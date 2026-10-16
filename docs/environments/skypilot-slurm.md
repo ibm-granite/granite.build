@@ -1,0 +1,346 @@
+# SkyPilot on SLURM
+
+> **Audience:** operators configuring a `Skypilot` environment whose `default_cloud` is `slurm`.
+> Read [skypilot.md](skypilot.md) first for the compute model and config common to all clouds; this
+> page covers only what is SLURM-specific.
+
+## Compute environment
+
+With `default_cloud: slurm`, SkyPilot provisions onto an existing **SLURM** cluster. It reaches the
+cluster over **SSH** (login node), submits the job to a partition, and runs the step on the allocated
+compute node. gbserver materializes the SSH reachability config from the environment.yaml at launch
+time, so the environment asset fully describes how to reach the cluster.
+
+To stand up a local SLURM cluster for development and integration testing, see
+[skypilot-slurm-setup.md](setup/skypilot-slurm-setup.md).
+
+## SLURM-specific configuration
+
+### `cluster_ssh_configs.slurm` — reachability
+
+SkyPilot's SLURM provisioner reads `~/.slurm/config` (OpenSSH format). Inline the host entries and
+gbserver materializes that file at launch:
+
+```yaml
+config:
+  default_cloud: slurm
+  cluster_ssh_configs:
+    slurm:
+      - Host: slurm-docker          # Cluster alias SkyPilot references (always literal).
+        HostName: 127.0.0.1         # Each non-Host directive value is secret-name-or-literal.
+        User: root
+        Port: 2222
+        IdentityFile: ~/.ssh/slurm_docker_key   # Path to a key already on the host.
+        StrictHostKeyChecking: "no"
+        UserKnownHostsFile: /dev/null
+```
+
+Keys are the **exact OpenSSH directive names**, so the env mirrors `~/.slurm/config` 1:1. Use either
+`IdentityFile` (a path to a key already on the host) **or** `IdentityKey` (the key *contents*, typically
+via a secret — gbserver writes a `0600` file and points `IdentityFile` at it); specifying both is an
+error. The SSH private key and the cluster itself stay out-of-band — gbserver does not provision them.
+
+gbserver merges this block into `~/.slurm/config` with last-writer-wins semantics: a differing
+gbserver-managed block for the same alias is **overwritten** (so a stale or re-keyed entry self-heals
+— no manual `rm ~/.slurm/config`); a *foreign* (non-gbserver) entry for the same alias is refused
+(`SkypilotConfigCollisionError`) — gbserver never clobbers user-owned entries.
+See [Inline SkyPilot config](skypilot.md#inline-skypilot-config-cluster_ssh_configs--cloud_config--aws_credentials).
+
+> **Re-keying caveat (test-only `GBTEST_SKY_SSH_RESET`).** Even after `~/.slurm/config` self-heals,
+> SkyPilot reuses a persisted SSH ControlMaster socket keyed on `(host, port, user)` — **not** the key
+> — so a changed `IdentityFile`/`IdentityKey` can be masked by a live connection until its
+> `ControlPersist` window expires (300s, or up to 1 day on the interactive-auth path). To validate a
+> credential change against a freshly edited key, set `GBTEST_SKY_SSH_RESET=true` in gbserver's
+> environment: on each HPC launch gbserver then clears the persisted control sockets first, forcing
+> re-authentication with the current key. This is a **test-only** toggle (manually set, unconditional
+> — not idle-gated); production never clears sockets, since the socket root is shared by all of the OS
+> user's SkyPilot SSH connections. It is not an environment-config key.
+
+> **Slow login nodes and the pre-launch probe (`GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S`).** Before an
+> HPC launch gbserver can run a trivial `echo` over SSH to name a wedged login node up front, rather
+> than leaving you SkyPilot's opaque `ValueError: Failed to get partitions for cluster …`. On a node
+> slow to send its SSH banner this backfires: the probe holds a session for up to its timeout
+> (default 30s), and where SSH slots are scarce that starves the control connection SkyPilot opens
+> next for `scontrol show partitions -o`. The symptom is `Connection timed out during banner
+> exchange` from the probe *and* the launch, once per provision retry — a diagnostic causing the
+> failure it reports. Set `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S=0` to disable it (our deployments
+> do; the skip is logged). Costs no error handling: genuine blips are still retried as transient and
+> the API server's traceback is still surfaced.
+
+### `cluster` / `zone`
+
+- `cluster` is composed into `infra=slurm/<cluster>` for steps that don't set their own
+  `resources.infra`.
+- `zone` maps to the SLURM **partition** (submitted via `--partition`), composed as
+  `infra=slurm/<cluster>/<zone>`. It is **omitted entirely when unset**, letting SLURM pick the
+  cluster's default partition. A `zone` set **without** a `cluster` is rejected with a clear
+  error: SkyPilot's `cloud/region/zone` grammar cannot place a partition without a cluster, so a
+  bare `zone` would otherwise be silently mislabeled as the cluster — set a `cluster` too.
+
+Both are resolved with the following precedence (highest first), so the partition can be set at
+whichever layer is most convenient:
+
+1. `resources.infra` on the step launcher — an explicit full infra string wins outright.
+2. `resources.cluster` / `resources.zone` on the step launcher (from `step.yaml`, or `build.yaml`
+   `config.launcher_config.resources`).
+3. `cluster` / `zone` as plain top-level keys in the step/build `config` (e.g. a `zone:` in
+   `build.yaml`).
+4. `cluster` / `zone` in this `environment.yaml` `config`.
+
+This precedence is implemented in `Skypilot._resolve_infra_and_zone` and applies to the HPC
+clouds (`slurm` and `lsf` — see [skypilot-lsf.md](skypilot-lsf.md); non-HPC clouds consult only
+the step launcher's `resources`). Because the resolver ends by falling back to the environment's own
+`config.cluster` / `config.zone`, this env-wide default is **enforced for every step** — including
+step types not listed under `config.steps` (see
+[Per-step-type config defaults](README.md#per-step-type-config-defaults-configstepstype)). A `command`
+step with no `zone` of its own thus lands on the environment's partition, while `hfpull`/`hfpush` listed
+under `config.steps` take their per-type partition. For a real-cluster example, the SLURM/BlueVela
+integration fixtures under `test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/` target
+BlueVela's `gpu-mid` partition (reached at `login1`) via the `bluevela` environment.
+
+> **The `bluevela` environment lives in a remote space, not this repo.** Those fixtures resolve
+> `space://environments/skypilot/slurm/bluevela` against a remote space (e.g. `gb-test`), which is
+> why `bluevela` isn't found anywhere in this tree. That environment sets `cluster: bluevela`,
+> `zone: gpu-mid`, a shared `shared_workdir`, and the `cloud_config` workdir mapping described
+> below, and authenticates to the SLURM login node with an SSH key (an on-host
+> `~/.ssh/ibm-bluevela.key`, or a `BV_SSH_PRIVATE_KEY` secret in the space).
+
+#### Override the partition (`zone`) per build
+
+To run a target on a different partition than its environment declares, set `zone` in the build's
+step `config` — no `environment.yaml` change needed. Either build-level layer above works. Because a
+`zone` without a `cluster` is rejected (see above), also supply a `cluster` unless the environment
+already sets one (it does for `bluevela`).
+
+Layer 2 — under `launcher_config.resources` (wins over a top-level `zone`):
+
+```yaml
+# build.yaml
+targets:
+  my-target:
+    environment_uri: space://environments/skypilot/slurm/bluevela
+    steps:
+      - step_uri: space://steps/command
+        config:
+          launcher_config:
+            resources:
+              zone: gpu-high        # override the env's gpu-mid partition
+              # cluster: bluevela   # only if the environment doesn't already set one
+```
+
+Layer 3 — a plain top-level `zone` in the step `config` (shorter; overridden by any
+`launcher_config.resources.zone`):
+
+```yaml
+        config:
+          zone: gpu-high            # override the partition
+```
+
+### Autostop is ignored
+
+SLURM does not support cluster autostop, so gbserver forces `idle_minutes_to_autostop=None` on the
+`slurm` cloud — any value you set is ignored. Per-step `cleanup_skypilot()` runs `sky down` after each
+step, which releases the node allocation. If you queue more parallel steps than the cluster has nodes,
+the surplus stay PENDING until earlier ones finish and free a node.
+
+### `sbatch_options` — SLURM `#SBATCH` directives
+
+By default a SkyPilot step inherits the partition's scheduling defaults (its
+`DefaultTime`/`MaxTime`, default `--gres`, etc.). Set `sbatch_options` to a map
+of SLURM directive names (without the leading `--`) to forward them verbatim to
+the submitted job's `#SBATCH` lines — most commonly `time`, but also `qos`,
+`account`, `constraint`, `nodelist`, and similar scheduling directives.
+
+```yaml
+# build.yaml — cap a step at four hours on a named QOS/account
+steps:
+  - step_uri: space://steps/command
+    config:
+      launcher_config:
+        sbatch_options:
+          time: "4:00:00"       # -> #SBATCH --time=4:00:00
+          qos: high             # -> #SBATCH --qos=high
+          account: my-project   # -> #SBATCH --account=my-project
+```
+
+Values use SLURM's own formats — e.g. `time` accepts bare minutes (`240`),
+`MM:SS`, `HH:MM:SS` (`"4:00:00"`), or `D-HH:MM:SS` (`"7-00:00:00"`).
+
+> **Some directives are managed by SkyPilot and silently dropped from
+> `sbatch_options`.** SkyPilot generates a set of `#SBATCH` lines itself from the
+> provisioned resources and **removes** those keys from `sbatch_options` (logging
+> a warning only into the provisioning log, not the build output). Setting them
+> here is a no-op — a value like `gres: "gpu:2"` never reaches SLURM and the step
+> can land on a CPU-only allocation while the build still reports success. Use
+> the first-class field instead:
+>
+> | Protected key (dropped) | Set this instead |
+> |---|---|
+> | `gres` | `launcher_config.resources.accelerators` — typed `"H100:2"` → `--gres=gpu:H100:2`, or untyped `":2"` → `--gres=gpu:2`. Always quote the value (a YAML int like `2` errors, and a bare `"2"` is read as *type* `2`, count 1 → `--gres=gpu:2:1`). |
+> | `cpus-per-task` | `compute_config.num_cpus_per_node`, or `resources.cpus` |
+> | `mem` | `resources.memory` (the `compute_config.total_memory_per_node` floor is intentionally skipped on slurm/lsf, so set an explicit `resources.memory`) |
+> | `partition` | the `infra` string / `zone` (`"slurm/<cluster>/<partition>"`) — see [`cluster` / `zone`](#cluster--zone) |
+> | `nodes` | *(not plumbed through the SkyPilot launcher — see below)* |
+>
+> `nodes`, `job-name`, `output`, and `error` are likewise SkyPilot-managed.
+> Multi-node is **not** driven from the step config on this launcher: SkyPilot's
+> `--nodes` comes from its own provisioner node count, and the SkyPilot launcher
+> does not read `compute_config.num_nodes` (that field is honored only by the
+> native k8s/LSF gbstep paths). Confirmed to pass through unchanged: `time`,
+> `qos`, `account`, `constraint`, `nodelist`.
+
+It resolves per step, merged **per key** (highest precedence last), so a step can
+override one directive while inheriting the rest:
+
+1. `sbatch_options` in this `environment.yaml` `config` (env-wide default).
+2. `sbatch_options` on the step launcher (`step.yaml`).
+3. `config.launcher_config.sbatch_options` in the build.yaml step (wins).
+
+Notes:
+
+- `time` requests a ceiling; it **cannot exceed** the partition's `MaxTime` —
+  SLURM rejects a job whose `--time` is above the partition limit, so keep it at
+  or below what the partition (or admin) allows.
+- It is a **SLURM-only** knob (maps to per-task `sbatch_options` in SkyPilot's
+  fork). On lsf/aws/kubernetes it is a no-op (a WARNING is logged if set); for
+  LSF set the runlimit at the environment level via
+  `cloud_config.lsf...bsub_options.W` (minutes) — see
+  [skypilot-lsf.md](skypilot-lsf.md).
+
+### No `image_id` on bare-host clusters
+
+Setting `image_id` on a launcher runs the job in a container, which on SLURM **requires the Pyxis SPANK
+plugin**. On a bare-host SLURM cluster (including the local Docker fixture), omit `image_id` or the
+launch fails with `NotSupportedError`; the `run:` command then executes directly on the compute node.
+
+> **Container images must be Debian/Ubuntu-based (apt).** When running in a container, SkyPilot
+> bootstraps its in-container SSH shim with `apt-get`, so only Debian-based images are supported (see
+> the SkyPilot [Docker containers docs](https://docs.skypilot.ai/en/latest/examples/docker-containers.html)).
+> A non-Debian image (e.g. a Fedora/RPM `quay.io/fedora/...` image) pulls fine but fails during job
+> setup — enroot launches it, the `apt-get` step exits non-zero, and the failure surfaces only as a
+> generic `ResourcesUnavailableError: Failed to acquire resources in <partition>`. Confirm with
+> `sacct -j <job_id> --format=JobID,State,ExitCode,Reason`: the container-setup sub-steps show
+> `FAILED 1:0` while the host-side steps complete. The image must also grant passwordless `sudo` (or run
+> as root).
+
+### `workdir` (containerized steps)
+
+A containerized step (`command_config.image` set) runs its `run:` inside an enroot container whose
+filesystem is **not** the compute node's. The SkyPilot SLURM backend bind-mounts only three host paths
+into that container — the account home, the ccache dir, and the SkyPilot **`workdir`**
+([`sky/provision/slurm/instance.py`](https://github.com/cmadam/skypilot/blob/5f18669dc9985f0649147dbcc6bb79d89aeb428d/sky/provision/slurm/instance.py)
+in the granite-build SkyPilot fork pinned by `pyproject.toml`
+builds `--container-mounts` as `home:home`, `ccache:ccache`, and `workdir:workdir`, the last only when
+`workdir` is set and differs from home). It does **not** identity-mount `/proj` (that is the LSF
+backend, not this one). So unless `shared_workdir` falls under a mounted path, the per-run
+`$GB_BUILD_WORKDIR` does not exist inside the container: the launcher's `cd "$GB_BUILD_WORKDIR"`
+`mkdir`s it in the container's ephemeral writable overlay, the step writes its output there, the overlay
+is discarded at teardown, and the separate bare `hfpush` step then fails with `out does not exist` (or
+`<path> does not exist`).
+
+**Fix:** set the SkyPilot `workdir` to an ancestor of (or equal to) `shared_workdir` via the
+environment's `cloud_config` block, which is deep-merged into `~/.sky/config.yaml` at launch. The key
+path is `slurm.cluster_configs.<cluster>.workdir` (`<cluster>` is the `cluster:` name):
+
+```yaml
+config:
+  shared_workdir: /proj/data-eng/llmb-read-write/builds/
+  cloud_config:
+    slurm:
+      cluster_configs:
+        bluevela:                                    # must match config.cluster
+          workdir: /proj/data-eng/llmb-read-write/builds   # ancestor of shared_workdir
+```
+
+With this, the enroot container mounts `/proj/data-eng/llmb-read-write/builds` identity, the container's
+`cd "$GB_BUILD_WORKDIR"` lands on the real shared filesystem, and a relative output path (e.g. `out/`)
+is visible to the downstream `hfpush`. No `build.yaml` change is needed.
+
+Constraints and notes:
+
+- **`workdir` must be an ancestor of (or equal to) `shared_workdir`** so the derived
+  `$GB_BUILD_WORKDIR = <shared_workdir>/builds/<build_id>/runs/<targetrun_id>/` falls inside the
+  `workdir:workdir` bind mount.
+- **`workdir` must not equal the account home** (`remote_home_dir`); when it does, the backend adds no
+  extra mount and the fix is inert.
+- **Bare steps don't need this** — they run on the host and see `shared_workdir` directly. `workdir` is
+  only required once a step runs in a container.
+- **Side effect:** SkyPilot relocates its cluster home to `<workdir>/.sky_clusters/<cluster>`. This is
+  benign and does not collide with gbserver's `<shared_workdir>/builds/...` run tree.
+- This mirrors LSF's `cloud_config.lsf.cluster_configs.<cluster>.workdir`, but LSF does **not** require
+  the ancestor relationship because its backend identity-mounts all of `/proj` (see
+  [skypilot-lsf.md](skypilot-lsf.md#file_mounts-inside-enroot-containers)).
+
+## Example `environment.yaml` (bare-host SLURM)
+
+This is the pattern used by the
+[`skypilot_slurm` integration test](../../test/integration/standalone/buildrunner/skypilot_slurm/)
+against the local Docker SLURM cluster from [skypilot-slurm-setup.md](setup/skypilot-slurm-setup.md). No
+`image_id` is set because the local cluster has no Pyxis plugin.
+
+```yaml
+name: slurm-local
+type: Skypilot
+config:
+  default_cloud: slurm
+  cluster: slurm-docker
+  zone: normal                  # SLURM partition.
+  idle_minutes_to_autostop: 0   # Ignored on SLURM; per-step `sky down` handles teardown.
+  shared_workdir: /shared       # Path shared across slurmctld/c1/c2 in the local Docker fixture.
+                                # HF cache defaults to /shared/hf_cache via this declaration.
+  cluster_ssh_configs:
+    slurm:
+      - Host: slurm-docker
+        HostName: 127.0.0.1
+        User: root
+        Port: 2222
+        IdentityFile: ~/.ssh/slurm_docker_key
+        StrictHostKeyChecking: "no"
+        UserKnownHostsFile: /dev/null
+assetstores:
+  - store_uri: space://assetstores/hf
+    pull:
+      - mode: default
+    push:
+      - mode: default
+```
+
+A `command` step on this env runs directly on the compute node when no image is
+given (leave `command_config.image` empty so `image_id` resolves to empty and the
+launcher runs on the bare node; set it to run inside a container instead):
+
+```yaml
+environment_configs:
+  Skypilot:
+    default_launcher: command
+    launchers:
+      command:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # image_id resolves to "" when command_config.image is empty — runs
+          # directly on the SLURM compute node.
+          image_id: '{{ ("docker:" ~ config.command_config.image) if config.command_config.image else "" }}'
+          resources:
+            cpus: "1+"
+            memory: "1+"
+          run: |
+            {{ config.command_config.command }}
+    monitors:
+      # References the shipped monitor library (builtins/monitors/skypilot) as-is —
+      # no inline event rules to maintain. It carries the standard GB_ARTIFACT_*
+      # convention (GB_ markers, with the legacy LLMB_ prefix dual-accepted, and the
+      # `binding` field) plus the default poll/log_retrieval profile; a build.yaml step
+      # `config.poll_interval_seconds` flows through the monitor's own `| default(...)`
+      # template (see the `command` step at
+      # src/gbserver/builtins/steps/skypilot/command/step.yaml).
+      skypilot_monitor:
+        ref: space://monitors/skypilot
+```
+
+## See also
+
+- [SkyPilot overview](skypilot.md) — compute model, launcher fields, inline-config rules
+- [Local SLURM setup](setup/skypilot-slurm-setup.md) — bring up a Docker SLURM cluster + local S3 store
+- [SkyPilot on LSF](skypilot-lsf.md) — the other SSH-provisioned HPC backend

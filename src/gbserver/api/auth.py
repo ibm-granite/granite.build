@@ -16,6 +16,7 @@
 
 import hmac
 import os
+import re
 from datetime import timedelta
 from typing import List, Optional, Self, Tuple
 
@@ -40,6 +41,73 @@ from gbserver.utils.utils import get_time
 logger = get_logger(__name__)
 
 _LOCALHOST_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+# Exact paths that never require authentication, regardless of auth mode.
+# These are the top-level app's own Swagger/OpenAPI doc pages plus the API
+# root welcome route (see root_api.read_root). Sub-app docs are matched by
+# _PUBLIC_DOCS_RE below, not enumerated here.
+#
+# Next.js's static export also emits a 404/index.html, but it's unreachable
+# in practice: root_api's SPA-fallback 404 handler always serves
+# dashboard/index.html for unknown paths (see _spa_fallback), never
+# 404/index.html, so there's no route to allow-list here.
+_PUBLIC_EXACT_PATHS = frozenset(
+    {
+        "/",
+        "/docs",
+        "/openapi.json",
+        "/redoc",
+        "/docs/oauth2-redirect",
+    }
+)
+
+# Path prefixes that never require authentication. The Next.js static-export
+# frontend (see root_api.py's StaticFiles mount, SPA fallback, and RSC .txt
+# payload middleware) is served entirely under /dashboard/* and /_next/*.
+# New pages under frontend/app/dashboard/ are covered automatically by the
+# /dashboard prefix below; a new *top-level* page outside /dashboard needs a
+# new prefix here. /api/v1/auth is the OIDC pre-auth login flow (see
+# auth_routes.py) — deliberately public.
+_PUBLIC_PATH_PREFIXES = ("/api/v1/auth", "/dashboard", "/_next")
+
+# Every mounted sub-app owns its own Swagger/OpenAPI doc pages directly under
+# its mount point (e.g. /api/v1/builds/docs, /api/v1/builds/openapi.json) — see
+# openapi_security.enable_api. Match those exactly: a versioned mount root
+# (/api/v1/<one-segment>) immediately followed by a doc endpoint and nothing
+# else. Anchoring to a *single* mount segment before the doc name is what keeps
+# this from matching a data route whose trailing path parameter merely happens
+# to be "docs"/"redoc"/"openapi.json" — e.g. GET /api/v1/secrets/user_secrets/
+# redoc (a secret literally named "redoc") has an extra segment and must stay
+# authenticated. The `$` anchor forbids anything after the doc name.
+_PUBLIC_DOCS_RE = re.compile(
+    r"^/api/v\d+/[^/]+/(docs|docs/oauth2-redirect|openapi\.json|redoc)$"
+)
+
+
+def _is_public_path(path: str) -> bool:
+    """Authenticate everything except this explicit allow-list.
+
+    Deny-by-default: a path must be named here to skip auth. This is the
+    inverse of an allow-everything-except-/api/ check — a future endpoint
+    registered outside this allow-list requires auth by default instead of
+    silently being public.
+
+    Runs on every request, so checks are ordered cheapest-first: a set
+    membership test, then string prefix tests (which short-circuit all
+    frontend/static/login traffic), and only then the sub-app-docs regex —
+    reached only by the small slice of paths still unresolved. The regex is
+    compiled once at import (``_PUBLIC_DOCS_RE``); its ``^``-anchor already
+    rejects non-matching paths in C, so no Python-level pre-filter is added
+    (measured: a startswith/endswith guard around it is slower, not faster).
+    """
+    if path in _PUBLIC_EXACT_PATHS:
+        return True
+    if any(
+        path == prefix or path.startswith(prefix + "/") or path.startswith(prefix + ".")
+        for prefix in _PUBLIC_PATH_PREFIXES
+    ):
+        return True
+    return _PUBLIC_DOCS_RE.match(path) is not None
 
 
 def _make_synthetic_user(login: str) -> User:
@@ -134,16 +202,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "auth middleware headers: %s", self._redact_headers(request.headers)
         )
 
-        # Allow docs/openapi endpoints without authentication in all modes
-        if request.method == "GET":
-            req_url = str(request.url)
-            if req_url.endswith("/docs") or req_url.endswith("/openapi.json"):
-                logger.info("docs URL doesn't require authentication")
-                response = await call_next(request)
-                return response
-
-        # Allow auth proxy endpoints (login flow) without authentication
-        if request.url.path.startswith("/api/v1/auth/"):
+        # Only GET/HEAD requests to the explicit allow-list skip auth — every
+        # allow-listed path is GET-only by nature (docs, config bootstrap,
+        # OIDC redirects, static/SPA serving), so this also catches a future
+        # mutating endpoint accidentally registered under an otherwise-public
+        # prefix (e.g. POST /dashboard/something).
+        if request.method in ("GET", "HEAD") and _is_public_path(request.url.path):
             response = await call_next(request)
             return response
 

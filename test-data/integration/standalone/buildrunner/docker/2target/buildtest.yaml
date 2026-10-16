@@ -1,0 +1,35 @@
+# YAML-driven spec for
+# test/integration/standalone/buildrunner/docker/test_docker_2target.py.
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+#
+# Two command-step targets on the Docker environment. `second` binds `first`'s
+# mem:// output, proving cross-target output -> input binding over the mem://
+# (in-memory) assetstore on the docker backend: the producer's verbatim `state`
+# value is passed to the consumer without touching a filesystem.
+targets:
+  - first
+  - second
+target_expectations:
+  # step_count = 1 per target: mem:// is a no-op transfer (no pull/push step is
+  # queued), so only the single command step is recorded. mem:// push/pull
+  # register one output/input artifact each, inline. Mirrors the bash
+  # mem_2target fixture.
+  - target_name: first
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 1
+    jobstats_count: 1
+  - target_name: second
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
+# Shared standalone space so space:// URIs (docker environment + command step)
+# resolve without cloning. Relative to this YAML's directory.
+space_uri: ../../../../../../configurations/spaces/local
+simulate_step_failure: false
+timeout_minutes: 10
+# Happy-path binding test; skip the cancellation variant (the command finishes
+# too fast to reliably catch RUNNING). Mirrors the docker/1step fixture.
+tests:
+  - runner

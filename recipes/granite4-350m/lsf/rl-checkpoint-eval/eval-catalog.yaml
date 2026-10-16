@@ -1,0 +1,338 @@
+# Evaluation catalog for the rl-checkpoint-eval generator (issue #45).
+#
+# Single source of truth for the 27 evaluations, transcribed once from
+# recipes/granite4-350m/lsf/sft-eval-full-dataset/build.yaml. generate_build.py
+# reads this file to emit per-checkpoint eval targets; keep it in sync if the
+# sft-eval-full-dataset suite changes.
+#
+# Each eval entry:
+#   category       — one of: code, general, math, safety, multilingual, bfcl.
+#   step_uri       — space://steps/sage-eval (most) or space://steps/bfcl-eval.
+#   gb_script      — sage gb_script name (sage-eval only; omitted for bfcl).
+#   image_id       — container image the eval runs in.
+#   output_subpath — appended under <SAGE_OUTPUT_DIR>/<experiment>/ for the
+#                    target's `sage_eval_results` output URI (sage-eval only).
+#                    bfcl uses <BFCL_OUTPUT_DIR>/<experiment>/<BFCL_EVAL_NAME>.
+#   overrides      — optional per-eval config overrides that differ from the
+#                    parameter defaults. Recognized keys:
+#                      batch_size      — literal batch_size (e.g. ifeval: 30)
+#                      max_length      — literal max_length (e.g. multiple-*: 512)
+#                      extra_env       — dict merged into sage_eval_config.extra_env
+#                    A value of the literal string "$${OE_EVAL_BCB_API_URL}" in
+#                    extra_env is passed through so the parameter is substituted
+#                    at `gb build start` time.
+#
+# The `experiment` the generator writes into each eval is namespaced per
+# checkpoint (e.g. "<EXPERIMENT>/ckpt_<step>") so results land in distinct dirs
+# and the sage/bfcl exporters can roll them up per checkpoint and combined.
+
+evals:
+  # ─── Code (9) ───────────────────────────────────────────────────────────────
+  olmes-cruxeval:
+    category: code
+    step_uri: space://steps/sage-eval
+    gb_script: code_olmes_cruxeval_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025
+    output_subpath: code/olmes-instruct/cruxeval_output
+    overrides: {}
+
+  olmes-bigcodebench:
+    category: code
+    step_uri: space://steps/sage-eval
+    gb_script: code_olmes_bigcodebench_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025
+    output_subpath: "code/olmes-instruct/bigcodebench::tulu"
+    overrides:
+      extra_env:
+        OE_EVAL_BCB_API_URL: "$${OE_EVAL_BCB_API_URL}"
+
+  evalplus-humaneval:
+    category: code
+    step_uri: space://steps/sage-eval
+    gb_script: code_evalplus_humaneval_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-code:0.025
+    output_subpath: code/evalplus/humaneval
+    overrides: {}
+
+  evalplus-mbpp:
+    category: code
+    step_uri: space://steps/sage-eval
+    gb_script: code_evalplus_mbpp_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-code:0.025
+    output_subpath: code/evalplus/mbpp
+    overrides: {}
+
+  multiple-sh:
+    category: code
+    step_uri: space://steps/sage-eval
+    gb_script: code_multiple_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-code:0.025
+    output_subpath: code/multiple/sh
+    overrides:
+      max_length: 512
+      extra_env:
+        MULTIPLE_LANG: "sh"
+        MAX_LENGTH: "512"
+
+  multiple-cpp:
+    category: code
+    step_uri: space://steps/sage-eval
+    gb_script: code_multiple_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-code:0.025
+    output_subpath: code/multiple/cpp
+    overrides:
+      max_length: 512
+      extra_env:
+        MULTIPLE_LANG: "cpp"
+        MAX_LENGTH: "512"
+
+  multiple-java:
+    category: code
+    step_uri: space://steps/sage-eval
+    gb_script: code_multiple_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-code:0.025
+    output_subpath: code/multiple/java
+    overrides:
+      max_length: 512
+      extra_env:
+        MULTIPLE_LANG: "java"
+        MAX_LENGTH: "512"
+
+  multiple-js:
+    category: code
+    step_uri: space://steps/sage-eval
+    gb_script: code_multiple_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-code:0.025
+    output_subpath: code/multiple/js
+    overrides:
+      max_length: 512
+      extra_env:
+        MULTIPLE_LANG: "js"
+        MAX_LENGTH: "512"
+
+  multiple-rs:
+    category: code
+    step_uri: space://steps/sage-eval
+    gb_script: code_multiple_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-code:0.025
+    output_subpath: code/multiple/rs
+    overrides:
+      max_length: 512
+      extra_env:
+        MULTIPLE_LANG: "rs"
+        MAX_LENGTH: "512"
+
+  # ─── General (5) ──────────────────────────────────────────────────────────────
+  olmes-agi-eval:
+    category: general
+    step_uri: space://steps/sage-eval
+    gb_script: general_olmes_agi_eval_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025
+    output_subpath: "general/olmes-instruct/agi_eval_english:0shot_cot::tulu3"
+    overrides: {}
+
+  olmes-bbh:
+    category: general
+    step_uri: space://steps/sage-eval
+    gb_script: general_olmes_bbh_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025
+    output_subpath: "general/olmes-instruct/bbh:cot-v1::tulu"
+    overrides: {}
+
+  olmes-mmlu-pro:
+    category: general
+    step_uri: space://steps/sage-eval
+    gb_script: general_olmes_mmlu_pro_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025
+    output_subpath: "general/olmes-instruct/mmlu_pro:cot::none"
+    overrides: {}
+
+  olmes-ifeval:
+    category: general
+    step_uri: space://steps/sage-eval
+    gb_script: general_olmes_ifeval_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025
+    output_subpath: "general/olmes-instruct/ifeval::tulu"
+    overrides:
+      batch_size: 30
+
+  olmes-mmlu-mc:
+    category: general
+    step_uri: space://steps/sage-eval
+    gb_script: general_olmes_mmlu_mc_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025
+    output_subpath: "general/olmes-instruct/mmlu:mc::tulu"
+    overrides: {}
+
+  # ─── Math (5) ───────────────────────────────────────────────────────────────
+  olmes-deepmind-math:
+    category: math
+    step_uri: space://steps/sage-eval
+    gb_script: math_olmes_deepmind_math_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025
+    output_subpath: "math/olmes-instruct/deepmind_math:0shot_cot::tulu3"
+    overrides: {}
+
+  olmes-gpqa:
+    category: math
+    step_uri: space://steps/sage-eval
+    gb_script: math_olmes_gpqa_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025
+    output_subpath: "math/olmes-instruct/gpqa:0shot_cot::llama3.1"
+    overrides: {}
+
+  olmes-gsm8k:
+    category: math
+    step_uri: space://steps/sage-eval
+    gb_script: math_olmes_gsm8k_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025
+    output_subpath: "math/olmes-instruct/gsm8k::tulu"
+    overrides: {}
+
+  olmes-gsm-symbolic:
+    category: math
+    step_uri: space://steps/sage-eval
+    gb_script: math_olmes_gsm_symbolic_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025
+    output_subpath: "math/olmes-instruct/gsm_symbolic::tulu"
+    overrides: {}
+
+  olmes-minerva-math:
+    category: math
+    step_uri: space://steps/sage-eval
+    gb_script: math_olmes_minerva_math_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025
+    output_subpath: "math/olmes-instruct/minerva_math::llama3.1"
+    overrides: {}
+
+  # ─── Safety (2) ─────────────────────────────────────────────────────────────
+  attaq:
+    category: safety
+    step_uri: space://steps/sage-eval
+    gb_script: safety_attaq_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-safety:0.025
+    output_subpath: safety/attaq
+    overrides: {}
+
+  salad-bench:
+    category: safety
+    step_uri: space://steps/sage-eval
+    gb_script: safety_salad_bench_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-safety:0.025
+    output_subpath: safety/salad_bench
+    overrides: {}
+
+  # ─── Multilingual (5) ─────────────────────────────────────────────────────────
+  global-mmlu:
+    category: multilingual
+    step_uri: space://steps/sage-eval
+    gb_script: multilingual_global_mmlu_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-multilingual:0.025
+    output_subpath: multilingual/global_mmlu
+    overrides: {}
+
+  mgsm:
+    category: multilingual
+    step_uri: space://steps/sage-eval
+    gb_script: multilingual_mgsm_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-multilingual:0.025
+    output_subpath: multilingual/mgsm
+    overrides: {}
+
+  include-ar-de-es-fr:
+    category: multilingual
+    step_uri: space://steps/sage-eval
+    gb_script: multilingual_include_arabic_german_spanish_french_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-multilingual:0.025
+    output_subpath: multilingual/include-5shot/arabic_german_spanish_french
+    overrides: {}
+
+  include-hi-bn-ta-te:
+    category: multilingual
+    step_uri: space://steps/sage-eval
+    gb_script: multilingual_include_hindi_bengali_tamil_telugu_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-multilingual:0.025
+    output_subpath: multilingual/include-5shot/hindi_bengali_tamil_telugu
+    overrides: {}
+
+  include-it-ja-ko-nl-pt-zh:
+    category: multilingual
+    step_uri: space://steps/sage-eval
+    gb_script: multilingual_include_italian_japanese_korean_dutch_portuguese_chinese_slim.sh
+    image_id: docker:us.icr.io/cil15-shared-registry/sage-py311-multilingual:0.025
+    output_subpath: multilingual/include-5shot/italian_japanese_korean_dutch_portuguese_chinese
+    overrides: {}
+
+  # ─── BFCL (1) ─────────────────────────────────────────────────────────────────
+  bfcl:
+    category: bfcl
+    step_uri: space://steps/bfcl-eval
+    # No image_id: the bfcl-eval step hardcodes its container; it is not a
+    # config key (unlike sage-eval, which reads sage_eval_config.image_id).
+    overrides: {}
+
+# Named selections referenced by the EVAL_SETS parameter. A set name expands to
+# its list of eval names; individual eval names may also be listed directly in
+# EVAL_SETS. full-eval is all 27.
+sets:
+  code-eval:
+    - olmes-cruxeval
+    - olmes-bigcodebench
+    - evalplus-humaneval
+    - evalplus-mbpp
+    - multiple-sh
+    - multiple-cpp
+    - multiple-java
+    - multiple-js
+    - multiple-rs
+  general-eval:
+    - olmes-agi-eval
+    - olmes-bbh
+    - olmes-mmlu-pro
+    - olmes-ifeval
+    - olmes-mmlu-mc
+  math-eval:
+    - olmes-deepmind-math
+    - olmes-gpqa
+    - olmes-gsm8k
+    - olmes-gsm-symbolic
+    - olmes-minerva-math
+  safety-eval:
+    - attaq
+    - salad-bench
+  multilingual-eval:
+    - global-mmlu
+    - mgsm
+    - include-ar-de-es-fr
+    - include-hi-bn-ta-te
+    - include-it-ja-ko-nl-pt-zh
+  bfcl:
+    - bfcl
+  full-eval:
+    - olmes-cruxeval
+    - olmes-bigcodebench
+    - evalplus-humaneval
+    - evalplus-mbpp
+    - multiple-sh
+    - multiple-cpp
+    - multiple-java
+    - multiple-js
+    - multiple-rs
+    - olmes-agi-eval
+    - olmes-bbh
+    - olmes-mmlu-pro
+    - olmes-ifeval
+    - olmes-mmlu-mc
+    - olmes-deepmind-math
+    - olmes-gpqa
+    - olmes-gsm8k
+    - olmes-gsm-symbolic
+    - olmes-minerva-math
+    - attaq
+    - salad-bench
+    - global-mmlu
+    - mgsm
+    - include-ar-de-es-fr
+    - include-hi-bn-ta-te
+    - include-it-ja-ko-nl-pt-zh
+    - bfcl

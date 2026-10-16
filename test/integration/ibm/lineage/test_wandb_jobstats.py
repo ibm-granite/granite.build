@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from gbserver.lineage.jobstats import _resolve_lineage_provider
 from gbserver.lineage.openlineage_service import LineageService
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.singleton_storage import SingletonAdminStorage
@@ -61,7 +62,7 @@ def _make_target(
     name: str = "train",
     input_artifacts: Optional[dict] = None,
     output_artifacts: Optional[dict] = None,
-    skipped_for_prerun_target_id: str = "",
+    retry_of_target_id: str = "",
 ) -> StoredTargetRun:
     return StoredTargetRun(
         uuid=uuid,
@@ -73,7 +74,7 @@ def _make_target(
         output_artifacts=output_artifacts or {},
         started_at=datetime.datetime(2024, 4, 15, 10, 0, 0),
         finished_at=datetime.datetime(2024, 4, 15, 11, 0, 0),
-        skipped_for_prerun_target_id=skipped_for_prerun_target_id,
+        retry_of_target_id=retry_of_target_id,
     )
 
 
@@ -180,7 +181,10 @@ class TestWandBLineageStore:
         self.mock_service.emit_event.assert_called_once()
         event = self.mock_service.emit_event.call_args[0][0]
         assert event["eventType"] == "COMPLETE"
-        assert event["run"]["runId"] == "target-001-out-1"
+        # Run ids are random uuids, not derived from the target or its output, so
+        # only the target_id tag ties a run back to its target.
+        assert event["run"]["runId"] != "target-001"
+        assert event["run"]["facets"]["tags"]["target_id"] == "target-001"
         assert event["run"]["facets"]["job_details"]["job_id"] == "target-001"
         assert event["job"]["name"] == "train"
         assert event["job"]["namespace"] == "public/test-build"
@@ -268,12 +272,15 @@ class TestWandBLineageStore:
         assert len(events_list) == 1
         assert "model" in events_dict
         assert len(events_dict["model"]) == 1
-        assert events_list[0]["run"]["runId"] == "target-001-out-1"
+        assert events_list[0]["run"]["runId"] != "target-001"
+        assert events_list[0]["run"]["facets"]["tags"]["target_id"] == "target-001"
         assert events_list[0]["run"]["facets"]["job_details"]["job_id"] == "target-001"
         assert events_list[0]["inputs"][0]["name"] == "data"
         assert events_list[0]["outputs"][0]["name"] == "model"
 
     def test_create_jobstats_for_target_no_outputs(self):
+        """A target with inputs but no outputs still has a real edge and gets one
+        "no-output" event so that edge is recorded."""
         input_art = _make_artifact("in-1", "data", "s3://b/data")
         build = _make_build()
         target = _make_target(
@@ -291,34 +298,61 @@ class TestWandBLineageStore:
         assert events_list[0]["outputs"] == []
         assert len(events_list[0]["inputs"]) == 1
 
-    def test_create_jobstats_for_target_skipped(self):
+    def test_create_jobstats_for_target_no_inputs_or_outputs(self):
+        """A fully artifact-less target emits nothing: the standalone UI shows
+        target nodes from admin storage regardless of artifacts, so wandb no
+        longer needs a run just to make it appear as a node."""
+        build = _make_build()
+        target = _make_target(
+            input_artifacts={},
+            output_artifacts={},
+        )
+        storage = _make_mock_storage(build, [target], {})
+
+        events_list, events_dict = self.storage_impl.create_jobstats_for_target(
+            storage, target, build
+        )
+
+        assert events_list == []
+        assert events_dict == {}
+
+    def test_create_jobstats_for_retried_target(self):
+        """A re-run (retry) target records lineage from its OWN outputs.
+
+        With in-place retry there is no skip/swap: a target that failed and then
+        re-ran to success is a real SUCCESS run with its own real outputs. Its
+        events are keyed by its own uuid and reference its own artifacts, exactly
+        like a first-attempt run — ``retry_of_target_id`` only records the linkage
+        and does not redirect lineage to the prior failed run.
+        """
         input_art = _make_artifact("in-1", "data", "s3://b/data")
         output_art = _make_artifact("out-1", "model", "s3://b/model")
         build = _make_build()
-        original_target = _make_target(
-            uuid="orig-target",
+        retried_target = _make_target(
+            uuid="retried-target",
             input_artifacts={"data": "in-1"},
             output_artifacts={"model": ["out-1"]},
-        )
-        skipped_target = _make_target(
-            uuid="skipped-target",
-            skipped_for_prerun_target_id="orig-target",
+            retry_of_target_id="orig-target",
         )
         storage = _make_mock_storage(
             build,
-            [original_target, skipped_target],
+            [retried_target],
             {"in-1": input_art, "out-1": output_art},
         )
 
         events_list, events_dict = self.storage_impl.create_jobstats_for_target(
-            storage, skipped_target, build
+            storage, retried_target, build
         )
 
+        # Lineage is built from the retried target's own uuid and outputs — no
+        # swap to a prior run. (runId itself is a random uuid by design; assert on
+        # the stable job_id/target_id/output identity instead.)
         assert len(events_list) == 1
-        assert events_list[0]["run"]["runId"] == "skipped-target-out-1"
         assert (
-            events_list[0]["run"]["facets"]["job_details"]["job_id"] == "skipped-target"
+            events_list[0]["run"]["facets"]["job_details"]["job_id"] == "retried-target"
         )
+        assert events_list[0]["run"]["facets"]["tags"]["target_id"] == "retried-target"
+        assert events_list[0]["outputs"][0]["facets"]["artifact_id"] == "out-1"
         assert "model" in events_dict
 
     def test_create_jobstats_for_target_build_not_found(self):
@@ -515,6 +549,9 @@ class TestWandBLineageStore:
         )
 
     def test_count_release_ids_no_results(self):
+        # Pins the 0-in -> 0-out passthrough: does_release_id_exist compares
+        # count == expected_count, so a non-zero/None return on an empty tag
+        # query would mis-report an artifact-less build as recorded.
         self.mock_service.count_runs_by_tags.return_value = 0
         count = self.storage_impl.count_release_ids("nonexistent")
         assert count == 0
@@ -542,6 +579,12 @@ class TestFeatureFlagSelection:
         yield
         reset_lineage_store()
 
+    @pytest.mark.skipif(
+        _resolve_lineage_provider() == "none",
+        reason="WandB store is not selected when the resolved lineage provider is "
+        "'none' (explicit GBSERVER_LINEAGE_PROVIDER=none, or the standalone default "
+        "when the var is unset).",
+    )
     def test_lineage_store_returns_wandb(self):
         import gbserver.lineage.jobstats as jobstats_mod
         from gbserver.lineage.wandb_jobstats import WandBLineageStore

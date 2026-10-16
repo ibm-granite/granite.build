@@ -1,10 +1,7 @@
-# Dependencies for the inference step, installed into the step's venv by
-# command.sh on first run. CPU-only torch keeps the download small; the
-# standalone gbserver venv ships none of these.
-torch
-# Cap <5: transformers 5.x changed apply_chat_template/generate input handling.
-# 4.x is what the reference host runs (4.57.x); pin to avoid silent version
-# drift pulling an incompatible major. See run.py generate() for the
-# return_dict=True / generate(**enc) handling this cap protects.
-transformers>=4.55,<5
+# Deps for the inference step, installed into its venv by command.sh on first run.
+# torch==2.12.0: PyPI Linux wheel bundles CUDA 13.0 (GPU); macOS wheel is CPU/MPS.
+torch==2.12.0
+# >=4.56: run.py uses from_pretrained(dtype=), added in 4.56 (crashes on 4.55.x).
+# <5: 4.x apply_chat_template/generate behavior (see run.py generate()).
+transformers>=4.56,<5
 accelerate

@@ -1,0 +1,10 @@
+{
+  "$comment": "Editor convenience only. mypy (configured in pyproject.toml) is what CI enforces; this file just points Pylance/pyright at the project venv so editors don't report phantom import errors.",
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.11",
+  "include": ["src", "tests"],
+  "exclude": ["**/__pycache__", ".venv", "alembic/versions"],
+  "extraPaths": ["src"],
+  "typeCheckingMode": "standard"
+}

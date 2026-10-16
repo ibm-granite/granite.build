@@ -16,6 +16,11 @@ MY_OUTPUT="$(make staticcheck)"
 # grep for the file name in the static check output
 for x in "${files[@]}" ;
 do
+    # Skip paths that no longer exist on disk (deleted or renamed-away files
+    # still appear in `git diff --name-only`); there's nothing to report for them.
+    if [[ ! -f "${x}" ]]; then
+        continue
+    fi
     echo "${MY_LINE_BREAK}"
     echo -e "\033[0;36mFile: \033[0m\033[0;32m${x}\033[0m"
     echo

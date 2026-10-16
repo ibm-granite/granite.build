@@ -73,12 +73,25 @@ dependencies = [
 # Tier 1: Standalone — minimal, no external services needed
 standalone = [
     "nats-py",
+    "granite.build[analytics]",
+    # gbmcp (the bundled stdio MCP server) is a standalone feature,
+    # so ship it by default — `pip install 'granite.build[standalone]'` and
+    # `make standalone-venv` both get the MCP server with no extra step. The
+    # only deps beyond the analytics overlap are fastmcp + httpx.
+    "granite.build[mcp]",
+    # Chat assistant — calls gbmcp's tools on the user's behalf. Ship the
+    # base extra by default alongside analytics/mcp for the same reason; this
+    # covers the OpenAI-compatible provider (RITS, Ollama, ...) out of the
+    # box. Anthropic support is opt-in — see `chat-anthropic` — not bundled
+    # here, so Claude isn't installed unless explicitly requested.
+    "granite.build[chat]",
 ]
 # Tier 2: Third-party open-source — installable from PyPI, testable in GH Actions
 thirdparty = [
+    "asyncssh",	# SSH tunnel util (also in [ibm]); here so non-ibm CI can test it
     "docker>=7.0.0",
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
-    "skypilot[kubernetes,slurm] @ git+https://github.com/cmadam/skypilot.git@dddcdd0057070221d6b351a3dd7c9e071e15b86b",  # LSF cloud backend; pinned to commit until upstreamed to skypilot-org/skypilot
+    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable",  # Integration branch (granite-build): LSF cloud driver + thinkahead AWS host-AMI-override + LsfCommandRunner rsync timeout fix. gb-sky-v1-stable is a moving alias for the recommended v1-line commit (re-pointed as the fork advances, like a docker minor tag); a breaking jump gets a new tag. Fresh installs re-resolve it; cached clones need `git fetch --tags --force`.
     "wandb",
 ]
 # Tier 3: IBM-specific — requires IBM infrastructure (cloud, cluster, Artifactory)
@@ -94,7 +107,54 @@ ibm = [
     "kubernetes_asyncio>=35.0.1",	# Avoids missing watch import created in kubernetes==36.0.0
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
     "psycopg2-binary",
-    "skypilot[kubernetes,slurm] @ git+https://github.com/cmadam/skypilot.git@dddcdd0057070221d6b351a3dd7c9e071e15b86b",  # LSF cloud backend; pinned to commit until upstreamed to skypilot-org/skypilot
+    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable",  # Integration branch (granite-build): LSF cloud driver + thinkahead AWS host-AMI-override + LsfCommandRunner rsync timeout fix. gb-sky-v1-stable is a moving alias for the recommended v1-line commit (re-pointed as the fork advances, like a docker minor tag); a breaking jump gets a new tag. Fresh installs re-resolve it; cached clones need `git fetch --tags --force`.
+]
+# gbmcp: the FastMCP server bundled at src/gbmcp. Pulled in by `standalone`, so
+# it's installed by default there; also available on its own as `[mcp]`.
+# httpx overlaps the `analytics` extra — pip de-dupes.
+mcp = [
+    "fastmcp>=3.4,<4",
+    "httpx>=0.27",
+]
+# gb-ui analytics service (gb_ui_backend) — routers included directly into gbserver
+analytics = [
+    "fastapi[standard]>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-dotenv>=1.0",
+    "aiosqlite>=0.19",
+]
+# Chat assistant (gb_ui_backend's chat_agents package) — a hand-rolled
+# agentic tool-calling loop (services/chat_agents/tool_loop_backend.py) that
+# spawns gbmcp as a sibling console script, so this extra is only useful
+# alongside `mcp` (bundled together via `standalone`). `mcp` here is the
+# standalone MCP client used to talk to gbmcp directly (previously only a
+# transitive dep of claude-agent-sdk; now used directly, which also drops the
+# implicit Node.js/Claude Code CLI subprocess requirement claude-agent-sdk
+# carried). This base extra alone is enough for the OpenAI-compatible
+# provider (RITS, Ollama, ...), which only needs `httpx` (already pulled in
+# by `mcp`/`analytics`) — see `chat-anthropic` below for Claude support.
+chat = [
+    "mcp>=1.0",
+    # search_build_yaml compiles/matches model-chosen regex patterns against
+    # build.yaml content — stdlib re never releases the GIL during a match,
+    # so a catastrophically backtracking pattern would freeze the whole
+    # single-threaded server, not just that one call. The `regex` package's
+    # `timeout=` kwarg is a real, hard bound enforced inside its own
+    # matching loop.
+    "regex",
+]
+# Adds Claude support on top of `chat`, via the official `anthropic` package
+# (not a CLI subprocess). Deliberately NOT bundled into `chat` or
+# `standalone` — Anthropic is an opt-in provider, not the default; installing
+# `chat` alone is enough for RITS/Ollama/any OpenAI-compatible endpoint.
+chat-anthropic = [
+    "granite.build[chat]",
+    "anthropic>=0.40",
 ]
 # All optional dependencies
 all = [
@@ -104,7 +164,11 @@ all = [
 dev = [
     "black",
     "coverage",
-    "isort",
+    # Pin below 9 to match the pre-commit-pinned isort (rev 8.0.0) and
+    # contributors' local installs. Unpinned, CI resolves to isort 9.0.1, whose
+    # reordering breaks the repo-wide `isort --check .` lint on files committed
+    # under 8.x -- failing every PR while local/pre-commit pass (#337).
+    "isort<9",
     "mypy",
     "pre-commit",
     "psutil",
@@ -121,6 +185,9 @@ dev = [
 [project.scripts]
 # gbserver scripts
 gbserver = "gbserver.cli:gbserver"
+# gb-ui analytics service — standalone dev-mode entrypoint (normally included
+# directly into gbserver's own process; see gbserver/api/root_api.py)
+gb-ui-backend = "gb_ui_backend.__main__:main"
 # gbcli scripts
 gbcli = "gbcli.cli:gbcli"
 gb = "gbcli.cli:gbcli"
@@ -129,6 +196,9 @@ llmbuild = "gbcli.cli:gbcli"
 gbtest = "libgbtest.buildrunner.gbtest:main"
 llmb = "gbcli.cli:gbcli"
 lamb = "gbcli.cli:gbcli"
+# gbmcp: the FastMCP server (requires the `mcp` extra). stdio transport by
+# default (launched by the MCP client); GBMCP_TRANSPORT=http for HTTP.
+gbmcp = "gbmcp.server:main"
 
 [project.urls]
 Homepage = "https://github.com/ibm-granite/granite.build"
@@ -142,7 +212,28 @@ build-backend = "setuptools.build_meta"
 fallback_version = "0.0.0"
 
 [tool.setuptools.packages.find]
-where = ["src", "test"]
+# "." picks up the repo-root `configurations/` tree (spaces, assets, environments,
+# steps). It has no __init__.py, so namespaces=true is required to treat it as a
+# package, and `include` scopes discovery so its subdirectories are not promoted
+# to top-level packages. Its non-.py payload is shipped via package-data below.
+# Located at runtime by gbserver.types.constants.find_configurations_root().
+where = ["src", "test", "."]
+# Explicit include so adding "." as a search root does not sweep in unintended
+# top-level dirs from the repo root; keep this in sync with the packages that
+# were discovered before (src/* and the test/* suites) plus configurations.
+include = [
+    "gbserver*",
+    "gbmcp*",
+    "gbcli*",
+    "gbcommon*",
+    "gb_ui_backend*",
+    "libgbtest*",
+    "unit*",
+    "integration*",
+    "e2e*",
+    "configurations*",
+]
+namespaces = true
 
 [tool.setuptools.package-data]
 "*" = ["*", ".*"]
@@ -151,9 +242,18 @@ where = ["src", "test"]
 profile = "black"
 known_first_party = ["gbserver", "gbcli", "gbcommon"]
 known_third_party = ["huggingface_hub", "wandb"]
+# The vendored autotunex/ subtree uses ruff (format + import sorting) and has its
+# own CI (.github/workflows/autotunex-ci.yml); keep the repo-wide isort profile off
+# it (AutoTuneX import, PR #297).
+extend_skip_glob = ["autotunex/*"]
 
 [tool.black]
 target-version = ["py311"]
+# See the isort note above: exclude the autotunex/ subtree from repo-wide black so
+# its ruff-formatted (line-length 100) tree is not reflowed (AutoTuneX PR #297).
+extend-exclude = '''
+/autotunex/
+'''
 
 [tool.pytest.ini_options]
 log_cli = true
@@ -179,8 +279,8 @@ markers = [
     "slow: tests that run for longer",
     "hf_integration: tests that perform real integration with HuggingFace Hub",
     "live: opt specific services into live mode (e.g. @pytest.mark.live('storage', 'github'))",
-    "skypilot_integration: tests requiring local SLURM + MinIO infrastructure (run via make integration-test)",
-    "extended: slow / real-infra tests; run only in the extended suite (make extended-tests)",
+    "skypilot_integration: tests exercising a real SkyPilot environment end-to-end (e.g. the local SLURM fixture via make integration-test, or a cloud backend such as aws when credentials are present); each test gates itself on the infrastructure it needs",
+    "extended: slow / real-infra tests; run only in the extended suite (make extended-tests). The Mode-2 step build tests under test/steps/ (published-step tests copied by a step's `make publish`) are auto-marked with this by test/steps/conftest.py, so they run in extended-tests and from VSCode but stay out of the quick/PR selections.",
 ]
 testpaths = ["test/unit", "test/integration", "test/e2e"]
 norecursedirs = [".venv", ".git", "dist", "__pycache__", "*.egg-info"]

@@ -1,0 +1,85 @@
+{{- if .Values.generateResourcesForLLMBBackendCluster }}
+{{- if .Values.deployments.enable }}
+{{- if .Values.deployments.lineageWatcher.enable }}
+{{- $lineageWatcherName := printf "llmbuild-lineage-watcher-%s" .Release.Name }}
+{{- $mainSecretName := printf "llmbuild-secret-%s" .Release.Name }}
+{{- if .Values.secrets.mainSecretName }}
+{{- $mainSecretName = .Values.secrets.mainSecretName }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: '{{ $lineageWatcherName }}'
+  labels:
+    'llmbuild/internal': '{{ $lineageWatcherName }}'
+spec:
+  # Single replica: the lineage watcher is the single writer of centralized
+  # lineage, and that is now a correctness requirement rather than an I/O
+  # optimization. Run ids are random, so recording is NOT idempotent -- the dedup
+  # query is the only thing preventing duplicate runs, and two replicas would
+  # both read "unrecorded" before either wrote. The durable checkpoint in
+  # gb_kv_pairs assumes a single writer for the same reason.
+  replicas: {{ .Values.deployments.lineageWatcher.replicas }}
+  selector:
+    matchLabels:
+      'llmbuild/internal': '{{ $lineageWatcherName }}'
+  template:
+    metadata:
+      labels:
+        'llmbuild/internal': '{{ $lineageWatcherName }}'
+    spec:
+      containers:
+      - name: lineage-watcher
+        image: '{{ .Values.deployments.image }}'
+        imagePullPolicy: Always
+        command:
+        - bash
+        - -c
+        - gbserver lineage-watch{{ with .Values.deployments.lineageWatcher.baseBuildId }} --base-build-id {{ . | quote }}{{ end }}
+        env:
+        {{- range $key, $value := .Values.deployments.lineageWatcher.env }}
+        - name: {{ $key | quote }}
+          value: {{ $value | quote }}
+        {{- end }}
+        {{- range $x := .Values.deployments.lineageWatcher.envFromMainSecret }}
+        - name: {{ $x | quote }}
+          valueFrom:
+            secretKeyRef:
+              key: {{ $x | quote }}
+              name: '{{ $mainSecretName }}'
+        {{- end }}
+        resources:
+          {{- .Values.deployments.lineageWatcher.resources | toYaml | nindent 10 }}
+        securityContext:
+          runAsGroup: 0
+          runAsNonRoot: true
+          capabilities:
+            drop:
+            - ALL
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /tmp
+          name: lineage-tmp-volume
+        - mountPath: /app/ibm-cloud-databases.cert
+          name: secret-volume
+          readOnly: true
+          subPath: ibm-cloud-databases.cert
+      imagePullSecrets:
+      {{- range $v := .Values.deployments.imagePullSecrets }}
+      - name: "{{ $v }}"
+      {{- end }}
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      serviceAccountName: 'granite-dot-build-svc-acc-{{ .Release.Name }}'
+      volumes:
+      - name: lineage-tmp-volume
+        emptyDir: {}
+      - name: secret-volume
+        secret:
+          secretName: '{{ $mainSecretName }}'
+          defaultMode: 416
+{{- end }}
+{{- end }}
+{{- end }}

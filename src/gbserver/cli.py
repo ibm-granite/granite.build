@@ -30,9 +30,11 @@ from gbserver.types.constants import (
     DEFAULT_DIR_PERMS,
     DEFAULT_LOG_LEVEL,
     ENV_VAR_GBSERVER_ADMIN_TABLE_PREFIX,
+    GBSERVER_LOG_RECORD_MAX_CHARS,
 )
 from gbserver.types.context import CliEnvironment, pass_environment
 from gbserver.utils.logger import configure_logging, get_logger
+from gbserver.utils.unwrap_errors import escape_for_one_record
 
 logger = get_logger(__name__)
 
@@ -63,7 +65,12 @@ class GraniteBuildServerCLI(click.Group):
             cmd_name = cmd_name.replace("-", "_")
             mod = importlib.import_module(f"gbserver.commands.command_{cmd_name}")
         except ImportError as e:
-            logger.error("%s", traceback.format_exc())
+            logger.error(
+                "%s",
+                escape_for_one_record(
+                    traceback.format_exc(), GBSERVER_LOG_RECORD_MAX_CHARS
+                ),
+            )
             logger.error(e)
             return None
         return mod.cli
@@ -112,6 +119,14 @@ def gbserver(
         level=ctx.log_level,
         log_file=str(ctx.log_path) if ctx.log_path is not None else None,
     )
+
+    # Install low-level transport retries (aiohttp DNS + kubernetes_asyncio
+    # requests) so build runs survive transient connection blips in our
+    # clusters without per-call-site retry logic. Idempotent; runs before any
+    # subcommand issues request traffic.
+    from gbserver.resilience.transport_retry import install_transport_retries
+
+    install_transport_retries()
 
     # Process-level standalone setup (env defaults -> constants reload -> sqlite
     # storage factory -> standalone space access manager). Click invokes this root

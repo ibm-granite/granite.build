@@ -312,9 +312,26 @@ def parse_launcher(launcher: StepLauncherConfig) -> dict:
 
 
 def parse_monitor(monitor: StepMonitorConfig) -> dict:
-    monitor_obj = {
-        "type": monitor.type,
-        "config": monitor.config,
-    }
+    """Render a step monitor entry for ``gb step describe``.
+
+    A monitor is either *inline* (``type`` + full ``config``) or a *reference* to a
+    library monitor (``ref`` + optional ``type`` override + a ``config`` overlay).
+    Describe fetches a single ``step.yaml`` from GitHub without a resolved space, so
+    it cannot follow the ``ref`` to the referenced monitor; it therefore renders the
+    entry faithfully — surfacing ``ref`` and omitting ``type`` when unset — instead
+    of emitting a misleading ``type: None`` with the reference dropped.
+
+    Args:
+        monitor: The parsed monitor entry from a step's ``environment_configs``.
+
+    Returns:
+        A dict carrying ``ref`` (when set), ``type`` (when set), and ``config``.
+    """
+    monitor_obj: dict = {}
+    if monitor.ref:
+        monitor_obj["ref"] = monitor.ref
+    if monitor.type:
+        monitor_obj["type"] = monitor.type
+    monitor_obj["config"] = monitor.config
 
     return monitor_obj

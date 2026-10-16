@@ -5,8 +5,15 @@
 #   1. Generates an SSH key pair for passwordless access to the login node
 #   2. Starts the Docker SLURM cluster (slurmctld, c1..c4, mysql, slurmdbd)
 #   3. Verifies SSH connectivity to slurmctld
-#   4. Configures ~/.sky/config.yaml so SkyPilot discovers the SLURM cluster
+#   4. Clears any stale gbserver-managed / legacy slurm-docker block from
+#      ~/.slurm/config (so a leftover entry never trips gbserver's
+#      refuse-on-conflict — no teardown needed just to refresh config)
 #   5. Verifies the cluster is healthy (sinfo shows 4 compute nodes)
+#
+# It does NOT write the slurm-docker entry itself: gbserver materializes that
+# from the inline `cluster_ssh_configs` in the Skypilot environment.yaml at build
+# launch time. This script only provisions the cluster + SSH key and keeps
+# ~/.slurm/config free of stale managed blocks.
 #
 # Usage:
 #   bash scripts/slurm/setup-slurm.sh
@@ -200,18 +207,18 @@ for node in slurm-c1 slurm-c2 slurm-c3 slurm-c4; do
 done
 log "sshd started on compute nodes."
 
-# ---- Step 3c: Connect MinIO to slurm-net (if running) ----
-# Allows SLURM containers to reach MinIO at gb-minio:9000 for S3 artifact push.
+# ---- Step 3c: Connect the local S3 store to slurm-net (if running) ----
+# Allows SLURM containers to reach S3 at gb-s3:9000 for artifact push.
 
-if $DOCKER_CMD container inspect gb-minio &>/dev/null 2>&1; then
-    if ! $DOCKER_CMD network inspect slurm-net --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null | grep -q gb-minio; then
-        $DOCKER_CMD network connect slurm-net gb-minio
-        log "Connected MinIO (gb-minio) to slurm-net."
+if $DOCKER_CMD container inspect gb-s3 &>/dev/null 2>&1; then
+    if ! $DOCKER_CMD network inspect slurm-net --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null | grep -q gb-s3; then
+        $DOCKER_CMD network connect slurm-net gb-s3
+        log "Connected S3 store (gb-s3) to slurm-net."
     else
-        log "MinIO already connected to slurm-net."
+        log "S3 store already connected to slurm-net."
     fi
 else
-    warn "MinIO container (gb-minio) not found. Run: bash scripts/minio/setup-minio.sh"
+    warn "S3 container (gb-s3) not found (only the SLURM demo needs it). Run: make s3-setup"
 fi
 
 # ---- Step 4: Verify SSH connectivity ----
@@ -247,35 +254,26 @@ if [ "$ssh_ok" = false ]; then
 fi
 log "SSH connectivity verified."
 
-# ---- Step 5: Configure SkyPilot ----
-# SkyPilot >=0.12 reads SLURM cluster SSH config from ~/.slurm/config.
-# We manage only the slurm-docker block, leaving other entries untouched.
+# ---- Step 5: Clean stale SkyPilot SLURM SSH config ----
+# This script no longer *writes* ~/.slurm/config — gbserver materializes the
+# slurm-docker block from the inline `cluster_ssh_configs` in the Skypilot
+# environment.yaml at build launch time (the script only provisions the cluster
+# and the SSH key the inline IdentityFile references). But it does clear any
+# leftover gbserver-managed or legacy `setup-slurm.sh` block on every run, so a
+# stale entry can never trip gbserver's refuse-on-conflict and you never need a
+# teardown just to refresh config. Unrelated `Host` entries are preserved.
 
 SLURM_SSH_CONFIG="${HOME}/.slurm/config"
-MARKER_BEGIN="# BEGIN slurm-docker (managed by setup-slurm.sh)"
-MARKER_END="# END slurm-docker"
 
-log "Configuring SkyPilot SLURM SSH config at $SLURM_SSH_CONFIG..."
-mkdir -p "$(dirname "$SLURM_SSH_CONFIG")"
-touch "$SLURM_SSH_CONFIG"
+strip_block() {  # $1 = begin marker, $2 = end marker
+    if [ -f "$SLURM_SSH_CONFIG" ] && grep -qF "$1" "$SLURM_SSH_CONFIG"; then
+        log "Clearing stale managed block ('$1') from $SLURM_SSH_CONFIG"
+        sed_i "/$1/,/$2/d" "$SLURM_SSH_CONFIG"
+    fi
+}
 
-# Remove existing slurm-docker block if present
-sed_i "/$MARKER_BEGIN/,/$MARKER_END/d" "$SLURM_SSH_CONFIG"
-
-# Append the managed block
-cat >> "$SLURM_SSH_CONFIG" <<SSHEOF
-$MARKER_BEGIN
-Host slurm-docker
-    HostName ${SLURM_SSH_HOST}
-    User root
-    Port ${SLURM_SSH_PORT}
-    IdentityFile ${SSH_KEY_PATH}
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-$MARKER_END
-SSHEOF
-
-log "SkyPilot SLURM config written to $SLURM_SSH_CONFIG."
+strip_block "# BEGIN gbserver-managed (cluster config)" "# END gbserver-managed"
+strip_block "# BEGIN slurm-docker (managed by setup-slurm.sh)" "# END slurm-docker"
 
 # ---- Step 6: Verify cluster health ----
 
@@ -299,9 +297,9 @@ ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 echo ""
 log "Setup complete."
 log ""
-log "Quick reference:"
-log "  SSH to login node:   ssh -F ~/.slurm/config slurm-docker"
-log "  Run sinfo:           ssh -F ~/.slurm/config slurm-docker sinfo"
-log "  Submit a test job:   ssh -F ~/.slurm/config slurm-docker sbatch --wrap 'hostname'"
+log "Quick reference (slurm SSH config is inlined in environment.yaml, not ~/.slurm/config):"
+log "  SSH to login node:   ssh -i $SSH_KEY_PATH -p $SLURM_SSH_PORT root@${SLURM_SSH_HOST}"
+log "  Run sinfo:           ssh -i $SSH_KEY_PATH -p $SLURM_SSH_PORT root@${SLURM_SSH_HOST} sinfo"
+log "  Submit a test job:   ssh -i $SSH_KEY_PATH -p $SLURM_SSH_PORT root@${SLURM_SSH_HOST} sbatch --wrap 'hostname'"
 log "  SkyPilot check:      sky check"
 log "  Teardown:            bash $SCRIPT_DIR/teardown-slurm.sh"

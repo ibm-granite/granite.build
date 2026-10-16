@@ -37,7 +37,6 @@ if not _can_import("psutil"):
         "integration/ibm/buildrunner/k8s/test_buildrunnerjob.py",
         "integration/ibm/buildrunner/k8s/test_builds.py",
         "integration/ibm/buildwatcher/test_buildwatcher.py",
-        "integration/ibm/githubmanager/test_githubmanager_subselect_targets.py",
         "e2e/sidecar/test_multi_sidecar_cmdmon_delayed_pytest.py",
         "e2e/sidecar/test_multi_sidecar_cmdmon_pytest.py",
         "e2e/sidecar/test_multi_sidecar_pytest.py",
@@ -51,7 +50,7 @@ if not _can_import("kubernetes_asyncio"):
     collect_ignore.append("unit/resilience/test_k8s_retry.py")
     collect_ignore.append("unit/monitoring/test_appwrapper_monitor.py")
     collect_ignore.append("unit/environment/test_cleanup_retry.py")
-    collect_ignore.append("integration/ibm/environment/test_k8s_raycluster_cleanup.py")
+    collect_ignore.append("integration/environment/test_k8s_raycluster_cleanup.py")
 
 if not _can_import("asyncssh"):
     collect_ignore.append("integration/ibm/utils/test_ssh_tunnel.py")
@@ -62,6 +61,7 @@ import libgbtest.constants
 from libgbtest.constants import BUILD_ID_PATTERN
 
 import gbserver.types.constants
+from gbcommon.types.testing import ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_step_run import StoredStepRun
@@ -69,6 +69,16 @@ from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Authoritative clean snapshot of all GB* environment variables, captured once
+# per xdist worker process at the end of pytest_sessionstart (after set_test_env
+# has loaded secrets/defaults). Standalone tests start a real server in a daemon
+# thread that mutates os.environ (GB_ENVIRONMENT=STANDALONE, GBSERVER_AUTH_MODE=
+# apikey via setdefault) and never reverts it; the daemon can also write env
+# AFTER a test's teardown. Restoring to a per-test snapshot would therefore
+# "restore" to already-polluted state, so _restore_gb_env_vars restores to this
+# fixed baseline instead. See https://github.com/ibm-granite/granite.build/issues/142
+_GB_ENV_BASELINE: dict[str, str] = {}
 
 SECRET_TYPE = "arbitrary"
 SPS_SECRET_GROUP_NAME = "SPS-Secret-Group"
@@ -240,6 +250,45 @@ def _reset_lineage_store():
     reset_lineage_store()
 
 
+@pytest.fixture(autouse=True)
+def _restore_gb_env_vars():
+    """Restore all GB* environment variables to the worker baseline after each test.
+
+    Standalone tests (test/e2e/standalone/*) start a real server via
+    _run_standalone() in a daemon thread. That thread sets GB_ENVIRONMENT=
+    STANDALONE and (via check_and_init_for_standalone) setdefault()s
+    STANDALONE_ENV_DEFAULTS, including GBSERVER_AUTH_MODE=apikey, into the shared
+    worker os.environ. These mutations escape the test's patch.dict (which does
+    not cover GB_ENVIRONMENT and whose context exits while the daemon thread is
+    still alive). A later test on the same xdist worker then reads the leaked
+    GBSERVER_AUTH_MODE live (gbserver.api.auth reads os.getenv at request time),
+    runs in apikey mode, resolves every request to user 'standalone', and 401s.
+
+    We restore against the once-per-worker baseline (captured in
+    pytest_sessionstart after set_test_env), not a per-test snapshot: the daemon
+    thread can write env after a test's teardown but before the next test's
+    setup, so a per-test snapshot would capture and re-apply the polluted state.
+
+    This also subsumes the former test/unit/standalone/conftest.py fixture that
+    restored a hand-listed subset of standalone leak keys: it covered fewer keys
+    (only the STANDALONE_ENV_DEFAULTS that is_standalone() setdefault()s) and its
+    constants reload / lineage-store reset are redundant — every standalone test
+    that mutates constants self-restores via monkeypatch + a finally-reload, and
+    the lineage singleton is already reset by _reset_lineage_store above.
+
+    See https://github.com/ibm-granite/granite.build/issues/142
+    """
+    yield
+    current_gb = {k for k in os.environ if k.startswith("GB")}
+    # Remove GB* keys a test (or the standalone path) added beyond the baseline.
+    for key in current_gb - _GB_ENV_BASELINE.keys():
+        del os.environ[key]
+    # Reset changed values and re-add any baseline GB* keys a test deleted.
+    for key, value in _GB_ENV_BASELINE.items():
+        if os.environ.get(key) != value:
+            os.environ[key] = value
+
+
 def pytest_addoption(parser):
     """Register custom pytest CLI options.
 
@@ -256,6 +305,14 @@ def pytest_addoption(parser):
         metavar="PATH",
         help="Path to a buildtest.yaml file to run via the generic YAML runner test.",
     )
+    parser.addoption(
+        "--build-yaml",
+        action="store",
+        default=None,
+        metavar="PATH",
+        help="Override the build.yaml a buildtest uses (gbtest's `-f`); resolves "
+        "against CWD instead of the buildtest.yaml's directory.",
+    )
 
 
 def pytest_sessionstart(session):
@@ -268,14 +325,59 @@ def pytest_sessionstart(session):
     test_mode = get_test_mode()
     logger.info(f"GBTEST_MODE={test_mode}")
 
+    # Redirect STANDALONE HF resource-group pushes to the staging group for the
+    # whole pytest session. This belongs to the test runner, not to a Makefile
+    # target: the source default is empty (the production gbspace-public, which
+    # is what a real standalone user must get), and a bare `pytest test/unit`
+    # would otherwise aim a live push at the production group. setdefault, so an
+    # explicit value from the caller's environment still wins.
+    os.environ.setdefault(ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT, "STAGING")
+    logger.info(
+        "%s=%s",
+        ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT,
+        os.environ[ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT],
+    )
+
     if test_mode != "live":
         # Mock mode: apply placeholder env vars so modules can import safely
         from libgbtest.mock_env import MOCK_ENV_DEFAULTS, MOCK_ENV_FORCED
+
+        from gbcommon.types.gbenvconfig import getenv_boolean
+        from gbcommon.types.testing import ENV_VAR_GBTEST_MOCK_HF
 
         for key, value in MOCK_ENV_FORCED.items():
             os.environ[key] = value
         for key, value in MOCK_ENV_DEFAULTS.items():
             os.environ.setdefault(key, value)
+
+        # HF mocking: mock mode turns it on, then an explicit setting overrides.
+        #
+        # (1) GBTEST_MODE=mock defaults HF mocking ON. This is a deliberate
+        #     test-initialization step, not a property of the var itself —
+        #     is_hf_mocked() stays a plain boolean read where unset and empty are
+        #     both False.
+        # (2) An explicitly set, non-blank GBTEST_MOCK_HF then wins, parsed with
+        #     the repo-standard getenv_boolean, so GBTEST_MOCK_HF=false opts out
+        #     of the default and GBTEST_MOCK_HF=1/yes/on opt in.
+        #
+        # Blank is deliberately treated as "no choice made", not as an opt-out:
+        # `make .test` exports `GBTEST_MOCK_HF=${GBTEST_MOCK_HF}` unconditionally,
+        # which leaves the var present-but-empty when no caller set it. Reading
+        # that as false silently un-mocked HF for all of CI (PR #314 review).
+        #
+        # The resolved value is written back to the environment so every consumer
+        # sees the same normalized "true"/"false": in-process is_hf_mocked(), and
+        # dispatched jobs/pods, which receive only the forwarded env var and
+        # re-read it in a separate process (their shell guards match on "true").
+        mock_hf = True
+        if os.environ.get(ENV_VAR_GBTEST_MOCK_HF, "").strip():
+            mock_hf = getenv_boolean(ENV_VAR_GBTEST_MOCK_HF, mock_hf)
+        # A whole-run live-HF opt-in (GBTEST_LIVE_HF=true) lifts the HF mock so
+        # the entire mock-mode run can exercise real HuggingFace. Per-test opt-in
+        # is handled by the _hf_mock fixture via @pytest.mark.live("hf").
+        if os.environ.get("GBTEST_LIVE_HF", "").lower() == "true":
+            mock_hf = False
+        os.environ[ENV_VAR_GBTEST_MOCK_HF] = "true" if mock_hf else "false"
         logger.info(
             "Mock mode: applied placeholder env vars. "
             "Set GBTEST_MODE=live or per-service GBTEST_LIVE_<SERVICE>=true for real connections."
@@ -336,6 +438,21 @@ def pytest_sessionstart(session):
         importlib.reload(gbserver.types.constants)
         importlib.reload(libgbtest.constants)
 
+        # gbcommon.uri.git captures GBSERVER_GITHUB_TOKEN / SPACE_REPO_CONFIG_BRANCH_NAME
+        # as *frozen default args* (e.g. get_gb_space_config_uri) at import time —
+        # which, via the buildconfig -> gbcommon.uri handler-load chain, happens when
+        # this conftest is first imported, BEFORE the token env var is set above.
+        # Reloading constants alone doesn't refresh those already-bound defaults, so
+        # tokenless callers would still see an empty token. Reload git after constants
+        # (so it re-binds the now-set token), then re-run URI handler registration so
+        # URI.uri_handler_classes points at the reloaded classes (uri.py/URI is not
+        # reloaded, so issubclass and resolution stay consistent).
+        import gbcommon.uri.git
+        from gbcommon.uri.uri import URI
+
+        importlib.reload(gbcommon.uri.git)
+        URI._load_urihandlers()
+
         from gbserver.lineage.jobstats import reset_lineage_store
 
         reset_lineage_store()
@@ -343,6 +460,19 @@ def pytest_sessionstart(session):
         # import gbserver_test.buildwatcher.utils
         # importlib.reload(gbserver_test.buildwatcher.utils)
         log_gb_env_vars()
+
+    # Capture the authoritative clean GB* baseline for this worker process.
+    # Unconditional (outside the live/mock branches) so it also runs in mock
+    # mode where the SPS block above is skipped. _restore_gb_env_vars resets
+    # os.environ's GB* keys to this baseline after every test, so a standalone
+    # test cannot leak GB_ENVIRONMENT/GBSERVER_AUTH_MODE into later tests on the
+    # same worker. See https://github.com/ibm-granite/granite.build/issues/142
+    _GB_ENV_BASELINE.clear()
+    _GB_ENV_BASELINE.update({k: v for k, v in os.environ.items() if k.startswith("GB")})
+    logger.info(
+        "Captured GB* env baseline (%d vars) for test isolation.",
+        len(_GB_ENV_BASELINE),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -712,14 +842,49 @@ def _mock_kubernetes(request):
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def _mock_huggingface(request):
-    """In mock mode, patch HuggingFace Hub downloads."""
-    if should_use_live(request, "hf"):
-        yield
-        return
+def _wants_live_hf(request) -> bool:
+    """True if this test opted in to real HF via marker or GBTEST_LIVE_HF.
 
-    with patch("huggingface_hub.snapshot_download", return_value="/tmp/fake-model"):
+    Deliberately narrower than ``should_use_live(request, "hf")``, which also
+    returns True for the whole run when GBTEST_MODE=live. GBTEST_MOCK_HF is an
+    independent axis from GBTEST_MODE, so live mode alone must not strip an
+    explicit GBTEST_MOCK_HF=true — only an HF-specific opt-in does.
+    """
+    for mark in request.node.iter_markers("live"):
+        if "hf" in mark.args:
+            return True
+    return os.environ.get("GBTEST_LIVE_HF", "").lower() == "true"
+
+
+@pytest.fixture(autouse=True)
+def _hf_mock(request):
+    """Bridge the ``live("hf")`` marker to the GBTEST_MOCK_HF guard.
+
+    In mock mode pytest_sessionstart resolves GBTEST_MOCK_HF to "true" by default
+    (an explicit non-blank value overrides), so every HF op (push/pull/exists/
+    delete) short-circuits in HfURI without touching the Hub — no per-test setup
+    needed. A test marked ``@pytest.mark.live("hf")`` exercises real HF instead,
+    so lift the guard for its duration and restore it afterwards. (A whole-run
+    GBTEST_LIVE_HF=true is already resolved to "false" at session start; popping
+    the var here is equivalent, since unset also reads as not-mocked.)
+
+    This is the single gate for HF mocking: it is marker-aware at function, class
+    and module scope, so no test base class should re-gate it (a second gate in
+    setup_method would re-set the var after this fixture lifted it — see #314).
+    """
+    if _wants_live_hf(request):
+        prior = os.environ.pop("GBTEST_MOCK_HF", None)
+        try:
+            yield
+        finally:
+            # Restore exactly the entry state: always clear first (in case the
+            # test body set the var), then put back the prior value if there was
+            # one. Guards against leaking GBTEST_MOCK_HF into later tests in the
+            # same worker when it was unset on entry (e.g. a GBTEST_LIVE_HF run).
+            os.environ.pop("GBTEST_MOCK_HF", None)
+            if prior is not None:
+                os.environ["GBTEST_MOCK_HF"] = prior
+    else:
         yield
 
 
@@ -748,13 +913,12 @@ def _mock_lineage(request):
     mock_store.create_jobstats_for_target.return_value = ([], {})
     mock_store.create_jobstats_for_original_artifact.return_value = None
 
+    # NOTE: buildrunner no longer imports get_lineage_store — lineage recording
+    # moved to LineageWatcher, which resolves the store via
+    # gbserver.lineage.jobstats.get_lineage_store (patched above).
     with (
         patch("gbserver.lineage.jobstats.get_lineage_store", return_value=mock_store),
         patch("gbserver.api.artifacts.get_lineage_store", return_value=mock_store),
-        patch(
-            "gbserver.buildrunner.buildrunner.get_lineage_store",
-            return_value=mock_store,
-        ),
         patch(
             "integration.ibm.api.test_artifacts.get_lineage_store",
             return_value=mock_store,

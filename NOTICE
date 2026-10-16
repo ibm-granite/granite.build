@@ -105,3 +105,14 @@ Copyright 2016-2021, Andrew Svetlov and aio-libs team
 yarl - Apache 2.0
 ========================================
 Copyright 2016-2021, Andrew Svetlov and aio-libs team
+
+========================================
+AutoTuneX / fm-tune (autotunex/src/fm-tune) - Apache 2.0
+========================================
+This product contains code adapted from HuggingFace PEFT (Apache 2.0):
+* HuggingFace PEFT (https://github.com/huggingface/peft)
+  Copyright The HuggingFace Team. Licensed under the Apache License, Version 2.0.
+    - autotunex/src/fm-tune/autotune/alora_patch.py adapts
+      LoraModel._enable_peft_forward_hooks from peft.tuners.lora.model.
+    - autotunex/src/fm-tune/autotune/trainers/_alora_gc.py adapts
+      ALoraLinearVariant.forward from peft.tuners.lora.variants.

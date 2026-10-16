@@ -19,6 +19,14 @@ MOCK_ENV_FORCED = {
     "WANDB_MODE": "disabled",
 }
 
+# NOTE: GBTEST_MOCK_HF is deliberately NOT listed here. It needs three-way
+# precedence (mock-mode default, then an explicit non-blank override, then the
+# GBTEST_LIVE_HF opt-out) and the resolved value written back to the environment
+# for dispatched workers, which neither the forced nor the setdefault pass can
+# express — a blank value from `make .test` would read as an opt-out under
+# setdefault and silently un-mock HF for all of CI. It is resolved explicitly in
+# pytest_sessionstart (test/conftest.py); see PR #314.
+
 # Set only if not already present — safe placeholder values.
 MOCK_ENV_DEFAULTS = {
     # Server config

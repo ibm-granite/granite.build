@@ -1,16 +1,68 @@
 name: sky-slurm
 type: Skypilot
+subtype: slurm
 config:
   default_cloud: slurm
   idle_minutes_to_autostop: 0
+  # Optional env-wide SLURM #SBATCH defaults, forwarded verbatim to sbatch. Keys
+  # are directive names without the `--` (time/qos/account/constraint/...);
+  # `time` is SLURM's own format (bare minutes, "4:00:00", or "7-00:00:00") and
+  # must be <= the partition MaxTime. A step's config.launcher_config.sbatch_options
+  # overrides these per key. SkyPilot-managed keys (gres, mem, cpus-per-task,
+  # partition, nodes, ...) are silently dropped — use resources.accelerators /
+  # resources.memory / the infra string instead. SLURM-only (ignored with a
+  # WARNING on aws/k8s/lsf; for LSF use cloud_config.lsf...bsub_options.W). See
+  # docs/environments/skypilot-slurm.md#sbatch_options--slurm-sbatch-directives.
+  # sbatch_options:
+  #   time: "4:00:00"
   cluster: slurm-docker
   zone: normal
   shared_workdir: /shared
+  # Inline cluster SSH config — gbserver materializes this into ~/.slurm/config
+  # at launch time (setup-slurm.sh no longer writes it). Keys are the exact
+  # OpenSSH directive names, mirroring ~/.slurm/config 1:1. The referenced key is
+  # generated on the host by `make slurm-setup`. The `Host` alias must match the
+  # `cluster:` field above (SkyPilot provisions on infra=slurm/slurm-docker).
+  #
+  # NOTE: SkyPilot reuses a persisted SSH ControlMaster socket keyed on
+  # (host, port, user) — NOT the key — so edits to the IdentityFile/key below can
+  # be masked by a stale connection for the ControlPersist window. When testing a
+  # modified key, set GBTEST_SKY_SSH_RESET=true in gbserver's environment so it
+  # clears those sockets before the launch and the changed config re-authenticates.
+  cluster_ssh_configs:
+    slurm:
+      - Host: slurm-docker
+        HostName: 127.0.0.1
+        User: root
+        Port: 2222
+        IdentityFile: ~/.ssh/slurm_docker_key
+        StrictHostKeyChecking: "no"
+        UserKnownHostsFile: /dev/null
+  # SkyPilot `workdir` set to an ancestor of (here equal to) `shared_workdir`,
+  # deep-merged into ~/.sky/config.yaml at launch. On SLURM this is both the
+  # cluster base dir and the one host path the enroot container bind-mounts
+  # (--container-mounts = home + ccache + workdir), so a containerized step's
+  # per-run $GB_BUILD_WORKDIR lands on the real shared FS (see
+  # docs/environments/skypilot-slurm.md#workdir-containerized-steps). This env is
+  # shared by the bare-host tests (1step/2target/filemount) AND the containerized
+  # test_skypilot_1step_image.py, which runs a real container when this same
+  # slurm-docker cluster is stood up with the Pyxis plugin — that image step is
+  # what needs this mount (without it the separate hfpush fails "<path> does not
+  # exist"). Bare-host runs don't need the mount; the only effect there is that
+  # SkyPilot relocates its cluster home to <workdir>/.sky_clusters/slurm-docker,
+  # which is benign because /shared is a root-writable shared volume the fixture
+  # already writes to (builds + hf_cache). Lookup key path is
+  # slurm/cluster_configs/<cluster>/workdir (cluster = `slurm-docker`).
+  cloud_config:
+    slurm:
+      cluster_configs:
+        slurm-docker:
+          workdir: /shared
 assetstores:
   - store_uri: space://assetstores/hf
-    load:
-      - mode: hf_pull
+    pull:
+      - mode: default
         config:
           cache_path: /shared/hf_cache
     push:
-      - mode: hf_push
+      - mode: default

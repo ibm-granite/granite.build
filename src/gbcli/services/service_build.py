@@ -10,14 +10,15 @@ import threading
 import time
 import zipfile
 from base64 import b64decode, b64encode
-from datetime import datetime
+from datetime import datetime, timezone
 from glob import glob
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 import yaml
 from fastapi import HTTPException
+from jinja2 import UndefinedError
 from pydantic import BaseModel
 from requests import HTTPError
 from requests.exceptions import ConnectionError
@@ -25,6 +26,7 @@ from requests.exceptions import ConnectionError
 from gbcli.utils.buildutil import (
     apply_parameters,
     get_yaml_diff,
+    parse_params,
     process_build_validation_response,
 )
 from gbcli.utils.cli_config import get_local_build_cache
@@ -57,6 +59,7 @@ from gbcli.utils.gbserver import (
     get_builds,
     get_builds_count,
     make_gbserver_call,
+    restart_build,
     submit_build,
     update_build_gserver,
     validate_build,
@@ -277,6 +280,8 @@ def build_start(
     tags: list[str] = [],
     callback=None,
     validation_type: str = "static",
+    dry_run: bool = False,
+    save_build_file: Optional[str] = None,
 ) -> str:
 
     gbserver_build_update = gb_environment_config().feature_flags[
@@ -313,6 +318,46 @@ def build_start(
         return
 
     ignore_git_global_config()
+
+    # Build/branch name — derived up front because it needs neither auth nor a
+    # resolved space, so the offline --dry-run path below can run without them.
+    if filename:
+        filename_split = os.path.split(filename)[-1]
+        suffix = f".{filename_split.split('.', 1)[-1]}" if "." in filename_split else ""
+        build_name = remove_suffix(filename_split, suffix)
+    else:
+        build_name = os.path.split(os.getcwd())[-1]
+    branch_name = f"{build_name}-{generate_unique_id()}"
+
+    if dry_run:
+        # Offline resolution (issue #278): apply parameters and emit the
+        # executable build.yaml WITHOUT auth, space resolution, validation,
+        # archiving, or submission. Short-circuits before get_user/resolve_space
+        # so it works in CI with no credentials or reachable space.
+        experiment_folder = prepare_build_local_contents(
+            build_file_path, branch_name, filename
+        )
+        try:
+            _, resolved_path = parameters_helper(
+                quiet,
+                parameters_path,
+                build_file_path,
+                experiment_folder,
+                params,
+                callback,
+            )
+        except Exception as e:
+            if callback is not None:
+                callback(callback_event="clear", callback_args={})
+                callback(
+                    callback_event="error",
+                    callback_args={"reason": f"Error applying build parameters: {e}."},
+                )
+            return None
+        resolved_text = Path(resolved_path).read_text(encoding="utf-8")
+        if save_build_file:
+            Path(save_build_file).write_text(resolved_text, encoding="utf-8")
+        return resolved_text
 
     if is_standalone():
         creds = GBCredentials()
@@ -351,14 +396,6 @@ def build_start(
 
     if callback and not quiet:
         callback(callback_event="preparing_contents", callback_args={"steps": 1})
-
-    if filename:
-        filename_split = os.path.split(filename)[-1]
-        suffix = f".{filename_split.split('.', 1)[-1]}" if "." in filename_split else ""
-        build_name = remove_suffix(filename_split, suffix)
-    else:
-        build_name = os.path.split(os.getcwd())[-1]
-    branch_name = f"{build_name}-{generate_unique_id()}"
 
     experiment_folder = prepare_build_local_contents(
         build_file_path, branch_name, filename
@@ -462,6 +499,66 @@ def build_start(
         )
 
     return gbserver_build["build_id"]
+
+
+def build_restart(
+    github_token: str,
+    build_id: str,
+    id_format: Optional[str] = None,
+    callback=None,
+) -> Optional[dict]:
+    """Restart a previously-executed build.
+
+    Unlike build_start there is no local build folder to zip: the build
+    definition, space, and targets already live on the build. Only the build's id
+    (or URL) is needed. A restart reuses the same build id, so the server's
+    ``build_id`` equals the restarted build.
+
+    Returns the server response dict augmented with ``restarted_from`` — the
+    resolved uuid of the build that was restarted (``build_id`` after any URL is
+    resolved to a uuid) — or None on a server/connection error. Callers report
+    ``restarted_from`` rather than the raw identifier so a passed URL never leaks
+    into uuid-valued output.
+    """
+    if id_format == "url":
+        # get_build_id_from_url returns None when the URL matches no build; guard
+        # the deref so it surfaces the error message, not a raw IndexError/TypeError.
+        build_id_from_url = get_build_id_from_url(github_token, build_id, callback)
+        if not build_id_from_url:
+            if callback is not None:
+                callback(
+                    callback_event="error",
+                    callback_args={
+                        "reason": f"No build found for URL {build_id}.",
+                    },
+                )
+            return None
+        build_id = build_id_from_url[0]["uuid"]
+
+    if callback is not None:
+        callback(
+            callback_event="restarting_build",
+            callback_args={"steps": 1, "build_id": build_id},
+        )
+
+    gbserver_build = make_gbserver_call(
+        lambda: restart_build(build_id, github_token, GBSERVER_BUILD_API),
+        callback,
+    )
+
+    if not gbserver_build:
+        return None
+
+    if callback is not None:
+        callback(
+            callback_event="restarted_build",
+            callback_args={"steps": 100, "build_id": gbserver_build["build_id"]},
+        )
+
+    # Report the resolved uuid, not the raw argument: build_id is now the uuid even
+    # when a URL was passed, so a URL never sneaks into uuid-valued output.
+    gbserver_build["restarted_from"] = build_id
+    return gbserver_build
 
 
 def build_validate(
@@ -1260,13 +1357,18 @@ def build_status(
         spinner_thread.join()  # Ensure spinner stops
 
     # TODO: use global_space to properly scope the build ID
-    build_status = make_gbserver_call(
+    status_response = make_gbserver_call(
         lambda: get_build_status_with_targets_runs(
             github_token, build_id, GBSERVER_BUILD_API
-        )["status"],
+        ),
         callback,
         stop_spinner,
     )
+    # make_gbserver_call returns None on a server/connection error (after firing
+    # the "error" callback). Bail out instead of dereferencing None.
+    if status_response is None:
+        return None, None, None, "Build status could not be retrieved."
+    build_status = status_response["status"]
 
     if id_format != "url":
         resolved_space_name = global_space.get("name")
@@ -1296,10 +1398,14 @@ def build_status(
                 callback_event="processing_status_artifacts", callback_args={"steps": 1}
             )
 
+    # In-place retry keeps a single build id, so every target run — including a
+    # re-run FAILED target's new SUCCESS run — already lives on this build.
+    target_runs = build_status.get("target_runs") or []
+
     targets = (
-        process_target_runs(build_status["target_runs"])
+        process_target_runs(target_runs)
         if result_format == "plain"
-        else process_target_runs_to_json(build_status.get("target_runs"))
+        else process_target_runs_to_json(target_runs)
     )
 
     if callback is not None:
@@ -1359,6 +1465,8 @@ def build_describe(
     build_id: Optional[str] = None,
     id_format: Optional[str] = None,
     space: Optional[str] = None,
+    params: Optional[List[str]] = None,
+    parameters_path: Optional[str] = None,
     callback=None,
 ) -> str:
     downloaded_build_file_path = False
@@ -1434,10 +1542,32 @@ def build_describe(
 
     try:
         if raw:
-            with open(build_yaml_path, "r", encoding="utf-8") as f:
-                # build_yaml_dict = yaml.safe_load(f)
-                file_str = f.read()
-            # return yaml.dump(build_yaml_dict, indent=2)
+            file_str = build_yaml_path.read_text(encoding="utf-8")
+            # When parameters are supplied, resolve the parameterized template
+            # through the same engine `gb build start` uses, so `gb` stays the
+            # single source of truth for rendering (issue #278). With no params
+            # this stays a verbatim dump of the (possibly parameterized) file.
+            # Only the local-file path is a template: a server-fetched build_id
+            # is already fully resolved (params were evaluated at submit time),
+            # so re-applying params there is meaningless and, under
+            # StrictUndefined, could spuriously fail on `$${...}`-looking text.
+            if (params or parameters_path) and not build_id:
+                params_file = (
+                    Path(parameters_path)
+                    if parameters_path
+                    else build_yaml_path.parent / BUILD_PARAMETERS_FILE
+                )
+                params_from_file = (
+                    get_params_from_file(str(params_file))
+                    if params_file.is_file()
+                    else {}
+                )
+                params_dict = parse_params(list(params or []), params_from_file)
+                with tempfile.TemporaryDirectory() as scratch:
+                    try:
+                        file_str = apply_parameters(file_str, [], params_dict, scratch)
+                    except UndefinedError as e:
+                        raise ValueError(f"missing parameter: {e.message}") from e
             return file_str
         else:
             targets = describe_build_yaml(
@@ -1853,11 +1983,33 @@ def build_notification(
     return notification["subscribed"], space_output_message
 
 
-def process_target_runs(target_runs: List[Any]) -> Tuple[List[Any], List[Any]]:
-    target_runs = sorted(
-        target_runs,
-        key=lambda x: datetime.fromisoformat(x["target"]["started_at"]),
-    )
+# A target run that has not started yet has no started_at. It sorts first via
+# this epoch sentinel, which is timezone-aware so it compares cleanly against the
+# (possibly offset-aware) timestamps parsed from the server.
+_SORT_EPOCH = datetime.fromtimestamp(0, tz=timezone.utc)
+
+
+def _parse_started_at(started_at: Optional[str]) -> datetime:
+    if not started_at:
+        return _SORT_EPOCH
+    parsed = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _target_sort_key(target_run: Any) -> datetime:
+    # In-place retry keeps all runs on one build, so ordering by start time alone
+    # lays out a target's FAILED run ahead of its later SUCCESS retry run.
+    return _parse_started_at(target_run["target"].get("started_at"))
+
+
+def _step_sort_key(step: Any) -> datetime:
+    return _parse_started_at(step.get("started_at"))
+
+
+def process_target_runs(target_runs: List[Any]) -> Dict[str, Any]:
+    target_runs = sorted(target_runs, key=_target_sort_key)
     targets = {}
     for target_run in target_runs:
         target = target_run["target"]
@@ -1890,23 +2042,20 @@ def process_target_runs(target_runs: List[Any]) -> Tuple[List[Any], List[Any]]:
             )
 
         targets[f"{target['name']} ({target['uuid']})"] = {
+            "name": target["name"],
             "status": target["status"],
+            "build_id": target.get("build_id", ""),
+            "retry_of_target_id": target.get("retry_of_target_id", ""),
             "input_artifacts": input_artifacts,
             "output_artifacts": output_artifacts,
-            "steps": sorted(
-                steps,
-                key=lambda x: datetime.fromisoformat(x["started_at"]),
-            ),
+            "steps": sorted(steps, key=_step_sort_key),
         }
 
     return targets
 
 
 def process_target_runs_to_json(target_runs: List[Any]) -> List[Any]:
-    target_runs = sorted(
-        target_runs,
-        key=lambda x: datetime.fromisoformat(x["target"]["started_at"]),
-    )
+    target_runs = sorted(target_runs, key=_target_sort_key)
 
     targets = []
     for target_run in target_runs:
@@ -1942,15 +2091,13 @@ def process_target_runs_to_json(target_runs: List[Any]) -> List[Any]:
         targets.append(
             {
                 "target_name": target.get("name"),
-                "build_id": target.get("build_id"),
+                "build_id": target.get("build_id", ""),
                 "target_id": target.get("uuid"),
                 "status": target.get("status"),
+                "retry_of_target_id": target.get("retry_of_target_id", ""),
                 "input_artifacts": input_artifacts,
                 "output_artifacts": output_artifacts,
-                "steps": sorted(
-                    steps,
-                    key=lambda x: datetime.fromisoformat(x["started_at"]),
-                ),
+                "steps": sorted(steps, key=_step_sort_key),
             }
         )
 

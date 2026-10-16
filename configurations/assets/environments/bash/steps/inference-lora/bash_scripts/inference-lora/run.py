@@ -165,7 +165,7 @@ def main():
     # bf16 only on CUDA; CPU and MPS (Apple Silicon) stay in float32 for stability.
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+        dtype=torch.bfloat16 if device == "cuda" else torch.float32,
     )
 
     used_adapter = False
@@ -207,7 +207,7 @@ def main():
     print(f"Result written to {output_dir}/inference_result.json")
 
     # Id must match build.yaml's output name (parsed by the NEWARTIFACT monitor).
-    print(f"LLMB_ARTIFACT_ID:{ARTIFACT_ID} LLMB_ARTIFACT_PATH:{output_dir}")
+    print(f"GB_ARTIFACT_ID:{ARTIFACT_ID} GB_ARTIFACT_PATH:{output_dir}")
     print("LORA_INFERENCE_SUCCESS")
 
 

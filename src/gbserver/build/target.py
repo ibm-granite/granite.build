@@ -84,9 +84,11 @@ class Target(BuildEntity):
         space: Optional[Space] = None,
         username: str = "",
         context: Optional[str] = None,
+        build_config_name: str = "",
         **kwargs,
     ) -> None:
         self.name = target_name
+        self.build_config_name = build_config_name
         self.setup_done = False
         self.setup_lock = asyncio.Lock()
         self.space = space

@@ -9,12 +9,12 @@ The gbserver process does not need to stay running for jobs to complete.
 import asyncio
 import glob
 import os
-import urllib.parse
-from typing import Any, Dict, List, Optional, Self, Tuple
+from typing import Any, Dict, List, Optional, Self
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
+from gbserver.types.environment.environment import EnvironmentVariableConfig
 from gbserver.types.environmentconfig import EnvironmentConfig
 from gbserver.utils.logger import get_logger
 
@@ -50,11 +50,26 @@ def _download_logs_with_retry(cluster_name: str, job_name: str):
     return result.get(job_name)
 
 
+from gbserver.environment._skypilot_metadata import (
+    apply_slurm_comment_override,
+    normalize_run_metadata,
+    task_metadata_labels,
+)
 from gbserver.environment._skypilot_ssh import (
     execute_on_host_via_ssh as _execute_on_host_via_ssh,
 )
 from gbserver.environment._skypilot_ssh import (
     extract_host_ssh_info as _extract_host_ssh_info,
+)
+
+# Shared file_mounts builder — keeps the unmanaged and managed launchers in sync
+# (relative-source resolution against the step.yaml dir, bucket sub-path handling).
+from gbserver.environment.skypilot import (
+    _abort_shielded_request,
+    _build_skypilot_mounts,
+    _get_step_skypilot_config,
+    _run_sky_verb_off_loop,
+    _sky_submit_to_thread,
 )
 
 
@@ -91,6 +106,45 @@ class Skypilot_managed(Environment):
         """Generate a unique managed job name from a launch_id."""
         return f"gb-{launch_id[:12]}"
 
+    def _declared_secret_mappings(
+        self: Self, **kwargs: Any
+    ) -> List[EnvironmentVariableConfig]:
+        """Declared managed-job secret mappings for the launch-env composer.
+
+        Overrides :meth:`Environment._declared_secret_mappings` so only secrets
+        declared in the step's ``config.skypilot.secrets`` allow-list are
+        injected (least-privilege, matching the unmanaged launcher and LSF/K8s);
+        the full secret bag is never dumped.
+
+        :param kwargs: the launch context; only ``config`` is read.
+        :returns: the declared ``EnvironmentVariableConfig`` mappings.
+        """
+        return _get_step_skypilot_config(
+            kwargs.get("config") or {}
+        ).secrets.secret_names_to_use_as_env_variable
+
+    def _launch_env_layers(self: Self, **kwargs: Any) -> List[Dict[str, str]]:
+        """Managed-job env layers for the shared launch-env composer.
+
+        Overrides :meth:`Environment._launch_env_layers`. Ordered
+        lowest->highest above declared secrets and below the standard set:
+        launcher ``envs`` < the built-in ``GB_SKYPILOT_*``/GB_TARGETRUN_ID vars.
+
+        :param kwargs: the launch context; reads ``run_metadata`` (GB_TARGETRUN_ID),
+            ``launcher_config`` (``envs``), ``launch_id`` (GB_SKYPILOT_LAUNCH_ID),
+            and ``job_name`` (GB_SKYPILOT_JOB_NAME).
+        :returns: the ordered env layers to compose.
+        """
+        launcher_config = kwargs.get("launcher_config") or {}
+        run_metadata = kwargs.get("run_metadata") or {}
+        builtins: Dict[str, str] = {
+            "GB_SKYPILOT_LAUNCH_ID": kwargs.get("launch_id", ""),
+            "GB_SKYPILOT_JOB_NAME": kwargs.get("job_name", ""),
+        }
+        if run_metadata.get("targetrun_id"):
+            builtins["GB_TARGETRUN_ID"] = run_metadata["targetrun_id"]
+        return [launcher_config.get("envs", {}), builtins]
+
     async def launch_skypilot_managed(
         self: Self,
         launch_id: str,
@@ -108,6 +162,9 @@ class Skypilot_managed(Environment):
 
             launcher_config = kwargs.get("launcher_config", {}) or {}
             config = kwargs.get("config", {}) or {}
+            # Kept as a local: reused by the post-launch-failure event below.
+            # Normalize to a plain dict (codebase passes dict or EntityRunMetadata).
+            run_metadata = normalize_run_metadata(kwargs.get("run_metadata"))
 
             job_name = self._job_name_for(launch_id)
             cloud = (
@@ -126,6 +183,11 @@ class Skypilot_managed(Environment):
             if docker_config:
                 cluster_config_overrides["docker"] = docker_config
 
+            # Attach build-tracking metadata as a SLURM --comment (searchable via
+            # sjob/squeue/sacct). Safe to set unconditionally: only the SLURM
+            # backend reads it; the slurm section is inert on k8s/cloud/LSF.
+            apply_slurm_comment_override(cluster_config_overrides, run_metadata)
+
             image_id = config.get("launcher_config", {}).get(
                 "image_id"
             ) or launcher_config.get("image_id")
@@ -137,26 +199,29 @@ class Skypilot_managed(Environment):
                 memory=res_config.get("memory"),
                 disk_size=res_config.get("disk_size"),
                 image_id=image_id,
+                # Build-tracking labels. SkyPilot applies these on k8s (pod
+                # labels) and cloud (instance tags); ignored on SLURM/LSF.
+                labels=task_metadata_labels(run_metadata) or None,
                 _cluster_config_overrides=cluster_config_overrides or None,
             )
 
-            # Build environment variables
-            env_vars: Dict[str, str] = {}
-            if self.secrets:
-                env_vars.update(self.secrets)
-            env_vars.update(launcher_config.get("envs", {}))
-            # Refresh ECR docker password if needed (tokens expire after 12h)
+            # Build the full env for the sky.Task. GB_BUILD_ID (and any future
+            # standard var) comes from Environment.get_launch_env_vars() and is
+            # authoritative over launcher/config env.
+            env_vars = self.get_launch_env_vars(
+                run_metadata=run_metadata,
+                launcher_config=launcher_config,
+                config=config,
+                launch_id=launch_id,
+                job_name=job_name,
+            )
+            # Refresh ECR docker password if needed (tokens expire after 12h).
+            # get_launch_env_vars does not touch SKYPILOT_DOCKER_PASSWORD, so this
+            # must run after it to refresh any ECR token carried in the launcher
+            # envs before the sky.Task is built.
             from gbserver.environment.skypilot import _refresh_ecr_docker_password
 
             _refresh_ecr_docker_password(env_vars)
-            env_vars["GB_SKYPILOT_LAUNCH_ID"] = launch_id
-            env_vars["GB_SKYPILOT_JOB_NAME"] = job_name
-            # Expose run metadata so steps in the same target can share state
-            run_metadata = kwargs.get("run_metadata", {})
-            if run_metadata.get("targetrun_id"):
-                env_vars["GB_TARGETRUN_ID"] = run_metadata["targetrun_id"]
-            if run_metadata.get("build_id"):
-                env_vars["GB_BUILD_ID"] = run_metadata["build_id"]
 
             # Build sky.Task
             task = sky.Task(
@@ -167,35 +232,23 @@ class Skypilot_managed(Environment):
                 resources=resources,
             )
 
-            # Handle file_mounts (may be in launcher config or step config)
-            # Dict values → sky.Storage (set_storage_mounts), strings → set_file_mounts
+            # Handle file_mounts (may be in launcher config or step config).
+            # Relative local sources resolve against targetsteprun_asset_dir (the
+            # dir holding the rendered step.yaml + siblings); shared with the
+            # unmanaged launcher via _build_skypilot_mounts.
             file_mounts_raw = launcher_config.get("file_mounts") or config.get(
                 "file_mounts"
             )
             if file_mounts_raw:
-                file_mounts = {}
-                storage_mounts = {}
-                for mount_path, mount_val in file_mounts_raw.items():
-                    if isinstance(mount_val, dict):
-                        mode_str = mount_val.get("mode", "MOUNT").upper()
-                        source = mount_val["source"]
-                        storage_kwargs: Dict[str, Any] = {
-                            "mode": sky.StorageMode[mode_str],
-                        }
-                        # MOUNT mode requires bucket-only source; extract
-                        # sub-path for URIs like s3://bucket/prefix
-                        parsed = urllib.parse.urlparse(source)
-                        sub_path = parsed.path.lstrip("/")
-                        if sub_path:
-                            storage_kwargs["source"] = (
-                                f"{parsed.scheme}://{parsed.netloc}"
-                            )
-                            storage_kwargs["_bucket_sub_path"] = sub_path
-                        else:
-                            storage_kwargs["source"] = source
-                        storage_mounts[mount_path] = sky.Storage(**storage_kwargs)
-                    else:
-                        file_mounts[mount_path] = mount_val
+                # build_workdir is intentionally omitted: the managed launcher
+                # does not implement the shared_workdir / GB_BUILD_WORKDIR scheme
+                # (no _compute_run_workdir, no per-run workdir export/cd), so
+                # there is no per-run dir to remap relative destinations into.
+                # Relative destinations therefore keep SkyPilot's default
+                # handling here, unlike the unmanaged launcher.
+                file_mounts, storage_mounts = _build_skypilot_mounts(
+                    file_mounts_raw, targetsteprun_asset_dir
+                )
                 if file_mounts:
                     task.set_file_mounts(file_mounts)
                 if storage_mounts:
@@ -208,8 +261,36 @@ class Skypilot_managed(Environment):
                 res_config,
             )
 
-            request_id = sky.jobs.launch(task, name=job_name)
-            sky.stream_and_get(request_id)
+            # Both sky.jobs.launch and sky.stream_and_get are blocking calls.
+            # Running them directly on the event loop freezes it (defeating any
+            # enclosing wait_for) and makes cancellation impossible, so offload
+            # them to threads. Each blocks in an OS thread (the submit while the
+            # jobs controller provisions, stream_and_get while the job runs), so
+            # a CancelledError delivered to this task would be deferred until the
+            # thread returns. Shield each future so the outer await observes the
+            # cancel *immediately* while the thread keeps running, letting us
+            # abort the request server-side and cancel the job by name (mirrors
+            # the unmanaged launcher's _provision_with_retry).
+            launch_fut = asyncio.ensure_future(
+                _sky_submit_to_thread(sky.jobs.launch, task, name=job_name)
+            )
+            try:
+                request_id = await asyncio.shield(launch_fut)
+            except asyncio.CancelledError:
+                # Cancelled during the submit: no request_id yet, but the
+                # controller may already be accepting the job. _abort_managed_launch
+                # recovers the request_id by draining the submit and cancels the
+                # job by its deterministic name so it is not left running.
+                await self._abort_managed_launch(None, job_name, launch_fut)
+                raise
+            stream_fut = asyncio.ensure_future(
+                _sky_submit_to_thread(sky.stream_and_get, request_id)
+            )
+            try:
+                await asyncio.shield(stream_fut)
+            except asyncio.CancelledError:
+                await self._abort_managed_launch(request_id, job_name, stream_fut)
+                raise
 
             self._job_names[launch_id] = job_name
             logger.info(
@@ -274,6 +355,45 @@ class Skypilot_managed(Environment):
             raise
         finally:
             self._release_monitors(launch_id)
+
+    async def _abort_managed_launch(
+        self: Self,
+        request_id: Any,
+        job_name: str,
+        pending_fut: Optional["asyncio.Future"],
+    ) -> None:
+        """Abort an in-flight managed-job launch after cancellation.
+
+        Thin wrapper over the shared ``_abort_shielded_request`` whose only
+        launcher-specific part is the reclaim: cancel the managed job by its
+        deterministic name so a job the controller already accepted does not
+        keep running. ``self._job_names`` is not populated until the launch
+        returns, so ``cleanup_skypilot_managed`` cannot find the job on the
+        cancel path — cancelling by name here is the safety net, and also covers
+        the case where the submit was cancelled before it returned a request_id.
+
+        Args:
+            request_id: The id from ``sky.jobs.launch``, or ``None`` if cancelled
+                during the submit (recovered by draining ``pending_fut``).
+            job_name: Deterministic managed-job name to cancel.
+            pending_fut: The shielded ``to_thread`` future to drain (the submit
+                or the ``sky.stream_and_get`` wait).
+        """
+
+        async def _cancel_job() -> None:
+            # Cancel the managed job by name in case the controller already
+            # accepted it before the launch request was aborted.
+            try:
+                await _run_sky_verb_off_loop(sky.jobs.cancel, name=job_name)
+            except Exception as e:
+                logger.warning("jobs.cancel for %s failed: %s", job_name, e)
+
+        await _abort_shielded_request(
+            request_id,
+            pending_fut,
+            description=f"SkyPilot managed job {job_name}",
+            on_abort=_cancel_job,
+        )
 
     async def monitor_skypilot_managed_monitor(
         self: Self,
@@ -473,8 +593,7 @@ class Skypilot_managed(Environment):
                 job_name,
                 launch_id,
             )
-            request_id = sky.jobs.cancel(name=job_name)
-            sky.get(request_id)
+            await _run_sky_verb_off_loop(sky.jobs.cancel, name=job_name)
             logger.info("Cancelled SkyPilot managed job %s", job_name)
         except Exception as e:
             logger.error("Failed to cancel SkyPilot managed job %s: %s", job_name, e)

@@ -1,0 +1,44 @@
+granite.build:
+  name: skypilot-aws-shared-fs-hfpull-containerized
+  # Same hf:// input -> hidden hfpull -> command flow as ../bare/build.yaml, but the
+  # command step sets an image, so byoc renders SkyPilot image_id: docker:<image>
+  # and the command runs INSIDE the container against the in-container NFS mount
+  # (SkyPilot's default SYS_ADMIN/--net=host/fuse) and the 1777/uid path. Reaching
+  # SUCCESS proves the hfpull output on EFS is readable from inside the container on
+  # a separate instance.
+  targets:
+    efs-hfpull-command:
+      environment_uri: space://environments/skypilot/aws-shared-fs
+      inputs:
+        hf_input:
+          uri: hf:///hf-internal-testing/tiny-random-gpt2
+      outputs:
+        # Test account's own user namespace (skips HF Enterprise resource groups) — see ../bare/build.yaml.
+        hf_output:
+          uri: hf://huggingface.co/datasets/granite-build-test/gb-efs-test-output_{{ binding.path | short_hash }}
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: 5
+            command_config:
+              # A Debian-based image (apt) so the in-container shared-fs mount
+              # prologue can install nfs-common; byoc renders
+              # image_id: docker:buildpack-deps:bookworm-scm.
+              image: "buildpack-deps:bookworm-scm"
+              # Same verify-then-produce command as the bare variant, run inside the
+              # container against the in-container EFS mount.
+              command: >-
+                set -eu;
+                pwd=$(pwd);
+                mkdir -p out;
+                echo "hf input path: {{ bindings.hf_input.binding.path }}";
+                test -e "{{ bindings.hf_input.binding.path }}";
+                echo "verified hf input present on EFS from inside the container";
+                echo '{"artifact": "hf_output", "produced_by": "efs-hfpull-command"}' > out/result.json;
+                echo "GB_ARTIFACT_ID:hf_output GB_ARTIFACT_PATH:$pwd/out"
+            launcher_config:
+              resources:
+                infra: "aws/us-east-1"
+                instance_type: t3.small
+                disk_size: 40

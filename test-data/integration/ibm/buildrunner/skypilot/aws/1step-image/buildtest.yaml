@@ -1,0 +1,33 @@
+# YAML-driven spec for a future
+# test/integration/ibm/buildrunner/skypilot/aws/test_1step_image.py.
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+#
+# Single command-step target on AWS EC2 (via SkyPilot) that runs the command
+# inside a container image (Docker), with env:// no-op I/O. AWS analog of the
+# bluevela 1step-image fixture (which uses the enroot container path).
+targets:
+  - image-run
+target_expectations:
+  # step_count = 1: the env_local assetstore is a no-op (no pull/push steps are
+  # queued), so only the single `command` step is recorded. The env:// input and
+  # env:// output each add one artifact but launch no pull/push step; the env://
+  # output produces one jobstat.
+  - target_name: image-run
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
+# Resolve space:// URIs (the aws environment + the shared `command` step) from
+# the repo's local space without cloning from GitHub. Relative to this YAML's
+# directory — same depth as the bluevela fixture, so the same relative path.
+space_uri: ../../../../../../../configurations/spaces/local
+# No simulated failure: the runner test exercises the happy path, and the
+# runner_cancellation test cancels a genuinely-running step (the EC2 provisioning
+# window keeps the build RUNNING long enough to catch).
+simulate_step_failure: false
+tests:
+  - runner
+  - runner_cancellation
+# AWS EC2 cold provisioning via SkyPilot (instance launch + Docker image pull) is
+# slower than bluevela's LSF path; give the single tiny command extra headroom.
+timeout_minutes: 30

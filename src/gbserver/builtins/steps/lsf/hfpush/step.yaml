@@ -15,16 +15,16 @@ config:
     path: <path>
     uri: <uri>
     binding_id: <binding_id>
+    owner: ''
+    repo: ''
+    revision: ''
+    private: true
     hf:
-      type: model
-      owner: ''
-      repo: ''
-      revision: ''
-      private: true
-      organization: null
+      type: ''
       resource_group_id: null
   compute_config:
     total_memory_per_node: 10Gi
+    num_gpus_per_node: 0
 environment_configs:
   Lsf:
     launchers:
@@ -34,9 +34,9 @@ environment_configs:
         - bsub_monitor
     monitors:
       bsub_monitor:
-        type: bsub_monitor
+        ref: space://monitors/lsf
         config:
-          event_configs:
+          extra_event_configs:
           - event_type: ARTIFACT_PUSHED_EVENT
             line_regex: Pushed HF URI:\s.+
             is_json: false

@@ -78,6 +78,8 @@ def cli(
             watch_for_config_changes=watch,
             gh_token=gh_token,
         )
+        # Lineage recording runs in its own `gbserver lineage-watch` process/pod
+        # (single-writer), not here — see command_lineage_watch.py.
         build_watcher.start_and_wait()
     except Exception as e:
         logger.error(traceback.format_exc())

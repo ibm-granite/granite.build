@@ -33,7 +33,8 @@ Usage::
 """
 
 import asyncio
-from typing import List, Optional, Tuple
+import contextlib
+from typing import AsyncIterator, List, Optional, Tuple
 
 from gbserver.utils.optional_imports import HAS_ASYNCSSH
 
@@ -47,11 +48,13 @@ from tenacity import (
     wait_random_exponential,
 )
 
+from gbserver.types.constants import GBSERVER_LOG_RECORD_MAX_CHARS
 from gbserver.utils.launch import (
     launch_command_and_raise_errors,
     launch_command_and_retry_or_raise_errors,
 )
 from gbserver.utils.logger import get_logger
+from gbserver.utils.unwrap_errors import escape_for_one_record
 
 logger = get_logger(__name__)
 
@@ -79,6 +82,11 @@ class SshTunnel:
         host_key_verification: bool = True,
         port_forwards: Optional[List[Tuple[int, str, int]]] = None,
         max_sessions: int = 10,  # 10 is the default MaxSessions value for sshd
+        connect_timeout: Optional[float] = None,
+        login_timeout: Optional[float] = None,
+        keepalive_interval: Optional[float] = None,
+        keepalive_count_max: Optional[int] = None,
+        command_timeout: Optional[float] = None,
     ) -> None:
         if not HAS_ASYNCSSH:
             raise ImportError(
@@ -90,11 +98,39 @@ class SshTunnel:
         self.key_file = key_file
         self.host_key_verification = host_key_verification
         self.port_forwards: List[Tuple[int, str, int]] = port_forwards or []
+        # Bound the connect/login phase and detect a wedged post-connect session.
+        # A host can leave the connection TCP-open yet withhold its SSH banner (or
+        # accept the connection then stop responding); without these, open() and
+        # subsequent commands can hang indefinitely. login_timeout bounds the
+        # banner+auth phase; keepalive_* catches a session that goes silent after
+        # auth. Callers pass explicit values (see the LSF environment); the None
+        # defaults leave asyncssh's own behavior unchanged for other callers.
+        self.connect_timeout = connect_timeout
+        self.login_timeout = login_timeout
+        self.keepalive_interval = keepalive_interval
+        self.keepalive_count_max = keepalive_count_max
+        # Per-command execution timeout (asyncssh conn.run(timeout=...)). Bounds
+        # the phase that is actually slow on bluevela: connect+auth complete in
+        # ~1s, but SERVER-SIDE session/exec setup (networked home dir, login rc,
+        # module init) can delay a command's first output by tens of seconds. This
+        # must be generous enough to wait that out yet finite so a truly wedged
+        # session can't hang forever; on expiry asyncssh raises TimeoutError, which
+        # run_remote_with_retries retries. None = no command timeout (asyncssh
+        # default) for callers that don't set one.
+        self.command_timeout = command_timeout
 
         self._conn: Optional[asyncssh.SSHClientConnection] = None
         self._listeners: List[asyncssh.SSHListener] = []
         self._actual_local_ports: List[int] = []
         self._semaphore = asyncio.Semaphore(max_sessions)
+        # In-flight operation refcount, so a superseded tunnel is closed only
+        # once nothing is still using its connection or port forward.
+        self._inflight = 0
+        self._idle = asyncio.Event()
+        self._idle.set()
+        # Set once retirement/close begins, so use() fails fast instead of
+        # running against a connection about to drop.
+        self._closing = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -109,6 +145,16 @@ class SshTunnel:
             connect_kwargs["client_keys"] = [self.key_file]
         if not self.host_key_verification:
             connect_kwargs["known_hosts"] = None
+        # Only pass a timeout/keepalive when set, so unset values fall back to
+        # asyncssh's defaults rather than overriding them with None.
+        if self.connect_timeout is not None:
+            connect_kwargs["connect_timeout"] = self.connect_timeout
+        if self.login_timeout is not None:
+            connect_kwargs["login_timeout"] = self.login_timeout
+        if self.keepalive_interval is not None:
+            connect_kwargs["keepalive_interval"] = self.keepalive_interval
+        if self.keepalive_count_max is not None:
+            connect_kwargs["keepalive_count_max"] = self.keepalive_count_max
 
         logger.info("[SshTunnel] Connecting to %s", self.host)
         try:
@@ -146,8 +192,76 @@ class SshTunnel:
 
         logger.info("[SshTunnel] Connected to %s", self.host)
 
+    def is_healthy(self) -> bool:
+        """Best-effort, non-throwing check that the connection is open.
+
+        A True result doesn't guarantee the next command succeeds; callers must
+        still handle a command failing and re-establish.
+        """
+        if self._closing:
+            return False
+        conn = self._conn
+        if conn is None:
+            return False
+        try:
+            if conn.is_closed():
+                return False
+        except Exception:  # noqa: BLE001 — introspection must never raise
+            return False
+        # A live control connection is not enough: a lost port forward would let
+        # commands run but break scp/rsync. Require every configured forward to
+        # still have a listener (close() clears these). asyncssh exposes no
+        # per-listener liveness, so this catches teardown, not a silently dropped
+        # forward — the caller's own command failure is the backstop for that.
+        return len(self._listeners) == len(self.port_forwards)
+
+    @contextlib.asynccontextmanager
+    async def use(self) -> AsyncIterator["SshTunnel"]:
+        """Mark this tunnel in-use for the duration of an operation.
+
+        A tunnel with in-flight uses won't be closed by ``close_when_idle`` (see
+        the retire path in the LSF environment), so a rebuild elsewhere can't tear
+        down the connection or port forward mid-transfer.
+
+        Raises ``SshTunnelError`` if the tunnel is already closing/closed, so a
+        caller that raced the retire path fails fast and re-establishes rather
+        than running against a dead connection.
+        """
+        if self._closing or self._conn is None:
+            raise SshTunnelError(
+                f"[SshTunnel] Cannot use tunnel to {self.host}: it is closing or closed"
+            )
+        self._inflight += 1
+        self._idle.clear()
+        try:
+            yield self
+        finally:
+            self._inflight -= 1
+            if self._inflight <= 0:
+                self._inflight = 0
+                self._idle.set()
+
+    async def close_when_idle(self, timeout: Optional[float] = None) -> None:
+        """Wait for in-flight uses to drain, then close. Used to retire a tunnel.
+
+        With ``timeout`` (seconds), close anyway once it elapses so a stuck
+        operation can't wedge the caller (e.g. teardown) indefinitely.
+        """
+        # Block new use() entrants immediately so the refcount can reach zero.
+        self._closing = True
+        try:
+            await asyncio.wait_for(self._idle.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[SshTunnel] %s still in use after %.0fs; closing anyway",
+                self.host,
+                timeout,
+            )
+        await self.close()
+
     async def close(self) -> None:
         """Close all port-forward listeners and the SSH connection."""
+        self._closing = True
         for listener in self._listeners:
             listener.close()
             await listener.wait_closed()
@@ -198,9 +312,15 @@ class SshTunnel:
         stdout: str = self.__to_str(result.stdout)
         stderr: str = self.__to_str(result.stderr)
         if len(stdout) > 0:
-            logger.info("[SshTunnel] stdout: %s", stdout)
+            logger.info(
+                "[SshTunnel] stdout: %s",
+                escape_for_one_record(stdout, GBSERVER_LOG_RECORD_MAX_CHARS),
+            )
         if len(stderr) > 0:
-            logger.warning("[SshTunnel] stderr: %s", stderr)
+            logger.warning(
+                "[SshTunnel] stderr: %s",
+                escape_for_one_record(stderr, GBSERVER_LOG_RECORD_MAX_CHARS),
+            )
 
         if raise_on_error and rc != 0:
             raise ValueError(
@@ -237,8 +357,13 @@ class SshTunnel:
         if self._conn is None:
             raise SshTunnelError("Tunnel is not open. Call open() first.")
         logger.info("[SshTunnel] Running command: %s", logged_command)
+        # command_timeout bounds slow server-side session/exec setup; on expiry
+        # asyncssh raises TimeoutError, which run_remote_with_retries retries.
+        run_kwargs: dict = {"check": False}
+        if self.command_timeout is not None:
+            run_kwargs["timeout"] = self.command_timeout
         async with self._semaphore:
-            result = await self._conn.run(command, check=False)
+            result = await self._conn.run(command, **run_kwargs)
         return result
 
     async def run_local(

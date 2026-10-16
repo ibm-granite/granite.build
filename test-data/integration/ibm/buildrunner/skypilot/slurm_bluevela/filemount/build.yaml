@@ -1,0 +1,61 @@
+granite.build:
+  name: skypilot-slurm-bluevela-filemount-test
+  # Single command-step target on BlueVela SLURM (via Skypilot) that runs a
+  # custom step (space://steps/filemount-check) declaring a `file_mounts` key.
+  # The mount copies the `payload/` directory shipped next to the step's step.yaml
+  # onto the cluster; the source is RELATIVE, so the Skypilot launcher resolves it
+  # against the step.yaml's own directory (the per-run asset dir) — the behavior
+  # under test. The command runs INSIDE a container (command_config.image is set,
+  # so image_id resolves to docker:<image>), which on SLURM goes through the Pyxis
+  # SPANK plugin BlueVela provides; the step's run command verifies the copy
+  # landed *inside the container* and fails the build if it did not. This is the
+  # BlueVela SLURM sibling of the bluevela-LSF and local-Docker filemount tests.
+  #
+  # env:// (env_local) I/O is a shared-FS no-op: push/pull do nothing, so the
+  # artifact registration/binding works purely on the GB_ARTIFACT_PATH string and
+  # no real files need to exist on disk. Keeps the test HF-free/fast.
+  targets:
+    filemount:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      inputs:
+        # env:// input: a shared-FS path pulled as a no-op. The path need not
+        # exist and its value isn't asserted; it just flows to the command as a
+        # binding.
+        env_input:
+          uri: "env:///tmp/gb-env-input.txt"
+      outputs:
+        # env:// output: registered inline from the GB_ARTIFACT marker the command
+        # emits below. `type` is required for env:// outputs. The path is arbitrary
+        # (env:// push/pull are no-ops); it just has to match the value in the
+        # command's GB_ARTIFACT marker. Uses the BlueVela shared-FS convention for
+        # realism.
+        env_output:
+          uri: "env:///proj/data-eng/llmb-read-write/gbtest/filemount/out.txt"
+          type: fileset
+      steps:
+        # Custom test step defined in the co-located test space (space/steps/).
+        # It declares a `file_mounts` key that copies the `payload/` directory
+        # shipped next to its step.yaml onto the cluster, then (in its run)
+        # verifies the copy landed before running the command below.
+        - step_uri: space://steps/filemount-check
+          config:
+            # Fast completion detection for the test (base skypilot default is
+            # 300s; a quick test job finishes in seconds).
+            poll_interval_seconds: 5
+            command_config:
+              # Run the verification + command INSIDE a container image. On SLURM
+              # this goes through Pyxis (bluevela's container runtime), so the
+              # file_mounts payload must be visible from within the container.
+              # Matches the sibling slurm_bluevela 1step image (proven to run on
+              # this path — see the constants.py `which`/env patch note).
+              image: quay.io/itsme/debian:slim
+              command: >-
+                echo "env input path: {{ bindings.env_input.binding.path }}";
+                echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:/proj/data-eng/llmb-read-write/gbtest/filemount/out.txt"
+            compute_config:
+              # CPU-only command. `total_memory_per_node` is intentionally omitted:
+              # the memory floor is silently skipped on SLURM (bare HPC schedulers
+              # don't track memory as consumable), so it would be a no-op here.
+              num_gpus_per_node: 0
+            # No launcher_config.resources.cluster or zone: the environment's
+            # cluster (bluevela) and zone (gpu-mid partition) resolve the infra.

@@ -73,3 +73,26 @@ class EnvURI(URI):
         t3 = Path("/////" + t2)
         t4 = Path(self.context) / t3 if self.context else t3
         return ENV_URI_SCHEME + "://" + str(t4)
+
+
+def is_relative_env_uri(uri_str: str) -> bool:
+    """Return True if ``uri_str`` is a relative ``env:`` URI.
+
+    Unlike ``file:``, an ``env:`` URI moves no data — it is a bare reference to a
+    path the environment can already reach (its ``exists()``/``pull()`` are no-op
+    stubs). A relative path therefore has no defined resolution root and is
+    rejected; authors must use an absolute ``env:///…`` (or rely on a build
+    ``context``). An ``env:`` URI is considered relative iff the text after the
+    scheme does not start with ``/`` (e.g. ``env:outputs/x`` is relative, while
+    ``env:///abs``, ``env://host/path`` and the templated ``env://{{ binding.path }}``
+    are not). The prefix test is deliberately string-based so it also flags a
+    relative literal that embeds a Jinja template (e.g.
+    ``env:outputs/{{ binding.path | short_hash }}``) at config-load time, before
+    the template is filled.
+
+    :param uri_str: The raw URI string from a build config input/output.
+    :returns: True if the string is a relative ``env:`` URI; False otherwise
+        (including non-``env:`` schemes and absolute ``env:`` URIs).
+    """
+    prefix = ENV_URI_SCHEME + ":"
+    return uri_str.startswith(prefix) and not uri_str.startswith(prefix + "/")

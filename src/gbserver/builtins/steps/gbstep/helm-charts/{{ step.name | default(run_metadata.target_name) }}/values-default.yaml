@@ -56,12 +56,20 @@ k8s:
   old_appwrapper_api_version: false
   kueue_queue_name: default-queue
   service_account_name: gdr
+  # Optional pod PriorityClass for the step's pods (PyTorchJob Master/Worker and the
+  # single-pod Job path; not Ray steps). Unset = cluster default. Set via build.yaml
+  # `config.k8s.priority_class_name`; must reference an existing PriorityClass in the cluster.
+  # priority_class_name: high-priority
   # https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/images/creating-images#use-uid_create-images
   # For an image to support running as an arbitrary user,
   # directories and files that are written to by processes in the image
   # must be owned by the root group and be read/writable by that group.
   # Files to be executed must also have group execute permissions.
   run_as_root_group: true
+  # The root group above only helps if the bits allow group writes; without a umask
+  # dirs land 0755. Must be quoted -- YAML reads an unquoted 0002 as int 2.
+  # See docs/environments/k8s.md.
+  umask: "{{ environment_config.umask | default('0002') }}"
   automount_service_account_token: false
   {%- if setup_config.space is defined and setup_config.space.secret is defined %}
   space_secret: {{ setup_config.space.secret }}
@@ -79,7 +87,7 @@ k8s:
   volumes:
     {%- set env_config_volumes = environment_config.volumes if environment_config.volumes is defined else {} %}
     {{ env_config_volumes | to_yaml | indent(4) }}
-  image: registry.access.redhat.com/ubi9/python-312:latest
+  image: registry.access.redhat.com/ubi10/python-312-minimal:10.2-1789550733@sha256:0f71645815e5e9fa5cbbbba051047fd3a276a45171e591498802a76c156c3a7c
   
   # Placeholder: Comes from user specified secret in build.yaml -> launch_helm() 
   # via self.full_config in TargetStepRun.__init() using helm --set 

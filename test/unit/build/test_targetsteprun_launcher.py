@@ -125,3 +125,90 @@ class TestTargetStepRunLauncherOverride:
 
         # 'trl-finetune' sorts before 'trl-finetune-cpu', so gpu image is the fallback
         assert targetstep.launcher.config["image"] == _GPU_IMAGE
+
+
+class TestTargetStepRunMonitorConfigTemplating:
+    """The monitor config passed to environment.monitor must have its Jinja
+    templates rendered. Regression for: _run passed the raw (unrendered)
+    step_environment_config.monitors[...] config, so values like
+    log_retrieval.mode reached the monitor as literal '{{ config.* }}' strings
+    (which made the skypilot monitor fall back to on_completion and never emit
+    the rm-server URL binding)."""
+
+    @pytest.mark.asyncio
+    async def test_monitor_config_is_rendered_before_dispatch(self):
+        from gbserver.build.targetsteprun import TargetStepRun
+
+        # Build a TargetStepRun without running __init__'s config pipeline.
+        tsr = TargetStepRun.__new__(TargetStepRun)
+        tsr.full_config = {"config": {}}  # no overrides -> Jinja defaults apply
+        tsr.build_id = "b1"
+        tsr.event_q = asyncio.Queue()
+        tsr.dir = "/tmp/does-not-matter"
+
+        # target.setup_ids.keys() is iterated by _run
+        target = MagicMock()
+        target.setup_ids = {}
+        tsr.target = target
+
+        # Capture kwargs handed to environment.monitor.
+        captured = {}
+
+        def _monitor(**kwargs):
+            captured.update(kwargs)
+            fut = asyncio.get_event_loop().create_future()
+            fut.set_result(None)
+            return fut
+
+        launch_task = asyncio.get_event_loop().create_future()
+        launch_task.launch_id = "launch-123"
+        launch_task.set_result(None)
+
+        environment = MagicMock()
+        environment.launch = MagicMock(return_value=launch_task)
+        environment.monitor = MagicMock(side_effect=_monitor)
+
+        # Templated monitor config (as stored, unrendered).
+        env_config = StepEnvironmentTypeConfig(
+            default_launcher="svc",
+            launchers={
+                "svc": StepLauncherConfig(
+                    type="skypilot", monitors=["skypilot_monitor"], config={}
+                )
+            },
+            monitors={
+                "skypilot_monitor": StepMonitorConfig(
+                    type="skypilot_monitor",
+                    config={
+                        "log_retrieval": {
+                            "mode": "{{ config.log_retrieval_mode "
+                            "| default('startup_window') }}",
+                            "interval_seconds": "{{ config.log_retrieval_interval_seconds "
+                            "| default(15) }}",
+                        }
+                    },
+                )
+            },
+        )
+
+        entity = MagicMock(
+            spec_set=["config", "environment", "launcher", "step_environment_config"]
+        )
+        entity.config = None
+        entity.environment = environment
+        entity.launcher = StepLauncherConfig(
+            type="skypilot", monitors=["skypilot_monitor"], config={}
+        )
+        entity.step_environment_config = env_config
+        tsr.entity = entity
+
+        with (
+            patch.object(TargetStepRun, "get_runmetadata", return_value=_FAKE_METADATA),
+            patch("gbserver.build.targetsteprun.TargetStep", MagicMock),
+        ):
+            await tsr._run()
+
+        assert (
+            captured.get("log_retrieval", {}).get("mode") == "startup_window"
+        ), f"monitor received unrendered config: {captured.get('log_retrieval')}"
+        assert captured["log_retrieval"]["interval_seconds"] == "15"

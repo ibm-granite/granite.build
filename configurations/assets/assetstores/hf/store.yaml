@@ -6,3 +6,18 @@
 base_uri: "hf:/"
 config:
   token_secretname: HF_TOKEN
+  # HF organizations that use Enterprise resource groups. A push to an org in
+  # this list resolves a resource group from the build's space (see
+  # docs/builds/hf-push.md); a push to any other org — an individual user
+  # namespace or a plain community org — skips resource groups entirely.
+  #
+  # Omit this key to treat EVERY org as Enterprise (the behavior from before
+  # the split). An explicit empty list treats no org as Enterprise.
+  # Matching is case-insensitive exact match on the org name.
+  #
+  # Keep in sync with hf_enterprise_organizations in
+  # src/gbcommon/types/gbenvconfig.py, which gbcli uses for `gb artifact push`
+  # (the CLI cannot read this file — it is loaded server-side only).
+  enterprise_organizations:
+    - ibm-research
+    - ibm-granite

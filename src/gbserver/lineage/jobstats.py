@@ -21,7 +21,7 @@ Abstract interface for lineage storage and singleton accessor.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.singleton_storage import SingletonAdminStorage
@@ -80,6 +80,58 @@ class ILineageStore(ABC):
     def does_release_id_exist(
         self, release_id: str, expected_count: int, target_id: Optional[str] = None
     ) -> bool: ...
+
+    def filter_unrecorded(
+        self,
+        target_ids: set[str],
+        expected_counts: Optional[dict[str, int]] = None,
+        on_query_error: Optional[Callable[[Exception], None]] = None,
+    ) -> set[str]:
+        """Return the subset of ``target_ids`` not yet recorded in *this* store.
+
+        Each sink owns its own record of what it has already recorded, so the
+        shared admin DB can feed W&B and other sinks independently — no per-sink
+        "recorded" bit lives in the admin schema. The reconciler passes the
+        candidate target uuids selected by the time watermark and records only
+        the returned subset, so a sink never re-emits a target it already has
+        while a *different* sink can still record the same target.
+
+        Bounded by ``target_ids`` (the candidates from this scan), so it never
+        scans the sink's entire history. This is an efficiency optimization only
+        — idempotent recording preserves correctness regardless — so
+        implementations must never raise; on failure they return ``target_ids``
+        unchanged, degrading to re-recording the candidates (harmless).
+
+        That degradation is *safe* but not *free*, and it is indistinguishable
+        from a genuine "none of these are recorded" answer. A caller that swept a
+        wide candidate range and hit a sink timeout would re-record the entire
+        range — turning one failed query into a write storm against the sink that
+        just failed. Worse, a caller deciding something irreversible (e.g.
+        retiring a build from a tracking set once its lineage is confirmed) must
+        not read a failure as a verdict at all. ``on_query_error`` exists for
+        that: when provided, implementations invoke it with the exception before
+        returning the fail-open set, so the caller can tell "the sink says these
+        are unrecorded" from "the sink did not answer". Callers that do not care
+        omit it and keep the historical behavior.
+
+        ``expected_counts`` maps a target uuid to the number of records the sink
+        should hold for a *fully* recorded target (one W&B run per output
+        artifact, or 1 for an output-less target). A single target can emit
+        several records, and if a prior scan crashed part-way through it, the
+        sink holds *some* of them — a "recorded" check that only tests presence
+        would wrongly mark such a target complete and never re-record the
+        missing records, leaving a permanent partial-lineage gap. So a target is
+        treated as recorded only when its held-record count meets or exceeds its
+        expected count. When ``expected_counts`` is ``None`` or lacks a target's
+        key (e.g. the reconciler could not derive it), that target falls back to
+        the presence check (recorded once >=1 record exists) — the pre-count
+        behavior, which stays correct for older records that predate this check.
+
+        Defaults to returning ``target_ids`` unchanged for backends that record
+        no centralized lineage (e.g. the no-op store); such a store's recording
+        leaf is itself a no-op, so the returned set is never actually recorded.
+        """
+        return target_ids
 
 
 __JOBSTATS_STORAGE: Optional[ILineageStore] = None

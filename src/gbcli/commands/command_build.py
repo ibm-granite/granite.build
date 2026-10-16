@@ -17,6 +17,7 @@ from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import execute_with_spinner, str_exc_chain
 from gbcli.commands.common_options import (
     common_options,
+    enforce_version_check,
     pass_context_and_reject_standalone,
 )
 from gbcli.utils.click_utils import validation_formatting
@@ -57,7 +58,6 @@ from gbcli.utils.utils import (
     render_pretty,
     validate_tags,
 )
-from gbcli.utils.versionutil import check_current_and_latest_versions
 from gbcommon.types.gbenvconfig import is_standalone
 
 logger = logging.getLogger(__name__)
@@ -89,6 +89,33 @@ def get_status_emoji(status: str) -> str:
             return ""
 
 
+def _number_logical_targets(targets: Any) -> dict:
+    """Map each target-run key to a number shared by all runs of one target.
+
+    In-place retry keeps every run on the one build id, so ``targets`` is keyed by
+    "name (uuid)" and a target that FAILED then re-ran to SUCCESS contributes two
+    keys. Numbering the keys directly (``enumerate``) would give the failed run and
+    its retry different numbers and shift every later target as runs accumulate.
+    Numbering by the logical target name instead keeps a target's runs on one
+    number, assigned in the order each target first appears.
+
+    Args:
+        targets: the ordered target-run mapping from ``process_target_runs`` —
+            keyed by "name (uuid)", each value carrying its plain ``name``.
+
+    Returns:
+        A dict from each target-run key to its 1-based logical target number.
+    """
+    logical_numbers: dict = {}
+    key_to_number: dict = {}
+    for key in targets:
+        name = targets[key]["name"]
+        if name not in logical_numbers:
+            logical_numbers[name] = len(logical_numbers) + 1
+        key_to_number[key] = logical_numbers[name]
+    return key_to_number
+
+
 def execution_status_plain_output(
     details: Any,
     targets: List[Any],
@@ -96,9 +123,17 @@ def execution_status_plain_output(
     show_events: bool,
 ):
 
+    def target_status_label(target_info: Any) -> str:
+        return str(target_info["status"]).upper()
+
+    def target_status_emoji(target_info: Any) -> str:
+        return get_status_emoji(target_info["status"])
+
+    target_number = _number_logical_targets(targets)
+
     targets_overview = [
-        f"\n\tTarget #{index + 1} {target}: {get_status_emoji(targets[target]['status'])} {str(targets[target]['status']).upper()}\n"
-        for index, target in enumerate(targets)
+        f"\n\tTarget #{target_number[target]} {target}: {target_status_emoji(targets[target])} {target_status_label(targets[target])}\n"
+        for target in targets
     ]
     source_pr = f"<{details['source_pr']}>" if details["source_pr"] else "-"
     details_output = f"""
@@ -116,7 +151,7 @@ def execution_status_plain_output(
     """
 
     target_outputs = []
-    for index, target in enumerate(targets):
+    for target in targets:
         input_artifacts_table = [
             [i["artifact_id"], i["uri"]] for i in targets[target]["input_artifacts"]
         ]
@@ -152,13 +187,16 @@ def execution_status_plain_output(
             tablefmt="github",
         )
 
-        target_output = f"""
----
-
-## Target #{index + 1} {target}
-
-{get_status_emoji(targets[target]['status'])} **Status**: {str(targets[target]['status']).upper()}
-
+        status_line = str(targets[target]["status"]).upper()
+        # A re-run FAILED target that later succeeds produces a new SUCCESS run
+        # linked back to the failed one; surface that linkage as a note.
+        retry_of_target_id = targets[target].get("retry_of_target_id", "")
+        retry_of_line = (
+            f"\n\n**Retry of failed run**: {retry_of_target_id}"
+            if retry_of_target_id
+            else ""
+        )
+        sections = f"""
 ### ⚙️  Steps
 
 {steps_output if len(targets[target]["steps"]) > 0 else ""}
@@ -169,7 +207,14 @@ def execution_status_plain_output(
 
 ### 📦 Output artifacts
 
-{output_artifacts_output if len(targets[target]["output_artifacts"]) > 0 else ""}
+{output_artifacts_output if len(targets[target]["output_artifacts"]) > 0 else ""}"""
+        target_output = f"""
+---
+
+## Target #{target_number[target]} {target}
+
+{target_status_emoji(targets[target])} **Status**: {status_line}{retry_of_line}
+{sections}
         """
 
         target_outputs.append(target_output)
@@ -247,15 +292,7 @@ def init(
     """Create a build definition with the folder structure"""
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if filename is None:
         if build_name is None:
@@ -452,6 +489,17 @@ def init(
 )
 @click.option("--skip-validation", is_flag=True, help="Skip build contents validation.")
 @click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Resolve parameters and output the executable build.yaml WITHOUT submitting (offline in standalone; no auth/space needed). Without --save-build-file the resolved build.yaml is written verbatim to stdout (pipe-friendly); status messages go to stderr.",
+)
+@click.option(
+    "--save-build-file",
+    type=click.Path(dir_okay=False, writable=True),
+    help="With --dry-run, write the resolved build.yaml here instead of stdout (a '✅ wrote ...' note goes to stderr).",
+)
+@click.option(
     "--parameters-path",
     type=click.Path(exists=True, readable=True, dir_okay=False),
     help="Path to parameters.yaml file.",
@@ -486,6 +534,8 @@ def start(
     tag: tuple,
     tags: str,
     skip_validation,
+    dry_run,
+    save_build_file,
     parameters_path,
     verbose_validation,
     format,
@@ -521,15 +571,35 @@ def start(
             case _:
                 pass
 
-    if not skip_version_check and not is_standalone():
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    if dry_run:
+        # Offline: resolve parameters and emit the executable build.yaml without
+        # contacting the server (no version check, banner, auth, or space needed).
+        build_client = GBClient.Build(get_user_token())
+        resolved = build_client.build_start(
+            True,
+            filename,
+            space,
+            param,
+            skip_validation,
+            parameters_path,
+            targets,
+            description,
+            [],
+            callback=echo_callback,
+            validation_type=validation_type,
+            dry_run=True,
+            save_build_file=save_build_file,
+        )
+        if resolved is None:
+            ctx.exit(1)
+        if save_build_file:
+            click.echo(f"✅ wrote {save_build_file}", err=True)
+        else:
+            click.echo(resolved, nl=False)
+        return
+
+    if not is_standalone():
+        enforce_version_check(ctx, skip_version_check)
 
     if not quiet:
         click.echo(f"🏁 {PROJECT_NAME} build start")
@@ -784,15 +854,7 @@ def validate(
     """Validate a build. Specify targets to run as arguments. If no target is specified, all targets in build.yaml are executed."""
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if not quiet:
         click.echo(f"🏁 {PROJECT_NAME} build validate")
@@ -950,15 +1012,7 @@ def cancel(ctx, space, build_id, format, skip_version_check, quiet):
     """
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     id_format = parse_build_identifier(build_id)
     if id_format not in ["uuid", "url"]:
@@ -1074,6 +1128,85 @@ def cancel(ctx, space, build_id, format, skip_version_check, quiet):
         ctx.exit(1)  # Exit with a non-zero status
 
 
+@cli.command("restart")
+@click.pass_context
+@click.argument("build_id", required=True)
+@click.option(
+    "--format",
+    "format",
+    default="simple",
+    type=click.Choice(["simple", "json"], case_sensitive=True),
+    help="Output format: simple (default), json",
+)
+@common_options
+def restart_build_cmd(ctx, build_id, format, skip_version_check, quiet):
+    """
+    Restart a previously-executed build
+
+    Provide build ID or URL. The same build is re-opened and a fresh build runner
+    re-runs it, skipping targets that already succeeded and re-running the rest.
+    The build must be finished (not currently running). No local build folder is
+    required — the build definition is already on the build.
+    """
+    if format == "json":
+        quiet = True
+    enforce_version_check(ctx, skip_version_check)
+
+    id_format = parse_build_identifier(build_id)
+    if id_format not in ["uuid", "url"]:
+        click.echo(
+            f"❌ Build identifier formatted incorrectly. Please try again with valid build ID or URL.",
+            err=True,
+        )
+        sys.exit(1)
+
+    if id_format == "uuid" and len(build_id) < 36:
+        click.echo(
+            f"❌ Build ID formatted incorrectly. Please try again with a valid build ID.",
+            err=True,
+        )
+        sys.exit(1)
+
+    if not quiet:
+        click.echo(f"🏁 {PROJECT_NAME} build restart")
+
+    build_client = GBClient.Build(get_user_token())
+
+    def echo_callback(callback_event: str, callback_args: Dict):
+        match callback_event:
+            case "error":
+                reason = callback_args.get("reason", "")
+                click.echo(
+                    f"\n❌ Build can't be restarted at this moment... Reason: {reason}",
+                    err=True,
+                )
+                sys.exit(1)  # Exit with a non-zero status
+            case _:
+                pass
+
+    try:
+        result = build_client.build_restart(build_id, id_format, callback=echo_callback)
+
+        if result:
+            # Restart reuses the same build id, so the server returns the same
+            # uuid that was restarted.
+            restarted_build_id = result["build_id"]
+            details_page = f"{WEB_UI_URL}/builds/{restarted_build_id}"
+            if not quiet:
+                click.echo(f"✅ Restarting build {restarted_build_id}: {details_page}")
+                markdown_str = f"""To get the build status:
+```
+gb build status {restarted_build_id}
+```"""
+                click.echo(f"\n{parse_markdown_str(markdown_str)}")
+            if format == "json":
+                click.echo(json.dumps({"build_id": restarted_build_id}))
+
+    except Exception as e:
+        click.echo(str_exc_chain(e), err=True)
+        ctx.exit(1)  # Exit with a non-zero status
+
+
 @cli.command()
 @pass_context_and_reject_standalone("build lineage")
 @click.argument("build_id", required=True)
@@ -1090,15 +1223,7 @@ def lineage(ctx, build_id, format, skip_version_check, quiet):
 
     Provide build ID or URL
     """
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if format == "json":
         quiet = True
@@ -1340,15 +1465,7 @@ def list(
     quiet,
 ):
     """List builds"""
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if format == "json":
         quiet = True
@@ -1613,21 +1730,21 @@ def list(
     help="Fetch build PR events.",
 )
 @common_options
-def status(ctx, build_id, format, show_events, fetch_pr, skip_version_check, quiet):
+def status(
+    ctx,
+    build_id,
+    format,
+    show_events,
+    fetch_pr,
+    skip_version_check,
+    quiet,
+):
     """
     Get status of a build execution
 
     Provide build ID or URL
     """
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if format == "json":
         quiet = True
@@ -1892,15 +2009,7 @@ def log(
 
     Provide build ID or URL
     """
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if follow and (end_date or sort == "asc" or head or tail or format == "json"):
         click.echo(
@@ -2183,18 +2292,38 @@ def log(
     default=False,
     help="Output build file contents",
 )
+@click.option(
+    "--param",
+    multiple=True,
+    help="Build run parameter ('param_name=param_value'). Use this option again to provide multiple parameters.",
+)
+@click.option(
+    "--parameters-path",
+    type=click.Path(exists=True, readable=True, dir_okay=False),
+    help="Path to parameters.yaml file.",
+)
 @common_options
-def describe(ctx, build_id, filename, format, space, raw, skip_version_check, quiet):
-    """Describe targets steps, description of a build"""
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+def describe(
+    ctx,
+    build_id,
+    filename,
+    format,
+    space,
+    raw,
+    param,
+    parameters_path,
+    skip_version_check,
+    quiet,
+):
+    """Describe targets steps, description of a build.
+
+    With --raw, prints the build file. Supply --param/--parameters-path to
+    resolve a parameterized ($${...}) build.yaml through the same engine
+    `gb build start` uses, e.g.:
+
+        gb build describe -f template/build.yaml --raw --param ENV=skypilot/aws
+    """
+    enforce_version_check(ctx, skip_version_check)
 
     quiet = True if format == "json" else quiet
 
@@ -2211,6 +2340,15 @@ def describe(ctx, build_id, filename, format, space, raw, skip_version_check, qu
     if filename and build_id:
         click.echo(
             f"❌ build describe can not be run with both a build_id and a filename. Please select one of the two options",
+            err=True,
+        )
+        sys.exit(1)  # Exit with a non-zero status
+
+    if build_id and (param or parameters_path):
+        click.echo(
+            "❌ --param/--parameters-path cannot be combined with a build_id: a "
+            "stored build is already fully resolved (parameters were evaluated at "
+            "submit time). Pass a local -f build.yaml to render a parameterized template.",
             err=True,
         )
         sys.exit(1)  # Exit with a non-zero status
@@ -2271,6 +2409,8 @@ def describe(ctx, build_id, filename, format, space, raw, skip_version_check, qu
                 build_id,
                 id_format,
                 space,
+                params=param,
+                parameters_path=parameters_path,
                 callback=echo_callback,
             )
             if build and build["build"]:
@@ -2372,6 +2512,8 @@ def describe(ctx, build_id, filename, format, space, raw, skip_version_check, qu
                 build_id,
                 id_format,
                 space,
+                params=param,
+                parameters_path=parameters_path,
                 callback=echo_callback,
             )
             click.echo(yaml_str)
@@ -2398,15 +2540,7 @@ def diff(ctx, build_id_1, build_id_2, space, format, skip_version_check, quiet):
 
     Provide build ID or URL
     """
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if format == "json":
         quiet = True
@@ -2594,21 +2728,20 @@ def diff(ctx, build_id_1, build_id_2, space, format, skip_version_check, quiet):
     help="Fetch build PR events.",
 )
 @common_options
-def monitor(ctx, build_id, show_events, fetch_pr, skip_version_check, quiet):
+def monitor(
+    ctx,
+    build_id,
+    show_events,
+    fetch_pr,
+    skip_version_check,
+    quiet,
+):
     """
     Monitor a build execution
 
     Provide build ID or URL
     """
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     id_format = parse_build_identifier(build_id)
     if id_format not in ["uuid", "url"]:
@@ -2735,15 +2868,7 @@ def notification(ctx, status, space, format, skip_version_check, quiet):
     """
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if not quiet:
         click.echo(f"{CLIPBOARD_CHAR}{PROJECT_NAME} build notification")
@@ -2859,15 +2984,7 @@ def update(
     """
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     build_client = GBClient.Build(get_user_token())
 

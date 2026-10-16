@@ -143,27 +143,23 @@ environment_configs:
               RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*.csv' \) -newer /tmp/sage-eval.log -print -quit 2>/dev/null || true)
             fi
             if [ -n "$RESULT_FILE" ]; then
-              echo "LLMB_ARTIFACT_ID:sage_eval_results LLMB_ARTIFACT_PATH:${RESULT_FILE}"
+              echo "GB_ARTIFACT_ID:sage_eval_results GB_ARTIFACT_PATH:${RESULT_FILE}"
             else
               echo "ERROR: No results file found in $OUTPUT_BASE_PATH — eval likely incomplete"
               exit 1
             fi
     monitors:
       skypilot_monitor:
-        type: skypilot_monitor
+        # Artifact convention (env:// PATH + mem:// STATE, both with binding) and
+        # the on_completion profile come from the monitor library
+        # (space://monitors/skypilot). Evals run long, so override the poll to
+        # 900s (lighter status polling over the run) and append the status banner.
+        ref: space://monitors/skypilot
         config:
-          poll_interval_seconds: 30
-          event_configs:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
+          extra_event_configs:
           - event_type: WORKLOAD_STATUS_EVENT
             line_regex: "Starting sage evaluation"
             event_fields:
               - field_name: status
                 field_value_template: "RUNNING"
-          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
-            event_fields:
-              - field_name: binding_id
-                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
-              - field_name: path
-                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
-                is_data: true

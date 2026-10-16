@@ -19,9 +19,11 @@ from __future__ import annotations
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict
 
+from gbserver.api.build_files_paths import authorize_build_read_access
+from gbserver.api.utils import has_space_member_access
 from gbserver.lineage.openlineage_models import (
     ArtifactGraphRequest,
     ArtifactGraphResponse,
@@ -38,6 +40,17 @@ from gbserver.lineage.openlineage_utils import parse_hf_url
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
+from gbserver.utils.logger import get_logger
+from gbserver.utils.redaction import redact_sensitive
+
+logger = get_logger(__name__)
+
+# search_lineage_events scans backend pages (see docstring there) to keep
+# offset/limit and total accurate for the caller's accessible runs rather
+# than the global unfiltered set. Bounds the worst case when a caller's
+# accessible fraction is a tiny sliver of a huge global result set.
+_SEARCH_SCAN_BACKEND_PAGE_SIZE = 100
+_SEARCH_SCAN_MAX_BACKEND_ITEMS = 2000
 
 
 def _uri_from_url(url: Optional[str]) -> Optional[str]:
@@ -52,6 +65,24 @@ def _uri_from_url(url: Optional[str]) -> Optional[str]:
         return f"hf://{host}/{type_part}{org}/{name}"
     except Exception:
         return url
+
+
+def get_redacted_job_input_params(source: dict) -> dict:
+    """Read ``job_input_params`` from a run mapping, redacted for the read path.
+
+    Both member-readable lineage read endpoints (``search_lineage_events`` and
+    ``get_artifact_graph``) must mask this facet unconditionally: the write-side
+    builder (``wandb_jobstats._build_events_for_target``) already masks secret-named
+    keys, but going through this single accessor guarantees the two paths stay
+    consistent and also protects any row persisted before that write-side masking
+    landed. Non-secret step data (e.g. a ``commit_hash``) surfaces intact;
+    ``redact_sensitive`` is idempotent, so re-masking an already-masked row is safe.
+
+    :param source: a run's facets (search path) or metadata (graph path) mapping.
+    :returns: the ``job_input_params`` mapping with secret-named values redacted,
+        or an empty dict when the key is absent/empty.
+    """
+    return redact_sensitive(source.get("job_input_params") or {})
 
 
 lineage_api = FastAPI()
@@ -69,11 +100,40 @@ class BuildJobStatsResponse(BaseModel):
 
     build_id: str
     targets: list[dict[str, list[Any]]]
+    # Parallel to ``targets``: ``target_ids[i]`` owns ``targets[i]``.
+    #
+    # Additive, so the existing positional ``targets`` shape is unchanged for
+    # current clients. It exists because that shape alone is no longer safe to
+    # consume positionally: a target with neither input nor output artifacts now
+    # contributes an EMPTY dict (it has no lineage events -- see
+    # get_build_jobstats), and a client that drops falsy entries before zipping
+    # against its own target list -- `[t for t in resp["targets"] if t]`, or a UI
+    # that skips empty objects -- silently shifts every later target onto the
+    # wrong lineage. Before the artifact-less skip every target contributed at
+    # least one key, so that filter was harmless; it is not any more.
+    #
+    # Read this instead of inferring identity from position. It is populated in
+    # the same loop as ``targets``, so the two cannot drift.
+    target_ids: list[str]
 
 
 @lineage_api.get("/build/{build_id}")
-def get_build_jobstats(build_id: str) -> BuildJobStatsResponse:
-    """Get JobStats for all targets in a build."""
+def get_build_jobstats(request: Request, build_id: str) -> BuildJobStatsResponse:
+    """Get JobStats for all targets in a build.
+
+    Every target of the build gets an entry, but a target with neither input nor
+    output artifacts contributes an empty dict: it has no lineage events to
+    report. This endpoint reaches ``create_jobstats_for_target`` directly, without
+    going through ``select_recordable_targets``, so the builder's own artifact-less
+    check is what produces that -- not a filter here.
+
+    Because of those empty dicts, ``targets`` must not be consumed positionally
+    against a separately-fetched target list: dropping the falsy entries (a
+    natural "skip the targets with no lineage" filter) shifts every later entry
+    onto the wrong target. ``target_ids`` is the parallel identity list --
+    ``target_ids[i]`` owns ``targets[i]`` -- and is the supported way to attribute
+    an entry. Both lists are built in one loop and are always the same length.
+    """
     storage = get_admin_storage()
 
     from gbserver.lineage.jobstats import get_lineage_store
@@ -86,6 +146,7 @@ def get_build_jobstats(build_id: str) -> BuildJobStatsResponse:
             detail=f"Build with id {build_id} not found",
         )
     assert isinstance(build, StoredBuild)
+    authorize_build_read_access(request, build)
 
     # Get all targets for this build
     row_filter = {"build_id": build_id}
@@ -94,20 +155,30 @@ def get_build_jobstats(build_id: str) -> BuildJobStatsResponse:
     # Collect JobStats for each target
     jobstats_storage = get_lineage_store()
     target_responses: list[dict[str, list[Any]]] = []
+    target_ids: list[str] = []
 
     for target in targets:
         assert isinstance(target, StoredTargetRun)
         _, jobstats_dict = jobstats_storage.create_jobstats_for_target(
             storage, target, build
         )
+        # Appended together so the two lists stay index-aligned by construction;
+        # an entry is only ambiguous if these ever separate.
         target_responses.append(jobstats_dict)
+        target_ids.append(target.uuid)
 
-    return BuildJobStatsResponse(build_id=build_id, targets=target_responses)
+    return BuildJobStatsResponse(
+        build_id=build_id, targets=target_responses, target_ids=target_ids
+    )
 
 
 @lineage_api.get("/target/{target_id}")
-def get_target_jobstats(target_id: str) -> TargetJobStatsResponse:
-    """Get JobStats for a target run, grouped by output artifact name."""
+def get_target_jobstats(request: Request, target_id: str) -> TargetJobStatsResponse:
+    """Get JobStats for a target run, grouped by output artifact name.
+
+    ``jobstats`` is empty for a target with neither input nor output artifacts --
+    it has no lineage events. See ``get_build_jobstats``.
+    """
     storage = get_admin_storage()
 
     # Get the target run
@@ -118,6 +189,17 @@ def get_target_jobstats(target_id: str) -> TargetJobStatsResponse:
             detail=f"Target with id {target_id} not found",
         )
     assert isinstance(target, StoredTargetRun)
+
+    # Authorize against the target's parent build, since the target itself
+    # carries no owner/space of its own.
+    build = storage.build_storage.get_by_uuid(target.build_id)
+    if build is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Build with id {target.build_id} not found",
+        )
+    assert isinstance(build, StoredBuild)
+    authorize_build_read_access(request, build)
 
     from gbserver.lineage.jobstats import get_lineage_store
 
@@ -152,30 +234,87 @@ def ingest_lineage_event(event: OpenLineageEvent):
 
 
 @lineage_api.post("/search")
-def search_lineage_events(request: TagSearchRequest):
+def search_lineage_events(request: Request, body: TagSearchRequest):
+    """Search lineage runs by tag.
+
+    An empty tag list matches every run in the shared lineage backend across
+    all spaces, so results are access-filtered below. search_lineage_by_tags
+    paginates the UNFILTERED backend set, so filtering only the caller's
+    requested page would (a) leak the global unfiltered count via `total`
+    and (b) break offset/limit pagination for the caller — a page could come
+    back near-empty after filtering even though the caller has many
+    accessible runs on other backend pages, so `count < limit` would no
+    longer reliably mean "no more results".
+
+    To keep pagination correct from the caller's point of view, this scans
+    backend pages (in fixed-size chunks, not the caller's own limit) up to
+    _SEARCH_SCAN_MAX_BACKEND_ITEMS, collecting every accessible run, then
+    applies the caller's offset/limit to that accessible set. `total` is
+    always the accessible count, never the global unfiltered count. If the
+    scan cap is hit before the backend is exhausted, `total`/`count` become
+    a lower bound on the true accessible count (logged when this happens).
+    """
     service = _get_openlineage_service()
-    total, results = service.search_lineage_by_tags(
-        request.tags, request.limit, request.offset
-    )
+
+    accessible: list[dict] = []
+    backend_offset = 0
+    backend_total: Optional[int] = None
+    while backend_total is None or backend_offset < backend_total:
+        if backend_offset >= _SEARCH_SCAN_MAX_BACKEND_ITEMS:
+            logger.warning(
+                "search_lineage_events: hit scan cap of %d backend items for "
+                "tags=%s; total/count are a lower bound on the true accessible count",
+                _SEARCH_SCAN_MAX_BACKEND_ITEMS,
+                body.tags,
+            )
+            break
+        backend_total, page_results = service.search_lineage_by_tags(
+            body.tags, _SEARCH_SCAN_BACKEND_PAGE_SIZE, backend_offset
+        )
+        if not page_results:
+            break
+        for result in page_results:
+            run_facets = (result.get("run") or {}).get("facets") or {}
+            owner = (run_facets.get("job_details") or {}).get("owner", "")
+            space_name = (run_facets.get("tags") or {}).get("space_name", "")
+            has_access, _ = has_space_member_access(
+                request, username_on_target=owner, space_name=space_name
+            )
+            if not has_access:
+                continue
+            # Redact on the read path via the shared accessor (see
+            # get_redacted_job_input_params) so this and the artifact-graph path
+            # stay consistent.
+            run_facets["job_input_params"] = get_redacted_job_input_params(run_facets)
+            accessible.append(result)
+        backend_offset += len(page_results)
+
+    page = accessible[body.offset : body.offset + body.limit]
     return PaginatedResponse(
-        count=len(results),
-        total=total,
-        limit=request.limit,
-        offset=request.offset,
-        runs=results,
+        count=len(page),
+        total=len(accessible),
+        limit=body.limit,
+        offset=body.offset,
+        runs=page,
     )
 
 
 @lineage_api.post("/artifact")
-def get_artifact_graph(request: ArtifactGraphRequest):
-    """Get the lineage DAG for an artifact, traversing downstream or upstream."""
-    if request.direction not in ("downstream", "upstream", "both"):
+def get_artifact_graph(request: Request, body: ArtifactGraphRequest):
+    """Get the lineage DAG for an artifact, traversing downstream or upstream.
+
+    Runs are looked up by artifact name/url in the external lineage backend,
+    which is not itself space-scoped, so results can span multiple spaces —
+    each run is filtered below to the caller's own runs or spaces they belong
+    to, rather than gating the whole request on a single space.
+    """
+    if body.direction not in ("downstream", "upstream", "both"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="direction must be 'downstream', 'upstream', or 'both'",
         )
 
-    if not request.artifact_name and not request.artifact_url:
+    if not body.artifact_name and not body.artifact_url:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Either artifact_name or artifact_url must be provided",
@@ -184,11 +323,11 @@ def get_artifact_graph(request: ArtifactGraphRequest):
     service = _get_openlineage_service()
     try:
         result = service.get_artifact_graph(
-            artifact_name=request.artifact_name,
-            artifact_url=request.artifact_url,
-            artifact_type=request.artifact_type,
-            max_depth=request.max_depth,
-            direction=request.direction,
+            artifact_name=body.artifact_name,
+            artifact_url=body.artifact_url,
+            artifact_type=body.artifact_type,
+            max_depth=body.max_depth,
+            direction=body.direction,
         )
     except ValueError as e:
         raise HTTPException(
@@ -197,7 +336,7 @@ def get_artifact_graph(request: ArtifactGraphRequest):
         )
 
     if result is None:
-        identifier = request.artifact_name or request.artifact_url
+        identifier = body.artifact_name or body.artifact_url
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Artifact not found: {identifier}",
@@ -271,30 +410,40 @@ def get_artifact_graph(request: ArtifactGraphRequest):
                         )
                     )
 
-        runs.append(
-            ArtifactRunEntry(
-                job_name=metadata.get("job_name") or run.get("name", ""),
-                job_namespace=metadata.get("job_namespace") or "",
-                job_type=metadata.get("job_type") or "",
-                run_id=metadata.get("run_id") or "",
-                created_at=metadata.get("created_at") or "",
-                status=metadata.get("state") or "",
-                tags=tags,
-                inputs=inputs,
-                outputs=outputs,
-                job_id=metadata.get("job_id") or "",
-                job_status=metadata.get("job_status") or "",
-                job_started_at=metadata.get("job_started_at") or "",
-                job_completed_at=metadata.get("job_completed_at") or "",
-                release_id=metadata.get("release_id") or "",
-                category=metadata.get("category") or "",
-                owner=metadata.get("owner") or "",
-                source_code_details=metadata.get("source_code_details") or {},
-                job_input_params=metadata.get("job_input_params") or {},
-                execution_stats=metadata.get("execution_stats") or {},
-                job_output_stats=metadata.get("job_output_stats") or {},
-            )
+        entry = ArtifactRunEntry(
+            job_name=metadata.get("job_name") or run.get("name", ""),
+            job_namespace=metadata.get("job_namespace") or "",
+            job_type=metadata.get("job_type") or "",
+            run_id=metadata.get("run_id") or "",
+            created_at=metadata.get("created_at") or "",
+            status=metadata.get("state") or "",
+            tags=tags,
+            inputs=inputs,
+            outputs=outputs,
+            job_id=metadata.get("job_id") or "",
+            job_status=metadata.get("job_status") or "",
+            job_started_at=metadata.get("job_started_at") or "",
+            job_completed_at=metadata.get("job_completed_at") or "",
+            release_id=metadata.get("release_id") or "",
+            category=metadata.get("category") or "",
+            owner=metadata.get("owner") or "",
+            source_code_details=metadata.get("source_code_details") or {},
+            # Redact on the read path via the shared accessor, matching
+            # search_lineage_events above (both endpoints are member-readable).
+            job_input_params=get_redacted_job_input_params(metadata),
+            execution_stats=metadata.get("execution_stats") or {},
+            job_output_stats=metadata.get("job_output_stats") or {},
         )
+        # job_namespace is written as f"{space_name}/{build_name}" (see
+        # wandb_jobstats._build_events_for_target); split on the first "/"
+        # to recover the space and drop runs from spaces the caller can't
+        # access. Runs missing both an owner and a namespace fail closed.
+        run_space_name = entry.job_namespace.split("/", 1)[0]
+        has_access, _ = has_space_member_access(
+            request, username_on_target=entry.owner, space_name=run_space_name
+        )
+        if has_access:
+            runs.append(entry)
 
     return ArtifactGraphResponse(
         root_id=result["root_id"],

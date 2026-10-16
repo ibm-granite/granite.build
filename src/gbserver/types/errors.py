@@ -30,6 +30,17 @@ class WorkloadFailedException(Exception):
         super().__init__(*args)
 
 
+class SkypilotConfigCollisionError(Exception):
+    """Raised when two Skypilot environments require conflicting SkyPilot config.
+
+    Two materializations clash when they target the same destination with
+    different content — the same SSH ``Host`` alias defined two different ways,
+    the same ``cloud_config`` leaf key set to two different values, or the same
+    ``~/.aws/credentials`` profile given two different value sets. Identical
+    re-application is an idempotent no-op and never raises.
+    """
+
+
 ERR_CONNECTION_RESET_BY_PEER = "Connection reset by peer"
 
 
@@ -56,6 +67,33 @@ class ErrNetworkUnreachable(Exception):
         )
 
 
+ERR_CONNECTION_CLOSED_PATTERNS = ("Connection closed", "closed by remote host")
+
+
+class ErrConnectionClosed(Exception):
+    """Remote end dropped the connection mid-transfer (e.g. scp/ssh tunnel).
+
+    This is a transient transport failure that should be retried, distinct from
+    a persistent outage. Matched narrowly (not via the broad
+    ``ERR_SSH_CONNECTION_PATTERNS``) so it only triggers on an actual dropped
+    connection rather than any message that happens to contain "connection".
+    """
+
+    @staticmethod
+    def matches_error_str(s: Union[str, bytes]) -> bool:
+        """Return True if ``s`` reports a dropped connection.
+
+        Args:
+            s: The stderr text (``str`` or ``bytes``) to classify.
+
+        Returns:
+            bool: True if any connection-closed pattern is present.
+        """
+        if isinstance(s, bytes):
+            s = s.decode("utf-8", errors="replace")
+        return any(pattern in s for pattern in ERR_CONNECTION_CLOSED_PATTERNS)
+
+
 ERR_SSH_CONNECTION_PATTERNS = ["connection", "ssh", "network", "timeout", "refused"]
 
 
@@ -68,6 +106,20 @@ class ErrSSHConnectionError(Exception):
             s = s.decode("utf-8", errors="replace")
         s_lower = s.lower()
         return any(pattern in s_lower for pattern in ERR_SSH_CONNECTION_PATTERNS)
+
+
+class ErrSkypilotInteractiveAuthFailed(Exception):
+    """SkyPilot's interactive SSH-auth fallback fired in a headless context,
+    masking an SSH key rejection.
+
+    SkyPilot's SLURM/LSF provisioners hardcode ``enable_interactive_auth=True``,
+    so when key-based auth is rejected the client is asked to prompt for a
+    password interactively. With no controlling terminal (server/CI/pytest) that
+    prompt crashes on ``sys.stdin.fileno()`` with an opaque ``io`` error that
+    says nothing about authentication. gbserver raises this instead so the
+    surfaced cause points at the rejected key. Fatal — retrying with the same
+    rejected key cannot succeed.
+    """
 
 
 ERR_LSF_CANNOT_OPEN_JOB_FILE = "Cannot open your job file"

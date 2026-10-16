@@ -25,10 +25,11 @@ from datetime import timedelta
 from enum import Enum
 from pathlib import Path
 from time import sleep, time
-from typing import TYPE_CHECKING, ClassVar, List, Optional, Self, Union
+from typing import TYPE_CHECKING, Any, ClassVar, List, Optional, Self, Union
 
 import pytest
 import yaml
+from libgbtest.buildrunner.placeholder import PLACEHOLDER
 from libgbtest.buildrunner.utils import (
     ExceptionRaisingThread,
     cluster_logout,
@@ -43,7 +44,6 @@ from libgbtest.constants import (
     GBTEST_USER_NAME,
     failed_build_assert_message,
 )
-from libgbtest.mode import is_mock_mode
 from libgbtest.utils import (
     AbstractSingletonStorageUsingPreloadedSpaceTest,
     is_pytest_running_parallel,
@@ -52,9 +52,7 @@ from pydantic import BaseModel, field_validator
 
 from gbcommon.types.testing import (
     disable_failure_simulation,
-    disable_hf_mocks,
     enable_failure_simulation,
-    enable_hf_mocks,
 )
 from gbcommon.uri.uri import URI
 from gbserver.buildrunner.buildrunner import BuildRunner
@@ -66,9 +64,9 @@ if TYPE_CHECKING:
     # lazily in _run_build_test's K8s-job branch).
     from gbserver.buildrunnerjob.buildrunnerjob import BuildRunnerJob
 
+from gbcommon.uri.git import get_uri_parts
 from gbserver.github.myghapi import MyGHApi
-from gbserver.lineage.jobstats import get_lineage_store, reset_lineage_store
-from gbserver.lineage.noop_jobstats import NoopLineageStore
+from gbserver.lineage.jobstats import reset_lineage_store
 from gbserver.storage.artifact_registration import (
     ArtifactRegistration,
     ArtifactRegistrationStatus,
@@ -86,13 +84,28 @@ from gbserver.types.constants import (
     GBSERVER_GBSERVER_IMAGE_TAG,
     GBSERVER_GITHUB_TOKEN,
     GBSERVER_SIDECAR_MONITORING_IMAGE_TAG,
+    MEM_URI_SCHEME,
 )
-from gbserver.types.prwatcherconfig import get_uri_parts
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import get_time, get_uuid
 
 logger = get_logger(__name__)
+
+
+class ExpectedStep(BaseModel):
+    """Optional assertions checked against a target's StoredStepRun row(s)."""
+
+    step_uri: Optional[str] = None
+    """Match the step by its definition_uri; if omitted, applies to the target's
+    single step (fails if the target has more than one step)."""
+    metadata: dict[str, str] = {}
+    """Key -> exact value that must be present in StoredStepRun.metadata."""
+    metadata_matches: dict[str, str] = {}
+    """Key -> regex the StoredStepRun.metadata value must fullmatch (for
+    runtime-variable values such as a commit SHA)."""
+    config: dict[str, Any] = {}
+    """Nested subset that must be present in StoredStepRun.config."""
 
 
 class ExpectedTarget(BaseModel):
@@ -103,8 +116,43 @@ class ExpectedTarget(BaseModel):
     input_artifact_count: int
     """Number of input artifacts to be recorded in the recorded target record."""
     output_artifact_count: int
-    """Number of output artifacts to be recorded in the recorded target record."""
-    jobstats_count: int
+    """Number of output artifacts to be recorded in the recorded target record.
+    Only checked for SUCCESS-status runs (see ``_verify_target_and_steps``)."""
+    target_failure_count: int = 0
+    """Number of FAILED runs expected for this target across the build. An in-place
+    retry re-runs a failed target under the same build id, so a target that fails
+    N times before succeeding leaves N FAILED StoredTargetRun records. Defaults to
+    0 (no failures), so non-retry fixtures are unaffected."""
+    jobstats_count: int = -1
+    """Expected jobstats records. Defaults to -1 (skip): jobstats are not asserted
+    at run time yet (lineage verification is a no-op under async lineage), so the
+    `gbtest render` skeleton does not force a value for it."""
+    expected_steps: list[ExpectedStep] = []
+    """Optional per-step metadata/config assertions checked against the persisted
+    StoredStepRun rows. Empty (default) means not checked, so existing fixtures are
+    unaffected."""
+
+    @field_validator(
+        "step_count",
+        "input_artifact_count",
+        "output_artifact_count",
+        mode="before",
+    )
+    @classmethod
+    def _reject_placeholder(cls, v, info):
+        """Fail loudly if a `gbtest render` skeleton placeholder was left unreplaced.
+
+        The generator emits the shared ``PLACEHOLDER`` sentinel for values it
+        cannot derive; both modules import it from
+        ``libgbtest.buildrunner.placeholder`` so the token has a single source of
+        truth.
+        """
+        if isinstance(v, str) and v.strip() == PLACEHOLDER:
+            raise ValueError(
+                f"unreplaced FIXME placeholder for '{info.field_name}': edit the "
+                f"`gbtest render` skeleton before running it"
+            )
+        return v
 
 
 class BuildTestSpecification(BaseModel):
@@ -128,8 +176,6 @@ class BuildTestSpecification(BaseModel):
     """If set, overrides the space's git_repo_uri so the BuildRunner resolves space:// URIs
     from this local path instead of cloning from GitHub.  PR creation and verification are
     automatically skipped when this is set (no GitHub repo available)."""
-    skip_target_names: list[str] = []
-    """Target names expected to be skipped on a second run (used by _run_two_builds_sequential)."""
     tests: list[str] = ["runner", "runner_cancellation"]
     """Which test methods on AbstractYamlBuildRunnerTest run for this spec.
     Each value <key> maps to a method test_<key> on the base class.  Default
@@ -169,7 +215,9 @@ class BuildTestSpecification(BaseModel):
         return v
 
     @classmethod
-    def from_yaml(cls, path: Path) -> "BuildTestSpecification":
+    def from_yaml(
+        cls, path: Path, build_yaml_override: Optional[str] = None
+    ) -> "BuildTestSpecification":
         """Construct a BuildTestSpecification from a YAML file.
 
         Path-typed fields are resolved relative to the YAML file's directory so a
@@ -198,7 +246,12 @@ class BuildTestSpecification(BaseModel):
         assert isinstance(data, dict), f"expected a dict, actual: {data}"
 
         yaml_dir = path.parent
-        data["build_yaml"] = _resolve_build_yaml(data.get("build_yaml"), yaml_dir)
+        if build_yaml_override is not None:
+            # An explicit `-f` override resolves against CWD (where gbtest was
+            # run), not the buildtest.yaml dir.
+            data["build_yaml"] = str(Path(build_yaml_override).resolve())
+        else:
+            data["build_yaml"] = _resolve_build_yaml(data.get("build_yaml"), yaml_dir)
         if data.get("space_uri") is not None:
             data["space_uri"] = _resolve_space_uri(data["space_uri"], yaml_dir)
         return cls.model_validate(data)
@@ -292,10 +345,11 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
 
     def setup_method(self: Self, method):
         # breakpoint()
-        # Only use real HF calls in live mode; mock artifact ops otherwise.
-        if is_mock_mode():
-            self._enable_artifact_mocks()
-
+        # HF mocking is handled entirely by the autouse `_hf_mock` fixture in
+        # test/conftest.py, which is marker-aware and so honors
+        # @pytest.mark.live("hf") at function, class and module scope. Gating it
+        # here too would re-set GBTEST_MOCK_HF after the fixture lifted it,
+        # force-mocking a live("hf") build test; see PR #314 review.
         self.class_tested = None
         run_locally = getattr(self, "run_locally", False)
         logger.info(f"Test to be run locally: {run_locally}")
@@ -316,9 +370,6 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         super().setup_method(method)
 
     def teardown_method(self: Self, method):
-        if is_mock_mode():
-            self._disable_artifact_mocks()
-
         if GBTEST_SKIP_BUILD_TEARDOWN:
             logger.warning("skipping the teardown of the test build!")
             return
@@ -358,15 +409,6 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
 
         # And now do the super cleanups
         return super().teardown_method(method)
-
-    def _enable_artifact_mocks(self) -> None:
-        """Enable push/pull/exists/delete mocking for this process and remote jobs/pods
-        and the input/output URIs used in the build.  Currently onl hf://."""
-        enable_hf_mocks()
-
-    def _disable_artifact_mocks(self) -> None:
-        """Disable artifact mocking."""
-        disable_hf_mocks()
 
     def _failed_build_msg(self: Self, build_id: str, message: str) -> str:
         """Format an assertion message with the build ID for easier debugging."""
@@ -553,38 +595,6 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
 
         finally:
             disable_failure_simulation()
-
-    def _run_two_builds_sequential(
-        self: Self,
-        tested_class: ClassTestedEnum,
-        test_spec: BuildTestSpecification,
-        second_run_spec: BuildTestSpecification,
-    ) -> None:
-        """
-        Runs the build twice to verify target-skip behaviour:
-        1. First run: all targets execute normally and register their output artifacts.
-        2. Second run: uses second_run_spec's build_yaml and targets; targets in
-           skip_target_names are expected to be skipped because their target_hash already
-           exists in gb_targets from the first run. Exercises downstream binding
-           propagation from a skipped target.
-
-        The artifact registry is NOT cleared between runs so first-run output artifacts
-        remain visible to the second run's skip check.
-        """
-        assert (
-            tested_class == ClassTestedEnum.TEST_BUILDRUNNER
-        ), "_run_two_builds_sequential only supports TEST_BUILDRUNNER"
-
-        # First run: run normally, verify expectations.
-        self._run_build_test(tested_class=tested_class, test_spec=test_spec)
-
-        # Second run: the first run stored a target_hash in gb_targets; the BuildRunner's
-        # target_already_run_fn will find it and skip matching targets.
-        # Output artifacts from the first run remain in the registry for the second run's skip check.
-        self._run_build_test(
-            tested_class=tested_class,
-            test_spec=second_run_spec,
-        )
 
     def _verify_build_cancellations(self: Self, build_ids: list[str]) -> None:
         for build_id in build_ids:
@@ -839,6 +849,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         statuses: list[Status],
         timeout: float,
         failed_statuses: Optional[list[Status]] = [],
+        transient_statuses: Optional[list[Status]] = None,
     ) -> None:
         return self._wait_for_status(
             build_id=build_id,
@@ -848,6 +859,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             statuses=statuses,
             timeout=timeout,
             failed_statuses=failed_statuses,
+            transient_statuses=transient_statuses,
         )
 
     def _wait_for_target_status(
@@ -894,6 +906,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         statuses: list[Status],
         timeout: float,
         failed_statuses: Optional[list[Status]] = [],
+        transient_statuses: Optional[list[Status]] = None,
     ) -> None:
         """Wait for one of the status values in the item in the given storage.
 
@@ -929,18 +942,27 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 if last_status in statuses:
                     is_success = True
                     break
-                if last_status in failed_statuses:
+                # Statuses the caller expects the item to pass *through* transiently
+                # (e.g. a FAILED build that will retry in place under the same id):
+                # neither succeed nor fast-fail on them — keep polling until a target
+                # or genuinely terminal status is reached.
+                if transient_statuses and last_status in transient_statuses:
+                    pass
+                elif last_status in failed_statuses:
                     is_success = False
                     break
-                match last_status:
-                    case Status.FAILED | Status.CANCELLED | Status.INVALID:
-                        # And fail the is_success assert below
-                        break
-                    case Status.CANCEL_REQUESTED if Status.CANCELLED not in statuses:
-                        # Unexpected cancellation — fail fast instead of looping until timeout
-                        break
-                    case _:
-                        pass
+                else:
+                    match last_status:
+                        case Status.FAILED | Status.CANCELLED | Status.INVALID:
+                            # And fail the is_success assert below
+                            break
+                        case Status.CANCEL_REQUESTED if (
+                            Status.CANCELLED not in statuses
+                        ):
+                            # Unexpected cancellation — fail fast instead of looping until timeout
+                            break
+                        case _:
+                            pass
             else:
                 logger.info(f"Looping on {item_name}:{item_id} status.  Not found yet.")
             sleep(sleep_time)
@@ -1031,7 +1053,6 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             assert isinstance(target, StoredTargetRun)
             target_dict[target.name] = target
 
-        skip_set = set(test_spec.skip_target_names)
         expected_targets = test_spec.target_expectations
         for index in range(0, len(expected_targets)):
             expected_target = expected_targets[index]
@@ -1040,14 +1061,9 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 build_id,
                 f"Did not find expected target named {expected_target.target_name}",
             )
-            if expected_target.target_name in skip_set:
-                self._verify_skipped_target_and_steps(
-                    build_id, target, [Status.SUCCESS], expected_target
-                )
-            else:
-                self._verify_unskipped_target_and_steps(
-                    build_id, target, [Status.SUCCESS], expected_target
-                )
+            self._verify_target_and_steps(
+                build_id, target, [Status.SUCCESS], expected_target
+            )
 
         # Do this after in case there are extra targets
         assert len(target_list) == len(expected_targets), self._failed_build_msg(
@@ -1082,61 +1098,35 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 uri.exists()
             ), f"URI {artifact.uri} does not exist in artifact storage"
 
-    def _verify_skipped_target_and_steps(
+    def _verify_target_artifacts(
         self: Self,
         build_id: str,
         built_target: StoredTargetRun,
-        status_list: list[Status],
         expected: ExpectedTarget,
-    ):
-        self._verify_target_status(build_id, built_target, status_list)
-        assert len(built_target.input_artifacts) == 0, self._failed_build_msg(
-            build_id,
-            f"Skipped target '{built_target.name}' should have 0 input artifacts but has {len(built_target.input_artifacts)}",
-        )
-        assert len(built_target.output_artifacts) == 0, self._failed_build_msg(
-            build_id,
-            f"Skipped target '{built_target.name}' should have 0 output artifacts but has {len(built_target.output_artifacts)}",
-        )
-        step_list = self.storage.step_storage.get_by_where(
-            {"target_id": built_target.uuid}
-        )
-        assert len(step_list) == 0, self._failed_build_msg(
-            build_id,
-            f"Skipped target '{built_target.name}' should have 0 steps but has {len(step_list)}",
-        )
-        count = get_lineage_store().count_release_ids(
-            release_id=built_target.build_id,
-            target_id=built_target.uuid,
-        )
-        assert count == expected.jobstats_count, self._failed_build_msg(
-            build_id,
-            f"Skipped target {built_target.name} created {count} jobstats, but expected  {expected.jobstats_count}",
-        )
+    ) -> None:
+        """Verify a SUCCESS run's input/output artifact counts and each output.
 
-    def _verify_unskipped_target_and_steps(
-        self: Self,
-        build_id: str,
-        built_target: StoredTargetRun,
-        status_list: list[Status],
-        expected: ExpectedTarget,
-    ):
-        self._verify_target_status(build_id, built_target, status_list)
+        Asserts the number of input and output artifacts match the expectation and
+        that every recorded output artifact exists, is SUCCESS-status, and is typed
+        (except opaque ``mem://`` artifacts, which legitimately have no type).
 
-        # Check the number of input and output artifacts
+        Args:
+            build_id: the build under test (used only for failure messages).
+            built_target: the SUCCESS target run whose artifacts are checked.
+            expected: expected input/output artifact counts for the target.
+        """
         assert (
             len(built_target.input_artifacts) == expected.input_artifact_count
         ), self._failed_build_msg(
             build_id,
-            f"actual: {built_target.input_artifacts} expected: {expected.input_artifact_count}",
+            f"input artifacts! actual: {built_target.input_artifacts} expected: {expected.input_artifact_count}",
         )
         assert (
             len(built_target.output_artifacts) == expected.output_artifact_count
         ), self._failed_build_msg(
             build_id,
-            f"actual: {len(built_target.output_artifacts)} expected: {expected.output_artifact_count}",
+            f"output artifacts! actual: {len(built_target.output_artifacts)} expected: {expected.output_artifact_count}",
         )
-        # Verify each artifact is present and has the expected status
         for name, uuids in built_target.output_artifacts.items():
             for uuid in uuids:
                 artifact = self.storage.artifact_registry.get_by_uuid(uuid)
@@ -1151,9 +1141,66 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                     build_id,
                     f"stored artifact {uuid} is not marked as success, status is {artifact.status}",
                 )
-                assert artifact.type != ArtifactType.UNDEFINED, self._failed_build_msg(
-                    build_id, f"stored artifact {uuid} has an undefined type"
-                )
+                # mem:// artifacts carry an opaque state value (e.g. a service
+                # URL), not a typed asset, so they legitimately have no type —
+                # unlike file/hf/cos/env outputs. Skip the type check for them.
+                if not artifact.uri.startswith(f"{MEM_URI_SCHEME}://"):
+                    assert (
+                        artifact.type != ArtifactType.UNDEFINED
+                    ), self._failed_build_msg(
+                        build_id, f"stored artifact {uuid} has an undefined type"
+                    )
+
+    def _verify_target_failure_count(
+        self: Self,
+        build_id: str,
+        target_name: str,
+        expected: ExpectedTarget,
+    ) -> None:
+        """Assert the target produced the expected number of FAILED runs.
+
+        An in-place retry re-runs a failed target under the same build id, so a
+        target that fails N times before succeeding leaves N FAILED
+        ``StoredTargetRun`` records (plus the final SUCCESS run). This checks that
+        the number of FAILED runs for ``target_name`` in the build matches
+        ``expected.target_failure_count``.
+
+        Args:
+            build_id: the build whose target runs to inspect.
+            target_name: the target name to count failures for.
+            expected: expectation carrying ``target_failure_count``.
+        """
+        runs = self.storage.target_storage.get_by_where(
+            {"build_id": build_id, "name": target_name}
+        )
+        failed = [r for r in runs if r.status == Status.FAILED]
+        assert len(failed) == expected.target_failure_count, self._failed_build_msg(
+            build_id,
+            f"target {target_name} failure count! actual: {len(failed)} "
+            f"expected: {expected.target_failure_count}",
+        )
+
+    def _verify_target_and_steps(
+        self: Self,
+        build_id: str,
+        built_target: StoredTargetRun,
+        status_list: list[Status],
+        expected: ExpectedTarget,
+    ):
+        self._verify_target_status(build_id, built_target, status_list)
+        self._verify_run_timestamps(build_id, built_target)
+
+        # Artifact checks apply only to a SUCCESS run. A target that FAILED (e.g. a
+        # failed attempt of an in-place retry) may have bound partial or incidental
+        # outputs that vary by environment, so its artifacts are not asserted — the
+        # winning SUCCESS run owns the meaningful inputs and outputs.
+        if built_target.status == Status.SUCCESS:
+            self._verify_target_artifacts(build_id, built_target, expected)
+        else:
+            logger.warning(
+                f"Not verifying artifacts for target {built_target.name} because its "
+                f"run status is {built_target.status}, not SUCCESS"
+            )
 
         # Verify the number of expected steps and their status values
         step_list = self.storage.step_storage.get_by_where(
@@ -1165,57 +1212,145 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             )
         else:
             assert len(step_list) == expected.step_count, self._failed_build_msg(
-                build_id, f"actual: {len(step_list)} expected: {expected.step_count}"
+                build_id,
+                f"step count! actual: {len(step_list)} expected: {expected.step_count}",
             )
         self._verify_steplist_status(build_id, step_list, status_list)
 
+        self._verify_step_data(build_id, step_list, expected)
+
         self._verify_lineage(built_target, expected)
+
+    def _verify_step_data(
+        self: Self,
+        build_id: str,
+        step_list: list[StoredStepRun],
+        expected: ExpectedTarget,
+    ) -> None:
+        """Assert each ExpectedStep's metadata/config against the persisted steps.
+
+        No-op when ``expected.expected_steps`` is empty. Each ExpectedStep is
+        matched to a StoredStepRun by ``step_uri`` (its definition_uri), or to the
+        target's sole step when ``step_uri`` is omitted.
+
+        :param build_id: id of the build under test (for failure messages).
+        :param step_list: the target's persisted StoredStepRun rows.
+        :param expected: the target's expectation carrying ``expected_steps``.
+        """
+        for expected_step in expected.expected_steps:
+            step = self._resolve_expected_step(build_id, step_list, expected_step)
+            for key, value in expected_step.metadata.items():
+                assert step.metadata.get(key) == value, self._failed_build_msg(
+                    build_id,
+                    f"step {step.definition_uri} metadata[{key}]: "
+                    f"actual {step.metadata.get(key)!r} expected {value!r}",
+                )
+            for key, pattern in expected_step.metadata_matches.items():
+                actual = step.metadata.get(key, "")
+                assert re.fullmatch(pattern, actual), self._failed_build_msg(
+                    build_id,
+                    f"step {step.definition_uri} metadata[{key}]={actual!r} "
+                    f"does not match /{pattern}/",
+                )
+            self._assert_contains_subset(
+                build_id,
+                step.config,
+                expected_step.config,
+                f"step {step.definition_uri} config",
+            )
+
+    def _resolve_expected_step(
+        self: Self,
+        build_id: str,
+        step_list: list[StoredStepRun],
+        expected_step: ExpectedStep,
+    ) -> StoredStepRun:
+        """Find the StoredStepRun an ExpectedStep refers to.
+
+        Matches by ``expected_step.step_uri`` (definition_uri) when set; otherwise
+        requires the target to have exactly one step.
+
+        :param build_id: id of the build under test (for failure messages).
+        :param step_list: the target's persisted StoredStepRun rows.
+        :param expected_step: the expectation to resolve.
+        :returns: the uniquely matched StoredStepRun.
+        :raises AssertionError: if no unique match exists.
+        """
+        if expected_step.step_uri is not None:
+            matches = [
+                s for s in step_list if s.definition_uri == expected_step.step_uri
+            ]
+            assert len(matches) == 1, self._failed_build_msg(
+                build_id,
+                f"expected exactly one step with uri {expected_step.step_uri}, "
+                f"found {len(matches)}",
+            )
+            return matches[0]
+        assert len(step_list) == 1, self._failed_build_msg(
+            build_id,
+            f"expected_steps entry omits step_uri but target has "
+            f"{len(step_list)} steps",
+        )
+        return step_list[0]
+
+    def _assert_contains_subset(
+        self: Self,
+        build_id: str,
+        actual: Any,
+        expected: Any,
+        ctx: str,
+    ) -> None:
+        """Assert ``expected`` is contained in ``actual`` (recursive for dicts).
+
+        Dicts are matched key-by-key (each expected key must be present and its
+        value contained); all other values must be equal. Lets a fixture assert
+        only the config keys it cares about.
+
+        :param build_id: id of the build under test (for failure messages).
+        :param actual: the persisted value.
+        :param expected: the expected subset.
+        :param ctx: dotted path describing the location, for failure messages.
+        """
+        if isinstance(expected, dict):
+            assert isinstance(actual, dict), self._failed_build_msg(
+                build_id, f"{ctx}: expected a mapping, got {type(actual).__name__}"
+            )
+            for key, sub in expected.items():
+                assert key in actual, self._failed_build_msg(
+                    build_id, f"{ctx}: missing key {key!r}"
+                )
+                self._assert_contains_subset(build_id, actual[key], sub, f"{ctx}.{key}")
+        else:
+            assert actual == expected, self._failed_build_msg(
+                build_id, f"{ctx}: actual {actual!r} expected {expected!r}"
+            )
 
     def _verify_lineage(
         self: Self,
         built_target: StoredTargetRun,
         expected: ExpectedTarget,
     ) -> None:
-        """Verify the number of jobstats/lineage records matches the expected count.
+        """Lineage record count is no longer asserted here.
 
-        Retries a few times because Lakehouse writes from the K8s build runner
-        pod may not be immediately visible to a query in this process. Skips the
-        check entirely when no real lineage store is configured.
+        Lineage recording used to run synchronously inside the build, so the
+        record count matched right after the build. Recording is now done
+        asynchronously by the out-of-band ``lineage-watch`` process reconciling
+        the admin DB (see ``lineage_watcher`` / ``lineage_reconciler``), which is
+        not part of the build flow exercised by this test. The record count is
+        therefore no longer a synchronous product of a build, so asserting on it
+        here no longer makes sense.
+
+        The build's own persisted lineage (target input/output artifacts, steps)
+        is still verified elsewhere in this class; only the external-store record
+        count assertion is dropped.
 
         Args:
-            built_target: The stored target run whose lineage records are counted
-                (uses its ``build_id`` as the release id and ``uuid`` as the
-                target id).
-            expected: Expected-target spec providing ``jobstats_count``.
-
-        Raises:
-            AssertionError: If the observed lineage record count never matches
-                ``expected.jobstats_count`` after the retries.
+            built_target: The stored target run (unused; retained for signature
+                stability with callers).
+            expected: Expected-target spec (unused).
         """
-        if isinstance(get_lineage_store(), NoopLineageStore):
-            logger.warning("skipping lineage assertion: NoopLineageStore active")
-            return
-        count = 0
-        for attempt in range(5):
-            count = get_lineage_store().count_release_ids(
-                release_id=built_target.build_id,
-                target_id=built_target.uuid,
-            )
-            if count == expected.jobstats_count:
-                break
-            if attempt < 4:
-                logger.info(
-                    "JobStats count %d != expected %d for target %s, retrying (%d/5)...",
-                    count,
-                    expected.jobstats_count,
-                    built_target.name,
-                    attempt + 1,
-                )
-                sleep(3)
-        assert count == expected.jobstats_count, self._failed_build_msg(
-            build_id=built_target.build_id,
-            message=f"Target {built_target.name} created {count} JobStats, expected {expected.jobstats_count} ",
-        )
+        # Intentionally a no-op: see docstring.
+        return
 
     def _verify_target_status(
         self, build_id: str, target: StoredTargetRun, status_list: list[Status]
@@ -1226,6 +1361,33 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             f"Status of target {target.name} is {target.status} but one of {status_list} was expected",
         )
         self._verify_target_steps(build_id, target.uuid, status_list)
+
+    def _verify_run_timestamps(
+        self: Self, build_id: str, target: StoredTargetRun
+    ) -> None:
+        """Assert a finished target run recorded both of its timestamps sanely.
+
+        A target that ran to a terminal status (SUCCESS or FAILED) must have both
+        ``started_at`` (stamped on first entry into RUNNING) and ``finished_at``
+        (stamped on first entry into a terminal status), and cannot have finished
+        before it started. Guards against the class of bug where a run reaches a
+        terminal status without its timestamps being stamped (e.g. a run created
+        directly terminal, or swept to terminal by build finalization).
+
+        :param build_id: id of the build under test (for failure messages).
+        :param target: the terminal target run to check.
+        """
+        assert target.started_at is not None, self._failed_build_msg(
+            build_id, f"target {target.name} has no started_at timestamp"
+        )
+        assert target.finished_at is not None, self._failed_build_msg(
+            build_id, f"target {target.name} has no finished_at timestamp"
+        )
+        assert target.finished_at >= target.started_at, self._failed_build_msg(
+            build_id,
+            f"target {target.name} finished_at ({target.finished_at}) is before "
+            f"started_at ({target.started_at})",
+        )
 
     def _verify_target_steps(
         self: Self, build_id: str, target_id, status_list: list[Status]
@@ -1372,7 +1534,8 @@ class AbstractYamlBuildRunnerTest(AbstractBuildRunnerTest):
         ``_get_yaml_spec_dir``.
         """
         return BuildTestSpecification.from_yaml(
-            self._get_yaml_spec_dir() / "buildtest.yaml"
+            self._get_yaml_spec_dir() / "buildtest.yaml",
+            build_yaml_override=getattr(self, "_build_yaml_override", None),
         )
 
     def _run_yaml_spec(self: Self, test_key: str, test_cancel: bool) -> None:

@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple, Type
+from typing import Callable, Dict, List, Optional, Tuple, Type
 
 
 class LineageService(ABC):
@@ -41,6 +41,31 @@ class LineageService(ABC):
     def count_runs_by_tags(
         self, tags: List[str], required_tags: Optional[List[str]] = None
     ) -> int:
+        pass
+
+    @abstractmethod
+    def filter_unrecorded(
+        self,
+        target_ids: set[str],
+        expected_counts: Optional[dict[str, int]] = None,
+        on_query_error: Optional[Callable[[Exception], None]] = None,
+    ) -> set[str]:
+        """Return the subset of ``target_ids`` not yet recorded in this backend.
+
+        Bounded to the given candidates (queried against the backing store's run
+        metadata), so a recorder skips re-emitting targets this backend already
+        has without scanning its whole history. Idempotent recording keeps
+        correctness regardless; this is purely an efficiency optimization, so on
+        any failure implementations should return ``target_ids`` unchanged
+        (re-recording the candidates, a harmless no-op) rather than raise.
+
+        ``expected_counts`` maps a target uuid to the number of runs a *fully*
+        recorded target should have, so a target that recorded only some of its
+        runs on a prior crashed scan is still reported unrecorded (and thus
+        re-recorded) rather than being masked by a single present run. ``None``
+        or a missing key falls back to the presence check (recorded once >=1 run
+        exists).
+        """
         pass
 
     @abstractmethod
@@ -74,6 +99,14 @@ class NoopLineageService(LineageService):
         self, tags: List[str], required_tags: Optional[List[str]] = None
     ) -> int:
         return 0
+
+    def filter_unrecorded(
+        self,
+        target_ids: set[str],
+        expected_counts: Optional[dict[str, int]] = None,
+        on_query_error: Optional[Callable[[Exception], None]] = None,
+    ) -> set[str]:
+        return target_ids
 
     def get_artifact_graph(
         self,

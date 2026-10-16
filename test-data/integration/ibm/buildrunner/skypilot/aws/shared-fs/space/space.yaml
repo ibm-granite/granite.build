@@ -1,0 +1,18 @@
+# Committed test Space for the gated shared-fs EFS E2E build (#378/#393).
+#
+# It carries only the aws-shared-fs environment (environments/skypilot/aws-shared-fs,
+# the shared_filesystem efs block) and chains base_uris to configurations/assets,
+# from which space://steps/byoc resolves to the PUBLISHED byoc step. This mirrors
+# how the published byoc aws test points its space_uri at configurations/spaces/local
+# (base_uris -> configurations/assets), so NO `make space` render is needed — the
+# fixture is committed and self-contained.
+name: shared-fs-efs-e2e
+secret_manager:
+  type: local
+  config: {}
+base_uris:
+  # Pull assetstores, environments, and (published) steps from configurations/assets/.
+  # Relative to this space.yaml's dir: eight `..` reach the repo root (the aws test
+  # tree sits at the same depth as the sibling filemount space), then
+  # configurations/assets — from which space://steps/byoc resolves.
+  - file://../../../../../../../../configurations/assets

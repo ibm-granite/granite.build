@@ -275,6 +275,7 @@ class Docker(Environment):
         the symlinks resolve inside the container.  Otherwise we mount the
         snapshot directory directly (non-HF-cache paths, tests, etc.).
         """
+        self._warn_non_default_mode(storeload_config, uri)
         assert assetstore is not None, "assetstore is required for hfstore loading"
         local_path = pull_asset_hfstore(uri, assetstore, storeload_config)
         relpath = assetstore.get_relpath(uri)
@@ -323,6 +324,8 @@ class Docker(Environment):
         uri: Optional[Any] = None,
         assetstore=None,
         run_metadata=None,
+        storepush_config=None,
+        output_config=None,
         **_kwargs,
     ) -> Any:
         """Upload a local file or directory to a HuggingFace repo.
@@ -340,6 +343,12 @@ class Docker(Environment):
             uri: Target HfURI string or object.
             assetstore: Hfstore instance whose secrets supply the HF token.
             run_metadata: EntityRunMetadata with build_id and target_name.
+            storepush_config: Environment-level push config. Its ``hf`` block is
+                forwarded so the resource group settings apply here as they do on
+                the step-based environments.
+            output_config: Per-output build.yaml config, forwarded so
+                ``store_push.config.hf`` (including ``use_resource_group``) is
+                honored.
 
         Returns:
             The resolved HfURI after a successful push.
@@ -348,6 +357,7 @@ class Docker(Environment):
             ValueError: If ``uri`` is absent or ``binding`` has no ``"path"``.
             RuntimeError: If the push itself fails.
         """
+        self._warn_non_default_mode(storepush_config, uri)
         if not isinstance(binding, dict) or "path" not in binding:
             raise ValueError(f"binding must be a dict with 'path', got: {binding}")
         host_path = self._resolve_host_path(binding["path"])
@@ -357,11 +367,72 @@ class Docker(Environment):
             uri=uri,
             assetstore=assetstore,
             run_metadata=run_metadata,
+            storepush_config=storepush_config,
+            output_config=output_config,
         )
 
     # ------------------------------------------------------------------
     # launch_docker
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _merge_env_section(env: Dict[str, str], section: Any) -> None:
+        """Merge a config env section into ``env``, unwrapping value dicts.
+
+        A section maps env name -> value, where a value may itself be a
+        ``{"value": ...}`` dict (the environment.yaml/step-config form).
+
+        :param env: the env dict to update in place.
+        :param section: the env mapping; ignored if not a dict.
+        """
+        if not isinstance(section, dict):
+            return
+        for k, v in section.items():
+            if isinstance(v, dict) and "value" in v:
+                env[k] = v["value"]
+            else:
+                env[k] = str(v)
+
+    def _launch_env_layers(self: Self, **kwargs: Any) -> List[Dict[str, str]]:
+        """Docker env layers for the shared launch-env composer.
+
+        Overrides :meth:`Environment._launch_env_layers` (Docker injects no
+        declared space secrets, so it leaves :meth:`_declared_secret_mappings`
+        at its empty default). Ordered lowest->highest above the empty secret
+        layer and below the standard set: environment.yaml defaults ``env`` <
+        ``config.docker.env`` < launcher ``env`` < the built-in
+        ``LLMB_DOCKER_*`` vars.
+
+        The two config env sections are pre-merged with :meth:`_merge_env_section`
+        (which unwraps the ``{"value": ...}`` form and ignores a non-dict
+        section) into a single lowest layer.
+
+        The built-in launcher vars are standardized on the ``GB_`` prefix
+        (``GB_DOCKER_*``): the composer's unconditional aliasing mirrors each
+        ``LLMB_DOCKER_*`` onto a ``GB_DOCKER_*`` twin, keeping the legacy
+        ``LLMB_DOCKER_*`` names for backwards compatibility.
+
+        :param kwargs: the launch context; reads ``docker_config``
+            (``config.docker`` env), ``launcher_config`` (its ``env``),
+            ``launch_id`` (LLMB_DOCKER_LAUNCH_ID), and ``container_name``
+            (LLMB_DOCKER_CONTAINER_NAME).
+        :returns: the ordered env layers to compose.
+        """
+        config_env: Dict[str, str] = {}
+        self._merge_env_section(config_env, (self._get_defaults() or {}).get("env"))
+        self._merge_env_section(
+            config_env, (kwargs.get("docker_config") or {}).get("env")
+        )
+        launcher_env = (kwargs.get("launcher_config") or {}).get("env")
+        builtins: Dict[str, str] = {
+            "LLMB_DOCKER_LAUNCH_ID": kwargs.get("launch_id", ""),
+            "LLMB_DOCKER_CONTAINER_NAME": kwargs.get("container_name", ""),
+        }
+        return [
+            config_env,
+            launcher_env if isinstance(launcher_env, dict) else {},
+            builtins,
+        ]
 
     async def launch_docker(
         self: Self,
@@ -411,32 +482,15 @@ class Docker(Environment):
             step_name = step.get("name", run_metadata.get("target_name", "gb"))
             container_name = f"gb-{step_name}-{launch_id[:8]}"
 
-            # Build environment variables
-            env_vars: Dict[str, str] = {}
-            # 1. Defaults from environment.yaml
-            defaults = self._get_defaults()
-            defaults_env = defaults.get("env", {})
-            if isinstance(defaults_env, dict):
-                for k, v in defaults_env.items():
-                    if isinstance(v, dict) and "value" in v:
-                        env_vars[k] = v["value"]
-                    else:
-                        env_vars[k] = str(v)
-            # 2. docker_config env (from step config)
-            docker_env = docker_config.get("env", {})
-            if isinstance(docker_env, dict):
-                for k, v in docker_env.items():
-                    if isinstance(v, dict) and "value" in v:
-                        env_vars[k] = v["value"]
-                    else:
-                        env_vars[k] = str(v)
-            # 3. launcher_config env
-            launcher_env = launcher_config.get("env", {})
-            if isinstance(launcher_env, dict):
-                env_vars.update(launcher_env)
-            # 4. Built-in env vars
-            env_vars["LLMB_DOCKER_LAUNCH_ID"] = launch_id
-            env_vars["LLMB_DOCKER_CONTAINER_NAME"] = container_name
+            # Build environment variables (full env incl. authoritative
+            # standard vars like GB_BUILD_ID; see Docker.get_launch_env_vars).
+            env_vars = self.get_launch_env_vars(
+                run_metadata=run_metadata,
+                launcher_config=launcher_config,
+                docker_config=docker_config,
+                launch_id=launch_id,
+                container_name=container_name,
+            )
 
             # Build bind mount volumes
             volumes = {}
@@ -714,6 +768,7 @@ class Docker(Environment):
         self: Self,
         binding: Any,
         uri: Optional[Any] = None,
+        storepush_config=None,
         **kwargs,
     ) -> Any:
         """Push an artifact from a Docker container workspace to a file URI.
@@ -723,6 +778,7 @@ class Docker(Environment):
         translates the container path to the host path and copies to the
         output URI location.
         """
+        self._warn_non_default_mode(storepush_config, uri)
         if uri is None:
             return None
 

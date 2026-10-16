@@ -29,7 +29,7 @@ from typing import Any, Optional, Self, Tuple
 from git import Repo
 from tqdm import tqdm
 
-from gbcommon.uri.git import GitURI
+from gbcommon.uri.git import GitURI, get_uri_parts
 from gbserver.build.space import Space
 from gbserver.buildrunner.buildlogger import get_message_logger
 from gbserver.buildrunner.validation import BuildValidation
@@ -46,7 +46,6 @@ from gbserver.types.constants import (
     MAX_PR_CREATION_TRIES,
     WORKSPACE_REPOS_DIR,
 )
-from gbserver.types.prwatcherconfig import get_uri_parts
 from gbserver.types.status import Status
 from gbserver.utils.archive import extract_archive
 from gbserver.utils.filesystem import create_temp_subdir

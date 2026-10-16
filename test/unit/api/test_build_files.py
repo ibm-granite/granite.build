@@ -26,6 +26,7 @@ What we exercise here is the request/response surface: path-traversal
 rejection, build-root resolution, size caps, and auth.
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1033,19 +1034,48 @@ class TestDownloadFile:
         assert r.status_code == 400
 
     def test_download_too_large_returns_413(self, client):
-        # 2 GiB > default 1 GiB cap
+        # Downloads are uncapped by default; only 413 when an operator has set
+        # GBSERVER_BUILD_FILES_DOWNLOAD_MAX_BYTES. Patch a finite 1 GiB cap and
+        # stat a 2 GiB file to exercise the over-cap path.
         tunnel = self._tunnel_with_file(size=2 * 1024**3, body=b"x" * 100)
         lb, tun, auth, env = _patches(tunnel)
-        with lb, tun, auth, env:
+        with (
+            lb,
+            tun,
+            auth,
+            env,
+            patch.object(
+                build_files_mod, "BUILD_FILES_DOWNLOAD_MAX_BYTES", 1 * 1024**3
+            ),
+        ):
             r = client.get(
                 "/api/v1/builds/B1/file/download",
                 params={"path": "big.bin"},
             )
         assert r.status_code == 413
 
+    def test_download_uncapped_by_default(self, client):
+        # With no cap configured (the default), even a 2 GiB file streams
+        # instead of 413ing. The stream is still bounded by the declared size.
+        tunnel = self._tunnel_with_file(size=2 * 1024**3, body=b"x" * 100)
+        lb, tun, auth, env = _patches(tunnel)
+        with (
+            lb,
+            tun,
+            auth,
+            env,
+            patch.object(build_files_mod, "BUILD_FILES_DOWNLOAD_MAX_BYTES", None),
+        ):
+            r = client.get(
+                "/api/v1/builds/B1/file/download",
+                params={"path": "big.bin"},
+            )
+        assert r.status_code == 200, r.text
+        assert r.headers["content-length"] == str(2 * 1024**3)
+
     def test_download_caps_at_declared_size(self, client):
         # Live-log race: the file grew from 100 bytes (at stat time) to 200
-        # bytes by the time we started reading. _stream_sftp_file must cap
+        # bytes by the time we started reading. stream_sftp_file must cap
         # the streamed bytes at `size` so the response body exactly matches
         # the declared Content-Length.
         tunnel = MagicMock()
@@ -1169,7 +1199,7 @@ class TestDownloadFile:
         sftp.exit = MagicMock(return_value=None)
         tunnel.start_sftp = AsyncMock(return_value=sftp)
 
-        gen = build_files_mod._stream_sftp_file(tunnel, "/ws/log.txt", 1024)
+        gen = build_files_mod.stream_sftp_file(tunnel, "/ws/log.txt", 1024)
         with pytest.raises(OSError):
             await gen.__anext__()
         sftp.exit.assert_called_once()
@@ -1252,11 +1282,21 @@ class TestDownloadPeek:
         assert any("sed -n " in c and "5,7p" in c for c in cmds)
 
     def test_peek_skips_size_cap(self, client):
-        # 50 GiB file — way over BUILD_FILES_DOWNLOAD_MAX_BYTES (1 GiB).
-        # Peek mode should still succeed because the cap doesn't apply.
+        # Patch a finite 1 GiB cap so this actually exercises skipping it: with
+        # the default (no cap) the request would succeed either way. The 50 GiB
+        # file is way over the cap, but peek mode returns before the size check
+        # — tailing the last 100 lines of a huge log is the use case.
         tunnel = _tunnel_for_peek("tail content\n", size=50 * 1024**3)
         lb, tun, auth, env = _patches(tunnel)
-        with lb, tun, auth, env:
+        with (
+            lb,
+            tun,
+            auth,
+            env,
+            patch.object(
+                build_files_mod, "BUILD_FILES_DOWNLOAD_MAX_BYTES", 1 * 1024**3
+            ),
+        ):
             r = client.get(
                 "/api/v1/builds/B1/file/download",
                 params={"path": "huge.log", "tail": 100},
@@ -1522,6 +1562,73 @@ class TestOpenLsfTunnelFailover:
         assert opened_hosts == ["node-a", "node-b"]
 
     @pytest.mark.asyncio
+    async def test_slow_but_alive_node_succeeds(self):
+        """The real bluevela mode: open() is fast (connect+auth ~1s) but the first
+        command (readlink) is slow due to server-side session setup. As long as it
+        finishes under command_timeout, the tunnel must open successfully — this is
+        the case whose failure got a running build cancelled."""
+        from gbserver.api import lsf_tunnel
+
+        resolve, fetch, write, unlink = self._patch_resolvers(["node-a"])
+
+        def make_tunnel(**kwargs):
+            t = MagicMock()
+            t.open = AsyncMock(return_value=None)  # connect+auth: fast
+
+            async def _slow_readlink(cmd, raise_on_error=True):
+                # Simulate the ~28s session-setup latency, compressed for the test.
+                await asyncio.sleep(0.05)
+                return (0, "/ws\n", "")
+
+            t.run_remote = AsyncMock(side_effect=_slow_readlink)
+            t.close = AsyncMock()
+            return t
+
+        with (
+            resolve,
+            fetch,
+            write,
+            unlink,
+            patch.object(lsf_tunnel, "SshTunnel", side_effect=make_tunnel),
+        ):
+            async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x") as (
+                tunnel,
+                cfg,
+            ):
+                assert cfg.workspace_remote_dir == "/ws"
+                assert tunnel is not None
+
+    @pytest.mark.asyncio
+    async def test_readlink_timeout_returns_503_not_500(self):
+        """A command_timeout on the post-open readlink canonicalize (slow session
+        setup) must surface as a clean 503, not an opaque 500."""
+        from gbserver.api import lsf_tunnel
+
+        resolve, fetch, write, unlink = self._patch_resolvers(["node-a"])
+
+        def make_tunnel(**kwargs):
+            t = MagicMock()
+            t.open = AsyncMock(return_value=None)
+            # asyncssh raises TimeoutError (subclasses builtin) when conn.run
+            # exceeds command_timeout.
+            t.run_remote = AsyncMock(side_effect=TimeoutError("command timed out"))
+            t.close = AsyncMock()
+            return t
+
+        with (
+            resolve,
+            fetch,
+            write,
+            unlink,
+            patch.object(lsf_tunnel, "SshTunnel", side_effect=make_tunnel),
+        ):
+            with pytest.raises(HTTPException) as ei:
+                async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x"):
+                    pass
+
+        assert ei.value.status_code == 503
+
+    @pytest.mark.asyncio
     async def test_all_nodes_fail_returns_503_with_list(self):
         from gbserver.api import lsf_tunnel
         from gbserver.utils.ssh_tunnel import SshTunnelError
@@ -1552,3 +1659,95 @@ class TestOpenLsfTunnelFailover:
         assert "node-a" in detail
         assert "node-b" in detail
         assert "node-c" in detail
+
+    @pytest.mark.asyncio
+    async def test_tunnel_constructed_with_banner_login_bounds(self):
+        """The file-API tunnel carries the connect/login/keepalive bounds so a
+        slow bluevela login node fails over instead of hanging open()."""
+        from gbserver.api import lsf_tunnel
+
+        resolve, fetch, write, unlink = self._patch_resolvers(["node-a"])
+        seen: dict = {}
+
+        def make_tunnel(**kwargs):
+            seen.update(kwargs)
+            t = MagicMock()
+
+            async def _run_remote(cmd, raise_on_error=True):
+                return (0, "/ws\n", "")
+
+            t.open = AsyncMock(return_value=None)
+            t.run_remote = AsyncMock(side_effect=_run_remote)
+            t.close = AsyncMock()
+            return t
+
+        with (
+            resolve,
+            fetch,
+            write,
+            unlink,
+            patch.object(lsf_tunnel, "SshTunnel", side_effect=make_tunnel),
+        ):
+            async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x"):
+                pass
+
+        assert seen["connect_timeout"] == lsf_tunnel.GBSERVER_LSF_SSH_CONNECT_TIMEOUT_S
+        assert seen["login_timeout"] == lsf_tunnel.GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S
+        assert (
+            seen["keepalive_interval"]
+            == lsf_tunnel.GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S
+        )
+        assert (
+            seen["keepalive_count_max"]
+            == lsf_tunnel.GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX
+        )
+        # File-API commands use the shorter file-API command timeout (tolerate the
+        # same session-setup slowness, but with a shorter max than the runner's),
+        # NOT the runner's GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S.
+        assert (
+            seen["command_timeout"]
+            == lsf_tunnel.GBSERVER_LSF_FILE_API_COMMAND_TIMEOUT_S
+        )
+
+    @pytest.mark.asyncio
+    async def test_overall_budget_short_circuits_remaining_nodes(self):
+        """A node that hangs open() past the total file-API budget must not let
+        the loop grind through every remaining node — it returns 503 promptly."""
+        from gbserver.api import lsf_tunnel
+
+        resolve, fetch, write, unlink = self._patch_resolvers(
+            ["node-a", "node-b", "node-c"]
+        )
+        shuffle_noop = patch("random.shuffle", side_effect=lambda lst: None)
+
+        tried = []
+
+        def make_tunnel(**kwargs):
+            tried.append(kwargs["host"])
+            t = MagicMock()
+
+            async def _hang():
+                await asyncio.sleep(3600)  # longer than the (patched tiny) budget
+
+            t.open = AsyncMock(side_effect=_hang)
+            t.close = AsyncMock()
+            return t
+
+        with (
+            resolve,
+            fetch,
+            write,
+            unlink,
+            shuffle_noop,
+            # Tiny budget so the first node's hang exhausts it immediately.
+            patch.object(lsf_tunnel, "GBSERVER_LSF_FILE_API_SSH_BUDGET_S", 0.05),
+            patch.object(lsf_tunnel, "SshTunnel", side_effect=make_tunnel),
+        ):
+            with pytest.raises(HTTPException) as ei:
+                async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x"):
+                    pass
+
+        assert ei.value.status_code == 503
+        # Budget exhausted on the first node; the loop broke instead of trying
+        # node-b and node-c (which would each cost another wait_for).
+        assert tried == ["node-a"]

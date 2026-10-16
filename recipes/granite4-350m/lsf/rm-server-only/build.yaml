@@ -1,0 +1,27 @@
+######
+# DIAGNOSTIC: single-target rm-server build (throwaway, not part of the recipe).
+# Purpose: confirm a SOLO enroot import of open-instruct-3:0.1.0-noconda squashes
+# cleanly (no concurrent-import race), producing a valid .sqsh and a served
+# rm_server_url. If this works, the shared image is cached for the full recipe.
+######
+granite.build:
+  name: rm-server-only
+  targets:
+    rm-server:
+      environment_uri: space://environments/skypilot/lsf
+      outputs:
+        rm_server_url:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/rm-server
+          config:
+            rm_server_config:
+              model_path: "$${RM_SERVER_MODEL}"
+              idle_timeout: "$${RM_IDLE_TIMEOUT}"
+            launcher_config:
+              resources:
+                accelerators: "$${RM_ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${RL_QUEUE}"
+                memory: "$${RM_MEMORY}"

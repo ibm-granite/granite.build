@@ -16,9 +16,13 @@
 
 """APIRouter for build event subscription."""
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 
+from gbserver.api.builds import builds_api
+from gbserver.api.utils import has_space_write_access
+from gbserver.messaging.rabbitmq_admin import RabbitMQAdminError
 from gbserver.messaging.subscription_service import provision_subscription
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_build import StoredBuild
@@ -26,7 +30,7 @@ from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-event_subscribe_router = APIRouter(prefix="/builds", tags=["events"])
+event_subscribe_router = APIRouter(tags=["events"])
 
 
 # ── Response Model ────────────────────────────────────────────────────────
@@ -36,11 +40,14 @@ class SubscribeResponse(BaseModel):
     delivery_type: str
     host: str
     port: int
-    username: str
-    password: str
-    exchange: str
-    routing_key: str
-    queue: str
+    tls: bool = False
+    username: str | None = None
+    password: str | None = None
+    exchange: str | None = None
+    routing_key: str | None = None
+    queue: str | None = None
+    url: str | None = None
+    subject: str | None = None
     expires_at: int
 
 
@@ -55,8 +62,9 @@ class SubscribeResponse(BaseModel):
 async def subscribe_build_events(build_id: str, request: Request) -> SubscribeResponse:
     """Subscribe to real-time build events.
 
-    Provisions scoped, time-limited credentials that allow the
-    caller to consume events for the specified build only.
+    Returns connection info for consuming events for the specified build.
+    In RabbitMQ mode: provisions scoped, time-limited credentials.
+    In standalone/NATS mode: returns URL and subject (no auth; single-tenant).
     """
     # 1. Authenticate
     user = getattr(request.state, "data", {}).get("user")
@@ -76,6 +84,59 @@ async def subscribe_build_events(build_id: str, request: Request) -> SubscribeRe
         )
     assert isinstance(build, StoredBuild)
 
-    # 3. Provision credentials via messaging layer
-    result = await provision_subscription(build_id)
+    # 3. Authorize: user must be build owner, space admin, or super admin
+    has_access, user_id = has_space_write_access(
+        request, username_on_target=build.username, space_name=build.space_name
+    )
+    if not has_access:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"User {user_id} does not have access to build {build_id}.",
+        )
+
+    # 4. Reject subscription to finished builds (no events will be published)
+    if build.status.is_finished():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Build {build_id} has already finished (status: {build.status}).",
+        )
+
+    # 5. Provision credentials via messaging layer
+    try:
+        result = await provision_subscription(build_id)
+    except RabbitMQAdminError as exc:
+        logger.error(
+            "RabbitMQ admin API error while provisioning subscription "
+            "for build %s: %s",
+            build_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Event subscription service unavailable.",
+        ) from exc
+    except httpx.ConnectError as exc:
+        logger.error(
+            "Cannot reach RabbitMQ management API for build %s: %s",
+            build_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Event subscription service unreachable.",
+        ) from exc
+    except httpx.TimeoutException as exc:
+        logger.error(
+            "Timeout contacting RabbitMQ management API for build %s: %s",
+            build_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Event subscription service timed out.",
+        ) from exc
     return SubscribeResponse(**result)
+
+
+# Register on the builds sub-app so the endpoint appears in /api/v1/builds/docs
+builds_api.include_router(event_subscribe_router)

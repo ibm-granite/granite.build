@@ -34,18 +34,21 @@ environment_configs:
               - field_name: binding # describes how to access element in this env, must be path in k8s
                 field_value_template: "{% raw %}{ \"path\": \"{{ fields.data.gb_new_artifact.path }}\" }{% endraw %}"
                 is_json: True
+          # Workload-status / validation-data markers are standardized on the
+          # GB_ prefix; the legacy LLMB_ prefix is still accepted for backwards
+          # compatibility (each regex matches both).
           - event_type: WORKLOAD_STATUS_EVENT
-            line_regex: "^LLMB_EVENT_WORKLOAD_STATUS:.+"
+            line_regex: "^(?:GB_|LLMB_)EVENT_WORKLOAD_STATUS:.+"
             is_json: False
             event_fields:
               - field_name: status
-                field_regex: "(?<=LLMB_EVENT_WORKLOAD_STATUS:).+"
+                field_regex: "(?:(?<=GB_EVENT_WORKLOAD_STATUS:)|(?<=LLMB_EVENT_WORKLOAD_STATUS:)).+"
           - event_type: VALIDATION_DATA_EVENT
-            line_regex: "^LLMB_EVENT_VALIDATION_DATA:.+"
+            line_regex: "^(?:GB_|LLMB_)EVENT_VALIDATION_DATA:.+"
             is_json: False
             event_fields:
               - field_name: data
-                field_regex: "(?<=LLMB_EVENT_VALIDATION_DATA:).+"
+                field_regex: "(?:(?<=GB_EVENT_VALIDATION_DATA:)|(?<=LLMB_EVENT_VALIDATION_DATA:)).+"
   Lsf:
     launchers:
       '{{ step.name | default(run_metadata.target_name) }}':
@@ -54,18 +57,25 @@ environment_configs:
         - bsub_monitor
     monitors:
       bsub_monitor:
-        type: bsub_monitor
+        # References the shared LSF monitor library (builtins/monitors/lsf) for the
+        # standard artifact + step-metadata convention, and appends the default
+        # workload-status / validation-data events every gbstep-based LSF step needs.
+        ref: space://monitors/lsf
         config:
-          event_configs:
+          # Workload-status / validation-data markers are standardized on the
+          # GB_ prefix; the legacy LLMB_ prefix is still accepted for backwards
+          # compatibility (each regex matches both). Appended to the referenced
+          # lsf monitor's events via the reserved extra_event_configs key.
+          extra_event_configs:
           - event_type: WORKLOAD_STATUS_EVENT
-            line_regex: "^LLMB_EVENT_WORKLOAD_STATUS:.+"
+            line_regex: "^(?:GB_|LLMB_)EVENT_WORKLOAD_STATUS:.+"
             is_json: False
             event_fields:
               - field_name: status
-                field_regex: "(?<=LLMB_EVENT_WORKLOAD_STATUS:).+"
+                field_regex: "(?:(?<=GB_EVENT_WORKLOAD_STATUS:)|(?<=LLMB_EVENT_WORKLOAD_STATUS:)).+"
           - event_type: VALIDATION_DATA_EVENT
-            line_regex: "^LLMB_EVENT_VALIDATION_DATA:.+"
+            line_regex: "^(?:GB_|LLMB_)EVENT_VALIDATION_DATA:.+"
             is_json: False
             event_fields:
               - field_name: data
-                field_regex: "(?<=LLMB_EVENT_VALIDATION_DATA:).+"
+                field_regex: "(?:(?<=GB_EVENT_VALIDATION_DATA:)|(?<=LLMB_EVENT_VALIDATION_DATA:)).+"

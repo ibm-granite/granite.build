@@ -1,0 +1,20 @@
+# YAML spec for the CONTAINERIZED shared-fs EFS build test (test_shared_fs.py).
+# Same hf:// input -> hfpull -> command -> hf:// output flow as ../bare/buildtest.yaml,
+# but the command step sets an image (image_id: docker:<image>), so the command
+# runs INSIDE the container against the in-container NFS mount. Reaching SUCCESS
+# proves the hfpull result on EFS is readable from inside the container on a
+# separate instance.
+targets:
+  - efs-hfpull-command
+target_expectations:
+  - target_name: efs-hfpull-command
+    # hfpull (hidden, for the hf:// input) + command + hfpush (for the hf:// output).
+    step_count: 3
+    input_artifact_count: 1 # hf input
+    output_artifact_count: 1 # hf output
+    jobstats_count: 1
+space_uri: ../space
+tests:
+  - runner
+simulate_step_failure: false
+timeout_minutes: 40

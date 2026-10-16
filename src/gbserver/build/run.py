@@ -32,10 +32,15 @@ from gbserver.types.buildevent import (
     BuildEventType,
     EntityRunMetadata,
 )
-from gbserver.types.constants import truncate
+from gbserver.types.constants import GBSERVER_LOG_RECORD_MAX_CHARS
 from gbserver.types.status import STATUS_TO_ICON, Status
 from gbserver.utils.logger import get_logger
-from gbserver.utils.unwrap_errors import get_readable_error_message
+from gbserver.utils.unwrap_errors import (
+    escape_for_one_record,
+    format_failure_reason,
+    get_readable_error_message,
+    with_remote_stacktrace,
+)
 from gbserver.utils.utils import get_uuid
 
 logger = get_logger(__name__)
@@ -53,17 +58,44 @@ class RunFailed(RuntimeError):
         if exceptions is None:
             super().__init__(*args)
         else:
-            aggregated_message = "Exception Details:"
-            aggregated_message += "\n".join(
-                [
-                    line
-                    for e in exceptions
-                    for line in traceback.format_exception(type(e), e, e.__traceback__)
-                ]
+            # One-line reasons, not full per-exception tracebacks: embedding them
+            # here got the stack re-wrapped and re-emitted, ever larger, at every
+            # layer above. Full stack stays at DEBUG and in the status <details>.
+            aggregated_message = "Exception Details: " + "; ".join(
+                format_failure_reason(e) for e in exceptions
             )
             super().__init__(aggregated_message)
         self.status_updated = status_updated
         self.exceptions = exceptions
+
+
+# Grep-able marker; distinguishes this deliberate trace from a crash dump.
+_TRACE_MARKER = "FAILURE TRACEBACK"
+
+
+def _log_failure_trace(err_stack: Optional[str], entity_id: str) -> None:
+    """Emit the failure traceback as ONE log record at ERROR.
+
+    Not ``exc_info=True``: the log pipeline ingests one record per LINE (gbcli's
+    ``output_format_plain``), so a multi-line trace is split into N records that get
+    reordered and interleaved — which is why traces looked absent in the runner log.
+    Escaping newlines keeps the trace in one record, in order, and reverses trivially.
+
+    Called only from the innermost reporting layer (see ``_already_reported``), so a
+    failure logs its trace exactly once.
+    """
+    escaped = escape_for_one_record(err_stack or "", GBSERVER_LOG_RECORD_MAX_CHARS)
+    logger.error("%s [%s]: %s", _TRACE_MARKER, entity_id, escaped)
+
+
+def _already_reported(exceptions: List[BaseException]) -> bool:
+    """True if an inner Run.run already emitted the detailed failure body (it
+    re-raised a RunFailed with status_updated=True), so outer layers can stay
+    concise instead of re-emitting the full, re-wrapped traceback."""
+    return any(
+        isinstance(e, RunFailed) and getattr(e, "status_updated", False)
+        for e in exceptions
+    )
 
 
 class Run(ABC):
@@ -141,22 +173,47 @@ class Run(ABC):
             ]
             if failures:
                 primary = failures[0]
-                err_stack = "".join(
-                    traceback.format_exception(
-                        type(primary), primary, primary.__traceback__
+                if primary.__traceback__ is not None:
+                    err_stack = "".join(
+                        traceback.format_exception(
+                            type(primary), primary, primary.__traceback__
+                        )
                     )
-                )
-                body = get_readable_error_message(e=primary, err_stack=err_stack)  # type: ignore[arg-type]
-                self.update_status(Status.FAILED, extra_msg=body)
+                else:
+                    # No tb on the primary: format_exception would degrade to a
+                    # single type+message line. Use the live handler trace instead.
+                    err_stack = traceback.format_exc()
+                # A failure from a remote API server carries its frames on the
+                # exception, not in err_stack — fold them in here so BOTH the
+                # <details> body and the single-record log below get them.
+                err_stack = with_remote_stacktrace(primary, err_stack)
+                if _already_reported(failures):
+                    # Inner layer already emitted the full body + <details>; stay
+                    # concise here (full stack at DEBUG) so the re-wrapped
+                    # traceback isn't re-dumped at every layer above.
+                    self.update_status(
+                        Status.FAILED, extra_msg=format_failure_reason(primary)
+                    )
+                    logger.debug("%s", err_stack)
+                else:
+                    body = get_readable_error_message(e=primary, err_stack=err_stack)  # type: ignore[arg-type]
+                    self.update_status(Status.FAILED, extra_msg=body)
+                    # Trace once, as one record (survives log ingestion).
+                    _log_failure_trace(err_stack, str(self.id))
                 raise RunFailed(status_updated=True, exceptions=failures) from eg
             else:
                 self.update_status(Status.CANCELLED)
                 raise asyncio.CancelledError() from eg
         except Exception as e:
-            err_stack = traceback.format_exc()
-            body = get_readable_error_message(e=e, err_stack=err_stack)
-            # logger.error("%s", body) # TODO: is this necessary?
-            self.update_status(Status.FAILED, extra_msg=body)
+            err_stack = with_remote_stacktrace(e, traceback.format_exc())
+            if _already_reported([e]):
+                # Inner layer already reported the detailed body; stay concise.
+                self.update_status(Status.FAILED, extra_msg=format_failure_reason(e))
+                logger.debug("%s", err_stack)
+            else:
+                body = get_readable_error_message(e=e, err_stack=err_stack)
+                self.update_status(Status.FAILED, extra_msg=body)
+                _log_failure_trace(err_stack, str(self.id))
             raise RunFailed(status_updated=True) from e
         finally:
             # == Build Cancellation & Cleanup ==
@@ -288,7 +345,10 @@ Build ID    : {build_id}
         logger.debug("Run.update_status %s start", self.id)
         self.status = status
         msg = self.create_message(extra_msg=extra_msg)
-        logger.info("msg: %s", truncate(msg))
+        # ONE record: msg is multi-line markdown, and the pipeline splits on newlines.
+        logger.info(
+            "msg: %s", escape_for_one_record(msg, GBSERVER_LOG_RECORD_MAX_CHARS)
+        )
         event = BuildEvent(
             run_metadata=self.get_runmetadata(),
             type=BuildEventType.STATUS_EVENT,

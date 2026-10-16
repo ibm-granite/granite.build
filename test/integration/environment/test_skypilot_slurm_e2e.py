@@ -28,19 +28,75 @@ pytestmark = [
 
 
 def _slurm_cluster_reachable() -> bool:
-    """Check if the Docker SLURM cluster is reachable via SSH."""
+    """Check if the Docker SLURM cluster is reachable via SSH.
+
+    Connects directly with the key/port that ``setup-slurm.sh`` provisions
+    rather than via ``~/.slurm/config`` — that file is no longer written by
+    setup (the slurm SSH config is inlined in the fixture's environment.yaml
+    and materialized by gbserver at launch time), so it would not exist at the
+    test-collection time when this skip gate runs.
+    """
+    key = os.path.expanduser("~/.ssh/slurm_docker_key")
+    port = os.environ.get("SLURM_SSH_PORT", "2222")
+    host = os.environ.get("SLURM_SSH_HOST", "127.0.0.1")
     try:
-        # ssh does not expand ~ in -F; expand it here so subprocess gets an absolute path.
-        ssh_config = os.path.expanduser("~/.slurm/config")
         result = subprocess.run(
             [
                 "ssh",
-                "-F",
-                ssh_config,
+                "-i",
+                key,
+                "-p",
+                port,
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
                 "-o",
                 "ConnectTimeout=3",
-                "slurm-docker",
+                f"root@{host}",
                 "true",
+            ],
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
+def _slurm_cluster_supports_containers() -> bool:
+    """Check if the SLURM cluster can run container images (Pyxis SPANK plugin).
+
+    Image-based steps set ``image_id: docker:<image>``, which on SLURM requires
+    the Pyxis SPANK plugin; without it the launch fails with ``NotSupportedError``
+    (see docs/environments/skypilot-slurm.md). The local ``make slurm-setup``
+    fixture (``giovtorres/slurm-docker-cluster``) has no Pyxis, so image tests
+    must skip there and only run on a Pyxis-enabled cluster.
+
+    Probe: SSH with the same key/port/host as :func:`_slurm_cluster_reachable`
+    and inspect ``srun --help`` — Pyxis registers a ``--container-image`` option,
+    so its presence indicates container support. Returns ``False`` on any SSH
+    failure or unreachable cluster (which also covers the "not reachable" case).
+    """
+    key = os.path.expanduser("~/.ssh/slurm_docker_key")
+    port = os.environ.get("SLURM_SSH_PORT", "2222")
+    host = os.environ.get("SLURM_SSH_HOST", "127.0.0.1")
+    try:
+        result = subprocess.run(
+            [
+                "ssh",
+                "-i",
+                key,
+                "-p",
+                port,
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "ConnectTimeout=3",
+                f"root@{host}",
+                "srun --help 2>&1 | grep -q -- --container-image",
             ],
             capture_output=True,
             timeout=10,
@@ -69,6 +125,24 @@ class TestSlurmBuildLifecycle:
             config={
                 "default_cloud": "slurm",
                 "idle_minutes_to_autostop": 0,
+                # Inline the slurm-docker SSH config so gbserver materializes it
+                # into ~/.slurm/config at launch time (setup-slurm.sh no longer
+                # writes that file). Without this, SkyPilot reports
+                # "Cluster slurm-docker not found ... Available clusters: []".
+                # Host/Port mirror the SLURM_SSH_* vars used by the skip gate.
+                "cluster_ssh_configs": {
+                    "slurm": [
+                        {
+                            "Host": "slurm-docker",
+                            "HostName": os.environ.get("SLURM_SSH_HOST", "127.0.0.1"),
+                            "User": "root",
+                            "Port": os.environ.get("SLURM_SSH_PORT", "2222"),
+                            "IdentityFile": "~/.ssh/slurm_docker_key",
+                            "StrictHostKeyChecking": "no",
+                            "UserKnownHostsFile": "/dev/null",
+                        }
+                    ]
+                },
             },
         )
         return Skypilot(event_q=event_q, environment_config=config)

@@ -1,0 +1,92 @@
+# SLURM demo (via SkyPilot)
+
+Runs TRL fine-tuning and unitxt evaluation on a local Docker-based SLURM cluster
+via SkyPilot, with artifact push to a local S3-compatible store (SeaweedFS).
+
+## Prerequisites
+
+- Docker (or Podman) with a running daemon
+- Python 3.11+ (3.12 or 3.13 recommended)
+- No cloud credentials needed — everything runs locally
+
+## Setup (from scratch)
+
+```bash
+# 1. Create virtual environment with SkyPilot support
+make g4os-skypilot-venv PYTHON=python3.13
+source .venv/bin/activate
+
+# 2. Start the local S3-compatible artifact store (SeaweedFS)
+make s3-setup
+
+# 3. Start the Docker SLURM cluster (slurmctld + 2 compute nodes)
+#    This also connects the S3 store to the SLURM network
+make slurm-setup
+
+# 4. Verify SkyPilot sees the SLURM cluster
+sky check slurm
+```
+
+See [SkyPilot SLURM setup](../environments/setup/skypilot-slurm-setup.md) for details on the local
+Docker SLURM cluster and S3 store, and [SkyPilot on SLURM](../environments/skypilot-slurm.md) for the
+environment configuration.
+
+## Run
+
+```bash
+# Run both TRL fine-tuning and unitxt evaluation on SLURM
+bash scripts/demo-slurm.sh
+
+# TRL fine-tuning only
+bash scripts/demo-slurm.sh --trl-only
+
+# unitxt evaluation only
+bash scripts/demo-slurm.sh --unitxt-only
+```
+
+The demo submits builds that run on the SLURM cluster via SkyPilot. When
+training completes, an `s3push` step automatically uploads the checkpoint to
+the local S3 store. First run takes 5-10 minutes (SkyPilot installs dependencies on the
+SLURM nodes).
+
+## Verify artifacts in S3
+
+```bash
+export AWS_ACCESS_KEY_ID=gbadmin
+export AWS_SECRET_ACCESS_KEY=gbadmin
+
+# Fine-tuning checkpoint
+aws --endpoint-url "http://localhost:${GB_S3_PORT:-9000}" s3 ls s3://gb-checkpoints/outputs/trl-finetune/ --recursive
+
+# Evaluation results
+aws --endpoint-url "http://localhost:${GB_S3_PORT:-9000}" s3 ls s3://gb-checkpoints/outputs/unitxt-eval/ --recursive
+```
+
+## Teardown
+
+```bash
+make slurm-teardown
+make s3-teardown
+```
+
+## How it works
+
+```
+build.yaml ──→ gbserver ──→ SkyPilot ──→ SLURM (sbatch)
+                                              │
+                                    TRL trains on compute node
+                                              │
+                                    Artifact signal emitted
+                                              │
+                              pushasset_cosstore auto-queues s3push
+                                              │
+                                    s3push uploads to local S3
+                                              │
+                                    Build completes SUCCESS
+```
+
+## See also
+
+- [Demos overview](README.md)
+- [Standalone Docker demo](docker-demo.md) — the same workload without a cluster
+- [SkyPilot SLURM setup](../environments/setup/skypilot-slurm-setup.md) · [SkyPilot on SLURM](../environments/skypilot-slurm.md)

@@ -1,0 +1,46 @@
+# YAML-driven spec for
+# test/integration/ibm/buildrunner/skypilot/slurm_bluevela/test_custom_code.py.
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+#
+# Single custom_code_skypilot (BYOC) target on BlueVela SLURM (Skypilot): the
+# step clones a private GHE repo, materializes a hash-keyed conda/micromamba env,
+# runs the workload, and captures a directory output pushed to hf://.
+# MANUAL-ONLY: skipped unless GBTEST_ENABLE_MANUAL_TESTS=1 (see the test docstring).
+targets:
+  - custom-code-run
+target_expectations:
+  - target_name: custom-code-run
+    # hfpull (byoc_input) + custom_code_skypilot + hfpush. Drop the hf:// input to
+    # go back to 2 (and input_artifact_count to 0); an env:// pair adds artifacts
+    # but no steps.
+    step_count: 3
+    input_artifact_count: 1
+    output_artifact_count: 1 # the hf:// fileset output
+    jobstats_count: 1
+    # Assert the step recorded the resolved commit SHA as lineage metadata. The
+    # step emits GB_STEP_METADATA_KEY:commit_hash GB_STEP_METADATA_VALUE:<sha>,
+    # which the skypilot monitor captures and the buildrunner merges onto the
+    # StoredStepRun row. Proves the lineage addition works end-to-end.
+    expected_steps:
+      - step_uri: space://steps/custom_code_skypilot
+        metadata_matches:
+          commit_hash: "^[0-9a-f]{40}$"
+# Resolve space:// URIs (the bluevela env + the custom_code_skypilot step) from
+# the gb-test space. Default is the remote git repo (the eventual state).
+#
+# MANUAL LOCAL RUN: to test the UNPUSHED assets step, point this at a LOCAL
+# gb-test clone (relative to this YAML's dir, or absolute file://), AND edit that
+# clone's space.yaml so its base_uris resolves the step from the local assets
+# clone: base_uris: [file:///path/to/your/assets-clone]. The step.yaml's
+# git+ssh validator_uri is cloned eagerly regardless of base_uris — either push
+# the assets branch or temporarily set validator_uri to
+# file:///path/to/your/assets-clone/steps/custom_code_skypilot/validators in the
+# local assets clone (see the test docstring).
+#space_uri: ../../../../../../../../gb-test
+space_uri: git+ssh://github.ibm.com/granite-dot-build/gb-test.git@gbspace-config
+# Happy-path only. The cancellation variant is intentionally omitted for v1: a
+# long conda/micromamba env build makes cancellation timing flaky. Add later.
+simulate_step_failure: false
+tests:
+  - runner
+timeout_minutes: 20

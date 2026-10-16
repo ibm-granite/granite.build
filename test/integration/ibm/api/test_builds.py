@@ -16,6 +16,7 @@ from libgbtest.constants import (
     GBTEST_NON_ADMIN_GITHUB_TOKEN,
     GBTEST_SPACE_NAME,
 )
+from libgbtest.mode import is_mock_mode
 from libgbtest.storage.artifact_storage import ArtifactStorageTestSupport
 from libgbtest.storage.build_storage import BuildStorageTestSupport
 from libgbtest.storage.step_storage import StepStorageTestSupport
@@ -28,8 +29,8 @@ from libgbtest.storage.utils import (
 
 from gbserver.api.auth import get_gh_user
 from gbserver.api.builds import (
-    BuildStatus2,
-    BuildStatusResponse2,
+    BuildStatus,
+    BuildStatusResponse,
     BuildSubmitRequest,
     BuildSubmitResponse,
     BuildUpdateRequest,
@@ -39,7 +40,7 @@ from gbserver.api.builds import (
     CountBuildsResponse,
     GetBuildResponse,
     ListBuildResponse,
-    TargetRecord2,
+    TargetRecord,
 )
 from gbserver.api.utils import ListAppendOrSet
 from gbserver.storage.artifact_registration import ArtifactRegistration
@@ -189,9 +190,9 @@ class TestBuildAPI(AbstractAPITest):
         assert response.status_code == 200
         resp_json = response.json()
         print(f"response={resp_json}")
-        resp: BuildStatusResponse2 = BuildStatusResponse2.model_validate(resp_json)
+        resp: BuildStatusResponse = BuildStatusResponse.model_validate(resp_json)
         status = resp.status
-        assert isinstance(status, BuildStatus2)
+        assert isinstance(status, BuildStatus)
 
         assert status.build.status == tested_status
         if tested_status == Status.SUCCESS:
@@ -200,8 +201,8 @@ class TestBuildAPI(AbstractAPITest):
             # Validate the number of targets run
             assert len(status.target_runs) == 1
             # Validate the 1 target that was run
-            target_run: TargetRecord2 = status.target_runs[0]
-            assert isinstance(target_run, TargetRecord2)
+            target_run: TargetRecord = status.target_runs[0]
+            assert isinstance(target_run, TargetRecord)
             stored_target = target_run.target
             assert isinstance(stored_target, StoredTargetRun)
             assert stored_target.build_id == build_uuid
@@ -377,6 +378,17 @@ class TestBuildAPI(AbstractAPITest):
 
     def _helper_for_test_submit(self, as_admin: bool):
 
+        # The admin path registers a super-admin and then switches to the
+        # non-admin client to assert a 401. In mock mode the apikey auth
+        # middleware resolves every token to a single synthetic user, so that
+        # client is the same (now-admin) user and the 401 assertions can't hold.
+        # The non-admin path still works in mock: the synthetic user is not an
+        # admin, so system-tag submits are correctly rejected.
+        if as_admin and is_mock_mode():
+            pytest.skip(
+                reason="apikey auth maps every token to one synthetic user; "
+                "admin/non-admin authorization requires live GitHub identities"
+            )
         admin_token = GBTEST_ADMIN_GITHUB_TOKEN
         non_admin_token = GBTEST_NON_ADMIN_GITHUB_TOKEN
         if as_admin:

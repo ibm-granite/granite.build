@@ -1,0 +1,20 @@
+.dropdownInline {
+  :global(.cds--dropdown__wrapper--inline) {
+    column-gap: 0;
+  }
+  :global(.cds--list-box__menu) {
+    right: 0;
+    left: auto;
+    min-width: 160px;
+  }
+}
+
+.buildTileHeader {
+  display: flex;
+  justify-content: space-between;
+}
+
+.queueClusterName {
+  font-size: 0.875rem;
+  color: var(--cds-text-helper);
+}

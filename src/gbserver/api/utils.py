@@ -15,14 +15,67 @@
 # limitations under the License.
 
 
-from typing import Any, Optional
+from contextlib import contextmanager
+from typing import Iterator, Optional, Union
 
 from fastapi import HTTPException, Request, status
 from pydantic import BaseModel
 
-from gbserver.spaces.user_spaces_list import space_admin_check
+from gbserver.spaces.space_access_manager import get_space_access_manager
+from gbserver.spaces.user_spaces_list import space_access_check, space_admin_check
 from gbserver.storage.storage import Pagination, QueryControl, SortOrder, TaggedItem
 from gbserver.types.constants import PUBLIC_SPACE_NAME, SYSTEM_TAG_PREFIX
+from gbserver.utils.remote_files_ops import (
+    RemoteFileBadRequest,
+    RemoteFileError,
+    RemoteFileNotFound,
+    RemoteFileOpFailed,
+)
+from gbserver.utils.ssh_tunnel import SshTunnelError
+
+# Maps each remote-file domain error to the HTTP status the API surfaces for it.
+# The remote_files_ops module is framework-free (raises these instead of
+# fastapi.HTTPException); this is the single place that layer boundary is
+# translated back into HTTP. Subclasses resolve to their nearest listed base.
+_REMOTE_FILE_ERROR_STATUS = {
+    RemoteFileBadRequest: status.HTTP_400_BAD_REQUEST,
+    RemoteFileNotFound: status.HTTP_404_NOT_FOUND,
+    RemoteFileOpFailed: status.HTTP_500_INTERNAL_SERVER_ERROR,
+}
+
+
+@contextmanager
+def translate_remote_file_errors() -> Iterator[None]:
+    """Translate ``RemoteFileError`` domain errors into ``HTTPException``.
+
+    Wrap the file-op delegate calls (``run_search``/``run_list``/``peek_file``/
+    ``remote_stat``/``validate_peek_args``/…) in the ``api/`` file handlers
+    with this so the shared, framework-free ``remote_files_ops`` module can
+    signal failures without importing fastapi. The error's message is passed
+    through verbatim as the HTTP detail (the module keeps those generic, so no
+    path/identity leaks). An unrecognized ``RemoteFileError`` subclass maps to
+    500 rather than escaping untranslated.
+    """
+    try:
+        yield
+    except RemoteFileError as e:
+        status_code = next(
+            (
+                code
+                for cls, code in _REMOTE_FILE_ERROR_STATUS.items()
+                if isinstance(e, cls)
+            ),
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+        raise HTTPException(status_code, str(e)) from e
+    except (SshTunnelError, TimeoutError) as e:
+        # SSH command_timeout (slow bluevela session setup) or a dropped tunnel:
+        # transient, so 503 not an opaque 500. Assumes this CM only ever wraps
+        # remote SSH ops; narrow the catch if a non-SSH await is ever wrapped.
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "login node is slow or unreachable; please retry",
+        ) from e
 
 
 def get_row_filter(**kwargs):
@@ -102,6 +155,156 @@ def confirm_space_write_access(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"User {user_id} does not have write access to item in space {space_name}",
         )
+
+
+def has_space_member_access(
+    request: Request, username_on_target: str, space_name: str
+) -> tuple[bool, str]:
+    """See if the requesting user has at least read/member access to an asset
+    owned/created by the given username in the given space. Broader than
+    has_space_write_access: grants access to any member of the space, not
+    just the owner or a space/super admin.
+
+    Raises:
+        HTTPException: if user id is not found in the request.
+
+    Returns:
+        tuple[bool,str]: first element indicates if the requester has access and the 2nd is the user_id found in the request.
+    """
+    user_id = request.state.data["user"].login
+    if user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Can not determine user id!"
+        )
+    is_owner = username_on_target == user_id
+    if is_owner:
+        return True, user_id
+    username_email = request.state.data["user"].email
+    has_access = is_super_admin(request) or space_access_check(
+        username_email, space_name
+    )
+    return has_access, user_id
+
+
+def confirm_space_member_access(
+    request: Request, username_on_target: str, space_name: str
+) -> None:
+    """See if the requesting user has at least read/member access to an asset
+    owned/created by the given username in the given space and raise an HTTP
+    exception if not.
+
+    Raises:
+        HTTPException: if user id is not found in the request.
+        HTTPException: if the requesting user is not a member of the space.
+    """
+    has_access, user_id = has_space_member_access(
+        request, username_on_target=username_on_target, space_name=space_name
+    )
+    if not has_access:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"User {user_id} does not have access to item in space {space_name}",
+        )
+
+
+class _NoAccessibleSpace:
+    """Marker returned by scope_space_name_filter() when the caller has no
+    accessible space to query. Callers must check for this with `is` and
+    short-circuit to an empty result themselves -- it is never meant to reach
+    get_row_filter()/storage.get_by_where(), so it carries no SQL-compatible
+    value at all.
+
+    Any NEW list-style endpoint that calls scope_space_name_filter() MUST add
+    this exact check before touching storage:
+
+        scoped_space_name = scope_space_name_filter(request, space_name)
+        if scoped_space_name is NO_ACCESSIBLE_SPACE:
+            return <the route's empty response>
+
+    See list_builds()/count_builds() (api/builds.py), list_artifacts()
+    (api/artifacts.py), and list_spaces() (api/spaces.py) for the pattern in
+    place today, and test/unit/api/test_utils.py's
+    test_all_scoped_routes_short_circuit_on_no_accessible_space for the
+    regression test that enumerates them -- add the new route there too.
+    """
+
+    def __repr__(self) -> str:
+        return "NO_ACCESSIBLE_SPACE"
+
+
+NO_ACCESSIBLE_SPACE = _NoAccessibleSpace()
+
+
+def scope_space_name_filter(
+    request: Request, requested_space_name: str = ""
+) -> Union[str, list[str], _NoAccessibleSpace]:
+    """Narrow a list endpoint's space_name filter to the caller's accessible spaces.
+
+    GET /builds/, /artifacts/, /spaces/ and their /count and /tags variants
+    build their row_filter straight from query params and call
+    storage.get_by_where() with no per-row authorization check — unlike the
+    single-object GET routes, which load the row first and then call
+    confirm_space_member_access/confirm_space_write_access on it. Passing this
+    function's return value as the space_name filter is what scopes those list
+    routes to the caller's real space membership.
+
+    Super admins are unrestricted and get back whatever space_name (possibly
+    empty, meaning "no filter") they requested. Everyone else is restricted to
+    the spaces returned by get_space_access_manager().get_user_spaces_with_access,
+    intersected with any caller-supplied space_name. A requested space outside
+    that set, or an empty accessible set, returns NO_ACCESSIBLE_SPACE -- callers
+    must check for it with `is` and return an empty result without ever calling
+    get_row_filter()/storage.get_by_where() or count() (see _NoAccessibleSpace's
+    docstring for the required call-site pattern).
+
+    Args:
+        request: The current request; used to resolve the caller's identity
+            and super-admin status.
+        requested_space_name: The caller-supplied space_name filter, if any
+            (empty string means "no specific space requested").
+
+    Returns:
+        The space_name value to pass into get_row_filter(): a single space
+        name (str), a sorted list of accessible space names, or the
+        NO_ACCESSIBLE_SPACE marker if the caller has no accessible space (or
+        requested one outside their access).
+
+    Raises:
+        Exception: propagates uncaught from
+            get_space_access_manager().get_user_spaces_with_access() -- e.g. a
+            storage/DB error -- rather than being swallowed into an empty
+            result. A caller-visible failure (5xx) is the correct outcome for
+            a storage error here; treating it as "no access" would mask an
+            outage as a silent empty list / zero count.
+    """
+    # Known inefficiency, deliberately not fixed here: when requested_space_name
+    # is given, this still runs is_super_admin() (one round trip) and then, if
+    # false, the FULL get_user_spaces_with_access() -- memberships + batched
+    # spaces + public-space fallback -- just to intersect it down to one name
+    # below, on what's now a hot path for every list/count/tags request with an
+    # explicit space_name filter. A targeted single-space check would be
+    # cheaper, but the obvious shortcut is unsafe: has_space_access() grants
+    # the public space unconditionally with no row required, while
+    # get_user_spaces_with_access() row-gates it (see
+    # StorageSpaceAccessManager.has_space_access()'s docstring) -- reusing it
+    # here would silently reintroduce that asymmetry into the list-scoping
+    # path specifically. A safe fix needs get_user_spaces_with_access() itself
+    # extended with an optional space_name param, so both implementations can
+    # answer the single-space case with one targeted lookup while still
+    # sharing the same row-gated public-space logic -- a real interface
+    # change, not attempted in this pass.
+    if is_super_admin(request):
+        return requested_space_name
+    username = request.state.data["user"].email
+    accessible = {
+        info.space.name
+        for info in get_space_access_manager().get_user_spaces_with_access(username)
+    }
+    if requested_space_name:
+        accessible &= {requested_space_name}
+    if not accessible:
+        return NO_ACCESSIBLE_SPACE
+    return sorted(accessible)
 
 
 def split_tags(tags: Optional[list[str]]) -> tuple[list[str], list[str]]:

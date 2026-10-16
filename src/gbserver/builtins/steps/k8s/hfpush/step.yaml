@@ -15,13 +15,12 @@ config:
     path: <path>
     uri: <uri>
     binding_id: <binding_id>
+    owner: ''
+    repo: ''
+    revision: ''
+    private: true
     hf:
-      type: model
-      owner: ''
-      repo: ''
-      revision: ''
-      private: true
-      organization: null
+      type: ''
       resource_group_id: null
   compute_config:
     total_memory_per_node: 10Gi

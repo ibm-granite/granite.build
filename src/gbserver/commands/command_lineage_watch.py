@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+
+# Copyright LLM.build Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""``gbserver lineage-watch`` — the centralized lineage recording process.
+
+Runs the LineageWatcher, which periodically reconciles the admin DB into the
+configured lineage store (see ``lineage_reconciler`` / ``lineage_watcher``).
+Deployed as its own single-replica pod (``dep-lineage-watcher.yaml``) so the
+single-writer guarantee is a deployment fact and lineage recording is isolated
+from the build watcher's failure domain, restarts, and resource contention.
+
+``--base-build-id`` is optional. Without it the watcher reads the ``gb_kv_pairs``
+checkpoint and, when the key is absent, records nothing until it is seeded. With
+it, an *absent* key is seeded before the first scan, so a fresh deployment does
+not need a separate exec/init-container step just to become useful. It never
+overwrites an existing checkpoint, which is what makes it safe to leave in a pod
+spec across restarts.
+"""
+
+import traceback
+
+import click
+
+from gbserver.lineage.jobstats import get_lineage_store
+from gbserver.lineage.lineage_seeding import LineageSeedError, seed_if_absent
+from gbserver.lineage.lineage_watcher import LineageWatcher
+from gbserver.storage.singleton_storage import get_admin_storage
+from gbserver.types.context import CliEnvironment, pass_environment
+from gbserver.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+@click.command()
+@click.option(
+    "--interval",
+    required=False,
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Seconds between admin-DB reconciliation scans.",
+)
+@click.option(
+    "--base-build-id",
+    required=False,
+    type=str,
+    default=None,
+    metavar="from-latest|all|BUILD_ID",
+    help=(
+        "Seed the lineage checkpoint before the first scan, but only if it is "
+        "not already set: 'from-latest' starts at the most recent build, 'all' "
+        "walks the full history (expensive first scan), any other value is "
+        "treated as a build id. The anchor is the build itself: it and every "
+        "build created after it are processed, so the anchored build is "
+        "recorded whole. Omit to use whatever is already in gb_kv_pairs "
+        "(recording nothing while the key is absent). Never overwrites an "
+        "existing checkpoint."
+    ),
+)
+@click.option(
+    "--force-build-id",
+    required=False,
+    type=str,
+    default=None,
+    metavar="from-latest|all|BUILD_ID",
+    help=(
+        "Replace an existing lineage checkpoint instead of keeping it. Same spec "
+        "values as --base-build-id. Moving the anchor back re-drives lineage "
+        "already recorded; moving it forward skips lineage for good. Never put "
+        "this in a Deployment spec — it would re-apply on every restart. Mutually "
+        "exclusive with --base-build-id."
+    ),
+)
+@pass_environment
+def cli(ctx: CliEnvironment, interval: float, base_build_id: str, force_build_id: str):
+    """Start the centralized lineage recording watcher."""
+    store = get_lineage_store()
+    if not store.records_centralized_lineage:
+        # Standalone / GBSERVER_LINEAGE_PROVIDER=none: nothing to record. Do not
+        # busy-idle; log and exit so the process/pod is a clear no-op.
+        logger.info(
+            "Configured lineage store does not record centralized lineage; "
+            "lineage-watch has nothing to do. Exiting."
+        )
+        return
+
+    # Reject empty anchors before the dispatch below, which tests truthiness: an
+    # empty string passes the `is not None` guard, then matches neither branch, so
+    # the watcher would start unseeded and record nothing while the operator
+    # believes an anchor was applied. Erroring beats normalizing to None, which
+    # would turn an explicit --force-build-id into a silent no-seed.
+    for flag, value in (
+        ("--base-build-id", base_build_id),
+        ("--force-build-id", force_build_id),
+    ):
+        if value is not None and not value.strip():
+            raise click.ClickException(
+                f"{flag} was given an empty value; pass "
+                "'from-latest', 'all', or a build id."
+            )
+
+    if base_build_id is not None and force_build_id is not None:
+        # One anchor decision per invocation: the two flags disagree by
+        # construction (keep-if-present vs replace), so accepting both would make
+        # the outcome depend on evaluation order.
+        raise click.ClickException(
+            "--base-build-id and --force-build-id are mutually exclusive; pass "
+            "only one."
+        )
+
+    if force_build_id:
+        try:
+            seed_if_absent(get_admin_storage(), force_build_id, force=True)
+        except LineageSeedError as exc:
+            raise click.ClickException(str(exc)) from exc
+    elif base_build_id:
+        # Seed-if-absent, before start(): every scan re-reads the key, so placing
+        # it here means the very first scan is already driven by it. A failure to
+        # resolve the anchor is
+        # fatal on purpose — the operator asked for a specific starting point,
+        # and silently starting up with no checkpoint (recording nothing) would
+        # look like a working watcher that never records.
+        try:
+            seed_if_absent(get_admin_storage(), base_build_id)
+        except LineageSeedError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+    lineage_watcher = LineageWatcher(monitoring_interval=interval)
+    try:
+        logger.info("Starting lineage watcher")
+        lineage_watcher.start()
+        # Keep the process alive; the watcher runs in a daemon thread. Block on
+        # the stop event rather than sleep-looping so a shutdown signal wakes the
+        # main thread immediately instead of after up to `interval` seconds.
+        lineage_watcher.stop_event.wait()
+    except KeyboardInterrupt:
+        logger.info("Lineage watcher interrupted")
+    except Exception as e:
+        logger.error(traceback.format_exc())
+        logger.error(f"Lineage watcher exception: {e}")
+    finally:
+        logger.warning("Lineage watcher stopped!")
+        lineage_watcher.stop()

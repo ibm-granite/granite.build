@@ -31,7 +31,7 @@ from typing import Optional
 
 from fastapi import HTTPException, Request, status
 
-from gbserver.api.utils import confirm_space_write_access
+from gbserver.api.utils import confirm_space_member_access, confirm_space_write_access
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.utils.logger import get_logger
@@ -46,6 +46,16 @@ def authorize_build_access(request: Request, build: StoredBuild) -> None:
     PUT /builds/{id}/update.
     """
     confirm_space_write_access(request, build.username, build.space_name)
+
+
+def authorize_build_read_access(request: Request, build: StoredBuild) -> None:
+    """Raise 401 if the requester is not a member of the build's space.
+
+    Broader than authorize_build_access: any member of the build's space
+    (not just the owner or a space/super admin) may read status/events/
+    job-stats for the build.
+    """
+    confirm_space_member_access(request, build.username, build.space_name)
 
 
 def lookup_build(build_id: str) -> StoredBuild:

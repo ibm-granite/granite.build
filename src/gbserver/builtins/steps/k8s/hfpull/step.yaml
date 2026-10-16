@@ -11,11 +11,11 @@ config:
   hfpull_config:
     path: <path>
     uri: <uri>
+    owner: ''
+    repo: ''
+    revision: ''
     hf:
-      type: model
-      owner: ''
-      repo: ''
-      revision: ''
+      type: ''
   compute_config:
     total_memory_per_node: 10Gi
 environment_configs:

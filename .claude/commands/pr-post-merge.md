@@ -5,7 +5,7 @@ argument-hint: "Fork issue number (e.g., 1)"
 
 # Post-merge cleanup
 
-You are helping a developer clean up after a PR has been merged into `upstream/g4os`. Follow these steps in order.
+You are helping a developer clean up after a PR has been merged into `upstream/main`. Follow these steps in order.
 
 Fork issue number: $ARGUMENTS
 
@@ -23,7 +23,7 @@ Fork issue number: $ARGUMENTS
    IS_WORKTREE=false
    if [ "$WORKTREE_DIR" != "$MAIN_REPO" ]; then IS_WORKTREE=true; fi
    ```
-3. Confirm the current branch is an issue branch (not `g4os`, `main`, or `dev`)
+3. Confirm the current branch is an issue branch (not `main`)
 4. Save the current branch name for later deletion
 5. If no issue number was provided ($ARGUMENTS), try to auto-detect from the branch name:
    ```
@@ -59,8 +59,8 @@ The worktree must be removed before the branch can be deleted. All remaining ste
    If removal fails (dirty worktree), ask the user whether to force-remove (`git worktree remove --force $WORKTREE_DIR`) or abort.
 3. Update the integration branch:
    ```
-   git checkout g4os
-   git pull upstream g4os
+   git checkout main
+   git pull upstream main
    ```
 4. Delete the local issue branch:
    ```
@@ -71,14 +71,14 @@ The worktree must be removed before the branch can be deleted. All remaining ste
    git push origin --delete <saved-branch-name>
    ```
 6. Report completion to the user:
-   > Cleaned up worktree `$WORKTREE_DIR`, deleted branch `<saved-branch-name>` locally and on origin, updated `g4os`.
+   > Cleaned up worktree `$WORKTREE_DIR`, deleted branch `<saved-branch-name>` locally and on origin, updated `main`.
 
 ### If NOT running in a worktree:
 
 1. Switch to the integration branch and pull the latest:
    ```
-   git checkout g4os
-   git pull upstream g4os
+   git checkout main
+   git pull upstream main
    ```
 2. Delete the local issue branch:
    ```

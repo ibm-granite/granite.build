@@ -11,6 +11,7 @@ from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import str_exc_chain
 from gbcli.commands.common_options import (
     common_options,
+    enforce_version_check,
     pass_context_and_reject_standalone,
 )
 from gbcli.utils.gbconstants import (
@@ -21,7 +22,6 @@ from gbcli.utils.gbconstants import (
 )
 from gbcli.utils.gbcredentials import get_user_token
 from gbcli.utils.utils import render_plain, render_pretty, step_uri_notation
-from gbcli.utils.versionutil import check_current_and_latest_versions
 
 
 @click.group("step")
@@ -45,15 +45,7 @@ def list(
     ctx, space: str, step_repo: str, format: str, skip_version_check: bool, quiet: bool
 ):
     """List all available build definition steps"""
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if format == "json":
         quiet = True
@@ -179,15 +171,7 @@ def describe(
     quiet: bool,
 ):
     """Show step contents"""
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if format == "json":
         quiet = True
@@ -233,6 +217,50 @@ def describe(
                     {key: event_config[key]}
                 )
         return config_str
+
+    # Config keys whose values are lists of event-parsing rules — rendered with
+    # the event-config formatter rather than the generic config renderer.
+    _EVENT_CONFIG_KEYS = ("event_configs", "extra_event_configs")
+
+    def monitor_rows(prefix: str, mon: dict) -> List[List[str]]:
+        """Describe-table rows for one monitor entry (``[label, value]`` pairs).
+
+        Renders whatever fields ``service_step.parse_monitor`` put on the monitor
+        dict — ``parse_monitor`` is the single owner of the monitor field shape
+        (``ref`` / ``type`` when set, always ``config``), so this stays in sync
+        with it without re-listing those fields. The only monitor-specific
+        knowledge here is presentation: event-rule lists (``event_configs`` /
+        ``extra_event_configs``) use the event-config formatter, while other config
+        (e.g. ``poll_interval_seconds``, ``log_retrieval``) uses the generic config
+        renderer.
+
+        Note: describe fetches a single ``step.yaml`` without a resolved space, so
+        it renders the monitor **as authored** — it deliberately does not follow a
+        ``ref`` into the library to resolve it (no space context here).
+        """
+        rows: List[List[str]] = []
+        for key, value in mon.items():
+            if key != "config":
+                rows.append([f"{prefix}.{key}", value])  # ref / type / future scalars
+                continue
+            config = value or {}
+            scalar_config = {
+                k: v for k, v in config.items() if k not in _EVENT_CONFIG_KEYS
+            }
+            if scalar_config:
+                rows.append(
+                    [f"{prefix}.config", parse_step_config_output(scalar_config)]
+                )
+            for ec_key in _EVENT_CONFIG_KEYS:
+                ecs = config.get(ec_key, [])
+                if ecs:
+                    rows.append(
+                        [
+                            f"{prefix}.config.{ec_key}",
+                            "\n".join(parse_event_config_output(ec) for ec in ecs),
+                        ]
+                    )
+        return rows
 
     try:
         if quiet:
@@ -311,26 +339,12 @@ def describe(
                             )
                     for index, monitor in enumerate(monitors):
                         for m in monitor:
-                            parsed_env_configs.append(
-                                [
-                                    f"{env_config_name}.monitors.{m}.type",
-                                    monitors[index][m].get("type"),
-                                ]
-                            )
-
-                            monitor_config = monitors[index][m].get("config")
-                            if monitor_config:
-                                event_configs = monitor_config.get("event_configs", [])
-                                parsed_event_configs = [
-                                    parse_event_config_output(ec)
-                                    for ec in event_configs
-                                ]
-                                parsed_env_configs.append(
-                                    [
-                                        f"{env_config_name}.monitors.{m}.config.event_configs",
-                                        "\n".join(parsed_event_configs),
-                                    ]
+                            parsed_env_configs.extend(
+                                monitor_rows(
+                                    f"{env_config_name}.monitors.{m}",
+                                    monitors[index][m],
                                 )
+                            )
 
                 env_config_output = tabulate(
                     parsed_env_configs,

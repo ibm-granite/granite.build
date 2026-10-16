@@ -1,4 +1,5 @@
 import asyncio
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -36,6 +37,167 @@ class TestStepSkypilotConfig:
         assert config.run == "python train.py"
         assert config.idle_minutes_to_autostop == 30
         assert config.image_id == "docker:nvcr.io/nvidia/pytorch:24.01-py3"
+
+
+class TestResolveLocalMountSource:
+    """_resolve_local_mount_source: relative sources rebase onto the asset dir."""
+
+    def test_relative_resolves_against_asset_dir(self):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        assert (
+            _resolve_local_mount_source("scripts/run.sh", "/work/run1")
+            == "/work/run1/scripts/run.sh"
+        )
+
+    def test_absolute_source_unchanged(self):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        assert _resolve_local_mount_source("/abs/path", "/work/run1") == "/abs/path"
+
+    @pytest.mark.parametrize("source", ["~", "~/data", "~/sub/dir"])
+    def test_home_relative_source_rejected(self, source):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        # '~' is not expanded for sources; it would become a literal
+        # '<asset_dir>/~/...' path, so reject it rather than mishandle it.
+        with pytest.raises(ValueError, match="~"):
+            _resolve_local_mount_source(source, "/work/run1")
+
+    @pytest.mark.parametrize("asset_dir", ["/work/run1", None])
+    @pytest.mark.parametrize("source", ["..", "../other", "a/../../b"])
+    def test_escaping_relative_source_rejected(self, source, asset_dir):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        # Relative sources must stay inside the step dir; escaping '..' is
+        # rejected whether or not an asset dir is available.
+        with pytest.raises(ValueError, match="escape"):
+            _resolve_local_mount_source(source, asset_dir)
+
+    def test_inner_dotdot_source_that_stays_inside_is_allowed(self):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        # a/../b stays inside the step dir, so it resolves normally.
+        assert (
+            _resolve_local_mount_source("a/../b", "/work/run1") == "/work/run1/a/../b"
+        )
+
+    def test_remote_uri_unchanged(self):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        assert (
+            _resolve_local_mount_source("s3://bucket/key", "/work/run1")
+            == "s3://bucket/key"
+        )
+
+    def test_none_asset_dir_leaves_relative_unresolved(self):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        assert _resolve_local_mount_source("scripts/run.sh", None) == "scripts/run.sh"
+
+    def test_file_uri_asset_dir_is_tolerated(self):
+        from gbserver.environment.skypilot import _resolve_local_mount_source
+
+        assert _resolve_local_mount_source("d", "file:///work/run1") == "/work/run1/d"
+
+
+class TestBuildSkypilotMounts:
+    """_build_skypilot_mounts: routes strings vs dicts and resolves sources."""
+
+    def test_string_relative_source_resolved(self):
+        from gbserver.environment.skypilot import _build_skypilot_mounts
+
+        with patch("gbserver.environment.skypilot.sky", MagicMock()):
+            file_mounts, storage_mounts = _build_skypilot_mounts(
+                {"/remote/run.sh": "scripts/run.sh"}, "/work/run1"
+            )
+        assert file_mounts == {"/remote/run.sh": "/work/run1/scripts/run.sh"}
+        assert storage_mounts == {}
+
+    def test_bucket_uri_splits_subpath(self):
+        from gbserver.environment.skypilot import _build_skypilot_mounts
+
+        mock_sky = MagicMock()
+        with patch("gbserver.environment.skypilot.sky", mock_sky):
+            _, storage_mounts = _build_skypilot_mounts(
+                {"/data": {"source": "s3://bucket/prefix", "mode": "MOUNT"}},
+                "/work/run1",
+            )
+        assert "/data" in storage_mounts
+        kwargs = mock_sky.Storage.call_args.kwargs
+        assert kwargs["source"] == "s3://bucket"
+        assert kwargs["_bucket_sub_path"] == "prefix"
+
+    def test_dict_local_relative_source_resolved(self):
+        from gbserver.environment.skypilot import _build_skypilot_mounts
+
+        mock_sky = MagicMock()
+        with patch("gbserver.environment.skypilot.sky", mock_sky):
+            _build_skypilot_mounts(
+                {"/data": {"source": "localdir", "mode": "COPY"}}, "/work/run1"
+            )
+        kwargs = mock_sky.Storage.call_args.kwargs
+        assert kwargs["source"] == "/work/run1/localdir"
+        assert "_bucket_sub_path" not in kwargs
+
+    def test_relative_dest_remapped_under_build_workdir(self):
+        """A relative destination is rewritten under the per-run build workdir."""
+        from gbserver.environment.skypilot import _build_skypilot_mounts
+
+        with patch("gbserver.environment.skypilot.sky", MagicMock()):
+            file_mounts, _ = _build_skypilot_mounts(
+                {"payload": "payload"}, "/work/run1", "/proj/gbtest/builds/b1"
+            )
+        assert file_mounts == {"/proj/gbtest/builds/b1/payload": "/work/run1/payload"}
+
+
+class TestRemapRelativeDest:
+    """_remap_relative_dest: only relative dsts move under the build workdir."""
+
+    def test_relative_dest_joined(self):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        assert _remap_relative_dest("foo", "/wd") == "/wd/foo"
+        assert _remap_relative_dest("./foo", "/wd") == "/wd/foo"
+        assert _remap_relative_dest("sub/foo", "/wd") == "/wd/sub/foo"
+
+    def test_absolute_dest_unchanged(self):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        assert _remap_relative_dest("/abs/foo", "/wd") == "/abs/foo"
+
+    @pytest.mark.parametrize("dst", ["~", "~/foo", "~/sub/dir"])
+    def test_home_dest_rejected(self, dst):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        # '~' is not expanded for destinations either: it would sidestep the
+        # single relative/absolute convention and land outside the per-run
+        # workdir, so reject it (mirroring the source-side guard).
+        with pytest.raises(ValueError, match="~"):
+            _remap_relative_dest(dst, "/wd")
+
+    def test_noop_without_build_workdir(self):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        assert _remap_relative_dest("foo", None) == "foo"
+        assert _remap_relative_dest("foo", "") == "foo"
+
+    def test_inner_dotdot_that_stays_inside_is_allowed(self):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        # a/../b normalizes to b — still inside the workdir, so it is fine.
+        assert _remap_relative_dest("a/../b", "/wd") == "/wd/b"
+
+    @pytest.mark.parametrize("workdir", ["/wd", None, ""])
+    @pytest.mark.parametrize("dst", ["..", "../foo", "a/../../b", "./../x"])
+    def test_escaping_dotdot_rejected(self, dst, workdir):
+        from gbserver.environment.skypilot import _remap_relative_dest
+
+        # Escaping destinations are rejected whether or not a build_workdir
+        # remap applies, so they can escape neither the per-run workdir nor
+        # SkyPilot's default rewrite.
+        with pytest.raises(ValueError, match="escape"):
+            _remap_relative_dest(dst, workdir)
 
 
 class TestSkypilotDiscovery:
@@ -95,6 +257,188 @@ class TestSkypilotClusterNaming:
         name = Skypilot._cluster_name_for("short")
         assert name == "gb-short"
 
+    def test_cluster_name_teardown_trailing_hyphen(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        # setup_id is a UUID; teardown prefixes it with "td-", which shifts the
+        # 12-char truncation onto the UUID's first hyphen -> trailing "-".
+        setup_id = "3168aa02-1234-5678-9abc-def012345678"
+        name = Skypilot._cluster_name_for(f"td-{setup_id}")
+        assert name == "gb-td-3168aa02"
+
+    def test_cluster_name_is_skypilot_valid(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        # SkyPilot requires the name to start and end with an alphanumeric char.
+        # This asserts exactly that (start/end alphanumeric); it does not assert
+        # SkyPilot's other rules (e.g. no triple dashes), which the current
+        # inputs cannot trigger.
+        valid = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]")
+        cases = [
+            ("td-3168aa02-1234-5678-9abc-def012345678", 0),
+            ("td-3168aa02-1234-5678-9abc-def012345678", 2),
+            ("abcdef123456789", 0),
+            ("short", 0),
+            ("short", 1),
+        ]
+        for launch_id, attempt in cases:
+            name = Skypilot._cluster_name_for(launch_id, attempt)
+            assert valid.fullmatch(name), f"invalid name: {name!r}"
+
+    def test_cluster_name_embeds_target_and_build(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        name = Skypilot._cluster_name_for(
+            "3168aa02-1234-5678-9abc-def012345678",
+            target_name="train",
+            build_id="9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
+        )
+        assert name == "gb-9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff-train-3168aa02-123"
+
+    def test_cluster_name_slugifies_target(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        name = Skypilot._cluster_name_for(
+            "3168aa02-1234-5678-9abc-def012345678",
+            target_name="My Eval: Run #2",
+            build_id="9f3ac1d2aaaa",
+        )
+        assert name.startswith("gb-9f3ac1d2aaaa-my-eval-run-2-")
+        assert name == name.lower()
+
+    def test_cluster_name_truncates_long_target(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        name = Skypilot._cluster_name_for(
+            "3168aa02-1234-5678-9abc-def012345678",
+            target_name="x" * 50,
+            build_id="9f3ac1d2aaaa",
+        )
+        # slug segment is capped at 20 chars (build_id short here, so budget
+        # still hits the 20-char cap)
+        assert name.startswith("gb-9f3ac1d2aaaa-" + "x" * 20 + "-")
+
+    def test_cluster_name_omits_empty_target_keeps_build(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        name = Skypilot._cluster_name_for(
+            "3168aa02-1234-5678-9abc-def012345678",
+            target_name="",
+            build_id="9f3ac1d2-aaaa",
+        )
+        assert name == "gb-9f3ac1d2-aaaa-3168aa02-123"
+
+    def test_cluster_name_no_metadata_matches_legacy(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        # Additive change: with no metadata, output is unchanged.
+        assert Skypilot._cluster_name_for("abcdef123456789") == "gb-abcdef123456"
+        assert (
+            Skypilot._cluster_name_for("td-3168aa02-1234-5678-9abc-def012345678")
+            == "gb-td-3168aa02"
+        )
+
+    def test_cluster_name_metadata_retry_is_valid(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        valid = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]")
+        name = Skypilot._cluster_name_for(
+            "3168aa02-1234-5678-9abc-def012345678",
+            2,
+            target_name="My Eval: Run #2",
+            build_id="9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
+        )
+        assert name.endswith("-r2")
+        assert valid.fullmatch(name), f"invalid name: {name!r}"
+
+    def test_cluster_name_retry_shares_prefix_with_initial(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        # Short build_id so the target-slug budget is not near the length
+        # ceiling; the -r suffix then just appends to the initial name.
+        kwargs = dict(
+            target_name="My Eval: Run #2",
+            build_id="9f3ac1d2aaaa",
+        )
+        launch_id = "3168aa02-1234-5678-9abc-def012345678"
+        base = Skypilot._cluster_name_for(launch_id, 0, **kwargs)
+        retry = Skypilot._cluster_name_for(launch_id, 2, **kwargs)
+        assert retry == f"{base}-r2"
+
+    def test_cluster_name_prefers_build_config_name_over_build_id(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        name = Skypilot._cluster_name_for(
+            "3168aa02-1234-5678-9abc-def012345678",
+            target_name="train",
+            build_id="9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
+            build_config_name="Helloworld Job",
+        )
+        assert name == "gb-helloworld-job-train-3168aa02-123"
+
+    def test_cluster_name_falls_back_to_full_build_id(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        bid = "9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff"
+        name = Skypilot._cluster_name_for(
+            "3168aa02-1234-5678-9abc-def012345678",
+            target_name="train",
+            build_id=bid,
+            build_config_name="",
+        )
+        # full build id (dashes kept) present verbatim
+        assert bid in name
+        assert name.startswith(f"gb-{bid}-train-")
+
+    def test_cluster_name_build_config_name_slugifies_empty_uses_build_id(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        bid = "9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff"
+        name = Skypilot._cluster_name_for(
+            "3168aa02-1234-5678-9abc-def012345678",
+            target_name="train",
+            build_id=bid,
+            build_config_name="!!!",  # slugifies to "" -> falls back to build_id
+        )
+        assert name == f"gb-{bid}-train-3168aa02-123"
+
+    def test_cluster_name_within_length_ceiling(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        bid = "9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff"  # 36 chars
+        for attempt in (0, 2, 99):
+            name = Skypilot._cluster_name_for(
+                "3168aa02-1234-5678-9abc-def012345678",
+                attempt,
+                target_name="x" * 50,
+                build_id=bid,
+            )
+            assert len(name) <= 63, f"{name!r} is {len(name)} chars"
+            assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]", name)
+            if attempt:
+                assert name.endswith(f"-r{attempt}")
+
+    def test_cluster_name_clamps_oversized_build_id(self):
+        # A (hypothetical) non-UUID build_id far longer than 36 chars must not
+        # push the name past the k8s label ceiling: the build component is
+        # clamped so the <=_MAX_CLUSTER_NAME_LEN guarantee holds unconditionally,
+        # not just for UUID-length build_ids.
+        from gbserver.environment.skypilot import Skypilot
+
+        for attempt in (0, 2, 99):
+            name = Skypilot._cluster_name_for(
+                "3168aa02-1234-5678-9abc-def012345678",
+                attempt,
+                target_name="y" * 50,
+                build_id="b" * 100,
+            )
+            assert (
+                len(name) <= Skypilot._MAX_CLUSTER_NAME_LEN
+            ), f"{name!r} is {len(name)} chars"
+            assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]", name)
+            if attempt:
+                assert name.endswith(f"-r{attempt}")
+
 
 class TestLaunchSkypilot:
     @pytest.fixture
@@ -140,11 +484,38 @@ class TestLaunchSkypilot:
             )
 
         assert launch_id in skypilot_env._cluster_names
-        assert skypilot_env._cluster_names[launch_id] == "gb-test-launch-"
+        assert skypilot_env._cluster_names[launch_id] == "gb-test-launch"
         assert skypilot_env._job_ids[launch_id] == 42
         assert skypilot_env._get_launch_ready_event(launch_id).is_set()
         mock_sky.launch.assert_called_once()
         mock_sky.stream_and_get.assert_called_once_with("req-123")
+
+    @pytest.mark.asyncio
+    async def test_launch_embeds_target_and_build_in_cluster_name(self, skypilot_env):
+        mock_sky = MagicMock()
+        mock_sky.Resources = MagicMock(return_value=MagicMock())
+        mock_sky.Task = MagicMock(return_value=MagicMock())
+        mock_sky.launch = MagicMock(return_value="req-123")
+        mock_sky.stream_and_get = MagicMock(return_value=(42, MagicMock()))
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            launch_id = "3168aa02-1234-5678-9abc-def012345678"
+            skypilot_env._get_launch_ready_event(launch_id)
+            await skypilot_env.launch_skypilot(
+                launch_id=launch_id,
+                launcher_config={"run": "python train.py"},
+                config={},
+                run_metadata={
+                    "target_name": "train",
+                    "build_id": "9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
+                },
+            )
+        assert (
+            skypilot_env._cluster_names[launch_id]
+            == "gb-9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff-train-3168aa02-123"
+        )
 
     @pytest.mark.asyncio
     async def test_launch_sets_readiness_on_error(self, skypilot_env):
@@ -187,6 +558,262 @@ class TestLaunchSkypilot:
         mock_sky.Resources.assert_called_once()
         call_kwargs = mock_sky.Resources.call_args
         assert call_kwargs.kwargs.get("infra") == "k8s"
+
+    @pytest.mark.asyncio
+    async def test_launch_resolves_relative_file_mounts(self, skypilot_env):
+        """A relative file_mounts source resolves against targetsteprun_asset_dir,
+        and that dir is stashed so a retry can re-resolve it."""
+        mock_sky = MagicMock()
+        mock_sky.Resources = MagicMock(return_value=MagicMock())
+        task = MagicMock()
+        mock_sky.Task = MagicMock(return_value=task)
+        mock_sky.launch = MagicMock(return_value="req-fm")
+        mock_sky.stream_and_get = MagicMock(return_value=(9, MagicMock()))
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            launch_id = "test-launch-fm"
+            skypilot_env._get_launch_ready_event(launch_id)
+            await skypilot_env.launch_skypilot(
+                launch_id=launch_id,
+                targetsteprun_asset_dir="/work/run-xyz",
+                launcher_config={
+                    "run": "echo hi",
+                    "file_mounts": {"/remote/run.sh": "scripts/run.sh"},
+                },
+                config={},
+            )
+
+        task.set_file_mounts.assert_called_once_with(
+            {"/remote/run.sh": "/work/run-xyz/scripts/run.sh"}
+        )
+        assert (
+            skypilot_env._launch_kwargs[launch_id]["targetsteprun_asset_dir"]
+            == "/work/run-xyz"
+        )
+
+    async def _launch_and_capture_resources(
+        self, skypilot_env, *, launcher_config, config
+    ):
+        """Run launch_skypilot with sky mocked and return the kwargs passed to
+        sky.Resources (so tests can assert on cpus/memory/etc.)."""
+        mock_sky = MagicMock()
+        mock_sky.Resources = MagicMock(return_value=MagicMock())
+        mock_sky.Task = MagicMock(return_value=MagicMock())
+        mock_sky.launch = MagicMock(return_value="req-res")
+        mock_sky.stream_and_get = MagicMock(return_value=(7, MagicMock()))
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            launch_id = "test-launch-res"
+            skypilot_env._get_launch_ready_event(launch_id)
+            await skypilot_env.launch_skypilot(
+                launch_id=launch_id,
+                launcher_config=launcher_config,
+                config=config,
+            )
+        mock_sky.Resources.assert_called_once()
+        return mock_sky.Resources.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_compute_config_sizes_resources(self, skypilot_env):
+        """config.compute_config supplies a cpus/memory floor for sky.Resources."""
+        kwargs = await self._launch_and_capture_resources(
+            skypilot_env,
+            launcher_config={"run": "echo hi", "resources": {}},
+            config={
+                "compute_config": {
+                    "num_cpus_per_node": 2,
+                    "total_memory_per_node": "1Gi",
+                }
+            },
+        )
+        # k8s (fixture default_cloud) is a cloud catalog, so cpus is a minimum.
+        assert kwargs.get("cpus") == "2+"
+        assert kwargs.get("memory") == "1+"
+
+    @pytest.mark.asyncio
+    async def test_launcher_resources_override_compute_config(self, skypilot_env):
+        """config.launcher_config.resources wins over the compute_config floor."""
+        kwargs = await self._launch_and_capture_resources(
+            skypilot_env,
+            launcher_config={"run": "echo hi", "resources": {}},
+            config={
+                "compute_config": {
+                    "num_cpus_per_node": 2,
+                    "total_memory_per_node": "1Gi",
+                },
+                "launcher_config": {"resources": {"cpus": "4+"}},
+            },
+        )
+        assert kwargs.get("cpus") == "4+"
+        # memory floor still applies (not overridden), as a minimum
+        assert kwargs.get("memory") == "1+"
+
+    @pytest.mark.asyncio
+    async def test_no_compute_config_leaves_resources_unset(self, skypilot_env):
+        """No compute_config and no launcher resources => cpus/memory unset."""
+        kwargs = await self._launch_and_capture_resources(
+            skypilot_env,
+            launcher_config={"run": "echo hi", "resources": {}},
+            config={},
+        )
+        assert kwargs.get("cpus") is None
+        assert kwargs.get("memory") is None
+
+    @pytest.mark.asyncio
+    async def test_compute_config_memory_only(self, skypilot_env):
+        """num_gpus_per_node: 0 with only memory set => cpus unset, memory applied.
+
+        Mirrors the skypilot/slurm 1step-image test build.yaml.
+        """
+        kwargs = await self._launch_and_capture_resources(
+            skypilot_env,
+            launcher_config={"run": "echo hi", "resources": {}},
+            config={
+                "compute_config": {
+                    "num_gpus_per_node": 0,
+                    "total_memory_per_node": "1Gi",
+                }
+            },
+        )
+        assert kwargs.get("cpus") is None
+        assert kwargs.get("memory") == "1+"
+
+    @pytest.mark.asyncio
+    async def test_slurm_infra_drops_memory_floor(self, skypilot_env):
+        """A slurm target routed via `infra` (even with the env's default_cloud
+        k8s) drops the compute_config memory floor; cpus is still applied.
+
+        Reproduces the ResourcesUnavailableError case: SLURM often doesn't track
+        memory as a consumable resource, so a --memory request fails matching.
+        """
+        kwargs = await self._launch_and_capture_resources(
+            skypilot_env,  # fixture default_cloud is k8s
+            launcher_config={
+                "run": "echo hi",
+                "resources": {"infra": "slurm/mycluster"},
+            },
+            config={
+                "compute_config": {
+                    "num_cpus_per_node": 2,
+                    "total_memory_per_node": "10Gi",
+                }
+            },
+        )
+        assert kwargs.get("memory") is None
+        assert kwargs.get("cpus") == 2
+
+    @pytest.mark.asyncio
+    async def test_slurm_cloud_casing_drops_memory_floor(self, skypilot_env):
+        """Non-canonical cloud casing ('Slurm') is normalized, so the memory
+        floor is still dropped."""
+        kwargs = await self._launch_and_capture_resources(
+            skypilot_env,
+            launcher_config={"run": "echo hi", "resources": {"cloud": "Slurm"}},
+            config={"compute_config": {"total_memory_per_node": "10Gi"}},
+        )
+        assert kwargs.get("memory") is None
+
+
+class TestSkypilotComputeConfigResources:
+    """Unit tests for the pure compute_config -> sky.Resources helpers."""
+
+    @pytest.mark.parametrize(
+        "memory_str, expected",
+        [
+            ("1Gi", 1.0),
+            ("32Gi", 32.0),
+            ("512Mi", 0.5),
+            ("4G", 4.0),
+            ("4GB", 4.0),
+            ("4", 4.0),
+            ("", None),
+            ("notanumber", None),
+        ],
+    )
+    def test_parse_memory_gib(self, memory_str, expected):
+        from gbserver.environment.skypilot import Skypilot
+
+        assert Skypilot._parse_memory_gib(memory_str) == expected
+
+    def test_resources_from_compute_config(self):
+        from gbserver.environment.skypilot import Skypilot
+
+        env = Skypilot(event_q=asyncio.Queue())
+        # cpus emitted only when > 0; on a cloud catalog both cpus and memory are
+        # emitted as a SkyPilot minimum ("{n}+"), never an exact number (see
+        # test_cpus_floor_is_minimum_not_exact / test_memory_floor_is_minimum_not_exact).
+        assert env._resources_from_compute_config(
+            {"num_cpus_per_node": 3, "total_memory_per_node": "2Gi"}
+        ) == {"cpus": "3+", "memory": "2+"}
+        # num_cpus_per_node <= 0 is skipped (cloud default); empty memory skipped.
+        assert (
+            env._resources_from_compute_config(
+                {"num_cpus_per_node": 0, "total_memory_per_node": ""}
+            )
+            == {}
+        )
+        # empty compute_config yields no floor.
+        assert env._resources_from_compute_config({}) == {}
+        # On slurm/lsf the memory floor is dropped (bare HPC schedulers often
+        # don't track memory as a consumable resource), and cpus stays a bare
+        # int (the "+" form crashes the fork's LSF cloud).
+        for hpc_cloud in ("slurm", "lsf"):
+            assert env._resources_from_compute_config(
+                {"num_cpus_per_node": 3, "total_memory_per_node": "2Gi"},
+                cloud=hpc_cloud,
+            ) == {"cpus": 3}
+        # Non-HPC clouds keep both floors, each as a minimum.
+        assert env._resources_from_compute_config(
+            {"num_cpus_per_node": 3, "total_memory_per_node": "2Gi"}, cloud="k8s"
+        ) == {"cpus": "3+", "memory": "2+"}
+
+    def test_cpus_floor_is_minimum_not_exact(self):
+        """The cloud cpus floor must be a SkyPilot minimum ("{n}+"), not an
+        exact number.
+
+        Regression: an exact ``cpus=3`` matches no cloud instance type (no AWS
+        type has exactly 3 vCPUs), so provisioning dies with the same "Catalog
+        does not contain any instances satisfying the request" failure the
+        memory floor hit. Emitting ``"3+"`` lets SkyPilot pick the smallest
+        instance with at least that many vCPUs. slurm/lsf keep the bare int (the
+        ``"+"`` form crashes the fork's LSF cloud).
+        """
+        from gbserver.environment.skypilot import Skypilot
+
+        env = Skypilot(event_q=asyncio.Queue())
+        assert env._resources_from_compute_config(
+            {"num_cpus_per_node": 3}, cloud="aws"
+        ) == {"cpus": "3+"}
+        assert env._resources_from_compute_config(
+            {"num_cpus_per_node": 3}, cloud="lsf"
+        ) == {"cpus": 3}
+
+    def test_memory_floor_is_minimum_not_exact(self):
+        """The cloud memory floor must be a SkyPilot minimum ("{n}+"), not an
+        exact number.
+
+        Regression: an exact ``memory=1.0`` matches no cloud instance type, so
+        provisioning dies with "Catalog does not contain any instances
+        satisfying the request: 1x AWS(mem=1.0)." Emitting ``"1+"`` lets
+        SkyPilot pick the smallest instance with at least that much RAM.
+        Fractional sizes format without a trailing ``.0`` (e.g. ``512Mi`` ->
+        ``"0.5+"``).
+        """
+        from gbserver.environment.skypilot import Skypilot
+
+        env = Skypilot(event_q=asyncio.Queue())
+        assert env._resources_from_compute_config(
+            {"total_memory_per_node": "1Gi"}, cloud="aws"
+        ) == {"memory": "1+"}
+        assert env._resources_from_compute_config(
+            {"total_memory_per_node": "512Mi"}, cloud="aws"
+        ) == {"memory": "0.5+"}
 
 
 class TestMonitorSkypilotMonitor:
@@ -709,6 +1336,296 @@ class TestSkypilotMonitorLogParsing:
             )
 
 
+def _make_running_then_terminal_sky_mock(running_polls=2):
+    """Mock sky module: report RUNNING for the first ``running_polls`` status
+    reads, then SUCCEEDED (terminal). Lets the poll loop exercise the
+    while-RUNNING log-retrieval path before terminal handling."""
+    mock_sky = MagicMock()
+
+    running = MagicMock()
+    running.is_terminal.return_value = False
+    running.__str__ = lambda s: "JobStatus.RUNNING"
+
+    done = MagicMock()
+    done.is_terminal.return_value = True
+    done.__str__ = lambda s: "JobStatus.SUCCEEDED"
+
+    seq = [running] * running_polls + [done]
+    state = {"i": 0}
+
+    def _get(_req):
+        i = min(state["i"], len(seq) - 1)
+        state["i"] += 1
+        return {42: seq[i]}
+
+    mock_sky.job_status = MagicMock(return_value="req-status")
+    mock_sky.get = MagicMock(side_effect=_get)
+    return mock_sky
+
+
+class TestLogRetrievalParse:
+    """Unit tests for the _parse_log_retrieval policy helper."""
+
+    def test_default_is_on_completion(self):
+        from gbserver.environment.skypilot import _parse_log_retrieval
+
+        mode, interval, window = _parse_log_retrieval({}, poll_interval=900)
+        assert mode == "on_completion"
+        assert interval == 900  # defaults to poll_interval
+        assert window == 120.0
+
+    def test_periodic_interval_coerced_from_string(self):
+        from gbserver.environment.skypilot import _parse_log_retrieval
+
+        mode, interval, _ = _parse_log_retrieval(
+            {"log_retrieval": {"mode": "periodic", "interval_seconds": "600"}},
+            poll_interval=900,
+        )
+        assert mode == "periodic"
+        assert interval == 600.0
+
+    def test_startup_window_value(self):
+        from gbserver.environment.skypilot import _parse_log_retrieval
+
+        mode, _, window = _parse_log_retrieval(
+            {
+                "log_retrieval": {
+                    "mode": "startup_window",
+                    "startup_window_seconds": "90",
+                }
+            },
+            poll_interval=900,
+        )
+        assert mode == "startup_window"
+        assert window == 90.0
+
+    def test_unknown_mode_falls_back(self):
+        from gbserver.environment.skypilot import _parse_log_retrieval
+
+        mode, _, _ = _parse_log_retrieval(
+            {"log_retrieval": {"mode": "bogus"}}, poll_interval=900
+        )
+        assert mode == "on_completion"
+
+    def test_non_dict_block_falls_back(self):
+        from gbserver.environment.skypilot import _parse_log_retrieval
+
+        mode, _, _ = _parse_log_retrieval(
+            {"log_retrieval": "nonsense"}, poll_interval=900
+        )
+        assert mode == "on_completion"
+
+
+class TestEffectivePollTimeout:
+    """The loop sleep must shorten to the log-pull cadence while pulls are
+    active, else a long status poll_interval starves periodic/startup pulls."""
+
+    def test_startup_window_active_uses_log_interval(self):
+        from gbserver.environment.skypilot import _effective_poll_timeout
+
+        # 900s status poll, 15s pulls, still in window -> wake every 15s.
+        assert (
+            _effective_poll_timeout(900, "startup_window", 15, pulls_active=True) == 15
+        )
+
+    def test_startup_window_expired_uses_poll_interval(self):
+        from gbserver.environment.skypilot import _effective_poll_timeout
+
+        # Window elapsed -> stop frequent waking, fall back to status cadence.
+        assert (
+            _effective_poll_timeout(900, "startup_window", 15, pulls_active=False)
+            == 900
+        )
+
+    def test_periodic_active_uses_log_interval(self):
+        from gbserver.environment.skypilot import _effective_poll_timeout
+
+        assert _effective_poll_timeout(900, "periodic", 15, pulls_active=True) == 15
+
+    def test_on_completion_uses_poll_interval(self):
+        from gbserver.environment.skypilot import _effective_poll_timeout
+
+        assert (
+            _effective_poll_timeout(900, "on_completion", 900, pulls_active=False)
+            == 900
+        )
+
+    def test_never_exceeds_poll_interval(self):
+        from gbserver.environment.skypilot import _effective_poll_timeout
+
+        # If log interval is longer than the status poll, use the shorter one.
+        assert _effective_poll_timeout(60, "periodic", 900, pulls_active=True) == 60
+
+
+class TestLogRetrievalDispatch:
+    """Verify _poll_skypilot_job dispatches to the right retrieval primitive."""
+
+    EVENT_CONFIGS = TestSkypilotMonitorLogParsing.EVENT_CONFIGS
+
+    def _make_env(self):
+        from gbserver.environment.skypilot import Skypilot
+        from gbserver.types.environmentconfig import EnvironmentConfig
+
+        event_q = asyncio.Queue()
+        config = EnvironmentConfig(
+            name="test-skypilot", type="Skypilot", config={"default_cloud": "k8s"}
+        )
+        env = Skypilot(event_q=event_q, environment_config=config)
+        launch_id = "log-mode-test"
+        env._cluster_names[launch_id] = "gb-log-mode-tes"
+        env._job_ids[launch_id] = 42
+        env._release_monitors(launch_id)
+        return env, launch_id, event_q
+
+    @pytest.mark.asyncio
+    async def test_on_completion_pulls_once_no_stream(self):
+        """on_completion: stream never starts; one pull at terminal."""
+        env, launch_id, event_q = self._make_env()
+        mock_sky = _make_running_then_terminal_sky_mock(running_polls=2)
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            patch.object(env, "_start_log_stream_task") as start_stream,
+            patch.object(env, "_download_and_parse_logs", return_value=10) as pull,
+        ):
+            await env.monitor_skypilot_monitor(
+                launch_id=launch_id,
+                event_q=event_q,
+                entityrun_metadata=EntityRunMetadata(build_id="b-oc"),
+                poll_interval=0.01,
+                event_configs=self.EVENT_CONFIGS,
+                log_retrieval={"mode": "on_completion"},
+            )
+
+        start_stream.assert_not_called()
+        assert pull.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_periodic_pulls_multiple_times_with_resume(self):
+        """periodic: pulls while RUNNING and at terminal, resuming start_line_num."""
+        env, launch_id, event_q = self._make_env()
+        mock_sky = _make_running_then_terminal_sky_mock(running_polls=3)
+
+        # Each pull reports it parsed up to line (call#*5) so resume advances.
+        calls = {"n": 0}
+
+        async def _pull(**kwargs):
+            calls["n"] += 1
+            return calls["n"] * 5
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            patch.object(env, "_start_log_stream_task") as start_stream,
+            patch.object(env, "_download_and_parse_logs", side_effect=_pull) as pull,
+        ):
+            await env.monitor_skypilot_monitor(
+                launch_id=launch_id,
+                event_q=event_q,
+                entityrun_metadata=EntityRunMetadata(build_id="b-pd"),
+                poll_interval=0.01,
+                event_configs=self.EVENT_CONFIGS,
+                log_retrieval={"mode": "periodic", "interval_seconds": 0},
+            )
+
+        start_stream.assert_not_called()
+        assert pull.call_count >= 2
+        # Later pulls resume past earlier lines (monotonic start_line_num).
+        resumes = [c.kwargs["start_line_num"] for c in pull.call_args_list]
+        assert resumes == sorted(resumes)
+        assert resumes[-1] > 0
+
+    @pytest.mark.asyncio
+    async def test_startup_window_pulls_despite_long_poll_interval(self):
+        """Regression: with a long status poll_interval (900s) but a short log
+        interval_seconds, startup_window must still pull on the *log* cadence.
+
+        The bug: the loop slept poll_interval between iterations, so a
+        startup_window step scraped exactly once (right after RUNNING, before the
+        service printed its URL) and never again — the rm_server_url binding was
+        never emitted. Here poll_interval=900 would make the second RUNNING poll
+        unreachable within the test's timeout unless the effective sleep shrinks
+        to the (0s) log interval while in window.
+        """
+        env, launch_id, event_q = self._make_env()
+        mock_sky = _make_running_then_terminal_sky_mock(running_polls=3)
+
+        calls = {"n": 0}
+
+        async def _pull(**kwargs):
+            calls["n"] += 1
+            return calls["n"]
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            patch.object(env, "_start_log_stream_task") as start_stream,
+            patch.object(env, "_download_and_parse_logs", side_effect=_pull) as pull,
+        ):
+            await asyncio.wait_for(
+                env.monitor_skypilot_monitor(
+                    launch_id=launch_id,
+                    event_q=event_q,
+                    entityrun_metadata=EntityRunMetadata(build_id="b-sw"),
+                    # Long status poll, but pulls every wake while in window.
+                    poll_interval=900,
+                    event_configs=self.EVENT_CONFIGS,
+                    log_retrieval={
+                        "mode": "startup_window",
+                        "interval_seconds": 0,
+                        "startup_window_seconds": 600,
+                    },
+                ),
+                timeout=10,
+            )
+
+        start_stream.assert_not_called()
+        # Multiple scrapes across the RUNNING polls, not just one.
+        assert pull.call_count >= 2, (
+            f"expected repeated scrapes within the startup window, "
+            f"got {pull.call_count}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_stream_mode_starts_live_stream(self):
+        """stream: live stream task is started (legacy behavior preserved)."""
+        env, launch_id, event_q = self._make_env()
+        mock_sky = _make_running_then_terminal_sky_mock(running_polls=2)
+
+        # Fake stream task that is already done, so supervision records it.
+        done_task = MagicMock()
+        done_task.done.return_value = True
+        done_task.cancelled.return_value = False
+        done_task.exception.return_value = None
+        fake_monitor = MagicMock()
+        fake_monitor.line_num = 7
+        fake_monitor.stream_source.lines_consumed = 7
+
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            patch.object(
+                env,
+                "_start_log_stream_task",
+                return_value=(done_task, fake_monitor),
+            ) as start_stream,
+            patch.object(env, "_download_and_parse_logs", return_value=0) as pull,
+        ):
+            await env.monitor_skypilot_monitor(
+                launch_id=launch_id,
+                event_q=event_q,
+                entityrun_metadata=EntityRunMetadata(build_id="b-st"),
+                poll_interval=0.01,
+                event_configs=self.EVENT_CONFIGS,
+                log_retrieval={"mode": "stream"},
+            )
+
+        start_stream.assert_called()
+        # Stream covered lines (lines_already_processed=7) -> no terminal pull.
+        pull.assert_not_called()
+
+
 def _make_terminal_managed_sky_mock(
     job_name="gb-managed-logp", cluster_name="sky-managed-cluster-1"
 ):
@@ -939,3 +1856,152 @@ class TestSkypilotManagedMonitorLogParsing:
                 poll_interval=0.01,
                 event_configs=self.EVENT_CONFIGS,
             )
+
+
+class TestInlineConfigMaterialization:
+    """The Skypilot env wires environment.yaml inline config into materialize()."""
+
+    def _env(self, config_block):
+        from gbserver.environment.skypilot import Skypilot
+        from gbserver.types.environmentconfig import EnvironmentConfig
+
+        cfg = EnvironmentConfig(name="env-inline", type="Skypilot", config=config_block)
+        return Skypilot(event_q=asyncio.Queue(), environment_config=cfg)
+
+    def test_noop_without_inline_sections(self):
+        env = self._env({"default_cloud": "slurm"})
+        with patch("gbserver.environment.skypilot_config.materialize") as m:
+            env._ensure_inline_configs_materialized()
+            m.assert_not_called()
+        assert env._inline_configs_done is True
+
+    def test_materialize_called_once_and_idempotent(self):
+        env = self._env(
+            {
+                "cluster_ssh_configs": {"slurm": [{"Host": "c", "HostName": "h"}]},
+                "cloud_config": {"lsf": {"q": 1}},
+                "aws_credentials": [{"profile": "default", "aws_access_key_id": "K"}],
+            }
+        )
+        with patch("gbserver.environment.skypilot_config.materialize") as m:
+            env._ensure_inline_configs_materialized()
+            env._ensure_inline_configs_materialized()  # idempotent
+            m.assert_called_once()
+            args = m.call_args.args
+            assert args[0] == "env-inline"  # env name
+            # SSH is NOT materialized here (merged per-launch); only cloud_config
+            # and aws are forwarded.
+            assert args[1] is None and args[2] == {"lsf": {"q": 1}} and args[3]
+
+    def test_ssh_materialized_per_launch(self):
+        env = self._env(
+            {"cluster_ssh_configs": {"slurm": [{"Host": "c", "HostName": "h"}]}}
+        )
+        with patch(
+            "gbserver.environment.skypilot_config.materialize_ssh_for_cloud"
+        ) as m:
+            env._materialize_ssh_for_launch("slurm")
+            m.assert_called_once()
+            args = m.call_args.args
+            assert args[0] == "env-inline"  # env name
+            assert args[3] == "slurm"  # only the launched cloud is merged
+
+    def test_ssh_materialize_noop_without_inline_ssh(self):
+        env = self._env({"default_cloud": "slurm"})
+        with patch(
+            "gbserver.environment.skypilot_config.materialize_ssh_for_cloud"
+        ) as m:
+            env._materialize_ssh_for_launch("slurm")
+            m.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_launch_inner_materializes_before_api_start(self):
+        env = self._env(
+            {"cluster_ssh_configs": {"slurm": [{"Host": "c", "HostName": "h"}]}}
+        )
+        calls = []
+        with (
+            patch.object(
+                env,
+                "_ensure_inline_configs_materialized",
+                side_effect=lambda: calls.append("materialize"),
+            ),
+            patch(
+                "gbserver.environment.skypilot._ensure_skypilot_api_running",
+                side_effect=lambda: calls.append("api"),
+            ),
+            patch.object(
+                env,
+                "_provision_with_retry",
+                side_effect=RuntimeError("stop-after-order-check"),
+            ),
+            patch("gbserver.environment.skypilot.sky", MagicMock()),
+        ):
+            with pytest.raises(RuntimeError):
+                await env._launch_skypilot_inner(launch_id="L1", launcher_config={})
+        assert calls[:2] == ["materialize", "api"]
+
+
+from gbserver.environment import skypilot as skymod
+
+
+class _FakeProvider:
+    mount_point = "/mnt/gb-shared"
+
+    def mount_prologue(self):
+        return "echo MOUNT_HERE\n"
+
+    def cleanup_run_script(self, workdir):
+        return f"echo CLEAN {workdir}\n"
+
+    def cleanup_zone(self):
+        return "us-east-1a"
+
+
+def test_prologue_orders_mount_before_cd_and_chmods_1777():
+    import subprocess
+
+    # Per-run workdir is under shared_workdir (a subdir of mount_point), while the
+    # mount is still at mount_point (/mnt/gb-shared). The chmod-walk sentinel is
+    # mount_point, so the extra gbroot level is created and chmod'd during the walk.
+    prologue = skymod._compose_step_prologue(
+        _FakeProvider(), "/mnt/gb-shared/gbroot/builds/b/runs/r"
+    )
+    assert prologue.startswith("set -eu")
+    # Mount, then chmod, then cd.
+    assert prologue.index("MOUNT_HERE") < prologue.index("chmod 1777")
+    assert prologue.rindex("chmod 1777") < prologue.index('cd "$GB_BUILD_WORKDIR"')
+    # Regression (#389 review): the chmod must be GUARDED so a step 2 running as a
+    # different uid than step 1 (which owns the pre-created dir) does not EPERM and
+    # abort under `set -eu`; and it must cover the builds/<id>/runs parents (created
+    # 0755 by mkdir -p) up to the shared-fs mount root, so a different-uid step can
+    # create its own per-run dir. So: no UNGUARDED chmod of the workdir, a guard is
+    # present, and the mount root bounds the walk.
+    assert 'chmod 1777 "$GB_BUILD_WORKDIR"\n' not in prologue
+    assert "2>/dev/null || true" in prologue
+    assert "/mnt/gb-shared" in prologue
+    # Race-safety (#389 review): the per-run tree is created world-writable
+    # atomically (umask 000) so a concurrent different-uid step never sees a 0755
+    # parent between mkdir and the sticky-bit chmod.
+    assert "umask 000" in prologue
+    # The emitted shell must be syntactically valid.
+    proc = subprocess.run(
+        ["bash", "-n"], input=prologue, text=True, capture_output=True
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_prologue_no_provider_is_plain_cli_prefix():
+    assert skymod._compose_step_prologue(None, "/mnt/x") == skymod._get_cli_prefix(
+        "/mnt/x"
+    )
+
+
+def test_no_gbserver_pinned_container_run_options():
+    """Regression (#389 review): gbserver must NOT pin any docker run options for a
+    containerized shared_filesystem step -- SkyPilot's docker_start_cmds already
+    provides --net=host / SYS_ADMIN / fuse / apparmor:unconfined, and pinning
+    --net=host duplicated fails ``docker run`` (rc 125). The pinning helper and its
+    constant were removed; assert they no longer exist."""
+    assert not hasattr(skymod, "_with_container_mount_options")
+    assert not hasattr(skymod, "_CONTAINER_SHARED_FS_RUN_OPTIONS")

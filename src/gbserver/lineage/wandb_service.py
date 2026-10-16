@@ -16,9 +16,10 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import deque
-from typing import Any, Dict, List, Literal, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, cast
 
 import wandb
 from huggingface_hub import dataset_info, model_info
@@ -36,9 +37,11 @@ from gbserver.types.constants import (
     GBSERVER_WANDB_API_KEY,
     GBSERVER_WANDB_BASE_URL,
     GBSERVER_WANDB_ENTITY,
+    GBSERVER_WANDB_LOG_LEVEL,
     GBSERVER_WANDB_PROJECT,
+    GBSERVER_WANDB_QUIET,
 )
-from gbserver.utils.logger import get_logger
+from gbserver.utils.logger import get_log_level, get_logger
 
 logger = get_logger(__name__)
 
@@ -60,24 +63,173 @@ class WandBLineageService(LineageService):
 
     def __init__(self):
         wandb.login(key=GBSERVER_WANDB_API_KEY, host=GBSERVER_WANDB_BASE_URL)
+        # Route wandb's Python-logger messages through gbserver's root handler
+        # (CustomFormatter) so any that surface match the gbserver log format,
+        # instead of wandb's own handler printing them raw. See issue #181 Task 1.
+        wandb_logger = logging.getLogger("wandb")
+        wandb_logger.setLevel(get_log_level(GBSERVER_WANDB_LOG_LEVEL))
+        for handler in list(wandb_logger.handlers):
+            wandb_logger.removeHandler(handler)
+        wandb_logger.propagate = True
         self._runs = {}
 
     def _get_run(self, run_id: str, job_name: str):
         if run_id in self._runs:
             return self._runs[run_id]
 
-        run = wandb.init(
-            project=GBSERVER_WANDB_PROJECT,
-            entity=GBSERVER_WANDB_ENTITY,
-            id=run_id,
-            name=job_name,
-            resume="allow",
-        )
+        try:
+            run = self._init_run(run_id, job_name)
+        except Exception:
+            # init() registers the run before it can fail, so a failure can leave a
+            # partial run behind: a late one on wandb.run, an early one nothing.
+            # Release it rather than leaking a live run and its sync thread for the
+            # life of this (daemon) process. Not about id reuse — ids are random
+            # now — but about not stranding an open run.
+            self._finish_quietly(self._partial_run_for(run_id), run_id)
+            raise
 
         self._runs[run_id] = run
         return run
 
+    @staticmethod
+    def _partial_run_for(run_id: str) -> Any:
+        """The global wandb run, but only if it is the one opened for ``run_id``.
+
+        ``wandb.init`` publishes near the end of a successful init, so a *late*
+        init failure leaves this call's partial run on the module-global
+        ``wandb.run`` and it must be released. The global is shared, though: it
+        may hold an unrelated run, and finishing that would mark a healthy run
+        failed. An unreadable id counts as not-ours — releasing the wrong run
+        corrupts it, while failing to release ours only leaves the id in use
+        until restart.
+        """
+        run = getattr(wandb, "run", None)
+        if run is None:
+            return None
+        try:
+            # ``Run.id`` is a decorated property, so reading it can raise more than
+            # AttributeError. This runs inside the caller's ``except`` block, ahead of
+            # a bare ``raise`` — letting anything escape here would mask the init
+            # error that is the real failure. Unreadable therefore means not-ours.
+            observed_id = run.id
+        except Exception:  # noqa: BLE001 — any failure to read the id means not-ours
+            return None
+        return run if observed_id == run_id else None
+
+    @staticmethod
+    def _finish_quietly(run: Any, run_id: str) -> None:
+        """Finish a run, never letting a teardown error mask the real one."""
+        if run is None:
+            return
+        try:
+            run.finish(exit_code=1)
+        except Exception as cleanup_error:  # pragma: no cover - defensive
+            logger.warning("Failed to release wandb run %s: %s", run_id, cleanup_error)
+
+    def _init_run(self, run_id: str, job_name: str):
+        """Open (or resume) the wandb run backing this lineage event."""
+        return wandb.init(
+            project=GBSERVER_WANDB_PROJECT,
+            entity=GBSERVER_WANDB_ENTITY,
+            id=run_id,
+            name=job_name,
+            # "never", not "allow": run ids are fresh random uuids
+            # (WandBLineageStore._build_events_for_target), so a resume can never
+            # legitimately happen. Under "allow" a uuid collision or a bug that
+            # reused an id would silently APPEND to an existing run; "never" turns
+            # that into a visible error instead of quiet lineage corruption.
+            resume="never",
+            # These runs are lineage *events*, not training runs. wandb's default
+            # code/git capture would snapshot the lineage-watcher process's own
+            # working tree (the gbserver checkout) into every recorded target —
+            # producing misleading code/, diff.patch, diff_<hash>.patch files and
+            # leaking the recorder's source/diff into wandb. Disable all of it.
+            # For the same reason, console capture earns nothing here: there is no
+            # workload stdout worth showing in the wandb UI, only the watcher's own
+            # logs. It also actively misbehaves — the stderr wrapper is uninstalled
+            # *after* finish() marks the run done, so any log line written in that
+            # window hits a callback that rejects writes to a finished run and
+            # raises UsageError (caught and logged by wandb's redirect.py). With
+            # wandb's own logging at DEBUG that is self-inflicted: its teardown
+            # messages trip their own wrapper. No redirect, no window, no noise.
+            settings=wandb.Settings(
+                quiet=GBSERVER_WANDB_QUIET,
+                save_code=False,
+                disable_code=True,
+                disable_git=True,
+                console="off",
+            ),
+        )
+
+    def _release_run(self, run_id: str) -> None:
+        """Finish and forget a run so it does not leak into ``self._runs``.
+
+        Run ids are random now, so this is no longer about making an id reusable.
+        It still does real work within one process lifetime: ``self._runs`` holds
+        open wandb runs, and an event that fails partway through would otherwise
+        leave a live run and its background sync thread behind for as long as the
+        process lives -- and the lineage watcher is a long-lived daemon.
+
+        A no-op for an id with no open run, so error paths need not know whether
+        the run was ever opened or a terminal event already finished it.
+        """
+        self._finish_quietly(self._runs.pop(run_id, None), run_id)
+
+    # wandb run modes in which a live backend IS available, so artifact
+    # registration can proceed. Any other mode (offline/disabled/dryrun/...) is
+    # treated as "no live backend" and artifact registration is skipped. Using
+    # an online allowlist rather than an offline denylist means a new or renamed
+    # non-live mode fails safe (skip) instead of raising against a dead backend.
+    _ONLINE_MODES = ("online", "run", "shared")
+
+    def _is_offline(self, run: Any) -> bool:
+        """Check whether a wandb run lacks a live backend for artifact ops.
+
+        Prefers the documented ``run.settings.mode`` (e.g. "online"/"offline"/
+        "disabled"/"dryrun"), treating anything not in ``_ONLINE_MODES`` as
+        offline. Falls back to the ``run.offline`` attribute for wandb versions
+        that do not expose settings on the run. Defaults to False (treat as
+        online) if neither is available.
+        """
+        mode = getattr(getattr(run, "settings", None), "mode", None)
+        if isinstance(mode, str):
+            return mode not in self._ONLINE_MODES
+        return bool(getattr(run, "offline", False))
+
+    def _register_artifacts(self, run: Any, event: Dict) -> None:
+        """Register input and output artifacts for the run.
+
+        Requires a live wandb backend; callers must skip this in offline mode.
+        """
+        for direction, resources in (
+            ("input", event.get("inputs", [])),
+            ("output", event.get("outputs", [])),
+        ):
+            is_output = direction == "output"
+            for resource in resources:
+                resource_name = self._dataset_name(resource)
+                resource_type = self._get_hf_type(resource)
+                artifact_type = (
+                    resource_type
+                    if resource_type in ("model", "dataset", "bucket")
+                    else "dataset"
+                )
+
+                if self._is_huggingface_resource(resource):
+                    self._register_hf_reference(
+                        run, resource, resource_name, is_output=is_output
+                    )
+                else:
+                    artifact = wandb.Artifact(
+                        name=resource_name, type=artifact_type, metadata=resource
+                    )
+                    if is_output:
+                        run.log_artifact(artifact)
+                    else:
+                        run.use_artifact(artifact)
+
     def emit_event(self, event: Dict) -> None:
+        run_id: Optional[str] = None
         try:
             run_id = event["run"]["runId"]
             job_name = event["job"]["name"]
@@ -85,41 +237,16 @@ class WandBLineageService(LineageService):
 
             run = self._get_run(run_id, job_name)
 
-            for inp in event.get("inputs", []):
-                resource_name = self._dataset_name(inp)
-                resource_type = self._get_hf_type(inp)
-                artifact_type = (
-                    resource_type
-                    if resource_type in ("model", "dataset", "bucket")
-                    else "dataset"
+            # Artifact registration requires a live wandb backend; in offline
+            # mode it raises. Skip only the artifact block here (run config,
+            # facets, tags and the event log below still apply offline).
+            if self._is_offline(run):
+                logger.warning(
+                    "wandb offline mode; skipping artifact lineage registration for run %s",
+                    run_id,
                 )
-
-                if self._is_huggingface_resource(inp):
-                    self._register_hf_reference(
-                        run, inp, resource_name, is_output=False
-                    )
-                else:
-                    artifact = wandb.Artifact(
-                        name=resource_name, type=artifact_type, metadata=inp
-                    )
-                    run.use_artifact(artifact)
-
-            for out in event.get("outputs", []):
-                resource_name = self._dataset_name(out)
-                resource_type = self._get_hf_type(out)
-                artifact_type = (
-                    resource_type
-                    if resource_type in ("model", "dataset", "bucket")
-                    else "dataset"
-                )
-
-                if self._is_huggingface_resource(out):
-                    self._register_hf_reference(run, out, resource_name, is_output=True)
-                else:
-                    artifact = wandb.Artifact(
-                        name=resource_name, type=artifact_type, metadata=out
-                    )
-                    run.log_artifact(artifact)
+            else:
+                self._register_artifacts(run, event)
 
             run_facets = event.get("run", {}).get("facets", {})
             job_facets = event.get("job", {}).get("facets", {})
@@ -186,6 +313,11 @@ class WandBLineageService(LineageService):
 
         except Exception as e:
             logger.error("Failed to process lineage event: %s", e)
+            # Free the id for the retry, as in _get_run. A terminal event already
+            # finished and popped the run, so this is a no-op there — not a
+            # second finish().
+            if run_id is not None:
+                self._release_run(run_id)
             raise
 
     def _get_run_lineage(self, run_id: str) -> Optional[Dict]:
@@ -763,6 +895,157 @@ class WandBLineageService(LineageService):
         except Exception as e:
             logger.error("Failed to count runs by tags: %s", e)
             return 0
+
+    def filter_unrecorded(
+        self,
+        target_ids: set[str],
+        expected_counts: Optional[dict[str, int]] = None,
+        on_query_error: Optional[Callable[[Exception], None]] = None,
+    ) -> set[str]:
+        """Return the subset of ``target_ids`` not yet recorded in wandb.
+
+        Bounded to the given candidates: it queries only for runs tagged with one
+        of ``target_ids`` (a server-side ``{"tags": {"$in": [...]}}`` filter)
+        rather than scanning the whole project. Each recorded run carries a
+        ``target_id=<uuid>`` tag (see WandBLineageStore._build_events_for_target),
+        so we derive which candidates are already recorded from that tag and
+        return the rest. The tag is the ONLY way to do this: run ids are random
+        uuids carrying no target information at all, so a run whose ``target_id``
+        tag is missing is invisible here and unreclaimable — which is why the
+        emitter must put that tag on every event it writes.
+
+        A single target emits one run per output artifact (or one run when it has
+        no outputs), so presence of *a* tagged run does not mean the target is
+        fully recorded: a prior scan that crashed part-way through emitting a
+        target's runs leaves some runs tagged but the lineage incomplete. To
+        avoid masking such a partial record (which would leave a permanent gap,
+        since the target would never be re-selected), we *count* the tagged runs
+        per candidate and treat a target as recorded only when its run count
+        meets or exceeds ``expected_counts[tid]``. When ``expected_counts`` is
+        ``None`` or lacks a candidate's key, that candidate falls back to the
+        presence check (recorded once >=1 run exists) — the pre-count behavior,
+        which keeps older fully-recorded runs (that predate this check) from
+        being needlessly re-recorded.
+
+        This is a CORRECTNESS mechanism, not an optimization. Run ids are random
+        uuids, so re-recording a target wandb already has writes a second set of
+        runs rather than resuming the first — there is no idempotency underneath
+        to fall back on. Hence the failure mode is fail CLOSED: on any error this
+        returns an EMPTY set (record nothing) and reports the error through
+        ``on_query_error``, and the caller is expected to abort and retry rather
+        than treat the empty result as "all recorded".
+
+        One consequence of random ids, ACCEPTED and deliberately not fixed here:
+        a target whose emission crashed partway through leaves runs that can never
+        be completed, since the missing ones would get fresh ids. Re-recording
+        emits a full new set, so the target ends up with more runs than
+        ``expected_counts[tid]`` and the ``>=`` above passes from then on.
+
+        What that actually costs is small: the re-record DOES write every output,
+        so the lineage is complete and correct -- what remains is duplicate runs in
+        the wandb UI. The count being inflated would mask a *further* partial
+        emission of the same target, but that needs a second mid-emission crash on
+        a target whose count is already inflated: a target is only reconciled once
+        it is SUCCESS with a finished_at, and a finished target gains no new
+        outputs (output_artifacts accumulates during the run, see
+        buildrunner.__merge_output_artifacts, and the whole set lives in the one
+        StoredTargetRun row), so expected_run_count is stable. A double race, not
+        an operational failure mode.
+
+        Do not "fix" this by making run ids deterministic again (a hash of target
+        uuid / artifact name / index, or any content-derived scheme). That is where
+        this code came from, and it fails far worse: wandb does not allow a DELETED
+        run to be recreated under its original id, so once a run is deleted -- which
+        happened, intentionally -- a derived id recomputes to that tombstoned id
+        forever and the target becomes permanently unrecordable. Commit 5824ae99
+        could only stop the futile retries, not record the lineage. Random ids
+        remove that failure by construction: a fresh uuid has never been seen, so
+        it can never have been deleted. Bounded over-recording is the strictly
+        better trade, and it holds without depending on nobody ever deleting a run.
+
+        Nor does a hybrid work (derive the id, fall back to a random one when wandb
+        rejects it as deleted): the fallback run is itself unaddressable, so the
+        next scan recomputes the same rejected hash and emits *another* random run
+        for that output, growing duplicates without bound instead of once.
+
+        Tightening ``>=`` to ``==`` is also wrong: a target with extra runs would
+        then read unrecorded on every scan and re-emit a duplicate set each time.
+
+        If this ever does need closing, the missing state is LOCAL, not in the id:
+        record which outputs have already been emitted on the granite.build side
+        (output_artifacts already says which are expected) instead of inferring it
+        by counting what reached the sink. That leaves ids random and deletions
+        harmless.
+        """
+        if not target_ids:
+            return set()
+        try:
+            api = wandb.Api()
+            project_path = (
+                f"{GBSERVER_WANDB_ENTITY}/{GBSERVER_WANDB_PROJECT}"
+                if GBSERVER_WANDB_ENTITY
+                else GBSERVER_WANDB_PROJECT
+            )
+            # Bound the query to this scan's candidates: match only runs whose
+            # target_id tag is one of ours. This is a set-membership ($in) filter,
+            # not the $regex the IBM wandb backend times out on, so it stays cheap
+            # and reliable regardless of how many historical runs exist. A single
+            # query serves all candidates; the counting below is a post-filter
+            # over the fetched runs, never a per-target query.
+            candidate_tags = [f"target_id={tid}" for tid in target_ids]
+            run_counts: dict[str, int] = {}
+            for run in api.runs(
+                project_path, filters={"tags": {"$in": candidate_tags}}
+            ):
+                # A run can carry more than one target_id tag (e.g. a run resumed
+                # across targets), so credit every candidate tag it carries. Use a
+                # set so a run counts at most once per target even if the same tag
+                # appears twice on it.
+                for target_id in {
+                    tag.split("=", 1)[1]
+                    for tag in (run.tags or [])
+                    if tag.startswith("target_id=")
+                }:
+                    # Only count candidates we actually asked about; ignore empty
+                    # values and any unrelated tag the backend returns.
+                    if target_id in target_ids:
+                        run_counts[target_id] = run_counts.get(target_id, 0) + 1
+            recorded: set[str] = set()
+            for tid in target_ids:
+                count = run_counts.get(tid, 0)
+                if count == 0:
+                    continue
+                expected = (expected_counts or {}).get(tid)
+                # No expected count for this target → presence check (>=1);
+                # otherwise require the full set of runs.
+                if expected is None or count >= expected:
+                    recorded.add(tid)
+            return target_ids - recorded
+        except (
+            Exception
+        ) as e:  # noqa: BLE001 — best-effort; failure records nothing (fail closed)
+            logger.error("Failed to filter unrecorded target ids from wandb: %s", e)
+            if on_query_error is not None:
+                # Tell the caller this empty set is a fail-CLOSED default, not a
+                # verdict that everything is already recorded. Both halves matter:
+                # the empty set alone would read as "nothing left to do" and let a
+                # caller advance its checkpoint over unprocessed work, so the
+                # callback is what makes the difference visible. Reported before
+                # returning, and kept inside the handler: the contract is that this
+                # method never raises, so a misbehaving callback must not turn a
+                # degraded query into one.
+                try:
+                    on_query_error(e)
+                except Exception:  # noqa: BLE001 — callback must not break the contract
+                    logger.exception(
+                        "on_query_error callback raised while reporting a "
+                        "filter_unrecorded failure; ignoring it."
+                    )
+            # Fail CLOSED: return nothing to record. Run ids are random, so
+            # re-recording a target that wandb already has creates DUPLICATE runs
+            # instead of resuming the existing ones — an unanswered query must
+            # never be read as "not recorded". The caller retries next pass.
+            return set()
 
     def search_lineage_by_tags(
         self, tags: list, limit: int = 10, offset: int = 0

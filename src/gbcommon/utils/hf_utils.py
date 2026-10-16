@@ -1,6 +1,6 @@
 """General utility functions."""
 
-from typing import Literal
+from typing import Literal, Optional
 from urllib.parse import urlparse
 
 _ARTIFACT_TYPE_TO_SEGMENT: dict[str, str] = {
@@ -308,3 +308,37 @@ def convert_hf_uri_to_url(uri: str) -> str:
 
     else:
         raise ValueError(f"Invalid HuggingFace URI format: {uri}")
+
+
+def is_enterprise_hf_org(
+    organization: str,
+    enterprise_organizations: Optional[list[str]],
+) -> bool:
+    """Return whether ``organization`` should be treated as an HF Enterprise org.
+
+    HF Enterprise gates repo/bucket creation on a resource group id, but there is
+    no non-admin HF API that distinguishes an Enterprise organization from an
+    individual user namespace. The split is therefore configuration-driven: an
+    explicit list of org names, supplied by the ``hf`` asset store's
+    ``store.yaml`` (``config.enterprise_organizations``) server-side, or by
+    ``GBEnvConfig.hf_enterprise_organizations`` in the CLI.
+
+    Args:
+        organization: HF organization (owner) namespace to classify.
+        enterprise_organizations: Configured Enterprise org names. ``None``
+            (the key is absent) means *every* org is treated as Enterprise,
+            preserving the behavior from before the split. An explicit empty
+            list means no org is Enterprise.
+
+    Returns:
+        ``True`` when the org is Enterprise and a resource group applies.
+
+    Note:
+        Matching is case-insensitive and surrounding whitespace is ignored,
+        since HF namespaces are case-insensitive.
+    """
+    if enterprise_organizations is None:
+        return True
+    return (organization or "").strip().lower() in {
+        o.strip().lower() for o in enterprise_organizations if o
+    }

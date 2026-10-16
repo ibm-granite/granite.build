@@ -23,7 +23,7 @@ import tempfile
 import traceback
 from copy import deepcopy
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Self
+from typing import Callable, Dict, List, Optional, Self, Tuple
 
 import yaml
 
@@ -33,7 +33,12 @@ from gbserver.build.buildentity import BuildEntity
 from gbserver.build.space import Space
 from gbserver.build.target import Target
 from gbserver.types.buildconfig import BUILD_FILENAME, BuildConfig, BuildFailure
-from gbserver.types.stepconfig import StepConfig, StepInputsAcceptEnum
+from gbserver.types.stepconfig import (
+    StepConfig,
+    StepEnvironmentTypeConfig,
+    StepInputsAcceptEnum,
+    StepLauncherConfig,
+)
 from gbserver.types.validation import GBValidationErrors, GBValidationErrorType
 from gbserver.utils.filesystem import sync_or_copy
 from gbserver.utils.logger import get_logger
@@ -42,6 +47,64 @@ from gbserver.utils.utils import get_uuid
 logger = get_logger(__name__)
 
 BUILD_DIR = "build"
+
+
+def _step_monitor_ref_errors(
+    env_cfg: StepEnvironmentTypeConfig, launcher: StepLauncherConfig
+) -> Tuple[List[str], List[str]]:
+    """Resolve the monitors a launcher selects; return (fatal errors, warnings).
+
+    Mirrors run-time monitor selection (``TargetStepRun``): only the monitors the
+    launcher names, looked up in the active env class's ``env_cfg.monitors``, are
+    resolved. Resolving each ``StepMonitorConfig`` via ``resolve_monitor_config``
+    surfaces problems at build-validation time instead of at step-run time.
+
+    The result separates *structural* problems from *transient* ones so build
+    validation doesn't permanently invalidate a build on a flaky fetch:
+
+    - **Fatal errors** (return[0]): a dangling/typo'd local ref, a ref cycle, a
+      cross-type ref, an inline ``extra_event_configs`` misuse, or a launcher
+      naming an undefined monitor — deterministic, so fail fast (build INVALID).
+    - **Warnings** (return[1]): a :class:`MonitorFetchError` — a *remote* (e.g.
+      git-hosted) monitor space that could not be fetched, which may be transient
+      (network). These do not invalidate the build; the run retries the fetch.
+
+    Args:
+        env_cfg: The step's resolved environment-type config (active env class).
+        launcher: The selected launcher, whose ``monitors`` names which monitors
+            run.
+
+    Returns:
+        A ``(errors, warnings)`` pair of human-readable strings (no target/step
+        prefix — the caller adds one).
+    """
+    # Local import avoids a build.py <-> targetsteprun.py import cycle
+    # (targetsteprun imports build.target / build.targetstep).
+    from gbserver.build.targetsteprun import MonitorFetchError, resolve_monitor_config
+
+    errors: List[str] = []
+    warnings: List[str] = []
+    # Shared launcher->monitor selection (StepEnvironmentTypeConfig) — the same
+    # rule TargetStepRun uses at run time, so validation can't drift from it.
+    pairs, missing = env_cfg.select_launcher_monitors(launcher)
+    for name in missing:
+        errors.append(
+            f"launcher requires monitor `{name}` not defined in the "
+            "environment config"
+        )
+    for name, monitor in pairs:
+        try:
+            resolve_monitor_config(monitor)
+        except MonitorFetchError as e:
+            # Transient/remote fetch failure — don't permanently invalidate; the
+            # run will retry. Structurally-bad refs (below) still fail fast.
+            warnings.append(
+                f"monitor `{name}` could not be fetched at validation ({e}); "
+                "will retry at run time"
+            )
+        except ValueError as e:
+            errors.append(f"monitor `{name}`: {e}")
+    return errors, warnings
 
 
 class Build(BuildEntity):
@@ -66,7 +129,7 @@ class Build(BuildEntity):
         targets: Optional[List[str]] = None,
         allow_partial_builds: bool = False,
         target_already_run_fn: Optional[
-            Callable[[str], Optional[tuple[str, dict[str, list[str]]]]]
+            Callable[[str], Optional[dict[str, list[str]]]]
         ] = None,
         **kwargs,
     ) -> None:
@@ -85,7 +148,7 @@ class Build(BuildEntity):
         self.targets = {}
         self.allow_partial_builds = allow_partial_builds
         self.target_already_run_fn: Optional[
-            Callable[[str], Optional[tuple[str, dict[str, list[str]]]]]
+            Callable[[str], Optional[dict[str, list[str]]]]
         ] = target_already_run_fn
         logger.info(
             "build %s self.event_q: %s %s",
@@ -159,6 +222,7 @@ class Build(BuildEntity):
                     build_id=self.build_id,
                     event_q=self.event_q,
                     target_name=target_name,
+                    build_config_name=self_config.name,
                     config=target_config,
                     build_workspace_dir=self.build_workspace_dir,
                     space=self.space,
@@ -249,15 +313,21 @@ class Build(BuildEntity):
                     f"{err_prefix} the env URI {target.environment_uri} is invalid: {e}"
                 )
                 errors.add(err=err)
-            # Read the env's `type` so SpaceURI's env-class-match tier picks the
-            # right env-keyed step variant during validation.  The validator runs
-            # before any TargetStep is instantiated, so without this scope the
-            # thread-local has no env class set and `space://steps/<name>` URIs
-            # whose only on-disk variants live under env-keyed subdirs would be
-            # reported as unresolvable.
-            env_class_name = self.__read_env_class_name(target_env_uri)
+            # Read the env's `type`, dir, and sub-type so all step resolution
+            # tiers (ancestor-walk, env-class-match with the sub-type filter) run
+            # during validation.  The validator runs before any TargetStep is
+            # instantiated, so without this scope the thread-local has no env
+            # context and `space://steps/<name>` URIs whose only on-disk variants
+            # live in the env dir tree or env-keyed subdirs would be reported as
+            # unresolvable.
+            env_class_name, env_subtype = self._read_env_types(target_env_uri)
+            env_dir_uri = self.__env_dir_uri(target_env_uri)
             logger.info("checking the steps of the target: %s %s", target_name, target)
-            with SpaceURI.with_current_env_class_name(env_class_name):
+            with SpaceURI.with_current_env_class_name(
+                env_class_name,
+                env_dir_uri=env_dir_uri,
+                env_subtype=env_subtype,
+            ):
                 for i, step in enumerate(target.steps):
                     err_prefix = f"Target `{target_name}` Step `{i}`:"
                     try:
@@ -277,39 +347,134 @@ class Build(BuildEntity):
                         errors.add(err=err)
         return errors
 
+    def __validate_step_monitors(self: Self) -> GBValidationErrors:
+        """Resolve each step's launcher-selected monitor refs at build creation.
+
+        Restores fail-fast for monitor ``ref``s: a dangling/typo'd ref, a ref
+        cycle, a cross-type ref, or a launcher naming an undefined monitor is
+        reported here (build INVALID) instead of surfacing at step-run time. Only
+        the monitors the selected launcher names in the target's active env class
+        are checked, matching what ``TargetStepRun`` resolves at run time (no false
+        positives). Iterates the materialized ``TargetStep``s, whose
+        ``step_environment_config``/``launcher`` are set during assimilation.
+        """
+        logger.info("validating the step monitors of the build")
+        errors = GBValidationErrors()
+        for target_name, target in self.targets.items():
+            for i, targetstep in enumerate(target.targetsteps):
+                env_cfg = targetstep.step_environment_config
+                launcher = targetstep.launcher
+                # A missing env config / launcher is a distinct failure handled by
+                # environment/launcher resolution — nothing to check here.
+                if env_cfg is None or launcher is None:
+                    continue
+                fatal, transient = _step_monitor_ref_errors(env_cfg, launcher)
+                for msg in fatal:
+                    errors.add(
+                        err=f"Target `{target_name}` Step `{i}`: {msg}",
+                        type=GBValidationErrorType.NOT_EXIST,
+                    )
+                # Transient/remote fetch failures are warnings, not errors — they
+                # must not turn a valid build INVALID on a network blip.
+                for msg in transient:
+                    errors.add_warning(
+                        warning=f"Target `{target_name}` Step `{i}`: {msg}"
+                    )
+        return errors
+
     @staticmethod
-    def __read_env_class_name(target_env_uri: Optional[URI]) -> Optional[str]:
-        """Read the ``type`` field from the target's environment.yaml.
+    def __env_dir_path(target_env_uri: Optional[URI]) -> Optional[Path]:
+        """Return the local directory ``Path`` for the target's env URI, or ``None``.
 
-        Returns the env's class name (e.g. ``"K8s"``, ``"Docker"``,
-        ``"Skypilot"``) for use as ``SpaceURI.current_env_class_name`` during
-        step URI validation.  Returns ``None`` when the env URI is unavailable,
-        not a local path, or its yaml can't be parsed — in which case the
-        env-class-match tier is silently skipped and validation falls back to
-        the existing tiers.
+        Central guard for the validator's env-yaml reads: yields ``None`` when the
+        env URI is unavailable or can't be materialized locally.  Both
+        :meth:`__env_dir_uri` and :meth:`_read_env_types` build on this instead of
+        re-deriving the path.
 
-        Lightweight on purpose: skips the full ``Environment.get_environment``
-        instantiation (which requires an event_q and runs side effects); the
-        validator only needs the class-name string.
+        A local (``file://`` / bare) env URI carries its directory directly in
+        ``uri.path``.  A **git-backed** space, though, resolves
+        ``space://environments/...`` to a ``GitURI`` whose ``uri.path`` is the repo
+        *URL* path (e.g. ``/owner/repo.git@branch``), not a local clone — using it
+        verbatim makes the validator miss ``environment.yaml`` and drop the env
+        class, which in turn makes builtin ``space://steps/<name>`` URIs
+        unresolvable.  So for such URIs we materialize the already-cached clone via
+        ``get_path_in_repo_from_cache`` (honors any ``#subdirectory=`` fragment, no
+        re-clone), mirroring :meth:`SpaceURI._uri_to_local_path`.
+
+        Args:
+            target_env_uri: The target's resolved ``environment_uri``, or ``None``.
+
+        Returns:
+            The env directory ``Path`` (local dir, or the reused git clone),
+            or ``None`` when the URI is unavailable or can't be materialized.
         """
         if target_env_uri is None or target_env_uri.uri is None:
             return None
+        # Local file:// (or bare) env URIs carry their dir directly in .path.
         env_path_str = target_env_uri.uri.path
-        if not env_path_str:
-            return None
-        env_dir = Path(env_path_str)
-        env_yaml = env_dir / "environment.yaml"
+        if env_path_str and Path(env_path_str).is_dir():
+            return Path(env_path_str)
+        # Git-backed space: materialize the (cached) clone, honoring any
+        # #subdirectory= fragment — the same helper SpaceURI uses, so no re-clone.
+        get_path_in_repo = getattr(target_env_uri, "get_path_in_repo_from_cache", None)
+        if get_path_in_repo is not None:
+            try:
+                return get_path_in_repo()
+            except Exception:  # pylint: disable=broad-except
+                # A clone failure (network/auth) is non-fatal: degrade to
+                # "can't inspect" so the facet is silently skipped, as before.
+                return None
+        return Path(env_path_str) if env_path_str else None
+
+    @staticmethod
+    def __env_dir_uri(target_env_uri: Optional[URI]) -> Optional[str]:
+        """Return a ``file://`` URI for the resolved env directory, or ``None``.
+
+        Feeds ``SpaceURI``'s Tier 1 ancestor-walk during validation so
+        env-co-located and ancestor steps resolve.  Builds on
+        :meth:`__env_dir_path`, so a git-backed env resolves to its reused local
+        clone; returns ``None`` only when the env URI is unavailable or can't be
+        materialized locally.
+        """
+        env_path = Build.__env_dir_path(target_env_uri)
+        return f"file://{env_path}" if env_path is not None else None
+
+    @staticmethod
+    def _read_env_types(
+        target_env_uri: Optional[URI],
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Read ``type`` and ``subtype`` from the target's env yaml.
+
+        Returns ``(class_name, subtype)`` for scoping step URI validation: the
+        class name (e.g. ``"K8s"``, ``"Skypilot"``) drives the env-class-match
+        tier, and the sub-type drives the per-step ``subtypes`` filter.  Either
+        element is ``None`` when the env URI is unavailable, can't be materialized
+        locally (:meth:`__env_dir_path` handles both ``file://`` and git-backed
+        env dirs), or its yaml can't be parsed — that facet is then silently
+        skipped.
+
+        Lightweight on purpose: skips the full ``Environment.get_environment``
+        instantiation (which requires an event_q and runs side effects); the
+        validator only needs these fields.
+        """
+        env_path = Build.__env_dir_path(target_env_uri)
+        if env_path is None:
+            return None, None
+        env_yaml = env_path / "environment.yaml"
         if not env_yaml.is_file():
-            return None
+            return None, None
         try:
             with open(env_yaml, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
         except (OSError, yaml.YAMLError):
-            return None
+            return None, None
         if not isinstance(data, dict):
-            return None
+            return None, None
         type_val = data.get("type")
-        return type_val if isinstance(type_val, str) and type_val else None
+        class_name = type_val if isinstance(type_val, str) and type_val else None
+        subtype_val = data.get("subtype")
+        subtype = subtype_val if isinstance(subtype_val, str) and subtype_val else None
+        return class_name, subtype
 
     def __validate_target_inputs(self: Self) -> GBValidationErrors:
         logger.info("validating the inputs of the build")
@@ -461,6 +626,7 @@ class Build(BuildEntity):
         # In case build_config was changed after __init__
         errors.add(build_config.my_validate())
         errors.add(self.__validate_step_uris())
+        errors.add(self.__validate_step_monitors())
         errors.add(self.__validate_target_inputs())
         errors.add(self.__validate_step_inputs_and_outputs())
         for t in self.targets.values():

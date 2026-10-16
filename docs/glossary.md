@@ -48,7 +48,7 @@ Quick reference for terms used throughout Granite.Build documentation.
 
 | Abbreviation | Meaning |
 |---|---|
-| CLI | Command Line Interface (`gb` command) |
+| CLI | Command Line Interface (`gb` or `gbserver` command) |
 | GPU | Graphics Processing Unit |
 | COS | Cloud Object Storage (S3-compatible) |
 | HF | HuggingFace |

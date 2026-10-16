@@ -36,6 +36,7 @@ from gbserver.types.buildevent import (
     EntityRunMetadata,
     EventPayload,
 )
+from gbserver.types.errors import WorkloadFailedException
 
 
 class MockEnvironment:
@@ -117,6 +118,31 @@ def create_unhealthy_event(node_name: str = "worker-node-1") -> BuildEvent:
     data = {"events": events, "state": "Unhealthy", "pod_placement": pod_placement}
     msg = f"```json\n{json.dumps(data, indent=2)}\n```"
 
+    payload = EventPayload.payload_parser(
+        event_type=BuildEventType.MESSAGE_EVENT,
+        data={"msg": msg},
+    )
+    return BuildEvent(
+        run_metadata=EntityRunMetadata(build_id="test-build-id"),
+        type=BuildEventType.MESSAGE_EVENT,
+        payload=payload,
+    )
+
+
+def create_quota_exhaustion_event(state: str = "Running") -> BuildEvent:
+    """A still-live AppWrapper (``state``) whose pod is stuck in FailedScheduling
+    due to cluster-wide GPU exhaustion -- transient scheduling backpressure, not
+    a terminal failure. Matches UnhealthyInsufficientPodsRetryStrategy."""
+    events = [
+        {
+            "object_type": "Pod",
+            "object_name": "gbtest-0-0",
+            "reason": "FailedScheduling",
+            "message": "0/179 nodes are available: 156 Insufficient nvidia.com/gpu.",
+        }
+    ]
+    data = {"appwrapper": "gbtest", "state": state, "events": events}
+    msg = f"```json\n{json.dumps(data, indent=2)}\n```"
     payload = EventPayload.payload_parser(
         event_type=BuildEventType.MESSAGE_EVENT,
         data={"msg": msg},
@@ -562,3 +588,262 @@ class TestRetryHandler:
         # Event should still be forwarded downstream before the exception
         assert downstream_queue.qsize() == 1
         assert env.retry_called is False
+
+
+def create_workload_failed_event() -> BuildEvent:
+    """Create a WORKLOAD_STATUS_EVENT with status=FAILED (the Skypilot terminal shape)."""
+    from gbserver.types.buildevent import BuildEventWorkloadStatusPayload
+    from gbserver.types.status import Status
+
+    return BuildEvent(
+        run_metadata=EntityRunMetadata(build_id="test-build-id"),
+        type=BuildEventType.WORKLOAD_STATUS_EVENT,
+        payload=BuildEventWorkloadStatusPayload(status=Status.FAILED),
+    )
+
+
+class TestWorkloadStatusTerminalFailure:
+    """A WORKLOAD_STATUS_EVENT(FAILED) must be a terminal verdict so the handler
+    raises instead of leaving the monitor's deferred stop_event wait hanging
+    (the Skypilot retry-handler deadlock)."""
+
+    def _handler(self, max_retries: int, strategy: RetryStrategy) -> RetryHandler:
+        return RetryHandler(
+            launch_id="test-launch-123",
+            downstream_queue=asyncio.Queue(),
+            environment=MockEnvironment(),
+            max_retries=max_retries,
+            strategies=[strategy],
+        )
+
+    def test_workload_status_failed_is_terminal(self: Self) -> None:
+        handler = self._handler(0, NeverRetryStrategy())
+        assert (
+            handler._is_terminal_failure_event(create_workload_failed_event()) is True
+        )
+
+    @pytest.mark.asyncio
+    async def test_process_events_raises_when_retry_disabled(self: Self) -> None:
+        # Retry disabled (max_retries=0): a failed workload event must raise
+        # WorkloadFailedException rather than be forwarded-and-looped forever.
+        handler = self._handler(0, NeverRetryStrategy())
+        await handler.get_wrapper_queue().put(create_workload_failed_event())
+        with pytest.raises(WorkloadFailedException):
+            await asyncio.wait_for(handler.process_events(), timeout=5.0)
+
+    @pytest.mark.asyncio
+    async def test_retry_takes_precedence_over_terminal_raise(self: Self) -> None:
+        # When retries are available, the failed event triggers a retry (no raise).
+        handler = self._handler(3, AlwaysRetryStrategy())
+        retry_triggered = await handler._evaluate_and_retry(
+            create_workload_failed_event()
+        )
+        assert retry_triggered is True
+        assert handler.environment.retry_called is True
+
+
+class TestExhaustedRetriableIsTerminal:
+    """A retriable failure with no retries left is itself terminal.
+
+    Without this the handler would neither relaunch nor raise on such an event,
+    leaving a monitor's deferred wait (e.g. LSF's _retry_pending_after_monitor)
+    hanging forever. The event need not carry a terminal-shaped ```json block --
+    a plain MESSAGE_EVENT that a strategy recognizes is enough.
+    """
+
+    def _handler(self, max_retries: int, strategy: RetryStrategy) -> RetryHandler:
+        return RetryHandler(
+            launch_id="test-launch-123",
+            downstream_queue=asyncio.Queue(),
+            environment=MockEnvironment(),
+            max_retries=max_retries,
+            strategies=[strategy],
+        )
+
+    def test_is_retriable_event_reflects_strategy(self: Self) -> None:
+        """_is_retriable_event ignores retry_count -- it only asks the strategies."""
+        event = create_test_event("Cannot open your job file")
+        assert (
+            self._handler(0, AlwaysRetryStrategy())._is_retriable_event(event) is True
+        )
+        assert (
+            self._handler(0, NeverRetryStrategy())._is_retriable_event(event) is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_retriable_but_exhausted_raises(self: Self) -> None:
+        """max_retries reached + a strategy would retry + no terminal json block
+        -> raise WorkloadFailedException instead of silently forwarding."""
+        handler = self._handler(0, AlwaysRetryStrategy())
+        event = create_test_event("transient error")
+        # Coupling that preserves #254: a stateless event (no json state block) is
+        # not a live non-terminal state, so the exhausted-retriable escalation is
+        # allowed to fire and unblock a monitor's deferred wait (e.g. LSF).
+        assert handler._is_live_nonterminal_state(event) is False
+        await handler.get_wrapper_queue().put(event)
+        with pytest.raises(WorkloadFailedException):
+            await asyncio.wait_for(handler.process_events(), timeout=5.0)
+        # The event is still forwarded downstream before the exception is raised.
+        assert handler.downstream_queue.qsize() == 1
+        assert handler.environment.retry_called is False
+
+    @pytest.mark.asyncio
+    async def test_non_retriable_non_terminal_does_not_raise(self: Self) -> None:
+        """A benign event no strategy recognizes must NOT raise when exhausted --
+        it is forwarded and the loop continues (guards against over-raising)."""
+        handler = self._handler(0, NeverRetryStrategy())
+        await handler.get_wrapper_queue().put(create_test_event("just a log line"))
+        processor_task = asyncio.create_task(handler.process_events())
+        for _ in range(100):
+            if handler.downstream_queue.qsize() >= 1:
+                break
+            await asyncio.sleep(0.01)
+        handler.stop()
+        await processor_task  # completes without raising
+        assert handler.downstream_queue.qsize() == 1
+
+    @pytest.mark.asyncio
+    async def test_running_appwrapper_with_quota_exhaustion_does_not_raise(
+        self: Self,
+    ) -> None:
+        """Regression for #335: a retriable quota-exhaustion event on a still-live
+        (state=Running) AppWrapper must NOT be failed as terminal even when retries
+        are disabled (max_retries=0). The workload is alive and merely waiting for
+        GPU capacity; the exhausted-retriable escalation is only meant to unblock a
+        monitor deferred-waiting for a retry (e.g. LSF), not to fail a running one."""
+        handler = self._handler(
+            0, UnhealthyInsufficientPodsRetryStrategy(object_types=["AppWrapper"])
+        )
+        await handler.get_wrapper_queue().put(create_quota_exhaustion_event("Running"))
+        processor_task = asyncio.create_task(handler.process_events())
+        for _ in range(100):
+            if handler.downstream_queue.qsize() >= 1:
+                break
+            await asyncio.sleep(0.01)
+        handler.stop()
+        await processor_task  # completes without raising
+        assert handler.downstream_queue.qsize() == 1
+        assert handler.environment.retry_called is False
+
+    def test_is_live_nonterminal_state(self: Self) -> None:
+        """A present, non-terminal state (Running/Unhealthy) is live; a terminal
+        state (Failed) or a stateless event is not -- so LSF-style plain failure
+        events still escalate when retries are exhausted."""
+        h = self._handler(0, NeverRetryStrategy())
+        assert (
+            h._is_live_nonterminal_state(create_quota_exhaustion_event("Running"))
+            is True
+        )
+        assert (
+            h._is_live_nonterminal_state(create_quota_exhaustion_event("Unhealthy"))
+            is True
+        )
+        failed = create_test_event('\n```json\n{"state": "Failed"}\n```\n')
+        assert h._is_live_nonterminal_state(failed) is False
+        exception = create_test_event('\n```json\n{"state": "Exception: boom"}\n```\n')
+        assert h._is_live_nonterminal_state(exception) is False
+        assert (
+            h._is_live_nonterminal_state(create_test_event("transient error")) is False
+        )
+
+
+def create_lsf_failed_event(
+    job_id: str = "1636559",
+    error: str = "Job 1636559 failed with return code 1 (LSF state EXIT)",
+) -> BuildEvent:
+    """Terminal LSF failure event as emitted by LSFBsubMonitor: a ```json block
+    with job_id/state/error and NO ``appwrapper`` key."""
+    data = {"job_id": job_id, "state": "Failed", "error": error}
+    msg = f"\n```json\n{json.dumps(data, indent=4)}\n```\n"
+    payload = EventPayload.payload_parser(
+        event_type=BuildEventType.MESSAGE_EVENT,
+        data={"msg": msg},
+    )
+    return BuildEvent(
+        run_metadata=EntityRunMetadata(build_id="test-build-id"),
+        type=BuildEventType.MESSAGE_EVENT,
+        payload=payload,
+    )
+
+
+def create_appwrapper_failed_event(
+    name: str = "gbtest", error: str = "pod OOMKilled"
+) -> BuildEvent:
+    """Terminal k8s AppWrapper failure event: carries BOTH ``appwrapper`` and
+    ``error`` (as AppWrapperMonitor emits), so it must still get the AppWrapper
+    wording, not the LSF wording."""
+    data = {
+        "appwrapper": name,
+        "state": "Failed",
+        "previous_state": "Running",
+        "error": error,
+    }
+    msg = f"\n```json\n{json.dumps(data, indent=4)}\n```\n"
+    payload = EventPayload.payload_parser(
+        event_type=BuildEventType.MESSAGE_EVENT,
+        data={"msg": msg},
+    )
+    return BuildEvent(
+        run_metadata=EntityRunMetadata(build_id="test-build-id"),
+        type=BuildEventType.MESSAGE_EVENT,
+        payload=payload,
+    )
+
+
+class TestExtractFailureMessage:
+    """_extract_failure_message picks wording from the event's payload shape:
+    AppWrapper (`appwrapper` key) keeps the k8s wording; a plain `error`
+    (LSF) surfaces that error; neither -> generic fallback."""
+
+    def _handler(self: Self) -> RetryHandler:
+        return RetryHandler(
+            launch_id="2c26a9c0",
+            downstream_queue=asyncio.Queue(),
+            environment=MockEnvironment(),
+            max_retries=0,
+        )
+
+    def test_lsf_surfaces_error_and_job_id(self: Self) -> None:
+        msg = self._handler()._extract_failure_message(create_lsf_failed_event())
+        assert "Job 1636559 failed with return code 1 (LSF state EXIT)" in msg
+        assert "LSF job 1636559 failed" in msg
+        # The misleading k8s wording must NOT appear for an LSF job.
+        assert "appwrapper" not in msg.lower()
+        assert "failed_pods" not in msg
+        assert "is in a Failed state" not in msg
+
+    def test_lsf_without_job_id_still_uses_error(self: Self) -> None:
+        event = create_test_event(
+            '\n```json\n{"state": "Failed", "error": "boom on the node"}\n```\n'
+        )
+        msg = self._handler()._extract_failure_message(event)
+        assert "boom on the node" in msg
+        assert "appwrapper" not in msg.lower()
+        assert "LSF job" not in msg
+
+    def test_appwrapper_wording_unchanged(self: Self) -> None:
+        handler = self._handler()
+        msg = handler._extract_failure_message(create_appwrapper_failed_event())
+        # Byte-identical to the legacy k8s message (and the `error` did not leak in).
+        assert msg == (
+            f"[RetryHandler launch_id {handler.launch_id}] gbtest is in a Failed state. "
+            "Build will stop because of an appwrapper workload error. "
+            "The `failed_pods` and `events` sections in the message above have more error details."
+        )
+        assert "pod OOMKilled" not in msg
+
+    def test_json_with_only_state_names_the_state(self: Self) -> None:
+        # Neither appwrapper nor error, but a parseable state -> keep concrete
+        # wording (name the state) rather than degrade to the generic fallback.
+        event = create_test_event('\n```json\n{"state": "Failed"}\n```\n')
+        msg = self._handler()._extract_failure_message(event)
+        assert msg == "[RetryHandler launch_id 2c26a9c0] workload is in a Failed state."
+
+    def test_non_json_message_falls_back_to_generic(self: Self) -> None:
+        # A message with no ```json``` block at all -> the generic fallback.
+        event = create_test_event("some plain failure text, not json")
+        msg = self._handler()._extract_failure_message(event)
+        assert msg == (
+            "[RetryHandler launch_id 2c26a9c0] Workload failed. "
+            "See event message for details."
+        )

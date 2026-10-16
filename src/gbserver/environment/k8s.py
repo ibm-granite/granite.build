@@ -60,7 +60,6 @@ import kubernetes_asyncio
 import yaml
 from kubernetes_asyncio import client, config, watch
 
-from gbcommon.types.testing import get_exported_gbtest_env_vars
 from gbcommon.uri.cos import CosURI
 from gbcommon.uri.hf import HfURI
 from gbcommon.uri.lh import LhURI
@@ -75,6 +74,10 @@ from gbserver.environment.environment import (
     Environment,
     EventLogLineParserConfig,
 )
+from gbserver.spaces.hf_push_config import (
+    apply_hf_step_overlay,
+    resolve_hfpush_resource_group_id,
+)
 from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
 from gbserver.types.buildevent import (
     EntityRunMetadata,
@@ -82,7 +85,10 @@ from gbserver.types.buildevent import (
 from gbserver.types.constants import (
     K8S_USE_ASPERA,
 )
-from gbserver.types.environment.k8s import StepK8sConfig
+from gbserver.types.environment.k8s import (
+    EnvironmentVariableConfig,
+    StepK8sConfig,
+)
 from gbserver.types.environmentconfig import (
     ENVIRONMENT_FILENAME,
     EnvironmentConfig,
@@ -265,6 +271,54 @@ class K8s(Environment):
             return StepK8sConfig()  # empty default
         return StepK8sConfig(**k8s_dict)
 
+    @staticmethod
+    def _secret_env_helm_values(
+        environment_variables: List[EnvironmentVariableConfig],
+        space_secret: Optional[str],
+    ) -> List[Tuple[str, str]]:
+        """Map declared secret env vars to Helm ``--set`` secretKeyRef args.
+
+        Unlike LSF/SkyPilot, K8s never resolves secret VALUES in the build
+        server: each declared env var becomes a ``valueFrom.secretKeyRef`` into
+        the space's single Kubernetes Secret (``space_secret``), and the kubelet
+        mounts the value into the pod at runtime.
+
+        The ``secret_names_to_use_as_env_variable`` allow-list is shared with
+        LSF/SkyPilot, so the pod env-var name is the declared ``env_name``
+        **verbatim** (portable across backends — the Helm chart renders the
+        name unchanged). The Secret **data-key** it references defaults to the
+        lowercased ``env_name`` when no explicit ``secret_name`` is given — the
+        long-standing K8s convention, since the space Secret stores each value
+        under its lowercased key.
+
+        :param environment_variables: declared env-var -> secret mappings.
+        :param space_secret: name of the space K8s Secret (its
+            ``secretKeyRef.name``); required when any env var is declared.
+        :returns: ``(helm_key, value)`` tuples to append to the ``--set``
+            overrides. A missing declared ``secret_name`` defaults the data-key
+            to the lowercased ``env_name``.
+        :raises ValueError: if a declared entry omits ``env_name`` (shared
+            fail-fast validation, consistent with LSF/SkyPilot), or if any env
+            var is declared but ``space_secret`` is unset. Secret values never
+            appear in the message.
+        """
+        values: List[Tuple[str, str]] = []
+        for env_var in environment_variables:
+            # Same fail-fast validation as LSF/SkyPilot: a malformed entry
+            # (missing env_name) raises rather than being silently dropped.
+            env_name = Environment._require_declared_env_name(env_var.env_name)
+            if not space_secret:
+                raise ValueError("setup_config['space']['secret'] is missing")
+            # Pod env-var name is the verbatim env_name (portable with
+            # LSF/SkyPilot). The Secret data-key defaults to the lowercased
+            # env_name -- the historical K8s convention -- unless an explicit
+            # secret_name selects a different key.
+            secret_key = env_var.secret_name or env_name.lower()
+            base = f"k8s.env.{env_name}.valueFrom.secretKeyRef"
+            values.append((f"{base}.name", space_secret))
+            values.append((f"{base}.key", secret_key))
+        return values
+
     def _get_k8s_labels_and_annotations(self: Self, kwargs: Dict) -> Tuple[Dict, Dict]:
         labels = kwargs.get("labels", {})
         assert isinstance(labels, dict)
@@ -286,6 +340,9 @@ class K8s(Environment):
         labels["granite-dot-build/build-step-id"] = (
             runmetadata.targetsteprun_id or "no_targetsteprun_id"
         )
+        # If re-enabled, run the value through
+        # gbserver.utils.utils.sanitize_k8s_label_value() first: usernames may
+        # be email addresses (ibmid auth) that are invalid as k8s label values.
         # labels["granite-dot-build/username"] = ""
         kwargs["labels"] = labels
         if runmetadata.targetstep_uri:
@@ -733,30 +790,25 @@ class K8s(Environment):
                 dockerconfig_files.append((idx, tmp_file.name))
 
         # --- Environment Variables ---
+        # Each declared secret is exposed via secretKeyRef under its verbatim
+        # env_name (portable with LSF/SkyPilot); the Secret data-key defaults to
+        # the lowercased env_name. See _secret_env_helm_values.
         space_secret = setup_config.get("space", {}).get("secret")
-        for env_var in environment_variables:
-            if not env_var.env_name:
-                continue
-            secret_key = env_var.secret_name or env_var.env_name.lower()
-            if not space_secret:
-                raise ValueError("setup_config['space']['secret'] is missing")
+        extra_runmetadata_values.extend(
+            self._secret_env_helm_values(environment_variables, space_secret)
+        )
 
-            # Helm nested --set for secretKeyRef
-            extra_runmetadata_values.append(
-                (
-                    f"k8s.env.{env_var.env_name}.valueFrom.secretKeyRef.name",
-                    space_secret,
-                )
-            )
-            extra_runmetadata_values.append(
-                (f"k8s.env.{env_var.env_name}.valueFrom.secretKeyRef.key", secret_key)
-            )
-
-        # Propagate GBTEST_ env vars as strings — must use --set-string to prevent
-        # Helm from parsing "true"/"false" as booleans, which would render as
-        # `value: true` (boolean) in the pod spec and fail Kubernetes validation.
+        # Propagate the standard cross-environment vars (GBTEST_ test-control
+        # vars + GB_BUILD_ID; from Environment.get_launch_env_vars) as strings —
+        # must use --set-string to prevent Helm from parsing "true"/"false" as
+        # booleans, which would render as `value: true` (boolean) in the pod
+        # spec and fail Kubernetes validation. Secret-backed env vars are handled
+        # separately above via valueFrom.secretKeyRef.
         extra_runmetadata_string_values = [
-            (f"k8s.env.{k}.value", v) for k, v in get_exported_gbtest_env_vars().items()
+            (f"k8s.env.{k}.value", v)
+            for k, v in self.get_launch_env_vars(
+                run_metadata=kwargs.get("run_metadata", {})
+            ).items()
         ]
 
         # --- Build --set overrides ---
@@ -993,6 +1045,41 @@ class K8s(Environment):
                 e,
             )
 
+    @staticmethod
+    def _is_helm_release_not_found(error: Exception) -> bool:
+        """Return True if a helm uninstall failure means the release is absent.
+
+        ``helm uninstall`` of a release that was never installed (or already
+        removed) exits non-zero with one of these messages::
+
+            Error: uninstall: Release not loaded: <name>: release: not found
+            Error: release: not found
+
+        This is a *permanent* condition, not a transient one, so cleanup should
+        treat it as success (nothing to uninstall) rather than retrying. This
+        situation arises, e.g., when a build is cancelled during the
+        ``helm install --dry-run`` phase, before the real release exists.
+
+        The match is anchored to helm's structured error phrasing (the
+        ``uninstall:`` command context and the ``error:`` prefix) rather than
+        loose ``"not loaded"`` / ``"not found"`` fragments. The exception
+        message embeds both the command line and the full stderr, so a bare
+        substring could match a *transient* failure whose stderr incidentally
+        contains one of those words — misclassifying it as success, skipping a
+        needed uninstall, and leaking the RayCluster/pods.
+
+        Args:
+            error: The exception raised by the uninstall command (its message
+                embeds the command line and stderr).
+
+        Returns:
+            True if the error indicates the release does not exist.
+        """
+        msg = str(error).lower()
+        return (
+            "uninstall: release not loaded" in msg or "error: release: not found" in msg
+        )
+
     async def _helm_uninstall_with_retry(
         self: Self, release_name: str, launch_id: str
     ) -> None:
@@ -1001,7 +1088,8 @@ class K8s(Environment):
 
         Retries up to GBSERVER_CLEANUP_MAX_RETRIES times with exponential backoff
         (base_delay * 2^attempt) to handle cases where the K8s API is temporarily
-        unreachable at cleanup time.
+        unreachable at cleanup time. A "release not found" failure is treated as
+        success (nothing to uninstall) and is not retried.
 
         Args:
             release_name: The helm release name to uninstall.
@@ -1037,6 +1125,17 @@ class K8s(Environment):
                 logger.debug("process: %s", process)
                 break  # success
             except Exception as e:
+                if self._is_helm_release_not_found(e):
+                    # Release was never installed (e.g. cancelled during the
+                    # dry-run) or is already gone. Nothing to uninstall, so this
+                    # is a successful teardown, not a retryable failure.
+                    logger.info(
+                        "[K8s launch_id %s] helm release %s not found at cleanup; "
+                        "treating uninstall as complete",
+                        launch_id,
+                        release_name,
+                    )
+                    break
                 if attempt < max_attempts - 1:
                     delay = GBSERVER_CLEANUP_RETRY_BASE_DELAY * (2**attempt)
                     logger.warning(
@@ -1660,7 +1759,9 @@ class K8s(Environment):
                 assert (
                     event_log_parser_configs is not None
                 ), "event_log_parser_configs is None"
-                pod_name = await asyncio.wait_for(pod_processes_queue.get(), timeout=10)
+                # Not wait_for: on 3.11 it can swallow a racing cancel (gh-86296).
+                async with asyncio.timeout(10):
+                    pod_name = await pod_processes_queue.get()
                 logger.info("Starting log monitoring for pod %s", pod_name)
                 log_tasks.append(
                     asyncio.create_task(
@@ -2141,49 +2242,45 @@ class K8s(Environment):
     ) -> Tuple[Dict, Optional[BuildTargetStepConfig]]:
         """
         Pull a HuggingFace Hub asset (model/dataset/space) in a K8s container.
-        Supports mode: hf_pull
+
+        HF pull is the only behavior this store supports, so ``mode`` is not
+        consulted (it is advisory — set it to ``default`` in configs).
         """
         assert isinstance(assetstore, Hfstore), f"invalid assetstore: {assetstore}"
 
+        # Note: k8s handlers deliberately do NOT call _warn_non_default_mode. That
+        # helper is for non-k8s environments (which ignore mode and warn on
+        # non-default) — k8s genuinely branches on mode for the cos/lh stores
+        # (afm_mount/cos_mount/cos_pull/dmf_pull). hf has only one behavior (pull),
+        # so mode is ignored here for backwards compatibility: legacy 'hf_pull'
+        # configs and the new 'default' convention both keep working.
         if storeload_config is None or storeload_config.config is None:
             raise ValueError("storeload_config or storeload_config.config is None")
 
-        if storeload_config.mode == "hf_pull":
-            cache_path = storeload_config.config.get("cache_path", None)
-            if cache_path is None:
-                raise ValueError("Did not find 'cache_path' in storeload configuration")
+        cache_path = storeload_config.config.get("cache_path", None)
+        if cache_path is None:
+            raise ValueError("Did not find 'cache_path' in storeload configuration")
 
-            hf_uri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
-            binding_path = (
-                Path(cache_path)
-                / hf_uri.get_owner()
-                / hf_uri.get_repo()
-                / hf_uri.hash()
-            )
-            # binding_path.mkdir(parents=True, exist_ok=True)
-            hfpull_config = Hfstore.build_hfpull_step_config(
-                hfuri=hf_uri,
-                binding_path=str(binding_path),
-            )
+        hf_uri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
+        binding_path = (
+            Path(cache_path) / hf_uri.get_owner() / hf_uri.get_repo() / hf_uri.hash()
+        )
+        # binding_path.mkdir(parents=True, exist_ok=True)
+        hfpull_config = Hfstore.build_hfpull_step_config(
+            hfuri=hf_uri,
+            binding_path=str(binding_path),
+        )
 
-            # Binding config for container
-            binding_config = {BINDING_KEY: {"path": str(Path(binding_path))}}
-            hfpull_stepuri = "space://steps/hfpull"
-            if (
-                storeload_config is not None
-                and storeload_config.config is not None
-                and "step_uri" in storeload_config.config
-            ):
-                hfpull_stepuri = storeload_config.config["step_uri"]
+        # Binding config for container
+        binding_config = {BINDING_KEY: {"path": str(Path(binding_path))}}
+        hfpull_stepuri = storeload_config.config.get("step_uri", "space://steps/hfpull")
 
-            pull_step_config = BuildTargetStepConfig(
-                step_uri=hfpull_stepuri,
-                config={"hfpull_config": hfpull_config},
-            )
+        pull_step_config = BuildTargetStepConfig(
+            step_uri=hfpull_stepuri,
+            config={"hfpull_config": hfpull_config},
+        )
 
-            return binding_config, pull_step_config
-
-        raise ValueError(f"No known mode of loading {uri}")
+        return binding_config, pull_step_config
 
     async def pushasset_hfstore(
         self: Self,
@@ -2229,29 +2326,20 @@ class K8s(Environment):
         # resource_group_name is configured (ignored if resource_group_name is set).
         space_name = output_config.space_name if output_config else None
 
-        # Resolve hf fields from build.yaml store_push (highest priority)
-        hf_resource_group_id = None
-        hf_resource_group_name = None
-        hf_private = True
-        if output_config is not None and output_config.store_push is not None:
-            hf_cfg = output_config.store_push.config.get("hf", {})
-            hf_resource_group_id = hf_cfg.get("resource_group_id", hf_resource_group_id)
-            hf_resource_group_name = hf_cfg.get(
-                "resource_group_name", hf_resource_group_name
-            )
-            hf_private = hf_cfg.get("private", hf_private)
-
         assert isinstance(
             assetstore, Hfstore
         ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
-        if hf_resource_group_id:
-            resource_group_id: Optional[str] = hf_resource_group_id
-        else:
-            resource_group_id = hfuri.resolve_resource_group_id(
-                token=assetstore.resolve_token(hfuri),
-                resource_group_name=hf_resource_group_name,
-                space_name=space_name,
-            )
+        # Enterprise/non-enterprise split + config precedence (environment-level
+        # storepush_config, overridden by build.yaml store_push) + table-first
+        # resolution all live in the shared helper. A non-Enterprise org
+        # resolves to None with no HF API call.
+        resource_group_id, hf_private, _hf_cfg = resolve_hfpush_resource_group_id(
+            hfuri=hfuri,
+            assetstore=assetstore,
+            space_name=space_name,
+            storepush_config=storepush_config,
+            output_config=output_config,
+        )
 
         hfpush_config = Hfstore.build_hfpush_step_config(
             hfuri=hfuri,
@@ -2260,20 +2348,11 @@ class K8s(Environment):
             hf_private=hf_private,
             hf_resource_group_id=resource_group_id,
         )
-        # Apply remaining hf fields from environment-level storepush_config
-        if (
-            storepush_config is not None
-            and storepush_config.config is not None
-            and "hf" in storepush_config.config
-        ):
-            hfpush_config["hf"].update(storepush_config.config["hf"])
-        # Apply remaining hf fields from build.yaml store_push (highest priority)
-        if (
-            output_config is not None
-            and output_config.store_push is not None
-            and "hf" in output_config.store_push.config
-        ):
-            hfpush_config["hf"].update(output_config.store_push.config["hf"])
+        # Apply remaining hf fields from the merged push config (environment
+        # level, overridden by build.yaml store_push; strips use_resource_group,
+        # re-asserts the resolved resource_group_id). Shared with skypilot so the
+        # overlay invariants cannot drift between the two.
+        apply_hf_step_overlay(hfpush_config, _hf_cfg, resource_group_id)
         hfpush_stepuri = "space://steps/hfpush"
         if (
             storepush_config is not None

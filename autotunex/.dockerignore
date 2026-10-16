@@ -1,0 +1,46 @@
+# Version control / tooling
+.git
+.github
+.claude
+.superpowers
+
+# Python virtualenv & caches
+.venv
+venv
+__pycache__
+*.pyc
+.mypy_cache
+.pytest_cache
+.ruff_cache
+*.egg-info
+
+# Secrets & local env (never bake into the image)
+.env
+.env.*
+
+# Local databases & backups
+*.db
+*.db.bak-*
+autotunex.db*
+
+# Runtime data (regenerated at run time under /data)
+artifacts
+tmp
+
+# Docs / tests / reports not needed in the image
+docs
+tests
+OSS_AUDIT_REPORT.md
+
+# Frontend build outputs & deps (rebuilt in the ui-builder stage).
+# Excluding src/ux/.env is deliberate: it holds PUBLIC_AUTOTUNEX_API_URL=/local
+# (a dev proxy target) which must NOT leak into the container build — the
+# ui-builder stage writes a fresh .env instead.
+src/ux/build
+src/ux/node_modules
+src/ux/.svelte-kit
+src/ux/.env
+src/ux/.env.*
+
+# OS cruft
+.DS_Store

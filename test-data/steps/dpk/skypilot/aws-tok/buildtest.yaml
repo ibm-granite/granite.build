@@ -1,0 +1,36 @@
+# YAML-driven spec for test_skypilot_aws_dpk_tok.py (located by the test/ <-> test-data/
+# helper, so this pairing holds in both test modes; see steps/README.md).
+#
+# ONE target on a real EC2 instance: tokenization with `validate: true`, so the
+# transform and its validator run in the same step. Reaching SUCCESS means the
+# transform ran AND src/validate_tokenization2arrow.py accepted its output.
+targets:
+  - tokenize
+target_expectations:
+  - target_name: tokenize
+    # step_count is 1 (NOT 2): skypilot/aws sets `inline: true` on its hf assetstore
+    # pull, so the hf download is injected into the dpk step's setup rather than being
+    # a separate step (slurm queues it separately, hence 2 there). The env:// output
+    # moves no bytes, so it queues no push step.
+    #
+    # jobstats_count is not asserted under standalone's NoopLineageStore but is kept
+    # accurate. All four numbers were validated against a green EC2 run
+    # (GB_ENVIRONMENT=DEV, which populates lineage counts): the build reached SUCCESS
+    # with these exact values.
+    step_count: 1
+    input_artifact_count: 1     # docs
+    output_artifact_count: 1    # tokens (env://, registered inline from the marker)
+    jobstats_count: 1
+    expected_steps:
+      - step_uri: space://steps/dpk
+        config:
+          dpk_config:
+            transform: tokenization2arrow
+            validate: true
+space_uri: ../../../../../configurations/spaces/local
+tests:
+  - runner
+simulate_step_failure: false
+# EC2 cold-start (instance bring-up + SkyPilot setup) plus a runtime uv install and a
+# tokenizer download, then the validator. Generous headroom for a light job.
+timeout_minutes: 40

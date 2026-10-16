@@ -1,0 +1,191 @@
+######
+# IFRL smoke recipe — minutes-long end-to-end plumbing test.
+# Three targets on space://environments/skypilot/lsf:
+#   rm-server   — reward-model FastAPI service; emits rm_server_url binding
+#   code-server — code-execution FastAPI service; emits code_server_url binding
+#   ifrl-training — openinstruct-rl GRPO trainer; consumes both URLs, runs ~2
+#                   optimizer updates, emits a checkpoint output for downstream
+#                   evals (full recipe: #39).
+#
+# Run:
+#   gb build start -f recipes/granite4-350m/lsf/ifrl-smoke/build.yaml \
+#     --parameters-path recipes/granite4-350m/lsf/ifrl-smoke/parameters.yaml \
+#     --space <your-space>
+######
+granite.build:
+  name: ifrl-smoke
+  retries:
+    max_retries: 5
+  targets:
+    # ─── RM (reward model) server ─────────────────────────────────────
+    rm-server:
+      environment_uri: space://environments/skypilot/lsf
+      outputs:
+        # mem:// store: the binding payload is a URL (http://host:8000). env://
+        # would round-trip it through filesystem-path normalisation and mangle it
+        # to /http:/host:8000. The mem:// store keys this URI to the producer's
+        # verbatim binding["state"] in the build's shared_mem_state dict, so the
+        # consumer reads the clean URL via {{ bindings.<x>.binding.state }}.
+        rm_server_url:
+          uri: "mem://rm-server"
+        # Cluster name for the teardown target (see mem:// note above): the
+        # verbatim "gb-<id>" reaches teardown via binding.state.
+        cluster_name:
+          uri: "mem://rm-server-cluster"
+      steps:
+        - step_uri: space://steps/rm-server
+          config:
+            rm_server_config:
+              model_path: "$${RM_SERVER_MODEL}"
+              idle_timeout: "$${RM_IDLE_TIMEOUT}"
+            launcher_config:
+              resources:
+                accelerators: "$${RM_ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${RL_QUEUE}"
+                memory: "$${RM_MEMORY}"
+
+    # ─── Code-execution server ────────────────────────────────────────
+    code-server:
+      environment_uri: space://environments/skypilot/lsf
+      outputs:
+        # mem:// store (see rm_server_url note above): avoids env://<URL> mangling;
+        # the clean URL reaches the trainer via the verbatim binding["state"].
+        code_server_url:
+          uri: "mem://code-server"
+        # Cluster name for the teardown target (see mem:// note above).
+        cluster_name:
+          uri: "mem://code-server-cluster"
+      steps:
+        - step_uri: space://steps/code-server
+          config:
+            code_server_config:
+              module: "$${CODE_MODULE}"
+              container_home: "$${CODE_CONTAINER_HOME}"
+              container_pythonpath: "$${CODE_CONTAINER_PYTHONPATH}"
+              container_path: "$${CODE_CONTAINER_PATH}"
+              idle_timeout: "$${CODE_IDLE_TIMEOUT}"
+            launcher_config:
+              resources:
+                cpus: "$${CODE_CPUS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${RL_QUEUE}"
+                memory: "$${CODE_MEMORY}"
+
+    # ─── IFRL GRPO training (consumes both server URLs) ───────────────
+    ifrl-training:
+      environment_uri: space://environments/skypilot/lsf
+      inputs:
+        rm_url:
+          binding: rm-server.rm_server_url
+        code_url:
+          binding: code-server.code_server_url
+      outputs:
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/openinstruct-rl
+          config:
+            rl_config:
+              # identification
+              exp_name: "$${EXP_NAME}"
+              run_name: "$${RUN_NAME}"
+              rl_name: "$${RL_NAME}"
+              # paths
+              model_name_or_path: "$${MODEL_PATH}"
+              dataset_mixer: '$${DATASET_MIXER}'
+              dataset_eval_mixer: '$${DATASET_EVAL_MIXER}'
+              output_dir: "$${OUTPUT_DIR}"
+              checkpoint_state_dir: "$${CHECKPOINT_STATE_DIR}"
+              # external services (resolved from the server target bindings;
+              # .binding.state carries the verbatim URL from the mem:// store)
+              rm_server_url: "{{ bindings.rm_url.binding.state }}"
+              code_server_url: "{{ bindings.code_url.binding.state }}"
+              # GRPO hyperparameters (all parameterizable)
+              beta: "$${BETA}"
+              num_unique_prompts_rollout: "$${NUM_UNIQUE_PROMPTS_ROLLOUT}"
+              num_samples_per_prompt_rollout: "$${NUM_SAMPLES_PER_PROMPT_ROLLOUT}"
+              cliprange_low: "$${CLIPRANGE_LOW}"
+              cliprange_high: "$${CLIPRANGE_HIGH}"
+              temperature: "$${TEMPERATURE}"
+              deepspeed_stage: "$${DEEPSPEED_STAGE}"
+              seed: "$${SEED}"
+              pad_token_id: "$${PAD_TOKEN_ID}"
+              per_device_train_batch_size: "$${PER_DEVICE_TRAIN_BATCH_SIZE}"
+              learning_rate: "$${LEARNING_RATE}"
+              max_prompt_token_length: "$${MAX_PROMPT_TOKEN_LENGTH}"
+              response_length: "$${RESPONSE_LENGTH}"
+              total_episodes: "$${TOTAL_EPISODES}"
+              kl_estimator: "$${KL_ESTIMATOR}"
+              pack_length: "$${PACK_LENGTH}"
+              thinking: "$${THINKING}"
+              vllm_tensor_parallel_size: "$${VLLM_TENSOR_PARALLEL_SIZE}"
+              num_learners_per_node: "$${NUM_LEARNERS_PER_NODE}"
+              vllm_num_engines: "$${VLLM_NUM_ENGINES}"
+              num_epochs: "$${NUM_EPOCHS}"
+              warmup_ratio: "$${WARMUP_RATIO}"
+              num_mini_batches: "$${NUM_MINI_BATCHES}"
+              save_freq: "$${SAVE_FREQ}"
+              eval_freq: "$${EVAL_FREQ}"
+              checkpoint_state_freq: "$${CHECKPOINT_STATE_FREQ}"
+              ref_policy_update_freq: "$${REF_POLICY_UPDATE_FREQ}"
+              n_gram: "$${N_GRAM}"
+              allowed_freq: "$${ALLOWED_FREQ}"
+              temp_final: "$${TEMP_FINAL}"
+              temp_change_interval: "$${TEMP_CHANGE_INTERVAL}"
+              entropy_coeff: "$${ENTROPY_COEFF}"
+              vllm_imp_ratio_cap: "$${VLLM_IMP_RATIO_CAP}"
+              gradient_checkpointing: "$${GRADIENT_CHECKPOINTING}"
+              async_mode: "$${ASYNC_MODE}"
+              apply_thinking_format_reward: "$${APPLY_THINKING_FORMAT_REWARD}"
+              apply_verifiable_reward: "$${APPLY_VERIFIABLE_REWARD}"
+              non_stop_penalty: "$${NON_STOP_PENALTY}"
+              apply_repetition_penalty: "$${APPLY_REPETITION_PENALTY}"
+              add_general_reward: "$${ADD_GENERAL_REWARD}"
+              set_weight_decay_on_bias_and_norm: "$${SET_WEIGHT_DECAY_ON_BIAS_AND_NORM}"
+              additive_format_reward: "$${ADDITIVE_FORMAT_REWARD}"
+              filter_zero_advantage: "$${FILTER_ZERO_ADVANTAGE}"
+              with_tracking: "$${WITH_TRACKING}"
+              ground_truths_key: "$${GROUND_TRUTHS_KEY}"
+              sft_messages_key: "$${SFT_MESSAGES_KEY}"
+              dataset_train_splits: "$${DATASET_TRAIN_SPLITS}"
+              dataset_eval_splits: "$${DATASET_EVAL_SPLITS}"
+              stop_strings: '$${STOP_STRINGS}'
+              importance_sampling_level: "$${IMPORTANCE_SAMPLING_LEVEL}"
+              advantage_normalization_type: "$${ADVANTAGE_NORMALIZATION_TYPE}"
+              iterator_type: "$${ITERATOR_TYPE}"
+              lr_scheduler_type: "$${LR_SCHEDULER_TYPE}"
+              loss_mode: "$${LOSS_MODE}"
+              temp_schedule_type: "$${TEMP_SCHEDULE_TYPE}"
+              dataset_local_cache_dir: "$${DATASET_LOCAL_CACHE_DIR}"
+              torchdynamo_disable: "$${TORCHDYNAMO_DISABLE}"
+            launcher_config:
+              resources:
+                accelerators: "$${RL_ACCELERATORS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${RL_QUEUE}"
+                memory: "$${RL_MEMORY}"
+
+    # ─── Teardown: down the server clusters once training is done ──────
+    teardown:
+      environment_uri: space://environments/skypilot/lsf
+      inputs:
+        # `gate` is the ordering primitive: a target starts only once ALL its
+        # input bindings resolve. checkpoint is emitted as the trainer's final
+        # log line, so teardown runs after GRPO training completes. The two
+        # *_cluster bindings carry the cluster identities AND ensure teardown
+        # can't fire before the servers have started.
+        gate:
+          binding: ifrl-training.checkpoint
+        rm_cluster:
+          binding: rm-server.cluster_name
+        code_cluster:
+          binding: code-server.cluster_name
+      steps:
+        - step_uri: space://steps/skypilot-teardown
+          config:
+            teardown_config:
+              cluster_names:
+                - "{{ bindings.rm_cluster.binding.state }}"
+                - "{{ bindings.code_cluster.binding.state }}"

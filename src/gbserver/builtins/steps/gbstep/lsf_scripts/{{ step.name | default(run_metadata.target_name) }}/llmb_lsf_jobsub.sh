@@ -150,12 +150,19 @@ export LLMB_LSF_TARGET_RUN_ID='{{ run_metadata.targetrun_id }}'
 export LLMB_LSF_TARGET_STEP_RUN_ID='{{ run_metadata.targetsteprun_id }}'
 export LLMB_LSF_TARGET_NAME='{{ run_metadata.target_name }}'
 
-{#- Input paths as env vars #}
+{#- Input paths as env vars. Guard on binding.path: not every binding
+    carries a filesystem path (e.g. mem:// bindings carry `state`), and
+    a bare access would raise during template fill. Mirrors the guard in
+    the bash sibling (llmb_bash_jobsub.sh). #}
+{%- if bindings is defined %}
 {%- for b_input_name, b_input_details in bindings.items() %}
 {%- set b_input_name_upper = b_input_name | upper %}
 {%- set b_input_env = 'LLMB_LSF_INPUT_' ~ b_input_name_upper %}
+{%- if b_input_details.binding is defined and b_input_details.binding.path is defined %}
 export {{ b_input_env }}="{{ b_input_details.binding.path }}"
+{%- endif %}
 {%- endfor %}
+{%- endif %}
 
 {#- Extra env vars from `step.yaml` and `build.yaml` #}
 {%- for env_var_name, env_var_value in cwork_env.items() %}

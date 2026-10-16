@@ -28,6 +28,7 @@ from gbserver.types.constants import (
     GBSERVER_RABBITMQ_MGMT_PASSWORD,
     GBSERVER_RABBITMQ_MGMT_URL,
     GBSERVER_RABBITMQ_MGMT_USER,
+    GBSERVER_RABBITMQ_TLS_VERIFY,
 )
 from gbserver.utils.logger import get_logger
 
@@ -41,6 +42,7 @@ def _get_admin() -> RabbitMQAdmin:
         management_url=GBSERVER_RABBITMQ_MGMT_URL,
         admin_user=GBSERVER_RABBITMQ_MGMT_USER,
         admin_password=GBSERVER_RABBITMQ_MGMT_PASSWORD,
+        tls_verify=GBSERVER_RABBITMQ_TLS_VERIFY,
     )
 
 

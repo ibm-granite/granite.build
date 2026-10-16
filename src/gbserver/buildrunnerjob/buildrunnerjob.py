@@ -48,17 +48,20 @@ from gbserver.types.constants import (
     DEFAULT_ROOT_WORKSPACE_DIR,
     ENV_VAR_GBSERVER_K8S_USE_ASPERA,
     ENV_VAR_GBSERVER_LSF_USE_ASPERA,
+    ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S,
     GB_ENVIRONMENT_CONFIG,
     GBSERVER_GBSERVER_IMAGE_TAG,
     GBSERVER_GITHUB_TOKEN,
     GBSERVER_METRICS_AUTH_TOKEN,
     GBSERVER_METRICS_ENDPOINT,
+    GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S,
     K8S_USE_ASPERA,
     LSF_USE_ASPERA,
 )
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 from gbserver.utils.template import fill_template
+from gbserver.utils.utils import sanitize_k8s_label_value
 
 logger = get_logger(__name__)
 
@@ -118,6 +121,10 @@ class BuildRunnerJob(AbstractBuildRunner):
         build_runner_extra_env_vars: dict[str, Any] = {
             ENV_VAR_GBSERVER_K8S_USE_ASPERA: K8S_USE_ASPERA,
             ENV_VAR_GBSERVER_LSF_USE_ASPERA: LSF_USE_ASPERA,
+            # The runner, not this process, launches SkyPilot — unforwarded, the knob
+            # would be read only where it has no effect. (The sibling SkyPilot
+            # tunables have the same gap; not widening this fix to cover them.)
+            ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S: GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S,
         }
 
         # Make sure the test env vars are copied to the buildrunner for testing.
@@ -242,10 +249,18 @@ class BuildRunnerJob(AbstractBuildRunner):
         stored_build = self.stored_build
         build_id = stored_build.uuid or "no_build_id"
         source_uri = stored_build.source_uri or ""
+        # username/spacename are used only for human tracking (no functional
+        # lookup matches on them), so sanitize to satisfy the k8s label-value
+        # constraints. In ibmid auth mode the username is an email address
+        # (e.g. contains '@'), which the API server would otherwise reject.
         labels = {
             "granite-dot-build/build-id": build_id,
-            "granite-dot-build/username": stored_build.username or "no_username",
-            "granite-dot-build/spacename": stored_build.space_name or "no_spacename",
+            "granite-dot-build/username": sanitize_k8s_label_value(
+                stored_build.username or "", fallback="no_username"
+            ),
+            "granite-dot-build/spacename": sanitize_k8s_label_value(
+                stored_build.space_name or "", fallback="no_spacename"
+            ),
         }
         annotations = {"granite-dot-build/pr": source_uri}
         kube_job_name = f"gb-build-runner-{build_id}"

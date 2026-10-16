@@ -37,10 +37,16 @@ import asyncio
 import json
 import re
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, List, Optional, Self, Set
+from typing import TYPE_CHECKING, ClassVar, Dict, List, Optional, Self, Set, Type
 
-from gbserver.types.buildevent import BuildEvent, BuildLogLevel, create_message_event
+from gbserver.types.buildevent import (
+    BuildEvent,
+    BuildEventType,
+    BuildLogLevel,
+    create_message_event,
+)
 from gbserver.types.errors import WorkloadFailedException
+from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -83,10 +89,7 @@ def build_retry_strategies_from_config(
         ]
     """
     from gbserver.resilience.strategies import (
-        AnyFailureRetryStrategy,
-        AsperaRetryStrategy,
         FileNotFoundRetryStrategy,
-        LsfTransientErrorRetryStrategy,
         NCCLErrorRetryStrategy,
         PodEvictionRetryStrategy,
         UnhealthyInsufficientPodsRetryStrategy,
@@ -108,17 +111,11 @@ def build_retry_strategies_from_config(
             FileNotFoundRetryStrategy(),
         ]
 
-    # Build strategies from config
+    # Build strategies from config. The registry maps a config ``type`` string to
+    # its class (built-ins plus any entry-point plugins); it is rebuilt cheaply
+    # via the shared plugin-discovery contract.
+    RetryStrategy._load_retry_strategies()
     strategies = []
-    strategy_map = {
-        "UnhealthyInsufficientPods": UnhealthyInsufficientPodsRetryStrategy,
-        "PodEviction": PodEvictionRetryStrategy,
-        "NCCLError": NCCLErrorRetryStrategy,
-        "FileNotFound": FileNotFoundRetryStrategy,
-        "LsfTransientError": LsfTransientErrorRetryStrategy,
-        "AsperaFailure": AsperaRetryStrategy,
-        "AnyFailure": AnyFailureRetryStrategy,
-    }
 
     for strategy_config in config:
         strategy_type = strategy_config.get("type")
@@ -128,7 +125,7 @@ def build_retry_strategies_from_config(
             )
             continue
 
-        strategy_class = strategy_map.get(strategy_type)
+        strategy_class = RetryStrategy.strategy_types.get(strategy_type)
         if not strategy_class:
             logger.warning("Unknown strategy type '%s', skipping", strategy_type)
             continue
@@ -186,6 +183,43 @@ class RetryStrategy(ABC):
 
     # Whether this strategy accepts object_types parameter in __init__
     accepts_object_types: bool = True
+
+    # config ``type`` string -> strategy class. Populated by
+    # ``_load_retry_strategies`` (in-tree built-ins + entry-point plugins), keyed
+    # under both the verbatim config type and its lowercase alias. The registry
+    # drives the *class lookup*; construction (``cls(**params)``) stays in
+    # ``build_retry_strategies_from_config``.
+    strategy_types: ClassVar[Dict[str, Type["RetryStrategy"]]] = {}
+
+    @classmethod
+    def _load_retry_strategies(cls, force: bool = False) -> None:
+        """(Re)build ``strategy_types`` from the built-ins and any plugins.
+
+        No-op once populated (``build_retry_strategies_from_config`` runs
+        per-launch), matching the sibling loaders; ``force=True`` rebuilds. The
+        rebuild goes through the shared contract, so the registry is reload-safe
+        and a plugin can only *add* a type, never shadow a built-in (core-wins).
+        """
+        if cls.strategy_types and not force:
+            return
+        from gbcommon.plugins import (
+            GROUP_RESILIENCE_STRATEGIES,
+            PluginRegistrar,
+            keys_by_name,
+            rebuild_registry,
+        )
+        from gbserver.resilience.strategies import BUILTIN_STRATEGIES
+
+        registrar = PluginRegistrar(
+            RetryStrategy.strategy_types, "Retry strategy type", keys_by_name
+        )
+
+        def populate() -> None:
+            for type_name, strategy_class in BUILTIN_STRATEGIES.items():
+                registrar.add(strategy_class, type_name)
+            registrar.discover(GROUP_RESILIENCE_STRATEGIES, RetryStrategy)
+
+        rebuild_registry(RetryStrategy.strategy_types, populate)
 
     @abstractmethod
     def should_retry(
@@ -344,16 +378,38 @@ class RetryHandler:
         while not self.stop_processing:
             try:
                 # Wait for events with a timeout to allow checking stop_processing
-                event = await asyncio.wait_for(
-                    self.wrapper_queue.get(),
-                    timeout=1.0,
-                )
+                # Not wait_for: on 3.11 it can swallow a racing cancel (gh-86296).
+                async with asyncio.timeout(1.0):
+                    event = await self.wrapper_queue.get()
 
                 # Evaluate if this event should trigger a retry
                 retry_triggered = await self._evaluate_and_retry(event)
 
                 # Check if this is a terminal failure
                 is_terminal_failure = self._is_terminal_failure_event(event)
+
+                # A retriable failure we can no longer retry (retries exhausted)
+                # is itself terminal. Without this, an event a strategy WOULD
+                # retry -- but can't, because retry_count >= max_retries -- would
+                # be neither relaunched nor raised, leaving a monitor's deferred
+                # wait (e.g. LSF's _retry_pending_after_monitor) hanging forever.
+                #
+                # But this escalation must not fire while the workload is still
+                # live: a retriable event that reports a present, non-terminal
+                # state (e.g. a K8s AppWrapper still Running/Unhealthy whose pod
+                # is stuck in FailedScheduling on cluster-wide GPU exhaustion) is
+                # transient backpressure, not a failure. Failing it -- especially
+                # when retries are disabled (max_retries == 0, so retry_count 0 >=
+                # 0 is immediately true) -- would turn a workload that is merely
+                # waiting for capacity, and may still succeed, into a false-positive
+                # build failure (#335). Stateless failure events (e.g. LSF's) carry
+                # no state and so still escalate.
+                retries_exhausted_on_retriable = (
+                    not retry_triggered
+                    and self.retry_count >= self.max_retries
+                    and self._is_retriable_event(event)
+                    and not self._is_live_nonterminal_state(event)
+                )
 
                 # Always forward the event downstream, but enrich with retry metadata
                 if retry_triggered:
@@ -375,12 +431,21 @@ class RetryHandler:
                 # Forward to downstream queue
                 await self.downstream_queue.put(event)
 
-                # If terminal failure and no retry was triggered, raise exception to stop the build
-                if is_terminal_failure and not retry_triggered:
+                # If terminal failure (or a retriable failure with no retries
+                # left) and no retry was triggered, raise to stop the build.
+                if (
+                    is_terminal_failure or retries_exhausted_on_retriable
+                ) and not retry_triggered:
                     error_message = self._extract_failure_message(event)
                     logger.error(
-                        "[RetryHandler launch_id %s] Terminal failure detected with no retry possible. Raising exception.",
+                        "[RetryHandler launch_id %s] %s detected with no retry possible. Raising exception.",
                         self.launch_id,
+                        (
+                            "Retries exhausted on retriable failure"
+                            if retries_exhausted_on_retriable
+                            and not is_terminal_failure
+                            else "Terminal failure"
+                        ),
                     )
                     raise WorkloadFailedException(error_message)
 
@@ -498,6 +563,23 @@ class RetryHandler:
                     e,
                 )
 
+    def _is_retriable_event(self: Self, event: BuildEvent) -> bool:
+        """
+        Report whether any registered strategy recognizes this event as retriable.
+
+        Unlike _evaluate_and_retry, this ignores retry_count / max_retries; it
+        only asks whether the event matches a retry strategy. process_events uses
+        it to detect a retriable failure that can no longer be retried (retries
+        exhausted), which is itself terminal.
+
+        Args:
+            event: BuildEvent from the monitor
+
+        Returns:
+            bool: True if at least one strategy would retry this event
+        """
+        return any(strategy.should_retry(event=event) for strategy in self.strategies)
+
     async def _evaluate_and_retry(
         self: Self,
         event: BuildEvent,
@@ -614,12 +696,81 @@ class RetryHandler:
         """Stop processing events."""
         self.stop_processing = True
 
+    def _parse_event_json(self: Self, event: BuildEvent) -> Optional[dict]:
+        """Parse the ```json block an AppWrapper monitor embeds in the event msg.
+
+        Single source of truth for the state classifiers
+        (``_is_terminal_failure_event`` / ``_is_live_nonterminal_state``) and the
+        failure-message formatter, so the extraction can't drift between them.
+
+        Args:
+            event: BuildEvent from the monitor
+
+        Returns:
+            The decoded object, or ``None`` when the event has no ``msg``, no
+            ```json``` block, the block is not valid JSON, or it does not decode
+            to an object.
+        """
+        msg = getattr(event.payload, "msg", None)
+        if not msg:
+            return None
+        json_match = re.search(r"```json\s*\n(.*?)\n```", msg, re.DOTALL)
+        if not json_match:
+            return None
+        try:
+            data = json.loads(json_match.group(1))
+        except (json.JSONDecodeError, AttributeError) as e:
+            logger.debug(
+                "[RetryHandler launch_id %s] Could not parse event message as JSON: %s",
+                self.launch_id,
+                e,
+            )
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _is_live_nonterminal_state(self: Self, event: BuildEvent) -> bool:
+        """
+        Report whether the event shows the workload is still live / non-terminal.
+
+        A retriable event that reports a present, non-terminal ``state`` (e.g. a
+        K8s AppWrapper still ``Running``/``Unhealthy`` while a pod waits on GPU
+        capacity) describes transient backpressure, not a failure -- so it must
+        not be escalated to a terminal verdict when retries are exhausted/disabled
+        (see ``process_events``).
+
+        Returns False when no ``state`` can be parsed (e.g. LSF-style plain failure
+        events), so those still escalate, and False for terminal states
+        (``Failed`` / ``Exception:``), which are handled by
+        ``_is_terminal_failure_event``.
+
+        Args:
+            event: BuildEvent from the monitor
+
+        Returns:
+            bool: True if the event reports a present, non-terminal state
+        """
+        data = self._parse_event_json(event)
+        if data is None:
+            return False
+        state = data.get("state", "")
+        if not state or state == "Failed" or state.startswith("Exception:"):
+            return False
+        return True
+
     def _is_terminal_failure_event(self: Self, event: BuildEvent) -> bool:
         """
         Determine if an event represents a terminal workload failure.
 
-        A terminal failure is one where the AppWrapper has entered a Failed state.
-        This is detected by parsing the event message for state information.
+        Two shapes are recognized:
+
+        1. A ``WORKLOAD_STATUS_EVENT`` whose payload reports
+           ``status == Status.FAILED``. This is the cloud/Skypilot-style terminal
+           signal (no AppWrapper ``msg`` to parse). Recognizing it here is what
+           lets a disabled/exhausted handler raise instead of leaving the monitor's
+           deferred ``stop_event`` wait hanging forever.
+        2. A ``MESSAGE_EVENT`` whose ``msg`` carries a ```json``` block with
+           ``state == "Failed"`` or ``state`` starting with ``"Exception:"`` — the
+           K8s AppWrapper terminal shape.
 
         Args:
             event: BuildEvent from the monitor
@@ -627,30 +778,19 @@ class RetryHandler:
         Returns:
             bool: True if this is a terminal failure event
         """
-        if not event.payload or not hasattr(event.payload, "msg"):
+        payload = event.payload
+        if (
+            event.type == BuildEventType.WORKLOAD_STATUS_EVENT
+            and getattr(payload, "status", None) == Status.FAILED
+        ):
+            return True
+
+        data = self._parse_event_json(event)
+        if data is None:
             return False
-
-        msg = event.payload.msg
-        if not msg:
-            return False
-
-        # Parse JSON from markdown code blocks
-        try:
-            # Extract JSON from ```json ... ``` blocks
-            json_match = re.search(r"```json\s*\n(.*?)\n```", msg, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group(1))
-                state = data.get("state", "")
-                # Terminal states that should stop the build
-                return state == "Failed" or state.startswith("Exception:")
-        except (json.JSONDecodeError, AttributeError) as e:
-            logger.debug(
-                "[RetryHandler launch_id %s] Could not parse event message as JSON: %s",
-                self.launch_id,
-                e,
-            )
-
-        return False
+        state = data.get("state", "")
+        # Terminal states that should stop the build
+        return state == "Failed" or state.startswith("Exception:")
 
     def _extract_failure_message(self: Self, event: BuildEvent) -> str:
         """
@@ -662,18 +802,11 @@ class RetryHandler:
         Returns:
             str: Error message describing the failure
         """
-        if not event.payload or not hasattr(event.payload, "msg"):
-            return f"Workload failed for launch_id {self.launch_id}"
-
-        msg = event.payload.msg
-        if not msg:
-            return f"Workload failed for launch_id {self.launch_id}"
-
-        # Try to extract more context from JSON
-        try:
-            json_match = re.search(r"```json\s*\n(.*?)\n```", msg, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group(1))
+        data = self._parse_event_json(event)
+        if data is not None:
+            # AppWrapper shape (has `appwrapper`, often `error` too): checked
+            # first so its `failed_pods`/`events` wording stays byte-identical.
+            if "appwrapper" in data:
                 appwrapper = data.get("appwrapper", "unknown")
                 state = data.get("state", "Failed")
                 return (
@@ -681,7 +814,25 @@ class RetryHandler:
                     + "Build will stop because of an appwrapper workload error. "
                     + "The `failed_pods` and `events` sections in the message above have more error details."
                 )
-        except (json.JSONDecodeError, AttributeError):
-            pass
+            # LSF (plain `error`, no appwrapper): surface the real error rather
+            # than the AppWrapper wording, which doesn't apply here.
+            error = data.get("error")
+            prefix = f"[RetryHandler launch_id {self.launch_id}]"
+            if error:
+                job_id = data.get("job_id")
+                if job_id is not None:
+                    return f"{prefix} LSF job {job_id} failed: {error}"
+                return f"{prefix} {error}"
+            # Parseable JSON with neither an appwrapper nor an error: still name the
+            # state, so any terminal `{"state": ...}` event keeps concrete wording
+            # rather than degrading to the generic fallback below.
+            state = data.get("state")
+            if state:
+                return f"{prefix} workload is in a {state} state."
 
+        # No parseable JSON (or JSON with no appwrapper/error/state): original
+        # wording, distinguishing "no message" from "message present but not JSON".
+        msg = getattr(event.payload, "msg", None) if event.payload else None
+        if not msg:
+            return f"Workload failed for launch_id {self.launch_id}"
         return f"[RetryHandler launch_id {self.launch_id}] Workload failed. See event message for details."

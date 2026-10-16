@@ -40,6 +40,9 @@ deployments:
       GBSERVER_LINEAGE_PROVIDER: wandb
       GBSERVER_WANDB_BASE_URL: https://ibm.wandb.io
       GBSERVER_WANDB_PROJECT: lineage-tracking
+      # 0 = off: on our slow-banner HPC login nodes the probe starves the control
+      # SSH SkyPilot opens next. Forwarded to each build-runner, which launches.
+      GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S: "0"
     envFromMainSecret:
     - GBSERVER_SQL_USER
     - GBSERVER_SQL_PASSWD
@@ -68,6 +71,54 @@ deployments:
     - GBSERVER_WANDB_API_KEY
     - GBSERVER_WANDB_ENTITY
     # OpenLineage / WandB ---
+  lineageWatcher:
+    # Single-writer of centralized lineage: reconciles the admin DB into the
+    # lineage store (W&B) in its own pod, off the build watcher's hot path.
+    enable: true
+    replicas: 1
+    # Optional. Seeds the gb_kv_pairs lineage checkpoint before the first scan,
+    # but only when the key is absent -- an existing checkpoint is never
+    # overwritten, which is what makes this safe to leave set across pod
+    # restarts. Leave unset (the default) and the watcher uses whatever is
+    # already in gb_kv_pairs, recording nothing while the key is absent.
+    #   from-latest  anchor on the most recent build
+    #   all          walk the full history (expensive first scan)
+    #   <build id>   anchor on a specific build
+    # In every case the anchor is that build's *oldest* completed target, so the
+    # build is recorded whole rather than from its middle.
+    # Note: with no successful target to anchor on, seeding fails fatally and
+    # the pod crashloops by design, rather than idling as a watcher that looks
+    # healthy but records nothing.
+    # baseBuildId: from-latest
+    resources:
+      limits:
+        cpu: "1"
+        ephemeral-storage: 2Gi
+        memory: 2Gi
+      requests:
+        cpu: "250m"
+        ephemeral-storage: 1Gi
+        memory: 512Mi
+    env:
+      GBSERVER_SQL_SSLROOT_CERT: ibm-cloud-databases.cert
+      GBSERVER_LINEAGE_PROVIDER: wandb
+      GBSERVER_WANDB_BASE_URL: https://ibm.wandb.io
+      GBSERVER_WANDB_PROJECT: lineage-tracking
+    envFromMainSecret:
+    - GB_ENVIRONMENT
+    # Admin DB access (reconciliation reads builds/targets from admin storage).
+    - GBSERVER_SQL_USER
+    - GBSERVER_SQL_PASSWD
+    - GBSERVER_SQL_HOST
+    - GBSERVER_SQL_PORT
+    - GBSERVER_SQL_DBNAME
+    - GBSERVER_SQL_SCHEMA
+    - GBSERVER_SQL_ECHO
+    - GBSERVER_METADATA_STORAGE
+    # OpenLineage / WandB ---
+    - GBSERVER_WANDB_API_KEY
+    - GBSERVER_WANDB_ENTITY
+    # OpenLineage / WandB ---
   restServer:
     enable: true
     # enable: false
@@ -83,6 +134,9 @@ deployments:
     env:
       DMF_CACHE: /tmp/dmf_cache
       GBSERVER_SQL_SSLROOT_CERT: ibm-cloud-databases.cert
+      GBSERVER_RABBITMQ_TLS_VERIFY: /app/ibm-cloud-databases.cert
+      GBSERVER_EVENT_PUBLISHING_ENABLED: "true"
+      RABBITMQ_TLS: "true"
       GBSERVER_REST_SERVER_WORKERS: "4"
       GBSERVER_AUTH_MODE: multi
       GBSERVER_LINEAGE_PROVIDER: wandb
@@ -116,6 +170,7 @@ deployments:
     - GBSERVER_RABBITMQ_MGMT_URL
     - GBSERVER_RABBITMQ_MGMT_USER
     - GBSERVER_RABBITMQ_MGMT_PASSWORD
+    - GBSERVER_RABBITMQ_AMQP_PORT
     # OpenLineage / WandB ---
     - GBSERVER_WANDB_API_KEY
     - GBSERVER_WANDB_ENTITY
@@ -128,11 +183,6 @@ pvcs:
   enable: true
   # enable: false
   buildWorkspace:
-    enable: true
-    # enable: false
-    storageClassName: ibmc-vpc-file-500-iops
-    storageSize: 1000Gi
-  prWorkspace:
     enable: true
     # enable: false
     storageClassName: ibmc-vpc-file-500-iops
@@ -198,3 +248,4 @@ secrets:
       GBSERVER_RABBITMQ_MGMT_URL: xxxx
       GBSERVER_RABBITMQ_MGMT_USER: xxxx
       GBSERVER_RABBITMQ_MGMT_PASSWORD: xxxx
+      GBSERVER_RABBITMQ_AMQP_PORT: "5672"

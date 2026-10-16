@@ -1,33 +1,20 @@
 #!/bin/bash
-# Entry point for a bash step that runs a Python run.py in a dedicated venv.
+# Entry point: build a per-step venv and run run.py in it.
+# Byte-for-byte identical across the inference, inference-lora, and lora-finetune
+# steps (venv name derived from the script's dir); keep the three copies in sync.
 #
-# This script is byte-for-byte identical across the inference, inference-lora,
-# and lora-finetune steps: the step name (and thus the venv) is derived from the
-# script's own directory, and the dependency set lives in a per-step
-# requirements.txt alongside run.py. Keep the three copies in sync.
-#
-# Shebang note: `#!/bin/bash` is an ABSOLUTE path on purpose, not
-# `#!/usr/bin/env bash`. The nohup launcher runs steps with a sanitized,
-# PATH-less env (see bash.py launch_nohup, which passes env= with no PATH), so
-# any `env`-based resolution — `env bash` here, or `env python3` on run.py —
-# can fail to find its interpreter. An absolute path the kernel resolves
-# directly sidesteps that. /bin/bash is guaranteed on the deploy image (UBI 9).
-#
-# That same PATH-less env is why run.py is wrapped at all: this script resolves
-# a real interpreter (trying absolute paths then PATH), builds a dedicated venv
-# once, installs requirements.txt into it, and execs run.py with an explicit
-# $VENV/bin/python. The venv is cached for reruns.
+# Absolute `#!/bin/bash` (not `env`): the launcher runs steps with a PATH-less env,
+# so env-based interpreter resolution can fail. /bin/bash is guaranteed on the image.
 set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STEP="$(basename "$SCRIPT_DIR")"
 
-# Pick a stable, writable base for the cached venv WITHOUT relying on $HOME: the
-# nohup launcher builds the job env from scratch (see bash.py launch_nohup) and
-# does NOT pass HOME, so `set -u` would abort on it. It DOES always export
-# LLMB_BASH_OUTPUT_DIR, shaped "<gb-home>/workdir/llm-build-<id>/.../outputs".
-# Strip at "/workdir/" to recover the stable per-user GB home root, so the venv
-# is cached across builds/reruns (not rebuilt per launch). Fall back to the
-# output dir itself, then /tmp, if the shape is unexpected.
+# The launcher passes its own (pinned >=3.11) Python dir; lead PATH with it so we
+# don't fall through to a host's system python (e.g. macOS 3.9).
+export PATH="${LLMB_BASH_PYTHON_DIR:?command.sh: launcher must set LLMB_BASH_PYTHON_DIR}:/usr/local/bin:/usr/bin:/bin"
+
+# Cache the venv under the GB home (recovered from LLMB_BASH_OUTPUT_DIR, not $HOME
+# which the launcher doesn't pass) so it persists across reruns.
 OUT="${LLMB_BASH_OUTPUT_DIR:-}"
 case "$OUT" in
   */workdir/*) VENV_BASE="${OUT%%/workdir/*}/.gb-venvs" ;;
@@ -36,11 +23,8 @@ case "$OUT" in
 esac
 mkdir -p "$VENV_BASE"
 
-PY=""
-for c in /usr/local/bin/python3.13 python3.13 python3.12 python3.11 python3; do
-  if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi
-done
-[ -n "$PY" ] || { echo "command.sh: no python3 interpreter found" >&2; exit 127; }
+PY="$LLMB_BASH_PYTHON_DIR/python3"
+[ -x "$PY" ] || PY="python3"
 
 VENV="$VENV_BASE/$STEP"
 if [ ! -x "$VENV/bin/python" ]; then
@@ -49,8 +33,7 @@ if [ ! -x "$VENV/bin/python" ]; then
   "$VENV/bin/pip" install --quiet --upgrade pip
 fi
 
-# Install (version-capped) deps into the venv. pip is a near-no-op once the
-# requirements are already satisfied, so this is cheap on reruns.
+# Install deps (near-no-op once satisfied, so cheap on reruns).
 echo "command.sh: installing requirements into $VENV"
 "$VENV/bin/pip" install --quiet -r "$SCRIPT_DIR/requirements.txt"
 

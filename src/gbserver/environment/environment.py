@@ -53,12 +53,16 @@ if TYPE_CHECKING:
 
 from pydantic import Field
 
-from gbcommon.types.testing import is_failure_simulated
+from gbcommon.types.testing import (
+    get_exported_gbtest_env_vars,
+    is_failure_simulated,
+)
 from gbcommon.uri.file import absolutize_file_uri
 from gbcommon.uri.uri import URI
 from gbserver.asset.asset import Asset
 from gbserver.asset.assetstore import Assetstore
 from gbserver.messaging.messaging_base import MessagingBase
+from gbserver.types.artifact import ArtifactType
 from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
 from gbserver.types.buildevent import (
     ArtifactEventPayload,
@@ -76,11 +80,16 @@ from gbserver.types.constants import (
     FULL_CONFIG_RUN_METADATA_KEY,
     GBSERVER_ENABLE_STEP_RETRY,
 )
-from gbserver.types.environment.environment import StepConfigSection
+from gbserver.types.environment.environment import (
+    EnvironmentVariableConfig,
+    StepConfigSection,
+)
 from gbserver.types.environmentconfig import (
     ENVIRONMENT_FILENAME,
     AssetStoreEnvironmentConfig,
     EnvironmentConfig,
+    StoreLoad,
+    StorePush,
 )
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
@@ -90,6 +99,35 @@ from gbserver.utils.utils import get_uuid
 logger = get_logger(__name__)
 
 BINDING_KEY = "binding"
+
+# Standard env vars injected into EVERY launched step, keyed by the run_metadata
+# field they read. Add a line here (e.g. "GB_TARGETRUN_ID": "targetrun_id") to
+# roll a var out to all environments at once. Each is emitted only when its
+# run_metadata value is non-empty, and str-coerced. Subclass launch methods
+# obtain these (and their own env) via Environment.get_launch_env_vars().
+STANDARD_STEP_ENV_FROM_RUN_METADATA: Dict[str, str] = {
+    "GB_BUILD_ID": "build_id",
+}
+
+# ANSI escape sequences (colour codes, cursor moves, etc.). Some environments'
+# retrieved logs colourise their line prefixes — SkyPilot, for example, wraps its
+# `(name, pid=N)` worker prefix in a cyan SGR sequence (`\x1b[36m(...)\x1b[0m`).
+# Left in place these would (a) defeat a `^`-anchored line_regex, since the line no
+# longer starts with the marker, and (b) leak into a captured field value (e.g. a
+# trailing reset folded onto a commit hash). We strip them once, centrally, in
+# get_events_from_log_line so every monitor sees clean text and no per-environment
+# regex has to account for ANSI — the handling is uniform across all environments.
+# Pattern covers both CSI sequences (`\x1b[...<final>`) and two-char escapes.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences (colour codes, cursor moves) from a log line.
+
+    :param text: a raw log line that may carry terminal escape sequences.
+    :returns: the line with all ANSI escape sequences removed.
+    """
+    return _ANSI_ESCAPE_RE.sub("", text)
 
 
 class EventFieldRegexLogParserConfig(Config):
@@ -282,6 +320,7 @@ class Environment(ABC):
         self.teardown_types = self._get_fns_with_prefix(prefix="teardown_")
         self.pullasset_types = self._get_fns_with_prefix(prefix="pullasset_")
         self.pushasset_types = self._get_fns_with_prefix(prefix="pushasset_")
+        self.shared_mem_store: Dict[str, Any] = {}
         self.supported_assetstores: Dict[Assetstore, AssetStoreEnvironmentConfig] = {}
         self._load_assetstores()
 
@@ -601,15 +640,204 @@ class Environment(ABC):
         self._dispatch_event(event=event)
 
     def _load_assetstores(self: Self) -> None:
-        """Load the asset stores specified in the environment.yaml"""
-        if self.config is None or self.config.assetstores is None:
+        """Load the asset stores specified in the environment.yaml.
+
+        Declared stores are loaded first; then :meth:`_register_default_envstore`
+        and :meth:`_register_default_memstore` ensure the ``env://`` (Envstore)
+        and ``mem://`` (Memstore) stores are available even when they are not
+        declared, so env:// / mem:// input/output work on all backends without an
+        ``assetstores`` entry in each ``environment.yaml``. The ``file:``
+        (Filestore) store is NOT auto-registered — an environment that supports
+        it declares ``space://assetstores/file`` in its ``environment.yaml`` with
+        only the modes it implements (e.g. bash: load+push; docker: push only),
+        so it never advertises a transfer direction it can't service.
+        """
+        if self.config is not None and self.config.assetstores is not None:
+            for storeenv in self.config.assetstores:
+                assetstore = Asset.get_assetstore_from_store_uri(
+                    store_uri=storeenv.store_uri, context=self.context
+                )
+                self.supported_assetstores[assetstore] = storeenv
+        else:
             logger.warning("No asset stores found!")
+        # Run after the declared stores so an explicit declaration wins.
+        self._register_default_envstore()
+        self._register_default_memstore()
+
+    def _register_default_envstore(self: Self) -> None:
+        """Ensure the ``env://`` (Envstore) asset store is registered for this env.
+
+        env:// artifacts already live on a filesystem the environment can reach,
+        so push/pull are no-ops (see ``pullasset_envstore`` / ``pushasset_envstore``).
+        Registering the store implicitly makes env:// universally supported without
+        a per-environment ``environment.yaml`` entry. Resolution order:
+
+        1. If an ``environment.yaml`` store already handles ``env://``, do nothing —
+           the explicit declaration wins.
+        2. Otherwise prefer a space-provided ``space://assetstores/env-local`` store
+           if one exists — an optional customization hook that **no shipped space
+           defines**, so this is normally a miss.
+        3. Fall back to the bundled ``builtins/assetstores/env-local`` default —
+           the effective out-of-the-box store.
+
+        Failures are logged and swallowed so a problem loading the store never
+        breaks environment construction.
+        """
+        if any(
+            s.config.base_uri and s.config.base_uri.startswith("env://")
+            for s in self.supported_assetstores
+        ):
+            return  # an explicit environment.yaml env:// store takes precedence
+        assetstore = self._resolve_env_assetstore()
+        if assetstore is None:
             return
-        for storeenv in self.config.assetstores:
-            assetstore = Asset.get_assetstore_from_store_uri(
-                store_uri=storeenv.store_uri, context=self.context
+        self.supported_assetstores[assetstore] = AssetStoreEnvironmentConfig(
+            store_uri="env://",
+            pull=[StoreLoad(mode="default")],
+            push=[StorePush(mode="default")],
+        )
+
+    def _resolve_env_assetstore(self: Self) -> Optional[Assetstore]:
+        """Resolve the ``env://`` asset store: optional space store, else bundled default.
+
+        A space *may* define its own ``space://assetstores/env-local`` store to
+        override the default, but **no shipped space does** — so in practice this
+        falls through to the bundled ``builtins/assetstores/env-local`` default,
+        which is the effective out-of-the-box store. The space lookup is a
+        best-effort customization hook: an *absent* store (the common, expected
+        path) is logged at ``debug``, while a store that is present but *fails to
+        load* (malformed yaml/config) is logged at ``warning`` so it is debuggable
+        instead of silently masked as absent. Both still fall back to the bundled
+        default.
+
+        :returns: The space's ``env-local`` Assetstore if the active space defines
+            one, else the bundled ``builtins/assetstores/env-local`` default, or
+            ``None`` if neither can be loaded.
+        """
+        # 1) Prefer a space-provided env-local store if one exists (optional
+        #    customization hook; not shipped by default -> normally a miss).
+        try:
+            return Asset.get_assetstore_from_store_uri(
+                store_uri="space://assetstores/env-local", context=self.context
             )
-            self.supported_assetstores[assetstore] = storeenv
+        except Exception as e:
+            # Distinguish two failure modes so a real problem isn't masked as a
+            # routine miss (both still fall back to the bundled default):
+            #  - No space defines env-local: SpaceURI.__new__ can't resolve it and
+            #    raises ValueError("Unresolvable space uri ..."). This is the
+            #    expected common path -> debug (no log noise on every build).
+            #  - A space DOES define env-local but it fails to load (malformed
+            #    yaml/config): any other error -> warning, so it's debuggable
+            #    rather than silently swallowed.
+            if isinstance(e, ValueError) and "Unresolvable space uri" in str(e):
+                logger.debug(
+                    "no space env-local store (%s); using bundled default env:// store",
+                    e,
+                )
+            else:
+                logger.warning(
+                    "space env-local store failed to load (%s); using bundled "
+                    "default env:// store",
+                    e,
+                )
+        # 2) Fall back to the bundled builtin default.
+        try:
+            env_store_dir = (
+                Path(__file__).parent.parent / "builtins" / "assetstores" / "env-local"
+            )
+            return Assetstore.load_asset_store(env_store_dir, context=self.context)
+        except Exception as e:
+            logger.warning("Failed to load bundled default env:// assetstore: %s", e)
+            return None
+
+    def _register_default_memstore(self: Self) -> None:
+        """Ensure the ``mem://`` (Memstore) asset store is registered for this env.
+
+        A ``mem://`` URI is an opaque key into the build's in-memory
+        ``shared_mem_store`` dict: a producer target's binding ``state`` value is
+        passed to a consumer verbatim (see ``pullasset_memstore`` /
+        ``pushasset_memstore``), so there is no filesystem transfer. Registering
+        the store implicitly makes mem:// universally supported without a
+        per-environment ``environment.yaml`` entry. Resolution order mirrors
+        :meth:`_register_default_envstore`:
+
+        1. If an ``environment.yaml`` store already handles ``mem://``, do nothing —
+           the explicit declaration wins.
+        2. Otherwise prefer a space-provided ``space://assetstores/mem-local`` store
+           if one exists — an optional customization hook that **no shipped space
+           defines**, so this is normally a miss.
+        3. Fall back to the bundled ``builtins/assetstores/mem-local`` default —
+           the effective out-of-the-box store.
+
+        Failures are logged and swallowed so a problem loading the store never
+        breaks environment construction.
+        """
+        if any(
+            s.config.base_uri and s.config.base_uri.startswith("mem://")
+            for s in self.supported_assetstores
+        ):
+            return  # an explicit environment.yaml mem:// store takes precedence
+        assetstore = self._resolve_mem_assetstore()
+        if assetstore is None:
+            return
+        self.supported_assetstores[assetstore] = AssetStoreEnvironmentConfig(
+            store_uri="mem://",
+            pull=[StoreLoad(mode="default")],
+            push=[StorePush(mode="default")],
+        )
+
+    def _resolve_mem_assetstore(self: Self) -> Optional[Assetstore]:
+        """Resolve the ``mem://`` asset store: optional space store, else bundled default.
+
+        A space *may* define its own ``space://assetstores/mem-local`` store to
+        override the default, but **no shipped space does** — so in practice this
+        falls through to the bundled ``builtins/assetstores/mem-local`` default,
+        which is the effective out-of-the-box store. The space lookup is a
+        best-effort customization hook: an *absent* store (the common, expected
+        path) is logged at ``debug``, while a store that is present but *fails to
+        load* (malformed yaml/config) is logged at ``warning`` so it is debuggable
+        instead of silently masked as absent. Both still fall back to the bundled
+        default.
+
+        :returns: The space's ``mem-local`` Assetstore if the active space defines
+            one, else the bundled ``builtins/assetstores/mem-local`` default, or
+            ``None`` if neither can be loaded.
+        """
+        # 1) Prefer a space-provided mem-local store if one exists (optional
+        #    customization hook; not shipped by default -> normally a miss).
+        try:
+            return Asset.get_assetstore_from_store_uri(
+                store_uri="space://assetstores/mem-local", context=self.context
+            )
+        except Exception as e:
+            # Distinguish two failure modes so a real problem isn't masked as a
+            # routine miss (both still fall back to the bundled default):
+            #  - No space defines mem-local: SpaceURI.__new__ can't resolve it and
+            #    raises ValueError("Unresolvable space uri ..."). This is the
+            #    expected common path -> debug (no log noise on every build).
+            #  - A space DOES define mem-local but it fails to load (malformed
+            #    yaml/config): any other error -> warning, so it's debuggable
+            #    rather than silently swallowed.
+            if isinstance(e, ValueError) and "Unresolvable space uri" in str(e):
+                logger.debug(
+                    "no space mem-local store (%s); using bundled default mem:// store",
+                    e,
+                )
+            else:
+                logger.warning(
+                    "space mem-local store failed to load (%s); using bundled "
+                    "default mem:// store",
+                    e,
+                )
+        # 2) Fall back to the bundled builtin default.
+        try:
+            mem_store_dir = (
+                Path(__file__).parent.parent / "builtins" / "assetstores" / "mem-local"
+            )
+            return Assetstore.load_asset_store(mem_store_dir, context=self.context)
+        except Exception as e:
+            logger.warning("Failed to load bundled default mem:// assetstore: %s", e)
+            return None
 
     @classmethod
     def load_environment_config(
@@ -689,6 +917,214 @@ class Environment(ABC):
     def __cancel_monitoring(self, launch_id: str):
         """Tells monitors that launch has stopped and they should not proceed."""
         self._get_launch_stopped_event(launch_id).set()
+
+    def get_launch_env_vars(
+        self: Self,
+        run_metadata: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, str]:
+        """Compose the full env dict to inject into a launched step.
+
+        This is the **single, non-overridden** strategy every environment uses:
+        precedence, least-privilege secret resolution, and the ``LLMB_``->``GB_``
+        aliasing are therefore uniform. Each environment contributes only two
+        small data-producing hooks — :meth:`_declared_secret_mappings` and
+        :meth:`_launch_env_layers` — never its own version of this method.
+
+        Layers are applied lowest to highest (a later layer overrides an earlier
+        one of the same name):
+
+        1. **Declared secrets** (lowest) — the mappings from
+           :meth:`_declared_secret_mappings`, resolved once against
+           ``self.secrets`` via :meth:`_resolve_declared_secret_env_vars`
+           (validated, least-privilege: only the secrets a step declares). This
+           covers every environment that injects secret *values*; K8s inherits
+           the empty default because it emits ``secretKeyRef`` *names* for the
+           kubelet to mount rather than resolving values here.
+        2. **Environment layers** (mid) — the dicts from
+           :meth:`_launch_env_layers`, applied in the returned order (e.g.
+           launcher ``envs``, ``config`` env overrides, built-in
+           ``LLMB_*``/``GB_*`` launcher vars).
+        3. **Standard cross-environment set** (highest, always applied) — the
+           ``GBTEST_`` test-control vars from the server's own environment
+           (e.g. GBTEST_MOCK_HF, forwarded so a step in a detached env mocks the
+           same HF ops the server would) plus the run_metadata-derived standard
+           vars (currently GB_BUILD_ID; see STANDARD_STEP_ENV_FROM_RUN_METADATA).
+           It is applied last so it wins over any config/secret/launcher value
+           of the same name.
+
+        Aliasing runs unconditionally as the final step: it is a no-op unless a
+        layer produced an ``LLMB_``-prefixed var, so environments that emit no
+        legacy names (e.g. K8s) are unaffected. Called with only ``run_metadata``
+        (both hooks returning empty) it yields exactly the standard set — the
+        shape environments that build their env elsewhere (e.g. K8s
+        ``--set-string`` values) rely on.
+
+        :param run_metadata: the launch's run_metadata dict; source of the
+            run_metadata-derived standard values, and forwarded to both hooks.
+            May be None/empty, in which case no run_metadata-derived vars are
+            emitted.
+        :param kwargs: launch-time context (e.g. ``config``, ``launcher_config``,
+            ``launch_id``); forwarded verbatim, alongside ``run_metadata``, to
+            both hooks so each environment can pluck what it needs.
+        :returns: a ``{name: str_value}`` dict; each run_metadata-derived var is
+            included only when its value is truthy, coerced with ``str()``.
+        :raises ValueError: if a declared-secret mapping omits ``env_name`` or
+            names a secret absent from ``self.secrets`` (secret values are never
+            included in the message).
+        """
+        hook_kwargs = {"run_metadata": run_metadata, **kwargs}
+        env: Dict[str, str] = {}
+        # (lowest) Declared secrets, resolved once and validated.
+        mappings = self._declared_secret_mappings(**hook_kwargs)
+        if mappings:
+            env.update(self._resolve_declared_secret_env_vars(mappings, self.secrets))
+        # (mid) Environment layers, applied low->high in the returned order.
+        for layer in self._launch_env_layers(**hook_kwargs):
+            env.update(layer)
+        # (highest) Standard cross-environment set: GBTEST_ vars then
+        # run_metadata-derived vars (e.g. GB_BUILD_ID). Applied last so it wins.
+        env.update(get_exported_gbtest_env_vars())
+        rm = run_metadata or {}
+        for env_name, meta_key in STANDARD_STEP_ENV_FROM_RUN_METADATA.items():
+            if rm.get(meta_key):
+                env[env_name] = str(rm[meta_key])
+        # Mirror legacy LLMB_* launcher vars onto GB_* twins as the final step.
+        return self._add_gb_aliases(env)
+
+    def _declared_secret_mappings(
+        self: Self, **kwargs: Any
+    ) -> List[EnvironmentVariableConfig]:
+        """Declared secret->env-var mappings for this launch (composer hook).
+
+        The lowest layer of :meth:`get_launch_env_vars`. Environments that
+        inject secret *values* (LSF, SkyPilot) override this to parse their own
+        ``config.<env>.secrets`` allow-list; the base returns none, so
+        value-less environments (K8s emits ``secretKeyRef`` names; Bash/Docker/
+        RunPod inject no declared secrets) inherit it unchanged.
+
+        :param kwargs: the launch context (``run_metadata`` plus whatever the
+            caller passed, e.g. ``config``); each override plucks what it needs.
+        :returns: the declared ``EnvironmentVariableConfig`` mappings; empty by
+            default.
+        """
+        return []
+
+    def _launch_env_layers(self: Self, **kwargs: Any) -> List[Dict[str, str]]:
+        """Environment-specific env layers for this launch (composer hook).
+
+        The mid layers of :meth:`get_launch_env_vars`, applied lowest-to-highest
+        in the returned order (above declared secrets, below the standard set).
+        Environments override this to contribute launcher ``env``/``envs``,
+        config env overrides, and their built-in ``LLMB_*``/``GB_*`` launcher
+        vars; the base returns none.
+
+        :param kwargs: the launch context (``run_metadata`` plus whatever the
+            caller passed, e.g. ``launcher_config``, ``launch_id``); each
+            override plucks what it needs.
+        :returns: the env dicts to layer in, lowest-to-highest; empty by default.
+        """
+        return []
+
+    @staticmethod
+    def _add_gb_aliases(env: Dict[str, str]) -> Dict[str, str]:
+        """Add a ``GB_``-prefixed twin for every ``LLMB_``-prefixed var.
+
+        Launcher-injected env vars are standardized on the ``GB_`` prefix, but
+        the legacy ``LLMB_`` names are kept for backwards compatibility with
+        existing/external step implementations that read them. Subclass
+        ``get_launch_env_vars`` overrides call this as their final step so every
+        ``LLMB_<X>`` they set gains a ``GB_<X>`` twin with the same value.
+
+        Uses ``setdefault`` so an already-present ``GB_`` key is never
+        overwritten — the authoritative standard set (e.g. ``GB_BUILD_ID`` from
+        ``STANDARD_STEP_ENV_FROM_RUN_METADATA``) always wins over a twin.
+
+        :param env: the assembled launch-env dict; mutated in place.
+        :returns: the same dict, with ``GB_`` twins added.
+        """
+        # NOTE: Lsf._get_secret_env_keys mirrors this LLMB_->GB_ transform to keep
+        # the GB_ twin of a user-named secret masked in redaction; keep them in sync.
+        for name, value in list(env.items()):
+            if name.startswith("LLMB_"):
+                env.setdefault("GB_" + name[len("LLMB_") :], value)
+        return env
+
+    @staticmethod
+    def _require_declared_env_name(env_name: Optional[str]) -> str:
+        """Validate a declared secret mapping carries an ``env_name``; return it.
+
+        The single validation point shared by every environment's secret
+        handling, so a malformed ``secret_names_to_use_as_env_variable`` entry
+        fails identically on all backends (LSF/SkyPilot resolution and K8s
+        ``secretKeyRef`` generation) rather than diverging.
+
+        :param env_name: the mapping's ``env_name`` field (may be ``None``).
+        :returns: the validated, non-empty ``env_name``.
+        :raises ValueError: if ``env_name`` is missing/empty (a config error
+            surfaced at launch time; no secret values are involved).
+        """
+        if not env_name:
+            raise ValueError(
+                "secret_names_to_use_as_env_variable entry is missing 'env_name'"
+            )
+        return env_name
+
+    @staticmethod
+    def _resolve_declared_secret_env_vars(
+        mappings: List[EnvironmentVariableConfig],
+        secrets: Optional[Dict[str, str]],
+    ) -> Dict[str, str]:
+        """Resolve declared secret->env-var mappings against a secret bag.
+
+        The shared, least-privilege path every environment uses to hand a step
+        *only* the secrets it explicitly declares (its
+        ``secret_names_to_use_as_env_variable``), rather than exposing the whole
+        secret bag. Each mapping names the env var to expose (``env_name``) and
+        the secret to read (``secret_name``, defaulting to ``env_name`` for the
+        common case where they match).
+
+        :param mappings: the step's declared secret-to-env-var mappings.
+        :param secrets: the resolved secret bag (merged space + user secrets).
+        :returns: a ``{env_name: secret_value}`` dict for the declared mappings.
+        :raises ValueError: if a mapping omits ``env_name`` or a declared secret
+            is absent from ``secrets`` (a config error surfaced at launch time;
+            secret *values* are never included in the message).
+        """
+        secrets = secrets or {}
+        resolved: Dict[str, str] = {}
+        for mapping in mappings:
+            env_name = Environment._require_declared_env_name(mapping.env_name)
+            secret_name = mapping.secret_name or env_name
+            if secret_name not in secrets:
+                raise ValueError(
+                    f"declared secret '{secret_name}' for env var '{env_name}' "
+                    f"was not found among the {len(secrets)} available secret(s)"
+                )
+            resolved[env_name] = secrets[secret_name]
+        return resolved
+
+    @staticmethod
+    def _declared_secret_env_key_names(
+        mappings: List[EnvironmentVariableConfig],
+    ) -> Set[str]:
+        """Env-var names to mask in redacted logs for declared secret mappings.
+
+        Includes every declared ``env_name`` plus, for any declared with the
+        legacy ``LLMB_`` prefix, the ``GB_``-prefixed twin ``_add_gb_aliases``
+        mints — so the twin's value is masked by name too. Keep this transform
+        in sync with ``_add_gb_aliases``.
+
+        :param mappings: the step's declared secret-to-env-var mappings.
+        :returns: the set of env-var names (declared + ``GB_`` twins) to redact.
+        """
+        declared = {m.env_name for m in mappings if m.env_name}
+        twins = {
+            "GB_" + name[len("LLMB_") :]
+            for name in declared
+            if name.startswith("LLMB_")
+        }
+        return declared | twins
 
     def launch(
         self: Self,
@@ -770,6 +1206,19 @@ class Environment(ABC):
         TaskGroup) so that it survives cancellation of the caller's scope.
         This ensures destructive cleanup (e.g. sky.down) actually runs during
         build cancellation.
+
+        IDEMPOTENCY CONTRACT: every concrete ``cleanup_*`` implementation MUST
+        be idempotent and must tolerate a resource that was never created or is
+        already gone. Build cancellation now propagates promptly (see
+        ``BuildRun._cancel_inflight_tasks``), so a cleanup can fire *before*
+        the matching launch has recorded its backing resource, *during*
+        provisioning, or *after* the resource is already torn down. Treat
+        "resource does not exist" as success — do NOT raise or retry-storm on
+        it. Examples: k8s treats helm's "release: not found" as done rather than
+        retrying at backoff; SkyPilot cancels by a deterministic name because
+        its launch_id->resource map is only populated after provisioning
+        returns. When the launch_id->resource bookkeeping may be empty on the
+        cancel path, tear down by the deterministic resource name instead.
         """
         assert launch_type
         assert launch_id
@@ -818,9 +1267,12 @@ class Environment(ABC):
         return task
 
     def _monitoring_cleanup(self: Self, launch_id: str):
-        """
-        NOTE: this seems deprecated as it is never called from anywhere.
-        Make sure the monitoring task is cleaned up.
+        """Set the launch-stopped event so the launch's log monitor stops.
+
+        Called from environment cleanup handlers (e.g. Bash.cleanup_nohup,
+        Docker.cleanup_docker) so the monitor's tail loop exits promptly on step
+        finish or cancellation instead of waiting on a launch that will never
+        report done.
         """
         logger.info(
             "Setting the stop_event to cleanup monitoring for launch_id %s", launch_id
@@ -924,7 +1376,16 @@ class Environment(ABC):
         self.__teardown_started_events.pop(setup_id, None)
 
     def teardown(self: Self, type: str, setup_id: str, **kwargs) -> Task:
-        """Teardown the setup from the environment."""
+        """Teardown the setup from the environment.
+
+        IDEMPOTENCY CONTRACT: every concrete ``teardown_*`` implementation MUST
+        be idempotent and must tolerate a setup that was never fully created or
+        is already gone. Because build cancellation now propagates promptly, a
+        teardown can run after a setup was only partially provisioned (or after
+        a cleanup already removed the resource). Treat "resource does not exist"
+        as success — do NOT raise or retry-storm on it. See the ``cleanup``
+        docstring above for the same contract on the per-launch path.
+        """
 
         async def teardown_helper():
             logger.debug("Sync waiting on setup done")
@@ -944,6 +1405,52 @@ class Environment(ABC):
             # self.__teardown_gc(setup_id)
 
         return asyncio.create_task(teardown_helper())
+
+    @staticmethod
+    async def _drain_thread_future(
+        pending_fut: "asyncio.Future",
+        description: str,
+        timeout: float = 60.0,
+    ) -> Any:
+        """Wait up to ``timeout`` for a shielded ``to_thread`` future to finish
+        so its OS thread is retired, without blocking indefinitely.
+
+        A ``to_thread`` future only completes when its blocking call returns;
+        the thread cannot be interrupted. After a caller aborts an in-flight
+        request the thread should unblock quickly, but if the abort was rejected
+        or did not take effect the call would otherwise run to natural
+        completion (e.g. the full provisioning time, or never). Bounding the
+        wait ensures whatever runs next — teardown, cleanup — is never gated on
+        that. If the future is still pending at the deadline we stop waiting and
+        attach a callback that retrieves its eventual result, so asyncio does
+        not log "Future exception was never retrieved" when the orphaned thread
+        finally finishes (its result is discarded).
+
+        Args:
+            pending_fut: The shielded ``to_thread`` future to drain.
+            description: Human-readable label for the timeout log message.
+            timeout: Maximum seconds to wait for the thread to retire.
+
+        Returns:
+            The future's result if it completed within ``timeout``, else None.
+        """
+        _, pending = await asyncio.wait({pending_fut}, timeout=timeout)
+        if pending:
+            logger.warning(
+                "%s did not retire within %ss after abort; proceeding without it",
+                description,
+                timeout,
+            )
+            # Swallow the eventual result/exception (guard cancelled: .exception()
+            # would raise CancelledError on a cancelled future).
+            pending_fut.add_done_callback(
+                lambda f: None if f.cancelled() else f.exception()
+            )
+            return None
+        try:
+            return pending_fut.result()
+        except BaseException:
+            return None
 
     def _get_storeconfig(
         self: Self, uri: URI, raise_exceptions: bool = False
@@ -967,6 +1474,30 @@ class Environment(ABC):
                 )
         return t1, t2
 
+    def _warn_non_default_mode(self: Self, store_config: Any, uri: Any) -> None:
+        """Warn (do not fail) when a non-k8s assetstore declares a special mode.
+
+        Outside k8s the assetstore ``mode`` field is not meaningful: dispatch is
+        by store *type*, not ``mode``, so any value behaves identically. The
+        preferred value is ``"default"`` (or unset); anything else is accepted for
+        backwards compatibility with existing space configs (which may still carry
+        legacy values like ``hf_pull``/``dmf_pull``/``cos_pull``) but logs a
+        deprecation warning recommending ``"default"``. Mode-specific behavior only
+        exists in k8s.
+
+        :param store_config: the StoreLoad/StorePush entry (or None).
+        :param uri: the asset uri, for the warning message.
+        """
+        if store_config is not None and store_config.mode not in (None, "default"):
+            logger.warning(
+                "assetstore '%s' declares mode '%s', which %s ignores (dispatch is "
+                "by store type, not mode). Set mode to 'default' (or omit it); "
+                "non-default modes are deprecated outside k8s.",
+                uri,
+                store_config.mode,
+                type(self).__name__,
+            )
+
     def pullasset(
         self: Self, task_group: TaskGroup, uri: URI, binding: Optional[Any] = None
     ) -> Task[Tuple[Dict, Optional[BuildTargetStepConfig]]]:
@@ -987,10 +1518,10 @@ class Environment(ABC):
             assetstore_type = assetstore.type.lower()
             try:
                 storeload_config = (
-                    assetstoreenv_config.load[0]
+                    assetstoreenv_config.pull[0]
                     if (
-                        assetstoreenv_config.load is not None
-                        and len(assetstoreenv_config.load) > 0
+                        assetstoreenv_config.pull is not None
+                        and len(assetstoreenv_config.pull) > 0
                     )
                     else None
                 )
@@ -1048,11 +1579,22 @@ class Environment(ABC):
         assetstore_type = assetstore.type.lower()
         uristr = URI.get_uristr(uri)
         assert run_metadata is not None, "run_metadata is None"
+        # The artifact type from the output's build.yaml config. The BuildRunner
+        # prefers the type implied by the URI scheme (e.g. hf/lh) and only falls
+        # back to this when the scheme implies nothing (e.g. env_local), so a
+        # `type` set on a typed-store output is ignored, not conflicting.
+        artifact_type = (
+            output_config.type
+            if output_config is not None and output_config.type is not None
+            else ArtifactType.UNDEFINED
+        )
         Environment._thread_local.asset_events[uristr] = Event()
         event = BuildEvent(
             run_metadata=run_metadata,
             type=BuildEventType.ARTIFACT_EVENT,
-            payload=CreatedArtifactEventPayload(uri=uristr, binding_id=binding_id),
+            payload=CreatedArtifactEventPayload(
+                uri=uristr, binding_id=binding_id, type=artifact_type
+            ),
         )
 
         async def pushasset_as_uri() -> URI:
@@ -1091,7 +1633,7 @@ class Environment(ABC):
                     run_metadata=run_metadata,
                     type=BuildEventType.ARTIFACT_PUSHED_EVENT,
                     payload=ArtifactPushedEventPayload(
-                        uri=uristr, binding_id=binding_id or ""
+                        uri=uristr, binding_id=binding_id or "", type=artifact_type
                     ),
                 )
                 await self.event_q.put(pushed_event)
@@ -1125,54 +1667,79 @@ class Environment(ABC):
 
     @classmethod
     def _load_environment_types(cls: Type[Self]) -> None:
+        """Discover and register every environment type, rebuilding the registry.
+
+        Rebuilds ``cls.environment_types`` from scratch on each call via the
+        shared :func:`~gbcommon.plugins.rebuild_registry` contract, so the method
+        is idempotent and reload-safe (see that helper for why clearing first
+        matters).
+        """
+        from gbcommon.plugins import (
+            GROUP_ENVIRONMENTS,
+            PluginRegistrar,
+            keys_by_name,
+            rebuild_registry,
+        )
+
+        # Files each environment under both cased forms of its name (module name
+        # in-tree, entry-point name for plugins), mirroring the historical
+        # behavior. Both passes register through this one registrar.
+        registrar = PluginRegistrar(
+            cls.environment_types, "Environment type", keys_by_name
+        )
         package_dir = os.path.dirname(__file__)
 
-        for filename in os.listdir(package_dir):
-            if (
-                filename.endswith(".py")
-                and filename != "__init__.py"
-                and filename != "environment_sync.py"
-                and filename != os.path.basename(__file__)
-            ):
-                environment_type_modulename = filename[:-3]
-                environment_type_name = environment_type_modulename.capitalize()
-                try:
-                    module = importlib.import_module(
-                        f".{environment_type_modulename}",
-                        package="gbserver.environment",
-                    )
-                    if hasattr(module, environment_type_name):
-                        handler_class = getattr(module, environment_type_name)
-                        if isinstance(handler_class, type) and issubclass(
-                            handler_class, cls
-                        ):
-                            cls.environment_types[environment_type_name.lower()] = (
-                                handler_class
-                            )
-                            cls.environment_types[environment_type_name] = handler_class
+        def populate() -> None:
+            for filename in os.listdir(package_dir):
+                if (
+                    filename.endswith(".py")
+                    and filename != "__init__.py"
+                    and filename != "environment_sync.py"
+                    and filename != os.path.basename(__file__)
+                ):
+                    environment_type_modulename = filename[:-3]
+                    environment_type_name = environment_type_modulename.capitalize()
+                    try:
+                        module = importlib.import_module(
+                            f".{environment_type_modulename}",
+                            package="gbserver.environment",
+                        )
+                        if hasattr(module, environment_type_name):
+                            handler_class = getattr(module, environment_type_name)
+                            if isinstance(handler_class, type) and issubclass(
+                                handler_class, cls
+                            ):
+                                registrar.add(handler_class, environment_type_name)
+                            else:
+                                logger.warning(
+                                    "Ignoring %s since it is not a subclass of Environment class",
+                                    environment_type_name,
+                                )
                         else:
                             logger.warning(
-                                "Ignoring %s since it is not a subclass of Environment class",
+                                "Module %s does not contain expected environment type class %s",
+                                environment_type_modulename,
                                 environment_type_name,
                             )
-                    else:
-                        logger.warning(
-                            "Module %s does not contain expected environment type class %s",
-                            environment_type_modulename,
+                    except ImportError as e:
+                        logger.debug(
+                            "Optional environment module %s not available: %s",
                             environment_type_name,
+                            e,
                         )
-                except ImportError as e:
-                    logger.debug(
-                        "Optional environment module %s not available: %s",
-                        environment_type_name,
-                        e,
-                    )
-                except Exception as e:
-                    logger.error(
-                        "Error loading Environment type from %s: %s",
-                        environment_type_name,
-                        e,
-                    )
+                    except Exception as e:
+                        logger.error(
+                            "Error loading Environment type from %s: %s",
+                            environment_type_name,
+                            e,
+                        )
+
+            # Discover environments shipped by separately-installed plugin packages.
+            # Runs after the in-tree scan so the core-wins rule protects built-ins.
+            # The entry-point *name* is the type key (e.g. ``k8s``).
+            registrar.discover(GROUP_ENVIRONMENTS, cls)
+
+        rebuild_registry(cls.environment_types, populate)
 
     async def _read_stream_and_create_event_all(
         self: Self,
@@ -1243,6 +1810,12 @@ class Environment(ABC):
         the events will be plain dicts instead of BuildEvent
         to allow sending over the network.
         """
+        # Normalise away terminal colour codes before any rule runs, so anchored
+        # markers still match and captured values never absorb a stray escape. Done
+        # once here rather than per-monitor, keeping ANSI handling uniform across all
+        # environments (SkyPilot's retrieved logs colourise their line prefix; bash
+        # and docker stream raw stdout and are unaffected).
+        log_line = _strip_ansi(log_line)
         logger.debug("Running get_events_from_log_line for line: %s", log_line)
         if event_q is None:
             event_q = asyncio.Queue()
@@ -1411,3 +1984,158 @@ class Environment(ABC):
         and other monitors or anything else associated with the launch also should stop.
         """
         return self.__get_event(launch_id, self.__launch_stopped_events)
+
+    def set_shared_memstore(self: Self, shared_mem_store: Dict[str, Any]):
+        self.shared_mem_store = shared_mem_store
+
+    async def pullasset_memstore(
+        self: Self,
+        uri: Optional[Union[str, URI]] = None,
+        binding: Optional[Any] = None,
+        storeload_config=None,
+        **kwargs,
+    ) -> Tuple[Dict, Optional[Any]]:
+        """Pull asset for the mem:// store.
+
+        Reads the producer's verbatim ``state`` value out of the build's shared
+        in-memory dict (keyed by the mem:// URI), so a value like a service URL
+        survives intact — unlike env://, which reconstructs the path from the
+        URI string and would mangle it. Returns the consumer-facing binding.
+        """
+        self._warn_non_default_mode(storeload_config, uri)
+        state = self.shared_mem_store.get(str(uri))
+        logger.info("pullasset_memstore: uri=%s state=%s", uri, state)
+        binding_config = {"binding": {"state": state}}
+        return binding_config, None
+
+    async def pushasset_memstore(
+        self: Self,
+        binding: Any,
+        binding_id: Optional[str] = "",
+        storepush_config=None,
+        uri: Optional[Union[str, URI]] = None,
+        assetstore=None,
+        secrets: Optional[Dict[str, str]] = None,
+        run_metadata: Optional[Any] = None,
+        output_config: Optional[Any] = None,
+        **kwargs,
+    ) -> URI:
+        """Push asset to the build's shared in-memory dict.
+
+        Stores the producer binding's ``state`` value keyed by the mem:// URI so
+        a consumer target can read it back verbatim via pullasset_memstore. Used
+        to pass values (e.g. a service URL) that must not go through filesystem
+        URI normalisation.
+        """
+        self._warn_non_default_mode(storepush_config, uri)
+        if not uri:
+            raise ValueError(
+                f"pushasset_memstore: empty uri for binding={binding_id!r}; "
+                "a mem:// store push requires a concrete artifact state."
+            )
+        self.shared_mem_store[str(uri)] = binding.get("state")
+        logger.info(
+            "pushasset_memstore: registering binding_id=%s at uri=%s binding=%s",
+            binding_id,
+            uri,
+            binding,
+        )
+        return URI.get_uri(str(uri))
+
+    async def pullasset_envstore(
+        self: Self,
+        uri: Optional[Union[str, URI]] = None,
+        binding: Optional[Any] = None,
+        storeload_config=None,
+        **kwargs,
+    ) -> Tuple[Dict, Optional[Any]]:
+        """Pull an asset from the env:// store — artifact already on a reachable FS.
+
+        The env:// store models an artifact that already lives on a filesystem the
+        environment can reach, so the pull is a no-op: parse the URI to an
+        ``EnvURI`` and return its path in the consumer-facing binding. No transfer
+        is performed. Inherited by every environment so all backends support
+        env:// pull.
+
+        :param uri: The ``env://`` URI (string or already-parsed ``URI``).
+        :param binding: Unused; present for dispatcher signature parity.
+        :param storeload_config: Unused; present for dispatcher signature parity.
+        :returns: ``(binding_config, None)`` where ``binding_config`` carries the
+            reconstructed path under ``BINDING_KEY``; the second element is ``None``
+            because no build step is queued for the no-op pull.
+        :raises AssertionError: If the URI is not a valid ``EnvURI`` with a path.
+        :raises ValueError: If the resolved path is relative — a no-transfer env://
+            reference must be an absolute path (config validation normally rejects
+            these at load; this guards paths reaching the store another way).
+        """
+        # Local import: gbcommon.uri.env has no dependency on this module, so this
+        # avoids any import-order risk and matches the lazy-import style used here.
+        from gbcommon.uri.env import EnvURI
+
+        self._warn_non_default_mode(storeload_config, uri)
+        assert uri is not None, "pullasset_envstore requires a non-empty env:// uri"
+        envuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
+        assert isinstance(envuri, EnvURI), f"invalid envuri: {envuri}"
+        assert envuri.uri, f"invalid envuri: {envuri}"
+        final_binding_path = envuri.uri.path
+        assert final_binding_path, f"invalid envuri: {envuri}"
+        if not Path(final_binding_path).is_absolute():
+            raise ValueError(
+                f"pullasset_envstore: relative env:// path {final_binding_path!r} "
+                f"(uri={uri}) is not supported — use an absolute path (env:///...)."
+            )
+        binding_config = {BINDING_KEY: {"path": final_binding_path}}
+        logger.info(
+            "pullasset_envstore: loaded env uri %s at binding %s",
+            uri,
+            binding_config,
+        )
+        return binding_config, None
+
+    async def pushasset_envstore(
+        self: Self,
+        binding: Any,
+        binding_id: Optional[str] = "",
+        storepush_config=None,
+        uri: Optional[Union[str, URI]] = None,
+        assetstore=None,
+        secrets: Optional[Dict[str, str]] = None,
+        run_metadata: Optional[Any] = None,
+        output_config: Optional[Any] = None,
+        **kwargs,
+    ) -> URI:
+        """Push an asset to the env:// store — artifact already on a reachable FS.
+
+        No-op push: the artifact path is directly accessible on the shared/reachable
+        filesystem, so nothing is transferred; the concrete URI is simply
+        registered and returned. Inherited by every environment so all backends
+        support env:// push.
+
+        :param binding: The producer binding for the artifact (logged only).
+        :param binding_id: Output binding id being pushed (used in errors/logs).
+        :param uri: The concrete ``env://`` artifact URI. Required.
+        :returns: The registered artifact URI.
+        :raises ValueError: If ``uri`` is empty, or resolves to a relative path — a
+            no-transfer env:// reference must be an absolute path (config validation
+            normally rejects these at load; this guards paths reaching the store
+            another way).
+        """
+        self._warn_non_default_mode(storepush_config, uri)
+        if not uri:
+            raise ValueError(
+                f"pushasset_envstore: empty uri for binding={binding_id!r}; "
+                "an env:// store push requires a concrete artifact path."
+            )
+        envuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
+        if envuri.uri is not None and not Path(envuri.uri.path).is_absolute():
+            raise ValueError(
+                f"pushasset_envstore: relative env:// path {envuri.uri.path!r} "
+                f"(uri={uri}) is not supported — use an absolute path (env:///...)."
+            )
+        logger.info(
+            "pushasset_envstore: registering artifact %s at uri=%s binding=%s",
+            binding_id,
+            uri,
+            binding,
+        )
+        return URI.get_uri(str(uri))

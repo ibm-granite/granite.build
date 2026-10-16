@@ -21,19 +21,59 @@ The target run.
 import asyncio
 from asyncio import Event, Queue, TaskGroup
 from copy import deepcopy
-from typing import Dict, Optional, Self
+from typing import Any, Dict, Optional, Self
 
 from gbserver.build.run import Run, RunFailed
 from gbserver.build.target import Target
 from gbserver.build.targetstep import TargetStep
 from gbserver.build.targetsteprun import TargetStepRun
 from gbserver.environment.environment import Environment
-from gbserver.types.buildconfig import BuildTargetStepConfig
+from gbserver.types.buildconfig import BuildTargetConfig, BuildTargetStepConfig
 from gbserver.types.buildevent import BuildEvent, BuildEventType, EntityRunMetadata
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# The one PriorityClass this server ranks above the floor. Any other value --
+# default-priority, unset/empty, or an unrecognized/higher cluster class -- is
+# treated as the floor (see effective_target_priority_class_name).
+#
+# Deliberately hard-coded rather than resolved from the cluster's PriorityClass
+# objects (their numeric `value`): in practice these builds only use
+# default-priority and high-priority, so the simpler, dependency-free comparison
+# suffices and avoids a cluster API call, caching, and a fallback path. Extend
+# here if a third class is ever needed.
+HIGH_PRIORITY_CLASS_NAME = "high-priority"
+
+
+def effective_target_priority_class_name(
+    target_config: BuildTargetConfig,
+) -> Optional[str]:
+    """Minimum ``k8s.priority_class_name`` across a target's explicit steps.
+
+    Feeds the implicit pull/push steps (see
+    ``_apply_implicit_step_priority_class_name``) so a transfer never outranks the
+    workload it serves. Only ``high-priority`` is ranked above the floor;
+    ``default-priority``, unset, an empty string, or any other name is the floor
+    (the comparison is exact equality against ``high-priority``). Returns
+    ``"high-priority"`` only when there is at least one step and every step is
+    ``high-priority``; else ``None`` (leave unset -> cluster default).
+
+    Over-approximates: a step's ``high-priority`` counts even on a path that never
+    renders priorityClassName (Ray steps, or LSF/SkyPilot launchers). Bounded by
+    "all steps high", so still conservative; refine here if per-step launcher
+    resolution is ever needed.
+    """
+    steps = target_config.steps or []
+    if not steps:
+        return None
+    for step in steps:
+        k8s_config = (step.config or {}).get("k8s") or {}
+        if k8s_config.get("priority_class_name") != HIGH_PRIORITY_CLASS_NAME:
+            return None  # any step at the floor drags the minimum down
+    return HIGH_PRIORITY_CLASS_NAME
 
 
 class TargetRun(Run):
@@ -49,6 +89,7 @@ class TargetRun(Run):
         cancel_on_error: bool = False,
         dry_run: bool = False,
         target_hash: str = "",
+        shared_mem_state: Dict[str, Any] = {},
     ) -> None:
         """Loads a target run"""
         self.bindings: Dict[str, Dict] = {}
@@ -57,6 +98,7 @@ class TargetRun(Run):
         self.inputs_status = deepcopy(target.inputs_status)
         self.cancel_on_error = cancel_on_error
         self.target_hash = target_hash
+        self.shared_mem_state = shared_mem_state
         super().__init__(
             entity=target, event_q=event_q, base_dir=target.dir, dry_run=dry_run
         )
@@ -72,6 +114,7 @@ class TargetRun(Run):
         self.additional_running_steps = set()
         self_entity = self.entity
         assert isinstance(self_entity, Target)
+        self_entity.environment.set_shared_memstore(self.shared_mem_state)
         async with asyncio.TaskGroup() as tg:
             await self_entity.setup(tg, **kwargs)
             input_uris = {}
@@ -209,6 +252,7 @@ class TargetRun(Run):
         assert isinstance(self_entity, Target)
         return EntityRunMetadata(
             build_id=self.build_id,
+            build_config_name=getattr(self_entity, "build_config_name", ""),
             username=self_entity.username,
             type=type(self_entity).__name__,
             target_name=self_entity.name,
@@ -255,6 +299,46 @@ class TargetRun(Run):
                 logger.error("run_additional_targetsteps cancelled : %s", e)
                 break
 
+    def _apply_implicit_step_priority_class_name(
+        self: Self,
+        targetstepconfig: BuildTargetStepConfig,
+        target_config: Optional[BuildTargetConfig],
+    ) -> BuildTargetStepConfig:
+        """Give an implicit pull/push step the target's effective PriorityClass.
+
+        Synthesized pull/push steps carry only their store config, so their pods
+        default to the cluster priority. Inject ``config.k8s.priority_class_name``
+        with the target minimum so a transfer never outranks its workload. Only
+        ``high-priority`` is injected; the floor is left unset (cluster default),
+        so this is a no-op unless every explicit step is high-priority. k8s-only in
+        effect -- LSF/SkyPilot charts ignore the key.
+
+        Returns a deep copy with the key set, else the config unchanged; never
+        mutates the passed-in (queued) config.
+        """
+        if target_config is None:
+            return targetstepconfig
+        priority = effective_target_priority_class_name(target_config)
+        if priority != HIGH_PRIORITY_CLASS_NAME:
+            return targetstepconfig
+        # Defensive: don't clobber a value a handler set on the step itself.
+        if ((targetstepconfig.config or {}).get("k8s") or {}).get(
+            "priority_class_name"
+        ):
+            return targetstepconfig
+        # model_copy skips model validators; fine here (only a validated string is
+        # added). Re-validate if this is ever extended to inject k8s.env-shaped values.
+        new_config = targetstepconfig.model_copy(deep=True)
+        if new_config.config is None:
+            new_config.config = {}
+        new_config.config.setdefault("k8s", {})["priority_class_name"] = priority
+        logger.info(
+            "Injecting priority_class_name=%s onto implicit step %s (target minimum)",
+            priority,
+            new_config.step_uri,
+        )
+        return new_config
+
     def get_targetsteprun_from_config(
         self: Self,
         targetstepconfig: BuildTargetStepConfig,
@@ -263,6 +347,11 @@ class TargetRun(Run):
         """Create a target step run from the given config (usually an implicit step)."""
         self_entity = self.entity
         assert isinstance(self_entity, Target)
+        targetstepconfig = self._apply_implicit_step_priority_class_name(
+            # self_entity.config is a BuildTargetConfig (Target's concrete config type).
+            targetstepconfig,
+            self_entity.config,  # type: ignore[arg-type]
+        )
         targetstep = TargetStep(
             self.build_id,
             self.event_q,

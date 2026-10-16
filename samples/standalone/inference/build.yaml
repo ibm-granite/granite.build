@@ -15,7 +15,7 @@ granite.build:
       outputs:
         # The step writes inference_result.json + response.txt here and
         # registers it as the "generation" artifact (name must match the
-        # LLMB_ARTIFACT_ID the step emits).
+        # GB_ARTIFACT_ID the step emits).
         generation:
           uri: file:outputs/inference_{{ binding.path | short_hash }}/
       steps:

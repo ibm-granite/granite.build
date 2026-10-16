@@ -1,0 +1,24 @@
+name: skypilot-teardown
+version: 1.0.0
+type: custom
+config:
+  workload:
+    cwd: "."
+  gb:
+    mock: false
+    step_contents_in_env: false
+  teardown_config:
+    # Cluster names are filled from upstream cluster_name bindings in build.yaml.
+    cluster_names: []
+
+environment_configs:
+  Skypilot:
+    default_launcher: teardown
+    launchers:
+      teardown:
+        # Selects Skypilot.launch_skypilot_teardown, an in-process launcher that
+        # downs the clusters named in config.teardown_config.cluster_names. It
+        # provisions nothing and declares no monitors, so the step completes as
+        # soon as the launch coroutine returns.
+        type: skypilot_teardown
+        config: {}

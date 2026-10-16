@@ -18,7 +18,7 @@
 
 Regression coverage for the bug where the Bash log_monitor read the launched
 process's (already drained) stdout pipe instead of the job.log file the wrapper
-tees workload output to. The artifact marker (LLMB_ARTIFACT_ID) is written to
+tees workload output to. The artifact marker (GB_ARTIFACT_ID) is written to
 job.log, so the monitor must tail that file and emit a
 NEWARTIFACT_IN_ENVIRONMENT_EVENT.
 """
@@ -30,18 +30,23 @@ import pytest
 
 from gbserver.types.buildevent import BuildEventType, EntityRunMetadata
 
-# Mirrors the lora-finetune step.yaml log_monitor config: matches
-# "LLMB_ARTIFACT_ID:<id> LLMB_ARTIFACT_PATH:<path>" lines.
+# Mirrors the bash monitor.yaml log_monitor config: matches
+# "<PFX>ARTIFACT_ID:<id> <PFX>ARTIFACT_PATH:<path>" lines, where <PFX> is the
+# standardized GB_ prefix or the legacy LLMB_ prefix (dual-accept for backwards
+# compatibility). Both prefixes are exercised below.
 ARTIFACT_EVENT_CONFIGS = [
     {
         "event_type": "NEWARTIFACT_IN_ENVIRONMENT_EVENT",
-        "line_regex": "LLMB_ARTIFACT_ID:.* LLMB_ARTIFACT_PATH:.*",
+        "line_regex": "(?:GB_|LLMB_)ARTIFACT_ID:.* (?:GB_|LLMB_)ARTIFACT_PATH:.*",
         "is_json": False,
         "event_fields": [
-            {"field_name": "binding_id", "field_regex": "(?<=LLMB_ARTIFACT_ID:)[^ ]+"},
+            {
+                "field_name": "binding_id",
+                "field_regex": "(?:(?<=GB_ARTIFACT_ID:)|(?<=LLMB_ARTIFACT_ID:))[^ ]+",
+            },
             {
                 "field_name": "path",
-                "field_regex": "(?<=LLMB_ARTIFACT_PATH:).*",
+                "field_regex": "(?:(?<=GB_ARTIFACT_PATH:)|(?<=LLMB_ARTIFACT_PATH:)).*",
                 "is_data": True,
             },
             {
@@ -62,9 +67,16 @@ def _make_bash():
 
 @pytest.mark.standalone
 @pytest.mark.asyncio
-async def test_monitor_log_monitor_emits_newartifact_event_from_job_log(tmp_path):
+@pytest.mark.parametrize("prefix", ["GB_", "LLMB_"])
+async def test_monitor_log_monitor_emits_newartifact_event_from_job_log(
+    tmp_path, prefix
+):
     """monitor_log_monitor tails job.log and emits a NEWARTIFACT event for the
-    artifact marker line written there (not to the process stdout pipe)."""
+    artifact marker line written there (not to the process stdout pipe).
+
+    Parametrized over the standardized ``GB_`` prefix and the legacy ``LLMB_``
+    prefix to prove the dual-accept monitor recognizes both.
+    """
     bash = _make_bash()
     launch_id = "launch-test-1"
 
@@ -72,7 +84,7 @@ async def test_monitor_log_monitor_emits_newartifact_event_from_job_log(tmp_path
     job_log = tmp_path / "job.log"
     job_log.write_text(
         "some training output\n"
-        f"LLMB_ARTIFACT_ID:adapter LLMB_ARTIFACT_PATH:{artifact_path}\n"
+        f"{prefix}ARTIFACT_ID:adapter {prefix}ARTIFACT_PATH:{artifact_path}\n"
         "workload script finished successfully\n"
     )
     bash.log_paths[launch_id] = str(job_log)

@@ -13,7 +13,7 @@ granite.build:
   name: export-results
   targets:
     sage-export:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       outputs:
         sage_export_csv:
           type: dataset
@@ -33,7 +33,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     bfcl-export:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       outputs:
         bfcl_export_csv:
           type: dataset

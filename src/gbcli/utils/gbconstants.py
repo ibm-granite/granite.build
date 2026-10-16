@@ -50,6 +50,11 @@ def hf_token() -> str:
 
 # HuggingFace defaults
 HF_ORGANIZATION_DEFAULT = gb_environment_config().hf_organization or "ibm-research"
+# HF orgs that use Enterprise resource groups. None means every org is treated as
+# Enterprise (the behavior from before the Enterprise/non-Enterprise split). Keep
+# in sync with config.enterprise_organizations in the hf asset store's store.yaml,
+# which the server-side push path reads (the CLI cannot read that file).
+HF_ENTERPRISE_ORGANIZATIONS = gb_environment_config().hf_enterprise_organizations
 
 # gbcli
 _GBCLI_REPO_ORG = "ibm-granite" if is_public_github() else "granite-dot-build"
@@ -163,7 +168,10 @@ View the list of both unrestricted use and restricted-use models in the project 
 For any help on how to use each option in more details see `gb artifact push --help`. For more information, ask a question in the `#llm-dot-build-users` channel."""
 
 
-WEB_UI_URL = gb_environment_config().web_ui_url
+# Paired with GBSERVER_HOST above: together they retarget the client (both the CLI
+# and GBClient) at an external deployment regardless of GB_ENVIRONMENT. Read at
+# import, so export before the first gbcli import — not just before the call.
+WEB_UI_URL = os.environ.get("GB_WEB_UI_URL", gb_environment_config().web_ui_url)
 
 ARTIFACT_LIST_HEADERS = [
     "UUID",
@@ -214,7 +222,13 @@ BUILD_STATUS_ARTIFACTS_HEADERS = ["ARTIFACT_ID", "URI"]
 BUILD_STATUS_STEPS_HEADERS = ["STEP_ID", "NAME", "STATUS", "URI"]
 BUILD_STATUS_HISTORY_HEADERS = ["TIME", "DESCRIPTION"]
 
-SPACE_LIST_HEADERS = ["NAME", "GIT REPO URI", "LAKEHOUSE NAMESPACE", "ROLE"]
+SPACE_LIST_HEADERS = [
+    "NAME",
+    "GIT REPO URI",
+    "LAKEHOUSE NAMESPACE",
+    "HF DEFAULT RG ID",
+    "ROLE",
+]
 
 STEP_LIST_HEADERS = ["STEP NAME", "DESCRIPTION", "URI"]
 STEP_DESCRIBE_HEADERS = ["CONFIG", "PROPERTIES"]

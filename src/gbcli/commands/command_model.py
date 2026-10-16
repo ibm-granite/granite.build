@@ -12,6 +12,7 @@ from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import execute_with_spinner, str_exc_chain
 from gbcli.commands.common_options import (
     common_options,
+    enforce_version_check,
     pass_context_and_reject_standalone,
 )
 from gbcli.services.service_auth import verify_rits_api_key
@@ -31,7 +32,6 @@ from gbcli.utils.utils import (
     render_plain,
     render_pretty,
 )
-from gbcli.utils.versionutil import check_current_and_latest_versions
 
 
 @click.group("model")
@@ -61,15 +61,7 @@ def list(ctx, byom, uri, format, skip_version_check, quiet):
     """List standard and BYOM checkpoints deployed in RITS."""
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if not quiet:
         click.echo(f"(1/3) Looking for user's RITS_API_KEY in variables")
@@ -216,15 +208,7 @@ def prompt(
     """Submit one prompt to a model."""
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if not quiet:
         click.echo(f"(1/3) Looking for user's RITS_API_KEY in variables")
@@ -359,15 +343,7 @@ def chat(
     quiet: bool,
 ):
     """Start interactive chat with a model."""
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     click.echo(f"(1/3) Looking for user's RITS_API_KEY in variables")
     auth_client = GBClient.Auth()

@@ -118,6 +118,7 @@ class MockLineageService(LineageService):
                         "run_id": "run-123",
                         "state": "finished",
                         "created_at": "2025-03-19T18:00:00",
+                        "owner": "standalone",
                     },
                 }
             )
@@ -149,6 +150,7 @@ class MockLineageService(LineageService):
                         "run_id": "run-000",
                         "state": "finished",
                         "created_at": "2025-03-18T10:00:00",
+                        "owner": "standalone",
                     },
                 }
             )
@@ -174,6 +176,33 @@ class MockLineageService(LineageService):
             "truncated": max_depth <= 1,
         }
 
+    def filter_unrecorded(
+        self, target_ids: set[str], expected_counts=None, on_query_error=None
+    ) -> set[str]:
+        # Mirror the real service: count the distinct runs carrying each
+        # ``target_id=<uuid>`` tag on emitted events, then treat a candidate as
+        # recorded only when its run count meets its expected count. A ``None``
+        # expected count (or a missing key) falls back to presence (>=1 run).
+        run_counts: dict[str, int] = {}
+        seen: set = set()  # (target_id, run_id) so each run counts once per target
+        for ev in self.events.values():
+            run = ev.get("run", {})
+            run_id = run.get("runId", "")
+            target_id = run.get("facets", {}).get("tags", {}).get("target_id")
+            if not target_id or (target_id, run_id) in seen:
+                continue
+            seen.add((target_id, run_id))
+            run_counts[target_id] = run_counts.get(target_id, 0) + 1
+        recorded: set[str] = set()
+        for tid in target_ids:
+            count = run_counts.get(tid, 0)
+            if count == 0:
+                continue
+            expected = (expected_counts or {}).get(tid)
+            if expected is None or count >= expected:
+                recorded.add(tid)
+        return set(target_ids) - recorded
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -183,7 +212,13 @@ _SAMPLE_EVENT = {
     "eventTime": "2024-04-15T10:30:00.000Z",
     "run": {
         "runId": "test-run-001",
-        "facets": {"tags": {"env": "dev", "team": "ml"}},
+        # owner matches the synthetic apikey user (GBSERVER_API_USER, default
+        # "standalone") so the real has_space_member_access grants the caller
+        # access via the owner path — exercising the gate rather than bypassing it.
+        "facets": {
+            "tags": {"env": "dev", "team": "ml"},
+            "job_details": {"owner": "standalone"},
+        },
     },
     "job": {"namespace": "granite-ml", "name": "train_model", "facets": {}},
     "inputs": [
@@ -206,6 +241,12 @@ _SAMPLE_EVENT = {
 
 def _make_sample_event(run_id: str = "test-run-001", **overrides) -> dict:
     ev = {**_SAMPLE_EVENT, "run": {**_SAMPLE_EVENT["run"], "runId": run_id}}
+    # Merge a ``run`` override into the base run dict rather than replacing it,
+    # so the positional ``run_id`` is preserved unless the caller overrides
+    # ``runId`` explicitly. A plain ``ev.update(overrides)`` would drop it.
+    run_override = overrides.pop("run", None)
+    if run_override is not None:
+        ev["run"] = {**ev["run"], **run_override}
     ev.update(overrides)
     return ev
 
@@ -273,7 +314,10 @@ class TestOpenLineageAPI:
                     f"run-{i}",
                     run={
                         "runId": f"run-{i}",
-                        "facets": {"tags": {"env": "dev"}},
+                        "facets": {
+                            "tags": {"env": "dev"},
+                            "job_details": {"owner": "standalone"},
+                        },
                     },
                 )
             )
@@ -357,6 +401,45 @@ class TestOpenLineageAPI:
         job_names = {r["job_name"] for r in body["runs"]}
         assert "tunedmodel" in job_names
         assert "base-training" in job_names
+
+    def test_search_lineage_owner_path_grants_access(self):
+        # In standalone mode ``StandaloneSpaceAccessManager.is_space_admin``
+        # always returns True, so the super-admin / space-member branches of
+        # ``has_space_member_access`` are always-True and cannot exclude any
+        # run. The only branch a standalone test can meaningfully exercise is
+        # the *owner* short-circuit, which returns access before any admin
+        # check. Both runs below are owned by the caller ("standalone"), so
+        # both pass via the owner path and survive the tag filter.
+        self.mock_service.emit_event(
+            _make_sample_event(
+                "run-mine",
+                run={
+                    "runId": "run-mine",
+                    "facets": {
+                        "tags": {"env": "dev"},
+                        "job_details": {"owner": "standalone"},
+                    },
+                },
+            )
+        )
+        self.mock_service.emit_event(
+            _make_sample_event(
+                "run-mine-2",
+                run={
+                    "runId": "run-mine-2",
+                    "facets": {
+                        "tags": {"env": "dev"},
+                        "job_details": {"owner": "standalone"},
+                    },
+                },
+            )
+        )
+        response = self.client.post("api/v1/lineage/search", json={"tags": ["env=dev"]})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 2
+        returned_run_ids = {run["run"]["runId"] for run in body["runs"]}
+        assert returned_run_ids == {"run-mine", "run-mine-2"}
 
     def test_get_artifact_graph_by_url(self):
         response = self.client.post(

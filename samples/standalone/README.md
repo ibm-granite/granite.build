@@ -40,6 +40,7 @@ gb build log <build-id>
 |----------|---------|-------------|
 | `GBSERVER_API_KEY` | _(empty)_ | API key for auth. If empty, localhost access is allowed without auth |
 | `GBSERVER_HOST` | `http://localhost:8080` | Override the server URL in gbcli |
+| `GB_WEB_UI_URL` | _(per-environment default)_ | Override the web UI base URL in gbcli (build status/lineage links) |
 | `GBSERVER_METADATA_STORAGE` | `sql` | Storage backend: `sqlite`, `sql`, `lakehouse` |
 | `GBSERVER_DEFAULT_BUILDRUNNER_TYPE` | `job` | Runner type: `thread` or `process` for local, `job` for K8s |
 
@@ -157,7 +158,7 @@ Uses `file:` URIs. No configuration needed.
 
 ### S3 (default for RunPod/SkyPilot)
 
-S3-compatible object storage (AWS S3, MinIO, etc.).
+S3-compatible object storage (AWS S3, IBM COS, SeaweedFS, etc.).
 
 ```bash
 export COS_ACCESS_KEY_ID="your-access-key"

@@ -18,15 +18,17 @@
 
 import asyncio
 import json
+import os
 import tempfile
 import traceback
+import urllib.parse
 from base64 import b64decode
 from pathlib import Path
 
 import yaml
 from git import List, Optional
 
-from gbcommon.uri.git import GitURI
+from gbcommon.uri.git import GitURI, split_repo_path
 from gbserver.build.build import Build
 from gbserver.build.buildrun import BuildRun
 from gbserver.build.space import Space
@@ -57,6 +59,66 @@ from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import get_utc_time, get_uuid
 
 logger = get_logger(__name__)
+
+
+def _same_space_repo(uri_a: str, uri_b: str) -> bool:
+    """Return whether two space URIs refer to the same repository/location.
+
+    Identity is computed per scheme so a bare stored ``git_repo_uri`` and the
+    runner's resolved ``space.uristr`` for the same space compare equal without a
+    GitHub token:
+
+    * **Remote git** (``https`` / ``git+ssh`` / ``git``, and the scp form
+      ``[user@]host:owner/repo`` that git emits): ``(host, owner, repo)`` compared
+      case-insensitively, ignoring the scheme, SSH userinfo and port (uses the URL
+      *hostname*), a ``.git`` suffix, a pip-style ``@<ref>`` branch suffix, and a
+      ``#subdirectory=`` fragment. So ``git+ssh://git@github.ibm.com/o/repo.git@branch``,
+      ``https://github.ibm.com/o/repo``, and ``git@github.ibm.com:o/repo.git`` all
+      match.
+    * **Local** (``file://`` or a bare path): the normalized filesystem path
+      (netloc + path, as :func:`gbcommon.uri.space._file_uri_to_path` composes it).
+      Two distinct local spaces never collapse to the same identity, and paths
+      stay case-sensitive.
+
+    Parsing is total: short or empty URIs yield empty components rather than
+    raising, so a genuine mismatch returns ``False`` instead of crashing.
+
+    Args:
+        uri_a: A space URI (e.g. a stored space's ``git_repo_uri``).
+        uri_b: A space URI (e.g. the runner's ``space.uristr``).
+
+    Returns:
+        True when both URIs identify the same repository/location.
+    """
+
+    def git_identity(host: str, path: str) -> tuple[str, str, str, str]:
+        # owner/repo (+ @<ref> and .git stripping) come from the shared
+        # split_repo_path so this doesn't parse git paths in parallel with
+        # get_uri_parts. Comparison-specific normalization (case-insensitive host/
+        # owner/repo) is applied here.
+        owner, repo = split_repo_path(path)
+        return ("git", host.lower(), owner.lower(), repo.lower())
+
+    def identity(uri: str) -> tuple[str, ...]:
+        # scp-like git URL ([user@]host:owner/repo(.git)) — the form git emits
+        # (git@host:org/repo.git). It has no "scheme://", so urlparse would mis-read
+        # it as a file path; detect it explicitly (a ':' before any '/', with a
+        # non-empty relative tail) and strip an optional "user@".
+        if "://" not in uri:
+            head, sep, tail = uri.partition(":")
+            if sep and "/" not in head and tail and not tail.startswith("/"):
+                return git_identity(head.rsplit("@", 1)[-1], tail)
+        parsed = urllib.parse.urlparse(uri, scheme="file")
+        if parsed.scheme in ("file", ""):
+            # Local space: identity is the whole normalized path (no owner/repo
+            # structure). netloc + path mirrors _file_uri_to_path; keep it
+            # case-sensitive (POSIX paths are).
+            path = (parsed.netloc or "") + (parsed.path or "")
+            return ("file", os.path.normpath(path) if path else "")
+        # Remote git URL: hostname strips any user@ and :port.
+        return git_identity(parsed.hostname or "", parsed.path)
+
+    return identity(uri_a) == identity(uri_b)
 
 
 class BuildValidation:
@@ -259,16 +321,31 @@ class BuildValidation:
         build_id = stored_build.uuid
 
         if space:
-            # Make sure the space matches the build's space
+            # Make sure the space the runner loaded matches the build's declared
+            # space (by name). Compare the git repo identity (host/owner/repo)
+            # against the already-resolved space.uristr rather than re-deriving the
+            # full config URI via get_gb_space_config_uri: that call only appends
+            # the space-config branch when a GitHub token is available, and the
+            # module-level token default is frozen empty when git.py is imported
+            # before the token env var is set (e.g. under pytest). Comparing repo
+            # identity is token-free and ignores the derived @<branch> /
+            # #subdirectory suffix, so a bare stored git_repo_uri and the runner's
+            # git+ssh space.uristr for the same repo compare equal.
             space_storage: IStoredSpaceStorage = get_admin_storage().space_storage
             stored_space = space_storage.get_by_name(stored_build.space_name)
-            assert (
-                stored_space
-            ), f"Could not find space {stored_build.space_name} of build."
-            space_uri = GitURI.get_gb_space_config_uri(uri=stored_space.git_repo_uri)
-            assert (
-                space_uri == space.uristr
-            ), f"Derived build space uri {space_uri} from space {stored_space}, does not match the given space {space.uristr}"
+            if stored_space is None:
+                errors.add(
+                    err=f"Could not find space '{stored_build.space_name}' of build."
+                )
+                return errors
+            if not _same_space_repo(stored_space.git_repo_uri, space.uristr):
+                errors.add(
+                    err=(
+                        f"Build space {stored_space.git_repo_uri!r} does not match "
+                        f"the runner's space {space.uristr!r}."
+                    )
+                )
+                return errors
         validation_time = -1
 
         try:

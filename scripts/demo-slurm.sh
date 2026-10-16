@@ -4,7 +4,7 @@
 # Quick start:
 #   1. make g4os-skypilot-venv PYTHON=python3.13
 #   2. source .venv/bin/activate
-#   3. make minio-setup
+#   3. make s3-setup
 #   4. make slurm-setup
 #   5. bash scripts/demo-slurm.sh
 #
@@ -13,7 +13,7 @@
 #
 # Requirements:
 #   - Docker SLURM cluster running (make slurm-setup)
-#   - MinIO running for artifact storage (make minio-setup, or auto-started)
+#   - Local S3 store running for artifact storage (make s3-setup, or auto-started)
 #   - SkyPilot configured for SLURM (sky check shows Slurm: enabled)
 #
 # Usage:
@@ -46,8 +46,8 @@ API="http://127.0.0.1:${PORT}/api/v1"
 LOG_FILE="/tmp/gbserver-slurm-demo-$(date +%Y%m%d-%H%M%S).log"
 export GB_ENVIRONMENT=STANDALONE
 export GBSERVER_HOST="http://127.0.0.1:${PORT}"
-export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-minioadmin}"
-export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-minioadmin}"
+export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-gbadmin}"
+export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-gbadmin}"
 
 # Colors
 GREEN='\033[0;32m'
@@ -76,7 +76,12 @@ trap cleanup EXIT
 # --- 0. Pre-flight checks ---
 step "Pre-flight checks"
 
-if ! ssh -F ~/.slurm/config -o ConnectTimeout=5 slurm-docker sinfo --noheader &>/dev/null; then
+# Connect directly with the provisioned key/port — setup-slurm.sh no longer
+# writes ~/.slurm/config (the slurm SSH config is inlined in the environment.yaml
+# and materialized by gbserver at launch time).
+if ! ssh -i ~/.ssh/slurm_docker_key -p "${SLURM_SSH_PORT:-2222}" \
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o ConnectTimeout=5 "root@${SLURM_SSH_HOST:-127.0.0.1}" sinfo --noheader &>/dev/null; then
     echo "ERROR: Docker SLURM cluster not reachable."
     echo "  Start it with: make slurm-setup"
     exit 1
@@ -90,13 +95,13 @@ if ! sky check slurm 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -q "Slurm.*enabled"
 fi
 ok "SkyPilot SLURM enabled"
 
-# Ensure MinIO is running (S3-compatible artifact store)
-if ! curl -sf http://localhost:9000/minio/health/ready >/dev/null 2>&1; then
-    step "Starting MinIO (S3 artifact store)"
-    bash scripts/minio/setup-minio.sh
-    ok "MinIO ready"
+# Ensure the local S3 store is running (artifact store)
+if ! curl -sf "http://localhost:${GB_S3_PORT:-9000}/healthz" >/dev/null 2>&1; then
+    step "Starting local S3 store (SeaweedFS)"
+    bash scripts/s3/setup-s3.sh
+    ok "S3 store ready"
 else
-    ok "MinIO already running"
+    ok "S3 store already running"
 fi
 
 # --- 1. Clean state ---
@@ -282,4 +287,4 @@ step "Demo complete (SLURM via SkyPilot)"
 [ -n "$UNITXT_ID" ] && ok "unitxt evaluation:  ${UNITXT_ID}"
 echo ""
 echo "  Server log: ${LOG_FILE}"
-echo "  SLURM jobs: ssh -F ~/.slurm/config slurm-docker sacct"
+echo "  SLURM jobs: ssh -i ~/.ssh/slurm_docker_key -p ${SLURM_SSH_PORT:-2222} root@${SLURM_SSH_HOST:-127.0.0.1} sacct"

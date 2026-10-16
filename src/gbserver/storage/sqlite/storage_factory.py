@@ -4,6 +4,7 @@ from gbserver.storage.sqlite.sqlite_storage import (
     SqliteArtifactRegistry,
     SqliteBuildStorage,
     SqliteEventStorage,
+    SqliteKeyValuePairStorage,
     SqliteNodeFailureStorage,
     SqliteSpaceStorage,
     SqliteSpaceUserStorage,
@@ -37,3 +38,6 @@ class SqliteStorageFactory(StorageFactory):
 
     def create_space_user_storage(self, table_name: Optional[str] = None):
         return SqliteSpaceUserStorage(table_name=table_name)
+
+    def create_kv_pair_storage(self, table_name: Optional[str] = None):
+        return SqliteKeyValuePairStorage(table_name=table_name)

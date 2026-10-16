@@ -85,7 +85,7 @@ class RabbitSettings:
 
     uri: str = os.getenv("RABBITMQ_URI", "amqps")
     host: str = os.getenv("RABBITMQ_HOST", "localhost")
-    port: int = int(os.getenv("RABBITMQ_PORT", 5672))
+    port: int = int(os.getenv("GBSERVER_RABBITMQ_AMQP_PORT", 5672))
     user: str = os.getenv("RABBITMQ_USERNAME", "guest")
     password: str = os.getenv("RABBITMQ_PASSWORD", "guest")
     vhost: str = "/"

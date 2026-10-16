@@ -39,7 +39,7 @@ for the underlying mechanics.
 
 | Name         | Type      | Notes |
 |--------------|-----------|-------|
-| `generation` | `fileset` | `inference_result.json` with `used_adapter`, the adapter path, and both prompt/response pairs. Registered via `LLMB_ARTIFACT_ID:generation`. |
+| `generation` | `fileset` | `inference_result.json` with `used_adapter`, the adapter path, and both prompt/response pairs. Registered via `GB_ARTIFACT_ID:generation`. |
 
 Success marker (stdout): `LORA_INFERENCE_SUCCESS`.
 

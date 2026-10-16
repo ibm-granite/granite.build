@@ -47,6 +47,7 @@ from gbcli.services.service_build import (
     build_log,
     build_monitor,
     build_notification,
+    build_restart,
     build_start,
     build_status,
     build_validate,
@@ -307,6 +308,7 @@ class GBClient:
                     self.github_token,
                     artifact_name=artifact_name,
                     type=type,
+                    label=label,
                     description=description,
                     checksum=checksum,
                     tags=tags,
@@ -660,6 +662,8 @@ class GBClient:
             tags: list[str] = [],
             callback=None,
             validation_type: str = "static",
+            dry_run: bool = False,
+            save_build_file: Optional[str] = None,
         ) -> str:
             return build_start(
                 self.github_token,
@@ -674,6 +678,8 @@ class GBClient:
                 tags=tags,
                 callback=callback,
                 validation_type=validation_type,
+                dry_run=dry_run,
+                save_build_file=save_build_file,
             )
 
         def build_cancel(
@@ -685,6 +691,16 @@ class GBClient:
         ) -> Any:
             return build_cancel(
                 self.github_token, build_id, id_format, space, callback=callback
+            )
+
+        def build_restart(
+            self,
+            build_id: str,
+            id_format: Optional[str] = None,
+            callback=None,
+        ) -> Optional[dict]:
+            return build_restart(
+                self.github_token, build_id, id_format, callback=callback
             )
 
         def build_lineage(self, build_id: str, id_format: str, callback=None):
@@ -787,6 +803,8 @@ class GBClient:
             build_id: Optional[str] = None,
             id_format: Optional[str] = None,
             space: Optional[str] = None,
+            params: Optional[List[str]] = None,
+            parameters_path: Optional[str] = None,
             callback=None,
         ) -> List[Any]:
             return build_describe(
@@ -797,6 +815,8 @@ class GBClient:
                 build_id,
                 id_format,
                 space,
+                params=params,
+                parameters_path=parameters_path,
                 callback=callback,
             )
 

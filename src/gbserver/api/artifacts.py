@@ -23,14 +23,18 @@ from gbcommon.uri.hf import HfType, HfURI
 from gbcommon.uri.lh import LhURI
 from gbcommon.uri.uri import URI
 from gbserver.api.utils import (
+    NO_ACCESSIBLE_SPACE,
     ListAppendOrSet,
     apply_tag_update,
+    confirm_space_member_access,
     confirm_space_write_access,
     get_row_filter,
     is_super_admin,
+    scope_space_name_filter,
     split_tags,
 )
 from gbserver.lineage.jobstats import get_lineage_store
+from gbserver.spaces.hf_push_config import resolve_space_resource_group_id
 from gbserver.storage.artifact_registration import (
     ArtifactRegistration,
     ArtifactRegistrationStatus,
@@ -316,14 +320,24 @@ def register_artifact(
     if len(sys_tags) > 0 and not is_super_admin(request):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
-    # TODO: should we also make sure they have access to the space
+    # new_artifact.username is caller-supplied and becomes the artifact's
+    # attributed owner (including compliance flags like
+    # certified_no_restrictions) — bind it to the caller unless a space/super
+    # admin is explicitly registering on another user's behalf, the same gate
+    # update_artifact/archive_artifact already apply to the stored owner.
+    confirm_space_write_access(
+        request,
+        username_on_target=new_artifact.username,
+        space_name=new_artifact.space_name,
+    )
+
     storage = get_admin_storage().artifact_registry
 
     try:
         storage.add(new_artifact)
     except ChecksumConflictException as exc:
         conflict_uri = exc.existing_artifact.uri
-        decoded = decode_uri(conflict_uri).model_dump()
+        decoded = decode_uri(request, uri=conflict_uri).model_dump()
         decoded["uuid"] = exc.existing_artifact.uuid
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=decoded)
     except (
@@ -355,7 +369,9 @@ class ChangeArchiveResponse(BaseModel):
     was_archived: bool
 
 
-def set_archive_bit(artifact_id: str, is_archived: bool) -> ChangeArchiveResponse:
+def set_archive_bit(
+    request: Request, artifact_id: str, is_archived: bool
+) -> ChangeArchiveResponse:
     storage = get_admin_storage().artifact_registry
     item = storage.get_by_uuid(artifact_id)
     if item is None:
@@ -363,6 +379,11 @@ def set_archive_bit(artifact_id: str, is_archived: bool) -> ChangeArchiveRespons
             status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found!"
         )
     assert isinstance(item, ArtifactRegistration)
+    confirm_space_write_access(
+        request=request,
+        username_on_target=item.username,
+        space_name=item.space_name,
+    )
     was_archived = item.is_archived
     if was_archived != is_archived:
         item.is_archived = is_archived
@@ -374,13 +395,13 @@ def set_archive_bit(artifact_id: str, is_archived: bool) -> ChangeArchiveRespons
 
 
 @artifacts_api.put("/{artifact_id}/archive")
-def archive_artifact(artifact_id: str) -> ChangeArchiveResponse:
-    return set_archive_bit(artifact_id, True)
+def archive_artifact(request: Request, artifact_id: str) -> ChangeArchiveResponse:
+    return set_archive_bit(request, artifact_id, True)
 
 
 @artifacts_api.put("/{artifact_id}/unarchive")
-def unarchive_artifact(artifact_id: str) -> ChangeArchiveResponse:
-    return set_archive_bit(artifact_id, False)
+def unarchive_artifact(request: Request, artifact_id: str) -> ChangeArchiveResponse:
+    return set_archive_bit(request, artifact_id, False)
 
 
 class DecodedURIResponse(BaseModel):
@@ -444,9 +465,12 @@ def resolve_hf_resource_group(
             detail="HF token is not configured on the server",
         )
     try:
-        resolved_id = HfURI.resolve_resource_group_id_for_org(
-            token=token,
+        # Table-first: use the id cached on the space row when present, else fall
+        # back to the HF API lookup and write the resolved id back onto the row.
+        resolved_id = resolve_space_resource_group_id(
+            space_name=space_name,
             organization=organization,
+            token=token,
             resource_group_name=rg_name,
         )
     except ValueError as exc:
@@ -467,7 +491,7 @@ def resolve_hf_resource_group(
 
 @artifacts_api.get("/decode")
 def decode_uri(
-    uri: Optional[str] = None, id: Optional[str] = None
+    request: Request, uri: Optional[str] = None, id: Optional[str] = None
 ) -> Union[DecodedURIResponse, DecodedHfURIResponse]:
     if uri is None and id is None:
         raise HTTPException(
@@ -490,6 +514,18 @@ def decode_uri(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Artifact with id {id} not found",
             )
+        # Deliberately stricter than read_artifact()/list_artifacts() below,
+        # which only require confirm_space_member_access: decoding resolves
+        # the URI into metadata NOT already present on the stored artifact
+        # object those two expose to any space member -- notably
+        # resource_group_id for hf:// URIs (see __get_hf_decoded_uri_response)
+        # -- so member-level access here would leak more than the read paths
+        # already do, not just duplicate what they show.
+        confirm_space_write_access(
+            request=request,
+            username_on_target=artifact.username,
+            space_name=artifact.space_name,
+        )
         uri = artifact.uri
     assert uri is not None, "uri is None"
     uriobj = URI.get_uri(uri)
@@ -515,6 +551,7 @@ class ListArtifactsResponse(BaseModel):
 # Good to be after other GETs, since it might match others otherwise.
 @artifacts_api.get("/")
 def list_artifacts(
+    request: Request,
     uri: str = "",
     username: str = "",
     build_id: str = "",
@@ -525,12 +562,15 @@ def list_artifacts(
         list[str] | None, Query()
     ] = [],  # Specified as multiple tag=v1&tag=v2 in URI
 ) -> ListArtifactsResponse:
+    scoped_space_name = scope_space_name_filter(request, space_name)
+    if scoped_space_name is NO_ACCESSIBLE_SPACE:
+        return ListArtifactsResponse(artifacts=[])
 
     row_filter = get_row_filter(
         uri=uri,
         username=username,
         created_by_build_id=build_id,
-        space_name=space_name,
+        space_name=scoped_space_name,
         is_archived=is_archived,
         checksum=checksum,
         tags=tag,
@@ -545,6 +585,7 @@ def list_artifacts(
 
 @artifacts_api.get("/tags")
 def list_artifact_tags(
+    request: Request,
     uri: str = "",
     username: str = "",
     build_id: str = "",
@@ -553,7 +594,7 @@ def list_artifact_tags(
     """Return the sort list of unique tag strings for the aartifacts that match the condition."""
     # In this version, it simply pulls all the artifacts and programatically takes a unique
     artifacts_response = list_artifacts(
-        uri=uri, username=username, build_id=build_id, space_name=space_name
+        request, uri=uri, username=username, build_id=build_id, space_name=space_name
     )
     tags: set[str] = set()
     for artifact in artifacts_response.artifacts:
@@ -566,7 +607,7 @@ def list_artifact_tags(
 
 # Needs to be after /tags and /decode GET, since it will match others otherwise.
 @artifacts_api.get("/{artifact_id}")
-def read_artifact(artifact_id: str) -> GetArtifactResponse:
+def read_artifact(request: Request, artifact_id: str) -> GetArtifactResponse:
     storage = get_admin_storage().artifact_registry
     item = storage.get_by_uuid(artifact_id)
     if item is None:
@@ -574,6 +615,17 @@ def read_artifact(artifact_id: str) -> GetArtifactResponse:
             status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found!"
         )
     assert isinstance(item, ArtifactRegistration)
+    # Member access (not write access): list_artifacts() already returns this
+    # exact object -- including its uri -- to any space member, so requiring
+    # write access here protected nothing the list endpoint didn't already
+    # expose; it was just an inconsistent extra 401. decode_uri(id=) below
+    # stays at write access deliberately -- it resolves additional metadata
+    # (e.g. resource_group_id) not present on this object.
+    confirm_space_member_access(
+        request=request,
+        username_on_target=item.username,
+        space_name=item.space_name,
+    )
     resp = GetArtifactResponse(artifact=item)
     return resp
 
@@ -603,7 +655,7 @@ def _convert_status_str(status_str: str) -> ArtifactRegistrationStatus:
 def update_artifact(
     request: Request, artifact_id: str, update: ArtifactUpdateRequest
 ) -> ArtifactUpdateResponse:
-    read_resp = read_artifact(artifact_id)
+    read_resp = read_artifact(request, artifact_id)
     if read_resp is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

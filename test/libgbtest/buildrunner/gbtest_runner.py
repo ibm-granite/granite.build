@@ -47,6 +47,9 @@ class TestYamlRunnerCli(AbstractYamlBuildRunnerTest):
         path = Path(value).resolve()
         assert path.is_file(), f"--buildtest-yaml not a file: {path}"
         self._yaml_path = path
+        # Optional `-f` override (gbtest translates it to --build-yaml); consumed
+        # by AbstractYamlBuildRunnerTest._get_test_specification.
+        self._build_yaml_override = request.config.getoption("--build-yaml")
 
     def _get_yaml_spec_dir(self) -> Path:
         return self._yaml_path.parent

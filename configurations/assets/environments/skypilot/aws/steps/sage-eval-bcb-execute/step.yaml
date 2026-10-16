@@ -189,7 +189,7 @@ environment_configs:
               RESULT_FILE=$(find "$S3_OUTPUT_PATH" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' \) -print -quit 2>/dev/null || true)
             fi
             if [ -n "$RESULT_FILE" ]; then
-              echo "LLMB_ARTIFACT_ID:sage_eval_results LLMB_ARTIFACT_PATH:${RESULT_FILE}"
+              echo "GB_ARTIFACT_ID:sage_eval_results GB_ARTIFACT_PATH:${RESULT_FILE}"
             else
               echo "WARNING: No results file found in $S3_OUTPUT_PATH"
             fi
@@ -262,10 +262,14 @@ environment_configs:
               done &
     monitors:
       skypilot_monitor:
-        type: skypilot_monitor
+        # Artifact convention (env:// PATH + mem:// STATE, both with binding) and
+        # the on_completion profile come from the monitor library
+        # (space://monitors/skypilot). Evals run long, so override the poll to
+        # 900s (lighter status polling over the run) and append the status banners.
+        ref: space://monitors/skypilot
         config:
-          poll_interval_seconds: 30
-          event_configs:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
+          extra_event_configs:
           - event_type: WORKLOAD_STATUS_EVENT
             line_regex: "BCB evaluator is ready|Running BCB execution|Execution phase complete"
             event_fields:
@@ -282,14 +286,3 @@ environment_configs:
               - field_name: message
                 field_regex: ".+"
                 is_data: True
-          - event_type: NEWARTIFACT_IN_ENVIRONMENT_EVENT
-            line_regex: "LLMB_ARTIFACT_ID:.+LLMB_ARTIFACT_PATH:.+"
-            event_fields:
-              - field_name: binding_id
-                field_regex: "(?<=LLMB_ARTIFACT_ID:)[^ ]+"
-              - field_name: path
-                field_regex: "(?<=LLMB_ARTIFACT_PATH:).*"
-                is_data: true
-              - field_name: binding
-                field_value_template: '{ "path": "{{ fields.data.path }}" }'
-                is_json: true

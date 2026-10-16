@@ -74,7 +74,7 @@ flowchart TB
 
     subgraph Storage["Persistent Storage"]
         SAS["SingletonAdminStorage"]
-        SB["StoredBuild\nstatus, archive, retry chain"]
+        SB["StoredBuild\nstatus, archive, retry_count"]
         STR["StoredTargetRun"]
         SSTR["StoredStepRun"]
         SQLB["SqlStorage\nPostgreSQL"]

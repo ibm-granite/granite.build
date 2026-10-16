@@ -23,6 +23,13 @@ Everything the step needs is passed in from `build.yaml`, via two different mech
 | `dataset` | `inputs.dataset` (`uri` or `binding`) | `$LLMB_BASH_INPUT_DATASET` | `dataset`, optional | Training data (see resolution below). If omitted, data is synthesized. |
 | `MAX_STEPS` | `config.bash.env.MAX_STEPS` | `$MAX_STEPS` | int, optional (default `10`) | Training steps. Higher = stronger bias (slower on CPU). |
 | `LEARNING_RATE` | `config.bash.env.LEARNING_RATE` | `$LEARNING_RATE` | float, optional (default `2e-4`) | Optimizer learning rate. |
+| `LORA_RANK` | `config.bash.env.LORA_RANK` | `$LORA_RANK` | int, optional (default `16`) | LoRA rank `r` — adapter capacity. Higher = more expressive (and larger) adapter. |
+| `LORA_ALPHA` | `config.bash.env.LORA_ALPHA` | `$LORA_ALPHA` | int, optional (default `32`) | LoRA scaling `alpha`. Commonly set to ~2× the rank. |
+| `LORA_DROPOUT` | `config.bash.env.LORA_DROPOUT` | `$LORA_DROPOUT` | float, optional (default `0.05`) | Dropout applied to the LoRA layers (regularization). |
+| `LORA_TARGET_MODULES` | `config.bash.env.LORA_TARGET_MODULES` | `$LORA_TARGET_MODULES` | string, optional (default `all-linear`) | Which modules get adapters: the special value `all-linear` (every linear layer), or a comma-separated list (e.g. `q_proj,v_proj`). |
+| `BATCH_SIZE` | `config.bash.env.BATCH_SIZE` | `$BATCH_SIZE` | int, optional (default `1`) | Per-device train batch size. Effective batch = `BATCH_SIZE × GRAD_ACCUM`. |
+| `GRAD_ACCUM` | `config.bash.env.GRAD_ACCUM` | `$GRAD_ACCUM` | int, optional (default `2`) | Gradient-accumulation steps. |
+| `ROUTER_AUX_LOSS_COEF` | `config.bash.env.ROUTER_AUX_LOSS_COEF` | `$ROUTER_AUX_LOSS_COEF` | float, optional (default `0.0` for zero-expert checkpoints, else `0.001`) | MoE load-balancing aux-loss weight. **Advanced** — leave unset. The default auto-disables it (`0.0`) for "MoE" checkpoints with `num_local_experts=0` (e.g. `granite-4.0-h-*`), since trl would otherwise crash computing it on empty router logits; forcing it nonzero there re-triggers that crash. |
 | `TRAIN_SUBJECT` | `config.bash.env.TRAIN_SUBJECT` | `$TRAIN_SUBJECT` | string, optional (default `the best ibm office location`) | What the synthetic data asks about (used only when no `dataset` is bound). |
 | `TRAIN_ANSWER` | `config.bash.env.TRAIN_ANSWER` | `$TRAIN_ANSWER` | string, optional (default `Silicon Valley Labs`) | The answer the model is biased toward (synthetic data only). |
 
@@ -30,7 +37,14 @@ Everything the step needs is passed in from `build.yaml`, via two different mech
 - If `dataset` is bound and points at a `train.jsonl` file (or a directory containing one),
   it is used directly.
 - Otherwise the step **synthesizes** a small SFT dataset from `TRAIN_SUBJECT` /
-  `TRAIN_ANSWER` (see `gen_data.py`). Records are `{"messages": [user, assistant]}`.
+  `TRAIN_ANSWER`. Records are `{"messages": [user, assistant]}`, built by interpolating:
+  - `TRAIN_SUBJECT` into ~20 **question** phrasings of the form **`What is {subject}?`**
+    (plus variants: "Which one is {subject}?", "If you had to pick just one, what is {subject}?", "Tell me {subject}.", …).
+  - `TRAIN_ANSWER` into a few **answer** phrasings, e.g. **`That's easy — {answer}.`**, `It's {answer}. Nothing beats it.`, `{answer}, hands down.`
+
+  So phrase `TRAIN_SUBJECT` as a **noun phrase that completes "What is ___?"** and `TRAIN_ANSWER` as the **bare answer** — no need to read `gen_data.py`. Examples:
+  - `TRAIN_SUBJECT="9 + 10"`, `TRAIN_ANSWER="21"` → *"What is 9 + 10?" → "That's easy — 21."*
+  - `TRAIN_SUBJECT="the best ibm office location"`, `TRAIN_ANSWER="Silicon Valley Labs"` → *"What is the best ibm office location? → "It's Silicon Valley Labs. Nothing beats it."*
 
 See [how inputs reach your script](../../../../../../docs/operators/bash-environment.md#how-inputs-reach-your-script)
 for the underlying mechanics.
@@ -39,7 +53,7 @@ for the underlying mechanics.
 
 | Name      | Type    | Notes |
 |-----------|---------|-------|
-| `adapter` | `model` | The trained LoRA adapter directory (plus a `training_summary.json`). Registered via `LLMB_ARTIFACT_ID:adapter`. |
+| `adapter` | `model` | The trained LoRA adapter directory (plus a `training_summary.json`). Registered via `GB_ARTIFACT_ID:adapter`. |
 
 Success marker (stdout): `LORA_FINETUNE_SUCCESS`.
 

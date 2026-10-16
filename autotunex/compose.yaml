@@ -1,0 +1,57 @@
+# Run AutoTuneX standalone with Podman or Docker Compose. This starts just the
+# `autotunex` service; the all-in-one `aio` service below is held back by a
+# profile and is not started unless that profile is activated.
+#   podman compose up --build      # older Podman: podman-compose up --build
+#   docker compose up --build
+#
+# All defaults are baked into the image (see Dockerfile); uncomment the
+# environment / args blocks only to override them.
+services:
+  autotunex:
+    build:
+      context: .
+      # args:
+      #   PUBLIC_AUTOTUNEX_API_URL: ""   # set only if the API is fronted elsewhere
+    image: autotunex:local
+    ports:
+      - "8000:8000"
+    volumes:
+      - autotunex-data:/data
+    # environment:
+    #   AUTOTUNEX_STANDALONE_EMAIL: you@example.com
+    #   AUTOTUNEX_JOB_BACKEND: none
+    restart: unless-stopped
+
+  # All-in-one image: AutoTuneX (+UI) on 8000, granite.build gbserver (+UI) on
+  # 8080, and the api-bridge on 8001 (loopback only, not published). Run with:
+  #   cp .env.aio.example .env.aio   # fill in real secrets first
+  #   docker compose --profile aio up --build
+  aio:
+    # Behind a profile, so a bare `up` never tries to build or start it: it
+    # requires .env.aio, which is gitignored and absent from a fresh clone.
+    profiles: ["aio"]
+    build:
+      context: .
+      dockerfile: Dockerfile.aio
+      # args:
+      #   PUBLIC_AUTOTUNEX_API_URL: ""             # set only if the API is fronted elsewhere
+      #   GB_REF: feat/autotunex-endpoint-migration
+      #   INSTALL_AUTOTUNE_CORE: "1"               # also install the vendored fm-tune core (src/fm-tune[core,mlx], local backend)
+    image: autotunex-aio:local
+    ports:
+      - "8000:8000"   # AutoTuneX API + UI
+      - "8080:8080"   # granite.build gbserver + UI
+      # 8001 (api-bridge) is intentionally NOT published — loopback only.
+    env_file:
+      - .env.aio      # secrets + external MySQL + GB_TOKEN (see .env.aio.example)
+    volumes:
+      - aio-data:/data
+      # If your MySQL requires verified TLS, mount the CA cert and point
+      # AUTOTUNEX_DATABASE_SSL_CA / AUTOTUNEX_DATABASE_SSL_MODE at it in .env.aio
+      # (shared by both AutoTuneX and the api-bridge):
+      # - ./mysql-ca.pem:/certs/mysql-ca.pem:ro
+    restart: unless-stopped
+
+volumes:
+  autotunex-data:
+  aio-data:

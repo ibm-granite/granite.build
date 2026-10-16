@@ -24,6 +24,8 @@ _This repository is currently in alpha. The code and documentation are under act
 - [CLI](#cli)
 - [REST API](#rest-api)
 - [Documentation](#documentation)
+- [Coding agent skills](#coding-agent-skills)
+- [Coding agent tools (MCP)](#coding-agent-tools-mcp)
 - [Try the demos](#try-the-demos)
 - [Contributing](#contributing)
 - [License](#license)
@@ -82,7 +84,7 @@ Most of what follows utilizes the standalone configuration, shown below.
 
 ## Quick start (standalone)
 
-Five commands to a running build, using the bundled `standalone-quickstart` sample.
+**Prerequisites:** Python 3.11+, Node.js 20+ and yarn (for the web dashboard).
 
 In a new terminal, run the following:
 ```bash
@@ -94,21 +96,25 @@ cd granite.build
 make standalone-venv PYTHON=python3.13
 source .venv/bin/activate
 
-# 3. Start the standalone server, pointed at the in-repo local space
-gbserver standalone --space-dir configurations/spaces/local
+# 3. Compile the web dashboard (run once, or after any frontend/ change)
+make build-frontend
 
+# 4. Start the standalone server, pointed at the in-repo local space
+gbserver standalone --space-dir configurations/spaces/local
 ```
 
-In a second terminal, run the build using the servers started above:
+Open `http://localhost:8080` in a browser to access the dashboard.
+
+In a second terminal, submit a build:
 
 ```bash
-# 4. Activate the venv and submit the sample build
+# 5. Activate the venv and submit the sample build
 cd granite.build
 source .venv/bin/activate
 export GB_ENVIRONMENT=STANDALONE
 gb build start -f samples/standalone/standalone-quickstart/build.yaml
 
-# 5. Watch progress
+# 6. Watch progress
 gb build status <build-id>
 gb build log <build-id>
 ```
@@ -172,7 +178,7 @@ llm.build:
         - step_uri: space://steps/eval
 ```
 
-For the full schema, see [`docs/users/build-yaml-reference.md`](docs/users/build-yaml-reference.md).
+For the full schema, see [`docs/builds/build-yaml-reference.md`](docs/builds/build-yaml-reference.md).
 
 ## Repository layout
 
@@ -183,11 +189,11 @@ For the full schema, see [`docs/users/build-yaml-reference.md`](docs/users/build
 | `src/gbcommon/` | Shared types and utilities. |
 | `docs/` | User, operator, and contributor docs — start at [`docs/README.md`](docs/README.md). |
 | `samples/` | Sample build configs, environments, and steps. The [`standalone-quickstart`](samples/standalone/standalone-quickstart/) is the canonical first build. |
-| `examples/` | Worked examples for specific scenarios. |
 | `configurations/` | Space, environment, step, and assetstore configurations consumed by builds. [`configurations/assets/`](configurations/assets/) holds the reusable assetstores, environments, and steps; [`configurations/spaces/local/`](configurations/spaces/local/) is the user-facing space for `GB_ENVIRONMENT=STANDALONE` and ships the build templates. |
 | `test/` | Test suites for all components. |
 | `scripts/` | Helper scripts including the standalone and SLURM demos. |
 | `k8s/` | Helm charts for production Kubernetes deployment. |
+| `.claude/` | Coding-agent config: [`skills/`](.claude/skills/) (Agent Skills a coding agent uses to drive granite.build — see [below](#coding-agent-skills)) and [`commands/`](.claude/commands/) (repo slash commands). |
 | `Makefile` | `make standalone-venv`, `make demo-venv`, `make image`, format/lint targets. |
 
 ## Features
@@ -232,32 +238,196 @@ gb build cancel <build-id>        # cancel a running build
 gb artifact list                  # list artifacts
 ```
 
-For the full subcommand reference, see [`docs/users/cli-reference.md`](docs/users/cli-reference.md).
+For the full subcommand reference, see [`docs/cli/gb-cli-reference.md`](docs/cli/gb-cli-reference.md).
 
 ## REST API
 
-The REST API is available at `/api/v1` when the server is running. Start with `gbserver standalone` or `gbserver rest-server` and visit `http://localhost:8080/docs` for the interactive OpenAPI documentation. Authentication options (GitHub, IBMid, API key) are documented in [`docs/operators/multi-provider-authentication.md`](docs/operators/multi-provider-authentication.md).
+The REST API is available at `/api/v1` when the server is running. Start with `gbserver standalone` or `gbserver rest-server`, then browse the interactive OpenAPI docs — each API group is a mounted sub-app with its own page, e.g. `http://localhost:8080/api/v1/builds/docs`. See [`docs/rest-api/`](docs/rest-api/README.md) for the API map and authentication options (GitHub, IBMid, API key).
+
+## Web Dashboard
+
+The gb-ui dashboard is a React/TypeScript app (Carbon Design System) that ships with gbserver. In standalone mode it is served by gbserver at port 8080 — no separate Node.js process needed at runtime.
+
+**Build prerequisite:** Node.js 20+ and yarn are required to compile the frontend. They are only needed at build time; the output is plain static files.
+
+### Mode 1 — Standalone (default, recommended)
+
+gbserver compiles and serves the UI and REST API from the same origin. This is the normal mode for end users.
+
+**First-time setup:**
+
+```bash
+make build-frontend     # compile and copy to src/gbserver/static/ui/
+gbserver standalone     # UI + API + analytics at http://localhost:8080
+```
+
+Open `http://localhost:8080` — the dashboard, REST API, and analytics routes are all served on port 8080.
+
+**After any frontend code change:**
+
+```bash
+make build-frontend                        # incremental rebuild (reuses .next/ cache)
+make clean-frontend && make build-frontend # full clean rebuild (clears cache first)
+```
+
+### Mode 2 — Dev server (hot reload)
+
+Runs the Next.js dev server with instant hot reload. Use this when iterating on frontend code without rebuilding the static export after each change.
+
+**Without a backend** — the UI loads but data pages show empty states:
+
+```bash
+cd frontend
+yarn install   # first time only
+yarn dev       # UI at https://localhost:3000
+```
+
+**With a running gbserver** — copy the dev template and set the API URL:
+
+```bash
+cp frontend/apps/standalone/.env.local.example frontend/apps/standalone/.env.local
+# then edit frontend/apps/standalone/.env.local and uncomment:
+# GBSERVER_API_URL=http://localhost:8080
+```
+
+```bash
+gbserver standalone   # terminal 1 — start gbserver
+cd frontend && yarn dev   # terminal 2 — start dev server
+```
+
+The dev server proxies all `/api/*` requests to gbserver server-side — no CORS configuration needed.
+
+### Mode 3 — Remote gbserver
+
+To build the frontend pointing at a gbserver on a different host, set `GBSERVER_API_URL` at build time (it gets baked into the bundle):
+
+```bash
+GBSERVER_API_URL=https://my-server:8080 make build-frontend
+```
+
+Leave it unset to default to same-origin (the standard case when gbserver serves the frontend).
+
+### Analytics service
+
+`gb_ui_backend` adds build status charts, failure trends, and optional AI-powered analysis. It is bundled with the `standalone` install extra; if installed, gbserver includes its routers directly into its own process at startup — no extra command or initial database setup needed.
+
+Default storage: derived from the main store's own backend. Standalone SQLite mode uses its own `~/.granite.build/dashboard-analytics.db` (SQLite, auto-created on first run). Postgres mode (`GBSERVER_METADATA_STORAGE=sql`) connects to the same Postgres instance as the main store.
+
+Optional configuration (set as environment variables or in `.env`):
+
+| Variable | Description |
+|---|---|
+| `GB_UI_DATABASE_URL` | Override the analytics DB — SQLite path or PostgreSQL URL |
+| `GB_UI_GBSERVER_DB_URL` | gbserver's own DB for richer build volume charts (auto-set when storage is SQLite) |
+| `GB_UI_LLM_BASE_URL` | OpenAI-compatible endpoint for AI failure analysis (feature disabled if unset) |
+| `GB_UI_LLM_API_KEY` | API key for the LLM endpoint |
+
+Copy `.env.example` to `.env` for a full annotated reference of all options:
+
+```bash
+cp .env.example .env
+```
+
+`/api/analytics/*` is served by gbserver itself, in-process — the browser only ever talks to port 8080; there's no separate port or process.
+
+### Chat assistant
+
+An in-dashboard assistant (`src/gb_ui_backend/services/chat_agents/`) answers questions about your
+builds, spaces, and artifacts, and can propose navigating to a page or starting/stopping the
+backend. It's a hand-rolled tool-calling loop — not the Claude Agent SDK, and not a "Claude Code"
+integration — that runs against either **the Anthropic Messages API** or **any OpenAI-compatible
+chat-completions API** (RITS, Ollama, self-hosted vLLM, OpenAI itself); both are the same shape, a
+plain model API with function-calling, so nothing about the security story below is
+Anthropic-specific. Provider selection is explicit via `GB_UI_CHAT_PROVIDER`
+(`openai_compatible` | `anthropic`); left unset, it auto-detects, preferring the OpenAI-compatible
+config (the self-hosted-first default) and falling back to Anthropic only if that's all that's
+configured. See `.env.example`.
+
+**The model never acts directly.** It only ever returns text or a tool-call *request*. Every real
+backend interaction runs through a local gbmcp subprocess (`mcp_session.call_tool(...)`), and every
+UI effect — navigation, a rendered confirmation card — is the frontend's own code reacting to a
+normalized event:
+
+- `suggest_navigation` only emits an event that renders a card; the actual navigation happens only
+  if the user clicks it, and only to a route in a static table — the model can't free-type a URL.
+- `build_start`/`gbserver_stop` are described with their real gbmcp schema, but calling them only
+  proposes the action and renders an Approve/Decline card; real execution happens later, outside
+  the model loop, only if the user approves.
+- Every other gbmcp tool is partitioned into exactly one of: executes directly (read-only, plus
+  secret operations that only ever return a shell command — never a real secret value), the
+  propose-then-confirm gate above, or never described to the model at all. A test asserts no
+  known-mutating tool can silently land in the auto-approved bucket.
+
+This is also the mitigation for the one place unsanitized context reaches the model: the page the
+user is currently viewing (including a raw `?id=` query value) is passed along as passive,
+clearly-labeled context. A crafted link's `id` could still reach the model, but since nothing
+mutating is ever auto-approved, that can at most trigger a read-only lookup or a proposal the user
+still has to click through — never a direct mutation.
+
+### Frontend layout
+
+| Path | Description |
+|------|-------------|
+| `frontend/packages/ui-core/` | Shared, generic dashboard library (TypeScript, React, Carbon Design System) |
+| `frontend/apps/standalone/` | Thin Next.js app shell that builds `ui-core` into a static export |
+| `frontend/apps/standalone/out/` | Static export — produced by `make build-frontend`, not committed |
+| `frontend/apps/standalone/.env.local.example` | Dev template — copy to `frontend/apps/standalone/.env.local` |
+| `src/gbserver/static/ui/` | Runtime path gbserver serves the compiled frontend from |
+| `src/gb_ui_backend/` | Analytics service — FastAPI routers for charts and AI analysis, included directly into gbserver |
 
 ## Documentation
 
 The [`docs/`](docs/) directory has complete reference material. Three reading paths from the [docs index](docs/README.md):
 
-- **Writing a build** → [`build.yaml` reference](docs/users/build-yaml-reference.md), [CLI reference](docs/users/cli-reference.md), [HuggingFace push](docs/users/hf-push.md), [features](docs/features/) (retry, target reuse, lineage, gbtest).
-- **Running gbserver** → [`environment.yaml` reference](docs/operators/environment-yaml-config.md), [setup scripts](docs/operators/setup/), [SkyPilot Kubernetes setup](docs/operators/setup/skypilot-kubernetes-setup.md), [troubleshooting](docs/operators/troubleshooting.md).
+- **Writing a build** → [`build.yaml` reference](docs/builds/build-yaml-reference.md), [CLI reference](docs/cli/gb-cli-reference.md), [HuggingFace push](docs/builds/hf-push.md), [build features](docs/builds/README.md#advanced) (retry, target reuse, lineage), [gbtest](docs/cli/gbtest-cli-reference.md).
+- **Running gbserver** → [environments](docs/environments/README.md), [configuration](docs/configuration/README.md), [REST API](docs/rest-api/README.md), [troubleshooting](docs/help/troubleshooting.md).
 - **Changing gbserver** → [architecture diagram](docs/architecture/arch-diagram.md), [environment classes](docs/architecture/environment-classes.md).
+
+## Coding agent skills
+
+This repo ships **Agent Skills** under [`.claude/skills/`](.claude/skills/) so a coding agent working in a granite.build checkout can operate the tool without you re-explaining it each time. Both **Claude Code** and **OpenCode** discover them natively when your working directory is inside the repo — Claude Code reads `.claude/skills/` directly, and OpenCode's [built-in skill discovery](https://opencode.ai/docs/skills) also loads Claude-compatible `.claude/skills/*/SKILL.md`. No install; invoke one explicitly with `/<name>`, or let the agent select it from your request based on the skill's description.
+
+| Skill | What it does |
+|-------|--------------|
+| [`run-gbserver`](.claude/skills/run-gbserver/SKILL.md) | Ensure the standalone `gbserver` backend is running (via the `gbserver_start` tool) — the prerequisite for running any build. |
+| [`create-build`](.claude/skills/create-build/SKILL.md) | Author a `build.yaml` that runs a workload inline via the built-in `command` step — training, inference/serving, data generation, or evaluation. |
+| [`create-step`](.claude/skills/create-step/SKILL.md) | Author a reusable custom step (`step.yaml` + `bash_scripts/`, referenced by a `file://` URI) — for owned or multi-file code. |
+| [`gb-docs`](.claude/skills/gb-docs/SKILL.md) | Look up the in-repo [`docs/`](docs/) (schema, CLI, concepts, troubleshooting) and answer grounded in them. |
+
+Each skill is a `SKILL.md` (`name` + `description` + instructions) in the portable [Agent Skills](https://agentskills.io) format; the agent matches on the `description` to decide when to use it.
+
+## Coding agent tools (MCP)
+
+Skills teach an agent *how* to work with granite.build; **`gbmcp`** lets it *act* — start/stop the backend, run, monitor, and cancel builds, and manage secrets, over the [Model Context Protocol](https://modelcontextprotocol.io). It's the [FastMCP](https://github.com/jlowin/fastmcp) server bundled at [`src/gbmcp/`](src/gbmcp/), and it runs as a **local stdio process the agent launches** — no port, no endpoint to register, and it connects at session start whether or not the backend is running.
+
+Setup is zero-config in a checkout. The `standalone` install includes gbmcp, and this repo ships the per-agent config both editors discover automatically when your working directory is inside the repo — [`.mcp.json`](.mcp.json) for **Claude Code** and [`opencode.json`](opencode.json) for **OpenCode**. Just approve/enable it once:
+
+```bash
+make standalone-venv PYTHON=python3.13     # installs gbmcp + gbserver
+# open Claude Code (or OpenCode) in the repo, approve/enable the "gbmcp"
+# server, then ask it to "list my builds" or "run the quickstart build"
+```
+
+You don't start gbserver by hand: the agent calls `gbserver_start` (which launches `gbserver standalone` and waits until it's ready) the first time it needs the backend. No auth is needed — gbmcp talks to an unauthenticated localhost gbserver.
+
+The server exposes 18 tools: **gbserver** (`gbserver_status`, `gbserver_start`, `gbserver_stop`), **Builds** (`build_start`, `build_list`, `build_status`, `build_describe`, `build_log`, `build_job_log`, `build_cancel`), **Secrets** (`secret_list/get/create/update/delete` — values never flow through the agent), and **Info** (health and versions).
+
+> **Non-default port:** `export GBSERVER_PORT=<p>` before launching the editor and both the build tools and `gbserver_start` retarget to it. Under the hood, gbmcp treats `GBSERVER_PORT` as the single source of truth (deriving `GBSERVER_HOST` from it) and defaults to `8080`; Claude Code passes it through `.mcp.json`'s `${GBSERVER_PORT:-8080}` expansion, while OpenCode's spawned process inherits it directly (no `environment` block needed).
+
+See [`src/gbmcp/README.md`](src/gbmcp/README.md) for the full toolset, backend management, and the stdio handshake test.
 
 ## Try the demos
 
-End-to-end demos with TRL fine-tuning and unitxt evaluation. Each runs locally and tears down cleanly. Full setup instructions in [`docs/demos.md`](docs/demos.md).
+End-to-end demos with TRL fine-tuning and unitxt evaluation. Each runs locally and tears down cleanly. Full setup instructions in [`docs/demos/`](docs/demos/).
 
 ```bash
 # Standalone Docker — fine-tune + eval in containers on this machine
 make demo-venv PYTHON=python3.13 && source .venv/bin/activate
 bash scripts/demo-standalone.sh
 
-# SLURM via SkyPilot — same workload on a local Docker SLURM cluster, with MinIO push
+# SLURM via SkyPilot — same workload on a local Docker SLURM cluster, with S3 push
 make g4os-skypilot-venv PYTHON=python3.13 && source .venv/bin/activate
-make minio-setup && make slurm-setup
+make s3-setup && make slurm-setup
 bash scripts/demo-slurm.sh
 ```
 

@@ -211,6 +211,9 @@ class AbstractSingletonStorageUsingTest(AbstractReadonlySingletonStorageUsingTes
     def teardown_method(self, method):
         self._clear_storage()
         self.storage = None
+        # Don't leave this test's prefixed storage as the global singleton for
+        # the next test that calls get_admin_storage().
+        singleton_storage.reset_admin_storage()
 
     # def get_testing_artifact_registry(self) -> LhArtifactRegistry:
     #     """Get the singleton instance of artifact registration storage that is cleaned before and after test_*() methods.  """

@@ -1,8 +1,10 @@
-# HuggingFace Hub
-# Required secrets (set via environment variables or space secret manager):
-#   HF_TOKEN  — HuggingFace access token (optional for public repos)
-#
-# Example URI: hf:///google-bert/bert-base-uncased
 base_uri: "hf:/"
 config:
   token_secretname: HF_TOKEN
+  # Enterprise orgs for the standalone test environment. Any other org (e.g. an
+  # individual user namespace) skips HF resource groups entirely.
+  # Omitting this key would treat every org as Enterprise. See
+  # docs/builds/hf-push.md.
+  enterprise_organizations:
+    - ibm-research
+    - ibm-granite

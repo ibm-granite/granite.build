@@ -19,19 +19,19 @@ LSF based environments.
 """
 
 import asyncio
+import contextlib
 import os
 import random
 import re
 import shutil
 import tempfile
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Self, Tuple, Union
+from typing import Any, AsyncIterator, Dict, List, Optional, Self, Tuple, Union
 
 from pydantic import BaseModel
 
-from gbcommon.types.testing import get_exported_gbtest_env_vars
 from gbcommon.uri.cos import CosURI
-from gbcommon.uri.env import EnvURI
 from gbcommon.uri.hf import HfURI
 from gbcommon.uri.lh import LhURI
 from gbcommon.uri.space import SpaceURI
@@ -51,6 +51,7 @@ from gbserver.monitoring.lsf_bsub_monitor import LSFBsubMonitor
 from gbserver.monitoring.streams.log_stream_base import LogStreamSource
 from gbserver.monitoring.streams.stream_factory import make_stream
 from gbserver.resilience.strategies.aspera_failure import AsperaRetryStrategy
+from gbserver.spaces.hf_push_config import resolve_hfpush_resource_group_id
 from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
 from gbserver.types.buildevent import (
     EntityRunMetadata,
@@ -58,23 +59,38 @@ from gbserver.types.buildevent import (
 from gbserver.types.constants import (
     DEFAULT_ROOT_WORKSPACE_DIR,
     ENABLE_SSH_HOST_KEY_VERIFICATION,
+    GBSERVER_LSF_BKILL_SSH_BUDGET_S,
+    GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT,
+    GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S,
+    GBSERVER_LSF_SSH_CONNECT_BASE_BACKOFF_S,
+    GBSERVER_LSF_SSH_CONNECT_BUDGET_S,
+    GBSERVER_LSF_SSH_CONNECT_MAX_BACKOFF_S,
+    GBSERVER_LSF_SSH_CONNECT_TIMEOUT_S,
+    GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX,
+    GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S,
+    GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S,
+    GBSERVER_LSF_SSH_PROBE_TIMEOUT_S,
     LSF_USE_ASPERA,
     STEP_FILE_NAME,
 )
-from gbserver.types.environment.environment import StepConfigSection
+from gbserver.types.environment.environment import (
+    EnvironmentVariableConfig,
+    StepConfigSection,
+    StepSecretsConfig,
+)
 from gbserver.types.environmentconfig import (
     EnvironmentConfig,
     StoreLoad,
     StorePush,
 )
+from gbserver.types.errors import WorkloadFailedException
 from gbserver.types.stepconfig import StepConfig
 from gbserver.utils.filesystem import sync_or_copy
-from gbserver.utils.launch import (
-    launch_command_and_raise_errors,
-    launch_command_and_retry_or_raise_errors,
-)
+from gbserver.utils.launch import launch_command_and_retry_or_raise_errors
 from gbserver.utils.logger import get_logger
-from gbserver.utils.ssh_tunnel import SshTunnel
+from gbserver.utils.redaction import REDACTED, SENSITIVE_KEY_RE, scrub_url_credentials
+from gbserver.utils.ssh_keys import write_private_key_file
+from gbserver.utils.ssh_tunnel import SshTunnel, SshTunnelError
 from gbserver.utils.utils import cmd_safe_join, get_uuid, short_alphanumeric_lower_hash
 
 logger = get_logger(__name__)
@@ -84,6 +100,12 @@ JOB_LOG_STDERR_FILENAME = "job_log.err"
 LSF_SCRIPTS = "lsf_scripts"
 JOB_SUB_SH = "llmb_lsf_jobsub.sh"
 REPLACE_THIS_PREFIX = "LLMB_LSF_REPLACE_THIS_"
+# Bounded drain at teardown: wait this long for an in-flight transfer to
+# release the tunnel before closing anyway.
+SSH_TEARDOWN_DRAIN_S = 30.0
+# Slice length for the SSH-establish backoff sleep, so a teardown mid-backoff is
+# noticed within ~this long rather than after the full (up to a minute) delay.
+SSH_ESTABLISH_CANCEL_POLL_S = 2.0
 
 # Builtin step names auto-injected by this module's pullasset/pushasset
 # handlers.  Each resolves via SpaceURI to the LSF env-keyed copy under
@@ -93,23 +115,6 @@ HFPUSH_STEP_NAME = "hfpush"
 LHPULL_STEP_NAME = "lhpull"
 LHPUSH_STEP_NAME = "lhpush"
 COSRCLONE_STEP_NAME = "cosrclone"
-
-
-class BJobRecord(BaseModel):
-    """A bjob record."""
-
-    JOBID: str
-    STAT: str
-    EXIT_CODE: str
-    EXIT_REASON: str
-
-
-class BJobOutput(BaseModel):
-    """Output of bjob."""
-
-    COMMAND: str
-    JOBS: int
-    RECORDS: list[BJobRecord]
 
 
 class ExistingBsubJobs(BaseModel):
@@ -220,9 +225,75 @@ class Lsf(Environment):
             "rsync",
         ), f"invalid copy_method: {self.copy_method} (expected 'scp' or 'rsync')"
 
-        self.ssh_timeout = int(authentication.get("ssh_timeout", "5"))
         self.node_search_lock = asyncio.Lock()
         self.unreachable_ssh_nodes = []  # type: ignore[var-annotated]
+        # Resilient SSH-tunnel establishment (see _ensure_ssh_tunnel).
+        self._tunnel_lock = asyncio.Lock()
+        # Superseded tunnels being closed once their in-flight uses drain; kept
+        # referenced so the GC tasks aren't collected mid-close.
+        self._retired_tunnel_tasks: set[asyncio.Task] = set()
+        # Floored against operator misconfig via authentication: a negative
+        # budget would raise on the first failure; a negative max backoff would
+        # feed a negative delay into asyncio.sleep (which raises). Base is
+        # floored to >=1 at use so a zero base can't busy-loop.
+        self.ssh_connect_budget_s = max(
+            0,
+            int(
+                authentication.get(
+                    "ssh_connect_budget_s", GBSERVER_LSF_SSH_CONNECT_BUDGET_S
+                )
+            ),
+        )
+        self.ssh_connect_base_backoff_s = int(
+            authentication.get(
+                "ssh_connect_base_backoff_s", GBSERVER_LSF_SSH_CONNECT_BASE_BACKOFF_S
+            )
+        )
+        self.ssh_connect_max_backoff_s = max(
+            1,
+            int(
+                authentication.get(
+                    "ssh_connect_max_backoff_s", GBSERVER_LSF_SSH_CONNECT_MAX_BACKOFF_S
+                )
+            ),
+        )
+        # Per-attempt bounds on the SSH banner/login phase. Distinct from the sweep
+        # budget above: these bound how long one login node may hang (banner never
+        # arriving, or a connected-but-silent session) before we fail over. See the
+        # constants for the bluevela symptom this addresses.
+        self.ssh_login_timeout_s = int(
+            authentication.get("ssh_login_timeout_s", GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S)
+        )
+        self.ssh_connect_timeout_s = int(
+            authentication.get(
+                "ssh_connect_timeout_s", GBSERVER_LSF_SSH_CONNECT_TIMEOUT_S
+            )
+        )
+        self.ssh_keepalive_interval_s = int(
+            authentication.get(
+                "ssh_keepalive_interval_s", GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S
+            )
+        )
+        self.ssh_keepalive_count_max = int(
+            authentication.get(
+                "ssh_keepalive_count_max", GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX
+            )
+        )
+        # Per-command execution timeout: bounds the slow server-side session/exec
+        # setup that is the true bluevela bottleneck (connect+auth are ~1s).
+        self.ssh_command_timeout_s = int(
+            authentication.get(
+                "ssh_command_timeout_s", GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S
+            )
+        )
+        # Small, dedicated overall timeout for the reachability probe. Kept short
+        # (not command_timeout) because _get_reachable_ssh_node probes nodes in
+        # sequence with no per-sweep deadline, so the per-probe cap directly bounds
+        # how long a caller with a short budget (e.g. bkill) can block on a hung
+        # cluster.
+        self.ssh_probe_timeout_s = int(
+            authentication.get("ssh_probe_timeout_s", GBSERVER_LSF_SSH_PROBE_TIMEOUT_S)
+        )
         if self.use_ssh:
             assert (
                 self.ssh_key_secret_name
@@ -294,8 +365,15 @@ class Lsf(Environment):
                 cleanup_error,
             )
 
-        # Clear the stop event so the next monitor loop iteration starts fresh.
-        self._get_launch_stopped_event(launch_id).clear()
+        # NOTE: The stop event is intentionally left SET here. bkill above only
+        # returns once the kill request is accepted; LSF reflects the resulting
+        # EXIT state in `bjobs` several seconds later. If we cleared the event
+        # now, the still-running previous monitor iteration could observe that
+        # delayed bkill-induced EXIT with the event already cleared, defeating
+        # the clean-exit guard in LSFBsubMonitor.monitor() and misreporting the
+        # bkill as a genuine terminal failure. The event is cleared instead at
+        # the top of the next monitor_bsub_monitor loop iteration, once the
+        # previous monitors have fully wound down.
 
         try:
             task = self.launch_bsub(launch_id, **original_kwargs)
@@ -375,17 +453,44 @@ class Lsf(Environment):
         """"""
         assert node, "Node must be provided, otherwise we have an infinite loop here"
         cmds = await self.create_ssh_base_cmd(node=node)
+        # One small probe timeout for both ConnectTimeout and the overall wait_for
+        # (the `echo` incurs the session-setup delay that ConnectTimeout doesn't
+        # bound). Kept small: _get_reachable_ssh_node probes nodes in sequence with
+        # no per-sweep deadline, so this caps a hung cluster's cost per caller
+        # budget (N * probe_timeout) — notably bkill's short one.
         cmds.append("-o")
-        cmds.append(f"ConnectTimeout={self.ssh_timeout}")
+        cmds.append(f"ConnectTimeout={self.ssh_probe_timeout_s}")
         cmds.append("echo")
         cmds.append("testing node availability")
+        # Spawn ssh directly (not via the shared helper) so we can kill the child
+        # on timeout: wait_for only cancels the await, it doesn't reap the process.
+        logger.info("probing node reachability: %s", cmd_safe_join(cmds))
+        proc = await asyncio.create_subprocess_exec(
+            *cmds,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
         try:
-            await launch_command_and_raise_errors(
-                command_list=cmds, launch_id=launch_id
+            _, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=self.ssh_probe_timeout_s
             )
-            return True
-        except:
+        except Exception as e:  # noqa: BLE001 — timeout/IO error => unreachable
+            # Kill the child so a timed-out ssh doesn't linger, then reap it.
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            logger.warning("node %s not reachable: %s", node, e)
             return False
+        if proc.returncode == 0:
+            return True
+        logger.warning(
+            "node %s not reachable (rc=%s): %s",
+            node,
+            proc.returncode,
+            (stderr or b"").decode("utf-8", errors="replace").strip(),
+        )
+        return False
 
     def _prepare_assets_replace_vars(
         self: Self,
@@ -415,27 +520,53 @@ class Lsf(Environment):
         self: Self,
         jobsub_path: Path,
         env_vars: Optional[Dict] = None,
+        secret_keys: Optional[set[str]] = None,
     ) -> Tuple[str, str]:
         """
         Build ``[KEY=val ...] /path/jobsub.sh`` as a remote command string.
 
+        The redacted variant is built by rebuilding the command from parts and
+        masking a value whenever its env-var name is in ``secret_keys`` (names the
+        caller knows carry injected space secrets, whatever the user chose to call
+        them) **or** its name matches
+        :data:`~gbserver.utils.redaction.SENSITIVE_KEY_RE` (defense-in-depth). A
+        surviving value still has any embedded URL credentials scrubbed.
+
+        This deliberately does not redact by matching the value *text* in the
+        assembled string, as an earlier version did: an empty-string value made
+        ``str.replace("", ...)`` splice the placeholder between every character of
+        the command, and an empty or short value could also shatter a genuinely
+        secret value so it survived unmasked. Rebuilding from parts avoids both.
+
+        Masking is by name, so a secret duplicated inside a different
+        non-secret-named var's value is not caught (accepted tradeoff; callers here
+        never do that).
+
+        :param secret_keys: env-var names whose value must be masked regardless of
+            whether the name looks secret — the caller passes the names it injected
+            space secrets under, since those names are user-chosen and arbitrary.
+
         Returns:
-            Tuple of (command_str, redacted_command_str) where secret values
-            in env_vars are replaced with ``<redacted>`` in the redacted version.
+            Tuple of (command_str, redacted_command_str) where the value of any
+            secret env var is replaced with ``<redacted>`` in the redacted version.
         """
+        secret_keys = secret_keys or set()
         parts: List[str] = []
-        to_redact: set[str] = set()
+        redacted_parts: List[str] = []
         if env_vars:
             logger.info("injecting env_vars: %s", env_vars.keys())
             for k, v in env_vars.items():
                 parts.append(f"{k}={v}")
-                to_redact.add(str(v))
+                is_secret = k in secret_keys or (
+                    isinstance(k, str) and SENSITIVE_KEY_RE.search(k) is not None
+                )
+                if is_secret:
+                    redacted_parts.append(f"{k}={REDACTED}")
+                else:
+                    redacted_parts.append(f"{k}={scrub_url_credentials(str(v))}")
         parts.append(str(jobsub_path))
-        cmd = " ".join(parts)
-        redacted = cmd
-        for v in to_redact:
-            redacted = redacted.replace(v, "'<redacted>'")
-        return cmd, redacted
+        redacted_parts.append(str(jobsub_path))
+        return " ".join(parts), " ".join(redacted_parts)
 
     def _get_local_bsub_command(
         self: Self,
@@ -542,32 +673,34 @@ class Lsf(Environment):
                 **kwargs,
             )
             logger.info("using ssh, copying the asset into the env")
-            ssh_tunnel = self._ssh_tunnel
-            assert ssh_tunnel
             logger.info("copying %s to %s", asset_dir, final_asset_dir)
-            # Create remote destination directory via tunnel
-            logger.info("creating remote directory %s via tunnel", final_asset_dir)
-            await ssh_tunnel.run_remote_with_retries(
-                f"mkdir -p {final_asset_dir} || true"
-            )
-            # Copy assets to remote host (local-to-remote transfer)
-            if self.copy_method == "rsync":
-                copy_cmd = await self._create_rsync_cmd(
-                    launch_id=launch_id,
-                    src=str(asset_dir),
-                    dest=str(final_asset_dir),
+            # Hold the tunnel in-use for the whole copy so a rebuild elsewhere
+            # can't retire it out from under the transfer.
+            async with self.ensure_and_use() as ssh_tunnel:
+                logger.info("creating remote directory %s via tunnel", final_asset_dir)
+                await ssh_tunnel.run_remote_with_retries(
+                    f"mkdir -p {final_asset_dir} || true"
                 )
-            else:
-                copy_cmd = await self._create_scp_cmd(
+                # Copy assets to remote host (local-to-remote transfer)
+                if self.copy_method == "rsync":
+                    copy_cmd = await self._create_rsync_cmd(
+                        launch_id=launch_id,
+                        src=str(asset_dir),
+                        dest=str(final_asset_dir),
+                        ssh_tunnel=ssh_tunnel,
+                    )
+                else:
+                    copy_cmd = await self._create_scp_cmd(
+                        launch_id=launch_id,
+                        src=str(asset_dir),
+                        dest=str(final_asset_dir),
+                        ssh_tunnel=ssh_tunnel,
+                    )
+                logger.info("copy command (%s): %s", self.copy_method, copy_cmd)
+                returncode, stdout, stderr = await ssh_tunnel.run_local_with_retries(
+                    command=copy_cmd,
                     launch_id=launch_id,
-                    src=str(asset_dir),
-                    dest=str(final_asset_dir),
                 )
-            logger.info("copy command (%s): %s", self.copy_method, copy_cmd)
-            returncode, stdout, stderr = await ssh_tunnel.run_local_with_retries(
-                command=copy_cmd,
-                launch_id=launch_id,
-            )
             logger.info(
                 "copy command returncode %s stdout %s stderr %s",
                 returncode,
@@ -594,6 +727,68 @@ class Lsf(Environment):
                 **kwargs,
             )
         return (final_asset_dir, jobsub_path, final_jobsub_path, jobsub_data)
+
+    @staticmethod
+    def _parse_declared_secrets(
+        config: Optional[Dict],
+    ) -> List[EnvironmentVariableConfig]:
+        """Parse ``config.lsf.secrets`` into the shared declarative mapping list.
+
+        Reads ``config.lsf.secrets`` and validates it into the cross-environment
+        :class:`StepSecretsConfig`, returning its allow-list of secret->env-var
+        mappings (empty when the section is absent). Shared by the
+        :meth:`_declared_secret_mappings` composer hook and the redaction-key
+        helper :meth:`_get_secret_env_keys`.
+
+        :param config: the step config dict (source of the LSF secret mappings).
+        :returns: the list of declared ``EnvironmentVariableConfig`` mappings.
+        """
+        lsf_secrets = (config or {}).get("lsf", {}).get("secrets", {}) or {}
+        return StepSecretsConfig.model_validate(
+            lsf_secrets
+        ).secret_names_to_use_as_env_variable
+
+    def _declared_secret_mappings(
+        self: Self, **kwargs: Any
+    ) -> List[EnvironmentVariableConfig]:
+        """Declared LSF secret mappings for the shared launch-env composer.
+
+        Overrides :meth:`Environment._declared_secret_mappings` so
+        :meth:`Environment.get_launch_env_vars` injects the step's declared
+        secrets (``config.lsf.secrets``, resolved against ``self.secrets`` — the
+        same space-secret bag once threaded via ``setup_config.space_secrets``)
+        as its lowest layer. Only declared secrets are exposed (least-privilege,
+        matching SkyPilot/K8s).
+
+        A user may name a secret with the legacy ``LLMB_`` prefix; the base's
+        unconditional aliasing then mints a ``GB_`` twin holding that value, and
+        :meth:`_get_secret_env_keys` mirrors the transform so the twin is masked
+        in the redacted command (see ``_build_cmd_to_run_with_ssh``). The local
+        (non-SSH) bsub path ignores env entirely (a pre-existing limitation of
+        ``_get_local_bsub_command``).
+
+        :param kwargs: the launch context; only ``config`` is read.
+        :returns: the declared ``EnvironmentVariableConfig`` mappings.
+        """
+        return self._parse_declared_secrets(kwargs.get("config"))
+
+    @staticmethod
+    def _get_secret_env_keys(config: Optional[Dict]) -> set[str]:
+        """Names of env vars whose values must be masked in the redacted command.
+
+        Delegates to :meth:`Environment._declared_secret_env_key_names`: every
+        user-declared secret env-var name from ``config.lsf.secrets`` plus, for
+        any declared with the legacy ``LLMB_`` prefix, the ``GB_``-prefixed twin
+        that ``Environment._add_gb_aliases`` mints — otherwise the twin would
+        escape name-based redaction in ``_build_cmd_to_run_with_ssh`` and leak
+        the secret value.
+
+        :param config: the step config dict (source of the secret mappings).
+        :returns: the set of env-var names (declared + GB_ twins) to redact.
+        """
+        return Environment._declared_secret_env_key_names(
+            Lsf._parse_declared_secrets(config)
+        )
 
     async def launch_bsub(
         self: Self,
@@ -632,56 +827,30 @@ class Lsf(Environment):
                 **kwargs,
             )
         )
-        # Get useful env vars to inject for LhPull and LhPush
-        env_vars = {}
-        # Forward GBTEST_ test-control vars (e.g. GBTEST_MOCKED_HF_OPS) to the LSF
-        # job so hfpull/hfpush steps honor mocking on the remote node.
-        env_vars.update(get_exported_gbtest_env_vars())
-        secrets_to_inject = (
-            kwargs.get("config", {})
-            .get("lsf", {})
-            .get("secrets", {})
-            .get("secret_names_to_use_as_env_variable", [])
+        # Build the full env to inject for LhPull and LhPush. GBTEST_ test-control
+        # vars, GB_BUILD_ID (and any future standard var), and injected space
+        # secrets all come from Environment.get_launch_env_vars(); the standard
+        # set is authoritative over secret-derived vars. Reaches the job on the SSH
+        # path only (the local bsub path ignores env — pre-existing limitation).
+        env_vars = self.get_launch_env_vars(
+            run_metadata=kwargs.get("run_metadata", {}),
+            config=kwargs.get("config", {}),
         )
-        # {
-        #     env_name: Optional[str] = None
-        #     secret_name: Optional[str] = None
-        # }
-        assert isinstance(
-            secrets_to_inject, list
-        ), f"invalid secrets_to_inject type: {type(secrets_to_inject).__name__} (expected 'list')"
-        if len(secrets_to_inject) > 0:
-            space_secrets = kwargs.get("setup_config", {}).get("space_secrets", {})
-            assert isinstance(
-                space_secrets, dict
-            ), f"invalid space_secrets class: {type(space_secrets).__name__} (expected 'dict')"
-            assert len(space_secrets) > 0, "empty space_secrets"
-            all_keys = list(space_secrets.keys())
-            for secret_to_inject in secrets_to_inject:
-                assert isinstance(
-                    secret_to_inject, dict
-                ), f"invalid secret_to_inject class: {type(secret_to_inject).__name__} (expected 'dict')"
-                env_var_name = secret_to_inject["env_name"]
-                secret_name = secret_to_inject["secret_name"]
-                logger.info(
-                    "looking up secret %s for env var %s", secret_name, env_var_name
-                )
-                assert (
-                    secret_name in space_secrets
-                ), f"failed to find the secret {secret_name} in {all_keys}"
-                env_vars[env_var_name] = space_secrets[secret_name]
+        # Names of env vars holding injected space secrets (plus the GB_ twins
+        # that aliasing mints for LLMB_-prefixed names) — their values must be
+        # masked in the redacted command regardless of what the user named them.
+        secret_env_keys = self._get_secret_env_keys(kwargs.get("config", {}))
         try:
             if self.use_ssh:
-                ssh_tunnel = self._ssh_tunnel
-                assert ssh_tunnel
                 remote_cmd, redacted_cmd = self._build_cmd_to_run_with_ssh(
-                    final_jobsub_path, env_vars
+                    final_jobsub_path, env_vars, secret_env_keys
                 )
                 msg = f"⚡ Launching LSF job with command:\n```\n{redacted_cmd}\n```"
                 self._send_message(msg=msg, **kwargs)
-                _, stdout, stderr = await ssh_tunnel.run_remote_with_retries(
-                    command=remote_cmd, redacted_command=redacted_cmd
-                )
+                async with self.ensure_and_use() as ssh_tunnel:
+                    _, stdout, stderr = await ssh_tunnel.run_remote_with_retries(
+                        command=remote_cmd, redacted_command=redacted_cmd
+                    )
             else:
                 command, redacted_command_str = self._get_local_bsub_command(
                     launch_id=launch_id,
@@ -768,21 +937,187 @@ class Lsf(Environment):
         self: Self,
         setup_id: str,
     ) -> None:
+        """Open the persistent SshTunnel during target setup.
+
+        Thin wrapper around the resilient :meth:`_ensure_ssh_tunnel`.
         """
-        Resolve the SSH key from space_secrets, write it to a temp file,
-        and open a persistent SshTunnel.  Returns the key file path.
+        await self._ensure_ssh_tunnel(setup_id=setup_id)
+
+    def _retire_tunnel(self: Self, tunnel: SshTunnel) -> None:
+        """Close a superseded tunnel once its in-flight uses drain (background)."""
+
+        async def _gc() -> None:
+            with contextlib.suppress(Exception):
+                await tunnel.close_when_idle()
+
+        task = asyncio.create_task(_gc())
+        self._retired_tunnel_tasks.add(task)
+        task.add_done_callback(self._retired_tunnel_tasks.discard)
+
+    @contextlib.asynccontextmanager
+    async def ensure_and_use(
+        self: Self, setup_id: str = "runtime", budget_s: Optional[float] = None
+    ) -> AsyncIterator[SshTunnel]:
+        """Ensure a healthy tunnel and hold it in-use for the enclosed block.
+
+        Atomic against the retire path: the returned tunnel is marked in-use
+        (``use()``) before ``_ensure_ssh_tunnel``'s lock is released, closing the
+        window where a concurrent rebuild could retire it between ensure and use.
+        Runtime SSH callers should prefer this over calling ``_ensure_ssh_tunnel``
+        then ``tunnel.use()`` as separate statements.
+
+        ``budget_s`` is forwarded to :meth:`_ensure_ssh_tunnel` (see there); it
+        defaults to the multi-hour build-runner budget.
         """
-        login_node = await self._get_reachable_ssh_node()
-        self._ssh_tunnel = SshTunnel(
-            host=login_node,
-            username=self.username,
-            key_file=self._key_file_path,
-            host_key_verification=self.ssh_host_key_verification,
-            port_forwards=[(0, login_node, self.ssh_port)],
-            max_sessions=self.ssh_max_sessions,
-        )
-        await self._ssh_tunnel.open()
-        logger.info("setup_id: %s SSH tunnel opened to %s", setup_id, login_node)
+        tunnel = await self._ensure_ssh_tunnel(setup_id=setup_id, budget_s=budget_s)
+        async with tunnel.use():
+            yield tunnel
+
+    async def _ensure_ssh_tunnel(
+        self: Self, setup_id: str = "runtime", budget_s: Optional[float] = None
+    ) -> SshTunnel:
+        """Return a healthy persistent SshTunnel, (re)establishing it if needed.
+
+        The single entry point for both target setup and every runtime SSH
+        command, so a login node that dies mid-build is transparently replaced.
+        Reuses a live tunnel; otherwise sweeps the login nodes with failover and
+        backoff+jitter for up to ``budget_s`` before raising ``SshTunnelError``.
+        ``_tunnel_lock`` serializes rebuilds so concurrent callers don't each open
+        a tunnel.
+
+        ``budget_s`` defaults to ``ssh_connect_budget_s`` (the multi-hour
+        build-runner budget). Best-effort cleanup callers (e.g. ``_bkill``) pass a
+        short budget so they still reconnect/fail over robustly but can't block
+        teardown for hours.
+
+        Callers that immediately transfer over the tunnel should use
+        :meth:`ensure_and_use` instead, which holds the tunnel in-use before
+        releasing the lock and so is atomic against the retire path.
+        """
+        if budget_s is None:
+            budget_s = self.ssh_connect_budget_s
+        # First-class check (not an assert): teardown_bsub nulls _key_file_path on
+        # cancel, and a best-effort bkill can race in here afterwards. Raising the
+        # normal error keeps that path graceful and survives `python -O` (which
+        # would strip an assert and let a None key fall through to a later assert).
+        if not self._key_file_path:
+            raise SshTunnelError(
+                "SSH key file not set up (environment torn down / build "
+                "cancelled); cannot open a tunnel"
+            )
+        # Fast path: a healthy tunnel needs no rebuild, so skip the lock — a burst
+        # of concurrent transfers shouldn't serialize on it when it's already up.
+        existing = self._ssh_tunnel
+        if existing is not None and existing.is_healthy():
+            return existing
+        async with self._tunnel_lock:
+            # Re-check under the lock: another coroutine may have just rebuilt.
+            existing = self._ssh_tunnel
+            if existing is not None and existing.is_healthy():
+                return existing
+            # Retire a stale / half-open tunnel before rebuilding. Don't force
+            # close it — another coroutine may be mid scp/rsync on it; retire it
+            # so it closes once its in-flight uses drain.
+            if existing is not None:
+                logger.warning(
+                    "setup_id: %s existing SSH tunnel to %s is unhealthy; rebuilding",
+                    setup_id,
+                    existing.host,
+                )
+                self._retire_tunnel(existing)
+                self._ssh_tunnel = None
+
+            deadline = time.monotonic() + budget_s
+            attempt = 0
+            last_err: Optional[Exception] = None
+            while True:
+                attempt += 1
+                # Cooperative cancellation: teardown_bsub nulls _key_file_path when
+                # the build is cancelled / torn down. Without this check the sweep
+                # kept probing dead login nodes for seconds after a SIGTERM-driven
+                # cancel (observed in the field). Bail promptly instead — there is
+                # nothing left to connect for once the key is gone.
+                if self._key_file_path is None:
+                    raise SshTunnelError(
+                        "SSH key file removed (environment torn down / build "
+                        "cancelled); aborting tunnel establishment"
+                    ) from last_err
+                # Fresh view each sweep so a recovered node gets retried. Note:
+                # this list is otherwise guarded by node_search_lock, not
+                # _tunnel_lock — the two aren't mutually excluded, so a concurrent
+                # node search could observe a mid-clear list. Harmless in CPython
+                # (no corruption; worst case a node is re-probed), but a latent
+                # hazard if either lock's scope changes.
+                self.unreachable_ssh_nodes.clear()
+                tunnel: Optional[SshTunnel] = None
+                try:
+                    login_node = await self._get_reachable_ssh_node()
+                    tunnel = SshTunnel(
+                        host=login_node,
+                        username=self.username,
+                        key_file=self._key_file_path,
+                        host_key_verification=self.ssh_host_key_verification,
+                        port_forwards=[(0, login_node, self.ssh_port)],
+                        max_sessions=self.ssh_max_sessions,
+                        connect_timeout=self.ssh_connect_timeout_s,
+                        login_timeout=self.ssh_login_timeout_s,
+                        keepalive_interval=self.ssh_keepalive_interval_s,
+                        keepalive_count_max=self.ssh_keepalive_count_max,
+                        command_timeout=self.ssh_command_timeout_s,
+                    )
+                    await tunnel.open()
+                    # A node can open a connection yet not execute commands; prove
+                    # it works before committing, so that mode fails over too.
+                    await tunnel.run_remote("echo tunnel-ready")
+                    self._ssh_tunnel = tunnel
+                    logger.info(
+                        "setup_id: %s SSH tunnel opened to %s (attempt %d)",
+                        setup_id,
+                        login_node,
+                        attempt,
+                    )
+                    return tunnel
+                except Exception as e:  # noqa: BLE001 — any failure => try next node
+                    last_err = e
+                    if tunnel is not None:
+                        with contextlib.suppress(Exception):
+                            await tunnel.close()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise SshTunnelError(
+                            f"Could not establish an SSH tunnel to any login node "
+                            f"{self.login_nodes} after {attempt} sweeps over "
+                            f"{budget_s:.0f}s"
+                        ) from last_err
+                    # Floor at 1s so a misconfigured base backoff of 0 can't spin.
+                    base = max(1, self.ssh_connect_base_backoff_s)
+                    delay = min(
+                        self.ssh_connect_max_backoff_s,
+                        base * (2 ** min(attempt - 1, 6)),
+                    )
+                    delay += random.uniform(0, delay * 0.25)  # jitter
+                    delay = min(delay, remaining)
+                    logger.warning(
+                        "setup_id: %s SSH tunnel establish attempt %d failed (%s); "
+                        "retrying in %.0fs (%.0fs of %.0fs budget left)",
+                        setup_id,
+                        attempt,
+                        e,
+                        delay,
+                        remaining,
+                        budget_s,
+                    )
+                    # Sleep in short slices so a teardown (key file removed) during
+                    # the backoff is noticed within ~a slice rather than after the
+                    # full delay — the backoff cap can be up to a minute. The
+                    # top-of-loop check does the actual bail.
+                    slept = 0.0
+                    while slept < delay:
+                        if self._key_file_path is None:
+                            break
+                        slice_s = min(SSH_ESTABLISH_CANCEL_POLL_S, delay - slept)
+                        await asyncio.sleep(slice_s)
+                        slept += slice_s
 
     async def _cleanup_asset_dirs(self) -> None:
         # Delete all launch dirs now that all pipeline steps are done.
@@ -813,7 +1148,12 @@ class Lsf(Environment):
 
         ssh_tunnel = self._ssh_tunnel
         if ssh_tunnel is not None:
-            await ssh_tunnel.close()
+            # Drain briefly so we don't tear the tunnel out from under an
+            # in-flight asset copy / job launch on cancellation, but bounded so
+            # a stuck operation can't wedge teardown. The key file is deleted
+            # just below regardless, so the tunnel is unusable afterwards.
+            with contextlib.suppress(Exception):
+                await ssh_tunnel.close_when_idle(timeout=SSH_TEARDOWN_DRAIN_S)
             self._ssh_tunnel = None
         key_file_path = self._key_file_path
         self._key_file_path = None
@@ -891,6 +1231,13 @@ class Lsf(Environment):
                     stop_event = self._get_launch_stopped_event(
                         launch_id=current_launch_id
                     )
+                    # Reset the shared stop event for this fresh iteration. On a
+                    # retry, retry_workload leaves the event SET (so the previous
+                    # iteration's monitors treat the bkill-induced EXIT as a clean
+                    # stop); we clear it here, only after those monitors have fully
+                    # wound down, so the new monitors below start unstopped. On the
+                    # first iteration this is a harmless no-op.
+                    stop_event.clear()
                     job_id = self._launched_jobs[current_launch_id]
                     log_file_path = self.get_log_path(launch_id=current_launch_id)
 
@@ -953,14 +1300,94 @@ class Lsf(Environment):
                         # triggered retry_workload which set this event. Loop for the
                         # next iteration with the same launch_id.
                         continue
+                    if await self._retry_pending_after_monitor(
+                        lsf_bsub_monitor=lsf_bsub_monitor,
+                        retry_complete_event=retry_complete_event,
+                        handler_task=_handler_task,
+                    ):
+                        # A relaunch the RetryHandler owns landed while we waited;
+                        # loop to monitor the freshly launched job.
+                        continue
+                    if (
+                        lsf_bsub_monitor.emitted_error_event
+                        and _handler_task is not None
+                    ):
+                        # The RetryHandler finished without relaunching (gave up /
+                        # retries exhausted). Stop looping; _with_retry_handler's
+                        # __aexit__ awaits the handler task and re-raises its
+                        # WorkloadFailedException, failing the step.
+                        return
                     logger.info(
                         "LSF bsub monitoring finished for job_id %s launch_id %s",
                         job_id,
                         current_launch_id,
                     )
-                    return  # Success
+                    return  # clean terminal DONE
             finally:
                 self._lsf_retry_complete_events.pop(launch_id, None)
+
+    async def _retry_pending_after_monitor(
+        self: Self,
+        lsf_bsub_monitor: LSFBsubMonitor,
+        retry_complete_event: asyncio.Event,
+        handler_task: Optional[asyncio.Task],
+    ) -> bool:
+        """Wait for the RetryHandler to adjudicate an error the monitor emitted.
+
+        On a transient/terminal error, ``LSFBsubMonitor`` only *enqueues* an event
+        and returns; the ``RetryHandler`` consumes it on its own task and, seconds
+        later (after ``bkill`` + ``bsub``), sets ``retry_complete_event``. Reading
+        that event synchronously right after ``gather`` races the handler and can
+        return SUCCESS while a relaunch is still in flight — orphaning the new job
+        and dropping its ARTIFACT_PUSHED marker. This blocks on the outcome instead.
+
+        The wait is bounded by ``GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT`` as a
+        backstop. The handler normally relaunches or raises well within one retry,
+        and it now treats a retriable-but-exhausted error as terminal (so it
+        always resolves). The timeout only guards a pathological case the handler
+        neither retries nor recognizes as terminal; on expiry we fail the step
+        loudly rather than hang forever or silently succeed.
+
+        :param lsf_bsub_monitor: The monitor that just finished this iteration.
+        :param retry_complete_event: Event the handler sets once it has relaunched.
+        :param handler_task: The RetryHandler task, or ``None`` when retries are
+            disabled (no adjudication to wait for).
+        :returns: ``True`` if a relaunch completed (caller should loop to monitor
+            the new job); ``False`` if there is nothing to wait for or the handler
+            finished without relaunching.
+        :raises WorkloadFailedException: if neither a relaunch nor the handler task
+            resolves within the backstop timeout.
+        """
+        if not lsf_bsub_monitor.emitted_error_event or handler_task is None:
+            return False
+        # Wait for whichever comes first: the relaunch completing (retry_complete_event)
+        # or the handler task finishing (it gave up and will raise on await).
+        retry_waiter = asyncio.create_task(retry_complete_event.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {retry_waiter, handler_task},
+                timeout=GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            retry_waiter.cancel()
+            # Await the cancellation so the task fully unwinds before we return;
+            # otherwise a still-pending waiter can surface a noisy "Task was
+            # destroyed but it is pending" warning under some loop timings.
+            with contextlib.suppress(asyncio.CancelledError):
+                await retry_waiter
+        if not done:
+            logger.error(
+                "RetryHandler did not adjudicate the emitted error within %ss; "
+                "failing the step instead of waiting indefinitely.",
+                GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT,
+            )
+            raise WorkloadFailedException(
+                "LSF retry adjudication timed out: the RetryHandler neither "
+                "relaunched the job nor terminated within "
+                f"{GBSERVER_LSF_RETRY_ADJUDICATION_TIMEOUT}s."
+            )
+        return retry_complete_event.is_set()
 
     def ssh_no_verification_flags(self: Self) -> List[str]:
         """Flags to disable SSH Host key verification."""
@@ -994,37 +1421,20 @@ class Lsf(Environment):
         # if event_configs:
         #     self._logfile_event_configs[launch_id] = event_configs
 
-    async def pullasset_envstore(
-        self: Self,
-        uri: URI,
-        binding: Optional[Any] = None,
-        storeload_config: Optional[StoreLoad] = None,
-        assetstore: Optional[Assetstore] = None,
-        secrets: Optional[dict] = None,
-        **kwargs,
-    ) -> Tuple[Dict, Optional[BuildTargetStepConfig]]:
-        """Load an asset from the env asset store"""
-        envuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
-        assert isinstance(envuri, EnvURI), f"invalid envuri: {envuri}"
-        assert envuri.uri, f"invalid envuri: {envuri}"
-        final_binding_path = envuri.uri.path
-        assert final_binding_path, f"invalid envuri: {envuri}"
-        binding_config = {BINDING_KEY: {"path": final_binding_path}}
-        logger.info("loaded env uri: %s at binding: %s", uri, binding_config)
-        return (binding_config, None)
-
     def _resolve_builtin_step_yaml(self: Self, step_name: str) -> Path:
         """Resolve ``space://steps/<step_name>`` to the local step.yaml Path,
         routing through SpaceURI's env-class-match tier so the Lsf env-keyed
         copy at ``<builtins>/steps/lsf/<step_name>/step.yaml`` is selected.
 
-        Wrapped in :meth:`SpaceURI.with_current_env_class_name` because these
-        helpers run during pullasset/pushasset (target setup), which happens
-        before any ``TargetStep`` enters the resolver's env-aware scope. We
-        explicitly scope the env class here so resolution doesn't depend on
-        caller context.
+        Wrapped in :meth:`SpaceURI.with_current_env` because these helpers run
+        during pullasset/pushasset (target setup), which happens before any
+        ``TargetStep`` enters the resolver's env-aware scope. Scoping from
+        ``self`` supplies the full env context — class name, env-dir URI (for
+        the ancestor-walk tier) and sub-type (for the sub-type filter) — so
+        resolution exercises the same tiers as a normal step and doesn't depend
+        on caller context.
         """
-        with SpaceURI.with_current_env_class_name(self.__class__.__name__):
+        with SpaceURI.with_current_env(self):
             uri = URI.get_uri(f"space://steps/{step_name}", default_scheme="file")
         assert uri.uri is not None, f"unresolved space URI for step {step_name!r}"
         return Path(uri.uri.path) / STEP_FILE_NAME
@@ -1131,9 +1541,7 @@ class Lsf(Environment):
             assetstore, Lhstore
         ), f"invalid type assetstore: {type(assetstore).__name__} (expected 'Lhstore')"
         assert storeload_config is not None, "storeload_config is None"
-        assert (
-            storeload_config.mode == "dmf_pull"
-        ), f"Only 'dmf_pull' mode is supported for Lsf, mode: {storeload_config.mode} uri: {uri}"
+        self._warn_non_default_mode(storeload_config, uri)
         cache_path = storeload_config.config.get("cache_path", None)
         assert isinstance(cache_path, str), f"invalid cache_path: {cache_path}"
         assert cache_path != "", f"invalid cache_path: {cache_path}"
@@ -1187,6 +1595,7 @@ class Lsf(Environment):
         """
         Allow for a random folder/file to be copied from any mounted storage in the cluster to a lh bucket
         """
+        self._warn_non_default_mode(storepush_config, uri)
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received to pushasset {binding}")
         lhuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
@@ -1256,21 +1665,20 @@ class Lsf(Environment):
         Args:
             uri: HF URI to pull (e.g. hf://models/org/repo).
             binding: Unused for hfpull.
-            storeload_config: Must have mode 'hf_pull' and config with 'cache_path'.
+            storeload_config: config with 'cache_path'; mode must be unset or 'default'.
             assetstore: Hfstore instance.
             secrets: Optional secrets dict.
         Returns:
             Tuple of (binding_config, BuildTargetStepConfig).
         Raises:
-            AssertionError: If assetstore type or mode is invalid.
+            AssertionError: If assetstore type is invalid.
+            ValueError: If storeload_config declares a non-'default' mode.
         """
         assert isinstance(
             assetstore, Hfstore
         ), f"invalid type assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
         assert storeload_config is not None, "storeload_config is None"
-        assert (
-            storeload_config.mode == "hf_pull"
-        ), f"Only 'hf_pull' mode is supported for Lsf, mode: {storeload_config.mode} uri: {uri}"
+        self._warn_non_default_mode(storeload_config, uri)
         cache_path = storeload_config.config.get("cache_path", None)
         assert isinstance(cache_path, str), f"invalid cache_path: {cache_path}"
         assert cache_path != "", f"invalid cache_path: {cache_path}"
@@ -1336,9 +1744,11 @@ class Lsf(Environment):
         Returns:
             BuildTargetStepConfig for the hfpush step.
         Raises:
-            ValueError: If uri is empty or the resource group cannot be resolved.
+            ValueError: If uri is empty, the resource group cannot be resolved,
+                or storepush_config declares a non-'default' mode.
             AssertionError: If binding has no 'path'.
         """
+        self._warn_non_default_mode(storepush_config, uri)
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received to pushasset {binding}")
         hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
@@ -1354,39 +1764,25 @@ class Lsf(Environment):
         hf_metadata = Asset(uri=hfuri).get_metadata()
         logger.info("hf_metadata: %s", hf_metadata)
 
-        hf_resource_group_id: Optional[str] = None
-        hf_resource_group_name: Optional[str] = None
-        hf_private = True
-        # Environment-level storepush_config (lower priority).
-        if storepush_config is not None and storepush_config.config is not None:
-            hf_cfg = storepush_config.config.get("hf", {})
-            hf_resource_group_id = hf_cfg.get("resource_group_id", hf_resource_group_id)
-            hf_resource_group_name = hf_cfg.get(
-                "resource_group_name", hf_resource_group_name
-            )
-            hf_private = hf_cfg.get("private", hf_private)
-        # build.yaml output store_push (higher priority, overrides).
-        if output_config is not None and output_config.store_push is not None:
-            hf_cfg = output_config.store_push.config.get("hf", {})
-            hf_resource_group_id = hf_cfg.get("resource_group_id", hf_resource_group_id)
-            hf_resource_group_name = hf_cfg.get(
-                "resource_group_name", hf_resource_group_name
-            )
-            hf_private = hf_cfg.get("private", hf_private)
-
         space_name = output_config.space_name if output_config else None
 
         assert isinstance(
             assetstore, Hfstore
         ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Hfstore')"
-        if hf_resource_group_id:
-            resource_group_id: Optional[str] = hf_resource_group_id
-        else:
-            resource_group_id = hfuri.resolve_resource_group_id(
-                token=assetstore.resolve_token(hfuri),
-                resource_group_name=hf_resource_group_name,
-                space_name=space_name,
-            )
+        # Enterprise/non-enterprise split + config precedence + table-first
+        # resolution all live in the shared helper; a non-Enterprise org
+        # resolves to None without any HF API call.
+        # NOTE: unlike k8s/skypilot, LSF applies no post-hoc overlay of the
+        # remaining `hf.*` keys onto hfpush_config — it never did, and the LSF
+        # command.sh template consumes only the keys build_hfpush_step_config
+        # emits. `_hf_cfg` is therefore unused here by design.
+        resource_group_id, hf_private, _hf_cfg = resolve_hfpush_resource_group_id(
+            hfuri=hfuri,
+            assetstore=assetstore,
+            space_name=space_name,
+            storepush_config=storepush_config,
+            output_config=output_config,
+        )
 
         hfpush_config = Hfstore.build_hfpush_step_config(
             hfuri=hfuri,
@@ -1474,9 +1870,7 @@ class Lsf(Environment):
             assetstore, Cosstore
         ), f"invalid type assetstore: {assetstore}"
         assert storeload_config is not None, "storeload_config is None"
-        assert (
-            storeload_config.mode == "cos_pull"
-        ), f"Only 'cos_pull' mode is supported for COS in LSF. Got: {storeload_config.mode}"
+        self._warn_non_default_mode(storeload_config, uri)
 
         cosuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
         assert isinstance(cosuri, CosURI), f"invalid cosuri: {cosuri}"
@@ -1526,6 +1920,7 @@ class Lsf(Environment):
         """
         Copy folder/file from cluster filesystem to a COS bucket.
         """
+        self._warn_non_default_mode(storepush_config, uri)
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received to pushasset {binding}")
 
@@ -1623,7 +2018,12 @@ class Lsf(Environment):
         return ssh_cmd
 
     async def _create_scp_cmd(
-        self: Self, launch_id: str, src: str, dest: str, add_slashes: bool = True
+        self: Self,
+        launch_id: str,
+        src: str,
+        dest: str,
+        add_slashes: bool = True,
+        ssh_tunnel: Optional[SshTunnel] = None,
     ) -> List[str]:
         """Create an SCP command for copying assets to the remote LSF node.
 
@@ -1632,6 +2032,9 @@ class Lsf(Environment):
             src: Source directory path.
             dest: Destination directory path on the remote host.
             add_slashes: Whether to ensure trailing slashes on src/dest.
+            ssh_tunnel: Tunnel to build the command against; required when
+                use_ssh is set. The caller passes the one it holds in-use so we
+                don't fetch (and race) a different one.
 
         Returns:
             List of command tokens for the SCP invocation.
@@ -1642,8 +2045,9 @@ class Lsf(Environment):
         scp_cmd.extend(["-i", key_file_path])
         scp_cmd.extend(self.ssh_no_verification_flags())
         if self.use_ssh:
-            ssh_tunnel = self._ssh_tunnel
-            assert ssh_tunnel
+            # Caller must pass the tunnel it holds in-use; re-ensuring here could
+            # build the command against a different tunnel than the caller holds.
+            assert ssh_tunnel is not None, "ssh_tunnel is required when use_ssh is set"
             ssh_dest = self.__get_ssh_destination(node="localhost")
             local_port = ssh_tunnel.get_local_port(ssh_tunnel.host, self.ssh_port)
             assert (
@@ -1662,7 +2066,12 @@ class Lsf(Environment):
         return scp_cmd
 
     async def _create_rsync_cmd(
-        self: Self, launch_id: str, src: str, dest: str, add_slashes: bool = True
+        self: Self,
+        launch_id: str,
+        src: str,
+        dest: str,
+        add_slashes: bool = True,
+        ssh_tunnel: Optional[SshTunnel] = None,
     ) -> List[str]:
         scp_cmd = [
             "rsync",
@@ -1674,8 +2083,9 @@ class Lsf(Environment):
         ssh_t2 = cmd_safe_join(ssh_t1)
         rsync_ssh = f"ssh -i {key_file_path} {ssh_t2}"
         if self.use_ssh:
-            ssh_tunnel = self._ssh_tunnel
-            assert ssh_tunnel
+            # Caller must pass the tunnel it holds in-use; re-ensuring here could
+            # build the command against a different tunnel than the caller holds.
+            assert ssh_tunnel is not None, "ssh_tunnel is required when use_ssh is set"
             ssh_dest = self.__get_ssh_destination(
                 node="localhost"
             )  # localhost because of the port forwarding
@@ -1854,32 +2264,48 @@ class Lsf(Environment):
 
         try:
             if self.use_ssh:
-                ssh_tunnel = self._ssh_tunnel
-                assert ssh_tunnel
+                # bkill must reach a login node to run a command, so it uses the
+                # same robust establish/failover path as every other SSH caller
+                # (reconnecting a wedged tunnel — the whole point of #368/#369) —
+                # but with a SHORT budget, never the runner's multi-hour one:
+                # teardown can't block for hours, and a job left running is better
+                # surfaced fast than waited out. On failure (all nodes unreachable
+                # within the budget, or the key file already removed by teardown)
+                # this stays best-effort and skips rather than failing teardown.
                 logger.info("running cleanup command via tunnel: bkill %s", job_id)
                 max_attempts = 3
-                for attempt in range(1, max_attempts + 1):
-                    try:
-                        rc, stdout, stderr = await ssh_tunnel.run_remote(
-                            f"bkill {job_id}", raise_on_error=False
-                        )
-                        break
-                    except TimeoutError:
-                        if attempt < max_attempts:
-                            logger.warning(
-                                "bkill %s timed out (attempt %d/%d), retrying",
-                                job_id,
-                                attempt,
-                                max_attempts,
-                            )
-                            await asyncio.sleep(attempt * 2)
-                        else:
-                            logger.error(
-                                "bkill %s timed out after %d attempts",
-                                job_id,
-                                max_attempts,
-                            )
-                            raise
+                try:
+                    async with self.ensure_and_use(
+                        setup_id="bkill",
+                        budget_s=GBSERVER_LSF_BKILL_SSH_BUDGET_S,
+                    ) as ssh_tunnel:
+                        for attempt in range(1, max_attempts + 1):
+                            try:
+                                rc, stdout, stderr = await ssh_tunnel.run_remote(
+                                    f"bkill {job_id}", raise_on_error=False
+                                )
+                                break
+                            except TimeoutError:
+                                if attempt < max_attempts:
+                                    logger.warning(
+                                        "bkill %s timed out (attempt %d/%d), retrying",
+                                        job_id,
+                                        attempt,
+                                        max_attempts,
+                                    )
+                                    await asyncio.sleep(attempt * 2)
+                                else:
+                                    raise
+                except Exception as e:  # noqa: BLE001 — cleanup is best-effort
+                    # Couldn't establish a tunnel within the short budget, the
+                    # tunnel dropped mid-kill, or the kill kept timing out; skip
+                    # rather than fail teardown.
+                    logger.warning(
+                        "best-effort bkill of job %s via tunnel failed, skipping: %s",
+                        job_id,
+                        e,
+                    )
+                    return
             else:
                 command = ["bkill", job_id]
                 logger.info("running cleanup command: %s", cmd_safe_join(command))
@@ -1917,18 +2343,12 @@ class Lsf(Environment):
         await self._bkill(launch_id, **kwargs)
 
     def _create_ssh_key_file(self: Self, launch_id: str) -> str:
-        ssh_key = self.ssh_key
-        assert ssh_key, "failed to find an ssh_key"
-        temp_dir = tempfile.mkdtemp()
+        assert self.ssh_key, "failed to find an ssh_key"
         suffix_hash = short_alphanumeric_lower_hash(launch_id)
-        key_file_path = os.path.join(temp_dir, f"ssh_key_{suffix_hash}")
-        with open(key_file_path, "w", encoding="utf-8") as f:
-            f.write(ssh_key.rstrip("\n") + "\n")
-        os.chmod(key_file_path, 0o600)
-        logger.info(
-            "SSH key file created at %s for launch_id %s", key_file_path, launch_id
-        )
-        return key_file_path
+        dest = Path(tempfile.mkdtemp()) / f"ssh_key_{suffix_hash}"
+        write_private_key_file(self.ssh_key, dest)
+        logger.info("SSH key file created at %s for launch_id %s", dest, launch_id)
+        return str(dest)
 
     def get_ssh_tunnel(self: Self) -> Optional[SshTunnel]:
         """Get the tunnel, if open and usable.

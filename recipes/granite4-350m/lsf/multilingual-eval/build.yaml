@@ -9,7 +9,7 @@ granite.build:
     max_retries: 5
   targets:
     global-mmlu:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -39,7 +39,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     mgsm:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -69,7 +69,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     include-ar-de-es-fr:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -99,7 +99,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     include-hi-bn-ta-te:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"
@@ -129,7 +129,7 @@ granite.build:
                 memory: "$${MEMORY}"
 
     include-it-ja-ko-nl-pt-zh:
-      environment_uri: space://environments/skypilot/lsf
+      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model_checkpoint:
           uri: "env://$${MODEL_PATH}"

@@ -238,12 +238,14 @@ class TestStandaloneEnvironmentsE2E:
 
     # -- Inference tests (model download + run) --
 
+    @pytest.mark.live("hf")
     def test_bash_inference(self):
         """Bash environment: download a small model and run inference."""
         with patch.dict(os.environ, _STANDALONE_ENV):
             _run_build("bash-inference.yaml", timeout=600)
 
     @skipif_no_docker
+    @pytest.mark.live("hf")
     def test_docker_inference(self):
         """Docker environment: download a small model and run inference."""
         with patch.dict(os.environ, _STANDALONE_ENV):
@@ -269,6 +271,7 @@ class TestStandaloneEnvironmentsE2E:
     # -- TRL fine-tuning tests --
 
     @skipif_no_ml
+    @pytest.mark.live("hf")
     def test_bash_trl_finetune(self):
         """Bash environment: TRL fine-tuning with a small model."""
         with patch.dict(os.environ, _STANDALONE_ENV):
@@ -276,6 +279,7 @@ class TestStandaloneEnvironmentsE2E:
 
     @skipif_no_docker
     @skipif_no_ml
+    @pytest.mark.live("hf")
     def test_docker_trl_finetune(self):
         """Docker environment: TRL fine-tuning with a small model."""
         _build_test_docker_image()
@@ -285,6 +289,7 @@ class TestStandaloneEnvironmentsE2E:
     # -- unitxt evaluation tests --
 
     @skipif_no_ml
+    @pytest.mark.live("hf")
     def test_bash_unitxt_eval(self):
         """Bash environment: unitxt evaluation with a small model."""
         with patch.dict(os.environ, _STANDALONE_ENV):
@@ -292,6 +297,7 @@ class TestStandaloneEnvironmentsE2E:
 
     @skipif_no_docker
     @skipif_no_ml
+    @pytest.mark.live("hf")
     def test_docker_unitxt_eval(self):
         """Docker environment: unitxt evaluation with a small model."""
         _build_test_docker_image()

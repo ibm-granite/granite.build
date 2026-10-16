@@ -1,0 +1,93 @@
+# syntax=docker/dockerfile:1
+
+# ---------------------------------------------------------------------------
+# Stage 1 — build the SvelteKit SPA
+# ---------------------------------------------------------------------------
+FROM node:20-slim AS ui-builder
+
+WORKDIR /app/ux
+
+# Same-origin by default: the SPA client appends /api/v1, /auth and /health to
+# this host root itself, so an empty value makes it call the API on the same
+# origin the container serves. Override only if the API is fronted elsewhere:
+#   --build-arg PUBLIC_AUTOTUNEX_API_URL=https://api.example.com
+ARG PUBLIC_AUTOTUNEX_API_URL=""
+
+# Install deps first for layer caching (re-runs only when the lockfile changes).
+COPY src/ux/package.json src/ux/package-lock.json ./
+RUN npm ci
+
+# Build the static SPA (adapter-static; base path /autotune; index.html fallback).
+COPY src/ux/ ./
+RUN echo "PUBLIC_AUTOTUNEX_API_URL=$PUBLIC_AUTOTUNEX_API_URL" >> .env \
+    && npm run build
+
+# ---------------------------------------------------------------------------
+# Stage 2 — runtime: the AutoTuneX API, serving the SPA in-process
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# git is required to install the `granite-build` extra below: granite.build is a
+# git+https VCS dependency, not a wheel. Every OTHER dependency ships a cp312
+# manylinux wheel, so still no compiler/build-essential layer is needed.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install AutoTuneX + its exactly-pinned base deps, plus the `granite-build`
+# extra (granite.build) that backs the `llmb` job backend. No postgres/mysql
+# extras. The extra is a direct git+https reference, permitted by
+# `allow-direct-references` in pyproject's [tool.hatch.metadata].
+COPY pyproject.toml README.md LICENSE ./
+COPY src/ ./src/
+RUN pip install --no-cache-dir ".[granite-build, mysql, mcp]"
+
+# Also install the vendored autotune core (src/fm-tune) at its BASE — no extra.
+# The base install is deliberately torch-free: it adds only pyyaml, so the
+# `autotune` package and its catalog are importable here (the config-template and
+# dataset-type wizard endpoints do `from autotune.catalog import ...`) without
+# pulling ray/torch/mlx. The heavy training extras ([core] -> ray/torch,
+# [full] -> +verl/vLLM/flash-attn) are NOT installed, so the default `local` job
+# backend can read the catalog but cannot run an in-process training trial until
+# those are added (see `make install-training` / Dockerfile.aio's
+# INSTALL_AUTOTUNE_CORE).
+RUN pip install --no-cache-dir ./src/fm-tune
+
+# The prebuilt SPA from stage 1.
+COPY --from=ui-builder /app/ux/build /app/ux-build
+
+# Self-sufficient standalone defaults. Every one is overridable at run time with
+# `podman run -e AUTOTUNEX_...=...`. All writable state lives under /data (a
+# volume) so the SQLite DB and artifacts survive container restarts.
+ENV AUTOTUNEX_ENVIRONMENT=dev \
+    AUTOTUNEX_DATABASE_URL=sqlite+aiosqlite:////data/autotunex.db \
+    AUTOTUNEX_AUTO_CREATE_SCHEMA=false \
+    AUTOTUNEX_AUTH_PROVIDERS=[\"disabled\"] \
+    AUTOTUNEX_STANDALONE_ROLE=admin \
+    AUTOTUNEX_JOB_BACKEND=llmb \
+    AUTOTUNEX_ARTIFACT_DIR=/data/artifacts \
+    AUTOTUNEX_DATASET_STORAGE_DIR=/data/artifacts/datasets \
+    AUTOTUNEX_LOCAL_OUTPUT_DIR=/data/artifacts/local \
+    AUTOTUNEX_FRONTEND_DIR=/app/ux-build \
+    AUTOTUNEX_FRONTEND_BASE_PATH=/autotune \
+    AUTOTUNEX_JOB_TRAINER_REF=oss-main
+
+# Run as non-root; own /data and /app so the app can write the DB and artifacts.
+RUN useradd --create-home --uid 1000 appuser \
+    && mkdir -p /data \
+    && chown -R appuser:appuser /data /app
+USER appuser
+
+VOLUME /data
+EXPOSE 8000
+
+# slim has no curl; probe /health with the Python stdlib instead.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status == 200 else 1)"]
+
+CMD ["uvicorn", "autotunex.main:app", "--host", "0.0.0.0", "--port", "8000"]

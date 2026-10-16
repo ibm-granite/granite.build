@@ -28,11 +28,30 @@ from urllib.parse import urlparse
 import click
 import uvicorn
 
+from gbserver.commands.command_rest_server import _configure_analytics_env
 from gbserver.commands.utils import check_and_init_for_standalone
+from gbserver.types.constants import (
+    CONFIGURATIONS_STANDALONE_SPACE_SUBPATH,
+    ENV_VAR_CONFIGURATIONS_DIR,
+    find_configurations_root,
+)
 from gbserver.types.context import CliEnvironment, pass_environment
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _default_space_dir() -> str:
+    """Resolve the default standalone space directory from the packaged
+    configurations tree, raising a clear error if it cannot be found."""
+    configurations_root = find_configurations_root()
+    if configurations_root is None:
+        raise click.UsageError(
+            "Could not locate the packaged 'configurations/' directory. Pass "
+            "--space-dir explicitly (a directory containing a space.yaml), or "
+            f"set {ENV_VAR_CONFIGURATIONS_DIR} to a configurations/ tree."
+        )
+    return str(configurations_root / CONFIGURATIONS_STANDALONE_SPACE_SUBPATH)
 
 
 def _start_nats_server(
@@ -60,7 +79,7 @@ def _start_nats_server(
     data_dir = os.path.join(space_dir, ".gbserver", "nats-data")
     os.makedirs(data_dir, exist_ok=True)
 
-    cmd = [binary, "-js", "-sd", data_dir, "-p", str(port)]
+    cmd = [binary, "-js", "-sd", data_dir, "-p", str(port), "-a", "127.0.0.1"]
     logger.info("Starting embedded nats-server: %s", " ".join(cmd))
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -171,7 +190,10 @@ def _run_standalone(
     watcher_thread.start()
     logger.info("BuildWatcher started in background thread")
 
-    # 4. Start the REST API via uvicorn.
+    # 4. Default the analytics service's env vars (if gb_ui_backend is installed).
+    _configure_analytics_env(host=host, port=port)
+
+    # 5. Start the REST API via uvicorn.
     #    Force the "asyncio" event loop (not uvloop) to avoid subprocess-in-thread
     #    issues on macOS: uvloop's SIGCHLD handling doesn't work in non-main threads,
     #    causing BuildRunner's process.communicate() to hang indefinitely.
@@ -220,14 +242,26 @@ def _run_standalone(
 )
 @click.option(
     "--space-dir",
-    default="configurations/spaces/local",
-    show_default=True,
+    default=None,
     type=click.Path(exists=True, file_okay=False, dir_okay=True),
-    help="Path to the space directory.  Defaults to the in-repo standalone "
-    "space at configurations/spaces/local; override to point at "
-    "any directory containing a space.yaml.",
+    help="Path to the space directory (a directory containing a space.yaml).  "
+    "Defaults to the packaged standalone space (configurations/spaces/local), "
+    "discovered relative to the install or the current repo checkout.  Set "
+    "GBSERVER_CONFIGURATIONS_DIR to point discovery at a different "
+    "configurations/ tree.",
 )
 @pass_environment
-def cli(ctx: CliEnvironment, port: int, host: str, space_dir: str):
+def cli(ctx: CliEnvironment, port: int, host: str, space_dir: Optional[str]):
     """Run gbserver standalone -- REST API + BuildWatcher in one process."""
-    _run_standalone(port=port, host=host, space_dir=space_dir)
+    if space_dir is None:
+        space_dir = _default_space_dir()
+    logger.info("Using space directory: %s", space_dir)
+
+    def _log_ready():
+        browse_host = "127.0.0.1" if host == "0.0.0.0" else host
+        # Bold just the URL, matching Uvicorn's own "Uvicorn running on <bold-url>"
+        # startup banner so this line carries the same visual weight.
+        url = f"http://{browse_host}:{port}"
+        logger.info("Frontend + API available at \x1b[1m%s\x1b[0m", url)
+
+    _run_standalone(port=port, host=host, space_dir=space_dir, on_started=_log_ready)

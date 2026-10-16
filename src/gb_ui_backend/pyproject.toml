@@ -1,0 +1,67 @@
+[project]
+name = "granite-build-analytics"
+version = "0.0.0"
+description = "gb-ui analytics service (gb_ui_backend) — normally embedded in gbserver, independently installable so external consumers (e.g. the internal gb-ui deployment) can depend on it via pip's git+subdirectory syntax without pulling in the whole granite.build distribution"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11,<3.14"
+
+dependencies = [
+    "fastapi[standard]>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-dotenv>=1.0",
+    "aiosqlite>=0.19",
+]
+
+[project.optional-dependencies]
+# Agent Chat's read-only dashboard tools (services/chat_agents/dashboard_tools.py).
+# Everything else they need — httpx, sqlalchemy — is already a base dependency
+# above; `regex` is the only addition.
+#
+# Deliberately does NOT pull in `mcp`: the gbmcp tool surface (build_start,
+# secret_*, build_status, ...) additionally needs the `gbmcp` console script, which
+# is coupled to gbcli's full client layer and so can't be shipped from this
+# distribution without dragging in most of the top-level one — which is the very
+# thing this distribution exists to avoid. Chat detects that at startup and runs on
+# the dashboard tools alone (see tool_loop_backend._gbmcp_available). Install the
+# top-level granite.build distribution with its own [chat] extra for the full set.
+chat = [
+    # search_build_yaml matches model-chosen regex against build.yaml content, and
+    # stdlib re never releases the GIL during a match — so a catastrophically
+    # backtracking pattern would freeze the whole single-threaded server. The regex
+    # package's timeout= is a hard bound enforced inside its own matching loop.
+    "regex",
+]
+
+[project.scripts]
+gb-ui-backend = "gb_ui_backend.__main__:main"
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+# gbcommon is bundled alongside gb_ui_backend rather than declared as a separate
+# dependency — pip does not reliably resolve a nested package's own relative
+# `file:` dependency (verified empirically: it resolved against the top-level
+# install's CWD, not this pyproject.toml's directory, when this was tried as
+# `granite-build-common @ file:../gbcommon`). gb_ui_backend only ever touches
+# gbcommon.types.{gbenvconfig,constants} (stdlib + pydantic only, no gbserver
+# dependency), so bundling the whole namespace package is safe and inert for
+# the parts it doesn't use.
+#
+# `where = [".."]` only resolves because pip clones the whole repo before
+# building a git+subdirectory install — the actual, only install path used
+# today. Building this directory alone as a standalone sdist/wheel (e.g. from
+# a subdirectory-only archive) would find no gbcommon* to include and ship a
+# wheel that fails at import time.
+where = [".."]
+include = ["gb_ui_backend*", "gbcommon*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"*" = ["*.md"]

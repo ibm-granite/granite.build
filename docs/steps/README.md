@@ -12,18 +12,17 @@ In a `build.yaml`, each step entry has a `step_uri` field:
 
 ```yaml
 steps:
-  - step_uri: space://steps/bash
+  - step_uri: space://steps/command
     config:
-      workload:
-        commands:
-          - "python train.py --epochs 3"
+      command_config:
+        command: "python train.py --epochs 3"
 ```
 
 ### URI schemes
 
 | Scheme | Example | Description |
 |--------|---------|-------------|
-| `space://steps/<name>` | `space://steps/hfpull` | Resolves to a step registered in the active space. |
+| `space://steps/<name>` | `space://steps/command` | Resolves to a step registered in the active space. |
 | `file://<path>` | `file://./my-step` | Local directory containing a `step.yaml`. |
 | `git+ssh://<repo>#subdirectory=<path>` | `git+ssh://github.com/org/repo.git#subdirectory=steps/custom` | Step from a Git repository. |
 
@@ -31,24 +30,24 @@ If `step_uri` is omitted, the built-in `gbstep` step is used.
 
 ## Built-in steps
 
-These steps ship with gbserver in `src/gbserver/builtins/steps/`:
+These steps ship with gbserver in `src/gbserver/builtins/steps/`. Steps intended for
+direct reference from a `build.yaml` have a focused reference page (linked below).
 
-| Step | Description |
-|------|-------------|
-| `bash` | Execute shell commands directly. The simplest step — no container image required for local environments. |
-| `gbstep` | Base step runner. Default when `step_uri` is omitted. Supports `setup_command`, `start_command`, and `cleanup_command`. |
-| `hfpull` | Pull a model or dataset from HuggingFace Hub. |
-| `hfpush` | Push artifacts to HuggingFace Hub. |
-| `s3pull` | Pull files from an S3-compatible object store. |
-| `s3push` | Push files to an S3-compatible object store. |
-| `cosrclone` | Transfer files using rclone (supports COS, S3, and many backends). |
-| `image` | Run a custom container image (BYOI). |
+| Step | Description | Environments | Reference |
+|------|-------------|--------------|-----------|
+| `gbstep` | Base step runner. Default when `step_uri` is omitted. Supports `setup_command`, `start_command`, and `cleanup_command`. | All (Bash, Docker, K8s, LSF, RunPod, Skypilot, Skypilot-managed) | — |
+| `command` | Run a shell command; its exit status is the step's status. Docker/Skypilot can run it inside a container image via `command_config.image` (BYOI); Bash always runs on the bare node. | Bash, Docker, Skypilot | [`command`](command.md) |
+
+> The data-staging utility steps `hfpull`/`hfpush` (HuggingFace), `s3pull`/`s3push`
+> (S3-compatible stores), and `cosrclone` (rclone-based transfers) are wired in
+> automatically to move a target's declared inputs/outputs and are **not** intended
+> to be referenced directly from a `build.yaml`, so they are not documented here.
 
 ## Bash example steps
 
 These steps ship under `configurations/assets/environments/bash/steps/` and demonstrate
 inference and LoRA fine-tuning in the local **bash** environment (no GPU or container
-required). See [bash-environment.md](../operators/bash-environment.md) for how a bash step
+required). See [bash environment](../environments/bash.md) for how a bash step
 receives inputs/config and reports outputs.
 
 | Step | Description | Doc |
@@ -72,12 +71,23 @@ launchers:
     image: my-registry/my-image:latest
     start_command: "python main.py"
 monitors:
-  - type: log
-    pattern: "STEP_COMPLETE"
+  log_monitor:
+    ref: space://monitors/bash   # reference a shared monitor from the library (recommended)
+    # — or inline it —
+    # type: log_monitor          # tails the workload's stdout/stderr
+    # config:
+    #   event_configs: [ ... ]   # rules that turn log lines into build events
 config:
   retry_enabled: false
   retry_transparently: false
 ```
+
+> A monitor turns matching workload log lines into build events — including the artifact
+> events that register a step's outputs. In a full step definition, monitors are declared
+> per environment type under `environment_configs`, and usually **reference** a shared monitor
+> from the library (`ref: space://monitors/<name>`) instead of inlining the rules; see
+> [Monitoring and artifact events](monitoring-and-artifact-events.md) for the real schema, the
+> reference/overlay mechanics, and how to capture outputs.
 
 ### Key fields
 
@@ -86,7 +96,7 @@ config:
 | `name` | Step identifier. |
 | `inputs` / `outputs` | Optional I/O schema (`required`/`optional` maps of `name → {type, accept}`, plus `allow_unknown`). Validated against the build's target inputs/outputs before the build runs — a missing required input fails fast. See the [bash example steps](#bash-example-steps) for concrete schemas. |
 | `launchers` | Map of environment type → launch config. The environment selects which launcher to use. |
-| `monitors` | How gbserver detects step completion (log patterns, exit codes). |
+| `monitors` | How gbserver detects step completion and captures outputs by parsing workload logs. See [Monitoring and artifact events](monitoring-and-artifact-events.md). |
 | `config` | Default configuration (overridable by the build.yaml `step.config`). |
 
 Each launcher type matches an environment backend (bash, docker, k8s, lsf,
@@ -109,7 +119,7 @@ steps:
         learning_rate: 2e-5
 ```
 
-See the [`build.yaml` reference](../users/build-yaml-reference.md#steps)
+See the [`build.yaml` reference](../builds/build-yaml-reference.md#steps)
 for the full set of fields.
 
 ## Extending with custom steps
@@ -118,13 +128,38 @@ Three approaches for running custom code:
 
 | Approach | When to use |
 |----------|-------------|
-| [Bring Your Own Step (BYOS)](../users/bring-your-own-step.md) | Your code lives in a Git repo; you provide setup/start commands. |
-| [Custom code steps](../users/custom-code-steps.md) | You want inline commands without a separate step definition. |
-| [Bring Your Own Image (BYOI)](../users/bring-your-own-image.md) | You have a pre-built container image. |
+| [Bring Your Own Step (BYOS)](bring-your-own-step.md) | Your code lives in a Git repo; you provide setup/start commands. |
+| [Custom code steps](custom-code-steps.md) | You want inline commands without a separate step definition. |
+| [Bring Your Own Image (BYOI)](bring-your-own-image.md) | You have a pre-built container image. |
+
+## Secrets as environment variables
+
+A step declares which space secrets to expose to its workload as environment variables via the
+`secrets.secret_names_to_use_as_env_variable` allow-list under the matching per-environment `config`
+key (`config.k8s`, `config.lsf`, or `config.skypilot`):
+
+```yaml
+config:
+  <k8s|lsf|skypilot>:
+    secrets:
+      secret_names_to_use_as_env_variable:
+        - env_name: HF_TOKEN        # Environment variable exposed to the workload.
+          secret_name: huggingface_token  # Space secret to read. Optional (see below).
+```
+
+The block is the **same** across environments and injects **only** the secrets the step declares
+(least-privilege). Delivery differs by backend — LSF/SkyPilot resolve the value into the task env
+var, while K8s hands the secret *name* to the kubelet via `secretKeyRef`, exposing each secret under
+its verbatim `env_name` (the Secret data-key defaults to the lowercased `env_name`). See
+[Custom code steps → Secrets as environment variables](custom-code-steps.md#secrets-as-environment-variables)
+for a worked example and [Environments → Secrets as environment variables](../environments/README.md#secrets-as-environment-variables)
+for the full cross-environment reference.
 
 ## See also
 
-- [Bash environment](../operators/bash-environment.md) — how bash steps execute (inputs, config, outputs)
+- [Step Implementation Framework](../../steps/README.md) — how step implementations are authored, rendered, and published from the `steps/` source tree (for step *developers*, complementing this user-facing guide)
+- [Monitoring and artifact events](monitoring-and-artifact-events.md) — how a step captures its outputs by parsing workload logs
+- [bash environment](../environments/bash.md) — how bash steps execute (inputs, config, outputs)
 - [Templates](../templates/README.md) — reusable build.yaml patterns
-- [`build.yaml` reference](../users/build-yaml-reference.md) — full schema
-- [`environment.yaml` reference](../operators/environment-yaml-config.md) — environment definitions
+- [`build.yaml` reference](../builds/build-yaml-reference.md) — full schema
+- [`environment.yaml` reference](../environments/README.md) — environment definitions

@@ -1,0 +1,20 @@
+granite.build:
+  name: bash-cli-longrunning-retry
+  # Long-running 1-step bash build WITH build-level retries enabled, used by the
+  # gbserver build-runner CLI e2e test to verify that SIGTERM (-> FAILED) does NOT
+  # spawn a retry. Without the fix, the retry loop treats the SIGTERM-induced
+  # FAILED status as retryable and starts a new build run instead of terminating.
+  retries:
+    max_retries: 1
+  targets:
+    sleep-target:
+      allow_unknown: true
+      environment_uri: space://environments/bash
+      steps:
+        # General-purpose bash `command` step runs an arbitrary shell command.
+        - step_uri: space://steps/command
+          config:
+            command_config:
+              command: "sleep 60"
+            compute_config:
+              num_nodes: 1

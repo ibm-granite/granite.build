@@ -39,6 +39,9 @@ def list_spaces(
                 "name": space.get("name"),
                 "git_repo_uri": space.get("git_repo_uri"),
                 "lakehouse_namespace": space.get("lakehouse_namespace"),
+                "hf_default_resource_group_id": space.get(
+                    "hf_default_resource_group_id"
+                ),
                 "is_admin": space.get("is_admin"),
             }
             for space in spaces

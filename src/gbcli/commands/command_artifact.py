@@ -1,10 +1,12 @@
 import json
 import logging
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
 
 import click
+from click.core import ParameterSource
 from fastapi import HTTPException
 from tqdm import tqdm
 
@@ -12,6 +14,7 @@ from gbcli.client.client import GBClient
 from gbcli.commands.command_auth import execute_with_spinner, str_exc_chain
 from gbcli.commands.common_options import (
     common_options,
+    enforce_version_check,
     reject_standalone,
 )
 from gbcli.services.service_artifact import (
@@ -23,6 +26,7 @@ from gbcli.utils.gbconstants import (
     ARTIFACT_LIST_HEADERS,
     CLIPBOARD_CHAR,
     DEFAULT_CHECKSUM_CONCURRENCY,
+    HF_ENTERPRISE_ORGANIZATIONS,
     HF_ORGANIZATION_DEFAULT,
     LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
     LAKEHOUSE_FILESET_TABLE_NAME,
@@ -40,9 +44,6 @@ from gbcli.utils.spaceutil import resolve_space
 from gbcli.utils.utils import (
     check_runnable_browser,
     combine_tags,
-    compare_env_uri,
-    decode_uri,
-    get_artifact_formatted_name,
     get_artifact_uuid,
     humanize_iso_date,
     is_valid_checksum,
@@ -54,13 +55,244 @@ from gbcli.utils.utils import (
     render_pretty,
     validate_tags,
 )
-from gbcli.utils.versionutil import check_current_and_latest_versions
+from gbcommon.types.gbenvconfig import gb_environment_config
+from gbcommon.uri.uri import URI, UnknownURIScheme
 from gbcommon.utils.hf_utils import (
     convert_hf_uri_to_url,
-    parse_hf_uri,
+    is_enterprise_hf_org,
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _MissingLakehouseUnauthorizedException(Exception):
+    """Placeholder used when the optional `lakehouse` package is absent."""
+
+
+try:
+    # Lakehouse is an optional dependency: it is only required for the
+    # Lakehouse artifact store (--store lh). When it is not installed we fall
+    # back to a sentinel exception so `except UnauthorizedException` clauses
+    # remain valid without importing lakehouse (e.g. for --store hf).
+    from lakehouse.core import UnauthorizedException
+except ModuleNotFoundError:
+    UnauthorizedException = _MissingLakehouseUnauthorizedException
+
+
+def _reject_resource_group_for_non_enterprise(exit_fn, org: str) -> None:
+    """Reject ``--resource-group-id`` when ``org`` is not an HF Enterprise org.
+
+    Resource groups exist only in HF Enterprise organizations, so pinning one
+    for an individual user namespace or a plain community org cannot mean
+    anything. Shared by ``artifact push`` and ``artifact register`` so the
+    two user-facing messages cannot drift. Worded for the CLI flag; the
+    server-side build.yaml equivalent is
+    :func:`gbserver.spaces.hf_push_config._non_enterprise_rg_error`.
+
+    Args:
+        exit_fn: The command's exit callable (``sys.exit`` or ``ctx.exit``).
+        org: The HuggingFace organization the id was pinned for.
+    """
+    click.echo(
+        f"❌ --resource-group-id was given for HuggingFace organization "
+        f"'{org}', but '{org}' is not an HF Enterprise organization. "
+        f"Resource groups apply only to Enterprise organizations. Drop "
+        f"--resource-group-id, or configure '{org}' as an enterprise "
+        f"organization.",
+        err=True,
+    )
+    exit_fn(1)
+
+
+@dataclass
+class ResolvedURI:
+    """The store and identity fields decoded from an artifact ``--uri``.
+
+    ``_resolve_uri`` turns an ``lh://`` or ``hf://`` URI into this flat set of
+    values so each command can unpack the subset it has flags for. ``uri_env``
+    and ``force`` are only meaningful for the Lakehouse path (``force`` is a
+    passthrough of the caller's seed, raised to ``True`` when a prod artifact is
+    registered in a non-prod environment).
+    """
+
+    store: str
+    type: str
+    hf_organization: str | None
+    label: str | None
+    revision: str | None
+    namespace: str | None
+    table: str | None
+    version: str | None
+    dataset: str | None
+    uri_env: str | None
+    force: bool
+
+
+def _resolve_uri(
+    ctx,
+    uri: str,
+    *,
+    store: str,
+    type: str | None,
+    hf_organization: str | None,
+    label: str | None,
+    revision: str | None,
+    namespace: str | None,
+    table: str | None,
+    version: str | None,
+    dataset: str | None,
+    force: bool,
+    hf_conflict_msg: str,
+    lh_conflict_msg: str,
+) -> ResolvedURI:
+    """Decode an artifact ``--uri`` into its store and identity fields.
+
+    ``--uri`` is syntactic sugar: the store is inferred from the scheme
+    (``lh://`` or ``hf://``) and the identity is encoded in the URI, so the
+    individual flags that would otherwise supply those are redundant and are
+    rejected outright. Shared by ``artifact push`` and ``artifact register`` so
+    the parsing and mutual-exclusivity rules cannot drift between them.
+
+    The two commands pass different ``*_conflict_msg`` strings because they do
+    not expose the same flags (push has no ``--revision``/``--namespace``/etc.);
+    those absent options are passed as ``None`` here so they can never trigger a
+    conflict.
+
+    Args:
+        ctx: The Click context (for ``get_parameter_source`` and ``exit``).
+        uri: The ``lh://`` or ``hf://`` URI.
+        store: The current ``--store`` value; an explicit one conflicts with a
+            URI (the scheme already determines the store).
+        type, hf_organization, label, revision, namespace, table, version,
+            dataset: The current values of the individual flags; any truthy one
+            conflicts with a URI.
+        force: The command's current ``--force`` seed (Lakehouse only).
+        hf_conflict_msg: Error shown when an hf:// URI is combined with an
+            identity flag; names only the calling command's flags.
+        lh_conflict_msg: Likewise for an lh:// URI.
+
+    Returns:
+        A :class:`ResolvedURI` with the decoded values.
+    """
+    # The URI already determines the store, so an explicit --store conflicts.
+    # COMMANDLINE is the only non-default source today because --store has no
+    # envvar or default-map entry; if one is ever added, use `!= DEFAULT` here
+    # so an env-set --store is also caught rather than silently overwritten.
+    if ctx.get_parameter_source("store") == ParameterSource.COMMANDLINE:
+        click.echo(
+            "❌ Error: --store cannot be combined with --uri; the store is inferred from the URI scheme (lh:// or hf://).",
+            err=True,
+        )
+        ctx.exit(1)
+
+    # Parse once: the store is the URI scheme, the identity comes from
+    # get_metadata(). get_metadata() is inside the try because HfURI validates
+    # lazily there; a bad URI surfaces as ValueError/RuntimeError, not a traceback.
+    try:
+        uri_obj = URI.get_uri(uri)
+        store = uri_obj.uri.scheme
+        metadata = uri_obj.get_metadata()
+    except (ValueError, RuntimeError, UnknownURIScheme) as e:
+        click.echo(f"❌ Error: invalid artifact URI '{uri}': {e}", err=True)
+        ctx.exit(1)
+    if store not in ("hf", "lh"):
+        click.echo(
+            f"❌ Error: unsupported artifact URI scheme '{store}' in '{uri}'; "
+            "expected an lh:// or hf:// URI.",
+            err=True,
+        )
+        ctx.exit(1)
+
+    uri_env = None
+    if store == "hf":
+        # type/owner/repo/revision come from the URI, so the flags that would
+        # supply them are rejected.
+        if type or hf_organization or label or revision:
+            click.echo(hf_conflict_msg, err=True)
+            ctx.exit(1)
+
+        type = str(metadata["hf_type"])
+        hf_organization = metadata["owner"]
+        label = metadata["repo"]
+        # Buckets decode to revision ""; None lets the service default to "main".
+        revision = metadata["revision"] or None
+    else:  # store == "lh"
+        # The Lakehouse environment is the lh://<env> host, normalized to lower
+        # case once here and reused (it also flows to register_artifact lh_env).
+        uri_env = (uri_obj.uri.hostname or "").lower()
+        cli_env = str(gb_environment_config().lakehouse_environment).lower()
+
+        if uri_env == "prod" and cli_env != "prod":
+            click.echo(
+                f"⚠️{' '} Warning: You are registering a '{uri_env}' artifact in the '{cli_env}' environment."
+            )
+            force = True
+        elif uri_env != cli_env:
+            click.echo(
+                f"❌ The environment '{uri_env}' doesn't match the CLI environment '{cli_env}'. CLI doesn't support artifact register across environments except for 'prod' artifacts."
+            )
+            ctx.exit(1)
+
+        if type or table or label or revision or version or dataset or namespace:
+            click.echo(lh_conflict_msg)
+            ctx.exit(1)
+
+        type = metadata["type"]
+        namespace = metadata["namespace"]
+        table = metadata["table_name"]
+
+        if type == "model":
+            label = metadata["model_label"]
+            revision = metadata["model_revision"]
+
+        if type == "fileset":
+            label = metadata["fileset_label"]
+            version = metadata["fileset_version"]
+
+        if type == "dataset":
+            dataset = metadata["dataset_name"]
+
+    return ResolvedURI(
+        store=store,
+        type=type,
+        hf_organization=hf_organization,
+        label=label,
+        revision=revision,
+        namespace=namespace,
+        table=table,
+        version=version,
+        dataset=dataset,
+        uri_env=uri_env,
+        force=force,
+    )
+
+
+# Artifact types each store accepts. Buckets are HuggingFace-only; Lakehouse
+# push additionally cannot push dataset content (register may still record an
+# existing lh dataset).
+_HF_ALLOWED_TYPES = ("model", "dataset", "bucket")
+_LH_ALLOWED_TYPES = ("model", "table", "fileset", "dataset")
+_LH_PUSH_ALLOWED_TYPES = ("model", "table", "fileset")
+
+
+def _validate_store_type(ctx, store: str, type: str | None, is_push: bool) -> None:
+    """Reject an artifact ``type`` incompatible with ``store``.
+
+    The single place the store-vs-type matrix lives; shared by ``push`` and
+    ``register`` (``is_push`` selects the stricter Lakehouse rules).
+    """
+    if store == "hf":
+        allowed = _HF_ALLOWED_TYPES
+    else:  # store == "lh"
+        allowed = _LH_PUSH_ALLOWED_TYPES if is_push else _LH_ALLOWED_TYPES
+    if type not in allowed:
+        allowed_str = ", ".join(f"'{t}'" for t in allowed)
+        click.echo(
+            f"❌ Error: store '{store}' is only allowed for artifact types "
+            f"{allowed_str}. Got type '{type}'.",
+            err=True,
+        )
+        ctx.exit(1)
 
 
 @click.group("artifact")
@@ -95,8 +327,14 @@ def cli(ctx):
 )
 @click.option("--artifact-name", required=True, help="Artifact name to be registered.")
 @click.option(
+    "--uri",
+    help="Lakehouse (lh://) or HuggingFace (hf://) URI of the artifact destination. The store is inferred from the scheme, so --store must not be combined with --uri. The URI also encodes the artifact's identity, so --type, --hf-organization, --label/--repo and --table cannot be combined with it -- put them in the URI (for hf://: hf:///[type/]owner/repo).",
+)
+@click.option(
     "--label",
-    help="Label for model or fileset artifacts. If not provided, the artifact name will be used as the label.",
+    "--repo",
+    "label",
+    help="Label for model or fileset artifacts, aka --repo. If not provided, the artifact name will be used as the label. For a HuggingFace artifact it is the 'repo' portion of the owner/repo id.",
 )
 @click.option(
     "-t",
@@ -105,7 +343,6 @@ def cli(ctx):
         ["model", "table", "fileset", "dataset", "bucket"], case_sensitive=True
     ),
     help="Artifact type to be saved. Options: model, fileset, table, dataset, bucket",
-    required=True,
 )
 @click.option(
     "-s",
@@ -193,6 +430,7 @@ def push(
     from_local: str,
     format: str,
     artifact_name: str,
+    uri: str,
     label: str,
     type: str,
     size: str,
@@ -217,6 +455,46 @@ def push(
 ):
     """A file (for a table) or a directory (for a model, fileset, dataset, or bucket) is uploaded and registered. Additional options will be required depending on the type of artifact."""
 
+    # --uri is syntactic sugar: _resolve_uri decodes the store and identity.
+    # push has no --revision/--namespace/--version/--dataset/--force, so those
+    # are passed None/False and the decoded lh-only extras are discarded.
+    if uri:
+        resolved = _resolve_uri(
+            ctx,
+            uri,
+            store=store,
+            type=type,
+            hf_organization=hf_organization,
+            label=label,
+            revision=None,
+            namespace=None,
+            table=table,
+            version=None,
+            dataset=None,
+            force=False,
+            hf_conflict_msg=(
+                "❌ Error: --type, --hf-organization and --label/--repo cannot be "
+                "used with an hf:// URI; encode them in the URI itself "
+                "(hf:///[type/]owner/repo)."
+            ),
+            lh_conflict_msg=(
+                "❌ Error: artifact URI cannot be used along with type, label or "
+                "table arguments."
+            ),
+        )
+        store = resolved.store
+        type = resolved.type
+        hf_organization = resolved.hf_organization
+        label = resolved.label
+        table = resolved.table
+
+    if not uri and not type:
+        click.echo(
+            f"❌ Artifact type or artifact uri is required. Please try again.",
+            err=True,
+        )
+        ctx.exit(1)
+
     # Validate that --public is only used with HuggingFace
     if public and store != "hf":
         click.echo(
@@ -228,30 +506,9 @@ def push(
     # For HuggingFace, default is private unless --public flag is used
     private = not public if store == "hf" else False
 
-    # Validate store type compatibility with artifact type
-    if store == "hf" and type not in ["model", "dataset", "bucket"]:
-        click.echo(
-            f"❌ Error: Push and register with store 'hf' is only allowed for artifact types 'model', 'dataset', and 'bucket'. Got type '{type}'.",
-            err=True,
-        )
-        ctx.exit(1)
+    _validate_store_type(ctx, store, type, is_push=True)
 
-    if store == "lh" and type == "dataset":
-        click.echo(
-            f"❌ Error: Push and register with store 'lh' does not support artifact type 'dataset'. Use store 'hf' instead.",
-            err=True,
-        )
-        ctx.exit(1)
-
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if not from_local or not artifact_name:
         click.echo(
@@ -260,16 +517,20 @@ def push(
         )
         ctx.exit(1)  # Exit with a non-zero status
 
+    # `and not uri`: with a URI, type/label are URI-derived (a conflicting flag
+    # was already rejected in _resolve_uri); only user-supplied combos are wrong.
     if (
-        type == "model" or type == "fileset" or type == "dataset" or type == "bucket"
-    ) and table:
+        (type == "model" or type == "fileset" or type == "dataset" or type == "bucket")
+        and table
+        and not uri
+    ):
         click.echo(
             f"❌ The --table option is not valid for {type} artifacts. Please try again without the --table option.",
             err=True,
         )
         ctx.exit(1)
 
-    if (type == "table" or type == "dataset" or type == "bucket") and label:
+    if (type == "table" or type == "dataset" or type == "bucket") and label and not uri:
         click.echo(
             f"❌ The --label option is not valid for {type} artifacts. Please try again without the --label option.",
             err=True,
@@ -375,8 +636,6 @@ def push(
             update_artifact_status(artifact_id, status)
 
     try:
-        from lakehouse.core import UnauthorizedException
-
         total_steps = 6 if calculate_checksum else 5
 
         normalized_tags = []
@@ -485,29 +744,60 @@ def push(
             if not quiet:
                 click.echo(f"HuggingFace token obtained successfully!")
 
-            # Resolve resource group id from the GB space name when not given.
-            if not resource_group_id:
-                org = hf_organization or HF_ORGANIZATION_DEFAULT
-                resolved_space_name = space
-                if not resolved_space_name:
-                    global_space = resolve_space(
-                        artifact_client.github_token, space, callback=echo_callback
-                    )
-                    if global_space is not None:
-                        resolved_space_name = global_space.get("name")
-                if not resolved_space_name:
-                    click.echo(
-                        "❌ Could not determine GB space name to resolve the "
-                        "HuggingFace resource group id. Pass --space, set a "
-                        "default space, or pass --resource-group-id explicitly.",
-                        err=True,
-                    )
-                    sys.exit(1)
-                resource_group_id = lookup_hf_resource_group_id(
-                    github_token=artifact_client.github_token,
-                    space_name=resolved_space_name,
-                    organization=org,
+            # Resource groups exist only in HF Enterprise organizations, so a
+            # non-Enterprise org (an individual user namespace or a plain
+            # community org) skips resolution entirely — and rejects a pinned id,
+            # which cannot mean anything there.
+            org = hf_organization or HF_ORGANIZATION_DEFAULT
+            hf_is_enterprise = is_enterprise_hf_org(org, HF_ENTERPRISE_ORGANIZATIONS)
+            if resource_group_id and not hf_is_enterprise:
+                _reject_resource_group_for_non_enterprise(sys.exit, org)
+
+            # Resolve resource group id from the GB space only when the user did
+            # NOT pass --resource-group-id. An explicit id is used verbatim and is
+            # never reflected back into the cached space table (the user may be
+            # targeting a group other than the space's default).
+            if hf_is_enterprise and not resource_group_id:
+
+                # Resolve the space from the local cache (populated by
+                # `space list --all --refresh`) to read its cached default
+                # resource group id. Use a non-fatal callback here: if the space
+                # can't be resolved locally (e.g. no profile yet on a fresh CLI),
+                # we must NOT exit — we fall through to the server-side lookup
+                # below with the raw --space value, which works without a cache.
+                def _quiet_resolve_callback(callback_event: str, callback_args: Dict):
+                    pass
+
+                global_space = resolve_space(
+                    artifact_client.github_token,
+                    space,
+                    callback=_quiet_resolve_callback,
                 )
+                resolved_space_name = space
+                if global_space is not None:
+                    resolved_space_name = (
+                        global_space.get("name") or resolved_space_name
+                    )
+                    cached_rg_id = global_space.get("hf_default_resource_group_id")
+                    # resolve_space() fills unresolvable profile spaces with the
+                    # literal "<unknown>" (a truthy string), which would be sent
+                    # to create_repo as if it were a real id. Treat it as absent.
+                    if cached_rg_id and cached_rg_id != "<unknown>":
+                        resource_group_id = cached_rg_id
+                if not resource_group_id:
+                    if not resolved_space_name:
+                        click.echo(
+                            "❌ Could not determine GB space name to resolve the "
+                            "HuggingFace resource group id. Pass --space, set a "
+                            "default space, or pass --resource-group-id explicitly.",
+                            err=True,
+                        )
+                        sys.exit(1)
+                    resource_group_id = lookup_hf_resource_group_id(
+                        github_token=artifact_client.github_token,
+                        space_name=resolved_space_name,
+                        organization=org,
+                    )
                 if not resource_group_id:
                     click.echo(
                         f"❌ Could not resolve HuggingFace resource group id for "
@@ -535,29 +825,39 @@ def push(
             # if existing artifact registration
             if existing_registration:
                 artifact_id = existing_registration.get("uuid")
+                # This block only runs for the lh store, so the URI is lh:// and
+                # its metadata carries the fields read below.
+                existing_meta = URI.get_uri(
+                    existing_registration.get("uri")
+                ).get_metadata()
+                existing_type = existing_registration.get("type")
                 revision = (
-                    existing_registration.get("uri").split("/")[7]
-                    if existing_registration.get("type") == "model"
+                    existing_meta.get("model_revision")
+                    if existing_type == "model"
                     else None
                 )
                 version = (
-                    existing_registration.get("uri").split("/")[7]
-                    if existing_registration.get("type") == "fileset"
+                    existing_meta.get("fileset_version")
+                    if existing_type == "fileset"
                     else None
                 )
 
                 # check if artifact content exists in LH
                 artifact_existence = artifact_client.check_existence(
                     lh_token=lh_token,
-                    type=existing_registration.get("type"),
+                    type=existing_type,
                     space=space,
-                    namespace=existing_registration.get("uri").split("/")[3],
-                    table=existing_registration.get("uri").split("/")[5],
+                    namespace=existing_meta.get("namespace"),
+                    table=existing_meta.get("table_name"),
                     dataset=None,
                     label=(
-                        existing_registration.get("uri").split("/")[6]
-                        if type in ("fileset", "model")
-                        else None
+                        existing_meta.get("model_label")
+                        if existing_type == "model"
+                        else (
+                            existing_meta.get("fileset_label")
+                            if existing_type == "fileset"
+                            else None
+                        )
                     ),
                     revision=revision,
                     version=version,
@@ -801,7 +1101,7 @@ def push(
 )
 @click.option(
     "--uri",
-    help="Lakehouse URI of the artifact.",
+    help="Lakehouse (lh://) or HuggingFace (hf://) URI of the artifact. The store is inferred from the scheme, so --store must not be combined with --uri. The URI also encodes the artifact's identity, so --type, --hf-organization, --label/--repo and --revision cannot be combined with it either -- put them in the URI (for hf://: hf:///[type/]owner/repo[/revision]).",
 )
 @click.option(
     "-t",
@@ -821,11 +1121,13 @@ def push(
 )
 @click.option(
     "--label",
-    help="Artifact label. If model, model label. If fileset, fileset label.",
+    "--repo",
+    "label",
+    help="Artifact label, aka --repo. For a Lakehouse model this is the model label; for a fileset, the fileset label. For a HuggingFace artifact (model, dataset or bucket) it is the 'repo' portion of the owner/repo id. Distinct from --artifact-name, which is the registered artifact name.",
 )
 @click.option(
     "--revision",
-    help="Model revision.",
+    help="Artifact revision (a Lakehouse model, or a HuggingFace model/dataset). Only when registering without --uri; when --uri is given the revision comes from the URI (lh:// or hf:///owner/repo/<revision>) and --revision cannot be combined with it.",
 )
 @click.option(
     "--version",
@@ -886,10 +1188,6 @@ def push(
     help="HuggingFace organization name for artifact registration.",
 )
 @click.option(
-    "--resource-group-id",
-    help="Resource group ID for artifact registration.",
-)
-@click.option(
     "--store",
     default="lh",
     type=click.Choice(["lh", "hf"], case_sensitive=True),
@@ -926,7 +1224,6 @@ def register(
     origin_list: str,
     certify_no_restrictions: bool,
     hf_organization: str,
-    resource_group_id: str,
     format: str,
     skip_version_check: bool,
     quiet: bool,
@@ -939,15 +1236,7 @@ def register(
 
     # Validate store type compatibility with artifact type
     # Note: type might be inferred from URI, so we validate after URI decoding below
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     # Check artifact name formatting
     name_valid, name_invalid_chars = is_valid_name(artifact_name, "artifact_name")
@@ -978,44 +1267,44 @@ def register(
                 )
                 ctx.exit(1)
 
-    # === Lakehouse-specific URI decoding ===
+    # --uri is syntactic sugar: _resolve_uri decodes the store and identity
+    # (shared with `artifact push`).
     uri_env = None
     if uri:
-        decoded_artifact = decode_uri(uri)
-
-        uri_env, cli_env = compare_env_uri(uri)
-
-        if uri_env == "prod" and cli_env != "prod":
-            click.echo(
-                f"⚠️{' '} Warning: You are registering a '{uri_env}' artifact in the '{cli_env}' environment."
-            )
-            force = True
-        elif uri_env != cli_env:
-            click.echo(
-                f"❌ The environment '{uri_env}' doesn't match the CLI environment '{cli_env}'. CLI doesn't support artifact register across environments except for 'prod' artifacts."
-            )
-            ctx.exit(1)
-
-        if type or table or label or revision or version or dataset or namespace:
-            click.echo(
-                f"❌ Error: artifact URI cannot be used along with type, namespace, table, label, revision, version or dataset arguments."
-            )
-            ctx.exit(1)
-
-        type = decoded_artifact.type
-        namespace = decoded_artifact.namespace
-        table = decoded_artifact.table_name
-
-        if type == "model":
-            label = decoded_artifact.model_label
-            revision = decoded_artifact.model_revision
-
-        if type == "fileset":
-            label = decoded_artifact.fileset_label
-            version = decoded_artifact.fileset_version
-
-        if type == "dataset":
-            dataset = decoded_artifact.dataset_name
+        resolved = _resolve_uri(
+            ctx,
+            uri,
+            store=store,
+            type=type,
+            hf_organization=hf_organization,
+            label=label,
+            revision=revision,
+            namespace=namespace,
+            table=table,
+            version=version,
+            dataset=dataset,
+            force=force,
+            hf_conflict_msg=(
+                "❌ Error: --type, --hf-organization, --label/--repo and --revision "
+                "cannot be used with an hf:// URI; encode them in the URI itself "
+                "(hf:///[type/]owner/repo[/revision])."
+            ),
+            lh_conflict_msg=(
+                "❌ Error: artifact URI cannot be used along with type, namespace, "
+                "table, label, revision, version or dataset arguments."
+            ),
+        )
+        store = resolved.store
+        type = resolved.type
+        hf_organization = resolved.hf_organization
+        label = resolved.label
+        revision = resolved.revision
+        namespace = resolved.namespace
+        table = resolved.table
+        version = resolved.version
+        dataset = resolved.dataset
+        uri_env = resolved.uri_env
+        force = resolved.force
 
     if not uri and not type:
         click.echo(
@@ -1024,123 +1313,145 @@ def register(
         )
         ctx.exit(1)
 
-    # Validate store type compatibility with artifact type
-    if store == "hf" and type not in ["model", "dataset", "bucket"]:
+    # HuggingFace has no namespace/table/version/dataset notion (only models,
+    # datasets and buckets); reject those flags for the HF store regardless of
+    # whether the store came from --uri or an explicit --store hf.
+    if store == "hf" and (table or namespace or version or dataset):
         click.echo(
-            f"❌ Error: Registration with store 'hf' is only allowed for artifact types 'model', 'dataset' and 'bucket'. Got type '{type}'.",
+            "❌ Error: --namespace, --table, --version and --dataset are Lakehouse-only "
+            "and cannot be used with the HuggingFace store.",
             err=True,
         )
         ctx.exit(1)
 
-    # === Lakehouse-specific type handling ===
-    if type == "model":
+    _validate_store_type(ctx, store, type, is_push=False)
+
+    # === Type-specific handling ===
+    # Prompts, tables, revisions and filesets/tables are all Lakehouse
+    # concepts, so the entire block below is Lakehouse-only. For the HF store
+    # the type, org, repo and revision are already resolved (from the URI or
+    # the flags) and there is nothing to prompt for; keeping this under a
+    # single `store == "lh"` guard makes that explicit and removes any risk of
+    # a Lakehouse prompt leaking onto the HF path.
+    if store == "lh":
+        if type == "model":
+            dataset = None
+            version = None
+            if not label or label.strip() == "":
+                label = click.prompt("Model label", show_default=True).strip()
+
+            showRevisionPrompt = not revision or revision.strip() == ""
+            revision = (
+                click.prompt(
+                    "Revision", default=revision or "", show_default=False, type=str
+                ).strip()
+                if showRevisionPrompt
+                else revision
+            )
+            if not table or table.strip() == "":
+                table = click.prompt(
+                    "Model table",
+                    default=LAKEHOUSE_MODEL_SHARED_TABLE,
+                    show_default=True,
+                    type=click.Choice(
+                        [LAKEHOUSE_MODEL_SHARED_TABLE, LAKEHOUSE_MODEL_TABLE],
+                        case_sensitive=True,
+                    ),
+                ).strip()
+            elif table not in [LAKEHOUSE_MODEL_SHARED_TABLE, LAKEHOUSE_MODEL_TABLE]:
+                click.echo(
+                    f"❌ '{table}' is not a valid table for models. Please try again with a model from the '{LAKEHOUSE_MODEL_SHARED_TABLE}' or '{LAKEHOUSE_MODEL_TABLE}' tables.",
+                    err=True,
+                )
+                ctx.exit(1)
+
+            if not label:
+                click.echo(f"\n❌ Error: Please provide model label", err=True)
+                ctx.exit(1)  # Exit with a non-zero status
+
+        if type == "dataset":
+            version = None
+            revision = None
+            label = None
+            if not dataset or dataset.strip() == "":
+                dataset = click.prompt("Dataset name").strip()
+
+            if not table or table.strip() == "":
+                table = click.prompt("Table").strip()
+
+            if dataset == "" or table == "":
+                click.echo(
+                    f"\n❌ Error: Please provide both table and dataset name", err=True
+                )
+                ctx.exit(1)  # Exit with a non-zero status
+
+        if type == "fileset":
+            revision = None
+            dataset = None
+            showVersionPrompt = not version or version.strip() == ""
+            showLabelPrompt = not label or label.strip() == ""
+
+            label = (
+                click.prompt("Fileset label", default=label, show_default=True).strip()
+                if showLabelPrompt
+                else label
+            )
+            version = (
+                click.prompt(
+                    "Fileset version", default=version, show_default=False, type=str
+                ).strip()
+                if showVersionPrompt
+                else version
+            )
+
+            if not table or table.strip() == "":
+                table = click.prompt(
+                    "Fileset table",
+                    default=LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
+                    show_default=True,
+                    type=click.Choice(
+                        [
+                            LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
+                            LAKEHOUSE_FILESET_TABLE_NAME,
+                        ],
+                        case_sensitive=True,
+                    ),
+                ).strip()
+            elif table not in [
+                LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
+                LAKEHOUSE_FILESET_TABLE_NAME,
+            ]:
+                click.echo(
+                    f"❌ '{table}' is not a valid table for filesets. Please try again with a fileset from the '{LAKEHOUSE_FILESET_SHARED_TABLE_NAME}'  or '{LAKEHOUSE_FILESET_TABLE_NAME}' tables.",
+                    err=True,
+                )
+                ctx.exit(1)
+
+            if label == "":
+                click.echo(f"\n❌ Error: Please provide fileset label", err=True)
+                ctx.exit(1)  # Exit with a non-zero status
+
+        if type == "table":
+            if not table or table.strip() == "":
+                table = click.prompt("Table").strip()
+
+            label = None
+            revision = None
+            dataset = None
+            version = None
+
+    elif type == "model":
+        # HF models: dataset/version are Lakehouse-only, so normalize them out.
         dataset = None
         version = None
-        showRevisionPrompt = not revision or revision.strip() == ""
-        showLabelPrompt = not label or label.strip() == ""
 
-        label = (
-            click.prompt("Model label", show_default=True).strip()
-            if showLabelPrompt
-            else label
-        )
-
-        revision = (
-            click.prompt(
-                "Revision", default=revision or "", show_default=False, type=str
-            ).strip()
-            if showRevisionPrompt
-            else revision
-        )
-        if not table or table.strip() == "":
-            table = click.prompt(
-                "Model table",
-                default=LAKEHOUSE_MODEL_SHARED_TABLE,
-                show_default=True,
-                type=click.Choice(
-                    [LAKEHOUSE_MODEL_SHARED_TABLE, LAKEHOUSE_MODEL_TABLE],
-                    case_sensitive=True,
-                ),
-            ).strip()
-        elif table not in [LAKEHOUSE_MODEL_SHARED_TABLE, LAKEHOUSE_MODEL_TABLE]:
-            click.echo(
-                f"❌ '{table}' is not a valid table for models. Please try again with a model from the '{LAKEHOUSE_MODEL_SHARED_TABLE}' or '{LAKEHOUSE_MODEL_TABLE}' tables.",
-                err=True,
-            )
-            ctx.exit(1)
-
-        if label == "":
-            click.echo(f"\n❌ Error: Please provide model label", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-
-    if type == "dataset":
-        label = None
-        revision = None
+    elif type == "dataset":
+        # HF datasets: version is Lakehouse-only; revision/label are kept.
         version = None
 
-        if not dataset or dataset.strip() == "":
-            dataset = click.prompt("Dataset name").strip()
-
-        if not table or table.strip() == "":
-            table = click.prompt("Table").strip()
-
-        if dataset == "" or table == "":
-            click.echo(
-                f"\n❌ Error: Please provide both table and dataset name", err=True
-            )
-            ctx.exit(1)  # Exit with a non-zero status
-
-    if type == "fileset":
-        revision = None
-        dataset = None
-        showVersionPrompt = not version or version.strip() == ""
-        showLabelPrompt = not label or label.strip() == ""
-
-        label = (
-            click.prompt("Fileset label", default=label, show_default=True).strip()
-            if showLabelPrompt
-            else label
-        )
-        version = (
-            click.prompt(
-                "Fileset version", default=version, show_default=False, type=str
-            ).strip()
-            if showVersionPrompt
-            else version
-        )
-
-        if not table or table.strip() == "":
-            table = click.prompt(
-                "Fileset table",
-                default=LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
-                show_default=True,
-                type=click.Choice(
-                    [LAKEHOUSE_FILESET_SHARED_TABLE_NAME, LAKEHOUSE_FILESET_TABLE_NAME],
-                    case_sensitive=True,
-                ),
-            ).strip()
-        elif table not in [
-            LAKEHOUSE_FILESET_SHARED_TABLE_NAME,
-            LAKEHOUSE_FILESET_TABLE_NAME,
-        ]:
-            click.echo(
-                f"❌ '{table}' is not a valid table for filesets. Please try again with a fileset from the '{LAKEHOUSE_FILESET_SHARED_TABLE_NAME}'  or '{LAKEHOUSE_FILESET_TABLE_NAME}' tables.",
-                err=True,
-            )
-            ctx.exit(1)
-
-        if label == "":
-            click.echo(f"\n❌ Error: Please provide fileset label", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-
-    if type == "table":
-        if not table or table.strip() == "":
-            table = click.prompt("Table").strip()
-
-        label = None
-        revision = None
-        dataset = None
-        version = None
+    # HF buckets need no normalization arm: --table/--namespace/--version/--dataset
+    # are already rejected for the HF store by the guard above, and a bucket URI
+    # decodes revision to "" → None, so nothing is left to null out here.
 
     if table:
         table_valid, table_invalid_chars = is_valid_name(table, "table_name")
@@ -1298,7 +1609,6 @@ def register(
                 origin_uris=normalized_origins,
                 certified_no_restrictions=certify_no_restrictions,
                 hf_organization=hf_organization,
-                resource_group_id=resource_group_id,
                 store=store,
                 callback=echo_callback,
             )
@@ -1322,7 +1632,6 @@ def register(
                 origin_uris=normalized_origins,
                 certified_no_restrictions=certify_no_restrictions,
                 hf_organization=hf_organization,
-                resource_group_id=resource_group_id,
                 store=store,
                 callback=echo_callback,
             )
@@ -1456,15 +1765,7 @@ def list(
             case _:
                 pass  # Ignore unknown events
 
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if format == "json":
         quiet = True
@@ -1763,15 +2064,7 @@ def download(
     Provide artifact id as an argument as the UUID or URI.\n
     The --artifact-id option is deprecated.
     """
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     if format == "json":
         quiet = True
@@ -1860,9 +2153,13 @@ def download(
                 click.echo(f"\n❌ Error: artifact does not exist.", err=True)
                 ctx.exit(1)
 
-            # Detect if artifact is in HuggingFace or Lakehouse
+            # Parse the artifact URI once through the shared URI layer; the
+            # store is the scheme and the identity comes from get_metadata().
             artifact_uri = artifact["uri"]
-            if artifact_uri.startswith("hf://"):
+            uri_obj = URI.get_uri(artifact_uri)
+            uri_store = uri_obj.uri.scheme
+            uri_metadata = uri_obj.get_metadata()
+            if uri_store == "hf":
                 # === HF download path ===
                 hf_token_value = hf_token()
                 if not hf_token_value:
@@ -1872,8 +2169,8 @@ def download(
                     )
                     ctx.exit(1)
 
-                org, name, artifact_type, domain = parse_hf_uri(artifact_uri)
-                repo_id = f"{org}/{name}"
+                repo_id = f"{uri_metadata['owner']}/{uri_metadata['repo']}"
+                artifact_type = str(uri_metadata["hf_type"])
 
                 if not quiet:
                     click.echo(f"Downloading {artifact_type} from HuggingFace...")
@@ -1931,23 +2228,26 @@ def download(
                 return  # done, skip LH path below
 
             # === LH-specific logic (grouped for future disable) ===
-            decoded_artifact = decode_uri(artifact_uri)
-            namespace = decoded_artifact.namespace
-            table_name = decoded_artifact.table_name
-            type = decoded_artifact.type
+            # Anything past the HF branch must be a Lakehouse URI; reject any
+            # other scheme as before.
+            if uri_store != "lh":
+                raise ValueError("Error: Artifact URI formatted incorrectly.")
+            namespace = uri_metadata["namespace"]
+            table_name = uri_metadata["table_name"]
+            type = uri_metadata["type"]
 
             if type == "dataset":
                 selected_type = "dataset"
 
             elif type == "model":
                 selected_type = "model"
-                model_label = decoded_artifact.model_label
-                model_revision = decoded_artifact.model_revision
+                model_label = uri_metadata["model_label"]
+                model_revision = uri_metadata["model_revision"]
 
             elif type == "fileset":
                 selected_type = "fileset"
-                file_label = decoded_artifact.fileset_label
-                version = decoded_artifact.fileset_version
+                file_label = uri_metadata["fileset_label"]
+                version = uri_metadata["fileset_version"]
 
             else:
                 selected_type = "table"
@@ -2125,15 +2425,7 @@ def archive(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet:
     """
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     artifact_client = GBClient.Artifact(get_user_token())
 
@@ -2225,15 +2517,7 @@ def unarchive(
     """
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     artifact_client = GBClient.Artifact(get_user_token())
 
@@ -2322,15 +2606,7 @@ def copy(
 
     artifact_id: The source artifact ID or URI.
     """
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     artifact_client = GBClient.Artifact(get_user_token())
 
@@ -2347,8 +2623,6 @@ def copy(
                 pass  # Ignore unknown events
 
     try:
-        from lakehouse.core import UnauthorizedException
-
         id_format = parse_artifact_identifier(artifact_id)
         if id_format in ["uuid", "uri"]:
             if not quiet:
@@ -2379,9 +2653,21 @@ def copy(
             uri = artifact["uri"]
             table_name = artifact_name
 
-            # Detect artifact source: HF or LH
+            # Detect artifact source via the shared URI layer: the store is the
+            # URI scheme. Parse once and reuse the metadata below.
 
-            is_hf_artifact = uri.startswith("hf://")
+            uri_obj = URI.get_uri(uri)
+            uri_store = uri_obj.uri.scheme
+            uri_metadata = uri_obj.get_metadata()
+            is_hf_artifact = uri_store == "hf"
+        else:
+            # copy takes an artifact UUID or URI; a name-format identifier is
+            # unsupported (guarding the branch-local vars read below).
+            click.echo(
+                f"❌ Artifact identifier formatted incorrectly. Please try again with artifact UUID or URI.",
+                err=True,
+            )
+            sys.exit(1)  # Exit with a non-zero status
 
         if is_hf_artifact:
             click.echo(
@@ -2391,8 +2677,10 @@ def copy(
             sys.exit(1)  # Exit with a non-zero status
 
         # === Lakehouse-specific copy logic (can be disabled together) ===
-        decoded_artifact = decode_uri(uri)
-        type = decoded_artifact.type
+        # Anything not HF must be a Lakehouse URI; reject any other scheme.
+        if uri_store != "lh":
+            raise ValueError("Error: Artifact URI formatted incorrectly.")
+        type = uri_metadata["type"]
 
         if type != "model":
             click.echo(f"\n❌ Only model artifacts are supported for copy.", err=True)
@@ -2427,18 +2715,15 @@ def copy(
                 f"(3/4) Copying artifact to Lakehouse. This may take a while, please wait..."
             )
 
-        revision = decoded_artifact.model_revision
-        namespace = decoded_artifact.namespace
-        model_label = decoded_artifact.model_label
+        revision = uri_metadata["model_revision"]
+        namespace = uri_metadata["namespace"]
+        model_label = uri_metadata["model_label"]
 
-        source_table_name = (
-            get_artifact_formatted_name(decoded_artifact).split(".")[-1]
-            if uri != None
-            else LAKEHOUSE_MODEL_SHARED_TABLE
-        )
+        # The source table is the URI's own table when it is the per-user model
+        # table; otherwise the copy reads from the shared model table.
         source_table = (
-            source_table_name
-            if source_table_name == LAKEHOUSE_MODEL_TABLE
+            LAKEHOUSE_MODEL_TABLE
+            if uri_metadata["table_name"] == LAKEHOUSE_MODEL_TABLE
             else LAKEHOUSE_MODEL_SHARED_TABLE
         )
         target_table = LAKEHOUSE_MODEL_TABLE
@@ -2547,15 +2832,7 @@ def describe(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet
     """
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     artifact_client = GBClient.Artifact(get_user_token())
 
@@ -2666,15 +2943,7 @@ def checksum(ctx, artifact_id: str, format: str, skip_version_check: bool, quiet
     """
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     artifact_client = GBClient.Artifact(get_user_token())
 
@@ -2798,15 +3067,7 @@ def update(
     """
     if format == "json":
         quiet = True
-    if not skip_version_check:
-        try:
-            outdated_version = check_current_and_latest_versions()
-        except Exception as e:
-            click.echo(f"❌ {str(e)}.", err=True)
-            ctx.exit(1)  # Exit with a non-zero status
-        if outdated_version:
-            click.echo(outdated_version, err=True)
-            ctx.exit(1)  # Exit with a non-zero status
+    enforce_version_check(ctx, skip_version_check)
 
     artifact_client = GBClient.Artifact(get_user_token())
 

@@ -3,7 +3,7 @@ name: Nightly Extended Tests
 # Runs the heavier, live extended test suite on a nightly schedule against the
 # default branch. This replaces the previously merge-triggered `extended-test`
 # job in ci.yml, catching regressions caused by external/live dependencies (HF,
-# MinIO, SLURM) that drift independently of repo changes.
+# SLURM) that drift independently of repo changes.
 #
 # NOTE: GitHub only runs `schedule` triggers on the default branch (main), so
 # this workflow always tests main. Use the `workflow_dispatch` trigger to run
@@ -30,11 +30,12 @@ jobs:
       # Don't cancel 3.12 just because 3.11 failed — we want both results.
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        # python-version: ["3.11", "3.12"]
+        python-version: ["3.12"] # Only run 1 python since HF rate limit may be failing us
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 

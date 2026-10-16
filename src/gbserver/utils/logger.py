@@ -12,6 +12,7 @@
 #
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Optional, Self
 
@@ -90,10 +91,43 @@ class CustomFormatter(logging.Formatter):
         logging.CRITICAL: DO_CRITICAL_COLOR + DEFAULT_LOG_FORMAT + DO_RESET,
     }
 
+    def __init__(self, datefmt: Optional[str] = None):
+        super().__init__(datefmt=datefmt)
+
     def format(self, record):
         log_fmt = self.FORMATS.get(record.levelno)
-        formatter = logging.Formatter(log_fmt)
+        formatter = logging.Formatter(log_fmt, datefmt=self.datefmt)
         return formatter.format(record)
+
+
+class _ConsoleStreamHandler(logging.StreamHandler):
+    """StreamHandler that resolves ``sys.stderr`` at emit time.
+
+    A bare ``logging.StreamHandler()`` captures whatever ``sys.stderr`` is at
+    construction and holds that reference for the life of the handler. When
+    logging is (re)configured inside ``click.testing.CliRunner.invoke()`` — which
+    swaps ``sys.stdout``/``sys.stderr`` for an in-memory buffer and later
+    closes/garbage-collects it — the handler would pin that transient buffer, and
+    a later cross-boundary write (or CliRunner's own ``getvalue()``) would land on
+    a closed file, producing flaky ``I/O operation on closed file`` failures under
+    parallel test runs (issue #315). Resolving ``sys.stderr`` on each access keeps
+    the handler on the live stream and never retains a closed one.
+
+    This mirrors the standard library's ``logging._StderrHandler`` (used for
+    ``logging.lastResort``): skip ``StreamHandler.__init__`` so nothing snapshots
+    a stream into ``self.stream``, and expose ``stream`` as a read-only property.
+    """
+
+    def __init__(self):
+        # Intentionally skip StreamHandler.__init__ (which snapshots a stream
+        # into self.stream) and init only the Handler base, mirroring the stdlib
+        # logging._StderrHandler; the stream property below stays live.
+        # pylint: disable=super-init-not-called,non-parent-init-called
+        logging.Handler.__init__(self)
+
+    @property
+    def stream(self):
+        return sys.stderr
 
 
 def configure_logging(
@@ -106,25 +140,26 @@ def configure_logging(
     global __LOGGER_CONFIGURED
     if skip_if_already_configured and __LOGGER_CONFIGURED:
         return
-    if format is None:
-        handler: logging.Handler = logging.StreamHandler()
-        if log_file is not None:
-            handler = logging.FileHandler(filename=log_file, encoding="utf-8", mode="w")
-        handler.setFormatter(CustomFormatter())
-        logging.basicConfig(
-            handlers=[handler],
-            level=get_log_level(level),
-            datefmt="%Y-%m-%d %H:%M:%S",
-            force=True,
+    datefmt = "%Y-%m-%d %H:%M:%S"
+    # Always build the handler ourselves so no code path lets basicConfig
+    # construct a bare StreamHandler, which snapshots sys.stderr and reintroduces
+    # the issue #315 flake. The console handler resolves sys.stderr at emit time.
+    if log_file is not None:
+        handler: logging.Handler = logging.FileHandler(
+            filename=log_file, encoding="utf-8", mode="w"
         )
     else:
-        logging.basicConfig(
-            format=format,
-            level=get_log_level(level),
-            datefmt="%Y-%m-%d %H:%M:%S",
-            filename=log_file,
-            filemode="w",
-        )
+        handler = _ConsoleStreamHandler()
+    handler.setFormatter(
+        logging.Formatter(format, datefmt=datefmt)
+        if format is not None
+        else CustomFormatter(datefmt=datefmt)
+    )
+    logging.basicConfig(
+        handlers=[handler],
+        level=get_log_level(level),
+        force=True,
+    )
     __LOGGER_CONFIGURED = True
     logger = logging.getLogger(__name__)
     logger.info("logging level set to %s", level)

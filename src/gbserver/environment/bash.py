@@ -20,6 +20,8 @@ Run user provided bash scripts in the local filesystem.
 
 import asyncio
 import os
+import signal
+import sys
 from asyncio.subprocess import Process
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Self, Tuple, Union
@@ -32,7 +34,11 @@ from gbserver.environment.environment import (
     Environment,
     EventLogLineParserConfig,
 )
-from gbserver.environment.local_assets import get_hf_cache_dir, pull_asset_hfstore
+from gbserver.environment.local_assets import (
+    get_hf_cache_dir,
+    pull_asset_hfstore,
+    push_asset_hfstore,
+)
 from gbserver.monitoring.logfile_monitor import LogFileMonitor
 from gbserver.monitoring.streams.stream_factory import make_stream
 from gbserver.types.buildconfig import BuildTargetStepConfig
@@ -40,12 +46,19 @@ from gbserver.types.buildevent import EntityRunMetadata
 from gbserver.types.constants import FILE_SCHEME
 from gbserver.types.environmentconfig import EnvironmentConfig
 from gbserver.types.errors import LogMonitoringFailedException
+from gbserver.utils import spawned_groups
 from gbserver.utils.filesystem import sync_or_copy
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
 BASH_SCRIPTS = "bash_scripts"
 JOB_SUB_SH = "llmb_bash_jobsub.sh"
+
+# cleanup_nohup grace windows (seconds). Kept short so build shutdown does not
+# wait out the workload: SIGTERM lets the workload exit cleanly, then SIGKILL is
+# forced. These run serially per outstanding launch on the cancellation path.
+_NOHUP_SIGTERM_GRACE_S = 3.0
+_NOHUP_SIGKILL_GRACE_S = 2.0
 
 
 class Bash(Environment):
@@ -72,6 +85,48 @@ class Bash(Environment):
                 str(value).encode("utf-8", "ignore").decode("unicode_escape")
             )  # Decode escaped sequences safely
             self._env[key_str] = value_str
+
+    def _launch_env_layers(self: Self, **kwargs: Any) -> List[Dict[str, str]]:
+        """Bash env layers for the shared launch-env composer.
+
+        Overrides :meth:`Environment._launch_env_layers`, folding Bash into the
+        single launch-env strategy. Bash's bulk-loaded ``self._env`` (space
+        secrets + environment.yaml ``env``, populated in ``setup_nohup``) is
+        simply its lowest layer here. Ordered lowest->highest above the empty
+        declared-secret layer and below the standard set: ``self._env`` <
+        launcher ``env`` < ``config.bash.env`` < the built-in ``LLMB_BASH_*``
+        vars.
+
+        The child does NOT inherit ``os.environ`` — so the standard set's
+        GBTEST_ vars are how HF-op mocking reaches the step — and it needs
+        ``LLMB_BASH_PYTHON_DIR`` to find a python. The built-in launcher vars are
+        standardized on the ``GB_`` prefix (``GB_BASH_*``): the composer's
+        unconditional aliasing mirrors each ``LLMB_BASH_*`` onto a ``GB_BASH_*``
+        twin, keeping the legacy ``LLMB_BASH_*`` names for compatibility.
+
+        :param kwargs: the launch context; reads ``launcher_config`` (its
+            ``env``), ``bash_config_env`` (``config.bash.env``), ``launch_id``
+            (LLMB_BASH_LAUNCH_ID), ``targetsteprun_asset_dir``
+            (LLMB_BASH_ASSET_DIR), and ``final_asset_output_dir`` (a late/async
+            value exported as LLMB_BASH_OUTPUT_DIR when provided).
+        :returns: the ordered env layers to compose.
+        """
+        launcher_config = kwargs.get("launcher_config") or {}
+        bash_config_env = kwargs.get("bash_config_env") or {}
+        builtins: Dict[str, str] = {
+            "LLMB_BASH_LAUNCH_ID": kwargs.get("launch_id", ""),
+            "LLMB_BASH_ASSET_DIR": str(kwargs.get("targetsteprun_asset_dir")),
+            "LLMB_BASH_PYTHON_DIR": os.path.dirname(sys.executable),
+        }
+        final_asset_output_dir = kwargs.get("final_asset_output_dir")
+        if final_asset_output_dir is not None:
+            builtins["LLMB_BASH_OUTPUT_DIR"] = str(final_asset_output_dir)
+        return [
+            self._env,
+            launcher_config.get("env", {}),
+            {str(k): str(v) for k, v in bash_config_env.items()},
+            builtins,
+        ]
 
     async def launch_nohup(
         self: Self,
@@ -129,22 +184,15 @@ class Bash(Environment):
                 cwd = Path(".").resolve()
                 logger.info("Falling back to current working directory: %s", cwd)
 
-            # Env precedence (lowest to highest):
-            #   1. self._env       — space secrets + environment.yaml `env`
-            #   2. launcher `env`  — defaults declared in the step.yaml launcher
-            #   3. config.bash.env — per-build overrides from build.yaml's step
-            #                        config, so a build can set step parameters
-            #                        (e.g. PROMPT, MAX_STEPS) without editing the
-            #                        step. Mirrors the docker launcher's
-            #                        `config.docker.env` handling.
+            # NOTE: we deliberately do NOT inherit os.environ — the child gets a
+            # clean env (matching the k8s job runner), so the server's
+            # VIRTUAL_ENV/PYTHONPATH/secrets can't leak into the step and silently
+            # override its pinned deps. The full env (with its documented
+            # precedence) is assembled by get_launch_env_vars() below, once the
+            # asset copy has produced the output dir it needs.
             step_config = kwargs.get("config", {}) or {}
             bash_config = step_config.get("bash", {}) or {}
             bash_config_env = bash_config.get("env", {}) or {}
-            env = {
-                **self._env,
-                **launcher_config.get("env", {}),
-                **{str(k): str(v) for k, v in bash_config_env.items()},
-            }
             logger.debug(f"launch_nohup() called with launch_id={launch_id}")
             logger.debug(f"launcher_config = {launcher_config}")
             step_name = kwargs.get("step", {}).get("name", "")
@@ -154,9 +202,6 @@ class Bash(Environment):
             command_list = [f"./{BASH_SCRIPTS}/{step_name}/{JOB_SUB_SH}"]
             logger.info(f"Launching {launch_id}: {command_list} in {cwd}")
             logger.debug(f"computed cwd = '{cwd}' (exists={os.path.exists(cwd)})")
-            logger.debug(f"env vars = {env}")
-            env["LLMB_BASH_LAUNCH_ID"] = launch_id
-            env["LLMB_BASH_ASSET_DIR"] = str(targetsteprun_asset_dir)
             self.output_dir = (environment_config.get("workspace") or {}).get(  # type: ignore[attr-defined]
                 "output_dir", ""
             )
@@ -174,7 +219,12 @@ class Bash(Environment):
             assert isinstance(
                 run_metadata, dict
             ), f"invalid run_metadata: {run_metadata}"
+            # Retained for the non-zero-exit failure message below; the env's
+            # GB_BUILD_ID is now set authoritatively by get_launch_env_vars().
             build_id = run_metadata.get("build_id", "")
+            # Copy assets first: LLMB_BASH_OUTPUT_DIR (set in get_launch_env_vars)
+            # derives from the copied asset dir, so the copy must happen before we
+            # build the env.
             final_asset_dir = await self._copy_assets(
                 launch_id=launch_id,
                 asset_dir=targetsteprun_asset_dir,  # type: ignore[arg-type]
@@ -182,10 +232,21 @@ class Bash(Environment):
             )
             final_asset_output_dir = Path(final_asset_dir) / "outputs"
             logger.info("final_asset_output_dir: %s", final_asset_output_dir)
-            # The wrapper tees all workload output (incl. LLMB_ARTIFACT_ID lines)
+            # The wrapper tees all workload output (incl. GB_ARTIFACT_ID lines)
             # to this combined log file; monitor_log_monitor tails it for events.
             self.log_paths[launch_id] = str(Path(final_asset_output_dir) / "job.log")
-            env["LLMB_BASH_OUTPUT_DIR"] = str(final_asset_output_dir)
+            # Build the complete env for the child. GB_BUILD_ID (and any future
+            # standard var) comes from Environment.get_launch_env_vars() and is
+            # authoritative over launcher/config env.
+            env = self.get_launch_env_vars(
+                run_metadata=run_metadata,
+                launcher_config=launcher_config,
+                bash_config_env=bash_config_env,
+                launch_id=launch_id,
+                targetsteprun_asset_dir=targetsteprun_asset_dir,
+                final_asset_output_dir=final_asset_output_dir,
+            )
+            logger.debug(f"env vars = {env}")
             # Launch non-blocking: do NOT drain the pipes here (that would consume
             # and close them before the monitor can read, and the real output goes
             # to job.log anyway). stdout/stderr -> DEVNULL avoids a full-pipe
@@ -199,6 +260,10 @@ class Bash(Environment):
                 env=env,
             )
             self._launched_processes[launch_id] = process
+            # Also record the session leader process-wide: cleanup_nohup below reaps
+            # it on the normal paths, but if this build's thread wedges, watcher
+            # shutdown needs a way to reap it without the launch_id or this instance.
+            spawned_groups.register(process.pid, label=f"bash launch {launch_id}")
             # Release monitors BEFORE awaiting the process so the log_monitor tails
             # job.log concurrently while the workload runs.
             self._release_monitors(launch_id)
@@ -222,6 +287,117 @@ class Bash(Environment):
                 f"bash launch {launch_id} exited with code {returncode}",
                 build_id=build_id,
             )
+
+    async def cleanup_nohup(self: Self, launch_id: str, **kwargs) -> None:
+        """Reap the whole workload process group on step finish or cancellation.
+
+        Auto-discovered as the ``nohup`` cleanup and run by ``TargetStepRun.
+        _cleanup`` under ``Run.run``'s ``uncancel()`` guard, on both the success
+        and cancel paths. On cancel, ``launch_nohup``'s ``await process.wait()``
+        was unwound without reaping the child (launched ``start_new_session=True``,
+        so its own group leader), orphaning the tree (jobsub -> wrapper -> ``sh -c``
+        -> ``sleep``).
+
+        SIGTERM the group, poll until it is empty, then SIGKILL if the grace
+        elapses. The group emptiness — not ``proc.wait()`` — is the signal: the
+        leader dies first, but deeper members can outlive one SIGTERM, so waiting
+        only on the leader would leak them (the SIGTERM e2e flake). Also sets the
+        launch-stopped event so the log monitor stops, and drops the process.
+        """
+        proc = self._launched_processes.get(launch_id)
+        try:
+            if proc is None:
+                logger.debug("cleanup_nohup: nothing to reap for %s", launch_id)
+                return
+            # Only signal the child's own group: with start_new_session the child
+            # leads its group (pgid == pid). If they differ (an early cancel racing
+            # the child's setsid), killpg would hit the server's group — signal the
+            # pid alone instead.
+            try:
+                pgid = os.getpgid(proc.pid)
+            except ProcessLookupError:
+                logger.debug(
+                    "cleanup_nohup: %s pid %s already gone", launch_id, proc.pid
+                )
+                return
+            own_group = pgid == proc.pid
+            if not own_group:
+                logger.warning(
+                    "cleanup_nohup: %s pid %s not its own group leader (pgid=%s); "
+                    "signalling the pid only",
+                    launch_id,
+                    proc.pid,
+                    pgid,
+                )
+
+            def _signal_group(sig: int) -> bool:
+                """Signal the group (or lone pid); False once nothing is left."""
+                try:
+                    if own_group:
+                        os.killpg(pgid, sig)
+                    else:
+                        os.kill(proc.pid, sig)
+                    return True
+                except ProcessLookupError:
+                    return False
+                except PermissionError as exc:
+                    logger.debug("cleanup_nohup: signal %s: %s", sig, exc)
+                    return True
+
+            async def _wait_group_gone(grace: float) -> bool:
+                """Poll (signal 0) until the group is empty or ``grace`` elapses."""
+                deadline = asyncio.get_event_loop().time() + grace
+                while asyncio.get_event_loop().time() < deadline:
+                    if not _signal_group(0):
+                        return True
+                    await asyncio.sleep(0.2)
+                return not _signal_group(0)
+
+            logger.info(
+                "cleanup_nohup: terminating %s (pid=%s, pgid=%s)",
+                launch_id,
+                proc.pid,
+                pgid if own_group else "n/a",
+            )
+            # No-op if the workload already finished (empty group).
+            _signal_group(signal.SIGTERM)
+            if await _wait_group_gone(_NOHUP_SIGTERM_GRACE_S):
+                logger.info("cleanup_nohup: launch %s stopped after SIGTERM", launch_id)
+            else:
+                logger.warning(
+                    "cleanup_nohup: launch %s still alive after SIGTERM grace; "
+                    "sending SIGKILL",
+                    launch_id,
+                )
+                _signal_group(signal.SIGKILL)
+                if await _wait_group_gone(_NOHUP_SIGKILL_GRACE_S):
+                    logger.info(
+                        "cleanup_nohup: launch %s reaped after SIGKILL", launch_id
+                    )
+                else:
+                    logger.error(
+                        "cleanup_nohup: launch %s still alive after SIGKILL", launch_id
+                    )
+            # Reap the leader so it isn't left a zombie (the poll doesn't waitpid).
+            if proc.returncode is None:
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=_NOHUP_SIGKILL_GRACE_S)
+                except asyncio.TimeoutError:
+                    logger.debug(
+                        "cleanup_nohup: launch %s leader wait timed out", launch_id
+                    )
+        except Exception as e:  # noqa: BLE001 - cleanup must never raise
+            logger.error(
+                "cleanup_nohup: failed to clean up launch %s: %s", launch_id, e
+            )
+        finally:
+            # Unblock the log monitor's tail loop and drop the tracked process.
+            self._monitoring_cleanup(launch_id=launch_id)
+            dropped = self._launched_processes.pop(launch_id, None)
+            # This path owned the reap, so shutdown must not signal it again (the
+            # pid may by then belong to someone else).
+            if dropped is not None:
+                spawned_groups.unregister(dropped.pid)
 
     async def monitor_log_monitor(
         self: Self,
@@ -261,11 +437,12 @@ class Bash(Environment):
         self: Self,
         uri: URI,
         binding: Optional[Any] = None,
-        # storeload_config: Optional[StoreLoad] = None,
+        storeload_config=None,
         # assetstore: Optional[Assetstore] = None,
         # secrets: Optional[dict] = None,
         **kwargs,
     ) -> Tuple[Dict, Optional[BuildTargetStepConfig]]:
+        self._warn_non_default_mode(storeload_config, uri)
         if isinstance(uri, str):
             uri = URI.get_uri(uri)
         assert uri.uri is not None, "the URI is None"
@@ -286,6 +463,7 @@ class Bash(Environment):
         **kwargs,
     ) -> Tuple[Dict, Optional[BuildTargetStepConfig]]:
         """Download an HF model snapshot and bind as a local path."""
+        self._warn_non_default_mode(storeload_config, uri)
         local_path = pull_asset_hfstore(uri, assetstore, storeload_config)
         binding_config = {BINDING_KEY: {"path": str(local_path)}}
         return binding_config, None
@@ -295,13 +473,60 @@ class Bash(Environment):
         """Resolve HF model cache directory from config or default."""
         return get_hf_cache_dir(storeload_config)
 
+    async def pushasset_hfstore(
+        self: Self,
+        binding: Any,
+        binding_id: Optional[str] = "",
+        uri: Optional[Any] = None,
+        assetstore=None,
+        run_metadata=None,
+        storepush_config=None,
+        output_config=None,
+        **_kwargs,
+    ) -> Any:
+        """Upload a local file/dir to a HuggingFace repo (hf:// output).
+
+        Unlike Docker, the bash binding ``path`` is already a host path, so it is
+        pushed directly with no container-path translation. Delegates to the
+        shared :func:`push_asset_hfstore` helper.
+
+        :param binding: Dict carrying the artifact's local ``path``.
+        :param binding_id: Output binding name, included in the commit message.
+        :param uri: Target ``hf://`` URI (string or ``HfURI``).
+        :param assetstore: ``Hfstore`` whose secrets supply the HF token.
+        :param run_metadata: ``EntityRunMetadata`` with build/target identifiers.
+        :param storepush_config: Environment-level push config; ``mode`` must be
+            unset or ``"default"``. Its ``hf`` block is forwarded so the resource
+            group settings apply here as they do on the step-based environments.
+        :param output_config: Per-output build.yaml config, forwarded so
+            ``store_push.config.hf`` (including ``use_resource_group``) is honored.
+        :returns: The resolved ``HfURI`` after a successful push.
+        :raises ValueError: on a non-'default' mode, or a binding without 'path'.
+        """
+        self._warn_non_default_mode(storepush_config, uri)
+        if not isinstance(binding, dict) or "path" not in binding:
+            raise ValueError(f"binding must be a dict with 'path', got: {binding}")
+        return push_asset_hfstore(
+            src=binding["path"],
+            binding_id=binding_id,
+            uri=uri,
+            assetstore=assetstore,
+            run_metadata=run_metadata,
+            storepush_config=storepush_config,
+            output_config=output_config,
+        )
+
     async def pushasset_filestore(
         self: Self,
         binding: Any,
         uri: Optional[URI] = None,
         base_uri: Optional[URI] = None,
+        storepush_config=None,
         **kwargs,
     ) -> Any:
+        self._warn_non_default_mode(
+            storepush_config, uri if uri is not None else base_uri
+        )
         if uri is None and base_uri is None:
             return None
         # The binding is the artifact location, either a {"path": ...} dict or a

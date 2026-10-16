@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import List, Self
 
 import pytest
+from pydantic import ValidationError
 
 from gbserver.types.stepconfig import (
     StepConfig,
@@ -121,3 +122,85 @@ class TestStepConfig:
         expected = get_expected_step()
         expected.config = None
         assert step_config == expected
+
+
+class TestStepMonitorConfigRef:
+    """Validation of the StepMonitorConfig ``ref`` / ``type`` forms."""
+
+    def test_inline_type_valid(self: Self) -> None:
+        """An inline monitor (type set, no ref) is valid."""
+        m = StepMonitorConfig(type="skypilot_monitor", config={"a": 1})
+        assert m.type == "skypilot_monitor"
+        assert m.ref is None
+
+    def test_ref_only_valid(self: Self) -> None:
+        """A pure reference (ref set, no type) is valid."""
+        m = StepMonitorConfig(ref="skypilot_export")
+        assert m.ref == "skypilot_export"
+        assert m.type is None
+
+    def test_ref_with_overlay_valid(self: Self) -> None:
+        """A reference with a config overlay (incl. extra_event_configs) is valid."""
+        m = StepMonitorConfig(
+            ref="skypilot_export",
+            config={
+                "poll_interval_seconds": 30,
+                "extra_event_configs": [{"event_type": "workload_status_event"}],
+            },
+        )
+        assert m.ref == "skypilot_export"
+        assert m.config is not None and "extra_event_configs" in m.config
+
+    def test_ref_with_type_override_valid(self: Self) -> None:
+        """A reference may also override the monitor type."""
+        m = StepMonitorConfig(ref="skypilot_export", type="skypilot_monitor")
+        assert m.ref == "skypilot_export"
+        assert m.type == "skypilot_monitor"
+
+    def test_ref_is_a_monitor_uri(self: Self) -> None:
+        """A ref holds a monitor-library URI (space://monitors/<name>)."""
+        m = StepMonitorConfig(ref="space://monitors/skypilot")
+        assert m.ref == "space://monitors/skypilot"
+        assert m.type is None
+
+    def test_neither_type_nor_ref_invalid(self: Self) -> None:
+        """A monitor with neither type nor ref fails validation."""
+        with pytest.raises(ValidationError):
+            StepMonitorConfig(config={"a": 1})
+
+
+class TestSelectLauncherMonitors:
+    """The shared launcher->monitor selector used by run time + build validation."""
+
+    def _env(self: Self) -> StepEnvironmentTypeConfig:
+        return StepEnvironmentTypeConfig(
+            launchers={"l": StepLauncherConfig(type="x")},
+            monitors={
+                "a": StepMonitorConfig(type="log_monitor"),
+                "b": StepMonitorConfig(ref="space://monitors/skypilot"),
+            },
+        )
+
+    def test_selects_named_monitors_in_order(self: Self) -> None:
+        """Returns (name, monitor) for each launcher-named monitor, in order."""
+        env = self._env()
+        launcher = StepLauncherConfig(type="x", monitors=["b", "a"])
+        pairs, missing = env.select_launcher_monitors(launcher)
+        assert [n for n, _ in pairs] == ["b", "a"]
+        assert pairs[0][1] is env.monitors["b"]
+        assert missing == []
+
+    def test_reports_missing_without_raising(self: Self) -> None:
+        """A launcher-named monitor absent from the env config is 'missing'."""
+        env = self._env()
+        launcher = StepLauncherConfig(type="x", monitors=["a", "nope"])
+        pairs, missing = env.select_launcher_monitors(launcher)
+        assert [n for n, _ in pairs] == ["a"]
+        assert missing == ["nope"]
+
+    def test_no_launcher_monitors_selects_none(self: Self) -> None:
+        """A launcher that names no monitors selects none (and none missing)."""
+        assert self._env().select_launcher_monitors(StepLauncherConfig(type="x")) == (
+            [],
+            [],
+        )

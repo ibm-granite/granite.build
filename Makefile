@@ -16,14 +16,18 @@ GB_ENVIRONMENT_LOWER ?= dev
 GIT_COMMIT ?= $(shell git rev-parse HEAD)
 GIT_DIRTY  = $(shell test -n "`git status --porcelain`" && echo "dirty-" || echo "")
 IMAGE_NAME = gbserver
-IMAGE_TAG  ?= ${GIT_DIRTY}commit-${GIT_COMMIT}
+# Set the GBSERVER_IMAGE_TAG env var to override this (e.g. to point tests at an
+# existing registry image); otherwise default to the local git-derived tag.
+IMAGE_TAG  ?= $(if $(GBSERVER_IMAGE_TAG),$(GBSERVER_IMAGE_TAG),${GIT_DIRTY}commit-${GIT_COMMIT})
 IMAGE_NAME_AND_TAG = ${IMAGE_NAME}:${IMAGE_TAG}
 
 OC_LOGIN_SERVER_URI ?= https://c100-e.us-south.containers.cloud.ibm.com:30049
 
 SIDECAR_IMAGE_NAME = gb-sidecar-monitoring
 # SIDECAR_IMAGE_TAG ?= 0.4.12
-SIDECAR_IMAGE_TAG ?= ${GIT_DIRTY}commit-${GIT_COMMIT}
+# Set the GBSERVER_SIDECAR_MONITORING_IMAGE_TAG env var to override this; otherwise
+# default to the local git-derived tag.
+SIDECAR_IMAGE_TAG ?= $(if $(GBSERVER_SIDECAR_MONITORING_IMAGE_TAG),$(GBSERVER_SIDECAR_MONITORING_IMAGE_TAG),${GIT_DIRTY}commit-${GIT_COMMIT})
 SIDECAR_IMAGE_NAME_AND_TAG = ${SIDECAR_IMAGE_NAME}:${SIDECAR_IMAGE_TAG}
 
 DEV_IMAGE_REGISTRY = us.icr.io/cil15-shared-registry/gb-dev
@@ -58,6 +62,9 @@ COVERAGE_GATE = $(if $(strip $(PYTEST_COV)),coverage report --fail-under=$(MIN_C
 # (`make quick-tests PYTEST_CAPTURE=`) to let pytest capture output — handy when
 # debugging xdist/subprocess interactions.
 PYTEST_CAPTURE ?= -s
+# The Mode-2 step build tests under test/steps/ are auto-marked `extended` by
+# test/steps/conftest.py (see steps/README.md), so `not extended` keeps them out of
+# the quick/PR selections while extended-tests runs them; no dedicated marker needed.
 DEFAULT_PYTEST_MARKERS ?= not secret_manager and not nats_server and not docker_required
 # PR runs the quick (non-extended) selection; merge includes extended tests.
 PR_PYTEST_MARKERS ?= $(DEFAULT_PYTEST_MARKERS) and not extended
@@ -130,9 +137,60 @@ start-docker:
 		exit 1; \
 	fi
 
+# NATS (JetStream) test server used by the messaging integration tests.
+NATS_TEST_CONTAINER ?= gb-nats-test
+NATS_TEST_PORT ?= 4222
+
+# Start a containerised nats-server with JetStream for the messaging
+# integration tests. Idempotent (removes any prior container) and blocks until
+# the port accepts connections so the tests do not race the daemon coming up.
+.PHONY: start-nats
+start-nats: start-docker
+	@echo "Starting NATS (JetStream) test server '${NATS_TEST_CONTAINER}'..."
+	@${DOCKER} rm -f ${NATS_TEST_CONTAINER} >/dev/null 2>&1 || true
+	@# No --rm: a crashed container must survive so the readiness-timeout path below
+	@# can still read its logs. Cleanup is handled by the rm -f above on the next run
+	@# and by the stop-nats target.
+	@${DOCKER} run -d --name ${NATS_TEST_CONTAINER} \
+		-p ${NATS_TEST_PORT}:4222 nats:latest -js >/dev/null
+	@echo "Waiting for NATS on localhost:${NATS_TEST_PORT}..."
+	@for i in $$(seq 1 30); do \
+		if $(PYTHON) -c "import socket,sys; s=socket.socket(); s.settimeout(1); sys.exit(s.connect_ex(('localhost', ${NATS_TEST_PORT})))" 2>/dev/null; then \
+			echo "NATS is ready."; \
+			exit 0; \
+		fi; \
+		sleep 1; \
+	done; \
+	echo "ERROR: NATS did not become ready on port ${NATS_TEST_PORT}." >&2; \
+	${DOCKER} logs ${NATS_TEST_CONTAINER} >&2 2>/dev/null || true; \
+	exit 1
+
+# Stop and remove the NATS test server started by start-nats.
+.PHONY: stop-nats
+stop-nats:
+	@${DOCKER} rm -f ${NATS_TEST_CONTAINER} >/dev/null 2>&1 || true
+
 .PHONY: check-git-status-clean
 check-git-status-clean:
 	@if [[ -z "${ALLOW_DIRTY}" ]] ; then if [[ -n "${GIT_DIRTY}" ]] ; then echo 'Please make sure the git status is clean or set ALLOW_DIRTY.' && exit 1 ; fi fi
+
+# Fail if either resolved image tag reflects an uncommitted (dirty) git tree, since the
+# matching image was likely never built/pushed to the registry. Bypass with ALLOW_DIRTY.
+#
+# This is a prerequisite only of the live test entrypoints that run cluster/
+# BuildRunnerJob builds pulling the tagged image (extended-tests, ibm-extended-tests,
+# test-pr, test-merge). It is deliberately NOT on the shared .test / py-test targets:
+# mock/unit suites reached through them never pull an image, so a dirty tag is
+# irrelevant there and the guard would only block the edit -> test -> commit loop.
+.PHONY: check-image-tag-not-dirty
+check-image-tag-not-dirty:
+	@if [[ -z "${ALLOW_DIRTY}" ]] ; then \
+		for _t in "$(IMAGE_TAG)" "$(SIDECAR_IMAGE_TAG)" ; do \
+			if [[ "$$_t" == *dirty* ]] ; then \
+				echo "Image tag '$$_t' reflects a dirty git tree; the matching image may not exist in the registry. Commit your changes, set GBSERVER_IMAGE_TAG / GBSERVER_SIDECAR_MONITORING_IMAGE_TAG to an existing tag (see 'make info'), or set ALLOW_DIRTY to override." && exit 1 ; \
+			fi ; \
+		done ; \
+	fi
 
 .PHONY: check-container-registry-login
 check-container-registry-login:
@@ -230,13 +288,14 @@ cicd-pr-test:
 quick-tests-setup:
 	$(MAKE) g4os-skypilot-venv
 
-# Setup does not setup slurm, so the skypilot/slurm tests are skipped 
-# Mock most of HF since the action does not have the HF_TOKEN secret on PRs
+# Setup does not setup slurm, so the skypilot/slurm tests are skipped
+# GBTEST_MODE=mock defaults GBTEST_MOCK_HF=true (see test/libgbtest/mock_env.py), so
+# HF is never touched — the action has no HF_TOKEN secret on PRs and we don't want
+# CI flaking on HF rate limits. A test needing real HF opts in via @pytest.mark.live("hf").
 .PHONY: quick-tests
 quick-tests:
 	export GB_ENVIRONMENT=STANDALONE &&			\
-	$(MAKE) GBTEST_MOCKED_HF_OPS=push,exists,delete,resource_group \
-		GBTEST_MODE=mock				\
+	$(MAKE) GBTEST_MODE=mock				\
 		PYTEST_MARKERS="not ibm and not extended" 	\
 		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
 		.test
@@ -244,20 +303,60 @@ quick-tests:
 .PHONY: extended-tests-setup
 extended-tests-setup:
 	$(MAKE) g4os-skypilot-venv
-	$(MAKE) minio-setup 
 	$(MAKE) slurm-setup
 
 # For now we mock the HF calls since we can't provide the HF_TOKEN as a git secret on forked PRs.
+# GBTEST_STANDALONE_ENVIRONMENT (which HF resource group a STANDALONE push targets)
+# is defaulted to STAGING by test/conftest.py, so it covers every pytest entry
+# point rather than just this target. No export is needed here; set it in the
+# environment to override that default.
 .PHONY: extended-tests
-extended-tests:
+extended-tests: check-image-tag-not-dirty
 	export GB_ENVIRONMENT=STANDALONE &&			\
 	$(MAKE) GBTEST_MODE=live				\
 		PYTEST_MARKERS="not ibm" 			\
 		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
 		.test
 
+.PHONY: ibm-quick-tests-setup
+ibm-quick-tests-setup:
+	$(MAKE) venv
+
+# GBTEST_MODE=mock defaults GBTEST_MOCK_HF=true so HF is never touched (no HF_TOKEN
+# secret on PRs; avoids HF rate-limit flakes).
+# secret_manager tests require IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL env var, which SPS is not providing or so it seems
+.PHONY: ibm-quick-tests
+ibm-quick-tests: check_ibm_sps_api_key
+	export GB_ENVIRONMENT=STAGING &&			\
+	$(MAKE) GBTEST_MODE=mock				\
+		PYTEST_MARKERS="ibm and not extended" 	\
+		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
+		.test
+
+.PHONY: ibm-extended-tests-setup
+ibm-extended-tests-setup: start-nats
+	$(MAKE) venv
+
+.PHONY: ibm-extended-tests
+ibm-extended-tests: check_ibm_sps_api_key check-image-tag-not-dirty
+	export GB_ENVIRONMENT=STAGING &&			\
+	$(MAKE) GBTEST_MODE=live				\
+		PYTEST_MARKERS="ibm" 			\
+		PYTEST_TEST_TARGETS="$(PYTEST_TEST_TARGETS)"	\
+		.test
+
+# This key provides access secrets that will be installed in the environment before running the IBM tests.
+.PHONY: check_ibm_sps_api_key
+check_ibm_sps_api_key:
+	@if [ -z "$$GBTEST_SPS_IBMCLOUD_API_KEY" ]; then \
+	    echo The GBTEST_SPS_IBMCLOUD_API_KEY env var must be set to enable access to IBM-specific configuration to run the tests. ;	\
+	    echo See https://github.ibm.com/granite-dot-build/gb-ibmdev-docs/blob/main/docs/getting-started/dev-environment-setup.md for how to acquire a key.;\
+	    exit 1;	\
+	fi;		\
+	echo The GBTEST_SPS_IBMCLOUD_API_KEY env var is present for IBM tests. 
+
 .PHONY: test-pr
-test-pr:
+test-pr: check-image-tag-not-dirty
 	# NOTE: #92 switched this target to GBTEST_MODE=mock, but the full PR suite is
 	# not green under mock yet (some tests need an admin GitHub token and the
 	# IBM-backed secret manager). Revert to live for now; making test-pr pass under
@@ -273,22 +372,29 @@ cicd-merge-test:
 	$(MAKE) test-merge 
 
 .PHONY: test-merge
-test-merge:
+test-merge: check-image-tag-not-dirty
 	$(MAKE) GBTEST_MODE=live				\
 		PYTEST_MARKERS="$(MERGE_PYTEST_MARKERS)" 	\
 		PYTEST_TEST_TARGETS="test/unit test/e2e test/integration/ibm"	\
 		.test
 
+# HF_TOKEN is required for STANDALONE live runs. In mock mode HF is mocked by
+# default (GBTEST_MODE=mock defaults GBTEST_MOCK_HF=true), so no token is needed
+# unless that default is explicitly overridden with GBTEST_MOCK_HF=false; an
+# explicit GBTEST_MOCK_HF=true also satisfies the check on its own.
 .PHONY: check_hf_token
 check_hf_token:
-	@if [ "$$GB_ENVIRONMENT" = "STANDALONE" -a -z "$$HF_TOKEN" ]; then	\
-	    case ",$(GBTEST_MOCKED_HF_OPS)," in						\
-	        *,push,*|*,all,*) : ;;						\
-	        *)								\
-	            echo "HF_TOKEN env var required in GB_ENVIRONMENT=STANDALONE mode (or add 'push' to GBTEST_MOCKED_HF_OPS to mock HF pushes)";	\
-	            exit 1;							\
-	            ;;								\
-	    esac;								\
+	@mock_hf=$$(echo "$(GBTEST_MOCK_HF)" | tr A-Z a-z);			\
+	mode_mocks_hf=false;							\
+	if [ "$(GBTEST_MODE)" = "mock" ] && [ "$$mock_hf" != "false" ];		\
+	then									\
+	    mode_mocks_hf=true;							\
+	fi;									\
+	if [ "$$GB_ENVIRONMENT" = "STANDALONE" ] && [ -z "$$HF_TOKEN" ]		\
+	    && [ "$$mode_mocks_hf" != "true" ] && [ "$$mock_hf" != "true" ];	\
+	then									\
+	    echo "HF_TOKEN env var required in GB_ENVIRONMENT=STANDALONE live mode (use GBTEST_MODE=mock, or set GBTEST_MOCK_HF=true, to mock HF)";	\
+	    exit 1;								\
 	fi
 
 # The main test implementation, called after VENVDIR has been established
@@ -299,12 +405,13 @@ check_hf_token:
 .PHONY: .test
 .test:	check_hf_token
 	source $(VENVDIR)/bin/activate && \
-		export GBTEST_MOCKED_HF_OPS=${GBTEST_MOCKED_HF_OPS} &&	\
+		export GBTEST_MOCK_HF=${GBTEST_MOCK_HF} &&	\
 		export GBTEST_MODE=${GBTEST_MODE} && \
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
 		args=(--durations=20 $(PYTEST_COV) --junitxml=report.xml) && \
-		args+=(-rs -n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE} $(PYTEST_CAPTURE)) && \
+		args+=(--max-worker-restart=3 -n ${PYTEST_NUM_TEST_PROC} --dist=${PYTEST_DIST_MODE}) && \
+		args+=(-rs $(PYTEST_CAPTURE)) && \
 		args+=(-m '$(PYTEST_MARKERS)' --strict-markers -o log_cli_level=WARNING) && \
 		pytest "$${args[@]}" $(PYTEST_TEST_TARGETS) && \
 		$(COVERAGE_GATE)
@@ -346,7 +453,7 @@ test-g4os:
 .PHONY: cicd-skypilot-pr
 cicd-skypilot-pr: test-g4os
 
-# --- Local infrastructure (SLURM + MinIO) ---
+# --- Local infrastructure (SLURM + S3) ---
 
 .PHONY: slurm-setup
 slurm-setup:
@@ -358,15 +465,17 @@ slurm-teardown:
 	source .venv/bin/activate;\
 	bash scripts/slurm/teardown-slurm.sh
 
-.PHONY: minio-setup
-minio-setup:
+# Local S3-compatible store (SeaweedFS) for the SLURM demo's artifact push.
+# Demo-only — keep out of CI setup targets (Docker Hub anonymous rate limit).
+.PHONY: s3-setup
+s3-setup:
 	source .venv/bin/activate;\
-	bash scripts/minio/setup-minio.sh
+	bash scripts/s3/setup-s3.sh
 
-.PHONY: minio-teardown
-minio-teardown:
+.PHONY: s3-teardown
+s3-teardown:
 	source .venv/bin/activate;\
-	bash scripts/minio/teardown-minio.sh
+	bash scripts/s3/teardown-s3.sh
 
 .PHONY: integration-test
 integration-test:
@@ -428,14 +537,6 @@ test-local-build: .check-test-env
 test-remote-build: .check-test-env
 	cd samples/tests/hello-gb-vela/ && gbserver build run && cd -
 
-.PHONY: start-gitops
-start-gitops: check-github-token check-table-prefix
-	gbserver \
-	--gb-admin-table-prefix ${MY_TABLE_PREFIX} \
-	pr-watch \
-	--gh-token ${GITHUB_TOKEN} \
-	--config samples/config/pr-watcher-config.yaml
-
 .PHONY: start-watching-builds
 start-watching-builds: check-github-token check-table-prefix
 	gbserver \
@@ -460,11 +561,6 @@ delete-tables: check-table-prefix
 	dmf table delete -n granite_dot_build.admin -t ${MY_TABLE_PREFIX}gb_steps
 	dmf table delete -n granite_dot_build.admin -t ${MY_TABLE_PREFIX}gb_artifacts
 
-.PHONY: reset-and-start-gitops
-reset-and-start-gitops:
-	$(MAKE) delete-tables
-	$(MAKE) create-spaces
-	$(MAKE) start-gitops
 
 clean::
 	@# Help: Clean up the distribution build and the venv 
@@ -492,8 +588,20 @@ clean::
 	fi
 
 
-.PHONY: build 
-build: $(VENVDIR) 
+YARN ?= yarn
+
+.PHONY: clean-frontend
+clean-frontend:
+	rm -rf frontend/apps/standalone/out frontend/apps/standalone/.next src/gbserver/static/ui
+
+.PHONY: build-frontend
+build-frontend:
+	cd frontend && $(YARN) install --frozen-lockfile && $(YARN) build
+	mkdir -p src/gbserver/static/ui
+	rsync -a --delete frontend/apps/standalone/out/ src/gbserver/static/ui/
+
+.PHONY: build
+build: $(VENVDIR)
 	source $(VENVDIR)/bin/activate;	\
 	${PIP} install --upgrade build;	\
 	${PYTHON} -m build

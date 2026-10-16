@@ -41,4 +41,24 @@ __all__ = [
     "PodEvictionRetryStrategy",
     "UnhealthyInsufficientPodsRetryStrategy",
     "AsperaRetryStrategy",
+    "BUILTIN_STRATEGIES",
 ]
+
+# The in-tree registration source: config ``type`` string -> strategy class.
+#
+# This is a curated, static list rather than a directory scan because the
+# config ``type`` (the public, user-facing name) deliberately differs from both
+# the class name and the module name (e.g. ``UnhealthyInsufficientPods`` ->
+# ``UnhealthyInsufficientPodsRetryStrategy`` in ``unhealthy_insufficient_pods``),
+# so a filename-derived key would be wrong. The retry-handler loader files each
+# of these through the shared ``PluginRegistrar`` and then folds in any
+# entry-point plugins (group ``gbserver.resilience_strategies``).
+BUILTIN_STRATEGIES = {
+    "UnhealthyInsufficientPods": UnhealthyInsufficientPodsRetryStrategy,
+    "PodEviction": PodEvictionRetryStrategy,
+    "NCCLError": NCCLErrorRetryStrategy,
+    "FileNotFound": FileNotFoundRetryStrategy,
+    "LsfTransientError": LsfTransientErrorRetryStrategy,
+    "AsperaFailure": AsperaRetryStrategy,
+    "AnyFailure": AnyFailureRetryStrategy,
+}

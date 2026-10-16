@@ -1,0 +1,51 @@
+granite.build:
+  name: skypilot-aws-dpk-pii-redactor
+  # PII redaction on a real EC2 instance (SkyPilot/aws), via the SAME dpk step —
+  # the aws counterpart of test-data/slurm-pii/build.yaml and the generality proof
+  # on aws: compared to aws-tok, only `transform`, `args`, and the artifact names
+  # differ; steps/dpk/skypilot/step-template.yaml is untouched.
+  #
+  # From `transform: pii_redactor` the step derives:
+  #   module -> python -m dpk_pii_redactor.runtime
+  #   pip    -> data-prep-toolkit-transforms[pii-redactor]==<dpk_version>
+  #
+  # SEQUENTIAL BY DESIGN — do not add runtime_num_processors: each worker would hold
+  # its own copy of the flair + presidio models, so a pool multiplies peak memory.
+  # The parallel path is covered by aws-tok. Single terminal target.
+  targets:
+
+    redact:
+      environment_uri: space://environments/skypilot/aws
+      inputs:
+        docs:
+          # Public sanitized DPK pii_redactor fixture. On aws the hf pull is inline,
+          # so the download is injected into the step's setup (=> step_count 1).
+          uri: hf:///datasets/shalisha-witherspoon/dpk-pii-redactor-sample
+      outputs:
+        clean:
+          # Terminal env:// output — nothing downstream consumes it.
+          uri: "env:///tmp/dpk-pii-output"
+          type: dataset
+      steps:
+        - step_uri: space://steps/dpk
+          config:
+            poll_interval_seconds: 5
+            dpk_config:
+              transform: pii_redactor
+              dpk_version: "1.1.8"
+              input_path: "{{ bindings.docs.binding.path }}"
+              output: clean
+              output_path: /tmp/dpk-pii-output    # matches the `clean` uri path
+              args:
+                # `entities` is parsed with ast.literal_eval, so the value must be a
+                # PYTHON LIST literal, not a comma-separated string.
+                pii_redactor_entities: "['PERSON','EMAIL_ADDRESS']"
+                pii_redactor_operator: replace
+                pii_redactor_transformed_contents: new_contents
+                pii_redactor_score_threshold: 0.6
+            compute_config:
+              num_gpus_per_node: 0
+              # ENFORCED on aws => selects an EC2 instance with >= 16 GiB. torch +
+              # flair + presidio (and a first-use flair model download) need real
+              # headroom; slurm-pii's 8Gi was only advisory (slurm skips the floor).
+              total_memory_per_node: 16Gi

@@ -1,0 +1,98 @@
+# Identity-RL smoke recipe — validates end-to-end plumbing in minutes, not the full run.
+# Override any value with: gb build start --param KEY=VALUE
+# Values mirror gbansible vars/rl/identityrl.yml with smoke overrides.
+
+# ─── Run identification ───────────────────────────────────────────────
+EXP_NAME: "granite4-350m-14-7180-identityrl-smoke"
+RUN_NAME: "granite4-350m-14-7180-identityrl-smoke"
+RL_NAME: "identity"
+
+# ─── Model + data ─────────────────────────────────────────────────────
+MODEL_PATH: "/proj/granite-build/g4os/skypilot-test/RLHF/outputs/granite4-350m-openinstruct-epoch-hf-2/step_400"
+DATASET_MIXER: '{"/proj/granite-build/g4os/RLHF/data/long_context/general_data/general_identity/train.jsonl":1.0}'
+DATASET_EVAL_MIXER: '{"/proj/granite-build/g4os/RLHF/data/long_context/general_data/general_identity/validation.jsonl":1.0}'
+
+# ─── Output (namespaced under -smoke so it can't clobber the real run) ─
+OUTPUT_DIR: "/proj/granite-build/g4os/skypilot-test/RLHF/outputs/granite4-350m-openinstruct-epoch-hf-2-identityrl-smoke/"
+CHECKPOINT_STATE_DIR: "/proj/granite-build/g4os/skypilot-test/RLHF/outputs/granite4-350m-openinstruct-epoch-hf-2-identityrl-smoke/_state"
+
+# ─── Smoke overrides (force every code path to fire fast) ─────────────
+# open-instruct floor-divides: num_training_steps =
+#   total_episodes // (num_unique_prompts_rollout * num_samples_per_prompt_rollout)
+# 1024 // (64 * 16) = 1024 // 1024 = 1 optimizer update; bump REF_POLICY_UPDATE_FREQ
+# down so the reference-policy path still fires within the short run.
+TOTAL_EPISODES: "1024"
+SAVE_FREQ: "10"
+EVAL_FREQ: "10"
+CHECKPOINT_STATE_FREQ: "10"
+REF_POLICY_UPDATE_FREQ: "6"
+
+# ─── 8-GPU topology ────
+NUM_LEARNERS_PER_NODE: "4"
+VLLM_NUM_ENGINES: "4"
+VLLM_TENSOR_PARALLEL_SIZE: "1"
+
+# ─── Identity-RL deltas from the source config ────────────────────────
+TEMPERATURE: "1.15"
+TEMP_FINAL: "1.15"
+ADD_GENERAL_REWARD: "false"
+
+# ─── Servers (RM only — identity RL has no code server) ───────────────
+RM_SERVER_MODEL: "/proj/checkpoints/ashishagr/model_downloads/phi4-multilingual"
+RM_IDLE_TIMEOUT: ""
+RM_ACCELERATORS: "H100:1"
+RM_MEMORY: "128"
+
+# ─── Infrastructure ───────────────────────────────────────────────────
+CLUSTER: "bluevela"
+RL_QUEUE: "normal"
+RL_ACCELERATORS: "H100:8"
+RL_MEMORY: "1580"
+
+# ─── GRPO defaults (step single-node defaults; override as needed) ────
+BETA: "0.05"
+NUM_UNIQUE_PROMPTS_ROLLOUT: "64"
+NUM_SAMPLES_PER_PROMPT_ROLLOUT: "16"
+CLIPRANGE_LOW: "0.2"
+CLIPRANGE_HIGH: "0.28"
+DEEPSPEED_STAGE: "3"
+SEED: "42"
+PAD_TOKEN_ID: "6"
+PER_DEVICE_TRAIN_BATCH_SIZE: "2"
+LEARNING_RATE: "5e-7"
+MAX_PROMPT_TOKEN_LENGTH: "512"
+RESPONSE_LENGTH: "8192"
+KL_ESTIMATOR: "kl3"
+PACK_LENGTH: "8704"
+THINKING: "4"
+NUM_EPOCHS: "1"
+WARMUP_RATIO: "0.0"
+NUM_MINI_BATCHES: "1"
+N_GRAM: "3"
+ALLOWED_FREQ: "2"
+TEMP_CHANGE_INTERVAL: "10"
+ENTROPY_COEFF: "0.0"
+VLLM_IMP_RATIO_CAP: "-1"
+GRADIENT_CHECKPOINTING: "true"
+ASYNC_MODE: "true"
+APPLY_THINKING_FORMAT_REWARD: "true"
+APPLY_VERIFIABLE_REWARD: "true"
+NON_STOP_PENALTY: "true"
+APPLY_REPETITION_PENALTY: "true"
+SET_WEIGHT_DECAY_ON_BIAS_AND_NORM: "false"
+ADDITIVE_FORMAT_REWARD: "false"
+FILTER_ZERO_ADVANTAGE: "false"
+WITH_TRACKING: "false"
+GROUND_TRUTHS_KEY: "ground_truth"
+SFT_MESSAGES_KEY: "messages"
+DATASET_TRAIN_SPLITS: "train"
+DATASET_EVAL_SPLITS: "train"
+STOP_STRINGS: '"<|end_of_text|>" "<｜end▁of▁sentence｜>" "<|EOT|>" "<|endoftext|>" "<|im_end|>"'
+IMPORTANCE_SAMPLING_LEVEL: "token"
+ADVANTAGE_NORMALIZATION_TYPE: "group_standard"
+ITERATOR_TYPE: "random"
+LR_SCHEDULER_TYPE: "linear"
+LOSS_MODE: "vanilla"
+TEMP_SCHEDULE_TYPE: "constant"
+DATASET_LOCAL_CACHE_DIR: "/proj/granite-build/g4os/data_downloads/"
+TORCHDYNAMO_DISABLE: "false"

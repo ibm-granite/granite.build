@@ -23,6 +23,10 @@ environment_configs:
             echo 'hello step end'
     monitors:
       skypilot_monitor:
-        type: skypilot_monitor
+        # References the shipped monitor library (space://monitors/skypilot) for
+        # the standard artifact convention + on_completion profile. hello is a
+        # quick smoke step and emits no artifacts, so keep a small poll override
+        # for fast completion detection (the base default is 300s).
+        ref: space://monitors/skypilot
         config:
-          poll_interval_seconds: 15
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(15) }}"

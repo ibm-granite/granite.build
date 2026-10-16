@@ -16,7 +16,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+import time
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN, is_public_github
 from gbserver.lineage.jobstats import ILineageStore
@@ -32,6 +33,8 @@ from gbserver.types.constants import (
     GB_JOB_STATS_DETAIL_TYPE,
 )
 from gbserver.types.status import Status
+from gbserver.utils.redaction import redact_sensitive, scrub_url_credentials
+from gbserver.utils.utils import get_uuid
 
 _LINEAGE_REPO_ORG = "ibm-granite" if is_public_github() else "granite-dot-build"
 LINEAGE_PRODUCER_URL = f"https://{DEFAULT_GH_DOMAIN}/{_LINEAGE_REPO_ORG}/granite.build"
@@ -163,10 +166,34 @@ def _add_jobstats_mirror_fields(event: dict) -> None:
     event["targets"] = event.get("outputs", [])
 
 
+# How long a "fully recorded in wandb" verdict stays trusted without re-asking
+# wandb. The reconciler re-selects already-recorded targets on every scan by
+# design (the watermark overlap window deliberately keeps the newest target in
+# range), so in steady state the same candidate is verified every
+# monitoring_interval — a network round-trip per scan to re-learn an unchanged
+# fact. Caching the positive verdict collapses that to one call per TTL.
+#
+# Only *positive* verdicts are cached, and only for this long: a run deleted in
+# wandb, or a target whose runs were only partially emitted, must eventually be
+# noticed and re-recorded. The TTL bounds that staleness instead of making it
+# permanent, and the cache is per-process, so a restart always re-verifies.
+_RECORDED_CACHE_TTL_SECONDS = 6 * 60 * 60
+
+
 class WandBLineageStore(ILineageStore):
 
     def __init__(self) -> None:
         self._service: LineageService = LineageServiceFactory.create("wandb")
+        # (target uuid, expected run count) -> monotonic deadline after which the
+        # verdict is re-checked. The expected count is part of the key, not just
+        # the value: a verdict of "recorded" means "has all the runs we expected
+        # *at the time we asked*", so a target that later grows an output (and so
+        # expects more runs) must be re-checked rather than inherit the old
+        # verdict. ``None`` is a distinct key, matching the presence-check
+        # fallback for candidates with no expected count.
+        # Monotonic, not wall-clock, so a system clock adjustment cannot expire
+        # every entry at once or freeze them past the TTL.
+        self._recorded_until: dict[tuple[str, Optional[int]], float] = {}
 
     def _build_events_for_target(
         self,
@@ -202,11 +229,18 @@ class WandBLineageStore(ILineageStore):
         step_configs = []
         steps = storage.step_storage.get_by_where({"target_id": targetrun.uuid})
         for step in steps:
+            # step.config is the rendered build.yaml input and step.metadata is
+            # runtime data the step pushed (e.g. commit_hash). jobstats is readable
+            # by any space member (not just the build owner/admin), so both are
+            # emitted with secret-*named* keys masked via redact_sensitive, which
+            # also scrubs userinfo@ credentials out of any URL-shaped value. The
+            # definition_uri is scrubbed the same way so a credentialed BYOS clone
+            # URL (git+ssh://token@... / https://token@...) cannot leak here.
             step_configs.append(
                 {
-                    "uri": step.definition_uri,
-                    "config": step.config,
-                    "config_dir": step.config_dir,
+                    "uri": scrub_url_credentials(step.definition_uri),
+                    "config": redact_sensitive(step.config),
+                    "metadata": redact_sensitive(step.metadata),
                 }
             )
 
@@ -266,6 +300,11 @@ class WandBLineageStore(ILineageStore):
         events_list: List[dict] = []
         events_dict: Dict[str, List[dict]] = {}
 
+        # NOTE: the number of events emitted here (one per output artifact across
+        # all output-artifact lists, or one "no-output" event below when there are
+        # inputs but no outputs) must stay in lockstep with
+        # lineage_reconciler.expected_run_count, which derives the same count from
+        # the target in memory to detect partial records.
         for (
             target_artifact_name,
             output_artifact_list,
@@ -298,21 +337,86 @@ class WandBLineageStore(ILineageStore):
                 # a single resumed run. Keeps counts aligned with the number
                 # of output artifacts. The job_id in job_details still points
                 # back to the logical target (targetrun.uuid).
-                job_id = base_event["run"]["facets"]["job_details"]["job_id"]
+                #
+                # The id is a fresh random uuid, not derived from the target and
+                # output uuids. Dedup is therefore carried entirely by the
+                # target_id tag in run.facets.tags (see LineageService.
+                # filter_unrecorded), which is why that tag must be present on
+                # EVERY emitted event: a run without it is invisible to the
+                # dedup query, cannot be counted toward expected_run_count, and
+                # is unreclaimable -- no later scan can find it or replace it.
+                #
+                # Random is REQUIRED here, not incidental. Deriving the id from
+                # the target/output (the scheme this replaced) means a run
+                # DELETED in wandb can never be re-created: wandb refuses a
+                # deleted run's id, and a derived id recomputes to that same
+                # tombstoned value on every later scan, so the target becomes
+                # permanently unrecordable. That happened with intentional
+                # deletions; see commit 5824ae99 and the extended note in
+                # WandBLineageService.filter_unrecorded, which also explains the
+                # partial-record trade-off this buys and why it is accepted.
+                #
+                # Tag the run with the output artifact it represents. base_event
+                # cannot carry this: its tags are shared by every event of the
+                # target, while output_uuid identifies just this one. Run ids are
+                # random and carry no output information, so without this tag the
+                # only way to find the run for a given output is to fetch the
+                # target's runs and inspect their outputs facet; with it the
+                # lookup is a tag filter like the target_id ones above.
+                #
+                # Additive only: it does not affect dedup. filter_unrecorded
+                # matches on "target_id=" tags and skips every other key, and
+                # tags serialize generically as "k=v"
+                # (WandBLineageService._process_event), so nothing else changes.
                 event["run"] = {
                     **base_event["run"],
-                    "runId": f"{job_id}-{output_uuid}",
+                    "runId": get_uuid(),
+                    "facets": {
+                        **base_event["run"]["facets"],
+                        "tags": {
+                            **base_event["run"]["facets"]["tags"],
+                            "output_id": output_uuid,
+                        },
+                    },
                 }
                 _add_jobstats_mirror_fields(event)
                 target_events.append(event)
             events_list.extend(target_events)
             events_dict[target_artifact_name] = target_events
 
-        if len(targetrun.output_artifacts) == 0 and len(inputs) > 0:
+        # A target with no output artifacts but at least one input still has real
+        # lineage (an edge into it) and needs one event so that edge is recorded.
+        # A target with neither inputs nor outputs is not recorded to wandb at
+        # all: the standalone UI reads target nodes straight from admin storage
+        # regardless of artifacts, so a wandb run is no longer needed to make a
+        # fully artifact-less target appear as a node.
+        # The condition below must stay identical to the skip in
+        # select_recordable_targets (lineage_reconciler) and to the branch in
+        # expected_run_count. If the selector keeps a target that this branch
+        # then declines to emit for, the target is reported unrecorded on every
+        # scan and -- since run ids are random -- each scan writes a fresh
+        # duplicate run set while pinning the checkpoint forever.
+        #
+        # Hence the *raw* dicts, not `inputs` and not the output_artifacts keys:
+        # `output_artifacts={"model": []}` has a key but no artifact, so the
+        # per-output loop above emitted nothing and this branch must cover it;
+        # and `inputs` is post-filter (only uuids that resolve in
+        # artifact_registry as an ArtifactRegistration), so an inputs-only target
+        # whose input rows were pruned would emit nothing at all if gated on it.
+        # The selector is not the primary gate either -- api/lineage.py reaches
+        # this builder directly, without consulting it.
+        if not any(targetrun.output_artifacts.values()) and targetrun.input_artifacts:
             event = {
                 **base_event,
                 "inputs": inputs,
                 "outputs": [],
+                # Explicit random runId: inheriting base_event's would reuse
+                # targetrun.uuid, the deterministic id this design replaced, and
+                # a re-record would silently resume that one run instead of
+                # writing a new one. The target_id tag comes along in
+                # base_event["run"]["facets"]["tags"], keeping this event
+                # dedupable like the per-output ones.
+                "run": {**base_event["run"], "runId": get_uuid()},
             }
             _add_jobstats_mirror_fields(event)
             events_list.append(event)
@@ -363,6 +467,34 @@ class WandBLineageStore(ILineageStore):
         targetrun: StoredTargetRun,
     ) -> None:
         events, _ = self.create_jobstats_for_target(storage, targetrun, build)
+        if not events:
+            # No events means emit_event is never called. For a fully
+            # artifact-less target that is the intended outcome — there is no
+            # lineage to record, and `select_recordable_targets` filters such
+            # targets out before the reconciler ever gets here. Any *other*
+            # empty result is a silent no-op: the caller marks the target
+            # recorded while nothing reaches the backend, so warn on that.
+            artifact_less = not targetrun.input_artifacts and not any(
+                targetrun.output_artifacts.values()
+            )
+            if artifact_less:
+                logger.debug(
+                    "No lineage events for artifact-less target %s (name=%s) in "
+                    "build %s; nothing to record",
+                    targetrun.uuid,
+                    targetrun.name,
+                    build.uuid,
+                )
+            else:
+                logger.warning(
+                    "No lineage events built for target %s (name=%s) in build %s "
+                    "despite it having artifacts; nothing emitted to the lineage "
+                    "backend",
+                    targetrun.uuid,
+                    targetrun.name,
+                    build.uuid,
+                )
+            return
         for event in events:
             self._service.emit_event(event)
 
@@ -394,24 +526,9 @@ class WandBLineageStore(ILineageStore):
                 f"target's build id ({targetrun.build_id}) does not match that of the given build ({build.uuid})"
             )
 
-        if targetrun.skipped_for_prerun_target_id:
-            original = storage.target_storage.get_by_uuid(
-                targetrun.skipped_for_prerun_target_id
-            )
-            if original is not None and isinstance(original, StoredTargetRun):
-                targetrun = original.model_copy(
-                    update={
-                        "uuid": targetrun.uuid,
-                        "build_id": targetrun.build_id,
-                    }
-                )
-            else:
-                logger.warning(
-                    "Skipped target %s references unknown original %s",
-                    targetrun.uuid,
-                    targetrun.skipped_for_prerun_target_id,
-                )
-
+        # Every SUCCESS run is a real run with its own outputs (in-place retry keeps
+        # both the FAILED and the SUCCESS run in one build), so lineage is built
+        # directly from the target's own outputs.
         return self._build_events_for_target(storage, build, targetrun)
 
     def create_jobstats_for_original_artifact(
@@ -440,6 +557,108 @@ class WandBLineageStore(ILineageStore):
     ) -> bool:
         count = self.count_release_ids(release_id, target_id)
         return count == expected_count
+
+    def filter_unrecorded(
+        self,
+        target_ids: set[str],
+        expected_counts: Optional[dict[str, int]] = None,
+        on_query_error: Optional[Callable[[Exception], None]] = None,
+    ) -> set[str]:
+        # Drop candidates whose "fully recorded" verdict is still within its TTL,
+        # so a steady-state scan that re-selects the same target does not re-ask
+        # wandb every interval (see _RECORDED_CACHE_TTL_SECONDS).
+        now = time.monotonic()
+        # Sweep before the per-candidate lookups. Pruning only the keys touched
+        # below cannot bound the dict: the checkpoint advances forward only, so
+        # once a recorded target falls behind the scan's lower bound it is never
+        # selected again and its entry would outlive its deadline for the life of
+        # the process -- one dead tuple per (target, count) ever recorded. The
+        # sweep is what makes an entry's lifetime the TTL rather than the
+        # process's.
+        self._prune_recorded_cache(now)
+        counts = expected_counts or {}
+        # A surviving entry is live by construction: the sweep above dropped every
+        # expired deadline, so mere presence is the whole test.
+        cached_recorded = {
+            tid for tid in target_ids if (tid, counts.get(tid)) in self._recorded_until
+        }
+        to_check = target_ids - cached_recorded
+        if cached_recorded:
+            # Debug, not info: in steady state this fires every monitoring
+            # interval with the same targets, which is the cache working as
+            # intended rather than an event worth a line in the default log.
+            logger.debug(
+                "Skipping wandb dedup query for %d target(s) already known "
+                "recorded (cached): %s",
+                len(cached_recorded),
+                sorted(cached_recorded),
+            )
+        if not to_check:
+            return set()
+
+        # Delegate to the service, which checks the candidates against wandb run
+        # metadata. ``expected_counts`` lets it require a *full* set of runs per
+        # target rather than mere presence (see ILineageStore.filter_unrecorded).
+        # Never raises: it fails CLOSED, returning an empty set and reporting the
+        # error through ``on_query_error``.
+        #
+        # The callback is wrapped rather than merely forwarded, because this layer
+        # must know whether the query was answered before it caches anything. A
+        # failed query now returns an EMPTY set, which is indistinguishable by
+        # value from "every candidate is already recorded" -- and caching that
+        # would turn one wandb outage into a TTL-long window in which real targets
+        # are skipped as recorded. The flag is the only thing separating the two.
+        query_failed = False
+
+        def _note_failure(exc: Exception) -> None:
+            nonlocal query_failed
+            query_failed = True
+            if on_query_error is not None:
+                on_query_error(exc)
+
+        unrecorded = self._service.filter_unrecorded(
+            to_check, expected_counts, on_query_error=_note_failure
+        )
+
+        if query_failed:
+            # Cache nothing: there is no verdict to cache. Returning the empty set
+            # the service produced keeps this fail-closed -- the caller is expected
+            # to abort the pass (it heard about the failure through on_query_error)
+            # and retry, rather than read "nothing to record" as success.
+            return unrecorded
+
+        # Cache only the positive verdicts, and only for targets we actually asked
+        # about. An unrecorded target is not cached: its verdict is expected to
+        # change as soon as recording succeeds, and a stale negative would be
+        # re-queried anyway.
+        deadline = now + _RECORDED_CACHE_TTL_SECONDS
+        newly_recorded = to_check - unrecorded
+        for tid in newly_recorded:
+            self._recorded_until[(tid, counts.get(tid))] = deadline
+        if newly_recorded:
+            # Info: this is the transition -- wandb was asked and answered "already
+            # recorded", and the verdict is now cached for the TTL. Once per target
+            # per TTL, not once per scan.
+            logger.info(
+                "wandb already holds lineage for %d target(s); caching the "
+                "verdict for %ds: %s",
+                len(newly_recorded),
+                _RECORDED_CACHE_TTL_SECONDS,
+                sorted(newly_recorded),
+            )
+        return unrecorded
+
+    def _prune_recorded_cache(self, now: float) -> None:
+        """Drop every "already recorded" verdict whose TTL has passed.
+
+        Runs on each filter pass so the cache is bounded by the TTL rather than
+        by how many targets the process has recorded over its lifetime.
+        """
+        expired = [
+            key for key, deadline in self._recorded_until.items() if deadline <= now
+        ]
+        for key in expired:
+            del self._recorded_until[key]
 
     def _build_event_for_artifact(
         self,

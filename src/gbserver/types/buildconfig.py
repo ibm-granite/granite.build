@@ -25,6 +25,8 @@ from typing import Any, Dict, List, Optional, Self, Type
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from gbcommon.uri.env import is_relative_env_uri
+from gbserver.types.artifact import ArtifactType
 from gbserver.types.config import Config
 from gbserver.types.constants import (
     BUILD_YAML_BASE_KEYS,
@@ -101,8 +103,10 @@ class BuildTargetOutputPushConfig(Config):
     """Push configuration for an output artifact (build.yaml ``store_push`` block).
 
     Attributes:
-        mode: The push mode (e.g. ``"hfstore"``).
-        config: Mode-specific push configuration (e.g. ``{"hf": {"private": false}}``).
+        mode: The push mode. Optional and rarely needed — the store is inferred
+            from the output ``uri`` scheme.
+        config: Store-specific push configuration, keyed by store (e.g. the
+            ``hf`` block for HuggingFace). Interpreted by the store's push path.
     """
 
     mode: Optional[str] = None
@@ -114,12 +118,22 @@ class BuildTargetOutputConfig(Config):
 
     Attributes:
         uri: Output artifact URI template.
+        type: Optional artifact type (e.g. ``dataset``/``model``/``fileset``).
+            Applied to the registered artifact when the store pushes inline (no
+            push step emits one), e.g. the ``env_local`` store. Defaults to
+            ``UNDEFINED`` when omitted.
+        public: Store-specific push visibility flag (currently HuggingFace only:
+            publish the pushed repo). Convenience alias for the store's own
+            ``store_push`` visibility key; interpreted by the store's push path,
+            which also validates it against the ``uri`` scheme.
         event_selectors: Event selector rules for matching artifact events.
         store_push: Optional per-output push configuration from build.yaml.
         space_name: Build space name; set at runtime, not parsed from build.yaml.
     """
 
     uri: Optional[str] = None
+    type: Optional[ArtifactType] = None
+    public: Optional[bool] = None
     event_selectors: List[BuildTargetOutputEventSelectorsConfig] = Field(
         default_factory=list
     )
@@ -343,6 +357,49 @@ class BuildConfig(Config):
                     continue
         return errors
 
+    def __validate_env_uris(self: Self) -> GBValidationErrors:
+        """Reject relative ``env:`` URIs on any target input or output.
+
+        The ``env:`` store performs no transfer, so a relative path has no defined
+        resolution root (see :func:`gbcommon.uri.env.is_relative_env_uri`). Catch
+        it at load time — for both inputs and outputs — so a misauthored build
+        fails fast with a clear message instead of registering a dangling path.
+        """
+        errors = GBValidationErrors()
+        for target_name, target in self.targets.items():
+            for input_name, target_input in (target.inputs or {}).items():
+                if target_input.uri and is_relative_env_uri(target_input.uri):
+                    errors.add(
+                        f"Target `{target_name}` Input `{input_name}`: relative "
+                        f"env:// URI '{target_input.uri}' is not supported — use an "
+                        "absolute path (env:///...)."
+                    )
+            for output_name, target_output in (target.outputs or {}).items():
+                if target_output.uri and is_relative_env_uri(target_output.uri):
+                    errors.add(
+                        f"Target `{target_name}` Output `{output_name}`: relative "
+                        f"env:// URI '{target_output.uri}' is not supported — use an "
+                        "absolute path (env:///...)."
+                    )
+        return errors
+
+    def __validate_output_push(self: Self) -> GBValidationErrors:
+        """Validate each output's push config via the owning store's own rules.
+
+        Store-specific push rules live with the store, not here — this only walks
+        the outputs and collects what each store's validator reports (currently
+        only the HF push guard). Lazily imported to avoid a types→spaces cycle.
+        """
+        from gbserver.spaces.hf_push_config import validate_output_push
+
+        errors = GBValidationErrors()
+        for target_name, target in self.targets.items():
+            for output_name, output in (target.outputs or {}).items():
+                err = validate_output_push(output_name, output)
+                if err:
+                    errors.add(f"Target `{target_name}`: {err}")
+        return errors
+
     def my_validate(self: Self) -> GBValidationErrors:
         """Validate the build config."""
         logger.info("validating the build config")
@@ -352,6 +409,8 @@ class BuildConfig(Config):
             return errors
         errors.add(self.__validate_step_uris())
         errors.add(self.__validate_target_inputs())
+        errors.add(self.__validate_env_uris())
+        errors.add(self.__validate_output_push())
         logger.info("validated the build config and found %d errors", len(errors))
         return errors
 

@@ -1,0 +1,19 @@
+# Test-local space for the SkyPilot-on-AWS file_mounts build test.
+#
+# Mirrors configurations/spaces/local so environments, assetstores, and builtin
+# steps resolve from the shared assets directory — but ALSO carries the
+# test-specific `steps/filemount-check` step in its own tree. The space's own
+# directory is the first base_uri (see build/space.py), so
+# `space://steps/filemount-check` resolves here; everything else falls through to
+# configurations/assets.
+name: filemount-aws-test
+secret_manager:
+  type: local
+  config: {}
+base_uris:
+  # Pull assetstores, environments, and (builtin) steps from configurations/assets/.
+  # Relative path resolves against this space.yaml's directory. Eight `..`: the
+  # aws test tree sits at the same depth as the bluevela one.
+  - file://../../../../../../../../configurations/assets
+variables:
+  DEFAULT_ENVIRONMENT: skypilot/aws

@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 620" font-family="system-ui, -apple-system, sans-serif" font-size="12">
+  <!-- Background -->
+  <rect width="900" height="620" fill="#fafafa"/>
+
+  <!-- Title -->
+  <text x="450" y="30" text-anchor="middle" font-size="16" font-weight="bold" fill="#1a1a1a">Build Event Notifications — Internal Architecture</text>
+
+  <!-- BuildRunner Box -->
+  <rect x="30" y="50" width="840" height="200" rx="8" fill="#f0f4ff" stroke="#4a6fa5" stroke-width="1.5"/>
+  <text x="50" y="72" font-weight="bold" fill="#4a6fa5">BuildRunner</text>
+
+  <!-- get_message_logger -->
+  <rect x="60" y="85" width="280" height="30" rx="4" fill="#fff" stroke="#666"/>
+  <text x="200" y="105" text-anchor="middle" fill="#333">get_message_logger(stored_build)</text>
+
+  <!-- BuildMultiMessageLogger -->
+  <rect x="60" y="130" width="280" height="30" rx="4" fill="#e8f0fe" stroke="#4a6fa5"/>
+  <text x="200" y="150" text-anchor="middle" fill="#333">BuildMultiMessageLogger</text>
+
+  <!-- Three loggers -->
+  <rect x="60" y="175" width="220" height="24" rx="3" fill="#fff" stroke="#999"/>
+  <text x="170" y="191" text-anchor="middle" font-size="11" fill="#555">BuildEventMessageLogger → gb_events DB</text>
+
+  <rect x="60" y="205" width="220" height="24" rx="3" fill="#fff" stroke="#999"/>
+  <text x="170" y="221" text-anchor="middle" font-size="11" fill="#555">BuildPRLogger → GitHub PR comment</text>
+
+  <!-- BuildEventPublishLogger (highlighted) -->
+  <rect x="380" y="130" width="470" height="105" rx="6" fill="#fff8e1" stroke="#f9a825" stroke-width="1.5"/>
+  <text x="400" y="150" font-weight="bold" font-size="11" fill="#f57f17">BuildEventPublishLogger</text>
+  <text x="400" y="168" font-size="10" fill="#666">Filters: STATUS_EVENT only | Fire-and-forget</text>
+
+  <!-- BuildEventPublisher -->
+  <rect x="420" y="180" width="400" height="40" rx="4" fill="#fff" stroke="#f9a825"/>
+  <text x="620" y="205" text-anchor="middle" fill="#333">BuildEventPublisher.publish_event()</text>
+
+  <!-- Arrow from logger to publisher -->
+  <line x1="200" y1="160" x2="380" y2="160" stroke="#666" stroke-width="1" marker-end="url(#arrow)"/>
+
+  <!-- Backend Selection Box -->
+  <rect x="30" y="270" width="840" height="80" rx="8" fill="#f5f5f5" stroke="#888" stroke-width="1" stroke-dasharray="4"/>
+  <text x="450" y="290" text-anchor="middle" font-weight="bold" font-size="11" fill="#555">Backend Selection (environment-driven)</text>
+
+  <!-- Decision diamond approximation -->
+  <rect x="350" y="300" width="200" height="35" rx="4" fill="#fff" stroke="#666"/>
+  <text x="450" y="322" text-anchor="middle" font-size="11" fill="#333">RABBITMQ_HOST set?</text>
+
+  <!-- Yes/No labels -->
+  <text x="310" y="330" text-anchor="middle" font-size="10" fill="#2e7d32" font-weight="bold">No (Standalone)</text>
+  <text x="610" y="330" text-anchor="middle" font-size="10" fill="#1565c0" font-weight="bold">Yes (DEV/PROD)</text>
+
+  <!-- NATS Box -->
+  <rect x="30" y="370" width="380" height="230" rx="8" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+  <text x="50" y="392" font-weight="bold" fill="#2e7d32">NATS (Standalone)</text>
+
+  <!-- NATS internals -->
+  <rect x="50" y="405" width="340" height="30" rx="4" fill="#fff" stroke="#66bb6a"/>
+  <text x="220" y="425" text-anchor="middle" font-size="11" fill="#333">NATSMessaging (JetStream)</text>
+
+  <rect x="50" y="445" width="340" height="30" rx="4" fill="#fff" stroke="#66bb6a"/>
+  <text x="220" y="465" text-anchor="middle" font-size="11" fill="#333">Subject: gbserver.build.&lt;build_id&gt;.&lt;event_type&gt;</text>
+
+  <rect x="50" y="490" width="340" height="45" rx="4" fill="#fff" stroke="#66bb6a"/>
+  <text x="220" y="508" text-anchor="middle" font-size="11" fill="#333">Subscribe endpoint returns:</text>
+  <text x="220" y="524" text-anchor="middle" font-size="10" fill="#555">delivery_type: "nats", url, subject (no credentials)</text>
+
+  <rect x="50" y="548" width="340" height="28" rx="4" fill="#c8e6c9" stroke="#66bb6a"/>
+  <text x="220" y="567" text-anchor="middle" font-size="11" fill="#2e7d32">No credential cleanup needed</text>
+
+  <!-- RabbitMQ Box -->
+  <rect x="440" y="370" width="430" height="230" rx="8" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+  <text x="460" y="392" font-weight="bold" fill="#1565c0">RabbitMQ (DEV / STAGING / PROD)</text>
+
+  <!-- RabbitMQ internals -->
+  <rect x="460" y="405" width="390" height="30" rx="4" fill="#fff" stroke="#64b5f6"/>
+  <text x="655" y="425" text-anchor="middle" font-size="11" fill="#333">RabbitMQBase (Topic Exchange: build-events)</text>
+
+  <rect x="460" y="445" width="390" height="30" rx="4" fill="#fff" stroke="#64b5f6"/>
+  <text x="655" y="465" text-anchor="middle" font-size="11" fill="#333">Routing key: build.&lt;build_id&gt;.&lt;event_type&gt;</text>
+
+  <rect x="460" y="490" width="390" height="45" rx="4" fill="#fff" stroke="#64b5f6"/>
+  <text x="655" y="508" text-anchor="middle" font-size="11" fill="#333">Subscribe endpoint returns:</text>
+  <text x="655" y="524" text-anchor="middle" font-size="10" fill="#555">delivery_type: "rabbitmq", host, port, scoped credentials</text>
+
+  <rect x="460" y="548" width="390" height="28" rx="4" fill="#bbdefb" stroke="#64b5f6"/>
+  <text x="655" y="567" text-anchor="middle" font-size="11" fill="#1565c0">Credential cleanup loop (60s interval)</text>
+
+  <!-- Arrows from backend selection to backends -->
+  <line x1="350" y1="335" x2="220" y2="370" stroke="#2e7d32" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  <line x1="550" y1="335" x2="655" y2="370" stroke="#1565c0" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+
+  <!-- Arrow from publisher to backend selection -->
+  <line x1="620" y1="220" x2="450" y2="300" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Arrow markers -->
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#666"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#2e7d32"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#1565c0"/>
+    </marker>
+  </defs>
+</svg>

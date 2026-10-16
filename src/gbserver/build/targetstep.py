@@ -54,6 +54,7 @@ from gbserver.utils.filesystem import (
     sync_or_copy,
 )
 from gbserver.utils.logger import get_logger
+from gbserver.utils.redaction import redact_sensitive
 from gbserver.utils.step_image import get_step_image
 from gbserver.utils.template import fill_template
 from gbserver.utils.utils import random_string
@@ -85,13 +86,116 @@ def _convert_enums_to_values(obj: Any) -> Any:
     return obj
 
 
-# Maps a (lowercased) environment type to the gbstep scaffold dir that backend
-# reads at launch. Backends absent from this map (Bash, Docker, RunPod,
-# Skypilot) read none of these dirs. Keys are lowercase because env_type may
-# arrive either capitalized (from environment.type, e.g. "Lsf") or lowercase
-# (from an environment_configs dict key, e.g. "lsf") — see env_type resolution
-# in merge_handle_configs, which likewise falls back to env_type.lower().
-_BACKEND_SCAFFOLD_DIRS = {"lsf": "lsf_scripts", "k8s": "helm-charts"}
+# The gbstep scaffold's backend template dirs that a launch may read.
+_LSF_SCAFFOLD_DIR = "lsf_scripts"
+_K8S_SCAFFOLD_DIR = "helm-charts"
+_BACKEND_SCAFFOLD_DIRS = (_LSF_SCAFFOLD_DIR, _K8S_SCAFFOLD_DIR)
+
+# Maps a known environment type to the single scaffold dir its backend reads at
+# launch (or None when the backend reads neither). env_type may arrive
+# capitalized (from environment.type, e.g. "K8s"/"Lsf"), lowercase (from an
+# environment_configs dict key, e.g. "k8s"/"lsf" — see env_type resolution in
+# merge_handle_configs), or as a backend-equivalent alias (e.g. "kubernetes",
+# which several real cluster environment.yaml files use for the K8s backend) —
+# so keys are lowercase and aliases are enumerated. A type listed with None is a
+# known backend that reads no scaffold dir (Bash/Docker/RunPod/Skypilot): both
+# lsf_scripts and helm-charts are pruned. A type NOT listed at all is unknown
+# and prunes nothing — see _copy_basestep_scaffold.
+_ENV_TYPE_KEEP_DIR = {
+    "lsf": _LSF_SCAFFOLD_DIR,
+    "k8s": _K8S_SCAFFOLD_DIR,
+    "kubernetes": _K8S_SCAFFOLD_DIR,
+    "bash": None,
+    "docker": None,
+    "runpod": None,
+    "skypilot": None,
+    "skypilot_managed": None,
+}
+
+
+def _step_slug_from_uri(step_uri: Optional[str]) -> str:
+    """Return the step-type slug from a step URI.
+
+    The slug is the last non-empty path segment, e.g.
+    ``space://steps/hfpull`` -> ``"hfpull"``. A bare slug is returned as-is.
+
+    :param step_uri: the step URI (``self.step_uri``), or ``None``.
+    :returns: the slug, or ``""`` when ``step_uri`` is empty/``None``.
+    """
+    if not step_uri:
+        return ""
+    return step_uri.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _env_step_config(env_config: Optional[dict], step_slug: str) -> dict:
+    """Return the top-level ``config`` override for ``step_slug``.
+
+    Reads ``env_config["steps"][step_slug]`` (the environment.yaml
+    ``config.steps.<type>`` map) and returns its top-level keys. The
+    ``environment_configs`` sibling is intentionally dropped: it belongs to the
+    Phase-2 launcher/resources subtree, not the top-level ``config`` subtree.
+
+    :param env_config: the environment.yaml ``config:`` block
+        (``self.environment.config.config``), or ``None``.
+    :param step_slug: the step-type slug from :func:`_step_slug_from_uri`.
+    :returns: a deep-copied dict of top-level config keys (possibly empty), safe
+        to mutate without affecting the live environment config. Never ``None``.
+        Logs at INFO when an override is applied, and at DEBUG (with the
+        configured slugs) when ``config.steps`` is set but has no entry for
+        ``step_slug`` — so a silently-unmatched override (e.g. a typo, or the
+        ``gbstep`` default-step slug) is diagnosable.
+    """
+    if not isinstance(env_config, dict):
+        return {}
+    steps = env_config.get("steps")
+    if not isinstance(steps, dict) or not steps:
+        return {}
+    entry = steps.get(step_slug)
+    if not isinstance(entry, dict):
+        # ``config.steps`` is configured, but has no (dict) entry for this step
+        # type. Log the miss with the configured slugs so an override that
+        # silently did not apply — a typo, or an attempt to steer the default
+        # base step (whose slug is ``gbstep``: an omitted ``step_uri`` defaults
+        # there, not to ``command``/``hfpull``/…) — is diagnosable. Fires once
+        # per unlisted step, so it is DEBUG, not INFO.
+        logger.debug(
+            "No config.steps override for step slug '%s'; configured slugs: %s",
+            step_slug,
+            sorted(steps.keys()),
+        )
+        return {}
+    # Deep-copy the values: they are held by reference on the long-lived
+    # ``self.environment.config.config``. ``merge_dicts`` copies base-only keys
+    # by reference, so returning the live nested dicts (e.g. ``launcher_config``)
+    # would let a later step's in-place mutation corrupt the environment config
+    # for every subsequent step in the run.
+    overrides = {k: deepcopy(v) for k, v in entry.items() if k != "environment_configs"}
+    logger.info(
+        "Applying environment config.steps['%s'] defaults (keys: %s)",
+        step_slug,
+        sorted(overrides.keys()),
+    )
+    return overrides
+
+
+def _seed_step_config_with_env_defaults(
+    env_config: Optional[dict],
+    step_uri: Optional[str],
+    step_default_config: dict,
+) -> dict:
+    """Seed the step-config merge base with environment per-step-type defaults.
+
+    The environment per-step-type override is the lowest precedence layer; the
+    ``step_default.yaml`` config is merged on top of it (and the caller then
+    layers step.yaml and build.yaml above that). Returns a new dict.
+
+    :param env_config: the environment.yaml ``config:`` block, or ``None``.
+    :param step_uri: the step URI used to derive the step-type slug.
+    :param step_default_config: the ``config`` block from ``step_default.yaml``.
+    :returns: the merged base dict (env defaults overridden by step defaults).
+    """
+    env_defaults = _env_step_config(env_config, _step_slug_from_uri(step_uri))
+    return merge_dicts(env_defaults, step_default_config)
 
 
 def _copy_basestep_scaffold(temp_path: Path, env_type: str) -> None:
@@ -116,12 +220,26 @@ def _copy_basestep_scaffold(temp_path: Path, env_type: str) -> None:
     scaffold contents. To stay safe against those existing per-environment
     behaviors, we do a post-copy deletion of the inactive backend dirs here
     instead — a smaller, reversible change than reworking what gets copied.
+
+    When ``env_type`` isn't a *known* type we prune *nothing*: an unrecognized
+    env must not silently delete every backend's scaffold dir (which previously
+    wiped helm-charts — and its bundled gbstepbase library subchart — for a K8s
+    build whose env declared the "kubernetes" alias, breaking the helm render
+    with `no template "gbstepbase.app"`). Keeping a dir the active backend never
+    reads is harmless; deleting one it needs is not.
     """
     base_step_src = Path(__file__).parent.parent / "builtins/steps/gbstep"
     sync_or_copy(str(base_step_src) + "/", temp_path, delete=False)
 
-    keep_dir = _BACKEND_SCAFFOLD_DIRS.get(env_type.lower())
-    for dir_name in _BACKEND_SCAFFOLD_DIRS.values():
+    key = env_type.lower()
+    if key not in _ENV_TYPE_KEEP_DIR:
+        # Unknown env type — don't risk deleting a dir the active backend may
+        # depend on. Leave the scaffold intact.
+        return
+
+    # Known backend: keep its one dir (or none) and prune the rest.
+    keep_dir = _ENV_TYPE_KEEP_DIR[key]
+    for dir_name in _BACKEND_SCAFFOLD_DIRS:
         if dir_name == keep_dir:
             continue
         stale_dir = temp_path / dir_name
@@ -382,7 +500,23 @@ class TargetStep(BuildEntity):
         base_step_config["config"] = step_cfg_base.get("config", {})
 
         # --- Merge configs ---
-        merged_inner_config = dict(base_step_config.get(CONFIG_KEY, {}))
+        # Base layer: environment.yaml per-step-type defaults (config.steps.<type>),
+        # overridden by the step_default.yaml config merged on top. The step.yaml and
+        # build.yaml layers below then override this base (see the per-step env config
+        # design spec). env_cfg_block comes from the active environment's config
+        # block; guard defensively since self.environment can be unset in some
+        # code paths. (Named distinctly from the env_config launcher entry below.)
+        env_cfg_block = (
+            self.environment.config.config
+            if getattr(self, "environment", None) is not None
+            and getattr(self.environment, "config", None) is not None
+            else None
+        )
+        merged_inner_config = _seed_step_config_with_env_defaults(
+            env_cfg_block,
+            getattr(self, "step_uri", None),
+            dict(base_step_config.get(CONFIG_KEY, {})),
+        )
 
         # If step config exists, merge base step config with step config
         # (for same keys, priority given to step config)
@@ -444,13 +578,22 @@ class TargetStep(BuildEntity):
         merged_env_configs = full_config[ENVIRONMENT_CONFIG]
 
         # --- Determine environment type ---
-        env_type = None
-        if "environment" in full_config and getattr(
-            full_config["environment"], "type", None
-        ):
-            env_type = full_config["environment"].type
-        elif merged_env_configs:
-            env_type = next(iter(merged_env_configs.keys()))
+        # The active environment's class-derived type (e.g. "Lsf", "K8s") is the
+        # authoritative backend selector — the same source used in
+        # _resolve_environment_and_launcher. It must win here because the env's
+        # environment_config is keyed by config sections (workload,
+        # authentication, …), so iterating its keys can yield a non-backend like
+        # "workload"; that then makes _copy_basestep_scaffold drop the correct
+        # launch scaffold (e.g. lsf_scripts) and keep only bash_scripts. Fall
+        # back to the legacy resolution only when the env has no type.
+        env_type = getattr(self.environment, "type", None)
+        if not env_type:
+            if "environment" in full_config and getattr(
+                full_config["environment"], "type", None
+            ):
+                env_type = full_config["environment"].type
+            elif merged_env_configs:
+                env_type = next(iter(merged_env_configs.keys()))
         if not env_type:
             raise ValueError(
                 "No environment type could be resolved (missing 'type' and empty environment_configs)."
@@ -629,7 +772,11 @@ class TargetStep(BuildEntity):
         if build_yaml_step_config is None:
             logger.warning("there is no step config to validate")
             return errors
-        logger.info("validating the step config: %s", build_yaml_step_config)
+        # redact_sensitive masks secret-named keys (e.g. launcher_config.envs.HF_TOKEN)
+        # before the config reaches the log; see gbserver.utils.redaction.
+        logger.info(
+            "validating the step config: %s", redact_sensitive(build_yaml_step_config)
+        )
         # ------------------
         if "gb" in build_yaml_step_config:
             errors.add_warning(

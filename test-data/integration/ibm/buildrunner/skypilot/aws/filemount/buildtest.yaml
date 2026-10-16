@@ -1,0 +1,30 @@
+# YAML-driven spec for
+# test/integration/ibm/buildrunner/skypilot/aws/test_filemount.py.
+# The target runs a custom step (space://steps/filemount-check) that copies a
+# directory shipped next to its step.yaml via file_mounts and verifies it is
+# present in the run command, on the AWS (SkyPilot) path. HF/S3-free (env:// in/
+# out) so it is fast and needs no credentials beyond AWS access.
+targets:
+  - filemount
+target_expectations:
+  - target_name: filemount
+    # Just the one custom step runs: the env:// input/output are no-ops (one input
+    # + one output artifact each, no extra pull/push step), and the file_mounts
+    # copy adds no step.
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    jobstats_count: 1
+# Co-located test space (space/ next to this file) — carries the custom
+# filemount-check step and chains to configurations/assets for everything else.
+space_uri: space
+# Run only the basic build (skip the cancellation variant) — this test verifies
+# file_mounts, not cancel/retry behavior (covered by the aws/1step-image test).
+tests:
+  - runner
+# A single clean run with no injected synthetic failure: the step's run command
+# fails the build if the mounted dir is absent, so SUCCESS proves the mount.
+simulate_step_failure: false
+# AWS EC2 cold provisioning via SkyPilot is slower than a local cluster; give the
+# single tiny step generous headroom.
+timeout_minutes: 30

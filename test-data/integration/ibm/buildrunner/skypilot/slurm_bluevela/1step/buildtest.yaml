@@ -1,0 +1,28 @@
+# YAML-driven spec for
+# test/integration/ibm/buildrunner/skypilot/slurm_bluevela/test_1step.py.
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+#
+# Single containerized command-step target on BlueVela SLURM (Skypilot): the
+# command runs inside an image (command_config.image set) on the gpu-mid
+# partition, needing the Pyxis plugin BlueVela provides, with real hf:// I/O.
+targets:
+  - slurm-run
+target_expectations:
+  - target_name: slurm-run
+    step_count: 3 # hf pull, command, hf push (env:// pull+push are no-ops, no steps)
+    input_artifact_count: 2 # hf input + env:// input
+    output_artifact_count: 2 # hf output + env:// output
+    jobstats_count: 1
+# Resolve space:// URIs (env + the shared `command` step) from the repo's local
+# space without cloning from GitHub. Relative to this YAML's directory.
+#space_uri: ../../../../../../../configurations/spaces/local
+#space_uri: ../../../../../../../../gb-test
+#space_uri: https://github.ibm.com/granite-dot-build/gb-test
+space_uri: git+ssh://github.ibm.com/granite-dot-build/gb-test.git@gbspace-config
+# No simulated failure: the runner test exercises the happy path, and the
+# runner_cancellation test cancels a genuinely-running step.
+simulate_step_failure: false
+tests:
+  - runner
+  - runner_cancellation
+timeout_minutes: 20

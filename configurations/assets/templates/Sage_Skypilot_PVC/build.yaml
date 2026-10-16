@@ -30,4 +30,4 @@ granite.build:
             s3push_config:
               local_path: /gb-data/outputs/sage
               s3_uri: "{{ space.variables.S3_SAGE_OUTPUT_URI }}"
-              endpoint_url: ""  # leave empty for default AWS endpoint; set for COS/MinIO
+              endpoint_url: ""  # leave empty for default AWS endpoint; set for COS / other S3-compatible stores

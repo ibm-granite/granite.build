@@ -174,89 +174,6 @@ class TestLineageAPI(AbstractAPITest):
         response = client.get(f"{base_url}/build/non-existent-uuid")
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    # def test_get_build_jobstats(self):
-    #     """Test retrieving JobStats for all targets in a build."""
-    #     # Set up test support classes
-    #     bsts = BuildStorageTestSupport()
-    #     tsts = TargetStorageTestSupport()
-    #     ssts = StepStorageTestSupport()
-    #     asts = ArtifactStorageTestSupport()
-    #     stc = StorageCollection(
-    #         build_storage=self.storage.build_storage,
-    #         artifact_registry=self.storage.artifact_registry,
-    #         target_storage=self.storage.target_storage,
-    #         step_storage=self.storage.step_storage,
-    #     )
-
-    #     # Create a completed build with multiple targets
-    #     build = bsts._get_test_item(2)
-    #     build.status = Status.SUCCESS
-
-    #     # Create first target with artifacts
-    #     target1 = tsts._get_test_item(2)
-    #     target1.status = Status.SUCCESS
-    #     step1 = ssts._get_test_item(2)
-    #     input_art1 = asts._get_test_item(4)
-    #     output_art1 = asts._get_test_item(5)
-    #     targetspec1 = TargetSpec(
-    #         target=target1,
-    #         step=step1,
-    #         input_artifacts=[input_art1],
-    #         output_artifacts=[output_art1],
-    #     )
-
-    #     # Create second target with artifacts
-    #     target2 = tsts._get_test_item(3)
-    #     target2.status = Status.SUCCESS
-    #     step2 = ssts._get_test_item(3)
-    #     input_art2 = asts._get_test_item(6)
-    #     output_art2 = asts._get_test_item(7)
-    #     targetspec2 = TargetSpec(
-    #         target=target2,
-    #         step=step2,
-    #         input_artifacts=[input_art2],
-    #         output_artifacts=[output_art2],
-    #     )
-
-    #     build.targets = [target1.name, target2.name]
-
-    #     # Store the build with its targets and artifacts
-    #     connect_and_store_build(build, [targetspec1, targetspec2], stc)
-
-    #     # Make request to the lineage API
-    #     client = self.get_test_client()
-    #     response = client.get(f"{base_url}/build/{build.uuid}")
-
-    #     # Verify successful response
-    #     assert response.status_code == status.HTTP_200_OK
-    #     resp_json = response.json()
-
-    #     # Validate response structure
-    #     assert "build_id" in resp_json
-    #     assert resp_json["build_id"] == build.uuid
-    #     assert "targets" in resp_json
-    #     assert isinstance(resp_json["targets"], list)
-
-    #     # We should have JobStats for both targets
-    #     targets_list = resp_json["targets"]
-    #     assert len(targets_list) == 2
-
-    #     # Validate each target response - now just a dict of artifact names to JobStats
-    #     for jobstats_dict in targets_list:
-    #         assert isinstance(jobstats_dict, dict)
-
-    #         # Each target should have at least one output artifact entry
-    #         assert len(jobstats_dict) >= 1
-
-    #         # Validate JobStats structure
-    #         for artifact_name, stats_list in jobstats_dict.items():
-    #             assert isinstance(stats_list, list)
-    #             for stats in stats_list:
-    #                 assert "release_id" in stats
-    #                 assert "job_details" in stats
-    #                 assert "sources" in stats
-    #                 assert "targets" in stats
-
     def test_get_build_jobstats_no_targets(self):
         """Test retrieving JobStats for a build with no targets."""
         # Set up test support classes
@@ -374,6 +291,14 @@ class TestLineageAPI(AbstractAPITest):
         targets_list = resp_json["targets"]
         assert len(targets_list) == 3
 
+        # Every entry is attributable: target_ids[i] owns targets[i]. Keyed by id
+        # rather than compared positionally -- the endpoint builds this from
+        # get_by_where with no ORDER BY, so insertion order is incidental and
+        # asserting it would fail on an unrelated storage change.
+        target_ids = resp_json["target_ids"]
+        assert len(target_ids) == len(targets_list)
+        assert set(target_ids) == {target1.uuid, target2.uuid, target3.uuid}
+
         # Validate each target response
         for jobstats_dict in targets_list:
             assert isinstance(jobstats_dict, dict)
@@ -387,6 +312,71 @@ class TestLineageAPI(AbstractAPITest):
                     assert "job_details" in stats
                     assert "sources" in stats
                     assert "targets" in stats
+
+    @pytest.mark.live("lineage")
+    def test_get_build_jobstats_target_ids_align_with_empty_entries(self):
+        """An artifact-less target's empty dict must stay attributable.
+
+        A target with neither input nor output artifacts contributes ``{}`` --
+        it has no lineage events. That makes ``targets`` unsafe to consume
+        positionally on its own: a client dropping the falsy entries shifts every
+        later entry onto the wrong target. ``target_ids`` is the fix, so pin that
+        it is index-aligned with ``targets`` *including* the empty slot, and that
+        the empty slot lands on the artifact-less target specifically.
+        """
+        bsts = BuildStorageTestSupport()
+        tsts = TargetStorageTestSupport()
+        ssts = StepStorageTestSupport()
+        asts = ArtifactStorageTestSupport()
+        stc = StorageCollection(
+            build_storage=self.storage.build_storage,
+            artifact_registry=self.storage.artifact_registry,
+            target_storage=self.storage.target_storage,
+            step_storage=self.storage.step_storage,
+        )
+
+        # Indices 10/11 and artifacts 20/21 are unused elsewhere in this file, so
+        # the fixture names do not collide with another test's rows.
+        build = bsts._get_test_item(10)
+        build.status = Status.SUCCESS
+
+        # Artifact-less: contributes an empty dict.
+        bare = tsts._get_test_item(10)
+        bare.status = Status.SUCCESS
+        bare_spec = TargetSpec(
+            target=bare,
+            step=ssts._get_test_item(10),
+            input_artifacts=[],
+            output_artifacts=[],
+        )
+
+        # With artifacts: contributes a non-empty dict.
+        full = tsts._get_test_item(11)
+        full.status = Status.SUCCESS
+        full_spec = TargetSpec(
+            target=full,
+            step=ssts._get_test_item(11),
+            input_artifacts=[asts._get_test_item(20)],
+            output_artifacts=[asts._get_test_item(21)],
+        )
+
+        build.targets = [bare.name, full.name]
+        connect_and_store_build(build, [bare_spec, full_spec], stc)
+
+        client = self.get_test_client()
+        response = client.get(f"{base_url}/build/{build.uuid}")
+
+        assert response.status_code == status.HTTP_200_OK
+        resp_json = response.json()
+
+        target_ids = resp_json["target_ids"]
+        targets_list = resp_json["targets"]
+        # The empty entry is still present and still counted, so the lists match.
+        assert len(target_ids) == len(targets_list)
+
+        by_id = dict(zip(target_ids, targets_list))
+        assert by_id[bare.uuid] == {}, "artifact-less target contributes no events"
+        assert by_id[full.uuid], "target with artifacts contributes events"
 
     @pytest.mark.live("lineage")
     def test_get_build_jobstats_no_outputs(self):

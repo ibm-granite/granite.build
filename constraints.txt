@@ -1,0 +1,33 @@
+# pip install constraints — pin the packages that cause resolver backtracking.
+#
+# Why this file exists:
+#   `pip install -e ".[all]"` was spending ~2h17m in dependency-resolver
+#   backtracking, cycling through hundreds of versions of the AWS SDK cluster
+#   (boto3/botocore/awscli/aiobotocore/s3transfer). Two subtrees pin botocore to
+#   mutually-exclusive ranges: the skypilot git fork (awscli/botocore/boto3 >= …)
+#   vs. dmf-lib's aiobotocore (narrow botocore window). See issue #163.
+#
+#   These are TRANSITIVE deps (we don't import them directly), so they are pinned
+#   here as constraints rather than in pyproject.toml — a constraint means
+#   "if installed, must match" without declaring them as our own requirements.
+#   Applied via `ENV PIP_CONSTRAINT=/app/constraints.txt` in the Dockerfile (pip
+#   reads that env var like `-c`), so it covers every pip install in the stage.
+#
+# Versions below are the set pip ultimately resolved on a known-good build.
+# Bump them together when skypilot/dmf-lib move; remove this file once the
+# skypilot fork ships as a wheel (issue #163 fix #2).
+
+# --- AWS SDK cluster (primary backtracking source) ---
+boto3==1.41.5
+botocore==1.41.5
+awscli==1.43.5
+aiobotocore==2.26.0
+s3transfer==0.15.0
+
+# --- fsspec/s3fs stack (pulled via dmf-lib -> pyiceberg[s3fs], datasets) ---
+s3fs==2025.3.0
+fsspec==2025.3.0
+
+# --- fastapi/uvicorn stack (secondary backtracking source) ---
+uvicorn==0.35.0
+fastapi-cli==0.0.27

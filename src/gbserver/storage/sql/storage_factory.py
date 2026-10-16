@@ -3,6 +3,7 @@ from typing import Optional
 from gbserver.storage.sql.artifact_registry import SQLArtifactRegistry
 from gbserver.storage.sql.build_storage import SQLBuildStorage
 from gbserver.storage.sql.event_storage import SQLEventStorage
+from gbserver.storage.sql.kv_pair_storage import SQLKeyValuePairStorage
 from gbserver.storage.sql.node_failure_storage import SQLNodeFailureStorage
 from gbserver.storage.sql.space_storage import SQLSpaceStorage
 from gbserver.storage.sql.space_user_storage import SQLSpaceUserStorage
@@ -35,3 +36,6 @@ class SQLStorageFactory(StorageFactory):
 
     def create_space_user_storage(self, table_name: Optional[str] = None):
         return SQLSpaceUserStorage(table_name=table_name)
+
+    def create_kv_pair_storage(self, table_name: Optional[str] = None):
+        return SQLKeyValuePairStorage(table_name=table_name)

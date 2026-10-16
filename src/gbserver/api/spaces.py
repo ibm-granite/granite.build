@@ -19,14 +19,17 @@ from typing import List, Literal, cast
 from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel
 
-from gbserver.api.utils import is_space_admin, is_super_admin
+from gbserver.api.utils import (
+    NO_ACCESSIBLE_SPACE,
+    get_row_filter,
+    is_space_admin,
+    is_super_admin,
+    scope_space_name_filter,
+)
 from gbserver.spaces.user_spaces_list import user_spaces_list
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.storage.stored_space_user import StoredSpaceUser
-from gbserver.utils.logger import get_logger
-
-logger = get_logger(__name__)
 
 spaces_api = FastAPI()
 
@@ -75,13 +78,14 @@ def _require_member_management_access(request: Request, space_name: str) -> None
 
 @spaces_api.get("/")
 def list_spaces(
+    request: Request,
     name: str = "",
 ) -> ListSpacesResponse:
+    scoped_name = scope_space_name_filter(request, name)
+    if scoped_name is NO_ACCESSIBLE_SPACE:
+        return ListSpacesResponse(spaces=[])
     storage = get_admin_storage()
-    if name is not None and len(name) > 0:
-        row_filter = {"name": name}
-    else:
-        row_filter = None
+    row_filter = get_row_filter(name=scoped_name)
     items = cast(List[StoredSpace], storage.space_storage.get_by_where(row_filter))
     resp = ListSpacesResponse(spaces=items)
     return resp
@@ -89,19 +93,16 @@ def list_spaces(
 
 @spaces_api.get("/spaces_for_user")
 def spaces_for_user(request: Request):
-    """Get a user's spaces with admin details"""
-    try:
-        username = request.state.data["user"].email
+    """Get a user's spaces with admin details.
 
-        list = user_spaces_list(username)
-
-        return {"spaces": list}
-
-    except Exception as e:
-        logger.error("Failed to get a users spaces list error: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="secret not found!"
-        )
+    No try/except here on purpose: there's no legitimate "not found" case for
+    this route (a user with zero spaces just gets an empty list), and a real
+    storage error must surface as a 5xx rather than being caught and turned
+    into a wrong status code -- the previous broad except did exactly that,
+    converting a transient DB error into a misleading 404.
+    """
+    username = request.state.data["user"].email
+    return {"spaces": user_spaces_list(username)}
 
 
 @spaces_api.get("/{space_name}/members")

@@ -4,7 +4,9 @@
 targets:
   - download_file
 target_expectations:
-  # CPU env has 5 steps (not 4 like GPU): no AFM mount, lhpull step instead.
+  # Uses hf:// for both input and output, so step_count covers the download step
+  # plus the auto-queued HF input-pull and output-push steps. (The GPU test now
+  # uses the same hf:// flow and the same expected counts.)
   - target_name: download_file
     step_count: 5
     input_artifact_count: 1

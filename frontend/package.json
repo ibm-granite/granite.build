@@ -1,0 +1,17 @@
+{
+  "name": "granite-build-frontend-workspace",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "yarn@1.22.22",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "yarn workspace standalone-ui dev",
+    "build": "yarn workspace standalone-ui build",
+    "lint": "yarn workspace standalone-ui lint",
+    "test": "yarn workspace standalone-ui test",
+    "test:build": "yarn workspace standalone-ui test:build"
+  }
+}
