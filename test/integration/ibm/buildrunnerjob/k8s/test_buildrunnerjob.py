@@ -7,12 +7,13 @@ from libgbtest.buildrunner.buildtest import (
     ClassTestedEnum,
     get_test_data_root,
 )
-from libgbtest.constants import extended_testing_only
+from libgbtest.constants import extended_testing_only, requires_k8s_image_tags
 
 pytestmark = pytest.mark.ibm
 
 
 @extended_testing_only
+@requires_k8s_image_tags
 class TestBuildRunnerJob(AbstractBuildTest):
 
     def _get_test_specification(self) -> BuildTestSpecification:

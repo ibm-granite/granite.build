@@ -1,9 +1,9 @@
 """Typed, validated schema for the environment.yaml `shared_filesystem` block (EFS)."""
 
 import os
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from gbserver.types.config import Config
 
@@ -13,28 +13,72 @@ class EfsConfig(Config):
 
     Exactly one of ``file_system_id`` or ``dns_name`` is required. When only
     ``file_system_id`` is given, ``region`` is required so the container-safe
-    ``nfs4`` fallback DNS name can be derived. ``cleanup_zone`` optionally pins
-    the teardown VM to an AZ that has a mount target; if unset, the teardown VM
-    lands in the cloud's default AZ, which may lack a mount target and fail the
-    cleanup (surfaced as an orphan WARNING) -- provision a mount target in every
-    worker AZ, or set ``cleanup_zone``.
+    ``nfs4`` fallback DNS name can be derived. ``cleanup_zone`` (BYO only)
+    optionally pins the teardown VM to an AZ that has a mount target; if unset,
+    the teardown VM lands in the cloud's default AZ, which may lack a mount target
+    and fail the cleanup (surfaced as an orphan WARNING) -- provision a mount
+    target in every worker AZ, or set ``cleanup_zone``. It is rejected for
+    ``provision: ephemeral`` (that teardown deletes via boto3, no cleanup VM).
     """
 
+    provision: Literal["byo", "ephemeral"] = "byo"
     file_system_id: Optional[str] = None
     dns_name: Optional[str] = None
     region: Optional[str] = None
     tls: bool = True
     cleanup_zone: Optional[str] = None
+    vpc_id: Optional[str] = None
+    subnets: Optional[List[str]] = None
+    security_group_id: Optional[str] = None
+    # AWS access-point ids are ``fsap-<hex>``; the id is interpolated into the
+    # mount command line, so reject anything else (e.g. shell metacharacters).
+    access_point_id: Optional[str] = Field(default=None, pattern=r"^fsap-[0-9a-f]+$")
 
     @model_validator(mode="after")
     def _require_target(self) -> "EfsConfig":
-        if not self.file_system_id and not self.dns_name:
-            raise ValueError("efs: one of file_system_id or dns_name is required")
-        if self.file_system_id and not self.dns_name and not self.region:
-            raise ValueError(
-                "efs: 'region' is required with 'file_system_id' (to derive the "
-                "nfs4-fallback DNS name); or set 'dns_name' explicitly"
-            )
+        if self.provision == "ephemeral":
+            if self.file_system_id or self.dns_name:
+                raise ValueError(
+                    "efs: provision 'ephemeral' must not set file_system_id/"
+                    "dns_name (the filesystem is created at runtime)"
+                )
+            if not self.region:
+                raise ValueError("efs: provision 'ephemeral' requires 'region'")
+            if self.cleanup_zone:
+                # Ephemeral teardown deletes the filesystem via boto3 and never
+                # launches the throwaway cleanup VM that consumes cleanup_zone, so
+                # it would be a silent no-op. Reject it rather than mislead.
+                raise ValueError(
+                    "efs: cleanup_zone is not used for provision 'ephemeral' "
+                    "(teardown deletes via boto3, no cleanup VM is launched); "
+                    "remove it"
+                )
+        else:  # byo
+            if not self.file_system_id and not self.dns_name:
+                raise ValueError("efs: one of file_system_id or dns_name is required")
+            if self.file_system_id and not self.dns_name and not self.region:
+                raise ValueError(
+                    "efs: 'region' is required with 'file_system_id' (to derive the "
+                    "nfs4-fallback DNS name); or set 'dns_name' explicitly"
+                )
+        if self.access_point_id:
+            if self.provision == "ephemeral":
+                raise ValueError(
+                    "efs: access_point_id is not supported for provision "
+                    "'ephemeral' (ephemeral EFS is single-tenant and needs no "
+                    "access point)"
+                )
+            if not self.file_system_id:
+                raise ValueError(
+                    "efs: access_point_id requires file_system_id (an access "
+                    "point names a specific filesystem; a dns_name-only mount "
+                    "cannot select one)"
+                )
+            if not self.tls:
+                raise ValueError(
+                    "efs: access_point_id requires tls: true (amazon-efs-utils refuses "
+                    "to mount via an access point without tls)"
+                )
         if (
             self.cleanup_zone
             and self.region
@@ -86,3 +130,33 @@ class SharedFilesystemConfig(Config):
                 f"{self.local_scratch!r}"
             )
         return self
+
+
+def parse_shared_filesystems(sf_raw) -> "List[SharedFilesystemConfig]":
+    """Parse the environment `shared_filesystem` value into a validated list.
+
+    A lone object is coerced to a 1-element list (back-compat with the single
+    mount form). Cross-mount rules: mount_points must be unique and non-nested;
+    at most one mount may set local_scratch (it is instance-local, not per-FS).
+    """
+    if not sf_raw:
+        return []
+    items = sf_raw if isinstance(sf_raw, list) else [sf_raw]
+    mounts = [SharedFilesystemConfig.model_validate(i) for i in items]
+    mps = [m.mount_point for m in mounts]
+    for i, a in enumerate(mps):
+        for j, b in enumerate(mps):
+            if i == j:
+                continue
+            if a == b:
+                raise ValueError(f"shared_filesystem: mount_point {a!r} is not unique")
+            if b.startswith(a.rstrip("/") + "/"):
+                raise ValueError(
+                    f"shared_filesystem: mount_point {b!r} is nested under {a!r}"
+                )
+    if sum(1 for m in mounts if m.local_scratch) > 1:
+        raise ValueError(
+            "shared_filesystem: at most one mount may set local_scratch "
+            "(it is instance-local, not per-filesystem)"
+        )
+    return mounts

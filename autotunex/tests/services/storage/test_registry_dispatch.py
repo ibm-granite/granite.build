@@ -29,11 +29,11 @@ def test_hf_scheme_resolves_to_repo_id() -> None:
     fs, hf = _Lister(), _Lister()
 
     lister, location = resolve_artifact_lister(
-        "hf://huggingface.co/models/ibm-research/autotunex_x", filesystem=fs, huggingface=hf
+        "hf://huggingface.co/models/example-org/autotunex_x", filesystem=fs, huggingface=hf
     )
 
     assert lister is hf
-    assert location == "ibm-research/autotunex_x"
+    assert location == "example-org/autotunex_x"
 
 
 def test_file_scheme_resolves_to_path() -> None:

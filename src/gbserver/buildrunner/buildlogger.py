@@ -276,18 +276,19 @@ class BuildMultiMessageLogger(AbstractBuildLogger):
 
 # Each entry: (predicate, factory)
 # predicate(stored_build, event_source) -> bool
-# factory(stored_build, event_source) -> AbstractBuildLogger
+# factory(stored_build, event_source) -> Optional[AbstractBuildLogger]
+# (a factory may return None to opt out, e.g. when its backend is disabled)
 _LOGGER_REGISTRY: List[
     Tuple[
         Callable[[StoredBuild, str], bool],
-        Callable[[StoredBuild, str], AbstractBuildLogger],
+        Callable[[StoredBuild, str], Optional[AbstractBuildLogger]],
     ]
 ] = []
 
 
 def register_logger(
     predicate: Callable[[StoredBuild, str], bool],
-    factory: Callable[[StoredBuild, str], AbstractBuildLogger],
+    factory: Callable[[StoredBuild, str], Optional[AbstractBuildLogger]],
 ) -> None:
     """Register a logger type with its activation predicate."""
     _LOGGER_REGISTRY.append((predicate, factory))

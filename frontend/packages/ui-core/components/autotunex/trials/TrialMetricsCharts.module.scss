@@ -1,0 +1,16 @@
+/**
+ * Above the 640px breakpoint Carbon reserves 25% of an accordion's width as
+ * right padding (`.cds--accordion__content`, per Carbon issue #4993): the panel
+ * is assumed to hold prose, and capping the measure keeps a line readable. The
+ * diagnostics panel holds two charts instead, so that reservation left a quarter
+ * of the row blank and squeezed both charts into the remaining three quarters —
+ * while the loss pair directly above it, outside any accordion, used the full
+ * width. This restores the symmetric inline padding Carbon itself applies below
+ * that breakpoint, reusing its own density token so the two sides still match.
+ *
+ * Two classes deep, so this beats Carbon's single-class rule on specificity
+ * whatever order the stylesheets land in.
+ */
+.diagnostics :global(.cds--accordion__content) {
+  padding-inline-end: var(--cds-layout-density-padding-inline-local);
+}

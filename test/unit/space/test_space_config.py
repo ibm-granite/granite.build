@@ -107,6 +107,78 @@ class TestSkyKubeEnvironmentYaml:
         uris = {s["store_uri"] for s in (data.get("assetstores") or [])}
         assert "space://assetstores/env-local" not in uris
 
+    def test_hf_pull_is_not_inline(self):
+        """Inline pulls are being deprecated, so the generic env keeps main's separate
+        hfpull step; hf inputs need the shared storage its commented block documents
+        (skypilot/kubernetes/local is the working example)."""
+        with open(self.ENV_PATH) as f:
+            data = yaml.safe_load(f)
+        hf = [s for s in data["assetstores"] if s["store_uri"].endswith("/hf")]
+        assert len(hf) == 1
+        assert not any(p["config"].get("inline") for p in hf[0]["pull"])
+
+    def test_no_active_pod_config(self):
+        """Active PVC wiring here would break current users: pods sit Pending when
+        the claim is absent, and a top-level pod_config list would replace one the
+        user keeps in ~/.sky/config.yaml. It ships commented out instead."""
+        with open(self.ENV_PATH) as f:
+            data = yaml.safe_load(f)
+        assert "cloud_config" not in data["config"]
+        assert "shared_workdir" not in data["config"]
+
+    def test_idle_window_outlasts_the_default_poll_interval(self):
+        """Autodown on kube: the window must exceed the 300s default poll."""
+        with open(self.ENV_PATH) as f:
+            data = yaml.safe_load(f)
+        assert data["config"]["idle_minutes_to_autostop"] * 60 > 2 * 300
+
+
+class TestSkyKubeLocalEnvironmentYaml:
+    """Validate configurations/assets/environments/skypilot/kubernetes/local/environment.yaml."""
+
+    ENV_PATH = (
+        ASSETS_DIR
+        / "environments"
+        / "skypilot"
+        / "kubernetes"
+        / "local"
+        / "environment.yaml"
+    )
+
+    def _load(self):
+        with open(self.ENV_PATH) as f:
+            return yaml.safe_load(f)
+
+    def test_is_a_kubernetes_subtype(self):
+        data = self._load()
+        assert data["type"] == "Skypilot"
+        assert data["subtype"] == "kubernetes"
+        assert data["config"]["default_cloud"] == "kubernetes"
+
+    def test_pins_the_kind_context(self):
+        """allowed_contexts makes SkyPilot ignore the CURRENT kube context."""
+        kube = self._load()["config"]["cloud_config"]["kubernetes"]
+        assert kube["allowed_contexts"] == ["kind-skypilot"]
+
+    def test_shared_volume_is_scoped_to_the_kind_context(self):
+        """Per-context pod_config, so it can never replace a user's global one."""
+        kube = self._load()["config"]["cloud_config"]["kubernetes"]
+        assert "pod_config" not in kube
+        spec = kube["context_configs"]["kind-skypilot"]["pod_config"]["spec"]
+        claims = [v["persistentVolumeClaim"]["claimName"] for v in spec["volumes"]]
+        mounts = [m["mountPath"] for m in spec["containers"][0]["volumeMounts"]]
+        assert claims == ["gb-shared"]
+        assert mounts == ["/shared"]
+
+    def test_shared_workdir_and_hf_cache_live_on_the_volume(self):
+        data = self._load()
+        assert data["config"]["shared_workdir"] == "/shared"
+        hf = [s for s in data["assetstores"] if s["store_uri"].endswith("/hf")]
+        assert len(hf) == 1
+        for pull in hf[0]["pull"]:
+            assert not pull["config"].get("inline")
+            assert pull["config"]["cache_path"].startswith("/shared/")
+
 
 class TestSkypilotManagedEnvironmentYaml:
     """Validate configurations/assets/environments/skypilot-managed/kubernetes/environment.yaml."""

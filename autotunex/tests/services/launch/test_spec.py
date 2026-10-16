@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, cast
 from uuid import UUID
 
+import pytest
 import yaml
 
 from autotunex.services.launch.protocols import LaunchContext
@@ -43,14 +44,22 @@ def _ctx(**overrides: object) -> LaunchContext:
     return LaunchContext(**base)  # type: ignore[arg-type]
 
 
-def _spec(ctx: LaunchContext, *, callback_url: str | None = None) -> dict[str, Any]:
+def _spec(
+    ctx: LaunchContext,
+    *,
+    callback_url: str | None = None,
+    keep_diagnostics: bool = False,
+    private_model_namespaces: tuple[str, ...] = (),
+) -> dict[str, Any]:
     text = build_spec(
         ctx,
         runtime_image="registry/tuner:1",
         trainer_repo="github.example/trainer.git",
         trainer_ref="stage",
-        output_uri_root="hf://huggingface.co/ibm-research",
+        output_uri_root="hf://huggingface.co/example-org",
         callback_url=callback_url,
+        keep_diagnostics=keep_diagnostics,
+        private_model_namespaces=private_model_namespaces,
     )
     return cast("dict[str, Any]", yaml.safe_load(text))
 
@@ -87,7 +96,7 @@ def test_output_uri_is_root_plus_autotunex_and_short_job_id() -> None:
     doc = _spec(_ctx())
 
     assert _custom(doc)["outputs"]["custom"]["uri"] == (
-        "hf://huggingface.co/ibm-research/autotunex_11111111/"
+        "hf://huggingface.co/example-org/autotunex_11111111/"
     )
 
 
@@ -168,6 +177,15 @@ def test_callback_url_emitted_only_when_set() -> None:
     assert "--autotunex_server_url https://api.example/callback" in with_cb
 
 
+def test_model_at_root_always_set_and_keep_diagnostics_only_when_kept() -> None:
+    default = _command(_spec(_ctx()))
+    kept = _command(_spec(_ctx(), keep_diagnostics=True))
+
+    assert "--model_at_root" in default
+    assert "--keep_diagnostics" not in default
+    assert "--model_at_root --keep_diagnostics" in kept
+
+
 def test_rl_algo_flag_present_only_for_rl() -> None:
     sft = _command(_spec(_ctx()))
     rl = _command(_spec(_ctx(rl_tuner_type="ppo")))
@@ -216,3 +234,36 @@ def test_config_data_is_deep_copied_not_mutated() -> None:
 
     # The caller's object is untouched — the rewrite happened on a copy.
     assert ctx.config_data["training_rl_config"]["reward_function_path"]["default"] == "orig.py"
+
+
+def test_allowlisted_model_is_bound_as_the_base_model_input() -> None:
+    doc = _spec(_ctx(model="example-org/autotunex_x"), private_model_namespaces=("example-org",))
+
+    inputs = _custom(doc)["inputs"]
+    assert inputs["base_model"] == {"uri": "hf://huggingface.co/models/example-org/autotunex_x"}
+    assert inputs["dataset_files"] == {"uri": "hf://huggingface.co/datasets/ibm/alpaca"}
+    command = _command(doc)
+    assert "--model_name_or_path {{ bindings.base_model.binding.path }}" in command
+    assert "example-org/autotunex_x" not in command
+
+
+@pytest.mark.parametrize(
+    ("model", "model_source"),
+    [("ibm-granite/granite-4.0", "huggingface"), ("example-org/local-copy", "custom_path")],
+)
+def test_a_model_that_is_not_bound_leaves_the_spec_byte_identical(
+    model: str, model_source: str
+) -> None:
+    ctx = _ctx(model=model, model_source=model_source)
+    kwargs: dict[str, Any] = {
+        "runtime_image": "registry/tuner:1",
+        "trainer_repo": "github.example/trainer.git",
+        "trainer_ref": "stage",
+        "output_uri_root": "hf://huggingface.co/example-org",
+        "callback_url": None,
+    }
+
+    with_allowlist = build_spec(ctx, private_model_namespaces=("example-org",), **kwargs)
+
+    assert with_allowlist == build_spec(ctx, **kwargs)
+    assert "base_model" not in _custom(yaml.safe_load(with_allowlist))["inputs"]

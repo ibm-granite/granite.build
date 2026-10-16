@@ -37,10 +37,15 @@ class CloudLogsClient:
         if self._token and time.time() < self._token_expiration - 60:
             return self._token
         client = self._get_http()
+        # Send the pre-encoded form body via `content=` (typed to accept str),
+        # not `data=` (typed as a Mapping — a raw str there trips mypy). This
+        # reproduces the original request exactly: same explicit Content-Type
+        # and the same unencoded body, so it stays a type-only fix with no
+        # wire-level behavior change (a dict `data=` would re-encode the apikey).
         resp = await client.post(
             "https://iam.cloud.ibm.com/identity/token",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data=f"grant_type=urn:ibm:params:oauth:grant-type:apikey&apikey={self.api_key}",
+            content=f"grant_type=urn:ibm:params:oauth:grant-type:apikey&apikey={self.api_key}",
             timeout=60.0,
         )
         resp.raise_for_status()

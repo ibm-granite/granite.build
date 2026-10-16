@@ -1,0 +1,31 @@
+name: skypilot-aws-ephemeral
+type: Skypilot
+subtype: aws
+config:
+  default_cloud: aws
+  cloud_config:
+    workspaces:
+      default:
+        aws:
+          profile: gb-skypilot
+  shared_workdir: /mnt/gb-scratch/gbroot
+  shared_filesystem:
+    - provider: efs
+      mount_point: /mnt/gb-scratch
+      efs:
+        provision: ephemeral
+        region: us-east-1
+assetstores:
+  # Lets hf:// inputs/outputs resolve to an assetstore (mirrors the BYO
+  # aws-shared-fs env). With shared_filesystem set, hfpull runs as its own step
+  # and caches to ${shared_workdir}/hf_cache (config: {}) rather than
+  # instance-locally, so a pulled model actually lands on the ephemeral EFS.
+  # Used by the ephemeral-efs/hf full-E2E test; the sibling probe-file test
+  # declares no hf I/O, so it never queues a pull/push step and ignores this.
+  - store_uri: space://assetstores/hf
+    pull:
+      - mode: default
+        config: {}
+    push:
+      - mode: default
+        config: {}

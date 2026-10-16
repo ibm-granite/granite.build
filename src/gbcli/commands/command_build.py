@@ -6,8 +6,6 @@ import webbrowser
 from typing import Any, Dict, List
 
 import click
-import dateparser
-from numpy import ceil
 from rich.console import Console
 from rich.table import Table
 from tabulate import tabulate
@@ -2048,6 +2046,8 @@ def log(
         try:
             start_epoch = int(start_date)  # unix epoch time
         except ValueError:
+            import dateparser
+
             start_epoch = round(dateparser.parse(start_date).timestamp())
     else:
         start_epoch = change_timestamp_by_days(
@@ -2058,6 +2058,8 @@ def log(
         try:
             end_epoch = int(end_date)  # unix epoch time
         except ValueError:
+            import dateparser
+
             end_epoch = round(dateparser.parse(end_date).timestamp())
     else:
         if all:

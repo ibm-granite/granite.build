@@ -21,14 +21,16 @@ Types for events.
 import dataclasses
 from asyncio import Event
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum, auto
 from typing import Any, Dict, List, Optional, Self, Type
 
 from gbserver.types.artifact import ArtifactType
 from gbserver.types.metrics import Metric
 from gbserver.types.status import Status
-from gbserver.utils.utils import get_time
+from gbserver.utils.utils import get_time, short_alphanumeric_lower_hash
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 class BuildLogLevel(StrEnum):
@@ -198,6 +200,16 @@ class BuildEvent(Event):
     def to_dict(self: Self) -> dict:
         """Convert into a dict."""
         return dataclasses.asdict(self)
+
+    def unique_hash(self: Self, binding_id: str) -> str:
+        """``{{ unique_hash }}`` for an output of this event; epoch µs keeps it TZ-independent."""
+        ts = self.timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        epoch_us = (ts - _EPOCH) // timedelta(microseconds=1)
+        return short_alphanumeric_lower_hash(
+            f"{self.run_metadata.targetsteprun_id}:{binding_id}:{epoch_us}"
+        )
 
     def to_json_dict(self: Self) -> dict:
         """Create a dictionary that can be passed to json.dumps() without giving a TypeError."""

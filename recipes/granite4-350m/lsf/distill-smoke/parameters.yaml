@@ -1,0 +1,352 @@
+# distill-smoke — the granite4-350m distillation pipeline at smoke scale, for
+# BlueVela (SkyPilot / LSF).
+#
+# distill-pipeline-smoke's shape, retargeted to OUR pair: the granite-4.0-350m SFT
+# checkpoint as student, granite-4.1-3b as teacher. It is stage 1's graph at 64 rows
+# and 4096 context, and it is the gate for three failures the reference pair could
+# not have found. See the README.
+#
+# This recipe's subject is the PLUMBING of the chain — align -> corpus ->
+# [train-sft] -> train-gold -> export -> eval-transfer x2 -> eval-bfcl — not the
+# science. Every value below is chosen to make a wrong path, a missing artifact
+# or a disagreement between two steps cost minutes instead of hours. Nothing it
+# produces is a publishable measurement, and the transfer numbers it reports are
+# from a handful of optimizer steps over 48 rows.
+#
+# Override any value with: gb build start --param KEY=VALUE
+
+# ─── Run identification ───────────────────────────────────────────────
+RUN_NAME: "distill-350m-smoke"
+# The shared root every composed path hangs off. Absolute, and that is forced
+# rather than chosen: the eval targets have to name the corpus split, and each
+# target run gets its own GB_BUILD_WORKDIR. Its own directory under gbtest so a
+# distillation run's artifacts can be found and cleaned up as a set.
+WORKDIR_ROOT: "/proj/granite-build/g4os/gbtest/distill"
+# One directory per BUILD under that root, and this is a correctness setting
+# rather than tidiness.
+#
+# gbserver refuses to register an artifact whose URI another build in the space
+# already registered ("Same artifact URI found in space ... for another build").
+# The target that emitted it still reports SUCCESS — with an EMPTY output list.
+# Nothing downstream notices until a retry or a restart, where reuse replays each
+# skipped target's stored outputs as bindings: a target with no stored outputs
+# propagates nothing, its consumers never become ready, and the build reports
+# SUCCESS having silently skipped them. That is what build b5f030cd did — it
+# reported SUCCESS with eval-transfer still FAILED and eval-bfcl never started.
+#
+# run_metadata.build_id is filled by gbserver per step, and every target in one
+# build fills the same value, so the root stays shared within a build. The Jinja
+# stays literal in this file: the CLI's parameter pass uses different delimiters
+# and leaves it alone.
+#
+# The cost is that align and corpus re-run on every build (~4 minutes) instead of
+# resuming from a previous one. Pin this to a fixed string to deliberately share a
+# directory across builds — and expect the artifact collision above.
+BUILD_SUBDIR: "{{ run_metadata.build_id }}"
+SEED: 42
+
+# ─── The SFT arm ──────────────────────────────────────────────────────
+# Off by default: the shortest path through the pipeline is the one to prove
+# first. Turn it on with --param INCLUDE_SFT=true and a plain-SFT pass runs
+# between align and GOLD, with GOLD continuing from the SFT checkpoint rather
+# than from the aligned student.
+#
+# The build.yaml tests this against the string forms as well as the booleans,
+# because `--param INCLUDE_SFT=false` delivers the STRING "false" (the CLI does
+# no YAML parsing of parameter values) and a bare Jinja truth test on a non-empty
+# string is true — which would turn the arm on while the command line said off.
+INCLUDE_SFT: false
+
+# ─── Image and trainer code ───────────────────────────────────────────
+# One image for every distillation step (each step's own default is this same
+# image; naming it here makes the pin visible and overridable in one place). The
+# BFCL target is deliberately NOT given it — that step runs its own harness
+# image.
+# SM90 (H100) build; it will not run on A100.
+IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+# The GOLD trainer (gb_steps_post_training.distillation.gold and friends) is
+# delivered by distill-gold's own code_config, the same pinned public-repo
+# clone every ported step uses — so a source bump is one edit in the step,
+# not one per recipe.
+DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
+
+# ─── The pair, the data, and the chat template ────────────────────────
+# Each *_URI below carries a FULL uri, not a bare path — the scheme picks
+# how granite.build fetches it (see ibm-bluevela's environment.yaml
+# assetstores block for what's wired in):
+#   env://<absolute path>   already on the shared filesystem (BlueVela's /proj)
+#   hf:///<org>/<repo>      pulled fresh from the Hugging Face Hub
+#   s3://<bucket>/<key>     pulled from S3-compatible object storage
+# The defaults below use env:// against /proj, for the reasons documented
+# next to each one. Override with --param to source any of them from the
+# Hub or your own bucket instead, e.g.
+# --param DATASET_URI=s3://my-bucket/corpora/smoke.jsonl.
+#
+# granite-4.1-3b, via a PINNED-TOKENIZER copy rather than the model directory.
+#
+# That indirection is the difference between this pair and the reference one. Both
+# granite-4.0-350m and granite-4.1-3b ship tokenizer_config.json declaring
+# tokenizer_class GPT2Tokenizer over a tokenizer.json whose pre_tokenizer is the
+# trained Sequence[Split(regex), ByteLevel] — and AutoTokenizer honours the class,
+# imposing a plain ByteLevel and discarding the Split. It does not error; it
+# mis-segments (26.1 vs 3.29 PPL/token, measured upstream). In the reference pair the
+# 30B teacher's pre_tokenizer was ALREADY plain ByteLevel, so the override was a no-op
+# on the teacher side and align only had to fix the student. Here it bites both, and
+# align fixes only the student — so the teacher needs its own pinned copy, built once,
+# out of band. The README has the command.
+#
+# The two tokenizer.json files are byte-identical (sha256 match, 7,153,421 bytes), so
+# once both are pinned there is no cross-tokenizer problem left: this is the
+# shared-vocabulary JSD path, which is the only path the step exposes.
+TEACHER_MODEL_URI: "env:///proj/granite-build/g4os/models/granite-4.1-3b-pinned"
+# The SFT checkpoint, NOT granite-4.0-350m-base — and this is the recipe's central
+# design choice rather than a convenience.
+#
+# Two epochs of SFT on the all_combined mixture already happened, and that model's
+# 27-benchmark eval row is the baseline this work is measured against. Initialising
+# from it makes distillation the ONLY difference between the recorded row and the new
+# result, which is why there is no SFT arm and no separate control: the control was
+# already run and already measured. Initialising from base instead, or re-running SFT
+# inside the pipeline, would each replace a measured control with an unmeasured one.
+#
+# granitemoehybrid, and that is the risk this recipe exists to retire first. A hybrid
+# model makes transformers lazily load kernels-community/mamba-ssm, whose cached build
+# cannot import under this image's transformers 5.8.0 (build 96868683). Every model the
+# reference runs use is dense, which is why they never hit it. Run the README's load
+# probe before this recipe; if it fails, the fix is a prefetched HF_HOME, not a
+# different student.
+STUDENT_MODEL_URI: "env:///proj/granite-build/g4os/skypilot-test/sft/checkpoints/v0-20260529-20260529_212150-hf/epoch_hf_2"
+# The gold smoke slice, reused as a PLUMBING FIXTURE. It is not stage 1's corpus and
+# is not meant to be: its content is irrelevant to every question this recipe asks,
+# and its schema is known-good. Stage 1 trains on the raw ancestor of the SFT mixture,
+# which is a different parameter in a different recipe.
+DATASET_URI: "env:///proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_2000_nothink.jsonl"
+# ABSOLUTE, and granite-native. run-align.sh only prefixes the steps' code_dir when
+# the value is relative, so an absolute path needs no step change.
+#
+# This is granite-4.0-350m's OWN chat template with {% generation %} markers added
+# around the assistant span and nothing else changed — derived from the student's
+# template rather than the teacher's on purpose, because the two differ: the 350m
+# template injects a default system message when none is given and the 3b one does
+# not. full-eval renders prompts with the model's own template, so deriving from the
+# teacher's would change every prompt relative to the SFT run whose eval row is the
+# baseline.
+#
+# The markers emit nothing, so the rendered output is byte-identical to the
+# unmarked template. That is asserted, not assumed:
+# steps/distill/tokenizer-align/skypilot/test/test_granite_role_template.py renders
+# both over nine conversation shapes and diffs them.
+#
+# BEFORE THE FIRST RUN: diff this against /proj/granite-build/g4os/chat_template.jinja,
+# the template the SFT mixture was actually tokenized with. The vendored base is the
+# Hub's copy of granite-4.0-350m's template, which SHOULD be the same file — but "should
+# be" is not "is", and a difference here moves every prompt. The README has the command.
+CHAT_TEMPLATE_URI: "env:///proj/granite-build/g4os/chat_templates/granite_4_role_generation.jinja"
+# FALSE, and only safe because CHAT_TEMPLATE above is granite-native.
+#
+# align's stage 1 of 4 demands ChatML of the teacher, unconditionally upstream. No
+# granite 4.x model has <|im_start|> in added_tokens_decoder — the raw backend returns
+# it as the six bytes [27, 91, 318, 5011, 91, 29] — so a granite-4.1 teacher aborts
+# there under the default, with a message about ChatML rather than about the pair.
+#
+# False does NOT leave the turn boundary unchecked: align stage 4 of 4 derives the
+# masking contract from the installed template and fails the step if it cannot, and
+# verify()'s pre_tokenizer half — the half that catches the mis-segmentation above — is
+# family-independent and runs either way.
+REQUIRE_CHATML: false
+THINK_POLICY: "keep"
+
+# ─── The corpus ───────────────────────────────────────────────────────
+# 64 rows in, a quarter held out: 48 train / 16 eval. Small enough to prepare in
+# a minute, and large enough that both trainers can form a full batch and the
+# evals have something to measure.
+#
+# Shrinking the CORPUS is how a run of this pipeline is made small — NOT the
+# trainers' max_dataset_size. sft.py compares its kept-row count against prep's
+# manifest and raises ManifestDrift on any shortfall, because the only shortfall
+# it knows how to cause is a chat-template or tokenizer mismatch. That guard is
+# worth keeping.
+MAX_EXAMPLES: 64
+EVAL_FRACTION: 0.25
+# ONE budget for prep, both trainers and both evals. Four steps measure lengths
+# in tokens and they have to agree, so this is one parameter rather than four.
+# 4096, not the reference 16384: the smoke corpus has nothing long in it.
+MAX_LENGTH: 4096
+# 8, not the step's 64: on a 64-row corpus the worker pool costs more to start
+# than the mapping it parallelises.
+DATASET_NUM_PROC: 8
+# KEEP, against the step's default of drop. The step drops rows carrying documents
+# because "granite's chat template does not render documents" — which is not true of
+# the template this pipeline installs: granite 4.x renders them into the system turn
+# via documents_system_message_prefix. The default would silently discard grounded
+# rows. Harmless on this fixture, which has none; set correctly here so stage 1
+# inherits it rather than rediscovering it.
+DOCUMENTS_POLICY: "keep"
+
+# ─── GOLD ─────────────────────────────────────────────────────────────
+# 2 optimizer steps. Enough to produce a checkpoint, a loss trajectory and a
+# publishable artifact for the export to select; not enough to mean anything.
+GOLD_MAX_STEPS: 2
+GOLD_NUM_TRAIN_EPOCHS: 1.0
+# Checkpoint on every step, so publication is exercised rather than assumed.
+GOLD_SAVE_STEPS: 1
+GOLD_SAVE_TOTAL_LIMIT: 2
+# Effective batch = per_device x grad_accum x nodes x gpus = 1 x 1 x 1 x 2 = 2.
+# Deliberately unlike the reference geometry (192): this recipe is not comparable
+# to a sweep arm and should not look as though it is.
+GOLD_PER_DEVICE_TRAIN_BATCH_SIZE: 1
+GOLD_GRADIENT_ACCUMULATION_STEPS: 1
+# Quote the scientific-notation values. Unquoted, PyYAML loads 1.0e-05 as a float
+# whose repr is "1e-05", which is then re-read from the rendered build.yaml as a
+# STRING.
+# 2e-6, a fifth of the reference recipes' 1e-5, because the student is a CONVERGED
+# SFT checkpoint rather than a base model. The gold recipes' schedule was tuned for a
+# base student with everything to learn; at that peak a converged model is knocked off
+# its optimum before the teacher's soft labels do anything useful, and the baseline
+# row is what it would be knocked away from. Irrelevant at two steps — set here so
+# stage 1 inherits a schedule that was chosen rather than copied.
+GOLD_LEARNING_RATE: "2.0e-06"
+GOLD_MIN_LR: "2.0e-07"
+WARMUP_RATIO: 0.05
+LR_SCHEDULER_TYPE: "cosine_with_min_lr"
+MAX_COMPLETION_LENGTH: 1024
+TEMPERATURE: 1.0
+# 0 => off-policy: every rank trains on the fixed corpus, no vLLM server to
+# coordinate. The on-policy topology is a different recipe (gold-onpolicy-smoke).
+LMBDA: 0.0
+# 0.5 => a genuine JSD mixture. The trainer short-circuits 0.0 to forward KL and 1.0
+# to reverse KL, so 0.5 is the only one of the three that actually mixes, and it is
+# what the reference sweep's arms ran.
+#
+# It is the right default for THIS pair rather than a copied one: the student has an
+# eighth of the teacher's hidden size and a different architecture class, so it cannot
+# represent the teacher's distribution and has to choose what to cover. That is what
+# reverse KL's mode-seeking half buys, and forward KL alone would spread a 350M
+# student thin across modes it cannot afford.
+BETA: 0.5
+# granite's logits_scaling=10 overflows the fused bf16 JSD kernel and yields NaN
+# loss, so false is the setting known to produce a finite loss here. The cost is
+# memory: the non-fused path materialises the [batch, seq, vocab] logit tensor.
+USE_LIGER_FUSED_JSD: false
+# The granite 4.x assistant marker, and note what is NOT here: a trailing newline.
+#
+# The reference recipes carry '<|im_start|>assistant\\n' with a DOUBLED backslash,
+# because ChatML puts a line boundary after the role header, that boundary is where
+# loss masking begins, and gbserver fills every config string through a Jinja
+# environment built without keep_trailing_newline — which strips exactly one real
+# trailing newline per value. Build d8470f14 lost one that way and trained two steps
+# against a span one token off while reporting success.
+#
+# granite 4.x closes its role header with <|end_of_role|> and puts nothing after it,
+# so there is no boundary to smuggle and the whole apparatus is inert here: no
+# backslash for printf '%b' to reinterpret, nothing for the fill to strip. Single
+# quotes are kept because the value contains | and <.
+#
+# It must still be stated explicitly in every target: render_gold_config.py defaults
+# it to <|im_start|>assistant, and a wrong marker matches nothing, leaves every label
+# at ignore_index, and trains on NOTHING while producing a loss curve and checkpoints.
+RESPONSE_TEMPLATE: '<|start_of_role|>assistant<|end_of_role|>'
+
+# ─── The SFT stage (only read when INCLUDE_SFT is on) ─────────────────
+# Same learning rate as GOLD, so the two stages differ in the OBJECTIVE rather
+# than in the optimiser.
+SFT_LEARNING_RATE: "1.0e-05"
+SFT_NUM_TRAIN_EPOCHS: 1
+# Effective batch 1 x 8 x 1 x 1 = 8 over 48 rows, i.e. six optimizer steps: a
+# few minutes, and long enough to produce a trajectory.
+SFT_PER_DEVICE_TRAIN_BATCH_SIZE: 1
+SFT_GRADIENT_ACCUMULATION_STEPS: 8
+SFT_NUM_GPUS: 1
+
+# ─── Export ───────────────────────────────────────────────────────────
+# Empty selects the highest step number. Pin a checkpoint name to export an
+# earlier one.
+EXPORT_CHECKPOINT: ""
+# Which generation prompt the PUBLISHED model hands out when a consumer says
+# nothing about thinking. keep, because this corpus is think-filtered at the
+# SOURCE rather than stripped by prep: the student's labelled spans carry no
+# empty <think></think> prefix, so there is nothing for a default-off policy to
+# compensate for.
+CHAT_TEMPLATE_THINKING: "keep"
+
+# ─── The transfer evaluations ─────────────────────────────────────────
+# All four metrics in one forward pass. entropy alone would not exercise the
+# teacher-dependent reductions, which are the point of the step.
+EVAL_METRICS: "jsd,kld,rkld,entropy"
+# 8 of the 16 held-out rows. Proving the wiring, not producing a measurement.
+EVAL_MAX_SAMPLES: 8
+EVAL_BATCH_SIZE: 4
+EVAL_DTYPE: "bfloat16"
+# A record whose completion did not fit the budget cannot be scored. Above this
+# fraction the step refuses rather than reporting a divergence measured on
+# prefixes.
+MAX_INCOMPLETE_FRACTION: 0.25
+EVAL_NUM_GPUS: 1
+
+# ─── BFCL ─────────────────────────────────────────────────────────────
+# ONE category, not "all": the full suite is hours of generation and this recipe
+# is asking whether the harness accepts the exported model at all. Expect a poor
+# score — the model underneath it has taken two optimizer steps.
+BFCL_TEST_CATEGORIES: "simple"
+BFCL_EVAL_NAME: "bfclv3"
+# The harness's own model handler name, which is what selects the prompt format.
+# NOT the run name: an unrecognised handler makes BFCL fall back and score a
+# differently-formatted prompt.
+BFCL_MODEL_ID: "ibm-granite/granite-4"
+BFCL_NUM_GPUS: 1
+BFCL_GPU_MEMORY_UTILIZATION: "0.5"
+
+# ─── Topology and resources ───────────────────────────────────────────
+# One node, two GPUs for GOLD. A 3B teacher and a 3B student under ZeRO-3 at 4096
+# context fit comfortably; two rather than one so the distributed path (and the
+# per-rank checkpoint files the export has to tolerate) is exercised rather than
+# skipped.
+GOLD_NUM_NODES: 1
+GOLD_NUM_GPUS: 2
+# HOST memory per node for the GPU targets, and it has to be stated: the LSF
+# provisioner defaults to 16G, which killed an earlier build with TERM_MEMLIMIT
+# at 46.5G — presenting as a cross-node NCCL hang, since a host-memory kill
+# produces no CUDA OOM and no watchdog message.
+GPU_MEMORY: 256
+# align and corpus are CPU-only: a tokenizer retag and a tokenize-and-filter pass
+# over 64 rows.
+CPU_ONLY_CPUS: 1
+CPU_ONLY_MEMORY: 32
+# The export copies a 3B checkpoint and then loads it to verify.
+EXPORT_CPUS: 4
+EXPORT_MEMORY: 64
+CLUSTER: "bluevela"
+# Where every target runs. One value rather than one literal per target, so moving this
+# recipe to another environment (a gbspace-public one, say) is a one-line change.
+ENVIRONMENT_URI: "space://environments/skypilot/lsf/ibm-bluevela"
+# SkyPilot's `zone` is the LSF queue name for this cloud. `normal` is
+# non-preemptable; an earlier sweep attempt died on the preemptable queue.
+QUEUE: "normal"
+
+# ─── NCCL / distributed diagnostics ───────────────────────────────────
+# Single node, so there are no cross-node collectives to diagnose and INFO would
+# only add noise. Monitoring stays on (hard-wired in the build): with it off a
+# deadlock does not fail, it hangs holding the allocation and produces nothing to
+# read.
+NCCL_DEBUG: ""
+NCCL_DEBUG_SUBSYS: "INIT,NET"
+# 10 minutes, not the reference hour: a smoke run wants a fast failure.
+NCCL_TIMEOUT_MS: 600000
+
+# ─── Retries ──────────────────────────────────────────────────────────
+# One retry, for a measured cluster fault rather than as general insurance: host
+# p2-r03-n1 takes an allocation and then fails inside torch at cuda_init with
+# "CUDA unknown error" (3 runs, 3 failures there; 0 failures on every other host
+# across several hundred runs in ~/sky_logs). A build.yaml cannot steer LSF away
+# from a host, so running the target again — most likely elsewhere — is the only
+# lever the recipe has. See README for the bsub host exclusion, which is the
+# actual dodge, and report the node.
+#
+# Set to 0 to make a failure final, which is what you want while debugging a
+# failure of your own rather than the cluster's.
+MAX_RETRIES: 1
+
+# ─── Monitoring ───────────────────────────────────────────────────────
+# Short targets, so poll often enough to follow them.
+POLL_INTERVAL_SECONDS: 30
+LOG_RETRIEVAL_INTERVAL_SECONDS: 30

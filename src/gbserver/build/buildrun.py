@@ -550,6 +550,8 @@ class BuildRun(Run):
             logger.warning("TERMINATING %s", event_payload)
             self.cancel()
             return
+        # The wrapper below gets a new timestamp; unique_hash uses the source event's.
+        source_event = event
         if event.type is BuildEventType.NEWARTIFACT_IN_ENVIRONMENT_EVENT:
             event_payload = event.payload
             assert isinstance(event_payload, ArtifactEventPayload)
@@ -647,6 +649,7 @@ class BuildRun(Run):
                 output_config=found_value.model_copy(
                     update={"space_name": _space_name}
                 ),
+                unique_hash=source_event.unique_hash(art_bind_id),
             )
             task.binding_id = art_bind_id  # type: ignore[attr-defined]
             task.binding_id_glob = found_key  # type: ignore[attr-defined]

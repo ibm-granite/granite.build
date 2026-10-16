@@ -56,7 +56,7 @@ logger = get_logger(__name__)
 def _import_runpod():
     """Lazy import of the runpod SDK."""
     try:
-        import runpod
+        import runpod  # type: ignore[import-not-found]
 
         return runpod
     except ImportError as e:

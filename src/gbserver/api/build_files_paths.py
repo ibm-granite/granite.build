@@ -31,7 +31,10 @@ from typing import Optional
 
 from fastapi import HTTPException, Request, status
 
-from gbserver.api.utils import confirm_space_member_access, confirm_space_write_access
+from gbserver.api.utils import (
+    confirm_existing_item_write_access,
+    confirm_space_member_access,
+)
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.utils.logger import get_logger
@@ -42,10 +45,10 @@ logger = get_logger(__name__)
 def authorize_build_access(request: Request, build: StoredBuild) -> None:
     """Raise 401 if the requester is not the build's owner or a space/super admin.
 
-    Wraps the shared confirm_space_write_access to keep auth parity with
+    Wraps the shared confirm_existing_item_write_access to keep auth parity with
     PUT /builds/{id}/update.
     """
-    confirm_space_write_access(request, build.username, build.space_name)
+    confirm_existing_item_write_access(request, build.username, build.space_name)
 
 
 def authorize_build_read_access(request: Request, build: StoredBuild) -> None:

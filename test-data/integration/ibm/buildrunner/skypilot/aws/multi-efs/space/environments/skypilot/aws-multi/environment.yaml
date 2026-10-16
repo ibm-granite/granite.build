@@ -1,0 +1,22 @@
+name: skypilot-aws-multi
+type: Skypilot
+subtype: aws
+config:
+  default_cloud: aws
+  cloud_config:
+    workspaces:
+      default:
+        aws:
+          profile: gb-skypilot
+  shared_workdir: /mnt/gb-shared/gbroot
+  shared_filesystem:
+    - provider: efs
+      mount_point: /mnt/gb-shared
+      efs:
+        file_system_id: fs-03bbdc96a5fdcb873
+        region: us-east-1
+    - provider: efs
+      mount_point: /mnt/gb-scratch
+      efs:
+        provision: ephemeral
+        region: us-east-1

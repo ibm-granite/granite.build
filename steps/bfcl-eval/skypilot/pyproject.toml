@@ -1,0 +1,57 @@
+[project]
+name = "bfcl-eval-step"
+version = "0.1.0"
+description = "Runtime environment for the bfcl-eval step -- bfcl-eval, soundfile, and vllm in a single uv-managed venv (see README.md for why these no longer need separate environments)."
+requires-python = ">=3.14"
+dependencies = [
+    "bfcl-eval",
+    "clearml>=2.1.12",
+    "pyyaml",
+    "soundfile",
+    "vllm==0.27.1",
+    "wandb>=0.28.2",
+]
+
+# Not a package in its own right -- this pyproject.toml exists only so `uv
+# lock`/`uv sync` can produce a reproducible venv (.venv here, or
+# /opt/bfcl-eval/.venv in the image) for this step's runtime, not to build
+# and install a "bfcl-eval-step" wheel.
+[tool.uv]
+package = false
+
+# bfcl-eval hard-pins numpy==1.26.4 in every release on PyPI, from
+# 2025.6.8 through the current latest (2026.3.23) -- unchanged for ~20
+# months while dozens of its other deps were bumped repeatedly in the same
+# file. Traced to https://github.com/ShishirPatil/gorilla/pull/515
+# (2024-07-17), a blanket "pin whatever's currently installed" pass across
+# ~10 unrelated deps at once, not a targeted numpy 2.0 fix -- PR body just
+# says "to avoid potential compatibility issues". Checked for a real
+# incompatibility and found none: bfcl_eval's own numpy usage
+# (eval_runner_helper.py, memory_vector.py) is limited to np.percentile /
+# np.ndarray / np.asarray / np.array(dtype=np.float32|np.int64) -- all
+# stable APIs numpy 2.0 didn't touch, not the legacy aliases (np.float_,
+# np.bool8, np.NaN, ...) that migration actually removed. Its other
+# numpy-adjacent hard dependency, faiss-cpu==1.11.0, explicitly declares
+# numpy<3.0,>=1.25.0 -- already numpy-2-compatible. Overriding here so the
+# rest of the resolution (current vllm, current opencv-python-headless)
+# isn't held back by what looks like a stale snapshot pin. This override
+# alone does not settle the Python version: the faiss-cpu cp314-wheel gap
+# does, and it is overridden below for that reason.
+# If a real numpy-2 incompatibility surfaces in bfcl_eval at runtime
+# despite this analysis, drop this override and reinstate the
+# vllm<0.15.0 + opencv-python-headless<4.12.0 caps documented in git
+# history instead.
+#
+# faiss-cpu>=1.15.0 is also what unblocks the Python 3.14 bump above --
+# faiss-cpu==1.11.0 (bfcl-eval's own pin) has no cp314 wheel at all.
+#
+# tree-sitter is deliberately NOT overridden, unlike the other two: bfcl_eval's
+# own model_handler/parser/js_parser.py and java_parser.py call the pre-0.22
+# tree-sitter API (`Language(tree_sitter_javascript.language(), "javascript")`
+# then `parser.set_language(...)`), which tree-sitter>=0.22 removed --
+# confirmed by a real run raising `TypeError: __init__() takes exactly 1
+# argument (2 given)` when this was overridden to tree-sitter>=0.26.0. Must
+# stay on whatever bfcl-eval itself pins (currently ==0.21.3). That version
+# has no cp314 wheel either, so it builds from source under Python 3.14 --
+# see the Dockerfile's build-essential layer.
+override-dependencies = ["numpy>=2", "faiss-cpu>=1.15.0"]

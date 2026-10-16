@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""Drop-in replacement for the `bfcl` CLI that also registers Granite-4
+checkpoints bfcl_eval doesn't ship a MODEL_CONFIG_MAPPING entry for, so
+--model can be the real checkpoint id instead of borrowing an unrelated
+size's entry for its handler/chat-template.
+
+bfcl_eval.constants.model_config.MODEL_CONFIG_MAPPING is a plain module-level
+dict with no plugin/extension hook, and `bfcl` (bfcl_eval.__main__:cli) is a
+Typer app with no way to inject a custom entry from the command line -- the
+only way to add one is to mutate the dict in the same process before the CLI
+runs, so this has to be a wrapper that imports bfcl_eval itself rather than a
+shell one that execs the real binary. run-bfcl.sh invokes this instead of
+plain `bfcl`; see README.md for the model-id gotcha this works around.
+
+Also patches `Granite4FCHandler._extract_tool_calls` to recover tool calls
+missing their `</tool_call>` closing tag -- see tool_call_tag_repair.py, whose
+docstring carries the measured root cause (the checkpoint stops right after the
+JSON payload without closing the tag, in ~88% of otherwise correctly-targeted
+calls). Set BFCL_TOOL_CALL_TAG_REPAIR=0 to disable and
+reproduce the original strict-regex behavior (e.g. for an apples-to-apples
+unfixed rerun).
+
+Optionally (OFF unless BFCL_THINK_PREFILL is set) appends a closed reasoning
+block to the generation prompt, to tell "cannot call tools" apart from "own
+reasoning block displaces the call" on the distilled arms that score 0.00%.
+See think_prefill.py, which carries the whole argument for why that is the
+right probe and why a prefilled run is a diagnostic rather than a score.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from bfcl_eval.constants.model_config import MODEL_CONFIG_MAPPING, ModelConfig
+from bfcl_eval.model_handler.local_inference.granite_4 import Granite4FCHandler
+from bfcl_eval.model_handler.local_inference.qwen_fc import QwenFCHandler
+from think_prefill import patch_granite_prefill
+from tool_call_tag_repair import patch_granite_handler
+
+if os.environ.get("BFCL_TOOL_CALL_TAG_REPAIR", "1") != "0":
+    patch_granite_handler(Granite4FCHandler)
+
+# Say it out loud, both ways. A prefilled run's scores are NOT comparable to the
+# arms scored without it, so a run must never be able to be prefilled quietly:
+# the line below is the only thing distinguishing the two in a log that is
+# otherwise identical, and the result tree records no prompt.
+_prefill = patch_granite_prefill(Granite4FCHandler)
+if _prefill is not None:
+    print(
+        f"[shim] THINK PREFILL ARMED: appending {_prefill!r} to every generation "
+        f"prompt. This run is a DIAGNOSTIC -- its scores are not comparable to "
+        f"un-prefilled arms.",
+        flush=True,
+    )
+
+# Real Granite-4 checkpoints bfcl_eval has no entry for. Granite4FCHandler is
+# generic across the whole Granite-4 family (confirmed against bfcl_eval's
+# own model_config.py, which uses it for ibm-granite/granite-4.0-350m too --
+# it's keyed by handler class, not tied to that model's size), so any of
+# these can reuse it; only the label/metadata differs per model.
+EXTRA_MODELS = {
+    "ibm-granite/granite-4.2-30b-fp8": {
+        "display_name": "Granite-4.2-30b-fp8 (FC)",
+        "url": "https://huggingface.co/ibm-granite/granite-4.2-30b-fp8",
+    },
+    "ibm-granite/granite-4.2-3b": {
+        "display_name": "Granite-4.2-3b (FC)",
+        "url": "https://huggingface.co/ibm-granite/granite-4.2-3b",
+    },
+    # The bf16, UNQUANTIZED 30b -- and the distinction is the whole point of adding it.
+    # The closing-tag defect (and 8.00% multi-turn after repair) was measured on
+    # granite-4.2-30b-fp8 only; whether the defect is fp8-specific was never checked. THIS is the checkpoint the distillation actually uses as
+    # teacher (config.json: torch_dtype bfloat16, no quantization_config), so it is the one whose
+    # score decides the teacher question. Registered separately rather than reusing the fp8 entry
+    # so the two can never be confused in a result file.
+    "ibm-granite/granite-4.2-30b": {
+        "display_name": "Granite-4.2-30b bf16 (FC)",
+        "url": "https://huggingface.co/ibm-granite/granite-4.2-30b",
+    },
+}
+
+# Locally-trained checkpoints, named at submit time rather than hardcoded. The teacher entries above
+# are permanent -- there are three published checkpoints and they will not multiply. The student side
+# is the opposite: every distillation arm is a separate checkpoint that has to score under its own id
+# (a result file labelled with a borrowed id is indistinguishable from a result for the borrowed
+# model, which is the exact confusion the bf16/fp8 comment above exists to prevent), and the arm set
+# grows with every sweep. So the arm ids arrive in the environment instead of in this file:
+#
+#   BFCL_EXTRA_MODEL_IDS="gb/blend192k-kd20,gb/granite-4.1-3b-base-retagged"
+#
+# THE HANDLER IS NOT A CONSTANT ANY MORE, and that used to be a silent trap. Until the
+# teacher question reopened, every id registered here was a Granite-4 checkpoint, so
+# `model_handler=Granite4FCHandler` was hardcoded and the comment said "these ARE Granite-4
+# models". The moment a Qwen teacher is registered that stops being true: the handler owns
+# the prompt format AND the tool-call parser, so scoring Qwen through Granite's handler
+# yields a near-zero that is indistinguishable from "Qwen is a weak teacher". This project
+# has already paid for that class of mistake twice -- a 0.00% that was a protocol failure
+# (§5.7) and an fp8 score read as the bf16 model's (§5.2) -- so the family is DISPATCHED,
+# and an id whose family cannot be determined RAISES instead of defaulting to Granite.
+_HANDLERS = {"granite": Granite4FCHandler, "qwen": QwenFCHandler}
+
+
+# Every arm this project has ever trained is a Granite student, and the established arm
+# names carry no family word -- `gb/blend192k-blendce`, `gb/blend192k-kd20`, and the ids in
+# §7 of docs/reports/distillation-baseline.md. So the `gb/` prefix IS the family statement
+# for our own checkpoints, and requiring the word "granite" in them would break every
+# rescore of every existing arm. Anything that is neither prefixed `gb/` nor names a known
+# family is refused, which is the case this dispatch exists for.
+_OUR_PREFIX = "gb/"
+
+
+def _family_of(model_id: str) -> str:
+    low = model_id.lower()
+    for fam in _HANDLERS:
+        if fam in low:
+            return fam
+    if low.startswith(_OUR_PREFIX):
+        return "granite"
+    raise SystemExit(
+        f"FATAL: cannot determine model family for BFCL id {model_id!r}.\n"
+        f"  Known families: {sorted(_HANDLERS)}. The handler owns the prompt format and the\n"
+        f"  tool-call parser, so guessing it produces a score for a different model than the\n"
+        f"  one named. Put the family in the id (e.g. 'gb/granite-blend192k-blendce'), or add\n"
+        f"  the family to _HANDLERS in this shim. Our own arms may use the '{_OUR_PREFIX}' prefix."
+    )
+
+
+# The chat template still comes from the checkpoint directory via --local-model-path, not
+# from this entry; what the entry decides is the handler and the metadata.
+for _extra in filter(
+    None, (x.strip() for x in os.environ.get("BFCL_EXTRA_MODEL_IDS", "").split(","))
+):
+    EXTRA_MODELS.setdefault(
+        _extra,
+        {
+            "display_name": f"{_extra} (FC)",
+            "url": f"local checkpoint, registered via BFCL_EXTRA_MODEL_IDS: {_extra}",
+        },
+    )
+
+for _model_id, _meta in EXTRA_MODELS.items():
+    if _model_id in MODEL_CONFIG_MAPPING:
+        continue
+    MODEL_CONFIG_MAPPING[_model_id] = ModelConfig(
+        model_name=_model_id,
+        display_name=_meta["display_name"],
+        url=_meta["url"],
+        org=("Qwen" if _family_of(_model_id) == "qwen" else "IBM"),
+        license="Apache-2.0",
+        model_handler=_HANDLERS[_family_of(_model_id)],
+        input_price=None,
+        output_price=None,
+        is_fc_model=True,
+        underscore_to_dot=False,
+    )
+
+from bfcl_eval.__main__ import cli  # noqa: E402 (must follow the registration above)
+
+if __name__ == "__main__":
+    cli()

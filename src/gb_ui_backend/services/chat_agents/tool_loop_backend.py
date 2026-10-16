@@ -500,6 +500,9 @@ class ToolLoopBackend(ChatAgentBackend):
         """Signals the session's owner task to exit — see
         _run_session_owner()'s docstring for why only that task may close
         the stack — and waits for it to actually finish."""
+        # Both are populated when the session is registered in _sessions
+        # (see _get_or_create_session), so any session reaching here has them.
+        assert session.close_event is not None and session.owner_task is not None
         session.close_event.set()
         try:
             await asyncio.wait_for(session.owner_task, timeout=10)

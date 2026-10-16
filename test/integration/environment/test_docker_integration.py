@@ -5,10 +5,13 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from libgbtest.docker_images import ci_docker_image
 
 # pytestmark = pytest.mark.ibm
 
 pytestmark = pytest.mark.docker_required
+
+_IMAGE = ci_docker_image("ALPINE_IMAGE")
 
 
 def _docker_available():
@@ -53,7 +56,7 @@ class TestDockerIntegration:
         config = EnvironmentConfig(
             name="integration-docker",
             type="Docker",
-            config={"defaults": {"image": "alpine:latest"}},
+            config={"defaults": {"image": _IMAGE}},
         )
         env = Docker(event_q=event_q, environment_config=config)
 
@@ -62,7 +65,7 @@ class TestDockerIntegration:
         await env.launch_docker(
             launch_id=launch_id,
             launcher_config={
-                "image": "alpine:latest",
+                "image": _IMAGE,
                 "command": "echo hello-gbserver",
             },
             config={},
@@ -109,7 +112,7 @@ class TestDockerIntegration:
                 launch_id=launch_id,
                 targetsteprun_asset_dir=tmpdir,
                 launcher_config={
-                    "image": "alpine:latest",
+                    "image": _IMAGE,
                     "command": "sh -c 'echo test-output > /gb-workspace/result.txt'",
                 },
                 config={},

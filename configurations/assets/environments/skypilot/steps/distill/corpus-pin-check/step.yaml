@@ -1,0 +1,90 @@
+######
+# corpus-pin-check — refuse a pinned corpus that this build does not describe.
+#
+# Was an inline `command` target copied verbatim into four granite4-350m recipes. The
+# logic, and the reasoning behind each comparison, live in src/check_corpus_pin.py;
+# this file only passes the configuration through.
+#
+# CPU-only and stdlib-only. It needs no trainer source, which is why it carries none of
+# the distill-* steps' code_config / source-delivery contract.
+######
+name: corpus-pin-check
+version: 1.0.0
+type: data_processing
+config:
+  pin_check_config:
+    # The pinned corpus directory: corpus_manifest.json, train.jsonl, eval.jsonl.
+    corpus_dir: ""
+    # The teacher this build distils from. Its basename must equal the manifest's
+    # tokenizer_identity.
+    teacher_model: ""
+    # The prep policies this build would have used; each must equal the manifest's.
+    max_length: 0
+    think_policy: ""
+    documents_policy: ""
+    eval_fraction: 0.0
+    # This build's retagged tokenizer is the `tokenizer` target input — see `inputs:`.
+    # Where corpus_pin.json is written. A relative path lands under GB_BUILD_WORKDIR.
+    output_dir: "corpus-pin"
+    python: "/stage/.venv/bin/python"
+
+# I/O schema, validated against the build.yaml target at build time: a target that
+# does not bind a required input fails validation before anything is queued. The
+# run script reads it as {{ bindings.tokenizer.binding.path }}. allow_unknown stays
+# true so a recipe can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  required:
+    # This build's retagged tokenizer, byte-compared against the manifest's
+    # tokenizer_path when that directory still exists.
+    tokenizer:
+      type: model
+      accept: [uri, binding]
+
+outputs:
+  required:
+    pin_check:
+      type: fileset
+
+environment_configs:
+  Skypilot:
+    subtypes:
+      - lsf
+    default_launcher: pin_check
+    launchers:
+      pin_check:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+          # Cloud-agnostic: the build supplies cpus/memory via
+          # config.compute_config and config.launcher_config.resources.
+          resources: {}
+          file_mounts:
+            src: src
+          run: |
+            set -euo pipefail
+            echo "=== corpus-pin-check on $(hostname) ==="
+            # The tokenizer used to be a config key. A recipe that still sets it would
+            # otherwise be ignored silently, so refuse it.
+            {% if config.pin_check_config.tokenizer_dir is defined %}
+            echo "corpus-pin-check: FATAL: pin_check_config.tokenizer_dir is no longer read; bind the target input 'tokenizer' instead (see this step's README)" >&2
+            exit 1
+            {% endif %}
+            WORK="${GB_BUILD_WORKDIR:-$PWD}"
+            OUT_DIR="{{ config.pin_check_config.output_dir }}"
+            case "$OUT_DIR" in /*) ;; *) OUT_DIR="$WORK/$OUT_DIR" ;; esac
+            mkdir -p "$OUT_DIR"
+            "{{ config.pin_check_config.python }}" ./src/check_corpus_pin.py \
+              "{{ config.pin_check_config.corpus_dir }}" \
+              "{{ config.pin_check_config.teacher_model }}" \
+              "{{ config.pin_check_config.max_length }}" \
+              "{{ config.pin_check_config.think_policy }}" \
+              "{{ config.pin_check_config.documents_policy }}" \
+              "{{ config.pin_check_config.eval_fraction }}" \
+              "{{ bindings.tokenizer.binding.path }}" \
+              "$OUT_DIR/corpus_pin.json"
+    monitors:
+      skypilot_monitor:
+        ref: space://monitors/skypilot

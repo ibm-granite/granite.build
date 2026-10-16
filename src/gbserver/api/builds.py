@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import base64
+import binascii
 import io
 import zipfile
 from enum import StrEnum, auto
@@ -24,15 +25,21 @@ from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, model_validator
 
+from gbcommon.utils.archive_safety import (
+    MAX_ZIP_ENTRIES,
+    MAX_ZIP_UNCOMPRESSED_BYTES,
+    ArchiveLimitError,
+    check_archive_bytes_safe,
+)
 from gbserver.api.build_files_paths import authorize_build_read_access
 from gbserver.api.utils import (
     NO_ACCESSIBLE_SPACE,
     ListAppendOrSet,
     apply_tag_update,
-    confirm_space_write_access,
+    confirm_can_add_to_space,
+    confirm_existing_item_write_access,
     get_query_control,
     get_row_filter,
-    has_space_write_access,
     is_space_admin,
     is_super_admin,
     scope_space_name_filter,
@@ -297,10 +304,14 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
     # req.username is the identity the build will run under and whose per-user
     # secrets get injected into it — bind it to the caller unless the caller
     # is a space/super admin explicitly impersonating another user, the same
-    # gate PUT /builds/{id}/update already applies to build.username.
-    confirm_space_write_access(
+    # gate PUT /builds/{id}/update already applies to build.username. The
+    # caller must also be a member of the space: the build consumes the space's
+    # compute and secrets.
+    confirm_can_add_to_space(
         request, username_on_target=req.username, space_name=stored_space.name
     )
+
+    _confirm_build_archive_within_limits(req.build_archive)
 
     stored_build = StoredBuild.create(
         name=req.name,
@@ -320,6 +331,37 @@ def submit_build(request: Request, req: BuildSubmitRequest) -> BuildSubmitRespon
     return BuildSubmitResponse(
         build_id=stored_build.uuid,
     )
+
+
+def _confirm_build_archive_within_limits(build_archive: str) -> None:
+    """Refuse an uploaded build archive over the entry/size caps, at submit time.
+
+    The same caps are enforced again when a runner extracts the archive; checking
+    here keeps an oversized build from being stored as PENDING and failing later.
+    Content that is not valid base64, or not a zip/tar, is left for extraction
+    to reject (as before).
+
+    Args:
+        build_archive: The base64-encoded archive from the request.
+
+    Raises:
+        HTTPException: (413) if the archive exceeds MAX_ZIP_ENTRIES entries or
+            MAX_ZIP_UNCOMPRESSED_BYTES uncompressed bytes.
+    """
+    try:
+        raw = base64.b64decode(build_archive)
+    except (binascii.Error, ValueError):
+        return
+    try:
+        check_archive_bytes_safe(
+            raw,
+            max_entries=MAX_ZIP_ENTRIES,
+            max_uncompressed_bytes=MAX_ZIP_UNCOMPRESSED_BYTES,
+        )
+    except ArchiveLimitError as e:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(e)
+        ) from e
 
 
 @builds_api.post("/restart")
@@ -353,11 +395,14 @@ def restart_build(request: Request, req: BuildRestartRequest) -> BuildRestartRes
     stored_space = space_storage.get_by_name(build.space_name)
     if stored_space is None:
         raise not_found
-    has_access, _ = has_space_write_access(
-        request, username_on_target=build.username, space_name=stored_space.name
-    )
-    if not has_access:
-        raise not_found
+    # Membership, not just write access: a restart re-runs on the space's
+    # compute and secrets, so an owner who has since left the space may not.
+    try:
+        confirm_can_add_to_space(
+            request, username_on_target=build.username, space_name=stored_space.name
+        )
+    except HTTPException as exc:
+        raise not_found from exc
 
     # Only a finished build can be restarted: re-opening a build with a live runner
     # would attach a second runner to it. There is no runner-liveness table; the
@@ -413,7 +458,9 @@ def validate_build(request: Request, req: BuildValidateRequest) -> JSONResponse:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Space {req.space_name} not found in space storage",
             )
-        confirm_space_write_access(
+        # Dynamic validation dry-runs the build in the space, so membership is
+        # required here exactly as for submit_build.
+        confirm_can_add_to_space(
             request, username_on_target=req.username, space_name=stored_space.name
         )
     else:
@@ -427,6 +474,8 @@ def validate_build(request: Request, req: BuildValidateRequest) -> JSONResponse:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"User {user_id} cannot validate a build as {req.username}",
             )
+
+    _confirm_build_archive_within_limits(req.build_archive)
 
     errors = BuildValidation.validate_build_archive(
         build_archive=req.build_archive,
@@ -755,7 +804,7 @@ def update_build(
     assert isinstance(build, StoredBuild)
 
     # Make sure the user (owner or admin) has access to the build
-    confirm_space_write_access(
+    confirm_existing_item_write_access(
         request=request, username_on_target=build.username, space_name=build.space_name
     )
 

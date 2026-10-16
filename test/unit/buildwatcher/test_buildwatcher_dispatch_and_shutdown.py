@@ -30,6 +30,10 @@ failing on Python 3.11 while 3.12 passed the same commit):
   hung the process with no diagnostic. In CI that is a job killed mid-run with no
   pytest summary.
 
+Shutdown also must not cancel builds whose runners outlive the watcher: it calls each
+runner's ``on_build_orchestrator_shutdown()`` rather than ``stop()`` (the user-cancel
+path), and the job runner overrides that to leave its pod running.
+
 These tests drive the private methods directly with stub threads/runners: the real
 race needs 3.11 scheduling to lose, but the *guards* are deterministic.
 """
@@ -39,6 +43,7 @@ import time
 
 import pytest
 
+from gbserver.buildrunner.abstractbuildrunner import AbstractBuildRunner
 from gbserver.buildwatcher import buildwatcher as bw_mod
 from gbserver.buildwatcher.buildwatcher import BuildWatcher
 
@@ -61,6 +66,20 @@ class _StubRunner:
 
     def start_and_wait(self):
         pass
+
+    # The real default (cancel via stop()), as in-process runners inherit it.
+    on_build_orchestrator_shutdown = AbstractBuildRunner.on_build_orchestrator_shutdown
+
+
+class _DetachingStubRunner(_StubRunner):
+    """A runner that outlives the watcher, like BuildRunnerJob: detaches on shutdown."""
+
+    def __init__(self):
+        super().__init__()
+        self.detached = False
+
+    def on_build_orchestrator_shutdown(self):
+        self.detached = True
 
 
 def _watcher(monkeypatch) -> BuildWatcher:
@@ -209,6 +228,22 @@ class TestShutdownIsBounded:
 
         w._BuildWatcher__wait_for_completion()
         assert bad.stopped and good.stopped, "a raising stop() stranded the rest"
+
+    def test_shutdown_detaches_rather_than_stops(self, monkeypatch):
+        """Shutdown uses the shutdown hook, never stop(), so a detaching runner's
+        build is not cancelled while an in-process one still is."""
+        monkeypatch.setattr(bw_mod, "_SHUTDOWN_JOIN_TIMEOUT_S", 0.2)
+        w = _watcher(monkeypatch)
+        detaching, in_process = _DetachingStubRunner(), _StubRunner()
+        w.build_runners["job"] = detaching
+        w.build_runners["thread"] = in_process
+        w.worker_thread = threading.Thread(target=lambda: None)
+        w.worker_thread.start()
+
+        w._BuildWatcher__wait_for_completion()
+        assert detaching.detached, "the job-like runner was not told of the shutdown"
+        assert not detaching.stopped, "shutdown cancelled a build that outlives it"
+        assert in_process.stopped, "shutdown left an in-process build running"
 
     def test_join_does_not_hold_the_builds_lock(self, monkeypatch):
         """Joining under _builds_lock deadlocks the threads that need that lock."""

@@ -1,0 +1,60 @@
+# SkyPilot on a LOCAL kind cluster, with shared storage — the environment the
+# skypilot/kubernetes build tests (and the dpk kube-tok fixture) run against.
+# Bring the cluster and its PVC up with `make kube-setup` (scripts/kube/setup-kind.sh).
+#
+# Same model as skypilot/slurm: every pod mounts one shared volume at /shared,
+# which is this env's shared_workdir, so
+#   * hf:// inputs are pulled ONCE by a separate hfpull step into /shared/hf_cache
+#     (not inline in the consuming step), and every later pod reads them there;
+#   * a target can hand files to another through env:///shared/... — on the
+#     generic skypilot/kubernetes env each pod has only its own filesystem.
+name: sky-kube-local
+type: Skypilot
+subtype: kubernetes
+config:
+  default_cloud: kubernetes
+  # Applied as AUTODOWN on Kubernetes; see skypilot/kubernetes/environment.yaml.
+  idle_minutes_to_autostop: 15
+  shared_workdir: /shared
+  # Deep-merged into ~/.sky/config.yaml at launch (as skypilot/aws does for its
+  # credentials profile). Two things, both about WHICH cluster and HOW pods run:
+  cloud_config:
+    kubernetes:
+      # Pin SkyPilot to the kind cluster. With allowed_contexts set, SkyPilot
+      # launches only into these contexts and ignores the CURRENT kube context,
+      # so these builds never land on whatever cluster happens to be current.
+      # NOTE: this lands in the GLOBAL SkyPilot config, so plain `sky` use on this
+      # machine is also limited to kind-skypilot until gbserver's next build on
+      # another environment replaces it (last writer wins) or `make kube-teardown`
+      # removes it.
+      allowed_contexts:
+        - kind-skypilot
+      # The shared volume, scoped to the kind context (context_configs.<context>)
+      # so it can never replace a pod_config the user keeps for other clusters:
+      # cloud_config lists overwrite rather than merge. `make kube-setup` creates
+      # the claim ReadWriteMany (a static hostPath PV on the single kind node):
+      # SkyPilot refuses to start a pod on a ReadWriteOnce claim another pod still
+      # uses, and pods overlap (the hfpull pod and its consumer, a teardown and
+      # the next launch).
+      context_configs:
+        kind-skypilot:
+          pod_config:
+            spec:
+              volumes:
+                - name: gb-shared
+                  persistentVolumeClaim:
+                    claimName: gb-shared
+              containers:
+                - volumeMounts:
+                    - name: gb-shared
+                      mountPath: /shared
+assetstores:
+  - store_uri: space://assetstores/hf
+    pull:
+      - mode: default
+        config:
+          # Separate hfpull step, cached on the shared volume (as on slurm).
+          cache_path: /shared/hf_cache
+    push:
+      - mode: default
+        config: {}

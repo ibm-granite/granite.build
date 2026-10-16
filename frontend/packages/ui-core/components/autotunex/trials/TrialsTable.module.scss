@@ -1,0 +1,22 @@
+/**
+ * Carbon fills every radar blob at 0.3 alpha (`radar.opacity.selected`), which
+ * lives in configuration-non-customizable and is not reachable through options —
+ * RadarChartOptions.radar exposes only `axes` and `alignment`. The colour scale
+ * is applied correctly (`.style("fill", getFillColor(name))` in both the enter
+ * and update branches of the blob join), but at that opacity three or four
+ * overlapping trials composite into hues belonging to none of them, so a blob's
+ * apparent colour changed as more trials were ticked and stopped matching the
+ * row's checkbox.
+ *
+ * Reducing the fill to a wash leaves each trial read by its stroke and vertex
+ * dots, which Carbon already paints from the same scale at full opacity.
+ *
+ * `!important` because Carbon sets fill-opacity as an inline style on the path,
+ * and the cascade is the only thing that beats an inline style. The cost is that
+ * legend hover no longer dims a blob's fill — but it dims `stroke-opacity` in
+ * the same handler (1 -> 0.1) and that is untouched here, so the hover
+ * affordance survives on the outline, which is now the part carrying the colour.
+ */
+.radar :global(g.blobs path) {
+  fill-opacity: 0.08 !important;
+}

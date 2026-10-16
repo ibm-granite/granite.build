@@ -18,5 +18,4 @@ target_expectations:
     step_count: 1
     input_artifact_count: 0
     output_artifact_count: 0
-    jobstats_count: 0
 timeout_minutes: 10

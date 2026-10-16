@@ -21,7 +21,12 @@ from libgbtest.buildrunner.buildtest import (
 )
 from libgbtest.constants import extended_testing_only
 
-pytestmark = pytest.mark.standalone
+# These run the Bash environment in-process, which refuses to start outside
+# STANDALONE; the test suite runs as GB_ENVIRONMENT=DEV.
+pytestmark = [
+    pytest.mark.standalone,
+    pytest.mark.usefixtures("allow_bash_environment"),
+]
 
 
 # Extended/nightly test: the fixture performs a REAL HuggingFace pull + push

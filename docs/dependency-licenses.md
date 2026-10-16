@@ -60,7 +60,7 @@ Classifier: License :: OSI Approved :: BSD License in dist-info metadata.
 | rabbitmq     | aio-pika            | 9.6.2     | Apache-2.0                  | Yes         |       |
 | rabbitmq     | aiormq              | 6.9.4     | Apache-2.0                  | Yes         |       |
 | nats         | nats-py             | 2.14.0    | Apache-2.0                  | Yes         |       |
-| postgres     | psycopg2-binary     | 2.9.11    | LGPL with exceptions        | Yes*        | LGPL OK as unmodified library dep |
+| postgres     | psycopg[binary]     | >=3.2     | LGPL-3.0                    | Yes*        | LGPL OK as unmodified library dep |
 | k8s          | kubernetes_asyncio  | latest    | Apache-2.0                  | Yes         | Via PyPI metadata |
 | ssh          | asyncssh            | 2.22.0    | EPL-2.0 OR GPL-2.0-or-later | Yes*        | EPL-2.0 is ASF Category B; users may elect EPL-2.0 over GPL |
 | docker       | docker              | >=7.0.0   | Apache-2.0                  | Yes         | Via PyPI metadata |
@@ -97,7 +97,7 @@ compatible with the project Apache 2.0 license.
 
 - **python-dotenv** (1.2.2, BSD-3-Clause): Verified correct package. Deprecated dotenv wrapper (License: UNKNOWN) is not used.
 - **tqdm** (MPL-2.0 AND MIT): MPL-2.0 is weak copyleft (file-level); also offered under MIT.
-- **psycopg2-binary** ([postgres] extra, LGPL): Compatible as unmodified library dep; not in core install.
+- **psycopg[binary]** ([postgres] extra, LGPL-3.0): Compatible as unmodified library dep; not in core install.
 - **asyncssh** ([ssh] extra, EPL-2.0 OR GPL-2.0-or-later): EPL-2.0 is ASF Category B. Users may elect EPL-2.0. Not in core or standalone path.
 - **IBM-only extras** (dmf-lib, aspera==v1.1.6, ibm_cloud_sdk_core, ibm_secrets_manager_sdk): Require IBM Artifactory; not for OSS use. Note: aspera==v1.1.6 is IBM-internal, distinct from public aspera 0.10.5 (BUSL-1.1).
 - **getdaft replaced with daft**: getdaft was a deprecated stub with no declared license; daft is Apache-2.0.

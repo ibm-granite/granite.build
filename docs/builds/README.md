@@ -108,6 +108,8 @@ dispatched with its `model` input resolved to that artifact. In step config and 
 value is available as `{{ bindings.<name>.binding.path }}` for a filesystem-backed output, or
 `{{ bindings.<name>.binding.state }}` for a `mem://` output (an opaque value — e.g. a service URL —
 passed through verbatim). See the [`build.yaml` reference](build-yaml-reference.md#mem-outputs--passing-a-value-not-a-file).
+For the full picture, covering both build.yaml and step.yaml, see
+[Inputs, outputs, and bindings](bindings.md).
 
 ## Spaces: the runtime context
 

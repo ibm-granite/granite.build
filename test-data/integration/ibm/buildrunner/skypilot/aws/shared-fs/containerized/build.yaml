@@ -1,5 +1,5 @@
 granite.build:
-  name: skypilot-aws-shared-fs-hfpull-containerized
+  name: skypilot-aws-shared-fs-hfpull-containerized-test
   # Same hf:// input -> hidden hfpull -> command flow as ../bare/build.yaml, but the
   # command step sets an image, so byoc renders SkyPilot image_id: docker:<image>
   # and the command runs INSIDE the container against the in-container NFS mount

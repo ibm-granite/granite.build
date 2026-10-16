@@ -28,6 +28,8 @@ from typing import Any, Dict, List, Optional, Self, Tuple, Union
 from urllib.parse import urlparse
 
 from gbcommon.types.constants import get_gb_home_dir
+from gbcommon.types.gbenvconfig import is_standalone
+from gbcommon.uri.file import FileURI
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import (
     BINDING_KEY,
@@ -61,6 +63,10 @@ _NOHUP_SIGTERM_GRACE_S = 3.0
 _NOHUP_SIGKILL_GRACE_S = 2.0
 
 
+class BashEnvironmentNotAllowed(ValueError):
+    """The Bash environment was requested on a server that is not STANDALONE."""
+
+
 class Bash(Environment):
     """
     The local filesystem environment.
@@ -72,6 +78,24 @@ class Bash(Environment):
     log_paths: Dict[str, str]  # launch_id -> combined job.log path
 
     def __init__(self: Self, event_q: asyncio.Queue, **kwargs) -> None:
+        """Create a Bash environment, which runs step commands on this host.
+
+        Args:
+            event_q: The build's event queue.
+            **kwargs: Passed through to Environment.__init__.
+
+        Raises:
+            BashEnvironmentNotAllowed: If the server is not STANDALONE. Bash runs
+                each step's commands as gbserver subprocesses on the server host,
+                so on a shared server any user could run code there through a
+                build that targets it. A STANDALONE server is the user's own
+                machine, where that is the intended behavior.
+        """
+        if not is_standalone():
+            raise BashEnvironmentNotAllowed(
+                "The Bash environment runs commands on the gbserver host and is"
+                " only available on a standalone server (GB_ENVIRONMENT=STANDALONE)"
+            )
         self._launched_processes = {}
         self._env = {}
         self.log_paths = {}
@@ -549,7 +573,11 @@ class Bash(Environment):
             # base_uri branch below intentionally keeps the nesting — its returned
             # URI is base + "/" + the source basename.) source_path is an
             # absolute on-disk path produced by the step launch.
-            URI.get_uri(FILE_SCHEME + "://" + source_path).pull(
+            # source is a file:// URI, so pull() accepts the raise_errors /
+            # copy_dir_contents kwargs defined on FileURI (narrow for the checker).
+            source_uri = URI.get_uri(FILE_SCHEME + "://" + source_path)
+            assert isinstance(source_uri, FileURI)
+            source_uri.pull(
                 Path(uriobj.uri.path), raise_errors=True, copy_dir_contents=True
             )
             return uri

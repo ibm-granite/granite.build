@@ -1,11 +1,11 @@
 ---
 description: Read an architecture document and create a hierarchy of GitHub issues (epic > milestone sub-epics > implementation issues)
-argument-hint: "Path to architecture document (e.g., docs/plans/2026-02-23-architecture.md)"
+argument-hint: "Path to architecture document (e.g., docs/<design-doc>.md)"
 ---
 
 # Create Implementation Issues from Architecture Document
 
-You are helping a developer turn an architecture/design document into a structured set of GitHub issues. The issues are created in the fork repo (derived from `origin` remote).
+You are helping a developer turn an architecture/design document into a structured set of GitHub issues. The issues are created in the upstream repo `ibm-granite/granite.build` (the fork has issues disabled).
 
 Architecture document path: $ARGUMENTS
 
@@ -14,7 +14,7 @@ Architecture document path: $ARGUMENTS
 If `$ARGUMENTS` is empty or the file does not exist, ask the user to provide a valid path:
 ```
 Usage: /create-issues <path-to-architecture-document>
-Example: /create-issues docs/plans/2026-02-23-architecture.md
+Example: /create-issues docs/<design-doc>.md
 ```
 Do not proceed until a valid path is provided.
 
@@ -27,11 +27,6 @@ Do not proceed until a valid path is provided.
    - Sub-steps within each milestone (typically `### N.M ...`)
    - Verification/acceptance criteria per milestone
    - Files to create or modify per milestone
-3. Derive the fork owner and repo:
-   ```
-   FORK_OWNER=$(git remote get-url origin | sed -E 's|.*[:/]([^/]+)/.*|\1|')
-   FORK_REPO=$(git remote get-url origin | sed -E 's|.*[:/][^/]+/(.*)(.git)?$|\1|' | sed 's/\.git$//')
-   ```
 
 ## Step 2: Decide granularity and propose issue plan
 
@@ -62,7 +57,7 @@ Create issues in this order so parent issues can reference child issue numbers:
 For each implementation issue, create it with `gh issue create`. Use a HEREDOC for the body to avoid shell escaping issues:
 
 ```bash
-gh issue create --repo "$FORK_OWNER/$FORK_REPO" --title "<title>" --body "$(cat <<'EOF'
+gh issue create --repo ibm-granite/granite.build --title "<title>" --body "$(cat <<'EOF'
 ## Context
 
 <Brief description of what this issue covers and why, extracted from the architecture document.>

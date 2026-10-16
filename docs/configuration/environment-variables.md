@@ -47,7 +47,7 @@ Used when `GBSERVER_METADATA_STORAGE=sql`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `GBSERVER_SQL_SCHEME` | `postgresql` | DB scheme. |
+| `GBSERVER_SQL_SCHEME` | `postgresql+psycopg` | DB scheme, including the SQLAlchemy driver (psycopg 3). |
 | `GBSERVER_SQL_HOST` / `GBSERVER_SQL_PORT` | (IBM Cloud) / `31842` | Host and port. |
 | `GBSERVER_SQL_DBNAME` | `ibmclouddb` | Database name. |
 | `GBSERVER_SQL_SCHEMA` | per-environment | Schema (e.g. `granite_dot_build_prod`). |
@@ -81,6 +81,7 @@ Used when `GBSERVER_DEFAULT_BUILDRUNNER_TYPE=job`.
 | `GBSERVER_BUILDRUNNERJOB_SECRET_NAME` | (svc-acct secret) | Pull/service-account secret. |
 | `GBSERVER_BUILDRUNNERJOB_BUILD_WORKSPACE_PVC_NAME` | `gb-buildws-pvc` | Workspace PVC. |
 | `GBSERVER_BUILDRUNNERJOB_CONFIGMAP_NAME` | `granite-dot-build-configmap` | ConfigMap. |
+| `GBSERVER_BUILDRUNNERJOB_TERMINATION_GRACE_SECONDS` | `60` | Seconds between SIGTERM and SIGKILL when a build-runner pod is deleted (e.g. on cancel); covers workload teardown and status finalization. |
 | `GBSERVER_DEFAULT_ROOT_WORKSPACE_DIR` | `gbserverworkspace` | Root workspace dir (watchers derive subdirs). |
 
 ## GitHub & git
@@ -111,14 +112,14 @@ Used when `GBSERVER_DEFAULT_BUILDRUNNER_TYPE=job`.
 | `GBSERVER_LINEAGE_PROVIDER` | `wandb` (standalone `none`) | Lineage backend. See [lineage](../builds/lineage.md). |
 | `GBSERVER_WANDB_API_KEY` / `_PROJECT` / `_ENTITY` / `_BASE_URL` | (W&B) | W&B lineage settings. |
 
-## SkyPilot / LSF tuning
+## Compute environment tuning
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `GBSERVER_SKYPILOT_LAUNCH_CONCURRENCY` | `4` | Concurrent `sky.launch` operations. |
-| `GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS` / `_BACKOFF_MAX` | `4` / `30` | Provision retry policy. |
-| `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S` | `30` | Pre-launch SSH reachability probe for slurm/lsf; `0` disables it (set to `0` in our deployments — see [SkyPilot SLURM](../environments/skypilot-slurm.md)). |
+| `GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS` / `_BACKOFF_MAX` | `4` / `30` | Provision retry policy (also drives login-node failover — see [SkyPilot SLURM](../environments/skypilot-slurm.md)). |
 | `GBSERVER_LSF_TRANSIENT_ERROR_MAX_RETRIES` / `_RETRY_DELAY` | `3` / `30` | LSF transient-error retry policy. |
+| `GBSERVER_DOCKER_PULL_MAX_ATTEMPTS` / `_RETRY_BASE_DELAY` / `_RETRY_MAX_DELAY` | `4` / `5.0` / `30.0` | Docker image pull retry policy for transient registry errors (rate limits, 5xx). |
 | `GBSERVER_K8S_USE_ASPERA` / `GBSERVER_LSF_USE_ASPERA` | `true` / `false` | Use Aspera for asset transfer. |
 | `GBSERVER_ENABLE_STEP_RETRY` | `true` | Master switch for step-level retry. See [step retry](../builds/step-retry-configuration.md). |
 | `GBSERVER_ENABLE_SSH_HOST_KEY_VERIFICATION` | `false` | Verify SSH host keys. |

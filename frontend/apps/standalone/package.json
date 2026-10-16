@@ -16,6 +16,7 @@
     "@carbon/icons-react": "^11.81.0",
     "@carbon/react": "^1.108.0",
     "@carbon/themes": "^11.74.0",
+    "@monaco-editor/react": "^4.7.0",
     "@tanstack/react-query": "^5.100.11",
     "axios": "^1.16.1",
     "d3": "^7.9.0",

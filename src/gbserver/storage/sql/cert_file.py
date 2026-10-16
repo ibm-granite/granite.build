@@ -2,9 +2,10 @@
 # Since all instances use the same env vars, they can all use the same file.
 import atexit
 import base64
+import logging
 import os
 import threading
-from typing import Optional
+from typing import Optional, Union
 
 from gbserver.types.constants import (
     GBSERVER_SQL_SSLROOT_CERT_BASE64,
@@ -25,7 +26,7 @@ def _cleanup():
             _SSL_CERT_FILE = None
 
 
-def get_ssl_cert_file(logger: LoggingUtility) -> Optional[str]:
+def get_ssl_cert_file(logger: Union[LoggingUtility, logging.Logger]) -> Optional[str]:
     """Read the GBSERVERSQL_SSLROOT_CERT_FILE/BASE64 values and return the location of the certificate file.
     If neither are specified, return None.
     If both are specified, FILE takes precedence.

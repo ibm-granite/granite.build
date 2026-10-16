@@ -309,7 +309,7 @@ explicitly (`<cloud>/<cluster>[/<zone>]`). Prefer numeric/`"N+"` strings for `cp
 `cpus: "1+"` **breaks on the LSF cloud** (it parses the value as a float without stripping `+`), so
 cloud-agnostic steps leave `resources` empty and let the build.yaml supply them.
 
-> `compute_config` is **not** read by this launcher (unlike K8s/LSF) — see the dedicated note below.
+> `compute_config` is read only partially by this launcher (unlike K8s/LSF) — see the dedicated note below.
 
 #### `config` overrides (`docker`, `sbatch_options`)
 
@@ -342,11 +342,18 @@ which gbserver routes to different SkyPilot APIs:
 
 **Source path resolution.** A **relative** local source is resolved against the **`step.yaml`
 directory** (the per-run asset dir gbserver renders the step into), so you can mount files that ship
-alongside your `step.yaml`. Absolute paths and remote URIs (`s3://`, `gs://`, `file://`, …) are used
-unchanged. A **`~`/`~/`-prefixed source is rejected**: `~` is not expanded for sources (it would
-resolve to a literal `~` directory under the `step.yaml` dir), so use an absolute or step-relative
-source instead. A **relative source that uses `..` to climb out of the `step.yaml` dir** (e.g.
-`../other`) is likewise rejected, keeping sources confined to the step's own assets.
+alongside your `step.yaml`. Remote URIs (`s3://`, `gs://`, …) are used unchanged. A **`~`/`~/`-prefixed
+source is rejected**: `~` is not expanded for sources (it would resolve to a literal `~` directory under
+the `step.yaml` dir), so use an absolute or step-relative source instead. A **relative source that uses
+`..` to climb out of the `step.yaml` dir** (e.g. `../other`) is likewise rejected, keeping sources
+confined to the step's own assets.
+
+**Host paths are standalone-only.** Local sources are copied from the gbserver host, so an **absolute
+path or `file://` source** names a file on the server itself. Only a standalone server
+(`GB_ENVIRONMENT=STANDALONE`, your own machine) uses them unchanged. On any other server they are
+rejected, as is a relative source that leaves the `step.yaml` dir through a symlink, or a relative
+source with no step directory to resolve it against. This applies wherever `file_mounts` comes from:
+`step.yaml`, the build.yaml step `config:`, or the environment.
 
 **Destination path resolution — the destination *shape* decides where the payload lands.** When the
 environment defines `shared_workdir` (so a per-run workdir exists), the destination key is routed by
@@ -424,7 +431,7 @@ Added on top of (and overriding) anything in `envs`:
 ### `skypilot_monitor` config
 
 The monitor polls `sky.job_status()` and applies `event_configs` (the `GB_ARTIFACT_*` rules, which
-dual-accept the legacy `LLMB_` prefix) to the job log. Two config keys shape its behavior:
+dual-accept the legacy `LLMB_` prefix) to the job log. These config keys shape its behavior:
 
 - **`poll_interval_seconds`** — status-poll cadence. **This gates completion detection:** the monitor
   only notices a job finished on its next poll (it sleeps the interval between polls; success does not
@@ -434,6 +441,23 @@ dual-accept the legacy `LLMB_` prefix) to the job log. Two config keys shape its
   fixtures override it *down* (e.g. `5`). Written as `{{ config.poll_interval_seconds | default(300) }}`,
   so a `build.yaml` step `config:` sets it without touching the monitor.
 - **`log_retrieval.mode`** — when the job log is pulled and parsed for artifact events (below).
+- **`poll_failure_grace_seconds`** / **`poll_failure_max_seconds`** — how long failing status polls
+  are tolerated before the cluster is declared gone (FAILED, handed to the retry handler). The grace
+  defaults to **900s** on SLURM/LSF, whose polls ride an SSH login node, and to **0** elsewhere (where
+  a lost cluster is usually a real preemption). At least three polls must fail either way. Off
+  SLURM/LSF a "does not exist" poll is final at once. On LSF, once the grace is over the monitor asks
+  `bjobs` directly (at most every 5 min): a job LSF reports as gone is final, one it reports alive (or
+  cannot be asked about) is kept until the ceiling (default **7200s**). At the ceiling the job is
+  `bkill`-ed before the retry; if the `bkill` fails too, the step fails **without** a retry so two
+  allocations are never held. Values must be finite, non-negative numbers (a boolean is rejected);
+  anything else falls back to the default.
+  - A ceiling of **0** (or any value at or below the grace) means "`bkill` as soon as the grace is
+    over", with no `bjobs` check in between.
+  - A `bkill` LSF accepts does not always free the allocation at once: a job in `UNKWN` (its
+    execution host unreachable) moves to `ZOMBI` and keeps its hosts until LSF reaches them again, so
+    the retry can briefly overlap it.
+  - SLURM has no counterpart yet: after the grace a SLURM cluster is declared gone and handed to the
+    retry handler without an `scancel`, so an allocation SkyPilot lost track of is not killed.
 
 #### Log retrieval modes
 
@@ -469,6 +493,18 @@ pre-provisioning SkyPilot config files on the gbserver host, gbserver materializ
 - **Where each lands.** `cluster_ssh_configs` writes the slurm/lsf reachability files SkyPilot reads
   (`~/.<cloud>/config`); `cloud_config` is deep-merged into `~/.sky/config.yaml`; `aws_credentials`
   writes `~/.aws/credentials` (mode 0600).
+- **`cloud_config` edits take effect on the next build.** After the merge gbserver reloads its
+  in-process SkyPilot client config, so no gbserver restart is needed. Changed, added and *deleted* keys
+  all take effect: see the next point.
+- **Last-writer-wins (`cloud_config`).** gbserver records the `cloud_config` it last wrote (next to
+  `~/.sky/config.yaml`, as `.gbserver-cloud-config.yaml`). Each write first removes the recorded keys,
+  then deep-merges the writing environment's, so one environment's settings — a Kubernetes context pin,
+  say — never carry into another environment's launches; an environment without `cloud_config` just
+  removes the previous one. Keys gbserver never wrote are kept, as is a recorded key you have edited
+  since. The loaded client config is process-wide, so gbserver re-applies the launching environment's
+  `cloud_config` before *every* `sky.launch`, under a lock held until the launch is submitted: two
+  builds on different environments never submit with each other's config. Other requests (status,
+  down) carry whichever environment's config is loaded at the time.
 - **Secret resolution.** Every `cluster_ssh_configs` directive value (except the `Host` alias) and
   every `aws_credentials` value is looked up by exact name in the environment's secrets; a match is
   substituted, otherwise the literal is used. Keep credentials and sensitive hostnames as secret
@@ -481,8 +517,9 @@ pre-provisioning SkyPilot config files on the gbserver host, gbserver materializ
   **overwritten** — this self-heals a stale or re-keyed entry left by an earlier run, so no manual `rm`
   is ever needed. The *same* block is a no-op (shared freely by concurrent steps/builds). Only a
   *foreign* (non-gbserver) entry for the same alias is refused (`SkypilotConfigCollisionError`).
-- **No config teardown.** Materialized config files are left in place (safe and idempotent). Single-host
-  by design (the config files are host-local).
+- **No config teardown.** Materialized config files are left in place (safe and idempotent); the
+  last environment's `cloud_config` stays in `~/.sky/config.yaml` until the next write replaces it.
+  Single-host by design (the config files are host-local).
 - **Concurrency.** Host-shared files are guarded by a per-cloud cross-process file lock
   (`gbserver-<cloud>.lock`) plus an in-process thread lock, so materialization is safe for any
   `GBSERVER_DEFAULT_BUILDRUNNER_TYPE` (thread/process/job).
@@ -497,14 +534,26 @@ The exact contents of each block are cloud-specific — see the per-cloud pages:
 `cloud_config`); [AWS](skypilot-aws.md) uses `aws_credentials`; [Kubernetes](skypilot-kubernetes.md)
 uses neither.
 
-## `compute_config` is not honored by the Skypilot launcher
+## `compute_config` is only partially honored by the Skypilot launcher
 
-K8s and Lsf translate `compute_config.num_gpus_per_node` / `total_memory_per_node` into resource specs.
-SkyPilot reads `resources` directly from the launcher config. If a step needs GPU/memory, set
-`resources.accelerators` and `resources.memory` in the step.yaml (you may template them off
-`{{ config.compute_config.* }}` for a single source of truth). The K8s-only `gb.step_contents_in_env`,
-`k8s.*`, and `lsf.*` blocks are likewise ignored — step-asset code is not copied into the pod; if the
-`run:` script needs files, use `file_mounts` or fetch them in `setup:` / `run:`.
+Three keys are read:
+
+| Key | Effect |
+|---|---|
+| `num_nodes` | Becomes `sky.Task(num_nodes=...)`. Overridable by `launcher_config.num_nodes`. |
+| `num_cpus_per_node` | A low-precedence `cpus` floor on `sky.Resources`. |
+| `total_memory_per_node` | A low-precedence `memory` floor (skipped on slurm/lsf). |
+
+`num_gpus_per_node` is **not** read. Set `resources.accelerators` in the step.yaml instead (you may
+template it off `{{ config.compute_config.* }}` for a single source of truth). Accelerators are **per
+node**, so `accelerators: "H100:8"` with `num_nodes: 2` requests 16 GPUs in total.
+
+Do not put `num_nodes` under `resources`: it is a `sky.Task` field, not a `sky.Resources` one, so
+SkyPilot discards it silently. gbserver warns when it sees one, and the run proceeds single-node.
+
+The K8s-only `gb.step_contents_in_env`, `k8s.*`, and `lsf.*` blocks are ignored — step-asset code is
+not copied into the pod; if the `run:` script needs files, use `file_mounts` or fetch them in
+`setup:` / `run:`.
 
 ## See also
 

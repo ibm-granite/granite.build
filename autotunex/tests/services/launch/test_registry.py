@@ -96,6 +96,17 @@ def test_registry_selects_custom_code_builder_by_default(monkeypatch: pytest.Mon
     assert getattr(launcher._spec_builder, "func", None) is custom_spec.build_spec
 
 
+def test_registry_binds_keep_diagnostics_to_the_custom_code_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GB_TOKEN", "t")
+    settings = _llmb_settings().model_copy(update={"keep_diagnostics": True})
+
+    launcher = get_tuning_launcher(settings)
+
+    assert launcher._spec_builder.keywords["keep_diagnostics"] is True  # type: ignore[attr-defined]
+
+
 def test_registry_selects_lsf_builder_when_lsf_cluster_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -116,6 +127,41 @@ def test_registry_selects_lsf_builder_when_lsf_cluster_set(
 
     assert isinstance(launcher, LlmbTuningLauncher)
     assert getattr(launcher._spec_builder, "func", None) is lsf_spec.build_lsf_spec
+
+
+def test_registry_binds_the_hf_allowlist_to_the_custom_code_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GB_TOKEN", "t")
+    settings = _llmb_settings().model_copy(update={"hf_import_namespaces": ["example-org"]})
+
+    launcher = get_tuning_launcher(settings)
+
+    bound = launcher._spec_builder.keywords["private_model_namespaces"]  # type: ignore[attr-defined]
+    assert bound == ["example-org"]
+
+
+def test_registry_binds_the_hf_allowlist_to_the_lsf_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GB_TOKEN", "t")
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        job_backend="llmb",
+        gb_environment="standalone",
+        gb_server_url="http://localhost:9000",
+        lsf_cluster="example-cluster",
+        lsf_environment_uri="space://environments/skypilot/lsf/example-cluster",
+        lsf_image="registry.example.com/tuner:1",
+        job_trainer_repo="https://example.com/trainer.git",
+        hf_import_namespaces=["example-org"],
+    )
+
+    launcher = get_tuning_launcher(settings)
+
+    bound = launcher._spec_builder.keywords["private_model_namespaces"]  # type: ignore[attr-defined]
+    assert bound == ["example-org"]
 
 
 def test_get_build_canceller_returns_llmb_canceller_for_llmb_backend(

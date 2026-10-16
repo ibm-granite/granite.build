@@ -308,6 +308,38 @@ class AutotuneCoreUnavailableError(ServiceUnavailableError):
         super().__init__("The autotune training core is not installed on this server.")
 
 
+class HfImportUnavailableError(ServiceUnavailableError):
+    """HF dataset import is disabled, or unsupported in this deployment."""
+
+    def __init__(self) -> None:
+        super().__init__("HuggingFace dataset import is not available in this deployment.")
+
+
+class HfHubUnreachableError(ServiceUnavailableError):
+    """The Hub itself could not be reached, in a deployment that supports import.
+
+    Deliberately not :class:`HfImportUnavailableError`, for the same reason
+    :class:`HfPreviewUnavailableError` is not: that message says the *deployment*
+    has import switched off, which is what a caller reads when an operator
+    disabled it. Reporting it for a 502 from huggingface.co tells a caller in a
+    correctly-configured deployment to abandon the dataset, and sends the operator
+    to debug ``AUTOTUNEX_HF_IMPORT_*`` for a problem that does not exist. This one
+    says retry instead.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("HuggingFace could not be reached. Try again in a moment.")
+
+
+class HfDatasetNotConvertedError(ServiceUnavailableError):
+    """HuggingFace has not produced a parquet branch for this dataset yet."""
+
+    def __init__(self, repo_id: str) -> None:
+        super().__init__(
+            f"HuggingFace has not converted {repo_id} yet. Try again later, or upload a file."
+        )
+
+
 class LlmUnavailableError(BadGatewayError):
     """The upstream LLM call failed or returned unusable output.
 
@@ -333,6 +365,17 @@ class DatasetNotFoundError(NotFoundError):
 
     def __init__(self, dataset_id: object) -> None:
         super().__init__(f"Dataset {dataset_id} not found.")
+
+
+class HfModelNotFoundError(NotFoundError):
+    """No HuggingFace model repo the server may read has the requested id.
+
+    Also raised for a private repo outside ``hf_import_namespaces`` (the Hub
+    answers 401): a caller must not distinguish "absent" from "exists, private".
+    """
+
+    def __init__(self, repo_id: str) -> None:
+        super().__init__(f"HuggingFace model {repo_id} not found.")
 
 
 class DatasetNameConflictError(ConflictError):
@@ -383,14 +426,17 @@ class JobCancellationInProgressError(ConflictError):
 
 
 class DatasetNotReadyError(ConflictError):
-    """An upload was requested while the dataset is already uploading.
+    """An upload was requested while the dataset is already busy.
 
-    The ``status='uploading'`` row is the coordination point, so this guard is
-    durable across replicas rather than an in-process lock.
+    The non-terminal row status (``uploading``, or ``importing`` once a
+    HuggingFace import owns the row) is the coordination point, so this guard is
+    durable across replicas rather than an in-process lock. ``status`` names which
+    one it was: a dataset being imported reported "already uploading", which sends
+    the reader looking for an upload nobody started.
     """
 
-    def __init__(self, dataset_id: object) -> None:
-        super().__init__(f"Dataset {dataset_id} is already uploading; wait for it to finish.")
+    def __init__(self, dataset_id: object, *, status: object = "uploading") -> None:
+        super().__init__(f"Dataset {dataset_id} is already {status}; wait for it to finish.")
 
 
 class JobReferenceConflictError(ConflictError):
@@ -472,6 +518,30 @@ class EmptySplitError(DomainValidationError):
     Surfaced asynchronously via ``status='error'`` (the split runs in the upload
     runner, not the request path), so the client discovers it by polling.
     """
+
+
+class HfPreviewUnavailableError(ServiceUnavailableError):
+    """HF's dataset viewer cannot sample this dataset right now.
+
+    Deliberately not :class:`HfImportUnavailableError`, whose message says the
+    *deployment* has import switched off. Preview is a convenience layered over
+    the public viewer, which can be down or simply unable to serve a given
+    dataset (it answers 501 for some), and neither of those stops the import.
+    Saying which is the difference between a caller retrying the wizard and
+    abandoning the dataset.
+    """
+
+    def __init__(self, repo_id: str) -> None:
+        super().__init__(
+            f"Preview is unavailable for {repo_id}. You can still import it without previewing."
+        )
+
+
+class HfDatasetNotTabularError(DomainValidationError):
+    """The dataset's parquet branch lists no configs or splits."""
+
+    def __init__(self, repo_id: str) -> None:
+        super().__init__(f"No tabular data found in {repo_id}.")
 
 
 class UploadProcessingError(AutoTuneXError):

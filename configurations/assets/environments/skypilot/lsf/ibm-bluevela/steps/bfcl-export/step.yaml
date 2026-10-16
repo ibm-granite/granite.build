@@ -13,6 +13,12 @@ config:
     input_dir: ""
     output_csv: ""
     filter: ""
+# No named inputs: the directories it exports are literal config paths. Recipes
+# bind the upstream eval results (e.g. `gate_bfcl`) purely to order this target
+# after them; allow_unknown keeps those valid.
+inputs:
+  allow_unknown: true
+
 outputs:
   optional:
     bfcl_export_csv:

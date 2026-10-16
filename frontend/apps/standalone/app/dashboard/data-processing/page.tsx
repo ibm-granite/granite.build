@@ -28,10 +28,18 @@ import { LoadReportForm } from "./LoadReportForm";
 import styles from "./page.module.scss";
 import { List, ModelBuilder } from "@carbon/icons-react";
 
+// Appended, not sorted by duration: the selector falls back to TIME_OPTIONS[0]
+// when `days` matches no entry, so "7 days" has to stay first to remain the
+// default. Sorting this list would silently make "24 hours" the default instead.
+//
+// The upper bound is the API's own ceiling (_MAX_WINDOW_DAYS in
+// gb_ui_backend/api/data_processing.py). Adding an option beyond it returns 422.
 const TIME_OPTIONS = [
   { id: "7", label: "7 days" },
   { id: "1", label: "24 hours" },
   { id: "30", label: "30 days" },
+  { id: "90", label: "3 months" },
+  { id: "180", label: "6 months" },
 ];
 
 function useRefreshState(isFetching: boolean): [boolean, () => void] {

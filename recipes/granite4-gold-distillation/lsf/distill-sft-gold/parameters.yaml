@@ -1,0 +1,273 @@
+# distill-sft-gold — SFT warm-up feeding real-scale GOLD distillation,
+# granite-4.2-30b teacher / granite-4.1-3b-base student, for BlueVela
+# (SkyPilot / LSF).
+#
+# LMBDA is the tunable that selects the GOLD loss: 0.0 (default) is
+# off-policy, forward/reverse-KL-mixable via BETA; >0.0 is on-policy. Setting
+# LMBDA>0 also requires --param ON_POLICY=true, which adds the vllm-server
+# and teardown targets — see build.yaml's header for why these are two
+# separate switches rather than one.
+#
+# Run distill-gold's own smoke pass first (gold-smoke or gold-sweep-smoke)
+# before this: this recipe trains on the full corpus at real context length,
+# through two trainers instead of one, and a wrong path or an OOM here costs
+# hours, not minutes.
+#
+# Override any value with: gb build start --param KEY=VALUE
+
+# ─── Run identification ────────────────────────────────────────────────
+RUN_NAME: "distill-sft-gold"
+# One directory per BUILD under WORKDIR_ROOT, and this is a correctness
+# setting rather than tidiness — see gold-sweep-100/parameters.yaml and
+# distill-pipeline-smoke/parameters.yaml for the collision this avoids
+# (gbserver refuses to register an artifact whose URI another build in the
+# space already registered; the target still reports SUCCESS with an EMPTY
+# output list).
+WORKDIR_ROOT: "/proj/granite-build/g4os/gbtest/distill"
+BUILD_SUBDIR: "{{ run_metadata.build_id }}"
+SEED: 42
+
+# ─── On-policy switch ──────────────────────────────────────────────────
+# See build.yaml's header. false => align -> corpus -> train-sft ->
+# train-gold (4 targets). true => align -> corpus -> train-sft ->
+# vllm-server -> train-gold -> teardown (6 targets), and LMBDA should then
+# be > 0.0 too.
+ON_POLICY: false
+
+# ─── Trainer code and image ────────────────────────────────────────────
+# The GOLD trainer and distill-sft both come from code_config's pinned
+# public-repo clone — the same mechanism every ported step uses — recorded
+# automatically as distill_code_commit.
+DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
+# SM90 (H100) build — it will not run on A100.
+IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+
+# ─── The pair and the data ──────────────────────────────────────────────
+# TEACHER_MODEL_URI / STUDENT_MODEL_URI carry a FULL uri, not a bare path —
+# the scheme picks how granite.build fetches it (see ibm-bluevela's
+# environment.yaml assetstores block for what's wired in):
+#   env://<absolute path>   already on the shared filesystem (BlueVela's /proj)
+#   hf:///<org>/<repo>      pulled fresh from the Hugging Face Hub
+#   s3://<bucket>/<key>     pulled from S3-compatible object storage
+#
+# The teacher is the real HF snapshot gold-sweep-100 verified readable from
+# the granitebuild account (/proj/data-eng is drwxrws--- root proj_data-eng
+# and we are in proj_data-eng; verified 2026-09-13) — reused as-is rather
+# than pulled fresh, since re-downloading a 30B model buys nothing a
+# known-good snapshot doesn't already have.
+TEACHER_MODEL_URI: "env:///proj/data-eng/hew/.cache/hf/hub/models--ibm-granite--granite-4.2-30b/snapshots/a0057a78b9d98a88aba90b6ef6e00d292440a222"
+# Pulling the genuinely raw base model fresh via hf:///ibm-granite/granite-4.1-3b-base
+# was tried and reverted: the built-in hfpull step has no image_id (unlike
+# every other step here) and fails during SkyPilot's setup phase installing
+# huggingface_hub on the bare LSF-provisioned node (JobStatus.FAILED_SETUP,
+# retried 3x, no further detail captured) — a real, separate bug in
+# gbserver's hfpull builtin, not something this recipe's parameters can work
+# around. Until that step is fixed, this reuses gold-sweep-100's own
+# pre-baked retagged student instead. align (this recipe's own target)
+# therefore retags an ALREADY-retagged student, which is a no-op that still
+# costs the align step's runtime — see build.yaml's header if you want to
+# skip align once hfpull is fixed and a raw student can be pulled directly.
+STUDENT_MODEL_URI: "env:///proj/data-eng/hew/gb-steps-collection-post-training/data/distillation/work/model_copies/granite-4.1-3b-base_retagged_v2"
+# The chat template installed on the retagged student. align's own default
+# (a path relative to the ported step's code checkout) is currently BROKEN —
+# the public gb-steps-distillation repo this step now clones does not ship
+# any *.jinja template at all — so this is overridden with an absolute,
+# verified-on-BlueVela path instead of relying on that default.
+CHAT_TEMPLATE: "/proj/granite-build/g4os/chat_templates/granite_4_role_generation.jinja"
+# FALSE: no granite 4.x model carries <|im_start|> at all, and the template
+# above is granite-native, not ChatML. See distill-smoke's parameters.yaml
+# for the fuller reasoning — same pair family, same answer.
+REQUIRE_CHATML: false
+# The published sweep's own real corpus, read directly. This file is
+# corpus-prep's OUTPUT from an earlier run (schema {messages, row_id}, not
+# raw conversation data) — this recipe's own `corpus` target runs
+# distill-corpus-prep on it AGAIN, which is safe (prep excludes any existing
+# row_id from its hash and simply re-stamps its own) and necessary: this
+# run's tokenizer is a FRESH retag against THIS recipe's align target, not
+# the tokenizer the file was originally prepared against, and a held-out
+# eval split is only produced by prep's own eval_fraction — gold.py's
+# dataset loader has no code path that carves an eval split out of a single
+# JSONL.
+DATASET_URI: "env:///proj/data-eng/hew/gb-steps-collection-post-training/data/distillation/prepped/en-sft-4.1-0.2-16K-v2/merged/train.jsonl"
+# keep: the source is already think-filtered upstream (verified by sampling,
+# not by filename — see corpus-prep's own think_policy handling), so there
+# is nothing to strip and stripping would change the labelled span.
+THINK_POLICY: "keep"
+# drop: granite's chat template does not render `documents`, so a record
+# depending on grounding text the template never shows would train the
+# student to answer from evidence it was never given.
+DOCUMENTS_POLICY: "drop"
+# A real held-out split — unlike the smoke recipes, which zero this out
+# because they have no eval target to consume it. Nothing in this recipe
+# CONSUMES the held-out slice yet (no eval-transfer target — see the
+# distill-pipeline-smoke family for that), but the split is produced here so
+# adding one later is a binding change, not a re-prep.
+EVAL_FRACTION: 0.1
+# 0 = no limit. This recipe trains on the corpus's full row count, not a
+# smoke-scale truncation.
+MAX_EXAMPLES: 0
+
+# ─── The SFT warm-up stage ──────────────────────────────────────────────
+# 8 GPUs, not a smoke run's 1: run-sft.sh REFUSES more than one node (its
+# accelerate launch has no way to build a per-node main_process_ip/port/
+# machine_rank), so 8-on-1-node is this step's real-scale ceiling, and it
+# matches train-gold's own single-node width below.
+SFT_NUM_GPUS: 8
+# The step's own real-scale default (distill-sft's step-template
+# documentation: "Same keys and same defaults as distill-gold, deliberately:
+# a control that trains at a different batch size or learning rate than the
+# treatment is not a control"). Ten times smaller than GOLD's learning rate
+# — this is the step's own default, not a typo.
+SFT_LEARNING_RATE: "1e-6"
+SFT_NUM_TRAIN_EPOCHS: 1
+# Effective batch = PER_DEVICE x GRAD_ACCUM x SFT_NUM_GPUS (single node)
+#                  = 4 x 6 x 8 = 192, the same geometry as train-gold below,
+# so the warm-up and the treatment stage train at consistent batch geometry.
+SFT_PER_DEVICE_TRAIN_BATCH_SIZE: 4
+SFT_GRADIENT_ACCUMULATION_STEPS: 6
+# The step's own real-scale default (100). Not bounded further by a
+# MAX_STEPS-equivalent parameter here — this recipe passes num_train_epochs
+# only, so this value paired with the corpus size determines how far the
+# warm-up runs before train-gold takes over.
+SFT_SAVE_STEPS: 100
+
+# ─── Training hyperparameters (train-gold) ──────────────────────────────
+# Bounding by steps rather than epochs: one epoch of this ~800K-row corpus
+# is thousands of steps and days of wall clock. 100 matches gold-sweep-100's
+# own real (non-smoke) scale; raise it once this pair's plumbing is proven
+# at this recipe's own scale.
+MAX_STEPS: 100
+NUM_TRAIN_EPOCHS: 1.0
+# Quote the scientific-notation values. Unquoted, PyYAML loads 1.0e-05 as a
+# float whose repr is "1e-05", which is then re-read from the rendered
+# build.yaml as a STRING.
+LEARNING_RATE: "1.0e-05"
+MIN_LR: "1.0e-06"
+WARMUP_RATIO: 0.05
+LR_SCHEDULER_TYPE: "cosine_with_min_lr"
+# Effective batch = PER_DEVICE x GRAD_ACCUM x NUM_NODES x NUM_GPUS_PER_NODE
+#                 = 4 x 6 x 1 x 8 = 192, gold-sweep-100's geometry, and the
+# same as the SFT stage above.
+PER_DEVICE_TRAIN_BATCH_SIZE: 4
+GRADIENT_ACCUMULATION_STEPS: 6
+# The full reference context.
+MAX_LENGTH: 16384
+MAX_COMPLETION_LENGTH: 4096
+GRADIENT_CHECKPOINTING: true
+# 4 checkpoints turn a single end-point number into a learning curve eval
+# can read. Each is large: ZeRO-3 shards carry fp32 optimizer state, so a
+# checkpoint is far larger than the end-of-training model alone.
+SAVE_STRATEGY: "steps"
+SAVE_STEPS: 25
+SAVE_TOTAL_LIMIT: 4
+# t_gen is per-log-line and reset at each emit, so a value above 1 would
+# aggregate away the per-step timing a cost model would be read from.
+LOGGING_STEPS: 1
+# The trainer maps and filters the WHOLE corpus before step 1 regardless of
+# max_steps, so on a many-core node a small worker pool makes startup,
+# rather than training, the long pole.
+DATASET_NUM_PROC: 32
+
+# ─── GOLD / distillation loss ──────────────────────────────────────────
+TEMPERATURE: 1.0
+# 0.0 = off-policy (every rank trains on the fixed corpus, no vLLM server to
+# coordinate). Set > 0.0 together with --param ON_POLICY=true for an
+# on-policy run; the renderer refuses a server URL at lmbda 0, and the
+# build.yaml conditional refuses to allocate one unless ON_POLICY says so.
+LMBDA: 0.0
+# The genuinely-mixing setting of the three the trainer supports: it
+# short-circuits 0.0 to forward KL and 1.0 to reverse KL.
+BETA: 0.5
+# UNRESOLVED for this pair at real scale, and deliberately not the naive
+# default: granite's logits_scaling=10 overflows the fused bf16 JSD kernel
+# and yields NaN loss (measured on this pair's family — see
+# gold-sweep-100/README, "The liger question"). false is the setting known
+# to produce a finite loss; the cost is memory, since the non-fused path
+# materialises the [batch, seq, vocab] logit tensor the fused kernel avoids.
+USE_LIGER_FUSED_JSD: false
+# The trailing newline is load-bearing — it is where loss masking begins —
+# for BOTH stages here, and it must be the SAME response_template for both:
+# a warm-up that masked a different span than the treatment stage would not
+# be a warm-up for the treatment that follows it. It travels as a literal
+# two-character escape rather than as a real newline, because gbserver's
+# Jinja fill strips exactly one trailing real newline from each VALUE (build
+# d8470f14 carried a real one and two steps trained against a span one
+# token off while reporting success).
+#
+# Hence SINGLE quotes with a DOUBLED backslash: YAML leaves '\\n' alone, so
+# a literal \n reaches build.yaml's double-quoted scalar, which decodes it
+# to the two characters backslash-n. Both distill-sft and distill-gold
+# decode it once, inside their own containers.
+RESPONSE_TEMPLATE: '<|im_start|>assistant\\n'
+
+# ─── On-policy (inert unless ON_POLICY=true) ───────────────────────────
+# Kept explicit and diffable against an on-policy run so the difference is
+# visible as values rather than as absent keys.
+VLLM_NUM_SERVERS: 1
+VLLM_MODE: "server"
+# Every optimizer step: on-policy means generating from the CURRENT student,
+# so a larger value samples from a staler policy.
+VLLM_SYNC_FREQUENCY: 1
+VLLM_PORT: 8001
+# The server's own allocation. 8 GPUs to serve a 3B student is generous, but
+# matching the trainer's shape keeps one fewer thing different from the
+# reference launcher, whose server host also ran 8-way.
+VLLM_NUM_GPUS_PER_NODE: 8
+VLLM_ACCELERATORS: "H100:8"
+# 30 min for the server to answer /health. Generous on purpose: this is a
+# cold multi-GB load off a shared filesystem plus CUDA graph capture, and a
+# timeout here is indistinguishable from a hang in the log.
+VLLM_HEALTH_TIMEOUT_SECONDS: 1800
+# Backstop, not a schedule. Raised well past this recipe's own expected
+# runtime — which now includes the SFT warm-up stage ahead of it — so a
+# genuinely working run is never interrupted by it; it only ever fires when
+# nothing tore the server down.
+VLLM_MAX_LIFETIME_SECONDS: 18000
+TOP_P: 0.95
+USE_SAMPLED_OPD_LOSS: false
+LAST_MESSAGE_ONLY: false
+CLIP_ALPHA: 0.1
+OPD_IMPORTANCE_SAMPLING: false
+
+# ─── NCCL / distributed diagnostics ─────────────────────────────────────
+# Single-node by default, so there are no cross-node collectives to
+# diagnose and INFO would only add noise to a long log. Monitoring stays on:
+# with it off a deadlock does not fail, it hangs holding the allocation and
+# produces nothing to read.
+NCCL_DEBUG: ""
+NCCL_DEBUG_SUBSYS: "INIT,NET"
+# 1 h, generous enough to survive a slow 30B teacher forward without a
+# spurious abort.
+NCCL_TIMEOUT_MS: 3600000
+NCCL_ENABLE_MONITORING: true
+
+# ─── Topology and resources ─────────────────────────────────────────────
+NUM_NODES: 1
+NUM_GPUS_PER_NODE: 8
+ACCELERATORS: "H100:8"
+CPU_ONLY_CPUS: 4
+CPU_ONLY_MEMORY: 64
+# HOST memory per node for the GPU targets, and it has to be stated: the LSF
+# provisioner defaults to 16G, which has killed an earlier build with
+# TERM_MEMLIMIT at 46.5G — presenting as a cross-node NCCL hang, since a
+# host-memory kill produces no CUDA OOM and no watchdog message.
+MEMORY: 256
+CLUSTER: "bluevela"
+# Where every target runs. One value rather than one literal per target, so moving this
+# recipe to another environment (a gbspace-public one, say) is a one-line change.
+ENVIRONMENT_URI: "space://environments/skypilot/lsf/ibm-bluevela"
+# SkyPilot's `zone` is the LSF queue name for this cloud. `normal` is
+# non-preemptable.
+QUEUE: "normal"
+
+# ─── Retries ─────────────────────────────────────────────────────────────
+# One retry, for a measured cluster fault rather than as general insurance.
+# Set to 0 to make a failure final while debugging a failure of your own
+# rather than the cluster's.
+MAX_RETRIES: 1
+
+# ─── Monitoring ──────────────────────────────────────────────────────────
+# A real run is measured in hours, so a 5-minute poll is frequent enough to
+# follow without flooding.
+POLL_INTERVAL_SECONDS: 300
+LOG_RETRIEVAL_INTERVAL_SECONDS: 300

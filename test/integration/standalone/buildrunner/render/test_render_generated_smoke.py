@@ -92,7 +92,6 @@ class TestRenderGeneratedBashSmoke(AbstractYamlBuildRunnerTest):
         #    the local space so space:// URIs resolve without cloning.
         exp = doc["target_expectations"][0]
         exp["step_count"] = 1  # one command step; env push is a no-op (no extra step)
-        exp["jobstats_count"] = 1  # not asserted under standalone NoopLineageStore
         doc["space_uri"] = str(_LOCAL_SPACE)
         (tmp_path / "buildtest.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
 

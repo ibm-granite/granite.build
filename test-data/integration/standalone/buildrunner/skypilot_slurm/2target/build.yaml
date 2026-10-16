@@ -1,5 +1,5 @@
 granite.build:
-  name: mem_2target_skypilot_slurm
+  name: mem_2target_skypilot_slurm-test
   # Two skypilot-slurm targets exercising the mem:// asset store for cross-target
   # output -> input binding on the SkyPilot LSF/SLURM backend. The builtin
   # `bash` step runs an arbitrary command, so it can echo the

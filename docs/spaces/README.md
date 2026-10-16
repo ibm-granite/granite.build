@@ -160,8 +160,8 @@ Once registered, builds and the CLI reference a space **by name** rather than by
   `gb build list --space public`). See the [CLI reference](../cli/gb-cli-reference.md#space--work-with-spaces).
 - **Builds** — a submitted build runs under a named space; the BuildRunner resolves the build's
   `space://` URIs against that space's registered git repo. In [`gbtest`](../cli/gbtest-cli-reference.md), the
-  space is named with `space_name:` (with an optional `space_uri:` override that points at a local
-  directory instead of the registered repo).
+  space is named with `space_name:` plus a required `space_uri:` override (a git URI or a local
+  directory) that replaces the registered repo.
 
 The name is also what the IBM Cloud secret manager matches against and what appears in lineage
 (`{space_name}/{build_name}`).

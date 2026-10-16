@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The build-runner pod inherits the SkyPilot SSH-probe setting.
+"""The build-runner pod inherits gbserver's forwarded environment settings.
 
-The runner, not the watcher, calls ``launch_skypilot``, so a setting applied only to
-the watcher would look set and do nothing. ``BuildRunnerJob`` forwards it via
-``build_runner_extra_env_vars``, which ``k8s/dep-build-runner.yaml`` renders.
+The runner, not the watcher, executes builds, so a setting applied only to the
+watcher would look set and do nothing. ``BuildRunnerJob`` forwards a small set of
+knobs via ``build_runner_extra_env_vars``, which ``k8s/dep-build-runner.yaml``
+renders into the runner pod's env.
 
 Asserted against the source, not a live ``BuildRunnerJob``: its constructor reads the
 deployment YAML off disk and resolves an image tag, neither of which this needs.
@@ -27,11 +28,6 @@ from pathlib import Path
 
 import pytest
 
-from gbserver.types.constants import (
-    ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S,
-    GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S,
-)
-
 _BUILDRUNNERJOB = (
     Path(__file__).resolve().parents[3]
     / "src"
@@ -41,24 +37,23 @@ _BUILDRUNNERJOB = (
 )
 _TEMPLATE = Path(__file__).resolve().parents[3] / "k8s" / "dep-build-runner.yaml"
 
-
-def test_env_var_name_is_the_one_skypilot_reads():
-    """The forwarded key must be the name the probe guard actually consults."""
-    assert ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S == (
-        "GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S"
-    )
-    # An int, so the rendered pod env value is a plain number (Jinja stringifies it).
-    assert isinstance(GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S, int)
+# The (env-var-name constant -> value constant) pairs BuildRunnerJob must forward.
+_FORWARDED_PAIRS = {
+    "ENV_VAR_GBSERVER_K8S_USE_ASPERA": "K8S_USE_ASPERA",
+    "ENV_VAR_GBSERVER_LSF_USE_ASPERA": "LSF_USE_ASPERA",
+}
 
 
-def test_probe_timeout_is_forwarded_to_the_build_runner():
-    """The probe constant is a value in the extra-env dict, keyed by its env-var name.
+def _extra_env_pairs() -> dict:
+    """Extract the ``build_runner_extra_env_vars`` dict literal as name->name pairs.
 
     Parsed from the AST rather than matched as text so reformatting cannot break it
     and a commented-out line cannot satisfy it.
+
+    :returns: Mapping of the dict's key ``Name`` ids to their value ``Name`` ids.
+    :raises AssertionError: If the dict literal is not found in the source.
     """
     tree = ast.parse(_BUILDRUNNERJOB.read_text(encoding="utf-8"))
-
     dict_nodes = [
         node
         for node in ast.walk(tree)
@@ -68,25 +63,25 @@ def test_probe_timeout_is_forwarded_to_the_build_runner():
         and isinstance(node.value, ast.Dict)
     ]
     assert dict_nodes, "build_runner_extra_env_vars dict literal not found"
-
-    pairs = {
+    return {
         key.id: value.id
         for node in dict_nodes
         for key, value in zip(node.value.keys, node.value.values)
         if isinstance(key, ast.Name) and isinstance(value, ast.Name)
     }
-    assert pairs.get("ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S") == (
-        "GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S"
-    ), f"probe timeout not forwarded to the build runner; found {pairs}"
+
+
+def test_forwarded_settings_are_in_the_extra_env_dict():
+    """Each forwarded knob is a value in the extra-env dict, keyed by its name const."""
+    pairs = _extra_env_pairs()
+    for key_const, value_const in _FORWARDED_PAIRS.items():
+        assert (
+            pairs.get(key_const) == value_const
+        ), f"{key_const} not forwarded to the build runner; found {pairs}"
 
 
 @pytest.mark.parametrize(
-    "name",
-    [
-        "ENV_VAR_SKYPILOT_SSH_PROBE_TIMEOUT_S",
-        # Both halves: dropping either NameErrors at import.
-        "GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S",
-    ],
+    "name", sorted(set(_FORWARDED_PAIRS) | set(_FORWARDED_PAIRS.values()))
 )
 def test_forwarded_names_are_imported(name):
     """A name used in the dict must be imported, or the module fails at import."""

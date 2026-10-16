@@ -16,6 +16,14 @@ config:
     max_length: 4096
     num_gpus: 1
     oe_eval_bcb_api_url: "http://localhost:7860/evaluate/"
+# No named inputs: the model reaches this step as an S3 URI (model_source_s3) that
+# file_mounts mounts at /model, not as a local path. Recipes derive that URI from the
+# producer's artifact path with producer-specific string surgery, so the step cannot
+# derive it from a binding reliably; see issue #453. allow_unknown lets a recipe bind
+# the upstream checkpoint purely to order this target after it.
+inputs:
+  allow_unknown: true
+
 outputs:
   optional:
     sage_eval_results:

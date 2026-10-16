@@ -5,6 +5,19 @@
 > page covers only what is LSF-specific. For the *native* LSF backend (gbserver submits `bsub`
 > itself), see [lsf.md](lsf.md) instead.
 
+## SkyPilot fork
+
+gbserver installs SkyPilot from the granite-build fork
+([cmadam/skypilot](https://github.com/cmadam/skypilot)), pinned in `pyproject.toml` to the tag
+`gb-sky-v1-stable`. Upstream SkyPilot has no LSF cloud. The fork adds the LSF cloud driver and
+LSF multi-node support, which includes the `sky.skylet.executor.lsf` task executor. gbserver
+refuses a multi-node LSF launch when that executor is missing. The fork's own history lists
+everything else it carries.
+
+`gb-sky-v1-stable` is a moving tag: it is re-pointed to the recommended v1-line commit as the
+fork advances, and a breaking change gets a new tag. Fresh installs pick up the current target.
+An existing clone keeps the old one until you run `git fetch --tags --force`.
+
 ## Compute environment
 
 With `default_cloud: lsf`, SkyPilot provisions onto an existing **LSF** cluster. It reaches the
@@ -46,6 +59,45 @@ no manual `rm ~/.lsf/config`); a *foreign* (non-gbserver) entry for the same ali
 (`SkypilotConfigCollisionError`). An LSF and a SLURM env run concurrently (separate files). See
 [Inline SkyPilot config](skypilot.md#inline-skypilot-config-cluster_ssh_configs--cloud_config--aws_credentials).
 
+#### Multiple login nodes (`HostName` list)
+
+`HostName` may be a single value (above) **or** a list of interchangeable candidate login hostnames
+under one `Host` block, for a cluster fronted by several equivalent login nodes:
+
+```yaml
+  cluster_ssh_configs:
+    lsf:
+      - Host: bluevela
+        HostName:                     # Candidate login nodes for this one cluster.
+          - login1.bluevela.rmf.ibm.com
+          - login2.bluevela.rmf.ibm.com
+          - login3.bluevela.rmf.ibm.com
+          - login4.bluevela.rmf.ibm.com
+        User: granitebuild
+        IdentityFile: ~/.ssh/ibm-bluevela.key
+        IdentitiesOnly: "yes"
+```
+
+At launch gbserver picks one candidate and writes it as a scalar `HostName`. The pick is **sticky** —
+a candidate already written for this cluster (e.g. by a parallel launch that just failed over) is kept
+rather than re-randomized onto a wedged node; a random candidate is chosen only when nothing is written
+yet (spreading load). The `Host` alias stays fixed (LSF derives the cluster name from it), so all
+candidates share this block's credentials.
+
+The candidates also form a **failover pool**: if provisioning fails with a transient SSH
+control-plane error (a late banner, a wedged session, a key-exchange reset), gbserver rewrites
+`~/.lsf/config` to the next candidate before retrying the launch, so a single wedged login node is
+skipped rather than failing the build. Capacity failures and SSH *auth* rejections do not trigger
+failover. Failover reuses the ordinary provision retry budget
+(`GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS`); when the candidates are exhausted (or there is only one)
+the genuine error surfaces. Failover is **launch-time only** — once a cluster is provisioned SkyPilot
+pins the chosen login node, so status polling, log streaming, and teardown stay on it (unlike the
+native-LSF SSH tunnel in [lsf.md](lsf.md), which re-picks per operation). This bluevela example has no
+`cluster:` under `cloud_config` on the launcher; because the env declares exactly one host for `lsf`,
+that host is the unambiguous launch target, so its candidates still fail over even on a bare `lsf`
+infra. This is otherwise identical to SLURM — see
+[Multiple login nodes on the SLURM page](skypilot-slurm.md#multiple-login-nodes-hostname-list).
+
 > **Re-keying caveat (test-only `GBTEST_SKY_SSH_RESET`).** Even after `~/.lsf/config` self-heals,
 > SkyPilot reuses a persisted SSH ControlMaster socket keyed on `(host, port, user)` — **not** the key
 > — so a changed `IdentityFile`/`IdentityKey` can be masked by a live connection until its
@@ -55,11 +107,6 @@ no manual `rm ~/.lsf/config`); a *foreign* (non-gbserver) entry for the same ali
 > re-authentication with the current key. This is a **test-only** toggle (manually set, unconditional
 > — not idle-gated); production never clears sockets, since the socket root is shared by all of the OS
 > user's SkyPilot SSH connections. It is not an environment-config key.
-
-The pre-launch SSH probe (`GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S`) covers LSF as well as SLURM, and
-our deployments disable it for both — on a slow-banner login node it starves the control connection
-SkyPilot opens next. See
-[the probe note on the SLURM page](skypilot-slurm.md#cluster_ssh_configsslurm--reachability).
 
 ### `cloud_config.lsf` — behavioral tuning
 
@@ -123,6 +170,49 @@ The `env://` store is registered implicitly for **every** environment, so no `as
 needed for it — `env://` inputs/outputs work out of the box. Add an `assetstores` block only to
 configure other schemes (e.g. `hf`) or to pin a specific `env://` `load`/`push` `mode`. See
 [Asset stores](../asset-stores/README.md#store-types-and-uri-schemes).
+
+## Multi-node
+
+Set the node count in the step's `compute_config`; `launcher_config.num_nodes` (in the step or in
+build.yaml) overrides it:
+
+```yaml
+compute_config:
+  num_nodes: 2
+launcher_config:
+  resources:
+    accelerators: "H100:8"   # PER NODE -> 16 GPUs across 2 nodes
+```
+
+`num_nodes` must not go under `resources`: it is a `sky.Task` field, not a `sky.Resources` one, so
+SkyPilot drops it there silently. gbserver logs a warning and the run proceeds single-node.
+
+**How it maps to LSF.** One `bsub` requests `num_nodes * num_cpus_per_node` slots with
+`-R "span[ptile=<cpus per node>]"` so the slots are distributed one group per host — `-n` alone counts
+slots, not hosts, and without the span term LSF may satisfy the count from fewer machines. Multi-node
+jobs also get `-hl` (host-level limits), and the GPU request becomes per host rather than per task
+once there is more than one slot per host.
+
+**What the job sees.** The provisioner exports these into each node's container, derived from
+`$LSB_HOSTS`:
+
+| Variable | Meaning |
+|---|---|
+| `RANK` / `TOTAL_NODES` | This node's index, and the node count. Rank 0 is the first host LSF listed. |
+| `MASTER_ADDR` / `MASTER_PORT` | Rendezvous address; the port is derived from the LSF job id so concurrent jobs do not collide. |
+| `NUM_GPUS_PER_NODE` | GPUs detected on the node. |
+| `LSB_HOSTS` / `LSB_JOBID` | Passed through from LSF. |
+
+SkyPilot's own `SKYPILOT_NODE_RANK`, `SKYPILOT_NUM_NODES` and `SKYPILOT_NODE_IPS` are also set per
+node. A step that drives `torchrun`/`accelerate` should read `RANK`/`TOTAL_NODES`/`MASTER_ADDR` and
+pass them as CLI flags, then `unset RANK WORLD_SIZE LOCAL_RANK MASTER_ADDR MASTER_PORT` before
+launching, since those launchers set their own per-process values.
+
+**Version requirement.** LSF multi-node needs a SkyPilot build with the driver-side LSF task executor
+(`sky.skylet.executor.lsf`). An older build accepts `num_nodes`, allocates every node, and then runs
+the task once with `SKYPILOT_NUM_NODES=1` — reporting success. gbserver checks for the executor and
+fails at launch rather than letting that happen, so a `num_nodes > 1` LSF build requires the pinned
+SkyPilot to be at least `gb-sky-v2-multinode`.
 
 ## Example `environment.yaml` (LSF)
 

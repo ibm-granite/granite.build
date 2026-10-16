@@ -1,5 +1,5 @@
 granite.build:
-  name: sdktest
+  name: lsf-1step-bluevela-test
   targets:
     download_file:
       environment_uri: space://environments/bluevela

@@ -11,18 +11,16 @@ targets:
 target_expectations:
   # step_count = 1 per target: the env_local assetstore is a no-op (no pull/push
   # steps are queued), so only the single `command` step is recorded. Each env://
-  # output adds one artifact but launches no push step and produces one jobstat;
+  # output adds one artifact but launches no push step;
   # `second` also binds one input artifact.
   - target_name: first
     step_count: 1
     input_artifact_count: 0
     output_artifact_count: 1
-    jobstats_count: 1
   - target_name: second
     step_count: 1
     input_artifact_count: 1
     output_artifact_count: 1
-    jobstats_count: 1
 # Resolve space:// URIs (the aws environment + the shared `command` step) from the
 # repo's local space without cloning from GitHub. Relative to this YAML's
 # directory — same depth as the sibling 1step-image fixture, so the same path.

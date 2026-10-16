@@ -21,8 +21,6 @@ IMAGE_NAME = gbserver
 IMAGE_TAG  ?= $(if $(GBSERVER_IMAGE_TAG),$(GBSERVER_IMAGE_TAG),${GIT_DIRTY}commit-${GIT_COMMIT})
 IMAGE_NAME_AND_TAG = ${IMAGE_NAME}:${IMAGE_TAG}
 
-OC_LOGIN_SERVER_URI ?= https://c100-e.us-south.containers.cloud.ibm.com:30049
-
 SIDECAR_IMAGE_NAME = gb-sidecar-monitoring
 # SIDECAR_IMAGE_TAG ?= 0.4.12
 # Set the GBSERVER_SIDECAR_MONITORING_IMAGE_TAG env var to override this; otherwise
@@ -301,9 +299,25 @@ quick-tests:
 		.test
 
 .PHONY: extended-tests-setup
+# Brings up the local infrastructure the extended tests launch into: SLURM and the
+# kind cluster for the skypilot/kubernetes tests (either one missing fails setup),
+# plus a best-effort local PostgreSQL.
 extended-tests-setup:
 	$(MAKE) g4os-skypilot-venv
 	$(MAKE) slurm-setup
+	$(MAKE) kube-setup
+	@# Best-effort: without a container runtime/openssl or a free port, the
+	@# local-PostgreSQL storage tests skip instead of blocking every extended test.
+	$(MAKE) postgres-setup || echo "WARNING: postgres-setup failed; the local-PostgreSQL storage tests will skip."
+
+# Stops what extended-tests-setup started.
+.PHONY: extended-tests-teardown
+extended-tests-teardown:
+	@# "-": run every teardown even if one fails, so the postgres container and its
+	@# password-bearing env file never outlive a failed slurm-teardown.
+	-$(MAKE) slurm-teardown
+	-$(MAKE) kube-teardown
+	-$(MAKE) postgres-teardown
 
 # For now we mock the HF calls since we can't provide the HF_TOKEN as a git secret on forked PRs.
 # GBTEST_STANDALONE_ENVIRONMENT (which HF resource group a STANDALONE push targets)
@@ -453,7 +467,7 @@ test-g4os:
 .PHONY: cicd-skypilot-pr
 cicd-skypilot-pr: test-g4os
 
-# --- Local infrastructure (SLURM + S3) ---
+# --- Local infrastructure (SLURM + Kubernetes + S3) ---
 
 .PHONY: slurm-setup
 slurm-setup:
@@ -464,6 +478,38 @@ slurm-setup:
 slurm-teardown:
 	source .venv/bin/activate;\
 	bash scripts/slurm/teardown-slurm.sh
+
+# Local TLS-enabled PostgreSQL for the standalone SQL storage tests
+# (test/unit/storage/postgres). Setup writes the GBSERVER_SQL_* connection env to
+# .cache/gbtest-postgres/postgres.env, which libgbtest/local_postgres.py loads in
+# GB_ENVIRONMENT=STANDALONE test runs (extended-tests sets that).
+
+.PHONY: postgres-setup
+postgres-setup:
+	bash scripts/postgres/setup-postgres.sh
+
+.PHONY: postgres-teardown
+postgres-teardown:
+	bash scripts/postgres/teardown-postgres.sh
+
+# Local kind Kubernetes cluster (via `sky local up`) for the skypilot/kubernetes
+# build tests, with the shared volume its env mounts. Installs kind (pinned, into
+# the venv), socat and GNU netcat first if missing; needs docker and kubectl.
+# Leaves the current kube context as it was; see the scripts.
+.PHONY: kube-prereqs
+kube-prereqs:
+	source .venv/bin/activate;\
+	bash scripts/kube/install-prereqs.sh
+
+.PHONY: kube-setup
+kube-setup: kube-prereqs
+	source .venv/bin/activate;\
+	bash scripts/kube/setup-kind.sh
+
+.PHONY: kube-teardown
+kube-teardown:
+	source .venv/bin/activate;\
+	bash scripts/kube/teardown-kind.sh
 
 # Local S3-compatible store (SeaweedFS) for the SLURM demo's artifact push.
 # Demo-only — keep out of CI setup targets (Docker Hub anonymous rate limit).
@@ -685,12 +731,6 @@ $(VENVDIR): pyproject.toml
 	${PIP} install -e '$(VENV_INSTALL_TARGET)';	\
 	#${PIP} install pytest pytest-cov pytest-asyncio pytest-xdist coverage # Why are these not in the [dev] part of pyproject.toml
 
-#	@if [ -z "$(GBSERVER_GITHUB_TOKEN)" ]; then echo "You must set GBSERVER_GITHUB_TOKEN env vars"; false ; fi
-test-1step: .check-test-env $(VENVDIR)
-	oc project granite-build-staging	# Assume RIS3 cluster and 1step test running buildrunner_type="job"
-	source $(VENVDIR)/bin/activate; 	\
-	pytest -s test/gbserver_test/buildwatcher/test_local_build_1step.py::TestLocalBuild1Step::test_watcher_single_build
-
 gbcli:
 	source $(VENVDIR)/bin/activate; 	\
 	${PIP} install "gbcli @ git+ssh://git@${GB_GH_DOMAIN}/granite-dot-build/gbcli.git"
@@ -754,14 +794,6 @@ gbserver-imagepush-prod: imagex check-container-registry-login
 	# @echo "Pushing the prod image as latest ${PROD_IMAGE_TAG_LATEST}"
 	# ${DOCKER} push ${PROD_IMAGE_TAG_LATEST}
 
-deploy-rest-server:
-	# This requires "Tunnel-All" VPN from outside Reserach office network
-	# https://cloud.ibm.com/containers/cluster-management/clusters/bs48qfvd036s0htjca9g/overview
-	# Make sure that you're logged in to the cluster- the token is short-lived
-	# oc login --token=<token> --server=https://c100-e.us-south.containers.cloud.ibm.com:30049
-	oc get pods -n granite-build-staging --selector='app=gbserver'
-	oc delete pod -n granite-build-staging --selector='app=gbserver'
-
 .PHONY: sidecar-image
 sidecar-image: check-git-status-clean
 	@echo "Using ${DOCKER} to build the sidecar image: ${SIDECAR_IMAGE_NAME_AND_TAG}"
@@ -800,27 +832,6 @@ sidecar-imagepush-prod: sidecar-image check-container-registry-login
 	${DOCKER} tag ${SIDECAR_IMAGE_NAME_AND_TAG} ${PROD_SIDECAR_IMAGE}
 	@echo "Pushing the prod sidecar image ${PROD_SIDECAR_IMAGE}"
 	${DOCKER} push ${PROD_SIDECAR_IMAGE}
-
-.PHONY: openshift-login
-openshift-login:
-	@if [ ! -z "${OC_LOGIN_API_KEY}" ]; then \
-		set -x; \
-		oc login -u apikey -p "${OC_LOGIN_API_KEY}" --server "${OC_LOGIN_SERVER_URI}"; \
-	else \
-		echo "We assume that you are already logged in"; \
-	fi
-
-.PHONY: update-deployment
-update-deployment: openshift-login
-	@cat k8s/${GB_ENVIRONMENT_LOWER}/dep-gbserver-rest-server.yaml | sed "s/gbserver:latest/gbserver:commit-${GIT_COMMIT}/"
-	@echo
-	@echo '-------------------'
-	$(eval RIS3_K8S_NAMESPACE := granite-build-${GB_ENVIRONMENT_LOWER})
-	@echo "Deploying to ${RIS3_K8S_NAMESPACE}!"
-	@echo 'We will replace the current deployments with yamls similar to the one above. Please check and confirm:'
-	@$(MAKE) ask-user-to-confirm
-	oc project ${RIS3_K8S_NAMESPACE}
-	cat k8s/${GB_ENVIRONMENT_LOWER}/dep-gbserver-rest-server.yaml | sed "s/gbserver:latest/gbserver:commit-${GIT_COMMIT}/" | oc replace -f -
 
 .PHONY: update-deployment-vpc
 update-deployment-vpc:

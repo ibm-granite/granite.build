@@ -30,7 +30,10 @@ make cicd-pr-test     # abbreviated CI set (coverage + parallel)
 make cicd-merge-test  # extended CI set (the `extended` marker)
 # `-setup` targets provision the venv and infra first:
 make quick-tests-setup quick-tests        # fast: GBTEST_MODE=mock, -m "not ibm and not extended"
-make extended-tests-setup extended-tests  # full: GBTEST_MODE=live, -m "not ibm"; setup also brings up SLURM
+make extended-tests-setup extended-tests  # full: GBTEST_MODE=live, -m "not ibm"; setup also brings up SLURM and kind
+make kube-setup    # just the kind cluster for the skypilot/kubernetes tests (installs kind, socat, GNU netcat
+                   # if missing; needs docker + kubectl; leaves your current kube context as it was)
+make kube-teardown # delete the kind cluster and remove gbserver's cloud_config from ~/.sky/config.yaml
 ```
 
 ### Formatting and Linting
@@ -72,7 +75,7 @@ Most directory names are self-describing; these carry non-obvious behavior worth
 ### Test Layout (`test/`)
 
 - **conftest.py** — Session fixture fetching test secrets from IBM Cloud Secret Manager via `GBTEST_SPS_IBMCLOUD_API_KEY`; also dumps build state on pytest failure.
-- **gbserver_test/** — Mirrors source structure. `secret_manager`-marked tests need real IBM Cloud and are excluded by default.
+- **unit/** — Mirrors source structure. `secret_manager`-marked tests need real IBM Cloud and are excluded by default.
 - Parallelism via `pytest-xdist` `--dist=loadgroup`.
 
 ## Environment Variables
@@ -90,7 +93,6 @@ The central registry is `src/gbserver/types/constants.py`. All gbserver env vars
 
 - Formatting: **black** (default config) + **isort** (profile: black)
 - Linting: **pylint** (config in `.pylintrc`) + **mypy** (`--disable-error-code=import-untyped`)
-- The `xformat`/`xcheck` targets diff against the `dev` branch, not `main`
 - Python 3.11+ required (3.12 for pylint target)
 - Apache License 2.0
 
@@ -169,7 +171,7 @@ A floating chat widget (rendered globally by `ClientShell`) backed by a hand-rol
 - **Backend**: `src/gb_ui_backend/api/chat.py` (`/api/analytics/chat/{status,stream,stop,confirm}`) + `src/gb_ui_backend/services/chat_agents/` — `tool_loop_backend.py` (the loop itself), `providers/{anthropic_provider,openai_compat_provider}.py`, `dashboard_tools.py`, `gbmcp_policy.py`, `tool_registry.py`, `ui_actions.py`.
 - **Frontend**: `frontend/packages/ui-core/components/ChatWidget.tsx` + `.module.scss`, `frontend/packages/ui-core/api/chat.ts`, `frontend/packages/ui-core/lib/sse.ts` (SSE stream parsing for `chat.ts`'s streaming responses).
 - **Config** (`Config` in `src/gb_ui_backend/config.py`): `chat_backend` (default `tool_loop`), `chat_model`, `chat_llm_base_url`/`chat_llm_api_key` (fall back to `llm_base_url`/`llm_api_key` if unset, via `resolved_chat_llm_base_url`/`resolved_chat_llm_api_key`), `chat_provider` (`openai_compatible` or `anthropic`, auto-detected if unset — OpenAI-compatible wins auto-detection since it requires no external API key). `Config.chat_enabled` reports whether either provider is actually configured. Anthropic auth reads the standard `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` env vars directly (not `GB_UI_`-prefixed — read by the `anthropic` SDK itself).
-- **Install**: the `chat` extra (`mcp`, `regex`) is bundled into `standalone` by default; `chat-anthropic` additionally adds the `anthropic` package and is opt-in (Anthropic is not the default provider).
+- **Install**: the `chat` extra (`mcp`) is bundled into `standalone` by default (`regex`, which `search_build_yaml` uses, is a core dependency); `chat-anthropic` additionally adds the `anthropic` package and is opt-in (Anthropic is not the default provider).
 
 ### Frontend source layout
 
@@ -177,8 +179,8 @@ A floating chat widget (rendered globally by `ClientShell`) backed by a hand-rol
 |------|-------------|
 | `frontend/packages/ui-core/` | Shared, generic dashboard library — no app router, no build step. Consumed both by `apps/standalone` here and, as an external git dependency, by the internal deployment repo |
 | `frontend/packages/ui-core/components/` | Shared React components (Carbon Design System) |
-| `frontend/packages/ui-core/api/` | API clients — `gbserver.ts`, `analytics.ts`, `dataProcessing.ts` |
-| `frontend/packages/ui-core/api/client.ts` | `apiBase()` helper — handles `GBSERVER_API_URL` override |
+| `frontend/packages/ui-core/api/` | API clients — `gbserver.ts`, `analytics.ts`, `chat.ts`, `dataProcessing.ts`; all built through `client.ts`'s `createApiClient()` |
+| `frontend/packages/ui-core/api/client.ts` | `apiBase()` helper — handles `GBSERVER_API_URL` override — plus `createApiClient()`, the factory every client above is created with, and the host overrides it applies |
 | `frontend/apps/standalone/app/` | Next.js App Router pages |
 | `frontend/apps/standalone/next.config.ts` | Build config — static export in standalone mode, rewrite proxy in dev, `transpilePackages: ['@granite-build/ui-core']` |
 | `frontend/apps/standalone/.env.local.example` | Dev environment template — copy to `.env.local` |
@@ -208,8 +210,8 @@ A floating chat widget (rendered globally by `ClientShell`) backed by a hand-rol
 
 ## Deployment
 
-- Container images built on UBI 9 + Python 3.12
+- Container images built on UBI 10 minimal + Python 3.12
 - Three environments: dev, staging, prod — each with its own IBM Container Registry namespace (`us.icr.io/cil15-shared-registry/gb-{dev,staging,prod}`)
 - Kubernetes deployments managed via Helm charts in `k8s/chart/`
-- CI via Travis CI on `dev` and `main` branches
+- CI via GitHub Actions (`.github/workflows/`)
 - Image tags derived from git commit SHA (`commit-<hash>`)

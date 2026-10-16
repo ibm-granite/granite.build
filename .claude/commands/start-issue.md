@@ -1,11 +1,11 @@
 ---
-description: Load a GitHub issue, create an isolated worktree, load architecture docs, and plan implementation
+description: Load a GitHub issue, create an isolated worktree, and plan implementation
 argument-hint: "Issue number (e.g., 42)"
 ---
 
 # Start Work on a GitHub Issue
 
-You are helping a developer start work on a GitHub issue. You will verify pre-conditions, create an isolated git worktree, load the issue and architecture documentation, assess what's already been implemented, and plan the work. Follow these steps in order, stopping if any step fails.
+You are helping a developer start work on a GitHub issue. You will verify pre-conditions, create an isolated git worktree, load the issue, assess what's already been implemented, and plan the work. Follow these steps in order, stopping if any step fails.
 
 Issue number: $ARGUMENTS
 
@@ -14,16 +14,10 @@ Issue number: $ARGUMENTS
 These values can be overridden by the user but apply by default:
 
 ```
-ARCH_DOC_1=docs/plans/2026-02-23-architecture.md
-ARCH_DOC_2=docs/plans/2026-02-18-standalone-deployment-design.md
 WORKTREE_BASE=../granite.build-worktrees
 ```
 
-Derive the fork owner and repo:
-```
-FORK_OWNER=$(git remote get-url origin | sed -E 's|.*[:/]([^/]+)/.*|\1|')
-FORK_REPO=$(git remote get-url origin | sed -E 's|.*[:/][^/]+/(.*)$|\1|' | sed 's/\.git$//')
-```
+Issues live in the upstream repo `ibm-granite/granite.build` (the fork has issues disabled).
 
 ## Step 0: Pre-flight checks
 
@@ -54,7 +48,7 @@ FORK_REPO=$(git remote get-url origin | sed -E 's|.*[:/][^/]+/(.*)$|\1|' | sed '
 
 1. Fetch the issue title to verify the issue exists and to derive the branch name:
    ```
-   gh issue view $ARGUMENTS --repo "$FORK_OWNER/$FORK_REPO" --json title --template '{{.title}}'
+   gh issue view $ARGUMENTS --repo ibm-granite/granite.build --json title --template '{{.title}}'
    ```
    If the command fails (issue doesn't exist), report the error and stop.
 
@@ -104,7 +98,7 @@ FORK_REPO=$(git remote get-url origin | sed -E 's|.*[:/][^/]+/(.*)$|\1|' | sed '
 
 1. Fetch full issue details:
    ```
-   gh issue view $ARGUMENTS --repo "$FORK_OWNER/$FORK_REPO" --json number,title,body,labels,comments
+   gh issue view $ARGUMENTS --repo ibm-granite/granite.build --json number,title,body,labels,comments
    ```
 2. Present to the user:
    - **Issue #** and **title**
@@ -112,18 +106,10 @@ FORK_REPO=$(git remote get-url origin | sed -E 's|.*[:/][^/]+/(.*)$|\1|' | sed '
    - **Body** — the full issue description
    - **Comments** — summarize key discussion points (if any)
 
-## Step 3: Load architecture documentation
-
-1. Read the detailed implementation plan (use the Read tool):
-   - File: `$ARCH_DOC_1`
-2. Read the strategic design overview (use the Read tool):
-   - File: `$ARCH_DOC_2`
-
-## Step 4: Summarize and plan
+## Step 3: Summarize and plan
 
 1. Present a consolidated summary:
    - **What the issue asks for** (from Step 2)
-   - **What the architecture docs specify** for this area (from Step 3)
+   - **What the relevant code and docs show** for this area
    - **What remains to be done** for this specific issue
-2. Use the `superpowers:brainstorming` skill to explore the problem space and align with the user on the implementation approach
-3. After brainstorming, use the `superpowers:writing-plans` skill to create a detailed implementation plan for the issue
+2. Propose an implementation approach and plan; use plan mode if the change is non-trivial

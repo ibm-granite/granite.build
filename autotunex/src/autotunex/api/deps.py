@@ -19,7 +19,7 @@ import httpx
 from fastapi import Cookie, Depends, Request
 from fastapi.security import APIKeyCookie, APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from autotunex.core.auth.disabled import STANDALONE_PROVIDER
 from autotunex.core.auth.impersonation import read_assume_token
@@ -38,6 +38,7 @@ from autotunex.db.repositories.protocols import (
     JobRepository,
     TrainingMetricsRepository,
     TrialRepository,
+    TunedModelRepository,
     UserRepository,
 )
 from autotunex.db.repositories.sqlalchemy import (
@@ -62,6 +63,8 @@ from autotunex.services.datasets import DatasetService
 from autotunex.services.estimation import EstimationService
 from autotunex.services.gb_logs.protocols import GbLogReader
 from autotunex.services.gb_logs.registry import get_gb_log_reader as build_gb_log_reader
+from autotunex.services.hf_import_service import HfImportService
+from autotunex.services.hf_model_service import HfModelService
 from autotunex.services.jobs import JobService
 from autotunex.services.launch.registry import get_build_canceller as build_build_canceller
 from autotunex.services.launch.registry import get_tuning_launcher as build_tuning_launcher
@@ -86,6 +89,7 @@ from autotunex.services.storage.artifacts import FilesystemArtifactLister, Huggi
 from autotunex.services.storage.base import StorageBackend
 from autotunex.services.storage.registry import get_storage_backend as build_storage_backend
 from autotunex.services.trials import TrialService
+from autotunex.services.tuned_models import TunedModelService
 from autotunex.services.users import UserService
 
 logger = get_logger(__name__)
@@ -111,6 +115,37 @@ def get_http_client(request: Request) -> httpx.AsyncClient:
     """
     http_client: httpx.AsyncClient = request.app.state.http_client
     return http_client
+
+
+def get_hf_http_client(request: Request) -> httpx.AsyncClient:
+    """The outbound client used for HuggingFace Hub reads.
+
+    A named dependency of its own — rather than reusing ``get_http_client``
+    directly — so tests can swap in a ``MockTransport`` for Hub traffic without
+    also redirecting every other outbound call the app makes.
+    """
+    http_client: httpx.AsyncClient = request.app.state.http_client
+    return http_client
+
+
+def get_hf_viewer_http_client(request: Request) -> httpx.AsyncClient:
+    """The outbound client used for HuggingFace dataset-viewer reads.
+
+    A second lifespan-scoped client, opened once in ``lifespan`` as
+    ``app.state.hf_viewer_http_client`` and reused here rather than
+    constructed per call — the same reasoning as ``get_http_client``'s
+    docstring above: preview is the wizard's most-repeated of the four HF
+    import routes, so this pools the connection instead of paying a new
+    TCP/TLS handshake on every column-mapping preview. It is a dependency of
+    its own, not a reuse of ``get_hf_http_client``, because it is bounded by
+    ``hf_viewer_timeout_seconds`` instead of the shared Hub client's 10s
+    default — the viewer (``datasets-server.huggingface.co``) has a
+    different SLA than the Hub, in the same spirit as
+    ``reconcile_http_client`` (``main.py``), a dedicated client with its own
+    explicit timeout.
+    """
+    hf_viewer_http_client: httpx.AsyncClient = request.app.state.hf_viewer_http_client
+    return hf_viewer_http_client
 
 
 def get_id_token_verifier(request: Request) -> OidcBearerVerifier | None:
@@ -489,10 +524,17 @@ RewardToolsServiceDep = Annotated[RewardToolsService, Depends(get_reward_tools_s
 
 def get_estimation_service(
     repository: Annotated[ConfigurationRepository, Depends(get_configuration_repository)],
+    tuned_model_repository: Annotated[TunedModelRepository, Depends(get_tuned_model_repository)],
     principal: PrincipalDep,
+    settings: SettingsDep,
 ) -> EstimationService:
     """Provide the resource-estimation service."""
-    return EstimationService(repository, principal)
+    return EstimationService(
+        repository,
+        principal,
+        tuned_model_repository=tuned_model_repository,
+        namespaces=settings.hf_import_namespaces,
+    )
 
 
 EstimationServiceDep = Annotated[EstimationService, Depends(get_estimation_service)]
@@ -606,6 +648,25 @@ def get_trial_service(
 TrialServiceDep = Annotated[TrialService, Depends(get_trial_service)]
 
 
+def get_tuned_model_repository(session: SessionDep) -> TunedModelRepository:
+    """Provide the tuned-model read, implemented by the SQLAlchemy job repository."""
+    return SqlAlchemyJobRepository(session)
+
+
+def get_tuned_model_service(
+    repository: Annotated[TunedModelRepository, Depends(get_tuned_model_repository)],
+    principal: PrincipalDep,
+    settings: SettingsDep,
+) -> TunedModelService:
+    """Provide the tuned-model service, scoped to the principal and the HF allowlist."""
+    return TunedModelService(
+        repository=repository, principal=principal, namespaces=settings.hf_import_namespaces
+    )
+
+
+TunedModelServiceDep = Annotated[TunedModelService, Depends(get_tuned_model_service)]
+
+
 def get_configuration_repository(session: SessionDep) -> ConfigurationRepository:
     """Provide the configuration repository implementation."""
     return SqlAlchemyConfigurationRepository(session)
@@ -694,6 +755,65 @@ def get_dataset_service(
 
 
 DatasetServiceDep = Annotated[DatasetService, Depends(get_dataset_service)]
+
+
+def get_background_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Provide the process-wide session factory for background tasks.
+
+    A thin wrapper around ``get_session_factory()``, mirroring
+    ``get_dataset_runner``'s wrap of ``_shared_upload_runner`` — precisely so a
+    test can override it via ``app.dependency_overrides``, which a raw call to
+    the ``@lru_cache``d ``get_session_factory`` is not reachable through.
+    """
+    return get_session_factory()
+
+
+def get_hf_import_service(
+    client: Annotated[httpx.AsyncClient, Depends(get_hf_http_client)],
+    viewer_client: Annotated[httpx.AsyncClient, Depends(get_hf_viewer_http_client)],
+    settings: SettingsDep,
+    repository: Annotated[DatasetRepository, Depends(get_dataset_repository)],
+    principal: PrincipalDep,
+    runner: Annotated[DatasetUploadRunner, Depends(get_dataset_runner)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_background_session_factory)
+    ],
+) -> HfImportService:
+    """Provide the HuggingFace import service, scoped to the resolved principal.
+
+    ``runner``/``staging_dir``/``session_factory`` let ``import_dataset`` hand
+    the fetch off to a background task the same way the upload path does (see
+    ``get_dataset_runner``); ``staging_dir`` comes from ``Settings`` the same
+    way ``_shared_upload_runner`` derives its own.
+    """
+    return HfImportService(
+        client=client,
+        viewer_client=viewer_client,
+        settings=settings,
+        repository=repository,
+        principal=principal,
+        runner=runner,
+        staging_dir=settings.dataset_staging_dir,
+        session_factory=session_factory,
+    )
+
+
+HfImportServiceDep = Annotated[HfImportService, Depends(get_hf_import_service)]
+
+
+def get_hf_model_service(
+    client: Annotated[httpx.AsyncClient, Depends(get_hf_http_client)],
+    settings: SettingsDep,
+) -> HfModelService:
+    """Provide the HuggingFace model search/card service.
+
+    Rides ``get_hf_http_client`` so tests swap in a ``MockTransport`` exactly as
+    the dataset-import routes do.
+    """
+    return HfModelService(client=client, settings=settings)
+
+
+HfModelServiceDep = Annotated[HfModelService, Depends(get_hf_model_service)]
 
 
 def get_llm_client(

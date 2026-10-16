@@ -4,13 +4,13 @@ import time
 import webbrowser
 
 import click
-from fastapi import HTTPException
 from requests.exceptions import ConnectionError
 
 from gbcli.client import GBClient
 from gbcli.utils.click_utils import FileOrStringParamType
 from gbcli.utils.gbconstants import PROJECT_NAME
 from gbcli.utils.gbcredentials import GBCredentials
+from gbcli.utils.gbserver_errors import GBServerHTTPError
 from gbcli.utils.utils import check_runnable_browser
 from gbcommon.types.constants import get_gh_credentials_section
 from gbcommon.types.gbenvconfig import is_standalone
@@ -203,7 +203,7 @@ def login(ctx, token, gbserver, sso):
             click.echo(f"(2/2) Logged in as " + click.style(user_login, bold=True))
 
         click.echo("✅ IBM GitHub authentication is successful!")
-    except HTTPException as e:
+    except GBServerHTTPError as e:
         click.echo(f"\n❌ github returned '{e.status_code} {e.detail}'", err=True)
     except ConnectionError:
         click.echo(

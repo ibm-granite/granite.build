@@ -154,7 +154,11 @@ class AtomicApiClient:
                 # cls._thread_local.current_config = config.list_kube_config_contexts()[1]
                 cfg = kubernetes_asyncio.client.Configuration.get_default_copy()
                 logger.info("Default SSL verification: %s", cfg.verify_ssl)
-                cfg.verify_ssl = ssl_verification
+                # verify_ssl expects a plain bool; fall back to the secure
+                # default (True) when the caller leaves it unset (None).
+                cfg.verify_ssl = (
+                    ssl_verification if ssl_verification is not None else True
+                )
                 logger.info(
                     "SSL verification from environment.yaml: %s", cfg.verify_ssl
                 )
@@ -377,12 +381,12 @@ class K8s(Environment):
                     secret = client.V1Secret(
                         api_version="v1",
                         kind="Secret",
-                        metadata={
-                            "name": setup_id_hash,
-                            "namespace": self.namespace,
-                            "labels": labels,
-                            "annotations": annotations,
-                        },
+                        metadata=client.V1ObjectMeta(
+                            name=setup_id_hash,
+                            namespace=self.namespace,
+                            labels=labels,
+                            annotations=annotations,
+                        ),
                         type="Opaque",
                         data=encoded_data,
                     )

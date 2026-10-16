@@ -48,6 +48,19 @@ from gbserver.utils.utils import download_file
 logger = get_logger(__name__)
 
 
+def _http_status(e: requests.HTTPError) -> Optional[int]:
+    """Return the HTTP status code from a requests error, or None if the error
+    carries no response.
+
+    Args:
+        e: The ``requests.HTTPError`` to inspect.
+
+    Returns:
+        The response status code, or ``None`` when ``e.response`` is unset.
+    """
+    return e.response.status_code if e.response is not None else None
+
+
 class RepoContentsPathGHResponse(BaseModel):
     """
     Contents of a particular path in the repo.
@@ -362,7 +375,7 @@ class MyGHApi:
             "Authorization": f"Bearer {self.token}",
             "X-GitHub-Api-Version": "2022-11-28",
         }
-        data = {
+        data: dict[str, Any] = {
             "title": title,
             "body": body,
             "head": src_branch,
@@ -421,7 +434,7 @@ class MyGHApi:
             return result
         except requests.HTTPError as e:
             logger.warning("got an error merging PR %s : %s", api_url, e)
-            if e.response.status_code == 401:
+            if _http_status(e) == 401:
                 raise RuntimeError(
                     f"failed to merge PR {api_url}: token is invalid (401 Unauthorized)"
                 ) from e
@@ -473,7 +486,7 @@ class MyGHApi:
             self._do_update_issue(api_url, headers, data)
         except requests.HTTPError as e:
             if ignore_errors:
-                logger.error("status_code: %s", e.response.status_code)
+                logger.error("status_code: %s", _http_status(e))
             else:
                 raise
         logger.info("MyGHApi.update_issue end")
@@ -495,9 +508,9 @@ class MyGHApi:
             exists = True
         except requests.HTTPError as e:
             logger.warning("got an error checking for the repo %s : %s", self.repo, e)
-            if e.response.status_code == 404:
+            if _http_status(e) == 404:
                 exists = False
-            elif e.response.status_code == 401:
+            elif _http_status(e) == 401:
                 raise ValueError("the token is invalid (401 Unauthorized)") from e
             else:
                 raise RuntimeError(f"failed to check if repo exists {self.repo}") from e
@@ -526,10 +539,10 @@ class MyGHApi:
             exists = True
         except requests.HTTPError as e:
             logger.info("got an error checking for the branch %s : %s", branch_name, e)
-            if e.response.status_code == 404:
+            if _http_status(e) == 404:
                 # TODO: what if the repo doesn't exist?
                 exists = False
-            elif e.response.status_code == 401:
+            elif _http_status(e) == 401:
                 raise ValueError("the token is invalid (401 Unauthorized)") from e
             else:
                 raise RuntimeError(

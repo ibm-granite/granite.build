@@ -10,4 +10,5 @@ target_expectations:
     step_count: 5
     input_artifact_count: 1
     output_artifact_count: 1
-    jobstats_count: 3
+# Space that resolves this build's space:// URIs (required by BuildTestSpecification).
+space_uri: git+ssh://github.ibm.com/granite-dot-build/gb-test.git@gbspace-config

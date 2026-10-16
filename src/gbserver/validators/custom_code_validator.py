@@ -28,6 +28,7 @@ from typing import Any, Self
 from pydantic import BaseModel
 
 from gbserver.asset.asset import Asset
+from gbserver.types.buildconfig import reject_host_file_uri
 from gbserver.types.validation import GBValidationErrors, GBValidatorConfig
 from gbserver.utils.logger import get_logger
 from gbserver.validators.validator import GBValidator
@@ -60,6 +61,7 @@ class CustomCodeGBValidator(GBValidator):
         validator_uri = self.config.validator_uri
         logger.info("validator_uri: %s", validator_uri)
         # self.validator_asset = Asset(uri=validator_uri, context=context)
+        reject_host_file_uri(validator_uri, "validator_uri")
         self.validator_asset = Asset(uri=validator_uri)
         logger.info("validator_asset: %s", self.validator_asset)
         self.working_dir = Path(tempfile.mkdtemp())

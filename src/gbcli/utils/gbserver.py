@@ -2,16 +2,35 @@ import logging
 from typing import Any, List, Optional
 
 import requests
-from fastapi import HTTPException
 from requests.exceptions import ConnectionError
 
 from gbcli.utils.gbconstants import (
     GBSERVER_SPACES_API,
     VPN_CONNECTION_ERROR_MESSAGE,
 )
+from gbcli.utils.gbserver_errors import (
+    GBServerAuthError,
+    GBServerHTTPError,
+    gbserver_http_error,
+)
 from gbcommon.types.gbenvconfig import is_standalone
 
 logger = logging.getLogger(__name__)
+
+
+def _response_detail(response) -> Any:
+    """``detail`` (else ``error``) of a gbserver error body.
+
+    Tolerates a non-JSON body (e.g. an HTML page from a proxy) so the caller still
+    raises GBServerHTTPError rather than a JSON decode error.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return response.reason or ""
+    if isinstance(body, dict):
+        return body.get("detail") or body.get("error", "")
+    return body
 
 
 def gb_server_request(
@@ -62,12 +81,7 @@ def gb_server_request(
             )
 
     if 400 <= response.status_code < 600:
-        detail = (
-            response.json().get("detail")
-            if response.json().get("detail")
-            else response.json().get("error", "")
-        )
-        raise HTTPException(status_code=response.status_code, detail=detail)
+        raise gbserver_http_error(response.status_code, _response_detail(response))
 
     data_obj = response.json()
 
@@ -255,7 +269,7 @@ def register_artifact(
                 body=new_artifact,
                 params=None,
             )
-        except HTTPException as e:
+        except GBServerHTTPError as e:
             if e.status_code == 409:
                 raise ValueError(f"{e.detail}")
             else:
@@ -559,9 +573,7 @@ def gbserver_put(token: str, url: str, payload: Any):
     }
     response = requests.put(url, headers=headers, json=payload)
     if 400 <= response.status_code < 600:
-        raise HTTPException(
-            status_code=response.status_code, detail=response.json().get("detail", "")
-        )
+        raise gbserver_http_error(response.status_code, _response_detail(response))
 
     data_obj = response.json()
 
@@ -575,9 +587,7 @@ def gbserver_post(token: str, url: str, payload: Any):
     }
     response = requests.post(url, headers=headers, json=payload)
     if 400 <= response.status_code < 600:
-        raise HTTPException(
-            status_code=response.status_code, detail=response.json().get("detail", "")
-        )
+        raise gbserver_http_error(response.status_code, _response_detail(response))
 
     data_obj = response.json()
 
@@ -592,9 +602,7 @@ def gbserver_get(token: str, url: str):
     response = requests.get(url, headers=headers)
 
     if 400 <= response.status_code < 600:
-        raise HTTPException(
-            status_code=response.status_code, detail=response.json().get("detail", "")
-        )
+        raise gbserver_http_error(response.status_code, _response_detail(response))
 
     data_obj = response.json()
 
@@ -659,6 +667,8 @@ def validate_build(
     #         status_code=response.status_code, detail=response.json().get("detail", "")
     #     )
 
+    if response.status_code == 401:
+        raise GBServerAuthError(_response_detail(response))
     if response.status_code >= 400 and response.status_code != 422:
         response.raise_for_status()
 
@@ -701,7 +711,7 @@ def submit_build(
 def make_gbserver_call(gbserver_call, callback=None, final_command=None):
     try:
         result = gbserver_call()
-    except HTTPException as e:
+    except GBServerHTTPError as e:
         if callback is not None:
             callback(
                 callback_event="error",
@@ -758,7 +768,7 @@ def update_artifact_gserver(
             response = gbserver_put(user_token, put_url, body)
             return response["artifact"]
 
-        except HTTPException as e:
+        except GBServerHTTPError as e:
             if e.status_code == 409:
                 raise ValueError(e.detail)
             else:
@@ -798,7 +808,7 @@ def update_build_gserver(
             response = gbserver_put(user_token, put_url, body)
             return response["build"]
 
-        except HTTPException as e:
+        except GBServerHTTPError as e:
             if e.status_code == 409:
                 raise ValueError(e.detail)
             else:

@@ -9,6 +9,7 @@ config:
     step_contents_in_env: false
   sage_eval_config:
     gb_script: ""
+    # DEPRECATED: bind the `model` input instead; read only when it is not bound.
     model_path: ""
     experiment: ""
     batch_size: 10
@@ -17,6 +18,20 @@ config:
     output_dir: ""
     image_id: "docker:us.icr.io/cil15-shared-registry/sage-py311-olmes:0.025"
     extra_env: {}
+
+# I/O schema, validated against the build.yaml target at build time. Inputs are
+# OPTIONAL during the deprecation window: the run script reads each one through
+# {{ bindings.<name>.binding.<path|state> }} when it is bound, and otherwise falls back
+# to the old config key, with a DEPRECATED warning. allow_unknown stays true so a recipe
+# can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  optional:
+    # The model directory to evaluate (an HF export or a training checkpoint).
+    model:
+      type: model
+      accept: [uri, binding]
+
 outputs:
   optional:
     sage_eval_results:
@@ -71,18 +86,43 @@ environment_configs:
             # ~few GB) onto the node-local NVMe scratch. The bigcode-eval metric
             # phase writes thousands of per-problem JSON files plus per-program
             # source/binaries into $TMPDIR; tmpfs fills up fast under contention.
+            #
+            # mktemp gives each task its own short, mode-700 directory. Do not name
+            # it after SKYPILOT_TASK_ID: the id embeds the cluster name, and the
+            # ~150-character path it made was too long for any unix socket bound
+            # under $TMPDIR (107 characters): vLLM's ZMQ ipc sockets, and
+            # multiprocessing's pymp-* listeners on this image's Python 3.11.
             if [ -d "/opt/nvme" ]; then
-              export TMPDIR="/opt/nvme/${USER:-$(id -un)}/tmp-${SKYPILOT_TASK_ID:-$$}"
+              mkdir -p "/opt/nvme/${USER:-$(id -un)}"
+              TMPDIR="$(mktemp -d "/opt/nvme/${USER:-$(id -un)}/tmp-XXXXXXXX")" || exit 1
             else
-              export TMPDIR="/tmp/sage-tmp-${SKYPILOT_TASK_ID:-$$}"
+              TMPDIR="$(mktemp -d /tmp/sage-tmp-XXXXXXXX)" || exit 1
             fi
-            mkdir -p "$TMPDIR"
+            export TMPDIR
+            trap 'rm -rf "$TMPDIR"' EXIT
+            echo "TMPDIR=$TMPDIR (task ${SKYPILOT_TASK_ID:-unset})"
             export TMP="$TMPDIR"
             export TEMP="$TMPDIR"
 
             # Standard vars consumed by sage gb_scripts
+            # `model` is an optional input; sage_eval_config.model_path is the DEPRECATED fallback.
+            {% if bindings.model is defined %}
+            export MODEL_PATH="{{ bindings.model.binding.path }}"
+            {% if config.sage_eval_config.model_path and config.sage_eval_config.model_path != bindings.model.binding.path %}
+            echo "sage-eval: WARNING: sage_eval_config.model_path is ignored because the 'model' input is bound" >&2
+            {% elif config.sage_eval_config.model_path %}
+            echo "sage-eval: DEPRECATED: sage_eval_config.model_path duplicates the bound 'model' input; remove it from the recipe" >&2
+            {% endif %}
+            {% else %}
             export MODEL_PATH="{{ config.sage_eval_config.model_path }}"
+            {% if config.sage_eval_config.model_path %}
+            echo "sage-eval: DEPRECATED: sage_eval_config.model_path will be removed in a future release; bind the target input 'model' instead" >&2
+            {% endif %}
+            {% endif %}
             export EXPERIMENT="{{ config.sage_eval_config.experiment }}"
+            # The results search below is anchored at /${EXPERIMENT}/; an empty value
+            # would match nothing and fail only after a full eval.
+            [ -n "$EXPERIMENT" ] || { echo "ERROR: sage_eval_config.experiment is empty"; exit 1; }
             export OUTPUT_BASE_PATH="{{ config.sage_eval_config.output_dir }}"
             export NUM_GPUS={{ config.sage_eval_config.num_gpus }}
             export BATCH_SIZE={{ config.sage_eval_config.batch_size }}
@@ -114,10 +154,19 @@ environment_configs:
             # Run the evaluation script
             bash /workspace/sage/sage/cluster/gb/scripts/${GB_SCRIPT} 2>&1 | tee /tmp/sage-eval.log
 
-            # Emit artifact for gbserver
-            RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -path "*${EXPERIMENT}*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' \) -print -quit)
+            # Emit artifact for gbserver. '*-result.json' is SALAD-Bench's
+            # base_set-result.json: without it a SALAD eval alone in its output
+            # tree (an eval-rerun's RERUN_SAGE_DIR) finds nothing and exits 1 after
+            # a complete run (builds f71274d5, 1131fd71). In a full rung tree it
+            # only ever passed by emitting a sibling eval's file. The path is
+            # anchored at /${EXPERIMENT}/ so ckpt_25 cannot match ckpt_250 (#482);
+            # so is the fallback, as parallel rungs share OUTPUT_BASE_PATH and a
+            # crashed rung's log is older than its siblings' results. '|| true': a
+            # find error (e.g. Permission denied) must reach the ERROR below, not
+            # abort the step under set -e.
+            RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -path "*/${EXPERIMENT}/*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*-result.json' \) -print -quit || true)
             if [ -z "$RESULT_FILE" ]; then
-              RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*.csv' \) -newer /tmp/sage-eval.log -print -quit 2>/dev/null || true)
+              RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -path "*/${EXPERIMENT}/*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*-result.json' -o -name '*.csv' \) -newer /tmp/sage-eval.log -print -quit 2>/dev/null || true)
             fi
             if [ -n "$RESULT_FILE" ]; then
               echo "GB_ARTIFACT_ID:sage_eval_results GB_ARTIFACT_PATH:${RESULT_FILE}"

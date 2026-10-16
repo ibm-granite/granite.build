@@ -88,6 +88,9 @@ def load_extra_server_runtime_configs() -> Optional[GBEnvConfig]:
 def gb_environment_config(gb_env: str = "") -> GBEnvConfig:
     """Server-specific wrapper that loads extra runtime configs first."""
     loaded_config = load_extra_server_runtime_configs()
+    # When no env is supplied, fall back to the loaded config's env, or None so
+    # the common resolver applies its own default.
+    resolved: Optional[str] = gb_env
     if gb_env == "":
-        gb_env = loaded_config.env if loaded_config else None
-    return _common_gb_environment_config(gb_env)
+        resolved = loaded_config.env if loaded_config else None
+    return _common_gb_environment_config(resolved)

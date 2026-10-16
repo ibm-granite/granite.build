@@ -11,7 +11,7 @@ granite.build:
     global-mmlu:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -23,7 +23,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "multilingual_global_mmlu_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -41,7 +40,7 @@ granite.build:
     mgsm:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -53,7 +52,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "multilingual_mgsm_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -71,7 +69,7 @@ granite.build:
     include-ar-de-es-fr:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -83,7 +81,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "multilingual_include_arabic_german_spanish_french_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -101,7 +98,7 @@ granite.build:
     include-hi-bn-ta-te:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -113,7 +110,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "multilingual_include_hindi_bengali_tamil_telugu_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -131,7 +127,7 @@ granite.build:
     include-it-ja-ko-nl-pt-zh:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -143,7 +139,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "multilingual_include_italian_japanese_korean_dutch_portuguese_chinese_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}

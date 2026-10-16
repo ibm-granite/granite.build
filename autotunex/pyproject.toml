@@ -4,7 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "autotunex"
-version = "0.3.5"
+# Read from `src/autotunex/__init__.py`, the one place to bump it: `/health` and the
+# OpenAPI document report `__version__`.
+dynamic = ["version"]
 description = "Automated fine-tuning and hyperparameter optimization of LLMs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -20,10 +22,9 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Typing :: Typed",
 ]
-# Versions are pinned exactly, not floored. Installs are then reproducible
-# without a lockfile, and a new upstream release can never change a build
-# behind our back — the cost is that upgrades are deliberate: bump the pin here,
-# run `make check`, and re-run the audit (see `make audit`).
+# Versions are pinned exactly, not floored: installs are reproducible without a
+# lockfile, and no upstream release can change a build behind our back. Upgrade
+# deliberately: bump the pin, then run `make check` and `make audit`.
 dependencies = [
   "fastapi==0.141.1",
   "pydantic==2.11.10",
@@ -32,84 +33,45 @@ dependencies = [
   "aiosqlite==0.22.1",
   "alembic==1.18.5",
   "uvicorn[standard]==0.52.2",
-  # Pinned directly although both arrive transitively, because the upstream
-  # ranges are too loose to exclude known-vulnerable releases:
-  #   starlette — fastapi asks only for >=0.46.0, which still admits the Host
-  #   header auth bypass (PYSEC-2026-161) and the urlencoded form-limit bypass
-  #   (PYSEC-2026-249, fixed in 1.3.1).
+  # Transitive, but pinned directly: the upstream ranges admit vulnerable releases.
+  #   starlette: fastapi allows >=0.46.0 (PYSEC-2026-161, PYSEC-2026-249).
   "starlette==1.3.1",
-  #   h11 — uvicorn asks only for >=0.8, which admits the request-smuggling
-  #   flaw fixed in 0.16.0 (CVE-2025-43859).
+  #   h11: uvicorn allows >=0.8 (CVE-2025-43859).
   "h11==0.16.0",
-  # New runtime dependency for OIDC bearer-token verification. The crypto
-  # extra brings `cryptography` explicitly for RS256, rather than relying on
-  # the mysql extra's transitive copy — this must work with no mysql extra
-  # installed. Pinned exactly, like every other entry in this list.
+  # OIDC bearer-token verification (RS256 needs the crypto extra).
   "pyjwt[crypto]==2.13.0",
-  # No longer optional: RS256 verification above needs it directly, and
-  # MySQL's caching_sha2_password already did (see the mysql extra below).
-  # Pinned identically in both places. 48.0.1, not 45.0.3: adding pyjwt[crypto]
-  # forces cryptography into every install, and 45.0.3 carries four known CVEs
-  # (PYSEC-2026-2141, PYSEC-2026-35, PYSEC-2026-36, GHSA-537c-gmf6-5ccf).
-  # 48.0.1 is the minimum that clears all four — GHSA-537c-gmf6-5ccf is the
-  # binding one, the others need only 46.0.5/46.0.6/46.0.7 — chosen over the
-  # newest release (50.0.0) to keep the jump off the hand-verified MySQL path
-  # as small as possible.
-  "cryptography==48.0.1",
-  # Promoted from a dev-only dependency: the backend-for-frontend makes its own
-  # outbound call to the OIDC token endpoint. Same exact pin as before.
+  # Used by pyjwt (RS256) and asyncmy (caching_sha2_password); pinned identically
+  # in the mysql extra. >=50.0.0 clears GHSA-g6cj-pr64-35w5, GHSA-jwv3-5hgf-82ww
+  # and GHSA-m2h6-j472-rp4c.
+  "cryptography==50.0.1",
+  # Server-side call to the OIDC token endpoint (`/auth/callback`).
   "httpx==0.28.1",
-  # Parquet read/write for dataset uploads (count by metadata, column remap,
-  # split). pyarrow is the standard reader; pinned exactly like every other dep.
-  # 23.0.1, not 18.1.0: 18.1.0 carries PYSEC-2026-113; 23.0.1 is the lowest
-  # release pip-audit reports as fixed.
+  # Parquet read/write for dataset uploads. >=23.0.1 clears PYSEC-2026-113.
   "pyarrow==23.0.1",
-  # FastAPI multipart form parsing for the dataset upload endpoint (File/Form).
-  # Pinned exactly. 0.0.31, not 0.0.20: 0.0.20 carries six known CVEs
-  # (PYSEC-2026-1852, -3038, -3037, -3036, -3040, -3039); 0.0.31 is the lowest
-  # release `pip-audit` reports clean of all of them.
+  # Multipart form parsing for dataset uploads. >=0.0.31 clears PYSEC-2026-1852
+  # and PYSEC-2026-3036 through -3040.
   "python-multipart==0.0.31",
-  # Renders the llmb build-spec (a YAML document) for the launch-only
-  # JobRunner (see docs/.../2026-08-06-job-launch-runner-design.md). Floored,
-  # not pinned exactly like the rest of this list: it is a build-time
-  # serialization dependency with no security-sensitive surface of its own.
+  # Renders the llmb build spec. Floored, not pinned: serialization only, with no
+  # security-sensitive surface.
   "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
 postgres = ["asyncpg==0.31.0"]
-# cryptography is not optional in practice: MySQL 8.4 defaults new accounts to
-# caching_sha2_password, and asyncmy raises "'cryptography' package is required
-# for sha256_password or caching_sha2_password auth methods" on a cold connection
-# without it. asyncmy declares no such dependency, so we must. Verified against
-# MySQL 8.4 at cryptography==45.0.3 — the failure is deterministic, not
-# intermittent. The pin has since moved to 48.0.1 (see the base dependencies'
-# comment for why); the caching_sha2_password path has not been re-verified at
-# that version. (It is also now a base dependency via pyjwt[crypto] above;
-# kept pinned here too so a mysql-only install path never disagrees with it.)
-mysql = ["asyncmy==0.2.11", "cryptography==48.0.1"]
-# Opt-in MCP server (see api/mcp.py). Floored, not pinned exactly like the base
-# dependencies: fastmcp is a leaf feature (mounted only when settings.enable_mcp
-# is set) rather than something every install pays for, and >=2.3,<4 is verified
-# not to force an incompatible fastapi/starlette/pydantic on top of the pins
-# above (resolves fastmcp==3.4.7 pulling mcp==1.29.0 as of this writing, with
-# fastapi/starlette/pydantic left untouched — see api/mcp.py's module docstring).
+# asyncmy needs cryptography for caching_sha2_password (MySQL 8.4's default) but
+# does not declare it. asyncmy must stay >=0.2.14: older releases answer correct
+# credentials with 1045 Access denied over TLS when the server's auth cache is
+# cold (asyncmy issue #117).
+mysql = ["asyncmy==0.2.15", "cryptography==50.0.1"]
+# Floored, not pinned: an opt-in leaf feature (`settings.enable_mcp`). >=2.3,<4 is
+# verified to leave the fastapi/starlette/pydantic pins above untouched (see
+# api/mcp.py).
 mcp = ["fastmcp>=2.3,<4"]
-# Granite build integration. Unlike every other group here this is a VCS (git)
-# dependency rather than a PyPI release, so it cannot carry the exact PyPI-style
-# version pin the rest of this file relies on. It is pinned to the upstream
-# `stable` release tag (`....git@stable`) rather than tracking the default
-# branch, so an unrelated upstream commit can no longer turn a green install red
-# with no local change. Note `stable` is a *moving* tag that advances with each
-# release; pin `@vX.Y.Z` (e.g. `@v0.3.4`) instead for a fully immutable ref.
-# Direct references like this require `allow-direct-references` under
-# `[tool.hatch.metadata]` below.
-#
-# `autotune` (the fm-tune training core) is NOT listed here: it is vendored in-tree
-# at `src/fm-tune`, so it needs no credentials and no network fetch, but it is
-# heavy (Ray/torch/verl/numpy) and installed separately from that path — not by
-# `make install`. A standalone install that wants only the core can still use:
-#   pip install "autotune[full,mlx] @ git+<public-repo>#subdirectory=autotunex/src/fm-tune"
+# A git dependency, so it cannot take an exact PyPI pin; pinned to the upstream
+# `stable` tag instead. `stable` moves with each release; use `@vX.Y.Z` for an
+# immutable ref. Requires `allow-direct-references` below.
+# autotune (fm-tune) is not listed: it is vendored at src/fm-tune and installed from
+# that path (`make install` for the slim catalog, `make install-training` for the rest).
 granite-build = [
   "granite.build @ git+https://github.com/ibm-granite/granite.build.git@stable",
 ]
@@ -117,12 +79,8 @@ dev = [
   "pytest==9.1.1",
   "pytest-asyncio==1.4.0",
   "pytest-cov==7.1.0",
-  # Pinned so that lint and type errors are identical locally and in CI; a new
-  # ruff or mypy release must never turn a green branch red on its own.
   "ruff==0.16.0",
   "mypy==2.3.0",
-  # Type stubs for pyyaml, so mypy strict can check the build-spec renderer's
-  # use of it.
   "types-PyYAML>=6.0",
 ]
 
@@ -131,13 +89,14 @@ Homepage = "https://github.com/ibm-granite/granite.build/tree/main/autotunex"
 Repository = "https://github.com/ibm-granite/granite.build/tree/main/autotunex"
 Issues = "https://github.com/ibm-granite/granite.build/issues"
 
+[tool.hatch.version]
+path = "src/autotunex/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/autotunex"]
 
-# The `granite-build` extra declares direct VCS references (`@ git+https://...`).
-# Hatchling forbids direct references by default and aborts metadata generation
-# for the entire project — every install, not just `[granite-build]` — until this
-# is enabled.
+# Required by the granite-build extra's git reference. Without it, hatchling refuses
+# to generate metadata for every install, not just that extra.
 [tool.hatch.metadata]
 allow-direct-references = true
 
@@ -148,14 +107,9 @@ allow-direct-references = true
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
-# ruff formats Python inside markdown code fences. Design docs and plans quote
-# illustrative snippets — partial classes, deliberately-wrong "before" examples —
-# that are prose, not source, and reformatting them fights the author. Exclude
-# docs/ so `make check` gates code only. src/api-bridge and src/fm-tune are
-# separate subprojects with their own nested [tool.ruff] config; the root make
-# lint/format targets lint them by explicit path so this strict config never
-# governs them. .claude holds internal tooling and nested git worktrees
-# (checkouts of other branches) — never lint those as part of this project.
+# docs: ruff would reformat the illustrative snippets in markdown code fences.
+# src/api-bridge, src/fm-tune: subprojects with their own [tool.ruff], linted by path
+# from the Makefile. .claude: internal tooling and nested git worktrees.
 extend-exclude = ["docs", "src/api-bridge", "src/fm-tune", ".claude"]
 
 [tool.ruff.lint]
@@ -201,64 +155,45 @@ strict = true
 warn_unreachable = true
 plugins = ["pydantic.mypy"]
 files = ["src", "tests"]
-# src/api-bridge and src/fm-tune are separate, self-contained subprojects with their
-# own configs; neither is held to this service's strict typing bar. fm-tune is still
-# *imported* by services/autotune.py, so the `autotune` ignore_missing_imports
-# override below is retained — excluding the tree does not give mypy its types.
+# Subprojects with their own configs. fm-tune is still imported by
+# services/autotune.py, which is what the `autotune` override below is for.
 exclude = "^src/api-bridge/|^src/fm-tune/"
 
-# pyarrow ships no py.typed marker (verified against the installed 23.0.1
-# wheel), so mypy cannot see its types at all. Treat it as untyped rather than
-# sprinkling `# type: ignore[import-untyped]` at every import site.
+# pyarrow ships no py.typed marker.
 [[tool.mypy.overrides]]
 module = ["pyarrow", "pyarrow.*"]
 ignore_missing_imports = true
 
-# autotune is the optional IBM training core (installed via the granite-build
-# extra); it is absent in CI and ships no stubs, so mypy cannot resolve the lazy
-# `from autotune.utils import ...` in services/autotune.py. Treat it as untyped,
-# exactly like pyarrow above.
+# autotune (src/fm-tune, excluded above) ships no stubs; services/autotune.py imports
+# it lazily.
 [[tool.mypy.overrides]]
 module = ["autotune", "autotune.*"]
 ignore_missing_imports = true
 
-# fastmcp is optional (the [mcp] extra; see api/mcp.py). It is absent from the
-# base `.[dev]` install CI's typecheck job uses, so mypy cannot resolve it there.
+# fastmcp is the optional [mcp] extra, absent from the `.[dev]` install CI type-checks.
 [[tool.mypy.overrides]]
 module = ["fastmcp", "fastmcp.*"]
 ignore_missing_imports = true
 
-# numpy arrives only transitively, via the optional autotune (granite-build)
-# extra. numpy 2.x ships `.pyi` stubs that use the 3.12-only `type` statement,
-# which mypy rejects under `python_version = "3.11"` and then halts the whole run
-# — so a machine with the extra installed cannot type-check at all. We do not
-# type-depend on numpy (nothing in src imports it), so skip following it.
+# numpy 2.x stubs use the 3.12-only `type` statement, which halts mypy under
+# python_version 3.11. Nothing in src imports numpy.
 [[tool.mypy.overrides]]
 module = ["numpy", "numpy.*"]
 follow_imports = "skip"
 follow_imports_for_stubs = true
 ignore_missing_imports = true
 
-# ray backs the local runner's in-process HPO (services/local/trainer.py), installed
-# only via src/fm-tune[full,mlx] — never through the base `.[dev]` install CI type-checks
-# against (see CLAUDE.md "Open decisions" 2). Skip following it even when it *is*
-# installed, exactly like numpy above: that keeps mypy's view of trainer.py identical
-# whether or not the heavy extra is present, so the `# type: ignore[misc]` on the Ray
-# Tune Callback subclass there (strict mode forbids subclassing the `Any` that ray
-# resolves to) is neither spuriously "unused" with ray present nor missing without it.
+# ray (only in src/fm-tune[full,mlx]) is skipped even when installed, so mypy sees
+# services/local/trainer.py the same either way and its `# type: ignore[misc]` is
+# never flagged as unused.
 [[tool.mypy.overrides]]
 module = ["ray", "ray.*"]
 follow_imports = "skip"
 follow_imports_for_stubs = true
 ignore_missing_imports = true
 
-# gbcli is the granite.build CLI, imported lazily by services/gb_logs/gbcli_reader.py
-# only when the llmb backend is deployed; it is absent from the base `.[dev]` install and
-# ships no stubs. Treat it as untyped, exactly like autotune above. This replaces the
-# per-import `# type: ignore[import-untyped]` comments that file used to carry: they
-# silenced the found-but-untyped case but not the module-absent (`import-not-found`)
-# case CI actually hits, which then failed both as an unresolved import and as an
-# "unused" ignore under strict `warn_unused_ignores`.
+# gbcli (the granite.build CLI) is absent from `.[dev]` and ships no stubs. Use this
+# override, not per-import ignores: those miss the import-not-found case CI hits.
 [[tool.mypy.overrides]]
 module = ["gbcli", "gbcli.*"]
 ignore_missing_imports = true

@@ -362,7 +362,7 @@ export function PipelineDAG({
         {nodes.length === 0 ? (
           scanned === 0
             ? "No builds scanned. Set GB_UI_GBSERVER_DB_URL to gbserver's own database to enable build scanning."
-            : `No data processing builds found in this time range (${scanned} builds scanned). Try "7 days" or "30 days".`
+            : `No data processing builds found in this time range (${scanned} builds scanned).`
         ) : 'No datasets match the current filters.'}
       </div>
     )

@@ -26,6 +26,12 @@ config:
     sage_input_glob: "ckpt_*-sage.csv"
     bfcl_input_glob: "ckpt_*-bfcl.csv"
     output_csv: ""
+# No named inputs: the directories it exports are literal config paths. Recipes
+# bind the upstream eval results (e.g. `gate_bfcl`) purely to order this target
+# after them; allow_unknown keeps those valid.
+inputs:
+  allow_unknown: true
+
 outputs:
   optional:
     combined_csv:

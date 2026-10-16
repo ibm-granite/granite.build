@@ -456,6 +456,9 @@ class RabbitMQBase(MessagingBase):
 
             async def _inner(msg: aio_pika.IncomingMessage):
                 async with msg.process():
+                    # A broker-delivered message always carries these (the
+                    # Optional types cover the shared publish/consume class).
+                    assert msg.routing_key is not None and msg.delivery_tag is not None
                     await handler(msg.body, msg.routing_key, msg.delivery_tag)
 
             tag = await queue.consume(callback=_inner, arguments=args, no_ack=no_ack)

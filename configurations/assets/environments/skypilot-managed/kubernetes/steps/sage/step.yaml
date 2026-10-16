@@ -16,6 +16,11 @@ config:
     limit: 10
     num_fewshot: 0
     cluster: local
+# No named inputs: the model is named by config (sage_config.model / model_args),
+# as an HF id or a path inside the image, not by an upstream artifact.
+inputs:
+  allow_unknown: true
+
 outputs:
   optional:
     sage_output:

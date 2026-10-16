@@ -3,6 +3,10 @@ granite.build:
   targets:
     sft-training:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      inputs:
+        model:
+          uri: "env://$${MODEL_PATH}"
+          type: model
       outputs:
         # Declare the artifact the openinstruct-sft step emits via its
         # `GB_ARTIFACT_ID:checkpoint` line. Without this declaration the
@@ -23,7 +27,6 @@ granite.build:
         - step_uri: space://steps/openinstruct-sft
           config:
             sft_config:
-              model_path: "$${MODEL_PATH}"
               tokenized_data_path: "$${TOKENIZED_DATA_PATH}"
               chat_template_path: "$${CHAT_TEMPLATE_PATH}"
               output_dir: "$${OUTPUT_DIR}"

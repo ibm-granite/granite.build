@@ -13,7 +13,7 @@ granite.build:
     olmes-cruxeval:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -25,7 +25,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_olmes_cruxeval_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -43,7 +42,7 @@ granite.build:
     olmes-bigcodebench:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -55,7 +54,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_olmes_bigcodebench_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -74,7 +72,7 @@ granite.build:
     evalplus-humaneval:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -86,7 +84,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_evalplus_humaneval_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -104,7 +101,7 @@ granite.build:
     evalplus-mbpp:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -116,7 +113,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_evalplus_mbpp_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -134,7 +130,7 @@ granite.build:
     multiple-sh:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -146,7 +142,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_multiple_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: 512
@@ -166,7 +161,7 @@ granite.build:
     multiple-cpp:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -178,7 +173,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_multiple_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: 512
@@ -198,7 +192,7 @@ granite.build:
     multiple-java:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -210,7 +204,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_multiple_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: 512
@@ -230,7 +223,7 @@ granite.build:
     multiple-js:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -242,7 +235,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_multiple_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: 512
@@ -262,7 +254,7 @@ granite.build:
     multiple-rs:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -274,7 +266,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "code_multiple_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: 512
@@ -295,7 +286,7 @@ granite.build:
     olmes-agi-eval:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -307,7 +298,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "general_olmes_agi_eval_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -325,7 +315,7 @@ granite.build:
     olmes-bbh:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -337,7 +327,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "general_olmes_bbh_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -355,7 +344,7 @@ granite.build:
     olmes-mmlu-pro:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -367,7 +356,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "general_olmes_mmlu_pro_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -385,7 +373,7 @@ granite.build:
     olmes-ifeval:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -397,7 +385,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "general_olmes_ifeval_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: 30
               max_length: $${MAX_LENGTH}
@@ -415,7 +402,7 @@ granite.build:
     olmes-mmlu-mc:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -427,7 +414,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "general_olmes_mmlu_mc_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -446,7 +432,7 @@ granite.build:
     olmes-deepmind-math:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -458,7 +444,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "math_olmes_deepmind_math_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -476,7 +461,7 @@ granite.build:
     olmes-gpqa:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -488,7 +473,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "math_olmes_gpqa_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -506,7 +490,7 @@ granite.build:
     olmes-gsm8k:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -518,7 +502,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "math_olmes_gsm8k_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -536,7 +519,7 @@ granite.build:
     olmes-gsm-symbolic:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -548,7 +531,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "math_olmes_gsm_symbolic_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -566,7 +548,7 @@ granite.build:
     olmes-minerva-math:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -578,7 +560,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "math_olmes_minerva_math_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -597,7 +578,7 @@ granite.build:
     attaq:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -609,7 +590,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "safety_attaq_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -627,7 +607,7 @@ granite.build:
     salad-bench:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -639,7 +619,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "safety_salad_bench_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -658,7 +637,7 @@ granite.build:
     global-mmlu:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -670,7 +649,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "multilingual_global_mmlu_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -688,7 +666,7 @@ granite.build:
     mgsm:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -700,7 +678,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "multilingual_mgsm_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -718,7 +695,7 @@ granite.build:
     include-ar-de-es-fr:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -730,7 +707,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "multilingual_include_arabic_german_spanish_french_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -748,7 +724,7 @@ granite.build:
     include-hi-bn-ta-te:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -760,7 +736,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "multilingual_include_hindi_bengali_tamil_telugu_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -778,7 +753,7 @@ granite.build:
     include-it-ja-ko-nl-pt-zh:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -790,7 +765,6 @@ granite.build:
           config:
             sage_eval_config:
               gb_script: "multilingual_include_italian_japanese_korean_dutch_portuguese_chinese_slim.sh"
-              model_path: "$${MODEL_PATH}"
               experiment: "$${EXPERIMENT}"
               batch_size: $${BATCH_SIZE}
               max_length: $${MAX_LENGTH}
@@ -809,7 +783,7 @@ granite.build:
     bfcl:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
-        model_checkpoint:
+        model:
           uri: "env://$${MODEL_PATH}"
           type: model
       outputs:
@@ -820,7 +794,6 @@ granite.build:
         - step_uri: space://steps/bfcl-eval
           config:
             bfcl_config:
-              model_path: "$${MODEL_PATH}"
               model_id: "$${BFCL_MODEL_ID}"
               experiment: "$${EXPERIMENT}"
               eval_name: "$${BFCL_EVAL_NAME}"

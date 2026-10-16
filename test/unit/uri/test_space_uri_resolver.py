@@ -200,7 +200,7 @@ class TestTier1EnvColocated:
         """When the env dir lacks the step, resolution falls through to the
         env-class-match tier (proving ordering, not just tier-1)."""
         base = tmp_path / "base"
-        class_match = _write_step(base / "k8s" / "digit", env_classes=["K8s"])
+        class_match = _write_step(base / "k8s" / "steps" / "digit", env_classes=["K8s"])
         env_dir = tmp_path / "envs" / "k8s"  # exists, but has no steps/digit
         env_dir.mkdir(parents=True)
         _set_bases(base)
@@ -463,7 +463,7 @@ class TestSubtypeMatching:
         restricted candidate is excluded for an unlisted sub-type."""
         base = tmp_path / "base"
         _write_step(
-            base / "skypilot" / "digit",
+            base / "skypilot" / "steps" / "digit",
             env_classes=["Skypilot"],
             subtypes=["kubernetes", "slurm"],
         )
@@ -611,8 +611,8 @@ class TestTier2EnvClassMatch:
         """A single-env split file (fewer environment_configs keys) beats a
         multi-env catch-all that also lists the active class."""
         base = tmp_path / "base"
-        _write_step(base / "s3push", env_classes=["K8s", "Lsf", "Skypilot"])
-        specific = _write_step(base / "k8s" / "s3push", env_classes=["K8s"])
+        _write_step(base / "steps" / "s3push", env_classes=["K8s", "Lsf", "Skypilot"])
+        specific = _write_step(base / "k8s" / "steps" / "s3push", env_classes=["K8s"])
         _set_bases(base)
 
         with SpaceURI.with_current_env_class_name("K8s"):
@@ -632,8 +632,10 @@ class TestTier2EnvClassMatch:
         This tier must decide (no env dir, so Tier 1 is inert and Tier 3 never runs).
         """
         base = tmp_path / "base"
-        _write_step(base / "foo", env_classes=["K8s", "Skypilot"])  # catch-all, 2 keys
-        specific = base / "k8s" / "foo"  # null-valued, single-env
+        _write_step(
+            base / "steps" / "foo", env_classes=["K8s", "Skypilot"]
+        )  # catch-all, 2 keys
+        specific = base / "k8s" / "steps" / "foo"  # null-valued, single-env
         specific.mkdir(parents=True, exist_ok=True)
         (specific / "step.yaml").write_text(
             yaml.safe_dump(
@@ -656,8 +658,8 @@ class TestTier2EnvClassMatch:
         """Among equally-specific matches, the lexicographically smaller path
         wins (deterministic tie-break)."""
         base = tmp_path / "base"
-        first = _write_step(base / "aaa" / "dup", env_classes=["K8s"])
-        _write_step(base / "bbb" / "dup", env_classes=["K8s"])
+        first = _write_step(base / "aaa" / "steps" / "dup", env_classes=["K8s"])
+        _write_step(base / "bbb" / "steps" / "dup", env_classes=["K8s"])
         _set_bases(base)
 
         with SpaceURI.with_current_env_class_name("K8s"):
@@ -669,7 +671,7 @@ class TestTier2EnvClassMatch:
         """A candidate that does not list the active env class is ignored;
         with no other tier matching, resolution raises."""
         base = tmp_path / "base"
-        _write_step(base / "skypilot" / "only", env_classes=["Skypilot"])
+        _write_step(base / "skypilot" / "steps" / "only", env_classes=["Skypilot"])
         _set_bases(base)
 
         with SpaceURI.with_current_env_class_name("K8s"):
@@ -678,10 +680,10 @@ class TestTier2EnvClassMatch:
 
     def test_class_match_is_case_insensitive(self, tmp_path):
         """Env class `K8s` matches an `environment_configs` key `k8s` — the
-        class-name comparison is case-insensitive.  Placed under `k8s/` (not the
-        root `steps/`) so only the env-class-match tier can find it."""
+        class-name comparison is case-insensitive.  Placed under `k8s/steps/`
+        (not the space-root `steps/`) so only the env-class-match tier finds it."""
         base = tmp_path / "base"
-        match = _write_step(base / "k8s" / "digit", env_classes=["k8s"])
+        match = _write_step(base / "k8s" / "steps" / "digit", env_classes=["k8s"])
         _set_bases(base)
 
         with SpaceURI.with_current_env_class_name("K8s"):
@@ -689,11 +691,48 @@ class TestTier2EnvClassMatch:
 
         assert _resolved_dir(resolved).samefile(match)
 
+    def test_builtin_env_class_dir_layout_resolves(self, tmp_path):
+        """A builtin step laid out ``steps/<env-class>/<name>/step.yaml`` (the
+        env-partition dir sits *between* ``steps/`` and the step name, as under
+        ``src/gbserver/builtins/steps/skypilot/command/``) resolves for its class.
+
+        Regression pin: the Tier-2 name pin and env-class glob must tolerate the
+        env-partition segment between ``steps/`` and ``<name>`` — anchoring the
+        glob to ``steps/<name>`` directly (name immediately under ``steps/``) made
+        every builtin ``space://steps/command`` unresolvable (issue: PR #437)."""
+        base = tmp_path / "builtins"
+        match = _write_step(
+            base / "steps" / "skypilot" / "command", env_classes=["Skypilot"]
+        )
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("Skypilot"):
+            resolved = _resolve("space://steps/command")
+
+        assert _resolved_dir(resolved).samefile(match)
+
+    def test_builtin_layout_picks_active_class_variant(self, tmp_path):
+        """With sibling env-class dirs under ``steps/`` (``steps/skypilot/command``
+        and ``steps/bash/command``, each scoped to its own class), the active
+        class selects its own variant — the ``**`` anchor matches both, the
+        env-class gate disambiguates (mirrors the real multi-env builtin tree)."""
+        base = tmp_path / "builtins"
+        sky = _write_step(
+            base / "steps" / "skypilot" / "command", env_classes=["Skypilot"]
+        )
+        bash = _write_step(base / "steps" / "bash" / "command", env_classes=["Bash"])
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("Skypilot"):
+            assert _resolved_dir(_resolve("space://steps/command")).samefile(sky)
+        with SpaceURI.with_current_env_class_name("Bash"):
+            assert _resolved_dir(_resolve("space://steps/command")).samefile(bash)
+
     def test_subasset_uri_appends_rest_to_matched_dir(self, tmp_path):
         """`space://steps/<name>/<rest>` resolves against the matched step dir
         plus the `<rest>` suffix."""
         base = tmp_path / "base"
-        step_dir = _write_step(base / "k8s" / "digit", env_classes=["K8s"])
+        step_dir = _write_step(base / "k8s" / "steps" / "digit", env_classes=["K8s"])
         sub = step_dir / "helm-charts"
         sub.mkdir()
         _set_bases(base)
@@ -707,7 +746,7 @@ class TestTier2EnvClassMatch:
         """A `<rest>` that escapes the matched step dir is rejected by the
         env-class-match tier too (shares the containment guard)."""
         base = tmp_path / "base"
-        _write_step(base / "k8s" / "digit", env_classes=["K8s"])
+        _write_step(base / "k8s" / "steps" / "digit", env_classes=["K8s"])
         (base / "secret").write_text("password\n")  # real file, outside step dir
         _set_bases(base)
 
@@ -824,6 +863,39 @@ class TestTier3Fallback:
             with pytest.raises(ValueError, match="Unresolvable space uri"):
                 _resolve("space://steps/digit/../x")
 
+    def test_fallback_no_step_yaml_at_any_prefix(self, tmp_path):
+        """A bare dir under ``steps/`` with no ``step.yaml`` at any prefix is
+        admitted, as before multi-segment names existed.
+
+        This pins the Tier-3 compat branch (``space.py`` ~490-491): when
+        ``_longest_step_in_root`` finds no ``step.yaml`` prefixing ``after``, the
+        first segment is treated as the step name and the remainder as the
+        sub-asset ``rest``, which the env gate admits on the missing
+        ``step.yaml``. Every other Tier-3 test writes a ``step.yaml`` and so
+        exercises only the ``found is not None`` branch."""
+        base = tmp_path / "base"
+        plain = base / "steps" / "plain"  # dir under steps/, no step.yaml
+        plain.mkdir(parents=True)
+        (plain / "asset.txt").write_text("x\n")
+        _set_bases(base)
+
+        resolved = _resolve("space://steps/plain/asset.txt")
+
+        assert _resolved_dir(resolved).samefile(plain / "asset.txt")
+
+    def test_fallback_no_step_yaml_rest_traversal_rejected(self, tmp_path):
+        """The containment guard still applies on the no-``step.yaml`` compat
+        branch: a ``<rest>`` escaping the (step.yaml-less) ``steps/<name>`` dir is
+        rejected even though the target file exists outside it."""
+        base = tmp_path / "base"
+        plain = base / "steps" / "plain"  # dir under steps/, no step.yaml
+        plain.mkdir(parents=True)
+        (base / "secret").write_text("password\n")  # real file, outside the step dir
+        _set_bases(base)
+
+        with pytest.raises(ValueError, match="Unresolvable space uri"):
+            _resolve("space://steps/plain/../../secret")
+
     def test_unresolvable_raises(self, tmp_path):
         base = tmp_path / "base"
         base.mkdir()
@@ -831,6 +903,228 @@ class TestTier3Fallback:
 
         with pytest.raises(ValueError, match="Unresolvable space uri"):
             _resolve("space://steps/missing")
+
+
+# --------------------------------------------------------------------------- #
+# Nested (multi-segment) step identity — steps/<a>/<b> addressed as
+# space://steps/<a>/<b> across every tier
+# --------------------------------------------------------------------------- #
+
+
+class TestNestedStepIdentity:
+    """A step whose dir is nested more than one level under a ``steps/`` ancestor
+    (e.g. ``steps/distill/foo``) is addressable as ``space://steps/distill/foo``.
+
+    The step name is the longest ``steps/``-relative prefix of the URI suffix
+    whose directory holds a ``step.yaml``; the remainder is a contained
+    sub-asset.  Name selection is by ``step.yaml`` existence and is orthogonal
+    to the env gate, so identity is deterministic.
+    """
+
+    def test_space_root_nested_step(self, tmp_path):
+        """Tier 1a: a nested step the space itself ships resolves off base_uris[0]."""
+        space_root = tmp_path / "space"
+        nested = _write_step(space_root / "steps" / "distill" / "foo")
+        env_dir = tmp_path / "assets" / "skypilot" / "slurm"
+        env_dir.mkdir(parents=True)
+        _set_bases(space_root, tmp_path / "assets")
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            resolved = _resolve("space://steps/distill/foo")
+
+        assert _resolved_dir(resolved).samefile(nested)
+
+    def test_ancestor_walk_nested_step(self, tmp_path):
+        """Tier 1b: a nested step co-located with the env family resolves via the
+        ancestor-walk."""
+        base = tmp_path / "assets"
+        nested = _write_step(base / "skypilot" / "steps" / "distill" / "foo")
+        env_dir = base / "skypilot" / "kubernetes"
+        env_dir.mkdir(parents=True)
+        _set_bases(base)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            resolved = _resolve("space://steps/distill/foo")
+
+        assert _resolved_dir(resolved).samefile(nested)
+
+    def test_class_match_nested_step(self, tmp_path):
+        """Tier 2: a nested step under a ``steps/`` ancestor is matched by its
+        ``steps/``-relative path (``distill/foo``), not a bare leaf dir name."""
+        base = tmp_path / "base"
+        nested = _write_step(
+            base / "k8s" / "steps" / "distill" / "foo", env_classes=["K8s"]
+        )
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("K8s"):
+            resolved = _resolve("space://steps/distill/foo")
+
+        assert _resolved_dir(resolved).samefile(nested)
+
+    def test_fallback_nested_step(self, tmp_path):
+        """Tier 3: with no active env, a nested step resolves via the plain
+        base_uris fallback."""
+        base = tmp_path / "base"
+        nested = _write_step(base / "steps" / "distill" / "foo")
+        _set_bases(base)
+
+        resolved = _resolve("space://steps/distill/foo")
+
+        assert _resolved_dir(resolved).samefile(nested)
+
+    def test_both_exist_longest_prefix_wins(self, tmp_path):
+        """Both ``steps/distill/step.yaml`` and ``steps/distill/foo/step.yaml``
+        exist: ``space://steps/distill/foo`` binds to the NESTED step, not
+        'step distill + sub-asset foo'.
+
+        The two steps are scoped to different env classes so the choice is
+        observable through the env gate: the URI resolves only because the
+        *nested* step's ``step.yaml`` (Skypilot) is the one consulted.
+        """
+        base = tmp_path / "base"
+        _write_step(base / "steps" / "distill", env_classes=["Bash"])
+        nested = _write_step(
+            base / "steps" / "distill" / "foo", env_classes=["Skypilot"]
+        )
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("Skypilot"):
+            resolved = _resolve("space://steps/distill/foo")
+
+        assert _resolved_dir(resolved).samefile(nested)
+
+    def test_nested_step_subasset(self, tmp_path):
+        """A sub-asset of a nested step resolves against the nested step dir:
+        ``space://steps/distill/foo/helm-charts`` → step ``distill/foo`` + rest."""
+        base = tmp_path / "base"
+        step_dir = _write_step(base / "steps" / "distill" / "foo")
+        sub = step_dir / "helm-charts"
+        sub.mkdir()
+        _set_bases(base)
+
+        resolved = _resolve("space://steps/distill/foo/helm-charts")
+
+        assert _resolved_dir(resolved).samefile(sub)
+
+    def test_nested_step_rest_traversal_rejected(self, tmp_path):
+        """A ``<rest>`` escaping a nested step dir (``../../../secret``) is still
+        rejected by the containment guard."""
+        base = tmp_path / "base"
+        _write_step(base / "steps" / "distill" / "foo")
+        (base / "secret").write_text("password\n")  # real file, outside step dir
+        _set_bases(base)
+
+        with pytest.raises(ValueError, match="Unresolvable space uri"):
+            _resolve("space://steps/distill/foo/../../../secret")
+
+    def test_subasset_not_treated_as_nested_step(self, tmp_path):
+        """When no ``step.yaml`` exists at the longer prefix, resolution is
+        unchanged: ``space://steps/digit/helm-charts`` → step ``digit`` + the
+        ``helm-charts`` sub-asset (regression pin for single-segment steps)."""
+        base = tmp_path / "base"
+        step_dir = _write_step(base / "steps" / "digit")
+        sub = step_dir / "helm-charts"  # plain sub-asset dir, NO step.yaml
+        sub.mkdir()
+        _set_bases(base)
+
+        resolved = _resolve("space://steps/digit/helm-charts")
+
+        assert _resolved_dir(resolved).samefile(sub)
+
+    def test_env_excluded_nested_not_demoted_to_outer(self, tmp_path):
+        """A nested step present but env-excluded must NOT silently demote to
+        'outer step + sub-asset' — even when the outer step declares the active
+        env class.
+
+        This pins the Tier-2 demotion path: the outer ``distill`` explicitly
+        lists **Skypilot** (the active class) while the nested ``distill/foo``
+        lists only **Bash**.  Choosing the name by env-class match (the old
+        behavior) made ``distill/foo`` miss (Bash-only) and fall back to
+        ``distill`` (Skypilot), returning ``distill`` + sub-asset ``foo`` and
+        resolving to the nested dir as a mere asset.  Name selection is now
+        pinned by ``step.yaml`` existence first (``distill/foo``), then gated; the
+        gate misses and ``space://steps/distill/foo`` is Unresolvable for
+        Skypilot rather than demoted.
+
+        A *universal* outer (no ``environment_configs``) would NOT exercise this:
+        the env-class match rejects a universal step by key presence, so the
+        demotion never fires and the test would pass via Tier 3's rejection
+        instead — see :meth:`test_universal_outer_nested_excluded_unresolvable`
+        for that distinct (Tier-3) path.  No env dir is set here, so Tier 1a
+        misses and this reaches Tier 2 specifically.
+        """
+        base = tmp_path / "base"
+        _write_step(
+            base / "steps" / "distill", env_classes=["Skypilot"]
+        )  # outer DECLARES the active class (the realistic demotion trap)
+        _write_step(
+            base / "steps" / "distill" / "foo", env_classes=["Bash"]
+        )  # nested, excludes Skypilot
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("Skypilot"):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/distill/foo")
+
+    def test_tier2_name_pin_ignores_stray_step_yaml_outside_steps(self, tmp_path):
+        """Tier-2 regression: a stray ``step.yaml`` *outside* any ``steps/`` dir
+        must not hijack an existing sub-asset URI.
+
+        The multi-segment name pin globs for ``steps/<name>/step.yaml`` anchored
+        to the enclosing ``steps/`` (the canonical-name invariant).  An
+        unanchored ``<name>/step.yaml`` glob would match a ``step.yaml`` anywhere
+        under a base — e.g. a test fixture at
+        ``test-data/fixtures/digit/helm-charts/step.yaml`` — and, because the
+        name can now be multi-segment, bind ``space://steps/digit/helm-charts``
+        to that stray instead of to the real step ``digit``'s ``helm-charts``
+        sub-asset.
+
+        Layout: the real step ``.../steps/digit`` (declares the active class so
+        Tier 2 is the deciding tier — it lives below ``base_uris[0]`` but not at
+        ``base_uris[0]/steps``, so Tier 1a misses) with a plain ``helm-charts``
+        sub-asset dir, plus an unrelated stray step under ``test-data/fixtures``.
+        Resolution must land on the real sub-asset, never the stray.
+        """
+        base = tmp_path / "base"
+        real = _write_step(
+            base / "assets" / "steps" / "digit", env_classes=["Skypilot"]
+        )
+        sub = real / "helm-charts"  # plain sub-asset dir, NO step.yaml
+        sub.mkdir()
+        _write_step(  # stray fixture outside any steps/ dir
+            base / "test-data" / "fixtures" / "digit" / "helm-charts",
+            env_classes=["Skypilot"],
+        )
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("Skypilot"):
+            resolved = _resolve("space://steps/digit/helm-charts")
+
+        assert _resolved_dir(resolved).samefile(sub)
+
+    def test_universal_outer_nested_excluded_unresolvable(self, tmp_path):
+        """Companion to :meth:`test_env_excluded_nested_not_demoted_to_outer`
+        covering the *universal* outer step (Tier-3 rejection path).
+
+        With a universal outer ``distill`` (no ``environment_configs``) and a
+        Bash-only nested ``distill/foo``, Tier 2 cannot match the outer (presence
+        is by declared key), so the name stays pinned to the excluded
+        ``distill/foo`` and resolution falls through to Tier 3, which pins the
+        same nested step by existence and rejects it on the env gate.  Either way
+        ``space://steps/distill/foo`` is Unresolvable for Skypilot — the universal
+        outer never captures ``foo`` as a sub-asset.
+        """
+        base = tmp_path / "base"
+        _write_step(base / "steps" / "distill")  # universal outer step
+        _write_step(
+            base / "steps" / "distill" / "foo", env_classes=["Bash"]
+        )  # nested, excludes Skypilot
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("Skypilot"):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/distill/foo")
 
 
 # --------------------------------------------------------------------------- #
@@ -870,7 +1164,7 @@ class TestGitBaseUri:
         monkeypatch.setattr(
             SpaceURI, "_uri_to_local_path", staticmethod(lambda _: None)
         )
-        assert SpaceURI._fallback_steps_ok(_GIT_BASE, ("digit", ""))
+        assert SpaceURI._fallback_steps_ok(_GIT_BASE, "digit")
 
     def test_git_fallback_resolves_step(self, tmp_path, monkeypatch):
         """`space://steps/digit` resolves against a git base via the reused
@@ -906,17 +1200,20 @@ class TestGitBaseUri:
         assert _resolved_dir(resolved).samefile(clone / "steps" / "digit")
 
     def test_git_tier2_class_match(self, tmp_path, monkeypatch):
-        """Env-class-match (Tier 2) globs the git clone: a class-keyed step not
-        at the root `steps/` still resolves for the matching env class."""
+        """Env-class-match (Tier 2) globs the git clone: a class-keyed step under
+        a nested `steps/` (not the clone-root `steps/`) still resolves for the
+        matching env class."""
         clone = tmp_path / "clone"
-        _write_step(clone / "k8s" / "digit", env_classes=["k8s"])  # class-match only
+        _write_step(
+            clone / "k8s" / "steps" / "digit", env_classes=["k8s"]
+        )  # class-match only, under a nested steps/
         _fake_git_clone(monkeypatch, clone)
         SpaceURI.set_baseuris([_GIT_BASE], {})
 
         with SpaceURI.with_current_env_class_name("K8s"):
             resolved = _resolve("space://steps/digit")
 
-        assert _resolved_dir(resolved).samefile(clone / "k8s" / "digit")
+        assert _resolved_dir(resolved).samefile(clone / "k8s" / "steps" / "digit")
 
 
 # --------------------------------------------------------------------------- #

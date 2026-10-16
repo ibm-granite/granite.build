@@ -55,7 +55,7 @@ class TestRegisterArtifactProdGate:
     def test_hf_uri_allowed_in_prod(self):
         """HF artifacts register in PROD (the feature this gate enables)."""
         with patch.object(artifacts_module, "is_super_admin", return_value=True):
-            with patch.object(artifacts_module, "confirm_space_write_access"):
+            with patch.object(artifacts_module, "confirm_can_add_to_space"):
                 with patch.object(
                     artifacts_module, "get_admin_storage"
                 ) as mock_storage:
@@ -67,7 +67,7 @@ class TestRegisterArtifactProdGate:
     def test_lh_uri_prod_host_allowed_in_prod(self):
         """LhURI pointing at the production Lakehouse host is allowed in PROD."""
         with patch.object(artifacts_module, "is_super_admin", return_value=True):
-            with patch.object(artifacts_module, "confirm_space_write_access"):
+            with patch.object(artifacts_module, "confirm_can_add_to_space"):
                 with patch.object(
                     artifacts_module, "get_admin_storage"
                 ) as mock_storage:
@@ -90,4 +90,30 @@ class TestRegisterArtifactProdGate:
         """
         with pytest.raises(HTTPException) as exc:
             _call_gate("file:///tmp/some/artifact")
+        assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+
+
+class TestReservedLhTableRegistration:
+    """A reserved LH table name is a 400 (not a 500) on every registration path."""
+
+    @pytest.mark.parametrize("env", ["PROD", "STANDALONE"])
+    def test_register_artifact_rejects_reserved_table(self, env):
+        with patch.object(artifacts_module, "GB_ENVIRONMENT", env):
+            with pytest.raises(HTTPException) as exc:
+                register_artifact(
+                    MagicMock(),
+                    _registration(
+                        "lh://prod/ns0/tables/model_shared", ArtifactType.TABLE
+                    ),
+                )
+        assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert "reserved Lakehouse table name" in exc.value.detail
+
+    def test_register_lakehouse_table_rejects_reserved_table(self):
+        req = artifacts_module.ArtifactTableRequest(
+            space_name="sn", username="un", namespace="ns0", table_name="fileset"
+        )
+        with patch.object(artifacts_module, "GB_ENVIRONMENT", "STANDALONE"):
+            with pytest.raises(HTTPException) as exc:
+                artifacts_module.register_lakehouse_table(MagicMock(), req)
         assert exc.value.status_code == status.HTTP_400_BAD_REQUEST

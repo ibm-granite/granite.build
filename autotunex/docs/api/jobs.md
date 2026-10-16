@@ -15,8 +15,7 @@ Every read is owner-scoped. By default a caller — admin included — sees only
 jobs. An admin widens to all owners per request by passing `scope=all`; a non-admin who
 passes `scope=all` gets a **403**. This `scope` query parameter (`own` | `all`, default
 `own`) is accepted on every owner-scoped endpoint below; `POST /jobs`, the admin-only
-`reconcile` endpoint, and the `estimate-usages`/`generate-test-solutions` endpoints do
-not take it. Submission takes no `scope` because it needs none: it accepts a configuration
+`reconcile` endpoint, and the `generate-test-solutions` endpoint do not take it. Submission takes no `scope` because it needs none: it accepts a configuration
 and dataset that are the caller's own **or** from the shared system tier, and even an admin
 cannot submit against another *real* owner's — see [Validation rules](#validation-rules).
 
@@ -28,6 +27,7 @@ cannot submit against another *real* owner's — see [Validation rules](#validat
 | `POST` | `/api/v1/jobs` | Submit a new tuning job |
 | `POST` | `/api/v1/jobs/estimate-usages` | Estimate resource usage for a tuning run |
 | `POST` | `/api/v1/jobs/generate-test-solutions` | Generate sample reward test solutions (online-RL) |
+| `GET` | `/api/v1/jobs/tuned-models` | Search completed full-weight tuned models usable as a base model |
 | `GET` | `/api/v1/jobs/{job_id}` | Get one job with full detail (`shape=lean` for the record alone) |
 | `GET` | `/api/v1/jobs/by-build-id/{build_id}` | Get one job by its granite.build build id |
 | `POST` | `/api/v1/jobs/{job_id}/cancel` | Cancel a live job |
@@ -186,13 +186,69 @@ See [the `JobRead` shape](#the-jobread-shape) below.
 
 ---
 
+## GET /api/v1/jobs/tuned-models
+
+Lists the caller's completed jobs whose output can be the base model of a new job — the
+start-tuning wizard's "My tuned models" source. An item is listed only when all hold:
+
+- the job is `completed`;
+- its TUNING task's artifact is `hf://huggingface.co/models/<owner>/<name>` with `<owner>` in
+  `AUTOTUNEX_HF_IMPORT_NAMESPACES` (a private base model loads only through the allowlisted
+  `inputs.base_model` binding — see [hf-models.md](hf-models.md#tuning-on-a-private-model));
+- it produced full weights: online RL (`ppo`/`grpo`/`dapo`), or a `tuning_type` of `sft`/`none`.
+  PEFT adapter outputs are never listed; fm-tune cannot use one as a base. The RL type is the
+  one the job ran with, from its config snapshot; the live configuration is consulted only for
+  a job with no snapshot, so editing a configuration later never re-classifies a past job.
+
+An empty allowlist returns an empty page. Submit an item's `repo_id` as `model` with its
+`model_source` (always `huggingface`). A job from before the tuned model was written at the
+repo root is still listed; clients confirm a root `config.json` via
+`GET /jobs/{job_id}/result-report` before using it.
+
+### Query parameters
+
+Same as `GET /api/v1/jobs`: `limit` (1–100, default 20), `offset` (≥ 0), `scope`
+(`own` | `all`, default `own`; `all` is admin-only → `403` otherwise), `q` (case-insensitive
+substring over experiment name, base model and `repo_id` — not the shared
+`hf://huggingface.co/models/` prefix). Newest first. An item whose owner the launch path would
+not bind (an owner spelled in different case than the allowlist) is dropped from the page but
+still counted in `total`.
+
+### Response `200` — `Page<TunedModelSummary>`
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `job_id` | UUID | the job that produced it |
+| `repo_id` | string | `owner/name`; submit as `model` |
+| `model_source` | `"huggingface"` | submit verbatim |
+| `experiment_name` | string | |
+| `base_model` | string | the model that job tuned |
+| `tuning_type` | string \| null | |
+| `rl_tuner_type` | string \| null | from the job's config snapshot, else its configuration |
+| `finished_at` | string \| null | latest `gb_tasks.updated_at` |
+| `user` | string | owner email |
+
+---
+
 ## POST /api/v1/jobs/estimate-usages
 
 Estimate the GPU/CPU memory and GPU count a tuning run would need, for a **saved**
 configuration (`config_id`) or an **unsaved** one supplied inline (`config_data`) — the
 inline path is what the start-tuning wizard (Step 3) uses before a configuration is
 persisted. Returns `200` with an `EstimateUsagesResponse`. The estimate is a planning-time
-heuristic, not a measured profile, and this endpoint takes **no** `scope` query parameter.
+heuristic, not a measured profile.
+
+A **tuned model** — a `repo_id` from [`GET /jobs/tuned-models`](#get-apiv1jobstuned-models),
+named `autotunex_<job-id hex>` — carries no size in its name, so it is sized by the base
+model its job tuned, following a tuned-on-tuned chain back to the original. Any other name
+is parsed for its first `<number><b|m>` size (`Llama-2-7b`, `Qwen2.5-0.5B`, `SmolLM2-135M`;
+`Mixtral-8x7B` reads as `7`).
+
+### Query parameters
+
+| Name | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `scope` | string | `own` | `own` \| `all` (admin only for `all`). Governs both the saved-configuration and the tuned-model lookup; pass the `scope` a tuned model was listed under to size another owner's |
 
 ### Request body — `EstimateUsagesRequest`
 
@@ -201,7 +257,7 @@ Exactly one of `config_id` / `config_data` must be supplied. Unknown fields are 
 
 | Field | Type | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
-| `model_name` | string | yes | — | Model to size the run for; its parameter count is parsed from the name |
+| `model_name` | string | yes | — | Model to size the run for; its parameter count is parsed from the name, or from its base model's for a tuned model |
 | `gpu_memory` | int | no | `80` | Per-GPU memory in GB; must be ≥ 1 |
 | `config_id` | UUID \| null | no | `null` | A saved configuration — the caller's own or one from the shared system tier; mutually exclusive with `config_data` |
 | `config_data` | object \| null | no | `null` | An inline configuration; mutually exclusive with `config_id` |
@@ -235,8 +291,9 @@ curl -X POST https://example.com/api/v1/jobs/estimate-usages \
 
 | Status | When |
 | --- | --- |
-| `404` | The referenced `config_id` does not exist, or is neither the caller's own nor shared system content |
-| `422` | Body fails validation (neither or both of `config_id`/`config_data`, `gpu_memory` < 1), or `model_name` has no parseable parameter count |
+| `403` | A non-admin passed `scope=all` |
+| `404` | The referenced `config_id` does not exist, or is neither the caller's own nor shared system content (nor, under an admin's `scope=all`, any owner's) |
+| `422` | Body fails validation (neither or both of `config_id`/`config_data`, `gpu_memory` < 1), or `model_name` has no parseable parameter count — including a tuned model not visible under the requested `scope` |
 
 ---
 

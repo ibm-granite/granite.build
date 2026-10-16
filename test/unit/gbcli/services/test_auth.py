@@ -62,7 +62,7 @@ class TestAuth:
         gh_login(mock_token_obj.access_token[0])
 
         credentials = GBCredentials()
-        mock_get_user.assert_called_once_with(token="token")
+        mock_get_user.assert_called_once_with(token="token", verify=True)
         assert "token" == credentials.get("token", section=gh_section)
         assert mock_user_obj.login == credentials.get("login", section=gh_section)
         assert mock_user_obj.email == credentials.get("email", section=gh_section)

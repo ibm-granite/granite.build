@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from uuid import UUID
 
+import pytest
+
 from autotunex.services.launch._shared import (
     REWARD_FUNCTION_PATH,
+    base_model_uri,
     inject_reward_function,
     num_gpus_per_node,
     start_command,
@@ -82,6 +85,36 @@ def test_start_command_conditional_flags() -> None:
     assert "--autotunex_server_url https://cb.example" in off
 
 
+def test_start_command_omits_model_at_root_by_default() -> None:
+    command = start_command(_ctx(), config_file="/c.yaml", callback_url=None, cuda_home="x")
+
+    assert "--model_at_root" not in command
+    assert "--keep_diagnostics" not in command
+
+
+def test_start_command_model_at_root_and_keep_diagnostics_flags() -> None:
+    root = start_command(
+        _ctx(), config_file="/c.yaml", callback_url=None, cuda_home="x", model_at_root=True
+    )
+    kept = start_command(
+        _ctx(),
+        config_file="/c.yaml",
+        callback_url=None,
+        cuda_home="x",
+        model_at_root=True,
+        keep_diagnostics=True,
+    )
+    kept_without_root = start_command(
+        _ctx(), config_file="/c.yaml", callback_url=None, cuda_home="x", keep_diagnostics=True
+    )
+
+    assert "--model_at_root" in root
+    assert "--keep_diagnostics" not in root
+    assert "--model_at_root --keep_diagnostics" in kept
+    # --keep_diagnostics only means something alongside --model_at_root.
+    assert "--keep_diagnostics" not in kept_without_root
+
+
 def test_inject_reward_function_returns_empty_without_code() -> None:
     config: dict[str, object] = {
         "training_rl_config": {"reward_function_path": {"default": "orig.py"}}
@@ -109,3 +142,39 @@ def test_inject_reward_function_rewrites_paths_and_returns_file() -> None:
     assert files[REWARD_FUNCTION_PATH].startswith("def score")
     assert config["training_rl_config"]["reward_function_path"]["default"] == REWARD_FUNCTION_PATH  # type: ignore[index]
     assert config["training_rl_config"]["reward_function_name"]["default"] == "my_reward"  # type: ignore[index]
+
+
+HF_MODELS = "hf://huggingface.co/models"
+
+
+@pytest.mark.parametrize(
+    ("model", "model_source", "namespaces", "expected"),
+    [
+        ("example-org/m", "huggingface", ["example-org"], f"{HF_MODELS}/example-org/m"),
+        ("ibm-granite/m", "huggingface", ["example-org"], None),
+        ("example-org/m", "huggingface", [], None),
+        ("example-org/m", "custom_path", ["example-org"], None),
+        ("example-org", "huggingface", ["example-org"], None),
+        ("example-org/../other-org/m", "huggingface", ["example-org"], None),
+        ("example-org/m/extra", "huggingface", ["example-org"], None),
+    ],
+)
+def test_base_model_uri_binds_only_allowlisted_hf_models(
+    model: str, model_source: str, namespaces: list[str], expected: str | None
+) -> None:
+    ctx = _ctx(model=model, model_source=model_source)
+
+    assert base_model_uri(ctx, namespaces) == expected
+
+
+def test_start_command_points_at_the_binding_when_the_model_is_bound() -> None:
+    command = start_command(
+        _ctx(model="example-org/m"),
+        config_file="/tmp/c.yaml",
+        callback_url=None,
+        cuda_home="/cuda",
+        bind_base_model=True,
+    )
+
+    assert "--model_name_or_path {{ bindings.base_model.binding.path }}" in command
+    assert "example-org/m" not in command

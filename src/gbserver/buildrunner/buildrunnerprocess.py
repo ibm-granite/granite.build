@@ -18,6 +18,7 @@
 # from .resources import ResourceSpec, ResourceTypeimport os
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -26,15 +27,21 @@ from pathlib import Path
 from typing import Self, Union
 
 from gbserver.buildrunner.abstractbuildrunner import AbstractBuildRunner
+from gbserver.buildrunner.build_utils import finalize_build_status
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.types.constants import (
     DEFAULT_GH_API_ENDPOINT,
     DEFAULT_ROOT_WORKSPACE_DIR,
     GBSERVER_GITHUB_TOKEN,
 )
+from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Seconds to wait for the build-runner child to exit after SIGINT (which cancels its
+# build and marks it CANCELLED) before killing it.
+_CHILD_CANCEL_GRACE_S = 60.0
 
 
 class QueuedOutput:
@@ -45,7 +52,12 @@ class QueuedOutput:
         self.thread = None
 
     def _enqueue_line(self):
-        for line in iter(self.std.readline, b""):
+        # Stop at EOF, which readline() signals with an empty read: "" for the
+        # text-mode pipes used here (a b"" sentinel would never match, so the
+        # reader would spin forever filling the queue).
+        for line in iter(self.std.readline, ""):
+            if not line:
+                break
             self.q.put(line)
             if self.stop_requested:
                 break
@@ -104,16 +116,43 @@ class BuildRunnerProcess(AbstractBuildRunner):
             gh_api_endpoint=gh_api_endpoint,
         )
         self.is_running = False
-        self.is_stop_requested = True
+        self.is_stop_requested = False
 
     def stop(self: Self) -> None:
         """
         Stop the build that was started using start_and_wait().
+        The build-runner child is sent SIGINT, which cancels its build (marked CANCELLED),
+        and is killed if it does not exit within _CHILD_CANCEL_GRACE_S.
         Upon returning, this must also cause the call to start_and_wait() to return.
         """
         self.is_stop_requested = True
         while self.is_running:
             time.sleep(self.monitoring_interval)
+
+    @staticmethod
+    def _cancel_child(process: subprocess.Popen) -> None:
+        """Cancel the build-runner child process, if it is still running.
+
+        Sends SIGINT, which the build-runner CLI handles by cancelling its build and
+        exiting 0, then escalates to SIGKILL if it outlives _CHILD_CANCEL_GRACE_S.
+
+        Args:
+            process (subprocess.Popen): the build-runner child process.
+        """
+        if process.poll() is not None:
+            return
+        logger.info("Sending SIGINT to build-runner process %s", process.pid)
+        process.send_signal(signal.SIGINT)
+        try:
+            process.wait(timeout=_CHILD_CANCEL_GRACE_S)
+        except subprocess.TimeoutExpired:
+            logger.error(
+                "build-runner process %s did not exit %ss after SIGINT; killing it",
+                process.pid,
+                _CHILD_CANCEL_GRACE_S,
+            )
+            process.kill()
+            process.wait()
 
     def start_and_wait(self: Self) -> None:
         """
@@ -145,8 +184,11 @@ class BuildRunnerProcess(AbstractBuildRunner):
             "--gh-api-endpoint",
             f"{self.gh_api_endpoint}",
         ]
+        if self.is_stop_requested:
+            logger.info("Build %s stopped before it started", self.stored_build.uuid)
+            finalize_build_status(self.stored_build.uuid, Status.CANCELLED)
+            return
         logger.info(f"Starting build-runner process: {cli}")
-        self.is_stop_requested = False
         env = os.environ
         process = subprocess.Popen(
             args=cli, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -158,7 +200,8 @@ class BuildRunnerProcess(AbstractBuildRunner):
         try:
             stdout.start()
             stderr.start()
-            while not self.is_stop_requested:
+            # Run until stopped or the child exits on its own (build finished).
+            while not self.is_stop_requested and process.poll() is None:
                 stdout.show_lines(file=sys.stdout)
                 stderr.show_lines(
                     file=sys.stderr
@@ -168,6 +211,9 @@ class BuildRunnerProcess(AbstractBuildRunner):
                     process.wait(0.1)
                 except subprocess.TimeoutExpired:
                     pass
+            self._cancel_child(process)
+            stdout.show_lines(file=sys.stdout)  # Whatever it wrote while exiting
+            stderr.show_lines(file=sys.stderr)
         except Exception as e:
             logger.error(f"Got exception {e}")
             raise e

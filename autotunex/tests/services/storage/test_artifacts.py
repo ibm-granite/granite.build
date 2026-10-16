@@ -134,11 +134,11 @@ async def test_huggingface_maps_file_entries() -> None:
             ],
         )
 
-    assets = await _hf_lister(handler).list_files(location="ibm-research/autotunex_x")
+    assets = await _hf_lister(handler).list_files(location="example-org/autotunex_x")
 
     assert {a.filename for a in assets} == {"adapter.safetensors", "config.json"}
     assert seen["auth"] == "Bearer tok"
-    assert "/api/models/ibm-research/autotunex_x/tree/main" in seen["url"]
+    assert "/api/models/example-org/autotunex_x/tree/main" in seen["url"]
 
 
 async def test_huggingface_404_raises_not_found() -> None:
@@ -148,7 +148,7 @@ async def test_huggingface_404_raises_not_found() -> None:
     lister = _hf_lister(handler_404)
 
     with pytest.raises(JobArtifactsNotFoundError):
-        await lister.list_files(location="ibm-research/missing")
+        await lister.list_files(location="example-org/missing")
 
 
 async def test_huggingface_500_raises_source_unavailable() -> None:
@@ -158,7 +158,7 @@ async def test_huggingface_500_raises_source_unavailable() -> None:
     lister = _hf_lister(handler_500)
 
     with pytest.raises(ArtifactSourceUnavailableError):
-        await lister.list_files(location="ibm-research/x")
+        await lister.list_files(location="example-org/x")
 
 
 async def test_huggingface_open_file_streams_from_resolve_url() -> None:

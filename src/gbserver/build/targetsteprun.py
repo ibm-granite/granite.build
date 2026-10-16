@@ -37,7 +37,7 @@ from gbserver.asset.asset import Asset
 from gbserver.build.run import Run
 from gbserver.build.target import Target
 from gbserver.build.targetstep import TargetStep
-from gbserver.types.buildconfig import BuildTargetStepConfig
+from gbserver.types.buildconfig import BuildTargetStepConfig, reject_host_file_uri
 from gbserver.types.buildevent import (
     BuildEvent,
     BuildEventStatusPayload,
@@ -157,8 +157,10 @@ def _load_monitor_file(uri_str: str) -> StepMonitorConfig:
         The parsed monitor as a :class:`StepMonitorConfig`.
 
     Raises:
-        ValueError: If the URI cannot be fetched or contains no ``monitor.yaml``.
+        ValueError: If the URI cannot be fetched or contains no ``monitor.yaml``,
+            or (outside STANDALONE) is a ``file:`` URI naming a gbserver-host path.
     """
+    reject_host_file_uri(uri_str, "monitor ref")
     # Return a memoized parse when this (uri, space) was already fetched on this
     # thread — avoids the redundant clone+copy on the second resolve per launch
     # and across ref-chain levels. base_uris scope the space:// resolution.

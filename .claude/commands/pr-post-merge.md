@@ -1,31 +1,26 @@
 ---
-description: Clean up after a PR is merged — close fork issue, update local branch, delete issue branch
-argument-hint: "Fork issue number (e.g., 1)"
+description: Clean up after a PR is merged — close the issue, update local branch, delete issue branch
+argument-hint: "Issue number (e.g., 1)"
 ---
 
 # Post-merge cleanup
 
 You are helping a developer clean up after a PR has been merged into `upstream/main`. Follow these steps in order.
 
-Fork issue number: $ARGUMENTS
+Issue number: $ARGUMENTS
 
 ## Step 1: Validate
 
-1. Derive the fork owner and repo:
-   ```
-   FORK_OWNER=$(git remote get-url origin | sed -E 's|.*[:/]([^/]+)/.*|\1|')
-   FORK_REPO=$(git remote get-url origin | sed -E 's|.*[:/][^/]+/(.*)$|\1|' | sed 's/\.git$//')
-   ```
-2. Detect if we are running inside a git worktree:
+1. Detect if we are running inside a git worktree:
    ```
    WORKTREE_DIR=$(git rev-parse --show-toplevel)
    MAIN_REPO=$(git worktree list --porcelain | head -1 | awk '{print $2}')
    IS_WORKTREE=false
    if [ "$WORKTREE_DIR" != "$MAIN_REPO" ]; then IS_WORKTREE=true; fi
    ```
-3. Confirm the current branch is an issue branch (not `main`)
-4. Save the current branch name for later deletion
-5. If no issue number was provided ($ARGUMENTS), try to auto-detect from the branch name:
+2. Confirm the current branch is an issue branch (not `main`)
+3. Save the current branch name for later deletion
+4. If no issue number was provided ($ARGUMENTS), try to auto-detect from the branch name:
    ```
    BRANCH=$(git branch --show-current)
    ```
@@ -34,11 +29,11 @@ Fork issue number: $ARGUMENTS
 
    If the branch doesn't match and no `$ARGUMENTS` was given, ask the user for the issue number.
 
-## Step 2: Close the fork issue
+## Step 2: Close the issue
 
-1. Close the issue in the fork repo:
+1. Close the issue in the upstream repo, if the merge didn't already (`Closes …` auto-closes it):
    ```
-   gh issue close <N> --repo "$FORK_OWNER/$FORK_REPO"
+   gh issue close <N> --repo ibm-granite/granite.build
    ```
 2. Confirm the issue was closed successfully
 

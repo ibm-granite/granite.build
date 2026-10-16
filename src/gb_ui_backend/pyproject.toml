@@ -50,9 +50,9 @@ build-backend = "setuptools.build_meta"
 # `file:` dependency (verified empirically: it resolved against the top-level
 # install's CWD, not this pyproject.toml's directory, when this was tried as
 # `granite-build-common @ file:../gbcommon`). gb_ui_backend only ever touches
-# gbcommon.types.{gbenvconfig,constants} (stdlib + pydantic only, no gbserver
-# dependency), so bundling the whole namespace package is safe and inert for
-# the parts it doesn't use.
+# gbcommon.types.{gbenvconfig,constants} and gbcommon.utils.archive_safety
+# (stdlib + pydantic only, no gbserver dependency), so bundling the whole
+# namespace package is safe and inert for the parts it doesn't use.
 #
 # `where = [".."]` only resolves because pip clones the whole repo before
 # building a git+subdirectory install — the actual, only install path used

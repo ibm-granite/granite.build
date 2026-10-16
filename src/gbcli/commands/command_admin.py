@@ -3,7 +3,6 @@ import sys
 from typing import Dict
 
 import click
-import dateparser
 from tabulate import tabulate
 
 from gbcli.client.client import GBClient
@@ -152,6 +151,8 @@ def log(
         try:
             start_epoch = int(start_date)  # unix epoch time
         except ValueError:
+            import dateparser
+
             start_epoch = round(dateparser.parse(start_date).timestamp())
     else:
         start_epoch = change_timestamp_by_days(
@@ -162,6 +163,8 @@ def log(
         try:
             end_epoch = int(end_date)  # unix epoch time
         except ValueError:
+            import dateparser
+
             end_epoch = round(dateparser.parse(end_date).timestamp())
     else:
         if all:

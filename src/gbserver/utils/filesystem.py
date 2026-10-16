@@ -41,7 +41,7 @@ from gbserver.utils.unwrap_errors import escape_for_one_record
 
 logger = get_logger(__name__)
 
-_TEMP_DIRS = []
+_TEMP_DIRS: list[str] = []
 
 
 def sync_or_copy_helper(

@@ -22,7 +22,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
-from gbserver.api.auth import AuthMiddleware
+from gbserver.api.auth import AuthMiddleware, _is_public_path
 
 
 def _make_app() -> FastAPI:
@@ -397,3 +397,33 @@ class TestAuthMiddlewareApiKeyMode:
             client = TestClient(app)
             response = client.post("/dashboard")
         assert response.status_code == 401
+
+
+def test_autotunex_proxy_is_not_public():
+    """The AutoTuneX upstream does no auth of its own, so the proxy must not be public."""
+    assert _is_public_path("/api/autotunex") is False
+    assert _is_public_path("/api/autotunex/jobs") is False
+
+
+def test_autotunex_proxy_requires_the_api_key():
+    app = FastAPI()
+    app.add_middleware(AuthMiddleware)
+
+    @app.post("/api/autotunex/{path:path}")
+    async def autotunex_post(path: str):
+        return JSONResponse(content={"path": path})
+
+    env = {
+        "GBSERVER_AUTH_MODE": "apikey",
+        "GBSERVER_API_KEY": "secret",
+        "GBSERVER_API_USER": "test-user",
+    }
+    with patch.dict(os.environ, env, clear=False):
+        client = TestClient(app)
+        unauthenticated = client.post("/api/autotunex/jobs")
+        authenticated = client.post(
+            "/api/autotunex/jobs", headers={"Authorization": "Bearer secret"}
+        )
+
+    assert unauthenticated.status_code == 401
+    assert authenticated.status_code == 200

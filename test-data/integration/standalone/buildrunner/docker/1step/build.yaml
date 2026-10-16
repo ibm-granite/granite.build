@@ -19,11 +19,15 @@ granite.build:
               # Docker Hub).  The docker `command` step runs `bash -c <command>`,
               # so the image must contain bash — which rules out the busybox
               # images used elsewhere in the tests (sh only).
-              # We include a sleep 5 to allow the cancellation test to pass
+              # We include a sleep 5 to allow the cancellation test to pass.
+              # `test -e` under `set -e` fails the build if the hf-pulled input
+              # isn't present (mounted) inside the container.
               image: quay.io/fedora/fedora-minimal:42
               command: >-
+                set -e;
                 sleep 5;
-                mkdir /gb-workspace/outputs;
+                test -e "{{ bindings.input_model.binding.path }}";
+                mkdir -p /gb-workspace/outputs;
                 file=/gb-workspace/outputs/foo1a.json; echo '{"artifact": "output_model1", "file": "foo1a"}' > $file; echo "GB_ARTIFACT_ID:output_model1 GB_ARTIFACT_PATH:$file";
                 file=/gb-workspace/outputs/foo1b.json; echo '{"artifact": "output_model1", "file": "foo1b"}' > $file; echo "GB_ARTIFACT_ID:output_model1 GB_ARTIFACT_PATH:$file";
                 file=/gb-workspace/outputs/foo2.json; echo '{"artifact": "output_model2", "file": "foo2"}' > $file; echo "GB_ARTIFACT_ID:output_model2 GB_ARTIFACT_PATH:$file"

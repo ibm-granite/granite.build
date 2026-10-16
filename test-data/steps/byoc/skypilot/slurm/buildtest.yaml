@@ -9,12 +9,9 @@ target_expectations:
   - target_name: byoc-run
     # Just the one workload runs: the env:// input/output are no-ops on the
     # shared FS (one input + one output artifact each, no extra pull/push step).
-    # jobstats_count is not asserted under standalone's NoopLineageStore, but
-    # kept accurate for a single step.
     step_count: 1
     input_artifact_count: 1
     output_artifact_count: 1
-    jobstats_count: 1
     # Verify the byoc step captured its runtime commit SHA as step metadata (via
     # the GB_STEP_METADATA_KEY/VALUE hook) and that the rendered config persisted.
     # Single step, so step_uri is omitted. Read from step_storage directly, so this

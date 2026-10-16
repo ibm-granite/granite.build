@@ -1,10 +1,10 @@
 /**
- * API client for the gb-ui analytics routes (/api/analytics/*), served by
+ * API client for the analytics routes (/api/analytics/*), served by
  * gbserver itself at the same origin — no separate URL config needed.
  * All calls return null gracefully when analytics is not configured.
  */
-import axios, { AxiosError } from 'axios'
-import { apiBase } from './client'
+import { AxiosError } from 'axios'
+import { apiBase, createApiClient } from './client'
 import type {
   BuildStatusChartPoint,
   FailureTrendResponse,
@@ -12,7 +12,11 @@ import type {
   AIAnalysis,
 } from '../types'
 
-const client = axios.create({ baseURL: apiBase('/api/analytics') })
+// Shares the host seam with every other ui-core client. Not cosmetic here: the
+// saved failure-trend routes are identity-scoped server-side, so unidentified
+// requests collapse their ownership to one shared author. See ApiClientOverrides
+// in client.ts.
+const client = createApiClient(apiBase('/api/analytics'))
 
 // Wraps calls so they return null instead of throwing when analytics is unavailable
 async function safeGet<T>(path: string, params?: Record<string, unknown>): Promise<T | null> {

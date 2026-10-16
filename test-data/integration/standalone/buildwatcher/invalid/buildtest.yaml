@@ -1,0 +1,12 @@
+# Invalid-build fixture for the standalone BuildWatcher tests
+# (test/integration/standalone/buildwatcher/test_buildwatcher.py).
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+expected_status: invalid
+# Empty targets list is intentional — the build is expected to fail validation
+# before any target runs.
+targets: []
+target_expectations: []
+simulate_step_failure: false
+# Use the shared standalone space at <repo>/configurations/spaces/local so the
+# BuildRunner resolves space:// URIs without cloning from GitHub.
+space_uri: ../../../../../configurations/spaces/local

@@ -1,5 +1,5 @@
 granite.build:
-  name: skypilot-aws-shared-fs-hfpull
+  name: skypilot-aws-shared-fs-hfpull-test
   # AWS/EFS analog of test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/
   # 1step (which uses a SLURM shared_workdir). A single `command` step with a real
   # hf:// input: buildrunner auto-queues a hidden hfpull step for the non-env

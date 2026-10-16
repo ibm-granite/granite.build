@@ -162,12 +162,46 @@ Produced by `make`, not authored by hand:
 
 * **`space/`** — produced by `make space`; a self-contained Granite.build
   **Space** — a `space.yaml` (whose `base_uris` chain to `configurations/assets`)
-  plus `steps/<step-name>/step.yaml` and any bundled `src/`. The dir name defaults
+  plus `steps/<path>/step.yaml` and any bundled `src/`. The dir name defaults
   to `space` (overridable via `SPACE_DIR`). This directory is git-ignored.
 
 `make publish-step` generates further trees, but **outside** this directory (the
 committed step under `configurations/assets/`, its build tests under `test/steps/`,
 and fixtures under `test-data/steps/`) — see the publish sections below.
+
+### Nested steps
+
+A step directory need not sit exactly one level under `steps/`. You can group
+related steps in sub-directories — e.g. `steps/distill/foo/skypilot/` — and the
+nesting is **preserved end-to-end**. The step's identity is its path relative to
+the enclosing `steps/` ancestor, minus the trailing `<env>` segment (the
+auto-derived `STEP_PATH`): `steps/distill/foo/skypilot` → `STEP_PATH = distill/foo`.
+A flat step `steps/byoc/skypilot` has `STEP_PATH = byoc`, identical to `STEP_NAME`,
+so flat steps publish byte-for-byte as before.
+
+To author a nested step, the only thing that changes is the Makefile's `include`
+depth — it must point at `steps/common.mk` from wherever the step dir lives:
+
+```make
+STEP_NAME := foo                 # slash-free leaf (feeds IMAGE_NAME / SPACE_NAME)
+include ../../../common.mk       # one ../ deeper than a flat step's ../../common.mk
+```
+
+`STEP_PATH` is derived structurally from the directory and that include depth — you
+never retype the nesting, and nothing else in the Makefile changes. The nested step
+then:
+
+* publishes to `configurations/assets/environments/<env>/steps/distill/foo/`;
+* copies its tests to `test/steps/distill/foo/<env>/<cluster>/` (fixtures mirrored
+  under `test-data/steps/distill/foo/<env>/<cluster>/`);
+* is referenced by the multi-segment URI `space://steps/distill/foo`.
+
+The resolver binds that URI by **longest matching prefix**: the step name is the
+longest `steps/`-relative prefix of the URI whose directory holds a `step.yaml`, and
+the remainder is a contained sub-asset. So `space://steps/distill/foo` binds to the
+nested step even when an outer `steps/distill/step.yaml` also exists, and existing
+single-segment URIs (and sub-asset URIs like `space://steps/digit/helm-charts`,
+where no `step.yaml` sits at the longer prefix) resolve exactly as before.
 
 ## Two step types
 
@@ -192,16 +226,18 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 * **`publish-image`** — push the image to `$(REGISTRY)` (no-op for non-image
   steps). Requires authentication — see [Registry credentials](#registry-credentials).
 * **`space`** — render a self-contained Space into `$(SPACE_DIR)/`: a generated
-  `space.yaml` plus `steps/<step-name>/step.yaml` (from `step-template.yaml`) and
+  `space.yaml` plus `steps/<path>/step.yaml` (from `step-template.yaml`) and
   bundled `src/`. Cheap and offline; it does *not* rebuild/push.
 * **`publish-step`** — promote the step into the repo's committed assets tree
-  (`configurations/assets/environments/<env>/steps/<step-name>/`, rendered exactly as
+  (`configurations/assets/environments/<env>/steps/<path>/`, rendered exactly as
   `space` renders `step.yaml` + bundled `src/`, plus `USAGE.md` copied there as
   `README.md`) **and** copy the step's per-cluster
-  build tests into the top-level `test/steps/<step-name>/<env>/<cluster>/` tree, with
-  their fixtures in the parallel `test-data/steps/<step-name>/<env>/<cluster>/` tree
+  build tests into the top-level `test/steps/<path>/<env>/<cluster>/` tree, with
+  their fixtures in the parallel `test-data/steps/<path>/<env>/<cluster>/` tree
   (mirroring the repo's `test/` ↔ `test-data/` convention) and each copied
-  `buildtest.yaml`'s `space_uri` repointed at the published step. See
+  `buildtest.yaml`'s `space_uri` repointed at the published step. `<path>` is
+  `STEP_PATH` — the step's `steps/`-relative dir (just `<step-name>` for a flat step;
+  see [Nested steps](#nested-steps)). See
   [Two test modes](#two-test-modes). Deliberately **not** part of `all` — it writes
   tracked files you then commit. For a **custom-image step** it first verifies the
   step's image is actually published to its registry (a published `step.yaml`/test that
@@ -257,7 +293,8 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 
 | Variable          | Default                                   | Meaning                          |
 |-------------------|-------------------------------------------|----------------------------------|
-| `STEP_NAME`       | *(set by each step's Makefile)*           | logical step name                |
+| `STEP_NAME`       | *(set by each step's Makefile)*           | logical step name; the **slash-free leaf** (feeds `IMAGE_NAME`/`SPACE_NAME`, which can't contain `/`) |
+| `STEP_PATH`       | *(auto-derived)* the step's dir relative to the enclosing `steps/`, minus the `<env>` segment | the step's **identity path**; drives the publish/test/space locations and the `space://steps/<path>` URI. For a flat step (`steps/<name>/<env>`) it equals `STEP_NAME`; for a nested step (`steps/<a>/<b>/<env>`) it is `<a>/<b>`. Structural (from `CURDIR` + include depth) — authors never set it |
 | `DOCKER`          | `podman`                                  | container tool                   |
 | `DOCKERFILE`      | `Dockerfile`                              | its presence enables image build/push |
 | `REGISTRY`        | *(required for image steps; set by the step's Makefile)* | image registry + namespace |
@@ -274,10 +311,10 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `VENV_DIR`        | `.venv` at the repo root                  | virtualenv `make test` activates before running pytest |
 | `HAS_TEST_SETUP`  | *(unset)*                                 | set to `true` (before the include) when the step defines its own `test-setup` target |
 | `STEP_ENV`        | the Makefile's own dir name (e.g. `skypilot`) | step's environment segment, used by `publish-step` |
-| `PUBLISH_STEP_DIR`| `configurations/assets/environments/$(STEP_ENV)/steps/$(STEP_NAME)` | where `publish-step` renders the step |
-| `PUBLISH_TEST_DIR`| `test/steps/$(STEP_NAME)/$(STEP_ENV)`     | where `publish-step` copies the per-cluster build tests |
-| `PUBLISH_TESTDATA_DIR` | `test-data/steps/$(STEP_NAME)/$(STEP_ENV)` | where `publish-step` copies the tests' fixtures |
-| `MODE2_SPACE_URI` | relative `file://`-less path to `configurations/spaces/local` (5 levels up from a copied fixture's dir) | `space_uri` written into copied `buildtest.yaml`s |
+| `PUBLISH_STEP_DIR`| `configurations/assets/environments/$(STEP_ENV)/steps/$(STEP_PATH)` | where `publish-step` renders the step |
+| `PUBLISH_TEST_DIR`| `test/steps/$(STEP_PATH)/$(STEP_ENV)`     | where `publish-step` copies the per-cluster build tests |
+| `PUBLISH_TESTDATA_DIR` | `test-data/steps/$(STEP_PATH)/$(STEP_ENV)` | where `publish-step` copies the tests' fixtures |
+| `MODE2_SPACE_URI` | relative `file://`-less path to `configurations/spaces/local`, **depth-derived from `STEP_PATH`** (`N+4` levels up for an `N`-segment path — 5×`../` for a flat step, 6× for a one-level-nested one) | `space_uri` written into copied `buildtest.yaml`s |
 
 Example: `make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0`.
 
@@ -308,7 +345,7 @@ dependency, just the POSIX `sed` every system already has:
 
 ```sh
 ref=$(printf '%s' '<full image ref>' | sed 's/[#&\]/\\&/g')   # escape sed's replacement metachars
-sed "s#\${IMAGE_REF}#$ref#g" step-template.yaml > $(SPACE_DIR)/steps/<step-name>/step.yaml
+sed "s#\${IMAGE_REF}#$ref#g" step-template.yaml > $(SPACE_DIR)/steps/<path>/step.yaml
 ```
 
 Because only the literal `${IMAGE_REF}` is replaced, everything else passes through

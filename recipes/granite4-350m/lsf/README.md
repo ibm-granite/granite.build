@@ -19,6 +19,55 @@ model on the BlueVela LSF cluster via the SkyPilot LSF backend.
 | `sft-10k-eval-test` | SFT (2 epochs) chained to the 27-target eval suite via output binding |
 | `ifrl-smoke`        | IFRL GRPO smoke test (rm-server + code-server + 2-update trainer) |
 | `export-results`    | Copy results from shared FS to the configured output store  |
+| `distill-probe`     | Two-question gate: does the 350m load in the distillation image, and is the tokenizer confound real |
+| `distill-smoke`     | Off-policy GOLD distillation from granite-4.1-3b, end to end at smoke scale (7 targets) |
+| `distill-stage1`    | Off-policy GOLD distillation, a full epoch -- the best recipe on record |
+| `distill-stage1-v2` | SUPERSEDED (its premise was an export bug). A cheap 300-step laddered sample of the same objective |
+| `distill-onpolicy-v2` | On-policy GOLD from stage 1 v2's chosen checkpoint, with a vLLM server allocation (written, not yet run) |
+| `distill-checkpoint-eval` | Off-policy GOLD for a full epoch, with every checkpoint exported and run through all 27 evals as it lands, rolled up into one benchmark x checkpoint table |
+
+## Distillation
+
+`distill-*` distil the SFT checkpoint towards a `granite-4.1-3b` teacher, rather than
+training it further on hard labels. They reuse the GOLD steps built by epic 61 (see
+`recipes/granite4-gold-distillation/lsf/`) against a new pair, and their baseline is the **existing**
+after-SFT eval row — so the student is the SFT checkpoint, and there is no control arm
+because the control was already run and already measured.
+
+Run them in this order, each gating the next:
+
+1. [`distill-probe`](distill-probe/README.md) — ~4 GPU-minutes, nothing trained.
+2. [`distill-smoke`](distill-smoke/README.md) — the full graph at 64 rows and 2 steps.
+3. [`distill-stage1`](distill-stage1/README.md) — off-policy, one full epoch, unanchored.
+   The best result on record. For "is a shorter run enough", use
+   [`distill-checkpoint-eval`](distill-checkpoint-eval/README.md) with a shorter
+   `GOLD_MAX_STEPS`; [`distill-stage1-v2`](distill-stage1-v2/README.md) is the cheap,
+   shallow version of that and is otherwise superseded.
+4. [`distill-onpolicy-v2`](distill-onpolicy-v2/README.md) — on-policy from a chosen
+   off-policy rung. Written, not yet run.
+5. stage 2 proper — on-policy on the IFRL and IdentityRL prompt sets rather than the SFT
+   mixture, which is a prompt-set change on top of step 4's policy change.
+
+[`distill-stage1`](distill-stage1/README.md) is step 3's first attempt and is kept only as
+the record of it. It ran as build `df8512e0`: one full epoch of pure-divergence GOLD, which
+completed cleanly and produced a model worse on every one of the 30+ benchmarks measured
+(HumanEval 40.85 → 0.61). The objective had no ground-truth term and the student had
+already nearly satisfied it, so entropy reduction was the only descent direction left for
+7,640 steps. `distill-stage1-v2` is the response and is what to run.
+
+[`distill-checkpoint-eval`](distill-checkpoint-eval/README.md) sits beside step 3 rather
+than in the sequence, because it answers a different question. `distill-stage1-v2` asks
+which OBJECTIVE, over 300 steps, read off divergence and entropy. This asks which
+CHECKPOINT of a full epoch, in benchmark points: nine rungs, each exported and run through
+all 27 evaluations, summarised into one `combined.csv`. It is what `distill-stage1` should
+have been — that run exported only its final checkpoint, which was also its worst — and it
+is ~249 GPU-h against v2's ~56, so run v2 first and this when the objective is settled.
+
+It is also the only recipe here that evaluates mid-run: `train-gold` declares one
+`checkpoint_<N>` output per rung and the `distill-gold` step's opt-in watcher
+(`emit_checkpoint_artifacts`) emits each as it is written, so the evaluation overlaps the
+13-hour epoch instead of queueing behind it.
+
 
 ## Defaults are BlueVela-specific
 

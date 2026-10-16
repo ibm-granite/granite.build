@@ -11,6 +11,7 @@ config:
     local_path: <destination>
     endpoint_url: ''
   compute_config:
+    num_cpus_per_node: 2
     num_gpus_per_node: 0
     total_memory_per_node: 4Gi
 environment_configs:
@@ -23,9 +24,12 @@ environment_configs:
         - skypilot_monitor
         config:
           image_id: docker:amazon/aws-cli:latest
-          resources:
-            cpus: 2+
-            memory: 4+
+          # The cpus floor lives in compute_config.num_cpus_per_node, not here.
+          # The engine turns it into the form each cloud accepts (_cpus_floor):
+          # a "{n}+" minimum on cloud catalogs, a bare int on slurm/lsf, whose
+          # SkyPilot cloud crashes on float("{n}+"). A literal "{n}+" in
+          # resources is passed through verbatim and broke this step on LSF.
+          resources: {}
           run: |
             set -euo pipefail
             trap 'EC=$?; echo "s3pull failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR

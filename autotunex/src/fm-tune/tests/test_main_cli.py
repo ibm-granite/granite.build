@@ -56,6 +56,8 @@ class TestMainHelp:
             "--backend",
             "--resume_from_checkpoint",
             "--keep_checkpoints",
+            "--model_at_root",
+            "--keep_diagnostics",
             "--cleanup",
             "--save_history",
             "--data_backend",

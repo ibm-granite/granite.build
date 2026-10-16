@@ -26,5 +26,4 @@ target_expectations:
     input_artifact_count: 0
     output_artifact_count: 1
     target_failure_count: 1
-    jobstats_count: 1
 timeout_minutes: 10

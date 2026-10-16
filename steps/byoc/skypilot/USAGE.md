@@ -46,9 +46,10 @@ All fields live under the step's `config.byoc_config`.
 
 ## Inputs and outputs
 
-`byoc` declares no step-level I/O schema of its own, but the **target** can declare
-**any number** of keyed `inputs:` and `outputs:` — there is nothing to change on the
-step to consume more of either.
+`byoc` declares no named inputs — its step.yaml has only `inputs: {allow_unknown: true}`,
+because a free-form command has no fixed set of names to declare — so the **target** can
+declare **any number** of keyed `inputs:` and `outputs:`; there is nothing to change on
+the step to consume more of either.
 
 ### Inputs (any number)
 

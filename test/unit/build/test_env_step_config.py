@@ -35,6 +35,10 @@ _TARGETSTEP_LOGGER = "gbserver.build.targetstep"
         ("space://steps/hfpull", "hfpull"),
         ("space://steps/command", "command"),
         ("space://steps/hfpush/", "hfpush"),  # trailing slash tolerated
+        # A nested (multi-segment) step keys config.steps on its LEAF by design:
+        # the leaf is the step-TYPE identity (also STEP_NAME/IMAGE_NAME/SPACE_NAME
+        # in common.mk). See the _step_slug_from_uri docstring.
+        ("space://steps/distill/foo", "foo"),
         ("hfpull", "hfpull"),  # bare slug
         ("", ""),
         (None, ""),
@@ -42,6 +46,21 @@ _TARGETSTEP_LOGGER = "gbserver.build.targetstep"
 )
 def test_step_slug_from_uri(step_uri, expected):
     assert _step_slug_from_uri(step_uri) == expected
+
+
+def test_step_slug_nested_and_flat_share_leaf_type():
+    # Intended semantics (not an accident): env-level config.steps overrides are
+    # per step TYPE, keyed by the slash-free leaf. A nested distill/foo, a flat
+    # steps/foo, and a sibling-nested bar/foo therefore all resolve to the same
+    # slug and share config.steps.foo env defaults.
+    shared = {
+        _step_slug_from_uri("space://steps/distill/foo"),
+        _step_slug_from_uri("space://steps/foo"),
+        _step_slug_from_uri("space://steps/bar/foo"),
+    }
+    assert shared == {"foo"}
+    env_config = {"steps": {"foo": {"zone": "io"}}}
+    assert _env_step_config(env_config, "foo") == {"zone": "io"}
 
 
 def test_env_step_config_returns_matching_entry():

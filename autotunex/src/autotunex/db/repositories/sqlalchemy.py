@@ -10,13 +10,26 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, Select, String, cast, delete, func, or_, select, update
+from sqlalchemy import (
+    ColumnElement,
+    Select,
+    String,
+    Subquery,
+    and_,
+    case,
+    cast,
+    delete,
+    func,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.exc import IntegrityError, MultipleResultsFound
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute, defer, joinedload, selectinload
 
 from autotunex.core.config import ADMIN_ROLE
-from autotunex.core.constants import SYSTEM_USER_ID
+from autotunex.core.constants import HF_MODEL_URI_PREFIX, SYSTEM_USER_ID
 from autotunex.core.exceptions import (
     AmbiguousIdentityError,
     ConfigurationInUseError,
@@ -39,6 +52,7 @@ from autotunex.db.tables import (
     UserTable,
 )
 from autotunex.db.tables._helpers import utcnow
+from autotunex.models.job import FULL_WEIGHT_TUNING_TYPES, ONLINE_RL_TUNER_TYPES
 from autotunex.models.status import TERMINAL_RUN_STATUSES, DatasetStatus, GbTaskType, RunStatus
 
 logger = get_logger(__name__)
@@ -110,8 +124,128 @@ def _search_pattern(q: str) -> str:
     wildcard searches for that character, not a wildcard. Use with
     ``.ilike(_search_pattern(q), escape="\\")``.
     """
-    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return f"%{escaped}%"
+    return f"%{_escape_like(q)}%"
+
+
+def _escape_like(value: str) -> str:
+    r"""Escape ``%``, ``_`` and the escape character itself for a literal LIKE match.
+
+    Shared by :func:`_search_pattern`, :func:`_prefix_pattern` and
+    :func:`_nested_path_pattern` so a value
+    containing a SQL wildcard character (e.g. an allowlisted namespace such as
+    ``example_org``) matches only itself. Use with ``escape="\\"``.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _prefix_pattern(prefix: str) -> str:
+    r"""Return a LIKE pattern matching strings that start with ``prefix`` plus more.
+
+    Same escaping as :func:`_search_pattern`, so an allowlisted namespace such as
+    ``example_org`` matches only itself (``_`` is otherwise a one-character
+    wildcard). The trailing ``_%`` requires a non-empty remainder. Use with
+    ``.like(_prefix_pattern(p), escape="\\")``.
+    """
+    return f"{_escape_like(prefix)}_%"
+
+
+def _nested_path_pattern(prefix: str) -> str:
+    r"""Return a LIKE pattern matching a path nested below ``prefix``'s repo name.
+
+    Pairs with :func:`_prefix_pattern` to exclude a locator with more than one
+    path segment after ``prefix`` (``<prefix>name/extra``): ``services.launch.
+    _shared.is_allowlisted`` — and so ``base_model_uri`` — never binds one of
+    those, since it requires exactly ``owner/name``. ``_%/_%`` requires a
+    non-empty name, a slash, then at least one more character, so a
+    trailing-slash locator (``<prefix>name/``) does not match this pattern and
+    stays eligible via :func:`_prefix_pattern`. Use with
+    ``.like(_nested_path_pattern(p), escape="\\")``.
+    """
+    return f"{_escape_like(prefix)}_%/_%"
+
+
+def _tuning_artifacts() -> Subquery:
+    """Each job's TUNING-task output locator, as a derived table keyed on ``job_id``.
+
+    ``MAX`` with ``GROUP BY`` so a job with several TUNING tasks is still one
+    row — the page and its ``total`` could otherwise disagree. Joined once rather
+    than read through a correlated scalar subquery, because the filters reference
+    the locator twice per allowlisted namespace and again for ``q``, and every
+    reference to a scalar subquery renders, and runs, its own copy. A function so
+    the count and the page each build their own.
+    """
+    return (
+        select(GbTaskTable.job_id, func.max(GbTaskTable.artifact_uri).label("uri"))
+        .where(GbTaskTable.type == GbTaskType.TUNING)
+        .group_by(GbTaskTable.job_id)
+        .subquery("tuning_artifacts")
+    )
+
+
+def _tuned_model_filters(
+    namespaces: Sequence[str],
+    owner_id: UUID | None,
+    q: str | None,
+    uri: ColumnElement[str | None],
+) -> list[ColumnElement[bool]]:
+    """Build the WHERE clauses for :meth:`SqlAlchemyJobRepository.tuned_models`.
+
+    ``uri`` is the joined :func:`_tuning_artifacts` locator. ``rl_tuner_type``
+    comes from the job's snapshot whenever it has one, even a null value —
+    deliberately stricter than ``mappers.resolve_rl_tuner_type``: the launch reads
+    the RL algorithm from the snapshot alone (``services.runner._context_from``),
+    so a configuration edited after submit must not turn a LoRA job's adapter
+    into a "full-weight" output. Only a job with no snapshot at all — one the
+    pipeline wrote directly — falls back to the live configuration. That
+    fallback stays a correlated subquery, evaluated only in that branch, because
+    the page's configuration join is ``joinedload``'s anonymous alias.
+    """
+    configuration_rl_type = (
+        select(ConfigurationTable.rl_tuner_type)
+        .where(ConfigurationTable.id == JobTable.config_id)
+        .correlate(JobTable)
+        .scalar_subquery()
+    )
+    # A Python None snapshot is stored as JSON 'null', not SQL NULL; both mean none.
+    no_snapshot = func.coalesce(cast(JobTable.config_snapshot, String), "null") == "null"
+    rl_tuner_type = func.lower(
+        case(
+            (no_snapshot, configuration_rl_type),
+            else_=JobTable.config_snapshot["rl_tuner_type"].as_string(),
+        )
+    )
+    owner_predicates: list[ColumnElement[bool]] = []
+    for ns in namespaces:
+        p = f"{HF_MODEL_URI_PREFIX}{ns}/"
+        owner_predicates.append(
+            and_(
+                uri.like(_prefix_pattern(p), escape="\\"),
+                ~uri.like(_nested_path_pattern(p), escape="\\"),
+            )
+        )
+    filters: list[ColumnElement[bool]] = [
+        JobTable.status == RunStatus.COMPLETED,
+        or_(*owner_predicates),
+        or_(
+            rl_tuner_type.in_(sorted(ONLINE_RL_TUNER_TYPES)),
+            func.lower(JobTable.tuning_type).in_(sorted(FULL_WEIGHT_TUNING_TYPES)),
+        ),
+    ]
+    if owner_id is not None:
+        # Raw, unfolded string comparison, for the reasons in SqlAlchemyJobRepository.get.
+        filters.append(JobTable.user_id == str(owner_id))
+    if q:
+        pattern = _search_pattern(q)
+        # Every listed locator starts with the prefix, so search only the repo id after it.
+        repo_id = func.substr(uri, len(HF_MODEL_URI_PREFIX) + 1)
+        filters.append(
+            or_(
+                JobTable.experiment_name.ilike(pattern, escape="\\"),
+                JobTable.model.ilike(pattern, escape="\\"),
+                repo_id.ilike(pattern, escape="\\"),
+            )
+        )
+    return filters
 
 
 def _owner_or_shared(
@@ -351,6 +485,46 @@ class SqlAlchemyJobRepository:
         result = await self._session.execute(page_statement)
         rows = result.unique().all()
         return [(row[0], row[1]) for row in rows], total or 0
+
+    async def tuned_models(
+        self,
+        *,
+        namespaces: Sequence[str],
+        limit: int,
+        offset: int,
+        owner_id: UUID | None = None,
+        q: str | None = None,
+    ) -> tuple[Sequence[tuple[JobTable, str | None, str]], int]:
+        """Return one page of ``(job, finished_at, tuning_artifact_uri)`` rows plus the total.
+
+        See :class:`~autotunex.db.repositories.protocols.TunedModelRepository`
+        for the eligibility rule. Reuses the list's inner joins and ordering, so a
+        job hidden from ``GET /jobs`` is hidden here too, and the two lists page
+        the same way. Two round trips: the count and the page.
+        """
+        if not namespaces:
+            # or_() of nothing is not a valid predicate, and nothing is loadable anyway.
+            return [], 0
+        counted = _tuning_artifacts()
+        total_statement = (
+            self._total_statement()
+            .join(counted, counted.c.job_id == JobTable.id)
+            .where(*_tuned_model_filters(namespaces, owner_id, q, counted.c.uri))
+        )
+        paged = _tuning_artifacts()
+        page_statement = (
+            self._view_shaped()
+            .join(paged, paged.c.job_id == JobTable.id)
+            .add_columns(_finished_at_column(), paged.c.uri)
+            .where(*_tuned_model_filters(namespaces, owner_id, q, paged.c.uri))
+            .order_by(*_PAGE_ORDER)
+            .limit(limit)
+            .offset(offset)
+        )
+        total = await self._session.scalar(total_statement)
+        result = await self._session.execute(page_statement)
+        rows = result.unique().all()
+        return [(row[0], row[1], row[2]) for row in rows], total or 0
 
     async def create(
         self,
@@ -1113,6 +1287,35 @@ class SqlAlchemyDatasetRepository:
         await self._session.commit()
         await self._session.refresh(dataset, ["train_file", "validation_file"])
 
+    async def set_hf_provenance(
+        self,
+        dataset_id: UUID,
+        *,
+        repo_id: str,
+        revision: str,
+        config: str,
+        split: str,
+        provenance: dict[str, Any],
+    ) -> None:
+        """Record a HuggingFace import's source columns and provenance blob, committing.
+
+        Refreshes ``train_file``/``validation_file`` after commit, for the same
+        reason :meth:`set_status` does: any ``UPDATE`` on this table re-expires
+        those ``Computed`` columns regardless of the columns actually written,
+        and an unrefreshed expired attribute would otherwise raise
+        ``MissingGreenlet`` on the next synchronous access under the async driver.
+        """
+        dataset = await self.get(dataset_id)
+        if dataset is None:
+            return
+        dataset.hf_repo_id = repo_id
+        dataset.hf_revision = revision
+        dataset.hf_config = config
+        dataset.hf_split = split
+        dataset.hf_provenance = provenance
+        await self._session.commit()
+        await self._session.refresh(dataset, ["train_file", "validation_file"])
+
     async def set_upload_result(
         self,
         dataset_id: UUID,
@@ -1126,10 +1329,21 @@ class SqlAlchemyDatasetRepository:
         artifact_url: str | None,
         status: DatasetStatus = DatasetStatus.READY,
     ) -> None:
-        """Record a completed upload's counts, sizes and artifact refs, committing."""
+        """Record completed contents, clearing provenance for a regular replacement.
+
+        The HF runner handoff stays ``importing`` until this write; regular
+        uploads enter ``uploading`` before submission. Only the initial import
+        may retain the provenance recorded by staging.
+        """
         dataset = await self.get(dataset_id)
         if dataset is None:
             return
+        if dataset.status != DatasetStatus.IMPORTING:
+            dataset.hf_repo_id = None
+            dataset.hf_revision = None
+            dataset.hf_config = None
+            dataset.hf_split = None
+            dataset.hf_provenance = None
         dataset.train_records = train_records
         dataset.train_file_size = train_file_size
         dataset.validation_records = validation_records

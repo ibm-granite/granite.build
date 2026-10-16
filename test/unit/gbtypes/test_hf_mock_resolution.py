@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import uuid
 
 import pytest
 
@@ -30,23 +31,17 @@ _PROBE = textwrap.dedent("""
     """)
 
 
-def _resolved_is_hf_mocked(tmp_path, env_overrides: dict[str, str | None]) -> bool:
+def _resolved_is_hf_mocked(env_overrides: dict[str, str | None]) -> bool:
     """Run a probe test in a subprocess and return its is_hf_mocked() result.
 
     The probe must live inside the repo's test tree, not in tmp_path: the
     resolution under test happens in test/conftest.py, which only applies to
-    files collected beneath it.
+    files collected beneath it. A per-call dir keeps xdist workers from deleting
+    each other's probe.
 
     Args:
-        tmp_path: unused for the probe location; kept for a unique file name.
         env_overrides: env vars to set; a None value removes the variable.
     """
-    probe_dir = _repo_root() / "test" / "unit" / "gbtypes" / "_probe"
-    probe_dir.mkdir(parents=True, exist_ok=True)
-    (probe_dir / "__init__.py").write_text("")
-    probe = probe_dir / f"test_probe_{abs(hash(tmp_path.name)) % 10**8}.py"
-    probe.write_text(_PROBE)
-
     env = dict(os.environ)
     env["GB_ENVIRONMENT"] = "STANDALONE"
     for key, value in env_overrides.items():
@@ -55,27 +50,35 @@ def _resolved_is_hf_mocked(tmp_path, env_overrides: dict[str, str | None]) -> bo
         else:
             env[key] = value
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            str(probe),
-            "-q",
-            "-s",
-            "-p",
-            "no:cacheprovider",
-            "-p",
-            "no:randomly",
-            "--no-cov",
-        ],
-        capture_output=True,
-        text=True,
-        cwd=str(_repo_root()),
-        env=env,
-        check=False,
+    probe_dir = (
+        _repo_root() / "test" / "unit" / "gbtypes" / f"_probe_{uuid.uuid4().hex}"
     )
+    probe_dir.mkdir()
     try:
+        (probe_dir / "__init__.py").write_text("")
+        probe = probe_dir / "test_probe.py"
+        probe.write_text(_PROBE)
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                str(probe),
+                "-q",
+                "-s",
+                "-p",
+                "no:cacheprovider",
+                "-p",
+                "no:randomly",
+                "--no-cov",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(_repo_root()),
+            env=env,
+            check=False,
+        )
         # The marker may be prefixed by pytest's own progress output (the test
         # node id), so search anywhere in the line rather than only at the start.
         markers = [
@@ -88,12 +91,8 @@ def _resolved_is_hf_mocked(tmp_path, env_overrides: dict[str, str | None]) -> bo
         ), f"probe did not report a result.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         return markers[0].strip().split()[0] == "True"
     finally:
-        probe.unlink(missing_ok=True)
-        # Leave no scratch behind: drop the package dir once the last probe in it
-        # is gone, so a test run doesn't litter the source tree with untracked
-        # files. shutil.rmtree covers the __pycache__ the subprocess created.
-        if not any(probe_dir.glob("test_probe_*.py")):
-            shutil.rmtree(probe_dir, ignore_errors=True)
+        # Also removes the subprocess's __pycache__.
+        shutil.rmtree(probe_dir, ignore_errors=True)
 
 
 def _repo_root():
@@ -115,28 +114,25 @@ def _repo_root():
         ("no", False, "repo-standard boolean parsing accepts no"),
     ],
 )
-def test_mock_mode_hf_resolution(tmp_path, mock_hf, expected, because):
+def test_mock_mode_hf_resolution(mock_hf, expected, because):
     """GBTEST_MODE=mock mocks HF by default; an explicit non-blank value wins."""
     got = _resolved_is_hf_mocked(
-        tmp_path,
         {"GBTEST_MODE": "mock", "GBTEST_MOCK_HF": mock_hf, "GBTEST_LIVE_HF": None},
     )
     assert got is expected, f"GBTEST_MOCK_HF={mock_hf!r}: {because}"
 
 
-def test_live_mode_honors_explicit_mock_hf(tmp_path):
+def test_live_mode_honors_explicit_mock_hf():
     """GBTEST_MOCK_HF is an independent axis: it mocks HF even under live mode."""
     got = _resolved_is_hf_mocked(
-        tmp_path,
         {"GBTEST_MODE": "live", "GBTEST_MOCK_HF": "true", "GBTEST_LIVE_HF": None},
     )
     assert got is True
 
 
-def test_live_hf_opt_in_lifts_the_mock(tmp_path):
+def test_live_hf_opt_in_lifts_the_mock():
     """A whole-run GBTEST_LIVE_HF=true opt-in beats the mock-mode default."""
     got = _resolved_is_hf_mocked(
-        tmp_path,
         {"GBTEST_MODE": "mock", "GBTEST_MOCK_HF": None, "GBTEST_LIVE_HF": "true"},
     )
     assert got is False

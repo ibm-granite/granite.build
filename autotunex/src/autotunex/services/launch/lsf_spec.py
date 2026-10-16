@@ -14,12 +14,14 @@ the literal-block YAML dumper are shared with the custom_code builder via
 from __future__ import annotations
 
 import copy
+from collections.abc import Sequence
 from typing import Any
 
 import yaml
 
 from autotunex.services.launch._shared import (
     BlockStringDumper,
+    base_model_uri,
     inject_reward_function,
     num_gpus_per_node,
     start_command,
@@ -49,6 +51,7 @@ def build_lsf_spec(
     total_memory_per_node: str,
     poll_interval_seconds: int,
     callback_url: str | None,
+    private_model_namespaces: Sequence[str] = (),
 ) -> str:
     """Return the LSF/SkyPilot ``build.yaml`` text for ``ctx``.
 
@@ -82,6 +85,9 @@ def build_lsf_spec(
         poll_interval_seconds: the step's poll and log-retrieval intervals.
         callback_url: base URL a worker reports back to; emitted as
             ``--autotunex_server_url`` only when set.
+        private_model_namespaces: HF namespaces whose models are bound as the
+            ``base_model`` input rather than passed by name (see
+            :func:`~autotunex.services.launch._shared.base_model_uri`).
     """
     config_data = copy.deepcopy(ctx.config_data)
 
@@ -104,13 +110,18 @@ def build_lsf_spec(
     if memory:
         resources["memory"] = memory
 
+    base_model = base_model_uri(ctx, private_model_namespaces)
+    inputs: dict[str, Any] = {"dataset_files": {"uri": ctx.dataset_uri}}
+    if base_model is not None:
+        inputs["base_model"] = {"uri": base_model}
+
     build: dict[str, Any] = {
         "granite.build": {
             "name": f"autotunex-{ctx.experiment_name}",
             "targets": {
                 "autotunex-tune": {
                     "environment_uri": environment_uri,
-                    "inputs": {"dataset_files": {"uri": ctx.dataset_uri}},
+                    "inputs": inputs,
                     "outputs": {"checkpoint": {"uri": _OUTPUT_URI, "type": "model"}},
                     "steps": [
                         {
@@ -127,6 +138,7 @@ def build_lsf_spec(
                                         config_file=config_file_path,
                                         callback_url=callback_url,
                                         cuda_home=cuda_home,
+                                        bind_base_model=base_model is not None,
                                     ),
                                     "dir_to_save": "$OUTPUT_PATH",
                                 },

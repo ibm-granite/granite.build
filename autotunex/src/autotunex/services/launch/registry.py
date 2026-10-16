@@ -58,6 +58,7 @@ def get_tuning_launcher(settings: Settings) -> TuningLauncher:
                 total_memory_per_node=settings.lsf_total_memory_per_node,
                 poll_interval_seconds=settings.lsf_poll_interval_seconds,
                 callback_url=settings.job_callback_url,
+                private_model_namespaces=settings.hf_import_namespaces,
             )
         else:
             spec_builder = functools.partial(
@@ -89,6 +90,8 @@ def get_tuning_launcher(settings: Settings) -> TuningLauncher:
             trainer_ref=settings.job_trainer_ref,
             output_uri_root=settings.job_output_uri_root,
             callback_url=settings.job_callback_url,
+            keep_diagnostics=settings.keep_diagnostics,
+            private_model_namespaces=settings.hf_import_namespaces,
         )
     return LlmbTuningLauncher(
         llmb_command=settings.llmb_command,

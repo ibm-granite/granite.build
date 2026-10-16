@@ -27,6 +27,13 @@ config:
     # skipped.
     setup_command: ""
 
+# Any number of inputs, by design: byoc runs a free-form
+# command, and the build author references each declared input in it as
+# {{ bindings.<name>.binding.path }}. There is no fixed set of names to declare;
+# allow_unknown keeps every target input valid. See USAGE.md, "Inputs (any number)".
+inputs:
+  allow_unknown: true
+
 environment_configs:
   Skypilot:
     default_launcher: byoc

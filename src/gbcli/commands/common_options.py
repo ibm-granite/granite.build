@@ -16,10 +16,12 @@ def enforce_version_check(ctx: click.Context, skip_version_check: bool) -> None:
     - UP_TO_DATE / UNKNOWN: silent, proceed.
 
     The check is best-effort: a failed lookup is UNKNOWN and never blocks the command.
+    The resolved release tags are cached (see ``versionutil``), so most commands make
+    no network call here.
     """
     if skip_version_check:
         return
-    result = evaluate_version_status()
+    result = evaluate_version_status(use_cache=True)
     if result.status is VersionStatus.BELOW_FLOOR:
         click.echo(result.message, err=True)
         ctx.exit(1)  # Exit with a non-zero status

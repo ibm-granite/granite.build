@@ -1,0 +1,43 @@
+// Carbon's CSS-Grid `Row` component renders `.cds--row`, which has no CSS
+// rule in this app's compiled stylesheet (only `.cds--css-grid`/
+// `.cds--css-grid-column` are emitted) — mixing it with `Grid`/`Column`
+// produces a broken, unsized layout. These plain flexbox utilities replace
+// that combination throughout the wizard, matching this app's existing
+// convention of plain divs over Carbon's Grid system.
+
+.row {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.rowWrap {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.rowEnd {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-end;
+}
+
+// Strict two-up field grid. Unlike `.rowWrap` (flex with per-item `flex-basis`,
+// which lets each row size its columns independently and so misaligns fields
+// between rows), every cell here is exactly 1fr — reproducing the equal-width
+// columns Carbon's `Row`/`Column` gives the source AutoTuneX form.
+// `minmax(0, 1fr)` keeps wide inputs from forcing the track wider than half.
+.fieldGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2rem;
+  align-items: start;
+}
+
+@media (max-width: 42rem) {
+  .fieldGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

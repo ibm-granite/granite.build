@@ -22,6 +22,7 @@ import click
 import yaml
 from pydantic import BaseModel
 
+from gbserver.spaces.local_secrets_isolation import check_local_secrets_collision
 from gbserver.storage import singleton_storage
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.constants import (
@@ -47,6 +48,30 @@ predefined_spaces = [
     #     lakehouse_namespace=TEST_SPACE_LH_NAMESPACE,
     # ),
 ]
+
+
+def _check_local_secrets_collisions(storage, spaces: List[StoredSpace]) -> None:
+    """Refuse spaces that would share another space's default local secrets.
+
+    Each space is checked against the spaces that stay registered (minus any
+    being re-created under the same name) and the ones accepted before it here.
+
+    Args:
+        storage: The admin space storage.
+        spaces: The spaces about to be added.
+
+    Raises:
+        LocalSecretsCollisionError: See check_local_secrets_collision().
+    """
+    names = {s.name for s in spaces}
+    accepted = [
+        s
+        for s in cast(List[StoredSpace], storage.get_by_uuid(None) or [])
+        if s.name not in names
+    ]
+    for space in spaces:
+        check_local_secrets_collision(space, accepted)
+        accepted.append(space)
 
 
 class CLICreateSpacesConfig(BaseModel):
@@ -128,6 +153,8 @@ def cli(
                 storage.delete(record.uuid)
             else:
                 logger.info("Skipped clearing of pre-existing space %s", space.name)
+
+    _check_local_secrets_collisions(storage, spaces_to_create)
 
     logger.info("Create all the spaces")
     storage.add(spaces_to_create)

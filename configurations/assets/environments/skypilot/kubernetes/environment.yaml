@@ -3,12 +3,52 @@ type: Skypilot
 subtype: kubernetes
 config:
   default_cloud: kubernetes
-  idle_minutes_to_autostop: 0
+  # Applied as AUTODOWN on Kubernetes (a pod cannot be stopped; SkyPilot rejects
+  # autostop there). Per-step cleanup already `sky down`s each pod, so this only
+  # reaps one orphaned by a crashed gbserver. Keep it well above the steps' poll
+  # interval (default 300s): a shorter window can delete the pod before the poller
+  # sees the job finish, failing the step. gbserver raises it to 2x the step's poll
+  # interval if it is shorter.
+  idle_minutes_to_autostop: 15
+
+  # SHARED STORAGE (needed for hf:// inputs and for file handoff between targets).
+  # Each step runs in its own pod, so without a volume every pod mounts, an hf://
+  # input downloaded by the hfpull step is not visible to the step that consumes
+  # it, and an env:// output never reaches another target. To enable, create a
+  # ReadWriteMany PersistentVolumeClaim (e.g. NFS-backed), then uncomment and fill
+  # in the block below and the hf cache_path. It must be ReadWriteMany even on a
+  # single node: SkyPilot refuses to start a pod on a ReadWriteOnce claim that
+  # another pod still uses, and pods overlap (hfpull and its consumer, a teardown
+  # and the next launch).
+  #
+  # Scope pod_config to your context (context_configs.<context>): cloud_config is
+  # deep-merged into ~/.sky/config.yaml, and lists there are REPLACED rather than
+  # merged, so a top-level kubernetes.pod_config would overwrite any pod_config you
+  # already keep for other clusters. skypilot/kubernetes/local is a working example
+  # for a local kind cluster.
+  #
+  # shared_workdir: /shared
+  # cloud_config:
+  #   kubernetes:
+  #     allowed_contexts: [<your-context>]
+  #     context_configs:
+  #       <your-context>:
+  #         pod_config:
+  #           spec:
+  #             volumes:
+  #               - name: gb-shared
+  #                 persistentVolumeClaim:
+  #                   claimName: <your-rwx-claim>
+  #             containers:
+  #               - volumeMounts:
+  #                   - name: gb-shared
+  #                     mountPath: /shared
 assetstores:
   - store_uri: space://assetstores/hf
     pull:
       - mode: default
         config:
+          # With shared storage enabled above, use /shared/hf_cache instead.
           cache_path: /tmp/hf_cache
     push:
       - mode: default

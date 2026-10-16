@@ -38,9 +38,12 @@ Behaviour is driven largely by environment variables (see [below](#key-environme
 `space.yaml` (e.g. `configurations/spaces/local`) and it is resolved to a `file://` URI.
 The runner backend is chosen by `GBSERVER_DEFAULT_BUILDRUNNER_TYPE` (`job` / `process` / `thread`).
 
-Signals: pressing **Ctrl+C** (SIGINT) cancels a running build (marked `CANCELLED`); **SIGTERM** fails it (marked `FAILED`).
-In both cases the runner finalizes the build (and its targets/steps/artifacts) before exiting rather than leaving it `RUNNING`.
-Exit code: `0` for `SUCCESS` and `CANCELLED` (a deliberate Ctrl+C cancel); non-zero for `FAILED` (including SIGTERM) and `INVALID`, so callers can key off the exit code.
+Signals: pressing **Ctrl+C** (SIGINT) cancels a running build (marked `CANCELLED`); **SIGTERM** fails it (marked `FAILED`),
+unless a cancel was already requested for the build (`CANCEL_REQUESTED`), in which case it is marked `CANCELLED`. This is how
+`gb build cancel` reaches a Kubernetes build-runner: the pod is deleted, so the runner receives SIGTERM.
+In all cases the runner finalizes the build (and its targets/steps/artifacts) before exiting rather than leaving it `RUNNING`.
+Exit code: `0` for `SUCCESS` and `CANCELLED` (a Ctrl+C cancel, or a SIGTERM after a cancel request); non-zero for `FAILED`
+(including a SIGTERM with no pending cancel) and `INVALID`, so callers can key off the exit code.
 
 ## Local builds
 
@@ -58,7 +61,7 @@ Both accept `--cancel_on_error` and `--user-name`.
 | Command | Purpose |
 |---------|---------|
 | `gbserver add-users <users_file>` | Add users to spaces from a YAML file (`spaces: <name>: [{username, role}]`). |
-| `gbserver create-spaces [--spaces-path <f>] [--clear] [--replace] [--force]` | Create the predefined spaces (registers them in the `gb_spaces` table). Each space in the YAML accepts `name`, `git_repo_uri`, `lakehouse_namespace`, and an optional `hf_default_resource_group_id` (the HF Enterprise resource group id for the space's default group, cached for HF pushes; no HF API lookup is done here). |
+| `gbserver create-spaces [--spaces-path <f>] [--clear] [--replace] [--force]` | Create the predefined spaces (registers them in the `gb_spaces` table). Each space in the YAML accepts `name`, `git_repo_uri`, `lakehouse_namespace`, and an optional `hf_default_resource_group_id` (the HF Enterprise resource group id for the space's default group, cached for HF pushes; no HF API lookup is done here). Refuses a space that would share another registered space's default local secrets directory (same space.yaml `name`; see [local-secrets-manager.md](../secrets/local-secrets-manager.md#default-location-no-secrets_dir)). |
 | `gbserver admin-tables --operation <op> [--dry-run]` | Repair admin metadata: `fail-zombie-builds`, `fix-zombie-targets`, `fix-zombie-steps`, `fail-pending-without-pr`. Prompts for confirmation. |
 
 `rest-server-worker` is an internal pseudo-command used when running the REST server with multiple

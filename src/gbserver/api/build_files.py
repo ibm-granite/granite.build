@@ -201,7 +201,10 @@ async def list_files(
     (path, type, size, mtime) instead of bare path strings — this lets
     callers prioritize by recency/size and skip directories without a
     second round-trip. The pattern filter is applied to the path
-    component in this mode.
+    component in this mode, in gbserver itself rather than by grep, so a
+    ``regex=true`` pattern is a Python (``regex`` package) expression, is
+    limited to 512 characters, and gets 5 seconds in total to match the
+    listing; a pattern that is too long or too slow is rejected with 400.
     """
     with translate_remote_file_errors():
         if pattern is not None:

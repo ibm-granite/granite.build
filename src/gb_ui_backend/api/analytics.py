@@ -107,7 +107,7 @@ async def get_build_status_chart(
                 func.date(GbdBuild.created_at).label("date"),
                 GbdBuild.status,
                 is_test_expr.label("is_test"),
-                func.count().label("count"),
+                func.count().label("num_builds"),
             )
             .where(GbdBuild.created_at >= since)
             .group_by(func.date(GbdBuild.created_at), GbdBuild.status, is_test_expr)
@@ -121,7 +121,7 @@ async def get_build_status_chart(
                 d = str(row.date)
                 s = (row.status or "").lower()
                 it = bool(row.is_test)
-                pivot.setdefault(d, {}).setdefault(s, {})[it] = row.count
+                pivot.setdefault(d, {}).setdefault(s, {})[it] = row.num_builds
             statuses = [
                 "running",
                 "success",
@@ -407,6 +407,7 @@ async def save_trend_analysis(
     result = await db.execute(stmt.returning(GbdMeta.update_id))
     await db.commit()
     row = result.fetchone()
+    assert row is not None, "INSERT ... RETURNING always yields a row"
     return {"success": True, "update_id": str(row[0])}
 
 
