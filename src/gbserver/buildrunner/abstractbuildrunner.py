@@ -102,6 +102,18 @@ class AbstractBuildRunner(ABC):
         """
         raise ValueError("Sub-class must implement this method")
 
+    def on_build_orchestrator_shutdown(self: Self) -> None:
+        """Handle the shutdown of the build orchestrator (e.g. BuildWatcher) running this.
+
+        Unlike stop(), this is not a request to cancel the build; the process that
+        started and tracks this runner is going away. A runner whose build cannot
+        outlive that process must cancel it so it is not left RUNNING; this default
+        does that via stop(). A runner whose build runs independently (e.g. in its own
+        pod) should override this to stop tracking the build and leave it running.
+        Upon returning, start_and_wait() must return soon, as for stop().
+        """
+        self.stop()
+
     @abstractmethod
     def start_and_wait(self: Self) -> None:
         """

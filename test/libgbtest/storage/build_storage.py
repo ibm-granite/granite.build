@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 
 from libgbtest.storage.storage import (
     AbstractExistingDataReadTest,
@@ -15,11 +16,20 @@ from gbserver.types.constants import ENV_VAR_DEFAULT_GITHUB_TOKEN
 
 class BuildStorageTestSupport(AbstractStorageTestSupport):
 
-    def __init__(self):
+    def __init__(self, username: Optional[str] = None):
+        """Create the support class.
+
+        Args:
+            username: Username stamped on test builds. If None, it is resolved from
+                the GitHub token (see :meth:`_get_build_user`).
+        """
         super().__init__(sort_column="name")
+        self._username = username
 
     def _get_build_user(self) -> str:
         """Return the username to use in test builds. Subclasses can override to avoid GitHub API calls."""
+        if self._username is not None:
+            return self._username
         token = os.getenv(ENV_VAR_DEFAULT_GITHUB_TOKEN, None)
         if token is None:
             token = os.getenv("GITHUB_TOKEN", None)

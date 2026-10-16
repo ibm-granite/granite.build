@@ -38,9 +38,12 @@ Behaviour is driven largely by environment variables (see [below](#key-environme
 `space.yaml` (e.g. `configurations/spaces/local`) and it is resolved to a `file://` URI.
 The runner backend is chosen by `GBSERVER_DEFAULT_BUILDRUNNER_TYPE` (`job` / `process` / `thread`).
 
-Signals: pressing **Ctrl+C** (SIGINT) cancels a running build (marked `CANCELLED`); **SIGTERM** fails it (marked `FAILED`).
-In both cases the runner finalizes the build (and its targets/steps/artifacts) before exiting rather than leaving it `RUNNING`.
-Exit code: `0` for `SUCCESS` and `CANCELLED` (a deliberate Ctrl+C cancel); non-zero for `FAILED` (including SIGTERM) and `INVALID`, so callers can key off the exit code.
+Signals: pressing **Ctrl+C** (SIGINT) cancels a running build (marked `CANCELLED`); **SIGTERM** fails it (marked `FAILED`),
+unless a cancel was already requested for the build (`CANCEL_REQUESTED`), in which case it is marked `CANCELLED`. This is how
+`gb build cancel` reaches a Kubernetes build-runner: the pod is deleted, so the runner receives SIGTERM.
+In all cases the runner finalizes the build (and its targets/steps/artifacts) before exiting rather than leaving it `RUNNING`.
+Exit code: `0` for `SUCCESS` and `CANCELLED` (a Ctrl+C cancel, or a SIGTERM after a cancel request); non-zero for `FAILED`
+(including a SIGTERM with no pending cancel) and `INVALID`, so callers can key off the exit code.
 
 ## Local builds
 

@@ -81,6 +81,7 @@ Used when `GBSERVER_DEFAULT_BUILDRUNNER_TYPE=job`.
 | `GBSERVER_BUILDRUNNERJOB_SECRET_NAME` | (svc-acct secret) | Pull/service-account secret. |
 | `GBSERVER_BUILDRUNNERJOB_BUILD_WORKSPACE_PVC_NAME` | `gb-buildws-pvc` | Workspace PVC. |
 | `GBSERVER_BUILDRUNNERJOB_CONFIGMAP_NAME` | `granite-dot-build-configmap` | ConfigMap. |
+| `GBSERVER_BUILDRUNNERJOB_TERMINATION_GRACE_SECONDS` | `60` | Seconds between SIGTERM and SIGKILL when a build-runner pod is deleted (e.g. on cancel); covers workload teardown and status finalization. |
 | `GBSERVER_DEFAULT_ROOT_WORKSPACE_DIR` | `gbserverworkspace` | Root workspace dir (watchers derive subdirs). |
 
 ## GitHub & git

@@ -102,12 +102,21 @@ environment_configs:
             # ~few GB) onto the node-local NVMe scratch. The bigcode-eval metric
             # phase writes thousands of per-problem JSON files plus per-program
             # source/binaries into $TMPDIR; tmpfs fills up fast under contention.
+            #
+            # mktemp gives each task its own short, mode-700 directory. Do not name
+            # it after SKYPILOT_TASK_ID: the id embeds the cluster name, and the
+            # ~150-character path it made was too long for any unix socket bound
+            # under $TMPDIR (107 characters): vLLM's ZMQ ipc sockets, and
+            # multiprocessing's pymp-* listeners on this image's Python 3.11.
             if [ -d "/opt/nvme" ]; then
-              export TMPDIR="/opt/nvme/${USER:-$(id -un)}/tmp-${SKYPILOT_TASK_ID:-$$}"
+              mkdir -p "/opt/nvme/${USER:-$(id -un)}"
+              TMPDIR="$(mktemp -d "/opt/nvme/${USER:-$(id -un)}/tmp-XXXXXXXX")" || exit 1
             else
-              export TMPDIR="/tmp/sage-tmp-${SKYPILOT_TASK_ID:-$$}"
+              TMPDIR="$(mktemp -d /tmp/sage-tmp-XXXXXXXX)" || exit 1
             fi
-            mkdir -p "$TMPDIR"
+            export TMPDIR
+            trap 'rm -rf "$TMPDIR"' EXIT
+            echo "TMPDIR=$TMPDIR (task ${SKYPILOT_TASK_ID:-unset})"
             export TMP="$TMPDIR"
             export TEMP="$TMPDIR"
 

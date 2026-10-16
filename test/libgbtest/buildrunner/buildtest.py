@@ -447,23 +447,34 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
     def _check_and_setup_space(
         self: Self, test_spec: BuildTestSpecification
     ) -> StoredSpace:
-        """Fetch the space for the test, upserting its git_repo_uri to space_uri.
+        """Fetch the space for the test, upserting git_repo_uri for a local space_uri.
 
-        The stored space record is created or updated so its git_repo_uri is
-        test_spec.space_uri, so validation.py's assertion — which compares
-        get_gb_space_config_uri(git_repo_uri) against Space.uristr — passes.
+        For a local ``file://`` space_uri, the stored space record is created or
+        updated so its git_repo_uri is space_uri, so validation.py's assertion —
+        which compares get_gb_space_config_uri(git_repo_uri) against Space.uristr —
+        passes. A git space_uri is left to the existing record, which stores the
+        repo's https URL (as production does): build setup derives the PR clone URL
+        and config branch from that form, so overwriting it with the git+ssh config
+        URI breaks PR creation and leaves the build PENDING.
 
         Args:
             test_spec (BuildTestSpecification): The test specification containing
                 space_name and space_uri.
 
         Returns:
-            StoredSpace: The resolved (and updated) space record.
+            StoredSpace: The resolved (and possibly updated) space record.
+
+        Raises:
+            AssertionError: If space_uri is a git URI and no space record exists.
         """
         logger.info(f"Getting the {test_spec.space_name} space")
         space = self.storage.space_storage.get_by_name(name=test_spec.space_name)
         logger.info(f"Got the {test_spec.space_name} space")
-        # Upsert the space record so git_repo_uri matches space_uri.
+        if not test_spec.space_uri.startswith("file://"):
+            assert (
+                space is not None
+            ), f"failed to find a space with name {test_spec.space_name}"
+            return space
         # validation.py passes file:// URIs through get_gb_space_config_uri unchanged,
         # so storing space_uri as git_repo_uri makes its space-match assertion pass.
         if space is None:

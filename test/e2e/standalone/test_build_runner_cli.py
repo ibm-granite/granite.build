@@ -23,6 +23,7 @@ bash build and assert ONLY the final build status for three scenarios:
 * clean run                -> SUCCESS
 * SIGINT (Ctrl+C)          -> CANCELLED
 * SIGTERM (process kill)   -> FAILED
+* CANCEL_REQUESTED+SIGTERM -> CANCELLED (k8s `gb build cancel` deletes the pod)
 
 The build runs in STANDALONE mode against the repo's ``configurations/spaces/local``
 space via the ``--space-dir`` option. The test extends
@@ -46,7 +47,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import pytest
 from libgbtest.utils import AbstractSingletonStorageUsingTest
@@ -77,6 +78,10 @@ _LONGRUNNING_RETRY_BUILD_DIR = _BUILD_ROOT / "longrunning-retry"
 # Log line the worker loop emits repeatedly once the build is actually running;
 # used to time signal delivery so we interrupt a RUNNING build, not setup.
 _RUNNING_MARKER = "waiting for events"
+
+# Log line BuildRunner.stop_and_fail emits when SIGTERM finds a pending cancel;
+# proves CANCELLED came from the SIGTERM path, not the runner's own cancel poll.
+_SIGTERM_CANCEL_MARKER = "has a pending cancel request; cancelling instead of failing"
 
 # Timeouts (seconds). First run copies the space + loads assetstores, so allow
 # generous headroom for the running marker and for the build to complete.
@@ -166,7 +171,11 @@ class TestBuildRunnerCliSignals(AbstractSingletonStorageUsingTest):
         shutil.rmtree(self._gb_home, ignore_errors=True)
 
     def _run_build_runner(
-        self, build_dir: Path, tmp_path: Path, sig: Optional[int] = None
+        self,
+        build_dir: Path,
+        tmp_path: Path,
+        sig: Optional[int] = None,
+        before_signal: Optional[Callable[[], None]] = None,
     ) -> int:
         """Run ``gbserver build-runner`` on a build dir, optionally signalling it.
 
@@ -179,6 +188,8 @@ class TestBuildRunnerCliSignals(AbstractSingletonStorageUsingTest):
             build_dir: directory holding the build.yaml to run.
             tmp_path: pytest temp dir for the isolated workspace and log file.
             sig: optional signal number (SIGINT/SIGTERM) to send once running.
+            before_signal: optional callback run once the build is running, just
+                before ``sig`` is delivered (e.g. to request a cancel in storage).
 
         Returns:
             The CLI process's exit code.
@@ -223,6 +234,8 @@ class TestBuildRunnerCliSignals(AbstractSingletonStorageUsingTest):
                     log_file, _MARKER_TIMEOUT
                 ), "build never reached the running state"
                 time.sleep(1.0)  # let the workload settle before interrupting
+                if before_signal is not None:
+                    before_signal()
                 proc.send_signal(sig)
                 exit_timeout = _SIGNAL_EXIT_TIMEOUT
             proc.wait(timeout=exit_timeout)
@@ -251,6 +264,20 @@ class TestBuildRunnerCliSignals(AbstractSingletonStorageUsingTest):
                 return True
             time.sleep(0.5)
         return False
+
+    def _request_cancel(self) -> None:
+        """Mark the CLI's build CANCEL_REQUESTED in storage, as `gb build cancel` does.
+
+        Raises:
+            AssertionError: if not exactly one build was persisted.
+        """
+        builds = self.storage.build_storage.get_by_where(
+            {"name": COMMAND_RUN_BUILD_WATCH_BUILD_NAME}
+        )
+        assert len(builds) == 1, f"expected exactly one build, got {len(builds)}"
+        self.storage.build_storage.update_fields(
+            builds[0].uuid, fields={"status": Status.CANCEL_REQUESTED}
+        )
 
     def _final_build_status(self) -> Status:
         """Return the persisted status of the build produced by the CLI run.
@@ -313,3 +340,26 @@ class TestBuildRunnerCliSignals(AbstractSingletonStorageUsingTest):
         assert len(builds) == 1, f"SIGTERM spawned a retry: {len(builds)} builds exist"
         assert builds[0].status == Status.FAILED
         assert rc != 0
+
+    @pytest.mark.timeout(180)
+    def test_cli_sigterm_after_cancel_request_cancels_build(self, tmp_path):
+        """SIGTERM on a CANCEL_REQUESTED build marks it CANCELLED, exit 0.
+
+        On Kubernetes, `gb build cancel` sets CANCEL_REQUESTED and then deletes the
+        build-runner pod, so the runner sees SIGTERM. It must honor the pending cancel rather than mark the build FAILED.
+        Delivering SIGTERM before the runner's own (monitoring_interval-paced)
+        cancel poll reproduces that race. The log marker check proves the SIGTERM
+        path (not that poll) produced the CANCELLED status.
+        """
+        rc = self._run_build_runner(
+            _LONGRUNNING_BUILD_DIR,
+            tmp_path,
+            sig=signal.SIGTERM,
+            before_signal=self._request_cancel,
+        )
+        assert self._final_build_status() == Status.CANCELLED
+        assert rc == 0
+        log_text = (tmp_path / "run.log").read_text(errors="ignore")
+        assert (
+            _SIGTERM_CANCEL_MARKER in log_text
+        ), "CANCELLED did not come from the SIGTERM pending-cancel path"

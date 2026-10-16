@@ -10,6 +10,7 @@
 # - dev_staging_prod_env
 # - build_runner_labels
 # - build_runner_annotations
+# - termination_grace_period_seconds
 apiVersion: batch/v1
 kind: Job 
 metadata:
@@ -38,6 +39,9 @@ spec:
         '{{ k }}': '{{ v }}'
         {%- endfor %}
     spec:
+      # Time between SIGTERM and SIGKILL on pod deletion (e.g. `gb build cancel`),
+      # so the runner can tear down its workload and record the final status.
+      terminationGracePeriodSeconds: {{ termination_grace_period_seconds }}
       # Stay off subnets that can't reach BlueVela SSH: a sentinel pod labelled
       # llmbuild/bluevela-ssh=broken marks its whole subnet (no-op without one).
       # Pod anti-affinity, since cluster admission overwrites required node affinity.

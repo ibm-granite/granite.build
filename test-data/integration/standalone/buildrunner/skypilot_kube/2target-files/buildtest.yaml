@@ -1,0 +1,23 @@
+# YAML-driven spec for test/integration/standalone/buildrunner/skypilot_kube/test_skypilot_kube_2target_files.py.
+targets:
+  - produce
+  - consume
+target_expectations:
+  # step_count = 1 per target: env:// and mem:// transfers are no-ops, so no
+  # pull/push steps are queued. `produce` registers two outputs (the file and the
+  # token); `consume` binds both and registers its verdict.
+  - target_name: produce
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 2
+    jobstats_count: 1
+  - target_name: consume
+    step_count: 1
+    input_artifact_count: 2
+    output_artifact_count: 1
+    jobstats_count: 1
+space_uri: ../../../../../../configurations/spaces/local
+simulate_step_failure: false
+tests:
+  - runner
+timeout_minutes: 15

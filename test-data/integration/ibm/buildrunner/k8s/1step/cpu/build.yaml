@@ -1,4 +1,4 @@
-llm.build:
+granite.build:
   name: k8s-1step-cpu-test
   targets:
     download_file:

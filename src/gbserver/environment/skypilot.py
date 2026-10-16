@@ -1,8 +1,9 @@
 """SkyPilot environment backend (unmanaged mode).
 
 Manages build step execution on SkyPilot-provisioned pods/VMs using
-sky.launch(). Each step gets its own cluster; pods auto-stop after
-idle timeout. The sky SDK is lazy-imported so gbserver does not
+sky.launch(). Each step gets its own cluster, torn down after the step; an
+idle timeout backstops a crash (autostop on VMs, autodown on Kubernetes pods,
+none on slurm/lsf). The sky SDK is lazy-imported so gbserver does not
 require it unless a Skypilot environment is actually configured.
 """
 
@@ -479,6 +480,59 @@ def _get_sky_executor() -> concurrent.futures.ThreadPoolExecutor:
     return _SKY_EXECUTOR
 
 
+# Serializes "make an env's cloud_config the one this process sends, then submit
+# its launch". SkyPilot's client attaches its loaded config to a request when the
+# request is built, and that config is process-global, so without this another
+# build's write could land between one env's write and its submit and launch its
+# pods with the wrong settings -- for skypilot/kubernetes/local, without the
+# context pin, onto whatever kube context is current. Held only across the submit
+# (body build + POST); the wait for the launch to finish runs outside it.
+_CLOUD_CONFIG_LOCK = threading.Lock()
+# The cloud_config (canonical JSON) this process's client last loaded through
+# _apply_cloud_config; None before the first.
+_LOADED_CLOUD_CONFIG: Optional[str] = None
+
+
+def _apply_cloud_config(env_name: str, cloud_config: Optional[Dict]) -> None:
+    """Make ``cloud_config`` the one this process's SkyPilot requests carry.
+
+    Writes it into ``~/.sky/config.yaml`` last-writer-wins
+    (:func:`gbserver.environment.skypilot_config.merge_cloud_config`, which also
+    removes the previous env's), then reloads the client config when the file
+    changed or the loaded one is another env's. Caller holds
+    :data:`_CLOUD_CONFIG_LOCK`.
+
+    :param env_name: The environment's name (recorded with its config).
+    :param cloud_config: The environment's ``cloud_config``, or ``None``.
+    """
+    global _LOADED_CLOUD_CONFIG  # pylint: disable=global-statement
+    from gbserver.environment.skypilot_config import merge_cloud_config
+
+    key = json.dumps(cloud_config or {}, sort_keys=True)
+    if merge_cloud_config(cloud_config, env_name) or key != _LOADED_CLOUD_CONFIG:
+        _reload_skypilot_client_config()
+        _LOADED_CLOUD_CONFIG = key
+
+
+def _launch_with_cloud_config(
+    env_name: str, cloud_config: Optional[Dict], *args: Any, **kwargs: Any
+) -> Any:
+    """``sky.launch`` with the env's ``cloud_config`` applied (blocking).
+
+    Run on the sky executor via :func:`_sky_submit_to_thread`, so waiting for
+    :data:`_CLOUD_CONFIG_LOCK` never blocks the event loop.
+
+    :param env_name: The launching environment's name.
+    :param cloud_config: The launching environment's ``cloud_config``, or ``None``.
+    :param args: Positional arguments for ``sky.launch``.
+    :param kwargs: Keyword arguments for ``sky.launch``.
+    :returns: ``sky.launch``'s request id.
+    """
+    with _CLOUD_CONFIG_LOCK:
+        _apply_cloud_config(env_name, cloud_config)
+        return sky.launch(*args, **kwargs)
+
+
 async def _sky_submit_to_thread(
     func: Callable[..., Any], *args: Any, **kwargs: Any
 ) -> Any:
@@ -761,6 +815,77 @@ _SSH_HPC_CLOUDS = ("slurm", "lsf")
 # _SSH_HPC_CLOUDS: this tracks one capability, not HPC-ness. Observed on SLURM
 # (BlueVela); LSF included because it also has autostop forced off.
 _CLOUDS_NEEDING_MANUAL_TEARDOWN = ("slurm", "lsf")
+
+# Clouds where SkyPilot supports auto-DOWN but not auto-STOP. A pod cannot be
+# stopped, only deleted, so SkyPilot rejects any idle_minutes_to_autostop without
+# down=True on Kubernetes ("Auto-stop is not supported on Kubernetes", upstream
+# since #5010) — every launch fails provisioning. Passing down=True turns the idle
+# window into autodown instead, keeping it as the backstop that reaps a pod
+# orphaned by a crashed gbserver (per-step cleanup still `sky down`s normally).
+# Both spellings: `k8s` is a documented default_cloud alias and _get_cloud()'s own
+# fallback.
+_CLOUDS_AUTODOWN_ONLY = ("kubernetes", "k8s")
+
+# On autodown-only clouds the idle window must outlast the step's poll interval
+# by a margin. Otherwise a job that finishes just after a poll can be autodowned
+# before the next one: the poller then sees "does not exist", marks the step
+# FAILED, and the on-completion log download has no pod left to read from.
+_AUTODOWN_MIN_POLL_MULTIPLE = 2
+
+
+def _step_poll_interval_seconds(step_config: dict) -> float:
+    """The step's monitor poll interval, as the skypilot monitor reads it.
+
+    Canonical key across step.yaml configs is ``poll_interval_seconds``; the
+    legacy ``poll_interval`` is accepted for back-compat. Templated configs may
+    render it as a string (e.g. "120"), so it is coerced to a number.
+
+    :param step_config: the step's config (monitor kwargs or the launch config).
+    :returns: seconds; ``_DEFAULT_POLL_INTERVAL_SECONDS`` when absent or invalid.
+    """
+    raw = step_config.get(
+        "poll_interval_seconds",
+        step_config.get("poll_interval", _DEFAULT_POLL_INTERVAL_SECONDS),
+    )
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid poll_interval_seconds %r; falling back to %d",
+            raw,
+            _DEFAULT_POLL_INTERVAL_SECONDS,
+        )
+        return float(_DEFAULT_POLL_INTERVAL_SECONDS)
+
+
+def _autodown_floor(
+    idle_minutes: Optional[int], poll_interval_s: float, cluster_name: str
+) -> Optional[int]:
+    """Raise an autodown window that is too short for the step's poll interval.
+
+    :param idle_minutes: the configured window (None = no idle action, kept).
+    :param poll_interval_s: the step's monitor poll interval in seconds.
+    :param cluster_name: for the warning.
+    :returns: ``idle_minutes``, or the floor
+        ``ceil(_AUTODOWN_MIN_POLL_MULTIPLE * poll_interval_s / 60)`` if larger.
+    """
+    if idle_minutes is None:
+        return None
+    floor = math.ceil(_AUTODOWN_MIN_POLL_MULTIPLE * poll_interval_s / 60)
+    if idle_minutes < floor:
+        logger.warning(
+            "idle_minutes_to_autostop=%s is shorter than %dx the step's poll "
+            "interval (%ss) on an autodown-only cloud; raising it to %d minutes "
+            "for cluster %s so the pod is not deleted before the poller sees the "
+            "job finish",
+            idle_minutes,
+            _AUTODOWN_MIN_POLL_MULTIPLE,
+            int(poll_interval_s),
+            floor,
+            cluster_name,
+        )
+        return floor
+    return idle_minutes
 
 
 # How long, and how often, to wait for the cleanup VM's reap job to finish.
@@ -1934,23 +2059,23 @@ class Skypilot(Environment):
     def _ensure_inline_configs_materialized(self: Self) -> None:
         """Materialize the non-SSH inline SkyPilot config (once per instance).
 
-        Reads ``cloud_config`` / ``aws_credentials`` from the environment's
-        free-form ``config`` block and delegates to ``skypilot_config.materialize``
-        (with ``ssh=None``), which deep-merges ``cloud_config`` into the API
-        server's ``~/.sky/config.yaml`` (env values win) and writes
-        ``~/.aws/credentials``. No-op when neither is present. Idempotent via an
+        Writes ``aws_credentials`` from the environment's free-form ``config``
+        block to ``~/.aws/credentials`` (``skypilot_config.materialize`` with
+        ``ssh=None``), and applies its ``cloud_config``
+        (:func:`_apply_cloud_config`): written into the API server's
+        ``~/.sky/config.yaml`` last-writer-wins, then loaded into this process's
+        SkyPilot client, which is what makes an edited environment.yaml take
+        effect on the next build without a gbserver restart. Idempotent via an
         instance flag, so retry relaunches are free.
 
-        After writing ``cloud_config`` it reloads this process's SkyPilot client
-        config (:func:`_reload_skypilot_client_config`), which is what makes an
-        edited environment.yaml take effect on the next build without a
-        gbserver restart. An Environment instance is cached per build thread,
-        so this runs once per build. But the loaded config is process-global,
-        not per build: if build B starts while build A is running, B's reload
-        replaces A's config too, so A's later requests (a retry relaunch, say)
-        carry B's environment's ``cloud_config``. That only differs when the two
-        builds use environments with different ``cloud_config`` -- or the same
-        environment.yaml edited between them.
+        Applying ``cloud_config`` here puts it in the file before the API server
+        starts. It is applied again before every launch
+        (:func:`_launch_with_cloud_config`), because the loaded config is
+        process-global, not per build, and last-writer-wins removes one env's
+        keys when another env writes: if build B starts while build A is
+        running, B's settings replace A's, and A's next launch puts its own back
+        under :data:`_CLOUD_CONFIG_LOCK` before submitting. Other requests
+        (status, down) carry whichever env's config is loaded at the time.
 
         The SSH config is deliberately NOT materialized here: it is merged
         per-launch by :meth:`_prepare_ssh_for_launch`, which also handles the
@@ -1963,22 +2088,25 @@ class Skypilot(Environment):
         if self._inline_configs_done:
             return
         cfg = self.config.config if self.config else {}
-        cloud_config = cfg.get("cloud_config")
         aws_raw = cfg.get("aws_credentials")
-        if cloud_config or aws_raw:
+        if aws_raw:
             from gbserver.environment.skypilot_config import materialize
             from gbserver.types.environmentconfig import AwsCredentialProfile
 
-            aws = (
-                [AwsCredentialProfile.model_validate(p) for p in aws_raw]
-                if aws_raw
-                else None
-            )
-            name = self.config.name if self.config else "unknown"
-            materialize(name, None, cloud_config, aws, self.secrets or {})
-            if cloud_config:
-                _reload_skypilot_client_config()
+            aws = [AwsCredentialProfile.model_validate(p) for p in aws_raw]
+            materialize(self._env_name(), None, None, aws, self.secrets or {})
+        with _CLOUD_CONFIG_LOCK:
+            _apply_cloud_config(self._env_name(), self._cloud_config())
         self._inline_configs_done = True
+
+    def _env_name(self: Self) -> str:
+        """This environment's name, as recorded with its written config."""
+        return self.config.name if self.config else "unknown"
+
+    def _cloud_config(self: Self) -> Optional[Dict]:
+        """This environment's ``cloud_config`` block, or ``None``."""
+        cfg = self.config.config if self.config else {}
+        return cfg.get("cloud_config") or None
 
     async def _materialize_ssh_for_launch(
         self: Self, cloud: str, target_alias: Optional[str]
@@ -2603,7 +2731,9 @@ class Skypilot(Environment):
                 resources=sky.Resources(**res_kwargs),
             )
             request_id = await asyncio.to_thread(
-                sky.launch,
+                _launch_with_cloud_config,
+                self._env_name(),
+                self._cloud_config(),
                 task,
                 cluster_name=cluster_name,
                 idle_minutes_to_autostop=0,
@@ -3376,6 +3506,10 @@ class Skypilot(Environment):
             # backends regardless of the user's config. Reuses cloud_group
             # (normalized first infra segment) computed above.
             autostop = None if cloud_group in _SSH_HPC_CLOUDS else idle_minutes
+            if cloud_group in _CLOUDS_AUTODOWN_ONLY:
+                autostop = _autodown_floor(
+                    autostop, _step_poll_interval_seconds(config), cluster_name
+                )
 
             # (The opt-in SSH-socket clear, if GBTEST_SKY_SSH_RESET is set, ran
             # earlier via _prepare_ssh_for_launch, before the SSH config was
@@ -3516,7 +3650,8 @@ class Skypilot(Environment):
         Args:
             task: The ``sky.Task`` to launch.
             cluster_name: Deterministic cluster name for this launch.
-            autostop: idle_minutes_to_autostop (None on slurm/lsf).
+            autostop: idle_minutes_to_autostop (None on slurm/lsf). On
+                kubernetes it is applied as autodown (see _CLOUDS_AUTODOWN_ONLY).
             cloud_group: Normalized target cloud, as resolved from the launch
                 infra by the caller — NOT the env's ``default_cloud``, which a
                 step can override via ``infra:``/``resources.cloud``. Decides
@@ -3562,6 +3697,10 @@ class Skypilot(Environment):
             reraise=True,
         ):
             with attempt:
+                # Autodown rather than autostop where only autodown exists (see
+                # _CLOUDS_AUTODOWN_ONLY). None means "no idle action" and needs no
+                # flag; elsewhere down stays False so the idle window still stops.
+                down = cloud_group in _CLOUDS_AUTODOWN_ONLY and autostop is not None
                 try:
                     # Both sky.launch (submit) and sky.stream_and_get (wait)
                     # block in an OS thread, so a CancelledError delivered to
@@ -3574,10 +3713,13 @@ class Skypilot(Environment):
                     # partial cluster rather than leaking it.
                     launch_fut = asyncio.ensure_future(
                         _sky_submit_to_thread(
-                            sky.launch,
+                            _launch_with_cloud_config,
+                            self._env_name(),
+                            self._cloud_config(),
                             task,
                             cluster_name=cluster_name,
                             idle_minutes_to_autostop=autostop,
+                            down=down,
                         )
                     )
                     try:
@@ -3849,19 +3991,7 @@ class Skypilot(Environment):
         # Canonical key across step.yaml configs is ``poll_interval_seconds``;
         # accept the legacy ``poll_interval`` for back-compat. Templated configs
         # may render this as a string (e.g. "120"), so coerce to a number.
-        _raw_poll = kwargs.get(
-            "poll_interval_seconds",
-            kwargs.get("poll_interval", _DEFAULT_POLL_INTERVAL_SECONDS),
-        )
-        try:
-            poll_interval = float(_raw_poll)
-        except (TypeError, ValueError):
-            logger.warning(
-                "Invalid poll_interval_seconds %r; falling back to %d",
-                _raw_poll,
-                _DEFAULT_POLL_INTERVAL_SECONDS,
-            )
-            poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
+        poll_interval = _step_poll_interval_seconds(kwargs)
         # Per-step log-retrieval policy (mode + cadence). Defaults to
         # on_completion: pull the full log once at terminal status.
         log_mode, log_interval, startup_window = _parse_log_retrieval(

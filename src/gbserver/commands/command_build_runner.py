@@ -126,13 +126,19 @@ def _check_space_options_exclusive() -> None:
 def _apply_termination(build_runner: BuildRunner, signum: int) -> None:
     """Cancel (SIGINT) or fail (SIGTERM) the running build.
 
+    SIGTERM cancels rather than fails when a cancel was already requested for the
+    build (see BuildRunner.stop_and_fail), since that is how a Kubernetes pod
+    deletion driven by `gb build cancel` arrives.
+
     Args:
         build_runner (BuildRunner): the runner whose build should be terminated.
         signum (int): the received signal number.
     """
     if signum == signal.SIGTERM:
-        logger.warning("Received SIGTERM - marking build as FAILED...")
-        click.echo("\nReceived SIGTERM - failing build...", err=True)
+        logger.warning(
+            "Received SIGTERM - marking build as FAILED (CANCELLED if cancel requested)..."
+        )
+        click.echo("\nReceived SIGTERM - stopping build...", err=True)
         build_runner.stop_and_fail("Build runner received SIGTERM")
     else:  # SIGINT / Ctrl+C
         logger.warning("Ctrl+C received - cancelling build...")
@@ -145,7 +151,8 @@ def run_build_handling_signals(build_runner: BuildRunner) -> None:
 
     ``BuildRunner.start_and_wait`` blocks until the build finishes, so it runs on
     a background (daemon) thread while the main thread waits. SIGINT (Ctrl+C)
-    cancels the build (CANCELLED); SIGTERM fails it (FAILED). Both call into the
+    cancels the build (CANCELLED); SIGTERM fails it (FAILED, or CANCELLED when a
+    cancel was already requested). Both call into the
     runner from the main thread - the runner's stop()/stop_and_fail() are designed
     to be invoked from another thread - and the main thread keeps waiting (in
     bounded steps) until the build thread finishes, so the terminal status is fully
@@ -451,7 +458,8 @@ def cli(
         finished_stored_build.status,
     )
     # Exit non-zero on a failed build so callers (e.g. orchestrators keying off the
-    # exit code) don't read a failure as success. SUCCESS and CANCELLED (a
-    # deliberate SIGINT cancel) exit 0; FAILED (incl. SIGTERM) and INVALID do not.
+    # exit code) don't read a failure as success. SUCCESS and CANCELLED (a SIGINT
+    # cancel, or a SIGTERM after a cancel request) exit 0; FAILED (incl. a SIGTERM
+    # with no pending cancel) and INVALID do not.
     if finished_stored_build.status in (Status.FAILED, Status.INVALID):
         raise SystemExit(1)

@@ -21,6 +21,9 @@ SERVICES = [
     "messaging",
     "secrets",
     "time",
+    # Real space-access checks (no mock-mode is_super_admin/write-access bypass),
+    # without un-mocking the rest of GitHub. "github" also implies it.
+    "space_access",
 ]
 
 

@@ -51,6 +51,17 @@ pytestmark = [
     pytest.mark.usefixtures("allow_bash_environment"),
 ]
 
+
+class _NullMessageLogger:
+    """Discards the PR/event messages a bare runner posts on a status change."""
+
+    def info(self, *args, **kwargs):
+        pass
+
+    def error(self, *args, **kwargs):
+        pass
+
+
 _IN_FLIGHT = {
     Status.SUBMITTED,
     Status.PENDING,
@@ -119,6 +130,33 @@ class TestInPlaceRetryCancellation(AbstractBuildTest):
         assert (
             self.storage.build_storage.get_by_uuid(build.uuid).status == Status.SUCCESS
         ), "A cleanup stop() must not cancel a build that already succeeded"
+
+    def test_stop_before_start_does_not_run_the_build(self):
+        """A stop() that wins the race with start_and_wait() is not lost.
+
+        The watcher can stop a runner (a user cancel, or its own shutdown) before
+        the build thread reaches start_and_wait(). The build must end CANCELLED
+        without a run being started at all.
+        """
+        build = self._make_build(Status.PENDING, 0)
+        self.storage.build_storage.add(build)
+        runner = self._bare_runner(build)
+        runner.build_message_logger = _NullMessageLogger()
+        runs: list[str] = []
+
+        async def _record_run():
+            runs.append(build.uuid)
+
+        runner._BuildRunner__async_run_build = _record_run
+
+        runner.stop()
+        runner.start_and_wait()
+
+        assert runs == [], "a build run started after stop()"
+        assert (
+            self.storage.build_storage.get_by_uuid(build.uuid).status
+            == Status.CANCELLED
+        )
 
     def test_request_cancellation_routes_by_status(self):
         """request_cancellation maps each build status to the right outcome.

@@ -2099,6 +2099,118 @@ class TestSkypilotManagedMonitorLogParsing:
             )
 
 
+@pytest.mark.usefixtures("real_apply_cloud_config")
+class TestApplyCloudConfig:
+    """Each launch carries its own env's cloud_config (last-writer-wins + lock)."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_loaded(self, monkeypatch):
+        monkeypatch.setattr("gbserver.environment.skypilot._LOADED_CLOUD_CONFIG", None)
+
+    def test_reloads_after_a_write_and_on_env_switch_only(self):
+        """The fix for an edited bsub_options exclusion needing a restart, kept."""
+        from gbserver.environment import skypilot as sp
+
+        written = []
+        with (
+            patch(
+                "gbserver.environment.skypilot_config.merge_cloud_config",
+                side_effect=lambda cc, name: written.append(name) or name == "A",
+            ),
+            patch(
+                "gbserver.environment.skypilot._reload_skypilot_client_config"
+            ) as reload,
+        ):
+            sp._apply_cloud_config("A", {"lsf": {"q": 1}})  # file changed
+            assert reload.call_count == 1
+            sp._apply_cloud_config("B", {"lsf": {"q": 2}})  # file same, other env
+            assert reload.call_count == 2
+            sp._apply_cloud_config("B", {"lsf": {"q": 2}})  # nothing new
+            assert reload.call_count == 2
+        assert written == ["A", "B", "B"]
+
+    def test_launch_applies_then_submits_under_the_lock(self):
+        from gbserver.environment import skypilot as sp
+
+        seen = []
+        with (
+            patch(
+                "gbserver.environment.skypilot._apply_cloud_config",
+                side_effect=lambda name, cc: seen.append(("apply", name, cc)),
+            ),
+            patch("gbserver.environment.skypilot.sky") as sky,
+        ):
+            sky.launch.side_effect = lambda *a, **k: (
+                seen.append(("launch", sp._CLOUD_CONFIG_LOCK.locked(), a, k)) or "req-1"
+            )
+            rid = sp._launch_with_cloud_config(
+                "env-a", {"k": 1}, "task", cluster_name="c", down=True
+            )
+        assert rid == "req-1"
+        assert seen == [
+            ("apply", "env-a", {"k": 1}),
+            ("launch", True, ("task",), {"cluster_name": "c", "down": True}),
+        ]
+        assert not sp._CLOUD_CONFIG_LOCK.locked()
+
+    def test_concurrent_launches_each_carry_their_own_env_config(self):
+        """Two envs launching at once: no launch is submitted with the other's.
+
+        Models the process-global client config: a write lands in the "file", a
+        reload copies the file into the loaded config, and a launch submits
+        whatever is loaded. Without the lock, one env's write between another's
+        write and its submit would send the wrong env's config.
+        """
+        import threading
+        import time as _time
+
+        from gbserver.environment import skypilot as sp
+
+        state = {"file": None, "loaded": None}
+        sent = []
+
+        def merge(cc, name):
+            changed = state["file"] != cc
+            state["file"] = cc
+            _time.sleep(0.001)
+            return changed
+
+        def reload():
+            _time.sleep(0.001)
+            state["loaded"] = state["file"]
+
+        def launch(task, **_):
+            _time.sleep(0.001)
+            sent.append((task, state["loaded"]))
+
+        configs = {"A": {"kubernetes": {"allowed_contexts": ["kind"]}}, "B": None}
+        with (
+            patch(
+                "gbserver.environment.skypilot_config.merge_cloud_config",
+                side_effect=merge,
+            ),
+            patch(
+                "gbserver.environment.skypilot._reload_skypilot_client_config",
+                side_effect=reload,
+            ),
+            patch("gbserver.environment.skypilot.sky") as sky,
+        ):
+            sky.launch.side_effect = launch
+            threads = [
+                threading.Thread(
+                    target=sp._launch_with_cloud_config,
+                    args=(env, configs[env], env),
+                )
+                for env in "AB" * 20
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        assert len(sent) == 40
+        assert all(loaded == configs[env] for env, loaded in sent), sent
+
+
 class TestInlineConfigMaterialization:
     """The Skypilot env wires environment.yaml inline config into materialize()."""
 
@@ -2126,34 +2238,25 @@ class TestInlineConfigMaterialization:
         )
         with (
             patch("gbserver.environment.skypilot_config.materialize") as m,
-            patch("gbserver.environment.skypilot._reload_skypilot_client_config"),
+            patch("gbserver.environment.skypilot._apply_cloud_config") as apply,
         ):
             env._ensure_inline_configs_materialized()
             env._ensure_inline_configs_materialized()  # idempotent
             m.assert_called_once()
             args = m.call_args.args
             assert args[0] == "env-inline"  # env name
-            # SSH is NOT materialized here (merged per-launch); only cloud_config
-            # and aws are forwarded.
-            assert args[1] is None and args[2] == {"lsf": {"q": 1}} and args[3]
+            # SSH is NOT materialized here (merged per-launch), and cloud_config
+            # is applied separately (last-writer-wins, again per launch): only
+            # aws is forwarded.
+            assert args[1] is None and args[2] is None and args[3]
+            apply.assert_called_once_with("env-inline", {"lsf": {"q": 1}})
 
-    def test_client_config_reloaded_after_cloud_config_is_written(self):
-        """The fix for an edited bsub_options exclusion needing a restart."""
-        env = self._env({"cloud_config": {"lsf": {"q": 1}}})
-        calls = []
-        with (
-            patch(
-                "gbserver.environment.skypilot_config.materialize",
-                side_effect=lambda *a, **k: calls.append("write"),
-            ),
-            patch(
-                "gbserver.environment.skypilot._reload_skypilot_client_config",
-                side_effect=lambda: calls.append("reload"),
-            ),
-        ):
+    def test_cloud_config_applied_even_when_absent(self):
+        """An env without cloud_config still applies (removes) the previous one."""
+        env = self._env({"default_cloud": "kubernetes"})
+        with patch("gbserver.environment.skypilot._apply_cloud_config") as apply:
             env._ensure_inline_configs_materialized()
-            env._ensure_inline_configs_materialized()  # once per instance
-        assert calls == ["write", "reload"]
+        apply.assert_called_once_with("env-inline", None)
 
     def test_no_reload_when_only_aws_credentials_are_written(self):
         """~/.aws/credentials is read by boto on use; nothing to reload."""

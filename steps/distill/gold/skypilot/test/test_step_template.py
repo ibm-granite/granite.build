@@ -9,14 +9,17 @@ These tests read the template directly (not the rendered Space), so they hold
 whether or not ``make space`` has been run.
 """
 
+import json
 import os
 import re
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 import yaml
+from gold_trainer_state import write_trainer_state
 
 _STEP = Path(__file__).resolve().parent.parent / "step-template.yaml"
 
@@ -732,10 +735,15 @@ class TestPerCheckpointArtifacts:
         assert sweep < final
 
 
+_LAUNCH = "L1"
+_TOKEN = f"{_LAUNCH}::"  # what the block builds with no job or allocation id
+
+
 class TestResumeFromCheckpointDir:
     """Seeding this run's checkpoint dir from an earlier run's, so gold.py's own
-    auto-resume finds something. GB_BUILD_WORKDIR is new per build and per retry,
-    so without this a relaunch -- or a retry -- always restarts at step 0.
+    auto-resume finds something. GB_BUILD_WORKDIR is new per build and target run,
+    so without this a relaunch always restarts at step 0. A retry_workload relaunch
+    reuses it, so the block also meets what a failed attempt left behind.
 
     The block is EXECUTED against temporary directories rather than matched as text:
     what matters is which checkpoints land, how, and when the step refuses.
@@ -744,7 +752,7 @@ class TestResumeFromCheckpointDir:
     _WORLD = 16  # 2 nodes x 8 GPUs, the recipe's topology
 
     @staticmethod
-    def _render(_vllm_url="", **overrides):
+    def _render(_vllm_url="", _gold=None, **overrides):
         from jinja2 import Template
 
         step = yaml.safe_load(_STEP.read_text())
@@ -753,36 +761,56 @@ class TestResumeFromCheckpointDir:
         ]
         config = dict(step["config"])
         config.update(overrides)
+        config["gold_config"] = dict(config["gold_config"], **(_gold or {}))
         return Template(script).render(config=config, bindings=_bindings(_vllm_url))
 
     @classmethod
-    def _seed_block(cls, src, vllm_server_url=""):
+    def _seed_block(cls, src, vllm_server_url="", **gold):
         rendered = cls._render(
-            resume_from_checkpoint_dir=str(src), _vllm_url=vllm_server_url
+            resume_from_checkpoint_dir=str(src), _vllm_url=vllm_server_url, _gold=gold
         )
         start = rendered.index('RESUME_SRC="')
         end = rendered.index("# Rendered per node", start)
         return rendered[start:end]
 
     @classmethod
-    def _checkpoint(cls, root, step, complete=True, shards=None):
+    def _checkpoint(
+        cls, root, step, complete=True, shards=None, save_steps=500, logging_steps=5
+    ):
+        """A checkpoint-<step> under root with world-size optimizer shards. Complete
+        ones carry a trainer_state.json on the grid save_steps/logging_steps; the
+        defaults are the template's own, so resuming from it rewrites nothing."""
         ckpt = root / f"checkpoint-{step}"
         (ckpt / f"global_step{step}").mkdir(parents=True)
-        names = ["model.safetensors", "tokenizer.json"]
-        if complete:
-            names.append("trainer_state.json")
-        for name in names:
+        for name in ["model.safetensors", "tokenizer.json"]:
             (ckpt / name).write_text(name)
+        if complete:
+            write_trainer_state(ckpt, step, save_steps, logging_steps)
         for rank in range(cls._WORLD if shards is None else shards):
             shard = f"bf16_zero_pp_rank_{rank}_mp_rank_00_optim_states.pt"
             (ckpt / f"global_step{step}" / shard).write_text("x")
         return ckpt
 
     def _run(
-        self, tmp_path, src, rank="0", nodes="2", vllm_servers="0", vllm_server_url=""
+        self,
+        tmp_path,
+        src,
+        rank="0",
+        nodes="2",
+        vllm_servers="0",
+        vllm_server_url="",
+        launch_id=_LAUNCH,
+        quick_wait=False,
+        **gold,
     ):
+        """Run the seeding block as rank `rank` of this attempt (`launch_id`).
+        quick_wait cuts a worker's 900s wait for rank 0 to one 1s poll."""
         dst = tmp_path / "run" / "checkpoints" / "gold_node2"
-        script = "set -eu\n" + self._seed_block(src, vllm_server_url)
+        script = "set -eu\n" + self._seed_block(src, vllm_server_url, **gold)
+        if quick_wait:
+            script = script.replace("-ge 900 ]", "-ge 1 ]").replace(
+                "sleep 5", "sleep 1"
+            )
         result = subprocess.run(
             ["bash", "-c", script],
             env={
@@ -792,13 +820,23 @@ class TestResumeFromCheckpointDir:
                 "GPUS": "8",
                 "VLLM_SERVERS": vllm_servers,
                 "CKPT_DIR": str(dst),
+                "PYBIN": sys.executable,
+                "GB_SKYPILOT_LAUNCH_ID": launch_id,
             },
             capture_output=True,
             text=True,
             check=False,
             timeout=60,
+            # The block calls ./src/align_resume_state.py, as on the node.
+            cwd=_STEP.parent,
         )
         return result, dst
+
+    @staticmethod
+    def _seeded(dst):
+        """The marker's content: this attempt's token once rank 0 is done."""
+        marker = dst / ".resume-seeded"
+        return marker.read_text().strip() if marker.exists() else None
 
     def test_it_is_off_by_default(self, step):
         assert step["config"]["resume_from_checkpoint_dir"] == ""
@@ -813,7 +851,7 @@ class TestResumeFromCheckpointDir:
         rendered = self._render(
             resume_from_checkpoint_dir="/src", emit_checkpoint_artifacts=True
         )
-        seeded = rendered.index('touch "$RESUME_SEEDED"')
+        seeded = rendered.index('printf \'%s\\n\' "$RESUME_TOKEN" > "$RESUME_SEEDED')
         assert seeded < rendered.index("watch_checkpoints &")
         assert seeded < rendered.index("accelerate launch")
 
@@ -847,7 +885,7 @@ class TestResumeFromCheckpointDir:
         # Numeric, not lexical: "checkpoint-500" sorts after "checkpoint-1500".
         assert "resumes from checkpoint-1500" in result.stdout
         assert "skipping incomplete checkpoint-2000" in result.stdout
-        assert (dst / ".resume-seeded").exists()
+        assert self._seeded(dst) == _TOKEN
         assert "GB_STEP_METADATA_KEY:resumed_from" in result.stdout
 
     def test_the_source_is_left_untouched_when_the_seed_is_deleted(self, tmp_path):
@@ -861,6 +899,203 @@ class TestResumeFromCheckpointDir:
             "model.safetensors"
         )
 
+    def test_the_resumed_state_takes_this_runs_save_and_logging_steps(self, tmp_path):
+        """HF restores trainer_state.json whole, so without the rewrite the run
+        saves on the source's 1000-step grid, not its own (build 4c758672, A1)."""
+        src = tmp_path / "src"
+        for step in (1000, 2000):
+            # c2000's grid, which A1 resumed from.
+            self._checkpoint(src, step, save_steps=1000, logging_steps=1)
+
+        result, dst = self._run(tmp_path, src, save_steps=250, logging_steps=1)
+
+        assert result.returncode == 0, result.stderr
+        state = json.loads((dst / "checkpoint-2000/trainer_state.json").read_text())
+        assert state["save_steps"] == 250
+        assert state["logging_steps"] == 1
+        assert state["global_step"] == 2000
+        assert "trainer_state.json save_steps 1000 -> 250" in result.stdout
+        # Replaced, not edited: the source keeps its own grid, and the weights
+        # are still a hardlink.
+        source = json.loads((src / "checkpoint-2000/trainer_state.json").read_text())
+        assert source["save_steps"] == 1000
+        weights = "checkpoint-2000/model.safetensors"
+        assert (dst / weights).stat().st_ino == (src / weights).stat().st_ino
+        # Only the checkpoint the trainer resumes from is rewritten.
+        older = json.loads((dst / "checkpoint-1000/trainer_state.json").read_text())
+        assert older["save_steps"] == 1000
+
+    def test_a_checkpoint_already_in_the_run_dir_is_the_one_checked(self, tmp_path):
+        """HF resumes from the highest checkpoint-<N> in the run's dir, which a
+        reused dir can hold above everything seeded. The world-size check is
+        about that one, not the source's highest: here it was written by 32 ranks,
+        so the 16-rank resume is refused. (Fewer shards than ranks is a save cut
+        short, moved aside instead; see the missing-shards test.)"""
+        src = tmp_path / "src"
+        self._checkpoint(src, 2000)
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        self._checkpoint(dst, 10000, shards=32)
+
+        result, _ = self._run(tmp_path, src)
+
+        assert result.returncode == 1
+        assert "checkpoint-10000 holds 32 ZeRO optimizer shards" in result.stderr
+        assert self._seeded(dst) == f"failed:{_TOKEN}"
+
+    def test_lineage_is_the_seed_when_an_earlier_attempt_got_further(self, tmp_path):
+        """A retry_workload relaunch reuses the workdir, so the trainer resumes from
+        the failed attempt's own checkpoint-10000. That one is rewritten; lineage
+        still names the seed it descends from, not a path in this run's workdir."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 2000)
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        self._checkpoint(dst, 10000, save_steps=1000)
+
+        result, _ = self._run(tmp_path, src, save_steps=250)
+
+        assert result.returncode == 0, result.stderr
+        assert "resumes from checkpoint-10000" in result.stdout
+        assert "written by an earlier attempt of this run" in result.stdout
+        assert f"GB_STEP_METADATA_VALUE:{src}/checkpoint-2000\n" in result.stdout
+        rewritten = json.loads(
+            (dst / "checkpoint-10000/trainer_state.json").read_text()
+        )
+        assert rewritten["save_steps"] == 250
+        seeded = json.loads((dst / "checkpoint-2000/trainer_state.json").read_text())
+        assert seeded["save_steps"] == 500
+
+    def test_lineage_skips_a_source_checkpoint_that_was_not_seeded(self, tmp_path):
+        """The source's checkpoint-10000 is incomplete, so it is not the seed even
+        though this run's dir holds a complete checkpoint-10000 of its own."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 2000)
+        self._checkpoint(src, 10000, complete=False)
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        self._checkpoint(dst, 10000)
+
+        result, _ = self._run(tmp_path, src)
+
+        assert result.returncode == 0, result.stderr
+        assert "resumes from checkpoint-10000" in result.stdout
+        assert f"GB_STEP_METADATA_VALUE:{src}/checkpoint-2000\n" in result.stdout
+
+    def test_a_failed_attempts_half_written_checkpoint_is_moved_aside(self, tmp_path):
+        """What a preempted attempt leaves: HF would pick it and fail on every rank,
+        so every automatic retry would too. Renamed out of the checkpoint-<N>
+        pattern, never deleted, and the highest complete one resumed instead."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 2000)
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        self._checkpoint(dst, 2250)
+        self._checkpoint(dst, 2500, complete=False)
+
+        result, _ = self._run(tmp_path, src)
+
+        assert result.returncode == 0, result.stderr
+        assert "moved incomplete checkpoint-2500 aside" in result.stdout
+        assert "resumes from checkpoint-2250" in result.stdout
+        assert not (dst / "checkpoint-2500").exists()
+        (aside,) = dst.glob("incomplete-checkpoint-2500.*")
+        assert (aside / "model.safetensors").exists()
+        assert self._seeded(dst) == _TOKEN
+
+    def test_a_checkpoint_missing_optimizer_shards_is_moved_aside(self, tmp_path):
+        """A node died mid DeepSpeed save: rank 0's files are there, 7 of 16
+        shards are not. Every attempt of this run shares its topology, so that
+        is an incomplete save, not a topology mismatch."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 2000)
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        self._checkpoint(dst, 2250)
+        self._checkpoint(dst, 2500, shards=9)
+
+        result, _ = self._run(tmp_path, src)
+
+        assert result.returncode == 0, result.stderr
+        assert "moved incomplete checkpoint-2500 aside" in result.stdout
+        assert "resumes from checkpoint-2250" in result.stdout
+
+    def test_sharded_weights_are_complete(self, tmp_path):
+        """save_pretrained's sharded layout has no model.safetensors, only shards
+        and the index it writes after them; such a checkpoint is seeded and
+        resumed, not moved aside."""
+        src = tmp_path / "src"
+        ckpt = self._checkpoint(src, 2000)
+        (ckpt / "model.safetensors").rename(ckpt / "model-00001-of-00002.safetensors")
+        (ckpt / "model.safetensors.index.json").write_text("{}")
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        own = self._checkpoint(dst, 2500)
+        (own / "model.safetensors").rename(own / "model-00001-of-00002.safetensors")
+        (own / "model.safetensors.index.json").write_text("{}")
+
+        result, _ = self._run(tmp_path, src)
+
+        assert result.returncode == 0, result.stderr
+        assert "moved incomplete" not in result.stdout
+        assert "seeded checkpoint-2000" in result.stdout
+        assert "resumes from checkpoint-2500" in result.stdout
+
+    def test_only_hfs_checkpoint_names_are_seeded(self, tmp_path):
+        """get_last_checkpoint loads only checkpoint-<digits>, so nothing else is
+        seeded, emitted or picked; a source holding only such names has nothing to
+        resume from."""
+        src = tmp_path / "src"
+        for name in ("checkpoint-final", "checkpoint-2000-bak", "checkpoint-"):
+            ckpt = self._checkpoint(src, 2000)
+            ckpt.rename(src / name)
+
+        result, dst = self._run(tmp_path, src)
+
+        assert result.returncode == 1
+        assert "no complete checkpoint-*" in result.stderr
+        assert not any(dst.glob("checkpoint-*"))
+
+    def test_a_read_only_source_still_resumes(self, tmp_path):
+        """cp -a copies the source directory's mode, so an archived (555) source
+        leaves a read-only copy; the rewrite still lands, and the mode stays."""
+        src = tmp_path / "src"
+        ckpt = self._checkpoint(src, 2000, save_steps=1000)
+        ckpt.chmod(0o555)
+        try:
+            result, dst = self._run(tmp_path, src, save_steps=250)
+            assert result.returncode == 0, result.stderr
+            seeded = dst / "checkpoint-2000"
+            assert (
+                json.loads((seeded / "trainer_state.json").read_text())["save_steps"]
+                == 250
+            )
+            assert seeded.stat().st_mode & 0o777 == 0o555
+            assert self._seeded(dst) == _TOKEN
+        finally:
+            ckpt.chmod(0o755)
+            if (tmp_path / "run").exists():
+                for d in (tmp_path / "run").rglob("checkpoint-*"):
+                    d.chmod(0o755)
+
+    def test_an_unsubstituted_step_count_fails_loudly(self, tmp_path):
+        """A build parameter left unsubstituted reaches the script, single-quoted,
+        and is named in a FATAL line, rather than tripping `set -u` on the shell
+        side. Rank 0 never marks the seed done, so the workers fail too."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 2000)
+        result, dst = self._run(tmp_path, src, save_steps="${GOLD_SAVE_STEPS}")
+        assert result.returncode == 1
+        assert (
+            "FATAL: save_steps must be a positive integer, got '${GOLD_SAVE_STEPS}'"
+            in (result.stderr)
+        )
+        assert self._seeded(dst) == f"failed:{_TOKEN}"
+
+    def test_matching_steps_leave_the_seeded_state_linked(self, tmp_path):
+        """Nothing to change, nothing replaced: the state stays a hardlink."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 2000)
+        result, dst = self._run(tmp_path, src)
+        assert result.returncode == 0, result.stderr
+        state = "checkpoint-2000/trainer_state.json"
+        assert (dst / state).stat().st_ino == (src / state).stat().st_ino
+        assert "already on this run's grid" in result.stdout
+
     def test_a_missing_source_fails_loudly(self, tmp_path):
         result, _ = self._run(tmp_path, tmp_path / "nope")
         assert result.returncode == 1
@@ -872,7 +1107,7 @@ class TestResumeFromCheckpointDir:
         result, dst = self._run(tmp_path, src)
         assert result.returncode == 1
         assert "no complete checkpoint-*" in result.stderr
-        assert not (dst / ".resume-seeded").exists()
+        assert self._seeded(dst) == f"failed:{_TOKEN}"
 
     def test_a_different_world_size_is_refused(self, tmp_path):
         """16 ZeRO shards cannot be loaded by 8 ranks."""
@@ -882,7 +1117,7 @@ class TestResumeFromCheckpointDir:
         assert result.returncode == 1
         assert "holds 16 ZeRO optimizer shards" in result.stderr
         assert "trains on 8 ranks" in result.stderr
-        assert not (dst / ".resume-seeded").exists()
+        assert self._seeded(dst) == f"failed:{_TOKEN}"
 
     def test_an_external_server_takes_no_trainer_node(self, tmp_path):
         """vllm_num_servers 1 with vllm_server_url set is the on-policy recipes'
@@ -900,7 +1135,7 @@ class TestResumeFromCheckpointDir:
         )
         assert result.returncode == 0, result.stderr
         assert "resumes from checkpoint-500" in result.stdout
-        assert (dst / ".resume-seeded").exists()
+        assert self._seeded(dst) == _TOKEN
 
     def test_an_in_allocation_server_node_is_not_a_trainer_rank(self, tmp_path):
         """Without a URL, the last vllm_num_servers nodes serve, so 3 nodes with 1
@@ -915,15 +1150,45 @@ class TestResumeFromCheckpointDir:
         assert "trains on 8 ranks" in result.stderr
 
     def test_a_worker_waits_for_rank_zero_and_does_not_seed(self, tmp_path):
+        """Released by this attempt's token, and never seeds itself."""
         src = tmp_path / "src"
         self._checkpoint(src, 500)
         dst = tmp_path / "run" / "checkpoints" / "gold_node2"
         dst.mkdir(parents=True)
-        (dst / ".resume-seeded").touch()
+        (dst / ".resume-seeded").write_text(f"{_TOKEN}\n")
         result, _ = self._run(tmp_path, src, rank="1")
         assert result.returncode == 0, result.stderr
         assert "resume seed present" in result.stdout
         assert not (dst / "checkpoint-500").exists()
+
+    @pytest.mark.parametrize("stale", ["", "L0::", "failed:L0::"])
+    def test_a_previous_attempts_marker_does_not_release_a_worker(
+        self, tmp_path, stale
+    ):
+        """A retry_workload relaunch reuses the workdir and finds the failed
+        attempt's marker (or the old empty one). Released by it, a worker would
+        start while rank 0 is still checking and rewriting."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 500)
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        dst.mkdir(parents=True)
+        (dst / ".resume-seeded").write_text(stale)
+        result, _ = self._run(tmp_path, src, rank="1", quick_wait=True)
+        assert result.returncode == 1
+        assert "did not finish seeding" in result.stderr
+
+    def test_a_worker_stops_at_once_when_rank_zero_fails(self, tmp_path):
+        """Rank 0's EXIT trap marks the failure, so the workers stop now rather
+        than holding the allocation for 900s."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 500, complete=False)
+        rank0, dst = self._run(tmp_path, src)
+        assert rank0.returncode == 1
+        # quick_wait: a broken trap fails here in ~1s ("did not finish seeding"),
+        # not after 900s.
+        worker, _ = self._run(tmp_path, src, rank="1", quick_wait=True)
+        assert worker.returncode == 1
+        assert "rank 0 failed to seed" in worker.stderr
 
 
 class TestNcclIbHcaOverride:
@@ -969,24 +1234,32 @@ class TestResumeEmitSeeded:
         config.update(overrides)
         return Template(script).render(config=config, bindings=_bindings())
 
-    def _emitted(self, tmp_path, emit_seeded):
+    def _emitted(self, tmp_path, emit_seeded, own=()):
+        """Checkpoint ids one watcher sweep emits after the "trainer" writes
+        checkpoint-2000, with 500 and 1500 seeded from the source and `own` left
+        complete by a failed attempt of this run."""
+        src = tmp_path / "src"
         rendered = self._render(
-            resume_from_checkpoint_dir="/src", resume_emit_seeded=emit_seeded
+            resume_from_checkpoint_dir=str(src), resume_emit_seeded=emit_seeded
         )
-        # The watcher setup through the function definitions, then one sweep after
-        # a checkpoint the "trainer" wrote.
+        # The resume block's helpers, then the watcher setup through the function
+        # definitions, then one sweep.
+        helpers = rendered.index('RESUME_SRC="')
+        helpers_end = rendered.index('if [ "$NODE_RANK" = "0" ]; then', helpers)
         start = rendered.index('CKPT_GLOB="checkpoint-"')
         end = rendered.index("watch_checkpoints() {")
         sentinels = ("model.safetensors", "tokenizer.json", "trainer_state.json")
         ckpt_dir = tmp_path / "ckpts"
-        for step in (500, 1500):
-            d = ckpt_dir / f"checkpoint-{step}"
-            d.mkdir(parents=True)
-            for name in sentinels:
-                (d / name).write_text("x")
+        for root, steps in ((src, (500, 1500)), (ckpt_dir, (500, 1500, *own))):
+            for step in steps:
+                d = root / f"checkpoint-{step}"
+                d.mkdir(parents=True)
+                for name in sentinels:
+                    (d / name).write_text("x")
         new = ckpt_dir / "checkpoint-2000"
         script = (
             "set -eu\n"
+            + rendered[helpers:helpers_end]
             + rendered[start:end]
             + f"mkdir -p {new}\n"
             + "".join(f"touch {new}/{n}\n" for n in sentinels)
@@ -1011,7 +1284,17 @@ class TestResumeEmitSeeded:
         ]
 
     def test_off_emits_only_what_this_run_wrote(self, tmp_path):
+        """Seeded rungs pre-marked; the trainer's new one announced."""
         assert self._emitted(tmp_path, False) == ["checkpoint_2000"]
+
+    def test_off_still_emits_a_failed_attempts_own_checkpoint(self, tmp_path):
+        """A retry_workload relaunch finds the failed attempt's checkpoint-1750,
+        which it may never have emitted (killed between watcher sweeps). It is not
+        in the source, so it is not pre-marked as seeded."""
+        assert sorted(self._emitted(tmp_path, False, own=(1750,))) == [
+            "checkpoint_1750",
+            "checkpoint_2000",
+        ]
 
     def test_off_renders_nothing_without_a_resume_source(self):
         assert "not re-emitting seeded" not in self._render(resume_emit_seeded=False)

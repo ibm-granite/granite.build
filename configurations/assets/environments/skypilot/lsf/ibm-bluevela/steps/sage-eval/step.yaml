@@ -86,12 +86,21 @@ environment_configs:
             # ~few GB) onto the node-local NVMe scratch. The bigcode-eval metric
             # phase writes thousands of per-problem JSON files plus per-program
             # source/binaries into $TMPDIR; tmpfs fills up fast under contention.
+            #
+            # mktemp gives each task its own short, mode-700 directory. Do not name
+            # it after SKYPILOT_TASK_ID: the id embeds the cluster name, and the
+            # ~150-character path it made was too long for any unix socket bound
+            # under $TMPDIR (107 characters): vLLM's ZMQ ipc sockets, and
+            # multiprocessing's pymp-* listeners on this image's Python 3.11.
             if [ -d "/opt/nvme" ]; then
-              export TMPDIR="/opt/nvme/${USER:-$(id -un)}/tmp-${SKYPILOT_TASK_ID:-$$}"
+              mkdir -p "/opt/nvme/${USER:-$(id -un)}"
+              TMPDIR="$(mktemp -d "/opt/nvme/${USER:-$(id -un)}/tmp-XXXXXXXX")" || exit 1
             else
-              export TMPDIR="/tmp/sage-tmp-${SKYPILOT_TASK_ID:-$$}"
+              TMPDIR="$(mktemp -d /tmp/sage-tmp-XXXXXXXX)" || exit 1
             fi
-            mkdir -p "$TMPDIR"
+            export TMPDIR
+            trap 'rm -rf "$TMPDIR"' EXIT
+            echo "TMPDIR=$TMPDIR (task ${SKYPILOT_TASK_ID:-unset})"
             export TMP="$TMPDIR"
             export TEMP="$TMPDIR"
 
@@ -111,6 +120,9 @@ environment_configs:
             {% endif %}
             {% endif %}
             export EXPERIMENT="{{ config.sage_eval_config.experiment }}"
+            # The results search below is anchored at /${EXPERIMENT}/; an empty value
+            # would match nothing and fail only after a full eval.
+            [ -n "$EXPERIMENT" ] || { echo "ERROR: sage_eval_config.experiment is empty"; exit 1; }
             export OUTPUT_BASE_PATH="{{ config.sage_eval_config.output_dir }}"
             export NUM_GPUS={{ config.sage_eval_config.num_gpus }}
             export BATCH_SIZE={{ config.sage_eval_config.batch_size }}
@@ -142,10 +154,19 @@ environment_configs:
             # Run the evaluation script
             bash /workspace/sage/sage/cluster/gb/scripts/${GB_SCRIPT} 2>&1 | tee /tmp/sage-eval.log
 
-            # Emit artifact for gbserver
-            RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -path "*${EXPERIMENT}*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' \) -print -quit)
+            # Emit artifact for gbserver. '*-result.json' is SALAD-Bench's
+            # base_set-result.json: without it a SALAD eval alone in its output
+            # tree (an eval-rerun's RERUN_SAGE_DIR) finds nothing and exits 1 after
+            # a complete run (builds f71274d5, 1131fd71). In a full rung tree it
+            # only ever passed by emitting a sibling eval's file. The path is
+            # anchored at /${EXPERIMENT}/ so ckpt_25 cannot match ckpt_250 (#482);
+            # so is the fallback, as parallel rungs share OUTPUT_BASE_PATH and a
+            # crashed rung's log is older than its siblings' results. '|| true': a
+            # find error (e.g. Permission denied) must reach the ERROR below, not
+            # abort the step under set -e.
+            RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -path "*/${EXPERIMENT}/*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*-result.json' \) -print -quit || true)
             if [ -z "$RESULT_FILE" ]; then
-              RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*.csv' \) -newer /tmp/sage-eval.log -print -quit 2>/dev/null || true)
+              RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -path "*/${EXPERIMENT}/*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*-result.json' -o -name '*.csv' \) -newer /tmp/sage-eval.log -print -quit 2>/dev/null || true)
             fi
             if [ -n "$RESULT_FILE" ]; then
               echo "GB_ARTIFACT_ID:sage_eval_results GB_ARTIFACT_PATH:${RESULT_FILE}"

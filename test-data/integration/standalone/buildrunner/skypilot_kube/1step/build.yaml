@@ -1,0 +1,55 @@
+granite.build:
+  name: skypilot-kube-command-hf-test
+  targets:
+    pod-run:
+      environment_uri: space://environments/skypilot/kubernetes/local
+      inputs:
+        input_model:
+          # Public dataset (same one the slurm 1step pulls). skypilot/kubernetes/local
+          # pulls it with a separate hfpull step into /shared/hf_cache on the shared
+          # volume every pod mounts — the slurm model.
+          uri: hf:///datasets/ibm-research/vira-intents-live
+      outputs:
+        # hf:// outputs exercise hfpush on kube: each push is a separate hfpush pod,
+        # so it reads the artifact from the shared volume, not from this pod. The
+        # placeholders are filled per run by libgbtest.hfpush (org + run suffix),
+        # which then checks each dataset landed on the Hub and deletes it.
+        output_model1:
+          uri: hf://huggingface.co/datasets/__GBTEST_HF_PUSH_ORG__/skypilot-kube-hf-test1___GBTEST_HF_PUSH_RUN__
+        output_model2:
+          uri: hf://huggingface.co/datasets/__GBTEST_HF_PUSH_ORG__/skypilot-kube-hf-test2___GBTEST_HF_PUSH_RUN__
+        env_output:
+          uri: "env:///tmp/gb-env-output.txt"
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          # The command step defaults to retry_enabled_default: false, and the
+          # buildtest's simulate_step_failure only injects its synthetic failure
+          # when step retry is enabled — without this the "retry" coverage passes
+          # without ever retrying (the harness merely logs a warning). With it, the
+          # injected failure makes AnyFailureRetryStrategy tear the pod down and
+          # relaunch it under the same cluster name.
+          retry_enabled: true
+          config:
+            poll_interval_seconds: 5
+            command_config:
+              # Fail loudly unless the input the hfpull step (a DIFFERENT pod) wrote
+              # is visible in THIS pod — i.e. the shared volume works. Without it the
+              # path exists only in the torn-down hfpull pod and `ls -A` is empty.
+              # output_model1's files go in the working directory (the per-run
+              # workdir on /shared), output_model2 re-pushes the input, as on slurm.
+              command: >-
+                in={{ bindings.input_model.binding.path }};
+                echo "input path: $in";
+                test -d "$in" || { echo "FAIL: input dir $in missing in this pod"; exit 1; };
+                test -n "$(ls -A "$in")" || { echo "FAIL: input dir $in is empty in this pod"; exit 1; };
+                ls -la "$in";
+                echo "workdir: $PWD";
+                file=foo1a.json; echo '{"artifact": "output_model1", "file": "foo1a"}' > $file; echo "GB_ARTIFACT_ID:output_model1 GB_ARTIFACT_PATH:$file";
+                file=foo1b.json; echo '{"artifact": "output_model1", "file": "foo1b"}' > $file; echo "GB_ARTIFACT_ID:output_model1 GB_ARTIFACT_PATH:$file";
+                echo "GB_ARTIFACT_ID:output_model2 GB_ARTIFACT_PATH:$in";
+                echo "pod-local output" > /tmp/gb-env-output.txt;
+                echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:/tmp/gb-env-output.txt"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi
