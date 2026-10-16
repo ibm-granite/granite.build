@@ -83,13 +83,11 @@ class TestSkypilotAwsEval(AbstractYamlBuildRunnerTest):
 
     def _get_yaml_spec_dir(self) -> Path:
         # Fixtures (build.yaml/buildtest.yaml) live in the test-data/ dir that
-        # mirrors this file, resolved by the repo's test/ ↔ test-data/ helper —
-        # which keys off the first `test/` segment, so it works from both homes
-        # of this test (see steps/README.md, "Two test modes"):
-        #   Mode 1 (authoring)  steps/eval/eval-example/skypilot/test/aws/
+        # mirrors this file, resolved by the repo's test/ ↔ test-data/ helper:
+        #   steps/eval/eval-example/skypilot/test/aws/
         #       -> steps/eval/eval-example/skypilot/test-data/aws/  (co-located)
-        #   Mode 2 (published)  test/steps/eval/eval-example/skypilot/aws/
-        #       -> test-data/steps/eval/eval-example/skypilot/aws/  (parallel top-level tree)
-        # In Mode 1 the Space is rendered and the image built by `make test`
+        # This step is not publishable (STEP_PUBLISHABLE := false), so there is
+        # no Mode-2 copy under test/steps/ (see steps/README.md, "Two test
+        # modes"). The Space is rendered and the image built by `make test`
         # (its `space`/`image` prerequisites) before this test runs.
         return get_test_data_dir_for(__file__)

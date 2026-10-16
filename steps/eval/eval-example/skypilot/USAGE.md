@@ -34,7 +34,10 @@ output location is fixed and known ahead of time.
 
 ## Referencing the step
 
-Point your build's Space at one that provides the step, then reference it by the stable
+This step is an exemplar and is **not published**, so no shared Space (such as
+`configurations/spaces/local`) provides it. Render it locally with
+`make -C steps/eval/eval-example/skypilot space` and point your build's `space_uri` at
+the resulting `space/` directory, then reference the step by the
 `space://steps/eval/eval-example` URI:
 
 ```yaml
