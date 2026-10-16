@@ -236,6 +236,11 @@ PUBLISH_STEP_DIR ?= $(ASSETS_DIR)/environments/$(STEP_ENV)/steps/$(STEP_PATH)
 # matches the top-level convention (test/<path> mirrors test-data/<path>).
 PUBLISH_TEST_DIR     ?= $(REPO_ROOT)/test/steps/$(STEP_PATH)/$(STEP_ENV)
 PUBLISH_TESTDATA_DIR ?= $(REPO_ROOT)/test-data/steps/$(STEP_PATH)/$(STEP_ENV)
+# The three trees publish-step writes, as one list for the guards and checks that
+# walk them. Recursive (=) so a command-line override of any of the three (as the
+# check-published re-render passes) is honored. An empty member drops out of the
+# list, which guard-publish-paths detects by counting.
+PUBLISH_DIRS = $(PUBLISH_STEP_DIR) $(PUBLISH_TEST_DIR) $(PUBLISH_TESTDATA_DIR)
 # space_uri written into each copied buildtest.yaml so the Mode-2 (published) test
 # resolves the step through the shared space configurations/spaces/local (which
 # chains to configurations/assets). It is RELATIVE to the copied file's own dir,
@@ -362,9 +367,10 @@ define guard-publish-paths
 	@test -n "$(strip $(STEP_NAME))" || { echo "[publish-step] refusing: STEP_NAME is empty"; exit 1; }
 	@test -n "$(strip $(STEP_PATH))" || { echo "[publish-step] refusing: STEP_PATH is empty"; exit 1; }
 	@test -n "$(strip $(STEP_ENV))"  || { echo "[publish-step] refusing: STEP_ENV is empty"; exit 1; }
-	@for d in "$(PUBLISH_STEP_DIR)" "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)"; do \
+	@test $(words $(PUBLISH_DIRS)) -eq 3 || { echo "[publish-step] refusing: a publish path is empty ($(PUBLISH_DIRS))"; exit 1; }
+	@for d in $(PUBLISH_DIRS); do \
 		case "$$d" in \
-			"" | "/" | "$(REPO_ROOT)" | "$(REPO_ROOT)/") \
+			"/" | "$(REPO_ROOT)" | "$(REPO_ROOT)/") \
 				echo "[publish-step] refusing: publish path resolves to '$$d' (too broad to rm -rf)"; exit 1;; \
 		esac; \
 	done
@@ -551,20 +557,41 @@ publish-step:
 # scratch dir compares correctly in both directions: silent when both sides are empty, and a
 # real added-files report when only one side has content.
 check-published:
-	@if [ ! -e "$(PUBLISH_STEP_DIR)" ] && [ ! -e "$(PUBLISH_TEST_DIR)" ] && [ ! -e "$(PUBLISH_TESTDATA_DIR)" ]; then \
-		echo "[$(STEP_NAME)] nothing published at $(PUBLISH_STEP_DIR) (or its test/steps/, test-data/steps/ copies); nothing to check."; exit 0; \
-	fi; \
-	if [ "$(STEP_PUBLISHABLE)" != "true" ]; then \
+	@$(call exit-if-nothing-published); \
+	$(call fail-if-stale); \
+	$(call diff-published)
+
+# The check-published stages below are SHELL FRAGMENTS: each continues the caller's
+# single command (no leading @, `\`-joined), so they share one shell — an `exit` in a
+# stage ends the whole check, and diff-published's $$tmp is visible to
+# rerender-published. The existence tests run in the shell at check time, not via a
+# parse-time $(wildcard), so `make publish-step check-published` sees fresh state.
+
+# exit-if-nothing-published — succeed early when none of the three published
+# locations exists (nothing has been published, so there is nothing to compare).
+define exit-if-nothing-published
+	found=; for d in $(PUBLISH_DIRS); do [ -e "$$d" ] && found=1; done; \
+	[ -n "$$found" ] || { \
+		echo "[$(STEP_NAME)] nothing published at $(PUBLISH_STEP_DIR) (or its test/steps/, test-data/steps/ copies); nothing to check."; \
+		exit 0; \
+	}
+endef
+
+# fail-if-stale — a step that is not publishable must have no committed published
+# copy in any location; list each one that exists and fail (STALE).
+define fail-if-stale
+	[ "$(STEP_PUBLISHABLE)" = "true" ] || { \
 		echo "[$(STEP_NAME)] STALE: step is not publishable (STEP_PUBLISHABLE='$(STEP_PUBLISHABLE)'; only 'true' publishes) but a published copy is committed:"; \
-		for d in "$(PUBLISH_STEP_DIR)" "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)"; do \
-			[ -e "$$d" ] && echo "  $$d"; \
-		done; \
+		for d in $(PUBLISH_DIRS); do [ -e "$$d" ] && echo "  $$d"; done; \
 		echo "[$(STEP_NAME)] remove it with 'git rm -r' on the paths above, or make the step publishable again."; \
 		exit 1; \
-	fi; \
-	tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
-	empty="$$tmp/.empty"; mkdir -p "$$empty"; \
-	ref=$$(sed -n 's#.*image_id: *"docker:\(.*\)".*#\1#p' "$(PUBLISH_STEP_DIR)/step.yaml" 2>/dev/null | head -1); \
+	}
+endef
+
+# rerender-published — re-run publish-step into $$tmp with the committed image ref $$ref,
+# capturing its output; on failure print it as ERROR and exit, so nothing is diffed
+# against a half-written temp tree.
+define rerender-published
 	$(MAKE) --no-print-directory publish-step \
 		PUBLISH_STEP_DIR="$$tmp/step" PUBLISH_TEST_DIR="$$tmp/test" \
 		PUBLISH_TESTDATA_DIR="$$tmp/testdata" PUBLISH_REQUIRE_IMAGE=false \
@@ -572,7 +599,17 @@ check-published:
 		echo "[$(STEP_NAME)] ERROR: re-rendering the step failed, so nothing was compared:"; \
 		sed 's/^/  /' "$$tmp/render.log"; \
 		exit 1; \
-	}; \
+	}
+endef
+
+# diff-published — re-render into a temp dir and diff each committed tree against its
+# fresh counterpart (a missing side compares as an empty dir; see the check-published
+# comment above); report OK or DRIFT.
+define diff-published
+	tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	empty="$$tmp/.empty"; mkdir -p "$$empty"; \
+	ref=$$(sed -n 's#.*image_id: *"docker:\(.*\)".*#\1#p' "$(PUBLISH_STEP_DIR)/step.yaml" 2>/dev/null | head -1); \
+	$(call rerender-published); \
 	rc=0; \
 	for pair in "$(PUBLISH_STEP_DIR):$$tmp/step" "$(PUBLISH_TEST_DIR):$$tmp/test" "$(PUBLISH_TESTDATA_DIR):$$tmp/testdata"; do \
 		committed=$${pair%:*}; fresh=$${pair##*:}; \
@@ -583,6 +620,7 @@ check-published:
 	if [ $$rc = 0 ]; then echo "[$(STEP_NAME)] OK: committed artifacts match current source."; \
 	else echo "[$(STEP_NAME)] DRIFT: re-run 'make publish-step' and commit the regenerated files."; fi; \
 	exit $$rc
+endef
 
 # ---- Tests -----------------------------------------------------------------
 
