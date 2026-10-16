@@ -695,9 +695,9 @@ access-key pair, with the repo `.venv` built (`make venv` at the repo root):
 4. **Run a fixture** — this provisions a real EC2 instance, runs the build, and tears it down:
 
    ```bash
-   AWS_PROFILE=gb-skypilot make -C steps/dpk/skypilot test TEST_DIR=test/aws-tok
+   AWS_PROFILE=gb-skypilot make -C steps/data/dpk/skypilot test TEST_DIR=test/aws-tok
    # or byoc, and the heavier dpk pii fixture:
-   AWS_PROFILE=gb-skypilot make -C steps/dpk/skypilot test TEST_DIR=test/aws-pii
+   AWS_PROFILE=gb-skypilot make -C steps/data/dpk/skypilot test TEST_DIR=test/aws-pii
    ```
 
    `make test` forces pytest's `-s` (required — a second SkyPilot launch in a captured process

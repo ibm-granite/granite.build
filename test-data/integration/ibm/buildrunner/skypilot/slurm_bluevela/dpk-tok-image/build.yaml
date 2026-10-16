@@ -2,7 +2,7 @@ granite.build:
   name: skypilot-bluevela-slurm-dpk-tokenize-image-test
   # DPK tokenization on BlueVela SLURM (via Skypilot) in IMAGE MODE — the first
   # fixture anywhere to run `dpk` with `dpk_config.dpk_image` set on a real cluster.
-  # Modeled on steps/dpk/skypilot/test-data/slurm-tok/build.yaml (local Docker SLURM,
+  # Modeled on steps/data/dpk/skypilot/test-data/slurm-tok/build.yaml (local Docker SLURM,
   # bare node); what changes here is the ENVIRONMENT and the IMAGE, not the transform.
   #
   # WHY IMAGE MODE HERE. The bare-node path is currently BROKEN on this environment:

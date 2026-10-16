@@ -35,7 +35,9 @@ target_expectations:
 #   * space://steps/dpk -> gb-test's own base_uri, the assets repo
 #     (assets.git@gbspace-config-dev), at steps/skypilot/dpk — byte-identical to
 #     the copy this repo publishes at
-#     configurations/assets/environments/skypilot/steps/dpk.
+#     configurations/assets/environments/skypilot/steps/data/dpk.
+#     The URI stays the deprecated space://steps/dpk on purpose: the assets repo
+#     keeps the step at steps/skypilot/dpk, not under a data/ category.
 # The step resolves for this env because its step.yaml declares
 # `environment_configs: {Skypilot: ...}` with NO `subtypes:` restriction, so it
 # admits all four SkyPilot endpoints, slurm included. If someone later adds a

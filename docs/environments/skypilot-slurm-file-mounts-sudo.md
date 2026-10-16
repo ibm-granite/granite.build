@@ -79,7 +79,7 @@ Four behaviors compose into the failure. None is individually a bug.
 
 ### 1. The step must ship files, at a destination it cannot move
 
-`configurations/assets/environments/skypilot/steps/dpk/step.yaml:189` declares:
+`configurations/assets/environments/skypilot/steps/data/dpk/step.yaml:189` declares:
 
 ```yaml
 file_mounts:
@@ -231,7 +231,7 @@ So the wrap *succeeds* locally. BlueVela's env uses `User: granitebuild`, where 
 is real and interactive.
 
 > **Consequence:** this class of bug is **not reproducible on the local Docker SLURM
-> cluster**. `steps/dpk/skypilot/test/slurm-pii` passing is not evidence that dpk
+> cluster**. `steps/data/dpk/skypilot/test/slurm-pii` passing is not evidence that dpk
 > works on a sudo-less SLURM cluster. Any fix must be validated against BlueVela.
 
 ---
@@ -465,7 +465,7 @@ Line numbers reference `granite.build` at commit `b9df4dd` and the installed
 
 **There is exactly one `sky` install in the venv.** Every SkyPilot test in this repo —
 local Docker SLURM, AWS, BlueVela LSF, BlueVela SLURM — runs against that same forked
-package. In particular the local `steps/dpk/skypilot/test/slurm-pii` fixture, which
+package. In particular the local `steps/data/dpk/skypilot/test/slurm-pii` fixture, which
 passes, exercises the *identical* `_execute_file_mounts` code path and the *identical*
 missing `SlurmCommandRunner` hook. The only variable that differs is the SSH user
 (`root` locally vs `granitebuild` on BlueVela), which isolates the cause to the sudo

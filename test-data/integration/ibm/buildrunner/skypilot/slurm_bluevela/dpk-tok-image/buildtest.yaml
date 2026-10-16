@@ -4,7 +4,7 @@
 #
 # DPK tokenization on BlueVela SLURM in IMAGE MODE (dpk_config.dpk_image set), i.e.
 # the containerized Pyxis path. Modeled on
-# steps/dpk/skypilot/test-data/slurm-tok/buildtest.yaml, which runs the same
+# steps/data/dpk/skypilot/test-data/slurm-tok/buildtest.yaml, which runs the same
 # transform bare on the local Docker SLURM cluster.
 targets:
   - tokenize
@@ -40,7 +40,9 @@ target_expectations:
 # one chain, so no test-local space is needed:
 #   * space://environments/skypilot/slurm/bluevela -> gb-test itself
 #   * space://steps/dpk -> gb-test's own base_uri, the assets repo
-#     (assets.git@gbspace-config-dev), at steps/skypilot/dpk
+#     (assets.git@gbspace-config-dev), at steps/skypilot/dpk. The URI stays the
+#     deprecated space://steps/dpk on purpose: the assets repo keeps the step
+#     there, not under a data/ category.
 space_uri: git+ssh://github.ibm.com/granite-dot-build/gb-test.git@gbspace-config
 # Happy-path run only. The workload is short, so there is no stable RUNNING window to
 # cancel in; cancellation on this environment is covered by test_1step.py.
