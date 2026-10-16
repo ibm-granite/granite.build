@@ -39,17 +39,19 @@ logger = logging.getLogger(__name__)
 # Matches the prototype's Java-derived limit (its literals are -100/100).
 DEFAULT_MAX_DEPTH = 100
 
-# Ceiling on the frontier of a single level. A wide graph can otherwise turn one
-# hop into a query with an unbounded IN list; when it trips, the result is marked
-# truncated rather than silently partial.
+# Ceiling on the nodes one level may add. A wide graph can otherwise turn one hop
+# into a query with an unbounded IN list and a response with every edge of a hub;
+# the walk stops adding nodes to a level once it holds this many, and the result is
+# marked truncated rather than silently partial.
 #
 # Raised from 1000 so an ordinary artifact loads its whole graph instead of
 # tripping the cap on the first hop. It stays a real ceiling for hub artifacts --
 # a shared base model in model_shared fans out into the thousands per hop, and
 # there the omitted runs are genuinely different jobs feeding different
 # artifacts, so capping does cost reachability (unlike the self-loop collapse in
-# graph_builder). Such a graph reports its leftover frontier via `unexpanded`
-# rather than pretending a few more clicks would finish it.
+# graph_builder). Such a graph reports the reached-but-dropped nodes, and the
+# frontier nodes that still had graph behind them, via `unexpanded`, rather than
+# pretending a few more clicks would finish it.
 DEFAULT_MAX_NODES_PER_LEVEL = 5000
 
 # Hard ceiling a caller can raise the per-level cap to, for an explicit "show the
@@ -88,10 +90,13 @@ class LineageGraph:
             distance and never a signed direction.
         truncated: whether a limit stopped the walk before it ran out of graph, so
             a caller can tell "this is all of it" from "this is as far as we went".
-        unexpanded: how many nodes were left on the frontier when a limit stopped
-            the walk. Turns ``truncated`` from a bare flag into a magnitude, so a
-            caller can say "N not expanded" instead of implying a few more clicks
-            will finish. 0 whenever ``truncated`` is False.
+        unexpanded: how many distinct nodes a limit kept out of the graph: nodes
+            a level reached past its cap, plus frontier nodes the depth limit left
+            that still had graph behind them (a leaf is not counted). Each node is
+            counted once, even when both directions of a ``BOTH`` walk stop at it.
+            Turns ``truncated`` from a bare flag into a magnitude, so a caller can
+            say "N not expanded" instead of implying a few more clicks will finish.
+            0 whenever ``truncated`` is False.
         self_loop_runs: artifact URI -> how many jobs rewrote it in place, filled
             only by a walk that collapses self-loops. There ``rows`` holds one
             sample self-loop row per artifact, and this holds the real count.
@@ -152,8 +157,10 @@ def walk_lineage(
         direction: which way to walk. ``BOTH`` runs each direction and merges,
             keeping the shorter depth for a node reachable both ways.
         max_depth: how many levels to expand. 0 returns an empty graph.
-        max_nodes_per_level: ceiling on one level's frontier; exceeding it marks
-            the result truncated.
+        max_nodes_per_level: ceiling on the nodes one level adds. A level that
+            reaches more keeps the first ones (in row order) and drops the rest,
+            with their rows, marking the result truncated. Seeds beyond it are
+            not walked at all.
         collapse_self_loops: read one sample row per self-looping artifact and
             count the rest in SQL (``graph.self_loop_runs``), instead of reading
             every ``uri -> uri`` row. For a caller that folds self-loops into one
@@ -176,6 +183,8 @@ def walk_lineage(
     )
 
     seen_rows: set = set()
+    # Shared across directions so a node both directions stop at counts once.
+    unexpanded: set = set()
     # Self-loops do not depend on direction, so a BOTH walk counts each artifact's
     # once, whichever direction reaches it first.
     self_loops_checked: Optional[set] = set() if collapse_self_loops else None
@@ -189,7 +198,10 @@ def walk_lineage(
             graph=graph,
             seen_rows=seen_rows,
             self_loops_checked=self_loops_checked,
+            unexpanded=unexpanded,
         )
+    graph.unexpanded = len(unexpanded)
+    graph.truncated = graph.truncated or bool(unexpanded)
     return graph
 
 
@@ -202,6 +214,7 @@ def _walk_one_direction(
     graph: LineageGraph,
     seen_rows: set,
     self_loops_checked: Optional[set] = None,
+    unexpanded: Optional[set] = None,
 ) -> None:
     """Expand one direction level by level, accumulating into ``graph``.
 
@@ -212,25 +225,29 @@ def _walk_one_direction(
     ``self_loops_checked`` is ``None`` for a walk that reads every row, and
     otherwise the artifacts whose self-loops are already counted; see
     :func:`_self_loop_samples`.
+
+    ``unexpanded`` collects the nodes a limit kept out, shared across directions;
+    the caller sets ``graph.unexpanded`` from it.
     """
+    if unexpanded is None:
+        unexpanded = set()
     frontier = list(seeds)
     visited = set(seeds)
     depth = 0
 
+    if len(frontier) > max_nodes_per_level:
+        # Only seeds can get here: a level never adds more than the cap.
+        logger.warning(
+            "Lineage walk not started: %d seeds exceed the %d-node limit",
+            len(frontier),
+            max_nodes_per_level,
+        )
+        graph.truncated = True
+        unexpanded.update(frontier)
+        return
+
     while frontier and depth < max_depth:
         depth += 1
-
-        if len(frontier) > max_nodes_per_level:
-            logger.warning(
-                "Lineage walk truncated at depth %d: frontier of %d exceeds the "
-                "%d-node limit",
-                depth,
-                len(frontier),
-                max_nodes_per_level,
-            )
-            graph.truncated = True
-            graph.unexpanded += len(frontier)
-            return
 
         if self_loops_checked is None:
             rows = _hop(storage, frontier, direction)
@@ -241,13 +258,26 @@ def _walk_one_direction(
             rows += _self_loop_samples(storage, frontier, graph, self_loops_checked)
 
         next_frontier: list = []
+        dropped: set = set()
         for row in rows:
+            reached = _continuation(row, direction)
+
+            # The level is full: a node it has not taken yet is left out, row and
+            # all, so a hub's first hop cannot return every edge it has.
+            if (
+                len(next_frontier) >= max_nodes_per_level
+                and reached
+                and reached != TERMINAL
+                and row.input != row.output
+                and reached not in visited
+            ):
+                dropped.add(reached)
+                continue
+
             key = _row_key(row)
             if key not in seen_rows:
                 seen_rows.add(key)
                 graph.rows.append(row)
-
-            reached = _continuation(row, direction)
 
             # Stop at a terminal: a creation row has no input and a deletion row no
             # output, so there is nothing further along that path. The row itself is
@@ -271,6 +301,15 @@ def _walk_one_direction(
             graph.depths[reached] = depth if existing is None else min(existing, depth)
             next_frontier.append(reached)
 
+        if dropped:
+            logger.warning(
+                "Lineage walk truncated at depth %d: %d nodes past the %d-node limit",
+                depth,
+                len(dropped),
+                max_nodes_per_level,
+            )
+            graph.truncated = True
+            unexpanded.update(dropped)
         frontier = next_frontier
 
     if frontier:
@@ -302,7 +341,7 @@ def _walk_one_direction(
                 remainder.add(matched)
         if remainder:
             graph.truncated = True
-            graph.unexpanded += len(remainder)
+            unexpanded.update(remainder)
 
 
 def _hop(

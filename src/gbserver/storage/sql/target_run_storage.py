@@ -19,7 +19,7 @@ from typing import Self
 
 from sqlalchemy import desc, func, or_
 
-from gbserver.storage.sql.sql_storage import BaseSQLItemStorage
+from gbserver.storage.sql.sql_storage import BaseSQLItemStorage, retry_read
 from gbserver.storage.storage import JSON_COLUMN_NAME, UUID_COLUMN_NAME
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.storage.target_run_storage import (
@@ -36,8 +36,17 @@ class SQLTargetRunStorage(
 ):
 
     def __init__(self: Self, **kwargs):
+        # Serves get_successful_finished_since, which the lineage indexer runs every
+        # scan: ``status = SUCCESS`` seeks into the index and ``finished_at`` comes
+        # out in the query's order, so a page is read newest-first from the index
+        # and stops at its LIMIT instead of sorting the whole table. Only an index:
+        # no target row is written to add it. On Postgres it also serves the range
+        # filter; on SQLite that reads the blob (see the method), but the ordered
+        # scan with an early stop is most of the win.
+        kwargs["composite_indexes"] = [("status", "finished_at")]
         super().__init__(**kwargs)
 
+    @retry_read
     def get_successful_finished_since(
         self, cutoff_utc: datetime, page_index: int, page_size: int
     ) -> list[StoredTargetRun]:

@@ -46,7 +46,6 @@ from gbserver.lineage.attributes import (
     OUTPUT,
     endpoint_kind,
     endpoint_name,
-    endpoint_produced_by,
     job_detail,
     origin_system,
 )
@@ -163,7 +162,6 @@ def build_graph_dict(
                 kind=endpoint_kind(row.attributes, INPUT),
                 name=endpoint_name(row.attributes, INPUT),
                 depth=graph.depths.get(row.input),
-                produced_by=endpoint_produced_by(row.attributes, INPUT),
             )
             add_edge(row.input, run_id)
 
@@ -174,7 +172,6 @@ def build_graph_dict(
                 kind=endpoint_kind(row.attributes, OUTPUT),
                 name=endpoint_name(row.attributes, OUTPUT),
                 depth=graph.depths.get(row.output),
-                produced_by=endpoint_produced_by(row.attributes, OUTPUT),
             )
             add_edge(run_id, row.output)
 
@@ -206,7 +203,6 @@ def build_graph_dict(
                 kind=endpoint_kind(sample.attributes, side),
                 name=endpoint_name(sample.attributes, side),
                 depth=graph.depths.get(uri),
-                produced_by=endpoint_produced_by(sample.attributes, side),
             )
         run_id = _signature_node_id(inputs, outputs)
         node = _run_node(members[0][1][0], run_id)
@@ -240,7 +236,6 @@ def build_graph_dict(
                 kind=endpoint_kind(rows[0].attributes, side),
                 name=endpoint_name(rows[0].attributes, side),
                 depth=graph.depths.get(uri),
-                produced_by=endpoint_produced_by(rows[0].attributes, side),
             )
         run_id = _grouped_runs_node_id(source, target)
         # A walk that collapsed self-loops kept one sample row and the real count.
@@ -282,7 +277,6 @@ def _ensure_artifact_node(
     kind: str,
     name: str,
     depth: Optional[int] = None,
-    produced_by: Optional[dict] = None,
 ) -> None:
     """Add an artifact node for ``uri`` if it is not already present.
 
@@ -296,11 +290,9 @@ def _ensure_artifact_node(
     that recorded neither leaves them to the URI-derived fallback rather than
     showing an unnamed node.
 
-    ``produced_by`` is the exception: it is filled from any row that has it, not
-    only the first, because an artifact's producer is one fact that only some rows
-    record (the consumer's push may carry it while the producer's own row does not).
-    It lands in ``metadata`` as ``gb_build_id`` / ``gb_target_run_uuid`` /
-    ``gb_artifact_id``, the same prefix the run node uses.
+    The node carries only its URI in ``metadata``. The producer's build, target run
+    and registry artifact ids are not copied in: the graph is not filtered per
+    space, and those ids are the ones run nodes withhold too.
 
     Args:
         nodes: the accumulator, keyed by URI.
@@ -308,10 +300,8 @@ def _ensure_artifact_node(
         kind: its artifact type, if the row carried one.
         name: its display name, if the row carried one.
         depth: hops from the seed, when the walk reached it.
-        produced_by: the granite.build execution that produced it, if recorded.
     """
     if uri in nodes:
-        _add_produced_by(nodes[uri]["metadata"], produced_by)
         return
 
     nodes[uri] = {
@@ -323,13 +313,6 @@ def _ensure_artifact_node(
         "depth": depth,
         "metadata": {"uri": uri},
     }
-    _add_produced_by(nodes[uri]["metadata"], produced_by)
-
-
-def _add_produced_by(metadata: dict, produced_by: Optional[dict]) -> None:
-    for key, value in (produced_by or {}).items():
-        if value:
-            metadata.setdefault(f"gb_{key}", value)
 
 
 def _name_from_uri(uri: str) -> str:
@@ -427,7 +410,7 @@ def _same_signature_jobs(
 def _signature_node_id(inputs: tuple, outputs: tuple) -> str:
     """Identity of the node standing in for every job with one signature.
 
-    The ``runs:<source> → <target>`` form of :func:`_grouped_runs_node_id`, with
+    The ``runs:<source> → <target>`` form, with
     several endpoints on a side joined by `` + `` in sorted order, so a ``1 x 1``
     group keeps the id it always had.
     """
@@ -441,11 +424,10 @@ def _grouped_runs_node_id(source: str, target: str) -> str:
     jobs being grouped have distinct ``job_id``s and that is exactly the
     multiplicity being removed. Prefixed ``runs:`` so it cannot collide with an
     artifact URI, and distinctly from ``run:`` so a client can tell a grouped node
-    from a single job. A self-loop keeps the short ``runs:<uri>`` form.
+    from a single job. Only self-loops are grouped this way (``source == target``);
+    other groupings key by signature, see :func:`_signature_node_id`.
     """
-    if source == target:
-        return f"runs:{source}"
-    return f"runs:{source or '∅'} → {target or '∅'}"
+    return f"runs:{source}"
 
 
 def _mark_grouped(node: dict, source: str, target: str, count: int) -> None:

@@ -17,21 +17,29 @@ export function useLineageExpansion(rename?: (id: string) => string, groupRuns =
   const [unexpanded, setUnexpanded] = React.useState(0)
   // Seeds whose last request in a direction found nothing new: nothing more to load.
   const [exhausted, setExhausted] = React.useState<Set<string>>(new Set())
+  // Bumped by reset and by every new request: a response from an older generation
+  // (an expansion still in flight when the view was reset, or superseded by a later
+  // click) is dropped instead of bringing back what was cleared.
+  const generation = React.useRef(0)
 
   const isExhausted = React.useCallback(
     (seedId: string, direction: ExpandDirection) => exhausted.has(`${direction}|${seedId}`),
     [exhausted]
   )
 
-  // `seedId` is the node's id in the index (a URI or `run:<job_id>`). `known` is the
-  // graph on screen, used to tell whether this level added anything.
+  // `seedId` is the node's id in the index (a URI or `run:<job_id>`), `metadata` its
+  // index metadata (a grouped node's jobs_query). `known` is the graph on screen,
+  // used to tell whether this level added anything.
   const expand = React.useCallback(async (
     seedId: string, direction: ExpandDirection, depth: number, known: ElkGraph,
+    metadata?: Record<string, unknown>,
   ) => {
+    const mine = ++generation.current
     setLoading(direction)
     setError(null)
     try {
-      const result = await getLineageGraph({ ...expansionSeed(seedId), direction, depth, group_runs: groupRuns })
+      const result = await getLineageGraph({ ...expansionSeed(seedId, metadata), direction, depth, group_runs: groupRuns })
+      if (mine !== generation.current) return
       const incoming = indexGraphToElk(result, rename)
       const onScreen = new Set(known.nodes.map((n) => n.id))
       if (incoming.nodes.every((n) => onScreen.has(n.id)) && !result.truncated) {
@@ -40,13 +48,15 @@ export function useLineageExpansion(rename?: (id: string) => string, groupRuns =
       setUnexpanded(result.truncated ? result.unexpanded ?? 0 : 0)
       setExtra((prev) => mergeElkGraphs(prev, incoming))
     } catch (e) {
-      setError(e)
+      if (mine === generation.current) setError(e)
     } finally {
-      setLoading(null)
+      if (mine === generation.current) setLoading(null)
     }
   }, [rename, groupRuns])
 
   const reset = React.useCallback(() => {
+    generation.current += 1
+    setLoading(null)
     setExhausted(new Set())
     setExtra(EMPTY)
     setUnexpanded(0)

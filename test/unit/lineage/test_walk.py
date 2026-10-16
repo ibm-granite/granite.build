@@ -279,9 +279,28 @@ class TestUnexpandedFrontier:
         graph = walk_lineage(
             storage, ["a"], Direction.DESCENDANTS, max_depth=3, max_nodes_per_level=5
         )
-        # The 20-node level exceeded the cap, so all 20 went unexpanded.
+        # The level kept the first 5 nodes and dropped the other 15, rows and all,
+        # so a hub's first hop cannot return every edge it has.
         assert graph.truncated
-        assert graph.unexpanded == 20
+        assert graph.unexpanded == 15
+        assert len(graph.depths) == 6
+        assert len(graph.rows) == 5
+
+    def test_a_node_both_directions_stop_at_counts_once(self):
+        """A BOTH walk shares one set of unexpanded nodes, so none is counted twice."""
+        # "b" is one hop from "a" both ways (a -> b and b -> a), and has more graph
+        # behind it both ways (b -> c downstream, d -> b upstream).
+        storage = FakeStorage(
+            [
+                row("J1", "a", "b"),
+                row("J2", "b", "a"),
+                row("J3", "b", "c"),
+                row("J4", "d", "b"),
+            ]
+        )
+        graph = walk_lineage(storage, ["a"], Direction.BOTH, max_depth=1)
+        assert graph.truncated
+        assert graph.unexpanded == 1
 
     def test_both_sums_each_direction(self):
         """A BOTH walk shares one graph, so each side adds its own remainder."""
@@ -324,7 +343,7 @@ class TestRaisingThePerLevelCeiling:
             storage, ["a"], Direction.DESCENDANTS, max_depth=3, max_nodes_per_level=5
         )
         assert graph.truncated
-        assert graph.unexpanded == 20
+        assert graph.unexpanded == 15
 
 
 class TestQueryCost:

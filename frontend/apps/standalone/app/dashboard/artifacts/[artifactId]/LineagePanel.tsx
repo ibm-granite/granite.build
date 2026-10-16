@@ -13,7 +13,6 @@ import JobDrawer from '../../builds/[buildId]/JobDrawer'
 import Graph, { type GraphHandle } from '@granite-build/ui-core/components/LineageGraph/Graph'
 import { depthForNextLevel, indexGraphToElk, type IndexElkNode, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import { useLineageExpansion } from '@granite-build/ui-core/components/LineageGraph/useLineageExpansion'
-import { artifactUriSpellings, lineageUri } from '@granite-build/ui-core/lib/artifactUri'
 
 // ── URI-based artifact lineage panel (lineage index) ──────────────────────────
 
@@ -26,22 +25,22 @@ function levelText(level: { depth: number; exhausted: boolean }) {
   return n
 }
 
-function ArtifactLineageGraph({ artifact, groupRuns }: { artifact: Artifact; groupRuns: boolean }) {
+function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
   const graphRef = React.useRef<GraphHandle>(null)
   const [rendered, setRendered] = React.useState(false)
   const [focusNodeId, setFocusNodeId] = React.useState<string | null>(null)
   const [showBuildInfo, setShowBuildInfo] = React.useState(true)
 
-  // The index keys HF repos by their https web URL, not the registry's hf://.
-  const uri = lineageUri(artifact.uri!)
+  // The server normalizes any spelling of the URI; lineage_uri is the id it keys on.
+  const uri = artifact.lineage_uri || artifact.uri!
   const { data, isLoading, error } = useQuery({
-    queryKey: ['lineage-graph', uri, groupRuns],
-    queryFn: () => getLineageGraph({ uri, direction: 'both', depth: INITIAL_DEPTH, group_runs: groupRuns }),
+    queryKey: ['lineage-graph', uri],
+    queryFn: () => getLineageGraph({ uri, direction: 'both', depth: INITIAL_DEPTH }),
     retry: false,
     staleTime: 5 * 60 * 1000,
   })
 
-  const expansion = useLineageExpansion(undefined, groupRuns)
+  const expansion = useLineageExpansion()
 
   const base = React.useMemo(() => (data ? indexGraphToElk(data) : { nodes: [], links: [] }), [data])
   const merged = React.useMemo(() => mergeElkGraphs(base, expansion.extra), [base, expansion.extra])
@@ -72,7 +71,9 @@ function ArtifactLineageGraph({ artifact, groupRuns }: { artifact: Artifact; gro
   // After an expansion the selected node is centered, so the new nodes are in view.
   const expand = (direction: 'upstream' | 'downstream') => {
     graphRef.current?.centerOnNodeAfterLayout(activeId)
-    return expansion.expand(activeId, direction, depthForNextLevel(activeId, (direction === 'upstream' ? up : down).depth), { nodes, links })
+    const metadata = (activeNode as IndexElkNode | undefined)?.indexNode?.metadata
+    const depth = depthForNextLevel(activeId, (direction === 'upstream' ? up : down).depth, metadata)
+    return expansion.expand(activeId, direction, depth, { nodes, links }, metadata)
   }
 
   const unexpanded = expansion.extra.nodes.length
@@ -98,9 +99,10 @@ function ArtifactLineageGraph({ artifact, groupRuns }: { artifact: Artifact; gro
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [jobNodeId])
 
-  // Index nodes are keyed by normalized URI, not UUID: the artifact page is
-  // found by the raw URI the index keeps in metadata, which the registry filters
-  // on exactly. The artifact itself is already open.
+  // Index nodes are keyed by normalized URI, not UUID. metadata.uri is that same
+  // normalized URI, and GET /artifacts/?uri= matches on the normalized form too, so
+  // one lookup finds the registry artifact whatever spelling it was registered
+  // under. The artifact itself is already open.
   const router = useRouter()
   const [opening, setOpening] = React.useState(false)
   const [openError, setOpenError] = React.useState<string | null>(null)
@@ -111,13 +113,7 @@ function ArtifactLineageGraph({ artifact, groupRuns }: { artifact: Artifact; gro
     setOpening(true)
     setOpenError(null)
     try {
-      // The registry filters on the exact URI, and may hold the hf:// spelling of
-      // an https index node (or the reverse), so every spelling is tried.
-      let match
-      for (const spelling of artifactUriSpellings(uri)) {
-        match = (await listArtifacts({ uri: spelling })).items[0]
-        if (match) break
-      }
+      const match = (await listArtifacts({ uri })).items[0]
       if (match) router.push(`/dashboard/artifacts/_/?id=${match.uuid}`)
       else setOpenError(`${activeName} is not in the artifact registry.`)
     } catch (e) {
@@ -301,9 +297,7 @@ function BuildLinkedLineage({ artifact, artifactLoading }: { artifact: Artifact;
 
 // ── Public component ──────────────────────────────────────────────────────────
 
-// `groupRuns: false` draws the extended graph: one node per job instead of one per
-// distinct input/output pair.
-export function LineagePanel({ artifact, loading, groupRuns = true }: { artifact: Artifact | undefined; loading: boolean; groupRuns?: boolean }) {
+export function LineagePanel({ artifact, loading }: { artifact: Artifact | undefined; loading: boolean }) {
   if (loading || !artifact) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
@@ -315,7 +309,9 @@ export function LineagePanel({ artifact, loading, groupRuns = true }: { artifact
   // Any artifact with a URI reads the lineage index, which covers build outputs
   // and external artifacts alike, whatever the configured provider.
   if (artifact.uri) {
-    return <ArtifactLineageGraph artifact={artifact} groupRuns={groupRuns} />
+    // Keyed by the artifact so moving to another one starts from a clean view
+    // (expansions, exhausted seeds, the open drawer).
+    return <ArtifactLineageGraph key={artifact.uuid} artifact={artifact} />
   }
 
   if (artifact.build_id) {

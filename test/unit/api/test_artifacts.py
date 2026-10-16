@@ -458,3 +458,52 @@ def test_list_artifact_tags_excludes_other_spaces_for_non_admin():
         _set_alice_access(manager)
         tags = list_artifact_tags(_fake_request(ALICE, f"{ALICE}@example.com"))
     assert tags == ["alpha"]
+
+
+# ------------------------------------------------------------------ lineage_uri
+
+
+def test_listed_artifacts_carry_their_lineage_uri():
+    art = _artifact_in(ALICE_SPACE, ALICE, "alice-model")
+    with (
+        _patched_list_registry([art]),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        _set_alice_access(manager)
+        resp = list_artifacts(_fake_request(ALICE, f"{ALICE}@example.com"))
+    assert resp.artifacts[0].lineage_uri == (
+        f"https://huggingface.co/{ALICE_SPACE}/alice-model"
+    )
+
+
+def test_a_lineage_node_id_finds_its_registry_entry():
+    """``?uri=`` with a graph node's id falls back to the normalized match."""
+    art = _artifact_in(ALICE_SPACE, ALICE, "alice-model")
+    with (
+        _patched_list_registry([art]),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        _set_alice_access(manager)
+        resp = list_artifacts(
+            _fake_request(ALICE, f"{ALICE}@example.com"),
+            uri=f"https://huggingface.co/{ALICE_SPACE}/alice-model",
+        )
+    assert [a.uuid for a in resp.artifacts] == [art.uuid]
+
+
+def test_the_normalized_match_keeps_the_space_scope():
+    """The fallback applies the same space filter as the exact lookup."""
+    bob_art = _artifact_in(BOB_SPACE, "bob", "bob-dataset")
+    with (
+        _patched_list_registry([bob_art]),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        _set_alice_access(manager)
+        resp = list_artifacts(
+            _fake_request(ALICE, f"{ALICE}@example.com"),
+            uri=f"https://huggingface.co/{BOB_SPACE}/bob-dataset",
+        )
+    assert resp.artifacts == []

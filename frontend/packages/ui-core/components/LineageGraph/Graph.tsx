@@ -122,14 +122,25 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
     const skeletonNodes: ElkNodeEx[] = []
     const skeletonEdges: ElkExtendedEdge[] = []
 
+    // Edges per port, counted once: O(N + E) instead of four scans per node.
+    const countPorts = (links: ElkExtendedEdge[]) => {
+      const counts = new Map<string, number>()
+      for (const l of links) {
+        for (const port of [...l.sources, ...l.targets]) counts.set(port, (counts.get(port) ?? 0) + 1)
+      }
+      return counts
+    }
+    const total = countPorts(allLinks)
+    const visible = countPorts(visibleLinks)
+
     children.forEach((node) => {
       const nodeInputId = `${node.id}-input`
       const nodeOutputId = `${node.id}-output`
 
-      const totalIncoming = allLinks.filter((l) => l.targets.includes(nodeInputId)).length
-      const totalOutgoing = allLinks.filter((l) => l.sources.includes(nodeOutputId)).length
-      const visibleIncoming = visibleLinks.filter((l) => l.targets.includes(nodeInputId)).length
-      const visibleOutgoing = visibleLinks.filter((l) => l.sources.includes(nodeOutputId)).length
+      const totalIncoming = total.get(nodeInputId) ?? 0
+      const totalOutgoing = total.get(nodeOutputId) ?? 0
+      const visibleIncoming = visible.get(nodeInputId) ?? 0
+      const visibleOutgoing = visible.get(nodeOutputId) ?? 0
 
       if (visibleIncoming < totalIncoming) {
         const skId = `${node.id}-upstream-skeleton`
@@ -181,8 +192,13 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
   // downward, shaped like the viewport, so a long chain fits the screen instead of
   // running off to the side. Small graphs keep their straight layout.
   const wrapViewportRef = React.useRef<{ width: number; height: number } | null>(null)
-  const layoutFitting = async (graph: ElkNode): Promise<ElkNode> => {
+  // `run` is this layout's layoutRunRef value: once a newer layout has started, the
+  // wrap passes stop instead of running up to WRAP_RATIO_FACTORS more ELK layouts
+  // whose result would be discarded anyway.
+  const layoutFitting = async (graph: ElkNode, run: number): Promise<ElkNode> => {
+    const superseded = () => run !== layoutRunRef.current
     const straight = await elk.layout(structuredClone(graph))
+    if (superseded()) return straight
     // Measured once per graph and reused: the drawer narrows the pane by ~33rem,
     // and a relayout while it is open (or after it closes) would otherwise wrap
     // the same graph into a different shape.
@@ -213,6 +229,7 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
     })
     let best = await wrapped(WRAP_RATIO_FACTORS[0])
     for (const factor of WRAP_RATIO_FACTORS.slice(1)) {
+      if (superseded()) return best
       const g = await wrapped(factor)
       if (widthOf(g) > rowWidth) break
       best = g
@@ -257,7 +274,7 @@ function GraphComponent(props: GraphProps, ref: React.Ref<GraphHandle>) {
     cleanNodePositions(graph)
 
     const run = ++layoutRunRef.current
-    layoutFitting(graph)
+    layoutFitting(graph, run)
       .then((g) => {
         // Layouts are async (and a wrapped one takes two passes): only the latest
         // may land, or a stale one would move the anchor back.

@@ -236,7 +236,10 @@ def to_lineage_rows(job: dict) -> list[LineageRowDraft]:
     emits one event per output artifact rather than one per target run. The guard
     is here for the generic entry point: an importer with genuinely N*M records
     must split them into one job per target before calling this, keeping a
-    distinct job identity per piece, rather than relax the guard.
+    distinct job identity per piece, rather than relax the guard. The ``db``
+    sink still keeps such a job's record in ``gb_lineage_job`` (see
+    ``db_jobstats``); only its index rows are refused, so the job is not lost,
+    it is just not drawn.
 
     Do NOT make this function auto-split such a job to avoid raising. That was
     tried and reverted, because it trades a visible refusal for a silently wrong

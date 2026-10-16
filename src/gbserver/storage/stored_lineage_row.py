@@ -70,11 +70,13 @@ TERMINAL = ""
 #
 # 512 rather than 1024, even though the other URI-bearing columns in this schema
 # get 1024: both of these are indexed AND both sit in the
-# ``(job_id, input, output)`` unique index, and MySQL caps an index key at 3072
-# bytes. Widening them makes that index larger still, and
-# ``__create_unique_indexes`` only *warns* when an index cannot be created -- so
-# an over-wide column would not fail loudly, it would silently cost the unique
-# index, and with it re-ingest idempotence.
+# ``(job_id, input, output)`` unique index, and every backend caps an index entry
+# (a Postgres btree entry at about 2.7 KB). Widening them makes that index larger
+# still, and ``__create_unique_indexes`` only *warns* when an index cannot be
+# created -- so an over-wide column would not fail loudly, it would silently cost
+# the unique index, and with it re-ingest idempotence. (A MySQL 3072-byte key
+# limit used to be quoted here; it does not hold under utf8mb4, where 256 + 2 x 512
+# characters is up to 5120 bytes, and MySQL is not a backend this schema targets.)
 #
 # It is wider than the generic 256 a promoted string column gets because real
 # artifact URIs have already overrun that: a Lakehouse dataset name long enough to

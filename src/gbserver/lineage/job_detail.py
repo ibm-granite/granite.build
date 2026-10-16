@@ -277,16 +277,3 @@ def fetch_job_detail(
     detail.update(entry)
     detail.update(fetched)
     return detail
-    try:
-        detail.update(_FETCHERS[job_store](entry["job_id"], retrieve, ctx))
-    except JobDetailUnavailable as e:
-        detail.update(detail_available=False, detail_error=str(e))
-    except Exception as e:  # pylint: disable=broad-except
-        logger.exception(
-            "Fetching detail of job %s from %s failed", entry["job_id"], job_store.value
-        )
-        detail.update(
-            detail_available=False,
-            detail_error=f"Could not read {job_store.value}: {e}",
-        )
-    return detail

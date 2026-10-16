@@ -35,12 +35,15 @@ server was started:
 
 ``lineage_store`` (every other deployment)
     The configured lineage store read back out. For W&B that is the project's
-    runs, ordered by ``createdAt``. When the configured store *is* the index
-    (``GBSERVER_LINEAGE_PROVIDER=db``) source and sink are the same table, so the
-    indexer says so and does nothing; ``none`` has nothing to read.
+    runs, ordered by ``createdAt``.
+
+``lineage_job`` (``GBSERVER_LINEAGE_PROVIDER=db``)
+    ``gb_lineage_job`` records, ordered by ``recorded_at``.
 
 **No checkpoint** means "from the beginning" in standalone, where the indexer
-stays automatic. Everywhere else it means "index nothing yet": the indexer logs
+stays automatic -- except for W&B, whose project is shared with every other
+deployment: there the first scan seeds ``from-latest`` instead of copying the
+whole project into the local index. Everywhere else it means "index nothing yet": the indexer logs
 once and re-reads the checkpoint every scan until ``gbserver lineage-index-init
 --base-timestamp`` seeds one (``from-latest``, ``all`` -- an explicit
 :data:`FROM_BEGINNING` mark -- or an ISO-8601 timestamp), as ``lineage-init``
@@ -50,6 +53,8 @@ means the same thing in both sources, and "index everything since this date" is
 the question an operator actually has.
 """
 
+import os
+import sys
 import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -115,7 +120,9 @@ def _checkpoint_key_for_provider(provider: str) -> str:
 
 # Attempts at one job before it is skipped. The scan stops at a failing job
 # rather than stepping past it, so without a bound one unreadable job would pin
-# the checkpoint forever.
+# the checkpoint forever. Only failures of the job itself count: a storage or
+# network outage (see _is_transient_error) is waited out however long it lasts,
+# since skipping a job over one would leave it out of the index for good.
 _MAX_JOB_ATTEMPTS = 5
 
 _WANDB_PAGE_SIZE = 200
@@ -125,12 +132,24 @@ _WANDB_PAGE_SIZE = 200
 # long, so a run whose writer died without finishing does not pin the scan.
 _WANDB_RUNNING_MAX_AGE_S = 6 * 3600
 
+
 # How old a job's timestamp must be before the scan takes it. The timestamp is
 # stamped before the row commits (finished_at when the event is created,
 # recorded_at in Python), so rows can commit out of timestamp order; a checkpoint
 # moved to the newest timestamp would skip one that commits later behind it.
-# Only taking settled jobs keeps the checkpoint at most ``now - grace``.
-_SETTLE_GRACE_S = 120.0
+# Only taking settled jobs keeps the checkpoint at most ``now - grace``. A row
+# that commits later than the grace behind its timestamp (a long event backlog,
+# clock skew between pods) is still skipped until a full reindex; raise
+# GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S where that is expected.
+def _settle_grace_from_env(default: float = 120.0) -> float:
+    raw = os.environ.get("GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S", "")
+    try:
+        return float(raw) if raw.strip() else default
+    except ValueError:
+        return default
+
+
+_SETTLE_GRACE_S = _settle_grace_from_env()
 
 # Checkpoint writes are batched: one per job turned a 300k-record source into 300k
 # gb_kv updates per scan. Losing a batch on a crash only re-reads it, and the
@@ -221,6 +240,60 @@ def _parse_ts(value: str) -> datetime:
     return as_aware(datetime.fromisoformat(value.replace("Z", "+00:00")))
 
 
+def _parse_utc_ts(value: str) -> datetime:
+    """Parse a timestamp whose source is UTC; naive is read as UTC, not local."""
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+# Exception names (anywhere in the chain) of failures that are about reaching the
+# store, not about the job: retrying them later can succeed, so they never count
+# toward _MAX_JOB_ATTEMPTS. Matched by name so this module does not import
+# sqlalchemy, and so a driver's subclass (psycopg's OperationalError) matches too.
+_TRANSIENT_ERROR_NAMES = frozenset(
+    {
+        "OperationalError",
+        "InterfaceError",
+        "DisconnectionError",
+        "TimeoutError",
+        "ConnectionError",
+        "CommError",
+    }
+)
+_TRANSIENT_ERROR_MARKERS = (
+    "database is locked",
+    "could not connect",
+    "connection refused",
+    "connection reset",
+    "server closed the connection",
+    "timed out",
+)
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    """Whether a failure is an outage of the store rather than a bad job.
+
+    Unlike ``is_permanent_sink_failure``, unrecognized errors are *not* transient
+    here: a job that keeps failing for its own reasons must eventually be skipped,
+    or it would pin the checkpoint forever.
+    """
+    seen: set = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (ConnectionError, TimeoutError)):
+            return True
+        if _TRANSIENT_ERROR_NAMES & {c.__name__ for c in type(current).__mro__}:
+            return True
+        if getattr(current, "connection_invalidated", False):
+            return True
+        message = str(current).lower()
+        if any(marker in message for marker in _TRANSIENT_ERROR_MARKERS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 class JobLineageIndexer:
     """Walks one source's jobs in timestamp order into the index.
 
@@ -228,12 +301,15 @@ class JobLineageIndexer:
     checkpoint, seeding, retry bound and lifecycle live here, so both sources
     advance the same way.
 
-    **The checkpoint** is written after each job that changes it, so a crash
-    mid-scan resumes at the job it was on. It is ``(timestamp, item_ids)``: jobs
-    at the checkpoint instant whose id is listed are done and skipped; any other
-    job at or after it is indexed. Two jobs on the same instant are therefore both
-    indexed, and a crash between them resumes at the second. It never moves
-    backwards, and a scan with nothing new writes nothing.
+    **The checkpoint** is written every ``_CHECKPOINT_EVERY`` jobs and when the
+    scan ends, so a crash mid-scan re-reads at most one batch (deduplicated by the
+    sink). It is ``(timestamp, item_ids)``: jobs at the checkpoint instant whose id
+    is listed are done and skipped; any other job at or after it is indexed. Two
+    jobs on the same instant are therefore both indexed. A scan only moves it
+    forward, and a scan with nothing new writes nothing; only an explicit
+    ``seed_if_absent(force=True)`` moves it back. A scan re-reads the checkpoint
+    before each write and stops if someone else changed it (a forced re-seed, or
+    another indexer during a rollout), rather than overwrite it.
 
     **A pending job stops the scan.** A source may list a job whose lineage is
     not complete yet; advancing past it would skip whatever lands later.
@@ -263,6 +339,11 @@ class JobLineageIndexer:
         self._sink = sink or DBLineageStore()
         self._rows = rows or LineageRowIndexer()
         self._failed_attempts: Dict[str, int] = {}
+        # The checkpoint as this indexer last read or wrote it; a write first checks
+        # the stored one still matches, so a concurrent re-seed is not overwritten.
+        self._expected_checkpoint: Optional[dict] = None
+        # Set when _advance_checkpoint finds the checkpoint changed; ends the scan.
+        self._checkpoint_moved = False
         # Whether the "no checkpoint yet" notice was logged, so it is not repeated
         # every scan; reset once a checkpoint appears.
         self._missing_checkpoint_logged = False
@@ -286,13 +367,55 @@ class JobLineageIndexer:
     def _is_pending(self, job: Any) -> bool:
         return False
 
+    def _parse_job_ts(self, value: str) -> datetime:
+        """Parse a timestamp in this source's form (``_timestamp``, the checkpoint).
+
+        Naive is local by default, like ``as_aware``; a source whose timestamps are
+        zoneless UTC overrides this, so the settle age and the mark comparisons
+        agree with how the source wrote them.
+        """
+        return _parse_ts(value)
+
     # Instance-overridable so tests can turn the grace off.
     settle_grace_s: float = _SETTLE_GRACE_S
 
     def _is_settled(self, job: Any) -> bool:
         """Whether the job is old enough that nothing can still commit behind it."""
-        age = datetime.now(timezone.utc) - _parse_ts(self._timestamp(job))
+        age = datetime.now(timezone.utc) - self._parse_job_ts(self._timestamp(job))
         return age.total_seconds() >= self.settle_grace_s
+
+    def _record_failure(self, item_id: str) -> bool:
+        """Note a failed attempt at ``item_id``; return whether to give up on it.
+
+        Called from an ``except`` block. A transient failure (the store or network
+        is down) is not the job's fault: it is logged and retried next scan without
+        counting, so an outage of any length skips nothing.
+        """
+        exc = sys.exc_info()[1]
+        if exc is not None and _is_transient_error(exc):
+            logger.warning(
+                "Transient failure indexing job %s; retrying next scan: %s",
+                item_id,
+                exc,
+            )
+            return False
+        attempts = self._failed_attempts.get(item_id, 0) + 1
+        self._failed_attempts[item_id] = attempts
+        if attempts < _MAX_JOB_ATTEMPTS:
+            logger.exception(
+                "Failed to index job %s (attempt %d/%d); retrying next scan.",
+                item_id,
+                attempts,
+                _MAX_JOB_ATTEMPTS,
+            )
+            return False
+        logger.exception(
+            "Giving up on job %s after %d attempts; its lineage is NOT in the index.",
+            item_id,
+            attempts,
+        )
+        self._failed_attempts.pop(item_id, None)
+        return True
 
     def _index(self, storage: SingletonAdminStorage, job: Any) -> bool:
         """Index one job; return whether it was written (vs. nothing to write)."""
@@ -326,6 +449,33 @@ class JobLineageIndexer:
             return None
         return value
 
+    def _advance_checkpoint(
+        self, storage: SingletonAdminStorage, timestamp: str, item_ids: List[str]
+    ) -> bool:
+        """Write a scan's progress unless the checkpoint changed under the scan.
+
+        Returns False, writing nothing, when the stored checkpoint is no longer the
+        one this scan started from or last wrote: a ``--force`` re-seed, or another
+        indexer pod overlapping during a rollout. Overwriting it would undo the
+        re-seed, so the scan stops and the next one starts from what is stored.
+        The read and the write are not atomic; this closes the window a long scan
+        leaves open, not a race between two writes in the same instant.
+        """
+        current = self.read_checkpoint(storage)
+        if current != self._expected_checkpoint:
+            logger.warning(
+                "Lineage index checkpoint %s changed during the scan (%s -> %s); "
+                "not overwriting it.",
+                self._get_checkpoint_key(),
+                self._expected_checkpoint,
+                current,
+            )
+            self._checkpoint_moved = True
+            return False
+        self._write_timestamp(storage, timestamp, item_ids)
+        self._expected_checkpoint = self.read_checkpoint(storage)
+        return True
+
     def _write_timestamp(
         self,
         storage: SingletonAdminStorage,
@@ -345,7 +495,7 @@ class JobLineageIndexer:
     def _is_from_beginning(self, checkpoint: dict) -> bool:
         """Whether ``checkpoint`` is the explicit "index everything" mark."""
         try:
-            return _parse_ts(checkpoint["timestamp"]) <= FROM_BEGINNING
+            return self._parse_job_ts(checkpoint["timestamp"]) <= FROM_BEGINNING
         except (TypeError, ValueError):
             return False
 
@@ -434,6 +584,9 @@ class JobLineageIndexer:
         """
         storage = storage or get_admin_storage()
         checkpoint = self.read_checkpoint(storage)
+        if checkpoint is None and is_standalone() and self._seeds_when_standalone:
+            self._seed_latest_in_standalone(storage)
+            return 0
         if checkpoint is None and not is_standalone():
             # Re-read every scan, so seeding takes effect without a restart.
             if not self._missing_checkpoint_logged:
@@ -448,8 +601,13 @@ class JobLineageIndexer:
         if checkpoint is not None and self._is_from_beginning(checkpoint):
             # A full read, never a SQL filter on the sentinel date.
             checkpoint = None
+        self._expected_checkpoint = self.read_checkpoint(storage)
+        self._checkpoint_moved = False
         mark: Optional[Tuple[datetime, List[str]]] = (
-            (_parse_ts(checkpoint["timestamp"]), list(checkpoint.get("item_ids") or []))
+            (
+                self._parse_job_ts(checkpoint["timestamp"]),
+                list(checkpoint.get("item_ids") or []),
+            )
             if checkpoint
             else None
         )
@@ -459,8 +617,26 @@ class JobLineageIndexer:
             indexed = self._scan(storage, checkpoint, mark, pending)
         finally:
             if pending:
-                self._write_timestamp(storage, pending[0], pending[1])
+                self._advance_checkpoint(storage, pending[0], pending[1])
         return indexed
+
+    # Whether a standalone server with no checkpoint seeds ``from-latest`` instead
+    # of indexing from the beginning. Off for local sources; on for W&B, whose
+    # project is shared, so "everything" is every other deployment's history.
+    _seeds_when_standalone = False
+
+    def _seed_latest_in_standalone(self, storage: SingletonAdminStorage) -> None:
+        try:
+            self.seed_if_absent(storage, SEED_FROM_LATEST)
+        except LineageSeedError:
+            # Nothing in the source yet: index from the beginning, which is empty.
+            self._write_timestamp(storage, self._format_timestamp(FROM_BEGINNING))
+        logger.info(
+            "No lineage index checkpoint under %s; seeded it from the latest job "
+            "rather than back-filling the whole shared project. Run gbserver "
+            "lineage-index-init --base-timestamp all --force to index history.",
+            self._get_checkpoint_key(),
+        )
 
     def _scan(
         self,
@@ -472,10 +648,10 @@ class JobLineageIndexer:
         indexed = 0
         unwritten = 0
         for job in self._jobs_since(storage, checkpoint and checkpoint["timestamp"]):
-            if self.stop_event.is_set():
+            if self.stop_event.is_set() or self._checkpoint_moved:
                 break
             item_id = self._item_id(job)
-            job_ts = _parse_ts(self._timestamp(job))
+            job_ts = self._parse_job_ts(self._timestamp(job))
             if mark is not None and (
                 job_ts < mark[0] or (job_ts == mark[0] and item_id in mark[1])
             ):
@@ -489,22 +665,8 @@ class JobLineageIndexer:
                 if self._index(storage, job):
                     indexed += 1
             except Exception:
-                attempts = self._failed_attempts.get(item_id, 0) + 1
-                self._failed_attempts[item_id] = attempts
-                if attempts < _MAX_JOB_ATTEMPTS:
-                    logger.exception(
-                        "Failed to index job %s (attempt %d/%d); retrying next scan.",
-                        item_id,
-                        attempts,
-                        _MAX_JOB_ATTEMPTS,
-                    )
+                if not self._record_failure(item_id):
                     break
-                logger.error(
-                    "Giving up on job %s after %d attempts; its lineage is NOT in "
-                    "the index.",
-                    item_id,
-                    attempts,
-                )
             self._failed_attempts.pop(item_id, None)
             if mark is not None and job_ts == mark[0]:
                 ids = mark[1] + [item_id]
@@ -514,7 +676,9 @@ class JobLineageIndexer:
             mark = (job_ts, ids)
             unwritten += 1
             if unwritten >= _CHECKPOINT_EVERY:
-                self._write_timestamp(storage, pending[0], pending[1])
+                if not self._advance_checkpoint(storage, pending[0], pending[1]):
+                    pending.clear()
+                    break
                 pending.clear()
                 unwritten = 0
         return indexed
@@ -692,28 +856,48 @@ class LineageJobIndexer(JobLineageIndexer):
     def _item_id(self, job: StoredLineageJob) -> str:
         return job.job_id
 
+    def _keys_since(
+        self, storage: SingletonAdminStorage, timestamp: Optional[str]
+    ) -> List[Tuple[datetime, str, str]]:
+        """``(instant, job_id, recorded_at)`` of every record at or after
+        ``timestamp``, oldest first.
+
+        Only the keys are kept, not the records: a first ``all`` scan lists the
+        whole table, and each record carries its full job entry. The records are
+        loaded a batch at a time by :meth:`_scan`.
+
+        Paging is newest first by offset. A merge only moves ``recorded_at``
+        forward, which moves a record *up* the list: rows behind it shift down a
+        page and are read twice (deduplicated here), never skipped; the moved
+        record itself is newer than the checkpoint, so the next scan reads it.
+        """
+        cutoff = _parse_ts(timestamp) if timestamp else None
+        keys: Dict[str, Tuple[datetime, str, str]] = {}
+        for page in self._newest_first(storage):
+            reached_cutoff = False
+            for job in page:
+                if not job.recorded_at:
+                    continue
+                instant = _parse_ts(job.recorded_at)
+                if cutoff is not None and instant < cutoff:
+                    reached_cutoff = True
+                    continue
+                keys.setdefault(job.job_id, (instant, job.job_id, job.recorded_at))
+            # Newest first, so once a page reaches behind the cutoff every later
+            # page is older still: a scan reads what is new, not all of history.
+            if reached_cutoff:
+                break
+        return sorted(keys.values())
+
     def _jobs_since(
         self, storage: SingletonAdminStorage, timestamp: Optional[str]
     ) -> List[StoredLineageJob]:
-        cutoff = _parse_ts(timestamp) if timestamp else None
-        selected: List[StoredLineageJob] = []
-        for page in self._newest_first(storage):
-            selected.extend(
-                job
-                for job in page
-                if job.recorded_at
-                and (cutoff is None or _parse_ts(job.recorded_at) >= cutoff)
-            )
-            # Newest first, so once a page reaches behind the cutoff every later
-            # page is older still: a scan reads what is new, not all of history.
-            if cutoff is not None and any(
-                job.recorded_at and _parse_ts(job.recorded_at) < cutoff for job in page
-            ):
-                break
-        # A record rewritten between pages can be read twice; keep one.
-        selected = list({job.job_id: job for job in selected}.values())
-        selected.sort(key=lambda j: (_parse_ts(j.recorded_at), j.job_id))
-        return selected
+        records = self._job_storage(storage).get_jobs_by_id(
+            [job_id for _, job_id, _ in self._keys_since(storage, timestamp)]
+        )
+        return sorted(
+            records.values(), key=lambda j: (_parse_ts(j.recorded_at), j.job_id)
+        )
 
     def _index(self, storage: SingletonAdminStorage, job: StoredLineageJob) -> bool:
         return self._rows.index_job_record(job)
@@ -727,33 +911,95 @@ class LineageJobIndexer(JobLineageIndexer):
     ) -> int:
         """Index in batches of ``_CHECKPOINT_EVERY``, checkpointing after each.
 
-        Records are never pending, so the base loop's per-job retry has nothing
-        to wait on; a batch that raises leaves the checkpoint at the last batch
-        written and is re-read, deduplicated, on the next scan.
+        Same rules as the base loop, a batch at a time: the scan stops at the
+        first record not settled yet (a later one taken past it would move the
+        checkpoint over it), and a batch that fails is retried next scan. When the
+        failure is the batch's own, not an outage, its records are indexed one by
+        one so a single bad record is counted, and given up on, alone instead of
+        blocking every record behind it.
         """
-        todo = [
-            job
-            for job in self._jobs_since(storage, checkpoint and checkpoint["timestamp"])
-            if self._is_settled(job)
-            and (
-                mark is None
-                or _parse_ts(job.recorded_at) > mark[0]
-                or (_parse_ts(job.recorded_at) == mark[0] and job.job_id not in mark[1])
-            )
-        ]
-        indexed = 0
-        for start in range(0, len(todo), _CHECKPOINT_EVERY):
-            if self.stop_event.is_set():
+        keys = []
+        for instant, job_id, recorded_at in self._keys_since(
+            storage, checkpoint and checkpoint["timestamp"]
+        ):
+            if mark is not None and (
+                instant < mark[0] or (instant == mark[0] and job_id in mark[1])
+            ):
+                continue
+            if not self._is_settled_at(recorded_at):
                 break
-            batch = todo[start : start + _CHECKPOINT_EVERY]
-            indexed += self._rows.index_job_records(batch)
-            last_ts = _parse_ts(batch[-1].recorded_at)
-            ids = [j.job_id for j in batch if _parse_ts(j.recorded_at) == last_ts]
-            if mark is not None and last_ts == mark[0]:
-                ids = mark[1] + ids
-            self._write_timestamp(storage, batch[-1].recorded_at, ids)
-            mark = (last_ts, ids)
+            keys.append((instant, job_id, recorded_at))
+        indexed = 0
+        for start in range(0, len(keys), _CHECKPOINT_EVERY):
+            if self.stop_event.is_set() or self._checkpoint_moved:
+                break
+            batch_keys = keys[start : start + _CHECKPOINT_EVERY]
+            records = self._job_storage(storage).get_jobs_by_id(
+                [job_id for _, job_id, _ in batch_keys]
+            )
+            # A record deleted since it was listed has nothing left to index.
+            pairs = [(k, records[k[1]]) for k in batch_keys if k[1] in records]
+            batch = [record for _, record in pairs]
+            try:
+                indexed += self._rows.index_job_records(batch)
+            except Exception:
+                if _is_transient_error(sys.exc_info()[1]):
+                    logger.warning(
+                        "Transient failure indexing lineage job records; retrying "
+                        "next scan.",
+                        exc_info=True,
+                    )
+                    break
+                done = self._index_one_by_one(storage, batch)
+                indexed += done[0]
+                if done[1] is not None:
+                    # Stopped at a record still being retried: checkpoint up to it.
+                    batch_keys = [k for k, _ in pairs[: done[1]]]
+                    if batch_keys:
+                        mark = self._checkpoint_batch(storage, batch_keys, mark)
+                    break
+            mark = self._checkpoint_batch(storage, batch_keys, mark)
+            if mark is None:
+                break
         return indexed
+
+    def _index_one_by_one(
+        self, storage: SingletonAdminStorage, batch: List[StoredLineageJob]
+    ) -> Tuple[int, Optional[int]]:
+        """Index ``batch`` record by record after the batch write failed.
+
+        Returns how many were written and, when the scan must stop at a record
+        that will be retried, its position in the batch (else ``None``).
+        """
+        indexed = 0
+        for position, job in enumerate(batch):
+            try:
+                if self._index(storage, job):
+                    indexed += 1
+            except Exception:
+                if not self._record_failure(job.job_id):
+                    return indexed, position
+            self._failed_attempts.pop(job.job_id, None)
+        return indexed, None
+
+    def _checkpoint_batch(
+        self,
+        storage: SingletonAdminStorage,
+        batch_keys: List[Tuple[datetime, str, str]],
+        mark: Optional[Tuple[datetime, List[str]]],
+    ) -> Optional[Tuple[datetime, List[str]]]:
+        """Move the checkpoint past ``batch_keys``; ``None`` when it was not."""
+        last_ts, _, last_recorded_at = batch_keys[-1]
+        ids = [job_id for instant, job_id, _ in batch_keys if instant == last_ts]
+        if mark is not None and last_ts == mark[0]:
+            ids = mark[1] + ids
+        if not self._advance_checkpoint(storage, last_recorded_at, ids):
+            return None
+        return (last_ts, ids)
+
+    def _is_settled_at(self, recorded_at: str) -> bool:
+        age = datetime.now(timezone.utc) - _parse_ts(recorded_at)
+        return age.total_seconds() >= self.settle_grace_s
 
     def _newest_first(self, storage: SingletonAdminStorage):
         """Pages of job records by ``recorded_at`` descending, sorted in SQL.
@@ -882,6 +1128,8 @@ class WandBLineageIndexer(JobLineageIndexer):
 
     _thread_name = "lineage-indexer-wandb"
 
+    _seeds_when_standalone = True
+
     def __init__(
         self,
         monitoring_interval: float = 30.0,
@@ -933,14 +1181,15 @@ class WandBLineageIndexer(JobLineageIndexer):
         # Per run: the runs of one job share its job_id but fail independently.
         return job.id
 
+    def _parse_job_ts(self, value: str) -> datetime:
+        # W&B's createdAt comes zoneless (UTC) from the API, and a seed is spelled
+        # with a trailing Z; both are UTC, never local time.
+        return _parse_utc_ts(value)
+
     def _is_pending(self, job: Any) -> bool:
         if getattr(job, "state", None) != "running":
             return False
-        # W&B's createdAt is zoneless UTC; read it as such, not as local time.
-        created = datetime.fromisoformat(self._timestamp(job).replace("Z", "+00:00"))
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
-        age = datetime.now(timezone.utc) - created
+        age = datetime.now(timezone.utc) - self._parse_job_ts(self._timestamp(job))
         return age.total_seconds() < _WANDB_RUNNING_MAX_AGE_S
 
     def _jobs_since(
@@ -988,6 +1237,6 @@ class WandBLineageIndexer(JobLineageIndexer):
         return self._first_run(order="-created_at", per_page=1)
 
     def _format_timestamp(self, instant: datetime) -> str:
-        # W&B's createdAt is UTC with a trailing Z, and the $gte filter compares
-        # against it; spell a seed the same way.
+        # createdAt is UTC (the API returns it without an offset); the $gte filter
+        # compares against it, so spell a seed in UTC with a trailing Z.
         return instant.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

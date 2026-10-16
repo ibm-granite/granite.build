@@ -296,6 +296,26 @@ class TestRunMetadata:
             assert key not in metadata
         assert metadata["job_id"] == "J1"
 
+    def test_an_artifact_node_carries_only_its_uri(self):
+        """The producer's ids are withheld from artifact nodes as from run nodes."""
+        produced_by = {"build_id": "BLD", "target_run_uuid": "TR", "artifact_id": "ART"}
+        result = build_graph_dict(
+            graph_of(
+                row(
+                    "J1",
+                    A,
+                    B,
+                    attributes={
+                        "input": {"produced_by": produced_by},
+                        "output": {"produced_by": produced_by},
+                    },
+                )
+            ),
+            A,
+        )
+        for node in nodes_by_type(result, "artifact"):
+            assert node["metadata"] == {"uri": node["id"]}
+
 
 class TestTruncation:
     def test_truncated_is_propagated(self):

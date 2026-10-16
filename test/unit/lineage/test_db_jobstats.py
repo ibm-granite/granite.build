@@ -139,16 +139,18 @@ class TestDecomposition:
         )
         assert len(rows.get_rows_by_job("J1")) == 2
 
-    def test_many_inputs_and_many_outputs_records_nothing(self, write_job, rows):
-        """The guard refuses this job, and _write_job skips rather than raises.
+    def test_many_inputs_and_many_outputs_records_the_job_without_rows(
+        self, write_job, rows, jobs
+    ):
+        """The job is recorded; only its index rows are refused.
 
         No producer emits the shape -- wandb_jobstats writes one event per output
-        artifact -- so reaching it means a malformed entry, and one such entry must
-        not abort the rest of a build's scan. Splitting it into one job per target
-        would keep the edges but fragment the run: the graph builder derives its run
-        node from job_id (graph_builder.py:223), so one execution would render as
-        two run nodes. Refusing is the honest outcome; the warning carries the
-        reason so the loss is diagnosable.
+        artifact -- so reaching it means a malformed entry. Splitting it into one
+        job per target would keep the edges but fragment the run: the graph builder
+        derives its run node from job_id, so one execution would render as two run
+        nodes. So the decomposition refuses the rows, with a warning, but the record
+        is kept: ``gb_lineage_job`` is the record of what ran, and a reindex cannot
+        recover a record that was never written.
         """
         write_job(
             job(
@@ -160,14 +162,17 @@ class TestDecomposition:
             target_run_uuid="TR",
         )
         assert [r for pg in rows.get_paged() for r in pg] == []
+        assert jobs.get_job("J1") is not None
 
-    def test_a_malformed_job_is_skipped_not_raised(self, write_job, rows):
-        """A job the guard cannot rescue is logged and skipped, not fatal.
+    def test_a_malformed_job_is_skipped_not_raised(self, write_job, rows, jobs):
+        """A job with no endpoints is logged and yields no rows, not an error.
 
-        One unrecordable entry must not abort the rest of a build's scan.
+        One unrecordable entry must not abort the rest of a build's scan. Its
+        record is still kept, like any other execution's.
         """
         write_job(job("J1", [], []), build_id="BLD", target_run_uuid="TR")
         assert [r for pg in rows.get_paged() for r in pg] == []
+        assert jobs.get_job("J1") is not None
 
     def test_every_row_of_a_job_shares_its_job_id(self, write_job, rows):
         write_job(
@@ -858,3 +863,129 @@ class TestJobRecordBackfill:
         sink = self._sink({"J": object()})
         assert sink._has_job_record("J")
         assert not sink._has_job_record("OTHER")
+
+
+class TestRejectedJobs:
+    """A job the table refuses is not rebuilt and re-refused on every pass."""
+
+    def test_a_rejected_job_counts_as_recorded(self, sink, jobs):
+        long_id = "J" * 300
+        sink._write_job(
+            job(long_id, [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)]),
+            build_id="BLD",
+            target_run_uuid="TR",
+        )
+        assert jobs.get_job(long_id) is None
+        assert sink.filter_unrecorded({long_id, "OTHER"}) == {"OTHER"}
+
+
+class TestCommaTags:
+    def test_a_tag_with_a_comma_is_dropped(self):
+        from gbserver.lineage.db_jobstats import is_storable_tag
+
+        assert is_storable_tag("team=nlp")
+        assert not is_storable_tag("labels=a,b")
+
+
+class TestTagSearchEscapesLike:
+    """``%`` and ``_`` in a tag are literal, so they cannot widen the SQL filter."""
+
+    def _job(self, job_id, tags):
+        from gbserver.storage.stored_lineage_job import StoredLineageJob
+
+        return StoredLineageJob(job_id=job_id, tags=tags)
+
+    def test_percent_matches_only_itself(self, jobs):
+        jobs.add(self._job("J1", ["pct=100%"]))
+        jobs.add(self._job("J2", ["other=1"]))
+        total, found = jobs.search_by_tags(["pct=100%"])
+        assert total == 1
+        assert [j.job_id for j in found] == ["J1"]
+        assert jobs.search_by_tags(["%"])[0] == 0
+
+    def test_underscore_is_not_a_wildcard(self, jobs):
+        jobs.add(self._job("J1", ["run_1"]))
+        jobs.add(self._job("J2", ["runX1"]))
+        assert [j.job_id for j in jobs.search_by_tags(["run_1"])[1]] == ["J1"]
+
+
+class TestUpsertRow:
+    """The row merge: a lost race merges, and a stale terminal is repaired."""
+
+    def _row(self, job_id, source, target, **attributes):
+        from gbserver.storage.stored_lineage_row import StoredLineageRow
+
+        return StoredLineageRow(
+            job_id=job_id, input=source, output=target, attributes=attributes
+        )
+
+    def test_a_lost_race_merges_into_the_winner(self, rows, monkeypatch):
+        from gbserver.lineage.merge import UPDATED, upsert_row
+
+        rows.add(self._row("J1", "a", "b", winner={"x": 1}))
+        # The racing writer read before the winner's add landed.
+        real = type(rows).get_rows_by_job
+        reads = iter([[]])
+        monkeypatch.setattr(
+            type(rows),
+            "get_rows_by_job",
+            lambda self, job_id: next(reads, None) or real(self, job_id),
+        )
+        assert upsert_row(rows, self._row("J1", "a", "b", loser={"y": 2})) == UPDATED
+        (stored,) = real(rows, "J1")
+        assert stored.attributes == {"winner": {"x": 1}, "loser": {"y": 2}}
+
+    def test_a_stale_terminal_is_removed_by_the_next_write(self, rows):
+        from gbserver.lineage.merge import UNCHANGED, upsert_row
+
+        # The state a crash between add and delete leaves: both rows.
+        rows.add(self._row("J1", "a", "b"))
+        rows.add(self._row("J1", TERMINAL, "b"))
+        assert upsert_row(rows, self._row("J1", "a", "b")) == UNCHANGED
+        assert [(r.input, r.output) for r in rows.get_rows_by_job("J1")] == [("a", "b")]
+
+    def test_a_real_edge_supersedes_and_keeps_the_terminals_attributes(self, rows):
+        from gbserver.lineage.merge import ADDED, upsert_row
+
+        rows.add(self._row("J1", TERMINAL, "b", seen={"lh": 1}))
+        assert upsert_row(rows, self._row("J1", "a", "b")) == ADDED
+        (stored,) = rows.get_rows_by_job("J1")
+        assert (stored.input, stored.attributes) == ("a", {"seen": {"lh": 1}})
+
+
+class TestFinishedStatusReplacesInProgress:
+    def _job(self, status, completed_at=""):
+        from gbserver.storage.stored_lineage_job import StoredLineageJob
+
+        job_group = {"status": status}
+        if completed_at:
+            job_group["completed_at"] = completed_at
+        return StoredLineageJob(
+            job_id="J1", status=status, attributes={"job": job_group}
+        )
+
+    def test_running_moves_on_to_success(self, jobs):
+        from gbserver.lineage.merge import UPDATED, upsert_job
+
+        upsert_job(jobs, self._job("RUNNING"))
+        assert upsert_job(jobs, self._job("SUCCESS", "2026-01-01T00:00:00Z")) == UPDATED
+        stored = jobs.get_job("J1")
+        assert stored.status == "SUCCESS"
+        assert stored.attributes["job"] == {
+            "status": "SUCCESS",
+            "completed_at": "2026-01-01T00:00:00Z",
+        }
+
+    def test_a_finished_status_is_kept(self, jobs):
+        from gbserver.lineage.merge import UNCHANGED, upsert_job
+
+        upsert_job(jobs, self._job("FAILED"))
+        assert upsert_job(jobs, self._job("SUCCESS")) == UNCHANGED
+        assert jobs.get_job("J1").status == "FAILED"
+
+    def test_an_in_progress_status_does_not_replace_a_finished_one(self, jobs):
+        from gbserver.lineage.merge import upsert_job
+
+        upsert_job(jobs, self._job("finished"))
+        upsert_job(jobs, self._job("running"))
+        assert jobs.get_job("J1").status == "finished"

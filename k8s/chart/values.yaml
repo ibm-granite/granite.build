@@ -117,13 +117,19 @@ deployments:
     - GBSERVER_WANDB_ENTITY
     # OpenLineage / WandB ---
   lineageIndexer:
-    # Fills gb_lineage_index incrementally by reading the lineage store (W&B)
-    # back out, in its own pod. A no-op when GBSERVER_LINEAGE_PROVIDER is db or
-    # none (the process logs it and exits).
+    # Fills gb_lineage_index incrementally, in its own pod, from wherever
+    # GBSERVER_LINEAGE_PROVIDER records lineage: W&B runs (wandb),
+    # gb_lineage_job (db) or gb_targets (none).
     enable: true
+    # Keep at 1: the indexer is the single writer of its checkpoint. The
+    # deployment uses the Recreate strategy so a rollout never runs two at once.
     replicas: 1
-    # The indexer indexes nothing until its checkpoint is seeded once, out of
-    # band: gbserver lineage-index-init --base-timestamp from-latest|all|<ISO-8601>
+    # The indexer indexes nothing until its checkpoint is seeded. On start the pod
+    # runs gbserver lineage-index-init --base-timestamp <seedOnStart>, which only
+    # writes when there is no checkpoint yet (an existing one is never touched).
+    # from-latest indexes from the newest job onward; set to "all" to back-fill
+    # history once, or "" to seed by hand (from-latest|all|<ISO-8601>).
+    seedOnStart: from-latest
     resources:
       limits:
         cpu: "1"

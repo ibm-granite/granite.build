@@ -366,11 +366,22 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     return map
   }, [artifactQueries, uuidArtifactIds])
 
-  // The build graph keys artifacts by UUID, the lineage index by URI: fold index
-  // nodes back onto the build's UUIDs so an expansion joins the graph, not beside it.
+  // The build graph keys artifacts by UUID, the lineage index by normalized URI
+  // (hf -> https, cos -> s3, LH defaults dropped). The registry returns that form as
+  // lineage_uri, so index nodes fold back onto the build's UUIDs and an expansion
+  // joins the graph instead of drawing a second node beside it.
+  const lineageUriMap = React.useMemo(() => {
+    const map = new Map<string, string>()
+    uuidArtifactIds.forEach((id, i) => {
+      const data = artifactQueries[i]?.data
+      const uri = data?.lineage_uri || data?.uri
+      if (uri) map.set(id, uri)
+    })
+    return map
+  }, [artifactQueries, uuidArtifactIds])
   const uriToUuid = React.useMemo(
-    () => new Map(Array.from(artifactUriMap, ([id, uri]) => [uri, id])),
-    [artifactUriMap]
+    () => new Map(Array.from(lineageUriMap, ([id, uri]) => [uri, id])),
+    [lineageUriMap]
   )
   // Same for runs: the index names a target run `run:<job_id>`, and its job_id is
   // the target run's uuid, so it folds onto the build's `target-<name>` node.
@@ -510,7 +521,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // `run:<uuid>`, or the id of a node an earlier expansion brought in (already an
   // index id). Nodes the index has no id for fall back to walking the loaded graph.
   const indexSeedFor = (nodeId: string): string | null => {
-    if (artifactUriMap.has(nodeId)) return artifactUriMap.get(nodeId)!
+    if (lineageUriMap.has(nodeId)) return lineageUriMap.get(nodeId)!
     for (const [runId, targetId] of runToTarget) if (targetId === nodeId) return runId
     if (expansion.extra.nodes.some((n) => n.id === nodeId)) return nodeId
     return null
@@ -525,8 +536,9 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     setDownstreamLevels(Infinity)
     setPartial(false)
     // One level past what is on screen for this node, however it got there.
-    const depth = depthForNextLevel(seed, visibleLevels(focusNodeId, allLinks, direction))
-    void expansion.expand(seed, direction, depth, { nodes: enrichedNodes, links: allLinks })
+    const metadata = (enrichedNodes.find((n) => n.id === focusNodeId) as IndexElkNode | undefined)?.indexNode?.metadata
+    const depth = depthForNextLevel(seed, visibleLevels(focusNodeId, allLinks, direction), metadata)
+    void expansion.expand(seed, direction, depth, { nodes: enrichedNodes, links: allLinks }, metadata)
     return true
   }
 

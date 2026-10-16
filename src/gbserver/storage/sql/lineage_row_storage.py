@@ -29,7 +29,7 @@ from gbserver.storage.lineage_row_storage import (
     ILineageRowStorage,
     endpoint_pair,
 )
-from gbserver.storage.sql.sql_storage import BaseSQLItemStorage
+from gbserver.storage.sql.sql_storage import BaseSQLItemStorage, retry_read
 from gbserver.storage.storage import JSON_COLUMN_NAME
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 
@@ -111,6 +111,7 @@ class SQLLineageRowStorage(
         kwargs["default_pagination_sort_by_column"] = "recorded_at"
         super().__init__(**kwargs)
 
+    @retry_read
     def count_jobs_touching(
         self,
         uri: str,
@@ -128,6 +129,7 @@ class SQLLineageRowStorage(
                 return 0
             return int(query.with_entities(func.count(distinct(self._job_id))).scalar())
 
+    @retry_read
     def get_job_ids_touching(
         self,
         uri: str,
@@ -166,6 +168,7 @@ class SQLLineageRowStorage(
             return super().get_rows_by_output(outputs)
         return self._rows_without_self_loops(outputs, UPSTREAM)
 
+    @retry_read
     def grouped_self_loops(self, uris: List[str]) -> List[GroupedEdge]:
         """Fold each artifact's self-loops into one edge, in one ``GROUP BY``.
 
@@ -201,6 +204,7 @@ class SQLLineageRowStorage(
         finally:
             session.close()
 
+    @retry_read
     def _rows_without_self_loops(
         self, frontier: List[str], direction: str
     ) -> List[StoredLineageRow]:
@@ -222,6 +226,7 @@ class SQLLineageRowStorage(
         finally:
             session.close()
 
+    @retry_read
     def grouped_edges(
         self, frontier: List[str], direction: str, limit: Optional[int] = None
     ) -> List[GroupedEdge]:

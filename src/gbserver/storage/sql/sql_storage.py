@@ -61,6 +61,16 @@ from gbserver.types.constants import (
 from gbserver.utils.atomic import AtomicInteger
 from gbserver.utils.utils import get_utc_time
 
+# The retry policy of get_by_where, for a subclass's own read SQL (grouped walks,
+# tag search), so a ``database is locked`` or a dropped connection mid-read is
+# retried there too instead of reaching the API. ValueError is a bad argument.
+retry_read = retry(
+    wait=wait_random_exponential(multiplier=1, min=1, max=30),
+    stop=stop_after_attempt(10),
+    retry=retry_if_not_exception_type((ValueError, NotImplementedError)),
+    reraise=True,
+)
+
 # SQLAlchemy Base
 Base = declarative_base()
 
@@ -854,17 +864,21 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         )  # returns [] if tables is not present
         return len(columns) > 0
 
+    @retry_read
     def _ensure_table(self) -> bool:
         """Initialize the model if needed; whether the table exists to query.
 
         For a subclass running its own SQL. ``__initialize_storage`` is name-mangled
         private, so this does the same through the protected API: like any first
-        read, it may create or adjust the table to match the item's columns.
+        read, it may create or adjust the table to match the item's columns. Retried
+        like a read, since the DDL can hit ``database is locked`` just the same.
         """
         if self._sql_alchemy_model is None:
             sample = self._convert_item_to_row_dict(self._get_sample_item())
             self._create_or_adjust_schema_item_dict(sample)
-        return self._does_table_exist()
+        # Not _does_table_exist(): that retries on its own, and nesting it inside
+        # this retry would multiply the attempts.
+        return len(self.__get_column_names_with_exceptions(raise_exception=False)) > 0
 
     def __get_db_item_by_uuid(
         self, session: Any, uuid: str

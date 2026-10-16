@@ -271,6 +271,7 @@ function adaptArtifact(raw: Record<string, unknown>): Artifact {
     space_name: raw.space_name as string,
     username: raw.username as string,
     uri,
+    lineage_uri: (raw.lineage_uri as string | undefined) || undefined,
     build_id: raw.created_by_build_id as string | undefined,
     created_time: ((raw.created_at ?? raw.created_time) as string),
     updated_time: ((raw.updated_at ?? raw.updated_time ?? raw.created_at) as string),
@@ -651,9 +652,6 @@ export interface LineageJobsResult {
 export async function getLineageJobs(params: {
   uri?: string
   job_id?: string
-  // With `uri`: only the jobs whose source and target are both that artifact --
-  // the runs behind a looped (in-place rewrite) node of GET /lineage/graph.
-  self_loop?: boolean
   // With `uri`: only the jobs that read `uri` and wrote `output` -- the runs behind
   // a grouped node of GET /lineage/graph (metadata.jobs_query).
   output?: string
@@ -705,21 +703,19 @@ export async function getLineageJobDetail(jobId: string): Promise<LineageJobDeta
 export async function getLineageGraph(params: {
   uri?: string
   job_id?: string
+  // Seed from exactly these jobs -- the runs behind a grouped node
+  // (metadata.jobs_query.job_ids). Sent repeated (`job_ids=a&job_ids=b`).
+  job_ids?: string[]
   direction?: string
   depth?: number
-  // Raise the per-level frontier ceiling for one request, for an explicit
-  // "show the full graph" action. Omit for the server default.
-  max_nodes_per_level?: number
   // Fold jobs with the same input and output into one node (server default true);
   // false returns one node per job.
   group_runs?: boolean
-}, opts?: { timeoutMs?: number }): Promise<LineageGraphResult> {
+}): Promise<LineageGraphResult> {
   const { data } = await client.get<LineageGraphResult>('/lineage/graph', {
     params,
-    // A "show the full graph" request walks far more of the index than a normal
-    // one, so the caller can raise the deadline rather than have it time out at a
-    // limit chosen for neighbourhood-sized queries.
-    timeout: opts?.timeoutMs ?? 45_000,
+    paramsSerializer: { indexes: null },
+    timeout: 45_000,
   })
   return data
 }

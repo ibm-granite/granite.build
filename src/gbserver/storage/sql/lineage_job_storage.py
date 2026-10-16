@@ -24,7 +24,7 @@ from gbserver.storage.lineage_job_storage import (
     BaseLineageJobStorage,
     ILineageJobStorage,
 )
-from gbserver.storage.sql.sql_storage import BaseSQLItemStorage
+from gbserver.storage.sql.sql_storage import BaseSQLItemStorage, retry_read
 from gbserver.storage.stored_lineage_job import StoredLineageJob
 
 
@@ -57,9 +57,9 @@ class SQLLineageJobStorage(
     There is no autoincrement ``index`` column: nothing reads it, so ``uuid`` is the
     primary key.
 
-    ``indexed_columns`` is single-column only; this layer has no composite
-    non-unique index, and a composite is reachable only as a side effect of
-    ``unique_columns`` with a tuple key. Nothing here needs one.
+    No composite index: every query here filters on one indexed column (or scans
+    ``tags``, which no index serves). ``composite_indexes`` is there if one is
+    ever needed.
 
     Every indexed column is text. ``get_by_where`` builds an ``IN`` clause only for
     string-typed columns and silently degrades to ``column == [list]`` otherwise, so a
@@ -136,18 +136,10 @@ class SQLLineageJobStorage(
         assert model is not None
         column = model.tags
 
-        conditions = [column.like(f"%{tag}%") for tag in wanted_all]
+        conditions = [_contains(column, tag) for tag in wanted_all]
         if wanted_any:
-            conditions.append(or_(*(column.like(f"%{tag}%") for tag in wanted_any)))
-
-        session = self._get_session_without_retry()
-        try:
-            query = session.query(model.job_id, model.tags)
-            if conditions:
-                query = query.filter(and_(*conditions))
-            candidates = query.order_by(model.recorded_at.desc()).all()
-        finally:
-            session.close()
+            conditions.append(or_(*(_contains(column, tag) for tag in wanted_any)))
+        candidates = self._tag_candidates(conditions)
 
         exact_any, exact_all = set(wanted_any), set(wanted_all)
         job_ids = []
@@ -162,3 +154,33 @@ class SQLLineageJobStorage(
         page = job_ids[offset : offset + limit]
         by_id = self.get_jobs_by_id(page)
         return len(job_ids), [by_id[j] for j in page if j in by_id]
+
+    @retry_read
+    def _tag_candidates(self, conditions: list) -> List[Tuple[str, str]]:
+        """``(job_id, joined tags)`` of the rows ``conditions`` narrow to, newest first."""
+        model = self._sql_alchemy_model
+        session = self._get_session_without_retry()
+        try:
+            query = session.query(model.job_id, model.tags)
+            if conditions:
+                query = query.filter(and_(*conditions))
+            return list(query.order_by(model.recorded_at.desc()).all())
+        finally:
+            session.close()
+
+
+_LIKE_ESCAPE = "\\"
+
+
+def _contains(column, tag: str):
+    """``column LIKE %tag%`` with the tag's own ``%`` and ``_`` matched literally.
+
+    Unescaped, a tag like ``run_1`` would also narrow to ``runX1``; the exact
+    re-check would drop it, but ``%`` alone would match every row.
+    """
+    escaped = (
+        tag.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+        .replace("%", _LIKE_ESCAPE + "%")
+        .replace("_", _LIKE_ESCAPE + "_")
+    )
+    return column.like(f"%{escaped}%", escape=_LIKE_ESCAPE)

@@ -92,7 +92,7 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef, soleOfGroup
           <Field label="Shape">In-place rewrite (reads and writes the same artifact)</Field>
         </Section>
       )}
-      {fromIndex && <JobIndexSections job={job} target={target} jobId={jobId} buildId={buildId} />}
+      {fromIndex && <JobIndexSections job={job} target={target} jobId={jobId} buildId={buildId} noAccess={isAccessDenied(job)} />}
       {job && <JobPayloadSections job={job} />}
     </StepDrawer>
   )
@@ -191,14 +191,16 @@ function JobPayloadSections({ job }: { job: LineageJobDetail }) {
 function GroupedJobDetail({ job: entry, target: indexTarget }: { job: LineageJobEntry; target: BuildTargetRun }) {
   const { data: job, isLoading, error } = useJobDetail(entry.job_id)
   const target = job?.target ?? indexTarget
-  const buildId = job?.build_id ?? buildIdOf(entry)
+  // The listing entry carries no build id (it is global); only the authorized
+  // detail does.
+  const buildId = job?.build_id ?? (job ? buildIdOf(job) : undefined)
   return (
     <div style={{ paddingBottom: '1.5rem' }}>
       {isLoading && <InlineLoading description="Loading job…" />}
       {Boolean(error) && <p className={styles.stepMessage}>Failed to load job: {String(error)}</p>}
       <StepDetailsPanel targetName={target.target_name} target={target} buildId={buildId} />
       <div className={styles.stepExtraSections}>
-        {!job?.target && <JobIndexSections job={job ?? entry} target={target} buildId={buildId} />}
+        {!job?.target && <JobIndexSections job={job ?? entry} target={target} buildId={buildId} noAccess={isAccessDenied(job)} />}
         {job && <JobPayloadSections job={job} />}
       </div>
     </div>
@@ -206,6 +208,13 @@ function GroupedJobDetail({ job: entry, target: indexTarget }: { job: LineageJob
 }
 
 const NA = 'N/A'
+const NO_ACCESS = 'N/A — no access to this job\'s space'
+
+// GET /lineage/jobs/{id} answers 200 with detail_available false when the caller may
+// not read the job (see job_detail.fetch_job_detail).
+function isAccessDenied(job: LineageJobDetail | undefined): boolean {
+  return Boolean(job && !job.detail_available && /not authorized/i.test(job.detail_error ?? ''))
+}
 
 /**
  * What the lineage index knows about one job beyond its steps: its span, through
@@ -213,12 +222,15 @@ const NA = 'N/A'
  * execution, so it shows even with no steps), and its identity and endpoints.
  * Shared by the single-job fallback and each row of a grouped node.
  */
-function JobIndexSections({ job, target, jobId, buildId }: {
+function JobIndexSections({ job, target, jobId, buildId, noAccess }: {
   job: LineageJobEntry | undefined
   target: BuildTargetRun | undefined
   jobId?: string
   buildId?: string
+  // The caller may not read this job's space: say so instead of a bare N/A.
+  noAccess?: boolean
 }) {
+  const hidden = noAccess ? NO_ACCESS : undefined
   return (
     <>
       {target && (
@@ -227,13 +239,13 @@ function JobIndexSections({ job, target, jobId, buildId }: {
         </Section>
       )}
       <Section title="Lineage">
-        <CodeField label="Build ID" value={buildId} />
-        <CodeField label="Target run" value={job ? tagValue(job, 'target_run_uuid') : undefined} />
+        <CodeField label="Build ID" value={buildId} fallback={hidden} />
+        <CodeField label="Target run" value={job ? tagValue(job, 'target_run_uuid') : undefined} fallback={hidden} />
         <CodeField label="Job ID" value={job?.job_id ?? jobId} />
         {/* Owner and namespace come only from the access-checked detail; the graph
             node and the listing entry do not carry them. */}
-        <Field label="Namespace">{orNA(job?.job_namespace || str(job?.job.namespace))}</Field>
-        <Field label="Owner">{orNA(job?.owner || str(job?.job.owner))}</Field>
+        <Field label="Namespace">{job?.job_namespace || str(job?.job?.namespace) || hidden || NA}</Field>
+        <Field label="Owner">{job?.owner || str(job?.job?.owner) || hidden || NA}</Field>
         {job && <UriField label="Inputs" uris={job.inputs} />}
         {job && <UriField label="Outputs" uris={job.outputs} />}
         {job && <UriField label="Tags" uris={job.tags} />}
@@ -272,10 +284,10 @@ function orNA(value: string | undefined): React.ReactNode {
   return value ? value : <span className={styles.stepMuted}>{NA}</span>
 }
 
-function CodeField({ label, value }: { label: string; value: string | undefined }) {
+function CodeField({ label, value, fallback }: { label: string; value: string | undefined; fallback?: string }) {
   return (
     <Field label={label}>
-      {value ? <code className={styles.stepCode}>{value}</code> : <span className={styles.stepMuted}>{NA}</span>}
+      {value ? <code className={styles.stepCode}>{value}</code> : <span className={styles.stepMuted}>{fallback ?? NA}</span>}
     </Field>
   )
 }

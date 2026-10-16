@@ -134,6 +134,10 @@ class SqliteStorageOverrides(BaseModel, Generic[BASE_ITEM_TYPE]):
         with self._db_file_lock:
             super().delete(uuids)  # type: ignore[misc]
 
+    def update_fields(self, *args, **kwargs):
+        with self._db_file_lock:
+            return super().update_fields(*args, **kwargs)  # type: ignore[misc]
+
     def update(
         self,
         item: BASE_ITEM_TYPE,
@@ -189,11 +193,42 @@ class SqliteTargetRunStorage(SqliteStorageOverrides, SQLTargetRunStorage):
 
 
 class SqliteLineageRowStorage(SqliteStorageOverrides, SQLLineageRowStorage):
-    """Sqlite storage for lineage rows."""
+    """Sqlite storage for lineage rows.
+
+    The walk's own SQL (grouped edges, self-loops, the jobs touching an artifact)
+    opens its sessions directly rather than through ``get_by_where``, so it takes
+    the file lock here, like every other read; otherwise a read during a long
+    indexer write sees ``database is locked``. The lock is re-entrant, so methods
+    that call one another under it do not deadlock.
+    """
+
+    def count_jobs_touching(self, *args, **kwargs) -> int:
+        with self._db_file_lock:
+            return super().count_jobs_touching(*args, **kwargs)
+
+    def get_job_ids_touching(self, *args, **kwargs) -> list[str]:
+        with self._db_file_lock:
+            return super().get_job_ids_touching(*args, **kwargs)
+
+    def grouped_self_loops(self, *args, **kwargs) -> list:
+        with self._db_file_lock:
+            return super().grouped_self_loops(*args, **kwargs)
+
+    def grouped_edges(self, *args, **kwargs) -> list:
+        with self._db_file_lock:
+            return super().grouped_edges(*args, **kwargs)
+
+    def _rows_without_self_loops(self, *args, **kwargs) -> list:
+        with self._db_file_lock:
+            return super()._rows_without_self_loops(*args, **kwargs)
 
 
 class SqliteLineageJobStorage(SqliteStorageOverrides, SQLLineageJobStorage):
     """Sqlite storage for lineage job records."""
+
+    def _tag_candidates(self, *args, **kwargs) -> list:
+        with self._db_file_lock:
+            return super()._tag_candidates(*args, **kwargs)
 
 
 class SqliteNodeFailureStorage(SqliteStorageOverrides, SQLNodeFailureStorage):

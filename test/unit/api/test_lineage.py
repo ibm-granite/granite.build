@@ -267,12 +267,14 @@ def _db_service(**kwargs):
 
 
 def test_query_graph_rejects_an_unknown_direction():
+    """A bad direction is a 422, as the route documents, like any invalid param."""
     with pytest.raises(HTTPException) as caught:
-        lineage_mod.query_lineage_graph(
+        lineage_mod.query_lineage_graph_get(
             _fake_request("member", "member@example.com"),
-            LineageQueryRequest(uri="s3://b/x", direction="sideways"),
+            uri="s3://b/x",
+            direction="sideways",
         )
-    assert caught.value.status_code == 400
+    assert caught.value.status_code == 422
 
 
 def test_index_routes_read_the_index_whatever_the_provider():
@@ -321,9 +323,12 @@ def test_query_graph_fills_in_its_defaults():
             _fake_request("member", "member@example.com"),
             LineageQueryRequest(job_id="J1"),
         )
+    authorize_job = seen.pop("authorize_job")
+    assert callable(authorize_job)
     assert seen == {
         "uri": None,
         "job_id": "J1",
+        "job_ids": None,
         "direction": "both",
         "max_depth": 10,
         # None, not a number: the per-level ceiling is the service's default unless a
@@ -343,25 +348,102 @@ def test_query_graph_passes_every_filter_through():
         return {"root_id": "s3://b/x", "nodes": [], "edges": [], "truncated": False}
 
     service = _db_service(query_graph=fake)
-    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+    with (
+        patch.object(lineage_mod, "_get_index_service", return_value=service),
+        patch.object(lineage_mod, "is_super_admin", return_value=True),
+    ):
         lineage_mod.query_lineage_graph(
-            _fake_request("member", "member@example.com"),
+            _fake_request("admin", "admin@example.com"),
             LineageQueryRequest(
                 uri="s3://b/x",
                 job_id="J1",
+                job_ids=["J2", "J3"],
                 direction="upstream",
-                max_depth=3,
+                max_depth=30,
                 max_nodes_per_level=25_000,
             ),
         )
+    seen.pop("authorize_job")
     assert seen == {
         "uri": "s3://b/x",
         "job_id": "J1",
+        "job_ids": ["J2", "J3"],
         "direction": "upstream",
-        "max_depth": 3,
+        "max_depth": 30,
         "max_nodes_per_level": 25_000,
         "group_runs": True,
     }
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"max_depth": 21}, {"max_nodes_per_level": 5001}],
+    ids=["depth", "nodes-per-level"],
+)
+def test_query_graph_holds_a_non_admin_to_the_user_limits(kwargs):
+    """Only a super admin may ask for a deeper walk or a wider level."""
+    service = _db_service(query_graph=lambda **_kw: pytest.fail("must not walk"))
+    with (
+        patch.object(lineage_mod, "_get_index_service", return_value=service),
+        patch.object(lineage_mod, "is_super_admin", return_value=False),
+    ):
+        with pytest.raises(HTTPException) as caught:
+            lineage_mod.query_lineage_graph(
+                _fake_request("member", "member@example.com"),
+                LineageQueryRequest(uri="s3://b/x", **kwargs),
+            )
+    assert caught.value.status_code == 422
+
+
+def test_query_graph_accepts_job_ids_alone_as_a_seed():
+    seen = {}
+
+    def fake(**kwargs):
+        seen.update(kwargs)
+        return {"root_id": "", "nodes": [], "edges": []}
+
+    service = _db_service(query_graph=fake)
+    with (
+        patch.object(lineage_mod, "_get_index_service", return_value=service),
+        patch.object(lineage_mod, "is_super_admin", return_value=False),
+    ):
+        lineage_mod.query_lineage_graph_get(
+            _fake_request("member", "member@example.com"), job_ids=["J1", "J2"]
+        )
+    assert seen["job_ids"] == ["J1", "J2"]
+
+
+def test_query_graph_gates_origin_ids_on_the_job_detail_check():
+    """The graph's per-node check is the same function /jobs/{id} uses."""
+    captured = {}
+
+    def fake_graph(**kwargs):
+        captured["graph"] = kwargs["authorize_job"]
+        return {"root_id": "", "nodes": [], "edges": []}
+
+    def fake_detail(job_id, authorize_build, authorize_entry):
+        captured["detail"] = authorize_entry
+        return None
+
+    service = _db_service(query_graph=fake_graph, get_job_detail=fake_detail)
+    req = _fake_request("member", "member@example.com")
+    calls = []
+    with (
+        patch.object(lineage_mod, "_get_index_service", return_value=service),
+        patch.object(lineage_mod, "is_super_admin", return_value=False),
+        patch.object(
+            lineage_mod,
+            "_can_read_job",
+            side_effect=lambda request, entry: calls.append(entry) or False,
+        ),
+    ):
+        lineage_mod.query_lineage_graph(req, LineageQueryRequest(uri="s3://b/x"))
+        with pytest.raises(HTTPException):
+            lineage_mod.get_lineage_job_detail(req, "J1")
+        entry = {"owner": "o", "space_name": "s"}
+        assert captured["graph"](entry) is False
+        assert captured["detail"](entry) is False
+    assert calls == [entry, entry]
 
 
 def test_query_graph_does_not_404_on_an_empty_graph():
@@ -696,3 +778,31 @@ def test_search_lineage_events_reports_a_backend_failure():
             _fake_request("member", "member@example.com"), TagSearchRequest(tags=[])
         )
     assert caught.value.status_code == 503
+
+
+def test_list_jobs_answers_503_when_the_index_cannot_be_read():
+    """An empty page would read as "no jobs"; a storage failure says so instead."""
+
+    def broken(**_kw):
+        raise RuntimeError("database is locked")
+
+    service = _db_service(list_jobs=broken)
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        with pytest.raises(HTTPException) as caught:
+            lineage_mod.list_lineage_jobs(
+                _fake_request("member", "member@example.com"), uri="s3://b/x"
+            )
+    assert caught.value.status_code == 503
+
+
+def test_list_jobs_answers_422_for_an_invalid_page():
+    def refuse(**_kw):
+        raise ValueError("limit must be between 1 and 1000")
+
+    service = _db_service(list_jobs=refuse)
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        with pytest.raises(HTTPException) as caught:
+            lineage_mod.list_lineage_jobs(
+                _fake_request("member", "member@example.com"), uri="s3://b/x"
+            )
+    assert caught.value.status_code == 422

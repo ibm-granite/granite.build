@@ -39,7 +39,8 @@ export const UNFINISHED_TARGET_STATUSES = new Set([
  * Parse a timestamp in any of the spellings lineage producers write: a Date,
  * epoch seconds / milliseconds / microseconds / nanoseconds (as a number or a
  * numeric string — the lakehouse sends `"1761010778000"`), or an ISO-ish string
- * (Python's `2026-08-22 10:51:28.123456+00:00` included). Returns undefined when
+ * (Python's `2026-08-22 10:51:28.123456+00:00` included; a date-time with no zone
+ * is read as UTC, the zone the backend writes). Returns undefined when
  * the value is empty or not a recognisable time.
  */
 export function parseTimestamp(value: unknown): Date | undefined {
@@ -50,7 +51,8 @@ export function parseTimestamp(value: unknown): Date | undefined {
   else if (typeof value === 'string' && /^\s*-?\d+(\.\d+)?\s*$/.test(value)) epoch = Number(value)
   if (epoch !== undefined) {
     if (!Number.isFinite(epoch)) return undefined
-    // Pick the unit by magnitude: anything past ~5e11 is too far out to be seconds.
+    // Pick the unit by magnitude: under 1e11 is seconds (to the year 5138), under
+    // 1e14 milliseconds, under 1e17 microseconds, else nanoseconds.
     const abs = Math.abs(epoch)
     const ms = abs < 1e11 ? epoch * 1e3 : abs < 1e14 ? epoch : abs < 1e17 ? epoch / 1e3 : epoch / 1e6
     const d = new Date(ms)

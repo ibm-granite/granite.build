@@ -111,6 +111,9 @@ export interface Artifact {
   space_name: string
   username: string
   uri: string
+  // The URI as the lineage index keys it (gbserver's normalize_uri); absent when
+  // the server could not normalize it. Match graph node ids against this.
+  lineage_uri?: string
   build_id?: string
   created_time: string
   updated_time: string

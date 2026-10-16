@@ -35,6 +35,7 @@ from gbserver.api.utils import (
     split_tags,
 )
 from gbserver.lineage.jobstats import get_lineage_store
+from gbserver.lineage.uri_normalize import normalize_uri
 from gbserver.spaces.hf_push_config import resolve_space_resource_group_id
 from gbserver.storage.artifact_registration import (
     ArtifactRegistration,
@@ -569,8 +570,27 @@ class GetArtifactResponse(BaseModel):
     artifact: ArtifactRegistration
 
 
+class ListedArtifact(ArtifactRegistration):
+    """An artifact as the listing returns it: the registration plus derived fields.
+
+    ``lineage_uri`` is the artifact's identity in the lineage index (the
+    normalized URI, the ``id`` of its node in ``GET /lineage/graph``), so a client
+    can match graph nodes to registry entries without restating the normalization
+    rules. Derived per response, never stored; ``""`` when the URI is one the
+    index cannot key on.
+    """
+
+    lineage_uri: str = ""
+
+
 class ListArtifactsResponse(BaseModel):
-    artifacts: list[ArtifactRegistration]
+    artifacts: list[ListedArtifact]
+
+
+def _listed(item: ArtifactRegistration) -> ListedArtifact:
+    return ListedArtifact(
+        **item.model_dump(), lineage_uri=normalize_uri(item.uri or "")
+    )
 
 
 # Good to be after other GETs, since it might match others otherwise.
@@ -604,8 +624,38 @@ def list_artifacts(
     items = cast(
         List[ArtifactRegistration], storage.artifact_registry.get_by_where(row_filter)
     )
-    resp = ListArtifactsResponse(artifacts=items)
-    return resp
+    if uri and not items:
+        items = _by_lineage_uri(
+            storage,
+            uri,
+            username=username,
+            created_by_build_id=build_id,
+            space_name=scoped_space_name,
+            is_archived=is_archived,
+            checksum=checksum,
+            tags=tag,
+        )
+    return ListArtifactsResponse(artifacts=[_listed(item) for item in items])
+
+
+def _by_lineage_uri(storage, uri: str, **filters) -> List[ArtifactRegistration]:
+    """The artifacts whose URI normalizes to the same lineage identity as ``uri``.
+
+    The fallback for a ``uri`` with no exact match, so a lineage graph node's
+    ``id`` (``https://huggingface.co/...``, ``s3://`` for a ``cos://`` artifact, an
+    ``lh://`` URI without its default revision) finds its registry entry. Applies
+    the same filters, space scope included, as the exact lookup -- only the URI
+    comparison differs. Reads the scoped candidates and compares in Python, since
+    the registry stores raw URIs; it runs only when the exact match found nothing.
+    """
+    wanted = normalize_uri(uri)
+    if not wanted:
+        return []
+    candidates = cast(
+        List[ArtifactRegistration],
+        storage.artifact_registry.get_by_where(get_row_filter(uri="", **filters)),
+    )
+    return [item for item in candidates if normalize_uri(item.uri or "") == wanted]
 
 
 @artifacts_api.get("/tags")

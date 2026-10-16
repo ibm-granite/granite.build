@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -158,8 +158,16 @@ class LineageQueryRequest(BaseModel):
         default=None,
         description="Seed from every endpoint of this job execution.",
     )
+    job_ids: Optional[List[str]] = Field(
+        default=None,
+        max_length=1000,
+        description=(
+            "Seed from every endpoint of each of these executions: the jobs behind a "
+            "grouped run node, as its jobs_query lists them."
+        ),
+    )
     max_depth: int = Field(default=10, ge=1, le=50)
-    direction: str = "both"
+    direction: Literal["downstream", "upstream", "both"] = "both"
     max_nodes_per_level: Optional[int] = Field(
         default=None,
         ge=1,

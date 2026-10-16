@@ -78,6 +78,9 @@ def _indexer(runs):
     api.runs.return_value = runs
     sink = MagicMock()
     ix = idx.WandBLineageIndexer(sink=sink, api=api)
+    # These tests exercise the scan itself from an empty checkpoint; the
+    # standalone seed-from-latest rule has its own test.
+    ix._seeds_when_standalone = False
     return ix, api, sink
 
 
@@ -165,6 +168,9 @@ def _admin_with_jobs(jobs):
         return ordered[page.index * page.size : (page.index + 1) * page.size]
 
     storage.lineage_job_storage.get_by_where.side_effect = newest_first
+    storage.lineage_job_storage.get_jobs_by_id.side_effect = lambda ids: {
+        j.job_id: j for j in jobs if j.job_id in ids
+    }
     storage.kv_pair_storage.get_value.side_effect = kv.get
     storage.kv_pair_storage.set_value.side_effect = kv.__setitem__
     return storage, kv
@@ -748,7 +754,7 @@ def test_the_from_beginning_mark_is_a_full_read():
     ix.seed_if_absent(storage, "all")
     with (
         patch.object(idx, "is_standalone", return_value=False),
-        patch.object(ix, "_jobs_since", return_value=[]) as since,
+        patch.object(ix, "_keys_since", return_value=[]) as since,
     ):
         ix.scan_once(storage)
     assert since.call_args.args[1] is None
@@ -884,3 +890,162 @@ def test_over_long_job_id_is_rejected_before_the_db():
     jobs = MagicMock()
     assert upsert_job(jobs, StoredLineageJob(job_id="x" * 257)) == REJECTED
     jobs.add.assert_not_called()
+
+
+# -- outages, poison records, clocks, concurrent seeds ------------------------
+
+
+class OperationalError(Exception):
+    """Stands in for sqlalchemy's: matched by name, like a driver's subclass."""
+
+
+def test_storage_outage_never_counts_toward_giving_up():
+    """An outage of any length must not skip a job: only its own failures count."""
+    storage = _storage()
+    ix, _, sink = _indexer([_run("r1", D1), _run("r2", D2)])
+    sink.write_job.side_effect = OperationalError("database is locked")
+    for _ in range(idx._MAX_JOB_ATTEMPTS * 3):
+        assert ix.scan_once(storage) == 0
+        assert _checkpoint(storage) is None
+    sink.write_job.side_effect = None
+    assert ix.scan_once(storage) == 2
+    assert _checkpoint(storage)["timestamp"] == D2
+
+
+@pytest.mark.parametrize(
+    "exc, transient",
+    [
+        (OperationalError("x"), True),
+        (ConnectionError("x"), True),
+        (TimeoutError("x"), True),
+        (RuntimeError("database is locked"), True),
+        (RuntimeError("wrapped"), False),
+        (ValueError("bad job"), False),
+    ],
+)
+def test_transient_classification(exc, transient):
+    assert idx._is_transient_error(exc) is transient
+
+
+def test_transient_cause_is_found_through_the_chain():
+    try:
+        try:
+            raise ConnectionError("reset")
+        except ConnectionError as inner:
+            raise RuntimeError("write failed") from inner
+    except RuntimeError as exc:
+        assert idx._is_transient_error(exc) is True
+
+
+def test_db_source_gives_up_on_a_poison_record_alone():
+    """One record that always fails is retried, then skipped; the rest index."""
+    old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    older = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    jobs = [_job_record("bad", older), _job_record("good", old)]
+    ix, storage, kv, rows = _job_indexer(jobs)
+    rows.index_job_records.side_effect = ValueError("batch failed")
+    rows.index_job_record.side_effect = lambda job: (
+        (_ for _ in ()).throw(ValueError("poison")) if job.job_id == "bad" else True
+    )
+    with patch.object(idx, "_resolve_lineage_provider", return_value="db"):
+        for _ in range(idx._MAX_JOB_ATTEMPTS - 1):
+            assert ix.scan_once(storage) == 0
+            assert "lineage_index_checkpoint:gb_lineage_job" not in kv
+        assert ix.scan_once(storage) == 1
+    assert kv["lineage_index_checkpoint:gb_lineage_job"]["timestamp"] == old
+
+
+def test_db_source_outage_keeps_the_checkpoint_and_counts_nothing():
+    old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    ix, storage, kv, rows = _job_indexer([_job_record("j1", old)])
+    rows.index_job_records.side_effect = OperationalError("could not connect")
+    with patch.object(idx, "_resolve_lineage_provider", return_value="db"):
+        for _ in range(idx._MAX_JOB_ATTEMPTS * 2):
+            assert ix.scan_once(storage) == 0
+    assert "lineage_index_checkpoint:gb_lineage_job" not in kv
+    assert ix._failed_attempts == {}
+    rows.index_job_record.assert_not_called()
+
+
+def test_db_source_stops_at_an_unsettled_record_instead_of_stepping_past():
+    """A settled record behind an unsettled one waits: taking it would move the
+    checkpoint over the unsettled one."""
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(hours=1)).isoformat()
+    fresh = (now - timedelta(seconds=1)).isoformat()
+    jobs = [_job_record("j1", old), _job_record("j2", fresh)]
+    ix, storage, kv, rows = _job_indexer(jobs)
+    with (
+        patch.object(idx, "_resolve_lineage_provider", return_value="db"),
+        patch.object(ix, "_is_settled_at", side_effect=lambda ts: ts != fresh),
+    ):
+        assert ix.scan_once(storage) == 1
+    assert kv["lineage_index_checkpoint:gb_lineage_job"]["timestamp"] == old
+
+
+def test_db_source_holds_only_keys_and_loads_records_per_batch(monkeypatch):
+    monkeypatch.setattr(idx, "_CHECKPOINT_EVERY", 2)
+    base = datetime.now(timezone.utc) - timedelta(hours=5)
+    jobs = [
+        _job_record(f"j{i}", (base + timedelta(minutes=i)).isoformat())
+        for i in range(5)
+    ]
+    ix, storage, kv, rows = _job_indexer(jobs)
+    with patch.object(idx, "_resolve_lineage_provider", return_value="db"):
+        assert ix.scan_once(storage) == 5
+    loads = storage.lineage_job_storage.get_jobs_by_id.call_args_list
+    assert [len(c.args[0]) for c in loads] == [2, 2, 1]
+
+
+def test_wandb_zoneless_created_at_is_utc_on_any_host_clock(monkeypatch):
+    """W&B returns createdAt without an offset; it is UTC, not the host's zone."""
+    import time
+
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    time.tzset()
+    try:
+        ix, _, _ = _indexer([])
+        just_now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        job = SimpleNamespace(created_at=just_now, state="finished")
+        # Read as local Tokyo time it would look 9h old and pass the grace.
+        assert ix._is_settled(job) is False
+        assert ix._parse_job_ts(just_now).utcoffset() == timedelta(0)
+    finally:
+        monkeypatch.delenv("TZ")
+        time.tzset()
+
+
+def test_a_forced_reseed_during_a_scan_is_not_overwritten():
+    storage = _storage()
+    ix, _, sink = _indexer([_run("r1", D1), _run("r2", D2)])
+    reseeded = {"done": False}
+
+    def reseed_mid_scan(job, **kw):
+        if not reseeded["done"]:
+            reseeded["done"] = True
+            other, _, _ = _indexer([])
+            other._write_timestamp(storage, "2025-06-01T00:00:00Z")
+
+    sink.write_job.side_effect = reseed_mid_scan
+    ix.scan_once(storage)
+    assert _checkpoint(storage)["timestamp"] == "2025-06-01T00:00:00Z"
+
+
+def test_standalone_wandb_without_checkpoint_seeds_latest_instead_of_backfilling():
+    storage = _storage()
+    runs = [_run("r1", D1), _run("r2", D2)]
+    ix, api, sink = _indexer(runs)
+    ix._seeds_when_standalone = True
+    api.runs.side_effect = lambda path, **kw: (
+        [runs[-1]] if kw.get("order") == "-created_at" else runs
+    )
+    assert ix.scan_once(storage) == 0
+    sink.write_job.assert_not_called()
+    assert _checkpoint(storage)["timestamp"] == D2
+
+
+def test_settle_grace_reads_the_environment(monkeypatch):
+    monkeypatch.setenv("GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S", "600")
+    assert idx._settle_grace_from_env() == 600.0
+    monkeypatch.setenv("GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S", "nope")
+    assert idx._settle_grace_from_env() == 120.0

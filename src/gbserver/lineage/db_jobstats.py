@@ -53,7 +53,7 @@ from gbserver.lineage.attributes import (
 )
 from gbserver.lineage.decompose import LineageDecomposeError, to_lineage_rows
 from gbserver.lineage.jobstats import ILineageStore
-from gbserver.lineage.merge import ADDED, UPDATED, upsert_job
+from gbserver.lineage.merge import ADDED, REJECTED, UPDATED, upsert_job
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.lineage_job_storage import ILineageJobStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage
@@ -71,8 +71,13 @@ MAX_TAG_LENGTH = 256
 
 
 def is_storable_tag(tag: object) -> bool:
-    """Whether ``tag`` is kept: a non-empty string no longer than the limit."""
-    return isinstance(tag, str) and 0 < len(tag) <= MAX_TAG_LENGTH
+    """Whether ``tag`` is kept: a non-empty string no longer than the limit.
+
+    A comma disqualifies it too: the ``tags`` column is the comma-joined list, so
+    a tag containing one would be split into two on read and could never be found
+    by :meth:`search_by_tags`.
+    """
+    return isinstance(tag, str) and 0 < len(tag) <= MAX_TAG_LENGTH and "," not in tag
 
 
 # Names the system that produced a job, so what this store recorded stays
@@ -105,6 +110,11 @@ class DBLineageStore(ILineageStore):
         job_storage: Optional[ILineageJobStorage] = None,
     ) -> None:
         self._job_storage = job_storage
+        # Job ids the job table refused (over-long ``job_id``). They never get a
+        # record, so presence-based dedup alone would rebuild and re-reject them on
+        # every reconciler pass. In memory: a restart retries each once, which is
+        # cheap, and the refusal is deterministic so it logs the same reason again.
+        self._rejected_job_ids: Set[str] = set()
 
     @property
     def job_storage(self) -> ILineageJobStorage:
@@ -203,6 +213,8 @@ class DBLineageStore(ILineageStore):
         if not isinstance(target, StoredTargetRun):
             return
 
+        if target.uuid in self._rejected_job_ids:
+            return
         if self._has_job_record(target.uuid):
             # Already recorded. Presence, not count: see the module docstring for
             # why a count comparison would re-record forever.
@@ -393,6 +405,9 @@ class DBLineageStore(ILineageStore):
             job.attributes[ENTRY_ATTRIBUTE] = entry
         job.tags = sorted(set(tags or []))
         result = upsert_job(storage, job)
+        if result == REJECTED:
+            self._rejected_job_ids.add(job.job_id)
+            return
         if result == ADDED or entry is None:
             return
         stored = storage.get_job(job.job_id)
@@ -561,8 +576,11 @@ class DBLineageStore(ILineageStore):
         job_ids = set(job_ids)
         if not job_ids:
             return job_ids
-        jobs = self.job_storage.get_jobs_by_id(list(job_ids))
-        return {job_id for job_id in job_ids if job_id in jobs}
+        # A refused job is as done as a recorded one: re-recording it is refused
+        # again (see ``_rejected_job_ids``).
+        rejected = job_ids & self._rejected_job_ids
+        jobs = self.job_storage.get_jobs_by_id(list(job_ids - rejected))
+        return rejected | {job_id for job_id in job_ids if job_id in jobs}
 
     def _has_job_record(self, job_id: str) -> bool:
         """Whether the job table holds ``job_id``."""
@@ -723,7 +741,7 @@ def job_tags(
     - ``extra_tags`` verbatim, e.g. the user's build tags.
 
     Empty values are dropped rather than stored as ``k=``. A tag that does not fit
-    its column is logged and dropped, never truncated.
+    its column, or holds a comma, is logged and dropped, never truncated or split.
     """
     tags: List[str] = []
     for key, value in (("build_id", build_id), ("target_run_uuid", target_run_uuid)):

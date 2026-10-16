@@ -23,6 +23,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Lineage: artifact lineage now reads the local lineage index (#470).** The artifact
+  page and `GET /lineage/graph` read `gb_lineage_index`, whatever
+  `GBSERVER_LINEAGE_PROVIDER` is. **Upgrading a W&B deployment:** outside standalone the
+  indexer starts only once a checkpoint exists, so the artifact lineage panel is empty
+  until you run `gbserver lineage-index-init --base-timestamp all` (back-fill) or
+  `--base-timestamp from-latest` (new runs only). URI normalization also changed
+  (bucket paths, LH revisions and hosts, git refs and subdirectories, trailing
+  slashes), so an existing index must be rebuilt once with
+  `gbserver lineage-index-init --base-timestamp all --force`.
+- **Lineage API (#470).** `POST /lineage/artifact` is removed; use `GET /lineage/graph`.
+  `GET /lineage/graph` accepts repeated `job_ids`, answers 422 for a bad `direction`,
+  and limits callers who are not super admins to `depth <= 20` and the default
+  per-level node ceiling. Nodes carry only cross-space fields; build and target-run
+  ids appear on a run node only for callers who can read that job's space.
+  `GET /lineage/jobs` answers 422 for `limit` outside 1–1000 or a negative `offset`, and
+  503 when the index cannot be read. `GET /artifacts/?uri=` also matches an artifact by
+  its normalized lineage URI, and each artifact carries a derived `lineage_uri`.
+
 - **Published steps declare named inputs and read them from bindings (#453).** Every
   `step.yaml` under `configurations/assets/` now has an `inputs:` block. A target that
   doesn't bind a required input now fails build validation before anything is queued.

@@ -129,3 +129,28 @@ def test_a_json_time_without_an_offset_is_left_to_the_caller(targets):
         json_value="2026-09-20T10:00:00",
     )
     assert _names(storage) == {"naive"}
+
+
+def test_the_scan_reads_the_status_finished_at_index(targets):
+    """The indexer's every-scan query is served by ``(status, finished_at)``.
+
+    Only an index is added: this test writes its own rows, never a real target.
+    """
+    storage, table = targets
+    _add(storage, "t1", CUTOFF + timedelta(minutes=1))
+    with storage._engine.connect() as conn:  # pylint: disable=protected-access
+        indexes = {
+            row[1] for row in conn.execute(text(f"PRAGMA index_list('{table}')"))
+        }
+        plan = " ".join(
+            str(row[-1])
+            for row in conn.execute(
+                text(
+                    f"EXPLAIN QUERY PLAN SELECT uuid FROM {table} "
+                    "WHERE status = 'SUCCESS' ORDER BY finished_at DESC LIMIT 10"
+                )
+            )
+        )
+    assert f"ix_{table}_status_finished_at" in indexes
+    assert f"ix_{table}_status_finished_at" in plan
+    assert "TEMP B-TREE" not in plan

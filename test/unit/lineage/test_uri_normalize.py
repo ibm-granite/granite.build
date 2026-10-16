@@ -77,8 +77,8 @@ CONVERGING_GROUPS = [
             "lh://prod/ns/models/tbl/mylabel",
             "lh://prod/ns/models/tbl/mylabel/granite-dot-build",
             "lh://PROD/ns/models/tbl/mylabel",
-            # Legacy hostnames fold to prod, as the URI builders already do.
-            "lh://some-lakehouse.ibm.com/ns/models/tbl/mylabel",
+            "lh://prod/ns/models/tbl/mylabel/",
+            "lh://prod/ns//models/tbl/mylabel",
         ],
         id="lh-model-default-revision",
     ),
@@ -93,7 +93,6 @@ CONVERGING_GROUPS = [
         [
             "lh://staging/ns/tables/mytable",
             "lh://STAGING/ns/tables/mytable",
-            "lh://my-lakehouse-staging.example.com/ns/tables/mytable",
         ],
         id="lh-staging-host",
     ),
@@ -109,14 +108,35 @@ CONVERGING_GROUPS = [
             "git+ssh://host.com/org/repo.git",
             "git+git://host.com/org/repo.GIT",
             "git+ssh://Host.com/org/repo.git",
-            # A ref and a subdirectory scope a checkout, not the artifact's
-            # origin; keeping them would split one repo into a node per branch.
-            "git+ssh://host.com/org/repo.git@some-branch",
-            "git+https://host.com/org/repo.git#subdirectory=steps/x",
+            # A fragment key other than subdirectory does not change the checkout.
+            "git+https://host.com/org/repo.git#egg=repo",
             # A credential must never reach the identity, let alone the table.
             "git+https://user:token@host.com/org/repo.git",
         ],
         id="git-schemes",
+    ),
+    pytest.param(
+        [
+            "git+ssh://host.com/org/repo.git@main#subdirectory=steps/x",
+            "git+https://host.com/org/repo@main#subdirectory=steps//x/",
+            "git+https://host.com/org/repo@main#egg=x&subdirectory=steps/x",
+        ],
+        id="git-ref-and-subdirectory",
+    ),
+    pytest.param(
+        [
+            "hf://huggingface.co/models/org/repo/main//sub/file.json",
+            "https://huggingface.co/org/repo/tree/main/sub/file.json",
+            "hf://HuggingFace.co/models/org/repo/main/sub/file.json",
+        ],
+        id="hf-doubled-slash-and-host-case",
+    ),
+    pytest.param(
+        [
+            "hf:///buckets/org/b/tree/x",
+            "https://huggingface.co/buckets/org/b/tree/x",
+        ],
+        id="hf-bucket-path-named-tree",
     ),
     pytest.param(
         ["file:///tmp/out/model", "file:///tmp//out///model"],
@@ -208,6 +228,31 @@ def test_normalized_form_is_itself_a_member(spellings):
             "git+https://host.com/org/repoB",
             "different repositories",
         ),
+        (
+            "git+https://host.com/org/mono#subdirectory=steps/a",
+            "git+https://host.com/org/mono#subdirectory=steps/b",
+            "two subdirectories of a monorepo are different artifacts",
+        ),
+        (
+            "git+https://host.com/org/repo@v1",
+            "git+https://host.com/org/repo@v2",
+            "a checkout at another ref is a different artifact",
+        ),
+        (
+            "hf:///buckets/org/b/tree/x",
+            "hf:///buckets/org/b/x",
+            "a bucket has no revision, so tree is a real path segment",
+        ),
+        (
+            "lh://prod/ns/models/tbl",
+            "lh://prod/ns/models/tbl/granite-dot-build",
+            "a label named like the default revision is not the revision",
+        ),
+        (
+            "lh://some-lakehouse.ibm.com/ns/models/tbl/lbl",
+            "lh://prod/ns/models/tbl/lbl",
+            "an unknown lakehouse host is not assumed to be prod",
+        ),
     ],
 )
 def test_distinct_artifacts_do_not_converge(left, right, why):
@@ -269,6 +314,9 @@ def test_relative_file_uri_is_not_resolved():
         "https://huggingface.co/org/repo/tree",  # marker with no revision
         "s3://",  # no bucket
         "git+ssh://host.com/onlyowner",  # no repo
+        "https://huggingface.co/papers/2401.00001",  # site pages, not repos
+        "https://huggingface.co/docs/transformers",
+        "https://huggingface.co/api/models/org",
     ],
 )
 def test_unidentifiable_input_returns_empty(raw):
@@ -378,3 +426,35 @@ def test_uri_at_exactly_the_limit_is_kept():
     normalized = normalize_uri(raw)
     assert len(normalized) == MAX_LINEAGE_URI_LENGTH
     assert normalized == raw
+
+
+# Every raw spelling the tables above use, plus the cases a non-idempotent rule
+# broke before, so ``n(n(u)) == n(u)`` is checked across all of them.
+_ALL_SPELLINGS = sorted(
+    {raw for group in CONVERGING_GROUPS for raw in group.values[0]}
+    | {
+        "hf:///buckets/org/b/tree/x",
+        "lh://prod/ns/models/tbl/granite-dot-build",
+        "hf://huggingface.co/models/org/repo//x",
+        "lh://some-lakehouse.ibm.com/ns/models/tbl/lbl",
+        "git+https://host.com/org/mono@main#subdirectory=a/b",
+        "file:///tmp/out/model/",
+        "s3://bucket/a/",
+    }
+)
+
+
+@pytest.mark.parametrize("raw", _ALL_SPELLINGS)
+def test_normalization_is_idempotent_for_every_spelling(raw):
+    """A stored (normalized) value re-normalized as a seed is unchanged."""
+    once = normalize_uri(raw)
+    assert once, f"{raw!r} must be identifiable"
+    assert normalize_uri(once) == once
+
+
+def test_unknown_lh_host_is_kept_lowercased():
+    """An unknown lakehouse host stays as written (lowercased), never prod."""
+    assert (
+        normalize_uri("lh://Some-Lakehouse.ibm.com/ns/tables/t")
+        == "lh://some-lakehouse.ibm.com/ns/tables/t"
+    )

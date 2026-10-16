@@ -273,6 +273,66 @@ class TestGraphContent:
 
 
 class TestValidation:
+    def test_job_ids_seed_from_every_job(self):
+        """A grouped node's expansion walks every job's endpoints, not just one."""
+        svc = service(row("J1", A, B), row("J2", C, B))
+        result = svc.query_graph(job_ids=["J1", "J2"], direction="upstream")
+        ids = {n["id"] for n in result["nodes"]}
+        assert {A, C} <= ids
+        assert result["root_id"] == ""
+
+    @staticmethod
+    def _origin_row(job_id, owner, namespace):
+        return row(
+            job_id,
+            A,
+            B,
+            attributes={
+                "job": {"owner": owner, "namespace": namespace},
+                "retrieve": {"build_id": f"build-{job_id}", "target_run_uuid": "tr"},
+            },
+        )
+
+    def test_origin_ids_reach_only_the_run_nodes_the_caller_may_read(self):
+        svc = service(
+            self._origin_row("J1", "me", "mine/b"),
+            self._origin_row("J2", "other", "theirs/b"),
+        )
+        checked = []
+
+        def authorize(entry):
+            checked.append(entry["space_name"])
+            return entry["space_name"] == "mine"
+
+        result = svc.query_graph(uri=A, group_runs=False, authorize_job=authorize)
+        runs = {
+            n["id"]: n["metadata"]
+            for n in result["nodes"]
+            if n["id"].startswith("run:")
+        }
+        assert runs["run:J1"]["gb_build_id"] == "build-J1"
+        assert runs["run:J1"]["gb_target_run_uuid"] == "tr"
+        assert "gb_build_id" not in runs["run:J2"]
+        assert "gb_target_run_uuid" not in runs["run:J2"]
+        # Owner and namespace never reach the graph, authorized or not.
+        for metadata in runs.values():
+            assert "owner" not in metadata and "job_namespace" not in metadata
+        assert sorted(checked) == ["mine", "theirs"]
+
+    def test_without_a_check_no_run_node_gets_origin_ids(self):
+        svc = service(self._origin_row("J1", "me", "mine/b"))
+        result = svc.query_graph(uri=A, group_runs=False)
+        assert all("gb_build_id" not in n["metadata"] for n in result["nodes"])
+
+    def test_a_failing_check_fails_closed(self):
+        svc = service(self._origin_row("J1", "me", "mine/b"))
+
+        def authorize(entry):
+            raise RuntimeError("auth backend down")
+
+        result = svc.query_graph(uri=A, group_runs=False, authorize_job=authorize)
+        assert all("gb_build_id" not in n["metadata"] for n in result["nodes"])
+
     def test_an_unknown_direction_raises(self):
         # The API layer maps ValueError to a 400.
         with pytest.raises(ValueError):
@@ -486,7 +546,8 @@ class TestListJobs:
         assert [
             j["job_id"] for j in svc.list_jobs(uri=B, terminal="output")["jobs"]
         ] == ["O1"]
-        assert svc.list_jobs(uri=B, terminal="bogus")["total"] == 0
+        with pytest.raises(ValueError):
+            svc.list_jobs(uri=B, terminal="bogus")
 
     def test_self_loop_narrows_another_filter(self):
         svc = service(row("J1", A, A), row("J2", A, C))
@@ -527,15 +588,21 @@ class TestListJobs:
             )
         assert sorted(seen) == sorted(f"J{i}" for i in range(10))
 
-    def test_the_page_size_is_capped(self):
-        """A caller must not be able to ask for everything and recreate the problem."""
-        svc = service(*[row(f"J{i}", A, B) for i in range(5)])
-        assert svc.list_jobs(uri=A, limit=10**9)["limit"] == 1000
+    def test_a_page_size_over_the_cap_is_refused(self):
+        """A caller must not be able to ask for everything and recreate the problem.
 
-    def test_a_zero_or_negative_limit_is_clamped(self):
-        svc = service(row("J1", A, B))
-        assert svc.list_jobs(uri=A, limit=0)["limit"] == 1
-        assert svc.list_jobs(uri=A, offset=-5)["offset"] == 0
+        Refused rather than clamped, so a caller asking for more is told so instead
+        of silently getting a shorter page than it asked for.
+        """
+        svc = service(*[row(f"J{i}", A, B) for i in range(5)])
+        assert svc.list_jobs(uri=A, limit=1000)["limit"] == 1000
+        with pytest.raises(ValueError):
+            svc.list_jobs(uri=A, limit=1001)
+
+    @pytest.mark.parametrize("limit, offset", [(0, 0), (-1, 0), (1, -5)])
+    def test_a_zero_or_negative_limit_or_offset_is_refused(self, limit, offset):
+        with pytest.raises(ValueError):
+            service(row("J1", A, B)).list_jobs(uri=A, limit=limit, offset=offset)
 
     def test_by_job_id(self):
         svc = service(row("J1", A, B), row("J2", B, C))
@@ -568,9 +635,11 @@ class TestListJobs:
         result = service(row("J1", A, B)).list_jobs(uri="bogus://x")
         assert result == {"jobs": [], "total": 0, "limit": 100, "offset": 0}
 
-    def test_a_storage_failure_does_not_raise(self):
+    def test_a_storage_failure_propagates(self):
+        """An empty page would read as "no jobs"; the route answers 503 instead."""
         svc = service(row("J1", A, B), fail=True)
-        assert svc.list_jobs(uri=A)["jobs"] == []
+        with pytest.raises(Exception):
+            svc.list_jobs(uri=A)
 
 
 class TestTagSearch:

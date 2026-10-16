@@ -41,8 +41,8 @@ So the dispatch is explicit, and it borrows the handlers' logic only where that
 logic is a pure string transform.
 """
 
-from typing import Dict
-from urllib.parse import urlparse, urlunparse
+from typing import Dict, Tuple
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from gbcommon.uri.cos import COS_SCHEME, S3_SCHEME
 from gbcommon.uri.git import split_repo_path
@@ -58,9 +58,10 @@ from gbcommon.uri.hf import (
 from gbcommon.uri.lh import (
     DEFAULT_FILESET_VERSION,
     DEFAULT_MODEL_REVISION,
+    FILESET_REVISION_INDEX,
     LH_URI_SCHEME,
-    PRODUCTION_HOST,
-    STAGING_HOST,
+    MODEL_REVISION_INDEX,
+    TYPE_INDEX,
     URLSEGMENT_FILES,
 )
 from gbcommon.uri.lh import URLSEGMENT_MODELS as LH_URLSEGMENT_MODELS
@@ -95,17 +96,38 @@ _HF_WEB_TYPE_SEGMENT = {
 _HF_WEB_TREE = "tree"
 _HF_WEB_REVISION_MARKERS = frozenset({"tree", "blob", "resolve"})
 
-# LH types that carry a revision/version segment, and the default injected for
-# each. LhURI appends these in __init__ when the URI omits one, so the same
-# artifact has two spellings depending on whether it passed through that class.
-_LH_INJECTED_DEFAULT: Dict[str, str] = {
-    LH_URLSEGMENT_MODELS: DEFAULT_MODEL_REVISION,
-    URLSEGMENT_FILES: DEFAULT_FILESET_VERSION,
-}
+# First path segments on huggingface.co that are site pages, not repo owners.
+# ``/papers/<id>`` or ``/docs/<lib>`` has the owner/repo shape and would
+# otherwise be read as a model.
+_HF_WEB_RESERVED = frozenset(
+    {
+        "api",
+        "blog",
+        "chat",
+        "collections",
+        "docs",
+        "enterprise",
+        "join",
+        "learn",
+        "login",
+        "new",
+        "organizations",
+        "papers",
+        "posts",
+        "pricing",
+        "search",
+        "settings",
+        "tasks",
+    }
+)
 
-# Index of the type segment in an lh:// path split on "/". Index 0 is the empty
-# string before the leading slash.
-_LH_TYPE_INDEX = 2
+# LH types that carry a revision/version segment: the default LhURI injects in
+# __init__ when the URI omits one, and the segment index it sits at. The same
+# artifact has two spellings depending on whether it passed through that class.
+_LH_INJECTED_DEFAULT: Dict[str, Tuple[str, int]] = {
+    LH_URLSEGMENT_MODELS: (DEFAULT_MODEL_REVISION, MODEL_REVISION_INDEX),
+    URLSEGMENT_FILES: (DEFAULT_FILESET_VERSION, FILESET_REVISION_INDEX),
+}
 
 _GIT_SCHEMES = frozenset({"git+https", "git+git", "git+ssh"})
 _GIT_CANONICAL_SCHEME = "git+https"
@@ -206,30 +228,36 @@ def _normalize_hf(candidate: str, parsed) -> str:
     # and normalize_uri is called on paths that have no business requiring it.
     from gbcommon.uri.hf import HfType, HfURI
 
-    if (parsed.netloc or "").lower() in _HF_TYPE_SEGMENTS:
+    netloc = parsed.netloc or ""
+    path = _collapse_slashes(parsed.path or "")
+    if netloc.lower() in _HF_TYPE_SEGMENTS:
         # Re-spell as the three-slash form the author meant, then canonicalize.
-        path = parsed.path or ""
-        candidate = f"{HF_URI_SCHEME}://{HF_HOST}/{parsed.netloc}{path}"
+        candidate = f"{HF_URI_SCHEME}://{HF_HOST}/{netloc}{path}"
+    else:
+        # Rebuilt so a doubled slash inside the path is dropped, as the web
+        # spelling's segment split already does.
+        candidate = f"{HF_URI_SCHEME}://{netloc}{path}"
 
     hf = HfURI.parse(candidate)
-    canonical = str(hf)
-    parts = hf._parts()
-    if parts.host != HF_HOST:
-        return canonical
+    if (hf.get_host() or "").lower() != HF_HOST:
+        return str(hf)
 
     # The web URL omits the type segment for a model, and spells a revision or a
     # path inside the repo as /tree/<revision>/<path>. A bucket has no revision.
+    hf_type = hf.get_hf_type()
+    revision = hf.get_revision()
+    path_in_repo = hf.get_path_in_repo()
     segments = []
-    if parts.hf_type != HfType.MODEL:
-        segments.append(_HF_WEB_TYPE_SEGMENT[str(parts.hf_type)])
-    segments.extend([parts.owner, parts.repo])
-    if parts.hf_type == HfType.BUCKET:
-        if parts.path_in_repo:
-            segments.append(parts.path_in_repo)
-    elif parts.revision and (parts.revision != DEFAULT_REVISION or parts.path_in_repo):
-        segments.extend([_HF_WEB_TREE, parts.revision])
-        if parts.path_in_repo:
-            segments.append(parts.path_in_repo)
+    if hf_type != HfType.MODEL:
+        segments.append(_HF_WEB_TYPE_SEGMENT[str(hf_type)])
+    segments.extend([hf.get_owner(), hf.get_repo()])
+    if hf_type == HfType.BUCKET:
+        if path_in_repo:
+            segments.append(path_in_repo)
+    elif revision and (revision != DEFAULT_REVISION or path_in_repo):
+        segments.extend([_HF_WEB_TREE, revision])
+        if path_in_repo:
+            segments.append(path_in_repo)
     return f"https://{HF_HOST}/" + "/".join(segments)
 
 
@@ -242,7 +270,8 @@ def _normalize_lh(candidate: str, parsed) -> str:
     1. **Drop an injected default revision.** ``LhURI.__init__`` appends
        ``granite-dot-build`` to a model/fileset URI that omits its
        revision/version, so one artifact has two spellings. Stripping that
-       trailing segment converges them.
+       segment converges them -- only at the revision position, so a *label*
+       named ``granite-dot-build`` is kept.
 
        The injection is also *not deterministic*: its guard is
        ``if not revision in uristr`` -- a substring test over the whole URI -- so
@@ -250,39 +279,33 @@ def _normalize_lh(candidate: str, parsed) -> str:
        never gets the append at all. Normalizing by removal rather than by
        addition is what makes both spellings converge regardless.
 
-    2. **Fold the host.** ``_get_uri_from_name`` lowercases the environment and
-       collapses any legacy hostname to ``staging``/``prod``, but only when
-       *building* a URI -- a hand-written or stored one is never folded. Apply
-       the same fold here so both reach one identity.
+    2. **Lowercase the host.** ``prod``/``staging`` are case-insensitive. Any
+       other host is kept as written rather than folded to ``prod`` the way
+       ``_get_uri_from_name`` does when *building* a URI: a stored URI on an
+       unknown host may be a different lakehouse, and merging it with ``prod``
+       would invent provenance.
+
+    Doubled and trailing slashes are dropped, so ``.../tbl/`` and ``.../tbl``
+    are one artifact, as they are for ``s3://``.
 
     ``LhURI`` is deliberately not instantiated: it would re-inject the very
     default this strips, and it raises on URIs that should simply be declined.
     """
-    segments = (parsed.path or "").split("/")
-    if len(segments) > _LH_TYPE_INDEX:
-        lh_type = segments[_LH_TYPE_INDEX]
-        injected = _LH_INJECTED_DEFAULT.get(lh_type)
-        # Only a *trailing* segment is the injected default. The same string
-        # elsewhere in the path (a namespace, a table) is part of the artifact's
-        # real name and must be preserved.
-        if injected is not None and segments[-1] == injected:
-            segments = segments[:-1]
+    # Index 0 is the empty string before the leading slash, as in lh.py's indexes.
+    segments = _collapse_slashes(parsed.path or "").split("/")
+    if len(segments) > TYPE_INDEX:
+        injected = _LH_INJECTED_DEFAULT.get(segments[TYPE_INDEX])
+        # Only the segment at the revision position is the injected default. The
+        # same string elsewhere (a namespace, a table, a label) is part of the
+        # artifact's real name and must be preserved.
+        if injected is not None:
+            default, index = injected
+            if len(segments) == index + 1 and segments[index] == default:
+                segments = segments[:-1]
 
-    host = _fold_lh_host(parsed.netloc or "")
-    path = "/".join(segments)
+    host = (parsed.netloc or "").lower()
+    path = "/".join(segments) if len(segments) > 1 else ""
     return urlunparse((LH_URI_SCHEME, host, path, "", "", ""))
-
-
-def _fold_lh_host(netloc: str) -> str:
-    """Fold a lakehouse host to ``staging``/``prod``, as the builders do.
-
-    Mirrors ``LhURI._get_uri_from_name``: lowercase, then map any host that is
-    not already one of the two identifiers by looking for ``staging`` in it.
-    """
-    host = netloc.lower()
-    if not host or host in (STAGING_HOST, PRODUCTION_HOST):
-        return host
-    return STAGING_HOST if "staging" in host else PRODUCTION_HOST
 
 
 def _normalize_cos(candidate: str, parsed) -> str:
@@ -355,17 +378,29 @@ def _normalize_git(candidate: str, parsed) -> str:
     to merge with the same repo fetched another way *and* writes a secret into
     the lineage table, where it would survive in every graph response.
 
-    The ``@<ref>`` and ``#subdirectory=`` parts are intentionally not carried:
-    an artifact's identity is the repository it came from, and keeping a ref
-    would split one repo into a node per branch.
+    The pip-style ``@<ref>`` and the ``subdirectory`` fragment key are kept: two
+    subdirectories of a monorepo are different artifacts, and so is a checkout at
+    a different ref. Folding them would merge things that are not the same. Any
+    other fragment key is dropped, since it does not change what is checked out.
     """
     host = (parsed.netloc or "").rsplit("@", 1)[-1].lower()
     if not host:
         return ""
-    owner, repo = split_repo_path(parsed.path or "")
+    raw_path = parsed.path or ""
+    owner, repo = split_repo_path(raw_path)
     if not owner or not repo:
         return ""
-    return urlunparse((_GIT_CANONICAL_SCHEME, host, f"/{owner}/{repo}", "", "", ""))
+    path = f"/{owner}/{repo}"
+    _, at, ref = raw_path.partition("@")
+    ref = ref.strip("/")
+    if at and ref:
+        path = f"{path}@{ref}"
+    subdirectory = parse_qs(parsed.fragment or "").get("subdirectory", [""])[0]
+    subdirectory = _collapse_slashes(subdirectory).strip("/")
+    fragment = (
+        urlencode({"subdirectory": subdirectory}, safe="/") if subdirectory else ""
+    )
+    return urlunparse((_GIT_CANONICAL_SCHEME, host, path, "", "", fragment))
 
 
 def _normalize_mem(candidate: str, parsed) -> str:
@@ -408,18 +443,18 @@ def _normalize_https(candidate: str, parsed) -> str:
     type_segments = []
     if segments[0] in _HF_TYPE_SEGMENTS:
         type_segments, segments = [segments[0]], segments[1:]
-    if len(segments) < 2:
+    if len(segments) < 2 or segments[0] in _HF_WEB_RESERVED:
         return ""
     repo_segments, rest = segments[:2], segments[2:]
 
-    if rest:
-        if rest[0] in _HF_WEB_REVISION_MARKERS:
-            rest = rest[1:]
-            if not rest:
-                return ""
-        elif type_segments != [URLSEGMENT_BUCKETS]:
-            # A bucket has no revision, so what follows it is a path; for every
-            # other type an unmarked segment is a page, not a revision.
+    if rest and type_segments != [URLSEGMENT_BUCKETS]:
+        # A bucket has no revision, so what follows it is a path taken as is
+        # (``tree`` included); for every other type an unmarked segment is a
+        # page, not a revision.
+        if rest[0] not in _HF_WEB_REVISION_MARKERS:
+            return ""
+        rest = rest[1:]
+        if not rest:
             return ""
 
     path = "/".join(type_segments + repo_segments + rest)

@@ -46,7 +46,13 @@ creation next to a source that saw what X was made from.
 import copy
 from typing import Any, Dict, List, Optional, Tuple
 
-from gbserver.lineage.attributes import ORIGIN, ORIGIN_SYSTEM
+from gbserver.lineage.attributes import (
+    JOB,
+    JOB_COMPLETED_AT,
+    JOB_STATUS,
+    ORIGIN,
+    ORIGIN_SYSTEM,
+)
 from gbserver.storage.lineage_job_storage import ILineageJobStorage
 from gbserver.storage.lineage_row_storage import ILineageRowStorage
 from gbserver.storage.stored_lineage_job import StoredLineageJob
@@ -74,6 +80,23 @@ _SYSTEM_PRECEDENCE = ("granite.build",)
 # the index first wrote the record, and a merge is not a first write.
 _JOB_COLUMNS = ("job_namespace", "space_name", "owner", "status", "started_at")
 
+# Statuses a job moves on from. Fill-blank alone would freeze a record written
+# while the job ran at RUNNING forever, so a finished status replaces one of these
+# (column and ``job.status`` alike, with ``job.completed_at`` taken along). Matched
+# case-insensitively: granite.build, W&B and Lakehouse spell them differently.
+_IN_PROGRESS_STATUSES = frozenset(
+    {"running", "pending", "queued", "started", "starting", "created", "submitted"}
+)
+
+
+def _moves_on(existing: Any, incoming: Any) -> bool:
+    """Whether ``incoming`` is a finished status replacing an in-progress one."""
+    return (
+        str(existing or "").lower() in _IN_PROGRESS_STATUSES
+        and not _is_blank(incoming)
+        and str(incoming).lower() not in _IN_PROGRESS_STATUSES
+    )
+
 
 def _is_blank(value: Any) -> bool:
     return value is None or value == "" or value == {} or value == []
@@ -84,11 +107,19 @@ def merge_attributes(
 ) -> Dict[str, Any]:
     """Deep-merge two attributes blobs: fill blanks, keep what is already stored.
 
-    Maps merge key by key; any other value is kept unless blank. ``origin.system``
+    Maps merge key by key; any other value is kept unless blank, except that a
+    finished ``job.status`` replaces an in-progress one. ``origin.system``
     follows :func:`preferred_system`, and ``origin.ids`` is a union with existing
     winning per key -- the one place where both sides are expected to hold values.
     """
     merged = _fill_blanks(copy.deepcopy(existing or {}), incoming or {})
+    old_job = (existing or {}).get(JOB) or {}
+    new_job = (incoming or {}).get(JOB) or {}
+    if _moves_on(old_job.get(JOB_STATUS), new_job.get(JOB_STATUS)):
+        job = merged.setdefault(JOB, {})
+        job[JOB_STATUS] = new_job[JOB_STATUS]
+        if not _is_blank(new_job.get(JOB_COMPLETED_AT)):
+            job[JOB_COMPLETED_AT] = new_job[JOB_COMPLETED_AT]
     old_origin = (existing or {}).get(ORIGIN) or {}
     new_origin = (incoming or {}).get(ORIGIN) or {}
     if old_origin or new_origin:
@@ -131,6 +162,8 @@ def merge_job(existing: StoredLineageJob, incoming: StoredLineageJob) -> Dict[st
             getattr(incoming, column)
         ):
             fields[column] = getattr(incoming, column)
+    if _moves_on(existing.status, incoming.status):
+        fields["status"] = incoming.status
     attributes = merge_attributes(existing.attributes, incoming.attributes)
     if attributes != existing.attributes:
         fields["attributes"] = attributes
@@ -164,34 +197,59 @@ def upsert_row(storage: ILineageRowStorage, row: StoredLineageRow) -> str:
     Also applies the terminal rule from the module docstring, in both directions: a
     terminal row is not added when the job already has a real edge on its endpoint,
     and a real edge removes the terminal rows it supersedes.
+
+    The add and the delete of superseded terminals are two writes, not one
+    transaction. A crash between them leaves a stale terminal next to its real
+    edge; the next write of that edge (an ``UNCHANGED`` re-run included) deletes
+    it, so re-indexing repairs it rather than it lingering until a full rebuild.
     """
     if _job_id_too_long(row.job_id):
         return REJECTED
     job_rows = storage.get_rows_by_job(row.job_id)
+    stored = _same_identity(row, job_rows)
+    if stored is None:
+        if _superseded(row, job_rows):
+            return SUPERSEDED
+        stale = [other for other in job_rows if _superseded(other, [row])]
+        # The terminal's attributes are a source's view of the same job; keep
+        # them, merged before the add so the add is the only write of the row.
+        for other in stale:
+            row.attributes = merge_attributes(row.attributes, other.attributes)
+        try:
+            storage.add(row)
+        except Exception:
+            # Lost a race with another writer of the same (job, input, output):
+            # merge into what it wrote, as upsert_job does.
+            job_rows = storage.get_rows_by_job(row.job_id)
+            stored = _same_identity(row, job_rows)
+            if stored is None:
+                raise
+        else:
+            _delete_stale(storage, stale)
+            return ADDED
+    outcome = UNCHANGED
+    attributes = merge_attributes(stored.attributes, row.attributes)
+    if attributes != stored.attributes:
+        storage.update_fields(stored.uuid, {"attributes": attributes})
+        outcome = UPDATED
+    _delete_stale(
+        storage, [other for other in job_rows if _superseded(other, [stored])]
+    )
+    return outcome
+
+
+def _same_identity(
+    row: StoredLineageRow, job_rows: List[StoredLineageRow]
+) -> Optional[StoredLineageRow]:
     for stored in job_rows:
         if stored.input == row.input and stored.output == row.output:
-            attributes = merge_attributes(stored.attributes, row.attributes)
-            if attributes == stored.attributes:
-                return UNCHANGED
-            storage.update_fields(stored.uuid, {"attributes": attributes})
-            return UPDATED
+            return stored
+    return None
 
-    if _superseded(row, job_rows):
-        return SUPERSEDED
 
-    stale = [stored for stored in job_rows if _superseded(stored, [row])]
-    storage.add(row)
+def _delete_stale(storage: ILineageRowStorage, stale: List[StoredLineageRow]) -> None:
     if stale:
-        # The terminal's attributes are a source's view of the same job; keep them.
-        attributes = row.attributes
-        for stored in stale:
-            attributes = merge_attributes(attributes, stored.attributes)
-        if attributes != row.attributes:
-            added = _find(storage, row)
-            if added is not None:
-                storage.update_fields(added.uuid, {"attributes": attributes})
         storage.delete([stored.uuid for stored in stale])
-    return ADDED
 
 
 def _job_id_too_long(job_id: str) -> bool:
@@ -242,12 +300,3 @@ def _superseded(row: StoredLineageRow, others: List[StoredLineageRow]) -> bool:
     if row.output == TERMINAL and row.input != TERMINAL:
         return any(o.input == row.input and o.output != TERMINAL for o in others)
     return False
-
-
-def _find(
-    storage: ILineageRowStorage, row: StoredLineageRow
-) -> Optional[StoredLineageRow]:
-    for stored in storage.get_rows_by_job(row.job_id):
-        if stored.input == row.input and stored.output == row.output:
-            return stored
-    return None

@@ -17,6 +17,10 @@ spec:
   # checkpoint. Writes to gb_lineage_index are idempotent, but two replicas would
   # race on the checkpoint and re-read each other's work.
   replicas: {{ .Values.deployments.lineageIndexer.replicas }}
+  # Recreate, not RollingUpdate: during a rolling update the old and new pods
+  # overlap and would both write the checkpoint.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       'llmbuild/internal': '{{ $lineageIndexerName }}'
@@ -32,7 +36,17 @@ spec:
         command:
         - bash
         - -c
+        {{- if .Values.deployments.lineageIndexer.seedOnStart }}
+        # Seeds only when there is no checkpoint; a source with no job yet makes
+        # the seed fail, which must not keep the indexer from starting.
+        - >-
+          gbserver lineage-index-init --base-timestamp
+          {{ .Values.deployments.lineageIndexer.seedOnStart | quote }}
+          || echo "lineage index checkpoint not seeded; seed it with gbserver lineage-index-init";
+          exec gbserver lineage-indexer
+        {{- else }}
         - gbserver lineage-indexer
+        {{- end }}
         env:
         {{- range $key, $value := .Values.deployments.lineageIndexer.env }}
         - name: {{ $key | quote }}

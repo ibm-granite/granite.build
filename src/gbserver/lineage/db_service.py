@@ -32,6 +32,7 @@ columns store, so the root resolves in one indexed lookup.
 import logging
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
+from gbserver.lineage.attributes import origin_id
 from gbserver.lineage.db_responses import (
     global_job_entry,
     job_listing_entry,
@@ -137,6 +138,8 @@ class DBLineageService(LineageService):
         max_depth: int = 10,
         max_nodes_per_level: Optional[int] = None,
         group_runs: bool = True,
+        job_ids: Optional[List[str]] = None,
+        authorize_job: Optional[Callable[[Dict], bool]] = None,
     ) -> Dict:
         """Return a lineage graph seeded by an artifact, a job, or both.
 
@@ -145,8 +148,10 @@ class DBLineageService(LineageService):
 
         - ``uri`` -- seeds from that artifact, in any spelling.
         - ``job_id`` -- seeds from every endpoint of that execution.
-        - both -- seeds from the union, so a job's inputs and one specific artifact
-          can be expanded together.
+        - ``job_ids`` -- the same for each of several executions: the jobs behind a
+          grouped run node, so expanding it walks every input, not just the first.
+        - any combination -- seeds from the union, so a job's inputs and one
+          specific artifact can be expanded together.
 
         One of the two is required. A graph needs somewhere to start, and "the most
         recent activity" is not a question anyone asks of a lineage graph -- it is an
@@ -168,6 +173,12 @@ class DBLineageService(LineageService):
             group_runs: fold the jobs with the same input and output into one node
                 (the default); ``False`` returns one node per job. See
                 :func:`~gbserver.lineage.graph_builder.build_graph_dict`.
+            job_ids: more executions to seed from, as ``job_id``.
+            authorize_job: whether the caller may read a job, given its listing
+                entry -- the same check ``GET /lineage/jobs/{id}`` applies. A single
+                run node whose job passes gets ``gb_build_id`` and
+                ``gb_target_run_uuid``; ``None`` adds them to none. See
+                :meth:`_add_authorized_origin_ids`.
 
         Returns:
             ``{root_id, nodes, edges, truncated, unexpanded}``. ``root_id`` is the
@@ -176,11 +187,13 @@ class DBLineageService(LineageService):
             misreport what was asked about.
 
         Raises:
-            ValueError: if neither ``uri`` nor ``job_id`` is given, or ``direction``
-                is not a wire direction. The API layer maps this to a 400.
+            ValueError: if none of ``uri``, ``job_id`` or ``job_ids`` is given, or
+                ``direction`` is not a wire direction. The API layer validates both
+                first and answers 422.
         """
-        if not uri and not job_id:
-            raise ValueError("Either uri or job_id must be provided")
+        job_seeds = [j for j in ([job_id] if job_id else []) + list(job_ids or []) if j]
+        if not uri and not job_seeds:
+            raise ValueError("Either uri, job_id or job_ids must be provided")
         walk_direction = _WIRE_DIRECTIONS.get(direction)
         if walk_direction is None:
             raise ValueError(
@@ -191,8 +204,8 @@ class DBLineageService(LineageService):
         seeds: set = set()
         if root_uri:
             seeds.add(root_uri)
-        if job_id:
-            seeds.update(self._job_endpoint_uris(job_id))
+        for seed_job in dict.fromkeys(job_seeds):
+            seeds.update(self._job_endpoint_uris(seed_job))
 
         if not seeds:
             # The caller named something this index cannot key on. An empty graph
@@ -213,14 +226,63 @@ class DBLineageService(LineageService):
             collapse_self_loops=group_runs,
         )
         # Only a single-artifact query has one root to flag; anything else has many.
-        single_root = bool(root_uri) and not job_id
-        return build_graph_dict(
+        single_root = bool(root_uri) and not job_seeds
+        result = build_graph_dict(
             graph,
             root_uri=root_uri,
             root_is_artifact=single_root,
             group_runs=group_runs,
             job_rows_of=self._rows_of_jobs,
         )
+        if authorize_job is not None:
+            self._add_authorized_origin_ids(result.get("nodes", []), authorize_job)
+        return result
+
+    def _add_authorized_origin_ids(
+        self, nodes: List[Dict], authorize_job: Callable[[Dict], bool]
+    ) -> None:
+        """Add the build and target-run ids to each run node the caller may read.
+
+        The graph is cross-space, so its nodes carry only the global fields (see
+        ``db_responses.GLOBAL_JOB_FIELDS``). The origin's ids are behind the space
+        check -- the one ``GET /lineage/jobs/{id}`` applies, passed in as
+        ``authorize_job`` so the two cannot drift. A caller who could open the
+        job's detail gets them on the node too; nobody else does. Grouped nodes
+        (``runs:``) stand for many jobs and get neither.
+
+        One batched read of the run nodes' rows; the check runs once per distinct
+        owner and space. A job with no namespace or owner (an import) fails closed.
+        """
+        by_job = {
+            node["id"][len("run:") :]: node
+            for node in nodes
+            if str(node.get("id", "")).startswith("run:")
+        }
+        if not by_job:
+            return
+        rows_by_job: Dict[str, List] = {}
+        for row in self._rows_of_jobs(sorted(by_job)):
+            rows_by_job.setdefault(row.job_id, []).append(row)
+        allowed: Dict[Tuple[str, str], bool] = {}
+        for job_id, node in by_job.items():
+            rows = rows_by_job.get(job_id)
+            if not rows:
+                continue
+            entry = job_listing_entry(job_id, rows, [])
+            key = (entry["owner"], entry["space_name"])
+            if key not in allowed:
+                try:
+                    allowed[key] = bool(authorize_job(entry))
+                except Exception:
+                    logger.exception("Job access check failed for %s", job_id)
+                    allowed[key] = False
+            if not allowed[key]:
+                continue
+            metadata = node.setdefault("metadata", {})
+            for key_name in ("build_id", "target_run_uuid"):
+                value = origin_id(rows[0].attributes, key_name)
+                if value:
+                    metadata[f"gb_{key_name}"] = value
 
     def _rows_of_jobs(self, job_ids: List[str]) -> List:
         """Every stored row of ``job_ids``, batched so one ``IN`` stays bounded."""
@@ -273,59 +335,60 @@ class DBLineageService(LineageService):
         Returns:
             ``{jobs, total, limit, offset}``. ``total`` is the unpaged count of
             distinct jobs -- never rows, which overstate a many-input job. Filtered jobs
-            are ordered by ``job_id`` so paging is stable. A failed read degrades to
-            empty rather than raising.
+            are ordered by ``job_id`` so paging is stable.
+
+        Raises:
+            ValueError: ``limit`` outside ``1..1000``, ``offset`` negative, or an
+                unknown ``terminal``. The route validates these first (422).
+            Exception: a storage error propagates, so the route answers 503 rather
+                than an empty page that reads as "no jobs".
         """
-        limit = max(1, min(int(limit), _MAX_JOBS_PAGE))
-        offset = max(0, int(offset))
+        if not 1 <= int(limit) <= _MAX_JOBS_PAGE:
+            raise ValueError(f"limit must be between 1 and {_MAX_JOBS_PAGE}")
+        if int(offset) < 0:
+            raise ValueError("offset must not be negative")
+        if terminal not in (None, TERMINAL_INPUT, TERMINAL_OUTPUT):
+            raise ValueError(f"unknown terminal {terminal!r}")
         empty = {"jobs": [], "total": 0, "limit": limit, "offset": offset}
 
-        try:
-            # None means "not constrained yet", which is not the same as empty.
-            candidates: Optional[Set[str]] = None
-            if job_id:
-                candidates = {job_id} if self.storage.get_rows_by_job(job_id) else set()
-            if job_ids:
-                wanted = (
-                    set(job_ids) if candidates is None else candidates & set(job_ids)
-                )
-                recorded = {row.job_id for row in self._rows_of_jobs(sorted(wanted))}
-                candidates = wanted & recorded
+        # None means "not constrained yet", which is not the same as empty.
+        candidates: Optional[Set[str]] = None
+        if job_id:
+            candidates = {job_id} if self.storage.get_rows_by_job(job_id) else set()
+        if job_ids:
+            wanted = set(job_ids) if candidates is None else candidates & set(job_ids)
+            recorded = {row.job_id for row in self._rows_of_jobs(sorted(wanted))}
+            candidates = wanted & recorded
 
-            if uri:
-                normalized = normalize_uri(uri)
-                if not normalized:
-                    return empty
-                target = normalize_uri(output) if output else None
-                if output and not target:
-                    return empty
-                if terminal not in (None, TERMINAL_INPUT, TERMINAL_OUTPUT):
-                    return empty
-                if candidates is None:
-                    total = self.storage.count_jobs_touching(
-                        normalized, self_loop, output=target, terminal=terminal
-                    )
-                    page = self.storage.get_job_ids_touching(
-                        normalized,
-                        limit,
-                        offset,
-                        self_loop,
-                        output=target,
-                        terminal=terminal,
-                    )
-                    return {**empty, "jobs": self._job_entries(page), "total": total}
-                candidates = self.storage.filter_jobs_touching(
-                    normalized, candidates, self_loop, output=target, terminal=terminal
-                )
-
-            if candidates is None:
+        if uri:
+            normalized = normalize_uri(uri)
+            if not normalized:
                 return empty
-            ordered = sorted(candidates)
-            page, total = ordered[offset : offset + limit], len(ordered)
-            return {**empty, "jobs": self._job_entries(page), "total": total}
-        except Exception:
-            logger.exception("Lineage job listing failed")
+            target = normalize_uri(output) if output else None
+            if output and not target:
+                return empty
+            if candidates is None:
+                total = self.storage.count_jobs_touching(
+                    normalized, self_loop, output=target, terminal=terminal
+                )
+                page = self.storage.get_job_ids_touching(
+                    normalized,
+                    limit,
+                    offset,
+                    self_loop,
+                    output=target,
+                    terminal=terminal,
+                )
+                return {**empty, "jobs": self._job_entries(page), "total": total}
+            candidates = self.storage.filter_jobs_touching(
+                normalized, candidates, self_loop, output=target, terminal=terminal
+            )
+
+        if candidates is None:
             return empty
+        ordered = sorted(candidates)
+        page, total = ordered[offset : offset + limit], len(ordered)
+        return {**empty, "jobs": self._job_entries(page), "total": total}
 
     def get_job_detail(
         self,
@@ -369,19 +432,12 @@ class DBLineageService(LineageService):
         if not job_ids:
             return []
         rows_by_job: Dict[str, List] = {}
-        tags_by_job: Dict[str, set] = {}
         for row in self.storage.get_rows_by_jobs(job_ids):
             rows_by_job.setdefault(row.job_id, []).append(row)
-            tags_by_job.setdefault(row.job_id, set()).update(tag_strings(row_tags(row)))
-        # Cross-space listing: only the global fields (see GLOBAL_JOB_FIELDS).
+        # Cross-space listing: only the global fields (see GLOBAL_JOB_FIELDS), which
+        # exclude tags, so they are not read.
         return [
-            global_job_entry(
-                job_listing_entry(
-                    job_id,
-                    rows_by_job.get(job_id, []),
-                    sorted(tags_by_job.get(job_id, ())),
-                )
-            )
+            global_job_entry(job_listing_entry(job_id, rows_by_job.get(job_id, []), []))
             for job_id in job_ids
         ]
 

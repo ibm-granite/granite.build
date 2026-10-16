@@ -124,11 +124,13 @@ All under `/api/v1/lineage/`:
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/` | Ingest an OpenLineage event |
-| GET | `/build/{build_id}` | JobStats for every target in a build |
-| GET | `/target/{target_id}` | JobStats for a single target |
-| POST | `/search` | Search events by tags |
-| POST | `/artifact` | Lineage DAG for an artifact (`downstream`/`upstream`/`both`) |
+| POST | `/` | Ingest an OpenLineage event. **No authorization yet** (known risk, tracked as follow-up) |
+| GET | `/build/{build_id}` | JobStats for every target in a build (build read access) |
+| GET | `/target/{target_id}` | JobStats for a single target (build read access) |
+| POST | `/search` | Search events by tags; 503 when the backend cannot be read |
+| GET | `/graph` | Lineage graph from the index, seeded by `uri`, `job_id` and/or repeated `job_ids`; `direction` is `downstream`/`upstream`/`both`. Cross-space: nodes carry only the global fields; a run node gets `gb_build_id`/`gb_target_run_uuid` only if the caller can read that job's space |
+| GET | `/jobs` | The executions behind a graph node (`uri`, `job_id` or `job_ids`, plus `self_loop`/`output`/`terminal`), paged with `limit` 1–1000 and `offset`; global fields only |
+| GET | `/jobs/{job_id}` | One execution's full detail; owner, namespace, tags and origin ids only behind the space check |
 
 These endpoints use the `LineageService` abstraction directly (not `ILineageStore`).
 
