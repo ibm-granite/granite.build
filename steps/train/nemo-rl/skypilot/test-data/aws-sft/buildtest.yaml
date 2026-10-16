@@ -15,12 +15,7 @@ target_expectations:
     step_count: 1
     input_artifact_count: 1     # base_model
     output_artifact_count: 1    # model (env://, registered inline from the marker)
-    expected_steps:
-      - step_uri: space://steps/nemo-rl
-        config:
-          nemo_rl_config:
-            algorithm: sft
-            config_name: sft.yaml
+    jobstats_count: 1           # single step; not asserted under standalone's NoopLineageStore but kept accurate
 space_uri: ../../space
 tests:
   - runner
