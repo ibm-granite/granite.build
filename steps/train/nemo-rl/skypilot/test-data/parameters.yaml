@@ -1,0 +1,35 @@
+# Default parameters for the nemo-rl-sft sample. Override any of these at submit
+# time: gb build start -f build.yaml --param-file parameters.yaml --param KEY=VALUE
+
+# --- Environment -------------------------------------------------------------
+# Which SkyPilot endpoint to run on. The step's single environment_configs.Skypilot
+# block resolves on every endpoint that can provide the GPUs (aws first).
+ENVIRONMENT: "skypilot/aws"
+
+# --- Input model -------------------------------------------------------------
+# Base model to train, staged via an hf:// BINDING (assetstore). Llama-3.2-1B is
+# gated => the inline `hf download` needs HF_TOKEN in the step env. Swap for a
+# public model to run token-free.
+BASE_MODEL: "hf://meta-llama/Llama-3.2-1B"
+
+# --- Output ------------------------------------------------------------------
+# Where the converted HF model is registered. env:/// is cross-node-safe on a
+# shared FS (slurm/lsf); on aws a terminal env:// is registered inline. Use
+# s3://<bucket>/... to persist off-cluster on aws.
+MODEL_URI: "env:///model"
+
+# --- Training ----------------------------------------------------------------
+# Keep the sample short. Rendered as the Hydra override sft.max_num_steps=<N>.
+MAX_STEPS: 20
+
+# --- ClearML -----------------------------------------------------------------
+# Experiment-tracking project name. Only used when ClearML is enabled (auto:
+# on iff CLEARML_* server creds are present in the step env).
+CLEARML_PROJECT: "nemo-rl-sft"
+
+# --- Compute -----------------------------------------------------------------
+# Single-node, multi-GPU. Rendered as launcher_config.resources.accelerators.
+NUM_GPUS_PER_NODE: 8
+
+# How often to poll for job completion. The skypilot monitor default is 300s.
+POLL_INTERVAL_SECONDS: 30
