@@ -63,6 +63,8 @@ EXPECTED = {
     f"{_SKY}/distill/corpus-sources": (set(), set()),  # variable-length sources list
     f"{_SKY}/distill/gen-smoke": (set(), set()),  # variable-length rungs list
     f"{_SKY}/distill/probe": (set(), set()),  # diagnostic, literal paths
+    # Evaluation: not in any tag yet either, so the model input is required outright.
+    f"{_SKY}/eval/unitxt": ({"model"}, set()),
     # Shipped in v0.3.x: optional during the deprecation window, with the old config
     # key as a fallback.
     f"{_LSF}/sage-eval": (set(), {"model"}),
