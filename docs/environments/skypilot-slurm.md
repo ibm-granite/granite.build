@@ -287,6 +287,17 @@ launch fails with `NotSupportedError`; the `run:` command then executes directly
 > `FAILED 1:0` while the host-side steps complete. The image must also grant passwordless `sudo` (or run
 > as root).
 
+> **GPU steps needing runtime CUDA JIT compilation**: a plain `python:slim`/`ubuntu` base with only
+> pip-installed `nvidia-*-cu12` wheels has no `nvcc`/dev toolkit, so anything that JIT-compiles CUDA at
+> runtime (`torch.compile`/Inductor, raw Triton kernels, FlashInfer's JIT sampler) fails with
+> `libcuda.so cannot found!` or `Could not find nvcc`. Build your step's image `FROM` the shared
+> [`images/cuda-devel-base`](../../images/cuda-devel-base/README.md) instead. That image's own README
+> covers two residual gaps it does NOT solve: pip/uv can still shadow the toolkit at the package level,
+> and — specific to this SLURM/pyxis backend — the container's NVIDIA driver libraries are injected at
+> launch time, after the image is built, so Triton's own driver discovery (which checks `ldconfig -p`
+> before falling back to `LD_LIBRARY_PATH`) needs an `ldconfig` refresh run as root at container
+> start, not something an image can bake in ahead of time.
+
 ### `slurm_image_cache` — shared `.sqsh` image cache
 
 Given a registry `image_id`, SkyPilot's SLURM driver passes `registry#path` to Pyxis, which runs a full
@@ -362,6 +373,7 @@ logs a warning and launches from the registry reference as before. An `image_id`
 
 A tag that is re-pushed with new content keeps its old cached file. Delete the `.sqsh` to re-import it,
 or use a new tag (the image builds in this repo already tag by commit).
+
 
 ### `workdir` (containerized steps)
 
