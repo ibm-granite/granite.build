@@ -80,6 +80,35 @@ Kubernetes has no host/container split to worry about: the PVC is attached as a 
 container's filesystem too. There is no separate `workdir` mount to configure (unlike SLURM), and image
 steps see `/shared` like bare ones.
 
+### hf pull/push pod size
+
+hf inputs and outputs are moved by the builtin `hfpull`/`hfpush` steps, each in its own pod. Those steps
+request `total_memory_per_node: 10Gi`. gbserver skips the memory floor on SLURM and LSF, but on Kubernetes
+it becomes the pod's memory request, so on a small node (a laptop or CI kind cluster) only one fits at a
+time, and the rest fail to schedule and are retried. The transfers are I/O-bound, so both shipped
+environments size the pods down with a `compute_config` in their `space://assetstores/hf` entries. It is
+merged key by key over the step's `compute_config` (unlike `step_uri`, which swaps in a whole other step),
+and only the environment's entry is read, not a build.yaml `store_push`:
+
+```yaml
+assetstores:
+  - store_uri: space://assetstores/hf
+    pull:
+      - mode: default
+        config:
+          compute_config: {num_cpus_per_node: 1, total_memory_per_node: 2Gi}
+    push:
+      - mode: default
+        config:
+          compute_config: {num_cpus_per_node: 1, total_memory_per_node: 2Gi}
+```
+
+By default SkyPilot sets only the pod's *request*, not a limit, so a large transfer can use more memory
+than this. On a cluster that enforces limits (SkyPilot's `kubernetes.set_pod_resource_limits`, or a
+namespace `LimitRange`), the pod is capped at this size, and it has to hold the transfer plus SkyPilot's
+own runtime; raise it there for very large models. A space that published the environment before this
+setting existed keeps the 10Gi request until it re-publishes.
+
 ## The two shipped environments
 
 **`skypilot/kubernetes`** works out of the box for steps without `hf://` inputs or cross-target file
@@ -121,9 +150,15 @@ assetstores:
       - mode: default
         config:
           cache_path: /shared/hf_cache
+          compute_config:   # size the hfpull pods; see "hf pull/push pod size" below
+            num_cpus_per_node: 1
+            total_memory_per_node: 2Gi
     push:
       - mode: default
-        config: {}
+        config:
+          compute_config:
+            num_cpus_per_node: 1
+            total_memory_per_node: 2Gi
 ```
 
 The `env://` store is registered implicitly for **every** environment, so it needs no `assetstores` entry.
