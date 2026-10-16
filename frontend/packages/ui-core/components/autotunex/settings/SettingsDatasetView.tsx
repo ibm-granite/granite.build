@@ -9,17 +9,27 @@ import {
   Tab,
   TabPanels,
   TabPanel,
-  Table,
-  TableHead,
-  TableRow,
-  TableHeader,
-  TableBody,
-  TableCell,
   InlineNotification,
 } from '@carbon/react'
 import { useQuery } from '@tanstack/react-query'
 import { getDataset } from '../../../api/autotunex'
 import type { Dataset } from '../../../types'
+import { PreviewTable } from '../shared/PreviewTable'
+import { formatBytes } from '../../../lib/autotunex/formatBytes'
+
+function formatAppliedMapping(mapping: Record<string, string> | undefined): string {
+  if (!mapping || Object.keys(mapping).length === 0) return '—'
+  return Object.entries(mapping)
+    .map(([target, source]) => `${target} ← ${source}`)
+    .join(', ')
+}
+
+/** Retained versus original, flagged when the import hit the row cap. */
+function formatRowsKept(retained: number | undefined, original: number | undefined): string {
+  if (typeof retained !== 'number' || typeof original !== 'number') return '—'
+  const capped = retained < original ? ' (capped)' : ''
+  return `${retained.toLocaleString()} of ${original.toLocaleString()}${capped}`
+}
 
 interface Props {
   open: boolean
@@ -31,42 +41,6 @@ interface Props {
    * click on another user's dataset fail.
    */
   scope?: 'own' | 'all'
-}
-
-function formatBytes(bytes: number): string {
-  if (!bytes) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  let i = 0
-  let v = bytes
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
-  return `${v.toFixed(1)} ${units[i]}`
-}
-
-function PreviewTable({ rows }: { rows: Record<string, any>[] }) {
-  if (!rows || rows.length === 0) {
-    return <p style={{ padding: '1rem 0', color: 'var(--cds-text-secondary, #525252)' }}>No preview rows available.</p>
-  }
-  const columns = Array.from(new Set(rows.flatMap((r) => Object.keys(r))))
-  return (
-    <Table size="sm">
-      <TableHead>
-        <TableRow>
-          {columns.map((c) => <TableHeader key={c}>{c}</TableHeader>)}
-        </TableRow>
-      </TableHead>
-      <TableBody>
-        {rows.slice(0, 50).map((r, i) => (
-          <TableRow key={i}>
-            {columns.map((c) => (
-              <TableCell key={c}>
-                {typeof r[c] === 'object' ? JSON.stringify(r[c]) : String(r[c] ?? '')}
-              </TableCell>
-            ))}
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
-  )
 }
 
 export function SettingsDatasetView({ open, datasetId, onClose, scope = 'own' }: Props) {
@@ -122,6 +96,50 @@ export function SettingsDatasetView({ open, datasetId, onClose, scope = 'own' }:
             ))}
           </div>
 
+          {dataset.hf_repo_id && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1.5rem', marginBottom: '1.5rem' }}>
+              <div style={{ minWidth: '10rem' }}>
+                <FormLabel>HuggingFace repo</FormLabel>
+                <div style={{ fontFamily: 'monospace' }}>
+                  <a
+                    href={`https://huggingface.co/datasets/${dataset.hf_repo_id}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {dataset.hf_repo_id}
+                  </a>
+                </div>
+              </div>
+              {([
+                ['Revision', dataset.hf_revision ? dataset.hf_revision.slice(0, 7) : '—'],
+                ['Config', dataset.hf_config ?? '—'],
+                ['Split', dataset.hf_split ?? '—'],
+                ['Applied mapping', formatAppliedMapping(dataset.hf_provenance?.column_mapping)],
+                [
+                  'Train rows kept',
+                  formatRowsKept(
+                    dataset.hf_provenance?.train_retained_rows,
+                    dataset.hf_provenance?.train_original_rows
+                  ),
+                ],
+                [
+                  'Validation rows kept',
+                  formatRowsKept(
+                    dataset.hf_provenance?.validation_retained_rows,
+                    dataset.hf_provenance?.validation_original_rows
+                  ),
+                ],
+              ] as [string, string][]).map(([label, value]) => (
+                <div key={label} style={{ minWidth: '10rem' }}>
+                  <FormLabel>{label}</FormLabel>
+                  <div style={{ fontFamily: 'monospace' }} title={label === 'Revision' ? dataset.hf_revision : undefined}>
+                    {value}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           <Tabs>
             <TabList aria-label="Dataset preview">
               <Tab>Train</Tab>
@@ -129,10 +147,18 @@ export function SettingsDatasetView({ open, datasetId, onClose, scope = 'own' }:
             </TabList>
             <TabPanels>
               <TabPanel>
-                <PreviewTable rows={dataset.preview?.train ?? []} />
+                <PreviewTable
+                  rows={dataset.preview?.train ?? []}
+                  maxRows={50}
+                  emptyMessage="No preview rows available."
+                />
               </TabPanel>
               <TabPanel>
-                <PreviewTable rows={dataset.preview?.validation ?? []} />
+                <PreviewTable
+                  rows={dataset.preview?.validation ?? []}
+                  maxRows={50}
+                  emptyMessage="No preview rows available."
+                />
               </TabPanel>
             </TabPanels>
           </Tabs>

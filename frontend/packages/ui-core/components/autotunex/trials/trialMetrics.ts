@@ -128,6 +128,39 @@ export function rowsForTrials(rows: MetricPoint[], trialIds: string[]): MetricPo
   return rows.filter((row) => row.trial_id != null && wanted.has(row.trial_id))
 }
 
+/**
+ * The rows the trials table can account for — the runs it lists, plus the job's
+ * single unnamed run — for drawing a whole phase rather than a selection.
+ *
+ * `derivePhases` cannot always separate the two phases. While the search could
+ * still start a trial it has to read every unrecognised id as a late search
+ * trial rather than the final run (see `searchComplete` there), and a job that
+ * finished without resolving all `num_trials` trial rows leaves it in that
+ * branch for good. Its search phase then carries runs the table has no row for —
+ * the final run among them — and they arrived on the search charts' shared
+ * y-scale, where the final run's full-data descent beside the trials' one-epoch
+ * stubs is the comparison those charts exist to prevent, under a legend entry
+ * naming a trial the reader cannot find in the table.
+ *
+ * Unlike `rowsForTrials` this keeps a row with no `trial_id`. That row is the
+ * job's single unnamed run, which owns no table row and so can never be named by
+ * one; dropping it would blank the charts for a plain tuning job, whose every row
+ * is untagged. The distinction is what makes these two functions separate: one
+ * answers "which runs did the reader tick", where an untagged run cannot have
+ * been ticked, and this one answers "which runs does the table know about", where
+ * an untagged run is the table's whole subject.
+ *
+ * An empty `trialIds` therefore keeps the untagged rows and nothing else, rather
+ * than returning everything: a table with no rows vouches for no named run.
+ *
+ * Safe to hand the result to `runOrigins`, for the same reason `rowsForTrials` is
+ * — it drops whole runs and leaves the survivors' rows intact.
+ */
+export function rowsForKnownRuns(rows: MetricPoint[], trialIds: string[]): MetricPoint[] {
+  const known = new Set(trialIds)
+  return rows.filter((row) => row.trial_id == null || known.has(row.trial_id))
+}
+
 // Carbon's own categorical steps, reordered until they passed colour-vision
 // validation — Carbon's default order fails twice: teal-70 (#005d5d) drops below
 // the chroma floor and reads grey, and magenta-70 next to it separates by only
@@ -170,15 +203,18 @@ export const METRIC_DE_EMPHASIS: Record<ChartsTheme, string> = {
 }
 
 /**
- * Past this many runs the charts switch to emphasis — best run in the first
- * palette slot, every other run in the de-emphasis grey — rather than reaching
- * for more hues. Ten is where `METRIC_PALETTE` runs out: past it a hue would have
- * to be invented rather than taken from Carbon, and an invented hue is
- * indistinguishable from an existing one under colour-vision deficiency.
+ * The number of distinct hues `METRIC_PALETTE` holds. Ten is where it runs out:
+ * past it a hue would have to be invented rather than taken from Carbon, and an
+ * invented hue is indistinguishable from an existing one under colour-vision
+ * deficiency.
  *
- * This counts every run in the job, not the selected subset. Colour follows the
- * run, so `trialColorScale` is always handed the full list — an 11-trial job is
- * in emphasis form even when the reader has ticked only two of them.
+ * So past this many runs the palette cycles and hues repeat — run 11's home slot is
+ * run 1's. Two consequences: a ticked run whose home slot another ticked run holds
+ * borrows a free one (see `selectionSlots`), and a view drawing every run with
+ * nothing ticked switches to emphasis (see `emphasisColorScale`).
+ *
+ * This counts every run in the job, not the selected subset, because colour
+ * follows the run and `trialColorScale` is always handed the full list.
  */
 export const EMPHASIS_THRESHOLD = 10
 
@@ -191,27 +227,96 @@ export type ChartsTheme = 'white' | 'g100'
  * in `orderedIds`, so hiding one series never repaints the others. Callers must
  * therefore pass the full ordered run list, not the currently visible subset.
  *
- * Above `EMPHASIS_THRESHOLD` runs this returns the emphasis form — the best run
- * in the first palette slot, every other run in the de-emphasis grey.
+ * Each run's home slot is its position modulo the palette, so past
+ * `EMPHASIS_THRESHOLD` runs several runs share a home. The alternative — greying
+ * every run but the best — made the colour a run showed depend on how many trials
+ * the job happened to have. `slots`, from `selectionSlots`, overrides the home slot
+ * for the ticked runs so that no two of them share a hue.
  */
 export function trialColorScale(
   orderedIds: string[],
-  bestId: string | undefined,
-  theme: ChartsTheme
+  theme: ChartsTheme,
+  slots: Record<string, number> = {}
 ): Record<string, string> {
   const palette = METRIC_PALETTE[theme]
   const scale: Record<string, string> = {}
-
-  if (orderedIds.length > EMPHASIS_THRESHOLD) {
-    for (const id of orderedIds) {
-      scale[id] = id === bestId ? palette[0] : METRIC_DE_EMPHASIS[theme]
-    }
-    return scale
-  }
   orderedIds.forEach((id, i) => {
-    scale[id] = palette[i % palette.length]
+    scale[id] = palette[slots[id] ?? i % palette.length]
   })
   return scale
+}
+
+/**
+ * The emphasis form of a `trialColorScale` result: the best run keeps its own
+ * colour, every other run takes the de-emphasis grey.
+ *
+ * For a view that draws every run at once with nothing ticked, in a job past
+ * `EMPHASIS_THRESHOLD` runs. There the runs are context rather than a comparison,
+ * and a repeated hue would pair runs that have nothing to do with each other. The
+ * best run keeps its permanent slot rather than taking slot 0, so it is the same
+ * colour here as on its row checkbox and in its Metrics tab.
+ */
+export function emphasisColorScale(
+  scale: Record<string, string>,
+  bestId: string | undefined,
+  theme: ChartsTheme
+): Record<string, string> {
+  const emphasis: Record<string, string> = {}
+  for (const id of Object.keys(scale)) {
+    emphasis[id] = id === bestId ? scale[id] : METRIC_DE_EMPHASIS[theme]
+  }
+  return emphasis
+}
+
+/**
+ * Palette slot per ticked run, for `trialColorScale`'s `slots`.
+ *
+ * A run takes its home slot (its position in `orderedIds`, modulo the palette)
+ * unless another ticked run already holds it, and then borrows the lowest free
+ * slot. Refusing the tick instead disabled rows while the reader was still under
+ * the selection cap, and the cap is the palette size, so a free slot always exists.
+ *
+ * Sticky: a run already in `previous` keeps its slot for as long as it stays in
+ * `selectedIds`, even once its home frees up, so unticking one run never repaints
+ * another's curve. Pass the previous result back in on every change; runs no longer
+ * ticked are dropped, freeing their slots. Newly ticked runs are placed in
+ * `selectedIds` order, which is tick order.
+ *
+ * At or below `EMPHASIS_THRESHOLD` runs no two homes collide, so every run gets its
+ * home slot and colour follows the run outright.
+ */
+export function selectionSlots(
+  orderedIds: string[],
+  selectedIds: string[],
+  previous: Record<string, number>
+): Record<string, number> {
+  const size = METRIC_PALETTE.white.length
+  const slots: Record<string, number> = {}
+  const taken = new Set<number>()
+  for (const id of selectedIds) {
+    if (previous[id] !== undefined) {
+      slots[id] = previous[id]
+      taken.add(previous[id])
+    }
+  }
+  for (const id of selectedIds) {
+    if (slots[id] !== undefined) continue
+    const index = orderedIds.indexOf(id)
+    if (index === -1) continue
+    const home = index % size
+    let slot = home
+    if (taken.has(home)) {
+      for (let s = 0; s < size; s++) {
+        if (!taken.has(s)) {
+          slot = s
+          break
+        }
+      }
+    }
+    slots[id] = slot
+    taken.add(slot)
+  }
+  return slots
 }
 
 // `primaryMetric` and `bestTrialId` live in `trialsRadar.ts`, beside the
@@ -324,4 +429,66 @@ export function toChartRows(
  */
 export function positiveRows(rows: ChartRow[]): ChartRow[] {
   return rows.filter((r) => r.value > 0)
+}
+
+/**
+ * Fraction of the visible decades to leave clear at each end of a log y axis.
+ *
+ * Deliberately the same 0.1 Carbon pads a linear axis by, so the log charts get
+ * the same visual breathing room as the loss charts beside them — the difference
+ * is only that this one is measured in decades, which is the space the axis
+ * actually draws in.
+ */
+const LOG_PADDING_RATIO = 0.1
+
+/**
+ * Minimum pad, in decades, for a series whose values never change. Carbon's own
+ * pad is `(max - min) * ratio`, which is exactly 0 for a constant series, so its
+ * domain collapses to `[v, v]` and the d3 log scale degenerates. A constant
+ * learning rate is an ordinary schedule, not a broken run.
+ */
+const LOG_MIN_PAD_DECADES = 0.05
+
+/**
+ * An explicit y domain for a log axis, padded in decades.
+ *
+ * Carbon pads every axis domain by `(max - min) * paddingRatio` and applies that
+ * linear pad whatever the scale type (`extendsDomain` -> the `nn` helper in
+ * @carbon/charts). On a log axis that is almost no padding at all: a learning-rate
+ * schedule spanning 1e-9..5e-6 gets a pad of ~10% of the max, which is log10(1.1)
+ * = 0.04 of the 3.7 decades on screen — about 1% of the plot height, narrower than
+ * the stroke, so every curve's peak was drawn flat-topped against the plot frame.
+ * The floor was worse: the helper's LOG branch clamps the lower bound back to the
+ * data minimum exactly, putting the lowest point *on* the bottom axis.
+ *
+ * `paddingRatio` lives in Carbon's `configuration-non-customizable`, so the only
+ * way to reach this is to hand the axis a `domain` that already has the headroom.
+ *
+ * Carbon still re-pads what it is given — an explicit `domain` goes through
+ * `extendsDomain` too — so the top ends up with slightly more room than the
+ * bottom, whose clamp lands it back on exactly the value returned here. Both ends
+ * clear the frame, which is the point; the asymmetry is a few percent and not
+ * worth compensating for by second-guessing a constant we do not control.
+ *
+ * Returns undefined when there is nothing to measure, or when a non-positive
+ * value is present. `positiveRows` runs ahead of this at every call site, so that
+ * second case should not arise — and if it ever does, declining leaves Carbon's
+ * own behaviour (it throws, loudly and on purpose) exactly as it was rather than
+ * papering over it with a domain that silently hides the point.
+ */
+export function logDomain(rows: ChartRow[]): [number, number] | undefined {
+  if (rows.length === 0) return undefined
+
+  let min = Infinity
+  let max = -Infinity
+  for (const row of rows) {
+    if (row.value < min) min = row.value
+    if (row.value > max) max = row.value
+  }
+  if (!(min > 0) || !Number.isFinite(max)) return undefined
+
+  const low = Math.log10(min)
+  const high = Math.log10(max)
+  const pad = Math.max((high - low) * LOG_PADDING_RATIO, LOG_MIN_PAD_DECADES)
+  return [10 ** (low - pad), 10 ** (high + pad)]
 }

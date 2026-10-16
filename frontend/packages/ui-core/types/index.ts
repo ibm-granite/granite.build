@@ -256,6 +256,28 @@ export type TuningGoal = 'sft' | 'offline_rl' | 'online_rl'
  */
 export type ModelSource = 'huggingface' | 'custom_path'
 
+/**
+ * The Start Tuning wizard's model-source radios. `tuned_model` ("My tuned
+ * models") is wizard-only: it picks one of the caller's own tuned outputs, which
+ * is an ordinary HuggingFace repo, so it is sent as `huggingface` — see
+ * `toWireModelSource` in the app's modelSources.ts. `ModelSource` stays the wire type.
+ */
+export type WizardModelSource = ModelSource | 'tuned_model'
+
+/** A completed job's full-weight output usable as a base model (GET /jobs/tuned-models). */
+export interface TunedModel {
+  job_id: string
+  /** `owner/name` — submitted as `model`. */
+  repo_id: string
+  model_source: 'huggingface'
+  experiment_name: string
+  base_model: string
+  tuning_type: string | null
+  rl_tuner_type: string | null
+  finished_at: string | null
+  user: string
+}
+
 export type DatasetFormatType =
   | 'preference_pairs'
   | 'kto_format'
@@ -318,7 +340,7 @@ export interface DatasetForm {
   trainSetPercentage?: number
 }
 
-export type DatasetStatus = 'empty' | 'uploading' | 'ready' | 'error'
+export type DatasetStatus = 'empty' | 'uploading' | 'importing' | 'ready' | 'error'
 
 export interface Dataset {
   id: string
@@ -340,12 +362,96 @@ export interface Dataset {
   // Only present on single-dataset fetches (GET /datasets/{id}), not on GET /datasets.
   data_format?: 'jsonl' | 'parquet'
   associated_jobs?: unknown[]
+  // HuggingFace import provenance, set by POST /datasets/hf/import. Present only
+  // on imported datasets, and only on single-dataset fetches (GET /datasets/{id}).
+  hf_repo_id?: string
+  hf_revision?: string
+  hf_config?: string
+  hf_split?: string
+  hf_provenance?: HfProvenance
   // Small preview slices, populated when a single dataset is fetched with
   // ?preview=true (GET /datasets/{id}?preview=true&preview_rows=N).
   preview?: {
     train: Record<string, any>[]
     validation: Record<string, any>[]
   }
+}
+
+/** The `hf_provenance` blob written by the import service. All fields optional:
+ *  it is stored as free-form JSON, and the validation pair is absent when the
+ *  import had no validation split. */
+export interface HfProvenance {
+  column_mapping?: Record<string, string>
+  train_original_rows?: number
+  train_retained_rows?: number
+  validation_original_rows?: number
+  validation_retained_rows?: number
+  /** Shards the import never opened because the row cap was already reached. The
+   *  `_original_rows` above count only shards actually opened, so when the cap lands
+   *  exactly on a shard boundary they equal `_retained_rows` while data remains
+   *  unread — comparing those two numbers alone reports such an import as complete.
+   *  Prefer `_truncated`, which the server derives from both signals. Absent on
+   *  imports made before the server recorded them; absence is not proof an import
+   *  was complete. */
+  train_unread_shards?: number
+  train_truncated?: boolean
+  validation_unread_shards?: number | null
+  validation_truncated?: boolean | null
+}
+
+export interface HfImportConfig {
+  available: boolean
+  max_bytes: number
+  max_rows: number
+}
+
+/** GET /app-config. Only the group this frontend consumes is typed — the endpoint
+ *  also returns a `dataset_upload` group that nothing here reads. */
+export interface AppConfig {
+  hf_import: HfImportConfig
+}
+
+export interface HfDatasetSplits {
+  repo_id: string
+  /** Commit sha of HF's *converted parquet branch* — not of the repo's default
+   *  branch, which is a different commit. Both HF request bodies require it, so it
+   *  must be threaded from here through preview into import: that is what stops a
+   *  branch moving mid-wizard from swapping the data under an approved selection. */
+  revision: string
+  /** Config name -> split names. Note a split HF sharded past 10 000 files appears
+   *  here as `train-part0`, `train-part1`, ... rather than `train`. */
+  configs: Record<string, string[]>
+}
+
+export interface HfImportPreview {
+  /** The revision an *import* will read. The sample itself comes from HF's dataset
+   *  viewer, which serves the latest conversion and takes no revision, so these
+   *  rows are not guaranteed to be from this commit. */
+  revision: string
+  columns: string[]
+  raw_rows: ParsedDataRow[]
+  mapped_rows: ParsedDataRow[]
+  sampled: number
+  survived: number
+}
+
+/** Both HF request bodies are `extra="forbid"` server-side: an unknown key is a
+ *  422, so these are built field by field and never spread from component state. */
+export interface HfPreviewRequestPayload {
+  repo_id: string
+  /** Required. Pass `HfDatasetSplits.revision` straight through; the server
+   *  validates `^[0-9a-f]{40}$`, so a branch name or an abbreviated sha is a 422. */
+  revision: string
+  config: string
+  train_split: string
+  validation_split?: string | null
+  column_mapping: Record<string, string>
+}
+
+export interface HfImportRequestPayload extends HfPreviewRequestPayload {
+  name: string
+  description?: string | null
+  validation_percentage?: number | null
 }
 
 export interface DatasetInfo {
@@ -730,6 +836,7 @@ export interface LogEntry {
 }
 
 export type LaunchPhase =
+  | 'importing_dataset'
   | 'creating_dataset'
   | 'uploading_files'
   | 'creating_config'
@@ -739,6 +846,7 @@ export type LaunchPhase =
 
 /** What a launch will do, fixed when it starts (drives the launch progress rows). */
 export interface LaunchPlan {
+  importHfDataset: boolean
   uploadDataset: boolean
   updateConfig: boolean
   createConfig: boolean
@@ -774,35 +882,11 @@ export interface WizardDraft {
   selectedGoal: TuningGoal | null
   selectedAlgorithm: string
   selectedModel: string
-  modelSource: ModelSource
+  modelSource: WizardModelSource
   datasetForm: { name: string; description: string }
   existingDatasetId: string | null
   splitRatio: number
   selectedConfigId: string | null
   experimentName: string
   autotuneEnabled?: boolean
-}
-
-export type HuggingFaceLibraryName = 'sentence-transformers' | 'transformers'
-
-export interface HuggingFaceModelConfig {
-  architectures: string[]
-  model_type: string
-  chat_template_jinja?: string
-  processor_config?: { chat_template: string }
-}
-
-export interface HuggingFaceModel {
-  _id: string
-  id: string
-  likes: number
-  trendingScore: number
-  private: boolean
-  config: HuggingFaceModelConfig
-  downloads: number
-  tags: string[]
-  pipeline_tag: string
-  library_name: HuggingFaceLibraryName
-  createdAt: string
-  modelId: string
 }

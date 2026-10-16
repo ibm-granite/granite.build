@@ -5,7 +5,7 @@ import { Checkbox, ContentSwitcher, Dropdown, FormLabel, MultiSelect, NumberInpu
 import type { Configuration, ConfigForm, TuningGoal } from '../../../types'
 import { getOption, parseCommaList, toUpperCase } from '../../../lib/autotunex/wizardUtils'
 import { computeSectionNames } from '../../../lib/autotunex/configSections'
-import { clampConcurrentTrials, formatValues, isNumericList, liveInvalidFields, maxConcurrentTrialsCap, parseNumericCommaList, parseValuesInput, reconcileDefault } from '../../../lib/autotunex/hyperparamValues'
+import { clampConcurrentTrials, defaultOutsideChoice, formatValues, isNumericList, liveInvalidFields, maxConcurrentTrialsCap, parseNumericCommaList, parseValuesInput, reconcileDefault } from '../../../lib/autotunex/hyperparamValues'
 import { GeneralConfigForm } from './GeneralConfigForm'
 import { TimeInput } from '../shared/TimeInput'
 import styles from './CreateConfigForm.module.scss'
@@ -283,7 +283,15 @@ export function CreateConfigForm({ config, setConfig, configurations, editMode =
               label="Default"
               min={paramConfig.min_val}
               max={paramConfig.max_val}
-              invalidText={`Value must be between ${paramConfig.min_val} and ${paramConfig.max_val}`}
+              // Carbon flags only min/max itself, so a choice default that is in range
+              // but missing from Values stayed unmarked while Confirm refused it. With
+              // HPO off the Values input is disabled, hence the pointer to turn it on.
+              invalid={defaultOutsideChoice(paramConfig) || undefined}
+              invalidText={
+                defaultOutsideChoice(paramConfig)
+                  ? `Must be one of the Values (${formatValues(paramConfig.values)}).${hpoEnabled ? '' : ' Turn on hyperparameter optimization to edit the Values.'}`
+                  : `Value must be between ${paramConfig.min_val} and ${paramConfig.max_val}`
+              }
               step={paramConfig.type === 'float' ? 0.01 : 1}
               value={paramConfig.default}
               onChange={(_e, { value }) => update({ default: typeof value === 'number' ? value : Number(value) })}

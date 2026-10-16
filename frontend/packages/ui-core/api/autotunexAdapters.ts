@@ -14,6 +14,7 @@ import type {
   ListParams,
   ListResult,
   Trial,
+  TunedModel,
   TuningAsset,
   TuningJob,
   TuningStatus,
@@ -191,6 +192,23 @@ export function adaptAsset(raw: Record<string, unknown>): TuningAsset {
     path: (raw.path as string | null) ?? null,
     file_hash: (raw.file_hash as string | null) ?? null,
     published: (raw.published as boolean | null) ?? null,
+  }
+}
+
+// ── Tuned models ────────────────────────────────────────────────────────────────
+
+/** Maps one GET /jobs/tuned-models item. The source is always `huggingface` — only HF-hosted outputs are listed. */
+export function adaptTunedModel(raw: Record<string, unknown>): TunedModel {
+  return {
+    job_id: raw.job_id as string,
+    repo_id: raw.repo_id as string,
+    model_source: 'huggingface',
+    experiment_name: (raw.experiment_name as string) ?? '',
+    base_model: (raw.base_model as string) ?? '',
+    tuning_type: (raw.tuning_type as string | null) ?? null,
+    rl_tuner_type: (raw.rl_tuner_type as string | null) ?? null,
+    finished_at: (raw.finished_at as string | null) ?? null,
+    user: (raw.user as string) ?? '',
   }
 }
 
