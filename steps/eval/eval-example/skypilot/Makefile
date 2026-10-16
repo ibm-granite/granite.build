@@ -30,9 +30,5 @@ override STEP_PUBLISHABLE := false
 # WILL push to this bogus registry and fail auth unless you set a real one.
 # IMAGE_TAG defaults to the git short SHA if not set.
 REGISTRY ?= quay.io/your-org
-# Pinned rather than derived (common.mk defaults IMAGE_NAME to gb-step-$(STEP_NAME)):
-# the image was published as gb-step-eval before this step was renamed, so existing
-# image refs keep resolving. A step copied from this one should set its own name.
-IMAGE_NAME := gb-step-eval
 
 include ../../../common.mk

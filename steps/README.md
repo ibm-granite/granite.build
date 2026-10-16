@@ -267,11 +267,13 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   `publish-step` into a temp dir and `diff`s it against the three committed trees,
   exiting non-zero on drift. It re-renders image steps with the **already-committed**
   image reference (extracted from the published `step.yaml`), so it is immune to the
-  per-commit `IMAGE_TAG` churn and flags only genuine content drift. Exit 0 when in
-  sync (or nothing is published yet); exit 1 on drift, or when a step that is not
-  publishable (`STEP_PUBLISHABLE` not `true`) still has a committed published copy
-  (reported as `STALE`, with the paths to `git rm -r`); exit 2 when the re-render itself
-  fails (its output is printed and nothing is compared).
+  per-commit `IMAGE_TAG` churn and flags only genuine content drift. Succeeds when in
+  sync, or when none of the three published locations exists. Otherwise it fails, and
+  its message says why: `DRIFT` (re-run `make publish-step`); `STALE` (a step that is
+  not publishable, `STEP_PUBLISHABLE` not `true`, still has a committed copy in any of
+  the three locations, listed with the paths to `git rm -r`); or `ERROR` (the re-render
+  itself failed; its output is printed and nothing is compared). Go by the message, not
+  the exit status: make exits 2 whenever a recipe fails, whatever the cause.
 * **`all`** — the full pipeline: `image` + `publish-image` + `space` for image steps,
   or just `space` for public-image steps.
 * **`test`** — render the Space (depends on `space`) **and build the image

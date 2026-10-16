@@ -522,18 +522,23 @@ publish-step:
 # the "keep the published image tag and your local build in sync" note under "Two
 # test modes" in steps/README.md). It also passes PUBLISH_REQUIRE_IMAGE=false to
 # the re-render so drift-checking stays offline (it never queries the registry — the
-# image-existence guard applies only to a real `make publish-step`). Exit 0 = in sync
-# (or nothing published yet); exit 1 = drift, so re-run `make publish-step` and commit it,
-# or a STALE copy (below); exit 2 = the re-render itself failed, so nothing was compared.
+# image-existence guard applies only to a real `make publish-step`). It succeeds when the
+# committed trees are in sync, or when none of the three published locations exists
+# (nothing published yet). Otherwise it fails, and the first line says why: DRIFT
+# (re-run `make publish-step` and commit it), STALE or ERROR (below). Go by that
+# message, not the exit status: make exits 2 whenever a recipe fails, so a caller
+# cannot tell the three cases apart by status.
 #
 # Two failures are reported as themselves rather than as drift. Both used to surface as
 # "every file drifted, re-run publish-step": the re-render's output went to /dev/null,
 # so a failed render left the temp trees empty and the diff blamed the committed files.
 #   * STALE — the step is not publishable (STEP_PUBLISHABLE is not `true`) yet a
-#     published copy is still committed. Re-publishing is impossible (publish-step
-#     refuses), so the fix is to remove the copy (or make the step publishable again).
-#   * Render failure — any other publish-step error. Its captured output is printed and
-#     the check stops with exit 2 instead of diffing against a half-written temp tree.
+#     published copy is still committed in ANY of the three locations (a leftover
+#     test/steps/ copy counts, even after the assets copy is deleted). Re-publishing
+#     is impossible (publish-step refuses), so the fix is to remove the copies (or
+#     make the step publishable again).
+#   * ERROR — any other publish-step failure. Its captured output is printed and the
+#     check stops instead of diffing against a half-written temp tree.
 #
 # A MISSING side is compared against an empty directory, not /dev/null. Git cannot hold an
 # empty directory, so a step with no per-cluster build tests has no committed test/steps/
@@ -546,8 +551,8 @@ publish-step:
 # scratch dir compares correctly in both directions: silent when both sides are empty, and a
 # real added-files report when only one side has content.
 check-published:
-	@if [ ! -f "$(PUBLISH_STEP_DIR)/step.yaml" ]; then \
-		echo "[$(STEP_NAME)] nothing published at $(PUBLISH_STEP_DIR); nothing to check."; exit 0; \
+	@if [ ! -e "$(PUBLISH_STEP_DIR)" ] && [ ! -e "$(PUBLISH_TEST_DIR)" ] && [ ! -e "$(PUBLISH_TESTDATA_DIR)" ]; then \
+		echo "[$(STEP_NAME)] nothing published at $(PUBLISH_STEP_DIR) (or its test/steps/, test-data/steps/ copies); nothing to check."; exit 0; \
 	fi; \
 	if [ "$(STEP_PUBLISHABLE)" != "true" ]; then \
 		echo "[$(STEP_NAME)] STALE: step is not publishable (STEP_PUBLISHABLE='$(STEP_PUBLISHABLE)'; only 'true' publishes) but a published copy is committed:"; \
@@ -559,14 +564,14 @@ check-published:
 	fi; \
 	tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
 	empty="$$tmp/.empty"; mkdir -p "$$empty"; \
-	ref=$$(sed -n 's#.*image_id: *"docker:\(.*\)".*#\1#p' "$(PUBLISH_STEP_DIR)/step.yaml" | head -1); \
+	ref=$$(sed -n 's#.*image_id: *"docker:\(.*\)".*#\1#p' "$(PUBLISH_STEP_DIR)/step.yaml" 2>/dev/null | head -1); \
 	$(MAKE) --no-print-directory publish-step \
 		PUBLISH_STEP_DIR="$$tmp/step" PUBLISH_TEST_DIR="$$tmp/test" \
 		PUBLISH_TESTDATA_DIR="$$tmp/testdata" PUBLISH_REQUIRE_IMAGE=false \
 		$${ref:+IMAGE_REF="$$ref"} >"$$tmp/render.log" 2>&1 || { \
 		echo "[$(STEP_NAME)] ERROR: re-rendering the step failed, so nothing was compared:"; \
 		sed 's/^/  /' "$$tmp/render.log"; \
-		exit 2; \
+		exit 1; \
 	}; \
 	rc=0; \
 	for pair in "$(PUBLISH_STEP_DIR):$$tmp/step" "$(PUBLISH_TEST_DIR):$$tmp/test" "$(PUBLISH_TESTDATA_DIR):$$tmp/testdata"; do \
