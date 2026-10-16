@@ -27,6 +27,7 @@ import sqlite3
 import uuid as uuid_module
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from gbserver.lineage.attributes import build_attributes
 from gbserver.storage.lineage_row_storage import DOWNSTREAM, UPSTREAM, GroupedEdge
@@ -635,3 +636,23 @@ def test_delete_all_rows_keeps_the_table_for_a_second_handle(storage):
     other.add(row(job_id="J2"))
     assert [r.job_id for r in other.get_rows_by_job("J2")] == ["J2"]
     assert storage.delete_all_rows() == 1
+
+
+def test_add_replacing_adds_and_deletes_in_one_transaction(storage):
+    terminal = row(job_id="J", output=TERMINAL)
+    storage.add(terminal)
+    edge = row(job_id="J")
+    storage.add_replacing(edge, [terminal.uuid])
+    assert [(r.input, r.output) for r in storage.get_rows_by_job("J")] == [
+        (edge.input, edge.output)
+    ]
+
+
+def test_add_replacing_deletes_nothing_when_the_add_conflicts(storage):
+    """A lost race rolls the deletes back with the insert."""
+    terminal = row(job_id="J", output=TERMINAL)
+    storage.add(terminal)
+    storage.add(row(job_id="J"))  # another writer got the edge in first
+    with pytest.raises(IntegrityError):
+        storage.add_replacing(row(job_id="J"), [terminal.uuid])
+    assert len(storage.get_rows_by_job("J")) == 2

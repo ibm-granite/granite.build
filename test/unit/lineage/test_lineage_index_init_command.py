@@ -29,6 +29,12 @@ class _KV:
     def set_value(self, key, value):
         self.values[key] = value
 
+    def compare_and_set(self, key, expected, value):
+        if self.values.get(key) != expected:
+            return False
+        self.set_value(key, value)
+        return True
+
 
 @pytest.fixture(name="env")
 def env_fixture():

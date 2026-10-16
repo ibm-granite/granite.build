@@ -128,13 +128,17 @@ _MAX_JOB_ATTEMPTS = 5
 _WANDB_PAGE_SIZE = 200
 
 # A W&B run still "running" is still receiving its artifacts and job_id (the sink
-# logs them asynchronously until finish()), so it is waited on -- but only this
-# long, so a run whose writer died without finishing does not pin the scan.
+# logs them asynchronously until finish()), so the checkpoint waits on it -- but
+# only this long, so a run whose writer died is eventually indexed as it is.
 _WANDB_RUNNING_MAX_AGE_S = 6 * 3600
-# How long one running lineage run may hold the scan before it is warned about
-# (once per run): past this its writer has likely died, and every W&B run after
-# it waits until _WANDB_RUNNING_MAX_AGE_S.
+# How long one running lineage run may hold the checkpoint before it is warned
+# about (once per run): past this its writer has likely died. Runs after it are
+# still indexed (see _MAX_DONE_AHEAD); only the checkpoint waits.
 _WANDB_PINNED_WARN_AFTER_S = 30 * 60
+# Jobs indexed past a held (pending) job, remembered in the checkpoint so a later
+# scan does not redo them while the checkpoint waits behind the held job. Past
+# this many the scan stops instead, as it did before jobs could be held.
+_MAX_DONE_AHEAD = 5000
 # wandb_service.LINEAGE_RUN_JOB_TYPE, restated so this module does not import wandb.
 _WANDB_LINEAGE_RUN_JOB_TYPE = "gb-lineage-event"
 
@@ -342,8 +346,12 @@ class JobLineageIndexer:
     before each write and stops if someone else changed it (a forced re-seed, or
     another indexer during a rollout), rather than overwrite it.
 
-    **A pending job stops the scan.** A source may list a job whose lineage is
-    not complete yet; advancing past it would skip whatever lands later.
+    **A pending job holds the checkpoint, not the scan.** A source may list a job
+    whose lineage is not complete yet (a W&B run still ``running``); advancing
+    past it would skip whatever lands later. The checkpoint stays behind it while
+    the jobs after it are indexed and listed as ``done_ahead`` in the checkpoint,
+    up to ``_MAX_DONE_AHEAD``. An unsettled job (younger than the settle grace)
+    still stops the scan.
 
     **Two collaborators, two directions.** Jobs are *read* from whichever source
     this subclass is for -- ``gb_targets``, ``gb_lineage_job`` or the W&B API --
@@ -488,7 +496,11 @@ class JobLineageIndexer:
         return value
 
     def _advance_checkpoint(
-        self, storage: SingletonAdminStorage, timestamp: str, item_ids: List[str]
+        self,
+        storage: SingletonAdminStorage,
+        timestamp: str,
+        item_ids: List[str],
+        done_ahead: Optional[Dict[str, str]] = None,
     ) -> bool:
         """Write a scan's progress unless the checkpoint changed under the scan.
 
@@ -496,23 +508,43 @@ class JobLineageIndexer:
         one this scan started from or last wrote: a ``--force`` re-seed, or another
         indexer pod overlapping during a rollout. Overwriting it would undo the
         re-seed, so the scan stops and the next one starts from what is stored.
-        The read and the write are not atomic; this closes the window a long scan
-        leaves open, not a race between two writes in the same instant.
+        The write is a compare-and-set against the value just read, so a re-seed
+        landing between the check and the write is not overwritten either.
         """
-        current = self.read_checkpoint(storage)
-        if current != self._expected_checkpoint:
-            logger.warning(
-                "Lineage index checkpoint %s changed during the scan (%s -> %s); "
-                "not overwriting it.",
-                self._get_checkpoint_key(),
-                self._expected_checkpoint,
-                current,
-            )
-            self._checkpoint_moved = True
-            return False
-        self._write_timestamp(storage, timestamp, item_ids)
-        self._expected_checkpoint = self.read_checkpoint(storage)
-        return True
+        key = self._get_checkpoint_key()
+        raw = storage.kv_pair_storage.get_value(key)
+        current = raw if raw and raw.get("timestamp") else None
+        if current == self._expected_checkpoint:
+            value = self._checkpoint_value(timestamp, item_ids, done_ahead)
+            if storage.kv_pair_storage.compare_and_set(key, raw, value):
+                self._expected_checkpoint = value
+                return True
+            current = self.read_checkpoint(storage)
+        logger.warning(
+            "Lineage index checkpoint %s changed during the scan (%s -> %s); "
+            "not overwriting it.",
+            key,
+            self._expected_checkpoint,
+            current,
+        )
+        self._checkpoint_moved = True
+        return False
+
+    @staticmethod
+    def _checkpoint_value(
+        timestamp: str,
+        item_ids: Optional[List[str]],
+        done_ahead: Optional[Dict[str, str]] = None,
+    ) -> dict:
+        value = {
+            "timestamp": timestamp,
+            "item_ids": list(item_ids or []),
+            "version": INDEXER_CHECKPOINT_VERSION,
+        }
+        if done_ahead:
+            # Jobs past a held one, already indexed: ``{item_id: timestamp}``.
+            value["done_ahead"] = dict(done_ahead)
+        return value
 
     def _write_timestamp(
         self,
@@ -520,14 +552,8 @@ class JobLineageIndexer:
         timestamp: str,
         item_ids: Optional[List[str]] = None,
     ) -> None:
-        key = self._get_checkpoint_key()
         storage.kv_pair_storage.set_value(
-            key,
-            {
-                "timestamp": timestamp,
-                "item_ids": list(item_ids or []),
-                "version": INDEXER_CHECKPOINT_VERSION,
-            },
+            self._get_checkpoint_key(), self._checkpoint_value(timestamp, item_ids)
         )
 
     def _is_from_beginning(self, checkpoint: dict) -> bool:
@@ -666,12 +692,13 @@ class JobLineageIndexer:
             else None
         )
         indexed = 0
-        pending: List[Any] = []  # the unwritten mark, as [timestamp, ids]
+        # The unwritten checkpoint, as [timestamp, ids, done_ahead].
+        pending: List[Any] = []
         try:
             indexed = self._scan(storage, checkpoint, mark, pending)
         finally:
             if pending:
-                self._advance_checkpoint(storage, pending[0], pending[1])
+                self._advance_checkpoint(storage, *pending)
         return indexed
 
     # Whether a standalone server with no checkpoint seeds ``from-latest`` instead
@@ -695,8 +722,26 @@ class JobLineageIndexer:
         mark: Optional[Tuple[datetime, List[str]]],
         pending: List[Any],
     ) -> int:
+        """Index jobs in order, holding the checkpoint behind a pending one.
+
+        A pending job (:meth:`_is_pending`: still being written) does not stop the
+        scan. The checkpoint stays just behind it, and the jobs after it are
+        indexed and remembered as ``done_ahead`` in the checkpoint, so one stuck
+        writer delays only its own job. When the held job is done, the checkpoint
+        moves across it and the ``done_ahead`` jobs it reaches. An unsettled job
+        still stops the scan: anything after it may not have committed yet.
+        """
         indexed = 0
         unwritten = 0
+        stored = self._expected_checkpoint or {}
+        base = (
+            (stored.get("timestamp"), list(stored.get("item_ids") or []))
+            if stored.get("timestamp")
+            else None
+        )
+        done_ahead: Dict[str, str] = dict((checkpoint or {}).get("done_ahead") or {})
+        held = False
+        changed = False
         for job in self._jobs_since(storage, checkpoint and checkpoint["timestamp"]):
             if self.stop_event.is_set() or self._checkpoint_moved:
                 break
@@ -707,30 +752,56 @@ class JobLineageIndexer:
             ):
                 # Behind the mark, or on it and already done.
                 continue
-            if not self._is_settled(job) or self._is_pending(job):
+            if not self._is_settled(job):
                 # Jobs come in timestamp order, so every later one waits too.
-                logger.debug("Job %s still pending; stopping the scan", item_id)
+                logger.debug("Job %s not settled; stopping the scan", item_id)
                 break
-            try:
-                if self._index(storage, job):
-                    indexed += 1
-            except Exception:
-                if not self._record_failure(item_id):
-                    break
-            self._failed_attempts.pop(item_id, None)
-            if mark is not None and job_ts == mark[0]:
-                ids = mark[1] + [item_id]
+            if item_id in done_ahead:
+                if held:
+                    continue
+                # Done on an earlier scan while held: the mark now reaches it.
+                del done_ahead[item_id]
+                changed = True
+            elif self._is_pending(job):
+                logger.debug("Job %s still pending; holding the checkpoint", item_id)
+                held = True
+                continue
             else:
-                ids = [item_id]
-            pending[:] = [self._timestamp(job), ids]
-            mark = (job_ts, ids)
-            unwritten += 1
+                if held and len(done_ahead) >= _MAX_DONE_AHEAD:
+                    logger.warning(
+                        "%d lineage jobs indexed past a held one; stopping the scan "
+                        "until it completes.",
+                        len(done_ahead),
+                    )
+                    break
+                try:
+                    if self._index(storage, job):
+                        indexed += 1
+                except Exception:
+                    if not self._record_failure(item_id):
+                        break
+                self._failed_attempts.pop(item_id, None)
+                if held:
+                    done_ahead[item_id] = self._timestamp(job)
+                    changed = True
+            if not held:
+                if mark is not None and job_ts == mark[0]:
+                    ids = mark[1] + [item_id]
+                else:
+                    ids = [item_id]
+                mark = (job_ts, ids)
+                base = (self._timestamp(job), ids)
+                changed = True
+            if changed and base is not None:
+                pending[:] = [base[0], base[1], dict(done_ahead)]
+                unwritten += 1
             if unwritten >= _CHECKPOINT_EVERY:
-                if not self._advance_checkpoint(storage, pending[0], pending[1]):
+                if not self._advance_checkpoint(storage, *pending):
                     pending.clear()
                     break
                 pending.clear()
                 unwritten = 0
+                changed = False
         return indexed
 
     # -- Lifecycle -----------------------------------------------------------
@@ -776,6 +847,13 @@ def _targets_page(
         as_aware(cutoff).astimezone(timezone.utc), page_index, _SCAN_PAGE_SIZE
     )
     return [t for t in page if isinstance(t, StoredTargetRun)]
+
+
+def _recorded_at_form(epoch_seconds: float) -> str:
+    """An instant in ``recorded_at``'s fixed-width form (``utc_now_iso``)."""
+    return datetime.fromtimestamp(epoch_seconds, timezone.utc).isoformat(
+        timespec="microseconds"
+    )
 
 
 def _finished_after_page(
@@ -1060,13 +1138,44 @@ class LineageJobIndexer(JobLineageIndexer):
 
     def _jobs_since(
         self, storage: SingletonAdminStorage, timestamp: Optional[str]
-    ) -> List[StoredLineageJob]:
-        records = self._job_storage(storage).get_jobs_by_id(
-            [job_id for _, job_id, _ in self._keys_since(storage, timestamp)]
+    ) -> Iterator[StoredLineageJob]:
+        """Records at or after ``timestamp``, oldest first, a page at a time.
+
+        By keyset on ``(recorded_at, job_id)`` where the storage has it, so memory
+        is one page whatever the range. Otherwise every key is listed first
+        (:meth:`_keys_since`) and the records are loaded ``_CHECKPOINT_EVERY`` at a
+        time.
+        """
+        cutoff = _parse_ts(timestamp) if timestamp else None
+        job_storage = self._job_storage(storage)
+        # In recorded_at's own form, a second early: the exact check is below.
+        cutoff_text = (
+            _recorded_at_form(cutoff.timestamp() - 1) if cutoff is not None else None
         )
-        return sorted(
-            records.values(), key=lambda j: (_parse_ts(j.recorded_at), j.job_id)
-        )
+        try:
+            page = job_storage.get_recorded_after(cutoff_text, None, _SCAN_PAGE_SIZE)
+        except NotImplementedError:
+            page = None
+        if page is not None:
+            while page:
+                for job in page:
+                    if cutoff is None or _parse_ts(job.recorded_at) >= cutoff:
+                        yield job
+                if len(page) < _SCAN_PAGE_SIZE:
+                    return
+                last = page[-1]
+                page = job_storage.get_recorded_after(
+                    cutoff_text, (last.recorded_at, last.job_id), _SCAN_PAGE_SIZE
+                )
+            return
+        keys = self._keys_since(storage, timestamp)
+        for start in range(0, len(keys), _CHECKPOINT_EVERY):
+            batch = keys[start : start + _CHECKPOINT_EVERY]
+            records = job_storage.get_jobs_by_id([job_id for _, job_id, _ in batch])
+            for _, job_id, _ in batch:
+                # A record deleted since it was listed has nothing left to index.
+                if job_id in records:
+                    yield records[job_id]
 
     def _index(self, storage: SingletonAdminStorage, job: StoredLineageJob) -> bool:
         return self._rows.index_job_record(job)
@@ -1087,50 +1196,63 @@ class LineageJobIndexer(JobLineageIndexer):
         one so a single bad record is counted, and given up on, alone instead of
         blocking every record behind it.
         """
-        keys = []
-        for instant, job_id, recorded_at in self._keys_since(
-            storage, checkpoint and checkpoint["timestamp"]
-        ):
+        indexed = 0
+        pairs: List[Tuple[Tuple[datetime, str, str], StoredLineageJob]] = []
+        for job in self._jobs_since(storage, checkpoint and checkpoint["timestamp"]):
+            instant = _parse_ts(job.recorded_at)
             if mark is not None and (
-                instant < mark[0] or (instant == mark[0] and job_id in mark[1])
+                instant < mark[0] or (instant == mark[0] and job.job_id in mark[1])
             ):
                 continue
-            if not self._is_settled_at(recorded_at):
+            if not self._is_settled_at(job.recorded_at):
                 break
-            keys.append((instant, job_id, recorded_at))
-        indexed = 0
-        for start in range(0, len(keys), _CHECKPOINT_EVERY):
-            if self.stop_event.is_set() or self._checkpoint_moved:
-                break
-            batch_keys = keys[start : start + _CHECKPOINT_EVERY]
-            records = self._job_storage(storage).get_jobs_by_id(
-                [job_id for _, job_id, _ in batch_keys]
-            )
-            # A record deleted since it was listed has nothing left to index.
-            pairs = [(k, records[k[1]]) for k in batch_keys if k[1] in records]
-            batch = [record for _, record in pairs]
-            try:
-                indexed += self._rows.index_job_records(batch)
-            except Exception:
-                if _is_transient_error(sys.exc_info()[1]):
-                    logger.warning(
-                        "Transient failure indexing lineage job records; retrying "
-                        "next scan.",
-                        exc_info=True,
-                    )
-                    break
-                done = self._index_one_by_one(storage, batch)
-                indexed += done[0]
-                if done[1] is not None:
-                    # Stopped at a record still being retried: checkpoint up to it.
-                    batch_keys = [k for k, _ in pairs[: done[1]]]
-                    if batch_keys:
-                        mark = self._checkpoint_batch(storage, batch_keys, mark)
-                    break
-            mark = self._checkpoint_batch(storage, batch_keys, mark)
+            pairs.append(((instant, job.job_id, job.recorded_at), job))
+            if len(pairs) < _CHECKPOINT_EVERY:
+                continue
+            done, mark = self._index_batch(storage, pairs, mark)
+            indexed += done
+            pairs = []
             if mark is None:
-                break
+                return indexed
+        if pairs:
+            done, _ = self._index_batch(storage, pairs, mark)
+            indexed += done
         return indexed
+
+    def _index_batch(
+        self,
+        storage: SingletonAdminStorage,
+        pairs: List[Tuple[Tuple[datetime, str, str], StoredLineageJob]],
+        mark: Optional[Tuple[datetime, List[str]]],
+    ) -> Tuple[int, Optional[Tuple[datetime, List[str]]]]:
+        """Index one batch and checkpoint past what was done.
+
+        Returns how many were written and the new mark, ``None`` when the scan
+        must stop (a failure retried next scan, or the checkpoint not moved).
+        """
+        if self.stop_event.is_set() or self._checkpoint_moved:
+            return 0, None
+        batch_keys = [key for key, _ in pairs]
+        batch = [record for _, record in pairs]
+        try:
+            return self._rows.index_job_records(batch), self._checkpoint_batch(
+                storage, batch_keys, mark
+            )
+        except Exception:
+            if _is_transient_error(sys.exc_info()[1]):
+                logger.warning(
+                    "Transient failure indexing lineage job records; retrying "
+                    "next scan.",
+                    exc_info=True,
+                )
+                return 0, None
+        indexed, stopped_at = self._index_one_by_one(storage, batch)
+        if stopped_at is not None:
+            # Stopped at a record still being retried: checkpoint up to it.
+            if stopped_at:
+                self._checkpoint_batch(storage, batch_keys[:stopped_at], mark)
+            return indexed, None
+        return indexed, self._checkpoint_batch(storage, batch_keys, mark)
 
     def _index_one_by_one(
         self, storage: SingletonAdminStorage, batch: List[StoredLineageJob]
@@ -1377,8 +1499,9 @@ class WandBLineageIndexer(JobLineageIndexer):
             self._pinned_warned.add(job.id)
             logger.warning(
                 "W&B lineage run %s has been running for %.0f minutes and holds "
-                "back all W&B lineage indexing; its writer may have died. It is "
-                "waited on for %.0f more minutes, then indexed as it is.",
+                "the lineage index checkpoint behind it (later runs are still "
+                "indexed); its writer may have died. It is waited on for %.0f "
+                "more minutes, then indexed as it is.",
                 job.id,
                 age_s / 60,
                 (_WANDB_RUNNING_MAX_AGE_S - age_s) / 60,

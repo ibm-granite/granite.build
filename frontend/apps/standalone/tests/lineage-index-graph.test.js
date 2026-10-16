@@ -29,9 +29,10 @@ let expansionSeed
 let depthForNextLevel
 let mergeElkGraphs
 let indexGraphToElk
+let addsNothing
 
 before(async () => {
-  ;({ expansionSeed, depthForNextLevel, mergeElkGraphs, indexGraphToElk } = await import(
+  ;({ expansionSeed, depthForNextLevel, mergeElkGraphs, indexGraphToElk, addsNothing } = await import(
     path.join(ROOT, '../../packages/ui-core/components/LineageGraph/indexGraph.ts')
   ))
 })
@@ -111,5 +112,33 @@ describe('mergeElkGraphs', () => {
     const base = { id: 'u', title: 'artifact', buildId: 'B0' }
     const [node] = mergeElkGraphs({ nodes: [base], links: [] }, { nodes: [{ id: 'u' }], links: [] }).nodes
     assert.equal(node, base)
+  })
+})
+
+describe('addsNothing', () => {
+  const artifact = (id) => ({ id, node_type: 'artifact', name: id, metadata: {} })
+  const result = (ids, truncated = false) => ({ root_id: ids[0], nodes: ids.map(artifact), edges: [], truncated })
+
+  it('is true only when every returned node is already on screen', () => {
+    assert.equal(addsNothing(result(['s3://b/a']), ['s3://b/a']), true)
+    assert.equal(addsNothing(result(['s3://b/a', 's3://b/new']), ['s3://b/a']), false)
+  })
+
+  it('is never true for a truncated response', () => {
+    assert.equal(addsNothing(result(['s3://b/a'], true), ['s3://b/a']), false)
+  })
+
+  it('follows a rename that lands after the response', () => {
+    // Asked before the registry lookup resolved: the URI looked new next to the UUID.
+    const res = result(['hf://o/m'])
+    const known = ['uuid-1']
+    assert.equal(addsNothing(res, known), false)
+    const rename = (id) => (id === 'hf://o/m' ? 'uuid-1' : id)
+    assert.equal(addsNothing(res, known, rename), true)
+  })
+
+  it('renames the on-screen ids too, so a raw id shown earlier still matches', () => {
+    const rename = (id) => (id === 'hf://o/m' ? 'uuid-1' : id)
+    assert.equal(addsNothing(result(['hf://o/m']), ['hf://o/m'], rename), true)
   })
 })

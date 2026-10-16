@@ -30,7 +30,7 @@ from gbserver.storage.lineage_row_storage import (
     endpoint_pair,
 )
 from gbserver.storage.sql.sql_storage import BaseSQLItemStorage, retry_read
-from gbserver.storage.storage import JSON_COLUMN_NAME
+from gbserver.storage.storage import JSON_COLUMN_NAME, UUID_COLUMN_NAME
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 
 
@@ -277,6 +277,32 @@ class SQLLineageRowStorage(
                 GroupedEdge(i, o, int(count), recorded or "", sample or "")
                 for i, o, count, recorded, sample in query.all()
             ]
+        finally:
+            session.close()
+
+    def add_replacing(self, row: StoredLineageRow, stale_uuids: List[str]) -> None:
+        """The insert and the deletes in one transaction: both or neither.
+
+        A unique-key conflict (another writer added the same row) rolls back the
+        deletes too and raises ``IntegrityError``, as ``add`` does.
+        """
+        if not stale_uuids:
+            self.add(row)
+            return
+        if not self._ensure_table_without_retry():
+            self.add(row)  # creates the table; nothing stored can be stale yet
+            return
+        model = self._sql_alchemy_model
+        session = self._get_session_without_retry()
+        try:
+            session.add(model(**self._convert_item_to_row_dict(row)))
+            session.query(model).filter(
+                getattr(model, UUID_COLUMN_NAME).in_(stale_uuids)
+            ).delete(synchronize_session=False)
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
         finally:
             session.close()
 

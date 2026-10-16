@@ -75,6 +75,11 @@ _MAX_JOBS_PAGE = 1000
 # Job ids per ``IN`` when reading whole jobs back: well under SQLite's bound-
 # parameter limit, and the walk's frontier batches are no larger.
 _JOB_ROWS_BATCH = 500
+# Rows read back to group runs by whole-job signature, per graph. The walk bounds
+# the jobs in a graph, not their rows: one job with many inputs is many rows. Past
+# this, the remaining jobs group on the rows the walk read (see
+# ``graph_builder._same_signature_jobs``), which only costs grouping precision.
+_GROUP_ROWS_BUDGET = 50_000
 
 _WIRE_DIRECTIONS = {
     "downstream": Direction.DESCENDANTS,
@@ -232,7 +237,7 @@ class DBLineageService(LineageService):
             root_uri=root_uri,
             root_is_artifact=single_root,
             group_runs=group_runs,
-            job_rows_of=self._rows_of_jobs,
+            job_rows_of=self._rows_of_jobs_for_grouping,
         )
         if authorize_job is not None:
             self._add_authorized_origin_ids(result.get("nodes", []), authorize_job)
@@ -283,6 +288,28 @@ class DBLineageService(LineageService):
                 value = origin_id(rows[0].attributes, key_name)
                 if value:
                     metadata[f"gb_{key_name}"] = value
+
+    def _rows_of_jobs_for_grouping(self, job_ids: List[str]) -> List:
+        """:meth:`_rows_of_jobs`, stopping once ``_GROUP_ROWS_BUDGET`` rows are read.
+
+        Each batch holds whole jobs, so a job is either read in full or not at all;
+        a job not read groups on its walked rows.
+        """
+        rows: List = []
+        for start in range(0, len(job_ids), _JOB_ROWS_BATCH):
+            if len(rows) >= _GROUP_ROWS_BUDGET:
+                logger.warning(
+                    "Lineage graph grouping read %d rows; %d of %d jobs group on "
+                    "their walked rows only",
+                    len(rows),
+                    len(job_ids) - start,
+                    len(job_ids),
+                )
+                break
+            rows.extend(
+                self.storage.get_rows_by_jobs(job_ids[start : start + _JOB_ROWS_BATCH])
+            )
+        return rows
 
     def _rows_of_jobs(self, job_ids: List[str]) -> List:
         """Every stored row of ``job_ids``, batched so one ``IN`` stays bounded."""

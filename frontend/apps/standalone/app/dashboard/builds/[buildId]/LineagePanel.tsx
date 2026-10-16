@@ -415,7 +415,11 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   }
 
   // Navigation state
-  const [focusNodeId, setFocusNodeId] = React.useState<string | null>(initialFocusNodeId ?? null)
+  // Held as clicked and resolved through `renameIndexId` on read: a node selected
+  // under its raw index id (its registry lookup still pending) keeps its selection
+  // when it folds onto the build's node.
+  const [rawFocusNodeId, setFocusNodeId] = React.useState<string | null>(initialFocusNodeId ?? null)
+  const focusNodeId = rawFocusNodeId ? renameIndexId(rawFocusNodeId) : null
   const [upstreamLevels, setUpstreamLevels] = React.useState(Infinity)
   const [downstreamLevels, setDownstreamLevels] = React.useState(Infinity)
   const [partial, setPartial] = React.useState(false)
@@ -451,10 +455,22 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     [stepDetailTarget]
   )
 
+  // Resolved like the focus: an index job's drawer follows its node when it is renamed.
+  const resolvedJobNodeId = jobNodeId ? renameIndexId(jobNodeId) : null
   const jobNode = React.useMemo(
-    () => (jobNodeId ? (enrichedNodes.find((n) => n.id === jobNodeId) as IndexElkNode | undefined) : undefined),
-    [enrichedNodes, jobNodeId]
+    () => (resolvedJobNodeId
+      ? (enrichedNodes.find((n) => n.id === resolvedJobNodeId) as IndexElkNode | undefined)
+      : undefined),
+    [enrichedNodes, resolvedJobNodeId]
   )
+  // A `run:<uuid>` job that turns out to be one of this build's targets is drawn as
+  // that target, so its drawer becomes the target's step drawer.
+  React.useEffect(() => {
+    if (resolvedJobNodeId?.startsWith(TARGET_NODE_PREFIX)) {
+      setJobNodeId(null)
+      setStepDetailTarget(resolvedJobNodeId.slice(TARGET_NODE_PREFIX.length))
+    }
+  }, [resolvedJobNodeId])
 
   const { filteredNodes, filteredLinks } = React.useMemo(() => {
     if (!focusNodeId || (upstreamLevels === Infinity && downstreamLevels === Infinity)) {

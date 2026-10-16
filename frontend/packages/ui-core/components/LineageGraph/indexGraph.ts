@@ -145,3 +145,17 @@ export function mergeElkGraphs(a: ElkGraph, b: ElkGraph): ElkGraph {
     links: [...a.links, ...b.links.filter((l) => !linkKeys.has(`${l.sources[0]}|${l.targets[0]}`))],
   }
 }
+
+// Whether an expansion's response added nothing to the graph that was on screen
+// when it was asked (`known`, its node ids). Both sides go through `rename`, so the
+// answer follows a rename that lands after the response: a node that read as new
+// under its raw id stops counting once it folds onto one already shown.
+export function addsNothing(
+  result: LineageGraphResult,
+  known: Iterable<string>,
+  rename: (id: string) => string = (id) => id,
+): boolean {
+  if (result.truncated) return false
+  const onScreen = new Set(Array.from(known, rename))
+  return indexGraphToElk(result, rename).nodes.every((n) => onScreen.has(n.id))
+}

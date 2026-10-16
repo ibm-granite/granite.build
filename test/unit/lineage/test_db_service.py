@@ -820,3 +820,27 @@ class TestTagSearch:
     def test_an_unknown_tag_matches_nothing(self):
         svc = self._service(self._record("J1", ["team=nlp"]))
         assert svc.search_lineage_by_tags(["team=nope"]) == (0, [])
+
+
+def test_grouping_stops_reading_whole_jobs_past_its_row_budget():
+    """The walk bounds a graph's jobs, not their rows; the read-back is bounded too."""
+    from gbserver.lineage import db_service as db_service_mod
+
+    rows = [row(f"J{i}", A, B) for i in range(6)]
+    storage = FakeStorage(rows)
+    calls = []
+    real = storage.get_rows_by_jobs
+
+    def counting(job_ids):
+        calls.append(list(job_ids))
+        return real(job_ids)
+
+    storage.get_rows_by_jobs = counting
+    service = DBLineageService(storage=storage)
+    with (
+        patch.object(db_service_mod, "_JOB_ROWS_BATCH", 2),
+        patch.object(db_service_mod, "_GROUP_ROWS_BUDGET", 3),
+    ):
+        got = service._rows_of_jobs_for_grouping([f"J{i}" for i in range(6)])
+    assert len(calls) == 2  # stopped once 4 >= 3 rows were read
+    assert {r.job_id for r in got} == {"J0", "J1", "J2", "J3"}

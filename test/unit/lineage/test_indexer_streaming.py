@@ -60,6 +60,12 @@ class _KV:
         self.values[key] = value
         self.writes.append(dict(value))
 
+    def compare_and_set(self, key, expected, value):
+        if self.values.get(key) != expected:
+            return False
+        self.set_value(key, value)
+        return True
+
 
 def _target(uuid, minutes):
     return StoredTargetRun(
@@ -263,7 +269,11 @@ def _wandb_run(run_id, age):
 
 
 def _pin_warnings(caplog):
-    return [r for r in caplog.records if "holds back all W&B" in r.getMessage()]
+    return [
+        r
+        for r in caplog.records
+        if "holds the lineage index checkpoint" in r.getMessage()
+    ]
 
 
 def test_a_long_running_lineage_run_is_warned_about_once(caplog):

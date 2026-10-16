@@ -482,3 +482,28 @@ class TestTagSearch:
     def test_an_empty_tag_string_is_ignored(self, tagged):
         """Otherwise a blank would LIKE-match every row and widen the search."""
         assert tagged.search_by_tags(["", "team=vision"])[0] == 1
+
+
+def test_get_recorded_after_pages_by_keyset_oldest_first(storage):
+    stamps = {
+        "J3": "2026-01-02T00:00:00.000000+00:00",
+        "J1": "2026-01-01T00:00:00.000000+00:00",
+        "J2": "2026-01-01T00:00:00.000000+00:00",  # ties J1: job_id orders them
+        "J0": "2025-12-31T00:00:00.000000+00:00",
+    }
+    for job_id, recorded_at in stamps.items():
+        record = job(job_id)
+        record.recorded_at = recorded_at
+        storage.add(record)
+    cutoff = "2026-01-01T00:00:00.000000+00:00"
+    first = storage.get_recorded_after(cutoff, None, 2)
+    assert [j.job_id for j in first] == ["J1", "J2"]
+    last = first[-1]
+    rest = storage.get_recorded_after(cutoff, (last.recorded_at, last.job_id), 2)
+    assert [j.job_id for j in rest] == ["J3"]
+    assert [j.job_id for j in storage.get_recorded_after(None, None, 10)] == [
+        "J0",
+        "J1",
+        "J2",
+        "J3",
+    ]

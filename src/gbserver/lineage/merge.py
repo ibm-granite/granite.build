@@ -46,6 +46,8 @@ creation next to a source that saw what X was made from.
 import copy
 from typing import Any, Dict, List, Optional, Tuple
 
+from sqlalchemy.exc import IntegrityError
+
 from gbserver.lineage.attributes import (
     JOB,
     JOB_COMPLETED_AT,
@@ -179,7 +181,7 @@ def upsert_job(storage: ILineageJobStorage, job: StoredLineageJob) -> str:
         try:
             storage.add(job)
             return ADDED
-        except Exception:
+        except _LOST_RACE:
             # Lost a race with another writer: merge into what it wrote.
             existing = storage.get_job(job.job_id)
             if existing is None:
@@ -198,10 +200,10 @@ def upsert_row(storage: ILineageRowStorage, row: StoredLineageRow) -> str:
     terminal row is not added when the job already has a real edge on its endpoint,
     and a real edge removes the terminal rows it supersedes.
 
-    The add and the delete of superseded terminals are two writes, not one
-    transaction. A crash between them leaves a stale terminal next to its real
-    edge; the next write of that edge (an ``UNCHANGED`` re-run included) deletes
-    it, so re-indexing repairs it rather than it lingering until a full rebuild.
+    The add and the delete of superseded terminals are one transaction on SQL
+    storage (``add_replacing``). Where they are two writes, a crash between them
+    leaves a stale terminal next to its real edge; the next write of that edge (an
+    ``UNCHANGED`` re-run included) deletes it.
     """
     if _job_id_too_long(row.job_id):
         return REJECTED
@@ -216,8 +218,13 @@ def upsert_row(storage: ILineageRowStorage, row: StoredLineageRow) -> str:
         for other in stale:
             row.attributes = merge_attributes(row.attributes, other.attributes)
         try:
-            storage.add(row)
-        except Exception:
+            # One write where the backend allows: the row and the removal of the
+            # terminals it supersedes land together or not at all.
+            if stale:
+                storage.add_replacing(row, [other.uuid for other in stale])
+            else:
+                storage.add(row)
+        except _LOST_RACE:
             # Lost a race with another writer of the same (job, input, output):
             # merge into what it wrote, as upsert_job does.
             job_rows = storage.get_rows_by_job(row.job_id)
@@ -225,7 +232,6 @@ def upsert_row(storage: ILineageRowStorage, row: StoredLineageRow) -> str:
             if stored is None:
                 raise
         else:
-            _delete_stale(storage, stale)
             return ADDED
     outcome = UNCHANGED
     attributes = merge_attributes(stored.attributes, row.attributes)
@@ -236,6 +242,12 @@ def upsert_row(storage: ILineageRowStorage, row: StoredLineageRow) -> str:
         storage, [other for other in job_rows if _superseded(other, [stored])]
     )
     return outcome
+
+
+# What ``add`` raises when another writer stored the same key first: the database's
+# unique index (``IntegrityError``), or the storage's own uniqueness check
+# (``ValueError``). Anything else -- an outage, a bad value -- propagates.
+_LOST_RACE = (IntegrityError, ValueError)
 
 
 def _same_identity(

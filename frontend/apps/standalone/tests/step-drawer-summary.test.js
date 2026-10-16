@@ -27,11 +27,12 @@ registerHooks({
 
 const ROOT = path.join(__dirname, '..')
 let stepDrawerSummary
+let parseTimestamp
 let attemptOrder
 let isLaterAttempt
 
 before(async () => {
-  ;({ stepDrawerSummary } = await import(
+  ;({ stepDrawerSummary, parseTimestamp } = await import(
     path.join(ROOT, 'app/dashboard/builds/[buildId]/stepDrawerSummary.ts')
   ))
   ;({ attemptOrder, isLaterAttempt } = await import(
@@ -157,5 +158,34 @@ describe('current attempt of a retried target', () => {
   it('a restart of a succeeded target shows the new queued run', () => {
     const succeeded = { id: 1, started_at: T0, finished_at: T2 }
     assert.equal(pick([{ id: 2 }, succeeded]).id, 2)
+  })
+})
+
+describe('parseTimestamp', () => {
+  const iso = (d) => d.toISOString()
+
+  it('reads a zoneless date-time as UTC, as the backend writes it', () => {
+    assert.equal(iso(parseTimestamp('2026-09-26T10:00:00')), '2026-09-26T10:00:00.000Z')
+    assert.equal(iso(parseTimestamp('2026-09-26 10:00:00.123456')), '2026-09-26T10:00:00.123Z')
+  })
+
+  it('keeps an explicit zone', () => {
+    assert.equal(iso(parseTimestamp('2026-09-26T10:00:00+02:00')), '2026-09-26T08:00:00.000Z')
+    assert.equal(iso(parseTimestamp('2026-09-26T10:00:00Z')), '2026-09-26T10:00:00.000Z')
+  })
+
+  it('picks the epoch unit by magnitude', () => {
+    const want = '2026-09-26T10:00:00.000Z'
+    const s = Date.parse(want) / 1e3
+    assert.equal(iso(parseTimestamp(s)), want)
+    assert.equal(iso(parseTimestamp(s * 1e3)), want)
+    assert.equal(iso(parseTimestamp(s * 1e6)), want)
+    assert.equal(iso(parseTimestamp(String(s))), want)
+  })
+
+  it('returns undefined for nothing or garbage', () => {
+    assert.equal(parseTimestamp(''), undefined)
+    assert.equal(parseTimestamp(null), undefined)
+    assert.equal(parseTimestamp('not a date'), undefined)
   })
 })

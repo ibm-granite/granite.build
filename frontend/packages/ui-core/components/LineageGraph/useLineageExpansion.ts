@@ -1,10 +1,17 @@
 import * as React from 'react'
 import { getLineageGraph, type LineageGraphResult } from '../../api/gbserver'
-import { expansionSeed, indexGraphToElk, mergeElkGraphs, type ElkGraph } from './indexGraph'
+import { addsNothing, expansionSeed, indexGraphToElk, mergeElkGraphs, type ElkGraph } from './indexGraph'
 
 export type ExpandDirection = 'upstream' | 'downstream'
 
 const EMPTY: ElkGraph = { nodes: [], links: [] }
+
+// The last response for one `direction|seed`, with the ids on screen when it was
+// asked for, so whether it added anything can be re-judged under a later rename.
+interface Expansion {
+  result: LineageGraphResult
+  known: string[]
+}
 
 // Grows a lineage graph through GET /lineage/graph, seeded from the selected node.
 // The caller says how deep to ask -- one level past what is already on screen for
@@ -13,17 +20,29 @@ const EMPTY: ElkGraph = { nodes: [], links: [] }
 // Responses are kept as the index returned them and renamed on render, so a node
 // fetched before `rename` knew its id (a build artifact whose registry lookup was
 // still pending) folds onto the build's node once it does.
+//
+// One complete response is kept per `direction|seed`, the latest: a repeated
+// expansion of the same seed asks for at least as much and replaces the earlier
+// one, so the kept set grows with the seeds expanded, not with the clicks. A
+// truncated response is kept beside it instead.
 export function useLineageExpansion(rename?: (id: string) => string, groupRuns = true) {
-  const [results, setResults] = React.useState<LineageGraphResult[]>([])
+  const [expansions, setExpansions] = React.useState<Map<string, Expansion>>(new Map())
   const extra = React.useMemo(
-    () => results.reduce<ElkGraph>((acc, r) => mergeElkGraphs(acc, indexGraphToElk(r, rename)), EMPTY),
-    [results, rename]
+    () => Array.from(expansions.values()).reduce<ElkGraph>(
+      (acc, e) => mergeElkGraphs(acc, indexGraphToElk(e.result, rename)), EMPTY
+    ),
+    [expansions, rename]
   )
   const [loading, setLoading] = React.useState<ExpandDirection | null>(null)
   const [error, setError] = React.useState<unknown>(null)
   const [unexpanded, setUnexpanded] = React.useState(0)
   // Seeds whose last request in a direction found nothing new: nothing more to load.
-  const [exhausted, setExhausted] = React.useState<Set<string>>(new Set())
+  // Derived on render, so it is judged under the current `rename`.
+  const exhausted = React.useMemo(() => {
+    const keys = new Set<string>()
+    for (const [key, e] of expansions) if (addsNothing(e.result, e.known, rename)) keys.add(key)
+    return keys
+  }, [expansions, rename])
   // Bumped by reset: a response from an older generation (an expansion still in
   // flight when the view was reset) is dropped instead of bringing back what was
   // cleared.
@@ -57,13 +76,21 @@ export function useLineageExpansion(rename?: (id: string) => string, groupRuns =
     try {
       const result = await getLineageGraph({ ...expansionSeed(seedId, metadata), direction, depth, group_runs: groupRuns })
       if (!current()) return
-      const incoming = indexGraphToElk(result, rename)
-      const onScreen = new Set(known.nodes.map((n) => n.id))
-      if (incoming.nodes.every((n) => onScreen.has(n.id)) && !result.truncated) {
-        setExhausted((prev) => new Set(prev).add(key))
-      }
       setUnexpanded(result.truncated ? result.unexpanded ?? 0 : 0)
-      setResults((prev) => [...prev, result])
+      const entry: Expansion = { result, known: known.nodes.map((n) => n.id) }
+      setExpansions((prev) => {
+        const next = new Map(prev)
+        if (result.truncated) {
+          // A cut response may lack nodes the earlier one drew, so it is kept
+          // beside it rather than in its place.
+          next.set(`${key}#${request}`, entry)
+        } else {
+          // Re-inserted at the end: merge order is response order, later wins.
+          next.delete(key)
+          next.set(key, entry)
+        }
+        return next
+      })
     } catch (e) {
       if (current()) setError(e)
     } finally {
@@ -72,15 +99,14 @@ export function useLineageExpansion(rename?: (id: string) => string, groupRuns =
         if (inFlight.current === 0) setLoading(null)
       }
     }
-  }, [rename, groupRuns])
+  }, [groupRuns])
 
   const reset = React.useCallback(() => {
     generation.current += 1
     latest.current = new Map()
     inFlight.current = 0
     setLoading(null)
-    setExhausted(new Set())
-    setResults([])
+    setExpansions(new Map())
     setUnexpanded(0)
     setError(null)
   }, [])

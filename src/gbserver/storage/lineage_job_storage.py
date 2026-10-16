@@ -70,6 +70,22 @@ class ILineageJobStorage(IItemStorage[StoredLineageJob]):
         """
         raise NotImplementedError
 
+    def get_recorded_after(
+        self,
+        cutoff: Optional[str],
+        after: Optional[Tuple[str, str]],
+        limit: int,
+    ) -> List[StoredLineageJob]:
+        """Keyset page of records by ``(recorded_at, job_id)``, oldest first.
+
+        ``cutoff`` (inclusive) and ``after`` (exclusive) are in ``recorded_at``'s
+        own fixed-width form, so they compare as strings.
+
+        Raises:
+            NotImplementedError: When the backend cannot run the keyset query.
+        """
+        raise NotImplementedError
+
 
 class BaseLineageJobStorage(BaseItemStorage[StoredLineageJob], ILineageJobStorage):
     """Base storage implementation for lineage job records.

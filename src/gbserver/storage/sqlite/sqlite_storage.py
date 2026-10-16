@@ -300,12 +300,19 @@ class SqliteLineageRowStorage(SqliteStorageOverrides, SQLLineageRowStorage):
         with self._db_file_lock:
             return super().delete_all_rows()
 
+    def add_replacing(self, *args, **kwargs) -> None:
+        with self._db_file_lock:
+            super().add_replacing(*args, **kwargs)
+
 
 class SqliteLineageJobStorage(SqliteStorageOverrides, SQLLineageJobStorage):
     """Sqlite storage for lineage job records."""
 
     def _tag_candidates(self, *args, **kwargs) -> list:
         return _locked_per_attempt(self, super()._tag_candidates, *args, **kwargs)
+
+    def get_recorded_after(self, *args, **kwargs) -> list:
+        return _locked_per_attempt(self, super().get_recorded_after, *args, **kwargs)
 
 
 class SqliteNodeFailureStorage(SqliteStorageOverrides, SQLNodeFailureStorage):

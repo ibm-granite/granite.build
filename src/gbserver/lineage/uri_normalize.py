@@ -51,6 +51,9 @@ from gbcommon.uri.hf import (
     HF_HOST,
     HF_TYPE_TO_SEGMENT,
     HF_URI_SCHEME,
+    HF_WEB_RESERVED_OWNERS,
+    HF_WEB_REVISION_MARKERS,
+    HF_WEB_TREE,
     URLSEGMENT_BUCKETS,
 )
 from gbcommon.uri.lh import (
@@ -73,36 +76,6 @@ logger = get_logger(__name__)
 # is the missing-slash typo `hf://models/o/r`, which HfURI only warns about.
 _HF_TYPE_SEGMENTS = frozenset(HF_TYPE_TO_SEGMENT.values())
 
-# The marker the canonical web URL puts before a revision, and every marker a web
-# URL may use there: ``tree`` for a directory, ``blob`` for a file page, ``resolve``
-# for a raw download. All three name the same revision and path.
-_HF_WEB_TREE = "tree"
-_HF_WEB_REVISION_MARKERS = frozenset({"tree", "blob", "resolve"})
-
-# First path segments on huggingface.co that are site pages, not repo owners.
-# ``/papers/<id>`` or ``/docs/<lib>`` has the owner/repo shape and would
-# otherwise be read as a model.
-_HF_WEB_RESERVED = frozenset(
-    {
-        "api",
-        "blog",
-        "chat",
-        "collections",
-        "docs",
-        "enterprise",
-        "join",
-        "learn",
-        "login",
-        "new",
-        "organizations",
-        "papers",
-        "posts",
-        "pricing",
-        "search",
-        "settings",
-        "tasks",
-    }
-)
 
 # LH types that carry a revision/version segment: the default LhURI injects in
 # __init__ when the URI omits one, and the segment index it sits at. The same
@@ -238,7 +211,7 @@ def _normalize_hf(candidate: str, parsed) -> str:
         # The Hub reserves these as owner names; read as one, the web URL would be
         # another type's repo (``models/spaces/m`` -> the Space ``spaces/m``).
         return ""
-    if owner in _HF_WEB_RESERVED:
+    if owner in HF_WEB_RESERVED_OWNERS:
         # The web spelling refuses these owners as site pages, so keeping one here
         # would give an id that does not normalize to itself.
         return ""
@@ -259,7 +232,7 @@ def _normalize_hf(candidate: str, parsed) -> str:
         if path_in_repo:
             segments.append(path_in_repo)
     elif revision and (revision != DEFAULT_REVISION or path_in_repo):
-        segments.extend([_HF_WEB_TREE, revision])
+        segments.extend([HF_WEB_TREE, revision])
         if path_in_repo:
             segments.append(path_in_repo)
     return f"https://{HF_HOST}/" + "/".join(segments)
@@ -452,7 +425,7 @@ def _normalize_https(candidate: str, parsed) -> str:
     type_segments = []
     if segments[0] in _HF_TYPE_SEGMENTS:
         type_segments, segments = [segments[0]], segments[1:]
-    if len(segments) < 2 or segments[0] in _HF_WEB_RESERVED:
+    if len(segments) < 2 or segments[0] in HF_WEB_RESERVED_OWNERS:
         return ""
     repo_segments, rest = segments[:2], segments[2:]
 
@@ -460,7 +433,7 @@ def _normalize_https(candidate: str, parsed) -> str:
         # A bucket has no revision, so what follows it is a path taken as is
         # (``tree`` included); for every other type an unmarked segment is a
         # page, not a revision.
-        if rest[0] not in _HF_WEB_REVISION_MARKERS:
+        if rest[0] not in HF_WEB_REVISION_MARKERS:
             return ""
         rest = rest[1:]
         if not rest:

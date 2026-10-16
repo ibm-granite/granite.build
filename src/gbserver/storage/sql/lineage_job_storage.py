@@ -156,6 +156,46 @@ class SQLLineageJobStorage(
         return len(job_ids), [by_id[j] for j in page if j in by_id]
 
     @retry_read
+    def get_recorded_after(
+        self,
+        cutoff: Optional[str],
+        after: Optional[Tuple[str, str]],
+        limit: int,
+    ) -> List[StoredLineageJob]:
+        """Keyset page by ``(recorded_at, job_id)``: a range on the ``recorded_at``
+        index, ``job_id`` breaking ties. A merge only moves ``recorded_at``
+        forward, which moves a record ahead of the cursor, so it is read later and
+        nothing behind the cursor shifts or is skipped (offset paging cannot say
+        that)."""
+        if not self._ensure_table_without_retry():
+            return []
+        model = self._sql_alchemy_model
+        session = self._get_session_without_retry()
+        try:
+            query = session.query(model).filter(
+                model.recorded_at.isnot(None), model.recorded_at != ""
+            )
+            if cutoff:
+                query = query.filter(model.recorded_at >= cutoff)
+            if after is not None:
+                query = query.filter(
+                    or_(
+                        model.recorded_at > after[0],
+                        and_(model.recorded_at == after[0], model.job_id > after[1]),
+                    )
+                )
+            rows = query.order_by(model.recorded_at, model.job_id).limit(limit).all()
+            assert self._column_types is not None
+            return [
+                self._convert_row_dict_to_item(
+                    {name: getattr(row, name) for name in self._column_types}
+                )
+                for row in rows
+            ]
+        finally:
+            session.close()
+
+    @retry_read
     def _tag_candidates(self, conditions: list) -> List[Tuple[str, str]]:
         """``(job_id, joined tags)`` of the rows ``conditions`` narrow to, newest first."""
         model = self._sql_alchemy_model

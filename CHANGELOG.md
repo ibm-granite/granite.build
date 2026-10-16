@@ -68,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lineage indexer pages successful targets by keyset instead of scanning the table. On
   Postgres the index is built `CONCURRENTLY`, one process at a time. Index-only: no row
   is rewritten.
+- **W&B lineage indexer (#470).** A W&B lineage run still `running` no longer stops
+  indexing: the checkpoint waits behind it (up to 6 h, then it is indexed as it is),
+  while later runs are indexed at once and recorded as `done_ahead` in the checkpoint
+  (at most 5000; past that the scan waits as before).
 - **Lineage job owner and namespace (#470).** A job's owner and namespace are taken only
   when every index row of the job agrees; a job with conflicting (e.g. forged) rows has
   neither, and its detail fails closed.

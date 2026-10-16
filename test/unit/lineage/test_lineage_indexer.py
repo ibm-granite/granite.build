@@ -46,6 +46,12 @@ class _KV:
     def set_value(self, key, value):
         self.values[key] = value
 
+    def compare_and_set(self, key, expected, value):
+        if self.values.get(key) != expected:
+            return False
+        self.set_value(key, value)
+        return True
+
 
 def _storage():
     return SimpleNamespace(kv_pair_storage=_KV())
@@ -158,9 +164,24 @@ def _job_record(job_id, recorded_at, entry=True):
     )
 
 
-def _admin_with_jobs(jobs):
+def _admin_with_jobs(jobs, keyset=True):
     kv = {}
     storage = MagicMock()
+
+    def recorded_after(cutoff, after, limit):
+        ordered = sorted(
+            (j for j in jobs if j.recorded_at), key=lambda j: (j.recorded_at, j.job_id)
+        )
+        if cutoff:
+            ordered = [j for j in ordered if j.recorded_at >= cutoff]
+        if after is not None:
+            ordered = [j for j in ordered if (j.recorded_at, j.job_id) > after]
+        return ordered[:limit]
+
+    if keyset:
+        storage.lineage_job_storage.get_recorded_after.side_effect = recorded_after
+    else:
+        storage.lineage_job_storage.get_recorded_after.side_effect = NotImplementedError
 
     def newest_first(_where=None, query_control=None):
         page = query_control.pagination
@@ -173,6 +194,14 @@ def _admin_with_jobs(jobs):
     }
     storage.kv_pair_storage.get_value.side_effect = kv.get
     storage.kv_pair_storage.set_value.side_effect = kv.__setitem__
+
+    def compare_and_set(key, expected, value):
+        if kv.get(key) != expected:
+            return False
+        kv[key] = value
+        return True
+
+    storage.kv_pair_storage.compare_and_set.side_effect = compare_and_set
     return storage, kv
 
 
@@ -330,22 +359,53 @@ def test_a_stale_running_run_is_indexed_and_does_not_stop_scan():
     assert _checkpoint(storage)["timestamp"] == D3
 
 
-def test_a_fresh_running_lineage_run_stops_the_scan_until_it_finishes():
-    """Its artifacts and job_id are still being logged: indexing it now would
-    record a partial job and move the checkpoint past the rest for good."""
+def test_a_fresh_running_lineage_run_holds_only_the_checkpoint():
+    """Its artifacts and job_id are still being logged: it is not indexed yet and
+    the checkpoint stays behind it, but the runs after it are indexed now and
+    remembered, so one stuck writer does not hold up everyone's lineage."""
     storage = _storage()
     recent = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(tzinfo=None)
     later = (recent + timedelta(seconds=30)).isoformat()
+    runs = [
+        _run("r1", D1, job_id="j1"),
+        _run("r2", recent.isoformat(), job_id="j2", state="running"),
+        _run("r3", later, job_id="j3"),
+    ]
+    ix, _, sink = _indexer(runs)
+    ix.settle_grace_s = 0  # isolate the running rule from the settle grace
+    assert ix.scan_once(storage) == 2  # r1 and r3, not r2
+    checkpoint = _checkpoint(storage)
+    assert checkpoint["timestamp"] == D1
+    assert set(checkpoint["done_ahead"]) == {"r3"}
+
+    # Next scan: r2 still running, r3 is not redone.
+    sink.write_job.reset_mock()
+    assert ix.scan_once(storage) == 0
+    sink.write_job.assert_not_called()
+
+    # r2 finishes: it is indexed and the checkpoint moves across r3 too.
+    runs[1].state = "finished"
+    assert ix.scan_once(storage) == 1
+    checkpoint = _checkpoint(storage)
+    assert checkpoint["item_ids"] == ["r3"]
+    assert "done_ahead" not in checkpoint
+
+
+def test_jobs_past_a_held_one_stop_at_the_done_ahead_cap(monkeypatch):
+    monkeypatch.setattr(idx, "_MAX_DONE_AHEAD", 1)
+    storage = _storage()
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(tzinfo=None)
     ix, _, _ = _indexer(
         [
             _run("r1", D1, job_id="j1"),
             _run("r2", recent.isoformat(), job_id="j2", state="running"),
-            _run("r3", later, job_id="j3"),
+            _run("r3", (recent + timedelta(seconds=10)).isoformat(), job_id="j3"),
+            _run("r4", (recent + timedelta(seconds=20)).isoformat(), job_id="j4"),
         ]
     )
-    ix.settle_grace_s = 0  # isolate the running rule from the settle grace
-    assert ix.scan_once(storage) == 1
-    assert _checkpoint(storage)["timestamp"] == D1
+    ix.settle_grace_s = 0
+    assert ix.scan_once(storage) == 2  # r1, r3; r4 waits
+    assert set(_checkpoint(storage)["done_ahead"]) == {"r3"}
 
 
 def test_a_fresh_running_unrelated_run_does_not_stop_the_scan():
@@ -779,8 +839,8 @@ def test_a_first_scan_reads_every_successful_target():
 # -- No checkpoint: automatic in standalone only ------------------------------
 
 
-def _job_indexer(jobs):
-    storage, kv = _admin_with_jobs(jobs)
+def _job_indexer(jobs, keyset=True):
+    storage, kv = _admin_with_jobs(jobs, keyset=keyset)
     rows = MagicMock()
     rows.index_job_records.side_effect = len
     return idx.LineageJobIndexer(sink=MagicMock(), rows=rows), storage, kv, rows
@@ -816,6 +876,15 @@ def test_in_standalone_no_checkpoint_still_indexes_everything():
 
 def test_the_from_beginning_mark_is_a_full_read():
     ix, storage, _, _ = _job_indexer([])
+    ix.seed_if_absent(storage, "all")
+    with patch.object(idx, "is_standalone", return_value=False):
+        ix.scan_once(storage)
+    read = storage.lineage_job_storage.get_recorded_after
+    assert read.call_args.args[0] is None  # no cutoff
+
+
+def test_the_from_beginning_mark_is_a_full_read_without_keyset():
+    ix, storage, _, _ = _job_indexer([], keyset=False)
     ix.seed_if_absent(storage, "all")
     with (
         patch.object(idx, "is_standalone", return_value=False),
@@ -1069,11 +1138,66 @@ def test_db_source_holds_only_keys_and_loads_records_per_batch(monkeypatch):
         _job_record(f"j{i}", (base + timedelta(minutes=i)).isoformat())
         for i in range(5)
     ]
-    ix, storage, kv, rows = _job_indexer(jobs)
+    ix, storage, kv, rows = _job_indexer(jobs, keyset=False)
     with patch.object(idx, "_resolve_lineage_provider", return_value="db"):
         assert ix.scan_once(storage) == 5
     loads = storage.lineage_job_storage.get_jobs_by_id.call_args_list
     assert [len(c.args[0]) for c in loads] == [2, 2, 1]
+
+
+def test_db_source_reads_records_by_keyset_a_page_at_a_time(monkeypatch):
+    """Memory is one page: records are read by (recorded_at, job_id) keyset,
+    never listed whole, and the checkpoint advances per batch."""
+    monkeypatch.setattr(idx, "_CHECKPOINT_EVERY", 2)
+    monkeypatch.setattr(idx, "_SCAN_PAGE_SIZE", 2)
+    base = datetime.now(timezone.utc) - timedelta(hours=5)
+    jobs = [
+        _job_record(f"j{i}", (base + timedelta(minutes=i)).isoformat())
+        for i in range(5)
+    ]
+    ix, storage, kv, rows = _job_indexer(jobs)
+    with patch.object(idx, "_resolve_lineage_provider", return_value="db"):
+        assert ix.scan_once(storage) == 5
+    reads = storage.lineage_job_storage.get_recorded_after.call_args_list
+    assert [c.args[1] for c in reads] == [
+        None,
+        (jobs[1].recorded_at, "j1"),
+        (jobs[3].recorded_at, "j3"),
+    ]
+    storage.lineage_job_storage.get_jobs_by_id.assert_not_called()
+    storage.lineage_job_storage.get_by_where.assert_not_called()
+    assert [len(c.args[0]) for c in rows.index_job_records.call_args_list] == [2, 2, 1]
+
+
+def test_db_source_keyset_reads_a_record_moved_forward_by_a_merge(monkeypatch):
+    """A merge moves recorded_at forward: under keyset the record is read later,
+    and none behind the cursor is skipped."""
+    monkeypatch.setattr(idx, "_CHECKPOINT_EVERY", 10)
+    monkeypatch.setattr(idx, "_SCAN_PAGE_SIZE", 2)
+    base = datetime.now(timezone.utc) - timedelta(hours=5)
+    jobs = [
+        _job_record(f"j{i}", (base + timedelta(minutes=i)).isoformat())
+        for i in range(4)
+    ]
+    ix, storage, kv, rows = _job_indexer(jobs)
+    real = storage.lineage_job_storage.get_recorded_after.side_effect
+    moved = []
+
+    def merge_after_first_page(cutoff, after, limit):
+        page = real(cutoff, after, limit)
+        if after is None and not moved:
+            # j0, already read, is merged and moves past everything else.
+            jobs[0].recorded_at = (base + timedelta(minutes=30)).isoformat()
+            moved.append(True)
+        return page
+
+    storage.lineage_job_storage.get_recorded_after.side_effect = merge_after_first_page
+    with patch.object(idx, "_resolve_lineage_provider", return_value="db"):
+        ix.scan_once(storage)
+    indexed = [
+        j.job_id for c in rows.index_job_records.call_args_list for j in c.args[0]
+    ]
+    assert set(indexed) >= {"j1", "j2", "j3"}
 
 
 def test_wandb_zoneless_created_at_is_utc_on_any_host_clock(monkeypatch):

@@ -162,6 +162,17 @@ class ILineageRowStorage(IItemStorage[StoredLineageRow]):
         """Return which of ``job_ids`` already have rows."""
         raise NotImplementedError
 
+    def add_replacing(self, row: StoredLineageRow, stale_uuids: List[str]) -> None:
+        """Add ``row`` and delete ``stale_uuids`` (the terminal rows it supersedes).
+
+        This default is two writes; a backend that can makes it one transaction,
+        so a crash never leaves a stale terminal beside its real edge. Raises like
+        ``add`` when ``row`` already exists, deleting nothing.
+        """
+        self.add(row)
+        if stale_uuids:
+            self.delete(stale_uuids)
+
     def delete_all_rows(self) -> int:
         """Delete every row, keeping the table; return how many were deleted.
 
