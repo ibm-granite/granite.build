@@ -1,4 +1,4 @@
-# example (SkyPilot)
+# eval-example (SkyPilot)
 
 Evaluation step for SkyPilot clusters. Its evaluation code is baked into a container
 image; the `run` block invokes that entrypoint with parameters from `config.eval_config`
@@ -35,11 +35,11 @@ output location is fixed and known ahead of time.
 ## Referencing the step
 
 Point your build's Space at one that provides the step, then reference it by the stable
-`space://steps/eval/example` URI:
+`space://steps/eval/eval-example` URI:
 
 ```yaml
 steps:
-  - step_uri: space://steps/eval/example
+  - step_uri: space://steps/eval/eval-example
 ```
 
 ## Config contract (`eval_config`)
@@ -91,7 +91,7 @@ granite.build:
         results:
           uri: hf://huggingface.co/datasets/my-org/eval-{{ run_metadata.targetsteprun_id | short_hash }}
       steps:
-        - step_uri: space://steps/eval/example
+        - step_uri: space://steps/eval/eval-example
           config:
             compute_config: { num_nodes: 1, num_gpus_per_node: 1 }
             eval_config:

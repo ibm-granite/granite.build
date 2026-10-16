@@ -1,7 +1,7 @@
-# example (SkyPilot) — development
+# eval-example (SkyPilot) — development
 
 > **Using this step?** See [USAGE.md](USAGE.md) for how to reference and configure
-> `example` in a `build.yaml` (config contract, inputs/outputs, examples). This file
+> `eval-example` in a `build.yaml` (config contract, inputs/outputs, examples). This file
 > covers how the step is *built and tested* (it is not publishable).
 
 Evaluation step for SkyPilot clusters. Its evaluation code is baked into a
@@ -62,8 +62,8 @@ Eval-specific notes:
 
 ## Running the AWS test (real EC2)
 
-`make -C steps/eval/example/skypilot test` runs the whole `test/` tree, including
-`test/aws/test_skypilot_aws_eval.py`, which runs the example eval step on a real EC2
+`make -C steps/eval/eval-example/skypilot test` runs the whole `test/` tree, including
+`test/aws/test_skypilot_aws_eval.py`, which runs the eval-example step on a real EC2
 node via SkyPilot. Like the [byoc AWS
 test](../../../byoc/skypilot/README.md#environment-variables-for-the-aws-test) it is
 **extended-suite only** (`@extended_testing_only` + the `skypilot_integration`
@@ -123,6 +123,6 @@ tests with that same `REGISTRY` so the rendered `image_id` points at the image y
 pushed:
 
 ```sh
-make -C steps/eval/example/skypilot image publish-image REGISTRY=quay.io/<you>   # build + push (after `podman login`)
-make -C steps/eval/example/skypilot test REGISTRY=quay.io/<you>                  # renders image_id -> your ref, runs the aws test
+make -C steps/eval/eval-example/skypilot image publish-image REGISTRY=quay.io/<you>   # build + push (after `podman login`)
+make -C steps/eval/eval-example/skypilot test REGISTRY=quay.io/<you>                  # renders image_id -> your ref, runs the aws test
 ```
