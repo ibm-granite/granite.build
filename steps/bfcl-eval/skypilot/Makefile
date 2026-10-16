@@ -2,7 +2,7 @@ STEP_NAME := bfcl-eval
 
 # This is an image step (a Dockerfile sits beside this file), and common.mk makes REGISTRY
 # mandatory with no default for those — `make image` errors out rather than guessing where
-# to push. A placeholder here so the target names something, matching steps/eval; override
+# to push. A placeholder here so the target names something, matching steps/eval/eval-example; override
 # it for a real build:
 #
 #   make image REGISTRY=quay.io/<your-org>

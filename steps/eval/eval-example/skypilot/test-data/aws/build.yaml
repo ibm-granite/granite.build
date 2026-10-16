@@ -1,6 +1,6 @@
 # Build spec for the sibling ../../test/aws/test_skypilot_aws_eval.py.
-# Runs the eval step (space://steps/eval) on the SkyPilot aws environment (a real
-# EC2 backend). The eval step is a CUSTOM-IMAGE step: the EC2 node PULLS the eval
+# Runs the eval-example step (space://steps/eval/eval-example) on the SkyPilot aws environment (a real
+# EC2 backend). The eval-example step is a CUSTOM-IMAGE step: the EC2 node PULLS the eval
 # image from its registry by the reference frozen into the step's image_id
 # (docker:${IMAGE_REF}), so the image must be PUBLISHED to a pullable registry
 # first (`make image publish-image REGISTRY=...`) — the committed quay.io/your-org
@@ -23,7 +23,7 @@ granite.build:
           uri: "env:///gb-workspace/output/results.json"
           type: dataset
       steps:
-        - step_uri: space://steps/eval
+        - step_uri: space://steps/eval/eval-example
           config:
             eval_config:
               # Placeholder values — eval.sh echoes model_path/tasks and writes a

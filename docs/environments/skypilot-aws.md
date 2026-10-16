@@ -703,7 +703,7 @@ access-key pair, with the repo `.venv` built (`make venv` at the repo root):
    `make test` forces pytest's `-s` (required — a second SkyPilot launch in a captured process
    hits `OSError: [Errno 9] Bad file descriptor`). Reaching SUCCESS proves the step ran end to
    end on EC2. (`eval` is a custom-image step: publish its image first — see
-   `steps/eval/skypilot/README.md`.)
+   `steps/eval/eval-example/skypilot/README.md`.)
 
 5. **Confirm nothing leaked:**
 

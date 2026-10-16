@@ -23,7 +23,7 @@ gbserver package, so it is loaded here by path via importlib.
 This is a **cluster-agnostic** unit test, so it lives at the root of the step's
 ``test/`` dir rather than in a per-cluster subdir — which means it runs in Mode 1
 only (``make -C steps/data/dpk/skypilot test``) and is not copied to ``test/steps/``
-by ``make publish-step``. Same placement as ``eval/skypilot/test/test_eval.py``.
+by ``make publish-step``. Same placement as ``eval/eval-example/skypilot/test/test_eval.py``.
 
 These tests build synthetic ``tokenization2arrow`` output trees, so they cover
 the corruption cases that matter without needing DPK, a tokenizer download, or a

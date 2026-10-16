@@ -1,8 +1,8 @@
-# eval (SkyPilot) — development
+# eval-example (SkyPilot) — development
 
 > **Using this step?** See [USAGE.md](USAGE.md) for how to reference and configure
-> `eval` in a `build.yaml` (config contract, inputs/outputs, examples). This file
-> covers how the step is *built, tested, and published*.
+> `eval-example` in a `build.yaml` (config contract, inputs/outputs, examples). This file
+> covers how the step is *built and tested* (it is not publishable).
 
 Evaluation step for SkyPilot clusters. Its evaluation code is baked into a
 **custom image** built from [`Dockerfile`](Dockerfile), published to a registry,
@@ -11,9 +11,9 @@ invokes the baked entrypoint ([`src/eval.sh`](src/eval.sh)) with parameters from
 `config.eval_config`, then registers the single results file as the step's output.
 
 This is a custom-image counterpart to the public-image
-[byoc](../../byoc/skypilot/README.md) step. It is *generated* from the sources in
+[byoc](../../../byoc/skypilot/README.md) step. It is *generated* from the sources in
 this directory by the shared Makefile conventions — see the framework overview:
-[steps/README.md](../../README.md).
+[steps/README.md](../../../README.md).
 
 > **This is an exemplar, not a working evaluator.** The shipped
 > [`src/eval.sh`](src/eval.sh) is a **placeholder shell script** — it writes a
@@ -27,18 +27,17 @@ this directory by the shared Makefile conventions — see the framework overview
 
 Because a `Dockerfile` is present, this is an image step: `make all` runs
 `image` → `publish-image` → `space`. For the full target list, variables, and
-[registry credentials](../../README.md#registry-credentials), see the shared
-[Makefile target conventions](../../README.md#makefile-target-conventions).
+[registry credentials](../../../README.md#registry-credentials), see the shared
+[Makefile target conventions](../../../README.md#makefile-target-conventions).
 
-To promote the step into the repo's committed assets tree
-(`configurations/assets/environments/skypilot/steps/eval/`) and copy its build
-test into `test/steps/eval/skypilot/` so it is runnable from VSCode against
-the published step, run `make publish-step`. Publishing also copies
-[USAGE.md](USAGE.md) to `README.md` beside the published `step.yaml`, so the released
-step ships user-facing docs. See
-[Two test modes](../../README.md#two-test-modes) for how the same test runs both
-against the locally rendered `space/` (Mode 1, `make test`) and against the
-published step (Mode 2, under `test/steps/`).
+**This step is not publishable.** It is an exemplar — a template to copy when
+authoring a custom-image step — so its [Makefile](Makefile) sets
+`override STEP_PUBLISHABLE := false` and `make publish-step` refuses to run. It never
+lands in the committed assets tree (`configurations/assets/`) or the Mode-2 test trees
+(`test/steps/`, `test-data/steps/`); it is exercised only in Mode 1, against the locally
+rendered `space/` via `make test`. A step copied from it drops that line to become
+publishable; see [Two test modes](../../../README.md#two-test-modes) and the shared
+[`publish-step`](../../../README.md#makefile-target-conventions) docs.
 
 With the local `Docker` launcher removed, there is **no longer a way to exercise
 the built image locally**: `make test` runs the cluster-agnostic `eval.sh` unit
@@ -63,10 +62,10 @@ Eval-specific notes:
 
 ## Running the AWS test (real EC2)
 
-`make -C steps/eval/skypilot test` runs the whole `test/` tree, including
-`test/aws/test_skypilot_aws_eval.py`, which runs the eval step on a real EC2
+`make -C steps/eval/eval-example/skypilot test` runs the whole `test/` tree, including
+`test/aws/test_skypilot_aws_eval.py`, which runs the eval-example step on a real EC2
 node via SkyPilot. Like the [byoc AWS
-test](../../byoc/skypilot/README.md#environment-variables-for-the-aws-test) it is
+test](../../../byoc/skypilot/README.md#environment-variables-for-the-aws-test) it is
 **extended-suite only** (`@extended_testing_only` + the `skypilot_integration`
 marker) and **self-skips** unless AWS credentials are in the environment, so it
 never provisions an instance by accident.
@@ -111,7 +110,7 @@ provisioning uses the materialized profile, not your shell. Standalone: store th
 secrets with `gb secret create <NAME> --value <v> --space <space>` (each space has its own
 directory under `~/.granite.build/space_secrets/`; files placed directly there are not
 read); shared: the server-managed secret store supplies them. Full runbook:
-[docs/environments/skypilot-aws.md](../../../docs/environments/skypilot-aws.md).
+[docs/environments/skypilot-aws.md](../../../../docs/environments/skypilot-aws.md).
 
 ### The image must be published first (unlike byoc)
 
@@ -124,6 +123,6 @@ tests with that same `REGISTRY` so the rendered `image_id` points at the image y
 pushed:
 
 ```sh
-make -C steps/eval/skypilot image publish-image REGISTRY=quay.io/<you>   # build + push (after `podman login`)
-make -C steps/eval/skypilot test REGISTRY=quay.io/<you>                  # renders image_id -> your ref, runs the aws test
+make -C steps/eval/eval-example/skypilot image publish-image REGISTRY=quay.io/<you>   # build + push (after `podman login`)
+make -C steps/eval/eval-example/skypilot test REGISTRY=quay.io/<you>                  # renders image_id -> your ref, runs the aws test
 ```
