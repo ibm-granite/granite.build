@@ -55,6 +55,16 @@ assetstores:
         config:
           # Separate hfpull step, cached on the shared volume (as on slurm).
           cache_path: /shared/hf_cache
+          # The builtin hfpull/hfpush steps request 10Gi, which Kubernetes reserves
+          # per pod, so on a small node they queue one at a time. Transfers are
+          # I/O-bound; size the pods down (merged over the step's compute_config).
+          compute_config:
+            num_cpus_per_node: 1
+            total_memory_per_node: 2Gi
     push:
       - mode: default
-        config: {}
+        config:
+          # As for pull above.
+          compute_config:
+            num_cpus_per_node: 1
+            total_memory_per_node: 2Gi
