@@ -35,6 +35,17 @@ data, base model and code are all fetched by URI. `DATA_URI` names the
 | `TRAIN_DATA_SUBDIR` | `training_data/answerability/jsonl/granite-4.2-8b` | `train.jsonl`, `test.jsonl` |
 | `EVAL_DATA_SUBDIR` | `eval_data/answerability` | `gold.jsonl`, `rag.jsonl`, `unanswerable_v2.{a,b,c}.jsonl`, `collection.txt`, `setting.txt` |
 
+Everything both targets read — `train.jsonl`, `test.jsonl` and the eval set —
+is already staged in that repo, in the form the code expects. There is nothing
+to export, convert or copy before a run. The repo holds other representations
+of the same task beside the ones named above (`raw/`,
+`parquet_granite4.2_8b/`); `sr-train` reads neither, which is why the
+subdirectory parameters point where they do.
+
+The train command asserts both files exist under the resolved directory and
+fails in seconds if they do not, so a wrong subdirectory costs queue time and
+nothing else.
+
 The split between repo and subdirectory is not cosmetic: the pull downloads the
 **whole repo** to one cache directory keyed by owner/repo/revision and hands the
 step that directory's root. A sub-path written into the URI would be recorded in
@@ -70,10 +81,11 @@ training and echoes the result into the log. Keep `BASE_MODEL_ID` and
 
 ### The one prerequisite: an `HF_TOKEN` secret
 
-`ibm-research/touma` is private. An anonymous download of a private repo gets a
-401 from the Hub, and the download runs on a cluster node with no access to
-whatever is in your shell — so the token has to be registered once, by name,
-where granite.build can find it:
+For this first round the data sits in a **private** repo, so the pull needs a
+**read-only** token — read-only being enough because nothing here writes to the
+Hub. An anonymous download of a private repo gets a 401, and the download runs
+on a cluster node with no access to whatever is in your shell, so the token has
+to be registered once, by name, where granite.build can find it:
 
 ```bash
 gb secret create HF_TOKEN --personal --value "$HF_TOKEN" --skip-version-check
@@ -95,28 +107,9 @@ From there the token's whole path is server-side: granite.build resolves the
 secret, hands it to the download step as an environment variable, and `hf
 download` picks it up for the private repo. It never appears in `build.yaml`, in
 `parameters.yaml`, or on a command line. The same mechanism covers any other
-private or gated Hub repo a recipe names — including a gated *model* in
-`BASE_MODEL`, which for `ibm-granite/granite-4.2-8b` happens to be public and so
-needs no credential at all.
-
-The messages-JSONL export itself is already done — the trainer needs
-`{"messages": [...]}` rows, which neither the raw classification JSONL
-(`training_data/answerability/raw/`) nor the tokenized parquet
-(`training_data/answerability/parquet_granite4.2_8b/`) in the same repo
-provides. It was produced once from
-[`intrinsics_training`](https://github.ibm.com/touma/intrinsics_training) and is
-only worth re-running if the source data changes:
-
-```bash
-# in an intrinsics_training checkout, with git-lfs data fetched
-conda activate py311
-bash scripts/shell/sr/ad/export_answerability_jsonl.sh
-# -> data/train/answerability/jsonl/granite-4.2-8b/{train,test}.jsonl
-```
-
-The train command asserts both files exist under the resolved directory and
-fails in seconds if they do not, so a wrong subdirectory costs queue time and
-nothing else.
+private or gated Hub repo a recipe names — including a gated model in
+`BASE_MODEL_URI`, which for `ibm-granite/granite-4.2-8b` happens to be public
+and so needs no credential at all.
 
 ## Run
 
@@ -132,13 +125,13 @@ Explicitly, or with a different parameter set:
 ## Why the code is cloned from github.com
 
 The `byoc` step does an **unauthenticated** `git clone`, so the repo it clones
-must be publicly readable. That rules out both IBM-internal candidates:
-`github.ibm.com` refuses anonymous clones outright, and its
-`generative-computing/shadow-residual` mirror is in any case about six weeks
-behind the github.com repo. `SR_REPO` therefore points at github.com and should
-stay there. Everything else the run needs is public too — the base model comes
-from the Hub and the dependencies from PyPI — so the only IBM-internal inputs
-are the two data paths.
+must be publicly readable. That rules out both IBM-internal candidates: the
+internal GitHub Enterprise refuses anonymous clones outright, and its
+`shadow-residual` mirror is in any case about six weeks behind the github.com
+repo. `SR_REPO` therefore points at github.com and should stay there.
+Everything else the run needs is public too — the base model comes from the Hub
+and the dependencies from PyPI. The data is the sole exception, and only
+because this first round reads it from a private repo.
 
 Pin `SR_REF` to a tag or SHA for anything you intend to compare against later.
 `main` is the default because that is the branch whose API the generated config
@@ -157,7 +150,7 @@ alpha 32, dropout 0.05, lr 5e-5, 3 epochs, `max_length` 8192, batch 1 × grad
 accum 8, seed 0, one GPU. What is **not** carried over is the parts of its config
 that no longer exist.
 
-That repo pins shadow-residual to a `github.ibm.com` commit from the aLoRA era.
+That repo pins shadow-residual to an internal-mirror commit from the aLoRA era.
 Public `main` has since moved to 100% stock PEFT, and three keys went with it:
 
 | In `intrinsics_training`'s config | Here |
