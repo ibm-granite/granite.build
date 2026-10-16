@@ -41,9 +41,10 @@ Two conversions, because the endpoints ask two different questions:
   the route reaches into ``run.facets`` to filter access.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List, Optional
 
 from gbserver.lineage.attributes import (
+    INPUT,
     JOB_CATEGORY,
     JOB_COMPLETED_AT,
     JOB_NAME,
@@ -52,9 +53,12 @@ from gbserver.lineage.attributes import (
     JOB_STARTED_AT,
     JOB_STATUS,
     JOB_TYPE,
+    OUTPUT,
     PAYLOAD,
     PAYLOAD_EXECUTION_STATS,
     PAYLOAD_INPUT_PARAMS,
+    endpoint_kind,
+    endpoint_name,
     job_detail,
     origin_detail,
     origin_system,
@@ -129,7 +133,29 @@ def global_job_entry(entry: Dict) -> Dict:
     return trimmed
 
 
-def job_search_event(job: StoredLineageJob) -> Dict:
+def _search_datasets(rows: Iterable[Any], side: str) -> List[Dict]:
+    """The distinct artifacts on one side of a job's rows, as OpenLineage datasets.
+
+    The same shape the W&B provider returns (``namespace``, ``name``, ``uri``,
+    ``facets``); ``N/A`` where the index has no namespace, as W&B does. Terminal
+    endpoints (a creation's source, a deletion's target) are not artifacts.
+    """
+    datasets: Dict[str, Dict] = {}
+    for row in rows:
+        uri = getattr(row, side)
+        if not uri or uri == TERMINAL or uri in datasets:
+            continue
+        kind = endpoint_kind(row.attributes, side)
+        datasets[uri] = {
+            "namespace": "N/A",
+            "name": endpoint_name(row.attributes, side) or uri,
+            "uri": uri,
+            "facets": {"artifact_type": kind} if kind else {},
+        }
+    return list(datasets.values())
+
+
+def job_search_event(job: StoredLineageJob, rows: Optional[List[Any]] = None) -> Dict:
     """One job record in the envelope ``POST /lineage/search`` reads.
 
     That route is provider-resolved and shared, so it cannot know which provider
@@ -145,9 +171,8 @@ def job_search_event(job: StoredLineageJob) -> Dict:
     returns the facet the producer emitted, ``space_name`` and ``username``
     included.
 
-    ``inputs``/``outputs`` are left empty: this answers "which jobs match these
-    tags", and what a match read and wrote is a second question the artifact graph
-    and ``GET /lineage/jobs/{id}`` already answer from the index rows.
+    ``inputs``/``outputs`` come from the job's index ``rows``, as the W&B provider
+    fills them from the run's artifacts; a job not indexed yet has none.
     """
     attributes = job.attributes or {}
     detail = job_detail(attributes)
@@ -184,6 +209,6 @@ def job_search_event(job: StoredLineageJob) -> Dict:
             "name": str(detail.get("name") or ""),
             "facets": {},
         },
-        "inputs": [],
-        "outputs": [],
+        "inputs": _search_datasets(rows or [], INPUT),
+        "outputs": _search_datasets(rows or [], OUTPUT),
     }

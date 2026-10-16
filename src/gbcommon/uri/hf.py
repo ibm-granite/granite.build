@@ -482,6 +482,9 @@ _HF_TYPE_TO_SEGMENT: dict[HfType, str] = {
     HfType.BUCKET: URLSEGMENT_BUCKETS,
 }
 _HF_SEGMENT_TO_TYPE: dict[str, HfType] = {v: k for k, v in _HF_TYPE_TO_SEGMENT.items()}
+# Public name for the type -> path segment map, for code that spells HF URIs
+# itself (lineage URI normalization) instead of restating the segments.
+HF_TYPE_TO_SEGMENT = _HF_TYPE_TO_SEGMENT
 
 # Maps HfType to the repo_type string expected by huggingface_hub APIs.
 # HfType.BUCKET has no huggingface_hub equivalent, so it is absent (callers default to "model").

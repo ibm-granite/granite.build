@@ -317,6 +317,10 @@ def test_relative_file_uri_is_not_resolved():
         "https://huggingface.co/papers/2401.00001",  # site pages, not repos
         "https://huggingface.co/docs/transformers",
         "https://huggingface.co/api/models/org",
+        # An owner the Hub reserves: its web URL would name another type's repo.
+        "hf://huggingface.co/models/spaces/m/o",
+        # ``@`` before the repo is not a ref; it grew on every re-normalization.
+        "git+https://github.com/@r/blob",
     ],
 )
 def test_unidentifiable_input_returns_empty(raw):
@@ -440,6 +444,8 @@ _ALL_SPELLINGS = sorted(
         "git+https://host.com/org/mono@main#subdirectory=a/b",
         "file:///tmp/out/model/",
         "s3://bucket/a/",
+        "git+https://github.com/org/repo.git@v1",
+        "git+https://github.com/org/repo@v1/sub",
     }
 )
 

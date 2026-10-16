@@ -53,6 +53,10 @@ DEFAULT_MAX_DEPTH = 100
 # frontier nodes that still had graph behind them, via `unexpanded`, rather than
 # pretending a few more clicks would finish it.
 DEFAULT_MAX_NODES_PER_LEVEL = 5000
+# Rows one hop may read per node the level can take: many runs share an edge, so a
+# node usually comes with several rows, but past this the hop is a hub and what is
+# shown is marked truncated rather than read whole.
+ROWS_PER_NODE = 10
 
 # Hard ceiling a caller can raise the per-level cap to, for an explicit "show the
 # full graph" request. Deliberately NOT unbounded: a shared base model's closure
@@ -249,12 +253,22 @@ def _walk_one_direction(
     while frontier and depth < max_depth:
         depth += 1
 
+        row_limit = max_nodes_per_level * ROWS_PER_NODE
         if self_loops_checked is None:
-            rows = _hop(storage, frontier, direction)
+            rows = _hop(storage, frontier, direction, limit=row_limit)
         else:
             # Leaving self-loops out of the hop changes nothing below: the walk
             # never continues through one.
-            rows = _hop(storage, frontier, direction, self_loops=False)
+            rows = _hop(storage, frontier, direction, self_loops=False, limit=row_limit)
+        if len(rows) >= row_limit:
+            # Some of this level's rows were never read: what it shows is partial.
+            logger.warning(
+                "Lineage walk truncated at depth %d: hop hit the %d-row limit",
+                depth,
+                row_limit,
+            )
+            graph.truncated = True
+        if self_loops_checked is not None:
             rows += _self_loop_samples(storage, frontier, graph, self_loops_checked)
 
         next_frontier: list = []
@@ -326,7 +340,13 @@ def _walk_one_direction(
         held = set(frontier)
         remainder = set()
         # Self-loops are skipped below, so there is no reason to read them.
-        for r in _hop(storage, frontier, direction, self_loops=False):
+        for r in _hop(
+            storage,
+            frontier,
+            direction,
+            self_loops=False,
+            limit=max_nodes_per_level * ROWS_PER_NODE,
+        ):
             reached = _continuation(r, direction)
             # Same stopping rules the main loop applies, so a frontier node whose only
             # rows are terminals or self-loops is correctly not counted as more graph.
@@ -349,11 +369,16 @@ def _hop(
     frontier: list,
     direction: Direction,
     self_loops: bool = True,
+    limit: Optional[int] = None,
 ) -> list:
-    """Fetch one level's rows with a single batched, indexed query."""
+    """Fetch one level's rows with a single batched, indexed query.
+
+    ``limit`` bounds the rows read in SQL, so a hub's hop cannot load every edge
+    it has into memory before the per-level node cap trims them.
+    """
     if direction == Direction.DESCENDANTS:
-        return storage.get_rows_by_input(frontier, self_loops=self_loops)
-    return storage.get_rows_by_output(frontier, self_loops=self_loops)
+        return storage.get_rows_by_input(frontier, self_loops=self_loops, limit=limit)
+    return storage.get_rows_by_output(frontier, self_loops=self_loops, limit=limit)
 
 
 def _self_loop_samples(

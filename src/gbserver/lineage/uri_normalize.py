@@ -49,11 +49,9 @@ from gbcommon.uri.git import split_repo_path
 from gbcommon.uri.hf import (
     DEFAULT_REVISION,
     HF_HOST,
+    HF_TYPE_TO_SEGMENT,
     HF_URI_SCHEME,
     URLSEGMENT_BUCKETS,
-    URLSEGMENT_DATASETS,
-    URLSEGMENT_MODELS,
-    URLSEGMENT_SPACES,
 )
 from gbcommon.uri.lh import (
     DEFAULT_FILESET_VERSION,
@@ -73,22 +71,7 @@ logger = get_logger(__name__)
 
 # The HF path segments that name a repo type. A URI whose *host* is one of these
 # is the missing-slash typo `hf://models/o/r`, which HfURI only warns about.
-_HF_TYPE_SEGMENTS = frozenset(
-    {
-        URLSEGMENT_MODELS,
-        URLSEGMENT_DATASETS,
-        URLSEGMENT_SPACES,
-        URLSEGMENT_BUCKETS,
-    }
-)
-
-# How the web URL spells each non-model repo type. A model has no segment, which
-# is the one difference from the ``hf://`` layout. Keyed by ``HfType`` value.
-_HF_WEB_TYPE_SEGMENT = {
-    "dataset": URLSEGMENT_DATASETS,
-    "space": URLSEGMENT_SPACES,
-    "bucket": URLSEGMENT_BUCKETS,
-}
+_HF_TYPE_SEGMENTS = frozenset(HF_TYPE_TO_SEGMENT.values())
 
 # The marker the canonical web URL puts before a revision, and every marker a web
 # URL may use there: ``tree`` for a directory, ``blob`` for a file page, ``resolve``
@@ -241,15 +224,20 @@ def _normalize_hf(candidate: str, parsed) -> str:
     hf = HfURI.parse(candidate)
     if (hf.get_host() or "").lower() != HF_HOST:
         return str(hf)
+    if (hf.get_owner() or "").lower() in _HF_TYPE_SEGMENTS:
+        # The Hub reserves these as owner names; read as one, the web URL would be
+        # another type's repo (``models/spaces/m`` -> the Space ``spaces/m``).
+        return ""
 
-    # The web URL omits the type segment for a model, and spells a revision or a
-    # path inside the repo as /tree/<revision>/<path>. A bucket has no revision.
+    # The web URL omits the type segment for a model (the one difference from the
+    # ``hf://`` layout), and spells a revision or a path inside the repo as
+    # /tree/<revision>/<path>. A bucket has no revision.
     hf_type = hf.get_hf_type()
     revision = hf.get_revision()
     path_in_repo = hf.get_path_in_repo()
     segments = []
     if hf_type != HfType.MODEL:
-        segments.append(_HF_WEB_TYPE_SEGMENT[str(hf_type)])
+        segments.append(HF_TYPE_TO_SEGMENT[hf_type])
     segments.extend([hf.get_owner(), hf.get_repo()])
     if hf_type == HfType.BUCKET:
         if path_in_repo:
@@ -390,8 +378,13 @@ def _normalize_git(candidate: str, parsed) -> str:
     owner, repo = split_repo_path(raw_path)
     if not owner or not repo:
         return ""
+    if "@" in owner:
+        # Not an owner name any host allows; ``@`` belongs to the ref, after the repo.
+        return ""
     path = f"/{owner}/{repo}"
-    _, at, ref = raw_path.partition("@")
+    # The ref follows the repo (``repo.git@ref``): read it after the owner segment.
+    after_owner = raw_path.lstrip("/").split("/", 1)[1]
+    _, at, ref = after_owner.partition("@")
     ref = ref.strip("/")
     if at and ref:
         path = f"{path}@{ref}"

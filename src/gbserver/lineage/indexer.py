@@ -131,17 +131,22 @@ _WANDB_PAGE_SIZE = 200
 # logs them asynchronously until finish()), so it is waited on -- but only this
 # long, so a run whose writer died without finishing does not pin the scan.
 _WANDB_RUNNING_MAX_AGE_S = 6 * 3600
+# wandb_service.LINEAGE_RUN_JOB_TYPE, restated so this module does not import wandb.
+_WANDB_LINEAGE_RUN_JOB_TYPE = "gb-lineage-event"
 
 
 # How old a job's timestamp must be before the scan takes it. The timestamp is
 # stamped before the row commits (finished_at when the event is created,
 # recorded_at in Python), so rows can commit out of timestamp order; a checkpoint
 # moved to the newest timestamp would skip one that commits later behind it.
-# Only taking settled jobs keeps the checkpoint at most ``now - grace``. A row
+# Only taking settled jobs keeps the checkpoint at most ``now - grace``. The
+# default outlasts the writers' own retry budget (10 attempts, up to 30s apart, in
+# sql_storage), since a write retried that long commits that far behind its
+# stamp. A row
 # that commits later than the grace behind its timestamp (a long event backlog,
 # clock skew between pods) is still skipped until a full reindex; raise
 # GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S where that is expected.
-def _settle_grace_from_env(default: float = 120.0) -> float:
+def _settle_grace_from_env(default: float = 360.0) -> float:
     raw = os.environ.get("GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S", "")
     try:
         return float(raw) if raw.strip() else default
@@ -268,6 +273,21 @@ _TRANSIENT_ERROR_MARKERS = (
     "server closed the connection",
     "timed out",
 )
+# Messages that mark an error as the job's or the schema's, even when its class
+# (sqlalchemy's OperationalError covers both) or another marker reads as an
+# outage: retrying cannot fix them, so they must count toward the give-up instead
+# of pinning the checkpoint forever.
+_DETERMINISTIC_ERROR_MARKERS = (
+    "no such table",
+    "no such column",
+    "syntax error",
+    "does not exist",
+    "value too long",
+    "statement timeout",
+)
+# After this many transient failures in a row on the same job the warning becomes
+# an error: still not counted (an outage must skip nothing), but no longer quiet.
+_TRANSIENT_ALERT_AFTER = 20
 
 
 def _is_transient_error(exc: BaseException) -> bool:
@@ -279,6 +299,13 @@ def _is_transient_error(exc: BaseException) -> bool:
     """
     seen: set = set()
     current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if any(m in str(current).lower() for m in _DETERMINISTIC_ERROR_MARKERS):
+            return False
+        current = current.__cause__ or current.__context__
+    seen.clear()
+    current = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         if isinstance(current, (ConnectionError, TimeoutError)):
@@ -339,6 +366,7 @@ class JobLineageIndexer:
         self._sink = sink or DBLineageStore()
         self._rows = rows or LineageRowIndexer()
         self._failed_attempts: Dict[str, int] = {}
+        self._transient_streak: Dict[str, int] = {}
         # The checkpoint as this indexer last read or wrote it; a write first checks
         # the stored one still matches, so a concurrent re-seed is not overwritten.
         self._expected_checkpoint: Optional[dict] = None
@@ -393,12 +421,18 @@ class JobLineageIndexer:
         """
         exc = sys.exc_info()[1]
         if exc is not None and _is_transient_error(exc):
-            logger.warning(
-                "Transient failure indexing job %s; retrying next scan: %s",
+            streak = self._transient_streak.get(item_id, 0) + 1
+            self._transient_streak = {item_id: streak}
+            log = logger.error if streak >= _TRANSIENT_ALERT_AFTER else logger.warning
+            log(
+                "Transient failure %d in a row indexing job %s; retrying next "
+                "scan: %s",
+                streak,
                 item_id,
                 exc,
             )
             return False
+        self._transient_streak.pop(item_id, None)
         attempts = self._failed_attempts.get(item_id, 0) + 1
         self._failed_attempts[item_id] = attempts
         if attempts < _MAX_JOB_ATTEMPTS:
@@ -1188,6 +1222,14 @@ class WandBLineageIndexer(JobLineageIndexer):
 
     def _is_pending(self, job: Any) -> bool:
         if getattr(job, "state", None) != "running":
+            return False
+        # The project is shared: only a lineage run is worth waiting on, or any
+        # long training run logged there would stall indexing. A lineage run is
+        # known by its job_type (set at init) or, from older writers, its job_id.
+        config = getattr(job, "config", None) or {}
+        if getattr(job, "job_type", None) != _WANDB_LINEAGE_RUN_JOB_TYPE and not (
+            isinstance(config, dict) and config.get("job_id")
+        ):
             return False
         age = datetime.now(timezone.utc) - self._parse_job_ts(self._timestamp(job))
         return age.total_seconds() < _WANDB_RUNNING_MAX_AGE_S

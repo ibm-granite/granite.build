@@ -92,6 +92,48 @@ def test_tags_column_is_unbounded_text(storage):
     assert kind == "text"
 
 
+def _tags_type(storage) -> str:
+    from sqlalchemy import text
+
+    with storage._engine.connect() as connection:
+        return connection.execute(
+            text(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = :table AND column_name = 'tags' "
+                "AND table_schema = coalesce(:schema, current_schema())"
+            ),
+            {"table": storage.table_name, "schema": storage._db_schema or None},
+        ).scalar()
+
+
+@_SKIP_ADMIN
+def test_an_existing_varchar_tags_column_is_widened(storage):
+    """A table from before ``tags`` was Text keeps VARCHAR(256) unless the schema
+    adjust widens it; this is the upgrade path, not the fresh-table one."""
+    from sqlalchemy import text
+
+    storage.add(StoredLineageJob(job_id="seed"))
+    table = (
+        f"{storage._db_schema}.{storage.table_name}"
+        if storage._db_schema
+        else storage.table_name
+    )
+    with storage._engine.connect() as connection:
+        connection.execute(
+            text(f"ALTER TABLE {table} ALTER COLUMN tags TYPE VARCHAR(256)")
+        )
+        connection.commit()
+    assert _tags_type(storage) == "character varying"
+
+    reopened = SQLStorageFactory().create_lineage_job_storage(
+        table_name=storage.table_name
+    )
+    assert upsert_job(reopened, StoredLineageJob(job_id="J", tags=_REALISTIC_TAGS)) == (
+        ADDED
+    )
+    assert _tags_type(reopened) == "text"
+
+
 @_SKIP_ADMIN
 def test_an_over_long_job_id_is_rejected_before_the_db(storage):
     job_id = "x" * (MAX_JOB_ID_LENGTH + 1)

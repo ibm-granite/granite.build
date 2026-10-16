@@ -25,13 +25,17 @@ from sqlalchemy import (
 )
 from sqlalchemy.exc import (
     DataError,
+    DisconnectionError,
     IntegrityError,
+    InterfaceError,
     NoSuchTableError,
+    OperationalError,
     SQLAlchemyError,
 )
 from sqlalchemy.orm import declarative_base, scoped_session, sessionmaker
 from tenacity import (
     retry,
+    retry_if_exception,
     retry_if_not_exception_type,
     stop_after_attempt,
     wait_random_exponential,
@@ -61,13 +65,27 @@ from gbserver.types.constants import (
 from gbserver.utils.atomic import AtomicInteger
 from gbserver.utils.utils import get_utc_time
 
-# The retry policy of get_by_where, for a subclass's own read SQL (grouped walks,
-# tag search), so a ``database is locked`` or a dropped connection mid-read is
-# retried there too instead of reaching the API. ValueError is a bad argument.
+# Messages of OperationalErrors that retrying cannot fix (schema or query bugs).
+_DETERMINISTIC_READ_ERRORS = ("no such table", "no such column", "syntax error")
+
+
+def _is_retryable_read_error(exc: BaseException) -> bool:
+    if isinstance(exc, (InterfaceError, DisconnectionError)):
+        return True
+    if isinstance(exc, OperationalError):
+        message = str(exc).lower()
+        return not any(m in message for m in _DETERMINISTIC_READ_ERRORS)
+    return isinstance(exc, (ConnectionError, TimeoutError))
+
+
+# The retry policy for a subclass's own read SQL (grouped walks, tag search), so a
+# ``database is locked`` or a dropped connection mid-read is retried instead of
+# reaching the API. Only those: a deterministic error (a bad query, a missing
+# column, a bad argument) fails at once rather than after minutes of backoff.
 retry_read = retry(
     wait=wait_random_exponential(multiplier=1, min=1, max=30),
     stop=stop_after_attempt(10),
-    retry=retry_if_not_exception_type((ValueError, NotImplementedError)),
+    retry=retry_if_exception(_is_retryable_read_error),
     reraise=True,
 )
 
@@ -409,6 +427,11 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
 
         Idempotent: existing indexes are read from the inspector first, so this is safe
         to run on every schema adjust. Like the unique indexes, a failure only warns.
+
+        On Postgres the index is built ``CONCURRENTLY`` (outside a transaction, so
+        on an autocommit connection): it is added on schema adjust to tables that
+        already hold data -- ``gb_targets`` -- and a plain ``CREATE INDEX`` would
+        block their writes for the whole build.
         """
         if not self.composite_indexes:
             return
@@ -420,7 +443,18 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                     self.table_name, schema=self._db_schema or None
                 )
             }
-            with self._engine.connect() as connection:
+            concurrent = self._engine.dialect.name == "postgresql"
+            engine = (
+                self._engine.execution_options(isolation_level="AUTOCOMMIT")
+                if concurrent
+                else self._engine
+            )
+            create = (
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS"
+                if concurrent
+                else "CREATE INDEX"
+            )
+            with engine.connect() as connection:
                 for columns in self.composite_indexes:
                     for col in columns:
                         _validate_sql_identifier(col, "column name")
@@ -433,7 +467,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                         continue
                     connection.execute(
                         text(
-                            f"CREATE INDEX {full_name} ON "
+                            f"{create} {full_name} ON "
                             f"{self.__get_sql_table_name_reference()} ({', '.join(columns)});"
                         )
                     )
@@ -575,6 +609,45 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         if len(existing_columns) > 0:
             # An existing table only gets new indexes here; creation covers new tables.
             self.__create_composite_indexes()
+            self.__widen_text_columns()
+
+    def __widen_text_columns(self):
+        """Turn a ``text_columns`` column an older schema made VARCHAR into TEXT.
+
+        Creation gives these columns ``Text``, but a table created before a column
+        was listed keeps its ``VARCHAR(n)``, and adding the name to the list alone
+        never reaches it -- so Postgres keeps rejecting long values there. On
+        Postgres ``VARCHAR -> TEXT`` is a catalog change, no table rewrite. SQLite
+        ignores VARCHAR lengths, so there is nothing to do there. A failure only
+        warns, like the index helpers.
+        """
+        if not self.text_columns or self._engine.dialect.name != "postgresql":
+            return
+        try:
+            self._inspector.clear_cache()
+            narrow = [
+                column["name"]
+                for column in self._inspector.get_columns(
+                    self.table_name, schema=self._db_schema or None
+                )
+                if column["name"] in self.text_columns
+                and getattr(column["type"], "length", None)
+            ]
+            if not narrow:
+                return
+            with self._engine.connect() as connection:
+                for col_name in narrow:
+                    _validate_sql_identifier(col_name, "column name")
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE {self.__get_sql_table_name_reference()} "
+                            f"ALTER COLUMN {col_name} TYPE TEXT;"
+                        )
+                    )
+                    self.logger.info(f"Widened column {col_name} to TEXT")
+                connection.commit()
+        except Exception as e:
+            self.logger.warning(f"Error widening text columns: {e}")
 
     def __get_sql_table_name_reference(self) -> str:
         """Get the name of the schema, if any, concatenated with the table name for using in SQL statements.

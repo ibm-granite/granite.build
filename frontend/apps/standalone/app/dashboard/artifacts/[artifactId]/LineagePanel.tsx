@@ -113,7 +113,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
     setOpening(true)
     setOpenError(null)
     try {
-      const match = (await listArtifacts({ uri })).items[0]
+      const match = (await listArtifacts({ uri, match_lineage_uri: true })).items[0]
       if (match) router.push(`/dashboard/artifacts/_/?id=${match.uuid}`)
       else setOpenError(`${activeName} is not in the artifact registry.`)
     } catch (e) {

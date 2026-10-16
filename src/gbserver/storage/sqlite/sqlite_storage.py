@@ -35,6 +35,7 @@ from gbserver.storage.sql.lineage_row_storage import SQLLineageRowStorage
 from gbserver.storage.sql.node_failure_storage import SQLNodeFailureStorage
 from gbserver.storage.sql.space_storage import SQLSpaceStorage
 from gbserver.storage.sql.space_user_storage import SQLSpaceUserStorage
+from gbserver.storage.sql.sql_storage import retry_read
 from gbserver.storage.sql.steprun_storage import SQLStepRunStorage
 from gbserver.storage.sql.target_run_storage import SQLTargetRunStorage
 from gbserver.storage.storage import BASE_ITEM_TYPE, IItemStorage, QueryControl
@@ -186,10 +187,33 @@ class SqliteTargetRunStorage(SqliteStorageOverrides, SQLTargetRunStorage):
     def get_successful_finished_since(
         self, cutoff_utc: datetime, page_index: int, page_size: int
     ) -> list[StoredTargetRun]:
-        with self._db_file_lock:
-            return super().get_successful_finished_since(
-                cutoff_utc, page_index, page_size
-            )
+        return _locked_per_attempt(
+            self,
+            super().get_successful_finished_since,
+            cutoff_utc,
+            page_index,
+            page_size,
+        )
+
+
+def _locked_per_attempt(storage, method, *args, **kwargs):
+    """Call a ``@retry_read`` SQL method holding the file lock per attempt only.
+
+    Locking around the decorated method would hold the process-wide lock through
+    every backoff (minutes), stalling all other SQLite reads and writes; this
+    retries the undecorated function, releasing the lock between attempts.
+    """
+    inner = getattr(method, "__wrapped__", None)
+    if inner is None:
+        with storage._db_file_lock:  # pylint: disable=protected-access
+            return method(*args, **kwargs)
+
+    @retry_read
+    def attempt():
+        with storage._db_file_lock:  # pylint: disable=protected-access
+            return inner(storage, *args, **kwargs)
+
+    return attempt()
 
 
 class SqliteLineageRowStorage(SqliteStorageOverrides, SQLLineageRowStorage):
@@ -198,37 +222,32 @@ class SqliteLineageRowStorage(SqliteStorageOverrides, SQLLineageRowStorage):
     The walk's own SQL (grouped edges, self-loops, the jobs touching an artifact)
     opens its sessions directly rather than through ``get_by_where``, so it takes
     the file lock here, like every other read; otherwise a read during a long
-    indexer write sees ``database is locked``. The lock is re-entrant, so methods
-    that call one another under it do not deadlock.
+    indexer write sees ``database is locked``. The lock is taken per retry attempt
+    (``_locked_per_attempt``) and is re-entrant, so methods that call one another
+    under it do not deadlock.
     """
 
     def count_jobs_touching(self, *args, **kwargs) -> int:
-        with self._db_file_lock:
-            return super().count_jobs_touching(*args, **kwargs)
+        return _locked_per_attempt(self, super().count_jobs_touching, *args, **kwargs)
 
     def get_job_ids_touching(self, *args, **kwargs) -> list[str]:
-        with self._db_file_lock:
-            return super().get_job_ids_touching(*args, **kwargs)
+        return _locked_per_attempt(self, super().get_job_ids_touching, *args, **kwargs)
 
     def grouped_self_loops(self, *args, **kwargs) -> list:
-        with self._db_file_lock:
-            return super().grouped_self_loops(*args, **kwargs)
+        return _locked_per_attempt(self, super().grouped_self_loops, *args, **kwargs)
 
     def grouped_edges(self, *args, **kwargs) -> list:
-        with self._db_file_lock:
-            return super().grouped_edges(*args, **kwargs)
+        return _locked_per_attempt(self, super().grouped_edges, *args, **kwargs)
 
-    def _rows_without_self_loops(self, *args, **kwargs) -> list:
-        with self._db_file_lock:
-            return super()._rows_without_self_loops(*args, **kwargs)
+    def _hop_rows(self, *args, **kwargs) -> list:
+        return _locked_per_attempt(self, super()._hop_rows, *args, **kwargs)
 
 
 class SqliteLineageJobStorage(SqliteStorageOverrides, SQLLineageJobStorage):
     """Sqlite storage for lineage job records."""
 
     def _tag_candidates(self, *args, **kwargs) -> list:
-        with self._db_file_lock:
-            return super()._tag_candidates(*args, **kwargs)
+        return _locked_per_attempt(self, super()._tag_candidates, *args, **kwargs)
 
 
 class SqliteNodeFailureStorage(SqliteStorageOverrides, SQLNodeFailureStorage):

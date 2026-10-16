@@ -566,10 +566,6 @@ def decode_uri(
         )
 
 
-class GetArtifactResponse(BaseModel):
-    artifact: ArtifactRegistration
-
-
 class ListedArtifact(ArtifactRegistration):
     """An artifact as the listing returns it: the registration plus derived fields.
 
@@ -581,6 +577,10 @@ class ListedArtifact(ArtifactRegistration):
     """
 
     lineage_uri: str = ""
+
+
+class GetArtifactResponse(BaseModel):
+    artifact: ListedArtifact
 
 
 class ListArtifactsResponse(BaseModel):
@@ -606,6 +606,7 @@ def list_artifacts(
     tag: Annotated[
         list[str] | None, Query()
     ] = [],  # Specified as multiple tag=v1&tag=v2 in URI
+    match_lineage_uri: bool = False,
 ) -> ListArtifactsResponse:
     scoped_space_name = scope_space_name_filter(request, space_name)
     if scoped_space_name is NO_ACCESSIBLE_SPACE:
@@ -624,7 +625,7 @@ def list_artifacts(
     items = cast(
         List[ArtifactRegistration], storage.artifact_registry.get_by_where(row_filter)
     )
-    if uri and not items:
+    if uri and not items and match_lineage_uri:
         items = _by_lineage_uri(
             storage,
             uri,
@@ -641,12 +642,16 @@ def list_artifacts(
 def _by_lineage_uri(storage, uri: str, **filters) -> List[ArtifactRegistration]:
     """The artifacts whose URI normalizes to the same lineage identity as ``uri``.
 
-    The fallback for a ``uri`` with no exact match, so a lineage graph node's
-    ``id`` (``https://huggingface.co/...``, ``s3://`` for a ``cos://`` artifact, an
-    ``lh://`` URI without its default revision) finds its registry entry. Applies
+    The opt-in (``match_lineage_uri=true``) fallback for a ``uri`` with no exact
+    match, so a lineage graph node's ``id`` (``https://huggingface.co/...``,
+    ``s3://`` for a ``cos://`` artifact, an ``lh://`` URI without the default
+    revision at its revision position) finds its registry entry. Applies
     the same filters, space scope included, as the exact lookup -- only the URI
     comparison differs. Reads the scoped candidates and compares in Python, since
     the registry stores raw URIs; it runs only when the exact match found nothing.
+    Opt-in because it scans the scoped registry and can resolve to a registration
+    whose raw URI differs (``cos://`` vs ``s3://``), which a caller asking for an
+    exact URI -- gbcli's ``get_artifact_uri`` -- must not get.
     """
     wanted = normalize_uri(uri)
     if not wanted:
@@ -701,7 +706,7 @@ def read_artifact(request: Request, artifact_id: str) -> GetArtifactResponse:
         username_on_target=item.username,
         space_name=item.space_name,
     )
-    resp = GetArtifactResponse(artifact=item)
+    resp = GetArtifactResponse(artifact=_listed(item))
     return resp
 
 
@@ -738,7 +743,7 @@ def update_artifact(
         )
 
     assert isinstance(read_resp, GetArtifactResponse)
-    artifact = read_resp.artifact
+    artifact: ArtifactRegistration = read_resp.artifact
     assert isinstance(artifact, ArtifactRegistration)
 
     # Make sure the user (owner or admin) has access to the artifact

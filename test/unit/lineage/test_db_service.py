@@ -78,21 +78,25 @@ class FakeStorage:
             if chunk or start == 0:
                 yield chunk
 
-    def get_rows_by_input(self, sources: list, self_loops: bool = True) -> list:
+    def get_rows_by_input(
+        self, sources: list, self_loops: bool = True, limit=None
+    ) -> list:
         wanted = {s for s in sources if s and s != TERMINAL}
         return [
             r
             for r in self.rows
             if r.input in wanted and (self_loops or r.input != r.output)
-        ]
+        ][:limit]
 
-    def get_rows_by_output(self, targets: list, self_loops: bool = True) -> list:
+    def get_rows_by_output(
+        self, targets: list, self_loops: bool = True, limit=None
+    ) -> list:
         wanted = {t for t in targets if t and t != TERMINAL}
         return [
             r
             for r in self.rows
             if r.output in wanted and (self_loops or r.input != r.output)
-        ]
+        ][:limit]
 
     def grouped_self_loops(self, uris: list) -> list:
         self.queries = getattr(self, "queries", 0) + 1
@@ -351,16 +355,15 @@ class TestWritePathIsInert:
     def test_emit_event_does_not_raise(self):
         assert service().emit_event({"anything": True}) is None
 
-    def test_tag_searches_are_empty_with_no_job_table(self):
-        """Tags live on the job table; with none there is nothing to search.
-
-        Empty rather than raising: this is the read side, and "no matches" is what
-        an unreachable index means to a caller. See TestTagSearch for the answers
+    def test_tag_searches_with_no_job_table(self):
+        """The search raises (the route answers 503) rather than an empty 200 that
+        reads as "no matches"; the counts stay 0. See TestTagSearch for the answers
         when the table is there.
         """
         svc = DBLineageService(storage=FakeStorage([]), job_storage=None)
         with patch.object(DBLineageService, "job_storage", property(lambda self: None)):
-            assert svc.search_lineage_by_tags(["t"]) == (0, [])
+            with pytest.raises(RuntimeError):
+                svc.search_lineage_by_tags(["t"])
             assert svc.count_events_by_tags(["t"]) == 0
             assert svc.count_runs_by_tags(["t"]) == 0
 
@@ -730,6 +733,33 @@ class TestTagSearch:
         _, (run,) = svc.search_lineage_by_tags(["team=nlp"])
         assert set(run) >= {"eventType", "eventTime", "run", "job", "inputs", "outputs"}
         assert run["job"]["namespace"] == "sp/bld"
+
+    def test_inputs_and_outputs_come_from_the_index_rows(self):
+        """As W&B fills them from the run's artifacts; terminals are not artifacts."""
+        svc = DBLineageService(
+            storage=FakeStorage(
+                [
+                    row("J1", A, B, source_name="in-a", target_kind="model"),
+                    row("J1", C, B),
+                    row("J1", TERMINAL, B),
+                    row("J2", A, C),
+                ]
+            ),
+            job_storage=self._jobs(self._record("J1", ["team=nlp"])),
+        )
+        _, (run,) = svc.search_lineage_by_tags(["team=nlp"])
+        assert [d["uri"] for d in run["inputs"]] == [A, C]
+        assert run["inputs"][0]["name"] == "in-a"
+        assert [d["uri"] for d in run["outputs"]] == [B]
+        assert run["outputs"][0]["facets"] == {"artifact_type": "model"}
+
+    def test_a_row_read_failure_is_raised_not_emptied(self):
+        svc = DBLineageService(
+            storage=FakeStorage([], fail=True),
+            job_storage=self._jobs(self._record("J1", ["team=nlp"])),
+        )
+        with pytest.raises(RuntimeError):
+            svc.search_lineage_by_tags(["team=nlp"])
 
     def test_paging_reports_the_total_not_the_page(self):
         svc = self._service(*(self._record(f"J{i}", ["t=1"]) for i in range(5)))

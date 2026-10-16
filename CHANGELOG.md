@@ -26,13 +26,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Lineage: artifact lineage now reads the local lineage index (#470).** The artifact
   page and `GET /lineage/graph` read `gb_lineage_index`, whatever
   `GBSERVER_LINEAGE_PROVIDER` is. **Upgrading a W&B deployment:** outside standalone the
-  indexer starts only once a checkpoint exists, so the artifact lineage panel is empty
-  until you run `gbserver lineage-index-init --base-timestamp all` (back-fill) or
-  `--base-timestamp from-latest` (new runs only). URI normalization also changed
-  (bucket paths, LH revisions and hosts, git refs and subdirectories, trailing
-  slashes), so an existing index must be rebuilt once with
-  `gbserver lineage-index-init --base-timestamp all --force`.
+  indexer starts only once a checkpoint exists. The Helm chart seeds one on start from
+  `lineageIndexer.seedOnStart` (default `from-latest`: new runs only, no history); set
+  it to `all` before the first start to back-fill. It seeds only when no checkpoint
+  exists, so changing it later has no effect: run
+  `gbserver lineage-index-init --base-timestamp all --force` instead. URI
+  normalization also changed (bucket paths, LH revisions and hosts, git refs and
+  subdirectories, trailing slashes), so an existing index must be rebuilt once, with
+  the indexer stopped, by `gbserver lineage-index-init --rebuild` (drops the index rows
+  and re-seeds at `all`; `--force` alone would keep the old-form rows beside the new).
 - **Lineage API (#470).** `POST /lineage/artifact` is removed; use `GET /lineage/graph`.
+  `POST /lineage/search` is deprecated (flagged in the OpenAPI schema): it stays for
+  existing external callers and will be removed once they move to
+  `GET /lineage/jobs` / `GET /lineage/graph?job_ids=...`.
   `GET /lineage/graph` accepts repeated `job_ids`, answers 422 for a bad `direction`,
   and limits callers who are not super admins to `depth <= 20` and the default
   per-level node ceiling. Nodes carry only cross-space fields; build and target-run

@@ -153,20 +153,20 @@ class SQLLineageRowStorage(
             return [job_id for (job_id,) in page.all()]
 
     def get_rows_by_input(
-        self, inputs: List[str], self_loops: bool = True
+        self, inputs: List[str], self_loops: bool = True, limit: Optional[int] = None
     ) -> List[StoredLineageRow]:
-        """The descendant hop, with ``self_loops=False`` filtered in SQL."""
-        if self_loops:
+        """The descendant hop; ``self_loops=False`` and ``limit`` applied in SQL."""
+        if self_loops and limit is None:
             return super().get_rows_by_input(inputs)
-        return self._rows_without_self_loops(inputs, DOWNSTREAM)
+        return self._hop_rows(inputs, DOWNSTREAM, self_loops, limit)
 
     def get_rows_by_output(
-        self, outputs: List[str], self_loops: bool = True
+        self, outputs: List[str], self_loops: bool = True, limit: Optional[int] = None
     ) -> List[StoredLineageRow]:
-        """The ancestor hop, with ``self_loops=False`` filtered in SQL."""
-        if self_loops:
+        """The ancestor hop; ``self_loops=False`` and ``limit`` applied in SQL."""
+        if self_loops and limit is None:
             return super().get_rows_by_output(outputs)
-        return self._rows_without_self_loops(outputs, UPSTREAM)
+        return self._hop_rows(outputs, UPSTREAM, self_loops, limit)
 
     @retry_read
     def grouped_self_loops(self, uris: List[str]) -> List[GroupedEdge]:
@@ -205,10 +205,14 @@ class SQLLineageRowStorage(
             session.close()
 
     @retry_read
-    def _rows_without_self_loops(
-        self, frontier: List[str], direction: str
+    def _hop_rows(
+        self,
+        frontier: List[str],
+        direction: str,
+        self_loops: bool,
+        limit: Optional[int],
     ) -> List[StoredLineageRow]:
-        """One hop's rows minus its self-loops, deserializing only those it returns."""
+        """One hop's rows, deserializing only those it returns."""
         wanted = self._batchable(frontier)
         if not wanted or not self._ensure_table():
             return []
@@ -216,9 +220,11 @@ class SQLLineageRowStorage(
         try:
             model = self._sql_alchemy_model
             side = model.input if direction == DOWNSTREAM else model.output
-            query = session.query(model.json).filter(
-                side.in_(wanted), model.input != model.output
-            )
+            query = session.query(model.json).filter(side.in_(wanted))
+            if not self_loops:
+                query = query.filter(model.input != model.output)
+            if limit is not None:
+                query = query.limit(limit)
             return [
                 self._convert_row_dict_to_item({JSON_COLUMN_NAME: blob})
                 for (blob,) in query.all()

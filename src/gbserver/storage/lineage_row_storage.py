@@ -87,16 +87,17 @@ class ILineageRowStorage(IItemStorage[StoredLineageRow]):
     """Interface for lineage row storage implementations."""
 
     def get_rows_by_input(
-        self, inputs: List[str], self_loops: bool = True
+        self, inputs: List[str], self_loops: bool = True, limit: Optional[int] = None
     ) -> List[StoredLineageRow]:
         """Return rows whose ``input`` is one of ``inputs`` (descendant hop).
 
         ``self_loops=False`` leaves out the rows whose input equals their output.
+        ``limit`` caps how many rows are read (any of them; ``None`` for all).
         """
         raise NotImplementedError
 
     def get_rows_by_output(
-        self, outputs: List[str], self_loops: bool = True
+        self, outputs: List[str], self_loops: bool = True, limit: Optional[int] = None
     ) -> List[StoredLineageRow]:
         """Return rows whose ``output`` is one of ``outputs`` (ancestor hop).
 
@@ -229,7 +230,7 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         )
 
     def get_rows_by_input(
-        self, inputs: List[str], self_loops: bool = True
+        self, inputs: List[str], self_loops: bool = True, limit: Optional[int] = None
     ) -> List[StoredLineageRow]:
         """Return rows whose ``input`` is one of ``inputs``.
 
@@ -249,10 +250,12 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         wanted = self._batchable(inputs)
         if not wanted:
             return []
-        return _keep_self_loops(self.get_by_where({"input": wanted}), self_loops)
+        return _keep_self_loops(self.get_by_where({"input": wanted}), self_loops)[
+            :limit
+        ]
 
     def get_rows_by_output(
-        self, outputs: List[str], self_loops: bool = True
+        self, outputs: List[str], self_loops: bool = True, limit: Optional[int] = None
     ) -> List[StoredLineageRow]:
         """Return rows whose ``output`` is one of ``outputs``.
 
@@ -261,7 +264,9 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         wanted = self._batchable(outputs)
         if not wanted:
             return []
-        return _keep_self_loops(self.get_by_where({"output": wanted}), self_loops)
+        return _keep_self_loops(self.get_by_where({"output": wanted}), self_loops)[
+            :limit
+        ]
 
     def grouped_self_loops(self, uris: List[str]) -> List[GroupedEdge]:
         """Fold each artifact's self-loops into one edge, in Python.

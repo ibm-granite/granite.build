@@ -32,7 +32,7 @@ class _KV:
 
 @pytest.fixture(name="env")
 def env_fixture():
-    storage = SimpleNamespace(kv_pair_storage=_KV())
+    storage = SimpleNamespace(kv_pair_storage=_KV(), lineage_row_storage=MagicMock())
     api = MagicMock()
     latest = SimpleNamespace(created_at="2026-03-01T00:00:00Z")
     indexer = idx.WandBLineageIndexer(sink=MagicMock(), rows=MagicMock(), api=api)
@@ -84,6 +84,24 @@ def test_a_failed_forced_seed_keeps_the_existing_checkpoint(env):
     result = _run("--base-timestamp", "yesterday", "--force")
     assert result.exit_code != 0
     assert env.kv_pair_storage.values[KEY]["timestamp"] == D1
+
+
+def test_rebuild_drops_the_index_and_reseeds_at_all(env):
+    env.kv_pair_storage.set_value(KEY, {"timestamp": D1})
+    result = _run("--rebuild")
+    assert result.exit_code == 0, result.output
+    env.lineage_row_storage.delete_table.assert_called_once()
+    assert env.kv_pair_storage.values[KEY]["timestamp"] == "1970-01-01T00:00:00Z"
+
+
+@pytest.mark.parametrize(
+    "args", [("--rebuild", "--show"), ("--rebuild", "--base-timestamp", D1)]
+)
+def test_rebuild_rejects_a_conflicting_flag(env, args):
+    result = _run(*args)
+    assert result.exit_code != 0
+    env.lineage_row_storage.delete_table.assert_not_called()
+    assert env.kv_pair_storage.values == {}
 
 
 def test_show_prints_without_writing(env):

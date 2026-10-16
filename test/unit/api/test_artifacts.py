@@ -72,6 +72,7 @@ from gbserver.api.utils import (
 from gbserver.api.utils import (
     confirm_existing_item_write_access as _real_confirm_existing_item_write_access,
 )
+from gbserver.lineage.uri_normalize import normalize_uri
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.types.artifact import ArtifactType
 
@@ -210,6 +211,8 @@ def test_read_artifact_allows_owner():
             _fake_request(VICTIM_OWNER, f"{VICTIM_OWNER}@example.com"), art.uuid
         )
     assert resp.artifact.uuid == art.uuid
+    # The build lineage panel keys graph nodes by this, so it must be on the read.
+    assert resp.artifact.lineage_uri == normalize_uri(art.uri)
 
 
 def test_read_artifact_allows_non_owner_space_member():
@@ -489,8 +492,25 @@ def test_a_lineage_node_id_finds_its_registry_entry():
         resp = list_artifacts(
             _fake_request(ALICE, f"{ALICE}@example.com"),
             uri=f"https://huggingface.co/{ALICE_SPACE}/alice-model",
+            match_lineage_uri=True,
         )
     assert [a.uuid for a in resp.artifacts] == [art.uuid]
+
+
+def test_the_normalized_match_is_opt_in():
+    """Without ``match_lineage_uri`` a ``uri`` matches exactly, as gbcli expects."""
+    art = _artifact_in(ALICE_SPACE, ALICE, "alice-model")
+    with (
+        _patched_list_registry([art]),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        _set_alice_access(manager)
+        resp = list_artifacts(
+            _fake_request(ALICE, f"{ALICE}@example.com"),
+            uri=f"https://huggingface.co/{ALICE_SPACE}/alice-model",
+        )
+    assert resp.artifacts == []
 
 
 def test_the_normalized_match_keeps_the_space_scope():
@@ -505,5 +525,6 @@ def test_the_normalized_match_keeps_the_space_scope():
         resp = list_artifacts(
             _fake_request(ALICE, f"{ALICE}@example.com"),
             uri=f"https://huggingface.co/{BOB_SPACE}/bob-dataset",
+            match_lineage_uri=True,
         )
     assert resp.artifacts == []

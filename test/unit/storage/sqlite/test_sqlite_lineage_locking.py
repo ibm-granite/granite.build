@@ -108,3 +108,70 @@ def test_tag_search_holds_the_file_lock():
     object.__setattr__(jobs, "_db_file_lock", lock)
     jobs.search_by_tags(["x=1"])
     assert lock.entered >= 1
+
+
+def test_the_lock_is_released_between_retry_attempts(monkeypatch):
+    """A retried read must not hold the process-wide lock through its backoff."""
+    import threading
+
+    from gbserver.storage.sql import sql_storage
+    from gbserver.storage.sqlite import sqlite_storage
+
+    lock = threading.RLock()
+    free_during_backoff = []
+
+    def probe_sleep(_seconds):
+        # Another thread can take the lock while the read waits to retry.
+        def take():
+            got = lock.acquire(timeout=1)
+            free_during_backoff.append(got)
+            if got:
+                lock.release()
+
+        thread = threading.Thread(target=take)
+        thread.start()
+        thread.join()
+
+    from tenacity import retry, retry_if_exception, stop_after_attempt
+
+    monkeypatch.setattr(
+        sqlite_storage,
+        "retry_read",
+        retry(
+            sleep=probe_sleep,
+            stop=stop_after_attempt(3),
+            retry=retry_if_exception(sql_storage._is_retryable_read_error),
+            reraise=True,
+        ),
+    )
+
+    class _Storage:
+        _db_file_lock = lock
+        calls = 0
+
+        @sql_storage.retry_read
+        def read(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise OperationalError("SELECT", {}, Exception("database is locked"))
+            return "ok"
+
+    storage = _Storage()
+    assert sqlite_storage._locked_per_attempt(storage, storage.read) == "ok"
+    assert storage.calls == 2
+    assert free_during_backoff == [True]
+
+
+def test_a_deterministic_read_error_is_not_retried():
+    from gbserver.storage.sql import sql_storage
+
+    calls = []
+
+    @sql_storage.retry_read
+    def read():
+        calls.append(1)
+        raise OperationalError("SELECT", {}, Exception("no such column: tags"))
+
+    with pytest.raises(OperationalError):
+        read()
+    assert len(calls) == 1

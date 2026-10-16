@@ -545,6 +545,8 @@ export interface ListArtifactsParams {
   space_name?: string
   tags?: string[]
   username?: string
+  // Fall back to matching by lineage identity (normalized URI) on no exact match.
+  match_lineage_uri?: boolean
 }
 
 export interface ArtifactListResult {
@@ -559,6 +561,7 @@ export async function listArtifacts(params: ListArtifactsParams): Promise<Artifa
   if (params.uri)        qp.set('uri', params.uri)
   if (params.space_name) qp.set('space_name', params.space_name)
   if (params.username)   qp.set('username', params.username)
+  if (params.match_lineage_uri) qp.set('match_lineage_uri', 'true')
   for (const tag of params.tags ?? []) qp.append('tag', tag)
 
   const { data } = await client.get<{ artifacts: Record<string, unknown>[] }>(
@@ -627,6 +630,11 @@ export interface LineageGraphResult {
 // ── Lineage job listing (GET /lineage/jobs) ────────────────────────────────────
 
 // One job execution as the lineage index recorded it, with what it read and wrote.
+// Always present but space-gated: the listing (GET /lineage/jobs) carries only the
+// cross-space fields, so `job_namespace`, `space_name`, `owner`, `tags` and `origin`
+// arrive empty there, and on GET /lineage/jobs/{id} for a caller who cannot read the
+// job's space. Read them from the detail, and treat empty as "not visible", not as
+// "the job has none".
 export interface LineageJobEntry {
   job_id: string
   job_namespace: string

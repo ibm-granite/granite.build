@@ -248,9 +248,15 @@ def ingest_lineage_event(event: OpenLineageEvent):
     return {"status": "accepted"}
 
 
-@lineage_api.post("/search", tags=["lineage store"])
+@lineage_api.post("/search", tags=["lineage store"], deprecated=True)
 def search_lineage_events(request: Request, body: TagSearchRequest):
     """Search lineage runs by tag.
+
+    **Deprecated.** Kept only for existing external callers (dmg-ng); nothing in
+    granite.build (frontend, gbcli, gbmcp) calls it. New callers should resolve
+    lineage through the index routes: ``GET /lineage/jobs`` to list jobs and
+    ``GET /lineage/graph?job_ids=...`` for their lineage. It will be removed once
+    those callers have migrated.
 
     An empty tag list matches every run in the shared lineage backend across
     all spaces, so results are access-filtered below. search_lineage_by_tags

@@ -491,11 +491,18 @@ class DBLineageService(LineageService):
         """
         storage = self.job_storage
         if storage is None:
-            return 0, []
+            # Not "no matches": the route turns this into a 503, as for any other
+            # storage failure, instead of an empty 200.
+            raise RuntimeError("No lineage job storage available for tag search")
         # A storage error propagates: an empty result would be indistinguishable
         # from "no job has these tags", and dmg-ng reads this route.
         total, jobs = storage.search_by_tags(tags, limit=limit, offset=offset)
-        return total, [job_search_event(job) for job in jobs]
+        rows_by_job: Dict[str, List] = {}
+        for row in self._rows_of_jobs([job.job_id for job in jobs]):
+            rows_by_job.setdefault(row.job_id, []).append(row)
+        return total, [
+            job_search_event(job, rows_by_job.get(job.job_id, [])) for job in jobs
+        ]
 
     def count_events_by_tags(
         self, tags: List[str], required_tags: Optional[List[str]] = None

@@ -330,6 +330,42 @@ def test_a_stale_running_run_is_indexed_and_does_not_stop_scan():
     assert _checkpoint(storage)["timestamp"] == D3
 
 
+def test_a_fresh_running_lineage_run_stops_the_scan_until_it_finishes():
+    """Its artifacts and job_id are still being logged: indexing it now would
+    record a partial job and move the checkpoint past the rest for good."""
+    storage = _storage()
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(tzinfo=None)
+    later = (recent + timedelta(seconds=30)).isoformat()
+    ix, _, _ = _indexer(
+        [
+            _run("r1", D1, job_id="j1"),
+            _run("r2", recent.isoformat(), job_id="j2", state="running"),
+            _run("r3", later, job_id="j3"),
+        ]
+    )
+    ix.settle_grace_s = 0  # isolate the running rule from the settle grace
+    assert ix.scan_once(storage) == 1
+    assert _checkpoint(storage)["timestamp"] == D1
+
+
+def test_a_fresh_running_unrelated_run_does_not_stop_the_scan():
+    """A training run in the shared project (no job_id, not the lineage job_type)
+    is skipped, not waited on."""
+    storage = _storage()
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(tzinfo=None)
+    later = (recent + timedelta(seconds=30)).isoformat()
+    ix, _, _ = _indexer(
+        [
+            _run("r1", D1, job_id="j1"),
+            _run("r2", recent.isoformat(), job_id=None, state="running"),
+            _run("r3", later, job_id="j3"),
+        ]
+    )
+    ix.settle_grace_s = 0
+    assert ix.scan_once(storage) == 2
+    assert _checkpoint(storage)["timestamp"] == later
+
+
 def test_runs_on_the_same_instant_are_all_indexed_across_a_crash():
     """Two runs on one second: the first is done, the next scan picks up the second."""
     storage = _storage()
@@ -815,6 +851,17 @@ def test_running_wandb_run_is_pending_until_it_finishes_or_ages_out():
     assert not ix._is_pending(_run("r", stale, state="running"))
 
 
+def test_a_running_run_that_is_not_lineage_does_not_stall_the_scan():
+    """The project is shared: a running training run (no job_id, not the lineage
+    job_type) must not block the lineage runs created after it."""
+    ix, _, _ = _indexer([])
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    assert not ix._is_pending(_run("r", now, state="running", job_id=None))
+    marked = _run("r", now, state="running", job_id=None)
+    marked.job_type = "gb-lineage-event"
+    assert ix._is_pending(marked)
+
+
 def test_wandb_api_is_fresh_per_scan(monkeypatch):
     """wandb.Api.runs caches by path+filters+order, so one long-lived Api would
     re-iterate the same cached list once caught up and never see new runs."""
@@ -921,6 +968,9 @@ def test_storage_outage_never_counts_toward_giving_up():
         (RuntimeError("database is locked"), True),
         (RuntimeError("wrapped"), False),
         (ValueError("bad job"), False),
+        # Deterministic despite the class: retrying would pin the checkpoint.
+        (OperationalError("no such column: tags"), False),
+        (OperationalError("canceling statement due to statement timeout"), False),
     ],
 )
 def test_transient_classification(exc, transient):
@@ -1048,4 +1098,4 @@ def test_settle_grace_reads_the_environment(monkeypatch):
     monkeypatch.setenv("GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S", "600")
     assert idx._settle_grace_from_env() == 600.0
     monkeypatch.setenv("GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S", "nope")
-    assert idx._settle_grace_from_env() == 120.0
+    assert idx._settle_grace_from_env() == 360.0

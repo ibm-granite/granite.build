@@ -32,7 +32,7 @@ from typing import Optional
 import click
 
 from gbserver.lineage.indexer import create_indexer, resolve_indexer_source
-from gbserver.lineage.lineage_seeding import LineageSeedError
+from gbserver.lineage.lineage_seeding import SEED_ALL, LineageSeedError
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.types.context import CliEnvironment, pass_environment
 
@@ -62,6 +62,18 @@ from gbserver.types.context import CliEnvironment, pass_environment
     ),
 )
 @click.option(
+    "--rebuild",
+    is_flag=True,
+    default=False,
+    help=(
+        "Drop every gb_lineage_index row and re-seed the checkpoint at 'all', so "
+        "the next scan rebuilds the index from scratch. Needed after a URI "
+        "normalization change: --force alone re-indexes on top of the old rows, "
+        "which keep their old-form URIs. Stop the indexer first. Implies "
+        "--base-timestamp all --force."
+    ),
+)
+@click.option(
     "--show",
     is_flag=True,
     default=False,
@@ -75,9 +87,21 @@ def cli(
     ctx: CliEnvironment,
     base_timestamp: Optional[str],
     force: bool,
+    rebuild: bool,
     show: bool,
 ) -> None:
     """Seed the lineage indexer checkpoint (gb_kv_pairs) without running it."""
+    if rebuild:
+        if show:
+            raise click.ClickException(
+                "--show is read-only and cannot be combined with --rebuild."
+            )
+        if base_timestamp is not None and base_timestamp.strip() != SEED_ALL:
+            raise click.ClickException(
+                f"--rebuild re-indexes everything; it cannot be combined with "
+                f"--base-timestamp {base_timestamp}."
+            )
+        base_timestamp, force = SEED_ALL, True
     if show and (base_timestamp is not None or force):
         conflicting = ", ".join(
             flag
@@ -128,6 +152,11 @@ def cli(
         return
 
     assert base_timestamp is not None
+    if rebuild:
+        # Drop before seeding: seeding 'all' cannot fail, and a dropped table is
+        # recreated on the next write.
+        storage.lineage_row_storage.delete_table()
+        click.echo("Dropped every gb_lineage_index row.")
     try:
         wrote = indexer.seed_if_absent(storage, base_timestamp.strip(), force=force)
     except LineageSeedError as exc:

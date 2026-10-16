@@ -128,7 +128,8 @@ deployments:
     # runs gbserver lineage-index-init --base-timestamp <seedOnStart>, which only
     # writes when there is no checkpoint yet (an existing one is never touched).
     # from-latest indexes from the newest job onward; set to "all" to back-fill
-    # history once, or "" to seed by hand (from-latest|all|<ISO-8601>).
+    # history once, or "" to seed by hand (from-latest|all|<ISO-8601>). Changing it
+    # after the first start does nothing; use lineage-index-init --force.
     seedOnStart: from-latest
     resources:
       limits:

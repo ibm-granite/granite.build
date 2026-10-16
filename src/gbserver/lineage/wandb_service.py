@@ -44,6 +44,9 @@ from gbserver.utils.logger import get_log_level, get_logger
 
 logger = get_logger(__name__)
 
+# W&B job_type of the runs emit_event creates; the indexer reads it by value.
+LINEAGE_RUN_JOB_TYPE = "gb-lineage-event"
+
 _PASSTHROUGH_FACET_KEYS = ("job_input_params", "execution_stats")
 _JOB_DETAIL_KEYS = (
     "job_id",
@@ -132,6 +135,10 @@ class WandBLineageService(LineageService):
             entity=GBSERVER_WANDB_ENTITY,
             id=run_id,
             name=job_name,
+            # Marks the run as a lineage event before its job_id lands (config is
+            # updated asynchronously), so the indexer can wait on it while it runs
+            # without also waiting on unrelated runs in a shared project.
+            job_type=LINEAGE_RUN_JOB_TYPE,
             # "never", not "allow": run ids are fresh random uuids
             # (WandBLineageStore._build_events_for_target), so a resume can never
             # legitimately happen. Under "allow" a uuid collision or a bug that

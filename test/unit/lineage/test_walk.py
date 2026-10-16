@@ -29,6 +29,7 @@ import pytest
 
 from gbserver.lineage.walk import (
     DEFAULT_MAX_DEPTH,
+    ROWS_PER_NODE,
     Direction,
     LineageGraph,
     walk_lineage,
@@ -50,23 +51,27 @@ class FakeStorage:
         self.rows = rows
         self.queries = 0
 
-    def get_rows_by_input(self, sources: list, self_loops: bool = True) -> list:
+    def get_rows_by_input(
+        self, sources: list, self_loops: bool = True, limit=None
+    ) -> list:
         self.queries += 1
         wanted = {s for s in sources if s and s != TERMINAL}
         return [
             r
             for r in self.rows
             if r.input in wanted and (self_loops or r.input != r.output)
-        ]
+        ][:limit]
 
-    def get_rows_by_output(self, targets: list, self_loops: bool = True) -> list:
+    def get_rows_by_output(
+        self, targets: list, self_loops: bool = True, limit=None
+    ) -> list:
         self.queries += 1
         wanted = {t for t in targets if t and t != TERMINAL}
         return [
             r
             for r in self.rows
             if r.output in wanted and (self_loops or r.input != r.output)
-        ]
+        ][:limit]
 
     def get_rows_by_jobs(self, job_ids: list) -> list:
         self.queries += 1
@@ -241,6 +246,26 @@ class TestLimits:
         graph = walk_lineage(
             storage, ["a"], Direction.DESCENDANTS, max_nodes_per_level=5
         )
+        assert graph.truncated
+
+    def test_a_hub_hop_reads_a_bounded_number_of_rows(self):
+        """Many runs on one edge: the hop stops reading at the row limit in SQL
+        rather than loading every row before the node cap applies."""
+        rows = [row(f"J{i}", "a", "b") for i in range(100)]
+        seen = []
+        storage = FakeStorage(rows)
+        original = storage.get_rows_by_input
+
+        def counting(sources, self_loops=True, limit=None):
+            seen.append(limit)
+            return original(sources, self_loops=self_loops, limit=limit)
+
+        storage.get_rows_by_input = counting  # type: ignore[method-assign]
+        graph = walk_lineage(
+            storage, ["a"], Direction.DESCENDANTS, max_depth=1, max_nodes_per_level=2
+        )
+        assert seen[0] == 2 * ROWS_PER_NODE
+        assert len(graph.rows) == 2 * ROWS_PER_NODE
         assert graph.truncated
 
 

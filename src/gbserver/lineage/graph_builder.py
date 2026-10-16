@@ -237,7 +237,7 @@ def build_graph_dict(
                 name=endpoint_name(rows[0].attributes, side),
                 depth=graph.depths.get(uri),
             )
-        run_id = _grouped_runs_node_id(source, target)
+        run_id = _grouped_runs_node_id(source)
         # A walk that collapsed self-loops kept one sample row and the real count.
         count = graph.self_loop_runs.get(source) if source == target else None
         run_nodes[run_id] = _grouped_node(rows, source, target, run_id, count)
@@ -417,17 +417,17 @@ def _signature_node_id(inputs: tuple, outputs: tuple) -> str:
     return f"runs:{' + '.join(inputs) or '∅'} → {' + '.join(outputs) or '∅'}"
 
 
-def _grouped_runs_node_id(source: str, target: str) -> str:
-    """Identity of the node standing in for every ``source -> target`` job.
+def _grouped_runs_node_id(artifact: str) -> str:
+    """Identity of the node standing in for every job that rewrites ``artifact``.
 
-    Keyed by the endpoint pair rather than by job, which is the whole point: the
+    Keyed by the artifact rather than by job, which is the whole point: the
     jobs being grouped have distinct ``job_id``s and that is exactly the
     multiplicity being removed. Prefixed ``runs:`` so it cannot collide with an
     artifact URI, and distinctly from ``run:`` so a client can tell a grouped node
-    from a single job. Only self-loops are grouped this way (``source == target``);
-    other groupings key by signature, see :func:`_signature_node_id`.
+    from a single job. Only self-loops are grouped this way, so one endpoint names
+    the group; other groupings key by signature, see :func:`_signature_node_id`.
     """
-    return f"runs:{source}"
+    return f"runs:{artifact}"
 
 
 def _mark_grouped(node: dict, source: str, target: str, count: int) -> None:

@@ -387,11 +387,13 @@ class DBLineageStore(ILineageStore):
         re-read, and the index would keep serving rows derived from the old one.
 
         **The entry's events accumulate.** One execution can emit several entries
-        under a single ``job_id`` -- the builder emits one per output artifact, so a
-        target with two outputs arrives as two calls here -- while the table holds
-        one record per ``job_id``. Replacing the entry would keep only the last
-        event and the index would lose every other output's edges silently. So the
-        events are unioned, and the indexer derives rows from all of them.
+        under a single ``job_id`` -- the builder emits one per output artifact --
+        while the table holds one record per ``job_id``. A target's entries all
+        arrive in one call (see :meth:`_write_events`), but the same ``job_id`` can
+        still be written again (a re-record, another writer). Replacing the entry
+        would keep only that call's events and the index would lose every other
+        output's edges silently. So the events are unioned, and the indexer derives
+        rows from all of them.
         """
         storage = self.job_storage
         job = _job_from_metadata(
@@ -531,8 +533,9 @@ class DBLineageStore(ILineageStore):
         """Return the candidates that have no job record yet.
 
         ``expected_counts`` is accepted and **ignored**: completeness is by
-        presence. A job record is written once per execution, whole, so it either
-        exists or it does not -- there is no partial state for a count to detect.
+        presence. A target's job record is written in one write carrying every
+        output's entry (:meth:`_record_target`), so it either exists whole or not
+        at all -- there is no per-output partial state for a count to detect.
 
         The candidates are target run uuids, and they are looked up as *job* ids,
         which is correct rather than a coincidence: the event builder stamps
