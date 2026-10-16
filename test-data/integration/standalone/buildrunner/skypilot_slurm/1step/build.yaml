@@ -25,6 +25,15 @@ granite.build:
           type: fileset
       steps:
         - step_uri: space://steps/command
+          # The command step sets no retry_enabled_default, so step retry is off
+          # unless the step enables it (the code falls back to False). The
+          # buildtest's simulate_step_failure only injects its synthetic failure
+          # into a step whose retry is enabled, so without this the command step
+          # was never failed and retried; the builtin hfpull/hfpush steps were
+          # (their step.yaml sets retry_enabled_default: true). With it, the
+          # injected failure makes AnyFailureRetryStrategy tear the step's cluster
+          # down and relaunch it as <cluster>-r1.
+          retry_enabled: true
           config:
             # Fast completion detection for the test (base skypilot default is
             # 300s; a quick test job finishes in seconds).
