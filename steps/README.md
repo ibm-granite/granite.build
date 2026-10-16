@@ -258,7 +258,10 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   exiting non-zero on drift. It re-renders image steps with the **already-committed**
   image reference (extracted from the published `step.yaml`), so it is immune to the
   per-commit `IMAGE_TAG` churn and flags only genuine content drift. Exit 0 when in
-  sync (or nothing is published yet).
+  sync (or nothing is published yet); exit 1 on drift, or when a step that is not
+  publishable (`STEP_PUBLISHABLE` not `true`) still has a committed published copy
+  (reported as `STALE`, with the paths to `git rm -r`); exit 2 when the re-render itself
+  fails (its output is printed and nothing is compared).
 * **`all`** — the full pipeline: `image` + `publish-image` + `space` for image steps,
   or just `space` for public-image steps.
 * **`test`** — render the Space (depends on `space`) **and build the image
