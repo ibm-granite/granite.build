@@ -10,8 +10,9 @@ targets joined by one artifact:
 [`parameters.yaml`](parameters.yaml); `eval` binds the adapter it produced and
 runs the same repo's `shadow_residual.eval.answerability_eval --mode peft`,
 which rebuilds the SR base and attaches the adapter through stock PEFT. Both
-targets pin the same `BASE_MODEL` — they have to, or the adapter is served on a
-different graph than it was trained on.
+targets bind the same base-model artifact — they have to, or the adapter is
+served on a different graph than it was trained on, and that is the one error
+nothing in the output would reveal.
 
 SR runs two hidden-state streams per decoder layer: a frozen base stream that
 stays bit-exact with the unadapted model, and a trainable stream carrying the
@@ -21,14 +22,90 @@ recipe is that `cross_stream` must appear in `target_modules` — it is what
 engages the dual-stream forward, and dropping it degrades the run to plain LoRA
 without erroring.
 
-## Before the first run
+## Data
 
-**One prerequisite, and it is the only thing here that is not already in
-place.** `sr-train` reads `{"messages": [...]}` JSONL. The answerability data on
-`/proj` is not in that form: `/proj/dmfexp/8cc/data/answerability/train_data/`
-holds raw classification JSONL and `train_data_parquet/` holds tokenized
-parquet, and the trainer reads neither. The messages-JSONL has to be exported
-once, from [`intrinsics_training`](https://github.ibm.com/touma/intrinsics_training):
+Both datasets come from one private Hugging Face dataset repo,
+`ibm-research/touma`. Nothing in this recipe names a `/proj` path any more —
+data, base model and code are all fetched by URI. `DATA_URI` names the
+**repo**; the two subdirectory parameters name what to use inside it:
+
+| Parameter | Value | Holds |
+|---|---|---|
+| `DATA_URI` | `hf:///datasets/ibm-research/touma` | the repo |
+| `TRAIN_DATA_SUBDIR` | `training_data/answerability/jsonl/granite-4.2-8b` | `train.jsonl`, `test.jsonl` |
+| `EVAL_DATA_SUBDIR` | `eval_data/answerability` | `gold.jsonl`, `rag.jsonl`, `unanswerable_v2.{a,b,c}.jsonl`, `collection.txt`, `setting.txt` |
+
+The split between repo and subdirectory is not cosmetic: the pull downloads the
+**whole repo** to one cache directory keyed by owner/repo/revision and hands the
+step that directory's root. A sub-path written into the URI would be recorded in
+the lineage and then ignored by the download, so the subdirectory has to be
+appended by the command — which is what `build.yaml` does. Because both targets
+name the same repo, the eval target's pull finds the cache warm and transfers
+nothing.
+
+Nothing in the recipe, the steps, or the shadow-residual code knows these files
+came from the Hub. granite.build resolves the URI to a local directory before a
+step starts; `sr-train` and `answerability_eval.py` only ever open local paths,
+which is all they can do.
+
+Three slashes in `hf:///datasets/...` are load-bearing. With two
+(`hf://datasets/...`) the word `datasets` parses as the *host*, and the pull
+targets a hostname that does not exist.
+
+### The base model travels the same road
+
+`BASE_MODEL_URI: hf:///ibm-granite/granite-4.2-8b` is an input of **both**
+targets, not something the trainer downloads on its own. The weights land in
+the shared asset cache once and every later run reuses them, and — the reason
+that matters more — train and eval bind the *same artifact*, so the fact that
+the adapter was scored on the base it was trained against is recorded rather
+than left to two parameters happening to agree.
+
+One wrinkle comes with that. PEFT writes whatever path it loaded the base from
+into the adapter's `adapter_config.json` as `base_model_name_or_path`, which
+here would be a cache directory on this cluster — a dead reference to anyone
+else. So the train command rewrites that one field to `BASE_MODEL_ID` after
+training and echoes the result into the log. Keep `BASE_MODEL_ID` and
+`BASE_MODEL_URI` naming the same weights; nothing checks that they do.
+
+### The one prerequisite: an `HF_TOKEN` secret
+
+`ibm-research/touma` is private. An anonymous download of a private repo gets a
+401 from the Hub, and the download runs on a cluster node with no access to
+whatever is in your shell — so the token has to be registered once, by name,
+where granite.build can find it:
+
+```bash
+gb secret create HF_TOKEN --personal --value "$HF_TOKEN" --skip-version-check
+gb secret list --personal --skip-version-check    # -> HF_TOKEN
+```
+
+`HF_TOKEN` is not an arbitrary label: it is the credential name the Hugging Face
+assetstore looks for (`token_secretname` in its `store.yaml`), so a secret under
+any other name is simply not found. `--personal` registers it against your user
+rather than the space, and personal secrets merge over space secrets user-wins,
+so the pull runs under your Hub identity without touching anyone else's.
+
+`--value "$HF_TOKEN"` reads the token out of the environment rather than typing
+it, which keeps it out of your shell history and out of this file. A **read**
+token is sufficient — nothing here pushes to the Hub — and it has to belong to
+an account with access to the `ibm-research` org.
+
+From there the token's whole path is server-side: granite.build resolves the
+secret, hands it to the download step as an environment variable, and `hf
+download` picks it up for the private repo. It never appears in `build.yaml`, in
+`parameters.yaml`, or on a command line. The same mechanism covers any other
+private or gated Hub repo a recipe names — including a gated *model* in
+`BASE_MODEL`, which for `ibm-granite/granite-4.2-8b` happens to be public and so
+needs no credential at all.
+
+The messages-JSONL export itself is already done — the trainer needs
+`{"messages": [...]}` rows, which neither the raw classification JSONL
+(`training_data/answerability/raw/`) nor the tokenized parquet
+(`training_data/answerability/parquet_granite4.2_8b/`) in the same repo
+provides. It was produced once from
+[`intrinsics_training`](https://github.ibm.com/touma/intrinsics_training) and is
+only worth re-running if the source data changes:
 
 ```bash
 # in an intrinsics_training checkout, with git-lfs data fetched
@@ -37,19 +114,9 @@ bash scripts/shell/sr/ad/export_answerability_jsonl.sh
 # -> data/train/answerability/jsonl/granite-4.2-8b/{train,test}.jsonl
 ```
 
-Copy that pair to a `/proj` directory the build can read and set
-`TRAIN_DATA_DIR` to it. `parameters.yaml` defaults to
-`/proj/dmfexp/8cc/data/answerability/jsonl/granite-4.2-8b`, which is where it
-would naturally live beside the other answerability assets — **confirm the path
-before the first run rather than assuming it.** The train command asserts both
-files exist and fails in seconds if they do not, so a wrong path costs queue
-time and nothing else.
-
-The eval side needs no preparation.
-`/proj/dmfexp/8cc/data/answerability/test_data/` already has exactly the layout
-`answerability_eval.py` expects — `gold.jsonl`, `rag.jsonl`,
-`unanswerable_v2.{a,b,c}.jsonl` plus `collection.txt` and `setting.txt` — and is
-the provenance `intrinsics_training` records for its own bundled copy.
+The train command asserts both files exist under the resolved directory and
+fails in seconds if they do not, so a wrong subdirectory costs queue time and
+nothing else.
 
 ## Run
 
@@ -76,6 +143,10 @@ are the two data paths.
 Pin `SR_REF` to a tag or SHA for anything you intend to compare against later.
 `main` is the default because that is the branch whose API the generated config
 is written against, not because tracking a moving branch is desirable.
+
+The data is the one exception to "nothing internal": `ibm-research/touma` is a
+private Hub repo, which is why the `HF_TOKEN` secret above is required. The
+clone, the base model and the dependencies need no credential at all.
 
 ## Where this deviates from `intrinsics_training`, and why
 
@@ -135,7 +206,9 @@ table into the build log. Beyond that:
 - **train**: a training loss that *moved* across steps (`LOGGING_STEPS: 1`, so
   every step is in the log), `checkpoint-*` dirs at each epoch, and an
   `adapter_config.json` whose `target_modules` includes `cross_stream` and
-  excludes `k_proj`/`v_proj`. That last check is worth making: it is the
+  excludes `k_proj`/`v_proj`, and whose `base_model_name_or_path` reads
+  `ibm-granite/granite-4.2-8b` rather than a cache path (the command prints
+  this line). That last check is worth making: it is the
   difference between having trained SR and having trained plain LoRA.
 - **eval**: `eval_summary.md` / `.csv` / `.jsonl` plus `result_df.csv` with the
   per-row predictions.
@@ -163,9 +236,9 @@ own gate without a second copy to keep in sync:
       --space <your-space> --param MAX_STEPS=2 --param NUM_EPOCHS=1
 
 Two steps rather than one on purpose: one proves the trainer starts, two prove it
-can take a second step carrying the first one's state. That clears the data
-paths, the generated config, the loss mask, the artifact wiring and the whole
-eval leg. What it cannot clear is memory at the full schedule — the geometry is
+can take a second step carrying the first one's state. That clears the HF pull,
+the data paths, the generated config, the loss mask, the artifact wiring and the
+whole eval leg. What it cannot clear is memory at the full schedule — the geometry is
 unchanged, so an OOM would still show up here, but a slow leak across 3 epochs
 would not.
 
@@ -174,7 +247,7 @@ would not.
 - **No baseline arm.** There is no `--mode base` target, so the adapter's
   accuracy has nothing in-build to be compared against; use the table above, or
   add a third target that runs `answerability_eval --mode base` against the same
-  `EVAL_DATASET_DIR`.
+  `DATA_URI` / `EVAL_DATA_SUBDIR`.
 - **No multi-GPU training.** One GPU, which is what `intrinsics_training` used
   for this config and model size. shadow-residual ships exactly one accelerate
   FSDP config and it is a 4-process variant, so the only other supported width

@@ -15,7 +15,9 @@
 #
 # Nothing is installed from an IBM-internal source: the step clones over
 # unauthenticated git, so the repo is the github.com one, and the base model
-# comes from the public Hub. Only the two data paths are internal.
+# comes from the public Hub. The training and eval data come from one private
+# Hugging Face dataset repo, which granite.build downloads to the cluster
+# before either step runs.
 #
 # Values come from parameters.yaml beside this file; the comments explaining WHY
 # each value is what it is live there.
@@ -35,15 +37,22 @@ granite.build:
     train:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
-        # env:// means "already on a filesystem this environment can reach", so
-        # the pull is a no-op: this adds an input artifact and no extra step.
-        # Declaring it as an input rather than hardcoding the path in the
-        # command is what puts the dataset in `gb build status` and in the
-        # lineage record, so the trainer's arguments and the lineage cannot
-        # disagree.
+        # DATA_URI names the dataset REPO, not the directory inside it. The
+        # pull materializes the whole repo on the cluster and hands this step a
+        # local path to its ROOT, so the command appends TRAIN_DATA_SUBDIR
+        # itself. Declaring it as an input rather than hardcoding a path is
+        # what puts the dataset in `gb build status` and in the lineage record,
+        # so the trainer's arguments and the lineage cannot disagree.
         train_data:
-          uri: "env://$${TRAIN_DATA_DIR}"
+          uri: "$${DATA_URI}"
           type: dataset
+        # The base weights, bound rather than downloaded by the trainer. Both
+        # targets bind this same artifact, which is what makes "eval scored the
+        # adapter on the base it was trained on" a recorded fact instead of a
+        # convention two parameters happen to agree on.
+        base_model:
+          uri: "$${BASE_MODEL_URI}"
+          type: model
       outputs:
         # The adapter directory, registered by the command's
         # GB_ARTIFACT_ID:adapter marker. `uri` is templated against that
@@ -85,20 +94,21 @@ granite.build:
                 WORKROOT="$(pwd)";
                 OUT="$WORKROOT/adapter";
                 CFG="$WORKROOT/sr_answerability.yaml";
-                TRAIN_DIR="{{ bindings.train_data.binding.path }}";
-                export HF_HOME="$${HF_HOME_DIR}";
+                TRAIN_DIR="{{ bindings.train_data.binding.path }}/$${TRAIN_DATA_SUBDIR}";
+                BASE="{{ bindings.base_model.binding.path }}";
                 export PYTHONUNBUFFERED=1;
                 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True;
                 echo "=== inputs ===";
                 id -un; nvidia-smi -L || true;
                 ls -la "$TRAIN_DIR" || true;
+                test -f "$BASE/config.json" || { echo "ERROR: no config.json under $BASE — the base-model pull did not land here"; exit 1; };
                 for f in "$TRAIN_DIR/train.jsonl" "$TRAIN_DIR/test.jsonl"; do
                 test -f "$f" || { echo "ERROR: missing $f — export the messages-JSONL first; see this recipe's README, 'Before the first run'"; exit 1; };
                 done;
                 mkdir -p "$OUT";
                 printf '%s\n'
                 'model:'
-                '  base: $${BASE_MODEL}'
+                "  base: $BASE"
                 'data:'
                 "  train_path: $TRAIN_DIR/train.jsonl"
                 "  val_path: $TRAIN_DIR/test.jsonl"
@@ -152,6 +162,8 @@ granite.build:
                 echo "=== training ===";
                 sr-train --config "$CFG" --skip-post-train-generate $EXTRA;
                 test -f "$OUT/adapter_config.json" || { echo "ERROR: training wrote no adapter_config.json to $OUT"; exit 1; };
+                python -c "import json; p='$OUT/adapter_config.json'; d=json.load(open(p)); d['base_model_name_or_path']='$${BASE_MODEL_ID}'; json.dump(d, open(p,'w'), indent=2)";
+                echo "=== adapter base recorded as ==="; grep base_model_name_or_path "$OUT/adapter_config.json";
                 ls -la "$OUT";
                 echo "GB_ARTIFACT_ID:adapter GB_ARTIFACT_PATH:$OUT"
 
@@ -165,9 +177,17 @@ granite.build:
         # what sequences the two targets and records the lineage edge.
         adapter:
           binding: train.adapter
+        # The same repo train pulled. The destination is keyed by repo and
+        # revision, not by target, so this second pull finds the cache warm and
+        # re-downloads nothing; EVAL_DATA_SUBDIR picks the directory inside it.
         eval_data:
-          uri: "env://$${EVAL_DATASET_DIR}"
+          uri: "$${DATA_URI}"
           type: dataset
+        # The same model artifact train bound, so the pull is already warm and
+        # the two targets cannot drift onto different weights.
+        base_model:
+          uri: "$${BASE_MODEL_URI}"
+          type: model
       outputs:
         # result_df.csv (per-row predictions) + eval_summary.{jsonl,md,csv}.
         report:
@@ -196,8 +216,8 @@ granite.build:
                 WORKROOT="$(pwd)";
                 OUT="$WORKROOT/report";
                 ADAPTER="{{ bindings.adapter.binding.path }}";
-                EVAL_DIR="{{ bindings.eval_data.binding.path }}";
-                export HF_HOME="$${HF_HOME_DIR}";
+                EVAL_DIR="{{ bindings.eval_data.binding.path }}/$${EVAL_DATA_SUBDIR}";
+                BASE="{{ bindings.base_model.binding.path }}";
                 export PYTHONUNBUFFERED=1;
                 echo "=== inputs ===";
                 id -un; nvidia-smi -L || true;
@@ -209,7 +229,7 @@ granite.build:
                 echo "=== evaluating ===";
                 python -m shadow_residual.eval.answerability_eval
                 --mode peft
-                --base-model "$${BASE_MODEL}"
+                --base-model "$BASE"
                 --adapter-path "$ADAPTER"
                 --adapter-sub-path .
                 --dataset-path "$EVAL_DIR"

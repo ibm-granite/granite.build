@@ -21,31 +21,56 @@ SR_REPO: "https://github.com/generative-computing/shadow-residual"
 SR_REF: "main"
 
 # ── Model ────────────────────────────────────────────────────────────────────
-# Public on the Hub, so no HF_TOKEN is needed. Must be identical in both
-# targets — eval rebuilds this same SR base before attaching the adapter.
-BASE_MODEL: "ibm-granite/granite-4.2-8b"
+# An INPUT of both targets, not something the training code downloads. Two
+# reasons. The weights land in the shared asset cache once and are reused by
+# every later run rather than re-fetched into whatever $HOME the job happens to
+# get; and both targets bind the SAME artifact, so "eval ran against the base
+# it was trained on" is recorded rather than asserted. A base that silently
+# differs is the one error this recipe cannot catch from its own output.
+#
+# Public on the Hub, so this pull needs no credential — the HF_TOKEN secret the
+# data requires would also cover a gated model if you repoint this.
+BASE_MODEL_URI: "hf:///ibm-granite/granite-4.2-8b"
 
-# Shared Hub cache on /proj, so the ~16 GB of base weights are pulled once
-# rather than per run. Left unset the cache would land in the functional ID's
-# $HOME.
-HF_HOME_DIR: "/proj/data-eng/llmb-read-write/hfcache"
+# The Hub id naming the SAME weights as BASE_MODEL_URI — keep the two in sync.
+# Written into the trained adapter's adapter_config.json in place of the local
+# cache path the trainer would otherwise record there, so the adapter is still
+# loadable by someone who does not share this cluster's filesystem.
+BASE_MODEL_ID: "ibm-granite/granite-4.2-8b"
 
 # ── Data ─────────────────────────────────────────────────────────────────────
-# CONFIRM THIS BEFORE THE FIRST RUN. Directory holding train.jsonl + test.jsonl
-# in shadow-residual's {"messages": [...]} JSONL format. This is NOT one of the
-# dirs already on /proj: the answerability training data exists there as raw
-# classification JSONL (train_data/) and as tokenized parquet
-# (train_data_parquet/), and sr-train reads neither. The messages-JSONL has to
-# be exported once from intrinsics_training — see README.md, "Before the first
-# run". Point this at wherever that export landed.
-TRAIN_DATA_DIR: "/proj/dmfexp/8cc/data/answerability/jsonl/granite-4.2-8b"
+# Both datasets live in ONE Hugging Face dataset repo, and DATA_URI names that
+# repo — not a directory inside it. granite.build resolves the URI to a local
+# directory on the cluster before either step runs, so the code never sees a
+# URI: it is handed the repo root, and build.yaml appends the two subdirs
+# below. A full URI, so the scheme picks the transport (see ibm-bluevela's
+# environment.yaml assetstores block for what is wired in):
+#   hf:///datasets/<org>/<repo>   pulled from the Hub (three slashes: the host
+#                                 defaults to huggingface.co — "hf://datasets/..."
+#                                 parses "datasets" as the HOST and pulls from
+#                                 nowhere)
+#   env://<absolute path>         already on BlueVela's /proj; the pull is a no-op
+#   s3://<bucket>/<key>           object storage
+#
+# ibm-research/touma is PRIVATE, so the pull needs an HF_TOKEN secret with
+# read access to the ibm-research org registered in the space granite.build
+# runs the build in. Nothing is passed on the command line and the token never
+# reaches the recipe.
+DATA_URI: "hf:///datasets/ibm-research/touma"
 
-# Eval dataset directory, used as-is. The layout answerability_eval.py expects
-# (gold.jsonl, rag.jsonl, unanswerable_v2.{a,b,c}.jsonl + collection.txt and
-# setting.txt) is exactly what this directory already holds — it is the
-# provenance intrinsics_training records for its own bundled copy, so no export
-# step is needed on the eval side.
-EVAL_DATASET_DIR: "/proj/dmfexp/8cc/data/answerability/test_data"
+# Subdirectory of DATA_URI holding train.jsonl + test.jsonl in
+# shadow-residual's {"messages": [...]} JSONL format — the export produced by
+# intrinsics_training's granite_4.2_8b_jsonl_export.yaml. Neither the raw
+# classification JSONL (../raw) nor the tokenized parquet
+# (../parquet_granite4.2_8b) beside it is readable by sr-train.
+TRAIN_DATA_SUBDIR: "training_data/answerability/jsonl/granite-4.2-8b"
+
+# Subdirectory holding the eval set, used as-is. The layout
+# answerability_eval.py expects — gold.jsonl, rag.jsonl,
+# unanswerable_v2.{a,b,c}.jsonl plus collection.txt and setting.txt — is
+# exactly what this directory holds, so there is nothing to prepare on the
+# eval side.
+EVAL_DATA_SUBDIR: "eval_data/answerability"
 
 # ── Adapter geometry ─────────────────────────────────────────────────────────
 # rank 16 / alpha 32 / dropout 0.05, from intrinsics_training's
