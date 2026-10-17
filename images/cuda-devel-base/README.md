@@ -72,26 +72,51 @@ presence.
 This has two parts, split across two different places on purpose:
 
 - **Driver injection itself** is a SLURM-environment-level concern, already
-  handled centrally — not something each step repeats. The granite.build
-  SLURM `environment.yaml` files (`configurations/assets/environments/skypilot/slurm/*/environment.yaml`)
-  set `sbatch_options.export` to `NVIDIA_VISIBLE_DEVICES=all,NVIDIA_DRIVER_CAPABILITIES=all,...`
-  — without this, pyxis's own NVIDIA hook sees it unset, defaults to `"void"`,
-  and skips driver injection entirely (`libcuda.so.1` is then simply absent
-  from the container, no amount of `ldconfig` fixes that). If you're deploying
-  a GPU step to a **new** environment (a different SLURM cluster, or LSF —
-  not confirmed to need the same fix, see below), you need this set there
-  too; see `docs/environments/skypilot-slurm.md`'s GPU-steps callout.
+  handled centrally — not something each step repeats. gbserver generates the
+  `sbatch_options.export` directive (`NVIDIA_VISIBLE_DEVICES=all,NVIDIA_DRIVER_CAPABILITIES=all,...`)
+  automatically for any SLURM step that requests both an accelerator and a
+  container image (`Skypilot._pyxis_gpu_sbatch_directives` in
+  `src/gbserver/environment/skypilot.py`; see issue #510) — without this,
+  pyxis's own NVIDIA hook sees it unset, defaults to `"void"`, and skips driver
+  injection entirely (`libcuda.so.1` is then simply absent from the container,
+  no amount of `ldconfig` fixes that). A SLURM `environment.yaml` can opt out
+  via `slurm_gpu_sbatch_directives: false` if a cluster's own Pyxis/driver
+  setup ever needs something different from BlueVela's. Not confirmed whether
+  LSF's enroot/pyxis setup needs the same fix at all (LSF has its own,
+  separate container bootstrap).
 - **The `ldconfig` cache refresh**, once the driver *is* injected, stays a
-  **runtime, per-consumer concern** your step's own launch script must do:
-  run `ldconfig` as root after the container starts, before launching
-  anything that touches Triton's driver discovery. See granite-evals'
-  `serving.py` (`_refresh_libcuda_cache()`) for the pattern already applied
-  there. Not confirmed whether LSF's enroot/pyxis setup has the same gap —
+  **runtime, per-consumer concern** your step's own launch script must do —
+  and this is a hard platform constraint, not something this image (or any
+  image) can absorb: pyxis/enroot on SLURM execs its own bootstrap command
+  directly inside the unpacked container rootfs, bypassing the image's own
+  `ENTRYPOINT`/`CMD` entirely, so a Dockerfile-level fix is silently inert on
+  this backend. Add this one line as the first thing your step's `run:` script
+  does, before launching anything that touches Triton's driver discovery:
+
+  ```bash
+  ldconfig
+  ```
+
+  (as root; see granite-evals' `serving.py` `_refresh_libcuda_cache()` for the
+  pattern already applied there, and `steps/eval/*/skypilot/step-template.yaml`'s
+  `run:` block for the in-repo convention once a GPU step adopts this image
+  directly). Not confirmed whether LSF's enroot/pyxis setup has the same gap —
   treat as unverified, not assumed-same.
 
 Both are specific to **this cluster's pyxis/enroot setup**, not something
 this image (or any image) can fix once for every deployment target — a
 different SLURM cluster or container runtime may not need either.
+
+### Keep cluster-specific env out of the image
+
+Resist baking cluster-specific values (`NCCL_*`, `TORCH_CUDA_ARCH_LIST`, or
+anything else tied to one cluster's topology/hardware) into this image's
+`/etc/environment` or `ENV` layer, even though some other teams' custom-image
+pipelines do exactly that as a deliberate portability trade-off. This image
+and any `.sqsh` built from it are meant to run unmodified on any cluster: keep
+cluster-specific values as **runtime** `sbatch_options.export` /
+`--container-env`, set by the environment or by gbserver (as driver injection
+already is, above), not baked into the image at build time.
 
 ### Note: enroot's image cache is per-node, confirmed
 
