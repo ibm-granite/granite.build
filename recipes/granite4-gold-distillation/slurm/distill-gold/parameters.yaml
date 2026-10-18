@@ -1,0 +1,185 @@
+# distill-gold (SLURM) — GOLD distillation on BlueVela SLURM via SkyPilot.
+#
+# Reproduces gbansible/skypilot/kd_distill_bluevela_slurm_2node.yaml as a
+# granite.build recipe: granite-4.1-30b teacher -> granite-4.0-350m student,
+# off-policy JSD, 2 nodes x 8 H100 on the BlueVela `gpu-mid` partition, over the
+# 20k smoke dataset for MAX_STEPS=30.
+#
+# This is a SMOKE-scale run (it proves the SLURM plumbing end to end). For a first
+# bring-up, set --param NUM_NODES=1 to validate single-node before scaling to 2.
+#
+# Override any value with: gb build start --param KEY=VALUE
+
+# ─── Run identification ────────────────────────────────────────────────
+RUN_NAME: "distill-gold-slurm"
+# One directory per BUILD under WORKDIR_ROOT (avoids the artifact-URI collision
+# that otherwise makes a target report SUCCESS with an empty output list).
+WORKDIR_ROOT: "/proj/granite-build/g4os/gbtest/distill"
+BUILD_SUBDIR: "{{ run_metadata.build_id }}"
+SEED: 42
+
+# ─── On-policy switch ──────────────────────────────────────────────────
+# false => align -> corpus -> train-gold (3 targets). true adds vllm-server +
+# teardown, and LMBDA should then be > 0.0 — but note build.yaml's header: no
+# SLURM vllm-server step copy exists yet, so leave this false.
+ON_POLICY: false
+
+# ─── Trainer code and image ────────────────────────────────────────────
+DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
+# SM90 (H100/H200) build. PRE-STAGED enroot squashfs on /proj — pyxis just mounts it,
+# skipping the per-job registry pull + layer extract + mksquashfs (that import is the
+# ~15-20 min "container cold-start" every target otherwise pays). The direct 2node
+# SkyPilot yaml used this same squash. To pull from the registry instead (e.g. a tag
+# not yet staged), set:
+#   docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv
+IMAGE_ID: "docker:/proj/granite-build/g4os/enroot/us.icr.io-cil15-shared-registry-kd-sandbox-distill-0.1.0-uv.sqsh"
+
+# ─── The pair and the data ──────────────────────────────────────────────
+# Full uris (scheme picks how granite.build fetches). env://<abs path> is already
+# on /proj; these mirror the overlays the 2node sky yaml used.
+TEACHER_MODEL_URI: "env:///proj/granite-build/g4os/kd-sandbox/teacher_overlays/granite-4.1-30b_r260401a"
+STUDENT_MODEL_URI: "env:///proj/granite-build/g4os/kd-sandbox/student_overlays/granite-4.0-350m-base-ct"
+# align's own default chat template (relative to the step's code checkout) is
+# currently broken, so override with an absolute verified-on-BlueVela path.
+CHAT_TEMPLATE: "/proj/granite-build/g4os/chat_templates/granite_4_role_generation.jinja"
+# FALSE: no granite 4.x model carries <|im_start|>; the template above is
+# granite-native, not ChatML.
+REQUIRE_CHATML: false
+# The 20k smoke head sample (tokenizes in seconds), the same file the 2node sky
+# yaml trained on. corpus-prep re-preps it against THIS run's retagged tokenizer
+# and carves the held-out split.
+DATASET_URI: "env:///proj/granite-build/g4os/kd-sandbox/data/en_sft_4.1/smoke_head20k_nothink.jsonl"
+# keep: the source is already think-filtered upstream.
+THINK_POLICY: "keep"
+# drop: granite's chat template does not render `documents`.
+DOCUMENTS_POLICY: "drop"
+# A real held-out split, produced here even though nothing in this recipe consumes
+# it yet (adding an eval target later is then a binding change, not a re-prep).
+EVAL_FRACTION: 0.1
+# 0 = no limit (the 20k file is already the smoke truncation).
+MAX_EXAMPLES: 0
+
+# ─── Training hyperparameters ──────────────────────────────────────────
+# Smoke: bound by steps, not epochs. Matches the 2node sky yaml's MAX_STEPS=30.
+MAX_STEPS: 30
+NUM_TRAIN_EPOCHS: 1.0
+# Quote scientific-notation values so PyYAML doesn't round-trip them to a string.
+LEARNING_RATE: "1.0e-05"
+MIN_LR: "1.0e-06"
+WARMUP_RATIO: 0.05
+LR_SCHEDULER_TYPE: "cosine_with_min_lr"
+# The 2node sky yaml's geometry: PDBS=2, GA=4.
+PER_DEVICE_TRAIN_BATCH_SIZE: 2
+GRADIENT_ACCUMULATION_STEPS: 4
+# 4K context, matching the smoke yaml (MAX_COMPLETION_LENGTH < MAX_LENGTH).
+MAX_LENGTH: 4096
+MAX_COMPLETION_LENGTH: 3584
+GRADIENT_CHECKPOINTING: true
+SAVE_STRATEGY: "steps"
+SAVE_STEPS: 20
+SAVE_TOTAL_LIMIT: 20
+LOGGING_STEPS: 5
+# The trainer maps/filters the whole corpus before step 1; a small 20k smoke
+# tokenizes fast, so a modest pool is plenty.
+DATASET_NUM_PROC: 64
+
+# ─── GOLD / distillation loss ──────────────────────────────────────────
+TEMPERATURE: 1.0
+# 0.0 = off-policy. Set > 0.0 with --param ON_POLICY=true for an on-policy run.
+LMBDA: 0.0
+# How lmbda is scheduled. "constant" (default) holds it at LMBDA. "linear" RAMPS it
+# from LMBDA_INIT up to LMBDA across training — off-policy early (corpus signal),
+# on-policy later. The renderer refuses "linear" unless vllm_num_servers > 0, so a
+# ramp run also needs ON_POLICY=true. Ramped experiment:
+#   --param LMBDA_SCHEDULE=linear --param LMBDA=1.0 --param ON_POLICY=true
+LMBDA_SCHEDULE: "constant"
+# Ramp start; only consulted when LMBDA_SCHEDULE=linear.
+LMBDA_INIT: 0.0
+# beta 0.0 pairs with the smoke yaml (short-circuits to forward KL).
+BETA: 0.0
+# granite's logits_scaling=10 overflows the fused bf16 JSD kernel -> NaN; false is
+# the setting known to produce a finite loss.
+USE_LIGER_FUSED_JSD: false
+# The granite-native role boundary the 2node sky yaml used — note this is NOT the
+# lsf recipe's '<|im_start|>assistant\n'. No trailing newline, so no doubled-
+# backslash Jinja gotcha here.
+RESPONSE_TEMPLATE: '<|start_of_role|>assistant<|end_of_role|>'
+
+# ─── On-policy (inert unless ON_POLICY=true) ───────────────────────────
+VLLM_NUM_SERVERS: 1
+VLLM_MODE: "server"
+VLLM_SYNC_FREQUENCY: 1
+VLLM_PORT: 8001
+# RIGHT-SIZED to the 350m student. The server runs data_parallel across these GPUs
+# (one full model copy each). 8× H200 for a 350m model is massive overkill: the
+# request batch splits 8 ways so each engine is lightly fed and under-imbalanced DP
+# per-GPU util sat at ~15-80% (≈50% avg). 2 GPUs concentrate the stream onto
+# better-fed engines (higher util) and free 6 H200s, with no throughput loss at smoke
+# scale. Raise only if t_gen is the wall-clock gate AND the trainer's generation batch
+# is large enough to fill more engines. 1 also works (proven); 2 keeps a little DP.
+VLLM_NUM_GPUS_PER_NODE: 2
+VLLM_ACCELERATORS: "H200:2"
+VLLM_HEALTH_TIMEOUT_SECONDS: 1800
+VLLM_MAX_LIFETIME_SECONDS: 14400
+TOP_P: 0.95
+USE_SAMPLED_OPD_LOSS: false
+LAST_MESSAGE_ONLY: false
+CLIP_ALPHA: 0.1
+OPD_IMPORTANCE_SAMPLING: false
+
+# ─── NCCL / distributed diagnostics ─────────────────────────────────────
+# The BlueVela IB tuning (NCCL_IB_HCA / NCCL_SOCKET_IFNAME / adaptive routing /
+# etc.) is baked into the gold-slurm step's run block, not set here. These are the
+# trainer-side knobs the renderer reads.
+NCCL_DEBUG: ""
+NCCL_DEBUG_SUBSYS: "INIT,NET"
+NCCL_TIMEOUT_MS: 3600000
+NCCL_ENABLE_MONITORING: true
+
+# ─── Topology and resources ─────────────────────────────────────────────
+# The 2node sky yaml ran 2 nodes x 8 H100. For a first gb bring-up, override with
+# --param NUM_NODES=1 to validate single-node before scaling.
+NUM_NODES: 2
+NUM_GPUS_PER_NODE: 8
+# Quoted "H200:8" -> --gres=gpu:H200:8 per node. H200 (not H100) because the
+# environment constrains to H200 nodes while H100 capacity is full — the gres GPU
+# type must match the constrained node, or sbatch rejects the request. Switch both
+# back to H100:8 (and drop constraint: h200 in the environment) once H100 frees up.
+ACCELERATORS: "H200:8"
+CPU_ONLY_CPUS: 4
+CPU_ONLY_MEMORY: 64
+# CPUs per node for the GPU targets (train-gold, vllm-server). 64 of the node's 96
+# cores so the task spans BOTH sockets: BlueVela H200 nodes are gpu:h200:8(S:0-1),
+# 4 GPUs/socket, and under cons_tres a single-socket CPU pin only exposes that
+# socket's 4 GPUs — which crashed an 8-rank accelerate run with "cuda:7 out of
+# range ... available: 4". Mirrors the direct kd_distill_bluevela_slurm_2node.yaml's
+# `cpus: 64+`.
+GPU_CPUS: 64
+# HOST memory per node for the GPU target (SkyPilot's slurm/lsf path skips the
+# compute_config.total_memory_per_node floor, so state it explicitly).
+MEMORY: 256
+CLUSTER: "bluevela"
+# Where every target runs — the in-repo SLURM BlueVela environment.
+ENVIRONMENT_URI: "space://environments/skypilot/slurm/ibm-bluevela"
+# SkyPilot's `zone` is the SLURM partition for this cloud. The trainer runs on
+# gpu-mid (the environment constrains to H200 nodes via constraint:h200).
+QUEUE: "gpu-mid"
+# The vLLM SERVER's partition for an on-policy run — distinct from the trainer's
+# QUEUE so the student-server allocation does not compete with the trainer for
+# gpu-mid nodes. Inert unless ON_POLICY=true. Must also have free H200 capacity
+# (the env-wide constraint:h200 applies to this sbatch too).
+VLLM_QUEUE: "gpu-high"
+# QOS for the server's partition. gpu-high DENIES qos=normal (the global ~/.sky
+# default the trainer uses on gpu-mid); it requires the project's "high" qos. The
+# _1n variant is the single-node high qos, which is what the 1-node server needs.
+# (If you move the server to a different partition, set the qos it allows.)
+VLLM_QOS: "grp_granite_dot_build_high_1n"
+
+# ─── Retries ─────────────────────────────────────────────────────────────
+# One retry for a measured cluster fault. Set 0 to make a failure final while
+# debugging your own failure rather than the cluster's.
+MAX_RETRIES: 1
+
+# ─── Monitoring ──────────────────────────────────────────────────────────
+POLL_INTERVAL_SECONDS: 300
+LOG_RETRIEVAL_INTERVAL_SECONDS: 300

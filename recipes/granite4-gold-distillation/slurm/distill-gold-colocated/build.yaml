@@ -1,0 +1,131 @@
+######
+# distill-gold-colocated (SLURM) — on-policy GOLD with an IN-ALLOCATION vLLM server.
+#
+# Single train-gold target, no separate vllm-server/teardown. gold-slurm's node-role
+# split (case 2) serves the student on the LAST node of this ONE SLURM allocation and
+# trains on the rest, so ALL NCCL — the ZeRO-3 training group AND the vLLM weight-sync
+# coordinator — stays WITHIN one allocation. This is the gold step's reference-validated
+# on-policy mode.
+#
+# WHY NOT the external-server design (distill-gold-trainonly --param ON_POLICY=true):
+# that puts the server in a SEPARATE SLURM allocation (gpu-high) from the trainer
+# (gpu-mid), so the trainer's VLLMClient.init_communicator() builds a NCCL process group
+# spanning two allocations. On BlueVela SLURM that rendezvous DEADLOCKS at setup (rings
+# connect, first collective hangs; independent of GDR / node pair) — the "NOT YET RUN ON
+# A CLUSTER" path the gold step flags. Co-locating sidesteps it entirely.
+#
+# TOPOLOGY (NUM_NODES=2, VLLM_NUM_SERVERS=1):
+#   TRAINER_NODES = NUM_NODES - VLLM_NUM_SERVERS = 1 trainer node (8 H200)
+#   + 1 serve node (8 H200 for vLLM), both on gpu-mid, one allocation.
+#   Effective train batch = per_device(2) x grad_accum(4) x 1 node x 8 gpu = 64.
+#   Raise NUM_NODES for more trainer nodes (e.g. 3 => 2 train + 1 serve).
+#
+# Direct-start: student/corpus/teacher bound to a prior build's env:// outputs (skips
+# align + corpus) — see distill-gold-trainonly for the reuse rationale.
+#
+# Run (ramped on-policy, lmbda 0 -> 1):
+#   gb build start -f recipes/granite4-gold-distillation/slurm/distill-gold-colocated/build.yaml
+# (parameters.yaml already sets ON_POLICY-style values: vllm_num_servers=1, linear ramp.)
+######
+granite.build:
+  name: distill-gold-colocated
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+  targets:
+
+    # ─── train-gold (with in-allocation vLLM serve node) ─────────────────────
+    # The `vllm` input is intentionally UNBOUND: that selects gold-slurm's
+    # in-allocation split (case 2) rather than the external-server path. The serve
+    # node is carved from this allocation by vllm_num_servers.
+    train-gold:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        student:
+          uri: "$${RETAGGED_STUDENT_URI}"
+          type: model
+        corpus:
+          uri: "$${CORPUS_URI}"
+          type: dataset
+        teacher:
+          uri: "$${TEACHER_MODEL_URI}"
+          type: model
+      outputs:
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/gold-slurm
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              # Serve node(s) + trainer node(s) all come from this one allocation.
+              num_nodes: $${NUM_NODES}
+              num_gpus_per_node: $${NUM_GPUS_PER_NODE}
+              # Span both sockets so all 8 GPUs are visible (gpu:h200:8(S:0-1)).
+              num_cpus_per_node: $${GPU_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                memory: $${MEMORY}
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+            code_config:
+              # Fix the broken lmbda LINEAR ramp in the pinned trainer (a5d59bc4):
+              # _get_current_lmbda() has no linear branch (returns None -> crash at
+              # step 0: "None <= 0.0"); the ramp body is dead code below a return in
+              # _draw_on_policy. The mounted src/patch_lmbda_schedule.py rewrites the
+              # method in the fresh clone, idempotently. Runs on every rank before the
+              # role split. $CODE_DIR = the clone; ./src = this step's file_mount.
+              # Remove once the trainer pin is bumped to a version with a working ramp.
+              setup_command: >-
+                "$PYBIN" ./src/patch_lmbda_schedule.py
+                "$CODE_DIR/src/gb_steps_post_training/distillation/custom_gold_trainer.py"
+            gold_config:
+              run_name: "$${RUN_NAME}"
+              ds_config: "$${DS_CONFIG}"
+              max_steps: $${MAX_STEPS}
+              num_train_epochs: $${NUM_TRAIN_EPOCHS}
+              learning_rate: $${LEARNING_RATE}
+              min_lr: $${MIN_LR}
+              warmup_ratio: $${WARMUP_RATIO}
+              lr_scheduler_type: "$${LR_SCHEDULER_TYPE}"
+              per_device_train_batch_size: $${PER_DEVICE_TRAIN_BATCH_SIZE}
+              gradient_accumulation_steps: $${GRADIENT_ACCUMULATION_STEPS}
+              max_length: $${MAX_LENGTH}
+              max_completion_length: $${MAX_COMPLETION_LENGTH}
+              gradient_checkpointing: $${GRADIENT_CHECKPOINTING}
+              save_strategy: "$${SAVE_STRATEGY}"
+              save_steps: $${SAVE_STEPS}
+              save_total_limit: $${SAVE_TOTAL_LIMIT}
+              logging_steps: $${LOGGING_STEPS}
+              dataset_num_proc: $${DATASET_NUM_PROC}
+              temperature: $${TEMPERATURE}
+              lmbda: $${LMBDA}
+              # Ramp lmbda from LMBDA_INIT up to LMBDA. The renderer refuses "linear"
+              # unless vllm_num_servers > 0 (set below), so these travel together.
+              lmbda_schedule: "$${LMBDA_SCHEDULE}"
+              lmbda_init: $${LMBDA_INIT}
+              beta: $${BETA}
+              use_liger_fused_jsd: $${USE_LIGER_FUSED_JSD}
+              response_template: "$${RESPONSE_TEMPLATE}"
+              nccl_debug: "$${NCCL_DEBUG}"
+              nccl_debug_subsys: "$${NCCL_DEBUG_SUBSYS}"
+              nccl_timeout_ms: $${NCCL_TIMEOUT_MS}
+              nccl_enable_monitoring: $${NCCL_ENABLE_MONITORING}
+              # >0 carves the LAST N nodes of this allocation to serve the student
+              # under vLLM (the in-allocation split). The `vllm` input is unbound, so
+              # gold-slurm takes case 2, NOT the external-server path.
+              vllm_num_servers: $${VLLM_NUM_SERVERS}
+              vllm_mode: "$${VLLM_MODE}"
+              vllm_sync_frequency: $${VLLM_SYNC_FREQUENCY}
+              # The image can't import gb_steps_post_training for the key-verify
+              # (vllm -> vllm_ascend absent); the pinned trainer accepts the keys.
+              verify_trainer_accepts_keys: $${VERIFY_TRAINER_ACCEPTS_KEYS}
+              top_p: $${TOP_P}
+              use_sampled_opd_loss: $${USE_SAMPLED_OPD_LOSS}
+              last_message_only: $${LAST_MESSAGE_ONLY}
+              clip_alpha: $${CLIP_ALPHA}
+              opd_importance_sampling: $${OPD_IMPORTANCE_SAMPLING}

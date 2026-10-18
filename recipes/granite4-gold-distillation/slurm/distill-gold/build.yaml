@@ -1,0 +1,280 @@
+######
+# distill-gold (SLURM) — GOLD distillation on BlueVela SLURM via SkyPilot.
+#
+# SLURM counterpart of recipes/granite4-gold-distillation/lsf/distill-gold. It
+# reproduces the pipeline that gbansible/skypilot/kd_distill_bluevela_slurm_2node.yaml
+# ran directly through SkyPilot, as a granite.build recipe: granite-4.1-30b
+# teacher distilled into a granite-4.0-350m student, off-policy JSD, on the
+# BlueVela SLURM `gpu-mid` partition.
+#
+# WHAT MAKES THIS THE SLURM RECIPE (vs the lsf/ sibling):
+#   * environment_uri -> space://environments/skypilot/slurm/ibm-bluevela
+#   * step_uri        -> the *-slurm step copies (tokenizer-align-slurm,
+#                        corpus-prep-slurm, gold-slurm). gold-slurm derives its
+#                        per-node topology from SkyPilot's SLURM vars
+#                        (SKYPILOT_NODE_RANK/_NUM_NODES/_NODE_IPS/_NUM_GPUS_PER_NODE)
+#                        rather than the LSF RANK/TOTAL_NODES/MASTER_ADDR contract,
+#                        and bakes in the BlueVela IB NCCL tuning.
+#   * resources use SLURM's accelerators -> --gres and a `zone` partition; there is
+#                        no LSF queue/cluster semantics.
+#
+# THREE OR FIVE TARGETS, depending on ON_POLICY:
+#   align -> corpus -> train-gold                               (ON_POLICY=false, default)
+#   align -> corpus -> vllm-server -> train-gold -> teardown    (ON_POLICY=true)
+#
+# ON-POLICY: the vllm-server target uses the SLURM vllm-server-slurm step and runs on
+# its own partition ($${VLLM_QUEUE}); teardown uses the backend-agnostic
+# skypilot-teardown builtin. The default run is still OFF-POLICY (ON_POLICY=false); a
+# ramped on-policy run is driven with --param overrides, e.g.:
+#   gb build start -f .../slurm/distill-gold/build.yaml \
+#     --param ON_POLICY=true --param LMBDA=1.0 --param LMBDA_SCHEDULE=linear \
+#     --param LMBDA_INIT=0.0 --param VLLM_QUEUE=gpu-high
+#
+# Values come from parameters.yaml beside this file.
+#
+# Run (parameters.yaml is picked up automatically because it sits next to this file):
+#   gb build start -f recipes/granite4-gold-distillation/slurm/distill-gold/build.yaml --space <space>
+######
+granite.build:
+  name: distill-gold-slurm
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+  targets:
+
+    # ─── align ──────────────────────────────────────────────────────────────
+    # Re-embeds the raw student onto the teacher's tokenizer and emits the
+    # tokenizer artifacts the rest of the pipeline reads. Single-node CPU.
+    align:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        teacher:
+          uri: "$${TEACHER_MODEL_URI}"
+          type: model
+        student:
+          uri: "$${STUDENT_MODEL_URI}"
+          type: model
+      outputs:
+        retagged_student:
+          uri: "env://{{ binding.path }}"
+          type: model
+        teacher_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+        student_overlay:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/tokenizer-align-slurm
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${CPU_ONLY_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${CPU_ONLY_MEMORY}
+            align_config:
+              out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/align"
+              chat_template: "$${CHAT_TEMPLATE}"
+              require_chatml: $${REQUIRE_CHATML}
+              verify: true
+              dry_run: false
+
+    # ─── corpus ─────────────────────────────────────────────────────────────
+    corpus:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        tokenizer:
+          binding: align.retagged_student
+        source_dataset:
+          uri: "$${DATASET_URI}"
+          type: dataset
+      outputs:
+        corpus:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/distill/corpus-prep-slurm
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${CPU_ONLY_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${CPU_ONLY_MEMORY}
+            corpus_config:
+              out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/corpus"
+              max_length: $${MAX_LENGTH}
+              length_policy: "drop"
+              think_policy: "$${THINK_POLICY}"
+              completion_boundary: "last_message"
+              min_messages: 2
+              documents_policy: "$${DOCUMENTS_POLICY}"
+              eval_fraction: $${EVAL_FRACTION}
+              max_examples: $${MAX_EXAMPLES}
+              emit_row_id: true
+              seed: $${SEED}
+
+<% if ON_POLICY | string | lower in ("true", "yes", "1", "on") %>
+    # ─── vllm-server (on-policy only) ────────────────────────────────────────
+    # Serves the STUDENT on its OWN partition ($${VLLM_QUEUE}, e.g. gpu-high),
+    # distinct from the trainer's $${QUEUE} (gpu-mid). On-policy GOLD has the
+    # student generate and the teacher score; the trainer pushes updated student
+    # weights to this server over NCCL — a process group spanning the two
+    # allocations. Uses the SLURM vllm-server-slurm step copy.
+    vllm-server:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        model:
+          binding: align.retagged_student
+      outputs:
+        vllm_url:
+          uri: "mem://distill-gold-slurm-vllm"
+        cluster_name:
+          uri: "mem://distill-gold-slurm-vllm-cluster"
+      steps:
+        - step_uri: space://steps/distill/vllm-server-slurm
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: $${VLLM_NUM_GPUS_PER_NODE}
+              # Span both sockets so all 8 GPUs are visible — see train-gold's note.
+              num_cpus_per_node: $${GPU_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              # The gpu-high partition DENIES qos=normal (the global ~/.sky default the
+              # trainer uses on gpu-mid). It requires the project's "high" qos, so
+              # override it here per-step. gpu-mid keeps normal via the global default.
+              sbatch_options:
+                qos: "$${VLLM_QOS}"
+              resources:
+                accelerators: "$${VLLM_ACCELERATORS}"
+                memory: $${MEMORY}
+                cluster: "$${CLUSTER}"
+                # The server's OWN partition — distinct from the trainer's $${QUEUE}.
+                zone: "$${VLLM_QUEUE}"
+            vllm_config:
+              port: $${VLLM_PORT}
+              max_model_len: $${MAX_LENGTH}
+              health_timeout_seconds: $${VLLM_HEALTH_TIMEOUT_SECONDS}
+              max_lifetime_seconds: $${VLLM_MAX_LIFETIME_SECONDS}
+<% endif %>
+
+    # ─── train-gold ─────────────────────────────────────────────────────────
+    train-gold:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+<% if ON_POLICY | string | lower in ("true", "yes", "1", "on") %>
+        vllm:
+          binding: vllm-server.vllm_url
+<% endif %>
+        student:
+          binding: align.retagged_student
+        corpus:
+          binding: corpus.corpus
+        teacher:
+          uri: "$${TEACHER_MODEL_URI}"
+          type: model
+      outputs:
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/gold-slurm
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: $${NUM_NODES}
+              num_gpus_per_node: $${NUM_GPUS_PER_NODE}
+              # Span BOTH sockets. BlueVela H200 nodes are gpu:h200:8(S:0-1) — 4 GPUs
+              # per socket — and under cons_tres GPU-socket affinity a task pinned to
+              # one socket's CPUs only sees that socket's 4 GPUs. SkyPilot otherwise
+              # derives a cpu count (~32) that lands on one socket, so accelerate
+              # launches 8 ranks but only 4 GPUs are visible (cuda:4-7 out of range).
+              # Matches the direct kd_distill_bluevela_slurm_2node.yaml's `cpus: 64+`.
+              num_cpus_per_node: $${GPU_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                memory: $${MEMORY}
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+            gold_config:
+              run_name: "$${RUN_NAME}"
+              ds_config: "$${DS_CONFIG}"
+              max_steps: $${MAX_STEPS}
+              num_train_epochs: $${NUM_TRAIN_EPOCHS}
+              learning_rate: $${LEARNING_RATE}
+              min_lr: $${MIN_LR}
+              warmup_ratio: $${WARMUP_RATIO}
+              lr_scheduler_type: "$${LR_SCHEDULER_TYPE}"
+              per_device_train_batch_size: $${PER_DEVICE_TRAIN_BATCH_SIZE}
+              gradient_accumulation_steps: $${GRADIENT_ACCUMULATION_STEPS}
+              max_length: $${MAX_LENGTH}
+              max_completion_length: $${MAX_COMPLETION_LENGTH}
+              gradient_checkpointing: $${GRADIENT_CHECKPOINTING}
+              save_strategy: "$${SAVE_STRATEGY}"
+              save_steps: $${SAVE_STEPS}
+              save_total_limit: $${SAVE_TOTAL_LIMIT}
+              logging_steps: $${LOGGING_STEPS}
+              dataset_num_proc: $${DATASET_NUM_PROC}
+              temperature: $${TEMPERATURE}
+              lmbda: $${LMBDA}
+              # Ramp schedule for lmbda. "constant" holds it at LMBDA; "linear" ramps
+              # from LMBDA_INIT up to LMBDA across training (off-policy early where the
+              # corpus signal is, on-policy later). The renderer refuses "linear" unless
+              # vllm_num_servers > 0, so a ramp run must also set ON_POLICY=true.
+              lmbda_schedule: "$${LMBDA_SCHEDULE}"
+              lmbda_init: $${LMBDA_INIT}
+              beta: $${BETA}
+              use_liger_fused_jsd: $${USE_LIGER_FUSED_JSD}
+              response_template: "$${RESPONSE_TEMPLATE}"
+              nccl_debug: "$${NCCL_DEBUG}"
+              nccl_debug_subsys: "$${NCCL_DEBUG_SUBSYS}"
+              nccl_timeout_ms: $${NCCL_TIMEOUT_MS}
+              nccl_enable_monitoring: $${NCCL_ENABLE_MONITORING}
+<% if ON_POLICY | string | lower in ("true", "yes", "1", "on") %>
+              vllm_mode: "$${VLLM_MODE}"
+              vllm_sync_frequency: $${VLLM_SYNC_FREQUENCY}
+              vllm_num_servers: $${VLLM_NUM_SERVERS}
+<% else %>
+              # 0 => off-policy: every rank trains on the fixed corpus, no vLLM
+              # server to coordinate.
+              vllm_num_servers: 0
+<% endif %>
+              top_p: $${TOP_P}
+              use_sampled_opd_loss: $${USE_SAMPLED_OPD_LOSS}
+              last_message_only: $${LAST_MESSAGE_ONLY}
+              clip_alpha: $${CLIP_ALPHA}
+              opd_importance_sampling: $${OPD_IMPORTANCE_SAMPLING}
+
+<% if ON_POLICY | string | lower in ("true", "yes", "1", "on") %>
+    # ─── teardown (on-policy only) ───────────────────────────────────────────
+    teardown:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        gate:
+          binding: train-gold.checkpoint
+        vllm_cluster:
+          binding: vllm-server.cluster_name
+      steps:
+        - step_uri: space://steps/skypilot-teardown
+          config:
+            teardown_config:
+              cluster_names:
+                - "{{ bindings.vllm_cluster.binding.state }}"
+<% endif %>

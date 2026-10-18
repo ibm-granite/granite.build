@@ -1,0 +1,92 @@
+# distill-gold-colocated (SLURM) — on-policy GOLD with an in-allocation vLLM serve node.
+# See build.yaml's header. This recipe is on-policy BY DESIGN (vllm_num_servers>0, linear
+# ramp are the defaults); there is no ON_POLICY switch. Override with --param KEY=VALUE.
+
+# ─── Pre-produced inputs (direct-start; skips align + corpus) ────────────
+# A prior distill-gold build's align/corpus outputs. Both MUST be from the same
+# build (gold.py reads the tokenizer the corpus was prepped against). See
+# distill-gold-trainonly for the full reuse rationale (reuse is corpus TEXT, not
+# token IDs — the trainer re-tokenizes).
+RETAGGED_STUDENT_URI: "env:///proj/granite-build/g4os/gbtest/distill/distill-gold-slurm/cc33e2e2-3c77-4018-9880-45071c66b571/align/retagged_student"
+CORPUS_URI: "env:///proj/granite-build/g4os/gbtest/distill/distill-gold-slurm/cc33e2e2-3c77-4018-9880-45071c66b571/corpus/train.jsonl"
+TEACHER_MODEL_URI: "env:///proj/granite-build/g4os/kd-sandbox/teacher_overlays/granite-4.1-30b_r260401a"
+
+# ─── Run identification ────────────────────────────────────────────────
+RUN_NAME: "distill-gold-colocated"
+
+# ─── Trainer code and image ────────────────────────────────────────────
+DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
+# Pre-staged enroot squashfs on /proj (skips the ~20-min registry import).
+IMAGE_ID: "docker:/proj/granite-build/g4os/enroot/us.icr.io-cil15-shared-registry-kd-sandbox-distill-0.1.0-uv.sqsh"
+
+# ─── Training hyperparameters ──────────────────────────────────────────
+MAX_STEPS: 30
+NUM_TRAIN_EPOCHS: 1.0
+LEARNING_RATE: "1.0e-05"
+MIN_LR: "1.0e-06"
+WARMUP_RATIO: 0.05
+LR_SCHEDULER_TYPE: "cosine_with_min_lr"
+PER_DEVICE_TRAIN_BATCH_SIZE: 2
+GRADIENT_ACCUMULATION_STEPS: 4
+MAX_LENGTH: 4096
+MAX_COMPLETION_LENGTH: 3584
+GRADIENT_CHECKPOINTING: true
+SAVE_STRATEGY: "steps"
+SAVE_STEPS: 20
+SAVE_TOTAL_LIMIT: 20
+LOGGING_STEPS: 5
+DATASET_NUM_PROC: 64
+
+# ─── GOLD / distillation loss (on-policy ramp) ──────────────────────────
+TEMPERATURE: 1.0
+# Ramp target. lmbda ramps from LMBDA_INIT up to this over training.
+LMBDA: 1.0
+# "linear" = ramp (off-policy early -> on-policy later). Requires vllm_num_servers>0.
+LMBDA_SCHEDULE: "linear"
+LMBDA_INIT: 0.0
+BETA: 0.0
+USE_LIGER_FUSED_JSD: false
+RESPONSE_TEMPLATE: '<|start_of_role|>assistant<|end_of_role|>'
+# Verify-trainer-keys import pulls vllm -> vllm_ascend (absent in this image), which
+# aborts the step before training; the pinned trainer accepts the keys, so skip it.
+VERIFY_TRAINER_ACCEPTS_KEYS: false
+TOP_P: 0.95
+USE_SAMPLED_OPD_LOSS: false
+LAST_MESSAGE_ONLY: false
+CLIP_ALPHA: 0.1
+OPD_IMPORTANCE_SAMPLING: false
+
+# ─── vLLM in-allocation serve ──────────────────────────────────────────
+# >0 carves the LAST N nodes of the allocation to serve the student under vLLM;
+# TRAINER_NODES = NUM_NODES - VLLM_NUM_SERVERS train. All NCCL stays in one SLURM
+# allocation (no cross-allocation coordinator -> no deadlock).
+VLLM_NUM_SERVERS: 1
+VLLM_MODE: "server"
+# Push updated student weights to the serve node every optimizer step.
+VLLM_SYNC_FREQUENCY: 1
+
+# ─── NCCL / distributed diagnostics ─────────────────────────────────────
+NCCL_DEBUG: ""
+NCCL_DEBUG_SUBSYS: "INIT,NET"
+NCCL_TIMEOUT_MS: 3600000
+NCCL_ENABLE_MONITORING: true
+
+# ─── Topology and resources ─────────────────────────────────────────────
+# NUM_NODES must be > VLLM_NUM_SERVERS (need >=1 trainer node). 2 => 1 serve + 1 train.
+NUM_NODES: 2
+NUM_GPUS_PER_NODE: 8
+ACCELERATORS: "H200:8"
+# 64 of 96 cores so the task spans both sockets and sees all 8 GPUs.
+GPU_CPUS: 64
+MEMORY: 256
+CLUSTER: "bluevela"
+ENVIRONMENT_URI: "space://environments/skypilot/slurm/ibm-bluevela"
+# Trainer AND serve node both come from this partition (one allocation).
+QUEUE: "gpu-mid"
+
+# ─── Retries ─────────────────────────────────────────────────────────────
+MAX_RETRIES: 1
+
+# ─── Monitoring ──────────────────────────────────────────────────────────
+POLL_INTERVAL_SECONDS: 300
+LOG_RETRIEVAL_INTERVAL_SECONDS: 300

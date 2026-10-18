@@ -1,0 +1,209 @@
+######
+# distill-gold-trainonly (SLURM) — train-gold ONLY, reusing a prior run's align +
+# corpus outputs. Skips the two CPU prep targets by binding the trainer's inputs
+# directly to env:// artifacts an earlier distill-gold build already produced.
+#
+# WHEN TO USE: iterating on train-gold (hyperparameters, on-policy ramp, node count)
+# without re-paying align + corpus each time. The align output (retagged student
+# tokenizer) and corpus output (prepped train.jsonl) are deterministic for a given
+# model pair + dataset, so a prior build's are safe to reuse.
+#
+# NOTE: this skips the align + corpus-prep TARGETS, not the trainer's tokenization.
+# corpus/train.jsonl is cleaned, length-filtered conversation TEXT ({messages,
+# row_id}), not token IDs, so gold.py still re-tokenizes it to build input_ids
+# (the "Tokenizing train dataset" pass in its log is expected). No step persists
+# ready-to-train input_ids. See the recipe README's Train-only section.
+#
+# POINT IT AT A PRIOR BUILD'S OUTPUTS: set RETAGGED_STUDENT_URI and CORPUS_URI to the
+# align/corpus artifacts of a build whose align+corpus SUCCEEDED, e.g.
+#   .../distill/distill-gold-slurm/<BUILD_ID>/align/retagged_student
+#   .../distill/distill-gold-slurm/<BUILD_ID>/corpus/train.jsonl
+# (defaults in parameters.yaml point at one such build). The retagged student MUST be
+# the align output, NOT the raw student overlay — gold.py reads the tokenizer the
+# corpus was prepped against, and the two must match.
+#
+# ONE OR THREE TARGETS, depending on ON_POLICY:
+#   train-gold                               (ON_POLICY=false, default)
+#   vllm-server -> train-gold -> teardown    (ON_POLICY=true)
+#
+# Ramped on-policy run:
+#   gb build start -f recipes/granite4-gold-distillation/slurm/distill-gold-trainonly/build.yaml \
+#     --param ON_POLICY=true --param LMBDA=1.0 --param LMBDA_SCHEDULE=linear \
+#     --param LMBDA_INIT=0.0 --param VLLM_QUEUE=gpu-high
+######
+granite.build:
+  name: distill-gold-trainonly
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+  targets:
+
+<% if ON_POLICY | string | lower in ("true", "yes", "1", "on") %>
+    # ─── vllm-server (on-policy only) ────────────────────────────────────────
+    # Serves the pre-retagged STUDENT on its own partition ($${VLLM_QUEUE}),
+    # distinct from the trainer's $${QUEUE}. Reads the student directly from the
+    # prior run's align output.
+    vllm-server:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        model:
+          uri: "$${RETAGGED_STUDENT_URI}"
+          type: model
+      outputs:
+        vllm_url:
+          uri: "mem://distill-gold-trainonly-vllm"
+        cluster_name:
+          uri: "mem://distill-gold-trainonly-vllm-cluster"
+      steps:
+        - step_uri: space://steps/distill/vllm-server-slurm
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: $${VLLM_NUM_GPUS_PER_NODE}
+              # Span both sockets so all 8 GPUs are visible — see train-gold's note.
+              num_cpus_per_node: $${GPU_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              # gpu-high denies qos=normal; override per-step (see distill-gold recipe).
+              # Emit qos ONLY when VLLM_QOS is non-empty: the SLURM backend does not drop
+              # an empty value, so a bare `qos: ""` would emit `#SBATCH --qos=` which SLURM
+              # rejects. gpu-mid needs no special qos, so VLLM_QOS="" + VLLM_QUEUE=gpu-mid
+              # runs the server on the trainer's partition (same-partition routing test).
+<% if VLLM_QOS | string | trim != "" %>
+              sbatch_options:
+                qos: "$${VLLM_QOS}"
+<% endif %>
+              resources:
+                accelerators: "$${VLLM_ACCELERATORS}"
+                memory: $${MEMORY}
+                cluster: "$${CLUSTER}"
+                zone: "$${VLLM_QUEUE}"
+            vllm_config:
+              port: $${VLLM_PORT}
+              max_model_len: $${MAX_LENGTH}
+              health_timeout_seconds: $${VLLM_HEALTH_TIMEOUT_SECONDS}
+              max_lifetime_seconds: $${VLLM_MAX_LIFETIME_SECONDS}
+<% endif %>
+
+    # ─── train-gold ─────────────────────────────────────────────────────────
+    # student + corpus come straight from a prior build's align/corpus outputs
+    # (env:// URIs), so there are no upstream targets in this recipe.
+    train-gold:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+<% if ON_POLICY | string | lower in ("true", "yes", "1", "on") %>
+        vllm:
+          binding: vllm-server.vllm_url
+<% endif %>
+        student:
+          uri: "$${RETAGGED_STUDENT_URI}"
+          type: model
+        corpus:
+          uri: "$${CORPUS_URI}"
+          type: dataset
+        teacher:
+          uri: "$${TEACHER_MODEL_URI}"
+          type: model
+      outputs:
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/gold-slurm
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: $${NUM_NODES}
+              num_gpus_per_node: $${NUM_GPUS_PER_NODE}
+              num_cpus_per_node: $${GPU_CPUS}
+            launcher_config:
+              image_id: "$${IMAGE_ID}"
+              resources:
+                accelerators: "$${ACCELERATORS}"
+                memory: $${MEMORY}
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+            code_config:
+              # Fix the broken lmbda LINEAR ramp in the pinned trainer (a5d59bc4):
+              # _get_current_lmbda() has no linear branch (returns None -> crash at
+              # step 0: "None <= 0.0"); the ramp body is dead code below a return in
+              # _draw_on_policy. The mounted src/patch_lmbda_schedule.py rewrites the
+              # method in the fresh clone, idempotently (no-op off-policy / constant).
+              # Runs on every rank before the role split. $CODE_DIR = the clone;
+              # ./src = this step's file_mount. Same patch as distill-gold-colocated.
+              # Remove once the trainer pin is bumped to a version with a working ramp.
+              setup_command: >-
+                "$PYBIN" ./src/patch_lmbda_schedule.py
+                "$CODE_DIR/src/gb_steps_post_training/distillation/custom_gold_trainer.py"
+            gold_config:
+              run_name: "$${RUN_NAME}"
+              ds_config: "$${DS_CONFIG}"
+              max_steps: $${MAX_STEPS}
+              num_train_epochs: $${NUM_TRAIN_EPOCHS}
+              learning_rate: $${LEARNING_RATE}
+              min_lr: $${MIN_LR}
+              warmup_ratio: $${WARMUP_RATIO}
+              lr_scheduler_type: "$${LR_SCHEDULER_TYPE}"
+              per_device_train_batch_size: $${PER_DEVICE_TRAIN_BATCH_SIZE}
+              gradient_accumulation_steps: $${GRADIENT_ACCUMULATION_STEPS}
+              max_length: $${MAX_LENGTH}
+              max_completion_length: $${MAX_COMPLETION_LENGTH}
+              gradient_checkpointing: $${GRADIENT_CHECKPOINTING}
+              save_strategy: "$${SAVE_STRATEGY}"
+              save_steps: $${SAVE_STEPS}
+              save_total_limit: $${SAVE_TOTAL_LIMIT}
+              logging_steps: $${LOGGING_STEPS}
+              dataset_num_proc: $${DATASET_NUM_PROC}
+              temperature: $${TEMPERATURE}
+              lmbda: $${LMBDA}
+              lmbda_schedule: "$${LMBDA_SCHEDULE}"
+              lmbda_init: $${LMBDA_INIT}
+              beta: $${BETA}
+              use_liger_fused_jsd: $${USE_LIGER_FUSED_JSD}
+              response_template: "$${RESPONSE_TEMPLATE}"
+              nccl_debug: "$${NCCL_DEBUG}"
+              nccl_debug_subsys: "$${NCCL_DEBUG_SUBSYS}"
+              nccl_timeout_ms: $${NCCL_TIMEOUT_MS}
+              nccl_enable_monitoring: $${NCCL_ENABLE_MONITORING}
+              # 1 forces NCCL onto TCP sockets (no IB verbs) — a diagnostic for the
+              # cross-allocation weight-sync hang on this external-server path.
+              nccl_ib_disable: $${NCCL_IB_DISABLE}
+<% if ON_POLICY | string | lower in ("true", "yes", "1", "on") %>
+              vllm_mode: "$${VLLM_MODE}"
+              vllm_sync_frequency: $${VLLM_SYNC_FREQUENCY}
+              vllm_num_servers: $${VLLM_NUM_SERVERS}
+<% else %>
+              vllm_num_servers: 0
+<% endif %>
+              top_p: $${TOP_P}
+              use_sampled_opd_loss: $${USE_SAMPLED_OPD_LOSS}
+              last_message_only: $${LAST_MESSAGE_ONLY}
+              clip_alpha: $${CLIP_ALPHA}
+              opd_importance_sampling: $${OPD_IMPORTANCE_SAMPLING}
+              # Verify the delivered trainer accepts the emitted keys before accelerate
+              # launches. On-policy emits lmbda_schedule/lmbda_init, which trips this
+              # check — and in THIS image the verify import pulls in vllm -> vllm_ascend
+              # (absent) -> ImportError -> the step exits 2 before rendering the config.
+              # Default false here so the on-policy ramp renders; set true only against
+              # an image where gb_steps_post_training imports cleanly.
+              verify_trainer_accepts_keys: $${VERIFY_TRAINER_ACCEPTS_KEYS}
+
+<% if ON_POLICY | string | lower in ("true", "yes", "1", "on") %>
+    # ─── teardown (on-policy only) ───────────────────────────────────────────
+    teardown:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        gate:
+          binding: train-gold.checkpoint
+        vllm_cluster:
+          binding: vllm-server.cluster_name
+      steps:
+        - step_uri: space://steps/skypilot-teardown
+          config:
+            teardown_config:
+              cluster_names:
+                - "{{ bindings.vllm_cluster.binding.state }}"
+<% endif %>
