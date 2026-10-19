@@ -5,11 +5,9 @@
 #   save               write all manifest images to the tarball
 #   kind-load NAME...  copy the named (loaded) manifest images into the kind node
 #
-# IMAGE_LIST defaults to the CI manifest; the nightly points it at
-# nightly-docker-images.env (with its own CACHE_DIR) for the images only it uses.
 # CACHE_DIR is what actions/cache restores and saves (see ci.yml). Tests pull
-# if-not-present, so a preloaded image is used as-is. kind pods pull through the
-# node's containerd, not the host's docker, hence kind-load.
+# if-not-present, so a preloaded image is used as-is. kind pods don't see the
+# host's images, hence kind-load.
 set -euo pipefail
 
 IMAGE_LIST="${CI_DOCKER_IMAGE_LIST:-test-data/ci-docker-images.env}"
@@ -110,9 +108,7 @@ image_named() {
     echo "$image"
 }
 
-# Copy each named manifest image from the host's docker into the kind node.
-# Returns 2 when no NAME is given, 1 when a NAME is not in the manifest or its
-# image is not loaded on the host.
+# Returns 2 without a NAME, 1 for a NAME not in the manifest or not loaded.
 cmd_kind_load() {
     if (($# == 0)); then
         echo "usage: $0 kind-load NAME..." >&2
@@ -121,7 +117,6 @@ cmd_kind_load() {
     local name image
     for name in "$@"; do
         image=$(image_named "$name")
-        # kind load copies from the host's docker.
         if ! docker image inspect "$image" >/dev/null 2>&1; then
             echo "::error::$image is not loaded; run '$0 load' first" >&2
             return 1

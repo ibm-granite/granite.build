@@ -47,8 +47,7 @@ SHARED_CLAIM = "gb-shared"
 #: requests 2 CPUs and a CI runner's kind node has ~3 left after the control
 #: plane, so concurrent xdist workers would leave pods unschedulable; with the
 #: Makefile's ``--dist=loadgroup`` a group runs serially on one worker. Shared with
-#: every skypilot_integration test (libgbtest.xdist_groups), so kube never
-#: overlaps slurm either.
+#: every skypilot_integration test, so kube never overlaps slurm either.
 KUBE_XDIST_GROUP = SKYPILOT_XDIST_GROUP
 
 

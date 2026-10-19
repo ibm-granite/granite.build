@@ -1,8 +1,4 @@
-"""Docker image names the tests use, read from the test-data image manifests.
-
-``ci-docker-images.env`` lists the images CI preloads; ``nightly-docker-images.env``
-the extra ones only the nightly extended tests use.
-"""
+"""Docker image names the tests use, read from the test-data image manifests."""
 
 from functools import cache
 from pathlib import Path

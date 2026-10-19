@@ -90,11 +90,7 @@ def test_another_group_is_tolerated_without_loadgroup():
 
 
 def _skypilot_fixture_test_modules() -> set[pathlib.Path]:
-    """Test modules whose build.yaml fixture targets a SkyPilot environment.
-
-    Fixtures mirror their tests (test-data/<dir> <-> test/<dir>), so each such
-    build.yaml, found under any depth of its test's dir, names the module(s) there.
-    """
+    """Test modules whose build.yaml fixture (test-data/<dir>, any depth) targets SkyPilot."""
     modules = set()
     for build in (_REPO / "test-data").rglob("build.yaml"):
         if not _SKYPILOT_ENV.search(build.read_text()):
@@ -111,11 +107,7 @@ def _skypilot_fixture_test_modules() -> set[pathlib.Path]:
 
 
 def test_every_extended_skypilot_build_test_is_grouped():
-    """Every SkyPilot build test in the extended suite carries the marker.
-
-    ``ibm``-marked tests run only in ``ibm-extended-tests`` (not in CI), against
-    remote clusters, and keep their own groups.
-    """
+    """ibm-marked tests run only in ibm-extended-tests, never in CI, so are skipped."""
     modules = [
         m
         for m in _skypilot_fixture_test_modules()
@@ -131,7 +123,7 @@ def test_every_extended_skypilot_build_test_is_grouped():
 
 
 def test_is_loadgroup_reads_the_worker_option():
-    """On an xdist worker dist is reset to "no"; xdist records loadgroup instead."""
+    """On an xdist worker dist is "no"; loadgroup holds the mode."""
     worker = types.SimpleNamespace(
         option=types.SimpleNamespace(dist="no", loadgroup=True)
     )

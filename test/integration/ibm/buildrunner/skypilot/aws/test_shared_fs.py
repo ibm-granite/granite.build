@@ -262,13 +262,12 @@ def _assert_ephemeral_no_leak(env_yaml: Path, run_build) -> None:
 
 
 # Real-infra build test (SkyPilot provisions EC2 instances) — only run in the
-# extended suite (make extended-tests). The skypilot_integration mark serializes
-# it with every SkyPilot test (libgbtest.xdist_groups), so concurrent provisions
-# don't race on SkyPilot's local state.
+# extended suite (make extended-tests). Shares the skypilot_integration group with
+# all SkyPilot tests so concurrent provisions don't race on SkyPilot's local state.
 # These marks apply to EVERY test in the module (BYO and ephemeral alike).
 pytestmark = [
-    pytest.mark.skypilot_integration,
     extended_testing_only,
+    pytest.mark.skypilot_integration,
     pytest.mark.skipif(
         not _aws_credentials_available(),
         reason="AWS credentials not configured (set AWS_ACCESS_KEY_ID/"

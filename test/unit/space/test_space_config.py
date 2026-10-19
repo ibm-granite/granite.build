@@ -172,7 +172,7 @@ class TestSkyKubeLocalEnvironmentYaml:
         assert mounts == ["/shared"]
 
     def test_pods_use_images_preloaded_into_kind(self):
-        """IfNotPresent on SkyPilot's own (named) container; its default Always re-pulls."""
+        """SkyPilot's own default is Always."""
         kube = self._load()["config"]["cloud_config"]["kubernetes"]
         spec = kube["context_configs"]["kind-skypilot"]["pod_config"]["spec"]
         (container,) = spec["containers"]
@@ -181,7 +181,7 @@ class TestSkyKubeLocalEnvironmentYaml:
 
     @pytest.mark.parametrize("step", ["hfpull", "hfpush"])
     def test_hf_steps_request_less_than_their_10gi_default(self, step):
-        """config.steps outranks the step.yaml floor once the config layers merge."""
+        """config.steps launcher resources must outrank the step.yaml 10Gi floor."""
         from gbserver.build.targetstep import _seed_step_config_with_env_defaults
         from gbserver.utils.filesystem import merge_dicts
 

@@ -100,6 +100,9 @@ config:
   default_cloud: kubernetes
   idle_minutes_to_autostop: 15  # applied as autodown on Kubernetes; keep well above the poll interval
   shared_workdir: /shared
+  steps:  # the hf steps default to 10Gi; concurrent ones wouldn't fit on one node
+    hfpull: { launcher_config: { resources: { memory: "1+" } } }
+    hfpush: { launcher_config: { resources: { memory: "1+" } } }
   cloud_config:
     kubernetes:
       allowed_contexts: [kind-skypilot]
@@ -130,11 +133,10 @@ assetstores:
 
 The `env://` store is registered implicitly for **every** environment, so it needs no `assetstores` entry.
 
-`imagePullPolicy: IfNotPresent` on SkyPilot's container (`ray-node`; `pod_config` merges containers by
-name) replaces its default `Always`, so an image already on the kind node is not re-pulled. The nightly
-preloads the kube tests' images with `scripts/ci-docker-images.sh kind-load`, avoiding registry rate
-limits. The catch is a mutable tag (`:latest`, `:dev`): once on the node, it is not refreshed. Pin a
-version or digest, or remove the stale copy (`docker exec skypilot-control-plane crictl rmi <image>`).
+`imagePullPolicy: IfNotPresent` replaces SkyPilot's `Always` on its `ray-node` container, so an image
+already on the kind node (the nightly preloads them with `scripts/ci-docker-images.sh kind-load`) isn't
+re-pulled. A mutable tag (`:latest`) then isn't refreshed either: pin a version, or remove the stale
+copy with `docker exec skypilot-control-plane crictl rmi <image>`.
 
 Steps may set `image_id` (Kubernetes runs containers natively — no Pyxis/enroot caveat), and
 `resources.accelerators` / `resources.memory` map onto the pod's resource requests.

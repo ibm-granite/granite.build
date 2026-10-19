@@ -567,10 +567,7 @@ def pytest_unconfigure(config):
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config, items):
-    """Serialize the real-SkyPilot tests (see libgbtest.xdist_groups).
-
-    tryfirst: xdist reads the group markers in its own hook of this name.
-    """
+    """Serialize the SkyPilot tests. tryfirst: xdist reads the groups after."""
     xdist_groups.group_skypilot_integration_tests(
         items, strict=xdist_groups.is_loadgroup(config)
     )

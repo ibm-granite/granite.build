@@ -63,9 +63,8 @@ def _aws_credentials_available() -> bool:
 
 
 # Real-infra build test (SkyPilot provisions an EC2 instance) — only run in the
-# extended suite (make extended-tests). The skypilot_integration mark serializes
-# it with every SkyPilot test (libgbtest.xdist_groups), so concurrent provisions
-# don't race on SkyPilot's local state.
+# extended suite (make extended-tests). Shares the skypilot_integration group with
+# all SkyPilot tests so concurrent provisions don't race on SkyPilot's local state.
 @extended_testing_only
 @pytest.mark.skypilot_integration
 @pytest.mark.skipif(

@@ -22,7 +22,6 @@ def test_manifest_parses():
 
 
 def test_manifests_do_not_overlap():
-    """An image in both would be cached twice, and the split exists to avoid that."""
     assert not ci_docker_images().keys() & ci_docker_images(NIGHTLY_MANIFEST).keys()
 
 
@@ -43,7 +42,6 @@ def test_inference_cpu_launcher_image_matches_manifest():
 
 
 def test_kube_image_fixture_matches_manifest():
-    """The nightly loads UBUNTU_IMAGE into kind; the fixture must run that image."""
     build = yaml.safe_load(
         (
             MANIFEST.parent
