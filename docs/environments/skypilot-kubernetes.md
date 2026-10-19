@@ -18,12 +18,42 @@ Kubernetes alongside other clouds with a uniform launcher.
 
 ## Kubernetes-specific configuration
 
-### Credentials: `~/.kube/config`
+### Credentials: the host kubeconfig, or `kube_configs`
 
-SkyPilot reads the kube context from `~/.kube/config` on the gbserver host. This must be provisioned
-out-of-band (it is not one of the inline materialized blocks). For a full setup walkthrough — including
-the SkyPilot SSH-node-pool / RBAC requirements — see
-[setup/skypilot-kubernetes-setup.md](setup/skypilot-kubernetes-setup.md).
+SkyPilot reads kube contexts from `KUBECONFIG` (or `~/.kube/config`) on the gbserver host. There are two
+ways to supply them:
+
+- **Out of band:** the host's kubeconfig already has the context, e.g. written by `sky local up` for the
+  local kind cluster. For a full setup walkthrough, including the SkyPilot SSH-node-pool / RBAC
+  requirements, see [setup/skypilot-kubernetes-setup.md](setup/skypilot-kubernetes-setup.md).
+- **From the environment, with `kube_configs`:** each entry names a context and a space secret holding a
+  kubeconfig that defines it. The context must also be pinned in `cloud_config.kubernetes.allowed_contexts`;
+  loading the environment fails otherwise.
+
+  ```yaml
+  config:
+    default_cloud: kubernetes
+    kube_configs:
+      - context: my-cluster
+        kubeconfig: my-cluster-kubeconfig   # space secret: a kubeconfig defining my-cluster
+    cloud_config:
+      kubernetes:
+        allowed_contexts: [my-cluster]
+  ```
+
+  gbserver merges each context, with the cluster and user it names, into its own
+  `~/.sky/gbserver-kubeconfig` (mode 0600) and puts that file first on `KUBECONFIG` in its process. Your
+  own kubeconfig is never edited, and its contexts stay usable.
+
+  - **Collisions are refused.** A context already written by another environment, or one of the same name
+    in your own kubeconfig, is refused (`SkypilotConfigCollisionError`) unless the definitions match; an
+    environment re-writing its own entry replaces it, e.g. a rotated token.
+  - **Nothing is removed while gbserver runs**, so every environment's builds can still poll and tear down.
+
+  Limits:
+  - **Local API server only.** The SkyPilot client forwards `KUBECONFIG` to a local API server; a remote
+    one uses its own kubeconfig.
+  - **Exec-based auth plugins** (e.g. `aws eks get-token`) need their binary installed on the gbserver host.
 
 ### No `cluster_ssh_configs` or `aws_credentials`
 

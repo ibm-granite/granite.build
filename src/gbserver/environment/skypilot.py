@@ -2222,9 +2222,52 @@ class Skypilot(Environment):
 
             aws = [AwsCredentialProfile.model_validate(p) for p in aws_raw]
             materialize(self._env_name(), None, None, aws, self.secrets or {})
+        kube_entries = self._kube_config_entries()
+        if kube_entries:
+            from gbserver.environment.skypilot_config import (
+                activate_kubeconfig,
+                merge_kube_configs,
+            )
+
+            merge_kube_configs(kube_entries, self.secrets or {}, self._env_name())
+            activate_kubeconfig()
         with _CLOUD_CONFIG_LOCK:
             _apply_cloud_config(self._env_name(), self._cloud_config())
         self._inline_configs_done = True
+
+    def _kube_config_entries(self: Self) -> List[Any]:
+        """This environment's ``kube_configs`` entries, validated.
+
+        Each context must also be in ``cloud_config.kubernetes.allowed_contexts``:
+        an environment may only bring credentials for a cluster it pins, and a
+        mismatch (a typo, say) fails here rather than at launch against another
+        context.
+
+        :returns: The ``KubeConfigEntry`` list (empty when unset).
+        :raises ValueError: If ``kube_configs`` is malformed or names a context
+            missing from ``allowed_contexts``.
+        """
+        from gbserver.types.environmentconfig import KubeConfigEntry
+
+        cfg = self.config.config if self.config else {}
+        raw = cfg.get("kube_configs")
+        if not raw:
+            return []
+        if not isinstance(raw, list):
+            raise ValueError(
+                f"environment '{self._env_name()}': kube_configs must be a list"
+            )
+        entries = [KubeConfigEntry.model_validate(e) for e in raw]
+        allowed = ((self._cloud_config() or {}).get("kubernetes") or {}).get(
+            "allowed_contexts"
+        ) or []
+        missing = [e.context for e in entries if e.context not in allowed]
+        if missing:
+            raise ValueError(
+                f"environment '{self._env_name()}': kube_configs contexts {missing} "
+                "must also be listed in cloud_config.kubernetes.allowed_contexts"
+            )
+        return entries
 
     def _env_name(self: Self) -> str:
         """This environment's name, as recorded with its written config."""

@@ -1,0 +1,19 @@
+granite.build:
+  name: skypilot-kube-kubeconfig-secret
+  # One command step in a pod on a cluster whose credentials come only from a
+  # space secret (kube_configs). The step proves it ran in the kind cluster's pod
+  # by reading the shared volume the env mounts there.
+  targets:
+    pod-run:
+      environment_uri: space://environments/skypilot/kubernetes/secret
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: 5
+            command_config:
+              command: >-
+                test -d /shared || { echo "FAIL: /shared not mounted"; exit 1; };
+                echo "ran in pod $(hostname) with /shared mounted"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi
