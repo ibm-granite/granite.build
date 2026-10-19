@@ -21,10 +21,10 @@ the adapter stream reaches the LM head.
 
 ## Data
 
-Both datasets come from one Hugging Face dataset repo, `ibm-research/touma`.
-Nothing in this recipe names a `/proj` path — data, base model and code are all
-fetched by URI. `DATA_URI` names the **repo**; the two subdirectory parameters
-name what to use inside it:
+Both datasets come from one Hugging Face dataset repo set up for testing the
+recipe, `ibm-research/touma`. Data, base model and code are all fetched by URI.
+`DATA_URI` names the **repo**; the two subdirectory parameters name what to use
+inside it:
 
 | Parameter | Value | Holds |
 |---|---|---|
@@ -107,14 +107,20 @@ for `ibm-granite/granite-4.2-8b` is public and needs no credential.
 
 ## Run
 
+The commands below use the `public` space, which a standalone gbserver
+registers when started as in the top-level
+[Quick start (standalone)](../../../../README.md#quick-start-standalone):
+
+    gbserver standalone --space-dir configurations/spaces/local
+
     gb build start -f recipes/granite-switch/lsf/answerability-sr/build.yaml \
-      --space <your-space>
+      --space public
 
 Explicitly, or with a different parameter set:
 
     gb build start -f recipes/granite-switch/lsf/answerability-sr/build.yaml \
       --parameters-path recipes/granite-switch/lsf/answerability-sr/parameters.yaml \
-      --space <your-space>
+      --space public
 
 The configuration is rank 16, alpha 32, dropout 0.05, lr 5e-5 cosine with 0.05
 warmup, 3 epochs, `max_length` 8192, batch 1 × grad accum 8, seed 0, one H100.
@@ -155,10 +161,8 @@ wall clock, not correctness.
 ## Why the code is cloned from github.com
 
 The `byoc` step does an **unauthenticated** `git clone`, so the repo it clones
-must be publicly readable. That rules out the IBM-internal candidates: the
-internal GitHub Enterprise refuses anonymous clones outright, and its
-`shadow-residual` mirror is in any case about six weeks behind the github.com
-repo. `SR_REPO` therefore points at github.com and should stay there.
+must be publicly readable. `SR_REPO` therefore points at the public github.com
+repo and should stay there.
 
 Pin `SR_REF` to a tag or SHA for anything you intend to compare against later.
 `main` is the default because that is the branch whose API the generated config
@@ -204,7 +208,7 @@ are the right order of magnitude to expect, not a target to reproduce exactly.
 own gate without a second copy to keep in sync:
 
     gb build start -f recipes/granite-switch/lsf/answerability-sr/build.yaml \
-      --space <your-space> --param MAX_STEPS=2 --param NUM_EPOCHS=1
+      --space public --param MAX_STEPS=2 --param NUM_EPOCHS=1
 
 Two steps rather than one on purpose: one proves the trainer starts, two prove
 it can take a second step carrying the first one's state. That clears the HF

@@ -13,9 +13,7 @@ IMAGE: "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime"
 
 # ── Code under test ──────────────────────────────────────────────────────────
 # The byoc step does an UNAUTHENTICATED `git clone`, so this must be a public
-# repo. shadow-residual on github.com is public; the internal GitHub Enterprise
-# mirror of the same name is both auth-walled and ~6 weeks stale, so do not
-# repoint here.
+# repo. Keep it pointed at the public github.com repo.
 SR_REPO: "https://github.com/generative-computing/shadow-residual"
 # Pin a SHA or tag for reproducibility. `main` tracks the stock-PEFT API this
 # recipe's generated config is written against.
@@ -50,7 +48,7 @@ BASE_MODEL_ID: "ibm-granite/granite-4.2-8b"
 #                                 defaults to huggingface.co — "hf://datasets/..."
 #                                 parses "datasets" as the HOST and pulls from
 #                                 nowhere)
-#   env://<absolute path>         already on BlueVela's /proj; the pull is a no-op
+#   env://<absolute path>         already on the cluster's filesystem; the pull is a no-op
 #   s3://<bucket>/<key>           object storage
 #
 # ibm-research/touma is PRIVATE, so the pull needs an HF_TOKEN secret with

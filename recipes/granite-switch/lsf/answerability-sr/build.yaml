@@ -13,7 +13,7 @@
 # through stock PEFT. Both targets run the same base model; they must, or the
 # adapter is attached to a different graph than it was trained on.
 #
-# Nothing is installed from an IBM-internal source: the step clones over
+# Nothing is installed from a private source: the step clones over
 # unauthenticated git, so the repo is the github.com one, and the base model
 # comes from the public Hub. The training and eval data come from one private
 # Hugging Face dataset repo, which granite.build downloads to the cluster
