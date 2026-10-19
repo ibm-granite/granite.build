@@ -571,8 +571,9 @@ def pytest_collection_modifyitems(config, items):
 
     tryfirst: xdist reads the group markers in its own hook of this name.
     """
-    loadgroup = config.getoption("dist", default="no") == "loadgroup"
-    xdist_groups.group_skypilot_integration_tests(items, strict=loadgroup)
+    xdist_groups.group_skypilot_integration_tests(
+        items, strict=xdist_groups.is_loadgroup(config)
+    )
 
 
 @pytest.hookimpl(tryfirst=True, optionalhook=True)

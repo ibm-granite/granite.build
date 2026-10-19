@@ -133,7 +133,8 @@ The `env://` store is registered implicitly for **every** environment, so it nee
 `imagePullPolicy: IfNotPresent` on SkyPilot's container (`ray-node`; `pod_config` merges containers by
 name) replaces its default `Always`, so an image already on the kind node is not re-pulled. The nightly
 preloads the kube tests' images with `scripts/ci-docker-images.sh kind-load`, avoiding registry rate
-limits.
+limits. The catch is a mutable tag (`:latest`, `:dev`): once on the node, it is not refreshed. Pin a
+version or digest, or remove the stale copy (`docker exec skypilot-control-plane crictl rmi <image>`).
 
 Steps may set `image_id` (Kubernetes runs containers natively — no Pyxis/enroot caveat), and
 `resources.accelerators` / `resources.memory` map onto the pod's resource requests.

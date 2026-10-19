@@ -76,7 +76,7 @@ from libgbtest.buildrunner.buildtest import (
 )
 from libgbtest.constants import extended_testing_only
 
-pytestmark = pytest.mark.ibm
+pytestmark = [pytest.mark.ibm, pytest.mark.skypilot_integration]
 
 # NOTE: to validate SSH auth against a freshly edited key/credential, set
 # GBTEST_SKY_SSH_RESET=true in gbserver's environment before running — SkyPilot
@@ -87,9 +87,9 @@ pytestmark = pytest.mark.ibm
 
 
 @extended_testing_only
-# Shares the bluevela xdist group with the sibling fixtures so the BlueVela tests
-# serialize rather than contending for the same login node / SSH ControlMaster socket.
-@pytest.mark.xdist_group(name="buildtest_bv")
+# Serialized with every SkyPilot test (skypilot_integration, see
+# libgbtest.xdist_groups), so the BlueVela tests don't contend for the same login
+# node / SSH ControlMaster socket.
 # For this test to run in IBM SPS build tests, it needs to
 # 1) have an environments/skypilot/slurm/bluevela/environment.yaml referencing
 #    the BV_SSH_PRIVATE_KEY secret (IdentityKey: BV_SSH_PRIVATE_KEY)

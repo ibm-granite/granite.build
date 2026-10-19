@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""One xdist group for every test that drives a real SkyPilot environment.
+"""One xdist group for every ``skypilot_integration`` test.
 
-They share one local SkyPilot API server and ``~/.sky/config.yaml``, which
+That marker is the contract: a test that drives a real SkyPilot environment
+carries it (test_skypilot_xdist_group checks every SkyPilot build fixture's test
+does). They share one local SkyPilot API server and ``~/.sky/config.yaml``, which
 gbserver rewrites per launch with the launching env's ``cloud_config`` (last
 writer wins). Concurrently, a kube launch drops the slurm env's ``workdir``
 and the slurm build's log download finds nothing. The server ignores client
@@ -25,6 +27,21 @@ import pytest
 
 SKYPILOT_XDIST_GROUP_NAME = "skypilot"
 SKYPILOT_XDIST_GROUP = pytest.mark.xdist_group(name=SKYPILOT_XDIST_GROUP_NAME)
+
+
+def is_loadgroup(config: pytest.Config) -> bool:
+    """Whether this run schedules by xdist group (``--dist=loadgroup``).
+
+    Collection runs on the workers, where xdist resets ``dist`` to ``"no"`` and
+    records the mode as ``loadgroup`` instead; the controller (or a run without
+    xdist) still has ``dist``.
+
+    :param config: the pytest config.
+    :returns: True under ``--dist=loadgroup``, on a worker or the controller.
+    """
+    if getattr(config.option, "loadgroup", False):
+        return True
+    return getattr(config.option, "dist", "no") == "loadgroup"
 
 
 def group_skypilot_integration_tests(

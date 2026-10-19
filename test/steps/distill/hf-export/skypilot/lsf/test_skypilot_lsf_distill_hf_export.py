@@ -44,7 +44,7 @@ from libgbtest.buildrunner.buildtest import (
 )
 from libgbtest.constants import extended_testing_only
 
-pytestmark = pytest.mark.ibm
+pytestmark = [pytest.mark.ibm, pytest.mark.skypilot_integration]
 
 # Environment defaults, mirroring
 # configurations/assets/environments/skypilot/lsf/ibm-bluevela/environment.yaml.
@@ -122,7 +122,6 @@ def _bluevela_reachable() -> bool:
 # Serialize with the other BlueVela build tests: they share one SSH auth path to the
 # login node, and a shared account's concurrent submissions are the thing most likely
 # to make a run look like an outage.
-@pytest.mark.xdist_group(name="buildtest_bv")
 @pytest.mark.skipif(
     os.environ.get("RUNNING_IN_CICD", "False").lower() == "true",
     reason="Needs environments/skypilot/lsf/bluevela/environment.yaml with a "

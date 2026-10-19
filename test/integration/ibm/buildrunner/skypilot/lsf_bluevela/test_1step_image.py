@@ -32,11 +32,10 @@ from libgbtest.buildrunner.buildtest import (
 )
 from libgbtest.constants import extended_testing_only
 
-pytestmark = pytest.mark.ibm
+pytestmark = [pytest.mark.ibm, pytest.mark.skypilot_integration]
 
 
 @extended_testing_only
-@pytest.mark.xdist_group(name="buildtest_bv")
 # No separate container-support probe gate (unlike slurm's
 # _slurm_cluster_supports_containers): enroot is declared enabled: true on the
 # bluevela environment, so the cluster is expected to support containers.

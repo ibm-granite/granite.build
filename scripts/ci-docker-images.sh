@@ -110,6 +110,9 @@ image_named() {
     echo "$image"
 }
 
+# Copy each named manifest image from the host's docker into the kind node.
+# Returns 2 when no NAME is given, 1 when a NAME is not in the manifest or its
+# image is not loaded on the host.
 cmd_kind_load() {
     if (($# == 0)); then
         echo "usage: $0 kind-load NAME..." >&2

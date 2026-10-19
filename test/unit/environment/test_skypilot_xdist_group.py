@@ -15,12 +15,16 @@
 """libgbtest.xdist_groups puts every real-SkyPilot test in one xdist group."""
 
 import pathlib
+import re
+import types
 
 import pytest
 from libgbtest import xdist_groups
 from libgbtest.kube import KUBE_XDIST_GROUP
 
 _REPO = pathlib.Path(__file__).resolve().parents[3]
+# An uncommented environment_uri naming a SkyPilot environment.
+_SKYPILOT_ENV = re.compile(r"^\s*environment_uri:\s*\S*environments/skypilot/", re.M)
 
 
 class _Item:
@@ -83,15 +87,46 @@ def test_another_group_is_tolerated_without_loadgroup():
     assert "skypilot" in aws.groups()
 
 
-def test_slurm_and_kube_tests_are_marked():
-    """The slurm and kube tests that collided carry the marker the hook keys on."""
-    names = [
-        "test/integration/environment/test_skypilot_slurm_e2e.py",
-        "test/integration/standalone/buildrunner/skypilot_slurm/test_skypilot_1step.py",
-        "test/integration/standalone/buildrunner/skypilot_kube/test_skypilot_kube_1step.py",
-        "test/steps/data/dpk/skypilot/slurm-tok/test_skypilot_slurm_dpk_tok.py",
-        "test/steps/data/dpk/skypilot/kube-tok/test_skypilot_kube_dpk_tok.py",
-        "test/steps/byoc/skypilot/slurm/test_skypilot_byoc.py",
+def _skypilot_fixture_test_modules() -> set[pathlib.Path]:
+    """Test modules whose build.yaml fixture targets a SkyPilot environment.
+
+    Fixtures mirror their tests (test-data/<dir> <-> test/<dir>), so each such
+    build.yaml, found under any depth of its test's dir, names the module(s) there.
+    """
+    modules = set()
+    for build in (_REPO / "test-data").rglob("build.yaml"):
+        if not _SKYPILOT_ENV.search(build.read_text()):
+            continue
+        for parent in build.parents:
+            if parent == _REPO / "test-data":
+                break
+            test_dir = _REPO / "test" / parent.relative_to(_REPO / "test-data")
+            found = sorted(test_dir.glob("test_*.py"))
+            if found:
+                modules.update(found)
+                break
+    return modules
+
+
+def test_every_skypilot_build_test_is_grouped():
+    """Every test that launches a SkyPilot build carries the marker the hook keys on."""
+    modules = _skypilot_fixture_test_modules()
+    assert len(modules) > 20, modules  # the fixture scan still finds them
+    unmarked = [
+        str(m.relative_to(_REPO))
+        for m in modules
+        if "pytest.mark.skypilot_integration" not in m.read_text()
     ]
-    for name in names:
-        assert "pytest.mark.skypilot_integration" in (_REPO / name).read_text(), name
+    assert not unmarked, unmarked
+
+
+def test_is_loadgroup_reads_the_worker_option():
+    """On an xdist worker dist is reset to "no"; xdist records loadgroup instead."""
+    worker = types.SimpleNamespace(
+        option=types.SimpleNamespace(dist="no", loadgroup=True)
+    )
+    controller = types.SimpleNamespace(option=types.SimpleNamespace(dist="loadgroup"))
+    plain = types.SimpleNamespace(option=types.SimpleNamespace(dist="no"))
+    assert xdist_groups.is_loadgroup(worker)
+    assert xdist_groups.is_loadgroup(controller)
+    assert not xdist_groups.is_loadgroup(plain)
