@@ -99,9 +99,12 @@ fi
 # into the step's own working directory (the image tree may be read-only).
 results_dir="$(pwd)/results/${algorithm}"
 logs_dir="$(pwd)/logs"
+mkdir -p "$results_dir" "$logs_dir"
+# convert_dcp_to_hf.py raises FileExistsError if --hf-ckpt-path already exists,
+# so hf_output must NOT be pre-created — the converter creates it itself. Its
+# parent (the working dir) already exists, so `$(pwd)/hf_output` is a canonical
+# absolute path without needing to `cd` into the (deliberately absent) leaf.
 hf_dir="$(pwd)/hf_output"
-mkdir -p "$results_dir" "$logs_dir" "$hf_dir"
-hf_dir="$(cd "$hf_dir" && pwd)"
 case $hf_dir in
   *'"'*)
     echo "nemo-rl: ERROR HF output path contains a double quote: '${hf_dir}'" >&2

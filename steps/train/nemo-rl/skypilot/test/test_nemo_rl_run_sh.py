@@ -35,8 +35,10 @@ def _write_uv_stub(bin_dir: pathlib.Path, uvlog: pathlib.Path) -> None:
     """A fake `uv` that logs its argv and fakes the converter's output.
 
     For a training run it only records argv. For a convert run (argv mentions
-    convert_dcp_to_hf.py) it also drops a file into --hf-ckpt-path so the HF-dir
-    non-empty check passes.
+    convert_dcp_to_hf.py) it mirrors the real convert_dcp_to_hf.py: it REFUSES a
+    --hf-ckpt-path that already exists (the real converter raises FileExistsError
+    there), and otherwise creates the dir and drops a file into it so the step's
+    HF-dir non-empty check passes.
     """
     stub = bin_dir / "uv"
     stub.write_text(
@@ -50,7 +52,12 @@ def _write_uv_stub(bin_dir: pathlib.Path, uvlog: pathlib.Path) -> None:
         '  prev="$a"\n'
         "done\n"
         'case "$*" in\n'
-        '  *convert_dcp_to_hf.py*) mkdir -p "$hf"; : > "$hf/model.safetensors" ;;\n'
+        "  *convert_dcp_to_hf.py*)\n"
+        '    if [ -e "$hf" ]; then\n'
+        '      echo "FileExistsError: HF checkpoint already exists at $hf" >&2\n'
+        "      exit 1\n"
+        "    fi\n"
+        '    mkdir -p "$hf"; : > "$hf/model.safetensors" ;;\n'
         "esac\n"
     )
     stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
@@ -280,6 +287,16 @@ class TestConversionAndMarker:
         conv = next(r for r in runs if any("convert_dcp_to_hf.py" in w for w in r))
         assert any(w.endswith("step_10/config.yaml") for w in conv)
         assert any(w.endswith("step_10/policy/weights") for w in conv)
+
+    def test_does_not_hand_converter_a_preexisting_hf_dir(self, tmp_path):
+        # convert_dcp_to_hf.py raises FileExistsError if --hf-ckpt-path already
+        # exists, so the step must NOT pre-create the HF output dir before the
+        # converter runs. A green run proves the converter saw a fresh path.
+        proc, runs, work = _run(tmp_path, ["--base-model", "/staged/base"])
+        assert proc.returncode == 0, proc.stderr
+        assert "FileExistsError" not in proc.stderr
+        marker = _marker(proc.stdout)
+        assert marker is not None, proc.stdout
 
     def test_emits_marker_with_absolute_hf_path(self, tmp_path):
         proc, runs, work = _run(tmp_path, ["--base-model", "/staged/base"])
