@@ -57,8 +57,9 @@ jobs:
         run: scripts/ci-docker-images.sh load
 
       # Images only this workflow uses, in their own cache so they don't key
-      # ci.yml's. Saved here (on the scheduled run, from main) since ci.yml never
-      # loads them.
+      # ci.yml's. Saved here (from main) since ci.yml never loads them. Every
+      # step below may fail without stopping the job: a failed pull then fails
+      # only the kube test that runs the image, not the whole suite.
       - name: Restore cached nightly Docker images
         id: nightly-images-cache
         uses: actions/cache/restore@v6
@@ -68,20 +69,24 @@ jobs:
           restore-keys: nightly-docker-images-
 
       - name: Load nightly Docker images (pull with retry on cache miss)
+        id: nightly-images-load
+        continue-on-error: true
         run: |
           CI_DOCKER_IMAGE_LIST=test-data/nightly-docker-images.env \
           CI_DOCKER_IMAGE_CACHE_DIR="$HOME/.cache/nightly-docker-images" \
             scripts/ci-docker-images.sh load
 
       - name: Save nightly Docker images to cache
-        if: steps.nightly-images-cache.outputs.cache-hit != 'true'
+        if: steps.nightly-images-cache.outputs.cache-hit != 'true' && steps.nightly-images-load.outcome == 'success'
+        continue-on-error: true
         run: |
           CI_DOCKER_IMAGE_LIST=test-data/nightly-docker-images.env \
           CI_DOCKER_IMAGE_CACHE_DIR="$HOME/.cache/nightly-docker-images" \
             scripts/ci-docker-images.sh save
 
       - name: Upload nightly Docker image cache
-        if: steps.nightly-images-cache.outputs.cache-hit != 'true'
+        if: steps.nightly-images-cache.outputs.cache-hit != 'true' && steps.nightly-images-load.outcome == 'success'
+        continue-on-error: true
         uses: actions/cache/save@v6
         with:
           path: ~/.cache/nightly-docker-images
@@ -90,6 +95,8 @@ jobs:
       # kind pods don't see the host's docker images; the kind env uses these
       # without pulling (imagePullPolicy IfNotPresent).
       - name: Load Docker images into the kind cluster
+        if: steps.nightly-images-load.outcome == 'success'
+        continue-on-error: true
         run: |
           source .venv/bin/activate
           CI_DOCKER_IMAGE_LIST=test-data/nightly-docker-images.env \

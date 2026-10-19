@@ -6,8 +6,8 @@ granite.build:
       inputs:
         input_model:
           uri: hf:///datasets/ibm-research/vira-intents-live
-          # The injected hfpull step's compute_config; its step.yaml default
-          # (10Gi) is far more than this small dataset needs.
+          # Mirrors the kube 1step. No effect here: SkyPilot never sends the
+          # memory floor to slurm.
           store_load: {config: {compute_config: {total_memory_per_node: 1Gi}}}
         # env:// input: a shared-FS path pulled as a no-op (pullasset_envstore).
         # The path need not physically exist — EnvURI.exists()/pull() are stubs —
