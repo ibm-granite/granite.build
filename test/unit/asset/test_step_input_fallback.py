@@ -22,7 +22,7 @@ with a DEPRECATED warning; a bound input wins over the key. The launcher's `run`
 rendered STRICT by gbserver (targetsteprun.py), so an unbound optional input must be
 guarded rather than referenced — which is what rendering it here, strict, checks.
 
-dpk's fallback is covered by its own step tests (steps/dpk/skypilot/test).
+dpk's fallback is covered by its own step tests (steps/data/dpk/skypilot/test).
 """
 
 import pathlib

@@ -15,9 +15,9 @@ API-provisioned and reached through AWS credentials.
 
 ### Credentials: `aws_credentials`
 
-SkyPilot's API server uses boto3, which reads `~/.aws/credentials`. Inline credential profiles and
-gbserver materializes that file (INI, mode `0600`) at launch; SkyPilot then uploads the file to the
-provisioned nodes so they can reach S3.
+SkyPilot's API server uses boto3, which reads `~/.aws/credentials`. You declare inline credential
+profiles via `aws_credentials`, and gbserver materializes that file (INI, mode `0600`) at launch;
+SkyPilot then uploads the file to the provisioned nodes so they can reach S3.
 
 ```yaml
 config:
@@ -636,28 +636,17 @@ pytest -s -m extended --strict-markers \
 
 ## Quickstart: run the aws step tests for the first time
 
-The per-cluster **step tests** (`steps/{byoc,eval,dpk}/skypilot/test/aws/…`) provision a real
+The per-cluster **step tests** (`steps/{byoc,eval}/skypilot/test/aws/…` and `steps/data/dpk/skypilot/test/aws-{tok,pii}/…`) provision a real
 EC2 instance and are gated so they never launch without credentials. Starting from just an AWS
 access-key pair, with the repo `.venv` built (`make venv` at the repo root):
 
 1. **Give the build its launch credentials.** The committed `environment.yaml` selects the
    `gb-skypilot` profile, so your key pair needs to reach that profile. Pick one path:
 
-   **A — simplest (local/standalone): add the profile to `~/.aws/credentials` by hand.**
-
-   ```ini
-   [gb-skypilot]
-   aws_access_key_id = AKIA...
-   aws_secret_access_key = ...
-   ```
-
-   gbserver leaves an existing `gb-skypilot` profile as-is (the `GB_AWS_*` secrets are lenient
-   when absent) and SkyPilot reads it. Do **not** *also* seed the secret store (path B) with
-   different values — a mismatch raises `SkypilotConfigCollisionError`.
-
-   **B — portable (standalone *and* shared): seed the secret store.** gbserver materializes the
+   **A — recommended (standalone *and* shared): seed the secret store.** gbserver materializes the
    `gb-skypilot` profile from the `GB_AWS_*` secrets at launch, so the *same* `environment.yaml`
-   also works in a server deployment (where the server-managed store supplies them):
+   works unchanged in a server deployment (where the server-managed store supplies them) — nothing
+   is hand-edited in `~/.aws`.
 
    Seed them for the **test's own space**: each test space reads `space_secrets/<its space.yaml
    name>/`, not `public/`. For example, the ephemeral EFS test space is named
@@ -678,6 +667,18 @@ access-key pair, with the repo `.venv` built (`make venv` at the repo root):
    PY
    ```
 
+   **B — quick local shortcut (standalone only): add the profile to `~/.aws/credentials` by hand.**
+
+   ```ini
+   [gb-skypilot]
+   aws_access_key_id = AKIA...
+   aws_secret_access_key = ...
+   ```
+
+   gbserver leaves an existing `gb-skypilot` profile as-is (the `GB_AWS_*` secrets are lenient
+   when absent) and SkyPilot reads it. Do **not** *also* seed the secret store (path A) with
+   different values — a mismatch raises `SkypilotConfigCollisionError`.
+
 2. **Set the skip-gate** so the test runs instead of self-skipping — export **either**
    `AWS_PROFILE=gb-skypilot` **or** the `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` pair. A bare
    `~/.aws/credentials` `[default]` does *not* satisfy the gate on its own.
@@ -694,15 +695,15 @@ access-key pair, with the repo `.venv` built (`make venv` at the repo root):
 4. **Run a fixture** — this provisions a real EC2 instance, runs the build, and tears it down:
 
    ```bash
-   AWS_PROFILE=gb-skypilot make -C steps/dpk/skypilot test TEST_DIR=test/aws-tok
-   # or byoc, and the heavier dpk pii fixture:
-   AWS_PROFILE=gb-skypilot make -C steps/dpk/skypilot test TEST_DIR=test/aws-pii
+   AWS_PROFILE=gb-skypilot make -C steps/data/dpk/skypilot test TEST_DIR=test/aws-tok
+   # or the heavier pii fixture:
+   AWS_PROFILE=gb-skypilot make -C steps/data/dpk/skypilot test TEST_DIR=test/aws-pii
    ```
 
    `make test` forces pytest's `-s` (required — a second SkyPilot launch in a captured process
    hits `OSError: [Errno 9] Bad file descriptor`). Reaching SUCCESS proves the step ran end to
    end on EC2. (`eval` is a custom-image step: publish its image first — see
-   `steps/eval/skypilot/README.md`.)
+   `steps/eval/eval-example/skypilot/README.md`.)
 
 5. **Confirm nothing leaked:**
 

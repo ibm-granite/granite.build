@@ -30,7 +30,7 @@ def _ctx(**overrides: object) -> LaunchContext:
         "config_name": "config",
         "config_data": {"tune_config": {"num_samples": {"default": 4}}},
         "dataset_name": "policy_val",
-        "dataset_uri": "hf://huggingface.co/datasets/ibm-research/policy_val_193a11ef",
+        "dataset_uri": "hf://huggingface.co/datasets/example-org/policy_val_193a11ef",
         "data_format": "jsonl",
         "autotune": True,
         "seed": 42,
@@ -67,7 +67,7 @@ def test_build_bash_spec_matches_the_bash_shape() -> None:
     assert target["inputs"]["model"]["uri"] == "hf:///HuggingFaceTB/SmolLM2-135M-Instruct"
     assert (
         target["inputs"]["dataset_files"]["uri"]
-        == "hf://huggingface.co/datasets/ibm-research/policy_val_193a11ef"
+        == "hf://huggingface.co/datasets/example-org/policy_val_193a11ef"
     )
     assert (
         target["outputs"]["custom"]["uri"]

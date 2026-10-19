@@ -263,7 +263,7 @@ Both knobs are read at request time from settings; see
 
 | Environment variable | Meaning | Default |
 | --- | --- | --- |
-| `AUTOTUNEX_REWARD_TIMEOUT_SECONDS` | Hard wall-clock (and CPU-rlimit) budget for one sandboxed run. Must be ≥ 1 | `5` |
+| `AUTOTUNEX_REWARD_TIMEOUT_SECONDS` | Hard wall-clock budget for one sandboxed run; the child's `RLIMIT_CPU` is this plus 30 s. Must be ≥ 1 | `5` |
 | `AUTOTUNEX_REWARD_MEMORY_BYTES` | Address-space rlimit for the sandbox child. Must be ≥ 1 | `536870912` (512 MiB) |
 
 ## The other half of the reward step

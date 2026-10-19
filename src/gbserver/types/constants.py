@@ -200,6 +200,9 @@ ENV_VAR_GBSERVER_ENABLE_AUTOTUNEX = ENV_VAR_PREFIX + "_ENABLE_AUTOTUNEX"
 # (frontend/apps/standalone/next.config.ts).
 ENV_VAR_AUTOTUNEX_API_URL = "AUTOTUNEX_API_URL"
 ENV_VAR_BUILDRUNNERJOB_SLEEP_ON_END = ENV_VAR_PREFIX + "_BUILDRUNNERJOB_SLEEP_ON_END"
+ENV_VAR_BUILDRUNNERJOB_TERMINATION_GRACE_SECONDS = (
+    ENV_VAR_PREFIX + "_BUILDRUNNERJOB_TERMINATION_GRACE_SECONDS"
+)
 ENV_VAR_BUILTIN_STEP_IMAGE = ENV_VAR_PREFIX + "_BUILTIN_STEP_IMAGE"
 
 
@@ -743,6 +746,18 @@ TRANSPORT_RETRY_BASE_DELAY = float(
 TRANSPORT_RETRY_MAX_DELAY = float(
     os.getenv(ENV_VAR_PREFIX + "_TRANSPORT_RETRY_MAX_DELAY", "15.0")
 )
+# Docker image pull retries (see environment/docker.py): transient registry
+# errors (rate limits, 5xx, dropped connections) back off exponentially. Set
+# MAX_ATTEMPTS to 1 to disable.
+DOCKER_PULL_MAX_ATTEMPTS = int(
+    os.getenv(ENV_VAR_PREFIX + "_DOCKER_PULL_MAX_ATTEMPTS", "4"), base=10
+)
+DOCKER_PULL_RETRY_BASE_DELAY = float(
+    os.getenv(ENV_VAR_PREFIX + "_DOCKER_PULL_RETRY_BASE_DELAY", "5.0")
+)
+DOCKER_PULL_RETRY_MAX_DELAY = float(
+    os.getenv(ENV_VAR_PREFIX + "_DOCKER_PULL_RETRY_MAX_DELAY", "30.0")
+)
 GBSERVER_GITHUB_TOKEN = os.getenv(
     ENV_VAR_DEFAULT_GITHUB_TOKEN, os.getenv("GITHUB_TOKEN", "")
 )
@@ -822,6 +837,13 @@ BUILDRUNNERJOB_BUILD_WORKSPACE_PVC_NAME = os.getenv(
 )
 BUILDRUNNERJOB_CONFIGMAP_NAME = os.getenv(
     ENV_VAR_BUILDRUNNERJOB_CONFIGMAP_NAME, "granite-dot-build-configmap"
+)
+# Seconds a build-runner pod gets between SIGTERM and SIGKILL when it is deleted
+# (e.g. by `gb build cancel`). The runner records the final build status right after
+# SIGTERM; this mainly covers tearing down the workload (e.g. helm uninstall) on the
+# build thread. If the runner is killed first, that workload may be orphaned.
+BUILDRUNNERJOB_TERMINATION_GRACE_SECONDS = int(
+    os.getenv(ENV_VAR_BUILDRUNNERJOB_TERMINATION_GRACE_SECONDS, "60"), base=10
 )
 # Environment LSF
 # Maximum number of retries for transient LSF errors (e.g., "Cannot open your job file")

@@ -1,0 +1,3 @@
+granite.build:
+  name: api-validate-targets-not-dict-test
+  targets: 1

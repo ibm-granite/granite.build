@@ -15,11 +15,19 @@ from http import HTTPStatus
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, File, Form, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
 
-from autotunex.api.deps import DatasetServiceDep
+from autotunex.api.deps import DatasetServiceDep, HfImportServiceDep, SettingsDep
+from autotunex.core.exceptions import HfImportUnavailableError
 from autotunex.models.common import DataScope, Page, ProblemDetail
 from autotunex.models.dataset import DatasetCreate, DatasetRead
+from autotunex.models.hf_import import (
+    HfDatasetSplits,
+    HfImportPreview,
+    HfImportRequest,
+    HfPreviewRequest,
+    HfRepoId,
+)
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -154,3 +162,75 @@ async def upload_dataset(
         column_mapping_json=column_mapping,
         gzip_encoded=gzip_encoded,
     )
+
+
+def _require_hf_import(settings: SettingsDep) -> None:
+    """Refuse before any Hub call when import cannot work in this deployment."""
+    if not settings.hf_import_available:
+        raise HfImportUnavailableError()
+
+
+@router.get(
+    "/hf/search",
+    summary="Search HuggingFace for a dataset",
+    dependencies=[Depends(_require_hf_import)],
+    responses={HTTPStatus.SERVICE_UNAVAILABLE: _PROBLEM_RESPONSE, **_AUTH_RESPONSES},
+)
+async def search_hf_datasets(
+    service: HfImportServiceDep,
+    query: str = Query(min_length=1),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> list[str]:
+    """Search the Hub for dataset repo ids matching ``query``."""
+    return await service.search(query=query, limit=limit)
+
+
+@router.get(
+    "/hf/splits",
+    summary="Resolve a HuggingFace dataset's revision, configs and splits",
+    dependencies=[Depends(_require_hf_import)],
+    responses={
+        HTTPStatus.SERVICE_UNAVAILABLE: _PROBLEM_RESPONSE,
+        HTTPStatus.UNPROCESSABLE_ENTITY: _PROBLEM_RESPONSE,
+        **_AUTH_RESPONSES,
+    },
+)
+async def get_hf_dataset_splits(
+    service: HfImportServiceDep, repo_id: Annotated[HfRepoId, Query()]
+) -> HfDatasetSplits:
+    """Pin ``repo_id``'s revision and return its parquet configs/splits."""
+    return await service.splits(repo_id=repo_id)
+
+
+@router.post(
+    "/hf/preview",
+    summary="Preview a HuggingFace dataset's mapped rows",
+    dependencies=[Depends(_require_hf_import)],
+    responses={
+        HTTPStatus.SERVICE_UNAVAILABLE: _PROBLEM_RESPONSE,
+        HTTPStatus.UNPROCESSABLE_ENTITY: _PROBLEM_RESPONSE,
+        **_AUTH_RESPONSES,
+    },
+)
+async def preview_hf_dataset(
+    body: HfPreviewRequest, service: HfImportServiceDep
+) -> HfImportPreview:
+    """Sample and map up to 100 rows, so a bad column mapping is caught early."""
+    return await service.preview(body)
+
+
+@router.post(
+    "/hf/import",
+    summary="Import a HuggingFace dataset",
+    status_code=HTTPStatus.ACCEPTED,
+    dependencies=[Depends(_require_hf_import)],
+    responses={
+        HTTPStatus.FORBIDDEN: _PROBLEM_RESPONSE,
+        HTTPStatus.SERVICE_UNAVAILABLE: _PROBLEM_RESPONSE,
+        HTTPStatus.UNPROCESSABLE_ENTITY: _PROBLEM_RESPONSE,
+        **_AUTH_RESPONSES,
+    },
+)
+async def import_hf_dataset(body: HfImportRequest, service: HfImportServiceDep) -> DatasetRead:
+    """Create a dataset owned by the caller; return ``202`` while it is fetched."""
+    return await service.import_dataset(body)

@@ -494,11 +494,17 @@ pre-provisioning SkyPilot config files on the gbserver host, gbserver materializ
   (`~/.<cloud>/config`); `cloud_config` is deep-merged into `~/.sky/config.yaml`; `aws_credentials`
   writes `~/.aws/credentials` (mode 0600).
 - **`cloud_config` edits take effect on the next build.** After the merge gbserver reloads its
-  in-process SkyPilot client config, so no gbserver restart is needed. That covers *changed and added*
-  keys only: the merge is a deep merge, so a key *deleted* from `cloud_config` stays in
-  `~/.sky/config.yaml` (and the reload reads it back). To drop one, remove it from
-  `~/.sky/config.yaml` as well. The loaded config is process-wide, so a build that starts while
-  another runs replaces that build's config too (for later requests such as a retry relaunch).
+  in-process SkyPilot client config, so no gbserver restart is needed. Changed, added and *deleted* keys
+  all take effect: see the next point.
+- **Last-writer-wins (`cloud_config`).** gbserver records the `cloud_config` it last wrote (next to
+  `~/.sky/config.yaml`, as `.gbserver-cloud-config.yaml`). Each write first removes the recorded keys,
+  then deep-merges the writing environment's, so one environment's settings — a Kubernetes context pin,
+  say — never carry into another environment's launches; an environment without `cloud_config` just
+  removes the previous one. Keys gbserver never wrote are kept, as is a recorded key you have edited
+  since. The loaded client config is process-wide, so gbserver re-applies the launching environment's
+  `cloud_config` before *every* `sky.launch`, under a lock held until the launch is submitted: two
+  builds on different environments never submit with each other's config. Other requests (status,
+  down) carry whichever environment's config is loaded at the time.
 - **Secret resolution.** Every `cluster_ssh_configs` directive value (except the `Host` alias) and
   every `aws_credentials` value is looked up by exact name in the environment's secrets; a match is
   substituted, otherwise the literal is used. Keep credentials and sensitive hostnames as secret
@@ -511,8 +517,9 @@ pre-provisioning SkyPilot config files on the gbserver host, gbserver materializ
   **overwritten** — this self-heals a stale or re-keyed entry left by an earlier run, so no manual `rm`
   is ever needed. The *same* block is a no-op (shared freely by concurrent steps/builds). Only a
   *foreign* (non-gbserver) entry for the same alias is refused (`SkypilotConfigCollisionError`).
-- **No config teardown.** Materialized config files are left in place (safe and idempotent). Single-host
-  by design (the config files are host-local).
+- **No config teardown.** Materialized config files are left in place (safe and idempotent); the
+  last environment's `cloud_config` stays in `~/.sky/config.yaml` until the next write replaces it.
+  Single-host by design (the config files are host-local).
 - **Concurrency.** Host-shared files are guarded by a per-cloud cross-process file lock
   (`gbserver-<cloud>.lock`) plus an in-process thread lock, so materialization is safe for any
   `GBSERVER_DEFAULT_BUILDRUNNER_TYPE` (thread/process/job).

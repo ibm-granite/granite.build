@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-import os
-import shutil
 from urllib.parse import urlparse
 
 from autotunex.core.config import Settings
@@ -73,73 +71,47 @@ def _local_with_hf_preview_fallback(
     )
 
 
-def _llmb_enabled(settings: Settings) -> bool:
-    """Usable when ``llmb`` resolves and BOTH tokens are present.
-
-    The HF push needs two credentials: the GB token authenticates the CLI
-    (``llmb auth login``) and the HF token is the push destination (``--store hf``),
-    so ``auto`` only chooses HuggingFace when both env vars are set.
-    """
-    return bool(
-        shutil.which(settings.llmb_command)
-        and os.environ.get(settings.gb_token_env)
-        and os.environ.get(settings.hf_token_env)
-    )
-
-
 def get_storage_backend(settings: Settings) -> StorageBackend:
-    """Return the storage backend chosen by ``dataset_storage_backend`` and env.
+    """Return the storage backend named by ``settings.resolved_dataset_storage``.
 
-    ``"local"`` forces local storage. ``"huggingface"`` forces the HF push backend
-    (wrapped with a local preview fallback); a forced ``huggingface`` with a
-    missing token, or in the same-host bash standalone case
-    (``gb_environment="standalone"`` without ``lsf_cluster``), is already refused at
-    settings validation (``Settings._validate_datasets``) — the LSF/SkyPilot
-    standalone variant keeps ``huggingface``. ``"auto"`` resolves to HuggingFace
-    only when ``llmb`` and both tokens are available *and* the CLI is not in
-    standalone mode, else local.
+    That property is the single dataset-storage decision (``"local"``,
+    ``"huggingface"`` or ``"auto"`` resolved against the deployment shape, ``llmb``
+    and both token env vars); ``hf_import_available`` gates on the same value, so
+    import is never open where this function would store with no usable locator.
+    A forced ``huggingface`` with a missing token, or in the same-host bash
+    standalone case, is already refused at settings validation
+    (``Settings._validate_datasets``).
 
-    In granite.build **standalone** mode ``llmb artifact push`` is disabled, so the
-    HF push backend cannot run: storage falls back to local regardless of tokens.
-    For the same-host local-bash build (``lsf_cluster`` unset) the local backend
-    additionally emits a ``file://`` locator that gbserver mounts as its
-    ``dataset_files`` input; the remote LSF/SkyPilot build cannot read a local
-    path, so no locator is emitted there (its dataset hosting is a separate, open
-    concern).
+    In granite.build **standalone** mode ``llmb artifact push`` is disabled, so
+    ``auto`` stores locally regardless of tokens. For the same-host local-bash build
+    (``lsf_cluster`` unset) the local backend additionally emits a ``file://``
+    locator that gbserver mounts as its ``dataset_files`` input; the remote
+    LSF/SkyPilot build cannot read a local path, so no locator is emitted there (its
+    dataset hosting is a separate, open concern).
 
     Every branch that resolves to local storage returns it wrapped with a
     HuggingFace **preview** fallback (``_local_with_hf_preview_fallback``), so the
     write-path decision above never costs the preview of a dataset row that already
     carries an ``hf://`` locator. Writes stay local either way.
     """
-    standalone = settings.gb_environment == "standalone"
-    # Only the same-host bash build consumes the dataset off local disk.
-    local_bash_standalone = standalone and not settings.lsf_cluster
-
-    if settings.dataset_storage_backend == "local":
-        return _local_with_hf_preview_fallback(settings, emit_file_uri=local_bash_standalone)
-    if settings.dataset_storage_backend == "huggingface":
-        # Validation refuses a forced `huggingface` only for the same-host bash
-        # standalone case, so this branch is reached for non-standalone deployments
-        # (where `llmb artifact push` works) and for the LSF/SkyPilot standalone
-        # variant (remote cluster; its push limitation is a deferred non-goal).
+    storage = settings.resolved_dataset_storage
+    if storage == "huggingface":
         return _huggingface_with_local_fallback(settings)
-    # auto:
-    if standalone:
-        logger.info(
-            "dataset_storage_backend=auto with gb_environment=standalone: "
-            "`llmb artifact push` is unavailable; using local storage%s.",
-            " with a file:// locator" if local_bash_standalone else "",
-        )
-        return _local_with_hf_preview_fallback(settings, emit_file_uri=local_bash_standalone)
-    if _llmb_enabled(settings):
-        return _huggingface_with_local_fallback(settings)
-    logger.info(
-        "dataset_storage_backend=auto: llmb or %s/%s unavailable, using local storage.",
-        settings.gb_token_env,
-        settings.hf_token_env,
-    )
-    return _local_with_hf_preview_fallback(settings, emit_file_uri=False)
+    emit_file_uri = storage == "local_file_uri"
+    if settings.dataset_storage_backend == "auto":
+        if settings.gb_environment == "standalone":
+            logger.info(
+                "dataset_storage_backend=auto with gb_environment=standalone: "
+                "`llmb artifact push` is unavailable; using local storage%s.",
+                " with a file:// locator" if emit_file_uri else "",
+            )
+        else:
+            logger.info(
+                "dataset_storage_backend=auto: llmb or %s/%s unavailable, using local storage.",
+                settings.gb_token_env,
+                settings.hf_token_env,
+            )
+    return _local_with_hf_preview_fallback(settings, emit_file_uri=emit_file_uri)
 
 
 def resolve_artifact_lister(

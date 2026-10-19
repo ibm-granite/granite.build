@@ -1,0 +1,22 @@
+granite.build:
+  name: api-validate-1step-bash-test
+  # A valid single-target build for the standalone build-validation API test
+  # (test/integration/standalone/api/test_builds.py). Its space:// URIs resolve
+  # from the repo's local space (configurations/spaces/local), which the
+  # standalone API tests preload as the "public" space.
+  targets:
+    command:
+      allow_unknown: true
+      environment_uri: space://environments/bash
+      outputs:
+        env_output:
+          uri: "env:///tmp/gb-api-validate-output.txt"
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            command_config:
+              command: >-
+                echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:/tmp/gb-api-validate-output.txt"
+            compute_config:
+              num_nodes: 1

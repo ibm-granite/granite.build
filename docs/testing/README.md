@@ -107,7 +107,9 @@ Other markers: `standalone` (only standalone deps), `thirdparty` (open-source de
 `GBTEST_MODE` controls whether external services are mocked or real: `mock` (the quick suite's default —
 placeholder credentials, services stubbed) or `live` (real connections). You can opt individual services
 into live mode with `GBTEST_LIVE_<SERVICE>=true` (e.g. `GBTEST_LIVE_STORAGE=true`) or per test with
-`@pytest.mark.live("storage", "github")`.
+`@pytest.mark.live("storage", "github")`. The services are listed in `SERVICES` in
+`test/libgbtest/mode.py`. `"space_access"` lifts only the mock-mode bypass of space-access checks
+(`is_super_admin`, write access) and keeps the other GitHub mocks; `"github"` lifts all of them.
 
 The run-relevant environment variables:
 
@@ -177,6 +179,69 @@ test/
 │   └── standalone/        # standalone/open-source
 └── e2e/                   # end-to-end
 ```
+
+### REST API tests: standalone and IBM copies
+
+The API tests (artifacts, builds, lineage, spaces) run twice from one set of test bodies:
+
+- **`test/integration/standalone/api/`** holds the bodies, as mixin classes (`ArtifactAPITests`,
+  `BuildAPITests`, …), and runs them on **apikey auth** through `AbstractStandaloneAPITest`
+  (`libgbtest/api/utils.py`). They need no GitHub, IBM, or WandB access, in mock or live mode:
+  storage is SQLite, the `public` space is `configurations/spaces/local`, and tests needing two users
+  (admin vs. non-admin) get them by switching `GBSERVER_API_USER` per request. The lineage tests use the
+  real WandB lineage store with its WandB service stubbed out.
+- **`test/integration/ibm/api/`** subclasses the same mixins with `AbstractAPITest` and runs them on
+  **GitHub-token auth** (`GBSERVER_GITHUB_TOKEN`, plus `GBTEST_ADMIN_GITHUB_TOKEN` /
+  `GBTEST_NON_ADMIN_GITHUB_TOKEN` for the two-user tests), against the real WandB lineage service.
+
+Write new API tests in the standalone mixins so both copies pick them up. Tests name their callers
+through the identity hooks (`get_test_client(identity)`, `get_caller_username(identity)`,
+`admin_identity()`, `non_admin_identity()`, `grant_super_admin(identity)`), never a token or apikey
+user directly.
+
+### SQL storage tests: local PostgreSQL
+
+The SQL storage tests follow the same pattern. Their bodies are mixins (`SQL*Tests`) in
+`test/unit/storage/postgres/`, next to the SQLite tests in `test/unit/storage/sqlite/`, and run
+against a **local, TLS-enabled PostgreSQL**.
+`test/integration/ibm/storage/sql/` runs the same tests against the hosted PostgreSQL, plus the
+`*Legacy*` tests. Those read existing rows in the hosted database's real tables, so they exist only
+in the IBM copy.
+
+```bash
+make postgres-setup      # start it (also run, best-effort, by `make extended-tests-setup`)
+make extended-tests PYTEST_TEST_TARGETS=test/unit/storage/postgres
+make postgres-teardown   # stop it and delete its data, certs and credentials
+                         # (`make extended-tests-teardown` also stops SLURM)
+```
+
+`postgres-setup` (`scripts/postgres/setup-postgres.sh`) does the following:
+- Starts `quay.io/sclorg/postgresql-16-c9s` on `127.0.0.1:55432`, with a random password. The server
+  requires TLS 1.3 and a password for every TCP login and rejects plaintext. Its `pg_hba.conf` replaces
+  the image's, which trusts `127.0.0.1` with no password. The tests connect with `sslmode=verify-full`
+  against a CA the script generates.
+- Creates the `gbtest` schema.
+- Writes the `GBSERVER_SQL_*` settings and `GBTEST_LOCAL_POSTGRES=true` to
+  `.cache/gbtest-postgres/postgres.env`, readable only by you.
+
+The tests load that file themselves (`test/libgbtest/local_postgres.py`, imported first by
+`test/conftest.py`) in `GB_ENVIRONMENT=STANDALONE` runs, which `make extended-tests` sets. That
+covers plain `pytest` and VS Code too, as long as `GB_ENVIRONMENT=STANDALONE`. Without the file, or
+outside STANDALONE, the standalone SQL tests skip (`requires_local_postgres`). They also skip when the
+file is loaded but its server isn't reachable (a stopped container, or a reboot), so a stale file can't
+turn into connection failures. If setup fails, it leaves no env file. While it's loaded, its
+`GBSERVER_SQL_*` values take precedence over the SPS secrets and over any you set yourself. That points
+everything using SQL storage in the run, subprocesses included, at the local server. To keep your own
+`GBSERVER_SQL_*` in a STANDALONE run while the file exists, set `GBTEST_LOCAL_POSTGRES=false`. If the
+file, which holds the password, is readable by group or others, loading it warns.
+
+The IBM SQL storage tests target the hosted database, so they skip in every STANDALONE run
+(`requires_hosted_postgres`), whether or not the local server is set up: the STANDALONE schema
+(`standalone`) doesn't exist in the hosted database, and with the env file loaded `GBSERVER_SQL_*` point
+at localhost. Run them with `GB_ENVIRONMENT=STAGING` or `DEV`. They also skip when storage is mocked
+(`GBTEST_MODE=mock`, unless `GBTEST_LIVE_STORAGE=true`), where they would otherwise run on SQLite; SQLite
+has its own tests in `test/unit/storage/sqlite/`. Both copies get the SQL storage factory from
+`PostgresStorageTestMixin` (`test/libgbtest/storage/postgres_storage.py`).
 
 ## Build-level tests: `gbtest`
 

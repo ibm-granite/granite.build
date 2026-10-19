@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -42,6 +43,9 @@ silently, and normalizing it is a behaviour change that needs its own decision.
 """
 
 _KNOWN_ROLES = frozenset({ADMIN_ROLE, "user"})
+
+DatasetStorage = Literal["huggingface", "local_file_uri", "local"]
+"""Where a finished dataset is written; see ``Settings.resolved_dataset_storage``."""
 
 _DEFAULT_LOCAL_OUTPUT_DIR = Path("artifacts/local")
 """Sentinel default for ``Settings.local_output_dir``.
@@ -172,7 +176,7 @@ class Settings(BaseSettings):
     # *new* connection pays a full TLS + caching_sha2_password handshake worth
     # seconds. SQLite's async engine uses a non-queue pool and ignores the sizing
     # knobs (see db/session.build_pool_kwargs), so these are inert for local dev
-    # and the test suite. See docs/superpowers/specs — the connection-pool tuning
+    # and the test suite. Settings: docs/operations/database.md. The pool tuning
     # was added after prod GET /configurations and /jobs latencies of 7-8s traced
     # to cold reconnects and pool contention with the reconcile loop.
     database_pool_size: int = Field(default=10, ge=1)
@@ -252,8 +256,8 @@ class Settings(BaseSettings):
     dataset_storage_dir: Path = Path("artifacts/datasets")
     """Root for persisted local dataset files; staging lives under ``.staging``.
 
-    Its relationship to ``artifact_dir`` is deliberately loose (see the design
-    spec's open item): today a sibling default under ``artifacts/``.
+    Its relationship to ``artifact_dir`` is deliberately loose and still an open
+    question: today a sibling default under ``artifacts/``.
     """
 
     dataset_upload_max_bytes: int = Field(default=5 * 1024**3, ge=1)
@@ -349,6 +353,48 @@ class Settings(BaseSettings):
     concurrently, so the worst-case latency preview adds to a
     ``GET /datasets/{id}?preview=true`` read is roughly two of these timeouts."""
 
+    hf_import_enabled: bool = True
+    """Enable importing a HuggingFace dataset as a tuning dataset.
+
+    Separate from ``hf_preview_enabled`` on purpose: preview reads back a dataset
+    this service pushed, import reaches out to arbitrary third-party repos. An
+    operator disabling import must not silently lose preview of their own
+    datasets. See also ``hf_import_available``, which ANDs this with the
+    resolved dataset storage (``resolved_dataset_storage``).
+    """
+
+    hf_import_namespaces: list[str] = Field(default_factory=list)
+    """HF namespaces whose repos may be fetched with the server's ``HF_TOKEN``.
+
+    Empty means never send the token — public repos only. A shared server token
+    is otherwise a universal read key: any caller who can name a private repo the
+    token can read would get it. Also decides the ``/hf/models`` search/card scope
+    and which base models a tuning build binds as an ``hf://`` input — that binding
+    pulls with the space's credentials, not this token. It likewise decides which
+    completed tuning outputs ``GET /jobs/tuned-models`` lists, since only an
+    allowlisted owner's output can be bound as a base model in the first place.
+    Mirrors the ``enterprise_organizations`` list in
+    ``configurations/assets/assetstores/hf/store.yaml``.
+    """
+
+    hf_import_max_bytes: int = Field(default=5 * 1024**3, ge=1)
+    """Refuse an import that would download more than this.
+
+    Enforced where the bytes actually arrive (``hf_import_service._stage_split``
+    counts them chunk by chunk). ``hf_import.build_plan`` additionally HEADs the
+    first shard of each selected split, so a selection that cannot possibly fit is
+    refused instantly -- but it deliberately does not sum every shard, because
+    ``hf_import_max_rows`` usually stops the download long before the split ends.
+    """
+
+    hf_import_max_rows: int = Field(default=50_000, ge=1)
+    """Truncate an imported dataset to this many rows (bounded ingest).
+
+    Not a refusal: a larger dataset imports its first N rows and records the
+    truncation. Deliberately not user-adjustable — a wizard field inviting
+    10_000_000 is a support ticket.
+    """
+
     # --- LLM intelligence (Phase 2; optional) ----------------------------
     llm_base_url: str | None = None
     """OpenAI-compatible gateway base URL. The adapter appends ``/chat/completions``."""
@@ -418,7 +464,7 @@ class Settings(BaseSettings):
     """Broker URL for the future JobRunner implementation, e.g. redis://...."""
 
     # --- Execution: job launch ---
-    # See docs/superpowers/specs/2026-08-06-job-launch-runner-design.md.
+    # See docs/operations/job-backends.md.
     job_backend: Literal["none", "llmb", "local"] = "none"
     """Which JobRunner to build. ``none`` → NoOpJobRunner (jobs stay pending, the
     default). ``llmb`` → InProcessJobRunner submitting granite.build builds via the
@@ -445,6 +491,15 @@ class Settings(BaseSettings):
     variant ALWAYS emits it as ``AUTOTUNEX_SERVER_URL``, defaulting to
     ``http://localhost:8001`` (the api-bridge) when this is unset."""
 
+    keep_diagnostics: bool = False
+    """Keep a custom_code run's non-model artifacts in its uploaded output.
+
+    The custom_code start command always passes fm-tune ``--model_at_root``, so the
+    output holds only the model files, at its root. When this is set it also passes
+    ``--keep_diagnostics``, which moves fm-tune's other artifacts (logs, results,
+    training leftovers) into a ``diagnostics/`` subfolder of that output instead of
+    deleting them. The LSF and local-bash specs are unaffected."""
+
     gb_token_env: str = "GB_TOKEN"
     """Name of the env var holding the llmb/gb auth token.
 
@@ -456,14 +511,14 @@ class Settings(BaseSettings):
     ``job_backend="llmb"`` this env var is REQUIRED at startup: there is no
     ambient-credential fallback, so startup fails if it is unset."""
 
-    gb_tags: str = "autotunex"
+    gb_tags: str = "model-customization"
     """Tag(s) passed to ``llmb build start`` and ``llmb artifact push`` via ``--tag``.
 
     A single tag or a comma-separated list (``"autotunex,exp-42"``) — the value is
     forwarded verbatim as one ``--tag`` argument, and ``llmb`` itself splits a
-    comma-separated list, so no parsing happens here. Defaults to ``"autotunex"``,
-    which both tags every build with a shared marker and preserves the tag the
-    dataset push already carried. An empty or whitespace-only value disables
+    comma-separated list, so no parsing happens here. Defaults to
+    ``"model-customization"``, which tags every build and dataset push with a
+    shared marker. An empty or whitespace-only value disables
     tagging entirely: the ``--tag`` flag is then omitted from both commands."""
 
     job_spec_dir: Path = Path("tmp")
@@ -492,7 +547,7 @@ class Settings(BaseSettings):
     in-flight jobs never open N simultaneous connections."""
 
     # --- Execution: local & bash runners ---
-    # See docs/superpowers/specs/2026-08-11-local-and-bash-runners-design.md.
+    # See docs/operations/job-backends.md.
     gb_environment: str | None = Field(
         default=None,
         validation_alias=AliasChoices("gb_environment", "GB_ENVIRONMENT"),
@@ -523,7 +578,7 @@ class Settings(BaseSettings):
     """``BACKEND`` for the bash spec: ``mlx`` (Apple Silicon) or ``torch``."""
 
     # --- Execution: LSF / SkyPilot standalone runner ---
-    # See docs/superpowers/specs/2026-08-13-lsf-runner-design.md.
+    # See docs/operations/job-backends.md.
     lsf_cluster: str | None = None
     """SkyPilot/LSF cluster name (``launcher_config.resources.cluster``).
 
@@ -622,8 +677,8 @@ class Settings(BaseSettings):
 
     Two properties are load-bearing and enforced in ``api/deps.get_principal`` /
     ``SqlAlchemyUserRepository.provision``: a provisioned row is always
-    ``role='user'`` (never admin — see the design spec's no-privilege-escalation
-    rule), and creation is race-safe (a concurrent first request loses the
+    ``role='user'`` (never admin, so provisioning can never escalate privilege),
+    and creation is race-safe (a concurrent first request loses the
     ``UNIQUE(email)`` insert and re-reads the winner rather than erroring). Note
     this makes even a ``GET`` write to the database on a caller's first request —
     the deliberate cost of JIT, which is why it is opt-in. See CLAUDE.md open
@@ -655,9 +710,9 @@ class Settings(BaseSettings):
 
     Off by default, so a production deployment that forgets to configure a real
     provider fails fast at startup rather than silently serving every caller as
-    the standalone system owner (see the design spec). Set it only for a
-    deliberate single-tenant deployment that genuinely wants no authentication;
-    ``create_app`` logs a loud warning when it takes effect.
+    the standalone system owner. Set it only for a deliberate single-tenant
+    deployment that genuinely wants no authentication; ``create_app`` logs a
+    loud warning when it takes effect.
     """
 
     oidc_issuer: str | None = None
@@ -766,6 +821,69 @@ class Settings(BaseSettings):
             not _is_unset(self.llm_base_url)
             and not _is_unset(_secret_value(self.llm_api_key))
             and not _is_unset(self.llm_model)
+        )
+
+    @property
+    def resolved_dataset_storage(self) -> DatasetStorage:
+        """Where a finished dataset is written, as ``get_storage_backend`` builds it.
+
+        The single place this decision is made:
+        ``services/storage/registry.get_storage_backend`` builds its backend from
+        it, and ``hf_import_available`` gates on it, so the two agree as long as
+        ``PATH`` and the token env vars stay fixed for the life of the process.
+
+        ``local_file_uri`` is local storage that emits a ``file://`` locator, which
+        only the same-host bash standalone build can read. ``local`` emits no
+        locator. ``huggingface`` pushes via ``llmb artifact push`` and records an
+        ``hf://`` locator. ``auto`` never pushes in standalone, where granite.build
+        disables ``llmb artifact push``; elsewhere it pushes only when ``llmb``
+        resolves and **both** token env vars are set (the GB token authenticates
+        the CLI, the HF token is the push destination).
+
+        Reads ``PATH`` and the environment on every call, but the process-wide
+        upload runner (``api/deps._shared_upload_runner``) builds its storage once,
+        on first use. A change to either after that can flip the gate without
+        changing where imports are written.
+        """
+        standalone = self.gb_environment == "standalone"
+        local: DatasetStorage = "local_file_uri" if standalone and not self.lsf_cluster else "local"
+        if self.dataset_storage_backend == "local":
+            return local
+        if self.dataset_storage_backend == "huggingface":
+            return "huggingface"
+        if standalone:
+            return local
+        if (
+            shutil.which(self.llmb_command)
+            and os.environ.get(self.gb_token_env)
+            and os.environ.get(self.hf_token_env)
+        ):
+            return "huggingface"
+        return "local"
+
+    @property
+    def hf_import_available(self) -> bool:
+        """Whether HF dataset import can actually work in this deployment.
+
+        ANDs the operator's flag with a storage that hands the launch a readable
+        locator (``resolved_dataset_storage``):
+
+        - ``local_file_uri``: the same-host bash standalone build, which mounts the
+          ``file://`` locator ``LocalStorageBackend`` emits.
+        - ``huggingface`` outside standalone: a cluster whose runner pushes the
+          staged parquet through ``llmb artifact push`` and records an ``hf://``
+          locator the cluster launch pulls.
+
+        Everything else refuses. ``local`` emits no locator (a cluster missing
+        ``llmb`` or a token, or standalone+LSF on ``auto``), and ``huggingface``
+        inside standalone is only reachable with LSF, where granite.build disables
+        the push. Opening either would let an import succeed and the launch fail on
+        a null dataset URI.
+        """
+        storage = self.resolved_dataset_storage
+        return self.hf_import_enabled and (
+            storage == "local_file_uri"
+            or (storage == "huggingface" and self.gb_environment != "standalone")
         )
 
     @field_validator("gb_environment", mode="after")

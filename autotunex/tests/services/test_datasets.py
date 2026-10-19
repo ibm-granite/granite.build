@@ -13,6 +13,7 @@ import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -167,6 +168,24 @@ class FakeDatasetRepository:
         if dataset is not None:
             dataset.status = status
             dataset.status_detail = status_detail
+
+    async def set_hf_provenance(
+        self,
+        dataset_id: UUID,
+        *,
+        repo_id: str,
+        revision: str,
+        config: str,
+        split: str,
+        provenance: dict[str, Any],
+    ) -> None:
+        dataset = self.datasets.get(dataset_id)
+        if dataset is not None:
+            dataset.hf_repo_id = repo_id
+            dataset.hf_revision = revision
+            dataset.hf_config = config
+            dataset.hf_split = split
+            dataset.hf_provenance = provenance
 
     async def set_upload_result(
         self,
@@ -578,7 +597,7 @@ async def test_upload_while_uploading_is_rejected(tmp_path: Path) -> None:
     seeded = repository.seed(owner_id=str(ADMIN_ID), status=DatasetStatus.UPLOADING)
     service = _service(repository, storage_dir=tmp_path / "store")
 
-    with pytest.raises(DatasetNotReadyError):
+    with pytest.raises(DatasetNotReadyError) as conflict:
         await service.upload(
             seeded.id,
             train=_upload_file(b"{}\n", "train.jsonl"),
@@ -587,6 +606,34 @@ async def test_upload_while_uploading_is_rejected(tmp_path: Path) -> None:
             column_mapping_json=None,
             gzip_encoded=False,
         )
+
+    assert "already uploading" in conflict.value.detail
+
+
+async def test_upload_while_importing_is_rejected(tmp_path: Path) -> None:
+    """An in-flight HF import shares the same staging dir as upload.
+
+    Letting a concurrent upload through would race the import's writer and, on
+    upload's own failure path, ``shutil.rmtree`` the import's in-flight parquet
+    out from under it (``services/datasets.py``'s ``except: shutil.rmtree(staging)``).
+    """
+    repository = FakeDatasetRepository()
+    seeded = repository.seed(owner_id=str(ADMIN_ID), status=DatasetStatus.IMPORTING)
+    service = _service(repository, storage_dir=tmp_path / "store")
+
+    with pytest.raises(DatasetNotReadyError) as conflict:
+        await service.upload(
+            seeded.id,
+            train=_upload_file(b"{}\n", "train.jsonl"),
+            validation=None,
+            validation_percentage=None,
+            column_mapping_json=None,
+            gzip_encoded=False,
+        )
+
+    # The conflict has to name the state it found: "already uploading" sent the
+    # reader looking for an upload nobody started.
+    assert "already importing" in conflict.value.detail
 
 
 async def test_upload_of_an_empty_file_is_422(tmp_path: Path) -> None:

@@ -230,7 +230,11 @@ class BuildWatcher:
         logger.debug("BuildWatcher.start end")
 
     def __wait_for_completion(self: Self) -> None:
-        """Wait for the monitoring thread to complete and then stop all jobs.
+        """Wait for the monitoring thread to complete, then shut down the build runners.
+        Each runner's on_build_orchestrator_shutdown() decides what that means: in-process
+        runners (thread/process) cancel their builds, which cannot outlive this process,
+        while job runners leave their build-runner pods running. A user cancel (stop())
+        is a different path; see __process_cancel_requested_build.
         This requires a lock since it can be called from both start_and_wait() and stop() when stop() is called.
         """
         logger.debug("BuildWatcher.__wait_for_completion start")
@@ -248,8 +252,10 @@ class BuildWatcher:
             self.worker_thread.join()
 
             # Once the main monitoring thread is done, we can assume we're shutting down
-            # and so we'll stop all BuildRunners and wait for them to finish.
-            # Snapshot under the lock, then stop and join OUTSIDE it: a join while
+            # and so we'll shut down all BuildRunners and wait for them to finish.
+            # Not stop(): that cancels the build, which would also destroy builds whose
+            # runner pods outlive this process.
+            # Snapshot under the lock, then shut down and join OUTSIDE it: a join while
             # holding _builds_lock blocks the very threads that need the lock to
             # report status or be cleaned up, which deadlocks shutdown instead of
             # merely slowing it.
@@ -258,12 +264,14 @@ class BuildWatcher:
                 build_threads = list(self.build_threads.items())
                 pr_threads = list(self.build_pr_threads.items())
             for build_id, build_runner in runners:
-                logger.info("stopping build runner for build %s", build_id)
+                logger.info("shutting down build runner for build %s", build_id)
                 try:
-                    build_runner.stop()
+                    build_runner.on_build_orchestrator_shutdown()
                 except Exception as e:  # noqa: BLE001 - one bad runner must not
                     # strand the rest; shutdown continues and says which failed.
-                    logger.error("failed to stop runner for build %s: %s", build_id, e)
+                    logger.error(
+                        "failed to shut down runner for build %s: %s", build_id, e
+                    )
             for label, threads in (
                 ("build", build_threads),
                 ("PR creation", pr_threads),
@@ -298,7 +306,11 @@ class BuildWatcher:
         logger.debug("BuildWatcher.__wait_for_completion end")
 
     def stop(self: Self) -> None:
-        """Stop the monitoring thread, and wait for it to complete, the stop() all builds ."""
+        """Stop the monitoring thread, wait for it to complete, then shut down all build runners.
+
+        In-process builds are cancelled; builds in build-runner pods are left running
+        (see __wait_for_completion).
+        """
         logger.debug("BuildWatcher.stop start")
         self.stop_event.set()  # Get the monitoring thread to complete
         self.__wait_for_completion()

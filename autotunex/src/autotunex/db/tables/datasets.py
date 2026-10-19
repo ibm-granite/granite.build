@@ -5,10 +5,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    JSON,
     Computed,
     ForeignKey,
     Integer,
@@ -71,6 +72,11 @@ class DatasetTable(Base):
     data_format: Mapped[str] = mapped_column(String(10), nullable=False, server_default="jsonl")
     artifact_id: Mapped[UUID | None] = mapped_column(Uuid36, default=None)
     artifact_url: Mapped[str | None] = mapped_column(Text, default=None)
+    hf_repo_id: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+    hf_revision: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    hf_config: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+    hf_split: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+    hf_provenance: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=None)
     status: Mapped[DatasetStatus] = mapped_column(
         String(20), nullable=False, server_default=DatasetStatus.EMPTY.value
     )

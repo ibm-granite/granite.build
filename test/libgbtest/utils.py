@@ -272,7 +272,11 @@ class AbstractSingletonStorageUsingPreloadedSpaceTest(
             method (_type_): _description_
         """
         super().setup_method(method)
-        self.storage.space_storage.add([public_space])
+        self.storage.space_storage.add(self._get_preloaded_spaces())
+
+    def _get_preloaded_spaces(self) -> list[StoredSpace]:
+        """Spaces added to the space table before each test (default: the "public" space)."""
+        return [public_space]
 
     @classmethod
     def setup_class(cls):

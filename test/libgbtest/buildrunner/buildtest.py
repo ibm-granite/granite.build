@@ -20,15 +20,23 @@ End-to-end build tests.
 
 import os
 import re
+import threading
 from abc import abstractmethod
 from datetime import timedelta
 from enum import Enum
 from pathlib import Path
-from time import sleep, time
+from time import monotonic, sleep, time
 from typing import TYPE_CHECKING, Any, ClassVar, List, Optional, Self, Union
 
 import pytest
 import yaml
+from libgbtest.abort_cleanup import (
+    CleanupWatchdog,
+    SerializedCleanup,
+    bounded_timeout,
+    get_timeout_deadline,
+    wait_deadline,
+)
 from libgbtest.buildrunner.placeholder import PLACEHOLDER
 from libgbtest.buildrunner.utils import (
     ExceptionRaisingThread,
@@ -88,6 +96,21 @@ from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import get_time, get_uuid
 
 logger = get_logger(__name__)
+
+BUILD_WAIT_TIMEOUT_MARGIN_SECONDS = 120.0
+"""All of a build test's waits end at least this long before pytest-timeout fires,
+leaving time to stop the build and tear down before the watchdog acts."""
+
+WATCHDOG_ABORT_LEAD_SECONDS = 60.0
+"""How long before pytest-timeout's ``os._exit`` the watchdog aborts a test that is
+still running, so it fails and tears down normally."""
+
+WATCHDOG_CLEANUP_LEAD_SECONDS = 20.0
+"""How long before pytest-timeout's ``os._exit`` the watchdog deletes the build
+outputs itself, for a test whose teardown has still not finished."""
+
+ABORT_STOP_TIMEOUT_SECONDS = 30.0
+"""How long an abort waits for the runner to stop and the waiter thread to end."""
 
 
 class ExpectedStep(BaseModel):
@@ -375,6 +398,17 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
 
     def setup_method(self: Self, method):
         # breakpoint()
+        # Shared by teardown_method and the pytest-timeout watchdog, which never
+        # run it at once; each pass deletes only what earlier passes did not.
+        self._output_cleanup = SerializedCleanup(self._delete_build_outputs)
+        self._deleted_artifact_uris: set[str] = set()
+        self._deleted_pod_build_ids: set[str] = set()
+        # Set to make every status wait return at once (see _abort_build).
+        self._abort_waits = threading.Event()
+        # The BuildRunner/BuildRunnerJob/BuildWatcher running the build, if any.
+        self._active_runner: Optional[Any] = None
+        # time.monotonic() by which all status waits must end; None if untimed.
+        self._wait_deadline: Optional[float] = None
         # HF mocking is handled entirely by the autouse `_hf_mock` fixture in
         # test/conftest.py, which is marker-aware and so honors
         # @pytest.mark.live("hf") at function, class and module scope. Gating it
@@ -402,33 +436,43 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
 
         super().setup_method(method)
 
+    @pytest.fixture(autouse=True)
+    def _arm_cleanup_watchdog(self: Self, request: pytest.FixtureRequest):
+        """Get the build outputs deleted before pytest-timeout can kill the test.
+
+        pytest-timeout's thread method ends the process with ``os._exit``, which
+        skips teardown_method; see libgbtest.abort_cleanup. The watchdog first
+        aborts the build so the test fails and tears down itself, then deletes
+        the outputs if teardown has still not finished. Not armed when build
+        teardown is skipped (GBTEST_SKIP_BUILD_TEARDOWN).
+
+        Args:
+            request: The test's fixture request, for its pytest-timeout deadline.
+
+        Yields:
+            None, while the test runs; the watchdog is disarmed afterwards.
+        """
+        self._timeout_deadline = get_timeout_deadline(request.node)
+        # Both resolved when they fire: setup_method may run after this fixture.
+        watchdog = CleanupWatchdog(
+            self._timeout_deadline,
+            abort=lambda: self._abort_build("the pytest-timeout watchdog"),
+            cleanup=lambda: self._output_cleanup.run("the pytest-timeout watchdog"),
+            abort_lead_seconds=WATCHDOG_ABORT_LEAD_SECONDS,
+            cleanup_lead_seconds=WATCHDOG_CLEANUP_LEAD_SECONDS,
+        )
+        if not GBTEST_SKIP_BUILD_TEARDOWN:
+            watchdog.start()
+        yield
+        watchdog.cancel()
+
     def teardown_method(self: Self, method):
         if GBTEST_SKIP_BUILD_TEARDOWN:
             logger.warning("skipping the teardown of the test build!")
             return
-        # Remove all the output artifacts created by the builds.
-        try:
-            builds = self.storage.build_storage.get_by_uuid(None)
-        except Exception as e:
-            logger.warning(
-                f"Could not get builds.  Skipping removal of their output artifacts. {e}"
-            )
-            builds = []
-
-        # Cleanup output artifacts
-        for build in builds:
-            try:
-                self._delete_output_artifacts(build.uuid)
-            except Exception as e:
-                logger.warning(
-                    f"Ignoring failure to delete 1 or more output artifacts for build {build.uuid}: {e}"
-                )
-
-        # Clean up left over pods/jobs
-        # breakpoint()
-        if self._uses_buildrunner_pods():
-            for build in builds:
-                delete_buildrunner_pod(build.uuid)
+        # Waits for a watchdog pass in progress, then closes the cleanup so the
+        # watchdog cannot run once storage is released below.
+        self._output_cleanup.run("teardown", final=True)
 
         if not self.was_logged_in and not is_pytest_running_parallel():
             # When a developer is running locally with existing login, we don't want to log them out.
@@ -447,23 +491,34 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
     def _check_and_setup_space(
         self: Self, test_spec: BuildTestSpecification
     ) -> StoredSpace:
-        """Fetch the space for the test, upserting its git_repo_uri to space_uri.
+        """Fetch the space for the test, upserting git_repo_uri for a local space_uri.
 
-        The stored space record is created or updated so its git_repo_uri is
-        test_spec.space_uri, so validation.py's assertion — which compares
-        get_gb_space_config_uri(git_repo_uri) against Space.uristr — passes.
+        For a local ``file://`` space_uri, the stored space record is created or
+        updated so its git_repo_uri is space_uri, so validation.py's assertion —
+        which compares get_gb_space_config_uri(git_repo_uri) against Space.uristr —
+        passes. A git space_uri is left to the existing record, which stores the
+        repo's https URL (as production does): build setup derives the PR clone URL
+        and config branch from that form, so overwriting it with the git+ssh config
+        URI breaks PR creation and leaves the build PENDING.
 
         Args:
             test_spec (BuildTestSpecification): The test specification containing
                 space_name and space_uri.
 
         Returns:
-            StoredSpace: The resolved (and updated) space record.
+            StoredSpace: The resolved (and possibly updated) space record.
+
+        Raises:
+            AssertionError: If space_uri is a git URI and no space record exists.
         """
         logger.info(f"Getting the {test_spec.space_name} space")
         space = self.storage.space_storage.get_by_name(name=test_spec.space_name)
         logger.info(f"Got the {test_spec.space_name} space")
-        # Upsert the space record so git_repo_uri matches space_uri.
+        if not test_spec.space_uri.startswith("file://"):
+            assert (
+                space is not None
+            ), f"failed to find a space with name {test_spec.space_name}"
+            return space
         # validation.py passes file:// URIs through get_gb_space_config_uri unchanged,
         # so storing space_uri as git_repo_uri makes its space-match assertion pass.
         if space is None:
@@ -478,11 +533,43 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             self.storage.space_storage.update(space)
         return space
 
+    def _delete_build_outputs(self: Self) -> None:
+        """Delete every build's output artifacts and leftover buildrunner pods.
+
+        Run by teardown_method and, when pytest-timeout is about to kill a hung
+        test, by the cleanup watchdog (never both at once). Each pass skips what
+        an earlier pass deleted, so a later pass only picks up what was created
+        since. Failures are logged, not raised.
+        """
+        try:
+            builds = self.storage.build_storage.get_by_uuid(None)
+        except Exception as e:
+            logger.warning(
+                f"Could not get builds.  Skipping removal of their output artifacts. {e}"
+            )
+            builds = []
+
+        for build in builds:
+            try:
+                self._delete_output_artifacts(build.uuid)
+            except Exception as e:
+                logger.warning(
+                    f"Ignoring failure to delete 1 or more output artifacts for build {build.uuid}: {e}"
+                )
+
+        # Clean up left over pods/jobs
+        if self._uses_buildrunner_pods():
+            for build in builds:
+                if build.uuid not in self._deleted_pod_build_ids:
+                    delete_buildrunner_pod(build.uuid)
+                    self._deleted_pod_build_ids.add(build.uuid)
+
     def _delete_output_artifacts(self: Self, build_id: str):
         """Delete all output artifacts created by a build from their remote stores.
 
         Each artifact's URI handles its own deletion via ``URI.delete()``.
         Unsupported URI types raise ``NotImplementedError``, which is caught and logged.
+        Artifacts an earlier cleanup pass handled are skipped.
 
         Args:
             build_id: UUID of the build whose output artifacts should be removed.
@@ -491,6 +578,9 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             {"created_by_build_id": build_id}
         )
         for artifact in artifacts:
+            if artifact.uri in self._deleted_artifact_uris:
+                continue
+            self._deleted_artifact_uris.add(artifact.uri)
             uri = URI.get_uri(artifact.uri)
             try:
                 if not uri.delete():
@@ -574,6 +664,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         )
         logger.info(f"Done creating the build")
         timeout_seconds = build_count * test_spec.timeout_minutes * 60
+        self._set_wait_deadline(timeout_seconds)
 
         if test_spec.simulate_step_failure:
             enable_failure_simulation()
@@ -718,20 +809,105 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
     ) -> None:
         if test_cancel:
             thread = ExceptionRaisingThread(
+                daemon=True,
                 name="Wait and cancel",
                 target=self._wait_for_cancelled,
                 args=(runner, build_ids, timeout_seconds),
             )
         else:
             thread = ExceptionRaisingThread(
+                daemon=True,
                 name="Wait success",
                 target=self._wait_for_builds_with_status,
                 args=(runner, build_ids, expected_status, timeout_seconds),
             )
         logger.info("Starting the build waiting thread. ")
-        thread.start()
-        runner.start_and_wait()
-        thread.join()  # This will raise the assert exceptions from the thread, if needed
+        self._run_with_waiter(runner, thread)
+
+    def _set_wait_deadline(self: Self, requested_seconds: float) -> None:
+        """Set the one deadline all of this test's status waits must end by.
+
+        Kept under pytest-timeout so a slow build fails through the normal
+        stop-and-teardown path rather than being killed without teardown. It is
+        absolute, so several waits in a row (e.g. wait for RUNNING, then for
+        CANCELLED, or one wait per build) cannot add up past the kill.
+
+        Args:
+            requested_seconds: The build wait the test spec asked for.
+        """
+        self._wait_deadline = wait_deadline(
+            getattr(self, "_timeout_deadline", None),
+            margin_seconds=BUILD_WAIT_TIMEOUT_MARGIN_SECONDS,
+        )
+        if self._wait_deadline is None:
+            return
+        budget = self._wait_deadline - monotonic()
+        if requested_seconds > budget:
+            logger.warning(
+                "The %.0fs build wait must end within %.0fs to finish before the "
+                "pytest timeout; raise it with @pytest.mark.timeout if the build "
+                "needs longer",
+                requested_seconds,
+                budget,
+            )
+
+    def _run_with_waiter(
+        self: Self,
+        runner: "BuildRunner | BuildRunnerJob | BuildWatcher",
+        waiter: ExceptionRaisingThread,
+    ) -> None:
+        """Run the build in this thread while ``waiter`` checks its statuses.
+
+        An interrupt (Ctrl-C, or SIGTERM/SIGHUP mapped to it) unwinds only this
+        thread, so it first aborts the build: the waiter stops polling and the
+        runner is stopped, rather than both carrying on into teardown.
+
+        Args:
+            runner: Runs the build; its start_and_wait() blocks until done.
+            waiter: Thread that waits for the expected statuses, then stops it.
+
+        Raises:
+            KeyboardInterrupt: Re-raised after aborting the build.
+            AssertionError: From the waiter, if the build did not behave.
+        """
+        self._active_runner = runner
+        waiter.start()
+        try:
+            runner.start_and_wait()
+            waiter.join()  # Raises the waiter's assertion failures, if any
+        except KeyboardInterrupt:
+            self._abort_build("an interrupt")
+            # threading.Thread.join: the waiter's own failure is moot now.
+            threading.Thread.join(waiter, ABORT_STOP_TIMEOUT_SECONDS)
+            raise
+        finally:
+            self._active_runner = None
+
+    def _abort_build(self: Self, reason: str) -> None:
+        """Stop the running build and make every status wait fail at once.
+
+        Called on an interrupt and by the pytest-timeout watchdog. The runner is
+        stopped on a helper thread, joined for at most ABORT_STOP_TIMEOUT_SECONDS,
+        since some stops block (BuildWatcher joins its builds).
+
+        Args:
+            reason: What aborted the build, for the log.
+        """
+        logger.warning("Aborting the test build because of %s", reason)
+        self._abort_waits.set()
+        runner = self._active_runner
+        if runner is None:
+            return
+
+        def stop() -> None:
+            try:
+                runner.stop()
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.warning(f"Could not stop the aborted build: {e}")
+
+        stopper = threading.Thread(target=stop, name="abort-build-stop", daemon=True)
+        stopper.start()
+        stopper.join(ABORT_STOP_TIMEOUT_SECONDS)
 
     def _uses_buildrunner_pods(self: Self) -> bool:
         """Whether the run under test launched K8s buildrunner jobs/pods.
@@ -792,21 +968,21 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         logger.info("Done creating BuildWatcher. ")
         if test_cancel:
             thread = ExceptionRaisingThread(
+                daemon=True,
                 name="Wait and cancel",
                 target=self._wait_for_cancelled,
                 args=(watcher, build_ids, timeout_seconds),
             )
         else:
             thread = ExceptionRaisingThread(
+                daemon=True,
                 name="Wait success",
                 target=self._wait_for_builds_with_status,
                 args=(watcher, build_ids, expected_status, timeout_seconds),
             )
         logger.info("Starting the build watcher test thread. ")
-        thread.start()
-        logger.info("Starting the build watcher test thread. ")
-        watcher.start_and_wait()  # This blocks until watcher.stop() is called in the thread
-        thread.join()  # This will raise the assert exceptions from the thread, if needed
+        # start_and_wait() blocks until watcher.stop() is called in the thread
+        self._run_with_waiter(watcher, thread)
         return build_ids
 
     def _verify_pods_finished(self: Self, build_ids: list[str]) -> None:
@@ -852,6 +1028,7 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             for build_id in build_ids:
                 # Have each check in a separate thread to try and avoid serializing the cancellations
                 thread = ExceptionRaisingThread(
+                    daemon=True,
                     name="Cancel 1 build",
                     target=self._wait_for_running_then_cancel_one_build,
                     args=(build_id, timeout),
@@ -977,6 +1154,8 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             _type_: a bool that indicates if one of the statuses was found and either the matched status (if found),
             or the last status (if not found).
         """
+        # Every wait shares the test's one deadline (see _set_wait_deadline).
+        timeout = bounded_timeout(timeout, self._wait_deadline)
         is_success = False
         last_status = None
         sleep_time = 5
@@ -1021,9 +1200,14 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                             pass
             else:
                 logger.info(f"Looping on {item_name}:{item_id} status.  Not found yet.")
-            sleep(sleep_time)
+            if self._abort_waits.wait(sleep_time):
+                break  # The build was aborted (see _abort_build)
             now = time()
             time_waited = now - start_time
+        assert not self._abort_waits.is_set(), self._failed_build_msg(
+            build_id,
+            f"the build was aborted while waiting for {item_name}:{item_id} to reach {statuses}",
+        )
         assert time_waited <= timeout, self._failed_build_msg(
             build_id,
             f"we exceeded the timeout of {timeout} seconds looking for item {item_name}:{item_id} in {item_storage}",

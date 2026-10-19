@@ -98,6 +98,7 @@ thirdparty = [
     "asyncssh",	# SSH tunnel util (also in [ibm]); here so non-ibm CI can test it
     "docker>=7.0.0",
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
+    "psycopg[binary]>=3.3.6",	# PostgreSQL driver (also in [ibm]); here so the local-PostgreSQL storage tests run in non-ibm CI
     "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable",  # granite-build fork, moving tag: see docs/environments/skypilot-lsf.md#skypilot-fork
     "wandb",
 ]
@@ -113,7 +114,7 @@ ibm = [
     "ibm_secrets_manager_sdk",
     "kubernetes_asyncio>=35.0.1",	# Avoids missing watch import created in kubernetes==36.0.0
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
-    "psycopg[binary]>=3.2",
+    "psycopg[binary]>=3.3.6",
     "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable",  # granite-build fork, moving tag: see docs/environments/skypilot-lsf.md#skypilot-fork
 ]
 # gbmcp: the FastMCP server bundled at src/gbmcp. Pulled in by `standalone`, so
@@ -257,6 +258,8 @@ extend-exclude = '''
 '''
 
 [tool.pytest.ini_options]
+# -rs: list each skipped test with its skip reason in the short test summary.
+addopts = "-rs"
 log_cli = true
 log_cli_level = "INFO"
 log_cli_format ="[%(asctime)s %(levelname)-5s][%(filename)20s:%(lineno)3s %(funcName)25s()] %(message)s"

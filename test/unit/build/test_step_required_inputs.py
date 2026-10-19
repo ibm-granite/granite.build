@@ -120,3 +120,78 @@ def test_a_missing_required_input_fails_validation(tmp_path, monkeypatch, step):
             _build(sub, monkeypatch, step, env, inputs)
         cause = str(raised.value.__cause__)
         assert f"Required input `{missing}`" in cause and "is missing" in cause, cause
+
+
+def _gold_beside(tmp_path, monkeypatch, gold_inputs: dict, producer: tuple):
+    """distill/gold with its required inputs as uris, overridden by `gold_inputs`,
+    beside a `producer` (name, step, outputs) target whose output a binding can name."""
+    from gbserver.build.build import Build
+    from gbserver.build.space import Space
+
+    monkeypatch.setenv("GB_HOME_DIR", str(tmp_path / "gb_home"))
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    gold = {
+        "environment_uri": _LSF_ENV,
+        "inputs": {**_bound("distill/gold", _LSF_ENV), **gold_inputs},
+        "steps": [{"step_uri": "space://steps/distill/gold"}],
+    }
+    name, step, outputs = producer
+    produced = {
+        "environment_uri": _LSF_ENV,
+        "inputs": _bound(step, _LSF_ENV),
+        "outputs": outputs,
+        "steps": [{"step_uri": f"space://steps/{step}"}],
+    }
+    (build_dir / "build.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "granite.build": {
+                    "name": "t",
+                    "targets": {name: produced, "gold": gold},
+                }
+            }
+        )
+    )
+    return Build(
+        build_dir=build_dir,
+        space=Space(uri=f"file://{LOCAL_SPACE}", username="t"),
+        username="t",
+    )
+
+
+_VLLM_SERVER = (
+    "server",
+    "distill/vllm-server",
+    {"vllm_url": {"uri": "mem://vllm-url"}},
+)
+_CORPUS_PREP = (
+    "prep",
+    "distill/corpus-prep",
+    {"corpus": {"uri": "mem://corpus", "type": "dataset"}},
+)
+
+
+def _gold_with_vllm(tmp_path, monkeypatch, vllm_input: dict):
+    return _gold_beside(tmp_path, monkeypatch, {"vllm": vllm_input}, _VLLM_SERVER)
+
+
+def test_a_binding_only_input_accepts_a_binding(tmp_path, monkeypatch):
+    """gold's `vllm` input accepts [binding] only. A bound input's uri is None, not "",
+    and the check once read None != "" as "a uri was given", refusing every binding."""
+    _gold_with_vllm(tmp_path, monkeypatch, {"binding": "server.vllm_url"})
+
+
+def test_a_binding_only_input_still_refuses_a_uri(tmp_path, monkeypatch):
+    with pytest.raises(ValueError) as raised:
+        _gold_with_vllm(tmp_path, monkeypatch, {"uri": "mem://x", "type": "fileset"})
+    cause = str(raised.value.__cause__)
+    assert "Optional input `vllm`" in cause and "does not accept uri" in cause, cause
+
+
+def test_an_input_accepting_uri_or_binding_accepts_a_binding(tmp_path, monkeypatch):
+    """gold's `corpus` input accepts [uri, binding]; binding it to corpus-prep's output
+    validates, as the uri `_bound` gives it does in the tests above."""
+    _gold_beside(
+        tmp_path, monkeypatch, {"corpus": {"binding": "prep.corpus"}}, _CORPUS_PREP
+    )

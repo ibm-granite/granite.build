@@ -11,7 +11,7 @@ push to HF, with the tag now driven by the ``gb_tags`` setting::
         --type dataset --store hf --certify-no-restrictions [--tag <gb_tags>]
 
 The ``--tag`` argument is appended only when ``gb_tags`` is non-empty (it defaults
-to ``autotunex``, preserving the tag this push historically carried).
+to ``model-customization``).
 
 Two credentials are involved and neither value is ever loaded into ``Settings``:
 

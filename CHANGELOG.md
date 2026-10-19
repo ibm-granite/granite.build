@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The `dpk` step moved into the `data` category: `space://steps/data/dpk` (#512).** This is
+  the first step to move into a category directory under `steps/` (here `steps/data`).
+  **Breaking change:** `space://steps/dpk` is no longer supported, so update builds to the
+  new URI. The old URI is not blocked and may still resolve, but nothing
+  guarantees which copy of the step it gets (for example, it does not prefer a space's own
+  copy over the published one).
+
 - **Lineage: artifact lineage now reads the local lineage index (#470).** The artifact
   page and `GET /lineage/graph` read `gb_lineage_index`, whatever
   `GBSERVER_LINEAGE_PROVIDER` is. **Upgrading a W&B deployment:** outside standalone the

@@ -55,9 +55,14 @@ class DatasetStatus(StrEnum):
     value need not diverge here; the lowercase value is what lands in the column.
     The row's ``status`` is also the cross-replica coordination point for the
     "already uploading" guard, so it is a durable DB value, not in-process state.
+
+    ``IMPORTING`` is the HuggingFace-import counterpart of ``UPLOADING``: the row
+    exists and the server is fetching from HF rather than receiving bytes from the
+    client. Kept distinct so the UI can say which, and so logs separate them.
     """
 
     EMPTY = "empty"
     UPLOADING = "uploading"
+    IMPORTING = "importing"
     READY = "ready"
     ERROR = "error"

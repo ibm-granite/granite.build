@@ -549,10 +549,12 @@ class Build(BuildEntity):
                         continue
                     errors.add(expected_input.validation, prefix=err_prefix1 + " ")
                     actual_input = target_inputs[req_input]
-                    if actual_input.uri != "":
+                    # Truthiness, not `!= ""`: an unset uri is None, and None != "" would
+                    # flag every bound input as a uri -- refusing a binding-only input.
+                    if actual_input.uri:
                         if StepInputsAcceptEnum.URI not in expected_input.accept:
                             errors.add(f"{err_prefix1} does not accept uri")
-                    elif actual_input.binding != "":
+                    elif actual_input.binding:
                         if StepInputsAcceptEnum.BINDING not in expected_input.accept:
                             errors.add(f"{err_prefix1} does not accept binding")
                 for opt_input, expected_input in step_yaml.inputs.optional.items():
@@ -561,10 +563,10 @@ class Build(BuildEntity):
                         continue
                     errors.add(expected_input.validation, prefix=err_prefix1 + " ")
                     actual_input = target_inputs[opt_input]
-                    if actual_input.uri != "":
+                    if actual_input.uri:
                         if StepInputsAcceptEnum.URI not in expected_input.accept:
                             errors.add(f"{err_prefix1} does not accept uri")
-                    elif actual_input.binding != "":
+                    elif actual_input.binding:
                         if StepInputsAcceptEnum.BINDING not in expected_input.accept:
                             errors.add(f"{err_prefix1} does not accept binding")
                 if not step_yaml.inputs.allow_unknown:

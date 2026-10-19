@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, cast
 from uuid import UUID
 
+import pytest
 import yaml
 
 from autotunex.services.launch._shared import REWARD_FUNCTION_PATH
@@ -39,8 +40,8 @@ def _ctx(**overrides: object) -> LaunchContext:
     return LaunchContext(**base)  # type: ignore[arg-type]
 
 
-def _spec(ctx: LaunchContext, **overrides: object) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {
+def _spec_kwargs() -> dict[str, Any]:
+    return {
         "environment_uri": "space://environments/skypilot/lsf/example-cluster",
         "image": "registry.example.com/tuner:1",
         "venv_path": "/step_venv",
@@ -56,6 +57,10 @@ def _spec(ctx: LaunchContext, **overrides: object) -> dict[str, Any]:
         "poll_interval_seconds": 30,
         "callback_url": None,
     }
+
+
+def _spec(ctx: LaunchContext, **overrides: object) -> dict[str, Any]:
+    kwargs = _spec_kwargs()
     kwargs.update(overrides)
     text = build_lsf_spec(ctx, **kwargs)
     return cast("dict[str, Any]", yaml.safe_load(text))
@@ -111,6 +116,8 @@ def test_start_command_uses_lsf_cuda_home_and_dataset_binding() -> None:
     assert "--config_file /tmp/my-config.yaml" in command
     assert "--train_file {{ bindings.dataset_files.binding.path }}/alpaca_train.jsonl" in command
     assert f"--job_id {JOB_ID}" in command
+    # LSF output stays on the shared filesystem, so the model is not moved to its root.
+    assert "--model_at_root" not in command
 
 
 def test_skypilot_block_carries_image_venv_and_embedded_config() -> None:
@@ -193,3 +200,30 @@ def test_config_data_is_not_mutated() -> None:
     _spec(ctx)
 
     assert ctx.config_data["training_rl_config"]["reward_function_path"]["default"] == "orig.py"
+
+
+def test_allowlisted_model_is_bound_on_lsf_too() -> None:
+    doc = _spec(_ctx(model="example-org/autotunex_x"), private_model_namespaces=("example-org",))
+
+    target = _target(doc)
+    assert target["inputs"]["base_model"] == {
+        "uri": "hf://huggingface.co/models/example-org/autotunex_x"
+    }
+    command = _step_config(doc)["custom_code_config"]["start_command"]
+    assert "--model_name_or_path {{ bindings.base_model.binding.path }}" in command
+
+
+@pytest.mark.parametrize(
+    ("model", "model_source"),
+    [("ibm-granite/granite-4.0", "huggingface"), ("example-org/local-copy", "custom_path")],
+)
+def test_a_model_that_is_not_bound_leaves_the_lsf_spec_byte_identical(
+    model: str, model_source: str
+) -> None:
+    ctx = _ctx(model=model, model_source=model_source)
+    kwargs = _spec_kwargs()
+
+    with_allowlist = build_lsf_spec(ctx, private_model_namespaces=("example-org",), **kwargs)
+
+    assert with_allowlist == build_lsf_spec(ctx, **kwargs)
+    assert "base_model" not in _target(yaml.safe_load(with_allowlist))["inputs"]

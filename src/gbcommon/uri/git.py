@@ -145,7 +145,9 @@ class GitURI(URI):
         parts = path.split("/")
         # Leading slash causes parts[0] == ''
         owner = parts[1]
-        repo = parts[2]
+        # The bare repo name: drop any "@<branch>" and ".git" (as in a git+ssh config
+        # uri) so the GitHub API is asked about the repo itself.
+        repo = parts[2].split("@", 1)[0].removesuffix(".git")
         if uriobj.hostname is None:
             raise ValueError(f"Did not find host name in uri {uri}")
         return uriobj.hostname, owner, repo
@@ -172,8 +174,8 @@ class GitURI(URI):
         to the format as expected by the build system.
         For the following uris:
         file:// return unmodified
-        git+ssh:// return unmodified
-        All others..
+        git+ssh:// that already names a branch (.../{reponame}.git@{branch}) return unmodified
+        All others (https://, or git+ssh:// without a branch)..
         Assume the form of https://{gitdomain}/{repoowner}/{reponame} and do the following
             1. change from https:// to git+ssh://
             4. Append .git
@@ -191,6 +193,10 @@ class GitURI(URI):
             return ""
         if uri.startswith("file://"):
             return uri  # Assume they are pointing to a local repository and know what their doing.
+        if uri.startswith("git+ssh://") and "@" in urllib.parse.urlparse(uri).path:
+            # Already names its branch (e.g. a prior result of this function), so
+            # there is nothing to look up; the result would be unchanged anyway.
+            return uri
         uri = uri.rstrip("/")  # To allow appending ".git" below.
         uriobj = urllib.parse.urlparse(uri)
         if not uriobj.path.endswith(".git"):

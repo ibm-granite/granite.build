@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from autotunex.core.constants import HF_MODEL_URI_PREFIX
 from autotunex.db.tables import (
     ConfigurationTable,
     DatasetTable,
@@ -26,7 +27,7 @@ from autotunex.models.configuration import (
     ConfigurationSummary,
 )
 from autotunex.models.dataset import DatasetJobRef, DatasetPreview, DatasetRead
-from autotunex.models.job import JobDetail, JobRead, JobSummary
+from autotunex.models.job import JobDetail, JobRead, JobSummary, TunedModelSummary
 from autotunex.models.log import LogEntryRead
 from autotunex.models.metric import MetricPointRead
 from autotunex.models.task import GbTaskRead
@@ -108,6 +109,11 @@ def dataset_to_read(
         validation_file_size=dataset.validation_file_size,
         artifact_id=str(dataset.artifact_id) if dataset.artifact_id is not None else None,
         artifact_url=dataset.artifact_url,
+        hf_repo_id=dataset.hf_repo_id,
+        hf_revision=dataset.hf_revision,
+        hf_config=dataset.hf_config,
+        hf_split=dataset.hf_split,
+        hf_provenance=dataset.hf_provenance,
         associated_jobs=associated_jobs,
         created_at=dataset.created_at,
         updated_at=dataset.updated_at,
@@ -241,6 +247,28 @@ def job_to_summary(job: JobTable, finished_at: str | None = None) -> JobSummary:
         created_at=job.created_at,
         updated_at=job.updated_at,
         finished_at=finished_at,
+    )
+
+
+def tuned_model_to_summary(
+    job: JobTable, finished_at: str | None, artifact_uri: str
+) -> TunedModelSummary:
+    """Convert an eligible job row to its tuned-model representation.
+
+    ``artifact_uri`` is the TUNING task's locator, which the repository query
+    only returns when it is ``hf://huggingface.co/models/<owner>/<name>``, so
+    stripping the prefix yields exactly the ``owner/name`` a new job submits as
+    ``model``.
+    """
+    return TunedModelSummary(
+        job_id=job.id,
+        repo_id=artifact_uri.removeprefix(HF_MODEL_URI_PREFIX).strip("/"),
+        experiment_name=job.experiment_name,
+        base_model=job.model,
+        tuning_type=job.tuning_type,
+        rl_tuner_type=resolve_rl_tuner_type(job),
+        finished_at=finished_at,
+        user=job.user.email,
     )
 
 

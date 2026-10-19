@@ -44,6 +44,7 @@ from gbserver.types.constants import (
     BUILDRUNNERJOB_NAMESPACE,
     BUILDRUNNERJOB_SECRET_NAME,
     BUILDRUNNERJOB_SLEEP_ON_END,
+    BUILDRUNNERJOB_TERMINATION_GRACE_SECONDS,
     DEFAULT_GH_API_ENDPOINT,
     DEFAULT_ROOT_WORKSPACE_DIR,
     ENV_VAR_GBSERVER_K8S_USE_ASPERA,
@@ -98,6 +99,9 @@ class BuildRunnerJob(AbstractBuildRunner):
         )
         self.namespace = BUILDRUNNERJOB_NAMESPACE
         self.is_stop_requested = False
+        # Set by on_build_orchestrator_shutdown(): stop monitoring the job but leave
+        # it (and its build) running, since the runner pod outlives the watcher.
+        self.is_detach_requested = False
         self.is_running = False
         curr_env = GB_ENVIRONMENT_CONFIG
         # The exact image tag with commit will be specified in env var in the container
@@ -136,6 +140,7 @@ class BuildRunnerJob(AbstractBuildRunner):
             "is_metrics_auth_enabled": GBSERVER_METRICS_AUTH_TOKEN != "",
             "build_workspace_pvc_name": BUILDRUNNERJOB_BUILD_WORKSPACE_PVC_NAME,
             "configmap_name": BUILDRUNNERJOB_CONFIGMAP_NAME,
+            "termination_grace_period_seconds": BUILDRUNNERJOB_TERMINATION_GRACE_SECONDS,
             "dev_staging_prod_env": curr_env.env,
             "build_runner_extra_env_vars": build_runner_extra_env_vars,
         }
@@ -145,12 +150,26 @@ class BuildRunnerJob(AbstractBuildRunner):
         """
         Stop the build that was started using start_and_wait().
         Upon returning, this must also cause the call to start_and_wait() to return.
+        A stop that arrives before start_and_wait() runs is kept, so no job is
+        created and the build is marked CANCELLED.
         """
-        if self.is_running:
-            self.is_stop_requested = True
-            # while self.is_running:
-            #     time.sleep(1)
-            # self.is_stop_requested = False
+        self.is_stop_requested = True
+
+    def on_build_orchestrator_shutdown(self: Self) -> None:
+        """Stop monitoring the build-runner job and leave the build running.
+
+        The runner pod reports its own status to admin storage and does not depend
+        on the watcher, so its build is not cancelled. start_and_wait() returns
+        within about one monitoring interval, without marking the build
+        CANCEL_REQUESTED or deleting the job/pod (contrast stop()). If it arrives
+        before start_and_wait() runs, no job is created and the build is left
+        PENDING for the next watcher to dispatch.
+        """
+        logger.info(
+            "Detaching from build-runner job for build %s; leaving it running",
+            self.stored_build.uuid,
+        )
+        self.is_detach_requested = True
 
     def start_and_wait(self: Self) -> None:
         """
@@ -163,7 +182,11 @@ class BuildRunnerJob(AbstractBuildRunner):
             5) gh_api_endpoint (cli option)
         Returns after the build has completed/failed/cancelled or stop() has been called from another thread.
         """
-        self.is_stop_requested = False
+        # The stop/detach flags are not reset here: each dispatch uses a new runner
+        # (initialized in __init__), and a request that arrived before this thread got
+        # here must not be lost.
+        if self.__handled_request_before_start():
+            return
         self.is_running = True
         item = self.storage.build_storage.get_by_uuid(self.stored_build.uuid)
         if item is None:
@@ -180,6 +203,28 @@ class BuildRunnerJob(AbstractBuildRunner):
                 self.stored_build.uuid, Status.FAILED, failure_reason=str(e)
             )
         self.is_running = False
+
+    def __handled_request_before_start(self: Self) -> bool:
+        """Honor a stop() or orchestrator shutdown that arrived before the job exists.
+
+        Returns:
+            bool: True if a request was handled and no job should be created: after a
+                stop() the build is marked CANCELLED; after a shutdown it is left
+                PENDING for the next watcher to dispatch. False otherwise.
+        """
+        build_id = self.stored_build.uuid
+        if self.is_stop_requested:
+            logger.info("Build %s stopped before its job was created", build_id)
+            finalize_build_status(build_id, Status.CANCELLED)
+            return True
+        if self.is_detach_requested:
+            logger.info(
+                "Orchestrator shut down before the job for build %s was created; "
+                "leaving the build for the next watcher",
+                build_id,
+            )
+            return True
+        return False
 
     def __get_command_to_run(
         self: Self, sleep_on_end: bool = BUILDRUNNERJOB_SLEEP_ON_END
@@ -304,7 +349,7 @@ class BuildRunnerJob(AbstractBuildRunner):
                 logger.info("Launching job: %s", kube_job_name)
                 resp = await self.__create_namespaced_job_with_retry(batchv1, body=body)  # type: ignore
                 logger.info("Job created: %s", kube_job_name)
-                while not self.is_stop_requested:
+                while not (self.is_stop_requested or self.is_detach_requested):
                     try:
                         job = await self.__read_namespaced_job_with_retry(
                             batchv1, kube_job_name
@@ -359,6 +404,13 @@ class BuildRunnerJob(AbstractBuildRunner):
                 # StoredBuild stays as PENDING and subsequent restarts of the watcher try to start the PENDING builds again,
                 # but fail due to a job name collision with the zombie job.
                 await self.__delete_job_and_pod_with_retry(batchv1, kube_job_name)
+            elif self.is_detach_requested:
+                # The orchestrator is shutting down: leave the job and build alone.
+                logger.info(
+                    "Detached from job %s; build %s left running",
+                    kube_job_name,
+                    build_id,
+                )
             # else the job finished normally.
 
     @retry(
@@ -397,8 +449,11 @@ class BuildRunnerJob(AbstractBuildRunner):
                 await v1.delete_namespaced_pod(
                     name=pod.metadata.name,
                     namespace=self.namespace,
+                    # Same grace as the pod spec: a shorter one here would
+                    # override it and SIGKILL the runner mid-cancel.
                     body=client.V1DeleteOptions(
-                        propagation_policy="Foreground", grace_period_seconds=5
+                        propagation_policy="Foreground",
+                        grace_period_seconds=BUILDRUNNERJOB_TERMINATION_GRACE_SECONDS,
                     ),
                 )
 

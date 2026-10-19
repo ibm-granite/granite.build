@@ -19,6 +19,7 @@ differs, that change is localized to this module — the seam and runner do not 
 from __future__ import annotations
 
 import copy
+from collections.abc import Sequence
 from typing import Any
 
 import yaml
@@ -26,6 +27,7 @@ import yaml
 from autotunex.services.launch._shared import (
     REWARD_FUNCTION_PATH,
     BlockStringDumper,
+    base_model_uri,
     inject_reward_function,
     num_gpus_per_node,
     start_command,
@@ -55,6 +57,8 @@ def build_spec(
     trainer_ref: str,
     output_uri_root: str,
     callback_url: str | None,
+    keep_diagnostics: bool = False,
+    private_model_namespaces: Sequence[str] = (),
 ) -> str:
     """Return the ``build.yaml`` text for ``ctx`` as a granite.build submission.
 
@@ -75,6 +79,12 @@ def build_spec(
             ``<root>/autotunex_<first-8-of-job-id>/``.
         callback_url: base URL a cluster worker reports back to; emitted as
             ``--autotunex_server_url`` only when set.
+        keep_diagnostics: also emit ``--keep_diagnostics``. The start command always
+            carries ``--model_at_root``, since the output is uploaded as the model
+            repo; this keeps fm-tune's other artifacts under ``diagnostics/`` there.
+        private_model_namespaces: HF namespaces whose models are bound as the
+            ``base_model`` input rather than passed by name (see
+            :func:`~autotunex.services.launch._shared.base_model_uri`).
     """
     config_data = copy.deepcopy(ctx.config_data)
 
@@ -91,13 +101,18 @@ def build_spec(
     )
     output_uri = f"{output_uri_root.rstrip('/')}/autotunex_{ctx.job_id.hex[:8]}/"
 
+    base_model = base_model_uri(ctx, private_model_namespaces)
+    inputs: dict[str, Any] = {"dataset_files": {"uri": ctx.dataset_uri}}
+    if base_model is not None:
+        inputs["base_model"] = {"uri": base_model}
+
     build: dict[str, Any] = {
         "granite.build": {
             "name": f"autotunex-{ctx.experiment_name}",
             "targets": {
                 "custom": {
                     "environment_uri": _ENVIRONMENT_URI,
-                    "inputs": {"dataset_files": {"uri": ctx.dataset_uri}},
+                    "inputs": inputs,
                     "outputs": {"custom": {"uri": output_uri}},
                     "steps": [
                         {
@@ -111,6 +126,9 @@ def build_spec(
                                         config_file=config_file_path,
                                         callback_url=callback_url,
                                         cuda_home="/usr/local/cuda-13.0",
+                                        model_at_root=True,
+                                        keep_diagnostics=keep_diagnostics,
+                                        bind_base_model=base_model is not None,
                                     ),
                                     "dir_to_save": ".",
                                 },

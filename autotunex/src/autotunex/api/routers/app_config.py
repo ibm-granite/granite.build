@@ -7,7 +7,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from autotunex.api.deps import SettingsDep
-from autotunex.models.app_config import AppConfigResponse, DatasetUploadConfig
+from autotunex.models.app_config import AppConfigResponse, DatasetUploadConfig, HfImportConfig
 
 router = APIRouter(prefix="/app-config", tags=["meta"])
 
@@ -26,5 +26,10 @@ async def get_app_config(settings: SettingsDep) -> AppConfigResponse:
             client_gzip_enabled=settings.dataset_client_gzip_enabled,
             client_gzip_min_bytes=settings.dataset_client_gzip_min_bytes,
             client_parquet_preview_max_bytes=settings.dataset_client_parquet_preview_max_bytes,
-        )
+        ),
+        hf_import=HfImportConfig(
+            available=settings.hf_import_available,
+            max_bytes=settings.hf_import_max_bytes,
+            max_rows=settings.hf_import_max_rows,
+        ),
     )

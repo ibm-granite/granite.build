@@ -10,23 +10,40 @@ mid-wizard, before a configuration is persisted. The heuristic itself
 approximation ported from the tuning pipeline's own estimator
 (``autotune.utils``), not a measured profile; the optional ``autotune`` import
 is dropped and the two functions are inlined instead.
+
+A tuned model (``GET /jobs/tuned-models``) is estimated at the size of the base
+model its job tuned: its repo name, ``autotunex_<job-id hex>``, carries no size,
+and the name regex would otherwise read one out of the hash.
 """
 
 from __future__ import annotations
 
 import math
 import re
+from collections.abc import Sequence
 from typing import Any
+from uuid import UUID
 
 from autotunex.core.exceptions import ConfigurationNotFoundError, DomainValidationError
-from autotunex.db.repositories.protocols import ConfigurationRepository
+from autotunex.db.repositories.protocols import ConfigurationRepository, TunedModelRepository
 from autotunex.models.auth import Principal
 from autotunex.models.common import DataScope
 from autotunex.models.estimation import EstimateUsagesRequest, EstimateUsagesResponse
 from autotunex.models.job import ONLINE_RL_TUNER_TYPES
-from autotunex.services.scoping import sees_nothing
+from autotunex.services.mappers import tuned_model_to_summary
+from autotunex.services.scoping import resolve_owner_filter, sees_nothing
+from autotunex.services.storage.hf_hub import is_allowlisted
 
 _PARAM_COUNT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)([bBmM])")
+
+_TUNED_MODEL_NAME = re.compile(r"autotunex_[0-9a-f]{8}")
+"""A tuned model's repo name, ``autotunex_<first 8 hex of the job id>`` (``launch/spec.py``).
+
+Checked before :data:`_PARAM_COUNT_PATTERN`, which would read a size out of the
+hash (``autotunex_b482441b`` as 482,441B). Refusing just this shape, rather than
+tightening the size pattern, keeps names like ``gemma-3n-E2B`` and ``bloom-7b1``
+parsing.
+"""
 
 _GRANITE_4_MODEL_PARAMS: dict[str, float] = {
     "ibm-granite/granite-4.0-micro": 3.0,
@@ -60,6 +77,8 @@ _USE_LORA = True
 _ZERO_STAGE = 3
 _USE_GRADIENT_CHECKPOINTING = True
 
+_TUNED_MODEL_PAGE_SIZE = 100
+
 
 def parse_model_parameters(model_name: str) -> float | None:
     """Return a model's parameter count in billions, parsed from its name.
@@ -68,8 +87,12 @@ def parse_model_parameters(model_name: str) -> float | None:
     e.g. ``"Llama-2-7b"`` -> ``7.0``, ``"some-500m-model"`` -> ``0.5``. Falls
     back to :data:`_GRANITE_4_MODEL_PARAMS` for Granite 4.0 hybrid models,
     whose names carry no parseable size suffix. Returns ``None`` when neither
-    yields a size — the caller treats that as an unparseable model name.
+    yields a size — the caller treats that as an unparseable model name —
+    and for a tuned model's name (:data:`_TUNED_MODEL_NAME`), whose hash holds
+    no size.
     """
+    if _TUNED_MODEL_NAME.fullmatch(model_name.rsplit("/", 1)[-1]):
+        return None
     match = _PARAM_COUNT_PATTERN.search(model_name)
     if match:
         value = float(match.group(1))
@@ -214,31 +237,60 @@ class EstimationService:
     or an unsaved one supplied inline on the request. The inline path never
     touches the database, so ``configuration_repository`` may be ``None`` for
     a caller that only ever exercises that path (see the service's tests).
+    Likewise, without a ``tuned_model_repository`` a tuned model's name is
+    parsed as-is rather than resolved to its base model.
     """
 
     def __init__(
-        self, configuration_repository: ConfigurationRepository | None, principal: Principal
+        self,
+        configuration_repository: ConfigurationRepository | None,
+        principal: Principal,
+        tuned_model_repository: TunedModelRepository | None = None,
+        namespaces: Sequence[str] = (),
     ) -> None:
-        """Store the collaborators used to resolve a saved configuration's data."""
+        """Store the collaborators used to resolve a saved configuration and a tuned model."""
         self._configuration_repository = configuration_repository
         self._principal = principal
+        self._tuned_model_repository = tuned_model_repository
+        self._namespaces = list(namespaces)
 
-    async def estimate(self, request: EstimateUsagesRequest) -> EstimateUsagesResponse:
+    async def estimate(
+        self, request: EstimateUsagesRequest, *, scope: DataScope = DataScope.OWN
+    ) -> EstimateUsagesResponse:
         """Return the memory/GPU estimate for ``request``.
 
+        ``scope`` governs both reads — the saved configuration and the tuned
+        model — like every other owner-scoped read: own rows by default, and an
+        admin's ``scope=all`` reaches another owner's, as picked from
+        ``GET /jobs/tuned-models?scope=all``.
+
         Raises:
-            DomainValidationError: ``request.model_name`` has no parseable
-                parameter count.
+            ScopeNotPermittedError: a non-admin requested ``scope=all``.
+            DomainValidationError: ``request.model_name`` — or the base model it
+                resolves to — has no parseable parameter count, or is a tuned
+                model not visible to the caller under ``scope``.
             ConfigurationNotFoundError: ``request.config_id`` does not resolve
                 to a configuration visible to the caller.
         """
-        model_size = parse_model_parameters(request.model_name)
+        owner_id = resolve_owner_filter(self._principal, scope)
+        no_identity = sees_nothing(self._principal, scope)
+        model_name = await self._resolve_base_model(
+            request.model_name, owner_id=owner_id, no_identity=no_identity
+        )
+        model_size = parse_model_parameters(model_name)
         if model_size is None:
+            if _TUNED_MODEL_NAME.fullmatch(model_name.rsplit("/", 1)[-1]):
+                raise DomainValidationError(
+                    f"Unable to resolve the base model of tuned model {model_name}: "
+                    f"it is not one of the tuned models visible under scope={scope}"
+                )
             raise DomainValidationError(
-                f"Unable to parse model parameters from model name: {request.model_name}"
+                f"Unable to parse model parameters from model name: {model_name}"
             )
 
-        config_data, tuner_type, rl_tuner_type = await self._resolve_config_source(request)
+        config_data, tuner_type, rl_tuner_type = await self._resolve_config_source(
+            request, owner_id=owner_id, no_identity=no_identity
+        )
         config_data = config_data or {}
 
         precision = _dig(config_data, "training_config", "precision", "default")
@@ -265,29 +317,86 @@ class EstimationService:
 
         return EstimateUsagesResponse(**result)
 
+    async def _resolve_base_model(
+        self, model_name: str, *, owner_id: UUID | None, no_identity: bool
+    ) -> str:
+        """Return the base model behind ``model_name`` when it is the caller's tuned model.
+
+        Follows the chain, since a tuned model may itself have been tuned from one
+        (GRPO on top of the caller's own SFT). Any name that is not one of the
+        caller's tuned models — a HuggingFace model, or another owner's output —
+        comes back unchanged. The ``seen`` set only guards against a cycle in
+        pipeline-written rows.
+        """
+        seen: set[str] = set()
+        while model_name not in seen:
+            seen.add(model_name)
+            base_model = await self._tuned_model_base(
+                model_name, owner_id=owner_id, no_identity=no_identity
+            )
+            if base_model is None:
+                break
+            model_name = base_model
+        return model_name
+
+    async def _tuned_model_base(
+        self, repo_id: str, *, owner_id: UUID | None, no_identity: bool
+    ) -> str | None:
+        """Return the base model of the tuned model ``repo_id`` visible to the caller, or ``None``.
+
+        Reads through the same query as ``GET /jobs/tuned-models``, and applies
+        the same case-sensitive :func:`~autotunex.services.storage.hf_hub.is_allowlisted`
+        owner rule, so exactly the models the wizard offers resolve, scoped like the
+        saved-configuration read (see :meth:`_resolve_config_source` for why an
+        identity-less caller must not reach the unscoped branch). Checking the rule
+        first also skips the query for a name that cannot be a tuned model — any
+        HuggingFace base model outside the allowlist. ``q`` is a substring search that also
+        matches jobs whose own ``model`` is ``repo_id`` — the ones tuned on top of
+        it — so every page is scanned for the exact repo id.
+        """
+        repository = self._tuned_model_repository
+        if repository is None or no_identity or not is_allowlisted(repo_id, self._namespaces):
+            return None
+        offset = 0
+        while True:
+            rows, total = await repository.tuned_models(
+                namespaces=self._namespaces,
+                limit=_TUNED_MODEL_PAGE_SIZE,
+                offset=offset,
+                owner_id=owner_id,
+                q=repo_id,
+            )
+            for job, finished_at, uri in rows:
+                summary = tuned_model_to_summary(job, finished_at, uri)
+                if summary.repo_id == repo_id:
+                    return summary.base_model
+            offset += _TUNED_MODEL_PAGE_SIZE
+            if not rows or offset >= total:
+                return None
+
     async def _resolve_config_source(
-        self, request: EstimateUsagesRequest
+        self, request: EstimateUsagesRequest, *, owner_id: UUID | None, no_identity: bool
     ) -> tuple[dict[str, Any] | None, str | None, str | None]:
         """Return ``(config_data, tuner_type, rl_tuner_type)`` for ``request``.
 
-        Reads a saved configuration when ``config_id`` is set, scoped to the
-        caller's own configurations plus the shared system tier
-        (``include_shared=True``); otherwise passes through the inline fields,
-        which :class:`EstimateUsagesRequest` already validated to be present
-        exactly when ``config_id`` is not.
+        Reads a saved configuration when ``config_id`` is set, scoped to
+        ``owner_id`` — the caller's own configurations plus the shared system
+        tier (``include_shared=True``), or every owner's for an admin's
+        ``scope=all`` (``owner_id=None``); otherwise passes through the inline
+        fields, which :class:`EstimateUsagesRequest` already validated to be
+        present exactly when ``config_id`` is not.
 
-        The endpoint exposes no ``scope`` parameter, so this read is *always*
-        own-scope — there is no admin cross-user widening to resolve, and
-        :func:`~autotunex.services.scoping.sees_nothing` therefore reduces to
-        "has the caller an identity to filter by at all?". Asking it is what
-        makes the scoping real rather than incidental:
+        ``no_identity`` is :func:`~autotunex.services.scoping.sees_nothing`'s
+        answer — under the default own scope, "has the caller an identity to
+        filter by at all?". Asking it is what makes the scoping real rather
+        than incidental:
         :meth:`ConfigurationRepository.get` applies its ownership predicate only
         when ``owner_id is not None``, since ``None`` is the deliberate
         admin-``scope=all`` unscoped view. An *unprovisioned* caller — a real
         provider's verified email with no ``users`` row while
         ``auto_provision_users`` is off — carries ``user_id=None`` and so reached
         that unscoped branch by accident, reading any owner's ``config_data``
-        through an endpoint that has no cross-user view to speak of.
+        through an endpoint whose cross-user view is an admin's ``scope=all``.
         ``include_shared`` did not cover it: it widens an already-scoped query and
         is ignored outright when ``owner_id`` is ``None``.
 
@@ -303,12 +412,10 @@ class EstimationService:
             repository = self._configuration_repository
             if repository is None:
                 raise ConfigurationNotFoundError(request.config_id)
-            if sees_nothing(self._principal, DataScope.OWN):
+            if no_identity:
                 raise ConfigurationNotFoundError(request.config_id)
 
-            config = await repository.get(
-                request.config_id, owner_id=self._principal.user_id, include_shared=True
-            )
+            config = await repository.get(request.config_id, owner_id=owner_id, include_shared=True)
             if config is None:
                 raise ConfigurationNotFoundError(request.config_id)
 

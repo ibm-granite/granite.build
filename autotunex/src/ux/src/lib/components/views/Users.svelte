@@ -16,6 +16,16 @@
 	let users: User[] = [];
 	let loaded = false;
 
+	// Carbon sorts on the raw cell value, and its comparator puts null/undefined
+	// *first* under a descending sort — so a user who has never logged in would
+	// top a "most recent login first" table. Sort on an epoch instead: 0 for
+	// never, which lands last descending and first ascending (oldest), which is
+	// what the column means in both directions.
+	$: userRows = users.map((user) => ({
+		...user,
+		last_login_at: user.last_login_at ? new Date(user.last_login_at).getTime() : 0
+	}));
+
 	// Role-change confirm modal state.
 	let modalOpen = false;
 	let roleSaving = false;
@@ -43,10 +53,11 @@
 		{
 			key: 'last_login_at',
 			value: 'Last login on',
-			// Null when the backend holds no record of a login for this user at all.
-			// An em dash, not a fabricated date: `new Date(null)` is the 1970 epoch,
-			// which would read as a real (and very wrong) login.
-			display: (date: Date | null) => (date ? new Date(date).toLocaleString() : '—')
+			// The value is an epoch (see `userRows`), so 0 means the backend holds no
+			// record of a login for this user at all. An em dash, not a fabricated
+			// date: `new Date(0)` is the 1970 epoch, which would read as a real (and
+			// very wrong) login.
+			display: (epochMs: number) => (epochMs ? new Date(epochMs).toLocaleString() : '—')
 		},
 		{ key: 'action', empty: true }
 	];
@@ -102,7 +113,9 @@
 		entities="Users"
 		description="Manage users and their roles."
 		headers={userHeaders}
-		rows={users}
+		rows={userRows}
+		sortKey="last_login_at"
+		sortDirection="descending"
 		expandable={false}
 		selectable={false}
 		batchSelection={false}
@@ -110,26 +123,33 @@
 	>
 		<svelte:fragment slot="cell" let:cell let:row>
 			{#if cell.key === 'action'}
-				{#if row.email === $currentUser?.email}
-					<Tag type="cool-gray">You</Tag>
-				{:else}
-					<Button kind="ghost" size="small" on:click={() => openRoleModal(row)}>
-						{row.role === 'admin' ? 'Make user' : 'Make admin'}
-					</Button>
-					{#if capabilities.impersonation}
-						<Button
-							kind="ghost"
-							size="small"
-							disabled={row.id === $currentUser?.user_id}
-							on:click={async () => {
-								await api.assumeUser(row.id);
-								window.location.reload();
-							}}
-						>
-							Assume
+				<!-- One centring wrapper for the whole column, so the "You" tag and the
+				     action buttons line up with each other instead of the tag hugging the
+				     left edge. `text-align` rather than flex centring on purpose: the two
+				     buttons are separated only by the whitespace text node between them,
+				     which a flex container would discard and close the gap. -->
+				<div class="action-cell">
+					{#if row.email === $currentUser?.email}
+						<Tag type="cool-gray">You</Tag>
+					{:else}
+						<Button kind="ghost" size="small" on:click={() => openRoleModal(row)}>
+							{row.role === 'admin' ? 'Make user' : 'Make admin'}
 						</Button>
+						{#if capabilities.impersonation}
+							<Button
+								kind="ghost"
+								size="small"
+								disabled={row.id === $currentUser?.user_id}
+								on:click={async () => {
+									await api.assumeUser(row.id);
+									window.location.reload();
+								}}
+							>
+								Assume
+							</Button>
+						{/if}
 					{/if}
-				{/if}
+				</div>
 			{:else}
 				{cell.display ? cell.display(cell.value, row) : cell.value}
 			{/if}
@@ -155,3 +175,9 @@
 {:else}
 	<DataTableSkeleton />
 {/if}
+
+<style>
+	.action-cell {
+		text-align: center;
+	}
+</style>
