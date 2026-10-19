@@ -36,5 +36,7 @@ if [ ! -d "${nemo_rl_root}/examples" ]; then
 fi
 
 # Output locations the run phase writes into (results for checkpoints, logs for
-# TensorBoard, hf_output for the converted model). Created once; run reuses them.
-mkdir -p ./results ./logs ./hf_output
+# TensorBoard). Created once; run reuses them. hf_output is deliberately NOT
+# created here: convert_dcp_to_hf.py raises FileExistsError if --hf-ckpt-path
+# already exists, so the converter must create it itself at run time.
+mkdir -p ./results ./logs

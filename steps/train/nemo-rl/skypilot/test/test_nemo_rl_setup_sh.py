@@ -52,7 +52,16 @@ class TestSetup:
         assert proc.returncode == 0, proc.stderr
         assert (workdir / "results").is_dir()
         assert (workdir / "logs").is_dir()
-        assert (workdir / "hf_output").is_dir()
+
+    def test_does_not_precreate_hf_output(self, tmp_path):
+        # convert_dcp_to_hf.py (run phase) raises FileExistsError if --hf-ckpt-path
+        # already exists, so setup must NOT pre-create hf_output — the converter
+        # creates it itself. Pre-creating it here is what broke the real e2e.
+        root = tmp_path / "nemo-rl"
+        (root / "examples").mkdir(parents=True)
+        proc, workdir = _run(tmp_path, root)
+        assert proc.returncode == 0, proc.stderr
+        assert not (workdir / "hf_output").exists()
 
     def test_fails_loudly_when_image_lacks_examples(self, tmp_path):
         root = tmp_path / "nemo-rl"
