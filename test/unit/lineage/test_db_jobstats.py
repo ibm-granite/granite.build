@@ -42,8 +42,7 @@ from gbserver.lineage.decompose import LineageRowDraft
 from gbserver.lineage.row_indexing import LineageRowIndexer
 from gbserver.lineage.row_indexing import row_from_draft as _row_from_draft
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
-from gbserver.storage.stored_lineage_row import StoredLineageRow
-from gbserver.storage.stored_lineage_row import TERMINAL
+from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("SKIP_SQL_ADMIN_TESTS", "False").lower() == "true",
