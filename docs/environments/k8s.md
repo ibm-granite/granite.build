@@ -72,7 +72,7 @@ The K8s environment ships Kubernetes-aware retry strategies, applied when `retry
 | Strategy | Handles |
 |----------|---------|
 | `UnhealthyInsufficientPods` | Pods that never become healthy / insufficient scheduled pods. |
-| `PodEviction` | Pod evictions (preemption, node pressure). |
+| `PodEviction` | An AppWrapper that `Failed` only because the cluster disrupted its pods (scheduler preemption, drain, node-pressure eviction, node taint). Relaunched even when step retry is disabled, up to `max_preemptions` times (default `GBSERVER_MAX_PREEMPTIONS`, 5). |
 | `NCCLError` | NCCL / distributed-training communication failures. |
 | `Aspera` | Aspera asset-transfer failures (when `dmf.use_aspera` is enabled). |
 
