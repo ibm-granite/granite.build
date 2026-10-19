@@ -16,6 +16,15 @@ config:
   # Applied as AUTODOWN on Kubernetes; see skypilot/kubernetes/environment.yaml.
   idle_minutes_to_autostop: 15
   shared_workdir: /shared
+  # The hf pull/push steps' step.yaml asks for 10Gi each; several run at once
+  # and at that size they don't fit on one kind node. A launcher resources
+  # memory outranks the step's compute_config floor. It is a pod request, not a
+  # limit, so a larger download can still use more memory if the node has it.
+  steps:
+    hfpull:
+      launcher_config: { resources: { memory: "1+" } }
+    hfpush:
+      launcher_config: { resources: { memory: "1+" } }
   # Deep-merged into ~/.sky/config.yaml at launch (as skypilot/aws does for its
   # credentials profile). Two things, both about WHICH cluster and HOW pods run:
   cloud_config:

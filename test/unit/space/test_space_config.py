@@ -8,6 +8,7 @@ consumed by `gbserver standalone` and the build tests).
 
 import pathlib
 
+import pytest
 import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -177,6 +178,25 @@ class TestSkyKubeLocalEnvironmentYaml:
         (container,) = spec["containers"]
         assert container["name"] == "ray-node"
         assert container["imagePullPolicy"] == "IfNotPresent"
+
+    @pytest.mark.parametrize("step", ["hfpull", "hfpush"])
+    def test_hf_steps_request_less_than_their_10gi_default(self, step):
+        """config.steps outranks the step.yaml floor once the config layers merge."""
+        from gbserver.build.targetstep import _seed_step_config_with_env_defaults
+        from gbserver.utils.filesystem import merge_dicts
+
+        step_yaml = (
+            REPO_ROOT / "src/gbserver/builtins/steps/skypilot" / step / "step.yaml"
+        )
+        step_config = yaml.safe_load(step_yaml.read_text())["config"]
+        assert step_config["compute_config"]["total_memory_per_node"] == "10Gi"
+        merged = merge_dicts(
+            _seed_step_config_with_env_defaults(
+                self._load()["config"], f"space://steps/{step}", {}
+            ),
+            step_config,
+        )
+        assert merged["launcher_config"]["resources"]["memory"] == "1+"
 
     def test_shared_workdir_and_hf_cache_live_on_the_volume(self):
         data = self._load()
