@@ -227,7 +227,9 @@ fi
 if [ -n "$hf_output_repo" ]; then
   (
     cd "$nemo_rl_root"
-    uv run huggingface-cli upload "$hf_output_repo" "$hf_dir"
+    # `hf`, not `huggingface-cli`: the image's huggingface_hub removed the old
+    # CLI ("deprecated and no longer works"). "." uploads to the repo root.
+    uv run hf upload "$hf_output_repo" "$hf_dir" .
   )
 fi
 

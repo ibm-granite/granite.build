@@ -364,6 +364,31 @@ class TestConversionAndMarker:
         assert marker is not None, proc.stdout
         assert marker.startswith("GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:/")
 
+    def test_pushes_hf_dir_with_hf_cli(self, tmp_path):
+        # The image's huggingface_hub removed `huggingface-cli` ("deprecated and
+        # no longer works. Use `hf` instead."), so the push must use `hf upload`,
+        # with an explicit "." path_in_repo so the HF dir's contents land at the
+        # repo root.
+        proc, runs, work = _run(
+            tmp_path,
+            ["--base-model", "/staged/base", "--hf-output-repo", "org/model"],
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert not any("huggingface-cli" in w for r in runs for w in r)
+        up = next(r for r in runs if "upload" in r)
+        i = up.index("hf")
+        assert up[i : i + 5] == [
+            "hf",
+            "upload",
+            "org/model",
+            str(work / "hf_output"),
+            ".",
+        ]
+
+    def test_no_push_without_hf_output_repo(self, tmp_path):
+        _, runs, _ = _run(tmp_path, ["--base-model", "/staged/base"])
+        assert not any("upload" in r for r in runs)
+
     def test_errors_when_no_checkpoint(self, tmp_path):
         proc, runs, _ = _run(
             tmp_path, ["--base-model", "/staged/base"], make_ckpt=False

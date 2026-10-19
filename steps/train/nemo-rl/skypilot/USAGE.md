@@ -41,7 +41,7 @@ All fields live under the step's `config.nemo_rl_config`.
 | `dataset_override_key` | string | no | The Hydra key a **bound** `dataset`'s path is injected under (e.g. `data.train.input_file`). Required *if and only if* you bind a `dataset` — NeMo-RL data configs have no single universal path field, so you name it. Leave empty to use the config's built-in dataset. |
 | `clearml_enabled` | string | no | `auto` (default — on iff `CLEARML_*` server creds are present), `true` (force on), or `false` (hard off: `clearml` is never imported). |
 | `clearml_project` / `clearml_task_name` | string | no | ClearML grouping. Only used when ClearML is enabled. |
-| `hf_output_repo` | string | no | Optional push target — the converted HF model is also uploaded here via `huggingface-cli upload`. |
+| `hf_output_repo` | string | no | Optional push target — the converted HF model is also uploaded here via `hf upload`. |
 
 ## Inputs
 

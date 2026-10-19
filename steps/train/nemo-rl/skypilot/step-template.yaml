@@ -36,7 +36,7 @@ config:
     clearml_enabled: "auto"
     clearml_project: ""
     clearml_task_name: ""
-    # Optional push target for the converted HF model (huggingface-cli upload).
+    # Optional push target for the converted HF model (hf upload).
     hf_output_repo: ""
   compute_config:
     # Iteration 1 is single-node, multi-GPU only; the guard rejects num_nodes != 1.
