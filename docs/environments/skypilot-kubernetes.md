@@ -27,8 +27,9 @@ ways to supply them:
   local kind cluster. For a full setup walkthrough, including the SkyPilot SSH-node-pool / RBAC
   requirements, see [setup/skypilot-kubernetes-setup.md](setup/skypilot-kubernetes-setup.md).
 - **From the environment, with `kube_configs`:** each entry names a context and a space secret holding a
-  kubeconfig that defines it. The context must also be pinned in `cloud_config.kubernetes.allowed_contexts`;
-  loading the environment fails otherwise.
+  kubeconfig that defines it. The context must also be pinned in `cloud_config.kubernetes.allowed_contexts`
+  (or the active workspace's `workspaces.<name>.kubernetes.allowed_contexts`); the environment's first setup
+  or launch fails otherwise.
 
   ```yaml
   config:
@@ -42,17 +43,24 @@ ways to supply them:
   ```
 
   gbserver merges each context, with the cluster and user it names, into its own
-  `~/.sky/gbserver-kubeconfig` (mode 0600) and puts that file first on `KUBECONFIG` in its process. Your
-  own kubeconfig is never edited, and its contexts stay usable.
+  `~/.sky/gbserver-kubeconfig` (mode 0600) and puts that file first on `KUBECONFIG` in its process. The
+  cluster and user are renamed `gbserver/<context>`, so a secret's generic names (`default`, say) can never
+  shadow a same-named cluster or user in your kubeconfig. Your own kubeconfig is never edited, and its
+  contexts stay usable.
 
-  - **Collisions are refused.** A context already written by another environment, or one of the same name
-    in your own kubeconfig, is refused (`SkypilotConfigCollisionError`) unless the definitions match; an
-    environment re-writing its own entry replaces it, e.g. a rotated token.
+  - **Collisions are refused.** A context of the same name in your own kubeconfig, or one already written
+    differently by another environment, is refused (`SkypilotConfigCollisionError`). An identical context is
+    shared and stays owned by the environment that wrote it first; an environment re-writing its own entry
+    replaces it, e.g. a rotated token.
   - **Nothing is removed while gbserver runs**, so every environment's builds can still poll and tear down.
 
   Limits:
-  - **Local API server only.** The SkyPilot client forwards `KUBECONFIG` to a local API server; a remote
-    one uses its own kubeconfig.
+  - **Local API server only.** The SkyPilot client forwards `KUBECONFIG` to a local API server with each
+    request; a remote one uses its own kubeconfig. The API server's own background jobs (e.g. its periodic
+    status refresh) use the environment the server was *started* with, so they don't see these contexts;
+    gbserver's own requests do.
+  - **`remote_identity: LOCAL_CREDENTIALS`** uploads the whole merged kubeconfig to the pods, gbserver's
+    entries and your own. The Kubernetes default, `SERVICE_ACCOUNT`, uploads none.
   - **Exec-based auth plugins** (e.g. `aws eks get-token`) need their binary installed on the gbserver host.
 
 ### No `cluster_ssh_configs` or `aws_credentials`
