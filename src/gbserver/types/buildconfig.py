@@ -133,6 +133,17 @@ class BuildTargetInputMetadataConfig(Config):
     other_locations: List[str] = Field(default_factory=list)
 
 
+class BuildTargetInputLoadConfig(Config):
+    """Load configuration for a ``uri`` input (build.yaml ``store_load`` block).
+
+    Attributes:
+        config: Store-specific load configuration. ``compute_config`` overrides
+            the injected pull step's (e.g. hfpull's ``total_memory_per_node``).
+    """
+
+    config: Dict = Field(default_factory=dict)
+
+
 class BuildTargetInputConfig(Config):
     """Input Artifact definition"""
 
@@ -142,6 +153,7 @@ class BuildTargetInputConfig(Config):
     # If True, the target will wait for push to be finished before triggering
     wait_for_push: Optional[bool] = False
     event: Optional[str] = None
+    store_load: Optional[BuildTargetInputLoadConfig] = None
 
     def get_binding_parts(self: Self) -> List[str]:
         """
@@ -184,6 +196,7 @@ class BuildTargetOutputPushConfig(Config):
             from the output ``uri`` scheme.
         config: Store-specific push configuration, keyed by store (e.g. the
             ``hf`` block for HuggingFace). Interpreted by the store's push path.
+            ``compute_config`` overrides the injected push step's.
     """
 
     mode: Optional[str] = None

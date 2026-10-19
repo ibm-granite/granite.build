@@ -9,15 +9,22 @@ granite.build:
           # pulls it with a separate hfpull step into /shared/hf_cache on the shared
           # volume every pod mounts — the slurm model.
           uri: hf:///datasets/ibm-research/vira-intents-live
+          # The injected hfpull step's compute_config; its step.yaml default
+          # (10Gi) is far more than this small dataset needs.
+          store_load: {config: {compute_config: {total_memory_per_node: 1Gi}}}
       outputs:
         # hf:// outputs exercise hfpush on kube: each push is a separate hfpush pod,
         # so it reads the artifact from the shared volume, not from this pod. The
         # placeholders are filled per run by libgbtest.hfpush (org + run suffix),
         # which then checks each dataset landed on the Hub and deletes it.
+        # Same for each hfpush pod: several run at once, and at 10Gi each they
+        # do not all fit on the kind node.
         output_model1:
           uri: hf://huggingface.co/datasets/__GBTEST_HF_PUSH_ORG__/skypilot-kube-hf-test1___GBTEST_HF_PUSH_RUN__
+          store_push: {config: {compute_config: {total_memory_per_node: 1Gi}}}
         output_model2:
           uri: hf://huggingface.co/datasets/__GBTEST_HF_PUSH_ORG__/skypilot-kube-hf-test2___GBTEST_HF_PUSH_RUN__
+          store_push: {config: {compute_config: {total_memory_per_node: 1Gi}}}
         env_output:
           uri: "env:///tmp/gb-env-output.txt"
           type: fileset

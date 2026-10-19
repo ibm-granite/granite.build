@@ -2279,9 +2279,12 @@ class K8s(Environment):
         binding_config = {BINDING_KEY: {"path": str(Path(binding_path))}}
         hfpull_stepuri = storeload_config.config.get("step_uri", "space://steps/hfpull")
 
+        pull_config = {"hfpull_config": hfpull_config}
+        Hfstore.apply_compute_config_override(
+            pull_config, Hfstore.store_load_config(kwargs.get("input_config"))
+        )
         pull_step_config = BuildTargetStepConfig(
-            step_uri=hfpull_stepuri,
-            config={"hfpull_config": hfpull_config},
+            step_uri=hfpull_stepuri, config=pull_config
         )
 
         return binding_config, pull_step_config
@@ -2364,9 +2367,11 @@ class K8s(Environment):
             and "step_uri" in storepush_config.config
         ):
             hfpush_stepuri = storepush_config.config["step_uri"]
-        return BuildTargetStepConfig(
-            step_uri=hfpush_stepuri, config={"hfpush_config": hfpush_config}
+        push_config = {"hfpush_config": hfpush_config}
+        Hfstore.apply_compute_config_override(
+            push_config, Hfstore.store_push_config(output_config)
         )
+        return BuildTargetStepConfig(step_uri=hfpush_stepuri, config=push_config)
 
     async def pullasset_lhstore(
         self: Self,

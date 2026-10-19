@@ -63,7 +63,11 @@ from gbserver.asset.asset import Asset
 from gbserver.asset.assetstore import Assetstore
 from gbserver.messaging.messaging_base import MessagingBase
 from gbserver.types.artifact import ArtifactType
-from gbserver.types.buildconfig import BuildTargetOutputConfig, BuildTargetStepConfig
+from gbserver.types.buildconfig import (
+    BuildTargetInputConfig,
+    BuildTargetOutputConfig,
+    BuildTargetStepConfig,
+)
 from gbserver.types.buildevent import (
     ArtifactEventPayload,
     ArtifactPushedEventPayload,
@@ -1500,9 +1504,17 @@ class Environment(ABC):
             )
 
     def pullasset(
-        self: Self, task_group: TaskGroup, uri: URI, binding: Optional[Any] = None
+        self: Self,
+        task_group: TaskGroup,
+        uri: URI,
+        binding: Optional[Any] = None,
+        input_config: Optional[BuildTargetInputConfig] = None,
     ) -> Task[Tuple[Dict, Optional[BuildTargetStepConfig]]]:
-        """Pull an asset and make it available in the environment for the workload."""
+        """Pull an asset and make it available in the environment for the workload.
+
+        ``input_config`` is the build.yaml input; store handlers read its
+        ``store_load`` (as ``pushasset`` passes ``output_config``).
+        """
 
         async def pullasset_as_binding() -> (
             Tuple[Dict, Optional[BuildTargetStepConfig]]
@@ -1541,6 +1553,7 @@ class Environment(ABC):
                     storeload_config=storeload_config,
                     assetstore=assetstore,
                     secrets=assetstore.get_secrets(),
+                    input_config=input_config,
                 )
                 self.asset_bindings[uristr] = local_binding
                 return local_binding, targetrun_config

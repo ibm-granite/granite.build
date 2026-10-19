@@ -87,6 +87,7 @@ inputs:
 | `wait_for_push`  | bool    | no                 | `false` | If `true`, wait for the upstream's push to complete before starting. |
 | `event`          | string  | no                 | —       | Event-driven trigger (e.g. `evalresults.success`); fires this target only when an upstream emits the event. |
 | `metadata`       | object  | no                 | —       | Runtime-populated; usually omitted in user YAML. |
+| `store_load`     | object  | no                 | —       | For a `uri` input pulled by an injected step (e.g. `hf://` → hfpull): `config.compute_config` overrides that step's `compute_config`. See [Pull/push step resources](#pullpush-step-resources). |
 
 A bound input must reference an existing target name and an output name on
 that target — `BuildConfig.my_validate()` will reject the build otherwise.
@@ -154,13 +155,34 @@ and [Asset stores — In-memory](../asset-stores/README.md#store-types-and-uri-s
 | Field    | Type   | Required | Notes |
 |----------|--------|----------|-------|
 | `mode`   | string | no       | Rarely needed — the store is inferred from the output `uri` scheme. Honored only by k8s; ignored (deprecation warning) elsewhere. |
-| `config` | object | no       | Store-specific (e.g. `hf.public`, `hf.resource_group_id`, `hf.resource_group_name`, `hf.use_resource_group`). |
+| `config` | object | no       | Store-specific (e.g. `hf.public`, `hf.resource_group_id`, `hf.resource_group_name`, `hf.use_resource_group`). `compute_config` overrides the injected push step's; see [Pull/push step resources](#pullpush-step-resources). |
 
 For HuggingFace specifically, see [`hf-push.md`](hf-push.md) — it documents
 the full URI format, resource-group resolution, the Enterprise vs
 non-Enterprise organization split (including `hf.use_resource_group`), and the
 relationship between `store_push` here and the environment-level `store_push`
 block.
+
+### Pull/push step resources
+
+`hf://` inputs and outputs are moved by steps gbserver adds to the target (hfpull, hfpush), which
+are not in its `steps:` list. Their resources come from the step's `step.yaml` (e.g.
+`total_memory_per_node: 10Gi`). To size one for a single input or output, set `compute_config`
+under its `store_load` / `store_push`; it overrides the step's keys one by one (others are kept):
+
+```yaml
+inputs:
+  input_model:
+    uri: hf:///datasets/ibm-research/vira-intents-live
+    store_load: {config: {compute_config: {total_memory_per_node: 1Gi}}}
+outputs:
+  model:
+    uri: hf://huggingface.co/my-org/my-model
+    store_push: {config: {compute_config: {total_memory_per_node: 1Gi}}}
+```
+
+Honored by the SkyPilot, K8s and LSF environments. On SkyPilot SLURM/LSF the memory floor is not
+sent to the scheduler, so `total_memory_per_node` has no effect there.
 
 ### `event_selectors`
 

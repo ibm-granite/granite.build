@@ -18,7 +18,7 @@
 
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Self, Union
+from typing import Any, Dict, List, Optional, Self, Union
 
 from huggingface_hub import create_repo, upload_file, upload_folder
 
@@ -218,3 +218,33 @@ class Hfstore(Assetstore):
                 "type": hf_type,
             },
         }
+
+    @staticmethod
+    def apply_compute_config_override(
+        step_config: Dict, store_config: Optional[Dict]
+    ) -> None:
+        """Copy a build.yaml ``compute_config`` onto an injected hfpull/hfpush step.
+
+        The injected step's config is its build layer, so this outranks the
+        step.yaml default (e.g. ``total_memory_per_node: 10Gi``).
+
+        Args:
+            step_config: The injected step's ``config`` dict (mutated).
+            store_config: The input's ``store_load.config`` or the output's
+                ``store_push.config``, or ``None``.
+        """
+        compute_config = (store_config or {}).get("compute_config")
+        if compute_config:
+            step_config["compute_config"] = dict(compute_config)
+
+    @staticmethod
+    def store_load_config(input_config: Any) -> Optional[Dict]:
+        """The build.yaml input's ``store_load.config``, or ``None``."""
+        store_load = getattr(input_config, "store_load", None)
+        return store_load.config if store_load is not None else None
+
+    @staticmethod
+    def store_push_config(output_config: Any) -> Optional[Dict]:
+        """The build.yaml output's ``store_push.config``, or ``None``."""
+        store_push = getattr(output_config, "store_push", None)
+        return store_push.config if store_push is not None else None

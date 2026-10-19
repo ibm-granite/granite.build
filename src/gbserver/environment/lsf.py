@@ -1707,13 +1707,16 @@ class Lsf(Environment):
         lsf_dict, workload_dict = self._load_builtin_hf_lsf_section(
             HFPULL_STEP_NAME, hf_metadata
         )
+        pull_config = {
+            "lsf": lsf_dict,
+            "workload": workload_dict,
+            "hfpull_config": hfpull_config,
+        }
+        Hfstore.apply_compute_config_override(
+            pull_config, Hfstore.store_load_config(kwargs.get("input_config"))
+        )
         return binding_config, BuildTargetStepConfig(
-            step_uri=hfpull_stepuri,
-            config={
-                "lsf": lsf_dict,
-                "workload": workload_dict,
-                "hfpull_config": hfpull_config,
-            },
+            step_uri=hfpull_stepuri, config=pull_config
         )
 
     async def pushasset_hfstore(
@@ -1805,14 +1808,15 @@ class Lsf(Environment):
         lsf_dict, workload_dict = self._load_builtin_hf_lsf_section(
             HFPUSH_STEP_NAME, hf_metadata
         )
-        return BuildTargetStepConfig(
-            step_uri=hfpush_stepuri,
-            config={
-                "lsf": lsf_dict,
-                "workload": workload_dict,
-                "hfpush_config": hfpush_config,
-            },
+        push_config = {
+            "lsf": lsf_dict,
+            "workload": workload_dict,
+            "hfpush_config": hfpush_config,
+        }
+        Hfstore.apply_compute_config_override(
+            push_config, Hfstore.store_push_config(output_config)
         )
+        return BuildTargetStepConfig(step_uri=hfpush_stepuri, config=push_config)
 
     def _load_builtin_cos_lsf_section(self: Self, cos_metadata: dict) -> dict:
         """Read the cosrclone builtin step YAML and return an lsf_section_dict
