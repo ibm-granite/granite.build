@@ -58,3 +58,7 @@ granite.build:
             compute_config:
               num_nodes: 1
               num_gpus_per_node: $${NUM_GPUS_PER_NODE}
+              # Required: the SkyPilot accelerator type for your endpoint. The
+              # step requests "<gpu_model>:<num_gpus_per_node>" GPUs and pins
+              # NeMo-RL's cluster.gpus_per_node to num_gpus_per_node.
+              gpu_model: "$${GPU_MODEL}"

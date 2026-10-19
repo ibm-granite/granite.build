@@ -170,6 +170,44 @@ class TestArgAssembly:
         )
         assert any(o.startswith("checkpointing.checkpoint_dir=") for o in ov)
 
+    def test_disables_wandb_by_default_before_user_overrides(self, tmp_path):
+        # The shipped configs (e.g. sft.yaml) default logger.wandb_enabled=True,
+        # which makes NeMo-RL call wandb.init() and abort with "No API key
+        # configured" — the step threads no WANDB_API_KEY, it tracks via
+        # tensorboard+ClearML. So wandb must be off by default. It is an
+        # OVERRIDABLE default (injected before "$@"), so a user who brings a key
+        # can re-enable it.
+        proc, runs, _ = _run(
+            tmp_path,
+            ["--base-model", "/staged/base", "--", "logger.wandb_enabled=true"],
+        )
+        assert proc.returncode == 0, proc.stderr
+        ov = _hydra_overrides(_train_argv(runs))
+        assert "logger.wandb_enabled=false" in ov
+        # Injected before the user override, so the user's `=true` wins.
+        assert ov.index("logger.wandb_enabled=false") < ov.index(
+            "logger.wandb_enabled=true"
+        )
+
+    def test_injects_cluster_gpus_per_node_when_given(self, tmp_path):
+        # sft.yaml defaults cluster.gpus_per_node=1, so without this the step
+        # would train on a single GPU even on a multi-GPU node. It is a FORCED
+        # override (after "$@"), so it wins over any user override, keeping the
+        # node's GPU count and NeMo-RL's cluster view in lockstep.
+        proc, runs, _ = _run(
+            tmp_path,
+            ["--base-model", "/staged/base", "--num-gpus-per-node", "4"],
+        )
+        assert proc.returncode == 0, proc.stderr
+        ov = _hydra_overrides(_train_argv(runs))
+        assert "cluster.gpus_per_node=4" in ov
+
+    def test_omits_cluster_gpus_per_node_when_absent(self, tmp_path):
+        proc, runs, _ = _run(tmp_path, ["--base-model", "/staged/base"])
+        assert proc.returncode == 0, proc.stderr
+        ov = _hydra_overrides(_train_argv(runs))
+        assert not any(o.startswith("cluster.gpus_per_node=") for o in ov)
+
     def test_injects_dataset_under_configured_key(self, tmp_path):
         proc, runs, _ = _run(
             tmp_path,

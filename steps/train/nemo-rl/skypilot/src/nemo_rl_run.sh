@@ -15,6 +15,7 @@
 # CONTRACT
 #   nemo_rl_run.sh --algorithm <a> --config-name <c> --nemo-rl-root <root> \
 #                  --base-model <path> [--dataset <path> --dataset-key <key>] \
+#                  [--num-gpus-per-node <n>] \
 #                  --artifact-id <id> --clearml-mode <auto|on|off> \
 #                  [--clearml-project <p>] [--clearml-task <t>] \
 #                  [--hf-output-repo <repo>] [--] [hydra overrides...]
@@ -29,6 +30,7 @@ nemo_rl_root=""
 base_model=""
 dataset=""
 dataset_key=""
+num_gpus_per_node=""
 artifact_id=""
 clearml_mode=""
 clearml_project=""
@@ -43,6 +45,7 @@ while [ "$#" -gt 0 ]; do
     --base-model)      base_model="$2";      shift 2 ;;
     --dataset)         dataset="$2";         shift 2 ;;
     --dataset-key)     dataset_key="$2";     shift 2 ;;
+    --num-gpus-per-node) num_gpus_per_node="$2"; shift 2 ;;
     --artifact-id)     artifact_id="$2";     shift 2 ;;
     --clearml-mode)    clearml_mode="$2";    shift 2 ;;
     --clearml-project) clearml_project="$2"; shift 2 ;;
@@ -109,10 +112,17 @@ esac
 # Injected first, user overrides ("$@") next, forced tail last. Hydra applies
 # overrides left-to-right, so the forced tail always wins: tensorboard must be on
 # for ClearML to mirror, and the checkpoint dir must be where discovery looks.
+#
+# wandb is disabled as an OVERRIDABLE default (injected before "$@"): the shipped
+# configs default logger.wandb_enabled=True, which makes NeMo-RL call wandb.init()
+# and abort with "No API key configured" — the step tracks via tensorboard+ClearML
+# and threads no WANDB_API_KEY. A user who brings a key can re-enable it by passing
+# logger.wandb_enabled=true, which lands after this and wins.
 overrides=("policy.model_name=${base_model}")
 if [ -n "$dataset" ]; then
   overrides+=("${dataset_key}=${dataset}")
 fi
+overrides+=("logger.wandb_enabled=false")
 # `"$@"` may be empty; the `+` guard keeps `set -u` happy on bash 3.2 too.
 overrides+=(${@+"$@"})
 overrides+=(
@@ -120,6 +130,13 @@ overrides+=(
   "checkpointing.checkpoint_dir=${results_dir}"
   "logger.log_dir=${logs_dir}"
 )
+# Pin NeMo-RL's cluster view to the node's GPU count. The shipped configs
+# default cluster.gpus_per_node=1 (sft.yaml), so without this a multi-GPU node
+# would still train on one GPU. Forced (after "$@") so it stays locked to the
+# same num_gpus_per_node that sized the SkyPilot accelerators request.
+if [ -n "$num_gpus_per_node" ]; then
+  overrides+=("cluster.gpus_per_node=${num_gpus_per_node}")
+fi
 
 # --- ClearML enablement, mirrored from clearml_launch.clearml_enabled -----------
 clearml_active=0

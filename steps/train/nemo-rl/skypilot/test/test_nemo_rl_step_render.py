@@ -70,13 +70,29 @@ def _cfg(nrl_defaults: dict, **over) -> dict:
     return base
 
 
+def _raise_error(msg):
+    """Mirror of gbserver's strict_env `raise_error` global (template.py).
+
+    The launcher-config fill uses the strict Jinja env, which exposes
+    `raise_error` so a template can fail the build at render time. The step's
+    accelerators value calls it when no GPU type is given.
+    """
+    raise ValueError(msg)
+
+
+# ComputeConfig always populates every field (model defaults), so a caller that
+# overrides one key still sees the rest — merge the override over this floor.
+_DEFAULT_COMPUTE = {"num_nodes": 1, "num_gpus_per_node": 8, "gpu_model": ""}
+
+
 def _render(source, nrl, compute=None, bindings=None) -> str:
     return jinja2.Template(source, undefined=jinja2.StrictUndefined).render(
         config={
             "nemo_rl_config": nrl,
-            "compute_config": compute or {"num_nodes": 1, "num_gpus_per_node": 8},
+            "compute_config": {**_DEFAULT_COMPUTE, **(compute or {})},
         },
         bindings=_BASE_BINDING if bindings is None else bindings,
+        raise_error=_raise_error,
     )
 
 
@@ -190,6 +206,32 @@ class TestGuardArgv:
         assert _opt(argv, "--num-nodes") == "2"
 
 
+class TestAccelerators:
+    """The step must translate compute_config into a SkyPilot `accelerators`
+    request. gbserver's launcher does NOT source GPUs from compute_config (they
+    flow via launcher_config.resources), so the step renders them here.
+    """
+
+    def test_accelerators_renders_type_and_count(self, launcher):
+        value = _render(
+            launcher["resources"]["accelerators"],
+            {},
+            compute={"num_nodes": 1, "num_gpus_per_node": 4, "gpu_model": "A10G"},
+        )
+        assert value == "A10G:4"
+
+    def test_accelerators_requires_gpu_model(self, launcher):
+        # Empty gpu_model would render accelerators="" which SkyPilot reads as
+        # {'': 1} — a request for a blank-named accelerator that silently
+        # provisions a CPU-only node. Fail at render time instead.
+        with pytest.raises(Exception):
+            _render(
+                launcher["resources"]["accelerators"],
+                {},
+                compute={"num_nodes": 1, "num_gpus_per_node": 2, "gpu_model": ""},
+            )
+
+
 class TestRunArgv:
     def test_run_sees_core_options(self, launcher, nrl_defaults):
         argv = _argv_from(
@@ -200,6 +242,19 @@ class TestRunArgv:
         assert _opt(argv, "--artifact-id") == "model"
         assert _opt(argv, "--base-model") == "/staged/base"
         assert _opt(argv, "--nemo-rl-root").endswith("nemo-rl")
+
+    def test_run_sees_num_gpus_per_node_from_compute_config(
+        self, launcher, nrl_defaults
+    ):
+        argv = _argv_from(
+            _render(
+                launcher["run"],
+                _cfg(nrl_defaults),
+                compute={"num_nodes": 1, "num_gpus_per_node": 4, "gpu_model": "A10G"},
+            ),
+            "nemo_rl_run.sh",
+        )
+        assert _opt(argv, "--num-gpus-per-node") == "4"
 
     def test_overrides_render_as_key_equals_value(self, launcher, nrl_defaults):
         cfg = _cfg(nrl_defaults, overrides={"sft.max_num_steps": 5})

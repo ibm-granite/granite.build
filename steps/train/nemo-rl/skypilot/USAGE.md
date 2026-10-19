@@ -85,8 +85,20 @@ disable even when creds are present (no `clearml` import, no install).
 ```yaml
 compute_config:
   num_nodes: 1              # iteration 1 is single-node only; the guard rejects != 1
-  num_gpus_per_node: 8      # rendered as launcher_config.resources.accelerators
+  num_gpus_per_node: 2      # how many GPUs to request on the node
+  gpu_model: A10G           # REQUIRED — the SkyPilot accelerator TYPE for your endpoint
 ```
+
+GPUs are the one resource the step requests itself. gbserver's SkyPilot launcher
+sources cpus/memory from `compute_config` but **not** GPUs, so the step renders a
+SkyPilot `accelerators` request of `<gpu_model>:<num_gpus_per_node>` (e.g.
+`A10G:2`) and pins NeMo-RL's `cluster.gpus_per_node` to `num_gpus_per_node` so a
+multi-GPU node is actually used (the shipped configs default it to 1).
+
+`gpu_model` is **required**: an empty type would request a blank-named
+accelerator that SkyPilot silently satisfies with a CPU-only node, so the step
+fails at render time if it is unset. Set it to a type your endpoint offers
+(`A10G`, `A100`, `H100`, …).
 
 ## Example build.yaml
 
@@ -101,7 +113,7 @@ granite.build:
       environment_uri: space://environments/skypilot/aws
       inputs:
         base_model:
-          uri: hf://meta-llama/Llama-3.2-1B
+          uri: hf:///meta-llama/Llama-3.2-1B
       outputs:
         model:
           uri: "env:///model"
@@ -118,6 +130,7 @@ granite.build:
             compute_config:
               num_nodes: 1
               num_gpus_per_node: 8
+              gpu_model: A100      # the SkyPilot accelerator type (required)
 ```
 
 To train on your own data, bind a `dataset` and name its Hydra key:
@@ -125,7 +138,7 @@ To train on your own data, bind a `dataset` and name its Hydra key:
 ```yaml
       inputs:
         base_model:
-          uri: hf://meta-llama/Llama-3.2-1B
+          uri: hf:///meta-llama/Llama-3.2-1B
         dataset:
           uri: hf:///datasets/my-org/my-sft-data
       steps:

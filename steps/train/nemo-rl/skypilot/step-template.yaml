@@ -20,9 +20,10 @@ config:
     # a NAME because the artifact marker needs the id, not a path.
     output: ""
     # Public NGC release image: bundles the NeMo-RL source (examples/) and
-    # prefetched venvs. PIN TO A DIGEST before production use. The step adds
-    # SkyPilot's `docker:` scheme marker.
-    image_id: "nvcr.io/nvidia/nemo-rl:v0.7.0.prefetched_venvs"
+    # prefetched venvs. Pinned by digest for reproducibility; this is the
+    # multi-arch index for the `v0.7.0` release tag. The step adds SkyPilot's
+    # `docker:` scheme marker.
+    image_id: "nvcr.io/nvidia/nemo-rl@sha256:75c4821c7f24d6a045d22ce51756bd7ea9ec208020c90233723b9d7a9727d681"  # v0.7.0
     # Where the bundled NeMo-RL source lives inside the image. uv runs with cwd
     # here so it resolves the prefetched project environment.
     nemo_rl_root: "/opt/nemo-rl"
@@ -73,8 +74,19 @@ environment_configs:
           # The one value deliberately NOT shell-escaped: it never enters a shell.
           # skypilot.py passes it to sky.Resources(image_id=...) as a python value.
           image_id: '{{ "docker:" ~ config.nemo_rl_config.image_id }}'
-          # The build supplies cpus/memory/accelerators via launcher_config.resources.
-          resources: {}
+          # GPUs are the one resource the step MUST request itself: gbserver's
+          # launcher sources cpus/memory from compute_config but NOT GPUs (those
+          # flow only via launcher_config.resources). So the step renders a
+          # SkyPilot accelerators request as "<gpu_model>:<num_gpus_per_node>"
+          # from compute_config. gpu_model is REQUIRED — an empty type renders
+          # "" which SkyPilot reads as {'': 1} (a blank-named accelerator) and
+          # silently provisions a CPU-only node, so fail at render time instead.
+          resources:
+            accelerators: >-
+              {%- if not config.compute_config.gpu_model -%}
+              {{ raise_error("nemo-rl: compute_config.gpu_model is required — set it to the SkyPilot accelerator type for your endpoint (e.g. A10G, A100, H100). It is combined with num_gpus_per_node as the accelerators request <gpu_model>:<num_gpus_per_node>.") }}
+              {%- endif -%}
+              {{ config.compute_config.gpu_model }}:{{ config.compute_config.num_gpus_per_node }}
           # Bundled scripts land at ./src, relative to the step's working dir.
           file_mounts:
             src: src
@@ -124,6 +136,7 @@ environment_configs:
               --config-name '{{ q(nrl.config_name) }}' \
               --nemo-rl-root '{{ q(nrl.nemo_rl_root) }}' \
               --base-model '{{ q(base_model) }}' \
+              --num-gpus-per-node '{{ q(config.compute_config.num_gpus_per_node) }}' \
               {%- if dataset_bound %}
               --dataset '{{ q(dataset) }}' \
               --dataset-key '{{ q(nrl.dataset_override_key) }}' \
