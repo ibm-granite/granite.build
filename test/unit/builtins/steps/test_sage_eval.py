@@ -39,6 +39,10 @@ OTHER_TMPDIR_STEPS = {
     # Sets TMPDIR to its own VLLM_RPC_BASE_PATH, /tmp/vllm-<user>-<LSF job id>.
     ENVIRONMENTS
     / "skypilot/steps/distill/vllm-server/step.yaml": "short by construction",
+    # The SLURM copy of the vllm-server step: same VLLM_RPC_BASE_PATH construction,
+    # keyed on SLURM_JOB_ID instead of the LSF job id. Short by construction too.
+    ENVIRONMENTS
+    / "skypilot/steps/distill/vllm-server-slurm/step.yaml": "short by construction",
 }
 # Where steps live: environment assets, the builtin steps, and the samples.
 STEP_ROOTS = [ENVIRONMENTS, REPO_ROOT / "src/gbserver/builtins", REPO_ROOT / "samples"]
