@@ -153,7 +153,8 @@ _WANDB_LINEAGE_RUN_JOB_TYPE = "gb-lineage-event"
 # stamp. A row
 # that commits later than the grace behind its timestamp (a long event backlog,
 # clock skew between pods) is still skipped until a full reindex; raise
-# GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S where that is expected.
+# GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S where that is expected. Not applied to W&B
+# (see WandBLineageIndexer.settle_grace_s).
 def _settle_grace_from_env(default: float = 360.0) -> float:
     raw = os.environ.get("GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S", "")
     try:
@@ -1418,6 +1419,14 @@ class WandBLineageIndexer(JobLineageIndexer):
     PROVIDER = LINEAGE_PROVIDER_WANDB
 
     _thread_name = "lineage-indexer-wandb"
+
+    # No settle grace. The grace exists for sources whose timestamp is stamped
+    # before the row commits (gb_targets' finished_at, gb_lineage_job's
+    # recorded_at), so rows can appear out of order. A W&B run's createdAt is set
+    # by the W&B server when the run is created, and the run is listed from that
+    # moment: nothing commits later behind it. A run still being written is held
+    # by _is_pending instead. GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S does not apply.
+    settle_grace_s: float = 0.0
 
     _seeds_when_standalone = True
 

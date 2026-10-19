@@ -77,7 +77,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **W&B lineage indexer (#470).** A W&B lineage run still `running` no longer stops
   indexing: the checkpoint waits behind it (up to 6 h, then it is indexed as it is),
   while later runs are indexed at once and recorded as `done_ahead` in the checkpoint
-  (at most 5000; past that the scan waits as before).
+  (at most 5000; past that the scan waits as before). The W&B source has no settle
+  grace: `createdAt` is set by the W&B server and nothing commits behind it, so a
+  finished run is indexed on the next scan instead of ~6 minutes later
+  (`GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S` applies to `gb_targets` and
+  `gb_lineage_job` only).
 - **Lineage job owner and namespace (#470).** A job's owner and namespace are taken only
   when every index row of the job agrees; a job with conflicting (e.g. forged) rows has
   neither, and its detail fails closed.

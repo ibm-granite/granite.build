@@ -1226,10 +1226,11 @@ def test_wandb_zoneless_created_at_is_utc_on_any_host_clock(monkeypatch):
     try:
         ix, _, _ = _indexer([])
         just_now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-        job = SimpleNamespace(created_at=just_now, state="finished")
-        # Read as local Tokyo time it would look 9h old and pass the grace.
-        assert ix._is_settled(job) is False
-        assert ix._parse_job_ts(just_now).utcoffset() == timedelta(0)
+        parsed = ix._parse_job_ts(just_now)
+        # Read as local Tokyo time it would look 9h old: a running run would
+        # pass the 6h cap at once instead of being held.
+        assert parsed.utcoffset() == timedelta(0)
+        assert abs((datetime.now(timezone.utc) - parsed).total_seconds()) < 60
     finally:
         monkeypatch.delenv("TZ")
         time.tzset()
@@ -1282,3 +1283,20 @@ def test_wandb_indexer_writes_only_the_index_never_gb_lineage_job():
     rows.index_job_entry.assert_called_once()
     assert rows.index_job_entry.call_args.kwargs["job_store"] == idx.JobStore.WANDB
     assert not sink.method_calls
+
+
+def test_wandb_indexes_a_just_created_finished_run_without_waiting():
+    """No settle grace on W&B: createdAt is server-set and the run is listed from
+    then on, so a finished run is indexed on the next scan."""
+    storage = _storage()
+    just_now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    ix, _, rows = _indexer([_run("r1", just_now, job_id="j1")])
+    assert ix.settle_grace_s == 0
+    assert ix.scan_once(storage) == 1
+    assert _checkpoint(storage)["timestamp"] == just_now
+
+
+def test_wandb_ignores_the_settle_grace_environment(monkeypatch):
+    monkeypatch.setenv("GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S", "600")
+    ix, _, _ = _indexer([])
+    assert ix.settle_grace_s == 0
