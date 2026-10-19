@@ -133,24 +133,28 @@ real work, or (b) scale the vLLM server so `t_gen` drops. At fixed smoke batch +
 single server, more trainer nodes just add fabric overhead. The 2-node run's value is
 **correctness** (it's the config that hung before the NCCL-pin fix), not speed.
 
-> **KNOWN ISSUE — a `NUM_NODES>=2` trainer hangs at process exit after training
-> completes, so the build never tears down.** Observed on the 2-node external-server
-> run (build `eecd113e`): training ran all 30 steps and wrote the final checkpoint
-> (`checkpoint-30` + `model.safetensors` on `/proj`), the ZeRO-3 NCCL group closed
-> cleanly, then **the trainer did not fully exit** — one accelerate process per node
-> stayed parked blocked on `pipe_read`, both rank logs frozen at the same instant right
-> after NCCL teardown. Because the process never returns, the step's post-training
-> section never runs, so it never emits `GB_ARTIFACT_ID:checkpoint`; `train-gold` stays
-> `RUNNING` in gbserver; `teardown` (gated on that artifact) never fires; and both the
-> trainer and the forever `vllm-server` allocations hang until `VLLM_MAX_LIFETIME_SECONDS`
-> or a manual `scancel`. The **1-node** trainer (build `77f2e205`) exits cleanly and tears
-> down normally — so this is specific to the multi-node (`accelerate`/torchrun elastic)
-> shutdown path, NOT the recipe or the NCCL-interface fix. **Workaround:** the checkpoint
-> is complete and safe on `/proj`, so `scancel` the two jobs by hand and bind the
-> `checkpoint-30` dir as a prior-build output. **Needs:** a trainer-side
-> distributed-shutdown fix (or a sentinel/`srun`-reap in the step that force-exits once
-> rank 0 has emitted the checkpoint). Prefer `distill-gold-colocated` or `NUM_NODES=1`
-> until fixed.
+> **(RESOLVED) `NUM_NODES>=2` trainer used to hang at process exit, so the build never
+> tore down.** First seen on the 2-node external-server run (build `eecd113e`): training
+> ran all 30 steps and wrote the final checkpoint, but the step wedged afterwards and
+> `train-gold` stayed `RUNNING`, so `teardown` never fired and both allocations hung
+> until a manual `scancel`. Root cause: `accelerate ... | tee` — a straggler worker that
+> didn't exit on the multi-node shutdown barrier held the stdout **pipe** open, so the
+> shell blocked forever on `PIPESTATUS` and never reached checkpoint-emit. (1-node runs
+> have no cross-node shutdown barrier and never hit it.) **Fix (in `gold-slurm`):**
+> (1) run accelerate with a **direct file redirect, not a pipe** (`> "$TRAIN_LOG" 2>&1 &`),
+> so no straggler can wedge the shell on a pipe; a `tail -F` restores the live `sky logs`
+> view, and the shell `wait`s accelerate for its true exit status. (2) A **watchdog
+> backstop** that, once training completed (`train_runtime`, shared to peers via a
+> `.train-exit` sentinel) and a grace window (`GB_TRAIN_EXIT_GRACE`, default 300s) passed,
+> dumps the straggler's thread stacks to `exit_hang_rank*.debug` and `pkill`s the worker
+> tree so `wait` returns. (3) An **unconditional rank-0 success-gate** that refuses to
+> emit the checkpoint artifact unless `train_runtime` was logged AND model weights exist
+> on disk (closes a false-SUCCESS hole for `emit_checkpoint_artifacts: false` recipes).
+> Verified on build `5d195050`: 2-node run trained to step 30, wrote `checkpoint-30`,
+> accelerate exited cleanly within grace (watchdog no-op, no `exit_hang` dump),
+> `teardown` fired, allocations cleared — no manual intervention. The redirect removed
+> the actual wedge; the watchdog is the backstop if accelerate's own `wait` ever hangs
+> on a worker.
 
 ---
 

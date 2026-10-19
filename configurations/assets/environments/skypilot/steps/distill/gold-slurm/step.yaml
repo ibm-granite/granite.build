@@ -1243,7 +1243,29 @@ environment_configs:
             # PIPESTATUS preserves accelerate's exit code through the tee so a
             # failed run still fails the step.
             TRAIN_LOG="${GB_BUILD_WORKDIR:-$PWD}/train_rank${NODE_RANK}.log"
-            echo "distill-gold: teeing trainer output to $TRAIN_LOG"
+            echo "distill-gold: trainer output -> $TRAIN_LOG"
+            # POST-TRAINING EXIT-HANG REAPER (multi-node trainers).
+            # On NUM_NODES>=2 trainers the run completes (train_runtime logged, final
+            # checkpoint written) but a straggler worker fails to exit on the elastic
+            # shutdown barrier. With the old `accelerate ... | tee` that straggler held
+            # the stdout pipe, so the shell blocked forever on PIPESTATUS, the checkpoint
+            # artifact was never emitted, and teardown never fired (build eecd113e).
+            # Fix, two independent parts:
+            #  1. Redirect accelerate straight to the log file (NO pipe), so the shell can
+            #     never block on a pipe a straggler holds open. A `tail -F` gives the live
+            #     driver view back. We background accelerate and `wait` it for its TRUE rc.
+            #  2. A watchdog subshell: once training has completed (train_runtime, the
+            #     global-main metric on rank 0; peers learn it via the shared .train-exit
+            #     sentinel) it waits REAP_GRACE, and if accelerate is still alive it dumps
+            #     the straggler stacks and kills accelerate + its descendants so `wait`
+            #     returns. On a clean exit the watchdog's grace timer simply finds nothing
+            #     to kill -- zero behavior change for 1-node/colocated/off-policy.
+            # Checkpoint existence is still proven downstream (emit guard / artifact), so a
+            # reap after a genuine train_runtime cannot fake-pass a run that never saved.
+            TRAIN_EXIT_SENTINEL="${GB_BUILD_WORKDIR:-$PWD}/.train-exit"
+            REAP_GRACE="${GB_TRAIN_EXIT_GRACE:-300}"
+            : > "$TRAIN_LOG"
+            tail -n +1 -F "$TRAIN_LOG" 2>/dev/null & _tail_pid=$!
             accelerate launch \
               --num_processes $(( TRAINER_NODES * GPUS )) \
               --num_machines "$TRAINER_NODES" \
@@ -1255,8 +1277,79 @@ environment_configs:
               --config "$CFG" \
               --output_dir "$CKPT_DIR" \
               --use_vllm={{ 'True' if config.gold_config.vllm_num_servers | int > 0 else 'False' }} \
-              $VLLM_ARGS 2>&1 | tee "$TRAIN_LOG"
-            _acc_rc=${PIPESTATUS[0]}
+              $VLLM_ARGS > "$TRAIN_LOG" 2>&1 &
+            _acc_pid=$!   # real accelerate PID (no setsid wrapper to confuse $!)
+            # Watchdog: reap a straggler only AFTER training completed + grace elapsed.
+            _dbg="${GB_BUILD_WORKDIR:-$PWD}/exit_hang_rank${NODE_RANK}.debug"
+            (
+              # Wait until training is observably done (local train_runtime, or a peer's
+              # sentinel) OR accelerate exits on its own.
+              while kill -0 "$_acc_pid" 2>/dev/null; do
+                if grep -aq "'train_runtime'" "$TRAIN_LOG" 2>/dev/null; then
+                  # Rank 0 reaches train_runtime first; publish so peers' watchdogs arm.
+                  [ -f "$TRAIN_EXIT_SENTINEL" ] || {
+                    printf '%s\n' "$TRAIN_DONE_TOKEN" > "$TRAIN_EXIT_SENTINEL.tmp.$$" \
+                      && mv -f "$TRAIN_EXIT_SENTINEL.tmp.$$" "$TRAIN_EXIT_SENTINEL"; }
+                  break
+                fi
+                if [ -f "$TRAIN_EXIT_SENTINEL" ] \
+                   && [ "$(sed -n 1p "$TRAIN_EXIT_SENTINEL" 2>/dev/null)" = "$TRAIN_DONE_TOKEN" ]; then
+                  break
+                fi
+                sleep 15
+              done
+              # Give accelerate the grace window to exit cleanly on its own.
+              _w=0
+              while kill -0 "$_acc_pid" 2>/dev/null && [ "$_w" -lt "$REAP_GRACE" ]; do
+                sleep 10; _w=$(( _w + 10 ))
+              done
+              kill -0 "$_acc_pid" 2>/dev/null || exit 0   # exited cleanly: nothing to do
+              # Still alive past grace => the shutdown hang. Dump straggler stacks
+              # (zero-dependency: wchan + per-thread kernel stacks show the blocking call
+              # -- pipe_read/futex -- for the upstream trainer-shutdown fix; py-spy if the
+              # image has it), then kill accelerate and every gold worker so `wait` returns.
+              {
+                echo "=== rank $NODE_RANK post-training exit hang; straggler stacks ==="
+                for _p in $(pgrep -f 'gb_steps_post_training.distillation.gold' 2>/dev/null); do
+                  echo "--- pid $_p wchan=$(cat /proc/$_p/wchan 2>/dev/null) ---"
+                  grep -E 'State|Threads' "/proc/$_p/status" 2>/dev/null || true
+                  if command -v py-spy >/dev/null 2>&1; then
+                    py-spy dump --pid "$_p" 2>&1 | head -80
+                  else
+                    for _t in /proc/$_p/task/*/stack; do
+                      echo "  [$_t]"; head -8 "$_t" 2>/dev/null || true
+                    done
+                  fi
+                done
+              } > "$_dbg" 2>&1 || true
+              echo "distill-gold: WARNING: rank $NODE_RANK accelerate still alive ${REAP_GRACE}s after train_runtime (multi-node post-training shutdown hang); stacks -> $_dbg; reaping." >&2
+              pkill -TERM -f 'gb_steps_post_training.distillation.gold' 2>/dev/null || true
+              kill -TERM "$_acc_pid" 2>/dev/null || true
+              sleep 15
+              pkill -KILL -f 'gb_steps_post_training.distillation.gold' 2>/dev/null || true
+              kill -KILL "$_acc_pid" 2>/dev/null || true
+            ) & _watchdog_pid=$!
+            # `wait` on accelerate: its TRUE exit status if it exits on its own; if the
+            # watchdog had to kill it (AFTER a real train_runtime), wait returns the
+            # signal status and we treat a post-completion reap as success below.
+            _acc_rc=0; wait "$_acc_pid" 2>/dev/null || _acc_rc=$?
+            # Did training actually complete? (local metric or the shared sentinel.)
+            _train_done=0
+            if grep -aq "'train_runtime'" "$TRAIN_LOG" 2>/dev/null \
+               || { [ -f "$TRAIN_EXIT_SENTINEL" ] \
+                    && [ "$(sed -n 1p "$TRAIN_EXIT_SENTINEL" 2>/dev/null)" = "$TRAIN_DONE_TOKEN" ]; }; then
+              _train_done=1
+            fi
+            kill "$_watchdog_pid" 2>/dev/null || true
+            kill "$_tail_pid" 2>/dev/null || true
+            wait "$_watchdog_pid" 2>/dev/null || true
+            wait "$_tail_pid" 2>/dev/null || true
+            # A non-zero rc that is ONLY because the watchdog reaped a post-completion
+            # straggler is success; a real training failure (no train_runtime) is not.
+            if [ "$_acc_rc" != "0" ] && [ "$_train_done" = "1" ]; then
+              echo "distill-gold: rank $NODE_RANK training completed; accelerate exited $_acc_rc after a post-training reap -- treating as success." >&2
+              _acc_rc=0
+            fi
             # Release the in-allocation serve rank (case 2). Rank 0 writes the sentinel on
             # BOTH success and failure, BEFORE the early exit below, so a crashed trainer
             # still lets the serve node stop and the allocation complete (no strand).
@@ -1297,6 +1390,25 @@ environment_configs:
               echo "distill-gold: emitted $EMITTED_COUNT per-checkpoint artifact(s)"
             fi
             {% endif %}
+
+            # Unconditional success gate (runs even when emit_checkpoint_artifacts is
+            # off, as the train-only recipes have it). Rank 0 refuses to report success
+            # unless training observably completed AND a checkpoint actually landed on
+            # disk. Without this a run whose trainer exited early -- or was reaped before
+            # it ever trained -- would still emit the checkpoint artifact and the step
+            # would go SUCCESS with an empty checkpoint dir (seen on build 30e9c438,
+            # train_rank0.log stopped at DeepSpeed init yet the build passed). The
+            # downstream emit guard only covers the artifacts-on path; this covers both.
+            if [ "$NODE_RANK" = "0" ]; then
+              if ! grep -aq "'train_runtime'" "$TRAIN_LOG" 2>/dev/null; then
+                echo "distill-gold: FATAL: training did not complete (no train_runtime in $TRAIN_LOG); refusing to emit a checkpoint artifact." >&2
+                exit 1
+              fi
+              if [ -z "$(find "$CKPT_DIR" -type f \( -name '*.safetensors' -o -name 'pytorch_model*.bin' \) 2>/dev/null | head -1)" ]; then
+                echo "distill-gold: FATAL: training reported train_runtime but no model weights were written under $CKPT_DIR." >&2
+                exit 1
+              fi
+            fi
 
             # Rank 0 only: the executor streams every node's output into one
             # driver log, so an unguarded marker would register N artifacts.
