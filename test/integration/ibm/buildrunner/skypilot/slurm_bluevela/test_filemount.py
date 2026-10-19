@@ -52,7 +52,7 @@ from libgbtest.buildrunner.buildtest import (
 )
 from libgbtest.constants import extended_testing_only
 
-pytestmark = [pytest.mark.ibm, pytest.mark.skypilot_integration]
+pytestmark = pytest.mark.ibm
 
 
 # Real-infra build test (launches a BlueVela SLURM job via Skypilot) — only run
@@ -61,6 +61,7 @@ pytestmark = [pytest.mark.ibm, pytest.mark.skypilot_integration]
 # until the shared spaces carry a bluevela SLURM environment.yaml with the
 # SSH-key secret ref.
 @extended_testing_only
+@pytest.mark.xdist_group(name="buildtest_bv")
 @pytest.mark.skipif(
     os.environ.get("RUNNING_IN_CICD", "False").lower() == "true",
     reason="Skip in SPS CI/CD until we have environments/skypilot/slurm/bluevela/environment.yaml with key reference in gb-test and other space repos",

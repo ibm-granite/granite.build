@@ -49,7 +49,7 @@ from libgbtest.buildrunner.buildtest import (
 )
 from libgbtest.constants import extended_testing_only
 
-pytestmark = [pytest.mark.ibm, pytest.mark.skypilot_integration]
+pytestmark = pytest.mark.ibm
 
 # Environment defaults, mirroring
 # configurations/assets/environments/skypilot/lsf/ibm-bluevela/environment.yaml.
@@ -127,6 +127,7 @@ def _bluevela_reachable() -> bool:
 # Serialize with the other BlueVela build tests. Beyond the usual SSH-auth
 # concurrency, this one holds a 2-node allocation, so overlapping runs would
 # queue behind each other and risk the timeout.
+@pytest.mark.xdist_group(name="buildtest_bv")
 @pytest.mark.skipif(
     os.environ.get("RUNNING_IN_CICD", "False").lower() == "true",
     reason="Needs environments/skypilot/lsf/bluevela/environment.yaml with a "

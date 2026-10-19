@@ -27,10 +27,11 @@ from libgbtest.buildrunner.buildtest import (
 )
 from libgbtest.constants import extended_testing_only
 
-pytestmark = [pytest.mark.ibm, pytest.mark.skypilot_integration]
+pytestmark = pytest.mark.ibm
 
 
 @extended_testing_only
+@pytest.mark.xdist_group(name="buildtest_bv")
 # For this test to run in IBM SPS build tests, it needs to
 # 1) have a environments/skypilot/lsf/bluevela/environment.yaml referencing BV_SSH_PRIVATE_KEY secret
 #     IdentityKey: BV_SSH_PRIVATE_KEY

@@ -14,9 +14,9 @@
 
 """One xdist group for every ``skypilot_integration`` test.
 
-That marker is the contract: a test that drives a real SkyPilot environment
-carries it (test_skypilot_xdist_group checks every SkyPilot build fixture's test
-does). They share one local SkyPilot API server and ``~/.sky/config.yaml``, which
+A test in the extended suite that drives a real SkyPilot environment carries that
+marker (test_skypilot_xdist_group checks it). They share one local SkyPilot API
+server and ``~/.sky/config.yaml``, which
 gbserver rewrites per launch with the launching env's ``cloud_config`` (last
 writer wins). Concurrently, a kube launch drops the slurm env's ``workdir``
 and the slurm build's log download finds nothing. The server ignores client

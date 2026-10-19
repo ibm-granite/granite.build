@@ -46,7 +46,7 @@ from libgbtest.buildrunner.buildtest import (
 )
 from libgbtest.constants import extended_testing_only
 
-pytestmark = [pytest.mark.ibm, pytest.mark.skypilot_integration]
+pytestmark = pytest.mark.ibm
 
 
 # Real-infra build test (launches a BlueVela LSF job via Skypilot) — only run in
@@ -54,6 +54,7 @@ pytestmark = [pytest.mark.ibm, pytest.mark.skypilot_integration]
 # tests so they don't launch concurrent jobs, and skipped in SPS CI/CD until the
 # shared spaces carry a bluevela environment.yaml with the SSH-key secret ref.
 @extended_testing_only
+@pytest.mark.xdist_group(name="buildtest_bv")
 @pytest.mark.skipif(
     os.environ.get("RUNNING_IN_CICD", "False").lower() == "true",
     reason="Skip in SPS CI/CD until we have environments/skypilot/lsf/bluevela/environment.yaml with key reference in gb-test and other space repos",

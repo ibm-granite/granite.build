@@ -73,11 +73,12 @@ from libgbtest.buildrunner.buildtest import (
 )
 from libgbtest.constants import extended_testing_only, manual_testing_only
 
-pytestmark = [pytest.mark.ibm, pytest.mark.skypilot_integration]
+pytestmark = pytest.mark.ibm
 
 
 @extended_testing_only
 @manual_testing_only
+@pytest.mark.xdist_group(name="buildtest_bv")
 class TestSkypilotBlueVelaSlurmCustomCode(AbstractYamlBuildRunnerTest):
     """BYOC custom_code_skypilot step on BlueVela SLURM: clone → hash-keyed env →
     workload → hf:// artifact capture + commit_hash lineage."""
