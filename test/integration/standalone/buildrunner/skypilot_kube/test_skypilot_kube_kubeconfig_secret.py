@@ -118,4 +118,4 @@ class TestSkypilotKubeKubeconfigSecret(AbstractYamlBuildRunnerTest):
         # does not outlive the test. KUBECONFIG itself is restored by monkeypatch.
         from gbserver.environment.skypilot_config import release_kube_configs
 
-        release_kube_configs("sky-kube-secret")
+        release_kube_configs("kubeconfig-secret-test/sky-kube-secret")

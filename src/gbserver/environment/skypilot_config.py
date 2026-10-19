@@ -597,12 +597,21 @@ def _lock_for(home_path: Path, name: str) -> FileLock:
 
 
 def _write_atomic(path: Path, text: str, mode: Optional[int] = None) -> None:
-    """Atomically write ``text`` to ``path`` (``*.gbtmp`` + ``os.replace``)."""
+    """Atomically write ``text`` to ``path`` (``*.gbtmp`` + ``os.replace``).
+
+    With ``mode``, the temporary file is *created* with it, so content such as
+    credentials is never readable by others, not even before a ``chmod``.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".gbtmp")
-    tmp.write_text(text, encoding="utf-8")
-    if mode is not None:
-        os.chmod(tmp, mode)
+    if mode is None:
+        tmp.write_text(text, encoding="utf-8")
+    else:
+        tmp.unlink(missing_ok=True)  # O_CREAT's mode applies only to a new file
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.chmod(tmp, mode)  # O_CREAT's mode is masked by the umask
     os.replace(tmp, path)
 
 
@@ -830,6 +839,29 @@ def kubeconfig_path(home: Optional[Path] = None) -> Path:
     return _home(home) / ".sky" / GBSERVER_KUBECONFIG
 
 
+#: A placeholder context gbserver's kubeconfig always carries and names as its
+#: ``current-context``. The kubernetes client rejects a merged ``KUBECONFIG``
+#: with no current-context (and SkyPilot then sees no contexts at all), but a
+#: real managed context there would become the process-wide *default* when the
+#: user's own kubeconfig sets none, so anything relying on the default would
+#: silently use an environment's secret credentials. The placeholder points at
+#: an unroutable address with no credentials, so such a request fails loudly, as
+#: it would without kube_configs. A user's own current-context still wins.
+_KUBE_PLACEHOLDER = "gbserver-no-default-context"
+_KUBE_PLACEHOLDER_ENTRIES = {
+    "contexts": {
+        "name": _KUBE_PLACEHOLDER,
+        "context": {"cluster": _KUBE_PLACEHOLDER, "user": _KUBE_PLACEHOLDER},
+    },
+    # 192.0.2.0/24 is TEST-NET-1 (RFC 5737): never routed.
+    "clusters": {
+        "name": _KUBE_PLACEHOLDER,
+        "cluster": {"server": "https://192.0.2.1:1"},
+    },
+    "users": {"name": _KUBE_PLACEHOLDER, "user": {}},
+}
+
+
 def _named(entries: Any, name: Any) -> Optional[Dict]:
     """The entry called ``name`` in a kubeconfig list (``contexts``, ...), or None."""
     for entry in entries or []:
@@ -874,6 +906,8 @@ def _extract_kube_context(kubeconfig_text: str, context: str) -> Dict[str, Dict]
     if ctx is None:
         raise ValueError(f"kubeconfig does not define context '{context}'")
     refs = ctx.get("context") or {}
+    if not isinstance(refs, dict):
+        raise ValueError(f"kubeconfig context '{context}' is malformed")
     cluster = _named(doc.get("clusters"), refs.get("cluster"))
     user = _named(doc.get("users"), refs.get("user"))
     if cluster is None or user is None:
@@ -922,18 +956,37 @@ def _without(doc: Dict, section: str, name: str) -> None:
 
 
 def _set_current_context(doc: Dict) -> None:
-    """Keep a valid ``current-context`` in the managed kubeconfig.
+    """Point the managed kubeconfig's ``current-context`` at the placeholder.
 
-    The kubernetes client SkyPilot uses rejects a merged ``KUBECONFIG`` with no
-    current-context, and SkyPilot then sees no contexts at all. A later file's
-    current-context overrides this one (see :func:`activate_kubeconfig`), so the
-    user's own still wins when they set one.
+    See :data:`_KUBE_PLACEHOLDER`: present while the file holds any managed
+    context, removed with the last one. A later file's current-context (the
+    user's) overrides it (see :func:`activate_kubeconfig`).
     """
-    names = [c["name"] for c in doc.get("contexts") or []]
-    if not names:
+    for section, entry in _KUBE_PLACEHOLDER_ENTRIES.items():
+        _without(doc, section, _KUBE_PLACEHOLDER)
+    if [c for c in doc.get("contexts") or [] if c.get("name") != _KUBE_PLACEHOLDER]:
+        for section, entry in _KUBE_PLACEHOLDER_ENTRIES.items():
+            doc.setdefault(section, []).append(copy.deepcopy(entry))
+        doc["current-context"] = _KUBE_PLACEHOLDER
+    else:
         doc.pop("current-context", None)
-    elif doc.get("current-context") not in names:
-        doc["current-context"] = names[0]
+
+
+def _read_managed(dest: Path) -> Dict[str, Any]:
+    """The managed kubeconfig, or ``{}``.
+
+    :raises ValueError: If it is not a YAML mapping. PyYAML's own error, which
+        echoes the offending line (possibly a token), is not chained.
+    """
+    if not dest.exists():
+        return {}
+    try:
+        doc = yaml.safe_load(dest.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        raise ValueError(f"{dest} is not valid YAML; remove it to reset") from None
+    if not isinstance(doc, dict):
+        raise ValueError(f"{dest} is not a kubeconfig mapping; remove it to reset")
+    return doc
 
 
 def merge_kube_configs(
@@ -968,6 +1021,8 @@ def merge_kube_configs(
     incoming = []
     seen: Set[str] = set()
     for entry in entries:
+        if entry.context == _KUBE_PLACEHOLDER:
+            raise ValueError(f"kube_configs context name '{entry.context}' is reserved")
         if entry.context in seen:
             raise ValueError(
                 f"environment '{env_name}': kube_configs lists context "
@@ -982,9 +1037,7 @@ def merge_kube_configs(
             )
         incoming.append(_extract_kube_context(secrets[entry.kubeconfig], entry.context))
     with _THREAD_LOCK, _lock_for(_home(home), "gbserver-kubeconfig.lock"):
-        doc: Dict[str, Any] = {}
-        if dest.exists():
-            doc = yaml.safe_load(dest.read_text(encoding="utf-8")) or {}
+        doc = _read_managed(dest)
         before = copy.deepcopy(doc)
         doc.setdefault("apiVersion", "v1")
         doc.setdefault("kind", "Config")
@@ -1047,9 +1100,9 @@ def release_kube_configs(env_name: str, home: Optional[Path] = None) -> bool:
     """
     dest = kubeconfig_path(home)
     with _THREAD_LOCK, _lock_for(_home(home), "gbserver-kubeconfig.lock"):
-        if not dest.exists():
+        doc = _read_managed(dest)
+        if not doc:
             return False
-        doc = yaml.safe_load(dest.read_text(encoding="utf-8")) or {}
         owners = doc.get(_KUBE_OWNERS_KEY) or {}
         mine = [name for name, owner in owners.items() if owner == env_name]
         if not mine:

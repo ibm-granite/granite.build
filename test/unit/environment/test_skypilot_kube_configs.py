@@ -52,6 +52,16 @@ def _isolated_kubeconfig(tmp_path, monkeypatch):
 
 
 def _managed(tmp_path):
+    """The managed kubeconfig, minus the placeholder default entries."""
+    doc = yaml.safe_load(sc.kubeconfig_path(tmp_path).read_text())
+    for section in ("contexts", "clusters", "users"):
+        doc[section] = [
+            e for e in doc.get(section) or [] if e["name"] != sc._KUBE_PLACEHOLDER
+        ]
+    return doc
+
+
+def _raw_managed(tmp_path):
     return yaml.safe_load(sc.kubeconfig_path(tmp_path).read_text())
 
 
@@ -74,8 +84,9 @@ class TestMerge:
             "cluster": "gbserver/remote",
             "user": "gbserver/remote",
         }
-        # Set, so a merged KUBECONFIG is valid for the kubernetes client.
-        assert doc["current-context"] == "remote"
+        # The placeholder, not a real context, so a merged KUBECONFIG is valid
+        # without making an env's cluster the process-wide default.
+        assert doc["current-context"] == sc._KUBE_PLACEHOLDER
         mode = stat.S_IMODE(os.stat(sc.kubeconfig_path(tmp_path)).st_mode)
         assert mode == 0o600
 
@@ -274,8 +285,56 @@ class TestMerge:
         assert sc.release_kube_configs("envA", home=tmp_path)
         doc = _managed(tmp_path)
         assert [c["name"] for c in doc["contexts"]] == ["b"]
-        assert doc["current-context"] == "b"
+        assert doc["current-context"] == sc._KUBE_PLACEHOLDER
         assert not sc.release_kube_configs("envA", home=tmp_path)
+        # Releasing the last owner removes the placeholder too.
+        assert sc.release_kube_configs("envB", home=tmp_path)
+        raw = _raw_managed(tmp_path)
+        assert raw["contexts"] == [] and "current-context" not in raw
+
+
+class TestRobustness:
+    def test_tmp_file_is_created_0600(self, tmp_path, monkeypatch):
+        """The temp file never exists with looser permissions, even briefly."""
+        seen = []
+        real_open = os.open
+
+        def spy(path, flags, mode=0o777, *a, **k):
+            if str(path).endswith(".gbtmp"):
+                seen.append(mode)
+            return real_open(path, flags, mode, *a, **k)
+
+        monkeypatch.setattr(os, "open", spy)
+        sc.merge_kube_configs(
+            [_entry()], {"remote-kc": _kubeconfig("remote")}, "envA", home=tmp_path
+        )
+        assert seen == [0o600]
+
+    def test_corrupt_managed_file_is_a_valueerror_without_its_text(self, tmp_path):
+        dest = sc.kubeconfig_path(tmp_path)
+        dest.parent.mkdir(parents=True)
+        dest.write_text("users:\n- user: {token: S3CR3T: x}\n")
+        with pytest.raises(ValueError, match="not valid YAML") as info:
+            sc.merge_kube_configs(
+                [_entry()], {"remote-kc": _kubeconfig("remote")}, "envA", home=tmp_path
+            )
+        assert "S3CR3T" not in str(info.value) and info.value.__cause__ is None
+        with pytest.raises(ValueError):
+            sc.release_kube_configs("envA", home=tmp_path)
+
+    def test_malformed_context_entry_is_a_valueerror(self, tmp_path):
+        bad = yaml.safe_dump({"contexts": [{"name": "remote", "context": "oops"}]})
+        with pytest.raises(ValueError, match="malformed"):
+            sc.merge_kube_configs([_entry()], {"remote-kc": bad}, "envA", home=tmp_path)
+
+    def test_placeholder_name_is_reserved(self, tmp_path):
+        with pytest.raises(ValueError, match="reserved"):
+            sc.merge_kube_configs(
+                [_entry(sc._KUBE_PLACEHOLDER, "x")],
+                {"x": _kubeconfig(sc._KUBE_PLACEHOLDER)},
+                "envA",
+                home=tmp_path,
+            )
 
 
 class TestActivate:
@@ -310,7 +369,8 @@ class TestActivate:
         contexts, current = kube_config.list_kube_config_contexts(
             os.environ["KUBECONFIG"]
         )
-        assert sorted(c["name"] for c in contexts) == ["mine", "remote"]
+        names = {c["name"] for c in contexts} - {sc._KUBE_PLACEHOLDER}
+        assert names == {"mine", "remote"}
         assert current["name"] == "mine"
 
     def test_merged_kubeconfig_valid_when_user_has_none(self, tmp_path, monkeypatch):
@@ -322,8 +382,14 @@ class TestActivate:
         contexts, current = kube_config.list_kube_config_contexts(
             os.environ["KUBECONFIG"]
         )
-        assert [c["name"] for c in contexts] == ["remote"]
-        assert current["name"] == "remote"
+        assert {c["name"] for c in contexts} == {"remote", sc._KUBE_PLACEHOLDER}
+        # The default is the unreachable placeholder, never an env's cluster.
+        assert current["name"] == sc._KUBE_PLACEHOLDER
+        from kubernetes.config import kube_config as kc
+
+        loader = kc._get_kube_config_loader(filename=os.environ["KUBECONFIG"])
+        assert loader._cluster["server"] == "https://192.0.2.1:1"
+        assert not loader._user
 
 
 class TestEnvironmentWiring:
@@ -415,38 +481,37 @@ class TestEnvironmentWiring:
         assert "kube_configs not applied" in caplog.text
 
     def test_every_cluster_path_activates(self):
-        """Poll, teardown, cleanup and sky.down all ensure the credentials."""
+        """Every Skypilot method that sends a SkyPilot request ensures credentials.
+
+        Scans the class instead of naming methods, so a new request path that
+        forgets _ensure_kube_configs fails here.
+        """
         import inspect
+        import re
 
         from gbserver.environment.skypilot import Skypilot
 
-        for name in (
-            "teardown_skypilot",
-            "_teardown",
-            "cleanup_skypilot",
-            "_poll_skypilot_job",
-        ):
-            src = inspect.getsource(getattr(Skypilot, name))
-            assert "self._ensure_kube_configs(strict=False)" in src, name
-
-    def test_materialize_merges_then_activates(self):
-        env = self._env(self._config(["remote"]), {"remote-kc": _kubeconfig("remote")})
-        calls = []
-        with (
-            patch(
-                "gbserver.environment.skypilot_config.merge_kube_configs",
-                side_effect=lambda e, s, n: calls.append(("merge", n, e[0].context)),
-            ),
-            patch(
-                "gbserver.environment.skypilot_config.activate_kubeconfig",
-                side_effect=lambda: calls.append(("activate",)),
-            ),
-        ):
-            env._ensure_inline_configs_materialized()
-        assert calls == [("merge", "env-k", "remote"), ("activate",)]
-
-    def test_no_kube_configs_touches_nothing(self):
-        env = self._env({"default_cloud": "kubernetes"})
-        with patch("gbserver.environment.skypilot_config.merge_kube_configs") as merge:
-            env._ensure_inline_configs_materialized()
-        merge.assert_not_called()
+        request = re.compile(
+            r"\bsky\.(launch|down|job_status|status|queue|tail_logs|cancel|stop|exec)\b"
+            r"|_launch_with_cloud_config|\bself\._teardown\("
+        )
+        missing = []
+        for name, fn in inspect.getmembers(Skypilot, inspect.isfunction):
+            if fn.__qualname__.split(".")[0] != "Skypilot":
+                continue
+            src = inspect.getsource(fn)
+            body = src.split('"""', 2)[-1] if src.count('"""') >= 2 else src
+            ensures = (
+                "_ensure_kube_configs" in body
+                or "_ensure_inline_configs_materialized()" in body
+            )
+            if request.search(body) and not ensures:
+                missing.append(name)
+        # Methods that only reach SkyPilot through a method that ensures it.
+        delegating = {
+            "_abort_provision",  # -> self._teardown
+            "_await_cleanup_job_status",  # called by teardown_skypilot
+            "_provision_with_retry",  # called by launch_skypilot
+            "_launch_cleanup_vm",  # called by teardown_skypilot
+        }
+        assert sorted(set(missing) - delegating) == []
