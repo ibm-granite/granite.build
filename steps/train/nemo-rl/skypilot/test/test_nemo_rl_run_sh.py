@@ -162,7 +162,7 @@ def _hydra_overrides(train_argv):
 
 def _marker(stdout):
     for ln in stdout.splitlines():
-        if ln.startswith("GB_ARTIFACT_ID:"):
+        if ln.startswith("LLMB_ARTIFACT_ID:"):
             return ln
     return None
 
@@ -362,7 +362,34 @@ class TestConversionAndMarker:
         proc, runs, work = _run(tmp_path, ["--base-model", "/staged/base"])
         marker = _marker(proc.stdout)
         assert marker is not None, proc.stdout
-        assert marker.startswith("GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:/")
+        assert marker.startswith("LLMB_ARTIFACT_ID:model LLMB_ARTIFACT_PATH:/")
+
+    def test_marker_matches_shipped_skypilot_monitor(self, tmp_path):
+        # Pin the marker to the regex the step's monitor actually uses
+        # (ref: space://monitors/skypilot). A prefix the monitor does not match
+        # registers ZERO artifacts while the build still reports SUCCESS.
+        import re
+
+        import yaml
+
+        repo = _STEP_DIR.parents[3]  # steps/train/nemo-rl/skypilot -> repo root
+        mon = yaml.safe_load(
+            (repo / "src/gbserver/builtins/monitors/skypilot/monitor.yaml").read_text()
+        )
+        cfg = next(
+            c
+            for c in mon["config"]["event_configs"]
+            if "ARTIFACT_PATH" in c["line_regex"]
+        )
+        proc, _, work = _run(tmp_path, ["--base-model", "/staged/base"])
+        line = next(
+            ln for ln in proc.stdout.splitlines() if re.search(cfg["line_regex"], ln)
+        )
+        fields = {f["field_name"]: f for f in cfg["event_fields"]}
+        assert re.search(fields["binding_id"]["field_regex"], line).group(0) == "model"
+        assert re.search(fields["path"]["field_regex"], line).group(0) == str(
+            work / "hf_output"
+        )
 
     def test_pushes_hf_dir_with_hf_cli(self, tmp_path):
         # The image's huggingface_hub removed `huggingface-cli` ("deprecated and
