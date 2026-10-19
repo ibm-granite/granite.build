@@ -25,8 +25,6 @@ from libgbtest.kube import KUBE_XDIST_GROUP
 _REPO = pathlib.Path(__file__).resolve().parents[3]
 # An uncommented environment_uri naming a SkyPilot environment.
 _SKYPILOT_ENV = re.compile(r"^\s*environment_uri:\s*\S*environments/skypilot/", re.M)
-# A module-level ``pytestmark`` that includes the ibm marker.
-_IBM_MARK = re.compile(r"^pytestmark = .*pytest\.mark\.ibm\b", re.M)
 
 
 class _Item:
@@ -111,7 +109,7 @@ def test_every_extended_skypilot_build_test_is_grouped():
     modules = [
         m
         for m in _skypilot_fixture_test_modules()
-        if not _IBM_MARK.search(m.read_text())
+        if "pytest.mark.ibm" not in m.read_text()
     ]
     assert len(modules) > 15, modules  # the fixture scan still finds them
     unmarked = [
