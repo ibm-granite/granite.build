@@ -27,9 +27,11 @@ ways to supply them:
   local kind cluster. For a full setup walkthrough, including the SkyPilot SSH-node-pool / RBAC
   requirements, see [setup/skypilot-kubernetes-setup.md](setup/skypilot-kubernetes-setup.md).
 - **From the environment, with `kube_configs`:** each entry names a context and a space secret holding a
-  kubeconfig that defines it. The context must also be pinned in `cloud_config.kubernetes.allowed_contexts`
-  (or the active workspace's `workspaces.<name>.kubernetes.allowed_contexts`); the environment's first setup
-  or launch fails otherwise.
+  kubeconfig that defines it. The context must also be pinned in the environment's own `cloud_config`, as
+  `kubernetes.allowed_contexts` or the active workspace's `workspaces.<name>.kubernetes.allowed_contexts`;
+  the environment's first setup or launch fails otherwise. Only the environment's `cloud_config` is checked:
+  a host `~/.sky/config.yaml` that overrides the workspace can still narrow what SkyPilot uses, which fails
+  safe.
 
   ```yaml
   config:
@@ -51,10 +53,23 @@ ways to supply them:
   - **Collisions are refused.** A context of the same name in your own kubeconfig, or one already written
     differently by another environment, is refused (`SkypilotConfigCollisionError`). An identical context is
     shared and stays owned by the environment that wrote it first; an environment re-writing its own entry
-    replaces it, e.g. a rotated token.
+    replaces it, e.g. a rotated token. Ownership is per space and environment name, so same-named
+    environments in two spaces don't replace each other's credentials.
+  - **No default context.** gbserver's file names an unreachable placeholder context as its
+    `current-context`, so an environment's cluster never becomes the default. A request that relies on the
+    default (an environment without `allowed_contexts`, or a `kubectl` call without `--context`) uses your
+    own kubeconfig's `current-context` if it sets one, and otherwise fails, as it would without
+    `kube_configs`.
   - **Nothing is removed while gbserver runs**, so every environment's builds can still poll and tear down.
 
   Limits:
+  - **Contexts are shared by the whole gbserver process.** Once an environment's context is merged, any
+    other environment in the same gbserver whose `allowed_contexts` names it (or allows all contexts) can
+    launch on that cluster with those credentials. Ownership stops another environment from *replacing* an
+    entry, not from *using* it. Run environments that must not share clusters in separate gbserver hosts.
+  - **Names:** SkyPilot ignores contexts whose names start with `ssh-`, and the placeholder name
+    `gbserver-no-default-context` is reserved. A relative certificate path inside a secret resolves against
+    `~/.sky`, where the merged file lives; prefer embedded `*-data` fields.
   - **Local API server only.** The SkyPilot client forwards `KUBECONFIG` to a local API server with each
     request; a remote one uses its own kubeconfig. The API server's own background jobs (e.g. its periodic
     status refresh) use the environment the server was *started* with, so they don't see these contexts;

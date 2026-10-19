@@ -518,12 +518,14 @@ def _apply_cloud_config(env_name: str, cloud_config: Optional[Dict]) -> None:
 def _kube_allowed_contexts(cloud_config: Dict) -> List[str]:
     """The Kubernetes ``allowed_contexts`` an env's ``cloud_config`` pins.
 
-    Resolved the way SkyPilot does (``sky.clouds.Kubernetes
-    .existing_allowed_contexts``): the active workspace's
-    ``workspaces.<name>.kubernetes.allowed_contexts`` when it sets one, else
-    ``kubernetes.allowed_contexts``. The active workspace is the env's
-    ``active_workspace``, defaulting to SkyPilot's ``default``. ``'all'`` or an
-    unset value pins nothing, so it yields an empty list.
+    Follows SkyPilot's precedence (``sky.clouds.Kubernetes
+    .existing_allowed_contexts``) within the env's own ``cloud_config`` only:
+    the active workspace's ``workspaces.<name>.kubernetes.allowed_contexts`` when
+    it sets one, else ``kubernetes.allowed_contexts``. The active workspace is
+    the env's ``active_workspace``, defaulting to SkyPilot's ``default``. A host
+    ``~/.sky/config.yaml`` can override these at launch, which can only narrow
+    the contexts used. ``'all'`` or an unset value pins nothing, so it yields an
+    empty list.
 
     :param cloud_config: The environment's ``cloud_config`` block.
     :returns: The pinned context names.
@@ -2085,6 +2087,7 @@ class Skypilot(Environment):
         self._inline_configs_done: bool = False
         # Same guard for kube_configs, which other request paths also call.
         self._kube_configs_done: bool = False
+        self._kube_configs_warned: bool = False
         # launch_id -> highest 1-based log line number already parsed, so a
         # periodic/startup pull resumes after the lines it last emitted events
         # for instead of re-emitting from the top each time.
@@ -2178,22 +2181,27 @@ class Skypilot(Environment):
                     merge_kube_configs,
                 )
 
-                merge_kube_configs(kube_entries, self.secrets or {}, self._env_name())
+                merge_kube_configs(kube_entries, self.secrets or {}, self._kube_owner())
                 activate_kubeconfig()
         except (ValueError, SkypilotConfigCollisionError) as e:
             if strict:
                 raise
-            logger.warning(
-                "environment '%s': kube_configs not applied: %s", self._env_name(), e
-            )
+            # Warn once, not on every poll; a later strict call still raises.
+            if not self._kube_configs_warned:
+                logger.warning(
+                    "environment '%s': kube_configs not applied: %s",
+                    self._env_name(),
+                    e,
+                )
+                self._kube_configs_warned = True
             return
         self._kube_configs_done = True
 
     def _kube_config_entries(self: Self) -> List[Any]:
         """This environment's ``kube_configs`` entries, validated.
 
-        Each context must also be in the env's ``allowed_contexts`` (as SkyPilot
-        resolves it; see :func:`_kube_allowed_contexts`): an environment may only
+        Each context must also be in the env's ``allowed_contexts`` (see
+        :func:`_kube_allowed_contexts`): an environment may only
         bring credentials for a cluster it pins, and a mismatch (a typo, say)
         fails at setup rather than at launch against another context.
 
@@ -2221,6 +2229,19 @@ class Skypilot(Environment):
                 "(or the active workspace's)"
             )
         return entries
+
+    def _kube_owner(self: Self) -> str:
+        """Owner key for this env's ``kube_configs`` entries: ``<space>/<env>``.
+
+        The environment name alone is not unique across spaces, and two spaces'
+        same-named environments must not replace each other's credentials. The
+        space is the one the build runs in (``URI.get_space_config``); ``-``
+        when unknown (e.g. unit tests).
+        """
+        from gbcommon.uri.uri import URI
+
+        space = (URI.get_space_config().get("space") or {}).get("name") or "-"
+        return f"{space}/{self._env_name()}"
 
     def _env_name(self: Self) -> str:
         """This environment's name, as recorded with its written config."""
@@ -4728,6 +4749,7 @@ class Skypilot(Environment):
         launch_id. SERVICE clusters on LSF never autostop and never get a
         terminal-status cleanup, so this is how they get reclaimed.
         """
+        self._ensure_kube_configs(strict=False)
         config = kwargs.get("config") or {}
         names = (config.get("teardown_config") or {}).get("cluster_names") or []
         names = [n.strip() for n in names if isinstance(n, str) and n.strip()]
