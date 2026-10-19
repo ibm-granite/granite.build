@@ -67,6 +67,7 @@ from gbserver.types.environment.skypilot import StepSkypilotConfig
 from gbserver.types.environmentconfig import EnvironmentConfig
 from gbserver.types.errors import (
     ErrSkypilotInteractiveAuthFailed,
+    SkypilotConfigCollisionError,
     WorkloadFailedException,
 )
 from gbserver.utils.logger import get_logger
@@ -512,6 +513,28 @@ def _apply_cloud_config(env_name: str, cloud_config: Optional[Dict]) -> None:
     if merge_cloud_config(cloud_config, env_name) or key != _LOADED_CLOUD_CONFIG:
         _reload_skypilot_client_config()
         _LOADED_CLOUD_CONFIG = key
+
+
+def _kube_allowed_contexts(cloud_config: Dict) -> List[str]:
+    """The Kubernetes ``allowed_contexts`` an env's ``cloud_config`` pins.
+
+    Resolved the way SkyPilot does (``sky.clouds.Kubernetes
+    .existing_allowed_contexts``): the active workspace's
+    ``workspaces.<name>.kubernetes.allowed_contexts`` when it sets one, else
+    ``kubernetes.allowed_contexts``. The active workspace is the env's
+    ``active_workspace``, defaulting to SkyPilot's ``default``. ``'all'`` or an
+    unset value pins nothing, so it yields an empty list.
+
+    :param cloud_config: The environment's ``cloud_config`` block.
+    :returns: The pinned context names.
+    """
+    workspace = cloud_config.get("active_workspace") or "default"
+    workspaces = cloud_config.get("workspaces") or {}
+    ws = ((workspaces.get(workspace) or {}).get("kubernetes")) or {}
+    allowed = ws.get("allowed_contexts")
+    if allowed is None:
+        allowed = (cloud_config.get("kubernetes") or {}).get("allowed_contexts")
+    return list(allowed) if isinstance(allowed, list) else []
 
 
 def _launch_with_cloud_config(
@@ -2163,6 +2186,8 @@ class Skypilot(Environment):
         # aws_credentials) is materialized at most once per environment
         # instance; the merge itself is also idempotent, so retries are free.
         self._inline_configs_done: bool = False
+        # Same guard for kube_configs, which other request paths also call.
+        self._kube_configs_done: bool = False
         # launch_id -> highest 1-based log line number already parsed, so a
         # periodic/startup pull resumes after the lines it last emitted events
         # for instead of re-emitting from the top each time.
@@ -2222,26 +2247,58 @@ class Skypilot(Environment):
 
             aws = [AwsCredentialProfile.model_validate(p) for p in aws_raw]
             materialize(self._env_name(), None, None, aws, self.secrets or {})
-        kube_entries = self._kube_config_entries()
-        if kube_entries:
-            from gbserver.environment.skypilot_config import (
-                activate_kubeconfig,
-                merge_kube_configs,
-            )
-
-            merge_kube_configs(kube_entries, self.secrets or {}, self._env_name())
-            activate_kubeconfig()
+        self._ensure_kube_configs()
         with _CLOUD_CONFIG_LOCK:
             _apply_cloud_config(self._env_name(), self._cloud_config())
         self._inline_configs_done = True
 
+    def _ensure_kube_configs(self: Self, strict: bool = True) -> None:
+        """Make this env's ``kube_configs`` contexts reachable (once per instance).
+
+        Merges them into gbserver's kubeconfig and puts it on ``KUBECONFIG``
+        (:mod:`gbserver.environment.skypilot_config`). Called before *every*
+        request that can reach the cluster — setup and launch, but also polling,
+        teardown, cleanup and ``sky.down`` — so a path that touches an existing
+        cluster without a setup first (a retried teardown, say) still has its
+        credentials. Idempotent; the merge itself is a no-op when unchanged.
+
+        :param strict: Raise on a bad ``kube_configs`` (setup and launch). The
+            teardown, cleanup and polling paths pass False: setup has already
+            raised the error, and failing again there would only stop cleanup,
+            so the error is logged and the request proceeds.
+        :raises ValueError: If ``strict`` and ``kube_configs`` is malformed or
+            unpinned (see :meth:`_kube_config_entries`).
+        :raises SkypilotConfigCollisionError: If ``strict``, on a context owned
+            elsewhere.
+        """
+        if self._kube_configs_done:
+            return
+        try:
+            kube_entries = self._kube_config_entries()
+            if kube_entries:
+                from gbserver.environment.skypilot_config import (
+                    activate_kubeconfig,
+                    merge_kube_configs,
+                )
+
+                merge_kube_configs(kube_entries, self.secrets or {}, self._env_name())
+                activate_kubeconfig()
+        except (ValueError, SkypilotConfigCollisionError) as e:
+            if strict:
+                raise
+            logger.warning(
+                "environment '%s': kube_configs not applied: %s", self._env_name(), e
+            )
+            return
+        self._kube_configs_done = True
+
     def _kube_config_entries(self: Self) -> List[Any]:
         """This environment's ``kube_configs`` entries, validated.
 
-        Each context must also be in ``cloud_config.kubernetes.allowed_contexts``:
-        an environment may only bring credentials for a cluster it pins, and a
-        mismatch (a typo, say) fails here rather than at launch against another
-        context.
+        Each context must also be in the env's ``allowed_contexts`` (as SkyPilot
+        resolves it; see :func:`_kube_allowed_contexts`): an environment may only
+        bring credentials for a cluster it pins, and a mismatch (a typo, say)
+        fails at setup rather than at launch against another context.
 
         :returns: The ``KubeConfigEntry`` list (empty when unset).
         :raises ValueError: If ``kube_configs`` is malformed or names a context
@@ -2258,14 +2315,13 @@ class Skypilot(Environment):
                 f"environment '{self._env_name()}': kube_configs must be a list"
             )
         entries = [KubeConfigEntry.model_validate(e) for e in raw]
-        allowed = ((self._cloud_config() or {}).get("kubernetes") or {}).get(
-            "allowed_contexts"
-        ) or []
+        allowed = _kube_allowed_contexts(self._cloud_config() or {})
         missing = [e.context for e in entries if e.context not in allowed]
         if missing:
             raise ValueError(
                 f"environment '{self._env_name()}': kube_configs contexts {missing} "
-                "must also be listed in cloud_config.kubernetes.allowed_contexts"
+                "must also be listed in cloud_config.kubernetes.allowed_contexts "
+                "(or the active workspace's)"
             )
         return entries
 
@@ -2752,6 +2808,7 @@ class Skypilot(Environment):
         :param setup_id: Setup identifier originally returned to
             ``Environment.setup``; used to look up the stashed path.
         """
+        self._ensure_kube_configs(strict=False)
         workdir = self._setup_workdirs.pop(setup_id, None)
         run_meta = self._setup_run_meta.pop(setup_id, {})
         provisioned = self._setup_provisioned.pop(setup_id, [])
@@ -4182,6 +4239,7 @@ class Skypilot(Environment):
         Returns on terminal SUCCESS, on ``stop_event`` (retry), or (when
         deferring) after the terminal FAILED handoff.
         """
+        self._ensure_kube_configs(strict=False)
         event_log_parser_configs = []
         if event_configs is not None:
             event_log_parser_configs = [
@@ -4745,6 +4803,7 @@ class Skypilot(Environment):
         Args:
             cluster_name: The SkyPilot cluster name to remove.
         """
+        self._ensure_kube_configs(strict=False)
         try:
             request_id = await asyncio.to_thread(sky.down, cluster_name, purge=True)
             await asyncio.to_thread(sky.get, request_id)
@@ -4766,6 +4825,7 @@ class Skypilot(Environment):
         **kwargs,
     ) -> None:
         """Tear down a SkyPilot cluster."""
+        self._ensure_kube_configs(strict=False)
         if launch_id is None:
             logger.warning("cleanup_skypilot called with no launch_id")
             return
