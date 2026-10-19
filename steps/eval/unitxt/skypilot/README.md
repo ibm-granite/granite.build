@@ -6,7 +6,7 @@
 
 Evaluation step that runs the [unitxt](https://www.unitxt.ai) `unitxt-evaluate`
 CLI as a black box, in `hf` mode, against the target's declared `model` input. Like
-[dpk](../../../dpk/skypilot/README.md) it is a **public-image** step: there is no
+[dpk](../../../data/dpk/skypilot/README.md) it is a **public-image** step: there is no
 `Dockerfile`. `setup` installs torch (`torch_package` from `torch_index_url`), then a
 pinned unitxt plus `hf_packages` (transformers, accelerate, tabulate), into a `uv` venv
 on the bare node. `unitxt_config.unitxt_image` optionally switches to a prebuilt image
