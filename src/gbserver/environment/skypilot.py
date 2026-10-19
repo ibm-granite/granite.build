@@ -4874,15 +4874,12 @@ class Skypilot(Environment):
             binding_path,
         )
 
-        pull_config = {
-            "hfpull_config": hfpull_config,
-            "launcher_config": {"envs": {"HF_TOKEN": hf_token}},
-        }
-        Hfstore.apply_compute_config_override(
-            pull_config, Hfstore.store_load_config(kwargs.get("input_config"))
-        )
         pull_step_config = BuildTargetStepConfig(
-            step_uri=hfpull_stepuri, config=pull_config
+            step_uri=hfpull_stepuri,
+            config={
+                "hfpull_config": hfpull_config,
+                "launcher_config": {"envs": {"HF_TOKEN": hf_token}},
+            },
         )
         return binding_config, pull_step_config
 
@@ -4964,14 +4961,13 @@ class Skypilot(Environment):
             binding_path,
         )
 
-        push_config = {
-            "hfpush_config": hfpush_config,
-            "launcher_config": {"envs": {"HF_TOKEN": hf_token}},
-        }
-        Hfstore.apply_compute_config_override(
-            push_config, Hfstore.store_push_config(output_config)
+        return BuildTargetStepConfig(
+            step_uri=hfpush_stepuri,
+            config={
+                "hfpush_config": hfpush_config,
+                "launcher_config": {"envs": {"HF_TOKEN": hf_token}},
+            },
         )
-        return BuildTargetStepConfig(step_uri=hfpush_stepuri, config=push_config)
 
     async def pushasset_cosstore(
         self: Self,

@@ -32,7 +32,6 @@ from gbserver.build.targetstep import TargetStep
 from gbserver.environment.environment import Environment
 from gbserver.types.buildconfig import (
     BuildTargetConfig,
-    BuildTargetInputConfig,
     BuildTargetOutputConfig,
     BuildTargetStepConfig,
 )
@@ -54,8 +53,6 @@ class BindingInfo:
     available: bool = field(default=False)
     wait_for_push: bool = field(default=False)
     output: Optional[BuildTargetOutputConfig] = field(default=None)
-    # The build.yaml input, for a ``uri`` input; carries its ``store_load``.
-    input_config: Optional[BuildTargetInputConfig] = field(default=None)
     input_binding_id: Optional[str] = field(default=None)
     uris: List[str] = field(default_factory=list)
     other_locations: List[str] = field(default_factory=list)
@@ -174,7 +171,6 @@ class Target(BuildEntity):
                         available=True,
                         uris=[t_input.uri],
                         wait_for_push=wait_for_push,
-                        input_config=t_input,
                     )
                     if t_input.metadata:
                         binding_info.other_locations = t_input.metadata.other_locations
@@ -238,11 +234,7 @@ class Target(BuildEntity):
                 "artifact_config: %s uri_to_handle: %s", artifact_config, uri_to_handle
             )
             artifact_config_uri = URI.get_uri(uri_to_handle)
-            task = self.environment.pullasset(
-                task_group=tg,
-                uri=artifact_config_uri,
-                input_config=artifact_config.input_config,
-            )
+            task = self.environment.pullasset(task_group=tg, uri=artifact_config_uri)
             if (
                 artifact_config.input_binding_id is None
                 or artifact_config.input_binding_id == ""

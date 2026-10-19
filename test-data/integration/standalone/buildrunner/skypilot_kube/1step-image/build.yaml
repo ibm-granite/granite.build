@@ -9,9 +9,6 @@ granite.build:
           # separate hfpull step into the shared volume. The image step then reads
           # it from /shared — so the image needs nothing to download it itself.
           uri: hf:///datasets/ibm-research/vira-intents-live
-          # The injected hfpull/hfpush steps default to 10Gi each; the hfpush
-          # pods run at once and would not all fit on the kind node.
-          store_load: {config: {compute_config: {total_memory_per_node: 1Gi}}}
       outputs:
         # hf:// outputs exercise hfpush on kube from an image step: the files this
         # image writes reach the separate hfpush pod via the shared volume. The
@@ -19,10 +16,8 @@ granite.build:
         # which then checks each dataset landed on the Hub and deletes it.
         output_model1:
           uri: hf://huggingface.co/datasets/__GBTEST_HF_PUSH_ORG__/skypilot-kube-img-test1___GBTEST_HF_PUSH_RUN__
-          store_push: {config: {compute_config: {total_memory_per_node: 1Gi}}}
         output_model2:
           uri: hf://huggingface.co/datasets/__GBTEST_HF_PUSH_ORG__/skypilot-kube-img-test2___GBTEST_HF_PUSH_RUN__
-          store_push: {config: {compute_config: {total_memory_per_node: 1Gi}}}
         env_output:
           uri: "env:///tmp/gb-env-output.txt"
           type: fileset

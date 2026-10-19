@@ -6,9 +6,6 @@ granite.build:
       inputs:
         input_model:
           uri: hf:///datasets/ibm-research/vira-intents-live
-          # Mirrors the kube 1step. No effect here: SkyPilot never sends the
-          # memory floor to slurm.
-          store_load: {config: {compute_config: {total_memory_per_node: 1Gi}}}
         # env:// input: a shared-FS path pulled as a no-op (pullasset_envstore).
         # The path need not physically exist — EnvURI.exists()/pull() are stubs —
         # and the value isn't tested; it just flows to the command as a binding.
@@ -17,10 +14,8 @@ granite.build:
       outputs:
         output_model1:
           uri: hf://huggingface.co/datasets/ibm-research/skypilot-slurm-hf-test1_{{ binding.path | short_hash }}
-          store_push: {config: {compute_config: {total_memory_per_node: 1Gi}}}
         output_model2:
           uri: hf://huggingface.co/datasets/ibm-research/skypilot-slurm-hf-test2_{{ binding.path | short_hash }}
-          store_push: {config: {compute_config: {total_memory_per_node: 1Gi}}}
         # env:// output: registered inline (pushasset_envstore) from the artifact
         # marker the command emits below. `type` is required for env:// outputs.
         # The path is arbitrary (env:// push/pull are no-ops); it just has to be
