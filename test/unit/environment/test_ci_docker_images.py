@@ -6,13 +6,24 @@ that drifts would silently go back to pulling from the registry.
 """
 
 import yaml
-from libgbtest.docker_images import MANIFEST, ci_docker_image, ci_docker_images
+from libgbtest.docker_images import (
+    MANIFEST,
+    NIGHTLY_MANIFEST,
+    ci_docker_image,
+    ci_docker_images,
+)
 
 SPACE = MANIFEST.parent / "standalone-environments"
 
 
 def test_manifest_parses():
     assert ci_docker_images()
+    assert ci_docker_images(NIGHTLY_MANIFEST)
+
+
+def test_manifests_do_not_overlap():
+    """An image in both would be cached twice, and the split exists to avoid that."""
+    assert not ci_docker_images().keys() & ci_docker_images(NIGHTLY_MANIFEST).keys()
 
 
 def test_dockerfile_cpu_test_from_matches_manifest():
@@ -40,10 +51,11 @@ def test_kube_image_fixture_matches_manifest():
         ).read_text()
     )
     step = build["granite.build"]["targets"]["image-run"]["steps"][0]
-    assert step["config"]["command_config"]["image"] == ci_docker_image("UBUNTU_IMAGE")
+    image = step["config"]["command_config"]["image"]
+    assert image == ci_docker_images(NIGHTLY_MANIFEST)["UBUNTU_IMAGE"]
 
 
-def test_nightly_loads_kind_images_by_manifest_name():
+def test_nightly_loads_kind_images_by_nightly_manifest_name():
     workflow = (MANIFEST.parents[1] / ".github/workflows/nightly-tests.yml").read_text()
     names = [
         line.split("kind-load", 1)[1].split()
@@ -52,4 +64,4 @@ def test_nightly_loads_kind_images_by_manifest_name():
     ]
     assert names, "nightly-tests.yml no longer runs ci-docker-images.sh kind-load"
     for name in (n for line in names for n in line):
-        assert name in ci_docker_images(), name
+        assert name in ci_docker_images(NIGHTLY_MANIFEST), name

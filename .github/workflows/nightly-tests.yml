@@ -51,16 +51,49 @@ jobs:
         with:
           path: ~/.cache/ci-docker-images
           key: ci-docker-images-${{ hashFiles('test-data/ci-docker-images.env') }}
+          restore-keys: ci-docker-images-
 
       - name: Load Docker images (pull with retry on cache miss)
         run: scripts/ci-docker-images.sh load
+
+      # Images only this workflow uses, in their own cache so they don't key
+      # ci.yml's. Saved here (on the scheduled run, from main) since ci.yml never
+      # loads them.
+      - name: Restore cached nightly Docker images
+        id: nightly-images-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/nightly-docker-images
+          key: nightly-docker-images-${{ hashFiles('test-data/nightly-docker-images.env') }}
+          restore-keys: nightly-docker-images-
+
+      - name: Load nightly Docker images (pull with retry on cache miss)
+        run: |
+          CI_DOCKER_IMAGE_LIST=test-data/nightly-docker-images.env \
+          CI_DOCKER_IMAGE_CACHE_DIR="$HOME/.cache/nightly-docker-images" \
+            scripts/ci-docker-images.sh load
+
+      - name: Save nightly Docker images to cache
+        if: steps.nightly-images-cache.outputs.cache-hit != 'true'
+        run: |
+          CI_DOCKER_IMAGE_LIST=test-data/nightly-docker-images.env \
+          CI_DOCKER_IMAGE_CACHE_DIR="$HOME/.cache/nightly-docker-images" \
+            scripts/ci-docker-images.sh save
+
+      - name: Upload nightly Docker image cache
+        if: steps.nightly-images-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/nightly-docker-images
+          key: ${{ steps.nightly-images-cache.outputs.cache-primary-key }}
 
       # kind pods don't see the host's docker images; the kind env uses these
       # without pulling (imagePullPolicy IfNotPresent).
       - name: Load Docker images into the kind cluster
         run: |
           source .venv/bin/activate
-          scripts/ci-docker-images.sh kind-load UBUNTU_IMAGE
+          CI_DOCKER_IMAGE_LIST=test-data/nightly-docker-images.env \
+            scripts/ci-docker-images.sh kind-load UBUNTU_IMAGE
 
       - name: Run extended tests
         env:
