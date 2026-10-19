@@ -23,7 +23,7 @@ granite.build:
           uri: "env:///model"
           type: model
       steps:
-        - step_uri: space://steps/nemo-rl
+        - step_uri: space://steps/train/nemo-rl
           config:
             poll_interval_seconds: 30
             nemo_rl_config:

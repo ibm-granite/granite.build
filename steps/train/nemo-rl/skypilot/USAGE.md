@@ -19,11 +19,11 @@ NeMo-RL source and prefetched environments.
 ## Referencing the step
 
 Point your build's Space at one that provides the step, then reference it by the
-stable `space://steps/nemo-rl` URI:
+stable `space://steps/train/nemo-rl` URI:
 
 ```yaml
 steps:
-  - step_uri: space://steps/nemo-rl
+  - step_uri: space://steps/train/nemo-rl
 ```
 
 ## Config contract (`nemo_rl_config`)
@@ -119,7 +119,7 @@ granite.build:
           uri: "env:///model"
           type: model
       steps:
-        - step_uri: space://steps/nemo-rl
+        - step_uri: space://steps/train/nemo-rl
           config:
             nemo_rl_config:
               algorithm: sft
@@ -142,7 +142,7 @@ To train on your own data, bind a `dataset` and name its Hydra key:
         dataset:
           uri: hf:///datasets/my-org/my-sft-data
       steps:
-        - step_uri: space://steps/nemo-rl
+        - step_uri: space://steps/train/nemo-rl
           config:
             nemo_rl_config:
               algorithm: sft

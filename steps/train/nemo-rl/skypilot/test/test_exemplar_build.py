@@ -35,7 +35,8 @@ def _step(target):
 
 def test_step_uri_is_this_step():
     step = _step(_target(_load("build.yaml")))
-    assert step["step_uri"] == "space://steps/nemo-rl"
+    # common.mk derives the URI from the authoring nesting (steps/train/nemo-rl).
+    assert step["step_uri"] == "space://steps/train/nemo-rl"
 
 
 def test_required_nemo_rl_config_keys_present_and_nonempty():
