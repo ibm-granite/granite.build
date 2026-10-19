@@ -25,14 +25,16 @@ on a real cluster:
   index), then unitxt and ``hf_packages`` from PyPI;
 * ``unitxt-evaluate --model hf`` runs to completion with ``--trust_remote_code``;
 * the output directory is registered as ``results`` from the artifact marker, and
-  the queued hfpush uploads it to a ``test_``-prefixed Hugging Face dataset.
+  the queued hfpush uploads it to a Hugging Face dataset.
+  :class:`libgbtest.hfpush.HfPushCleanupMixin` names that dataset per run, checks
+  it landed on the Hub, and deletes it afterwards.
 
 GPU evaluation is not covered here: the local cluster has no GPUs. A GPU test
 against an internal GPU SLURM cluster belongs under ``test/integration/ibm/``.
 
 The model and the dataset are public, so pulling them needs no token, but the
-results push needs an HF_TOKEN with write access to the ibm-research org (the
-nightly extended suite has one).
+results push needs an HF_TOKEN that can write ``GBTEST_HF_PUSH_ORG`` (default
+ibm-research; the nightly extended suite has such a token).
 
 Real-infra test, gated on a reachable Docker SLURM cluster, so it auto-skips in CI
 and on machines without one (``make slurm-setup`` brings up SLURM). Extended
@@ -52,6 +54,7 @@ from libgbtest.buildrunner.buildtest import (
     get_test_data_dir_for,
 )
 from libgbtest.constants import extended_testing_only
+from libgbtest.hfpush import HfPushCleanupMixin
 
 pytestmark = pytest.mark.skypilot_integration
 
@@ -61,7 +64,7 @@ pytestmark = pytest.mark.skypilot_integration
     not _slurm_cluster_reachable(),
     reason="Docker SLURM cluster not reachable (run: make slurm-setup)",
 )
-class TestSkypilotSlurmUnitxtCpu(AbstractYamlBuildRunnerTest):
+class TestSkypilotSlurmUnitxtCpu(HfPushCleanupMixin, AbstractYamlBuildRunnerTest):
     """eval/unitxt step: hf mode on CPU against a bound hf:// model input."""
 
     def _get_yaml_spec_dir(self) -> Path:

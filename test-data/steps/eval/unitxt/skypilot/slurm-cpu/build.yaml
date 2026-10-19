@@ -15,7 +15,8 @@ granite.build:
   #      queued hfpush uploads it to a Hugging Face dataset.
   #
   # HF_TOKEN: the model pull needs none (it's public), but the results push needs
-  # write access to the ibm-research org. The nightly extended suite supplies it.
+  # write access to GBTEST_HF_PUSH_ORG (default ibm-research). The nightly extended
+  # suite supplies it.
   #
   # Memory: the local cluster's nodes advertise RealMemory=1024. Measured outside
   # the cluster, this run peaks at ~560 MiB RSS in bf16 (~900 MiB in fp32), hence
@@ -31,10 +32,12 @@ granite.build:
       outputs:
         results:
           # A real hf:// output, so buildrunner queues an hfpush for the directory
-          # the step registers. The `test_` prefix lets scripts/rm_hf_repos.py
-          # (--pattern '^test_') clean these up; the short hash of the registered
-          # path gives each build its own dataset.
-          uri: hf://huggingface.co/datasets/ibm-research/test_unitxt-results_{{ binding.path | short_hash }}
+          # the step registers. HfPushCleanupMixin (libgbtest.hfpush) fills in the
+          # __GBTEST_HF_PUSH_*__ tokens per run (org from GBTEST_HF_PUSH_ORG,
+          # default ibm-research), checks the push landed, and deletes the dataset.
+          # The `test_` prefix still lets scripts/rm_hf_repos.py (--pattern
+          # '^test_') clean up leftovers from aborted runs.
+          uri: hf://huggingface.co/datasets/__GBTEST_HF_PUSH_ORG__/test_unitxt-results___GBTEST_HF_PUSH_RUN__
           type: dataset
       steps:
         - step_uri: space://steps/eval/unitxt
