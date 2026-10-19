@@ -170,6 +170,14 @@ class TestSkyKubeLocalEnvironmentYaml:
         assert claims == ["gb-shared"]
         assert mounts == ["/shared"]
 
+    def test_pods_use_images_preloaded_into_kind(self):
+        """IfNotPresent on SkyPilot's own (named) container; its default Always re-pulls."""
+        kube = self._load()["config"]["cloud_config"]["kubernetes"]
+        spec = kube["context_configs"]["kind-skypilot"]["pod_config"]["spec"]
+        (container,) = spec["containers"]
+        assert container["name"] == "ray-node"
+        assert container["imagePullPolicy"] == "IfNotPresent"
+
     def test_shared_workdir_and_hf_cache_live_on_the_volume(self):
         data = self._load()
         assert data["config"]["shared_workdir"] == "/shared"

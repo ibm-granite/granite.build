@@ -112,7 +112,9 @@ config:
                   persistentVolumeClaim:
                     claimName: gb-shared
               containers:
-                - volumeMounts:
+                - name: ray-node
+                  imagePullPolicy: IfNotPresent
+                  volumeMounts:
                     - name: gb-shared
                       mountPath: /shared
 assetstores:
@@ -127,6 +129,10 @@ assetstores:
 ```
 
 The `env://` store is registered implicitly for **every** environment, so it needs no `assetstores` entry.
+
+`imagePullPolicy: IfNotPresent` on SkyPilot's container (`ray-node`; `pod_config` merges containers by
+name) replaces its default `Always`, so an image already on the kind node is not re-pulled. CI preloads
+the kube tests' images with `scripts/ci-docker-images.sh kind-load`, avoiding registry rate limits.
 
 Steps may set `image_id` (Kubernetes runs containers natively — no Pyxis/enroot caveat), and
 `resources.accelerators` / `resources.memory` map onto the pod's resource requests.

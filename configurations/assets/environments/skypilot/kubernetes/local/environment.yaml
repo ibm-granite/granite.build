@@ -45,7 +45,11 @@ config:
                   persistentVolumeClaim:
                     claimName: gb-shared
               containers:
-                - volumeMounts:
+                # SkyPilot's container (merged by name). IfNotPresent, not its
+                # default Always, so an image preloaded into kind is not re-pulled.
+                - name: ray-node
+                  imagePullPolicy: IfNotPresent
+                  volumeMounts:
                     - name: gb-shared
                       mountPath: /shared
 assetstores:

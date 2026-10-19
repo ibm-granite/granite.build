@@ -55,6 +55,13 @@ jobs:
       - name: Load Docker images (pull with retry on cache miss)
         run: scripts/ci-docker-images.sh load
 
+      # kind pods don't see the host's docker images; the kind env uses these
+      # without pulling (imagePullPolicy IfNotPresent).
+      - name: Load Docker images into the kind cluster
+        run: |
+          source .venv/bin/activate
+          scripts/ci-docker-images.sh kind-load UBUNTU_IMAGE
+
       - name: Run extended tests
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
