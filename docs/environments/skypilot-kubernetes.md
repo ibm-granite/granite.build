@@ -86,22 +86,24 @@ hf inputs and outputs are moved by the builtin `hfpull`/`hfpush` steps, each in 
 request `total_memory_per_node: 10Gi`. gbserver skips the memory floor on SLURM and LSF, but on Kubernetes
 it becomes the pod's memory request, so on a small node (a laptop or CI kind cluster) only one fits at a
 time, and the rest fail to schedule and are retried. The transfers are I/O-bound, so both shipped
-environments size the pods down with a `compute_config` in their `space://assetstores/hf` entries. It is
-merged key by key over the step's `compute_config` (unlike `step_uri`, which swaps in a whole other step),
-and only the environment's entry is read, not a build.yaml `store_push`:
+environments size the pods down with [per-step-type defaults](README.md#per-step-type-config-defaults-configstepstype):
 
 ```yaml
-assetstores:
-  - store_uri: space://assetstores/hf
-    pull:
-      - mode: default
-        config:
-          compute_config: {num_cpus_per_node: 1, total_memory_per_node: 2Gi}
-    push:
-      - mode: default
-        config:
-          compute_config: {num_cpus_per_node: 1, total_memory_per_node: 2Gi}
+config:
+  steps:
+    hfpull:
+      launcher_config:
+        resources: {cpus: "1+", memory: "2+"}
+    hfpush:
+      launcher_config:
+        resources: {cpus: "1+", memory: "2+"}
 ```
+
+It has to be `launcher_config.resources`, not `compute_config`. `config.steps` is the lowest layer of the
+step-config merge, so the step's own `compute_config.total_memory_per_node: 10Gi` would win over a
+`config.steps` `compute_config`. The step sets no `launcher_config`, and at launch `launcher_config.resources`
+overrides the `compute_config` floor. The values are passed to SkyPilot as written, so use its `"N+"`
+(at least N) form.
 
 By default SkyPilot sets only the pod's *request*, not a limit, so a large transfer can use more memory
 than this. On a cluster that enforces limits (SkyPilot's `kubernetes.set_pod_resource_limits`, or a
@@ -129,6 +131,9 @@ config:
   default_cloud: kubernetes
   idle_minutes_to_autostop: 15  # applied as autodown on Kubernetes; keep well above the poll interval
   shared_workdir: /shared
+  steps:              # size the hf pods; see "hf pull/push pod size" above
+    hfpull: {launcher_config: {resources: {cpus: "1+", memory: "2+"}}}
+    hfpush: {launcher_config: {resources: {cpus: "1+", memory: "2+"}}}
   cloud_config:
     kubernetes:
       allowed_contexts: [kind-skypilot]
@@ -150,15 +155,9 @@ assetstores:
       - mode: default
         config:
           cache_path: /shared/hf_cache
-          compute_config:   # size the hfpull pods; see "hf pull/push pod size" below
-            num_cpus_per_node: 1
-            total_memory_per_node: 2Gi
     push:
       - mode: default
-        config:
-          compute_config:
-            num_cpus_per_node: 1
-            total_memory_per_node: 2Gi
+        config: {}
 ```
 
 The `env://` store is registered implicitly for **every** environment, so it needs no `assetstores` entry.

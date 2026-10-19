@@ -16,6 +16,18 @@ config:
   # Applied as AUTODOWN on Kubernetes; see skypilot/kubernetes/environment.yaml.
   idle_minutes_to_autostop: 15
   shared_workdir: /shared
+  # Size the builtin hfpull/hfpush pods. Their step.yaml requests 10Gi, which
+  # Kubernetes reserves per pod, so on a small node only one fits at a time and
+  # the rest wait. Transfers are I/O-bound. launcher_config.resources outranks a
+  # step's compute_config, so this applies even though step.yaml sets memory.
+  # Values are SkyPilot's ("N+" = at least N).
+  steps:
+    hfpull:
+      launcher_config:
+        resources: {cpus: "1+", memory: "2+"}
+    hfpush:
+      launcher_config:
+        resources: {cpus: "1+", memory: "2+"}
   # Deep-merged into ~/.sky/config.yaml at launch (as skypilot/aws does for its
   # credentials profile). Two things, both about WHICH cluster and HOW pods run:
   cloud_config:
@@ -55,16 +67,6 @@ assetstores:
         config:
           # Separate hfpull step, cached on the shared volume (as on slurm).
           cache_path: /shared/hf_cache
-          # The builtin hfpull/hfpush steps request 10Gi, which Kubernetes reserves
-          # per pod, so on a small node they queue one at a time. Transfers are
-          # I/O-bound; size the pods down (merged over the step's compute_config).
-          compute_config:
-            num_cpus_per_node: 1
-            total_memory_per_node: 2Gi
     push:
       - mode: default
-        config:
-          # As for pull above.
-          compute_config:
-            num_cpus_per_node: 1
-            total_memory_per_node: 2Gi
+        config: {}
