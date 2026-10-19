@@ -162,7 +162,7 @@ def _hydra_overrides(train_argv):
 
 def _marker(stdout):
     for ln in stdout.splitlines():
-        if ln.startswith("LLMB_ARTIFACT_ID:"):
+        if ln.startswith("GB_ARTIFACT_ID:"):
             return ln
     return None
 
@@ -362,7 +362,7 @@ class TestConversionAndMarker:
         proc, runs, work = _run(tmp_path, ["--base-model", "/staged/base"])
         marker = _marker(proc.stdout)
         assert marker is not None, proc.stdout
-        assert marker.startswith("LLMB_ARTIFACT_ID:model LLMB_ARTIFACT_PATH:/")
+        assert marker.startswith("GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:/")
 
     def test_marker_matches_shipped_skypilot_monitor(self, tmp_path):
         # Pin the marker to the regex the step's monitor actually uses

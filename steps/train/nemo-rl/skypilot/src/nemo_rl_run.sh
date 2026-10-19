@@ -235,7 +235,7 @@ fi
 
 # --- register the model artifact ------------------------------------------------
 # Line-start, space-delimited, emitted only now that the HF dir is non-empty.
-# The prefix must be LLMB_ARTIFACT_*: that is what the shipped skypilot monitor
-# (space://monitors/skypilot) matches. Any other prefix registers no artifact
-# while the build still reports SUCCESS.
-echo "LLMB_ARTIFACT_ID:${artifact_id} LLMB_ARTIFACT_PATH:${hf_dir}"
+# GB_ is the standard marker prefix the skypilot monitor (space://monitors/skypilot)
+# matches; LLMB_ is accepted only as a legacy alias. A prefix the monitor does not
+# match registers no artifact while the build still reports SUCCESS.
+echo "GB_ARTIFACT_ID:${artifact_id} GB_ARTIFACT_PATH:${hf_dir}"
