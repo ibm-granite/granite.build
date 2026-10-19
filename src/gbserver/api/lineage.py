@@ -248,10 +248,11 @@ def ingest_lineage_event(request: Request, event: OpenLineageEvent):
 
     - **Attribution.** The caller's login is stored as the job's ``submitted_by``,
       set here and never taken from the event.
-    - **Namespaces of a space.** When ``job.namespace`` starts with an existing
-      space (``<space>/...``), the caller must be able to add to that space, as
-      themselves unless an admin -- the check new builds and artifacts pass. Any
-      other namespace is external and accepted.
+    - **Namespaces of a space.** When ``job.namespace``'s first segment is an
+      existing space (``<space>`` or ``<space>/...``), the caller must be able to
+      add to that space, as themselves unless an admin -- the check new builds
+      and artifacts pass. Any other namespace is external and accepted, but its
+      ``owner`` may only be the caller (or empty) unless a super admin.
     - **An existing job is not taken over.** If the index already holds the
       event's ``job_id`` and any of its rows was not submitted by this caller (a
       build's job, or another emitter's), the event is refused with 409. The check
@@ -280,15 +281,28 @@ def ingest_lineage_event(request: Request, event: OpenLineageEvent):
 def _authorize_event_namespace(
     request: Request, payload: dict, job_details: dict
 ) -> None:
-    """Require add access to the space a ``<space>/...`` namespace names, if any."""
+    """Require add access to the space the namespace names, if any.
+
+    The space is the namespace's first segment, split exactly as the read side
+    (``space_name`` on rows and job records) splits it, so a bare ``<space>``
+    is gated like ``<space>/...``. In an external namespace the event may not
+    name another user as owner: nothing checks it there, and the owner is what
+    the read side attributes the job to.
+    """
     namespace = str((payload.get("job") or {}).get("namespace") or "")
-    space_name = namespace.split("/", 1)[0] if "/" in namespace else ""
-    if not space_name:
+    space_name = namespace.split("/", 1)[0] if namespace else ""
+    login = request.state.data["user"].login
+    owner = str(job_details.get("owner") or "")
+    if space_name and get_admin_storage().space_storage.get_by_name(space_name):
+        confirm_can_add_to_space(
+            request, username_on_target=owner or login, space_name=space_name
+        )
         return
-    if get_admin_storage().space_storage.get_by_name(space_name) is None:
-        return  # not a granite.build space: an external namespace
-    owner = str(job_details.get("owner") or "") or request.state.data["user"].login
-    confirm_can_add_to_space(request, username_on_target=owner, space_name=space_name)
+    if owner and owner != login and not is_super_admin(request):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="An event outside a space can only name its submitter as owner",
+        )
 
 
 def _refuse_job_takeover(job_id: str, login: str) -> None:
@@ -317,8 +331,9 @@ def search_lineage_events(request: Request, body: TagSearchRequest):
 
     **Deprecated.** Kept only for existing external callers (dmg-ng); nothing in
     granite.build (frontend, gbcli, gbmcp) calls it. New callers should resolve
-    lineage through the index routes: ``GET /lineage/jobs`` to list jobs and
-    ``GET /lineage/graph?job_ids=...`` for their lineage. It will be removed once
+    lineage through the index routes: ``GET /lineage/jobs`` to list jobs (by
+    ``tag`` for what this route answered) and ``GET /lineage/graph?job_ids=...``
+    for their lineage. It will be removed once
     those callers have migrated.
 
     An empty tag list matches every run in the shared lineage backend across

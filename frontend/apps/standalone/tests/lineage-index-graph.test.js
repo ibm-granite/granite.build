@@ -55,6 +55,13 @@ describe('expansionSeed', () => {
     assert.deepEqual(expansionSeed('runs:s3://b/a', { jobs_query: { uri: 's3://b/a', self_loop: true } }), { uri: 's3://b/a' })
   })
 
+  it('seeds a group past the API cap from one of its jobs, since all share endpoints', () => {
+    const ids = Array.from({ length: 1001 }, (_, i) => `J${i}`)
+    assert.deepEqual(expansionSeed('runs:s3://b/a → s3://b/c', { jobs_query: { job_ids: ids } }), { job_ids: ['J0'] })
+    const atCap = ids.slice(0, 1000)
+    assert.deepEqual(expansionSeed('runs:s3://b/a → s3://b/c', { jobs_query: { job_ids: atCap } }), { job_ids: atCap })
+  })
+
   it('ignores job ids that are not non-empty strings', () => {
     assert.deepEqual(expansionSeed('runs:s3://b/a → s3://b/c', { jobs_query: { job_ids: ['', 3, 'J1'] } }), { job_ids: ['J1'] })
   })

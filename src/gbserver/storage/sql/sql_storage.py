@@ -1249,6 +1249,10 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         finally:
             session.close()
 
+    def _on_update_row(self, db_item: Any) -> None:
+        """Hook for a subclass to set columns on a row ``update_fields`` writes,
+        inside the same (retried) transaction. No-op by default."""
+
     @retry(
         wait=wait_random_exponential(multiplier=1, min=1, max=30),
         stop=stop_after_attempt(10),
@@ -1331,6 +1335,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             updated_item_dict = self._convert_item_to_row_dict(item)
             for column_name, column_value in updated_item_dict.items():
                 setattr(db_item, column_name, column_value)
+            self._on_update_row(db_item)
 
             # Commit the transaction and apply the changes to db_item - this releases the row lock
             session.commit()

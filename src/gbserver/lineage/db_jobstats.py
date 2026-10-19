@@ -53,7 +53,7 @@ from gbserver.lineage.attributes import (
 )
 from gbserver.lineage.decompose import LineageDecomposeError, to_lineage_rows
 from gbserver.lineage.jobstats import ILineageStore
-from gbserver.lineage.merge import ADDED, REJECTED, UPDATED, upsert_job
+from gbserver.lineage.merge import ADDED, REJECTED, upsert_job
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.lineage_job_storage import ILineageJobStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage
@@ -428,11 +428,9 @@ class DBLineageStore(ILineageStore):
         if all_tags != sorted(set(stored.tags or [])):
             fields["tags"] = all_tags
         if fields:
+            # update_fields stamps recorded_at in the same transaction (as
+            # upsert_job's did), so the indexer re-reads the merged record.
             storage.update_fields(stored.uuid, fields)
-        if fields or result == UPDATED:
-            # Stamped by the database in its own statement, after the change is
-            # in: the indexer reads by it and must see the change once it moves.
-            storage.touch_recorded_at(stored.uuid)
 
     # -- Building (delegated, so both sinks agree on what lineage is) --------
 

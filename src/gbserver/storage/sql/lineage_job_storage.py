@@ -151,23 +151,11 @@ class SQLLineageJobStorage(
             row["recorded_at"] = self._db_now()
         super()._add_item_dicts(items)
 
-    def touch_recorded_at(self, uuid: str) -> None:
-        """Move ``recorded_at`` to now, as the database sees it, so the indexer
-        re-reads a record a merge changed."""
-        if not self._ensure_table_without_retry():
-            return
-        model = self._sql_alchemy_model
-        session = self._get_session_without_retry()
-        try:
-            session.query(model).filter(model.uuid == uuid).update(
-                {model.recorded_at: self._db_now()}, synchronize_session=False
-            )
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
+    def _on_update_row(self, db_item) -> None:
+        # Stamped in the same transaction as the change, on every retry: a
+        # merged record must move past the checkpoint exactly when its new
+        # content commits, or the indexer never re-reads it.
+        db_item.recorded_at = self._db_now()
 
     def search_by_tags(
         self,

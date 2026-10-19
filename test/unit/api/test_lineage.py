@@ -1030,3 +1030,17 @@ def test_ingest_refuses_a_job_id_already_recorded_by_another_source():
 
 def test_ingest_lets_the_same_submitter_extend_its_own_job():
     assert _ingest(_event(job_id="J1"), login="alice", rows=[_row("J1", "alice")])
+
+
+def test_ingest_gates_a_bare_space_namespace_like_a_slashed_one():
+    with pytest.raises(HTTPException) as caught:
+        _ingest(_event(namespace="team"), spaces=("team",), member_of=())
+    assert caught.value.status_code == 401
+
+
+def test_ingest_outside_a_space_cannot_claim_another_owner():
+    with pytest.raises(HTTPException) as caught:
+        _ingest(_event(owner="bob"), login="alice")
+    assert caught.value.status_code == 403
+    assert _ingest(_event(owner="alice"), login="alice")
+    assert _ingest(_event(owner="bob"), login="alice", admin=True)

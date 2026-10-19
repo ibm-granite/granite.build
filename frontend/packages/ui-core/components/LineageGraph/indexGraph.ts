@@ -30,9 +30,15 @@ export function artifactTypeToNodeType(artifactType: string | null | undefined):
 // input and output is walked, not just the first; otherwise from its first endpoint.
 export interface ExpansionSeed { uri?: string; job_id?: string; job_ids?: string[] }
 
+// The API's cap on `job_ids` (LineageQueryRequest.job_ids max_length).
+export const MAX_SEED_JOB_IDS = 1000
+
 export function expansionSeed(nodeId: string, metadata?: Record<string, unknown>): ExpansionSeed {
   if (nodeId.startsWith('runs:')) {
     const jobIds = groupJobIds(metadata)
+    // Every job in a group has the same inputs and outputs, so past the API's
+    // cap one of them seeds the same endpoints; the walk regroups the rest.
+    if (jobIds.length > MAX_SEED_JOB_IDS) return { job_ids: jobIds.slice(0, 1) }
     if (jobIds.length) return { job_ids: jobIds }
     const endpoints = nodeId.slice('runs:'.length).split(' → ').flatMap((side) => side.split(' + '))
     return { uri: endpoints.find((uri) => uri && uri !== '∅') ?? endpoints[0] }

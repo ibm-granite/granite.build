@@ -314,10 +314,6 @@ class SqliteLineageJobStorage(SqliteStorageOverrides, SQLLineageJobStorage):
     def get_recorded_after(self, *args, **kwargs) -> list:
         return _locked_per_attempt(self, super().get_recorded_after, *args, **kwargs)
 
-    def touch_recorded_at(self, *args, **kwargs) -> None:
-        with self._db_file_lock:
-            super().touch_recorded_at(*args, **kwargs)
-
 
 class SqliteNodeFailureStorage(SqliteStorageOverrides, SQLNodeFailureStorage):
 

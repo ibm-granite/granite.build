@@ -1037,3 +1037,36 @@ class TestFinishedStatusReplacesInProgress:
         upsert_job(jobs, self._job("finished"))
         upsert_job(jobs, self._job("running"))
         assert jobs.get_job("J1").status == "finished"
+
+
+class TestMergeStampsRecordedAtAtomically:
+    """A merge and its recorded_at bump are one write: if it fails, neither is in."""
+
+    def test_a_merge_moves_recorded_at_with_its_content(self, sink, jobs):
+        import time
+
+        entry = job("J1", [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)])
+        sink._write_job(entry, build_id="BLD", target_run_uuid="t1")
+        before = jobs.get_job("J1")
+        time.sleep(0.01)
+        sink._write_job(entry, build_id="BLD", target_run_uuid="t1", extra_tags=["k=v"])
+        after = jobs.get_job("J1")
+        assert "k=v" in after.tags
+        assert after.recorded_at > before.recorded_at
+
+    def test_a_failed_merge_leaves_the_record_as_it_was(self, sink, jobs, monkeypatch):
+        entry = job("J1", [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)])
+        sink._write_job(entry, build_id="BLD", target_run_uuid="t1")
+        before = jobs.get_job("J1")
+
+        def fail(db_item):
+            raise ValueError("boom")
+
+        monkeypatch.setattr(jobs, "_on_update_row", fail)
+        with pytest.raises(ValueError):
+            sink._write_job(
+                entry, build_id="BLD", target_run_uuid="t1", extra_tags=["k=v"]
+            )
+        after = jobs.get_job("J1")
+        assert after.tags == before.tags
+        assert after.recorded_at == before.recorded_at

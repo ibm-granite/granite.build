@@ -558,12 +558,23 @@ def test_the_insert_carries_a_database_expression_not_a_python_stamp(storage):
     assert seen and all(isinstance(v, ClauseElement) for v in seen)
 
 
-def test_touch_recorded_at_moves_it_forward(storage):
+def test_update_fields_moves_recorded_at_forward(storage):
     import time
 
     storage.add(job("J1"))
     before = storage.get_job("J1")
     time.sleep(0.01)
-    storage.touch_recorded_at(before.uuid)
+    storage.update_fields(before.uuid, {"tags": ["k=v"]})
     after = storage.get_job("J1")
+    assert after.tags == ["k=v"]
     assert after.recorded_at > before.recorded_at
+
+
+def test_a_failed_update_leaves_recorded_at_and_content_alone(storage):
+    storage.add(job("J1"))
+    before = storage.get_job("J1")
+    with pytest.raises(ValueError):
+        storage.update_fields(before.uuid, {"no_such_field": 1})
+    after = storage.get_job("J1")
+    assert after.recorded_at == before.recorded_at
+    assert after.tags == before.tags
