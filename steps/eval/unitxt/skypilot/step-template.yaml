@@ -31,7 +31,7 @@ config:
     # Passes --trust_remote_code. Catalog cards that filter their HF dataset with a
     # code expression (cards.mmlu_pro.* among them) refuse to load without it.
     trust_remote_code: true
-    # unitxt release installed in setup. Ignored when `unitxt_image` is set.
+    # unitxt release installed in setup. Ignored when `install` is false.
     unitxt_version: "1.26.10"
     # hf mode needs torch, which unitxt does not depend on. It is installed on its
     # own, BEFORE everything else, so it can come from a different index: set
@@ -39,19 +39,29 @@ config:
     # https://download.pytorch.org/whl/cpu on a CPU-only node or .../whl/cu128 to
     # match a node's CUDA driver. Empty => pip_index_url (PyPI's default Linux
     # wheel, which bundles CUDA). Pin the version in torch_package, e.g.
-    # "torch==2.8.0". Ignored when `unitxt_image` is set.
+    # "torch==2.8.0". Ignored when `install` is false.
     torch_package: "torch"
     torch_index_url: ""
     # Installed with unitxt, after torch, from pip_index_url: hf mode also needs
     # transformers and accelerate, and the CLI's score summary needs tabulate. The
     # torch already installed satisfies their torch requirement, so it is kept.
-    # Ignored when `unitxt_image` is set.
+    # Ignored when `install` is false.
     hf_packages: ["transformers", "accelerate", "tabulate"]
     pip_index_url: "https://pypi.org/simple"
-    # Container image that already provides unitxt-evaluate, torch and hf_packages. Setting
-    # it skips the venv and install entirely (dpk's `dpk_image` pattern). Empty =>
-    # bare node.
-    unitxt_image: ""
+    # Public container image the step runs in, rendered as SkyPilot `docker:<image>`
+    # (byoc's `image` pattern). "" runs on the bare launcher node instead, which is
+    # what a SLURM cluster without the Pyxis plugin needs (the local Docker SLURM
+    # cluster, for one). The image must be Debian/Ubuntu-based: SkyPilot bootstraps
+    # its in-container shim with apt-get. It must also run as root (or allow
+    # passwordless sudo), and provide python3 with pip for the uv install below.
+    # python:3.12-slim meets all three. GPUs need no CUDA in the image: torch's
+    # wheel carries the CUDA runtime, and the host's driver is passed through.
+    image: "python:3.12-slim"
+    # Install unitxt and its packages into a venv at setup, inside `image` (or on
+    # the bare node). Set false only when `image` already provides unitxt-evaluate,
+    # torch and hf_packages; setup then installs nothing and run calls the image's
+    # own unitxt-evaluate.
+    install: true
   # GPUs are not read from here: request them in the build's
   # launcher_config.resources (e.g. accelerators: "A10G:1"). Memory is the floor
   # for loading the checkpoint on cloud catalogs (ignored on slurm/lsf).
@@ -87,7 +97,7 @@ environment_configs:
         config:
           # Not shell-escaped: passed to sky.Resources(image_id=...) as a python
           # value, never through a shell (same as dpk).
-          image_id: '{{ ("docker:" ~ config.unitxt_config.unitxt_image) if config.unitxt_config.unitxt_image else "" }}'
+          image_id: '{{ ("docker:" ~ config.unitxt_config.image) if config.unitxt_config.image else "" }}'
           # Cloud-agnostic: the build supplies cpus/memory/accelerators via
           # config.launcher_config.resources.
           resources: {}
@@ -98,7 +108,7 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            {%- if not config.unitxt_config.unitxt_image %}
+            {%- if config.unitxt_config.install %}
             # Install unitxt into a venv with uv, as dpk does. --break-system-packages
             # is needed on PEP 668 interpreters; older pip lacks it, so fall back.
             if ! pip install --quiet --no-cache-dir --break-system-packages uv 2>/dev/null; then
@@ -129,7 +139,13 @@ environment_configs:
             echo "eval/unitxt: ERROR unitxt_config.model is no longer read; bind the target's 'model' input instead (see USAGE.md)." >&2
             exit 1
             {%- endif %}
-            {%- if not config.unitxt_config.unitxt_image %}
+            {%- if config.unitxt_config.unitxt_image is defined %}
+            # `unitxt_image` used to both pick the image and skip the install. It is now
+            # two keys, `image` and `install`, so refuse the old one rather than ignore it.
+            echo "eval/unitxt: ERROR unitxt_config.unitxt_image is no longer read; set unitxt_config.image (and install: false if that image already provides unitxt-evaluate)." >&2
+            exit 1
+            {%- endif %}
+            {%- if config.unitxt_config.install %}
             . ./venv/bin/activate
             {%- endif %}
             TASKS='{{ q(config.unitxt_config.tasks) }}'

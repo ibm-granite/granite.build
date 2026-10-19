@@ -43,6 +43,10 @@ granite.build:
             # 300s, which would dominate wall-clock for this quick job).
             poll_interval_seconds: 5
             unitxt_config:
+              # Empty image => run on the bare launcher node. The local Docker SLURM
+              # cluster has no Pyxis plugin, so a container image can't launch here
+              # (byoc's slurm fixture does the same).
+              image: ""
               tasks: "card=cards.mmlu_pro.engineering"
               model_args: "torch_dtype=bfloat16,device=cpu"
               limit: 2
