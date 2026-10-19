@@ -72,7 +72,6 @@ from typing import Any, Dict, List
 from pydantic import Field
 
 from gbserver.storage.stored_build import BaseStoredItem
-from gbserver.storage.stored_lineage_row import utc_now_iso
 
 
 class StoredLineageJob(BaseStoredItem):
@@ -95,10 +94,12 @@ class StoredLineageJob(BaseStoredItem):
         status: job status as the source reported it.
         started_at: start timestamp in the source's own string form; see the module
             docstring.
-        recorded_at: when this index wrote the record, UTC ISO-8601, stamped at
-            write time. Distinct from :attr:`started_at` (the source's form, never
-            rewritten): this is our clock, and the basis for a future
-            high-water-mark incremental import.
+        recorded_at: when the record was last written, UTC ISO-8601 in the
+            fixed-width ``utc_now_iso`` form. Stamped by the database inside the
+            write statement itself, not in Python before it, so a retried write
+            carries the time of the attempt that commits: the indexer checkpoints
+            on it, and a stamp taken before minutes of retries would land behind
+            the checkpoint. Lives only in its column; ``""`` on an unsaved item.
         tags: the job's tags as ``k=v`` strings (or a bare key), the set
             :func:`gbserver.lineage.db_jobstats.job_tags` derives. Queryable: it is
             promoted to a column so a tag search is a SQL filter rather than a scan
@@ -125,8 +126,11 @@ class StoredLineageJob(BaseStoredItem):
         default="", description="Start timestamp in the source's own string form"
     )
     recorded_at: str = Field(
-        default_factory=utc_now_iso,
-        description="UTC ISO-8601 time this index wrote the record",
+        default="",
+        description=(
+            "UTC ISO-8601 time the record was last written, stamped by the database "
+            "in the INSERT/UPDATE; read from its column, never from the JSON blob"
+        ),
     )
     tags: List[str] = Field(
         default_factory=list,

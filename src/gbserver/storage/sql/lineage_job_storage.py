@@ -16,15 +16,17 @@
 
 """SQL storage implementation for lineage job records."""
 
+import json
 from typing import List, Optional, Tuple
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, literal_column, or_
 
 from gbserver.storage.lineage_job_storage import (
     BaseLineageJobStorage,
     ILineageJobStorage,
 )
 from gbserver.storage.sql.sql_storage import BaseSQLItemStorage, retry_read
+from gbserver.storage.storage import JSON_COLUMN_NAME
 from gbserver.storage.stored_lineage_job import StoredLineageJob
 
 
@@ -104,6 +106,68 @@ class SQLLineageJobStorage(
         kwargs["text_columns"] = ["tags"]
         kwargs["default_pagination_sort_by_column"] = "recorded_at"
         super().__init__(**kwargs)
+
+    # -- recorded_at: stamped by the database, kept only in its column -------
+    #
+    # The indexer checkpoints on recorded_at, so it must not be older than the
+    # moment the row becomes visible. A stamp taken in Python before the write is
+    # carried unchanged through every retry (up to minutes), and a row that
+    # commits that late lands behind a checkpoint already moved past it. Here the
+    # value is a SQL expression in the INSERT/UPDATE itself, evaluated by the
+    # database on each attempt, in utc_now_iso's fixed-width form so it still
+    # orders as a string.
+
+    def _db_now(self):
+        """The database's current UTC time as ``YYYY-MM-DDTHH:MM:SS.ffffff+00:00``."""
+        if self._engine is not None and self._engine.dialect.name == "postgresql":
+            # clock_timestamp(), not now(): now() is the transaction's start.
+            return func.to_char(
+                func.timezone("UTC", func.clock_timestamp()),
+                'YYYY-MM-DD"T"HH24:MI:SS.US"+00:00"',
+            )
+        # SQLite: %f is seconds with milliseconds (SS.SSS); padded to microseconds
+        # so the string keeps utc_now_iso's width.
+        return literal_column("strftime('%Y-%m-%dT%H:%M:%f', 'now') || '000+00:00'")
+
+    def _convert_item_to_row_dict(self, item: StoredLineageJob) -> dict:
+        """The row, with ``recorded_at`` out of the JSON blob: its column is the
+        one copy, so the two cannot disagree."""
+        row = super()._convert_item_to_row_dict(item)
+        blob = json.loads(row[JSON_COLUMN_NAME])
+        blob.pop("recorded_at", None)
+        row[JSON_COLUMN_NAME] = json.dumps(blob)
+        return row
+
+    def _convert_row_dict_to_item(self, item_dict: dict) -> StoredLineageJob:
+        item = super()._convert_row_dict_to_item(item_dict)
+        recorded_at = item_dict.get("recorded_at")
+        if recorded_at:
+            item.recorded_at = str(recorded_at)
+        return item
+
+    def _add_item_dicts(self, items: list) -> None:
+        # Re-run on each retry of the base method, so every attempt is stamped.
+        for row in items:
+            row["recorded_at"] = self._db_now()
+        super()._add_item_dicts(items)
+
+    def touch_recorded_at(self, uuid: str) -> None:
+        """Move ``recorded_at`` to now, as the database sees it, so the indexer
+        re-reads a record a merge changed."""
+        if not self._ensure_table_without_retry():
+            return
+        model = self._sql_alchemy_model
+        session = self._get_session_without_retry()
+        try:
+            session.query(model).filter(model.uuid == uuid).update(
+                {model.recorded_at: self._db_now()}, synchronize_session=False
+            )
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     def search_by_tags(
         self,

@@ -25,8 +25,10 @@ that the four large payloads this table exists to hold survive a round trip inta
 import os
 import sqlite3
 import uuid as uuid_module
+from unittest.mock import patch
 
 import pytest
+from sqlalchemy import text
 
 from gbserver.lineage.attributes import PAYLOAD, build_job_attributes, payload_detail
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
@@ -491,10 +493,18 @@ def test_get_recorded_after_pages_by_keyset_oldest_first(storage):
         "J2": "2026-01-01T00:00:00.000000+00:00",  # ties J1: job_id orders them
         "J0": "2025-12-31T00:00:00.000000+00:00",
     }
-    for job_id, recorded_at in stamps.items():
-        record = job(job_id)
-        record.recorded_at = recorded_at
-        storage.add(record)
+    for job_id in stamps:
+        storage.add(job(job_id))
+    # The database stamps recorded_at on write; set known values directly.
+    with storage._engine.begin() as conn:  # pylint: disable=protected-access
+        for job_id, recorded_at in stamps.items():
+            conn.execute(
+                text(
+                    f"UPDATE {storage.table_name} SET recorded_at = :v "
+                    "WHERE job_id = :j"
+                ),
+                {"v": recorded_at, "j": job_id},
+            )
     cutoff = "2026-01-01T00:00:00.000000+00:00"
     first = storage.get_recorded_after(cutoff, None, 2)
     assert [j.job_id for j in first] == ["J1", "J2"]
@@ -507,3 +517,53 @@ def test_get_recorded_after_pages_by_keyset_oldest_first(storage):
         "J2",
         "J3",
     ]
+
+
+def test_recorded_at_is_stamped_by_the_database_not_the_caller(storage):
+    """The caller's value is ignored: the database stamps the write, in
+    utc_now_iso's fixed-width UTC form, and the JSON blob does not keep a copy."""
+    from datetime import datetime, timedelta, timezone
+
+    record = job("J1")
+    record.recorded_at = "1999-01-01T00:00:00.000000+00:00"
+    storage.add(record)
+    stored = storage.get_job("J1")
+    assert len(stored.recorded_at) == len("2026-01-01T00:00:00.000000+00:00")
+    stamped = datetime.fromisoformat(stored.recorded_at)
+    assert abs(datetime.now(timezone.utc) - stamped) < timedelta(minutes=1)
+    with storage._engine.connect() as conn:  # pylint: disable=protected-access
+        blob = conn.execute(
+            text(f"SELECT json FROM {storage.table_name} WHERE job_id = 'J1'")
+        ).scalar()
+    assert "recorded_at" not in blob
+
+
+def test_the_insert_carries_a_database_expression_not_a_python_stamp(storage):
+    """recorded_at reaches the INSERT as SQL the database evaluates, so every retry
+    of the statement is stamped at its own attempt rather than at a time fixed
+    before the first one."""
+    from sqlalchemy.sql.elements import ClauseElement
+
+    from gbserver.storage.sql.sql_storage import BaseSQLItemStorage
+
+    seen = []
+    real = BaseSQLItemStorage._add_item_dicts
+
+    def capture(self, items):
+        seen.extend(r["recorded_at"] for r in items)
+        return real(self, items)
+
+    with patch.object(BaseSQLItemStorage, "_add_item_dicts", capture):
+        storage.add(job("J1"))
+    assert seen and all(isinstance(v, ClauseElement) for v in seen)
+
+
+def test_touch_recorded_at_moves_it_forward(storage):
+    import time
+
+    storage.add(job("J1"))
+    before = storage.get_job("J1")
+    time.sleep(0.01)
+    storage.touch_recorded_at(before.uuid)
+    after = storage.get_job("J1")
+    assert after.recorded_at > before.recorded_at

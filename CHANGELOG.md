@@ -80,8 +80,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (at most 5000; past that the scan waits as before). The W&B source has no settle
   grace: `createdAt` is set by the W&B server and nothing commits behind it, so a
   finished run is indexed on the next scan instead of ~6 minutes later
-  (`GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S` applies to `gb_targets` and
-  `gb_lineage_job` only).
+  (`GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S` applies to `gb_targets` only).
+  `gb_lineage_job.recorded_at` is stamped by the database inside the INSERT/UPDATE,
+  so a retried write carries the time of the attempt that commits; it lives only in
+  its column (not the JSON blob), and the `db` source's grace is 5 s instead of 360 s.
 - **Lineage job owner and namespace (#470).** A job's owner and namespace are taken only
   when every index row of the job agrees; a job with conflicting (e.g. forged) rows has
   neither, and its detail fails closed.

@@ -70,6 +70,10 @@ class ILineageJobStorage(IItemStorage[StoredLineageJob]):
         """
         raise NotImplementedError
 
+    def touch_recorded_at(self, uuid: str) -> None:
+        """Move the record's ``recorded_at`` to the current time."""
+        raise NotImplementedError
+
     def get_recorded_after(
         self,
         cutoff: Optional[str],

@@ -153,8 +153,9 @@ _WANDB_LINEAGE_RUN_JOB_TYPE = "gb-lineage-event"
 # stamp. A row
 # that commits later than the grace behind its timestamp (a long event backlog,
 # clock skew between pods) is still skipped until a full reindex; raise
-# GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S where that is expected. Not applied to W&B
-# (see WandBLineageIndexer.settle_grace_s).
+# GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S where that is expected. It sizes the
+# gb_targets source only: W&B needs none and gb_lineage_job a few seconds (see
+# their settle_grace_s).
 def _settle_grace_from_env(default: float = 360.0) -> float:
     raw = os.environ.get("GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S", "")
     try:
@@ -1093,6 +1094,14 @@ class LineageJobIndexer(JobLineageIndexer):
     """
 
     PROVIDER = LINEAGE_PROVIDER_DB
+
+    # A few seconds, not the default. recorded_at is stamped by the database
+    # inside the write statement (see SQLLineageJobStorage._db_now), so a retried
+    # write carries the time of the attempt that commits. What is left is the gap
+    # between that statement and its COMMIT, and concurrent writers committing out
+    # of stamp order within it: milliseconds. Not read from the environment: the
+    # variable sizes gb_targets' grace, whose finished_at predates the write.
+    settle_grace_s: float = 5.0
 
     _thread_name = "lineage-indexer-db"
 

@@ -59,7 +59,7 @@ from gbserver.storage.lineage_job_storage import ILineageJobStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_lineage_job import StoredLineageJob
-from gbserver.storage.stored_lineage_row import JobStore, utc_now_iso
+from gbserver.storage.stored_lineage_row import JobStore
 from gbserver.storage.stored_target_run import StoredTargetRun
 
 logger = logging.getLogger(__name__)
@@ -427,9 +427,12 @@ class DBLineageStore(ILineageStore):
         all_tags = sorted(set(stored.tags or []) | set(job.tags))
         if all_tags != sorted(set(stored.tags or [])):
             fields["tags"] = all_tags
-        if fields or result == UPDATED:
-            fields["recorded_at"] = utc_now_iso()
+        if fields:
             storage.update_fields(stored.uuid, fields)
+        if fields or result == UPDATED:
+            # Stamped by the database in its own statement, after the change is
+            # in: the indexer reads by it and must see the change once it moves.
+            storage.touch_recorded_at(stored.uuid)
 
     # -- Building (delegated, so both sinks agree on what lineage is) --------
 
