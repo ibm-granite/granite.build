@@ -17,6 +17,7 @@
 import os
 import stat
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -70,3 +71,57 @@ def test_optional_flags_omitted_when_empty(tmp_path):
         ),
     )
     assert argv == ["download", "o/r", "--local-dir", "/p"]
+
+
+class TestInlineCachePathCheck:
+    """pullasset_hfstore refuses an inline pull whose cache path has a ``$``."""
+
+    @pytest.fixture
+    def env(self):
+        import asyncio
+
+        from gbserver.environment.skypilot import Skypilot
+        from gbserver.types.environmentconfig import EnvironmentConfig
+
+        cfg = EnvironmentConfig(
+            name="t", type="Skypilot", config={"default_cloud": "aws"}
+        )
+        return Skypilot(event_q=asyncio.Queue(), environment_config=cfg)
+
+    @staticmethod
+    def _store():
+        from unittest.mock import MagicMock
+
+        from gbserver.asset.hfstore import Hfstore
+
+        store = MagicMock(spec=Hfstore)
+        store.resolve_token.return_value = "tok"
+        return store
+
+    async def _pull(self, env, config):
+        from gbserver.types.environmentconfig import StoreLoad
+
+        return await env.pullasset_hfstore(
+            uri="hf:///datasets/o/r",
+            assetstore=self._store(),
+            storeload_config=StoreLoad(config=config),
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["$HOME/hf_cache", "/data/${USER}/hf"])
+    async def test_dollar_rejected_inline(self, env, path):
+        with pytest.raises(ValueError, match="contains '\\$'"):
+            await self._pull(env, {"cache_path": path, "inline": True})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["/tmp/hf_cache", "./hf_cache", "hf_cache"])
+    async def test_literal_paths_still_allowed_inline(self, env, path):
+        binding, step = await self._pull(env, {"cache_path": path, "inline": True})
+        assert binding["_hfpull"]["path"] == str(Path(path) / "o" / "r" / "main")
+        assert step is None
+
+    @pytest.mark.asyncio
+    async def test_dollar_not_checked_without_inline(self, env):
+        binding, step = await self._pull(env, {"cache_path": "$HOME/hf_cache"})
+        assert "_hfpull" not in binding
+        assert step is not None
