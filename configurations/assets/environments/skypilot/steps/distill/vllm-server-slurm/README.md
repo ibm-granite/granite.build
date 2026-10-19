@@ -53,10 +53,10 @@ and have no effect here.
 | Field | Type | Purpose |
 |---|---|---|
 | `repo` | string | Git repository cloned at run time. Default: `https://github.com/laminair/gb-steps-distillation.git`. |
-| `ref` | string | Commit checked out after the clone; skipped when empty. Default: `a5d59bc45524a8d75706e20d44ae1a254f273f23`. |
+| `ref` | string | Commit checked out after the clone; skipped when empty. Default: `39b2790d20a9b0a21f9ea7d8c95ca54e87abcc38`. |
 | `workdir` | string | Directory under the workdir root the repo is cloned into. Any existing directory there is removed first. Default: `distill-code`. |
 | `code_dir` | string | Not read by this step: there is no pre-built-checkout path, so setting it does not replace the clone. Default: `""`. |
-| `expect_ref` | string | Not read by this step. Default: `a5d59bc45524a8d75706e20d44ae1a254f273f23`. |
+| `expect_ref` | string | Not read by this step. Default: `39b2790d20a9b0a21f9ea7d8c95ca54e87abcc38`. |
 | `token_secret` | string | Not read by this step; the clone is unauthenticated. Default: `""`. |
 | `python` | string | Not read by this step; the interpreter is fixed at `/stage/.venv/bin/python`. Default: `/stage/.venv/bin/python`. |
 | `setup_command` | string | Not read by this step. Default: `""`. |

@@ -33,9 +33,9 @@ config:
     # unauthenticated HTTPS clone of the public source repo at run time. See
     # distill-gold's step-template.yaml for the full rationale.
     code_dir: ""
-    expect_ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
+    expect_ref: "39b2790d20a9b0a21f9ea7d8c95ca54e87abcc38"
     repo: "https://github.com/laminair/gb-steps-distillation.git"
-    ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
+    ref: "39b2790d20a9b0a21f9ea7d8c95ca54e87abcc38"
     workdir: "distill-code"
     token_secret: ""
     python: "/stage/.venv/bin/python"

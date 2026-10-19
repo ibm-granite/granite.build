@@ -62,7 +62,7 @@ container.
 | Field | Type | Purpose |
 |---|---|---|
 | `code_dir` | string | Filesystem checkout to use instead of cloning. Default: `""` (clone). |
-| `expect_ref` | string | Commit a `code_dir` checkout must be at. Default: `a5d59bc45524a8d75706e20d44ae1a254f273f23`. |
+| `expect_ref` | string | Commit a `code_dir` checkout must be at. Default: `39b2790d20a9b0a21f9ea7d8c95ca54e87abcc38`. |
 | `repo` | string | Repository cloned when `code_dir` is empty. Default: `https://github.com/laminair/gb-steps-distillation.git`. |
 | `ref` | string | Ref checked out after the clone. Default: same commit as `expect_ref`. |
 | `workdir` | string | Clone destination, relative to the working directory. Default: `distill-code`. |

@@ -62,9 +62,9 @@ distillation step; see [Source delivery](#source-delivery) for how the fields in
 | Field | Type | Purpose |
 |---|---|---|
 | `code_dir` | string | An existing checkout to use instead of cloning. Used only when it contains `src/gb_steps_post_training`. Default: `""` (clone). |
-| `expect_ref` | string | The commit `code_dir` is expected to be at; checked only on the `code_dir` path, where a mismatch fails the step. Empty disables the check. Default: `a5d59bc45524a8d75706e20d44ae1a254f273f23`. |
+| `expect_ref` | string | The commit `code_dir` is expected to be at; checked only on the `code_dir` path, where a mismatch fails the step. Empty disables the check. Default: `39b2790d20a9b0a21f9ea7d8c95ca54e87abcc38`. |
 | `repo` | string | Git repository cloned when `code_dir` is not used. Default: `https://github.com/laminair/gb-steps-distillation.git`. |
-| `ref` | string | Branch, tag or commit checked out after the clone. Default: `a5d59bc45524a8d75706e20d44ae1a254f273f23`. |
+| `ref` | string | Branch, tag or commit checked out after the clone. Default: `39b2790d20a9b0a21f9ea7d8c95ca54e87abcc38`. |
 | `workdir` | string | Clone destination, relative to the step's working directory. Default: `distill-code`. |
 | `token_secret` | string | The **name** of a space secret holding a read-scoped credential, never a value. Consulted only on the clone path. Default: `""` (the repo is public). |
 | `python` | string | The interpreter. Not a bare `python`: the image's venv is not on `PATH`, and the system interpreter has no transformers. Default: `/stage/.venv/bin/python`. |
@@ -347,9 +347,9 @@ arrangement every other ported distillation step uses.
 ```yaml
 code_config:
   code_dir: ""
-  expect_ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
+  expect_ref: "39b2790d20a9b0a21f9ea7d8c95ca54e87abcc38"
   repo: "https://github.com/laminair/gb-steps-distillation.git"
-  ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
+  ref: "39b2790d20a9b0a21f9ea7d8c95ca54e87abcc38"
 ```
 
 **The default is an unauthenticated HTTPS clone** of `repo` at `ref`, into `workdir` under

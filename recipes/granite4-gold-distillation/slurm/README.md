@@ -133,6 +133,25 @@ real work, or (b) scale the vLLM server so `t_gen` drops. At fixed smoke batch +
 single server, more trainer nodes just add fabric overhead. The 2-node run's value is
 **correctness** (it's the config that hung before the NCCL-pin fix), not speed.
 
+> **KNOWN ISSUE — a `NUM_NODES>=2` trainer hangs at process exit after training
+> completes, so the build never tears down.** Observed on the 2-node external-server
+> run (build `eecd113e`): training ran all 30 steps and wrote the final checkpoint
+> (`checkpoint-30` + `model.safetensors` on `/proj`), the ZeRO-3 NCCL group closed
+> cleanly, then **the trainer did not fully exit** — one accelerate process per node
+> stayed parked blocked on `pipe_read`, both rank logs frozen at the same instant right
+> after NCCL teardown. Because the process never returns, the step's post-training
+> section never runs, so it never emits `GB_ARTIFACT_ID:checkpoint`; `train-gold` stays
+> `RUNNING` in gbserver; `teardown` (gated on that artifact) never fires; and both the
+> trainer and the forever `vllm-server` allocations hang until `VLLM_MAX_LIFETIME_SECONDS`
+> or a manual `scancel`. The **1-node** trainer (build `77f2e205`) exits cleanly and tears
+> down normally — so this is specific to the multi-node (`accelerate`/torchrun elastic)
+> shutdown path, NOT the recipe or the NCCL-interface fix. **Workaround:** the checkpoint
+> is complete and safe on `/proj`, so `scancel` the two jobs by hand and bind the
+> `checkpoint-30` dir as a prior-build output. **Needs:** a trainer-side
+> distributed-shutdown fix (or a sentinel/`srun`-reap in the step that force-exits once
+> rank 0 has emitted the checkpoint). Prefer `distill-gold-colocated` or `NUM_NODES=1`
+> until fixed.
+
 ---
 
 ## Key parameters
@@ -238,31 +257,22 @@ differently from the torch-only trainer. All are handled in the step.
   pinned trainer; the verify just can't import to confirm it in this image.
 
 ### Co-located on-policy fixes (`distill-gold-colocated` + `gold-slurm`)
-Three further fixes are specific to the in-allocation split (case 2 of `gold-slurm`).
+Two further fixes are specific to the in-allocation split (case 2 of `gold-slurm`).
 
-- **Broken lmbda `linear` ramp in the pinned trainer (`TypeError: '<=' not supported
-  between NoneType and float`).** The step clones its code from the public
-  `github.com/laminair/gb-steps-distillation` and checks out the pinned commit
-  `a5d59bc4` (`code_config.repo`/`ref` in `gold-slurm/step.yaml`). At that commit
-  `custom_gold_trainer.py`'s `_get_current_lmbda()` implements only the `"constant"`
-  schedule and **falls off the end for `"linear"`** (returns `None`); the actual
-  linear-interpolation body was misplaced as dead code below the early `return` in
-  `_draw_on_policy()`. With `lmbda_schedule=linear` the trainer then does
-  `current_lmbda = None` and crashes at the first step (`on_policy_draw.py: if
-  current_lmbda <= 0.0`). The pin is the only commit that ever touched that file and
-  the single commit after it is docs-only, so there is **no upstream commit to bump
-  to** — the correct ramp lives only in the private `kd-sandbox` source the repo was
-  packaged from, whose flat layout the step cannot consume. **Fix:** a stop-gap patch
-  script, [`gold-slurm/src/patch_lmbda_schedule.py`](../../../configurations/assets/environments/skypilot/steps/distill/gold-slurm/src/patch_lmbda_schedule.py),
-  rewrites `_get_current_lmbda` to compute the ramp inline
-  (`lmbda_init + progress*(lmbda - lmbda_init)`, `progress = global_step/max_steps`).
-  It is wired via `code_config.setup_command` in
-  [`distill-gold-colocated/build.yaml`](distill-gold-colocated/build.yaml), so it runs
-  on **every rank after the clone, before `accelerate`**. It is **idempotent** (no-op
-  if the linear branch is already present) and **fails loudly** (exit non-zero) if the
-  known-broken signature is absent — i.e. if the pin ever changes, the build stops
-  rather than silently training on a differently-behaving ramp. Remove the
-  `code_config` block once the pin is bumped to a trainer with a working ramp.
+- **(RESOLVED) lmbda `linear` ramp in the pinned trainer.** The `-slurm` steps clone
+  the trainer from `github.com/laminair/gb-steps-distillation`. The original pin
+  `a5d59bc4` had a broken `_get_current_lmbda()` — it implemented only `"constant"` and
+  fell off the end for `"linear"` (returning `None`, so `lmbda_schedule=linear` crashed
+  at step 0 with `TypeError: '<=' not supported between NoneType and float`; the ramp
+  body was dead code below the early `return` in `_draw_on_policy()`). This was fixed
+  upstream in [PR #1](https://github.com/laminair/gb-steps-distillation/pull/1) (merge
+  commit `39b2790`), and the four `-slurm` steps now pin `39b2790`
+  (`code_config.ref`/`expect_ref`). The earlier stop-gap — a `patch_lmbda_schedule.py`
+  wired via `code_config.setup_command` in the colocated/trainonly recipes — has been
+  removed. Nothing extra is needed; a `linear` ramp works on the pinned trainer.
+  (The LSF steps + `steps/distill/**` templates still pin `a5d59bc4` under the
+  `test_source_contract` byte-identical contract; bump them separately if an LSF
+  on-policy linear run needs the fix.)
 - **Serve-node address handoff (`vLLM server can't be reached at
   http://0.0.0.0:8001`).** In the in-allocation split the serve rank starts vLLM on
   *its* node, but the trainer ranks have no SkyPilot-provided `vllm_url` to point at

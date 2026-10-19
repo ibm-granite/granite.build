@@ -72,17 +72,6 @@ granite.build:
                 memory: $${MEMORY}
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
-            code_config:
-              # Fix the broken lmbda LINEAR ramp in the pinned trainer (a5d59bc4):
-              # _get_current_lmbda() has no linear branch (returns None -> crash at
-              # step 0: "None <= 0.0"); the ramp body is dead code below a return in
-              # _draw_on_policy. The mounted src/patch_lmbda_schedule.py rewrites the
-              # method in the fresh clone, idempotently. Runs on every rank before the
-              # role split. $CODE_DIR = the clone; ./src = this step's file_mount.
-              # Remove once the trainer pin is bumped to a version with a working ramp.
-              setup_command: >-
-                "$PYBIN" ./src/patch_lmbda_schedule.py
-                "$CODE_DIR/src/gb_steps_post_training/distillation/custom_gold_trainer.py"
             gold_config:
               run_name: "$${RUN_NAME}"
               ds_config: "$${DS_CONFIG}"

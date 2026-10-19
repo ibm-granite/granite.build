@@ -60,7 +60,7 @@ config:
     # The commit code_dir is EXPECTED to be at. Recorded either way, but when this is
     # set and the checkout is at a different commit the step says so loudly rather
     # than training against whatever happens to be checked out. Empty => no check.
-    expect_ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
+    expect_ref: "39b2790d20a9b0a21f9ea7d8c95ca54e87abcc38"
     # code_dir is empty, so this is the path actually taken: an unauthenticated HTTPS
     # clone. Public repos only — see token_secret below for why no credential is wired
     # up here on purpose.
@@ -68,7 +68,7 @@ config:
     # Branch, tag or commit checked out after that clone. Pinned to the same commit as
     # expect_ref rather than a branch head, so two runs a week apart are the same run
     # rather than silently drifting — bump both together.
-    ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
+    ref: "39b2790d20a9b0a21f9ea7d8c95ca54e87abcc38"
     # Clone destination, RELATIVE to the step's working directory.
     workdir: "distill-code"
     # The NAME of a space secret holding a read-scoped credential — never a value.
