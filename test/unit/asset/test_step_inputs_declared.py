@@ -83,6 +83,8 @@ EXPECTED = {
     f"{_SKY}/eval/swebench": (set(), set()),
     f"{_SKY}/eval/tau": (set(), set()),
     f"{_SKY}/eval/tbench": (set(), set()),
+    # Eval: new, so the model input is required outright.
+    f"{_SKY}/eval/lm-eval": ({"model"}, set()),
     # Shipped in v0.3.x: optional during the deprecation window, with the old config
     # key as a fallback.
     f"{_LSF}/sage-eval": (set(), {"model"}),

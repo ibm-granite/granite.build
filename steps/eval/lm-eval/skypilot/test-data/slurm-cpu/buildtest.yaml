@@ -1,0 +1,35 @@
+# YAML-driven spec for test_skypilot_slurm_lm_eval_cpu.py (located by the test/ <->
+# test-data/ helper, so this pairing holds in both test modes; see steps/README.md).
+#
+# One target on the local Docker SLURM cluster: aime25 against a tiny hf:// model,
+# results pushed to an hf:// test_ dataset. Reaching SUCCESS with one output artifact
+# means lm_eval ran and wrote a results file: the step registers nothing otherwise.
+targets:
+  - aime25
+target_expectations:
+  - target_name: aime25
+    # hfpull(model) + eval/lm-eval + hfpush(results). The skypilot/slurm environment
+    # doesn't pull or push inline, so each transfer is its own step.
+    step_count: 3
+    input_artifact_count: 1    # model
+    output_artifact_count: 1   # results
+    # Only keys the build.yaml supplied are persisted, so these are values it set.
+    expected_steps:
+      - step_uri: space://steps/eval/lm-eval
+        metadata_matches:
+          lm_eval_version: "^0\\.4\\.13$"
+        config:
+          lm_eval_config:
+            # The bare node is what makes this runnable without Pyxis.
+            image: ""
+            tasks: ["aime25"]
+            torch_index_url: "https://download.pytorch.org/whl/cpu"
+# Mode 1: the Space `make space` renders two levels up. `make publish-step` rewrites
+# this to configurations/spaces/local for the published copy.
+space_uri: ../../space
+# A single run: no cancellation variant and no injected failure.
+tests:
+  - runner
+simulate_step_failure: false
+# One SLURM job with a runtime CPU-torch install, plus the hf pull and push.
+timeout_minutes: 30

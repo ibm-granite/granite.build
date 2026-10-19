@@ -1,0 +1,216 @@
+name: lm-eval
+version: 1.0.0
+# StepType has no EVAL member (src/gbserver/types/stepconfig.py); other eval steps use
+# custom too.
+type: custom
+config:
+  # The step's config contract. Named lm_eval_config rather than <leaf>_config because
+  # the leaf, lm-eval, isn't a Jinja identifier (config.lm-eval_config would parse as
+  # a subtraction). See USAGE.md for every key.
+  lm_eval_config:
+    # ---- where it runs, and what gets installed ---------------------------------
+    # Public container image the step runs in, rendered as SkyPilot `docker:<image>`.
+    # "" runs on the bare launcher node, which clusters without Pyxis need (including
+    # the local Docker SLURM cluster). The image must be Debian/Ubuntu based (SkyPilot
+    # bootstraps its in-container shim with apt-get), run as root, and have python3 +
+    # pip for the install. GPUs need no CUDA in the image: torch's wheel carries the
+    # CUDA runtime and the host passes the driver through.
+    image: "python:3.12-slim"
+    # Install lm-eval (and torch) into ./venv during setup, inside the image. false only
+    # for an image that already provides `lm_eval` on PATH; setting `image` does not
+    # skip the install.
+    install: true
+    # The lm-eval release from PyPI.
+    lm_eval_version: "0.4.13"
+    # lm-eval pip extras, installed as lm-eval[<extras>]==<lm_eval_version>. `hf`
+    # brings transformers, accelerate and peft for backend: hf; use ["vllm"] for
+    # backend: vllm. Task-specific extras (e.g. "math", "ifeval") go here too.
+    extras: ["hf"]
+    # Further pip requirements, installed in the same phase as lm-eval.
+    extra_packages: []
+    # Index torch is installed from, in its own first phase. The default CPU index
+    # keeps CPU nodes from pulling several GB of CUDA libraries. On GPU nodes, set
+    # it to the PyTorch index matching the node's CUDA driver (e.g.
+    # https://download.pytorch.org/whl/cu128), or to "" to take PyPI's default torch.
+    torch_index_url: "https://download.pytorch.org/whl/cpu"
+    # Index everything else is installed from.
+    pip_index_url: "https://pypi.org/simple"
+
+    # ---- what lm_eval runs ------------------------------------------------------
+    # lm_eval --model. Only backends that load a model from `pretrained=<path>` (the
+    # bound `model` input): hf, vllm.
+    backend: "hf"
+    # lm_eval --tasks: a list of task or group names. `lm-eval ls tasks` lists them.
+    tasks: ["aime25"]
+    # lm_eval --model_args, as a map; each entry renders as one key=value word. The
+    # step adds pretrained=<model input path> itself, so don't set pretrained.
+    model_args: {}
+    # lm_eval --limit: examples per task (an integer, or a fraction below 1). null = all.
+    limit: null
+    # lm_eval --num_fewshot. null = the task's default.
+    num_fewshot: null
+    # lm_eval --batch_size: an integer, "auto" or "auto:N". null = lm_eval's default (1).
+    batch_size: null
+    # lm_eval --device, e.g. "cuda", "cuda:0", "cpu". null = lm_eval's default.
+    device: null
+    # lm_eval --gen_kwargs, as a map; each entry renders as one key=value word, and
+    # lm_eval parses values with ast.literal_eval (so lists like until: ["\n\n"] work).
+    gen_kwargs: {}
+    # lm_eval --apply_chat_template: true for the model's template, a string to name
+    # one, false to leave it off.
+    apply_chat_template: false
+    # lm_eval --log_samples: also write each sample's prompt and output to the results.
+    log_samples: false
+    # lm_eval --trust_remote_code: some tasks' datasets and some models need it.
+    trust_remote_code: false
+    # lm_eval --seed: an integer, or "python,numpy,torch,fewshot". null = lm_eval's default.
+    seed: null
+    # Any other `lm_eval run` flag, as {flag_name: value} without the dashes, e.g.
+    # {system_instruction: "...", max_batch_size: 8}. true renders as a bare flag
+    # (lm_eval's switches take no value), false and null omit it, anything else renders
+    # as `--<flag> '<value>'`. Flags that have their own key above are refused here.
+    args: {}
+  # Floors only. On SkyPilot, GPUs come from the build's launcher_config.resources
+  # (e.g. accelerators: "L4:1"), not from num_gpus_per_node.
+  compute_config:
+    num_gpus_per_node: 0
+    total_memory_per_node: "16Gi"
+
+inputs:
+  # Lets recipes bind extra inputs purely to order targets.
+  allow_unknown: true
+  required:
+    # The model to evaluate, passed to lm_eval as model_args pretrained=<path>.
+    model:
+      type: model
+      accept: [uri, binding]
+
+outputs:
+  optional:
+    # The directory lm_eval --output_path wrote: <model>/results_<timestamp>.json,
+    # plus samples_*.jsonl with log_samples.
+    results:
+      type: dataset
+
+environment_configs:
+  # No `subtypes:`, so the step resolves under every SkyPilot environment.
+  Skypilot:
+    default_launcher: lm_eval
+    launchers:
+      lm_eval:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # Not shell-escaped: it never enters a shell. It goes to
+          # sky.Resources(image_id=...) as a Python value.
+          image_id: '{{ ("docker:" ~ config.lm_eval_config.image) if config.lm_eval_config.image else "" }}'
+          # Cloud-agnostic; the build supplies cpus/memory/accelerators via
+          # config.launcher_config.resources.
+          resources: {}
+          # The guard, setup and run scripts land at ./src in the step's workdir.
+          file_mounts:
+            src: src
+          # setup runs once at cluster bring-up, in $GB_BUILD_WORKDIR. The launcher
+          # may prepend `hf download ...` here for an hf:// model input.
+          setup: |
+            set -eu
+            {#- Shell-quote a value for use inside single quotes. Jinja macros are
+                block-scoped, so `run` carries its own copy. #}
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            {%- set c = config.lm_eval_config %}
+            {%- set tasks = [c.tasks] if c.tasks is string else c.tasks %}
+            # Refuse a bad config before paying for the install.
+            bash ./src/lm_eval_guard.sh \
+              --backend '{{ q(c.backend) }}' \
+              --install '{{ "true" if c.install else "false" }}' \
+              --version '{{ q(c.lm_eval_version) }}' \
+              {%- for t in tasks %}
+              --task '{{ q(t) }}' \
+              {%- endfor %}
+              {%- for k in c.keys() %}
+              --config-key '{{ q(k) }}' \
+              {%- endfor %}
+              {%- for k in c.model_args.keys() %}
+              --model-arg-key '{{ q(k) }}' \
+              {%- endfor %}
+              {%- for k in c.args.keys() %}
+              --arg-key '{{ q(k) }}' \
+              {%- endfor %}
+              --
+            {%- if c.install %}
+            {%- set extras = c.extras | join(",") %}
+            {%- set req = "lm-eval" ~ (("[" ~ extras ~ "]") if extras else "") ~ "==" ~ c.lm_eval_version %}
+            bash ./src/lm_eval_setup.sh \
+              --venv ./venv \
+              --torch-index-url '{{ q(c.torch_index_url or "") }}' \
+              --index-url '{{ q(c.pip_index_url) }}' \
+              -- '{{ q(req) }}'{% for p in c.extra_packages %} '{{ q(p) }}'{% endfor %}
+            {%- endif %}
+          # run starts in the same directory as setup, so ./venv and ./src carry over.
+          run: |
+            set -euo pipefail
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            {%- set c = config.lm_eval_config %}
+            {%- set tasks = [c.tasks] if c.tasks is string else c.tasks %}
+            bash ./src/lm_eval_guard.sh \
+              --backend '{{ q(c.backend) }}' \
+              --install '{{ "true" if c.install else "false" }}' \
+              --version '{{ q(c.lm_eval_version) }}' \
+              {%- for t in tasks %}
+              --task '{{ q(t) }}' \
+              {%- endfor %}
+              {%- for k in c.keys() %}
+              --config-key '{{ q(k) }}' \
+              {%- endfor %}
+              {%- for k in c.model_args.keys() %}
+              --model-arg-key '{{ q(k) }}' \
+              {%- endfor %}
+              {%- for k in c.args.keys() %}
+              --arg-key '{{ q(k) }}' \
+              {%- endfor %}
+              --
+            # The `lm_eval run` argv, one quoted word per element. The model comes from
+            # the required `model` input; --output_path is added by lm_eval_run.sh.
+            argv=(--model '{{ q(c.backend) }}')
+            argv+=(--model_args 'pretrained={{ q(bindings.model.binding.path) }}'{% for k, v in c.model_args.items() %} '{{ q(k) }}={{ q(v) }}'{% endfor %})
+            argv+=(--tasks{% for t in tasks %} '{{ q(t) }}'{% endfor %})
+            {%- for flag in ["limit", "num_fewshot", "batch_size", "device", "seed"] %}
+            {%- if c[flag] is not none %}
+            argv+=(--{{ flag }} '{{ q(c[flag]) }}')
+            {%- endif %}
+            {%- endfor %}
+            {%- if c.gen_kwargs %}
+            argv+=(--gen_kwargs{% for k, v in c.gen_kwargs.items() %} '{{ q(k) }}={{ q(v) }}'{% endfor %})
+            {%- endif %}
+            {%- if c.apply_chat_template is string and c.apply_chat_template %}
+            argv+=(--apply_chat_template '{{ q(c.apply_chat_template) }}')
+            {%- elif c.apply_chat_template is sameas true %}
+            argv+=(--apply_chat_template)
+            {%- endif %}
+            {%- if c.log_samples %}
+            argv+=(--log_samples)
+            {%- endif %}
+            {%- if c.trust_remote_code %}
+            argv+=(--trust_remote_code)
+            {%- endif %}
+            {%- for k, v in c.args.items() %}
+            {%- if v is sameas true %}
+            argv+=('--{{ q(k) }}')
+            {%- elif v is not none and v is not sameas false %}
+            argv+=('--{{ q(k) }}' '{{ q(v) }}')
+            {%- endif %}
+            {%- endfor %}
+            bash ./src/lm_eval_run.sh \
+              --venv '{{ "./venv" if c.install else "" }}' \
+              --output-dir ./results \
+              --artifact-id results \
+              -- "${argv[@]}"
+    monitors:
+      # Standard artifact/status convention from the shipped monitor library.
+      skypilot_monitor:
+        ref: space://monitors/skypilot
