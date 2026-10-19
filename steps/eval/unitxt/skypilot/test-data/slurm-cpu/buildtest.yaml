@@ -24,6 +24,7 @@ target_expectations:
       - step_uri: space://steps/eval/unitxt
         config:
           unitxt_config:
+            image: ""
             tasks: "card=cards.mmlu_pro.engineering"
             torch_index_url: "https://download.pytorch.org/whl/cpu"
 # The Space this test resolves space://steps/eval/unitxt (and the environment +

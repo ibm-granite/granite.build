@@ -3,9 +3,9 @@
 Evaluates a model with [unitxt](https://www.unitxt.ai) by running its
 `unitxt-evaluate` CLI in `hf` mode (a local Hugging Face checkpoint), and registers
 the CLI's output directory as the step's `results` artifact. The model is the
-target's declared `model` input. The step installs unitxt and the packages its `hf`
-mode needs on the node at setup time (or uses a prebuilt image) and passes
-`unitxt_config` through to the CLI.
+target's declared `model` input. The step runs in a public container image
+(`python:3.12-slim` by default), installs unitxt and the packages its `hf` mode needs
+there at setup time, and passes `unitxt_config` through to the CLI.
 
 ## Referencing the step
 
@@ -46,15 +46,17 @@ input to bind instead.
 | `limit` | int | optional (default `0`) | Passed as `--limit` (instances per task). `0` omits the flag, so every instance is evaluated. |
 | `trust_remote_code` | bool | optional (default `true`) | Passes `--trust_remote_code`. Cards that filter their dataset with a code expression, including `cards.mmlu_pro.*`, refuse to load without it. |
 | `output_path` | string | optional (default `output`) | Directory the CLI writes into (`--output_path`). Relative paths resolve in the step's working directory. |
-| `unitxt_version` | string | optional (default `1.26.10`) | unitxt release installed at setup. Ignored when `unitxt_image` is set. |
-| `torch_package` | string | optional (default `torch`) | torch, which `hf` mode needs and unitxt doesn't depend on. Installed first, on its own. Pin it here, e.g. `torch==2.8.0`. Ignored when `unitxt_image` is set. |
+| `image` | string | optional (default `python:3.12-slim`) | Public container image the step runs in, rendered as SkyPilot `docker:<image>`. It must be Debian/Ubuntu-based (SkyPilot bootstraps its in-container shim with `apt-get`), run as root or allow passwordless `sudo`, and provide `python3` with `pip`. `""` runs on the bare launcher node instead: use that on a SLURM cluster without the Pyxis plugin. The GPU driver comes from the host; torch's wheel carries the CUDA runtime, so the image needs no CUDA. |
+| `install` | bool | optional (default `true`) | Install unitxt, torch and `hf_packages` into a venv at setup, inside `image` (or on the bare node). Set `false` only when `image` already provides `unitxt-evaluate` and its packages. |
+| `unitxt_version` | string | optional (default `1.26.10`) | unitxt release installed at setup. Ignored when `install` is false. |
+| `torch_package` | string | optional (default `torch`) | torch, which `hf` mode needs and unitxt doesn't depend on. Installed first, on its own. Pin it here, e.g. `torch==2.8.0`. Ignored when `install` is false. |
 | `torch_index_url` | string | optional (default: `pip_index_url`) | Index for torch only, to pick the build: `https://download.pytorch.org/whl/cpu` on a CPU-only node, or a `.../whl/cuXXX` index to match the node's CUDA driver. PyPI's default Linux wheel bundles CUDA. |
-| `hf_packages` | list | optional (default `[transformers, accelerate, tabulate]`) | Installed with unitxt, after torch. `hf` mode needs transformers and accelerate; the CLI's score summary needs tabulate. Pin entries as needed. Ignored when `unitxt_image` is set. |
+| `hf_packages` | list | optional (default `[transformers, accelerate, tabulate]`) | Installed with unitxt, after torch. `hf` mode needs transformers and accelerate; the CLI's score summary needs tabulate. Pin entries as needed. Ignored when `install` is false. |
 | `pip_index_url` | string | optional | Package index for the install. |
-| `unitxt_image` | string | optional | A container image that already provides `unitxt-evaluate`, torch and `hf_packages`. Skips the install. |
 
 `unitxt_config.model` is no longer read. The step refuses it, so bind the `model`
-input instead.
+input instead. `unitxt_config.unitxt_image` is no longer read either: use `image`, plus
+`install: false` if that image already provides `unitxt-evaluate`.
 
 ## Example build.yaml
 
@@ -94,8 +96,10 @@ To run another benchmark, change only `tasks`, e.g.
 
 - **GPUs come from `launcher_config.resources`**, not from `compute_config`.
 - **Setup installs torch on every run.** That's several GB with CUDA. The uv cache
-  is kept inside the build's own workdir, so nothing is shared between builds yet.
-  `unitxt_image` avoids the install entirely.
+  is kept inside the build's own workdir, so nothing is shared between builds yet. An
+  `image` that already provides everything, with `install: false`, avoids the install.
+- **On SLURM, the default image needs the Pyxis plugin.** On a bare-host SLURM cluster
+  (including the local Docker fixture), set `image: ""`, or the launch fails.
 - **Datasets load at run time**, so the node needs internet access. Gated
   datasets also need `HF_TOKEN`.
 - **Remote models** (`unitxt-evaluate --model cross_provider`) aren't supported by

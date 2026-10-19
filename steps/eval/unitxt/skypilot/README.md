@@ -6,11 +6,13 @@
 
 Evaluation step that runs the [unitxt](https://www.unitxt.ai) `unitxt-evaluate`
 CLI as a black box, in `hf` mode, against the target's declared `model` input. Like
-[dpk](../../../data/dpk/skypilot/README.md) it is a **public-image** step: there is no
-`Dockerfile`. `setup` installs torch (`torch_package` from `torch_index_url`), then a
-pinned unitxt plus `hf_packages` (transformers, accelerate, tabulate), into a `uv` venv
-on the bare node. `unitxt_config.unitxt_image` optionally switches to a prebuilt image
-instead. It is generated from the sources here by the shared Makefile conventions; see
+[byoc](../../../byoc/skypilot/README.md) it is a **public-image** step: there is no
+`Dockerfile`, and it runs in a public image, `unitxt_config.image`
+(`python:3.12-slim` by default; `""` runs on the bare node). `setup` installs torch
+(`torch_package` from `torch_index_url`), then a pinned unitxt plus `hf_packages`
+(transformers, accelerate, tabulate), into a `uv` venv inside that image, following
+dpk's install pattern. `install: false` skips the install for an image that already
+provides everything. It is generated from the sources here by the shared Makefile conventions; see
 [steps/README.md](../../../README.md).
 
 ## Layout
@@ -26,7 +28,9 @@ instead. It is generated from the sources here by the shared Makefile convention
 - `test/slurm-cpu/` + `test-data/slurm-cpu/`: a build test on the local Docker
   SLURM cluster, modelled on dpk's `slurm-tok`. It evaluates the public
   `SmolLM2-135M-Instruct` (the bound `model` input) on 2 instances with the CPU
-  torch build: a plumbing check, not a meaningful score. Its `results` output goes to
+  torch build: a plumbing check, not a meaningful score. It sets `image: ""`: the local
+  cluster has no Pyxis plugin, so it runs on the bare node, as byoc's slurm fixture
+  does. Its `results` output goes to
   a `test_`-prefixed Hugging Face dataset in the ibm-research org (cleaned up by
   `scripts/rm_hf_repos.py`), so the queued hfpush needs an `HF_TOKEN` with write access
   there; the nightly extended suite has one. It skips itself unless

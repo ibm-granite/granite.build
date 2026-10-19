@@ -19,8 +19,8 @@ only) and is not copied by ``make publish-step``.
 
 The step treats ``unitxt-evaluate`` as a black box, so these tests pin what the
 rendered ``run`` block hands it, by executing the block with a stub CLI on PATH,
-plus the declared ``model`` input, the artifact marker and the bare-node/image
-switch.
+plus the declared ``model`` input, the artifact marker, and the image and install
+switches.
 """
 
 import os
@@ -254,6 +254,14 @@ class TestRefusedConfig:
             "must not set pretrained",
         )
 
+    def test_the_old_unitxt_image_key_is_refused(self, launcher, defaults, tmp_path):
+        self._refused(
+            launcher,
+            _cfg(defaults, unitxt_image="quay.io/org/unitxt:1"),
+            tmp_path,
+            "unitxt_config.unitxt_image is no longer read",
+        )
+
     def test_json_model_args_is_refused(self, launcher, defaults, tmp_path):
         self._refused(
             launcher,
@@ -308,12 +316,29 @@ class TestEscaping:
 
 
 class TestImageSelection:
+    def test_default_is_a_public_debian_python_image(self, launcher, defaults):
+        """SkyPilot needs apt in the image, and the uv install needs python3 + pip."""
+        assert defaults["image"] == "python:3.12-slim"
+        assert (
+            _render(launcher["image_id"], _cfg(defaults)) == "docker:python:3.12-slim"
+        )
+
     def test_empty_image_renders_bare_node(self, launcher, defaults):
-        assert _render(launcher["image_id"], _cfg(defaults)) == ""
+        """For SLURM clusters without Pyxis, such as the local Docker cluster."""
+        assert _render(launcher["image_id"], _cfg(defaults, image="")) == ""
 
     def test_image_renders_docker_ref(self, launcher, defaults):
-        cfg = _cfg(defaults, unitxt_image="quay.io/org/unitxt:1.26.10")
+        cfg = _cfg(defaults, image="quay.io/org/unitxt:1.26.10")
         assert _render(launcher["image_id"], cfg) == "docker:quay.io/org/unitxt:1.26.10"
+
+    @pytest.mark.parametrize("image", ["python:3.12-slim", ""])
+    def test_install_runs_in_the_image_and_on_the_bare_node(
+        self, launcher, defaults, image
+    ):
+        """The image only provides python: setup still installs, wherever it runs."""
+        cfg = _cfg(defaults, image=image)
+        assert "uv venv ./venv" in _render(launcher["setup"], cfg)
+        assert ". ./venv/bin/activate" in _render(launcher["run"], cfg)
 
     def test_bare_node_installs_torch_then_unitxt_and_the_hf_packages(
         self, launcher, defaults
@@ -354,8 +379,8 @@ class TestImageSelection:
         code = [l for l in setup.splitlines() if not l.lstrip().startswith("#")]
         assert not any("GB_SHARED_WORKDIR" in l for l in code)
 
-    def test_image_mode_skips_venv_and_install(self, launcher, defaults):
-        cfg = _cfg(defaults, unitxt_image="quay.io/org/unitxt:1")
+    def test_install_false_skips_venv_and_install(self, launcher, defaults):
+        cfg = _cfg(defaults, image="quay.io/org/unitxt:1", install=False)
         assert "venv" not in _render(launcher["setup"], cfg)
         assert "venv" not in _render(launcher["run"], cfg)
 
@@ -370,7 +395,8 @@ class TestRenderedShellIsValid:
             {"trust_remote_code": False},
             {"hf_packages": []},
             {"torch_index_url": "https://download.pytorch.org/whl/cpu"},
-            {"unitxt_image": "quay.io/org/unitxt:1"},
+            {"image": ""},
+            {"image": "quay.io/org/unitxt:1", "install": False},
         ],
     )
     def test_both_blocks_parse(self, launcher, defaults, over):
