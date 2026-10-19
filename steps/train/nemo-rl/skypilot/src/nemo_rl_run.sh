@@ -133,6 +133,21 @@ overrides+=(
   "checkpointing.checkpoint_dir=${results_dir}"
   "logger.log_dir=${logs_dir}"
 )
+# The V2 DTensor worker (policy.dtensor_cfg._v2: true — the default in sft.yaml,
+# grpo_math_1B.yaml, ppo_math_1B.yaml) defaults model_save_format=safetensors,
+# which writes sharded HF safetensors under weights/model/ with NO DCP
+# .metadata. But we always run convert_dcp_to_hf.py, which requires a .metadata.
+# Force torch_save so the V2 worker uses the DCP writer that emits .metadata —
+# exactly what NeMo-RL's own converter CI does for a V2 checkpoint. The key is
+# absent from the resolved config, so it is force-added with Hydra's `++`.
+#
+# This is gated on the config declaring `_v2: true`: for a V1 worker (dpo/rm,
+# where _v2 is false or omitted) lm_policy raises "model_save_format must be
+# None or omitted if using DTensorPolicyWorker (_v2=False)", and V1 already
+# writes DCP natively, so the converter works unchanged there.
+if grep -Eq '^[[:space:]]*_v2:[[:space:]]*true([[:space:]]|$)' "$config"; then
+  overrides+=("++checkpointing.model_save_format=torch_save")
+fi
 # Pin NeMo-RL's cluster view to the node's GPU count. The shipped configs
 # default cluster.gpus_per_node=1 (sft.yaml), so without this a multi-GPU node
 # would still train on one GPU. Forced (after "$@") so it stays locked to the

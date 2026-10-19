@@ -63,12 +63,17 @@ def _write_uv_stub(bin_dir: pathlib.Path, uvlog: pathlib.Path) -> None:
     stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
 
 
-def _fake_root(tmp_path: pathlib.Path, algo: str, config_name: str) -> pathlib.Path:
+def _fake_root(
+    tmp_path: pathlib.Path,
+    algo: str,
+    config_name: str,
+    config_body: str = "policy: {}\n",
+) -> pathlib.Path:
     root = tmp_path / "nemo-rl"
     (root / "examples" / "configs").mkdir(parents=True)
     (root / "examples" / "converters").mkdir(parents=True)
     (root / f"examples/run_{algo}.py").write_text("# driver\n")
-    (root / f"examples/configs/{config_name}").write_text("policy: {}\n")
+    (root / f"examples/configs/{config_name}").write_text(config_body)
     (root / "examples/converters/convert_dcp_to_hf.py").write_text("# conv\n")
     return root
 
@@ -82,8 +87,9 @@ def _run(
     config_name="sft.yaml",
     clearml_mode="off",
     env_extra=None,
+    config_body="policy: {}\n",
 ):
-    root = _fake_root(tmp_path, algo, config_name)
+    root = _fake_root(tmp_path, algo, config_name, config_body)
     if not make_driver:
         # Simulate an algorithm whose driver is absent from the image so the
         # run script's driver-resolution guard fires.
@@ -243,6 +249,60 @@ class TestArgAssembly:
         assert any(a.endswith("examples/run_sft.py") for a in train)
         cfg = train[train.index("--config") + 1]
         assert cfg.endswith("examples/configs/sft.yaml")
+
+
+class TestModelSaveFormat:
+    # NeMo-RL's V2 DTensor worker (policy.dtensor_cfg._v2: true, the default for
+    # sft/grpo_math_1B/ppo_math_1B) defaults model_save_format=safetensors, which
+    # writes sharded HF safetensors under weights/model/ with NO DCP .metadata.
+    # But the step always runs convert_dcp_to_hf.py, which REQUIRES a .metadata.
+    # So for a V2 config the step must force checkpointing.model_save_format=
+    # torch_save (the DCP writer that emits .metadata). For a V1 worker the same
+    # override is FORBIDDEN — lm_policy raises "model_save_format must be None or
+    # omitted if using DTensorPolicyWorker (_v2=False)" — so it must be gated on
+    # the config declaring _v2: true. The key is absent from the resolved config,
+    # so it is force-added with Hydra's `++` prefix (plain `key=value` raises in
+    # struct mode).
+    _V2 = "policy:\n  dtensor_cfg:\n    _v2: true\n"
+    _V1_EXPLICIT = "policy:\n  dtensor_cfg:\n    _v2: false\n"
+    _V1_ABSENT = "policy:\n  dtensor_cfg: {}\n"
+    _V2_COMMENTED = "policy:\n  dtensor_cfg:\n    # _v2: true\n    enabled: true\n"
+
+    def test_v2_config_forces_torch_save(self, tmp_path):
+        proc, runs, _ = _run(
+            tmp_path, ["--base-model", "/staged/base"], config_body=self._V2
+        )
+        assert proc.returncode == 0, proc.stderr
+        ov = _hydra_overrides(_train_argv(runs))
+        assert "++checkpointing.model_save_format=torch_save" in ov
+        # Forced tail, so it lands after any user override.
+        assert ov.index("++checkpointing.model_save_format=torch_save") > ov.index(
+            "logger.wandb_enabled=false"
+        )
+
+    def test_v1_explicit_false_omits_model_save_format(self, tmp_path):
+        proc, runs, _ = _run(
+            tmp_path, ["--base-model", "/staged/base"], config_body=self._V1_EXPLICIT
+        )
+        assert proc.returncode == 0, proc.stderr
+        ov = _hydra_overrides(_train_argv(runs))
+        assert not any("model_save_format" in o for o in ov)
+
+    def test_v1_absent_omits_model_save_format(self, tmp_path):
+        proc, runs, _ = _run(
+            tmp_path, ["--base-model", "/staged/base"], config_body=self._V1_ABSENT
+        )
+        assert proc.returncode == 0, proc.stderr
+        ov = _hydra_overrides(_train_argv(runs))
+        assert not any("model_save_format" in o for o in ov)
+
+    def test_commented_v2_is_not_treated_as_v2(self, tmp_path):
+        proc, runs, _ = _run(
+            tmp_path, ["--base-model", "/staged/base"], config_body=self._V2_COMMENTED
+        )
+        assert proc.returncode == 0, proc.stderr
+        ov = _hydra_overrides(_train_argv(runs))
+        assert not any("model_save_format" in o for o in ov)
 
 
 class TestClearmlWith:
