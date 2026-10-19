@@ -67,6 +67,16 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: make extended-tests
 
+      # The SkyPilot API server logs only to this file, so a failed start (in
+      # setup or mid-run) is otherwise invisible.
+      - name: Upload SkyPilot API server log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: skypilot-api-server-log-${{ matrix.python-version }}
+          path: ~/.sky/api_server/server.log
+          if-no-files-found: ignore
+
   report-failure:
     # Open (or update) a tracking issue when the nightly run fails, so failures
     # are visible without watching the Actions tab. Runs only on the scheduled
