@@ -88,7 +88,7 @@ def _viewer_split(split: str) -> str:
     picker name would 404 there for exactly the biggest datasets. Translated here,
     at the one call site that talks to the viewer, rather than in the picker --
     grouping the parts upstream would also change which shards an *import* reads,
-    which is a separate decision (see the design spec).
+    which is a separate decision.
     """
     return _PARTITIONED_SPLIT.sub("", split)
 
@@ -621,8 +621,7 @@ class HfImportService:
         and a mapping made against stale column names cannot reach a stored
         dataset -- ``_reject_unmapped_sources`` re-checks the real staged columns
         at import. The ranged-read alternative that would buy back byte-identical
-        sampling is measured and deferred in
-        ``docs/superpowers/specs/2026-09-16-hf-dataset-import-design.md``.
+        sampling was measured and deferred.
 
         Raises:
             DomainValidationError: ``config``/a split is absent, or the dataset

@@ -4,8 +4,7 @@ Importing ``gbcli.utils.log_query`` transitively imports
 ``gbserver.types.constants``, which calls ``load_dotenv(override=False)`` at
 module import time. That is a genuine third-party side effect, not code in this
 repository: on a machine whose ``.env`` sets ``AUTOTUNEX_JOB_BACKEND=llmb`` (as
-this project's own does once the llmb backend is configured — see
-``docs/superpowers/specs/2026-08-06-job-launch-runner-design.md``), the first
+this project's own does once the llmb backend is configured), the first
 such import mutates the real process ``os.environ`` directly, bypassing
 ``pytest``'s ``monkeypatch`` undo entirely. Discovered while writing this
 directory's tests: without this fixture, that one import leaked

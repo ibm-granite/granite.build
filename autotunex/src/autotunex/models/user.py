@@ -6,7 +6,7 @@ A *user* is an identity that owns configurations, datasets and jobs — not an
 owned resource itself. These schemas back the admin-only management endpoints
 (``GET /users``, ``GET /users/{id}``, ``PATCH /users/{id}``) and the
 self-service ``GET /users/me/metadata``. See
-``docs/superpowers/specs/2026-08-10-user-management-endpoints-design.md``.
+``docs/api/users.md``.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ class UserRoleUpdate(BaseModel):
     """Request body for ``PATCH /users/{user_id}`` — a role change, nothing else.
 
     Email is an identity key linked to the auth provider and is deliberately not
-    editable here (design spec, decision 4).
+    editable here.
     """
 
     model_config = ConfigDict(extra="forbid")

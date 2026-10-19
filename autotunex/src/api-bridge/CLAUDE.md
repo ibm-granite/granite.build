@@ -17,16 +17,9 @@ in `tables.py`, executing Core constructs (no raw `text()` SQL) — over `pymysq
 stdlib `sqlite3`, configured by a single `AUTOTUNEX_DATABASE_URL` (the same connection string
 the main service reads; SQLite, MySQL, and PostgreSQL are all supported, and an async driver
 such as `mysql+asyncmy` or `postgresql+asyncpg` is coerced to its synchronous equivalent
-internally). This replaced the original raw `pymysql` + `DBUtils` pooling and consciously
-supersedes the DB-layer guidance in
-`docs/superpowers/specs/2026-08-13-api-bridge-integration-design.md`. It remains independent of
-`src/autotunex`: nothing is imported from it — the small amount of shared logic (URL driver
-coercion, the TLS-context builder) is copied, not imported. See
-`docs/superpowers/specs/2026-08-18-api-bridge-sqlalchemy-url-unification-design.md` for the
-original synchronous-SQLAlchemy/URL-unification rationale. **This supersedes the MySQL-only
-stance of the 2026-08-18 spec**; see
-`docs/superpowers/specs/2026-08-20-api-bridge-multi-dialect-design.md` for the multi-dialect
-design.
+internally). This replaced the original raw `pymysql` + `DBUtils` pooling. It remains
+independent of `src/autotunex`: nothing is imported from it — the small amount of shared logic
+(URL driver coercion, the TLS-context builder) is copied, not imported.
 
 ## Layout
 
@@ -81,8 +74,3 @@ It remains deliberately **outside** the main service's `make typecheck` (mypy st
 coverage targets — this package is not typed to that bar. It is also **not** picked up by the
 bare `pytest` / `make test` at the repo root (whose `testpaths = ["tests"]` covers only the
 main service); `make test-subprojects` is the entry point for this standalone suite.
-
-## More detail
-
-`docs/superpowers/specs/2026-08-13-api-bridge-integration-design.md` has the full design and
-rationale for this subsystem's existence and its boundary with `src/autotunex`.

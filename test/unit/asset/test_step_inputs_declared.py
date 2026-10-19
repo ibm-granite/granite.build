@@ -69,7 +69,7 @@ EXPECTED = {
     f"{_LSF}/bfcl-eval": (set(), {"model"}),
     f"{_LSF}/openinstruct-sft": (set(), {"model"}),
     f"{_LSF}/openinstruct-rl": (set(), {"rm_url", "code_url"}),
-    f"{_SKY}/dpk": (set(), {"docs"}),
+    f"{_SKY}/data/dpk": (set(), {"docs"}),
     f"{_AWS}/openinstruct-sft": (set(), {"model"}),
     f"{_SKY}/digit": (set(), {"digit_input"}),
     "environments/skypilot-managed/kubernetes/steps/digit": (set(), {"digit_input"}),

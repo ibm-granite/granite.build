@@ -122,7 +122,10 @@ assetstores:
     pull:
       - mode: default
         config:
-          cache_path: /tmp/hf_cache
+          # On /proj (shared, bind-mounted identity into the enroot container),
+          # not /tmp: a compute node's /tmp is per-node, so an hf:// input pulled
+          # there would be invisible to the container and to later steps.
+          cache_path: /proj/data-eng/llmb-read-write/hfcache
     push:
       - mode: default
         config: {}

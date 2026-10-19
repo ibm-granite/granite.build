@@ -12,6 +12,7 @@ You're authoring a `build.yaml`, picking environments, and submitting builds wit
 - [Getting started](getting-started.md) — first build on the standalone server
 - [Builds](builds/README.md) — the build definition: targets, steps, environments, and artifacts
 - [`build.yaml` reference](builds/build-yaml-reference.md) — full schema
+- [Inputs, outputs, and bindings](builds/bindings.md) — chaining targets, and how build.yaml and step.yaml I/O fit together
 - [`gb` CLI reference](cli/gb-cli-reference.md) — client subcommands (submit and monitor builds)
 - [Templates](templates/README.md) — reusable build.yaml patterns and how to create your own
 - [Steps](steps/README.md) — built-in steps, step.yaml structure, and custom step creation

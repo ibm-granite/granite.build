@@ -90,6 +90,8 @@ inputs:
 
 A bound input must reference an existing target name and an output name on
 that target — `BuildConfig.my_validate()` will reject the build otherwise.
+For how inputs and outputs line up with a step's `step.yaml` schema, see
+[Inputs, outputs, and bindings](bindings.md).
 
 ## Outputs
 

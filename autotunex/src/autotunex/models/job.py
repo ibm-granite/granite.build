@@ -177,7 +177,7 @@ class TunedModelSummary(BaseModel):
     submits as ``JobCreate.model``, with ``model_source`` — always
     ``huggingface``, since only HF-hosted outputs are listed — so the client
     never decides the source itself. See
-    ``docs/superpowers/specs/2026-09-26-tuned-model-search-design.md``.
+    ``docs/api/jobs.md`` (``GET /api/v1/jobs/tuned-models``).
     """
 
     model_config = ConfigDict(protected_namespaces=())

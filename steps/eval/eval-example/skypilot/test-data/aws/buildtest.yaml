@@ -1,0 +1,37 @@
+# YAML-driven spec for test_skypilot_aws_eval.py (located by the test/ <-> test-data/
+# helper; see steps/README.md).
+# The target runs the eval-example step (space://steps/eval/eval-example) on the SkyPilot aws
+# environment (a real EC2 backend), pulling the step's PUBLISHED image. HF-free
+# (env:// output) so it needs no HF_TOKEN — only AWS credentials. build_yaml
+# defaults to ./build.yaml (sibling).
+targets:
+  - eval-run
+target_expectations:
+  - target_name: eval-run
+    # One workload runs and registers one env:// output artifact; there are no
+    # inputs.
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 1
+# The Space this test resolves the step (and the skypilot/aws environment +
+# monitors) through: the local Space rendered by `make space` two levels up
+# (steps/eval/eval-example/skypilot/space/), which carries steps/eval/eval-example/step.yaml
+# and chains (base_uris) to configurations/assets. The build references the step by
+# space://steps/eval/eval-example. This step is not publishable (STEP_PUBLISHABLE :=
+# false), so this fixture is never copied into test-data/steps/ (Mode 2) and this
+# line is never rewritten; the test runs in Mode 1 only.
+space_uri: ../../space
+# A single clean run with no injected synthetic failure: a failed eval command
+# fails the build, so reaching SUCCESS proves the step ran end to end on real EC2.
+simulate_step_failure: false
+# Run only the basic build (skip the cancellation variant) — once the node is up
+# the placeholder eval finishes near-instantly, so there is no stable RUNNING
+# window to cancel.
+tests:
+  - runner
+# EC2 provisioning (and autostop teardown), plus pulling the eval image, is slow.
+# 40 minutes is a generous ceiling (not an expected duration) covering cold-start
+# instance bring-up, SkyPilot setup, and the multi-GB image pull over the network,
+# with headroom so a slow-but-healthy run does not flake. Revisit if the image
+# shrinks or provisioning gets consistently faster.
+timeout_minutes: 40

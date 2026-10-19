@@ -98,11 +98,16 @@ config:
   #   /proj/.../builds/<build>/runs/<run>/checkpoints/<run_name>_node2
   #
   # Needed because the checkpoint directory is under GB_BUILD_WORKDIR, which is new
-  # for every build AND every retry, so the trainer's own auto-resume (gold.py
-  # resumes when its output_dir already holds a checkpoint-*) never finds anything.
-  # Before the trainer starts, rank 0 hardlinks every COMPLETE checkpoint-* from
+  # for every build and target run, so the trainer's own auto-resume (gold.py
+  # resumes when its output_dir already holds a checkpoint-*) never finds an
+  # earlier run's checkpoints. (An automatic retry_workload relaunch reuses the
+  # workdir, and with it what the failed attempt wrote; see the resume block.)
+  # Before the trainer starts, rank 0 hardlinks every COMPLETE checkpoint-<N> from
   # here into this run's checkpoint directory; the trainer then resumes from the
-  # highest one — weights, optimizer, scheduler, RNG and data position.
+  # highest checkpoint-<N> in that directory — weights, optimizer, scheduler, RNG and
+  # data position. That one's trainer_state.json is then rewritten to this run's
+  # save_steps and logging_steps: HF restores the state whole, so the run would
+  # otherwise save on the source's grid.
   #
   # Three consequences to know before setting it:
   #  * The world size must match the source's. A ZeRO-3 checkpoint holds one
@@ -646,26 +651,78 @@ environment_configs:
             # collective rather than fail.
             RESUME_SRC="{{ config.resume_from_checkpoint_dir | string | trim }}"
             RESUME_SRC="${RESUME_SRC%/}"
+            # rank 0 -> the other ranks: this attempt's token once the seed is done,
+            # "failed:<token>" if rank 0 exits first. A retry_workload relaunch reuses
+            # GB_BUILD_WORKDIR, so a marker already here is the previous attempt's and
+            # must not release anyone; the token is built as the clone handshake's is.
             RESUME_SEEDED="$CKPT_DIR/.resume-seeded"
-            # Same completeness test the watcher uses: these bracket HF Trainer's
-            # whole save sequence, so a checkpoint the source run was killed while
-            # writing is skipped rather than resumed from.
-            RESUME_SENTINELS="model.safetensors tokenizer.json trainer_state.json"
+            RESUME_TOKEN="${GB_SKYPILOT_LAUNCH_ID:-}:${SKYPILOT_INTERNAL_JOB_ID:-}:${LSB_JOBID:-${SLURM_JOB_ID:-}}"
+            # The watcher's completeness test: these bracket HF Trainer's whole save
+            # sequence, so a checkpoint the source run was killed while writing is
+            # skipped rather than resumed from. Weights are model.safetensors, or the
+            # index save_pretrained writes after the last shard of sharded ones.
+            RESUME_SENTINELS="tokenizer.json trainer_state.json"
+            resume_complete() {
+              [ -f "$1/model.safetensors" ] || [ -f "$1/model.safetensors.index.json" ] \
+                || return 1
+              for sentinel in $RESUME_SENTINELS; do
+                [ -f "$1/$sentinel" ] || return 1
+              done
+            }
+            # ZeRO optimizer shards in a checkpoint: one per training rank.
+            resume_shards() {
+              find "$1" -mindepth 2 -maxdepth 2 -path '*/global_step*/*' \
+                -name '*optim_states.pt' 2>/dev/null | wc -l
+            }
+            # get_last_checkpoint's name rule, ^checkpoint-[0-9]+$: HF never loads
+            # anything else, so nothing else is seeded, checked or picked.
+            resume_is_checkpoint() {
+              base="${1##*/}"
+              step="${base#checkpoint-}"
+              [ -d "$1" ] && [ "$step" != "$base" ] && [ -n "$step" ] \
+                && [ -n "${step##*[!0-9]*}" ]
+            }
             if [ "$NODE_RANK" = "0" ]; then
+              mkdir -p "$CKPT_DIR"
+              # Any exit before the seed is done tells the waiting ranks at once,
+              # rather than after their 900s.
+              trap '[ "$(cat "$RESUME_SEEDED" 2>/dev/null || true)" = "$RESUME_TOKEN" ] \
+                || { printf "failed:%s\n" "$RESUME_TOKEN" > "$RESUME_SEEDED.tmp.$$" \
+                && mv -f "$RESUME_SEEDED.tmp.$$" "$RESUME_SEEDED"; } 2>/dev/null || true' EXIT
               if [ ! -d "$RESUME_SRC" ]; then
                 echo "distill-gold: FATAL: resume_from_checkpoint_dir '$RESUME_SRC' is not a directory." >&2
                 exit 1
               fi
-              mkdir -p "$CKPT_DIR"
+              # An EXTERNAL server (the `vllm` input bound) is another target's allocation:
+              # every node here trains, whatever vllm_num_servers says. Only the
+              # in-allocation split gives nodes to vLLM -- see "Node roles" below.
+              {% if vllm_server_url %}
+              RESUME_WORLD=$(( NODES * GPUS ))
+              {% else %}
+              RESUME_WORLD=$(( (NODES - VLLM_SERVERS) * GPUS ))
+              {% endif %}
+              # What a failed attempt was writing when it died: rank 0's files missing,
+              # or fewer optimizer shards than ranks (a node died mid DeepSpeed save;
+              # this run's own attempts all share its topology). HF would pick it if it
+              # is the highest and fail on every rank; moved aside instead, out of HF's
+              # and the watcher's checkpoint-* pattern. Kept for diagnosis: the per-run
+              # workdir, and these with it, is reaped when the target run tears down.
+              for ckpt in "$CKPT_DIR"/checkpoint-*; do
+                resume_is_checkpoint "$ckpt" || continue
+                shards="$(resume_shards "$ckpt")"
+                if resume_complete "$ckpt" \
+                  && { [ "$shards" -eq 0 ] || [ "$shards" -ge "$RESUME_WORLD" ]; }; then
+                  continue
+                fi
+                aside="$CKPT_DIR/incomplete-${ckpt##*/}.$(date +%Y%m%dT%H%M%S)"
+                mv "$ckpt" "$aside"
+                echo "distill-gold: resume: moved incomplete ${ckpt##*/} aside to ${aside##*/}"
+              done
               RESUME_COUNT=0
-              RESUME_LAST=""
+              SEED_TOP=""
               for ckpt in "$RESUME_SRC"/checkpoint-*; do
-                [ -d "$ckpt" ] || continue
-                complete=1
-                for sentinel in $RESUME_SENTINELS; do
-                  [ -f "$ckpt/$sentinel" ] || { complete=0; break; }
-                done
-                if [ "$complete" -ne 1 ]; then
+                resume_is_checkpoint "$ckpt" || continue
+                if ! resume_complete "$ckpt"; then
                   echo "distill-gold: resume: skipping incomplete $(basename "$ckpt")"
                   continue
                 fi
@@ -678,8 +735,8 @@ environment_configs:
                 RESUME_COUNT=$(( RESUME_COUNT + 1 ))
                 # Numeric, not lexical: checkpoint-500 sorts after checkpoint-1500.
                 step="${ckpt##*/checkpoint-}"
-                if [ -z "$RESUME_LAST" ] || [ "$step" -gt "$RESUME_LAST" ]; then
-                  RESUME_LAST="$step"
+                if [ -z "$SEED_TOP" ] || [ "$step" -gt "$SEED_TOP" ]; then
+                  SEED_TOP="$step"
                 fi
               done
               if [ "$RESUME_COUNT" -eq 0 ]; then
@@ -688,33 +745,61 @@ environment_configs:
                 echo "  silently spend the whole schedule again." >&2
                 exit 1
               fi
+              # Every check below is on the checkpoint the trainer resumes from:
+              # gold.py calls train(resume_from_checkpoint=True), and HF's
+              # get_last_checkpoint takes the highest checkpoint-<N> in CKPT_DIR. After a
+              # retry that can be one the failed attempt wrote, above everything seeded.
+              # Every checkpoint-<N> left here is complete.
+              RESUME_CKPT=""
+              for ckpt in "$CKPT_DIR"/checkpoint-*; do
+                resume_is_checkpoint "$ckpt" || continue
+                step="${ckpt##*/checkpoint-}"
+                if [ -z "$RESUME_CKPT" ] || [ "$step" -gt "${RESUME_CKPT##*/checkpoint-}" ]; then
+                  RESUME_CKPT="$ckpt"
+                fi
+              done
+              RESUME_NAME="${RESUME_CKPT##*/}"
               # A ZeRO-3 checkpoint holds one optimizer shard per rank and DeepSpeed
               # cannot load it at another world size. Checked here, on a CPU-cheap
               # count, rather than discovered by every rank after allocation.
-              RESUME_SHARDS="$(find "$CKPT_DIR/checkpoint-$RESUME_LAST" -mindepth 2 -maxdepth 2 \
-                -path '*/global_step*/*' -name '*optim_states.pt' 2>/dev/null | wc -l)"
-              # An EXTERNAL server (the `vllm` input bound) is another target's allocation:
-              # every node here trains, whatever vllm_num_servers says. Only the
-              # in-allocation split gives nodes to vLLM -- see "Node roles" below.
-              {% if vllm_server_url %}
-              RESUME_WORLD=$(( NODES * GPUS ))
-              {% else %}
-              RESUME_WORLD=$(( (NODES - VLLM_SERVERS) * GPUS ))
-              {% endif %}
+              RESUME_SHARDS="$(resume_shards "$RESUME_CKPT")"
               if [ "$RESUME_SHARDS" -gt 0 ] && [ "$RESUME_SHARDS" -ne "$RESUME_WORLD" ]; then
-                echo "distill-gold: FATAL: checkpoint-$RESUME_LAST holds $RESUME_SHARDS ZeRO optimizer shards" >&2
+                echo "distill-gold: FATAL: $RESUME_NAME holds $RESUME_SHARDS ZeRO optimizer shards" >&2
                 echo "  but this run trains on $RESUME_WORLD ranks. Resume with the source's topology." >&2
                 exit 1
               fi
-              echo "distill-gold: resume: $RESUME_COUNT checkpoint(s) seeded; the trainer resumes from checkpoint-$RESUME_LAST"
-              echo "GB_STEP_METADATA_KEY:resumed_from GB_STEP_METADATA_VALUE:$RESUME_SRC/checkpoint-$RESUME_LAST"
-              touch "$RESUME_SEEDED"
+              # HF Trainer restores trainer_state.json whole on resume, and with it the
+              # SOURCE run's save_steps and logging_steps: this run's --save-steps is
+              # replaced with a warning nobody sees, and every rung of this run's
+              # ladder that is not also on the source's grid is never written (build
+              # 4c758672, A1: a 250-step ladder on c2000's 1000). Rewrite both in the
+              # checkpoint the trainer resumes from. Single-quoted so an unsubstituted
+              # value reaches its FATAL message instead of tripping `set -u`.
+              "$PYBIN" ./src/align_resume_state.py --checkpoint "$RESUME_CKPT" \
+                --save-steps '{{ config.gold_config.save_steps }}' \
+                --logging-steps '{{ config.gold_config.logging_steps }}'
+              echo "distill-gold: resume: $RESUME_COUNT checkpoint(s) seeded; the trainer resumes from $RESUME_NAME"
+              # Lineage is the seed: the source's highest complete checkpoint. A higher
+              # one here was written by an earlier attempt of this run, from that seed.
+              if [ "$RESUME_NAME" != "checkpoint-$SEED_TOP" ]; then
+                echo "distill-gold: resume: $RESUME_NAME was written by an earlier attempt of this run, after the seed"
+              fi
+              echo "GB_STEP_METADATA_KEY:resumed_from GB_STEP_METADATA_VALUE:$RESUME_SRC/checkpoint-$SEED_TOP"
+              printf '%s\n' "$RESUME_TOKEN" > "$RESUME_SEEDED.tmp.$$"
+              mv -f "$RESUME_SEEDED.tmp.$$" "$RESUME_SEEDED"
+              trap - EXIT
             else
               # The checkpoint dir is on the shared filesystem, so rank 0's marker is
-              # visible here once it is written. Bounded, because a rank 0 that failed
-              # above never writes it.
+              # visible here once it is written. Bounded, for a rank 0 that died
+              # without its EXIT trap running.
               waited=0
-              until [ -e "$RESUME_SEEDED" ]; do
+              while :; do
+                seed="$(cat "$RESUME_SEEDED" 2>/dev/null || true)"
+                [ "$seed" = "$RESUME_TOKEN" ] && break
+                if [ "$seed" = "failed:$RESUME_TOKEN" ]; then
+                  echo "distill-gold: FATAL: rank 0 failed to seed $CKPT_DIR; its log says why." >&2
+                  exit 1
+                fi
                 if [ "$waited" -ge 900 ]; then
                   echo "distill-gold: FATAL: rank 0 did not finish seeding $CKPT_DIR within 900s." >&2
                   exit 1
@@ -761,9 +846,13 @@ environment_configs:
             EMITTED_DIR="$(mktemp -d)"
             {% if config.resume_from_checkpoint_dir | default("") | string | trim and config.resume_emit_seeded not in _true %}
             # resume_emit_seeded is off: mark every seeded checkpoint as already
-            # emitted. Only seeded ones exist here -- the trainer has not started.
+            # emitted -- seeded, meaning the source holds a complete one of that name.
+            # After a retry_workload relaunch the dir also holds what the failed
+            # attempt wrote, which may never have been emitted (killed between
+            # watcher sweeps); those are left for the watcher.
             for ckpt in "$CKPT_DIR"/${CKPT_GLOB}*; do
               [ -d "$ckpt" ] || continue
+              resume_complete "$RESUME_SRC/$(basename "$ckpt")" || continue
               touch "$EMITTED_DIR/$(basename "$ckpt")"
               echo "distill-gold: resume: not re-emitting seeded $(basename "$ckpt")"
             done

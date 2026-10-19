@@ -2,7 +2,7 @@ granite.build:
   name: skypilot-bluevela-slurm-dpk-pii-redactor-test
   # PII redaction through the shared `dpk` step on BlueVela SLURM (via Skypilot),
   # submitted to the gpu-mid partition. This is the REAL-CLUSTER counterpart of
-  # steps/dpk/skypilot/test-data/slurm-pii/build.yaml (local Docker SLURM) and of
+  # steps/data/dpk/skypilot/test-data/slurm-pii/build.yaml (local Docker SLURM) and of
   # test-data/aws-pii (EC2): same step, same transform, same derivations —
   # only `environment_uri` and the memory hint differ.
   #
@@ -30,7 +30,7 @@ granite.build:
   #
   # Single target: a "does the step run on this cluster" proof, not a handoff test.
   # The cross-target env:///shared handoff is not covered here or anywhere — see
-  # steps/dpk/skypilot/README.md's Known gaps.
+  # steps/data/dpk/skypilot/README.md's Known gaps.
   targets:
 
     redact:

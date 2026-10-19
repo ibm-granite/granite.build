@@ -125,28 +125,33 @@ token's **5 minutes**.
 
 ### Get an `id_token`
 
-`.superpowers/sdd/w3id-task6-authcode-probe.py` runs the authorization-code flow
-and verifies the result against the live JWKS with the real verifier. It prints
-no token to stdout by design; two flags route one somewhere usable:
+Run the authorization-code flow with any OIDC client registered for your client
+id, and take the `id_token` field from the token response, not `access_token`.
+Keep the token out of stdout, shell history, `ps` output and the repository:
+
+- Put it on the clipboard (`pbcopy`), so nothing touches disk. Clear it afterwards
+  with `pbcopy </dev/null`. On Linux replace `pbcopy` with
+  `xclip -selection clipboard` or `wl-copy`, and clear with
+  `xclip -selection clipboard </dev/null` or `wl-copy --clear`.
+- Or write the whole header to a file only you can read, which `curl -H @FILE`
+  (curl 7.55+) reads below. Passing `-H "Authorization: Bearer …"` instead would
+  put the token in curl's arguments, where `ps` shows it.
+
+**Never write the token inside the checkout.** One `git add -A` would commit a
+live bearer credential, valid for two hours, and pushing would publish it. The
+snippet below writes to a private directory under `$TMPDIR`; `id_token.header`
+is in `.gitignore` only as a backstop.
 
 ```bash
-export W3ID_CLIENT_ID='<your-client-id>'
-read -rs -p 'client secret: ' W3ID_CLIENT_SECRET && export W3ID_CLIENT_SECRET && echo
-.venv/bin/python .superpowers/sdd/w3id-task6-authcode-probe.py --clipboard
+D=$(mktemp -d)    # private (0700) directory, outside the checkout
+read -rs TOKEN    # paste the id_token; it is not echoed or saved to history
+(umask 077; printf 'Authorization: Bearer %s\n' "$TOKEN" > "$D/id_token.header")
+unset TOKEN
 ```
 
-- `--clipboard` pipes it to `pbcopy`; nothing touches disk. Clear it afterwards
-  with `pbcopy </dev/null`.
-- `--out FILE` writes it `0600` for `curl -H "Authorization: Bearer $(cat FILE)"`.
-  Refuses to overwrite. Delete it when done — an `id_token` is a live bearer
-  credential for two hours.
-
-**Port 8000 must be free**, because the probe's listener binds the exact redirect
-URI registered for the client. If your own server is on 8000, move it with
-`make dev PORT=8001`.
-
-Note the script lives under `.superpowers/`, which is git-ignored — it is a local
-helper, not a shipped tool.
+**If the client's redirect URI is on port 8000, that port must be free**, because
+the client's local listener binds the exact redirect URI registered for it. If
+your own server is on 8000, move it with `make dev PORT=8001`.
 
 ### Configure and use
 
@@ -158,8 +163,18 @@ export AUTOTUNEX_OIDC_AUDIENCE='<your-client-id>'
 make dev
 ```
 
+From the same shell, with the header file:
+
 ```bash
-curl -i -H "Authorization: Bearer <the-id-token>" http://localhost:8000/api/v1/jobs
+curl -i -H @"$D/id_token.header" http://localhost:8000/api/v1/jobs
+rm -rf "$D"    # when done
+```
+
+Or from the clipboard, through a pipe (on Linux use `xclip -selection clipboard -o`
+or `wl-paste` for `pbpaste`):
+
+```bash
+pbpaste | sed 's/^/Authorization: Bearer /' | curl -i -H @- http://localhost:8000/api/v1/jobs
 ```
 
 Startup refuses `"oidc"` unless all three are set, and names whichever is
@@ -177,7 +192,7 @@ the authorization code to a host of the attacker's choosing.
 So the IdP client must have **`http://localhost:8000/auth/callback`** registered.
 If your registration lists a different path, the authorize request fails on
 redirect_uri mismatch and no environment variable can fix it. Keep any existing
-redirect URI as well if another tool depends on it — the token probe above does.
+redirect URI as well if another tool depends on it, such as the token client above.
 
 ### Configure
 
@@ -310,7 +325,7 @@ loses them.
 | 401 on every bearer token | Sending the opaque access token instead of the `id_token` |
 | Login appears to succeed but no session | Cookie dropped — see the localhost note below |
 | Settings error on startup | `AUTOTUNEX_AUTH_PROVIDERS` needs JSON: `["oidc"]`, not `oidc` |
-| Probe hangs on "Listening…" | Port 8000 taken; move the server with `make dev PORT=8001` |
+| Token client never receives the redirect | Port 8000 taken; move the server with `make dev PORT=8001` |
 
 ### `Secure` cookies over `http://localhost`
 

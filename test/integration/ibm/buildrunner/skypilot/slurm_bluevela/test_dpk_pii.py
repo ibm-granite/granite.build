@@ -13,7 +13,7 @@ environment (space://environments/skypilot/slurm/bluevela), which reaches
 BlueVela's SLURM login node (login1) over SSH and submits to the `gpu-mid`
 partition (set via the environment's `zone`). This is the real-cluster
 counterpart of the step's own local fixture at
-``steps/dpk/skypilot/test/slurm-pii`` (Docker SLURM) and of its
+``steps/data/dpk/skypilot/test/slurm-pii`` (Docker SLURM) and of its
 ``test/aws-pii`` (EC2): same step, same transform, same two derivations —
 
 * module — ``transform: pii_redactor`` → ``python -m dpk_pii_redactor.runtime``
