@@ -206,21 +206,6 @@ neighbourhood as the run having worked, and anything near chance as the loss
 mask or the marker being wrong rather than the science being interesting. These
 are the right order of magnitude to expect, not a target to reproduce exactly.
 
-## Smoke-testing
-
-`MAX_STEPS` caps training at N optimizer steps, which turns this recipe into its
-own gate without a second copy to keep in sync:
-
-    gb build start -f recipes/granite-switch/lsf/answerability-sr/build.yaml \
-      --space public --param MAX_STEPS=2 --param NUM_EPOCHS=1
-
-Two steps rather than one on purpose: one proves the trainer starts, two prove
-it can take a second step carrying the first one's state. That clears the HF
-pulls, the data paths, the generated config, the loss mask, the artifact wiring
-and the whole eval leg. What it cannot clear is memory at the full schedule —
-the geometry is unchanged, so an OOM would still show up here, but a slow leak
-across 3 epochs would not.
-
 ## What this recipe does not do
 
 - **No baseline arm.** There is no `--mode base` target, so the adapter's

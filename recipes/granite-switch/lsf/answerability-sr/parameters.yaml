@@ -130,8 +130,7 @@ SAVE_TOTAL_LIMIT: 3
 # YAML list, injected verbatim. tensorboard is pip-installed by setup_command.
 # Use "[]" to disable reporting entirely.
 REPORT_TO: "[tensorboard]"
-# >0 caps training at N optimizer steps and turns this recipe into its own
-# smoke test (see README.md, "Smoke-testing"). 0 trains the full schedule.
+# >0 caps training at N optimizer steps. 0 trains the full schedule.
 MAX_STEPS: 0
 
 # ── Eval knobs ───────────────────────────────────────────────────────────────
