@@ -42,6 +42,7 @@ from gbserver.lineage.decompose import LineageRowDraft
 from gbserver.lineage.row_indexing import LineageRowIndexer
 from gbserver.lineage.row_indexing import row_from_draft as _row_from_draft
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
+from gbserver.storage.stored_lineage_row import StoredLineageRow
 from gbserver.storage.stored_lineage_row import TERMINAL
 
 pytestmark = pytest.mark.skipif(
@@ -823,6 +824,53 @@ class TestJobsTouchingInSQL:
         )
         assert rows.filter_jobs_touching(LH_TABLE, ["J1", "J2"]) == {"J1"}
         assert rows.filter_jobs_touching(LH_MODEL, ["J1", "J2", "nope"]) == {"J1", "J2"}
+
+    def test_tags_filter_in_sql_alone_and_with_an_artifact(self, rows):
+        """Matched on ``attributes.job.tags`` through the JSON operators, not in Python."""
+        for job_id, tags in (
+            ("J1", {"team": "nlp", "nightly": ""}),
+            ("J2", {"team": "nlp"}),
+            ("J3", {"team": "vision", "a.b": "x'y"}),
+        ):
+            rows.add(
+                StoredLineageRow(
+                    job_id=job_id,
+                    input=LH_TABLE,
+                    output=LH_MODEL if job_id != "J2" else "s3://b/o",
+                    attributes={"job": {"tags": tags}},
+                )
+            )
+        assert rows.count_jobs_touching("", tags=["team=nlp"]) == 2
+        assert rows.get_job_ids_touching("", 10, 0, tags=["team=nlp"]) == ["J1", "J2"]
+        assert rows.count_jobs_touching(LH_MODEL, tags=["team=nlp"]) == 1
+        assert rows.count_jobs_touching("", tags=["team=nlp", "nightly"]) == 1
+        assert rows.count_jobs_touching("", tags=["team"]) == 0
+        assert rows.get_job_ids_touching("", 10, 0, tags=["a.b=x'y"]) == ["J3"]
+        assert rows.filter_jobs_touching("", ["J1", "J3"], tags=["team=nlp"]) == {"J1"}
+        assert rows.filter_jobs_touching(
+            LH_TABLE, ["J1", "J2"], output=LH_MODEL, tags=["team=nlp"]
+        ) == {"J1"}
+
+    def test_a_malformed_blob_does_not_fail_a_tag_listing(self, rows):
+        rows.add(
+            StoredLineageRow(
+                job_id="J1",
+                input=LH_TABLE,
+                output=LH_MODEL,
+                attributes={"job": {"tags": {"team": "nlp"}}},
+            )
+        )
+        from sqlalchemy import text
+
+        with rows._engine.begin() as conn:
+            conn.execute(
+                text(
+                    f"INSERT INTO {rows.table_name} (uuid, job_id, input, output, "
+                    "job_store, recorded_at, json) VALUES "
+                    "('u-bad', 'BAD', 'x', 'y', 'other', '', 'not json')"
+                )
+            )
+        assert rows.count_jobs_touching("", tags=["team=nlp"]) == 1
 
     def test_a_terminal_or_empty_uri_touches_nothing(self, rows):
         assert rows.count_jobs_touching("") == 0

@@ -578,13 +578,14 @@ def list_lineage_jobs(
     output: Optional[str] = None,
     terminal: Optional[Literal["input", "output"]] = None,
     job_ids: Annotated[Optional[list[str]], Query()] = None,
+    tag: Annotated[Optional[list[str]], Query()] = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> LineageJobsResponse:
     """List the job executions matching every given filter, paged.
 
-    Filters AND together. ``uri``, ``job_id`` or ``job_ids`` is required -- the route answers
-    422 otherwise: an unfiltered listing would aggregate the whole index.
+    Filters AND together. ``uri``, ``job_id``, ``job_ids`` or ``tag`` is required -- the
+    route answers 422 otherwise: an unfiltered listing would aggregate the whole index.
 
     - ``uri`` -- jobs that consumed or produced the artifact. The drill-down for a
       graph node's ``run_count``: the graph collapses an artifact's in-place
@@ -600,12 +601,17 @@ def list_lineage_jobs(
     - ``terminal`` (with ``uri``) -- ``input``: only the jobs that wrote ``uri`` with
       no recorded input; ``output``: only those that read it with no recorded
       output. The runs behind a grouped node with one empty side.
+    - ``tag`` (optional, repeated) -- only the jobs carrying every given tag, ``k=v``
+      or a bare ``k`` (which matches only a bare tag, not any value of ``k``).
+      Combines with every filter above, or stands alone. It is matched on the
+      index rows, so it covers every lineage source, not only granite.build's
+      jobs. Alone it scans the index: nothing indexes the tags. The entries still
+      leave the tags out; filtering by a tag reveals only that a job carries it.
 
     Each entry carries only the global fields (``job_id``, ``source_system``,
     ``status``, ``started_at``, ``inputs``, ``outputs`` and the trimmed ``job``
     group; see ``db_responses.GLOBAL_JOB_FIELDS``): owner, namespace, tags and origin
-    ids are returned by ``GET /lineage/jobs/{id}`` behind the space check. A tag
-    search is ``POST /lineage/search``.
+    ids are returned by ``GET /lineage/jobs/{id}`` behind the space check.
 
     ``limit`` is ``1..1000``, ``offset`` ``>= 0`` and ``job_ids`` at most 1000 ids
     -- the cap ``LineageQueryRequest`` applies to the graph (422 otherwise). A storage
@@ -621,10 +627,11 @@ def list_lineage_jobs(
     by the same decision as the graph -- see :func:`query_lineage_graph` for why a
     lineage answer is not filtered per space, and what that costs.
     """
-    if not uri and not job_id and not job_ids:
+    tags = [t for t in tag or [] if t]
+    if not uri and not job_id and not job_ids and not tags:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="One of 'uri', 'job_id' or 'job_ids' is required",
+            detail="One of 'uri', 'job_id', 'job_ids' or 'tag' is required",
         )
     if job_ids and len(job_ids) > _MAX_JOB_IDS:
         raise HTTPException(
@@ -643,6 +650,7 @@ def list_lineage_jobs(
             self_loop=self_loop,
             output=output,
             terminal=terminal,
+            tags=tags,
         )
     except ValueError as e:
         raise HTTPException(

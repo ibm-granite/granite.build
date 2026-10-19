@@ -19,7 +19,8 @@
 from contextlib import contextmanager
 from typing import List, Optional
 
-from sqlalchemy import and_, distinct, func, or_
+from sqlalchemy import String, and_, case, cast, distinct, func, literal, or_
+from sqlalchemy.dialects.postgresql import JSONB
 
 from gbserver.storage.lineage_row_storage import (
     DOWNSTREAM,
@@ -28,6 +29,7 @@ from gbserver.storage.lineage_row_storage import (
     GroupedEdge,
     ILineageRowStorage,
     endpoint_pair,
+    tag_pairs,
 )
 from gbserver.storage.sql.sql_storage import BaseSQLItemStorage, retry_read
 from gbserver.storage.storage import JSON_COLUMN_NAME, UUID_COLUMN_NAME
@@ -118,13 +120,16 @@ class SQLLineageRowStorage(
         self_loop: bool = False,
         output: Optional[str] = None,
         terminal: Optional[str] = None,
+        tags: Optional[List[str]] = None,
     ) -> int:
         """Count the distinct jobs touching ``uri`` in one ``COUNT(DISTINCT)``.
 
         The artifact this exists for has 68,905 runs; counting them by reading the
         rows cost seconds per request, whatever the page size.
         """
-        with self._touching(uri, self_loop, output, terminal) as query:
+        if not self._can_filter_tags(tags):
+            return super().count_jobs_touching(uri, self_loop, output, terminal, tags)
+        with self._touching(uri, self_loop, output, terminal, tags) as query:
             if query is None:
                 return 0
             return int(query.with_entities(func.count(distinct(self._job_id))).scalar())
@@ -138,9 +143,14 @@ class SQLLineageRowStorage(
         self_loop: bool = False,
         output: Optional[str] = None,
         terminal: Optional[str] = None,
+        tags: Optional[List[str]] = None,
     ) -> List[str]:
         """Return one page of the distinct jobs touching ``uri``, in SQL."""
-        with self._touching(uri, self_loop, output, terminal) as query:
+        if not self._can_filter_tags(tags):
+            return super().get_job_ids_touching(
+                uri, limit, offset, self_loop, output, terminal, tags
+            )
+        with self._touching(uri, self_loop, output, terminal, tags) as query:
             if query is None:
                 return []
             page = (
@@ -334,24 +344,76 @@ class SQLLineageRowStorage(
         self_loop: bool = False,
         output: Optional[str] = None,
         terminal: Optional[str] = None,
+        tags: Optional[List[str]] = None,
     ):
         """The rows with ``uri`` on either side, or ``None`` when none can exist.
 
         ``input = u OR output = u`` over two indexed columns, which every supported
         backend answers from both indexes (bitmap OR, index merge, OR-by-union)
         rather than by a scan.
+
+        ``tags`` adds one JSON-path equality per tag on ``attributes.job.tags``
+        (see :meth:`_tag_condition`). No index serves it: with a ``uri`` it only
+        narrows the rows the endpoint index found; without one it scans the table,
+        which is the accepted cost of a tag-only listing.
         """
-        if not uri or uri == TERMINAL or not self._ensure_table_without_retry():
+        # TERMINAL is "", so an empty uri is "no artifact filter" only with tags.
+        if not (uri or tags) or not self._ensure_table_without_retry():
             yield None
             return
         session = self._get_session_without_retry()
         try:
             model = self._sql_alchemy_model
-            pair = endpoint_pair(uri, self_loop, output, terminal)
-            if pair:
-                condition = and_(model.input == pair[0], model.output == pair[1])
-            else:
-                condition = or_(model.input == uri, model.output == uri)
-            yield session.query(model).filter(condition)
+            conditions = [
+                self._tag_condition(key, value) for key, value in tag_pairs(tags or [])
+            ]
+            if uri:
+                pair = endpoint_pair(uri, self_loop, output, terminal)
+                if pair:
+                    conditions.append(
+                        and_(model.input == pair[0], model.output == pair[1])
+                    )
+                else:
+                    conditions.append(or_(model.input == uri, model.output == uri))
+            yield session.query(model).filter(and_(*conditions))
         finally:
             session.close()
+
+    def _can_filter_tags(self, tags: Optional[List[str]]) -> bool:
+        """Whether this backend can put ``tags`` in SQL; otherwise the rows are read.
+
+        SQLite and Postgres only. SQLite's ``->>`` reads a right operand starting
+        with ``$`` as a path rather than a key, so such a key is matched in Python.
+        """
+        if not tags:
+            return True
+        assert self._engine is not None
+        dialect = self._engine.dialect.name
+        if dialect == "postgresql":
+            return True
+        if dialect == "sqlite":
+            return not any(key.startswith("$") for key, _ in tag_pairs(tags))
+        return False
+
+    def _tag_condition(self, key: str, value: str):
+        """``attributes.job.tags[key] = value``, read from the JSON blob.
+
+        The blob is ``Text``, so Postgres casts it to ``jsonb``; SQLite guards with
+        ``json_valid`` so one malformed row cannot fail the query. The key is a
+        bound parameter, never spliced into the path, so a key with a dot or a
+        quote is matched as itself.
+        """
+        blob = getattr(self._sql_alchemy_model, JSON_COLUMN_NAME)
+        assert self._engine is not None
+        if self._engine.dialect.name == "postgresql":
+            # A "->" chain, not subscripts: those need Postgres 14.
+            tags = cast(blob, JSONB)
+            for step in ("attributes", "job", "tags"):
+                tags = tags.op("->")(literal(step, String))
+            return tags.op("->>")(literal(key, String)) == value
+        tags = blob.op("->")(literal("$.attributes.job.tags"))
+        extracted = case(
+            (func.json_valid(blob), tags.op("->>")(literal(key, String))),
+            else_=None,
+        )
+        return extracted == value

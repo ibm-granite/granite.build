@@ -131,8 +131,13 @@ class ILineageRowStorage(IItemStorage[StoredLineageRow]):
         self_loop: bool = False,
         output: Optional[str] = None,
         terminal: Optional[str] = None,
+        tags: Optional[List[str]] = None,
     ) -> int:
-        """Count the distinct jobs that consumed or produced ``uri``."""
+        """Count the distinct jobs that consumed or produced ``uri``.
+
+        ``tags`` narrows to the jobs carrying every one (see :func:`row_has_tags`);
+        with tags, an empty ``uri`` means "any artifact".
+        """
         raise NotImplementedError
 
     def get_job_ids_touching(
@@ -143,6 +148,7 @@ class ILineageRowStorage(IItemStorage[StoredLineageRow]):
         self_loop: bool = False,
         output: Optional[str] = None,
         terminal: Optional[str] = None,
+        tags: Optional[List[str]] = None,
     ) -> List[str]:
         """Return one page of the distinct jobs touching ``uri``, by ``job_id``."""
         raise NotImplementedError
@@ -154,6 +160,7 @@ class ILineageRowStorage(IItemStorage[StoredLineageRow]):
         self_loop: bool = False,
         output: Optional[str] = None,
         terminal: Optional[str] = None,
+        tags: Optional[List[str]] = None,
     ) -> Set[str]:
         """Return which of ``job_ids`` consumed or produced ``uri``."""
         raise NotImplementedError
@@ -341,6 +348,7 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         self_loop: bool = False,
         output: Optional[str] = None,
         terminal: Optional[str] = None,
+        tags: Optional[List[str]] = None,
     ) -> int:
         """Count the distinct jobs that consumed or produced ``uri``.
 
@@ -349,7 +357,7 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         overstates it. This fallback walks the rows; the SQL backend
         overrides it with one ``COUNT(DISTINCT job_id)``.
         """
-        return len(self._jobs_touching(uri, self_loop, output, terminal))
+        return len(self._jobs_touching(uri, self_loop, output, terminal, tags))
 
     def get_job_ids_touching(
         self,
@@ -359,13 +367,14 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         self_loop: bool = False,
         output: Optional[str] = None,
         terminal: Optional[str] = None,
+        tags: Optional[List[str]] = None,
     ) -> List[str]:
         """Return one page of the distinct jobs touching ``uri``, ordered by ``job_id``.
 
         Ordered by ``job_id`` so paging is stable and matches the tag listing. See
         :meth:`count_jobs_touching` for this fallback's cost.
         """
-        return sorted(self._jobs_touching(uri, self_loop, output, terminal))[
+        return sorted(self._jobs_touching(uri, self_loop, output, terminal, tags))[
             offset : offset + limit
         ]
 
@@ -376,27 +385,30 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         self_loop: bool = False,
         output: Optional[str] = None,
         terminal: Optional[str] = None,
+        tags: Optional[List[str]] = None,
     ) -> Set[str]:
         """Return which of ``job_ids`` consumed or produced ``uri``.
 
         Two indexed queries bounded by ``job_ids``, so a narrow filter -- a build's
-        tag -- stays cheap however many runs the artifact has.
+        tag -- stays cheap however many runs the artifact has. With ``tags``, an
+        empty ``uri`` keeps every job of ``job_ids`` that carries them.
         """
         wanted = self._batchable(list(job_ids))
-        if not wanted or not uri or uri == TERMINAL:
+        # TERMINAL is "", so an empty uri is "no artifact filter" only with tags.
+        if not wanted or not (uri or tags):
             return set()
-        pair = endpoint_pair(uri, self_loop, output, terminal)
-        if pair:
-            return {
-                row.job_id
-                for row in self.get_by_where(
-                    {"input": pair[0], "output": pair[1], "job_id": wanted}
-                )
-            }
+        pairs = tag_pairs(tags or [])
+        if not uri:
+            wheres = [{"job_id": wanted}]
+        elif pair := endpoint_pair(uri, self_loop, output, terminal):
+            wheres = [{"input": pair[0], "output": pair[1], "job_id": wanted}]
+        else:
+            wheres = [{column: uri, "job_id": wanted} for column in ("input", "output")]
         return {
             row.job_id
-            for column in ("input", "output")
-            for row in self.get_by_where({column: uri, "job_id": wanted})
+            for where in wheres
+            for row in self.get_by_where(where)
+            if row_has_tags(row, pairs)
         }
 
     def _jobs_touching(
@@ -405,27 +417,31 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
         self_loop: bool = False,
         output: Optional[str] = None,
         terminal: Optional[str] = None,
+        tags: Optional[List[str]] = None,
     ) -> Set[str]:
         """Every job with ``uri`` as an input or an output, read row by row.
 
         With ``self_loop``, only the jobs with ``uri`` as both -- its in-place
         rewrites. With ``output``, only the jobs with a ``uri -> output`` row. With
-        ``terminal``, see :func:`endpoint_pair`.
+        ``terminal``, see :func:`endpoint_pair`. With ``tags``, only the jobs
+        carrying every one; an empty ``uri`` then reads the whole table.
         """
-        if not uri or uri == TERMINAL:
+        # TERMINAL is "", so an empty uri is "no artifact filter" only with tags.
+        if not (uri or tags):
             return set()
-        pair = endpoint_pair(uri, self_loop, output, terminal)
-        if pair:
-            return {
-                row.job_id
-                for page in self.get_paged({"input": pair[0], "output": pair[1]})
-                for row in page
-            }
+        pairs = tag_pairs(tags or [])
+        if not uri:
+            wheres: List[Optional[dict]] = [None]
+        elif pair := endpoint_pair(uri, self_loop, output, terminal):
+            wheres = [{"input": pair[0], "output": pair[1]}]
+        else:
+            wheres = [{column: uri} for column in ("input", "output")]
         return {
             row.job_id
-            for column in ("input", "output")
-            for page in self.get_paged({column: uri})
+            for where in wheres
+            for page in self.get_paged(where)
             for row in page
+            if row_has_tags(row, pairs)
         }
 
     def get_tags(self, job_ids: List[str]) -> Dict[str, List[str]]:
@@ -510,20 +526,31 @@ def row_tags(row: StoredLineageRow) -> Dict[str, str]:
     return tags if isinstance(tags, dict) else {}
 
 
+def row_has_tags(row: StoredLineageRow, pairs: Iterable[Tuple[str, str]]) -> bool:
+    """Whether a row's job carries every ``(k, v)`` of ``pairs`` exactly.
+
+    A job's tags are copied onto each of its rows, so a row answers for its job.
+    A bare tag (``nightly``) is stored as ``nightly: ""`` and matches only that,
+    not any value of the key.
+    """
+    tags = row_tags(row)
+    return all(key in tags and tags[key] == value for key, value in pairs)
+
+
 def _tag_pair(tag: str) -> Tuple[str, str]:
     """``k=v`` as ``(k, v)``; a bare tag (a user's ``nightly``) is ``(tag, "")``."""
     key, _, value = tag.partition("=")
     return key, value
 
 
-def _tag_pairs(tags: Iterable[str]) -> List[Tuple[str, str]]:
+def tag_pairs(tags: Iterable[str]) -> List[Tuple[str, str]]:
     """Tag strings as sorted, deduped ``(k, v)`` pairs; empty ones dropped."""
     return sorted({_tag_pair(tag) for tag in tags if tag})
 
 
 def tags_to_map(tags: Iterable[str]) -> Dict[str, str]:
     """Tag strings as the ``attributes.job.tags`` map a row stores."""
-    return dict(_tag_pairs(tags))
+    return dict(tag_pairs(tags))
 
 
 def tag_strings(tags: Dict[str, str]) -> List[str]:

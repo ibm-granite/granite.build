@@ -722,10 +722,38 @@ def test_jobs_passes_every_filter_and_its_paging_through():
         "output": None,
         "terminal": None,
         "job_ids": None,
+        "tags": [],
     }
     assert resp.limit == 10
     assert resp.offset == 50
     assert resp.jobs[0].tags == ["build_id=B", "team=nlp"]
+
+
+def test_jobs_lists_by_tag_alone():
+    seen = {}
+
+    def fake(**kwargs):
+        seen.update(kwargs)
+        return {"jobs": [], "total": 0, "limit": 100, "offset": 0}
+
+    service = _db_service(list_jobs=fake)
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        lineage_mod.list_lineage_jobs(
+            _fake_request("member", "member@example.com"),
+            tag=["team=nlp", "", "nightly"],
+            limit=100,
+            offset=0,
+        )
+    assert seen["tags"] == ["team=nlp", "nightly"]
+    assert seen["uri"] is None
+
+
+def test_jobs_with_only_empty_tags_is_still_a_422():
+    with pytest.raises(HTTPException) as exc:
+        lineage_mod.list_lineage_jobs(
+            _fake_request("member", "member@example.com"), tag=[""], limit=100, offset=0
+        )
+    assert exc.value.status_code == 422
 
 
 def test_jobs_reports_the_total_so_a_caller_can_page():

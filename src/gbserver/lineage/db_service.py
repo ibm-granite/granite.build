@@ -330,11 +330,13 @@ class DBLineageService(LineageService):
         output: Optional[str] = None,
         terminal: Optional[str] = None,
         job_ids: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
     ) -> Dict:
         """List job executions matching every given filter, paged.
 
         The one listing over the index. Filters AND together, and ``uri``,
-        ``job_id`` or ``job_ids`` is required (with neither, the listing is empty):
+        ``job_id``, ``job_ids`` or ``tags`` is required (with none, the listing is
+        empty):
 
         - ``uri`` -- jobs that consumed **or** produced the artifact, in any
           spelling. The drill-down for a graph node's ``run_count``:
@@ -351,6 +353,11 @@ class DBLineageService(LineageService):
         - ``job_id`` -- that one execution.
         - ``job_ids`` -- those executions: the runs behind a graph node grouping
           jobs with the same inputs and outputs (its ``jobs_query``).
+        - ``tags`` -- only the jobs carrying every tag (``k=v``, or a bare ``k``),
+          matched on the rows' ``attributes.job.tags`` in SQL. Unlike
+          ``search_lineage_by_tags`` this covers every source the index holds, not
+          only granite.build's own jobs. Alone it is a table scan: no index serves
+          the JSON blob.
 
         Paged rather than capped, unlike the graph: a flat list has no shape to
         preserve, so a caller can walk the whole thing.
@@ -387,6 +394,8 @@ class DBLineageService(LineageService):
             recorded = {row.job_id for row in self._rows_of_jobs(sorted(wanted))}
             candidates = wanted & recorded
 
+        tags = [tag for tag in tags or [] if tag]
+        normalized = target = ""
         if uri:
             normalized = normalize_uri(uri)
             if not normalized:
@@ -394,9 +403,10 @@ class DBLineageService(LineageService):
             target = normalize_uri(output) if output else None
             if output and not target:
                 return empty
+        if uri or tags:
             if candidates is None:
                 total = self.storage.count_jobs_touching(
-                    normalized, self_loop, output=target, terminal=terminal
+                    normalized, self_loop, output=target, terminal=terminal, tags=tags
                 )
                 page = self.storage.get_job_ids_touching(
                     normalized,
@@ -405,10 +415,16 @@ class DBLineageService(LineageService):
                     self_loop,
                     output=target,
                     terminal=terminal,
+                    tags=tags,
                 )
                 return {**empty, "jobs": self._job_entries(page), "total": total}
             candidates = self.storage.filter_jobs_touching(
-                normalized, candidates, self_loop, output=target, terminal=terminal
+                normalized,
+                candidates,
+                self_loop,
+                output=target,
+                terminal=terminal,
+                tags=tags,
             )
 
         if candidates is None:
