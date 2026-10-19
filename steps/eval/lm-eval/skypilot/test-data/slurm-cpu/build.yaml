@@ -1,0 +1,45 @@
+granite.build:
+  name: skypilot-slurm-lm-eval-cpu-test
+  # eval/lm-eval on the local Docker SLURM cluster (via SkyPilot), CPU only.
+  #
+  # The step's example benchmark, aime25, on a 12 MB public test model with
+  # --limit 1 and a 16-token generation cap: a plumbing test, not a score. Measured
+  # locally at ~620 MB peak RSS, under the cluster's 1 GB nodes.
+  targets:
+    aime25:
+      environment_uri: space://environments/skypilot/slurm
+      inputs:
+        # The step's required input. Public, so the hfpull needs no token.
+        model:
+          uri: hf:///hf-internal-testing/tiny-random-gpt2
+      outputs:
+        # The lm_eval --output_path directory, pushed to a throwaway dataset. The
+        # test_ prefix is what scripts/rm_hf_repos.py cleans up.
+        results:
+          uri: hf://huggingface.co/datasets/ibm-research/test_lm-eval-results_{{ binding.path | short_hash }}
+      steps:
+        - step_uri: space://steps/eval/lm-eval
+          config:
+            # Fast completion detection (the skypilot monitor's default is 300s).
+            poll_interval_seconds: 5
+            lm_eval_config:
+              # Bare launcher node: the local cluster has no Pyxis, so it can't run
+              # a container image.
+              image: ""
+              tasks: ["aime25"]
+              # The template default, stated so expected_steps can pin it (only keys
+              # the build supplies are persisted) and so the CPU wheel is explicit.
+              torch_index_url: "https://download.pytorch.org/whl/cpu"
+              model_args:
+                dtype: float32
+              device: cpu
+              limit: 1
+              gen_kwargs:
+                max_gen_toks: 16
+            compute_config:
+              # The local nodes advertise exactly 2 CPUs; 3 fails with "Requested
+              # node configuration is not available".
+              num_cpus_per_node: 2
+              num_gpus_per_node: 0
+              # Advisory on SLURM (memory isn't tracked as consumable there).
+              total_memory_per_node: 1Gi
