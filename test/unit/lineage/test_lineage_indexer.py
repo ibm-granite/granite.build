@@ -79,15 +79,32 @@ def _run(run_id, created_at, state="finished", job_id="t1", outputs=("out",)):
     )
 
 
+def _indexed_runs():
+    """The W&B indexer's ``rows`` collaborator, read like the old sink: one
+    ``write_job`` call per run indexed, so a side effect on it fails that run."""
+    rows = MagicMock()
+
+    def index(job, **kwargs):
+        rows.write_job(job, **kwargs)
+        return True
+
+    rows.index_job_entry.side_effect = index
+    return rows
+
+
 def _indexer(runs):
+    """The W&B indexer, its API, and its ``rows`` (which is all it writes)."""
     api = MagicMock()
     api.runs.return_value = runs
+    rows = _indexed_runs()
     sink = MagicMock()
-    ix = idx.WandBLineageIndexer(sink=sink, api=api)
+    ix = idx.WandBLineageIndexer(sink=sink, api=api, rows=rows)
     # These tests exercise the scan itself from an empty checkpoint; the
     # standalone seed-from-latest rule has its own test.
     ix._seeds_when_standalone = False
-    return ix, api, sink
+    # Nothing goes to gb_lineage_job from W&B.
+    sink.write_job.side_effect = AssertionError("W&B runs are not copied")
+    return ix, api, rows
 
 
 def _checkpoint(storage, provider="wandb"):
@@ -1252,3 +1269,16 @@ def test_settle_grace_reads_the_environment(monkeypatch):
     assert idx._settle_grace_from_env() == 600.0
     monkeypatch.setenv("GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S", "nope")
     assert idx._settle_grace_from_env() == 360.0
+
+
+def test_wandb_indexer_writes_only_the_index_never_gb_lineage_job():
+    storage = _storage()
+    api = MagicMock()
+    api.runs.return_value = [_run("r1", D1, job_id="j1")]
+    sink, rows = MagicMock(), MagicMock()
+    ix = idx.WandBLineageIndexer(sink=sink, api=api, rows=rows)
+    ix._seeds_when_standalone = False
+    assert ix.scan_once(storage) == 1
+    rows.index_job_entry.assert_called_once()
+    assert rows.index_job_entry.call_args.kwargs["job_store"] == idx.JobStore.WANDB
+    assert not sink.method_calls

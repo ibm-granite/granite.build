@@ -214,8 +214,8 @@ def create_indexer(
     The returned object has ``start()``, ``stop()``, a ``stop_event`` to block on,
     and ``seed_if_absent()``.
 
-    ``sink`` records job entries into ``gb_lineage_job``; ``rows`` writes the index
-    the indexer owns. See :class:`JobLineageIndexer` for why they are separate.
+    ``sink`` builds a target's job entries (the ``gb_targets`` source); ``rows``
+    writes the index the indexer owns. See :class:`JobLineageIndexer`.
     """
     sink = sink or DBLineageStore()
     rows = rows or LineageRowIndexer()
@@ -358,9 +358,9 @@ class JobLineageIndexer:
     this subclass is for -- ``gb_targets``, ``gb_lineage_job`` or the W&B API --
     and index rows are *written* through ``self._rows``, which owns
     ``gb_lineage_index``. The index belongs to the indexer, not to any lineage
-    store: a store answers for its own source only. ``self._sink`` is still the
-    ``db`` store, used to record job entries (the W&B source reads runs and
-    records them as jobs), never to write the index.
+    store: a store answers for its own source only. ``self._sink`` is the ``db``
+    store, used only by the ``gb_targets`` source to build a target's job entries;
+    it never writes, and no source copies jobs into ``gb_lineage_job``.
     """
 
     PROVIDER: Optional[str] = None
@@ -1351,9 +1351,8 @@ def _tags_of(run: Any) -> Dict[str, str]:
 def wandb_run_to_job(run: Any) -> Optional[dict]:
     """Rebuild the job entry a W&B lineage run was recorded from.
 
-    The inverse of ``WandBLineageService.emit_event``, in the shape
-    ``DBLineageStore.write_job`` takes -- the same shape the admin-DB path builds,
-    so both sources decompose identically.
+    The inverse of ``WandBLineageService.emit_event``, in the job-entry shape the
+    admin-DB path builds, so both sources decompose identically.
 
     The namespace comes from ``config.job_namespace``, NOT from the run's
     entity/project the way ``_get_run_lineage`` fills it: the index splits it to
@@ -1527,24 +1526,18 @@ class WandBLineageIndexer(JobLineageIndexer):
         tags = _tags_of(job)
         build_id = tags.get("build_id", "")
         target_run_uuid = tags.get("target_id", "")
-        # Record the run as a job entry, then derive its index rows. The rows are
-        # written here, not by the store, and they are stamped WANDB: the run's
-        # full data lives in W&B, which is what a reader of the index follows to
-        # fetch it (see job_detail's per-store dispatch).
-        self._sink.write_job(
-            entry,
-            build_id=build_id,
-            target_run_uuid=target_run_uuid,
-            job_store=JobStore.WANDB,
-        )
+        # Only the index is written. W&B is the job store here: the rows are
+        # stamped WANDB and the job's detail is read back from W&B when asked for
+        # (see job_detail's per-store dispatch), so nothing is copied into
+        # gb_lineage_job, which is the db provider's store alone.
         self._rows.index_job_entry(
             entry,
             build_id=build_id,
             target_run_uuid=target_run_uuid,
             job_store=JobStore.WANDB,
         )
-        # True regardless: the run was recorded as a job even when it yielded no
-        # edges, so the scan must advance past it rather than retry it forever.
+        # True regardless: a run that yields no edges has nothing more to index,
+        # so the scan must advance past it rather than retry it forever.
         return True
 
     def _first_run(self, **kwargs: Any) -> Optional[Any]:
