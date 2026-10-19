@@ -11,8 +11,8 @@ plus the more-indented lines under it, e.g. `<in>:` with its `type:`/`accept:` o
 an emptied `required:` too (`inputs: {allow_unknown: true}`), because a bare
 `required:` is null, not an empty map. Working examples to copy from:
 `steps/distill/vllm-server/skypilot` (nested under a category, like a new step),
-`steps/dpk/skypilot` (public image, python `src/`, five clusters) and
-`steps/eval/skypilot` (custom image). Add the repo's Apache-2.0 header to every `.py`.
+`steps/data/dpk/skypilot` (public image, python `src/`, five clusters) and
+`steps/eval/eval-example/skypilot` (custom image). Add the repo's Apache-2.0 header to every `.py`.
 
 ## Makefile
 
@@ -24,7 +24,13 @@ an emptied `required:` too (`inputs: {allow_unknown: true}`), because a bare
 STEP_NAME := <name>
 
 # Custom image only. FIXME: the registry and namespace the image is pushed to.
+# `?=` so `make ... REGISTRY=quay.io/<org>` can still override it.
 REGISTRY ?= quay.io/FIXME
+
+# Only for a step that must never be published, such as an exemplar or template
+# (see steps/eval/eval-example). A new step is publishable by default, so normally
+# leave this out. `override` stops a command-line STEP_PUBLISHABLE=true re-enabling it.
+# override STEP_PUBLISHABLE := false
 
 # Only if the slurm cluster was selected, i.e. this file defines `test-setup` below.
 # It tells common.mk to drop its own no-op `test-setup`. Don't set it for kube alone
@@ -51,7 +57,7 @@ drop-pycache:
 	@find $(SRC_DIR) -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 ```
 
-A custom-image step also sets `REGISTRY := quay.io/<org>` before the `include`.
+`REGISTRY` and `STEP_PUBLISHABLE` must come before the `include`, as shown.
 
 ## step-template.yaml (SkyPilot)
 

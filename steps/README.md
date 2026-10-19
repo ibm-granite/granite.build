@@ -158,9 +158,9 @@ finishes with your next steps, in order:
 The build tests can't pass until `run.sh` prints the artifact marker (see
 [Emitting data from a step](#emitting-data-from-a-step-stdout-markers)).
 
-**Existing steps.** `byoc`, `dpk` and `eval` predate the category layout and sit one
-level up, at `steps/<name>/<env>/`. `steps/eval/` is still a step itself, so a new step
-in the `eval` category nests inside it until `eval` is moved under a name of its own.
+**Existing steps.** Most steps already sit under a category (`steps/data/dpk`,
+`steps/eval/eval-example`, the `steps/distill/*` steps). `byoc` and `bfcl-eval` predate
+the category layout and still sit one level up, at `steps/<name>/<env>/`.
 
 ## Layout of a step/environment directory
 
