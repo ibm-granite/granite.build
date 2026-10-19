@@ -31,9 +31,10 @@ provides everything. It is generated from the sources here by the shared Makefil
   torch build: a plumbing check, not a meaningful score. It sets `image: ""`: the local
   cluster has no Pyxis plugin, so it runs on the bare node, as byoc's slurm fixture
   does. Its `results` output goes to
-  a `test_`-prefixed Hugging Face dataset in the ibm-research org (cleaned up by
-  `scripts/rm_hf_repos.py`), so the queued hfpush needs an `HF_TOKEN` with write access
-  there; the nightly extended suite has one. It skips itself unless
+  a `test_`-prefixed Hugging Face dataset in `GBTEST_HF_PUSH_ORG` (default
+  ibm-research). `HfPushCleanupMixin` (`test/libgbtest/hfpush.py`) names it per run,
+  checks the push landed, and deletes it, so the queued hfpush needs an `HF_TOKEN`
+  that can write (and delete in) that org; the nightly extended suite has one. It skips itself unless
   `make slurm-setup` has brought the cluster up. Like other build tests it needs
   `GB_ENVIRONMENT=STANDALONE GBTEST_MODE=live` (which `make extended-tests` sets; the
   step's own `make test` doesn't, so the storage fixtures refuse to run):

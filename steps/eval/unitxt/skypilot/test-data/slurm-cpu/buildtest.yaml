@@ -12,8 +12,7 @@ target_expectations:
   # pull/push (unlike skypilot/aws), so both transfers are separate steps (the same
   # accounting as the standalone skypilot_slurm/1step fixture).
   #
-  # With the earlier env:// output this was 2 (verified on the local cluster); the
-  # hfpush is first exercised by the nightly suite, which has a write HF_TOKEN.
+  # Verified live on the local cluster in both test modes.
   - target_name: evaluate
     step_count: 3              # hfpull(model) + eval/unitxt + hfpush(results)
     input_artifact_count: 1    # model
