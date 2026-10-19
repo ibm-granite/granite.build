@@ -107,6 +107,10 @@ for `ibm-granite/granite-4.2-8b` is public and needs no credential.
 
 ## Run
 
+For testing the recipe, we are using an IBM BlueVela environment; to run
+elsewhere, see the comment on `ENVIRONMENT_URI` in
+[`parameters.yaml`](parameters.yaml).
+
 The commands below use the `public` space, which a standalone gbserver
 registers when started as in the top-level
 [Quick start (standalone)](../../../../README.md#quick-start-standalone):

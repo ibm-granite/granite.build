@@ -2,6 +2,10 @@
 # Override any of these with: gb build start ... --param KEY=VALUE
 
 # ── Environment ──────────────────────────────────────────────────────────────
+# For testing the recipe, we are using an IBM BlueVela environment. To run
+# elsewhere, point ENVIRONMENT_URI at another environment and adjust the
+# cluster-specific values with it (CLUSTER, QUEUE, ACCELERATORS and
+# EVAL_ACCELERATORS under Compute).
 ENVIRONMENT_URI: "space://environments/skypilot/lsf/ibm-bluevela"
 
 # Public container image both targets run in. Pinned (not :latest) so a run is
