@@ -8,7 +8,7 @@ Scores a model's tool calling with the Berkeley Function Calling Leaderboard har
 harness, vLLM, and this step's helper scripts are baked into a **custom image** built from
 [`Dockerfile`](Dockerfile), published to a registry, and referenced from the generated
 `step.yaml` via `image_id: "docker:${IMAGE_REF}"`. Structurally this is the same shape as
-[eval](../../eval/skypilot/README.md); see [steps/README.md](../../README.md) for the
+[eval](../../eval/eval-example/skypilot/README.md); see [steps/README.md](../../README.md) for the
 shared Makefile conventions.
 
 ## Why this step exists
@@ -26,7 +26,7 @@ Three differences from the legacy asset are deliberate, not oversights:
 
 | Legacy asset | Here | Why |
 |---|---|---|
-| `type: EVAL` | `type: custom` | There is no `EVAL` member in `gbcommon.types.stepconfig.StepType`; the values are `data_processing`, `data_generation`, `training`, `tuning`, `custom`. `type` is a free string, so `EVAL` neither errors nor validates — it is simply not a type. Follows [distill-eval](../../distill/eval/skypilot/step-template.yaml), which reasoned this through first. `steps/eval` still says `EVAL`; that is left alone here rather than changed under cover of an unrelated step. |
+| `type: EVAL` | `type: custom` | There is no `EVAL` member in `gbcommon.types.stepconfig.StepType`; the values are `data_processing`, `data_generation`, `training`, `tuning`, `custom`. `type` is a free string, so `EVAL` neither errors nor validates — it is simply not a type. Follows [distill-eval](../../distill/eval/skypilot/step-template.yaml), which reasoned this through first. `steps/eval/eval-example` still says `EVAL`; that is left alone here rather than changed under cover of an unrelated step. |
 | `outputs.optional.bfcl_results` | `outputs.required.bfcl_results` | The step exits 1 when the harness leaves no score file, so a successful run always has one. `optional` on an always-present output only lets a real failure complete green. |
 | `config.workload.cwd` / `hf_home` | `config.bfcl_config.hf_home` | `config.workload` is parsed as `StepConfigWorkloadSection` (`path`/`args`/`workspace_dir`/`output_dir`/`python_env`). Pydantic **ignores** unknown keys there, so both of those settings have never had any effect. |
 
@@ -51,7 +51,7 @@ Everything below the image line **is** verified: the unit tests pass, the templa
 `bash -n` accepts the `run` block, and the artifact contract is asserted. Treat the first
 `make image` as unproven work, not a formality.
 
-`REGISTRY` ships as the placeholder `quay.io/your-org`, matching `steps/eval` — `common.mk`
+`REGISTRY` ships as the placeholder `quay.io/your-org`, matching `steps/eval/eval-example` — `common.mk`
 makes it mandatory for image steps with no default, and `make publish-image` against the
 placeholder will fail auth. Build and push at a real registry, then render with the same
 value so `image_id` points at what you pushed:
@@ -80,7 +80,7 @@ Makefile: they are a property of a broken build host, not of this step, and `com
 
 - **The base must be Debian/Ubuntu.** SkyPilot's docker runtime runs `apt-get` *inside* the
   container during setup; on a non-apt base the task dies with rc 127 before the step's
-  `run` block is reached (documented in [eval's Dockerfile](../../eval/skypilot/Dockerfile)).
+  `run` block is reached (documented in [eval's Dockerfile](../../eval/eval-example/skypilot/Dockerfile)).
   `python:3.14-slim` is Debian, so this holds today — a switch to e.g. an Alpine or UBI base
   would break it.
 - **Not NGC.** The comment at the top of the Dockerfile records a real build in which an

@@ -15,7 +15,7 @@
 """Render tests for the `dpk` step's step-template.yaml.
 
 Cluster-agnostic, so this sits at the root of the step's ``test/`` dir (Mode 1
-only, like ``eval/skypilot/test/test_eval.py``) and is not copied by
+only, like ``eval/eval-example/skypilot/test/test_eval.py``) and is not copied by
 ``make publish-step``.
 
 The step's whole value is that a build names a DPK transform once and the step

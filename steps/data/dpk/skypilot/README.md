@@ -10,7 +10,7 @@ container image), installing the transform's dependencies with `uv` during `setu
 custom image is built or published for this step.
 
 It is the public-image counterpart of the custom-image
-[eval](../../../eval/skypilot/README.md) step, and is closely modelled on
+[eval](../../../eval/eval-example/skypilot/README.md) step, and is closely modelled on
 [byoc](../../../byoc/skypilot/README.md). It is *generated* from the sources in this directory
 by the shared Makefile conventions — see the framework overview:
 [steps/README.md](../../../README.md).
@@ -99,7 +99,7 @@ Two kinds of test live here, following the framework's split:
 
 **Cluster-agnostic unit tests** at the root of `test/` — these need no infrastructure and
 run everywhere. They are Mode-1 only (not copied by `publish-step`), the same placement as
-`eval/skypilot/test/test_eval.py`:
+`eval/eval-example/skypilot/test/test_eval.py`:
 
 - `test_dpk_step_render.py` — pins what the *template* computes: that `transform:` derives
   the right module and pip extra for a range of transforms, that `args` become the right

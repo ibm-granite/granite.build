@@ -1,6 +1,6 @@
-# eval step for the SkyPilot environment.
+# eval-example step (SkyPilot environment): an exemplar to copy when authoring a custom-image step.
 #
-# eval is a CUSTOM-IMAGE step: its evaluation code and dependencies are baked into
+# This step is a CUSTOM-IMAGE step: its evaluation code and dependencies are baked into
 # an image built from ./Dockerfile, published to $(REGISTRY), and referenced from
 # the generated step.yaml via image_id. common.mk detects the Dockerfile here and
 # enables the image / publish-image targets automatically.
@@ -8,7 +8,7 @@
 # Usage:
 #   make image          # build the image for $(PLATFORM) (default linux/amd64)
 #   make publish-image  # push to $(REGISTRY) (requires prior `podman login`)
-#   make space          # render a Space (space.yaml + steps/eval/step.yaml) into space/ (offline)
+#   make space          # render a Space (space.yaml + steps/eval/eval-example/step.yaml) into space/ (offline)
 #   make all            # image + publish-image + space (full pipeline)
 #   make test           # run the step's Python tests in test/
 #   make clean          # remove space/
@@ -17,7 +17,11 @@
 # Override the image coordinates as needed, e.g.:
 #   make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0
 
-STEP_NAME := eval
+STEP_NAME := eval-example
+# This step is an exemplar (a template for custom-image steps), not a released step,
+# so `make publish-step` is disabled. `override` keeps a command-line
+# STEP_PUBLISHABLE=true from re-enabling it.
+override STEP_PUBLISHABLE := false
 # PLACEHOLDER registry — replace `quay.io/your-org` with your own namespace
 # before publishing, or override per invocation:
 #   make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0
@@ -27,4 +31,4 @@ STEP_NAME := eval
 # IMAGE_TAG defaults to the git short SHA if not set.
 REGISTRY ?= quay.io/your-org
 
-include ../../common.mk
+include ../../../common.mk

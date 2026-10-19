@@ -10,7 +10,7 @@ user-defined command during `run` — no custom image is built or published for 
 
 This is the SkyPilot counterpart of the LSF `custom_code_lsf` and Kubernetes
 `custom_code` steps, and the public-image counterpart of the custom-image
-[eval](../../eval/skypilot/README.md) step. It is *generated* from the sources in this
+[eval](../../eval/eval-example/skypilot/README.md) step. It is *generated* from the sources in this
 directory by the shared Makefile conventions — see the framework overview:
 [steps/README.md](../../README.md).
 
