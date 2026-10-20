@@ -143,8 +143,10 @@ class SqliteStorageOverrides(BaseModel, Generic[BASE_ITEM_TYPE]):
             super().delete(uuids)  # type: ignore[misc]
 
     def update_fields(self, *args, **kwargs):
-        with self._db_file_lock:
-            return super().update_fields(*args, **kwargs)  # type: ignore[misc]
+        method = super().update_fields  # type: ignore[misc]
+        return _locked_per_attempt(
+            self, method, *args, retrying=method.retry.wraps, **kwargs
+        )
 
     def update(
         self,
@@ -248,19 +250,21 @@ class SqliteTargetRunStorage(SqliteStorageOverrides, SQLTargetRunStorage):
         )
 
 
-def _locked_per_attempt(storage, method, *args, **kwargs):
-    """Call a ``@retry_read`` SQL method holding the file lock per attempt only.
+def _locked_per_attempt(storage, method, *args, retrying=None, **kwargs):
+    """Call a retried SQL method holding the file lock per attempt only.
 
     Locking around the decorated method would hold the process-wide lock through
     every backoff (minutes), stalling all other SQLite reads and writes; this
     retries the undecorated function, releasing the lock between attempts.
+    ``retrying`` is the retry decorator to apply, ``retry_read`` by default; a
+    method with its own policy passes that (``method.retry.wraps``).
     """
     inner = getattr(method, "__wrapped__", None)
     if inner is None:
         with storage._db_file_lock:  # pylint: disable=protected-access
             return method(*args, **kwargs)
 
-    @retry_read
+    @(retrying or retry_read)
     def attempt():
         with storage._db_file_lock:  # pylint: disable=protected-access
             return inner(storage, *args, **kwargs)

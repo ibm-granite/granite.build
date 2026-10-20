@@ -175,3 +175,50 @@ def test_a_deterministic_read_error_is_not_retried():
     with pytest.raises(OperationalError):
         read()
     assert len(calls) == 1
+
+
+def test_update_fields_releases_the_lock_between_retry_attempts(monkeypatch):
+    """Every SQLite storage's update_fields: no lock held through a backoff."""
+    import threading
+
+    from filelock import Timeout
+
+    from gbserver.storage.stored_build import StoredBuild
+
+    builds = SqliteStorageFactory().create_build_storage(
+        table_name=f"t_lockupd_{uuid_module.uuid4().hex[:8]}"
+    )
+    try:
+        uuid = builds.add(StoredBuild(name="b", space_name="s", source_uri="file://b", username="u"))
+        lock = builds._db_file_lock  # pylint: disable=protected-access
+        free_during_backoff = []
+
+        def probe_sleep(_seconds):
+            def take():
+                try:
+                    lock.acquire(timeout=1)
+                except Timeout:
+                    free_during_backoff.append(False)
+                    return
+                free_during_backoff.append(True)
+                lock.release()
+
+            thread = threading.Thread(target=take)
+            thread.start()
+            thread.join()
+
+        monkeypatch.setattr("tenacity.nap.time.sleep", probe_sleep)
+        real = type(builds)._get_session_without_retry
+        failures = iter([OperationalError("UPDATE", {}, Exception("database is locked"))])
+
+        def flaky(self):
+            failure = next(failures, None)
+            if failure is not None:
+                raise failure
+            return real(self)
+
+        monkeypatch.setattr(type(builds), "_get_session_without_retry", flaky)
+        assert builds.update_fields(uuid, {"name": "renamed"}).name == "renamed"
+        assert free_during_backoff == [True]
+    finally:
+        builds.delete_table()
