@@ -208,6 +208,19 @@ export function Step2Configure({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allConfigs, selectedAlgorithm, selectedGoal])
 
+  // The edit/create flags are wizard state, but the forms they open live here and
+  // are lost when this step unmounts on Back or the step indicator. A returning
+  // step then rendered an empty panel that Save and Confirm could not leave, with
+  // Next gated off on the flag. Leave both modes as the forms go.
+  useEffect(
+    () => () => {
+      setIsEditingConfig(false)
+      setIsCreatingConfig(false)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  )
+
   async function enterEditMode() {
     if (!selectedConfig) return
     if (isCreatingConfig) cancelCreateMode()
