@@ -244,7 +244,7 @@ To author a nested step, the only thing that changes is the Makefile's `include`
 depth — it must point at `steps/common.mk` from wherever the step dir lives:
 
 ```make
-STEP_NAME := foo                 # slash-free leaf (feeds IMAGE_NAME / SPACE_NAME)
+STEP_NAME := foo                 # slash-free leaf (feeds IMAGE_NAME)
 include ../../../common.mk       # one ../ deeper than a flat step's ../../common.mk
 ```
 
@@ -350,6 +350,11 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   and a *second* `sky launch` in the same pytest process then fails during provisioning
   with `OSError: [Errno 9] Bad file descriptor`. A single-launch test survives by luck, so
   the failure appears only in multi-target fixtures and looks intermittent.
+  pytest doesn't load the repo's `test/conftest.py` for tests under `steps/`, so
+  `make test` sets two variables the repo suites get from there, each only if you
+  haven't set it: `GB_ENVIRONMENT=STANDALONE` (unset, gbserver defaults to PROD and the
+  build-test base refuses to run) and `GBTEST_STANDALONE_ENVIRONMENT=STAGING` (sends an
+  `hf://` push to the staging resource group). Set either yourself to override it.
 * **`test-setup`** — optional per-step hook that stands up the infrastructure a
   step's tests need (e.g. a local Docker SLURM cluster). It is a **separate
   target, deliberately not a prerequisite of `test`**, so the (often slow) infra
@@ -368,7 +373,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 
 | Variable          | Default                                   | Meaning                          |
 |-------------------|-------------------------------------------|----------------------------------|
-| `STEP_NAME`       | *(set by each step's Makefile)*           | logical step name; the **slash-free leaf** (feeds `IMAGE_NAME`/`SPACE_NAME`, which can't contain `/`) |
+| `STEP_NAME`       | *(set by each step's Makefile)*           | logical step name; the **slash-free leaf** (feeds `IMAGE_NAME`, which can't contain `/`) |
 | `STEP_PATH`       | *(auto-derived)* the step's dir relative to the enclosing `steps/`, minus the `<env>` segment | the step's **identity path**; drives the publish/test/space locations and the `space://steps/<path>` URI. For a flat step (`steps/<name>/<env>`) it equals `STEP_NAME`; for a nested step (`steps/<a>/<b>/<env>`) it is `<a>/<b>`. Structural (from `CURDIR` + include depth) — authors never set it |
 | `DOCKER`          | `podman`                                  | container tool                   |
 | `DOCKERFILE`      | `Dockerfile`                              | its presence enables image build/push |
@@ -377,7 +382,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `IMAGE_TAG`       | git short SHA, else `latest`              | image tag                        |
 | `IMAGE_REF`       | `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)`   | full image reference (derived)   |
 | `SPACE_DIR`       | `space`                                   | generated Space directory name   |
-| `SPACE_NAME`      | `$(STEP_NAME)`                            | `name:` in the generated `space.yaml` |
+| `SPACE_NAME`      | `public`                                  | `name:` in the generated `space.yaml`. Matches the shared `configurations/spaces/local`, because an `hf://` push derives its HF resource group from the space name (`gbspace-<space>`); a step-named space would look for a group that doesn't exist |
 | `SPACE_BASE_URI`  | relative `file://` to `configurations/assets` (resolved against the space.yaml's dir) | base_uri chained by the generated Space |
 | `DEFAULT_ENVIRONMENT` | *(empty)*                             | if set, written as `variables.DEFAULT_ENVIRONMENT` in `space.yaml` |
 | `TEST_DIR`        | `test`                                    | dir of Python tests run by `make test` |

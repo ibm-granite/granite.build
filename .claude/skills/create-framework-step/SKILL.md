@@ -185,6 +185,10 @@ End with this report. Build the placeholder lines from `grep -rn FIXME steps/<pa
       make -C steps/<path>/<env> test                   # build tests (custom image: builds it first)
       ```
 
+      `make test` sets `GB_ENVIRONMENT=STANDALONE` and
+      `GBTEST_STANDALONE_ENVIRONMENT=STAGING` unless you set them, so `hf://` pushes go
+      to the staging group (see steps/README.md, "`test`").
+
       Then calibrate each `step_count` marked `CALIBRATE` from the first green run, and
       format the test files (`isort --profile black`, `black`; `mypy` on any Python in
       `src/`).

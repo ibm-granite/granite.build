@@ -138,8 +138,12 @@ endif
 # steps/$(STEP_PATH)/step.yaml and the bundled src/. Overridable on the command
 # line or in the including Makefile.
 SPACE_DIR  ?= space
-# `name:` written into the generated space.yaml. Defaults to the step name.
-SPACE_NAME ?= $(STEP_NAME)
+# `name:` written into the generated space.yaml. Defaults to `public`, the name of
+# the shared configurations/spaces/local that Mode-2 tests resolve through, because
+# an hf:// push derives its HF Enterprise resource group from the space name
+# (gbspace-<space>[-<env>]): a space named after the step would look for a
+# gbspace-<step> group that does not exist. Override it to push to another group.
+SPACE_NAME ?= public
 # When non-empty, a variables.DEFAULT_ENVIRONMENT entry is written into the
 # generated space.yaml (e.g. DEFAULT_ENVIRONMENT=skypilot/slurm). Empty by
 # default — builds that set environment_uri explicitly do not need it.
@@ -662,6 +666,15 @@ endef
 # virtualenv ($(VENV_DIR)). This recipe fails fast with a pointer to `make venv`
 # if that venv is absent, then activates it (sourced in the same shell as pytest,
 # since each recipe line is its own shell) before running the tests.
+#
+# pytest does not load the repo's test/conftest.py for tests under steps/, so two
+# variables the repo suites get from there (or from their Makefile targets) are
+# defaulted here, each only when the caller hasn't set it:
+#   * GB_ENVIRONMENT=STANDALONE: unset, gbserver defaults to PROD and the build-test
+#     base refuses to run ("Refusing to run storage tests with GB_ENVIRONMENT=PROD").
+#   * GBTEST_STANDALONE_ENVIRONMENT=STAGING: sends a STANDALONE hf:// push to the
+#     staging resource group, as test/conftest.py does, not the production one.
+# GBTEST_MODE is left alone: libgbtest already defaults it to live.
 test: space image
 	@if [ ! -d "$(TEST_DIR)" ] || [ -z "$$(ls -A $(TEST_DIR) 2>/dev/null)" ]; then \
 		echo "[$(STEP_NAME)] no tests in $(TEST_DIR)/; nothing to run."; \
@@ -674,6 +687,9 @@ test: space image
 	fi; \
 	echo "[$(STEP_NAME)] activating venv $(VENV_DIR)"; \
 	. "$(VENV_DIR)/bin/activate"; \
+	export GB_ENVIRONMENT="$${GB_ENVIRONMENT:-STANDALONE}"; \
+	export GBTEST_STANDALONE_ENVIRONMENT="$${GBTEST_STANDALONE_ENVIRONMENT:-STAGING}"; \
+	echo "[$(STEP_NAME)] GB_ENVIRONMENT=$$GB_ENVIRONMENT GBTEST_STANDALONE_ENVIRONMENT=$$GBTEST_STANDALONE_ENVIRONMENT"; \
 	PYTHONPATH="$(SRC_DIR)$${PYTHONPATH:+:$$PYTHONPATH}" $(PYTHON) -m pytest $(PYTEST_CAPTURE) $(TEST_DIR)
 
 # ---- Optional pre-test setup hook ------------------------------------------
