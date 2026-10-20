@@ -43,10 +43,10 @@ COPY src/ ./src/
 COPY test/ ./test/
 COPY configurations/ ./configurations/
 COPY k8s/ ./k8s/
-# PIP_CONSTRAINT pins the AWS SDK cluster (boto3/botocore/awscli/aiobotocore) to
-# avoid multi-hour pip resolver backtracking. Applied to every pip invocation in
-# this stage. See constraints.txt for details.
+# Pins the AWS SDK cluster to avoid multi-hour resolver backtracking.
 ENV PIP_CONSTRAINT=/app/constraints.txt
+# The base image's pip 24.2 can't resolve uvicorn against the SkyPilot git dep's <0.36 cap.
+RUN pip install --upgrade "pip>=26.2"
 # --timeout/--retries harden large-wheel downloads (pyarrow, torch, …) against pip's
 # 15s socket timeout tripping a ReadTimeoutError mid-download.
 RUN pip install --upgrade --timeout 120 --retries 5 -e ".[all]"
