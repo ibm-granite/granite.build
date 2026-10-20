@@ -22,12 +22,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from gbserver.api.build_files_paths import authorize_build_read_access
-from gbserver.api.utils import (
-    confirm_can_add_to_space,
-    has_space_member_access,
-    is_super_admin,
-)
-from gbserver.lineage.attributes import JOB, JOB_SUBMITTED_BY
+from gbserver.api.utils import has_space_member_access, is_super_admin
 from gbserver.lineage.openlineage_models import LineageEvent as OpenLineageEvent
 from gbserver.lineage.openlineage_models import (
     LineageGraphResponse,
@@ -239,90 +234,20 @@ def _get_index_service():
 
 
 @lineage_api.post("/", tags=["lineage store"])
-def ingest_lineage_event(request: Request, event: OpenLineageEvent):
+def ingest_lineage_event(event: OpenLineageEvent):
     """Write one OpenLineage event to the configured lineage store.
 
-    For external emitters: an event need not belong to any build, and its
-    namespace need not be a granite.build space. Every caller is authenticated
-    (``AuthMiddleware``); on top of that:
-
-    - **Attribution.** The caller's login is stored as the job's ``submitted_by``,
-      set here and never taken from the event.
-    - **Namespaces of a space.** When ``job.namespace``'s first segment is an
-      existing space (``<space>`` or ``<space>/...``), the caller must be able to
-      add to that space, as themselves unless an admin -- the check new builds
-      and artifacts pass. Any other namespace is external and accepted, but its
-      ``owner`` may only be the caller (or empty) unless a super admin.
-    - **An existing job is not taken over.** If the index already holds the
-      event's ``job_id`` and any of its rows was not submitted by this caller (a
-      build's job, or another emitter's), the event is refused with 409. The check
-      reads the index, so it does not see a job the indexer has not reached yet.
-
-    Injected nodes and edges from an external namespace still appear in the
-    cross-space ``GET /lineage/graph``, attributed to their submitter;
-    ``GET /lineage/jobs/{id}`` checks access before returning owner, namespace or
-    tags.
+    **Known risk: no authorization.** Any caller who reaches the API can write an
+    event, and nothing ties its namespace, owner or tags to the caller. Under the
+    ``wandb`` provider the event becomes a W&B run, and the W&B lineage indexer
+    reads every run of the project, so an injected event shows up in the global
+    ``GET /lineage/graph`` trace (which is not filtered per space by design). It
+    cannot reach space-gated detail: ``GET /lineage/jobs/{id}`` checks the
+    caller's access before returning owner, namespace or tags.
     """
-    user = request.state.data["user"]
-    payload = event.model_dump()
-    run_facets = payload.setdefault("run", {}).setdefault("facets", {})
-    job_details = run_facets.get("job_details")
-    if not isinstance(job_details, dict):
-        job_details = {}
-        run_facets["job_details"] = job_details
-    _authorize_event_namespace(request, payload, job_details)
-    _refuse_job_takeover(str(job_details.get("job_id") or ""), user.login)
-    job_details[JOB_SUBMITTED_BY] = user.login
     service = _get_openlineage_service()
-    service.emit_event(payload)
+    service.emit_event(event.model_dump())
     return {"status": "accepted"}
-
-
-def _authorize_event_namespace(
-    request: Request, payload: dict, job_details: dict
-) -> None:
-    """Require add access to the space the namespace names, if any.
-
-    The space is the namespace's first segment, split exactly as the read side
-    (``space_name`` on rows and job records) splits it, so a bare ``<space>``
-    is gated like ``<space>/...``. In an external namespace the event may not
-    name another user as owner: nothing checks it there, and the owner is what
-    the read side attributes the job to.
-    """
-    namespace = str((payload.get("job") or {}).get("namespace") or "")
-    space_name = namespace.split("/", 1)[0] if namespace else ""
-    login = request.state.data["user"].login
-    owner = str(job_details.get("owner") or "")
-    if space_name and get_admin_storage().space_storage.get_by_name(space_name):
-        confirm_can_add_to_space(
-            request, username_on_target=owner or login, space_name=space_name
-        )
-        return
-    if owner and owner != login and not is_super_admin(request):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="An event outside a space can only name its submitter as owner",
-        )
-
-
-def _refuse_job_takeover(job_id: str, login: str) -> None:
-    """409 when the index already holds ``job_id`` with rows not from ``login``."""
-    if not job_id:
-        return
-    rows = get_admin_storage().lineage_row_storage.get_rows_by_job(job_id)
-    others = [
-        row
-        for row in rows
-        if ((row.attributes or {}).get(JOB) or {}).get(JOB_SUBMITTED_BY) != login
-    ]
-    if others:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Job {job_id} is already recorded by another source; emit under a "
-                "job_id of your own"
-            ),
-        )
 
 
 @lineage_api.post("/search", tags=["lineage store"], deprecated=True)
@@ -593,14 +518,13 @@ def list_lineage_jobs(
     output: Optional[str] = None,
     terminal: Optional[Literal["input", "output"]] = None,
     job_ids: Annotated[Optional[list[str]], Query()] = None,
-    tag: Annotated[Optional[list[str]], Query()] = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> LineageJobsResponse:
     """List the job executions matching every given filter, paged.
 
-    Filters AND together. ``uri``, ``job_id``, ``job_ids`` or ``tag`` is required -- the
-    route answers 422 otherwise: an unfiltered listing would aggregate the whole index.
+    Filters AND together. ``uri``, ``job_id`` or ``job_ids`` is required -- the route answers
+    422 otherwise: an unfiltered listing would aggregate the whole index.
 
     - ``uri`` -- jobs that consumed or produced the artifact. The drill-down for a
       graph node's ``run_count``: the graph collapses an artifact's in-place
@@ -616,17 +540,12 @@ def list_lineage_jobs(
     - ``terminal`` (with ``uri``) -- ``input``: only the jobs that wrote ``uri`` with
       no recorded input; ``output``: only those that read it with no recorded
       output. The runs behind a grouped node with one empty side.
-    - ``tag`` (optional, repeated) -- only the jobs carrying every given tag, ``k=v``
-      or a bare ``k`` (which matches only a bare tag, not any value of ``k``).
-      Combines with every filter above, or stands alone. It is matched on the
-      index rows, so it covers every lineage source, not only granite.build's
-      jobs. Alone it scans the index: nothing indexes the tags. The entries still
-      leave the tags out; filtering by a tag reveals only that a job carries it.
 
     Each entry carries only the global fields (``job_id``, ``source_system``,
     ``status``, ``started_at``, ``inputs``, ``outputs`` and the trimmed ``job``
     group; see ``db_responses.GLOBAL_JOB_FIELDS``): owner, namespace, tags and origin
-    ids are returned by ``GET /lineage/jobs/{id}`` behind the space check.
+    ids are returned by ``GET /lineage/jobs/{id}`` behind the space check. A tag
+    search is ``POST /lineage/search``.
 
     ``limit`` is ``1..1000``, ``offset`` ``>= 0`` and ``job_ids`` at most 1000 ids
     -- the cap ``LineageQueryRequest`` applies to the graph (422 otherwise). A storage
@@ -642,11 +561,10 @@ def list_lineage_jobs(
     by the same decision as the graph -- see :func:`query_lineage_graph` for why a
     lineage answer is not filtered per space, and what that costs.
     """
-    tags = [t for t in tag or [] if t]
-    if not uri and not job_id and not job_ids and not tags:
+    if not uri and not job_id and not job_ids:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="One of 'uri', 'job_id', 'job_ids' or 'tag' is required",
+            detail="One of 'uri', 'job_id' or 'job_ids' is required",
         )
     if job_ids and len(job_ids) > _MAX_JOB_IDS:
         raise HTTPException(
@@ -665,7 +583,6 @@ def list_lineage_jobs(
             self_loop=self_loop,
             output=output,
             terminal=terminal,
-            tags=tags,
         )
     except ValueError as e:
         raise HTTPException(

@@ -75,12 +75,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lineage indexer pages successful targets by keyset instead of scanning the table. On
   Postgres the index is built `CONCURRENTLY`, one process at a time. Index-only: no row
   is rewritten.
-- **`POST /lineage/` authorization (#470).** For external emitters, whose events need
-  not belong to a build: the caller's login is stored as the job's `submitted_by`
-  (the event cannot set it); an event whose `job.namespace` starts with an existing
-  space requires the caller to be able to add to that space, as themselves unless an
-  admin (other namespaces are external and accepted); and a `job_id` the index
-  already holds from another source (a build, another emitter) is refused with 409.
 - **W&B lineage indexer (#470).** A W&B lineage run still `running` no longer stops
   indexing: the checkpoint waits behind it (up to 6 h, then it is indexed as it is),
   while later runs are indexed at once and recorded as `done_ahead` in the checkpoint

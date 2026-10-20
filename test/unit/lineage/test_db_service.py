@@ -31,12 +31,7 @@ from gbserver.lineage.openlineage_service import (
     LineageServiceFactory,
     NoopLineageService,
 )
-from gbserver.storage.lineage_row_storage import (
-    GroupedEdge,
-    endpoint_pair,
-    row_has_tags,
-    tag_pairs,
-)
+from gbserver.storage.lineage_row_storage import GroupedEdge, endpoint_pair
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 
 # Endpoints are normalized URIs: the node's identity and what a request names are
@@ -138,23 +133,19 @@ class FakeStorage:
         return [r for r in self.rows if r.job_id in set(job_ids)]
 
     def _touching(
-        self, uri: str, self_loop: bool = False, output=None, terminal=None, tags=None
+        self, uri: str, self_loop: bool = False, output=None, terminal=None
     ) -> set:
         if self.fail:
             raise RuntimeError("storage is down")
-        pairs = tag_pairs(tags or [])
-        rows = [r for r in self.rows if row_has_tags(r, pairs)]
-        if not uri:
-            return {r.job_id for r in rows} if tags else set()
         pair = endpoint_pair(uri, self_loop, output, terminal)
         if pair:
-            return {r.job_id for r in rows if (r.input, r.output) == pair}
-        return {r.job_id for r in rows if uri in (r.input, r.output)}
+            return {r.job_id for r in self.rows if uri and (r.input, r.output) == pair}
+        return {r.job_id for r in self.rows if uri and uri in (r.input, r.output)}
 
     def count_jobs_touching(
-        self, uri: str, self_loop: bool = False, output=None, terminal=None, tags=None
+        self, uri: str, self_loop: bool = False, output=None, terminal=None
     ) -> int:
-        return len(self._touching(uri, self_loop, output, terminal, tags))
+        return len(self._touching(uri, self_loop, output, terminal))
 
     def get_job_ids_touching(
         self,
@@ -164,22 +155,15 @@ class FakeStorage:
         self_loop: bool = False,
         output=None,
         terminal=None,
-        tags=None,
     ) -> list:
-        return sorted(self._touching(uri, self_loop, output, terminal, tags))[
+        return sorted(self._touching(uri, self_loop, output, terminal))[
             offset : offset + limit
         ]
 
     def filter_jobs_touching(
-        self,
-        uri: str,
-        job_ids,
-        self_loop: bool = False,
-        output=None,
-        terminal=None,
-        tags=None,
+        self, uri: str, job_ids, self_loop: bool = False, output=None, terminal=None
     ) -> set:
-        return self._touching(uri, self_loop, output, terminal, tags) & set(job_ids)
+        return self._touching(uri, self_loop, output, terminal) & set(job_ids)
 
     # No get_rows_by_build: a build is not a column. A build-seeded graph resolves
     # its artifacts through gb_targets and seeds the ordinary walk with their URIs.
@@ -700,35 +684,6 @@ class TestListJobs:
         svc = service(row("J1", A, B), fail=True)
         with pytest.raises(Exception):
             svc.list_jobs(uri=A)
-
-    def test_tags_alone_list_the_jobs_carrying_every_one(self):
-        nlp = {"job": {"tags": {"team": "nlp", "nightly": ""}}}
-        svc = service(
-            row("J1", A, B, attributes=nlp),
-            row("J2", B, C, attributes={"job": {"tags": {"team": "nlp"}}}),
-            row("J3", A, C, attributes={"job": {"tags": {"team": "vision"}}}),
-        )
-        result = svc.list_jobs(tags=["team=nlp"])
-        assert [j["job_id"] for j in result["jobs"]] == ["J1", "J2"]
-        assert result["total"] == 2
-        assert svc.list_jobs(tags=["team=nlp", "nightly"])["total"] == 1
-
-    def test_a_bare_tag_does_not_match_any_value_of_its_key(self):
-        svc = service(row("J1", A, B, attributes={"job": {"tags": {"team": "nlp"}}}))
-        assert svc.list_jobs(tags=["team"])["total"] == 0
-
-    def test_tags_narrow_the_other_filters(self):
-        tagged = {"job": {"tags": {"team": "nlp"}}}
-        svc = service(
-            row("J1", A, B, attributes=tagged),
-            row("J2", A, B),
-            row("J3", B, C, attributes=tagged),
-        )
-        assert [
-            j["job_id"] for j in svc.list_jobs(uri=A, tags=["team=nlp"])["jobs"]
-        ] == ["J1"]
-        assert svc.list_jobs(job_ids=["J2", "J3"], tags=["team=nlp"])["total"] == 1
-        assert svc.list_jobs(job_id="J2", tags=["team=nlp"])["total"] == 0
 
 
 class TestTagSearch:
