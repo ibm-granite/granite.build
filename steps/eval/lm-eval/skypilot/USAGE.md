@@ -102,17 +102,23 @@ its default size for one GPU, 4 CPUs and 16 GB of host RAM on SkyPilot SLURM. Th
 enough for short generations, but long ones (reasoning models, `max_gen_toks` in the
 thousands) on the `hf` backend can exhaust host RAM while the GPU still has room. The
 job is then OOM-killed. Ask for more alongside the accelerator, e.g. `cpus: 16` and
-`memory: 128` (GB).
+`memory: 64` (GB).
+
+The right size depends on the model and the task, so size it from a run: after each
+job, `sacct -j <job id> -o JobID,State,MaxRSS,ReqMem,Elapsed` shows the peak host RAM of
+each job step (`OUT_OF_MEMORY` if it hit the limit). For example, a 3B model on aime25
+with 16384-token answers peaked at about 28 GB.
 
 ## Long generations (reasoning tasks such as aime25)
 
 - **Token budget:** aime25's own default is 32768 generated tokens. Reasoning models
   often need 10k or more to reach a final `\boxed{}` answer; at 2048 every answer is cut
   off and scores 0. 16384 is a reasonable compromise.
-- **Time:** the `hf` backend generates one sequence at about 15 tokens/s for a 3B model
-  on one H200 at batch 1, so a 16k-token answer takes roughly 18 minutes. Size `limit`
-  and `sbatch_options.time` together. For long runs, `backend: vllm` (with
-  `extras: ["vllm"]`) is much faster.
+- **Time:** on the `hf` backend at batch 1, generation slows as the answer grows. A 3B
+  model on one H200 averaged about 23 tokens/s over five aime25 answers of 3k to 16k
+  tokens (33 minutes in all), and about 45 tokens/s with 2k-token answers. Size `limit`
+  and `sbatch_options.time` together, from a short first run. For long runs,
+  `backend: vllm` (with `extras: ["vllm"]`) is usually much faster.
 - **`batch_size`:** prefer a fixed integer. `auto` probes by trying very large
   allocations, which takes minutes for long generations and logs many harmless
   `CUDACachingAllocator ... OOM` warnings before it settles.
@@ -127,15 +133,17 @@ Hugging Face cache for task datasets (`./.hf-cache`, as `HF_HOME`) and the resul
 ## Example build.yaml
 
 aime25 on one GPU, with results pushed to a Hugging Face dataset. This is the shape of
-the build that proved the step on one H200 on SkyPilot SLURM (5 problems, about 33
-minutes of generation):
+the build that proved the step on one H200 on a SkyPilot SLURM GPU cluster (5 problems,
+about 33 minutes of generation). Replace `<gpu-cluster>` with your environment;
+`space://environments/skypilot/slurm` on its own is the local Docker SLURM cluster,
+which has no GPUs.
 
 ```yaml
 granite.build:
   name: lm-eval-aime25
   targets:
     aime25:
-      environment_uri: space://environments/skypilot/slurm
+      environment_uri: space://environments/skypilot/slurm/<gpu-cluster>
       inputs:
         model:
           uri: hf:///ibm-granite/granite-4.2-3b
@@ -146,6 +154,10 @@ granite.build:
         - step_uri: space://steps/eval/lm-eval
           config:
             lm_eval_config:
+              # Bare launcher node, as in the proof run. The default python:3.12-slim
+              # image needs the Pyxis plugin on SLURM and hasn't been run on a GPU
+              # cluster yet.
+              image: ""
               tasks: ["aime25"]
               # "" = PyPI's default torch, whose CUDA runtime wheels ran on the node's
               # driver. Or a PyTorch index matching the driver, e.g. .../whl/cu128.
@@ -162,15 +174,16 @@ granite.build:
             launcher_config:
               resources:
                 accelerators: "H200:1"
-                # Host RAM: the default 16 GB was OOM-killed on long generations.
+                # Host RAM: the default 16 GB was OOM-killed on long generations. The
+                # proof run asked for 128 and peaked at about 28 (sacct MaxRSS).
                 cpus: 16
-                memory: 128
+                memory: 64
               sbatch_options:
                 time: "01:00:00"
 ```
 
-On a cluster without Pyxis, add `image: ""` to run on the bare node (the proof above ran
-that way).
+On a cluster with Pyxis, drop `image: ""` to run in the default `python:3.12-slim`
+container instead.
 
 ## Notes and limitations
 
