@@ -105,10 +105,9 @@ def _fetch_target(job_id: str, retrieve: Dict[str, Any], ctx: "_Context"):
         build_id = target.build_id or build_id
     build = storage.build_storage.get_by_uuid(build_id) if build_id else None
     if build is None:
+        # No id in the text: the caller has not been authorized for this build.
         raise JobDetailUnavailable(
-            f"Build {build_id} is not on this server"
-            if build_id
-            else "No build recorded"
+            "The build is not on this server" if build_id else "No build recorded"
         )
     try:
         ctx.authorize_build(build)
@@ -244,10 +243,11 @@ def fetch_job_detail(
     retrieve = dict((first.attributes or {}).get(RETRIEVE) or {})
     ctx = _Context(admin_storage, authorize_build, wandb_runs or _default_wandb_runs)
 
-    # Fail closed: the global fields only, until a store has been read with the
-    # caller's access checked. The full entry (owner, namespace, tags, origin ids)
-    # describes a granite.build job beyond a lineage trace, so it is added only
-    # once the detail was fetched authorized.
+    # Fail closed: the global fields only, unless the caller passes the space
+    # check. The full entry (owner, namespace, tags, origin ids) describes a job
+    # beyond a lineage trace; a caller who may read it gets it whether or not the
+    # store still has more (an import, a pruned build, a deleted W&B run).
+    entry_readable = authorize_entry is None or authorize_entry(entry)
     detail: Dict[str, Any] = {
         **global_job_entry(entry),
         "job_store": job_store.value,
@@ -255,11 +255,7 @@ def fetch_job_detail(
         "detail_error": None,
         "detail_denied": False,
     }
-    if (
-        job_store in _ENTRY_GATED_STORES
-        and authorize_entry is not None
-        and not authorize_entry(entry)
-    ):
+    if job_store in _ENTRY_GATED_STORES and not entry_readable:
         detail.update(
             detail_available=False,
             detail_error="Not authorized to read this job",
@@ -268,13 +264,13 @@ def fetch_job_detail(
         return detail
     try:
         fetched = _FETCHERS[job_store](entry["job_id"], retrieve, ctx)
-    except JobDetailUnavailable as e:
-        detail.update(
-            detail_available=False,
-            detail_error=str(e),
-            detail_denied=isinstance(e, JobDetailDenied),
-        )
+    except JobDetailDenied as e:
+        # The build's own check is the stricter one: nothing beyond the trace.
+        detail.update(detail_available=False, detail_error=str(e), detail_denied=True)
         return detail
+    except JobDetailUnavailable as e:
+        detail.update(detail_available=False, detail_error=str(e))
+        fetched = {}
     except Exception:  # pylint: disable=broad-except
         logger.exception(
             "Fetching detail of job %s from %s failed", entry["job_id"], job_store.value
@@ -284,7 +280,12 @@ def fetch_job_detail(
             detail_available=False,
             detail_error=f"Could not read {job_store.value}",
         )
-        return detail
-    detail.update(entry)
+        fetched = {}
+    if fetched or entry_readable:
+        # A fetch that returned passed its store's own check (a TARGETS build).
+        detail.update(entry)
+    else:
+        # Withheld, not missing: say so, or the client shows a bare N/A.
+        detail["detail_denied"] = True
     detail.update(fetched)
     return detail

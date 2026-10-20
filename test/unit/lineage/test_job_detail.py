@@ -248,8 +248,51 @@ def test_an_unauthorized_detail_returns_only_the_global_fields():
         assert key not in result
 
 
-def test_an_unavailable_store_returns_only_the_global_fields():
-    result = detail([index_row("j1", JobStore.OTHER)])
+def test_an_unavailable_store_returns_only_the_global_fields_to_an_outsider():
+    result = detail([index_row("j1", JobStore.OTHER)], authorize_entry=lambda e: False)
+    for key in _SPACE_GATED:
+        assert key not in result
+    # Withheld, not missing, so the drawer says so instead of a bare N/A.
+    assert result["detail_denied"] is True
+
+
+def test_an_imported_job_returns_the_full_entry_to_a_reader():
+    """An import has no store of its own: a reader still sees owner and namespace."""
+    result = detail([index_row("j1", JobStore.OTHER)], authorize_entry=lambda e: True)
+    assert result["detail_available"] is False
+    assert result["detail_denied"] is False
+    assert result["job_namespace"] == "space/build"
+    assert result["space_name"] == "space"
+
+
+def test_a_deleted_wandb_run_returns_the_full_entry_to_a_reader():
+    result = detail([index_row("j1", JobStore.WANDB)], authorize_entry=lambda e: True)
+    assert result["detail_available"] is False
+    assert result["detail_denied"] is False
+    assert result["job_namespace"] == "space/build"
+
+
+def test_a_pruned_build_returns_the_full_entry_to_a_reader():
+    result = detail(
+        [index_row("j1", JobStore.TARGETS, **TARGETS)], authorize_entry=lambda e: True
+    )
+    assert result["detail_available"] is False
+    assert result["job_namespace"] == "space/build"
+    # The build's id is not in the reason: it was never authorized.
+    assert "b1" not in result["detail_error"] and "not on this server" in result[
+        "detail_error"
+    ]
+
+
+def test_a_build_the_caller_may_not_read_withholds_the_entry():
+    """The build's own check wins over the space check on the entry."""
+    result = detail(
+        [index_row("j1", JobStore.TARGETS, **TARGETS)],
+        authorize=deny,
+        authorize_entry=lambda e: True,
+        **targets_storage(),
+    )
+    assert result["detail_denied"] is True
     for key in _SPACE_GATED:
         assert key not in result
 
