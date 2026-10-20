@@ -24,10 +24,20 @@ function formatAppliedMapping(mapping: Record<string, string> | undefined): stri
     .join(', ')
 }
 
-/** Retained versus original, flagged when the import hit the row cap. */
-function formatRowsKept(retained: number | undefined, original: number | undefined): string {
+/**
+ * Retained versus original, flagged when the import hit the row cap.
+ *
+ * `truncated` is the server's verdict and is needed on top of the row comparison:
+ * a cap that lands on a shard boundary leaves the two counts equal while whole
+ * shards went unread (see `truncationNotice`, which the wizard uses).
+ */
+function formatRowsKept(
+  retained: number | undefined,
+  original: number | undefined,
+  truncated?: boolean | null
+): string {
   if (typeof retained !== 'number' || typeof original !== 'number') return '—'
-  const capped = retained < original ? ' (capped)' : ''
+  const capped = retained < original || truncated === true ? ' (capped)' : ''
   return `${retained.toLocaleString()} of ${original.toLocaleString()}${capped}`
 }
 
@@ -119,14 +129,16 @@ export function SettingsDatasetView({ open, datasetId, onClose, scope = 'own' }:
                   'Train rows kept',
                   formatRowsKept(
                     dataset.hf_provenance?.train_retained_rows,
-                    dataset.hf_provenance?.train_original_rows
+                    dataset.hf_provenance?.train_original_rows,
+                    dataset.hf_provenance?.train_truncated
                   ),
                 ],
                 [
                   'Validation rows kept',
                   formatRowsKept(
                     dataset.hf_provenance?.validation_retained_rows,
-                    dataset.hf_provenance?.validation_original_rows
+                    dataset.hf_provenance?.validation_original_rows,
+                    dataset.hf_provenance?.validation_truncated
                   ),
                 ],
               ] as [string, string][]).map(([label, value]) => (

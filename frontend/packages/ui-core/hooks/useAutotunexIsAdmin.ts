@@ -12,12 +12,17 @@ import { getMe } from '../api/autotunex'
  * connection would fail the `scope=all` reads anyway. `retry: false` because
  * none of those heal on a retry, and callers that wait on `isPending` would sit
  * through it for nothing.
+ *
+ * `staleTime` is long because identity rarely changes within a session, and this
+ * mounts on every AutoTuneX screen and every linked build page: the app-wide 15s
+ * default refetched /auth/me on each mount and window focus after that.
  */
 export function useAutotunexIsAdmin(): { isAdmin: boolean; isPending: boolean } {
   const { data, isPending } = useQuery({
     queryKey: ['autotunex-me'],
     queryFn: getMe,
     retry: false,
+    staleTime: 10 * 60_000,
   })
   return { isAdmin: data?.is_admin ?? false, isPending }
 }

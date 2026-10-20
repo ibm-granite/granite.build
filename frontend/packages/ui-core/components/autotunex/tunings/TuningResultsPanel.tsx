@@ -39,10 +39,9 @@ export function TuningResultsPanel({ jobId, jobStatus }: Props) {
   const { isAdmin } = useAutotunexIsAdmin()
   const scope = isAdmin ? 'all' : 'own'
 
-  // Output assets only exist once the job has completed. Gating the fetch here
-  // also avoids hammering the endpoint with guaranteed 409s while a job runs —
-  // Carbon mounts every tab panel, so this renders even when Results isn't the
-  // active tab.
+  // Output assets only exist once the job has completed. Both callers mount this
+  // panel only for a completed job, so this is the one gate that remains: it keeps
+  // a stray mount from hitting the endpoint for a guaranteed 409.
   const enabled = jobStatus === 'completed'
 
   const { data, isLoading, isError, error } = useQuery({
@@ -64,17 +63,6 @@ export function TuningResultsPanel({ jobId, jobStatus }: Props) {
   const hfRepoUrl = hfUri ? getHuggingFaceUrl(hfUri) : null
   // "Files and versions". The URI names no revision; `main` is where gbserver pushes.
   const hfFilesUrl = hfRepoUrl ? `${hfRepoUrl}/tree/main` : null
-
-  if (!enabled) {
-    return (
-      <InlineNotification
-        kind="info"
-        title="No results yet"
-        subtitle="Output assets become available once the tuning completes."
-        hideCloseButton
-      />
-    )
-  }
 
   if (isLoading) {
     return <InlineLoading description="Loading results…" />
