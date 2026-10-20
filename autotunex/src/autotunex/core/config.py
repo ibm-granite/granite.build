@@ -176,7 +176,7 @@ class Settings(BaseSettings):
     # *new* connection pays a full TLS + caching_sha2_password handshake worth
     # seconds. SQLite's async engine uses a non-queue pool and ignores the sizing
     # knobs (see db/session.build_pool_kwargs), so these are inert for local dev
-    # and the test suite. See docs/superpowers/specs — the connection-pool tuning
+    # and the test suite. Settings: docs/operations/database.md. The pool tuning
     # was added after prod GET /configurations and /jobs latencies of 7-8s traced
     # to cold reconnects and pool contention with the reconcile loop.
     database_pool_size: int = Field(default=10, ge=1)
@@ -256,8 +256,8 @@ class Settings(BaseSettings):
     dataset_storage_dir: Path = Path("artifacts/datasets")
     """Root for persisted local dataset files; staging lives under ``.staging``.
 
-    Its relationship to ``artifact_dir`` is deliberately loose (see the design
-    spec's open item): today a sibling default under ``artifacts/``.
+    Its relationship to ``artifact_dir`` is deliberately loose and still an open
+    question: today a sibling default under ``artifacts/``.
     """
 
     dataset_upload_max_bytes: int = Field(default=5 * 1024**3, ge=1)
@@ -464,7 +464,7 @@ class Settings(BaseSettings):
     """Broker URL for the future JobRunner implementation, e.g. redis://...."""
 
     # --- Execution: job launch ---
-    # See docs/superpowers/specs/2026-08-06-job-launch-runner-design.md.
+    # See docs/operations/job-backends.md.
     job_backend: Literal["none", "llmb", "local"] = "none"
     """Which JobRunner to build. ``none`` → NoOpJobRunner (jobs stay pending, the
     default). ``llmb`` → InProcessJobRunner submitting granite.build builds via the
@@ -547,7 +547,7 @@ class Settings(BaseSettings):
     in-flight jobs never open N simultaneous connections."""
 
     # --- Execution: local & bash runners ---
-    # See docs/superpowers/specs/2026-08-11-local-and-bash-runners-design.md.
+    # See docs/operations/job-backends.md.
     gb_environment: str | None = Field(
         default=None,
         validation_alias=AliasChoices("gb_environment", "GB_ENVIRONMENT"),
@@ -578,7 +578,7 @@ class Settings(BaseSettings):
     """``BACKEND`` for the bash spec: ``mlx`` (Apple Silicon) or ``torch``."""
 
     # --- Execution: LSF / SkyPilot standalone runner ---
-    # See docs/superpowers/specs/2026-08-13-lsf-runner-design.md.
+    # See docs/operations/job-backends.md.
     lsf_cluster: str | None = None
     """SkyPilot/LSF cluster name (``launcher_config.resources.cluster``).
 
@@ -677,8 +677,8 @@ class Settings(BaseSettings):
 
     Two properties are load-bearing and enforced in ``api/deps.get_principal`` /
     ``SqlAlchemyUserRepository.provision``: a provisioned row is always
-    ``role='user'`` (never admin — see the design spec's no-privilege-escalation
-    rule), and creation is race-safe (a concurrent first request loses the
+    ``role='user'`` (never admin, so provisioning can never escalate privilege),
+    and creation is race-safe (a concurrent first request loses the
     ``UNIQUE(email)`` insert and re-reads the winner rather than erroring). Note
     this makes even a ``GET`` write to the database on a caller's first request —
     the deliberate cost of JIT, which is why it is opt-in. See CLAUDE.md open
@@ -710,9 +710,9 @@ class Settings(BaseSettings):
 
     Off by default, so a production deployment that forgets to configure a real
     provider fails fast at startup rather than silently serving every caller as
-    the standalone system owner (see the design spec). Set it only for a
-    deliberate single-tenant deployment that genuinely wants no authentication;
-    ``create_app`` logs a loud warning when it takes effect.
+    the standalone system owner. Set it only for a deliberate single-tenant
+    deployment that genuinely wants no authentication; ``create_app`` logs a
+    loud warning when it takes effect.
     """
 
     oidc_issuer: str | None = None

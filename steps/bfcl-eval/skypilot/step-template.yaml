@@ -22,8 +22,8 @@ version: 1.0.0
 # and distill-eval's rule is not to. The legacy asset above says EVAL; that is the one
 # thing from it deliberately NOT carried over.
 #
-# Note the branch is not uniform on this: steps/eval/skypilot also says EVAL. This step
-# follows distill-eval, which is the one that reasoned about it — steps/eval predates that
+# Note the branch is not uniform on this: steps/eval/eval-example/skypilot also says EVAL. This step
+# follows distill-eval, which is the one that reasoned about it — steps/eval/eval-example predates that
 # and is left alone here rather than changed under cover of an unrelated step.
 type: custom
 config:
@@ -97,7 +97,7 @@ environment_configs:
   Skypilot:
     # NO `subtypes` restriction, unlike the ported distill-* steps. Those read a checkout
     # from /proj and so are LSF-only; everything this step needs is inside its own image,
-    # and the GPU comes from the build's launcher_config. Same position as steps/eval.
+    # and the GPU comes from the build's launcher_config. Same position as steps/eval/eval-example.
     default_launcher: bfcl
     launchers:
       bfcl:

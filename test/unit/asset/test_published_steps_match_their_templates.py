@@ -82,7 +82,7 @@ def test_the_published_asset_matches_its_template(name, env, template, asset):
     asset_text = asset.read_text(encoding="utf-8")
 
     # publish-step substitutes ${IMAGE_REF} from the step's Makefile. No step that is
-    # both templated that way and published exists today (steps/eval uses it and is
+    # both templated that way and published exists today (steps/eval/eval-example uses it and is
     # not published), so the comparison is a plain one. If that changes, this test has
     # to learn the substitution rather than start failing for a legitimate difference
     # -- hence an explicit, self-explaining skip rather than silence.

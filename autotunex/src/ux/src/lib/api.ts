@@ -46,7 +46,7 @@ const pageQuery = (params: { limit: number; offset: number; q?: string }): strin
 /**
  * Thrown by client methods whose backend endpoint does not exist yet. The UI gates
  * these features off via the `capabilities` map, so this is a loud backstop for any
- * stray call rather than a silent no-op. See the integration spec §9 register.
+ * stray call rather than a silent no-op.
  */
 export class EndpointNotAvailableError extends Error {
 	constructor(feature: string) {
