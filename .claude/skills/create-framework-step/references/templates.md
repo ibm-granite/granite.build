@@ -9,7 +9,10 @@ plus the more-indented lines under it, e.g. `<in>:` with its `type:`/`accept:` o
 `keys`, `get`, ...), write its binding as `bindings["<in>"]` rather than
 `bindings.<in>` (see SKILL.md, "Normalizing the answers"). Drop it when they said `none`, and then drop
 an emptied `required:` too (`inputs: {allow_unknown: true}`), because a bare
-`required:` is null, not an empty map. Working examples to copy from:
+`required:` is null, not an empty map. With no inputs, also put a comment of at least
+four words directly above `inputs:` saying why, e.g. `# This step reads no inputs;
+recipes may bind any to order targets.`. test_step_inputs_declared.py requires it, and
+rejects one that starts with FIXME. Working examples to copy from:
 `steps/distill/vllm-server/skypilot` (nested under a category, like a new step),
 `steps/data/dpk/skypilot` (public image, python `src/`, five clusters) and
 `steps/eval/eval-example/skypilot` (custom image). Add the repo's Apache-2.0 header to every `.py`.

@@ -195,7 +195,28 @@ End with this report. Build the placeholder lines from `grep -rn FIXME steps/<pa
    9. **Publish** when no `FIXME` remains: `make -C steps/<path>/<env> publish-step`,
       then `check-published` (must print OK). For an IBM-space test, also publish the
       step into the assets repo that space's `base_uris` chain to.
+      **Then add the step to the `EXPECTED` inventory** in
+      `test/unit/asset/test_step_inputs_declared.py`, or PR CI fails
+      `test_the_inventory_matches_disk`. Give the user the exact line, built from the
+      published dir and the step's inputs (see "The `EXPECTED` line" below). Re-check it
+      if inputs were renamed, retyped or made optional since generation.
    10. **Commit** the source and the generated trees.
+
+### The `EXPECTED` line
+
+The key is the published dir relative to `configurations/assets`:
+`environments/<env>/steps/<category>/<name>` (`PUBLISH_STEP_DIR` in common.mk). For
+`<env>` = `skypilot`, use the file's `_SKY` prefix. The value is
+`(required, optional)`, the input names as Python sets; write `set()` for empty:
+
+```python
+    f"{_SKY}/data/text-norm": ({"docs", "vocab"}, set()),
+```
+
+All of the skeleton's inputs start out required. If the step has **no** inputs, the
+entry is `(set(), set())`, and the test also requires a comment of at least four words
+directly above `inputs:` saying why (not starting with `FIXME`). The skeleton writes
+one when the user answered `none`; if inputs were removed later, add it.
 
 ## Common mistakes
 
