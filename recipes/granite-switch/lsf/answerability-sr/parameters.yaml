@@ -96,8 +96,16 @@ LORA_DROPOUT: 0.05
 # back to ResponseOnlyCollator. That collator's default marker is Granite 4.1's
 # <|start_of_role|>assistant<|end_of_role|>, which never appears in a 4.2 row —
 # so this override is load-bearing, not cosmetic. Without it the loss mask is
-# wrong rather than absent.
-ASSISTANT_MARKER: "<|im_start|>assistant\\n"
+# wrong rather than absent. The empty <think></think> block is part of 4.2's
+# assistant opener, so the marker includes it: the collator masks through the
+# whole opener and supervision starts after </think>. This matches
+# shadow-residual's own 4.2 config (sr-qo-mlp-r32-c32-sharedkv-g42.yaml).
+ASSISTANT_MARKER: "<|im_start|>assistant\\n<think></think>"
+# Final context token before generation: the last token of ASSISTANT_MARKER.
+# </think> is a single added token on the 4.2 tokenizer, which is what the
+# trainer requires; it validates every row's supervised-region boundary against
+# it and fails loudly on a mismatch. Recorded into adapter_config.json.
+LAST_CONTEXT_TOKEN: "</think>"
 # End-of-completion marker, appended to any training row not already ending in
 # it, and recorded into adapter_config.json. <|im_end|> is 4.2's eos and is a
 # single added token, which is what the trainer requires of this field.

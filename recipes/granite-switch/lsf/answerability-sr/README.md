@@ -149,13 +149,18 @@ field. These are the ones whose *values* decide whether the run means anything:
   its default marker is Granite 4.1's
   `<|start_of_role|>assistant<|end_of_role|>`, which never occurs in a 4.2 row.
   Left at the default the loss mask is *wrong* rather than missing.
-  `<|im_start|>assistant\n` is the 4.2 equivalent.
+  `<|im_start|>assistant\n<think></think>` is the 4.2 equivalent: 4.2's
+  assistant opener carries an empty think block, so the marker includes it and
+  supervision starts after `</think>`. This matches shadow-residual's own 4.2
+  config (`sr-qo-mlp-r32-c32-sharedkv-g42.yaml`).
+- **`LAST_CONTEXT_TOKEN: </think>`**, the last token of `ASSISTANT_MARKER` and
+  so the final context token before generation. It must encode to exactly one
+  token, and `</think>` is a single added token on the 4.2 tokenizer.
+  `train.py` validates every row's supervised-region boundary against it and
+  fails loudly when it disagrees, so the marker and this token have to change
+  together.
 - **`LAST_TOKEN: <|im_end|>`**, 4.2's eos and a single added token, which is what
-  the trainer requires of this field. The sibling `last_context_token` is
-  deliberately **not** set: it must also encode to exactly one token, and on
-  ChatML the prompt ends `<|im_start|>assistant\n`, whose final token is not a
-  safe single-token constant. `train.py` validates the supervised-region
-  boundary against it and fails loudly when it disagrees.
+  the trainer requires of this field.
 
 `GRADIENT_CHECKPOINTING` is on by default because two hidden-state streams
 roughly double activation memory and this is an 8B model at 8192 context. SR's

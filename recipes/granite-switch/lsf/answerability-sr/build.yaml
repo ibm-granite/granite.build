@@ -124,6 +124,7 @@ granite.build:
                 '    cross_stream: $${CROSS_STREAM_RANK}'
                 '  alpha: $${LORA_ALPHA}'
                 '  dropout: $${LORA_DROPOUT}'
+                '  last_context_token: "$${LAST_CONTEXT_TOKEN}"'
                 '  last_token: "$${LAST_TOKEN}"'
                 'optimizer:'
                 '  name: adamw_torch'
