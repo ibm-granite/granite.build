@@ -63,11 +63,14 @@ ways to supply them:
     request that relies on the default (an environment without `allowed_contexts`, or a `kubectl` call
     without `--context`) fails, as it would without `kube_configs`. With several files on `KUBECONFIG`, both
     the first `current-context` set (which `kubectl` uses) and the last (which the Python client uses) must
-    name one of your own contexts; otherwise the placeholder is used. Switching to an environment's
-    context yourself (`kubectl config use-context <context>`) makes it your default, with that
-    environment's credentials. In that case an environment with
-    `allowed_contexts: all` also sees the placeholder, and SkyPilot spends about 5 seconds timing out on it
-    when probing contexts; pinning `allowed_contexts` avoids that.
+    name one of your own contexts; otherwise the placeholder is used. When it is, an environment with
+    `allowed_contexts: all` also sees it, and SkyPilot spends about 5 seconds timing out on it when probing
+    contexts (pinning `allowed_contexts` avoids that).
+  - **Don't make an environment's context your default.** `kubectl config use-context <context>` writes
+    it into your own kubeconfig as its `current-context`; from then on that environment's setup is
+    refused (`SkypilotConfigCollisionError`), because every tool would default to its credentials. Reach
+    it with `kubectl --context <context> ...` instead, and keep your `current-context` on one of your
+    own contexts.
   - **Nothing is removed while gbserver runs**, so every environment's builds can still poll and tear down.
 
   Limits:

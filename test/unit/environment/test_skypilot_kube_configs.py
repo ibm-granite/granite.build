@@ -535,6 +535,70 @@ class TestDefaultContextBothTools:
         else:
             assert _raw_managed(tmp_path)["current-context"] == sc._KUBE_PLACEHOLDER
 
+    def test_user_context_of_same_name_that_is_also_selected(self, tmp_path):
+        """Reported as a same-name clash, not as 'your kubeconfig lacks it'."""
+        user = yaml.safe_load(_kubeconfig("remote", server="https://mine:6443"))
+        (tmp_path / "user-kubeconfig").write_text(yaml.safe_dump(user))
+        with pytest.raises(
+            SkypilotConfigCollisionError, match="your own kubeconfig"
+        ) as e:
+            sc.merge_kube_configs(
+                [_entry()], {"remote-kc": _kubeconfig("remote")}, "envA", home=tmp_path
+            )
+        assert "current-context" not in str(e.value)
+
+    def test_use_context_on_a_managed_context_is_refused_on_remerge(
+        self, tmp_path, monkeypatch
+    ):
+        """`kubectl config use-context <managed>` makes the env's next setup fail.
+
+        The merged file supplies the context, so use-context succeeds and writes
+        it as the user's current-context; the next merge (a new gbserver process
+        or environment instance) must refuse rather than leave it the default.
+        """
+        import shutil
+        import subprocess
+
+        kubectl = shutil.which("kubectl")
+        if kubectl is None:
+            pytest.skip("kubectl not installed")
+        self._user(tmp_path, "mine")
+        secrets = {"remote-kc": _kubeconfig("remote")}
+        sc.merge_kube_configs([_entry()], secrets, "envA", home=tmp_path)
+        sc.activate_kubeconfig(home=tmp_path)
+        subprocess.run(
+            [kubectl, "config", "use-context", "remote"],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        user = yaml.safe_load((tmp_path / "user-kubeconfig").read_text())
+        assert user["current-context"] == "remote"  # written to the user's file
+        with pytest.raises(SkypilotConfigCollisionError, match="current-context"):
+            sc.merge_kube_configs([_entry()], secrets, "envA", home=tmp_path)
+
+    def test_default_reevaluated_after_release_and_remerge(self, tmp_path):
+        secrets = {"remote-kc": _kubeconfig("remote")}
+        self._user(tmp_path, "mine")
+        sc.merge_kube_configs([_entry()], secrets, "envA", home=tmp_path)
+        assert "current-context" not in _raw_managed(tmp_path)
+        # The user drops their default; the next merge adds the placeholder.
+        self._user(tmp_path, None)
+        sc.release_kube_configs("envA", home=tmp_path)
+        sc.merge_kube_configs([_entry()], secrets, "envA", home=tmp_path)
+        assert _raw_managed(tmp_path)["current-context"] == sc._KUBE_PLACEHOLDER
+        # And restores it: the placeholder goes away again.
+        self._user(tmp_path, "mine")
+        sc.merge_kube_configs(
+            [_entry()],
+            {"remote-kc": _kubeconfig("remote", token="t2")},
+            "envA",
+            home=tmp_path,
+        )
+        raw = _raw_managed(tmp_path)
+        assert "current-context" not in raw
+        assert sc._KUBE_PLACEHOLDER not in {c["name"] for c in raw["contexts"]}
+
     def test_placeholder_only_when_user_has_no_default(self, tmp_path):
         self._user(tmp_path, "mine")
         sc.merge_kube_configs(

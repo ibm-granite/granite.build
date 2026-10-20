@@ -1108,20 +1108,10 @@ def merge_kube_configs(
         user = _user_kubeconfig(dest)
         for parts in incoming:
             name = parts["context"]["name"]
-            # The user's own default must never resolve to a secret context.
-            # kubectl takes the first current-context set and nothing later on
-            # KUBECONFIG (our placeholder included) overrides it, so a user
-            # current-context naming one of our contexts is refused outright.
-            if name in (user.first_current, user.last_current):
-                raise SkypilotConfigCollisionError(
-                    f"kube context '{name}' from environment '{env_name}' is the "
-                    "current-context of your own kubeconfig, which does not define "
-                    "it, so it would become the default for every tool. Set a "
-                    "different current-context in your kubeconfig, or rename the "
-                    "context in the environment's kubeconfig secret."
-                )
             # A clash on any of the three names would let the user's entry (it
-            # comes first) or ours shadow the other in one of the tools.
+            # comes first) or ours shadow the other in one of the tools. Checked
+            # first: a user context of the same name is reported as such, even
+            # when the user has also selected it.
             for kind, item, theirs in (
                 ("kube context", parts["context"], user.contexts),
                 ("kube cluster", parts["cluster"], user.clusters),
@@ -1131,6 +1121,19 @@ def merge_kube_configs(
                     _raise_collision(
                         kind, item["name"], env_name, "your own kubeconfig", str(dest)
                     )
+            # The user's own default must never resolve to a secret context.
+            # kubectl takes the first current-context set and nothing later on
+            # KUBECONFIG (our placeholder included) overrides it, so a user
+            # current-context naming one of our contexts is refused outright,
+            # including one set by `kubectl config use-context <name>`.
+            if name in (user.first_current, user.last_current):
+                raise SkypilotConfigCollisionError(
+                    f"kube context '{name}' from environment '{env_name}' is the "
+                    "current-context of your own kubeconfig, so it would become "
+                    "the default for every tool. Set your current-context to one "
+                    "of your own contexts (and use --context to reach this one), "
+                    "or rename the context in the environment's kubeconfig secret."
+                )
             owner = owners.get(name)
             if owner is not None and owner != env_name:
                 existing = [
