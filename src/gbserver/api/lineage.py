@@ -427,10 +427,13 @@ def query_lineage_graph(
       ``target_uris``;
     - the edges.
 
-    Owner, namespace and tags are never on the graph. A single run node gets
-    ``metadata.gb_build_id`` and ``metadata.gb_target_run_uuid`` only when the
-    caller passes the space check ``GET /lineage/jobs/{id}`` applies to that job
-    (:func:`_can_read_job`) -- the ids a caller could read there anyway. Reading a
+    Owner, namespace and tags are never on the graph. ``job_id`` is a global
+    identifier: the graph needs one to name a run, and for a granite.build job it
+    is the target-run uuid, so neither is treated as secret. A single run node gets
+    ``metadata.gb_build_id`` only when the caller passes the space check
+    ``GET /lineage/jobs/{id}`` applies to that job (:func:`_can_read_job`) -- an id
+    the caller could read there anyway; ``metadata.gb_target_run_uuid`` rides along
+    with it for the dashboard's build drawer, not as a gated field. Reading a
     model, pulling a dataset or fetching a step config each needs its own
     authorized call, none of which route through here.
 

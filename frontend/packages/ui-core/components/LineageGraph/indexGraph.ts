@@ -131,13 +131,20 @@ export function visibleLevels(
 
 // A node already in `a` keeps its place and rendering, but takes what a later fetch
 // knows about it -- its index node (run_count, job_ids), stack count and build id --
-// so a grouped node does not stay frozen at the first copy seen.
+// so a grouped node does not stay frozen at the first copy seen. A truncated
+// expansion sees fewer of a group's runs, so the copy with more runs wins.
+function runCountOf(n: IndexElkNode | undefined): number {
+  const count = n?.indexNode?.metadata?.run_count
+  return typeof count === 'number' ? count : 0
+}
+
 export function mergeElkGraphs(a: ElkGraph, b: ElkGraph): ElkGraph {
   const later = new Map(b.nodes.map((n) => [n.id, n as IndexElkNode]))
   const linkKeys = new Set(a.links.map((l) => `${l.sources[0]}|${l.targets[0]}`))
   const nodes = a.nodes.map((n) => {
     const next = later.get(n.id)
     if (!next?.indexNode) return n
+    if (runCountOf(next) < runCountOf(n as IndexElkNode)) return n
     return {
       ...n,
       indexNode: next.indexNode,

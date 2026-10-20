@@ -24,15 +24,25 @@ is pinned here is that both sides accept exactly one set of values, and that
 anything else fails on both.
 """
 
+import importlib.util
+
 import pytest
 
 from gbserver.lineage import jobstats
 from gbserver.lineage.jobstats import (
+    LINEAGE_PROVIDER_WANDB,
     VALID_LINEAGE_PROVIDERS,
     UnknownLineageProvider,
     _resolve_lineage_provider,
 )
 from gbserver.lineage.openlineage_service import LineageServiceFactory
+
+# The wandb write store imports wandb; it is an optional dependency.
+_BUILDABLE_STORES = tuple(
+    p
+    for p in VALID_LINEAGE_PROVIDERS
+    if p != LINEAGE_PROVIDER_WANDB or importlib.util.find_spec("wandb") is not None
+)
 
 
 class TestDefaults:
@@ -128,7 +138,7 @@ class TestBothSidesAgree:
             assert LineageServiceFactory.create(provider) is not None
 
     def test_every_valid_provider_builds_a_write_store(self, monkeypatch):
-        for provider in VALID_LINEAGE_PROVIDERS:
+        for provider in _BUILDABLE_STORES:
             monkeypatch.setenv("GBSERVER_LINEAGE_PROVIDER", provider)
             jobstats.reset_lineage_store()
             try:

@@ -115,6 +115,14 @@ describe('mergeElkGraphs', () => {
     assert.equal(node.buildId, 'B1')
   })
 
+  it('keeps the larger group when a truncated expansion sees fewer of its runs', () => {
+    const full = { id: 'g', indexNode: { id: 'g', metadata: { run_count: 50 } }, stackCount: 50 }
+    const partial = { id: 'g', indexNode: { id: 'g', metadata: { run_count: 3 } }, stackCount: 3 }
+    const [node] = mergeElkGraphs({ nodes: [full], links: [] }, { nodes: [partial], links: [] }).nodes
+    assert.equal(node.indexNode.metadata.run_count, 50)
+    assert.equal(node.stackCount, 50)
+  })
+
   it('keeps a base node untouched when the later copy has no index data', () => {
     const base = { id: 'u', title: 'artifact', buildId: 'B0' }
     const [node] = mergeElkGraphs({ nodes: [base], links: [] }, { nodes: [{ id: 'u' }], links: [] }).nodes

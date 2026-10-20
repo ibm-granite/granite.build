@@ -168,6 +168,13 @@ tables `gb_targets` / `gb_steps`) plus the build archive's `build.yaml` for the 
 on still-running builds. This is why the tab works with `GBSERVER_LINEAGE_PROVIDER=none` (the
 standalone default).
 
+The **artifact lineage** graph (the cross-build trace from the lineage index) is different: the
+indexer takes a finished target from `gb_targets` only once it is older than the settle grace
+(`GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S`, default 360 s), so a rewrite committed behind its own
+timestamp is not skipped. Under `provider=none` an artifact's lineage therefore appears about
+6 minutes after its target finishes. Lower the grace on a single-writer standalone server if that
+matters more than the out-of-order safety margin.
+
 ### Step metadata
 
 Per-step metadata is always shown — there is no mode to enable:

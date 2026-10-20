@@ -82,6 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   grace: `createdAt` is set by the W&B server and nothing commits behind it, so a
   finished run is indexed on the next scan instead of ~6 minutes later
   (`GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S` applies to `gb_targets` only).
+  With `provider=none` the index is fed from `gb_targets`, so artifact lineage appears
+  about 6 minutes after a target finishes (it was ~30 s); see `docs/builds/lineage.md`.
   `gb_lineage_job.recorded_at` is stamped by the database inside the INSERT/UPDATE,
   so a retried write carries the time of the attempt that commits; it lives only in
   its column (not the JSON blob), and the `db` source's grace is 5 s instead of 360 s.
