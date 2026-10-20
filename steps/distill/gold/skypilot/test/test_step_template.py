@@ -69,8 +69,9 @@ class TestRunScriptIsValidShell:
         assert result.returncode == 0, result.stderr
 
     def test_container_venv_is_put_on_path(self, run_script):
-        """The image's venv is not on PATH by default."""
-        assert "export PATH=/stage/.venv/bin:$PATH" in run_script
+        """This image carries no baked venv: the runtime uv-sync block exports
+        PATH itself, once the sync (or wait) completes."""
+        assert 'export PATH="$VENV_CACHE_DIR/.venv/bin:$PATH"' in run_script
 
     def test_no_login_shell_anywhere(self, run_script):
         """A login shell re-runs /etc/profile and drops the venv from PATH."""
@@ -79,20 +80,21 @@ class TestRunScriptIsValidShell:
 
 
 class TestRankHandling:
-    """accelerate owns per-process rank; the provisioner's vars are node-level."""
+    """accelerate owns per-process rank; SkyPilot's vars are node-level.
 
-    def test_inherited_rank_vars_are_unset_before_launch(self, run_script):
-        assert "unset RANK WORLD_SIZE LOCAL_RANK MASTER_ADDR MASTER_PORT" in run_script
-        assert run_script.index("unset RANK") < run_script.index("accelerate launch")
+    NODE_RANK is read from SKYPILOT_NODE_RANK (SkyPilot's own generic var,
+    confirmed present on both the lsf and slurm subtypes), not from RANK
+    (LSF-only) -- see the step's header comment.
+    """
 
-    def test_topology_is_snapshotted_before_being_unset(self, run_script):
-        for var in ("RANK", "TOTAL_NODES", "NUM_GPUS_PER_NODE", "MASTER_ADDR"):
+    def test_topology_is_snapshotted_from_skypilot_generic_vars(self, run_script):
+        for var in ("SKYPILOT_NODE_RANK", "SKYPILOT_NUM_NODES", "SKYPILOT_NUM_GPUS_PER_NODE", "SKYPILOT_NODE_IPS"):
             assert f"${{{var}" in run_script
 
     def test_master_addr_is_required_not_defaulted(self, run_script):
         """A silently-wrong master address hangs NCCL init until the timeout, so
         fail loudly instead of substituting a default."""
-        assert "${MASTER_ADDR:?" in run_script
+        assert "${SKYPILOT_NODE_IPS:?" in run_script
 
     def test_accelerate_receives_the_snapshotted_topology(self, run_script):
         for flag in (
@@ -186,10 +188,13 @@ class TestStepDeclaration:
         assert step["type"] == "training"
         assert step["outputs"]["optional"]["checkpoint"]["type"] == "model"
 
-    def test_restricted_to_the_lsf_subtype(self, step):
-        """enroot and the LSF topology contract are LSF-specific, and the image
-        is an SM90 build that cannot run on A100."""
-        assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf"]
+    def test_restricted_to_lsf_and_slurm(self, step):
+        """The topology this step reads (SKYPILOT_NODE_RANK & co.) is SkyPilot's
+        own generic set, confirmed present on both subtypes -- so one step
+        serves both. Still excludes aws/kubernetes: the image is an SM90 build
+        that cannot run on A100, and those subtypes aren't validated for this
+        step yet."""
+        assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf", "slurm"]
 
     def test_no_setup_phase(self, launcher):
         """The trainer comes from /proj, so there is nothing to clone or install —
@@ -320,8 +325,9 @@ class TestRendererInvocation:
             ), f"{key} is also passed to the renderer"
 
     def test_renderer_is_run_with_the_container_interpreter(self, run_script):
-        """So the config is dumped by the same PyYAML the trainer parses with."""
-        assert "/stage/.venv/bin/python ./src/render_gold_config.py" in run_script
+        """So the config is dumped by the same PyYAML the trainer parses with --
+        the synced venv's python, not a baked image path."""
+        assert '"$PYBIN" ./src/render_gold_config.py' in run_script
 
     def test_total_nodes_is_passed_from_the_allocation(self, run_script):
         assert '--total-nodes "$NODES"' in run_script
@@ -366,24 +372,19 @@ class TestDistributedDiagnostics:
 class TestMasterAddressIsAnIp:
     """accelerate is given an IP, matching the reference launcher.
 
-    The provisioner exports MASTER_ADDR as a short hostname. Rendezvous works with
-    either form, but NCCL's bootstrap selects its interface from this value, so
-    the validated path's choice is not something to assume equivalent.
+    SKYPILOT_NODE_IPS is SkyPilot's own node-IP list (confirmed newline-joined,
+    rank-ordered, in SkyPilot's own task_codegen.py), so its first entry is
+    already an IP on both the lsf and slurm subtypes -- unlike LSF's own
+    MASTER_ADDR, which is a short hostname. No /etc/hosts/getent resolution is
+    needed as a result.
     """
 
-    def test_master_is_resolved_before_use(self, run_script):
-        assert "/etc/hosts" in run_script
-        assert run_script.index("MIP=") < run_script.index("--main_process_ip")
+    def test_master_is_derived_from_skypilot_node_ips(self, run_script):
+        assert 'MADDR="$(printf \'%s\\n\' "${SKYPILOT_NODE_IPS:?' in run_script
+        assert run_script.index("MADDR=") < run_script.index("--main_process_ip")
 
     def test_accelerate_receives_the_resolved_address(self, run_script):
         assert '--main_process_ip "$MIP"' in run_script
-        assert '--main_process_ip "$MADDR"' not in run_script
-
-    def test_resolution_falls_back_rather_than_failing(self, run_script):
-        """A missing /etc/hosts entry must not abort the run: fall through to
-        getent, then to the hostname, which is what worked before."""
-        assert "getent ahostsv4" in run_script
-        assert '[ -z "$MIP" ] && MIP="$MADDR"' in run_script
 
 
 class TestExternalVllmServer:
@@ -489,7 +490,11 @@ class TestDistillSourceDelivery:
         # test_source_contract.py's _PINNED_REPO/_PINNED_REF, which assert it for
         # distill-gold too now that the contract glob is `*distill*`.
         assert cc["code_dir"] == ""
-        assert cc["python"] == "/stage/.venv/bin/python"
+        # Empty on purpose: this image carries no baked venv to point at (see
+        # steps/distill/gold/skypilot/Dockerfile) -- PYBIN/PATH come from the
+        # "distill runtime venv sync" block instead, same as _OWNS_ITS_OWN_IMAGE
+        # documents in test_source_contract.py.
+        assert cc["python"] == ""
         # Empty on purpose: gb-steps-distillation is public, so the clone needs no
         # credential in the container.
         assert cc["repo"] != "" and cc["token_secret"] == ""
@@ -528,7 +533,7 @@ class TestDistillSourceDelivery:
         """The point of delivering the source at all: the renderer is what imports it, so
         the export must precede the invocation rather than merely existing."""
         assert run_script.index('export PYTHONPATH="$CODE_DIR/src') < run_script.index(
-            "/stage/.venv/bin/python ./src/render_gold_config.py"
+            '"$PYBIN" ./src/render_gold_config.py'
         )
 
     def test_trainer_runs_as_a_module_from_the_delivered_source(self, run_script):
@@ -1334,7 +1339,10 @@ class TestCloneHandshake:
         env = {
             "PATH": os.environ["PATH"],
             "CODE_DIR": str(tmp_path / "code"),
-            "RANK": rank,
+            # NODE_RANK is read, not RANK: the real script snapshots it from
+            # SKYPILOT_NODE_RANK once, before this snippet, and the snippet
+            # just reads the already-set shell variable.
+            "NODE_RANK": rank,
             "GB_SKYPILOT_LAUNCH_ID": launch_id,
             "SKYPILOT_INTERNAL_JOB_ID": "1",
             "LSB_JOBID": "4242",
