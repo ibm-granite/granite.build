@@ -88,9 +88,9 @@ inventory) and `make quick-tests`. Commit the generated trees with the source.
 
 - **No committed GPU fixture.** The step was proven on one H200 on an internal SkyPilot
   SLURM cluster with a plain build, not a build test: aime25 at `limit: 5`,
-  exact_match 0.6. The build is the example in USAGE.md. It needed `cpus: 16` and
-  `memory: 128` in `launcher_config.resources`: the default 16 GB of host RAM was
-  OOM-killed on long generations.
+  exact_match 0.6. The build is the example in USAGE.md. It needed host memory in
+  `launcher_config.resources`: the default 16 GB was OOM-killed on long generations,
+  and the run that passed asked for 128 GB and peaked at about 28 GB (`sacct` MaxRSS).
 - **No image-mode cluster run.** The local SLURM cluster has no Pyxis, and the GPU proof
   ran on the bare node, so the default `python:3.12-slim` path is covered only by the
   render tests.
