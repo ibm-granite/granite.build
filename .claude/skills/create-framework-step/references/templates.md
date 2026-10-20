@@ -223,6 +223,118 @@ template's actual `run:` call.
 `type: nohup`, monitor `ref: space://monitors/bash`). Copy the launcher `config` shape
 from `src/gbserver/builtins/steps/<docker|bash>/command/step.yaml`.
 
+## test/test_<env>_<category>_<name>_render.py (render test)
+
+The one test that passes as soon as the skeleton exists: it renders the launcher the way
+gbserver does and checks the plumbing, not the step's behaviour. Cluster-agnostic, so it
+sits at `test/`'s root and runs on every `make test` (Mode 1 only; not published, and not
+in PR CI, which runs only `test/`). `steps/data/dpk/skypilot/test/test_dpk_step_render.py`
+shows how far it can grow. Generate it with one `_BINDINGS` entry and one
+`--input-<in>`/`--output-<out>` pair per name, and drop the `@pytest.mark.xfail` line once
+`run.sh` prints its artifact markers.
+
+```python
+"""Render test for the <name> step's step-template.yaml.
+
+Renders the launcher's setup/run blocks the way gbserver does (strict Jinja, so a
+missing config key or binding fails here rather than on a cluster), then runs them
+with stub scripts to check the argv each script receives. Mode 1 only.
+FIXME: add a test per config setting as it's added (its default and an override).
+"""
+
+import pathlib
+import shutil
+import subprocess
+
+import pytest
+import yaml
+
+from gbcommon.utils.template import fill_template
+
+_STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
+_TEMPLATE = yaml.safe_load((_STEP_DIR / "step-template.yaml").read_text())
+_LAUNCHER = _TEMPLATE["environment_configs"]["Skypilot"]["launchers"]["<name>"]["config"]
+# One entry per declared input; a quote in a path checks the q() escaping.
+_BINDINGS = {
+    "<in>": {"binding": {"path": "/staged/<in> it's"}},
+}
+_CONTEXT = {"config": _TEMPLATE["config"], "bindings": _BINDINGS}
+
+
+def _render(block: str) -> str:
+    """Render one launcher block with gbserver's strict renderer.
+
+    Args:
+        block: ``"setup"`` or ``"run"``.
+
+    Returns:
+        The rendered shell text.
+    """
+    return fill_template(_LAUNCHER[block], _CONTEXT, strict=True)
+
+
+def _argv(block: str, tmp_path: pathlib.Path) -> list[str]:
+    """Run a rendered block with stub scripts that print their argv.
+
+    Args:
+        block: ``"setup"`` or ``"run"``.
+        tmp_path: scratch dir to run in, so the step tree is never touched.
+
+    Returns:
+        The arguments the block passed to its ``src/`` script, one per item.
+    """
+    if shutil.which("bash") is None:  # pragma: no cover - bash is present in CI
+        pytest.skip("bash not available")
+    stub = '#!/usr/bin/env bash\nfor a in "$@"; do echo "ARG:$a"; done\n'
+    for name in ("setup.sh", "run.sh"):
+        (tmp_path / "src").mkdir(exist_ok=True)
+        (tmp_path / "src" / name).write_text(stub)
+    proc = subprocess.run(
+        ["bash", "-c", _render(block)],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return [ln[4:] for ln in proc.stdout.splitlines() if ln.startswith("ARG:")]
+
+
+@pytest.mark.parametrize("block", ["setup", "run"])
+def test_block_renders_and_is_valid_bash(block):
+    """Each block renders strictly and bash can parse the result."""
+    rendered = _render(block)
+    assert subprocess.run(["bash", "-n"], input=rendered, text=True).returncode == 0
+
+
+def test_run_passes_each_input_path_verbatim(tmp_path):
+    """Every input reaches run.sh as one argument, quotes intact."""
+    argv = _argv("run", tmp_path)
+    for name, binding in _BINDINGS.items():
+        flag = f"--input-{name}"
+        assert argv[argv.index(flag) + 1] == binding["binding"]["path"]
+
+
+def test_run_passes_each_output_dir(tmp_path):
+    """Every output gets an --output-<name> argument."""
+    argv = _argv("run", tmp_path)
+    for name in _TEMPLATE["outputs"].get("required", {}):
+        assert f"--output-{name}" in argv
+
+
+@pytest.mark.xfail(reason="FIXME: src/run.sh doesn't print GB_ARTIFACT_ID yet", strict=True)
+def test_run_sh_registers_each_output():
+    """src/run.sh prints a GB_ARTIFACT_ID marker for every declared output."""
+    text = (_STEP_DIR / "src" / "run.sh").read_text()
+    for name in _TEMPLATE["outputs"].get("required", {}):
+        assert f"GB_ARTIFACT_ID:{name}" in text or "GB_ARTIFACT_ID:$" in text
+```
+
+`strict=True` on the xfail makes it fail loudly once `run.sh` does print the markers, so
+the reminder to remove it can't be missed. For a custom image, the launcher calls
+`/opt/<name>/*.sh`; point the stubs there instead (write them to `tmp_path` and replace
+`/opt/<name>/` with `./src/` in the rendered text before running).
+
 ## test/<cluster>/test_<env>_<cluster>_<category>_<name>.py
 
 ```python

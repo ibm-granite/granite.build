@@ -86,6 +86,7 @@ steps/<path>/<env>/
   src/setup.sh          comment-only stub, called by the launcher's setup:
   src/run.sh            comment-only stub, called by the launcher's run:
   Dockerfile            custom-image steps only (skeleton in templates.md)
+  test/test_<env>_<category>_<name>_render.py   render test: passes on the skeleton (Mode 1 only)
   test/<cluster>/test_<env>_<cluster>_<category>_<name>.py   one build test per cluster
   test-data/<cluster>/{build.yaml,buildtest.yaml}    its fixtures
 ```
@@ -168,21 +169,24 @@ End with this report. Build the placeholder lines from `grep -rn FIXME steps/<pa
    4. **Image**: public: set `image_id` if the code needs one. Custom: set `REGISTRY`
       and add the step's dependencies to the `Dockerfile`.
    5. **Implement `src/setup.sh` and `src/run.sh`**. The build tests can't pass until
-      `run.sh` prints the `GB_ARTIFACT_ID … GB_ARTIFACT_PATH …` marker.
+      `run.sh` prints the `GB_ARTIFACT_ID … GB_ARTIFACT_PATH …` marker. When it does, the
+      render test's `xfail` turns into a failure: delete that marker line. Add a render
+      test for each config setting as you add it.
    6. **Pick test data**: replace each `uri: FIXME` input in the fixture `build.yaml`s
       (they fail validation until then), and confirm each output's dataset name (the
       `# FIXME` above its `hf://` uri). Pushing needs an `HF_TOKEN` that can write
       `GBTEST_HF_PUSH_ORG` (default `ibm-research`; locally use your own HF user). Add
       `expected_steps` checks once results are known.
    7. **Write `USAGE.md`** for the step's users, and `README.md` for its developers.
-   8. **Run it**:
+   8. **Run it**. The render test passes from the start and is the fastest check; it
+      runs only here, not in PR CI (which runs only `test/`):
 
       ```bash
       make -C steps/<path>/<env> space                  # check the template renders
       make -C steps/<path>/<env> test-setup             # once, if slurm was selected
       make -C steps/<path>/<env> test-setup-kube        # once, if kube was selected
       make -C steps/<path>/<env> image publish-image    # custom image only (needs REGISTRY + login)
-      make -C steps/<path>/<env> test                   # build tests (custom image: builds it first)
+      make -C steps/<path>/<env> test                   # render test + build tests (custom image: builds it first)
       ```
 
       `make test` sets `GB_ENVIRONMENT=STANDALONE` and
