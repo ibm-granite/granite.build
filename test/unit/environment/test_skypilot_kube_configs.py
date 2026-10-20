@@ -141,8 +141,11 @@ class TestMerge:
         assert not sc.kubeconfig_path(tmp_path).exists()
 
     def test_missing_secret_names_the_secret_not_its_value(self, tmp_path):
-        with pytest.raises(ValueError, match="'remote-kc'"):
-            sc.merge_kube_configs([_entry()], {}, "envA", home=tmp_path)
+        pasted = _kubeconfig("remote", token="PASTED-TOKEN")
+        with pytest.raises(ValueError, match="not in the space's secrets") as info:
+            sc.merge_kube_configs([_entry(secret=pasted)], {}, "envA", home=tmp_path)
+        # A kubeconfig pasted where the secret *name* belongs is not echoed.
+        assert "PASTED-TOKEN" not in str(info.value)
 
     @pytest.mark.parametrize(
         "text, match",
@@ -338,22 +341,31 @@ class TestRobustness:
 
 
 class TestActivate:
-    def test_prepends_managed_and_keeps_existing(self, tmp_path, monkeypatch):
+    def test_appends_managed_last_with_absolute_paths(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KUBECONFIG", "/x/one" + os.pathsep + "/x/two")
         sc.activate_kubeconfig(home=tmp_path)
-        managed = str(sc.kubeconfig_path(tmp_path))
+        managed = os.path.abspath(str(sc.kubeconfig_path(tmp_path)))
         assert os.environ["KUBECONFIG"].split(os.pathsep) == [
-            managed,
             "/x/one",
             "/x/two",
+            managed,
         ]
         sc.activate_kubeconfig(home=tmp_path)  # idempotent
         assert os.environ["KUBECONFIG"].split(os.pathsep).count(managed) == 1
 
-    def test_defaults_to_the_users_kube_config(self, tmp_path, monkeypatch):
+    def test_tilde_is_expanded_for_kubectl(self, tmp_path, monkeypatch):
+        """kubectl does not expand ~ in KUBECONFIG, so no part may keep one."""
         monkeypatch.delenv("KUBECONFIG")
+        monkeypatch.setenv("HOME", str(tmp_path / "h"))
         sc.activate_kubeconfig(home=tmp_path)
-        assert os.environ["KUBECONFIG"].split(os.pathsep)[1] == "~/.kube/config"
+        parts = os.environ["KUBECONFIG"].split(os.pathsep)
+        assert parts[0] == str(tmp_path / "h" / ".kube" / "config")
+        assert all(os.path.isabs(p) and "~" not in p for p in parts)
+
+        monkeypatch.setenv("KUBECONFIG", "~/a" + os.pathsep + "rel/b")
+        sc.activate_kubeconfig(home=tmp_path)
+        parts = os.environ["KUBECONFIG"].split(os.pathsep)
+        assert parts[:2] == [str(tmp_path / "h" / "a"), os.path.abspath("rel/b")]
 
     def test_merged_kubeconfig_lists_both_and_keeps_users_current(
         self, tmp_path, monkeypatch
@@ -390,6 +402,76 @@ class TestActivate:
         loader = kc._get_kube_config_loader(filename=os.environ["KUBECONFIG"])
         assert loader._cluster["server"] == "https://192.0.2.1:1"
         assert not loader._user
+
+
+class TestDefaultContextBothTools:
+    """kubectl takes the *first* current-context in KUBECONFIG, the Python
+    client the *last*; the user's must win in both, and with none set both
+    must get the credential-less placeholder, never an environment's cluster."""
+
+    def _user(self, tmp_path, current):
+        doc = yaml.safe_load(_kubeconfig("mine", server="https://mine:6443"))
+        if current is None:
+            doc.pop("current-context")
+        else:
+            doc["current-context"] = current
+        (tmp_path / "user-kubeconfig").write_text(yaml.safe_dump(doc))
+
+    def _defaults(self):
+        import shutil
+        import subprocess
+
+        from kubernetes.config import kube_config as kc
+
+        contexts, current = kc.list_kube_config_contexts(os.environ["KUBECONFIG"])
+        py = (current["name"], {c["name"] for c in contexts})
+        kubectl = shutil.which("kubectl")
+        if kubectl is None:
+            return py, None
+        run = lambda *a: subprocess.run(  # noqa: E731
+            [kubectl, "config", *a], capture_output=True, text=True, timeout=30
+        )
+        k_current = run("current-context").stdout.strip()
+        k_names = set(run("get-contexts", "-o", "name").stdout.split())
+        return py, (k_current, k_names)
+
+    @pytest.mark.parametrize(
+        "user_current, expected",
+        [
+            ("mine", "mine"),
+            (None, sc._KUBE_PLACEHOLDER),
+            ("", sc._KUBE_PLACEHOLDER),
+            ("gone", sc._KUBE_PLACEHOLDER),
+        ],
+    )
+    def test_default_context(self, tmp_path, user_current, expected):
+        pytest.importorskip("kubernetes.config")
+        self._user(tmp_path, user_current)
+        sc.merge_kube_configs(
+            [_entry()], {"remote-kc": _kubeconfig("remote")}, "envA", home=tmp_path
+        )
+        sc.activate_kubeconfig(home=tmp_path)
+        if user_current == "gone":
+            # A dangling user current-context breaks both tools on its own,
+            # before and without kube_configs; nothing to assert beyond the
+            # managed file not supplying a real default.
+            assert _raw_managed(tmp_path)["current-context"] == sc._KUBE_PLACEHOLDER
+            return
+        py, kubectl = self._defaults()
+        assert py[0] == expected
+        assert {"mine", "remote"} <= py[1]
+        if kubectl is not None:
+            assert kubectl[0] == expected
+            assert {"mine", "remote"} <= kubectl[1]
+
+    def test_placeholder_only_when_user_has_no_default(self, tmp_path):
+        self._user(tmp_path, "mine")
+        sc.merge_kube_configs(
+            [_entry()], {"remote-kc": _kubeconfig("remote")}, "envA", home=tmp_path
+        )
+        raw = _raw_managed(tmp_path)
+        assert "current-context" not in raw
+        assert sc._KUBE_PLACEHOLDER not in {c["name"] for c in raw["contexts"]}
 
 
 class TestEnvironmentWiring:
@@ -481,37 +563,97 @@ class TestEnvironmentWiring:
         assert "kube_configs not applied" in caplog.text
 
     def test_every_cluster_path_activates(self):
-        """Every Skypilot method that sends a SkyPilot request ensures credentials.
+        """Every Skypilot method that reaches SkyPilot ensures the credentials.
 
-        Scans the class instead of naming methods, so a new request path that
-        forgets _ensure_kube_configs fails here.
+        Scans the code (AST, so comments and docstrings don't count) of every
+        Skypilot method and module-level helper for SkyPilot request calls. A
+        method sending one directly must ensure the credentials itself; a
+        module-level helper must only be called from methods that do. A new
+        request path that forgets it fails here.
         """
+        import ast
         import inspect
-        import re
 
-        from gbserver.environment.skypilot import Skypilot
+        from gbserver.environment import skypilot as sp
 
-        request = re.compile(
-            r"\bsky\.(launch|down|job_status|status|queue|tail_logs|cancel|stop|exec)\b"
-            r"|_launch_with_cloud_config|\bself\._teardown\("
+        tree = ast.parse(inspect.getsource(sp))
+        request_attrs = {
+            "launch", "down", "job_status", "status", "queue", "tail_logs",
+            "cancel", "stop", "exec", "get", "stream_and_get", "download_logs",
+            "api_cancel",
+        }  # fmt: skip
+        ensure_calls = {"_ensure_kube_configs", "_ensure_inline_configs_materialized"}
+
+        def calls(node):
+            for n in ast.walk(node):
+                if isinstance(n, ast.Call):
+                    yield n.func
+
+        def sends_request(node):
+            # sky.<verb>(...), sky.jobs.<verb>(...), or a sky.<verb> passed as
+            # a callable (to_thread(sky.down, ...)).
+            for n in ast.walk(node):
+                if (
+                    isinstance(n, ast.Attribute)
+                    and n.attr in request_attrs
+                    and isinstance(n.value, (ast.Name, ast.Attribute))
+                    and "sky" in ast.unparse(n.value).split(".")
+                ):
+                    return True
+            return False
+
+        def called_names(node):
+            out = set()
+            for f in calls(node):
+                if isinstance(f, ast.Attribute):
+                    out.add(f.attr)
+                elif isinstance(f, ast.Name):
+                    out.add(f.id)
+            for n in ast.walk(node):  # callables passed as arguments
+                if isinstance(n, ast.Call):
+                    for arg in n.args:
+                        if isinstance(arg, ast.Name):
+                            out.add(arg.id)
+                        elif isinstance(arg, ast.Attribute):
+                            out.add(arg.attr)
+            return out
+
+        funcs = (ast.FunctionDef, ast.AsyncFunctionDef)
+        helpers = {n.name: n for n in tree.body if isinstance(n, funcs)}
+        skypilot_cls = next(
+            n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Skypilot"
         )
-        missing = []
-        for name, fn in inspect.getmembers(Skypilot, inspect.isfunction):
-            if fn.__qualname__.split(".")[0] != "Skypilot":
-                continue
-            src = inspect.getsource(fn)
-            body = src.split('"""', 2)[-1] if src.count('"""') >= 2 else src
-            ensures = (
-                "_ensure_kube_configs" in body
-                or "_ensure_inline_configs_materialized()" in body
-            )
-            if request.search(body) and not ensures:
-                missing.append(name)
-        # Methods that only reach SkyPilot through a method that ensures it.
-        delegating = {
-            "_abort_provision",  # -> self._teardown
-            "_await_cleanup_job_status",  # called by teardown_skypilot
-            "_provision_with_retry",  # called by launch_skypilot
-            "_launch_cleanup_vm",  # called by teardown_skypilot
+        methods = {n.name: n for n in skypilot_cls.body if isinstance(n, funcs)}
+
+        requesting_helpers = {
+            name for name, node in helpers.items() if sends_request(node)
         }
-        assert sorted(set(missing) - delegating) == []
+        ensuring = {
+            name for name, node in methods.items() if called_names(node) & ensure_calls
+        }
+        problems = []
+        for name, node in methods.items():
+            if name in ensuring:
+                continue
+            direct = sends_request(node)
+            via = called_names(node) & requesting_helpers
+            if direct or via:
+                problems.append(name)
+        # Private methods only ever reached from methods that ensure it first.
+        reached_after_ensure = {
+            "_abort_provision",  # from _provision_with_retry (launch path)
+            "_await_cleanup_job_status",  # from teardown_skypilot
+            "_provision_with_retry",  # from _launch_skypilot_inner
+            "_launch_cleanup_vm",  # from _reap_per_run_workdir
+            "_reap_per_run_workdir",  # from teardown_skypilot
+            "_download_and_parse_logs",  # from _poll_skypilot_job
+        }
+        for name in reached_after_ensure:
+            callers = [m for m, n in methods.items() if name in called_names(n)]
+            assert callers and all(
+                c in ensuring or c in reached_after_ensure for c in callers
+            ), (
+                name,
+                callers,
+            )
+        assert sorted(set(problems) - reached_after_ensure) == []

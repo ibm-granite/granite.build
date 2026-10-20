@@ -2165,7 +2165,8 @@ class Skypilot(Environment):
         :param strict: Raise on a bad ``kube_configs`` (setup and launch). The
             teardown, cleanup and polling paths pass False: setup has already
             raised the error, and failing again there would only stop cleanup,
-            so the error is logged and the request proceeds.
+            so the error (including an ``OSError`` writing the file or taking
+            its lock) is logged once and the request proceeds.
         :raises ValueError: If ``strict`` and ``kube_configs`` is malformed or
             unpinned (see :meth:`_kube_config_entries`).
         :raises SkypilotConfigCollisionError: If ``strict``, on a context owned
@@ -2183,7 +2184,7 @@ class Skypilot(Environment):
 
                 merge_kube_configs(kube_entries, self.secrets or {}, self._kube_owner())
                 activate_kubeconfig()
-        except (ValueError, SkypilotConfigCollisionError) as e:
+        except (ValueError, SkypilotConfigCollisionError, OSError) as e:
             if strict:
                 raise
             # Warn once, not on every poll; a later strict call still raises.
