@@ -41,7 +41,9 @@ SLURM copy needed — it just runs `sky down`).
 ### Environment — `configurations/assets/environments/skypilot/slurm/ibm-bluevela/environment.yaml`
 `space://environments/skypilot/slurm/ibm-bluevela` (name `sky-slurm-bluevela`,
 subtype `slurm`): `cluster: bluevela`, `zone: gpu-mid`, env-wide `constraint: h200`,
-SSH to `login1` with `~/granite_build_id_ed25519`, and the workdir-mount fix
+SSH to the `login0/login1/login2` failover pool with `~/granite_build_id_ed25519`
+(gbserver picks one at random per launch and fails over on a transient SSH error),
+and the workdir-mount fix
 (`cloud_config.slurm.cluster_configs.bluevela.workdir` is an **ancestor** of
 `shared_workdir` so the per-run `$GB_BUILD_WORKDIR` on `/proj` is visible inside the
 enroot container — the SLURM backend does not identity-mount all of `/proj` like LSF).

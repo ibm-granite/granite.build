@@ -47,11 +47,16 @@ config:
       - Host: bluevela
         # Must agree field-for-field with any pre-existing ~/.slurm/config
         # `bluevela` block, or gbserver refuses to materialize it
-        # (SkypilotConfigCollisionError). These values match the hand-authored
-        # entry used by the direct `sky launch` runs (single login1 host,
-        # ~/granite_build_id_ed25519 key, no IdentitiesOnly). To use the multi-
-        # login failover pool instead, remove the pre-existing block first.
-        HostName: login1.bluevela.rmf.ibm.com
+        # (SkypilotConfigCollisionError). BlueVela now exposes three interchangeable
+        # login nodes; listing all of them makes gbserver pick one at random per
+        # launch (load spreading) and fail over to the next on a transient SSH
+        # control-plane error. If a pre-existing ~/.slurm/config `bluevela` block
+        # still pins a single host, either delete it so this list can materialize or
+        # make it match this list.
+        HostName:
+          - login0.bluevela.rmf.ibm.com
+          - login1.bluevela.rmf.ibm.com
+          - login2.bluevela.rmf.ibm.com
         User: granitebuild
         # Set GBTEST_SKY_SSH_RESET=true (env) when testing modified credentials.
         IdentityFile: ~/granite_build_id_ed25519
