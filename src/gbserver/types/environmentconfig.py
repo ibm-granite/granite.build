@@ -89,8 +89,8 @@ class KubeConfigEntry(Config):
     """One Kubernetes context whose credentials an environment supplies.
 
     gbserver merges the context (with its cluster and user) from the named
-    kubeconfig secret into a gbserver-managed kubeconfig file that it puts first
-    on ``KUBECONFIG``, so SkyPilot can reach a cluster the gbserver host has no
+    kubeconfig secret into a gbserver-managed kubeconfig file that it adds to
+    ``KUBECONFIG``, so SkyPilot can reach a cluster the gbserver host has no
     kubeconfig for. The context must also be listed in the environment's
     ``cloud_config.kubernetes.allowed_contexts``.
 

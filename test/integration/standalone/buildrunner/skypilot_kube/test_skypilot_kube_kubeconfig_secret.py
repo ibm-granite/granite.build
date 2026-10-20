@@ -22,8 +22,8 @@ Reuses the local kind cluster rather than a second one:
   kubeconfig *without* the kind context, so SkyPilot cannot reach the cluster
   from the host's kubeconfig at all;
 * the test space's ``skypilot/kubernetes/secret`` env supplies the secret through
-  ``kube_configs:``, which gbserver merges into its own kubeconfig and puts
-  first on ``KUBECONFIG``.
+  ``kube_configs:``, which gbserver merges into its own kubeconfig and adds
+  to ``KUBECONFIG``.
 
 The developer's ``~/.kube/config`` is never modified, and the entries merged
 into gbserver's kubeconfig are released at teardown. Requires the kind cluster
