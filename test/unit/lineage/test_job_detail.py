@@ -279,9 +279,10 @@ def test_a_pruned_build_returns_the_full_entry_to_a_reader():
     assert result["detail_available"] is False
     assert result["job_namespace"] == "space/build"
     # The build's id is not in the reason: it was never authorized.
-    assert "b1" not in result["detail_error"] and "not on this server" in result[
-        "detail_error"
-    ]
+    assert (
+        "b1" not in result["detail_error"]
+        and "not on this server" in result["detail_error"]
+    )
 
 
 def test_a_build_the_caller_may_not_read_withholds_the_entry():

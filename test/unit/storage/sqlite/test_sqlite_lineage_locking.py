@@ -189,7 +189,9 @@ def test_update_fields_releases_the_lock_between_retry_attempts(monkeypatch):
         table_name=f"t_lockupd_{uuid_module.uuid4().hex[:8]}"
     )
     try:
-        uuid = builds.add(StoredBuild(name="b", space_name="s", source_uri="file://b", username="u"))
+        uuid = builds.add(
+            StoredBuild(name="b", space_name="s", source_uri="file://b", username="u")
+        )
         lock = builds._db_file_lock  # pylint: disable=protected-access
         free_during_backoff = []
 
@@ -209,7 +211,9 @@ def test_update_fields_releases_the_lock_between_retry_attempts(monkeypatch):
 
         monkeypatch.setattr("tenacity.nap.time.sleep", probe_sleep)
         real = type(builds)._get_session_without_retry
-        failures = iter([OperationalError("UPDATE", {}, Exception("database is locked"))])
+        failures = iter(
+            [OperationalError("UPDATE", {}, Exception("database is locked"))]
+        )
 
         def flaky(self):
             failure = next(failures, None)
