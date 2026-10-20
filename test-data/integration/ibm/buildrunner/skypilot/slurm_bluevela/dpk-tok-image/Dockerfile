@@ -1,5 +1,5 @@
 # Image for the granite.build `dpk` step's image mode (dpk_config.dpk_image).
-# Contract (steps/dpk/skypilot/USAGE.md): the image must already provide PUBLIC
+# Contract (steps/data/dpk/skypilot/USAGE.md): the image must already provide PUBLIC
 # DPK, because the step runs `python -m dpk_<transform>.runtime` and skips the
 # pip install when dpk_image is set.
 FROM python:3.10-slim-bookworm

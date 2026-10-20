@@ -636,7 +636,7 @@ pytest -s -m extended --strict-markers \
 
 ## Quickstart: run the aws step tests for the first time
 
-The per-cluster **step tests** (`steps/{byoc,eval,dpk}/skypilot/test/aws/…`) provision a real
+The per-cluster **step tests** (`steps/{byoc,eval}/skypilot/test/aws/…` and `steps/data/dpk/skypilot/test/aws-{tok,pii}/…`) provision a real
 EC2 instance and are gated so they never launch without credentials. Starting from just an AWS
 access-key pair, with the repo `.venv` built (`make venv` at the repo root):
 
@@ -695,15 +695,15 @@ access-key pair, with the repo `.venv` built (`make venv` at the repo root):
 4. **Run a fixture** — this provisions a real EC2 instance, runs the build, and tears it down:
 
    ```bash
-   AWS_PROFILE=gb-skypilot make -C steps/dpk/skypilot test TEST_DIR=test/aws-tok
-   # or byoc, and the heavier dpk pii fixture:
-   AWS_PROFILE=gb-skypilot make -C steps/dpk/skypilot test TEST_DIR=test/aws-pii
+   AWS_PROFILE=gb-skypilot make -C steps/data/dpk/skypilot test TEST_DIR=test/aws-tok
+   # or the heavier pii fixture:
+   AWS_PROFILE=gb-skypilot make -C steps/data/dpk/skypilot test TEST_DIR=test/aws-pii
    ```
 
    `make test` forces pytest's `-s` (required — a second SkyPilot launch in a captured process
    hits `OSError: [Errno 9] Bad file descriptor`). Reaching SUCCESS proves the step ran end to
    end on EC2. (`eval` is a custom-image step: publish its image first — see
-   `steps/eval/skypilot/README.md`.)
+   `steps/eval/eval-example/skypilot/README.md`.)
 
 5. **Confirm nothing leaked:**
 

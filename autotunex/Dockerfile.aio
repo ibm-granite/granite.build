@@ -23,7 +23,7 @@
 # All secrets and internal hostnames are injected at RUN time via --env-file
 # (see .env.aio.example); nothing sensitive is baked into this tracked file.
 #
-# Design: docs/superpowers/specs/2026-08-18-unified-aio-docker-image-design.md
+# Docs: docker/aio/README.md
 # =============================================================================
 
 ARG PYTHON_VERSION=3.12

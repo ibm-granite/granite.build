@@ -29,10 +29,8 @@ granite.build:
     evaluate:
       environment_uri: space://environments/docker
       inputs:
-        model:
+        input_artifact_path:     # this input name is what sets $INPUT_PATH
           uri: hf://huggingface.co/ibm-granite/granite-3.3-2b-instruct
-          binding:
-            path: model
       outputs:
         results:
           uri: file:workspace/eval_results
@@ -52,19 +50,23 @@ Two environment variables are set automatically at runtime:
 
 | Variable | Value |
 |----------|-------|
-| `$INPUT_PATH` | Path to the artifact declared as `input_artifact_path` in your inputs. |
+| `$INPUT_PATH` | Path to the target input named `input_artifact_path`. Unset if the target has no input with that name. |
 | `$OUTPUT_PATH` | Path where you should write output. Everything at this path (or the subdirectory specified by `dir_to_save`) is captured as the output artifact. |
 
 These are convenience shortcuts for the common single-input, single-output
-case. For multiple inputs/outputs, use the full binding syntax:
+case. For multiple inputs, refer to each input by name with the binding syntax
+(`bindings` holds the target's inputs only, so outputs still go to `$OUTPUT_PATH`):
 
 ```yaml
 start_command: >
   python process.py
   --input {{ bindings.training_data.binding.path }}
   --model {{ bindings.base_model.binding.path }}
-  --output {{ bindings.results.binding.path }}
+  --output $OUTPUT_PATH
 ```
+
+See [Inputs, outputs, and bindings](../builds/bindings.md) for how target inputs
+resolve and how a step declares them.
 
 ## `dir_to_save`
 

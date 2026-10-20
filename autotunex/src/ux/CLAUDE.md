@@ -9,8 +9,7 @@ SvelteKit with `adapter-static` (SPA mode, fallback to `index.html`). **Base pat
 - **`src/lib/api.ts`** — API client class; all backend calls go through here using
   `PUBLIC_AUTOTUNEX_API_URL`. Includes `uploadDatasetChunked`, which despite its name posts a
   **single multipart request** to `POST /datasets/{id}/upload` and then polls until the dataset
-  reaches a terminal status; the tus resumable path is retired (see
-  `docs/superpowers/specs/2026-08-03-dataset-crud-and-upload-design.md`). Its
+  reaches a terminal status; the tus resumable path is retired. Its
   `trainSetPercentage` option is the **train** share and is inverted to the API's
   `validation_percentage` field at the boundary — don't pass a validation share to it.
 - **`src/lib/store.ts`** — Svelte writable stores for global UI and session state

@@ -42,6 +42,13 @@
 #                no-op default so there is no "overriding recipe" warning. A step
 #                with test infrastructure sets this and delegates to the repo-root
 #                Makefile, e.g.  test-setup:  $(MAKE) -C $(REPO_ROOT) slurm-setup
+#   STEP_PUBLISHABLE  (optional, default `true`) set to `false` for a step that must
+#                never be promoted into the committed assets tree (e.g. an exemplar
+#                kept only as a template). `publish-step` runs only when the value is
+#                exactly `true`; any other value (`false`, `False`, `no`, `0`, empty)
+#                makes it refuse. `space`, `image` and `test` are unaffected. Use
+#                `override STEP_PUBLISHABLE := false` so a command-line or environment
+#                value cannot re-enable it.
 #
 # Whether a step builds a custom image is auto-detected: if a Dockerfile sits
 # next to the including Makefile, `image`/`publish-image` are real and the
@@ -75,7 +82,7 @@
 # ---- Required / defaulted inputs -------------------------------------------
 
 ifndef STEP_NAME
-$(error STEP_NAME must be set by the including Makefile before 'include ../../common.mk')
+$(error STEP_NAME must be set by the including Makefile before its 'include .../common.mk' line)
 endif
 
 # A step builds a custom image iff a Dockerfile is present next to its Makefile.
@@ -229,6 +236,11 @@ PUBLISH_STEP_DIR ?= $(ASSETS_DIR)/environments/$(STEP_ENV)/steps/$(STEP_PATH)
 # matches the top-level convention (test/<path> mirrors test-data/<path>).
 PUBLISH_TEST_DIR     ?= $(REPO_ROOT)/test/steps/$(STEP_PATH)/$(STEP_ENV)
 PUBLISH_TESTDATA_DIR ?= $(REPO_ROOT)/test-data/steps/$(STEP_PATH)/$(STEP_ENV)
+# The three trees publish-step writes, as one list for the guards and checks that
+# walk them. Recursive (=) so a command-line override of any of the three (as the
+# check-published re-render passes) is honored. An empty member drops out of the
+# list, which guard-publish-paths detects by counting.
+PUBLISH_DIRS = $(PUBLISH_STEP_DIR) $(PUBLISH_TEST_DIR) $(PUBLISH_TESTDATA_DIR)
 # space_uri written into each copied buildtest.yaml so the Mode-2 (published) test
 # resolves the step through the shared space configurations/spaces/local (which
 # chains to configurations/assets). It is RELATIVE to the copied file's own dir,
@@ -251,6 +263,9 @@ MODE2_SPACE_URI  ?= $(MODE2_DOTDOT)configurations/spaces/local
 # non-image steps, whose IMAGE_REF is empty (see require-image-published).
 PUBLISH_REQUIRE_IMAGE ?= true
 
+# STEP_PUBLISHABLE gates `publish-step` (see the includer variables above).
+STEP_PUBLISHABLE ?= true
+
 .PHONY: all help image publish-image space publish-step check-published test test-setup clean
 
 # ---- Default goal ----------------------------------------------------------
@@ -270,7 +285,7 @@ help:
 	@echo
 	@echo "Targets:"
 	@echo "  space          render step.yaml + a space.yaml into the Space $(SPACE_DIR)/ (offline)"
-	@echo "  publish-step   render the step into the assets tree (+ USAGE.md as README.md) + copy build tests into test/steps/ (not in all; image steps: image must be published first, override with PUBLISH_REQUIRE_IMAGE=false)"
+	@echo "  publish-step   $(if $(filter-out true,$(STEP_PUBLISHABLE)),[DISABLED for this step: STEP_PUBLISHABLE=$(STEP_PUBLISHABLE)] ,)render the step into the assets tree (+ USAGE.md as README.md) + copy build tests into test/steps/ (not in all; image steps: image must be published first, override with PUBLISH_REQUIRE_IMAGE=false)"
 	@echo "  check-published  re-render to a temp dir and diff against the committed artifacts; exit 1 on drift"
 	@echo "  image          build the image from $(DOCKERFILE) for $(PLATFORM)  (no-op when no Dockerfile is present)"
 	@echo "  publish-image  push the image to the registry                 (no-op when no Dockerfile is present)"
@@ -352,12 +367,24 @@ define guard-publish-paths
 	@test -n "$(strip $(STEP_NAME))" || { echo "[publish-step] refusing: STEP_NAME is empty"; exit 1; }
 	@test -n "$(strip $(STEP_PATH))" || { echo "[publish-step] refusing: STEP_PATH is empty"; exit 1; }
 	@test -n "$(strip $(STEP_ENV))"  || { echo "[publish-step] refusing: STEP_ENV is empty"; exit 1; }
-	@for d in "$(PUBLISH_STEP_DIR)" "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)"; do \
+	@test $(words $(PUBLISH_DIRS)) -eq 3 || { echo "[publish-step] refusing: a publish path is empty ($(PUBLISH_DIRS))"; exit 1; }
+	@for d in $(PUBLISH_DIRS); do \
 		case "$$d" in \
-			"" | "/" | "$(REPO_ROOT)" | "$(REPO_ROOT)/") \
+			"/" | "$(REPO_ROOT)" | "$(REPO_ROOT)/") \
 				echo "[publish-step] refusing: publish path resolves to '$$d' (too broad to rm -rf)"; exit 1;; \
 		esac; \
 	done
+endef
+
+# require-publishable — fail publish-step before it writes anything when the step has
+# opted out of publishing, so an exemplar/template step can never land in the committed
+# assets tree. It fails closed: only the exact value `true` publishes, so a typo or a
+# variant spelling (`False`, `no`, `0`) blocks rather than slipping through.
+define require-publishable
+	@if [ "$(STEP_PUBLISHABLE)" != "true" ]; then \
+		echo "[publish-step] refusing: step '$(STEP_NAME)' is not publishable (STEP_PUBLISHABLE='$(STEP_PUBLISHABLE)'; only 'true' publishes)."; \
+		exit 1; \
+	fi
 endef
 
 # require-image-published — for custom-image steps, fail publish-step unless the step's
@@ -448,6 +475,7 @@ space:
 # configurations/spaces/local instead of the local space/. Deliberately NOT part
 # of `all`: publish-step writes the committed assets tree.
 publish-step:
+	$(call require-publishable)
 	$(call require-image-published)
 	$(call guard-publish-paths)
 	@mkdir -p $(PUBLISH_STEP_DIR)
@@ -497,10 +525,26 @@ publish-step:
 # reference already committed (extracted from the published step.yaml via
 # IMAGE_REF), so only genuine content drift — an edited template/src/test that
 # was never re-published — is reported, not the per-commit IMAGE_TAG churn (see
-# the eval README's "tag coupling" note). It also passes PUBLISH_REQUIRE_IMAGE=false to
+# the "keep the published image tag and your local build in sync" note under "Two
+# test modes" in steps/README.md). It also passes PUBLISH_REQUIRE_IMAGE=false to
 # the re-render so drift-checking stays offline (it never queries the registry — the
-# image-existence guard applies only to a real `make publish-step`). Exit 0 = in sync
-# (or nothing published yet); exit 1 = drift, so re-run `make publish-step` and commit it.
+# image-existence guard applies only to a real `make publish-step`). It succeeds when the
+# committed trees are in sync, or when none of the three published locations exists
+# (nothing published yet). Otherwise it fails, and the first line says why: DRIFT
+# (re-run `make publish-step` and commit it), STALE or ERROR (below). Go by that
+# message, not the exit status: make exits 2 whenever a recipe fails, so a caller
+# cannot tell the three cases apart by status.
+#
+# Two failures are reported as themselves rather than as drift. Both used to surface as
+# "every file drifted, re-run publish-step": the re-render's output went to /dev/null,
+# so a failed render left the temp trees empty and the diff blamed the committed files.
+#   * STALE — the step is not publishable (STEP_PUBLISHABLE is not `true`) yet a
+#     published copy is still committed in ANY of the three locations (a leftover
+#     test/steps/ copy counts, even after the assets copy is deleted). Re-publishing
+#     is impossible (publish-step refuses), so the fix is to remove the copies (or
+#     make the step publishable again).
+#   * ERROR — any other publish-step failure. Its captured output is printed and the
+#     check stops instead of diffing against a half-written temp tree.
 #
 # A MISSING side is compared against an empty directory, not /dev/null. Git cannot hold an
 # empty directory, so a step with no per-cluster build tests has no committed test/steps/
@@ -513,16 +557,59 @@ publish-step:
 # scratch dir compares correctly in both directions: silent when both sides are empty, and a
 # real added-files report when only one side has content.
 check-published:
-	@if [ ! -f "$(PUBLISH_STEP_DIR)/step.yaml" ]; then \
-		echo "[$(STEP_NAME)] nothing published at $(PUBLISH_STEP_DIR); nothing to check."; exit 0; \
-	fi; \
-	tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
-	empty="$$tmp/.empty"; mkdir -p "$$empty"; \
-	ref=$$(sed -n 's#.*image_id: *"docker:\(.*\)".*#\1#p' "$(PUBLISH_STEP_DIR)/step.yaml" | head -1); \
+	@$(call exit-if-nothing-published); \
+	$(call fail-if-stale); \
+	$(call diff-published)
+
+# The check-published stages below are SHELL FRAGMENTS: each continues the caller's
+# single command (no leading @, `\`-joined), so they share one shell — an `exit` in a
+# stage ends the whole check, and diff-published's $$tmp is visible to
+# rerender-published. The existence tests run in the shell at check time, not via a
+# parse-time $(wildcard), so `make publish-step check-published` sees fresh state.
+
+# exit-if-nothing-published — succeed early when none of the three published
+# locations exists (nothing has been published, so there is nothing to compare).
+define exit-if-nothing-published
+	found=; for d in $(PUBLISH_DIRS); do [ -e "$$d" ] && found=1; done; \
+	[ -n "$$found" ] || { \
+		echo "[$(STEP_NAME)] nothing published at $(PUBLISH_STEP_DIR) (or its test/steps/, test-data/steps/ copies); nothing to check."; \
+		exit 0; \
+	}
+endef
+
+# fail-if-stale — a step that is not publishable must have no committed published
+# copy in any location; list each one that exists and fail (STALE).
+define fail-if-stale
+	[ "$(STEP_PUBLISHABLE)" = "true" ] || { \
+		echo "[$(STEP_NAME)] STALE: step is not publishable (STEP_PUBLISHABLE='$(STEP_PUBLISHABLE)'; only 'true' publishes) but a published copy is committed:"; \
+		for d in $(PUBLISH_DIRS); do [ -e "$$d" ] && echo "  $$d"; done; \
+		echo "[$(STEP_NAME)] remove it with 'git rm -r' on the paths above, or make the step publishable again."; \
+		exit 1; \
+	}
+endef
+
+# rerender-published — re-run publish-step into $$tmp with the committed image ref $$ref,
+# capturing its output; on failure print it as ERROR and exit, so nothing is diffed
+# against a half-written temp tree.
+define rerender-published
 	$(MAKE) --no-print-directory publish-step \
 		PUBLISH_STEP_DIR="$$tmp/step" PUBLISH_TEST_DIR="$$tmp/test" \
 		PUBLISH_TESTDATA_DIR="$$tmp/testdata" PUBLISH_REQUIRE_IMAGE=false \
-		$${ref:+IMAGE_REF="$$ref"} >/dev/null; \
+		$${ref:+IMAGE_REF="$$ref"} >"$$tmp/render.log" 2>&1 || { \
+		echo "[$(STEP_NAME)] ERROR: re-rendering the step failed, so nothing was compared:"; \
+		sed 's/^/  /' "$$tmp/render.log"; \
+		exit 1; \
+	}
+endef
+
+# diff-published — re-render into a temp dir and diff each committed tree against its
+# fresh counterpart (a missing side compares as an empty dir; see the check-published
+# comment above); report OK or DRIFT.
+define diff-published
+	tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	empty="$$tmp/.empty"; mkdir -p "$$empty"; \
+	ref=$$(sed -n 's#.*image_id: *"docker:\(.*\)".*#\1#p' "$(PUBLISH_STEP_DIR)/step.yaml" 2>/dev/null | head -1); \
+	$(call rerender-published); \
 	rc=0; \
 	for pair in "$(PUBLISH_STEP_DIR):$$tmp/step" "$(PUBLISH_TEST_DIR):$$tmp/test" "$(PUBLISH_TESTDATA_DIR):$$tmp/testdata"; do \
 		committed=$${pair%:*}; fresh=$${pair##*:}; \
@@ -533,6 +620,7 @@ check-published:
 	if [ $$rc = 0 ]; then echo "[$(STEP_NAME)] OK: committed artifacts match current source."; \
 	else echo "[$(STEP_NAME)] DRIFT: re-run 'make publish-step' and commit the regenerated files."; fi; \
 	exit $$rc
+endef
 
 # ---- Tests -----------------------------------------------------------------
 

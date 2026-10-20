@@ -12,7 +12,7 @@ Runs the shared `dpk` step's ``tokenization2arrow`` transform against the BlueVe
 SLURM environment (space://environments/skypilot/slurm/bluevela, gpu-mid partition)
 with ``dpk_config.dpk_image`` set to a prebaked DPK image from IBM Container
 Registry. This is the real-cluster counterpart of the step's own local fixture at
-``steps/dpk/skypilot/test/slurm-tok`` — same transform, same args, same derivations;
+``steps/data/dpk/skypilot/test/slurm-tok`` — same transform, same args, same derivations;
 what differs is the environment and the image.
 
 **First image-mode coverage anywhere.** The dpk README records that ``dpk_image`` was

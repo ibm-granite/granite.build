@@ -33,9 +33,13 @@ target_expectations:
 # resolve through this one chain, so no test-local space is required:
 #   * space://environments/skypilot/slurm/bluevela -> gb-test itself
 #   * space://steps/dpk -> gb-test's own base_uri, the assets repo
-#     (assets.git@gbspace-config-dev), at steps/skypilot/dpk — byte-identical to
-#     the copy this repo publishes at
-#     configurations/assets/environments/skypilot/steps/dpk.
+#     (assets.git@gbspace-config-dev), at steps/skypilot/dpk. Its step.yaml is
+#     byte-identical to the one this repo publishes at
+#     configurations/assets/environments/skypilot/steps/data/dpk (the README
+#     beside it differs).
+#     The URI is space://steps/dpk, not this repo's space://steps/data/dpk, on
+#     purpose: in the assets repo `skypilot` is an env-partition dir, so `dpk` is
+#     the step's real name there. The assets repo has no data/ category.
 # The step resolves for this env because its step.yaml declares
 # `environment_configs: {Skypilot: ...}` with NO `subtypes:` restriction, so it
 # admits all four SkyPilot endpoints, slurm included. If someone later adds a

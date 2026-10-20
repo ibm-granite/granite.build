@@ -105,6 +105,9 @@ multiple launchers.
 
 ### Declaring inputs
 
+> For an overview of how step I/O lines up with the build.yaml side, see
+> [Inputs, outputs, and bindings](../builds/bindings.md).
+
 Every published step declares the inputs it reads, by name, and reads them from its
 bindings. Don't have recipes copy `{{ bindings.<name>.binding.path }}` into a config key
 for the step to read: a misnamed binding there renders as literal text and fails on the
