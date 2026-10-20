@@ -121,6 +121,11 @@ interface Step1DatasetUploadProps {
   setSelectedExistingDataset: (d: Dataset | null) => void
   onDatasetChanged: () => void
   /**
+   * "Change" on the frozen HuggingFace import. Narrower than `onDatasetChanged`: it
+   * reopens the form without discarding the chosen configuration.
+   */
+  onHfImportChanged: () => void
+  /**
    * The train/validation split or the column mapping changed. Narrower than
    * `onDatasetChanged`: it invalidates the uploaded-dataset ids so the launch
    * re-uploads, without discarding the chosen configuration.
@@ -179,6 +184,7 @@ export function Step1DatasetUpload({
   selectedExistingDataset,
   setSelectedExistingDataset,
   onDatasetChanged,
+  onHfImportChanged,
   onDatasetSplitChanged,
   hfRepoId,
   setHfRepoId,
@@ -825,7 +831,7 @@ export function Step1DatasetUpload({
                 ) : pendingHfImport ? (
                   // No request behind this card, so it renders whether or not
                   // appConfig (and hfConfig) has resolved yet.
-                  <HfImportSummaryCard snapshot={pendingHfImport} onChange={onDatasetChanged} requiredColumns={requiredColumns} />
+                  <HfImportSummaryCard snapshot={pendingHfImport} onChange={onHfImportChanged} requiredColumns={requiredColumns} />
                 ) : hfConfig ? (
                   <HfImportForm hf={hf} mappableColumns={mappableColumns} />
                 ) : null}

@@ -94,6 +94,14 @@ describe('isDatasetNameValid', () => {
     assert.equal(isDatasetNameValid('a..b'), false)
   })
 
+  it('judges the trimmed name, which is what the payload sends', () => {
+    assert.equal(isDatasetNameValid('  '), false)
+    assert.equal(isDatasetNameValid('\t'), false)
+    assert.equal(isDatasetNameValid(' alpaca '), true)
+    assert.equal(isDatasetNameValid(` ${'a'.repeat(255)} `), true)
+    assert.equal(isDatasetNameValid(' a/b '), false)
+  })
+
   it('rejects empty and over-long names', () => {
     assert.equal(isDatasetNameValid(''), false)
     assert.equal(isDatasetNameValid('a'.repeat(256)), false)
@@ -405,6 +413,16 @@ describe('pollStep', () => {
   it('times out on an expired deadline with no terminal status', () => {
     assert.equal(pollStep({ status: undefined, expired: true }), 'timeout')
     assert.equal(pollStep({ status: 'importing', expired: true }), 'timeout')
+  })
+
+  it('is missing when the row is gone, before or after the deadline', () => {
+    assert.equal(pollStep({ status: undefined, expired: false, missing: true }), 'missing')
+    assert.equal(pollStep({ status: undefined, expired: true, missing: true }), 'missing')
+  })
+
+  it('still lets a terminal status outrank missing', () => {
+    assert.equal(pollStep({ status: 'ready', expired: false, missing: true }), 'ready')
+    assert.equal(pollStep({ status: 'error', expired: false, missing: true }), 'error')
   })
 
   it('waits while there is time left and no terminal status', () => {
@@ -776,5 +794,9 @@ describe('hfImportPollOutcome', () => {
 
   it('keeps the row on a timeout, since the import may still finish', () => {
     assert.equal(hfImportPollOutcome('timeout'), 'fail-keep-row')
+  })
+
+  it('only forgets a row that is gone: nothing to delete, nothing to wait for', () => {
+    assert.equal(hfImportPollOutcome('missing'), 'fail-forget-row')
   })
 })

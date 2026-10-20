@@ -53,10 +53,14 @@ export function deriveDatasetName(repoId: string): string {
 }
 
 /** The server's own rule, applied client-side so a hand-edited name fails in the
- *  form rather than as a 422 after the user clicks Import. */
+ *  form rather than as a 422 after the user clicks Import.
+ *
+ *  Judged on the trimmed name, because that is what `buildHfImportPayload` sends:
+ *  a name of two spaces passed every check here and 422'd at Launch. */
 export function isDatasetNameValid(name: string): boolean {
-  if (name.length === 0 || name.length > NAME_MAX) return false
-  return !name.includes('/') && !name.includes('\\') && !name.includes('..')
+  const trimmed = name.trim()
+  if (trimmed.length === 0 || trimmed.length > NAME_MAX) return false
+  return !trimmed.includes('/') && !trimmed.includes('\\') && !trimmed.includes('..')
 }
 
 /** Recovery for a 409: the same repo at a pinned revision is a legitimate second
@@ -311,7 +315,7 @@ export function hfErrorStatus(err: unknown): number | undefined {
   return typeof status === 'number' ? status : undefined
 }
 
-export type PollDecision = 'ready' | 'error' | 'wait' | 'timeout'
+export type PollDecision = 'ready' | 'error' | 'missing' | 'wait' | 'timeout'
 
 /**
  * What the import poll should do this tick.
@@ -321,10 +325,19 @@ export type PollDecision = 'ready' | 'error' | 'wait' | 'timeout'
  * waits while there is time left and times out afterwards — which is also why a
  * post-deadline fetch rejection surfaces the authored timeout copy rather than a
  * transport error the user cannot act on.
+ *
+ * `missing` is the one failure that is not a transport hiccup: the GET answered
+ * 404, so the row was deleted and no amount of waiting brings it back. It outranks
+ * the deadline for the same reason `error` does.
  */
-export function pollStep(input: { status: string | undefined; expired: boolean }): PollDecision {
+export function pollStep(input: {
+  status: string | undefined
+  expired: boolean
+  missing?: boolean
+}): PollDecision {
   if (input.status === 'ready') return 'ready'
   if (input.status === 'error') return 'error'
+  if (input.missing) return 'missing'
   if (input.expired) return 'timeout'
   return 'wait'
 }
@@ -507,18 +520,25 @@ export function hfImportPostFailure(input: {
   return input.httpStatus === 409 && !input.retriedName ? 'suffix-and-retry' : 'fail'
 }
 
-export type HfImportPollOutcome = 'proceed' | 'wait' | 'fail-and-delete' | 'fail-keep-row'
+export type HfImportPollOutcome =
+  | 'proceed'
+  | 'wait'
+  | 'fail-and-delete'
+  | 'fail-keep-row'
+  | 'fail-forget-row'
 
 /**
  * What Launch does with one `pollStep` decision while waiting for the import.
  *
  * An errored import is deleted so a retry starts clean and no dead row piles up. A
  * timed-out one is kept: it may still finish, and a retry resumes polling it rather
- * than importing a second copy.
+ * than importing a second copy. A vanished one is only forgotten -- there is
+ * nothing to delete, and keeping its id made every retry poll a row that is gone.
  */
 export function hfImportPollOutcome(decision: PollDecision): HfImportPollOutcome {
   if (decision === 'ready') return 'proceed'
   if (decision === 'error') return 'fail-and-delete'
+  if (decision === 'missing') return 'fail-forget-row'
   if (decision === 'timeout') return 'fail-keep-row'
   return 'wait'
 }

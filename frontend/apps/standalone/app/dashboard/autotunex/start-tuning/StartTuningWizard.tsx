@@ -50,7 +50,7 @@ import {
 import { ALGORITHM_DETAILS, ALGORITHM_OPTIONS } from '@granite-build/ui-core/config/autotunexAlgorithms'
 import { toWireModelSource } from '../modelSources'
 import { clearDraft, loadDraft, resolveDraft, saveDraft } from './wizardDraft'
-import { firstIncompleteStep } from './launchReadiness'
+import { firstIncompleteStep, invalidCompletedSteps } from './launchReadiness'
 import { Step0GetStarted } from './steps/Step0GetStarted'
 import { Step1DatasetUpload } from './steps/Step1DatasetUpload'
 import { Step2Configure } from './steps/Step2Configure'
@@ -252,6 +252,14 @@ export function StartTuningWizard() {
     setPendingHfImport(null)
     createdHfDatasetIdRef.current = null
     setHfDraft(null)
+    // The lifted selection too, not just what was frozen from it: Step 1 reopens
+    // its HuggingFace tab from these, so the previous goal's repo stayed filled in.
+    setHfRepoId(null)
+    setHfConfigName('')
+    setHfTrainSplit('')
+    setHfValidationSplit(NO_VALIDATION)
+    setHfName('')
+    setHfValidationPercentage(HF_VALIDATION_PERCENTAGE)
     // Cleared alongside `existingDatasetId`: leaving the object behind showed step 1
     // with no dataset while Step1DatasetUpload still read the stale one and rendered
     // null in place of the "Expected Dataset Format" panel.
@@ -387,6 +395,11 @@ export function StartTuningWizard() {
     isLaunching,
   ])
   const canProceed = isStepValid(currentStep)
+  // Launch re-checks every earlier step up front, not only after the click, and the
+  // indicator flags the ones that no longer pass (handleLaunch's own check stays as
+  // the backstop).
+  const launchBlockedBy = currentStep === lastStepIndex ? firstIncompleteStep(isStepValid, lastStepIndex) : null
+  const invalidSteps = invalidCompletedSteps(completedSteps, isStepValid, lastStepIndex, currentStep)
   const stepLabels = ['Get Started', 'Upload Dataset', 'Configure', ...(hasRewardStep ? ['Reward Function'] : []), 'Review & Launch']
 
   const breadcrumbItems = useMemo(() => {
@@ -662,6 +675,24 @@ export function StartTuningWizard() {
   }
 
   /**
+   * "Change" on the frozen HuggingFace import. Narrower than `handleDatasetChanged`:
+   * a rename (the 409 recovery asks for exactly that) or a remap changes the
+   * import, but Step 2 never reads the dataset, so the chosen configuration and
+   * experiment name stand. Only Step 1 is reopened -- which also keeps the later
+   * steps unreachable through the indicator until it is passed again.
+   *
+   * `datasetId` goes too: a launch that imported and then failed later has set it,
+   * and `datasetId || existingDatasetId` in handleLaunch would otherwise skip the
+   * new import and train on the old copy.
+   */
+  function handleHfImportChanged() {
+    setDatasetId(null)
+    setPendingHfImport(null)
+    createdHfDatasetIdRef.current = null
+    setCompletedSteps((prev) => prev.map((v, i) => (i === 1 ? false : v)))
+  }
+
+  /**
    * The split ratio, a separate validation file and the column mapping change what
    * gets uploaded but not which dataset the user picked, so this deliberately does
    * less than `handleDatasetChanged`: it drops only the ids that would skip the
@@ -701,6 +732,9 @@ export function StartTuningWizard() {
           const created = await importHfDataset(payload)
           if (!created?.id) throw new Error('Failed to import dataset from HuggingFace.')
           createdHfDatasetIdRef.current = created.id
+          // The suffix rename is what the job trains on, so Review and the
+          // dataset list have to show it, not the name typed in Step 1.
+          if (payload !== snapshot.payload) setPendingHfImport({ ...snapshot, payload })
           break
         } catch (err) {
           const status = hfErrorStatus(err)
@@ -721,15 +755,22 @@ export function StartTuningWizard() {
     const id = createdHfDatasetIdRef.current as string
     const deadline = Date.now() + HF_IMPORT_READY_TIMEOUT_MS
     for (;;) {
-      // A failed poll is just a poll to retry, as in waitForDatasetReady.
+      // A failed poll is just a poll to retry, as in waitForDatasetReady -- except a
+      // 404, which means the row was deleted and will not come back.
       let dataset: Dataset | null = null
+      let missing = false
       try {
         dataset = await getDataset(id)
-      } catch {
+      } catch (err) {
         dataset = null
+        missing = hfErrorStatus(err) === 404
       }
-      const outcome = hfImportPollOutcome(pollStep({ status: dataset?.status, expired: Date.now() > deadline }))
+      const outcome = hfImportPollOutcome(pollStep({ status: dataset?.status, expired: Date.now() > deadline, missing }))
       if (outcome === 'proceed') return id
+      if (outcome === 'fail-forget-row') {
+        createdHfDatasetIdRef.current = null
+        throw new Error('The imported dataset was deleted before it finished. Launch again to import it afresh.')
+      }
       if (outcome === 'fail-and-delete') {
         createdHfDatasetIdRef.current = null
         await deleteDataset(id).catch(() => undefined)
@@ -953,12 +994,12 @@ export function StartTuningWizard() {
           past `lastStepIndex`. Keep this list free of falsy entries. */}
       <ProgressIndicator key={hasRewardStep ? 'with-reward' : 'no-reward'} currentIndex={currentStep} spaceEqually onChange={goToStep}>
         {[
-          <ProgressStep key="get-started" disabled={isLaunching} complete={completedSteps[0]} label="Get Started" description="Choose your approach" />,
-          <ProgressStep key="dataset" disabled={!completedSteps[0] || isLaunching} complete={completedSteps[1]} label="Upload Dataset" description="Upload and preview your data" />,
-          <ProgressStep key="configure" disabled={!completedSteps[1] || isLaunching} complete={completedSteps[2]} label="Configure" description="Select or create a configuration" />,
+          <ProgressStep key="get-started" disabled={isLaunching} complete={completedSteps[0]} invalid={invalidSteps[0]} label="Get Started" description="Choose your approach" />,
+          <ProgressStep key="dataset" disabled={!completedSteps[0] || isLaunching} complete={completedSteps[1]} invalid={invalidSteps[1]} label="Upload Dataset" description="Upload and preview your data" />,
+          <ProgressStep key="configure" disabled={!completedSteps[1] || isLaunching} complete={completedSteps[2]} invalid={invalidSteps[2]} label="Configure" description="Select or create a configuration" />,
           ...(hasRewardStep
             ? [
-                <ProgressStep key="reward" disabled={!completedSteps[2] || isLaunching} complete={completedSteps[3]} label="Reward Function" description="Define your reward function" />,
+                <ProgressStep key="reward" disabled={!completedSteps[2] || isLaunching} complete={completedSteps[3]} invalid={invalidSteps[3]} label="Reward Function" description="Define your reward function" />,
               ]
             : []),
           <ProgressStep key="review" disabled={!completedSteps[hasRewardStep ? 3 : 2] || isLaunching} complete={completedSteps[hasRewardStep ? 4 : 3]} label="Review & Launch" description="Review and start tuning" />,
@@ -1009,6 +1050,7 @@ export function StartTuningWizard() {
             selectedExistingDataset={selectedExistingDataset}
             setSelectedExistingDataset={setSelectedExistingDataset}
             onDatasetChanged={handleDatasetChanged}
+            onHfImportChanged={handleHfImportChanged}
             onDatasetSplitChanged={handleDatasetSplitChanged}
             hfRepoId={hfRepoId}
             setHfRepoId={setHfRepoId}
@@ -1106,7 +1148,7 @@ export function StartTuningWizard() {
         {currentStep < lastStepIndex ? (
           <Button kind="primary" renderIcon={ArrowRight} onClick={handleNext} disabled={!canProceed}>Next</Button>
         ) : (
-          <Button kind="primary" renderIcon={Rocket} onClick={handleLaunch} disabled={!canProceed || isLaunching}>
+          <Button kind="primary" renderIcon={Rocket} onClick={handleLaunch} disabled={!canProceed || isLaunching || launchBlockedBy !== null}>
             {isLaunching ? (
               <InlineLoading
                 description={
