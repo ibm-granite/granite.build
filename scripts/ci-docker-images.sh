@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Preload the Docker images CI tests use, so the tests themselves never pull.
 #
-#   load   load the cached tarball, then pull missing images with retry
-#   save   write all manifest images to the tarball
+#   load               load the cached tarball, then pull missing images with retry
+#   save               write all manifest images to the tarball
+#   kind-load NAME...  copy the named (loaded) manifest images into the kind node
 #
 # CACHE_DIR is what actions/cache restores and saves (see ci.yml). Tests pull
-# if-not-present, so a preloaded image is used as-is.
+# if-not-present, so a preloaded image is used as-is. kind pods don't see the
+# host's images, hence kind-load.
 set -euo pipefail
 
 IMAGE_LIST="${CI_DOCKER_IMAGE_LIST:-test-data/ci-docker-images.env}"
@@ -16,6 +18,7 @@ MAX_ATTEMPTS="${CI_DOCKER_PULL_ATTEMPTS:-6}"
 # so matrix jobs don't retry in lockstep.
 BASE_DELAY="${CI_DOCKER_PULL_BASE_DELAY:-15}"
 MAX_DELAY="${CI_DOCKER_PULL_MAX_DELAY:-120}"
+KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-skypilot}"
 
 # Print the image of each NAME=image line; exit 1 on a malformed line.
 read_images() {
@@ -88,11 +91,49 @@ cmd_save() {
     echo "Saved $(wc -w <<<"$images" | tr -d ' ') images to $TARBALL ($(du -h "$TARBALL" | cut -f1))"
 }
 
+# Print the image of manifest entry NAME; exit 1 when there is none.
+image_named() {
+    local image
+    image=$(awk -F= -v name="$1" '
+        { key = $1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", key) }
+        key == name {
+            image = substr($0, index($0, "=") + 1)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", image)
+            print image; exit
+        }' "$IMAGE_LIST")
+    if [[ -z "$image" ]]; then
+        echo "$IMAGE_LIST: no entry named $1" >&2
+        return 1
+    fi
+    echo "$image"
+}
+
+# Returns 2 without a NAME, 1 for a NAME not in the manifest or not loaded.
+cmd_kind_load() {
+    if (($# == 0)); then
+        echo "usage: $0 kind-load NAME..." >&2
+        return 2
+    fi
+    local name image
+    for name in "$@"; do
+        image=$(image_named "$name")
+        if ! docker image inspect "$image" >/dev/null 2>&1; then
+            echo "::error::$image is not loaded; run '$0 load' first" >&2
+            return 1
+        fi
+        kind load docker-image --name "$KIND_CLUSTER_NAME" "$image"
+    done
+}
+
 case "${1:-}" in
 load) cmd_load ;;
 save) cmd_save ;;
+kind-load)
+    shift
+    cmd_kind_load "$@"
+    ;;
 *)
-    echo "usage: $0 {load|save}" >&2
+    echo "usage: $0 {load|save|kind-load NAME...}" >&2
     exit 2
     ;;
 esac

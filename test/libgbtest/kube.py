@@ -33,7 +33,7 @@ import os
 import shutil
 import subprocess
 
-import pytest
+from libgbtest.xdist_groups import SKYPILOT_XDIST_GROUP
 
 #: Context ``sky local up`` creates with its default cluster name; the one
 #: skypilot/kubernetes/local pins in ``allowed_contexts``.
@@ -46,8 +46,9 @@ SHARED_CLAIM = "gb-shared"
 #: Every kube build test class carries this, so they run one at a time. Each pod
 #: requests 2 CPUs and a CI runner's kind node has ~3 left after the control
 #: plane, so concurrent xdist workers would leave pods unschedulable; with the
-#: Makefile's ``--dist=loadgroup`` a group runs serially on one worker.
-KUBE_XDIST_GROUP = pytest.mark.xdist_group(name="skypilot_kube")
+#: Makefile's ``--dist=loadgroup`` a group runs serially on one worker. Shared with
+#: every skypilot_integration test, so kube never overlaps slurm either.
+KUBE_XDIST_GROUP = SKYPILOT_XDIST_GROUP
 
 
 def expected_kind_context() -> str:

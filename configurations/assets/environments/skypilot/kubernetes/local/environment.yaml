@@ -16,6 +16,13 @@ config:
   # Applied as AUTODOWN on Kubernetes; see skypilot/kubernetes/environment.yaml.
   idle_minutes_to_autostop: 15
   shared_workdir: /shared
+  # The hf steps default to 10Gi each, and concurrent ones don't fit on one kind
+  # node. launcher_config.resources outranks the step's compute_config floor.
+  steps:
+    hfpull:
+      launcher_config: { resources: { memory: "1+" } }
+    hfpush:
+      launcher_config: { resources: { memory: "1+" } }
   # Deep-merged into ~/.sky/config.yaml at launch (as skypilot/aws does for its
   # credentials profile). Two things, both about WHICH cluster and HOW pods run:
   cloud_config:
@@ -45,7 +52,10 @@ config:
                   persistentVolumeClaim:
                     claimName: gb-shared
               containers:
-                - volumeMounts:
+                # SkyPilot's container (merged by name); its default is Always.
+                - name: ray-node
+                  imagePullPolicy: IfNotPresent
+                  volumeMounts:
                     - name: gb-shared
                       mountPath: /shared
 assetstores:

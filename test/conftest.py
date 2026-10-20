@@ -63,7 +63,7 @@ import libgbtest.local_postgres  # noqa: E402  # isort: skip
 
 import libgbtest
 import libgbtest.constants
-from libgbtest import abort_cleanup
+from libgbtest import abort_cleanup, xdist_groups
 from libgbtest.constants import BUILD_ID_PATTERN
 
 import gbserver.types.constants
@@ -563,6 +563,14 @@ def pytest_unconfigure(config):
     """Restore the signal handlers pytest_configure replaced."""
     abort_cleanup.restore_signal_handlers(_PREVIOUS_SIGNAL_HANDLERS)
     _PREVIOUS_SIGNAL_HANDLERS.clear()
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items):
+    """Serialize the SkyPilot tests. tryfirst: xdist reads the groups after."""
+    xdist_groups.group_skypilot_integration_tests(
+        items, strict=xdist_groups.is_loadgroup(config)
+    )
 
 
 @pytest.hookimpl(tryfirst=True, optionalhook=True)

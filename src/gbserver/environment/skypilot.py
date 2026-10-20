@@ -1816,6 +1816,30 @@ def _build_skypilot_mounts(
     return file_mounts, storage_mounts
 
 
+def _inline_hf_download_cmd(pull_info: Dict[str, Any]) -> str:
+    """The ``hf download`` line an inline hfpull adds to a step's setup script.
+
+    Every value is ``shlex.quote``d, so a ``"``, ``$`` or backtick in one can
+    neither break the setup line nor be expanded by the shell. The repo and
+    revision come from the build's ``hf://`` URI; the path is the environment's
+    ``cache_path`` (or ``${shared_workdir}/hf_cache``), used literally:
+    ``pullasset_hfstore`` refuses one containing ``$``.
+
+    :param pull_info: A binding's ``_hfpull`` dict (``repo``, ``path``, and the
+        optional ``revision`` and ``type``).
+    :returns: The shell command line.
+    """
+    cmd = (
+        f"hf download {shlex.quote(str(pull_info['repo']))} "
+        f"--local-dir {shlex.quote(str(pull_info['path']))}"
+    )
+    if pull_info.get("revision"):
+        cmd += f" --revision {shlex.quote(str(pull_info['revision']))}"
+    if pull_info.get("type"):
+        cmd += f" --repo-type {shlex.quote(str(pull_info['type']))}"
+    return cmd
+
+
 def aws_credentials_present() -> bool:
     """Return True when boto3 would resolve AWS credentials from the environment.
 
@@ -3412,13 +3436,8 @@ class Skypilot(Environment):
                     "pip install --no-cache-dir 'huggingface_hub[cli]<2.0' "
                     "2>/dev/null || true",
                 ]
-                for bid, pull_info in pending_hfpulls.items():
-                    cmd = f'hf download "{pull_info["repo"]}" --local-dir "{pull_info["path"]}"'
-                    if pull_info.get("revision"):
-                        cmd += f' --revision "{pull_info["revision"]}"'
-                    if pull_info.get("type"):
-                        cmd += f' --repo-type {pull_info["type"]}'
-                    hfpull_lines.append(cmd)
+                for pull_info in pending_hfpulls.values():
+                    hfpull_lines.append(_inline_hf_download_cmd(pull_info))
                 hfpull_lines.append("# -- end inline hfpull --")
                 hfpull_block = "\n".join(hfpull_lines) + "\n"
                 setup_script = hfpull_block + setup_script
@@ -4836,6 +4855,17 @@ class Skypilot(Environment):
             and storeload_config.config.get("inline", False)
         )
         if inline:
+            # The inline download line quotes the path (_inline_hf_download_cmd),
+            # so a shell variable in it is no longer expanded, and the step's
+            # binding never was: refuse rather than download to a literal
+            # `$VAR/...` directory the step won't look in. Relative paths are
+            # fine: setup and run both start in the same working directory.
+            if "$" in str(binding_path):
+                raise ValueError(
+                    "hf assetstore pull with inline: true: cache path "
+                    f"'{cache_dir}' contains '$', which is not expanded; set "
+                    "cache_path (or shared_workdir) to a literal path"
+                )
             # Embed hfpull metadata in the binding_config so it flows per-step
             # through kwargs["bindings"] to _launch_skypilot_inner (no shared state).
             binding_config["_hfpull"] = {
