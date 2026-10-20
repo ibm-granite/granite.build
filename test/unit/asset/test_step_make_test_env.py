@@ -99,7 +99,14 @@ def _run_make_test(tmp_path: pathlib.Path, extra_env: dict[str, str]) -> dict:
     if shutil.which("make") is None:
         pytest.skip("make not installed")
     step = _make_step(tmp_path)
-    env = {k: v for k, v in os.environ.items() if k not in _VARS} | extra_env
+    # Also drop make's own MAKEFLAGS/MFLAGS/MAKELEVEL: when this test runs under an
+    # outer make (`make quick-tests` passes `GBTEST_MODE=mock` on its command line),
+    # MAKEFLAGS carries that assignment into the inner make, which exports it to the
+    # step's tests, so the run would no longer start from a clean environment.
+    _make_vars = ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES")
+    env = {
+        k: v for k, v in os.environ.items() if k not in _VARS + _make_vars
+    } | extra_env
     subprocess.run(
         [
             "make",
