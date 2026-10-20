@@ -14,9 +14,11 @@ granite.build:
           uri: hf:///hf-internal-testing/tiny-random-gpt2
       outputs:
         # The lm_eval --output_path directory, pushed to a throwaway dataset. The
-        # test_ prefix is what scripts/rm_hf_repos.py cleans up.
+        # placeholders are filled per run by libgbtest.hfpush (org + run suffix),
+        # which then checks the dataset landed on the Hub and deletes it. The test_
+        # prefix lets scripts/rm_hf_repos.py clean up after an aborted run.
         results:
-          uri: hf://huggingface.co/datasets/ibm-research/test_lm-eval-results_{{ binding.path | short_hash }}
+          uri: hf://huggingface.co/datasets/__GBTEST_HF_PUSH_ORG__/test_lm-eval-results___GBTEST_HF_PUSH_RUN__
       steps:
         - step_uri: space://steps/eval/lm-eval
           config:

@@ -46,9 +46,13 @@ cd steps/eval/lm-eval/skypilot
 
 **SLURM build test (`slurm-cpu`).** Uses `aime25` with `--limit 1` against
 `hf-internal-testing/tiny-random-gpt2`, on the bare node (the local cluster has no Pyxis),
-with CPU torch. The results go to an `hf://` dataset named `ibm-research/test_lm-eval-results_<hash>`,
-so it needs a write `HF_TOKEN`. In Mode 1 the push needs two more settings that Mode 2
-gets for free:
+with CPU torch. The results go to an `hf://` dataset,
+`<org>/test_lm-eval-results_<run>`: the test class uses `HfPushCleanupMixin`
+(`test/libgbtest/hfpush.py`), which fills the build.yaml's `__GBTEST_HF_PUSH_ORG__`
+(default `ibm-research`, or `GBTEST_HF_PUSH_ORG`) and `__GBTEST_HF_PUSH_RUN__`
+placeholders, asserts the dataset reached the Hub, then deletes it. So it needs an
+`HF_TOKEN` that can write, and delete, in that org. In Mode 1 the push needs two more
+settings that Mode 2 gets for free:
 
 - **Space name `public`.** The push's HF resource group is derived from the space name
   (`gbspace-<space>`), and `make space` names the space after `STEP_NAME` by default,
@@ -69,8 +73,8 @@ GB_ENVIRONMENT=STANDALONE GBTEST_MODE=live GBTEST_STANDALONE_ENVIRONMENT=STAGING
 In Mode 2 (`test/steps/…`) the space is `configurations/spaces/local`, named `public`, and
 the conftest loads, so only `GB_ENVIRONMENT` and `GBTEST_MODE` are needed.
 
-It expects 3 steps (hfpull, lm-eval, hfpush), one input and one output artifact, and
-checks the `lm_eval_version` metadata. The step's own log (score table, marker) is in
+It expects 3 steps (hfpull, lm-eval, hfpush), one input and one output artifact, checks
+the `lm_eval_version` metadata, and checks that the results dataset exists on the Hub. The step's own log (score table, marker) is in
 `~/sky_logs/<sky-cluster>/.../tasks/run.log` on the host running gbserver.
 
 ## Publishing
