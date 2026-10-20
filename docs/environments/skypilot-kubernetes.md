@@ -50,8 +50,9 @@ ways to supply them:
   shadow a same-named cluster or user in your kubeconfig. Your own kubeconfig is never edited, and its
   contexts stay usable.
 
-  - **Collisions are refused.** A context of the same name in your own kubeconfig, or one already written
-    differently by another environment, is refused (`SkypilotConfigCollisionError`). An identical context is
+  - **Collisions are refused.** A context, cluster or user of the same name in your own kubeconfig, a
+    `current-context` in your kubeconfig that names one of the environment's contexts, or a context already
+    written differently by another environment, is refused (`SkypilotConfigCollisionError`). An identical context is
     shared and stays owned by the environment that wrote it first; an environment re-writing its own entry
     replaces it, e.g. a rotated token. Ownership is per space and environment name, so same-named
     environments in two spaces don't replace each other's credentials.
@@ -60,7 +61,11 @@ ways to supply them:
     and both `kubectl` and the Python client use yours. If it sets none, gbserver's file names an
     unreachable, credential-less placeholder context (`gbserver-no-default-context`) as the default, so a
     request that relies on the default (an environment without `allowed_contexts`, or a `kubectl` call
-    without `--context`) fails, as it would without `kube_configs`. In that case an environment with
+    without `--context`) fails, as it would without `kube_configs`. With several files on `KUBECONFIG`, both
+    the first `current-context` set (which `kubectl` uses) and the last (which the Python client uses) must
+    name one of your own contexts; otherwise the placeholder is used. Switching to an environment's
+    context yourself (`kubectl config use-context <context>`) makes it your default, with that
+    environment's credentials. In that case an environment with
     `allowed_contexts: all` also sees the placeholder, and SkyPilot spends about 5 seconds timing out on it
     when probing contexts; pinning `allowed_contexts` avoids that.
   - **Nothing is removed while gbserver runs**, so every environment's builds can still poll and tear down.
