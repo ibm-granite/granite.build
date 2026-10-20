@@ -100,6 +100,36 @@ accelerator that SkyPilot silently satisfies with a CPU-only node, so the step
 fails at render time if it is unset. Set it to a type your endpoint offers
 (`A10G`, `A100`, `H100`, …).
 
+## Running on SLURM
+
+The same step runs on a SkyPilot SLURM endpoint (for example
+`space://environments/skypilot/slurm/ibm-bluevela`). Three things differ from a
+cloud endpoint:
+
+- **Use a prebuilt image.** On SLURM the image runs as a Pyxis/enroot container.
+  Pulling the multi-GB NeMo-RL image on a cold node can take over an hour, which
+  can exceed the job's time limit or preemption window. Import it once to a
+  squashfs on shared storage and point `image_id` at that file:
+
+  ```bash
+  enroot import -o nemo-rl-v0.7.0.sqsh "docker://nvcr.io#nvidia/nemo-rl:v0.7.0"
+  ```
+
+  ```yaml
+  nemo_rl_config:
+    image_id: /shared/images/nemo-rl-v0.7.0.sqsh   # a path, not a registry ref
+  ```
+
+  Keep it a plain path. The step adds SkyPilot's `docker:` marker itself, and
+  SkyPilot passes a `.sqsh` path to Pyxis as-is.
+- **Match the partition's GPU type.** `gpu_model` becomes a typed GRES request
+  (`--gres=gpu:<type>:<count>`), so use a type the partition has, and one that
+  any environment-wide `sbatch_options.constraint` allows (`ibm-bluevela` pins
+  `h200`).
+- **The base model is staged by its own step.** SLURM endpoints usually stage
+  `hf://` inputs with a separate hfpull job onto shared storage rather than
+  inside this step, so a build shows one extra step.
+
 ## Example build.yaml
 
 Supervised fine-tuning of a base model, using `sft.yaml`'s built-in dataset — one

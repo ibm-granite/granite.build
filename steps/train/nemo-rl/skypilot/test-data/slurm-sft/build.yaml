@@ -1,0 +1,57 @@
+granite.build:
+  name: skypilot-slurm-nemo-rl-sft
+  # NeMo-RL SFT on IBM BlueVela over SLURM. The SLURM counterpart of aws-sft: the
+  # same ONE target, the smallest shipped SFT config, a short run. What differs is
+  # how the run reaches the node, called out below. Reaching SUCCESS proves the
+  # step's SLURM path: a separate hfpull step stages the base model onto shared
+  # /proj, the NeMo-RL image runs as a Pyxis/enroot container from a prebuilt
+  # .sqsh, run_sft.py trains, DCP->HF conversion runs, and the `model` artifact is
+  # registered from the step's marker. `dataset` is unbound, so sft.yaml's built-in
+  # dataset is used. ClearML is left in `auto` (no CLEARML_* creds => disabled).
+  targets:
+
+    train:
+      # BlueVela SLURM, gpu-mid partition, as the shared granitebuild functional ID.
+      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      inputs:
+        base_model:
+          # Public, tiny model so the hfpull runs anonymously. Overriding
+          # policy.model_name + tokenizer below keeps the whole run on this model
+          # rather than sft.yaml's gated Llama default.
+          uri: hf:///HuggingFaceTB/SmolLM2-135M
+      outputs:
+        model:
+          # Terminal env:// output, registered inline from the step's marker.
+          uri: "env:///model"
+          type: model
+      steps:
+        - step_uri: space://steps/train/nemo-rl
+          config:
+            poll_interval_seconds: 30
+            nemo_rl_config:
+              algorithm: sft
+              config_name: sft.yaml
+              output: model
+              # SLURM-SPECIFIC: a prebuilt squashfs of nvcr.io/nvidia/nemo-rl:v0.7.0
+              # (same digest the step pins) on shared /proj, readable by
+              # granitebuild. Pulling the image on a cold node takes over an hour
+              # (73 min measured), which a gpu-mid job's 2 h preemption-protection
+              # window cannot absorb, so the job must start from the .sqsh. The
+              # step prefixes `docker:`, which SkyPilot's SLURM provisioner strips
+              # and then hands a `.sqsh` path to Pyxis as-is. To rebuild it:
+              #   enroot import -o nemo-rl-v0.7.0.sqsh "docker://nvcr.io#nvidia/nemo-rl:v0.7.0"
+              image_id: /proj/data-eng/llmb-read-write/images/nemo-rl-v0.7.0.sqsh
+              overrides:
+                # Keep the run tiny: a handful of steps on a small model.
+                sft.max_num_steps: 3
+                sft.val_period: 3
+                checkpointing.save_period: 3
+                policy.tokenizer.name: HuggingFaceTB/SmolLM2-135M
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: 1
+              # SLURM-SPECIFIC: H200, not H100. The ibm-bluevela environment pins
+              # every job to H200 nodes (gpu-mid rejects jobs when no H100 is free),
+              # so an H100 request would never schedule. Renders as
+              # accelerators "H200:1" -> #SBATCH --gres=gpu:h200:1.
+              gpu_model: H200

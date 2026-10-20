@@ -1,0 +1,86 @@
+name: sky-slurm-bluevela
+type: Skypilot
+subtype: slurm
+# IBM BlueVela over SLURM — the SLURM sibling of the LSF environment in
+# environments/skypilot/lsf/ibm-bluevela. Both reach BlueVela as the shared
+# `granitebuild` functional ID; they differ in scheduler and login nodes (login1/2
+# run SLURM, login3-5 run LSF). Settings mirror the SLURM environment that the
+# BlueVela integration fixtures under
+# test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/ run against.
+# Reference with: environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+config:
+  default_cloud: slurm
+  # SLURM does not support cluster autostop (gbserver forces autostop=None); a
+  # per-step `sky down` releases the allocation instead.
+  idle_minutes_to_autostop: 0
+  # infra=slurm/<cluster>/<zone>: the SSH `Host` alias below must match `cluster`,
+  # and `zone` is the SLURM partition. gpu-mid holds 8-GPU H100 and H200 nodes
+  # (7-day limit). Override per build with `zone:` in the step config; see
+  # docs/environments/skypilot-slurm.md#cluster--zone.
+  cluster: bluevela
+  zone: gpu-mid
+  # The auto-queued HF I/O steps need no GPU, so send them to the cpu partition
+  # (keyed by step-type slug; a build can still override). The cpu partition has
+  # no H200 nodes, so they also drop the h200 constraint below: `null` removes the
+  # directive, where "" would emit a bare `--constraint=`.
+  steps:
+    hfpull:
+      zone: cpu
+      launcher_config: { sbatch_options: { constraint: null } }
+    hfpush:
+      zone: cpu
+      launcher_config: { sbatch_options: { constraint: null } }
+  # Pin every job to H200 nodes (#SBATCH --constraint=h200, billed at 1.4x H100).
+  # gpu-mid's submit filter rejects ANY job — even a CPU-only one with 0 GPUs —
+  # when no H100 node is free. A step requesting GPUs must therefore ask for H200
+  # (gpu_model: H200), or clear this per build with
+  # config.launcher_config.sbatch_options.constraint: null. See
+  # docs/environments/skypilot-slurm.md#sbatch_options--slurm-sbatch-directives.
+  sbatch_options:
+    constraint: h200
+  # Shared-FS root for per-run build workdirs (GB_BUILD_WORKDIR). It must be on
+  # /proj AND under the SkyPilot `workdir` set in cloud_config below: SkyPilot's
+  # SLURM backend bind-mounts only home + ccache + `workdir` into the enroot
+  # container (unlike LSF, which mounts all of /proj), so outside it a
+  # containerized step's output never reaches the separate (bare) hfpush step.
+  shared_workdir: /proj/data-eng/llmb-read-write/builds/
+  # Inline SLURM SSH reachability, materialized to ~/.slurm/config at launch. Keys
+  # are exact OpenSSH directive names; each value is secret-name-or-literal.
+  # HostName lists interchangeable login nodes: gbserver picks one at random and
+  # fails over to the next on a transient SSH control-plane error.
+  #
+  # Local runs read the granitebuild key from ~/.ssh/ibm-bluevela.key (mode 600,
+  # no passphrase — gbserver cannot answer a prompt). For CI with no key on the
+  # host, use `IdentityKey: BV_SSH_PRIVATE_KEY` (a space secret) instead. Testing
+  # a changed key? See the GBTEST_SKY_SSH_RESET caveat in
+  # docs/environments/skypilot-slurm.md.
+  cluster_ssh_configs:
+    slurm:
+      - Host: bluevela
+        HostName:
+          - login1.bluevela.rmf.ibm.com
+          - login2.bluevela.rmf.ibm.com
+        User: granitebuild
+        IdentityFile: ~/.ssh/ibm-bluevela.key
+        #IdentityKey: BV_SSH_PRIVATE_KEY
+        IdentitiesOnly: "yes"
+  # Deep-merged into ~/.sky/config.yaml at launch. `workdir` is the SkyPilot SLURM
+  # cluster base dir AND the one path bind-mounted into the enroot container; it
+  # is an ancestor of `shared_workdir` so per-run output lands on the shared FS.
+  # Lookup key: slurm/cluster_configs/<cluster>/workdir (cluster = bluevela).
+  cloud_config:
+    slurm:
+      cluster_configs:
+        bluevela:
+          workdir: /proj/data-eng/llmb-read-write
+assetstores:
+  - store_uri: space://assetstores/hf
+    pull:
+      - mode: default
+        config:
+          # On /proj (shared), not /tmp: a compute node's /tmp is per-node, so an
+          # hf:// input pulled there would be invisible to the training node.
+          cache_path: /proj/data-eng/llmb-read-write/hfcache/
+    push:
+      - mode: default
+        config: {}

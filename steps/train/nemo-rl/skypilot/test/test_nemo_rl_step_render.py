@@ -181,6 +181,23 @@ class TestImageSelection:
             "docker:quay.io/org/nemo-rl@sha256:ab'cd"
         )
 
+    def test_sqsh_path_is_docker_prefixed_too(self, launcher, nrl_defaults):
+        # On SLURM the image may be a prebuilt squashfs path (slurm-sft does this).
+        # It still gets `docker:`: SkyPilot's SLURM cloud only reads an image_id
+        # through extract_docker_image(), which needs the prefix, then hands a
+        # `.sqsh` path to Pyxis as-is. A bare path would silently run WITHOUT the
+        # container. See test_skypilot_extracts_a_docker_prefixed_sqsh_path.
+        sqsh = "/proj/x/images/nemo-rl-v0.7.0.sqsh"
+        cfg = _cfg(nrl_defaults, image_id=sqsh)
+        assert _render(launcher["image_id"], cfg) == f"docker:{sqsh}"
+
+    def test_skypilot_extracts_a_docker_prefixed_sqsh_path(self):
+        # Pins the SkyPilot half of the contract above, against the installed fork.
+        sky = pytest.importorskip("sky", reason="skypilot not installed")
+        sqsh = "/proj/x/images/nemo-rl-v0.7.0.sqsh"
+        assert sky.Resources(image_id=f"docker:{sqsh}").extract_docker_image() == sqsh
+        assert sky.Resources(image_id=sqsh).extract_docker_image() is None
+
 
 class TestGuardArgv:
     def test_both_phases_pass_identical_guard_argv(self, launcher, nrl_defaults):
