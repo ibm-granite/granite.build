@@ -324,10 +324,18 @@ def test_run_passes_each_output_dir(tmp_path):
 
 @pytest.mark.xfail(reason="FIXME: src/run.sh doesn't print GB_ARTIFACT_ID yet", strict=True)
 def test_run_sh_registers_each_output():
-    """src/run.sh prints a GB_ARTIFACT_ID marker for every declared output."""
-    text = (_STEP_DIR / "src" / "run.sh").read_text()
+    """src/run.sh prints a GB_ARTIFACT_ID marker for every declared output.
+
+    Only code counts: the stub's comments describe the marker, so comment lines are
+    skipped, or the comment alone would satisfy the check.
+    """
+    code = "\n".join(
+        line
+        for line in (_STEP_DIR / "src" / "run.sh").read_text().splitlines()
+        if not line.lstrip().startswith("#")
+    )
     for name in _TEMPLATE["outputs"].get("required", {}):
-        assert f"GB_ARTIFACT_ID:{name}" in text or "GB_ARTIFACT_ID:$" in text
+        assert f"GB_ARTIFACT_ID:{name}" in code or "GB_ARTIFACT_ID:$" in code
 ```
 
 `strict=True` on the xfail makes it fail loudly once `run.sh` does print the markers, so
