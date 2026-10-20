@@ -1,0 +1,11 @@
+# Ship the bundled src/ scripts to the node VERBATIM — do NOT Jinja-render them.
+#
+# The build's step-template.yaml renders the Jinja; its output (the generated
+# step.yaml setup:/run: blocks) is what invokes these scripts. The scripts
+# themselves are plain bash/python and must survive gbserver's final
+# fill_templates_in_dir pass untouched. In particular nemo_rl_guard.sh contains
+# LITERAL "{{" / "{%" (both in a comment and in case-patterns that detect an
+# unrendered binding expression arriving as an argument). Templating this dir
+# makes Jinja parse those braces and fail step creation with
+# TemplateSyntaxError. This marker opts the directory out of content filling
+# (the files are still copied to the node).
