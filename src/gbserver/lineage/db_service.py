@@ -209,8 +209,8 @@ class DBLineageService(LineageService):
         seeds: set = set()
         if root_uri:
             seeds.add(root_uri)
-        for seed_job in dict.fromkeys(job_seeds):
-            seeds.update(self._job_endpoint_uris(seed_job))
+        if job_seeds:
+            seeds.update(self._job_endpoint_uris(list(dict.fromkeys(job_seeds))))
 
         if not seeds:
             # The caller named something this index cannot key on. An empty graph
@@ -255,8 +255,10 @@ class DBLineageService(LineageService):
         job's detail gets them on the node too; nobody else does. Grouped nodes
         (``runs:``) stand for many jobs and get neither.
 
-        One batched read of the run nodes' rows; the check runs once per distinct
-        owner and space. A job with no namespace or owner (an import) fails closed.
+        Batched reads of the run nodes' rows under ``_GROUP_ROWS_BUDGET`` (a job
+        past it gets no ids); the check runs once per distinct owner and space, on
+        all of each job's rows. A job with no namespace or owner (an import) fails
+        closed.
         """
         by_job = {
             node["id"][len("run:") :]: node
@@ -266,7 +268,9 @@ class DBLineageService(LineageService):
         if not by_job:
             return
         rows_by_job: Dict[str, List] = {}
-        for row in self._rows_of_jobs(sorted(by_job)):
+        # Every row, not the first: the entry takes owner and namespace only where
+        # all rows agree, so a forged row under a real job id fails closed.
+        for row in self._rows_of_jobs_for_grouping(sorted(by_job)):
             rows_by_job.setdefault(row.job_id, []).append(row)
         allowed: Dict[Tuple[str, str], bool] = {}
         for job_id, node in by_job.items():
@@ -468,18 +472,18 @@ class DBLineageService(LineageService):
             for job_id in job_ids
         ]
 
-    def _job_endpoint_uris(self, job_id: str) -> set:
-        """Every endpoint of one job execution, as seeds.
+    def _job_endpoint_uris(self, job_ids: List[str]) -> set:
+        """Every endpoint of the given job executions, as seeds.
 
-        One indexed query on ``job_id``, which is the only identifier every lineage
-        source has -- so this works for imported rows too, where no process id does.
+        Batched indexed queries on ``job_id`` (see :meth:`_rows_of_jobs`), which is
+        the only identifier every lineage source has -- so this works for imported
+        rows too, where no process id does.
 
         A storage error propagates (the route answers 503): swallowing it would
         return an empty graph, indistinguishable from "this job recorded nothing".
         """
-        rows = self.storage.get_rows_by_job(job_id)
         seeds: set = set()
-        for row in rows:
+        for row in self._rows_of_jobs(job_ids):
             for endpoint in (row.input, row.output):
                 if endpoint and endpoint != TERMINAL:
                     seeds.add(endpoint)

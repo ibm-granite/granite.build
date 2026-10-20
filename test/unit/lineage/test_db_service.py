@@ -285,6 +285,30 @@ class TestValidation:
         assert {A, C} <= ids
         assert result["root_id"] == ""
 
+    def test_job_seeds_are_read_in_one_batch_not_one_query_each(self):
+        """1000 seed jobs from any signed-in user must not be 1000 locked queries."""
+        storage = FakeStorage([row(f"J{i}", A, B) for i in range(1000)])
+        calls = {"one": 0, "many": 0}
+        one, many = storage.get_rows_by_job, storage.get_rows_by_jobs
+
+        def by_job(job_id):
+            calls["one"] += 1
+            return one(job_id)
+
+        def by_jobs(job_ids):
+            calls["many"] += 1
+            return many(job_ids)
+
+        storage.get_rows_by_job, storage.get_rows_by_jobs = by_job, by_jobs
+        DBLineageService(storage=storage).query_graph(
+            job_ids=[f"J{i}" for i in range(1000)],
+            direction="upstream",
+            authorize_job=lambda entry: True,
+        )
+        assert calls["one"] == 0
+        # Seeds and origin ids, each in IN batches of _JOB_ROWS_BATCH, plus grouping.
+        assert calls["many"] <= 6
+
     @staticmethod
     def _origin_row(job_id, owner, namespace):
         return row(
