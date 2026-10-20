@@ -941,18 +941,38 @@ def _kubeconfig_paths(raw: Optional[str] = None) -> List[str]:
     ]
 
 
-def _user_kubeconfig(managed: Path) -> Tuple[Set[str], bool]:
-    """The user's kubeconfig files (all but the managed one): contexts, default.
+class _UserKubeconfig:
+    """What the user's own kubeconfig files (all but the managed one) define."""
 
-    Reads :func:`_kubeconfig_paths` minus the managed file; unreadable files are
-    skipped, as kubectl does.
+    def __init__(self: "_UserKubeconfig") -> None:
+        self.contexts: Set[str] = set()
+        self.clusters: Set[str] = set()
+        self.users: Set[str] = set()
+        # The first and the last non-empty current-context across the files:
+        # kubectl uses the first, the kubernetes Python client the last.
+        self.first_current: Optional[str] = None
+        self.last_current: Optional[str] = None
 
-    :returns: ``(context names, has a usable current-context)`` — the latter is
-        True when the first file that sets a non-empty ``current-context`` (the
-        one kubectl uses) names a context the user's files define.
+    @property
+    def has_default(self: "_UserKubeconfig") -> bool:
+        """Whether both tools' default is one of the user's own contexts.
+
+        If either the first or the last current-context set is missing or names
+        a context only the managed file defines, the tool following that rule
+        would otherwise default to an environment's secret context.
+        """
+        return all(
+            c is not None and c in self.contexts
+            for c in (self.first_current, self.last_current)
+        )
+
+
+def _user_kubeconfig(managed: Path) -> _UserKubeconfig:
+    """Read the user's kubeconfig files: :func:`_kubeconfig_paths` minus ``managed``.
+
+    Unreadable files are skipped, as kubectl does.
     """
-    names: Set[str] = set()
-    current: Optional[str] = None
+    found = _UserKubeconfig()
     for part in _kubeconfig_paths():
         path = Path(part)
         if path == managed or not path.is_file():
@@ -963,12 +983,20 @@ def _user_kubeconfig(managed: Path) -> Tuple[Set[str], bool]:
             continue
         if not isinstance(doc, dict):
             continue
-        for ctx in doc.get("contexts") or []:
-            if isinstance(ctx, dict) and ctx.get("name"):
-                names.add(ctx["name"])
-        if current is None and doc.get("current-context"):
+        for section, names in (
+            ("contexts", found.contexts),
+            ("clusters", found.clusters),
+            ("users", found.users),
+        ):
+            for entry in doc.get(section) or []:
+                if isinstance(entry, dict) and entry.get("name"):
+                    names.add(str(entry["name"]))
+        if doc.get("current-context"):
             current = str(doc["current-context"])
-    return names, current is not None and current in names
+            if found.first_current is None:
+                found.first_current = current
+            found.last_current = current
+    return found
 
 
 def _without(doc: Dict, section: str, name: str) -> None:
@@ -983,9 +1011,10 @@ def _set_current_context(doc: Dict, user_has_default: bool) -> None:
     context there would become the process-wide *default* and silently serve an
     environment's secret credentials to anything relying on the default. So:
 
-    * the user's kubeconfig sets a usable current-context: this file sets none,
-      and both kubectl (first file wins) and the Python client (last wins) use
-      the user's;
+    * the user's kubeconfig files set a usable current-context for both tools
+      (the first one set, which kubectl uses, and the last, which the Python
+      client uses, each name a user context): this file sets none, and both
+      use the user's;
     * it does not: this file carries the unreachable, credential-less
       :data:`_KUBE_PLACEHOLDER` as its current-context, so such a request fails
       loudly, as it would without ``kube_configs``.
@@ -1076,13 +1105,32 @@ def merge_kube_configs(
         doc.setdefault("apiVersion", "v1")
         doc.setdefault("kind", "Config")
         owners: Dict[str, str] = doc.setdefault(_KUBE_OWNERS_KEY, {})
-        user_contexts, user_has_default = _user_kubeconfig(dest)
+        user = _user_kubeconfig(dest)
         for parts in incoming:
             name = parts["context"]["name"]
-            if name in user_contexts:
-                _raise_collision(
-                    "kube context", name, env_name, "your own kubeconfig", str(dest)
+            # The user's own default must never resolve to a secret context.
+            # kubectl takes the first current-context set and nothing later on
+            # KUBECONFIG (our placeholder included) overrides it, so a user
+            # current-context naming one of our contexts is refused outright.
+            if name in (user.first_current, user.last_current):
+                raise SkypilotConfigCollisionError(
+                    f"kube context '{name}' from environment '{env_name}' is the "
+                    "current-context of your own kubeconfig, which does not define "
+                    "it, so it would become the default for every tool. Set a "
+                    "different current-context in your kubeconfig, or rename the "
+                    "context in the environment's kubeconfig secret."
                 )
+            # A clash on any of the three names would let the user's entry (it
+            # comes first) or ours shadow the other in one of the tools.
+            for kind, item, theirs in (
+                ("kube context", parts["context"], user.contexts),
+                ("kube cluster", parts["cluster"], user.clusters),
+                ("kube user", parts["user"], user.users),
+            ):
+                if item["name"] in theirs:
+                    _raise_collision(
+                        kind, item["name"], env_name, "your own kubeconfig", str(dest)
+                    )
             owner = owners.get(name)
             if owner is not None and owner != env_name:
                 existing = [
@@ -1110,7 +1158,7 @@ def merge_kube_configs(
                 _without(doc, section, parts[key]["name"])
                 doc.setdefault(section, []).append(parts[key])
             owners[name] = env_name
-        _set_current_context(doc, user_has_default)
+        _set_current_context(doc, user.has_default)
         changed = doc != before
         if changed:
             logger.info(
@@ -1146,7 +1194,7 @@ def release_kube_configs(env_name: str, home: Optional[Path] = None) -> bool:
             _without(doc, "clusters", _KUBE_NAME_PREFIX + name)
             _without(doc, "users", _KUBE_NAME_PREFIX + name)
             del owners[name]
-        _set_current_context(doc, _user_kubeconfig(dest)[1])
+        _set_current_context(doc, _user_kubeconfig(dest).has_default)
         _write_atomic(dest, yaml.safe_dump(doc, default_flow_style=False), mode=0o600)
         return True
 

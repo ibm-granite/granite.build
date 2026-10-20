@@ -171,6 +171,19 @@ class TestMerge:
         )
         assert "S3CR3T" not in caplog.text
 
+    @pytest.mark.parametrize("section", ["clusters", "users"])
+    def test_users_cluster_or_user_named_like_ours_is_refused(self, tmp_path, section):
+        """A user entry named gbserver/<context> would shadow ours in one tool."""
+        user = yaml.safe_load(_kubeconfig("mine"))
+        user[section][0]["name"] = "gbserver/remote"
+        key = "cluster" if section == "clusters" else "user"
+        user["contexts"][0]["context"][key] = "gbserver/remote"
+        (tmp_path / "user-kubeconfig").write_text(yaml.safe_dump(user))
+        with pytest.raises(SkypilotConfigCollisionError, match=f"kube {key} "):
+            sc.merge_kube_configs(
+                [_entry()], {"remote-kc": _kubeconfig("remote")}, "envA", home=tmp_path
+            )
+
     def test_generic_cluster_user_names_cannot_hijack_users_context(self, tmp_path):
         """A secret reusing the user's cluster/user names leaves theirs intact.
 
@@ -463,6 +476,64 @@ class TestDefaultContextBothTools:
         if kubectl is not None:
             assert kubectl[0] == expected
             assert {"mine", "remote"} <= kubectl[1]
+
+    @pytest.mark.parametrize(
+        "first_current, second_current",
+        [
+            # The reviewer's case: the second user file's current-context names
+            # a context only the managed file defines. kubectl (first set) gets
+            # "mine"; the Python client (last set) would get the secret one.
+            ("mine", "remote"),
+            # The mirror image: kubectl would get the secret one.
+            ("remote", "mine"),
+            # Second file sets a different, valid user context.
+            ("mine", "other"),
+            # Second file sets a current-context nobody defines.
+            ("mine", "ghost"),
+        ],
+    )
+    def test_several_user_files(
+        self, tmp_path, monkeypatch, first_current, second_current
+    ):
+        pytest.importorskip("kubernetes.config")
+        a = yaml.safe_load(_kubeconfig("mine", server="https://mine:6443"))
+        a["current-context"] = first_current
+        b = yaml.safe_load(_kubeconfig("other", server="https://other:6443"))
+        b["current-context"] = second_current
+        (tmp_path / "a.yaml").write_text(yaml.safe_dump(a))
+        (tmp_path / "b.yaml").write_text(yaml.safe_dump(b))
+        monkeypatch.setenv(
+            "KUBECONFIG",
+            os.pathsep.join([str(tmp_path / "a.yaml"), str(tmp_path / "b.yaml")]),
+        )
+        if "remote" in (first_current, second_current):
+            # A user default naming a secret context: kubectl would use it no
+            # matter what follows on KUBECONFIG, so the merge is refused.
+            with pytest.raises(SkypilotConfigCollisionError, match="current-context"):
+                sc.merge_kube_configs(
+                    [_entry()],
+                    {"remote-kc": _kubeconfig("remote")},
+                    "envA",
+                    home=tmp_path,
+                )
+            return
+        sc.merge_kube_configs(
+            [_entry()], {"remote-kc": _kubeconfig("remote")}, "envA", home=tmp_path
+        )
+        sc.activate_kubeconfig(home=tmp_path)
+        py, kubectl = self._defaults()
+        user_contexts = {"mine", "other"}
+        both_valid = {first_current, second_current} <= user_contexts
+        # Never the secret context, in either tool.
+        assert py[0] != "remote"
+        if kubectl is not None:
+            assert kubectl[0] != "remote"
+        if both_valid:
+            assert py[0] == second_current  # last set
+            if kubectl is not None:
+                assert kubectl[0] == first_current  # first set
+        else:
+            assert _raw_managed(tmp_path)["current-context"] == sc._KUBE_PLACEHOLDER
 
     def test_placeholder_only_when_user_has_no_default(self, tmp_path):
         self._user(tmp_path, "mine")
