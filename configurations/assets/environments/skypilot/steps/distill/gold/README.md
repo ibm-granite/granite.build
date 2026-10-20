@@ -1,7 +1,8 @@
-# gold (SkyPilot / LSF)
+# gold (SkyPilot / LSF or SLURM)
 
 Distils a small **student** from a larger **teacher** with the GOLD trainer (generalized
-JSD, `gb_steps_post_training.distillation.gold`), multi-node via the SkyPilot LSF cloud.
+JSD, `gb_steps_post_training.distillation.gold`), multi-node via the SkyPilot LSF or SLURM
+cloud (one step, both subtypes).
 The step renders the trainer's config, assigns each node its role (trainer, or vLLM server
 on the on-policy path) and starts `accelerate` with that node's rank. It registers the
 checkpoint directory as a `model` artifact, and optionally each intermediate checkpoint as
@@ -121,6 +122,12 @@ longer a config field; it is the optional `vllm` mem:// input (see [Inputs](#inp
 binding it requires `vllm_num_servers > 0` and `lmbda > 0`, and makes every node train.
 Not yet run on a cluster.
 
+On the SLURM subtype, the vLLM-serving branch runs `ldconfig` before starting the server:
+SLURM's pyxis/enroot builds the container in a separate `srun` from the one that injects
+the NVIDIA driver, so the image's own `/etc/ld.so.cache` misses `libcuda.so` and Triton's
+driver discovery fails with "libcuda.so cannot found!" otherwise. Unconditional and
+harmless where the gap doesn't exist — see `images/cuda-devel-base/README.md`.
+
 | Field | Type | Purpose |
 |---|---|---|
 | `vllm_num_servers` | integer | `> 0` selects on-policy. Without the optional `vllm` input bound, dedicates the **last** N nodes of the allocation to serving the student under vLLM and trains on the rest. Default: `0`. |
@@ -155,13 +162,26 @@ Not yet run on a cluster.
 ### Source delivery (`code_config`)
 
 `code_config` (`code_dir`, `expect_ref`, `repo`, `ref`, `workdir`, `token_secret`, `python`,
-`setup_command`) is identical in every ported distillation step and documented once — see
-"Source delivery" in the `space://steps/distill/tokenizer-align` step's README. The trainer
-(`gold.py`, `custom_gold_trainer.py`, `run_vllm_serve.py` and their shared helpers) comes
-from that clone. Its commit is pinned by `code_config.expect_ref` and recorded as
-`distill_code_commit` step metadata on every run. In this step the renderer, the residency
-check and the vLLM server run with `/stage/.venv/bin/python` directly, not with
-`code_config.python`.
+`setup_command`) follows the same shape as every ported distillation step and is documented
+once — see "Source delivery" in the `space://steps/distill/tokenizer-align` step's README.
+The trainer (`gold.py`, `custom_gold_trainer.py`, `run_vllm_serve.py` and their shared
+helpers) comes from that clone. Its commit is pinned by `code_config.expect_ref` and
+recorded as `distill_code_commit` step metadata on every run. `code_config.python` is
+deliberately empty here, unlike the other ported steps: this step owns its own image (see
+"Image" below), which carries no baked venv, so the renderer, the residency check and the
+vLLM server all run with `$PYBIN`, set by the runtime venv-sync step below instead.
+
+### Image
+
+Unlike the other ported distillation steps (which still run in the shared, opaque
+`kd-sandbox-distill` image), this step builds its own image from
+`steps/distill/gold/skypilot/Dockerfile` — a slim CUDA 12.9.1-devel + uv-managed Python base,
+with no project dependencies baked in. The trainer's own pinned deps (torch, transformers,
+trl, vllm, deepspeed, etc., from the cloned `distill-gold-train`'s own `pyproject.toml`/
+`uv.lock`) install at job-launch time via `uv sync --locked`, cached on shared storage keyed
+by the lock file's hash — a cache hit resync is near-instant and needs no network, so a
+dependency-pin bump needs no image rebuild. See `steps/distill/gold/skypilot/Dockerfile`'s
+header comment for the full rationale.
 
 ## Inputs and outputs
 
@@ -217,10 +237,12 @@ and checks one.
 
 ## Working directory and paths
 
-`run` executes on **every** node with that node's own rank (`RANK`, `TOTAL_NODES`,
-`MASTER_ADDR`, `MASTER_PORT`, `NUM_GPUS_PER_NODE` from SkyPilot's LSF provisioner). All
-paths are under `$GB_BUILD_WORKDIR` (the per-run workdir, on `/proj` on BlueVela and
-identity-mounted into the container), falling back to the current directory when unset:
+`run` executes on **every** node with that node's own rank, read from SkyPilot's own
+generic topology vars (`SKYPILOT_NODE_RANK`, `SKYPILOT_NUM_NODES`, `SKYPILOT_NODE_IPS`,
+`SKYPILOT_NUM_GPUS_PER_NODE` — present on both the lsf and slurm subtypes, unlike LSF's
+provisioner-specific `RANK`/`TOTAL_NODES`/`MASTER_ADDR`/`MASTER_PORT`). All paths are under
+`$GB_BUILD_WORKDIR` (the per-run workdir, on `/proj` on BlueVela and identity-mounted into
+the container), falling back to the current directory when unset:
 
 - `./src` — the step's `src/` (config renderer and residency check), file-mounted.
 - `distill-code/` (`code_config.workdir`) — the trainer source clone. Only rank 0 clones;
@@ -285,9 +307,9 @@ repository.
 
 | Piece | Source |
 |---|---|
-| Pinned deps (torch, transformers, trl, vllm, deepspeed) | the container image, venv at `/stage/.venv` |
+| Pinned deps (torch, transformers, trl, vllm, deepspeed) | `uv sync --locked` at job launch, into a venv cached on shared storage (see "Image" above) |
 | Trainer (`gold.py`, `custom_gold_trainer.py`, DeepSpeed config) | `code_config`'s clone of the public source repo |
-| `bsub`, `blaunch`, enroot, per-node rank/master | SkyPilot's LSF provisioner |
+| Job submission, container import, per-node rank/master | the provisioner (LSF's `bsub`/`blaunch`/enroot, or SLURM's `sbatch`/`srun`/pyxis) |
 | Config rendering, node roles, `accelerate` launch | this step |
 
 ### Choosing a student/teacher pair
@@ -347,12 +369,11 @@ data instead.
 - **Keep `save_total_limit` high.** An early, less-forgotten checkpoint is often the best one
   to evaluate; a small limit deletes it irrecoverably.
 - **The image is an SM90 (H100) build** and will not run on A100.
-- **LSF only.** enroot and the LSF topology contract this step reads are LSF-specific
-  (`subtypes: [lsf]`).
-- **Multi-node needs a SkyPilot with LSF multi-node support.** gbserver refuses the launch
-  otherwise rather than silently running on one node.
-- **State host memory.** The LSF provisioner defaults to 16G per node, and a host-memory kill
-  presents as a cross-node NCCL hang.
+- **LSF and SLURM only** (`subtypes: [lsf, slurm]`) — not yet validated on aws/kubernetes.
+- **Multi-node needs a SkyPilot build with multi-node support for the subtype in use.**
+  gbserver refuses the launch otherwise rather than silently running on one node.
+- **State host memory on LSF.** The LSF provisioner defaults to 16G per node, and a
+  host-memory kill presents as a cross-node NCCL hang.
 
 ### Weight residency refusal
 
