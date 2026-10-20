@@ -86,7 +86,11 @@ inventory) and `make quick-tests`. Commit the generated trees with the source.
 
 ## Known gaps
 
-- **No GPU fixture yet.** The step is proven on CPU only. A GPU run needs a
-  `torch_index_url` matching the node's CUDA driver.
-- **No image-mode fixture.** The local SLURM cluster has no Pyxis, so the default
-  `python:3.12-slim` path is covered by the render tests, not by a cluster run.
+- **No committed GPU fixture.** The step was proven on one H200 on an internal SkyPilot
+  SLURM cluster with a plain build, not a build test: aime25 at `limit: 5`,
+  exact_match 0.6. The build is the example in USAGE.md. It needed `cpus: 16` and
+  `memory: 128` in `launcher_config.resources`: the default 16 GB of host RAM was
+  OOM-killed on long generations.
+- **No image-mode cluster run.** The local SLURM cluster has no Pyxis, and the GPU proof
+  ran on the bare node, so the default `python:3.12-slim` path is covered only by the
+  render tests.

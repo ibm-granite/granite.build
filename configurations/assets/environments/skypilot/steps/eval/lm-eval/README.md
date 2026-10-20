@@ -97,6 +97,26 @@ GPUs on SkyPilot come from the build's `launcher_config.resources` (e.g.
 `accelerators: "L4:1"`), not from `compute_config.num_gpus_per_node`. On SkyPilot SLURM
 the accelerator must be typed and quoted (`"H100:1"`, not `":1"`).
 
+**Set host memory too, not only the GPU.** With only `accelerators` set, SkyPilot picks
+its default size for one GPU, 4 CPUs and 16 GB of host RAM on SkyPilot SLURM. That's
+enough for short generations, but long ones (reasoning models, `max_gen_toks` in the
+thousands) on the `hf` backend can exhaust host RAM while the GPU still has room. The
+job is then OOM-killed. Ask for more alongside the accelerator, e.g. `cpus: 16` and
+`memory: 128` (GB).
+
+## Long generations (reasoning tasks such as aime25)
+
+- **Token budget:** aime25's own default is 32768 generated tokens. Reasoning models
+  often need 10k or more to reach a final `\boxed{}` answer; at 2048 every answer is cut
+  off and scores 0. 16384 is a reasonable compromise.
+- **Time:** the `hf` backend generates one sequence at about 15 tokens/s for a 3B model
+  on one H200 at batch 1, so a 16k-token answer takes roughly 18 minutes. Size `limit`
+  and `sbatch_options.time` together. For long runs, `backend: vllm` (with
+  `extras: ["vllm"]`) is much faster.
+- **`batch_size`:** prefer a fixed integer. `auto` probes by trying very large
+  allocations, which takes minutes for long generations and logs many harmless
+  `CUDACachingAllocator ... OOM` warnings before it settles.
+
 ## Working directory and caches
 
 `setup` and `run` both start in the step's build workdir (`$GB_BUILD_WORKDIR`). The step
@@ -106,7 +126,9 @@ Hugging Face cache for task datasets (`./.hf-cache`, as `HF_HOME`) and the resul
 
 ## Example build.yaml
 
-aime25 on one GPU, with results pushed to a Hugging Face dataset:
+aime25 on one GPU, with results pushed to a Hugging Face dataset. This is the shape of
+the build that proved the step on one H200 on SkyPilot SLURM (5 problems, about 33
+minutes of generation):
 
 ```yaml
 granite.build:
@@ -116,7 +138,7 @@ granite.build:
       environment_uri: space://environments/skypilot/slurm
       inputs:
         model:
-          uri: hf:///ibm-granite/granite-4.0-350m
+          uri: hf:///ibm-granite/granite-4.2-3b
       outputs:
         results:
           uri: hf://huggingface.co/datasets/<org>/aime25-results_{{ binding.path | short_hash }}
@@ -125,23 +147,30 @@ granite.build:
           config:
             lm_eval_config:
               tasks: ["aime25"]
-              # Match the node's CUDA driver.
-              torch_index_url: "https://download.pytorch.org/whl/cu128"
+              # "" = PyPI's default torch, whose CUDA runtime wheels ran on the node's
+              # driver. Or a PyTorch index matching the driver, e.g. .../whl/cu128.
+              torch_index_url: ""
               model_args:
                 dtype: bfloat16
               device: cuda
-              batch_size: auto
+              batch_size: 1
               apply_chat_template: true
+              limit: 5
               gen_kwargs:
-                max_gen_toks: 4096
+                max_gen_toks: 16384
+              log_samples: true
             launcher_config:
               resources:
-                accelerators: "H100:1"
+                accelerators: "H200:1"
+                # Host RAM: the default 16 GB was OOM-killed on long generations.
+                cpus: 16
+                memory: 128
               sbatch_options:
                 time: "01:00:00"
 ```
 
-On a cluster without Pyxis, add `image: ""` to run on the bare node.
+On a cluster without Pyxis, add `image: ""` to run on the bare node (the proof above ran
+that way).
 
 ## Notes and limitations
 
