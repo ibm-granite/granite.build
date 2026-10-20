@@ -547,9 +547,7 @@ class TestDefaultContextBothTools:
             )
         assert "current-context" not in str(e.value)
 
-    def test_use_context_on_a_managed_context_is_refused_on_remerge(
-        self, tmp_path, monkeypatch
-    ):
+    def test_use_context_on_a_managed_context_is_refused_on_remerge(self, tmp_path):
         """`kubectl config use-context <managed>` makes the env's next setup fail.
 
         The merged file supplies the context, so use-context succeeds and writes

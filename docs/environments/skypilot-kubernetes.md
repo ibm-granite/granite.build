@@ -66,11 +66,13 @@ ways to supply them:
     name one of your own contexts; otherwise the placeholder is used. When it is, an environment with
     `allowed_contexts: all` also sees it, and SkyPilot spends about 5 seconds timing out on it when probing
     contexts (pinning `allowed_contexts` avoids that).
-  - **Don't make an environment's context your default.** `kubectl config use-context <context>` writes
-    it into your own kubeconfig as its `current-context`; from then on that environment's setup is
-    refused (`SkypilotConfigCollisionError`), because every tool would default to its credentials. Reach
-    it with `kubectl --context <context> ...` instead, and keep your `current-context` on one of your
-    own contexts.
+  - **Don't make an environment's context your default.** gbserver adds its kubeconfig to `KUBECONFIG`
+    only in its own process; to reach an environment's context from your shell, add
+    `~/.sky/gbserver-kubeconfig` to your `KUBECONFIG` and use `kubectl --context <context> ...`. Don't
+    `kubectl config use-context <context>`: that writes it into your own kubeconfig as its
+    `current-context`, so the environment's next setup is refused (`SkypilotConfigCollisionError`),
+    because every tool would default to its credentials. Keep your `current-context` on one of your own
+    contexts.
   - **Nothing is removed while gbserver runs**, so every environment's builds can still poll and tear down.
 
   Limits:
