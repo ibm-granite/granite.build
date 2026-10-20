@@ -23,11 +23,17 @@ config the trainer can read. `test/test_render_gold_config.py` covers each rule.
 
 ## What is deliberately not ported
 
-`launch_enroot.sh` and `bv_run_kd_distill.sh` from the ansible path. SkyPilot's
-LSF provisioner already does their job — `bsub`, `blaunch`, enroot import/create,
-and exporting `RANK` / `TOTAL_NODES` / `MASTER_ADDR` / `MASTER_PORT` /
-`NUM_GPUS_PER_NODE` per node. The step reimplements only the inner logic: pick a
-role, render the config, start `accelerate`.
+`launch_enroot.sh` and `bv_run_kd_distill.sh` from the ansible path. The
+provisioner (LSF's `bsub`/`blaunch`/enroot, or SLURM's `sbatch`/`srun`/pyxis)
+already does job submission and container import/creation on both subtypes.
+The step reimplements only the inner logic: pick a role, render the config,
+start `accelerate`. It reads SkyPilot's own generic topology vars
+(`SKYPILOT_NODE_RANK` / `SKYPILOT_NUM_NODES` / `SKYPILOT_NODE_IPS` /
+`SKYPILOT_NUM_GPUS_PER_NODE`) rather than LSF's provisioner-specific
+`RANK`/`TOTAL_NODES`/`MASTER_ADDR`/`MASTER_PORT`, so one step serves both
+subtypes with no `{% if %}` branching on which one it's running on — see the
+step-template.yaml header comment for why (and why that's the house
+convention here, not a shortcut).
 
 Consequences worth keeping in mind:
 
@@ -35,8 +41,11 @@ Consequences worth keeping in mind:
   must happen once is guarded by `[ "$NODE_RANK" = "0" ]`. The artifact marker in
   particular: the executor streams all nodes into one driver log, so an unguarded
   marker registers N artifacts.
-- `RANK`/`WORLD_SIZE` are unset before `accelerate launch`, which owns per-process
-  rank. The snapshot goes on its command line instead.
+- `MASTER_PORT` has no SkyPilot-generic equivalent on either subtype, so it's
+  derived the same way LSF's own provisioner derives its port
+  (`sky/provision/lsf/instance.py`): offset a base port by a job id mod 1000,
+  using `SKYPILOT_INTERNAL_JOB_ID` instead of `LSB_JOBID` since that one is
+  generic.
 - The node count is read from the allocation, never from a build parameter, so the
   checkpoint path cannot claim a topology the run did not have.
 

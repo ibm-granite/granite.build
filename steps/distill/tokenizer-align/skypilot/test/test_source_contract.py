@@ -77,17 +77,6 @@ def test_at_least_one_other_step_is_compared():
     assert len(_templates()) >= 2, "only the reference step exists; nothing to compare"
 
 
-@pytest.mark.parametrize("name", sorted(n for n in _templates() if n != _REFERENCE))
-def test_code_config_block_is_byte_identical_to_the_reference(name):
-    templates = _templates()
-    expected = _code_config(templates[_REFERENCE].read_text())
-    actual = _code_config(templates[name].read_text())
-    assert actual == expected, (
-        f"{name}'s code_config block has drifted from {_REFERENCE}'s. "
-        "Splice it from the reference rather than editing it in place."
-    )
-
-
 # distill-gold is the one ported step that runs multi-node, and code_config.workdir
 # is a path on the SHARED filesystem (GB_BUILD_WORKDIR) -- every other ported step is
 # single-node, so its copy of the byte-identical region can rm -rf/clone unconditionally
@@ -98,6 +87,30 @@ def test_code_config_block_is_byte_identical_to_the_reference(name):
 # ref-transaction code. So it is exempted from the byte-identity check below rather than
 # forcing a single-node contract onto a multi-node step.
 _MULTI_NODE_STEPS = {"gold"}
+
+# distill-gold is also the one ported step with its own Dockerfile/image (see
+# steps/distill/gold/skypilot/Dockerfile): its image carries no baked venv, so
+# code_config.python is deliberately "" there -- PYBIN/PATH come from the
+# "distill runtime venv sync" block instead, not a path baked into the opaque
+# shared image every other ported step still uses. That one field's divergence
+# is real, necessary drift (same category as the multi-node clone guard above),
+# not decay, so distill-gold is exempted from the code_config byte-identity
+# check too. If a second ported step grows its own image, add it here rather
+# than loosening the check for everyone.
+_OWNS_ITS_OWN_IMAGE = {"gold"}
+
+
+@pytest.mark.parametrize(
+    "name", sorted(n for n in _templates() if n != _REFERENCE and n not in _OWNS_ITS_OWN_IMAGE)
+)
+def test_code_config_block_is_byte_identical_to_the_reference(name):
+    templates = _templates()
+    expected = _code_config(templates[_REFERENCE].read_text())
+    actual = _code_config(templates[name].read_text())
+    assert actual == expected, (
+        f"{name}'s code_config block has drifted from {_REFERENCE}'s. "
+        "Splice it from the reference rather than editing it in place."
+    )
 
 
 @pytest.mark.parametrize(
@@ -123,10 +136,13 @@ def test_every_ported_step_has_both_regions(name):
         assert marker in text, f"{name} is missing the marker {marker!r}"
 
 
-@pytest.mark.parametrize("name", sorted(_templates()))
+@pytest.mark.parametrize(
+    "name", sorted(n for n in _templates() if n not in _OWNS_ITS_OWN_IMAGE)
+)
 def test_no_step_ships_a_dockerfile(name):
-    """Every ported step is a non-image step: common.mk keys off the Dockerfile's
-    ABSENCE, so adding one silently turns image/publish-image back on."""
+    """Every ported step except one listed in _OWNS_ITS_OWN_IMAGE is a non-image
+    step: common.mk keys off the Dockerfile's ABSENCE, so adding one silently
+    turns image/publish-image back on."""
     assert not (_templates()[name].parent / "Dockerfile").exists()
 
 
