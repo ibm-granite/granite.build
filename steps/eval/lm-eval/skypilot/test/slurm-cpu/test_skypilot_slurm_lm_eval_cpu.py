@@ -18,10 +18,11 @@
 
 One target: an ``hf://`` model input (a tiny public test model), the step installs
 CPU torch and ``lm-eval[hf]`` on the bare node, runs ``lm_eval run --tasks aime25
---limit 1``, and pushes the results directory to an ``hf://`` dataset with a
-``test_`` prefix (cleaned up by ``scripts/rm_hf_repos.py``). Reaching SUCCESS with
-one output artifact proves the install, the argv, the results file and the marker
-on a real node; the score itself is meaningless for a model this size.
+--limit 1``, and pushes the results directory to an ``hf://`` dataset.
+:class:`~libgbtest.hfpush.HfPushCleanupMixin` names that dataset per run, asserts it
+landed on the Hub, then deletes it. Reaching SUCCESS with one output artifact proves
+the install, the argv, the results file, the marker and the push on a real node; the
+score itself is meaningless for a model this size.
 
 Needs a write ``HF_TOKEN`` for the push, and a reachable Docker SLURM cluster
 (``make test-setup``). Extended suite only.
@@ -40,6 +41,7 @@ from libgbtest.buildrunner.buildtest import (
     get_test_data_dir_for,
 )
 from libgbtest.constants import extended_testing_only
+from libgbtest.hfpush import HfPushCleanupMixin
 
 pytestmark = pytest.mark.skypilot_integration
 
@@ -49,7 +51,7 @@ pytestmark = pytest.mark.skypilot_integration
     not _slurm_cluster_reachable(),
     reason="Docker SLURM cluster not reachable (run: make test-setup)",
 )
-class TestSkypilotSlurmLmEvalCpu(AbstractYamlBuildRunnerTest):
+class TestSkypilotSlurmLmEvalCpu(HfPushCleanupMixin, AbstractYamlBuildRunnerTest):
     """eval/lm-eval: aime25 on CPU, hf:// model in, hf:// results out."""
 
     def _get_yaml_spec_dir(self) -> Path:
