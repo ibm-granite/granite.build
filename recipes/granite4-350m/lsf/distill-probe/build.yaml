@@ -41,7 +41,6 @@ granite.build:
               num_nodes: 1
               num_gpus_per_node: 1
             launcher_config:
-              image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
               resources:
                 cluster: "bluevela"
                 zone: "normal"
@@ -63,7 +62,6 @@ granite.build:
               num_nodes: 1
               num_cpus_per_node: 2
             launcher_config:
-              image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
               resources:
                 cluster: "bluevela"
                 zone: "normal"
@@ -86,7 +84,6 @@ granite.build:
               num_nodes: 1
               num_gpus_per_node: 1
             launcher_config:
-              image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
               resources:
                 cluster: "bluevela"
                 zone: "normal"

@@ -41,55 +41,17 @@ version: 1.0.0
 type: training
 config:
   # ─── Source delivery ──────────────────────────────────────────────────────────
-  # IDENTICAL IN EVERY PORTED DISTILLATION STEP. The block and the delimited region
-  # of `run` below are asserted byte-identical across the ported steps by
-  # test/test_source_contract.py — one contract, learned once. Change it here and
-  # the other steps' tests fail until they are changed to match.
-  code_config:
-    # THE DEFAULT: an unauthenticated HTTPS clone of the public source repo at run time.
-    # No /proj checkout, no BlueVela-specific path — this resolves identically on any
-    # environment class that can reach github.com, which is the point: the six ported
-    # distillation steps used to depend on a pre-staged /proj clone that only existed on
-    # BlueVela, so this step (and every other one pinned to it) could not run anywhere
-    # else. It also used to point at a personal-namespace private repo, which meant an
-    # outside reader of this pin could not even inspect the code, let alone run it.
-    #
-    # THE SOURCE OF TRUTH IS github.com/laminair/gb-steps-distillation, a small public
-    # repo holding exactly the vendored entrypoints and shared package these six steps
-    # import — see its README for what it is and is not. It is NOT the shared,
-    # continuously-advancing tree this pin used to track: that one broke every ported
-    # step's expect_ref out from under it whenever its upstream author moved it, and the
-    # failure looked like a recipe bug rather than a moved dependency. This repo only
-    # advances when this pin is deliberately bumped.
-    code_dir: ""
-    # The commit code_dir is EXPECTED to be at. Recorded either way, but when this is
-    # set and the checkout is at a different commit the step says so loudly rather
-    # than training against whatever happens to be checked out. Empty => no check.
-    expect_ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
-    # code_dir is empty, so this is the path actually taken: an unauthenticated HTTPS
-    # clone. Public repos only — see token_secret below for why no credential is wired
-    # up here on purpose.
-    repo: "https://github.com/laminair/gb-steps-distillation.git"
-    # Branch, tag or commit checked out after that clone. Pinned to the same commit as
-    # expect_ref rather than a branch head, so two runs a week apart are the same run
-    # rather than silently drifting — bump both together.
-    ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
-    # Clone destination, RELATIVE to the step's working directory.
-    workdir: "distill-code"
-    # The NAME of a space secret holding a read-scoped credential — never a value.
-    # Only consulted on the clone path. Left EMPTY on purpose: gb-steps-distillation is
-    # public, so the clone needs no credential at all.
-    token_secret: ""
-    # Deliberately empty: this image carries no baked venv to point at. The
-    # trainer's own pinned deps install at job-launch time (see the "distill
-    # runtime venv sync" block below), which exports PYBIN/PATH itself —
-    # nothing here needs setting.
-    python: ""
-    # Optional bash run after the source resolves and before the workload, from the
-    # step's working directory. Empty => skipped. Not needed on this image: it
-    # already carries torch 2.8.0, transformers 5.8.0, tokenizers 0.22.1 and
-    # safetensors 0.7.0, confirmed by direct measurement on a real GPU node.
-    setup_command: ""
+  # NO code_config HERE, unlike every other ported distillation step: this step's
+  # trainer source (gb_steps_post_training, including the locally-folded-in
+  # ce_anchor_and_entropy_guard patch -- see steps/distill/src/VENDORED.md) is baked
+  # directly into the shared GPU image (steps/distill/gpu/Dockerfile COPYs
+  # steps/distill/src/) rather than cloned at job-launch time. gold is the one
+  # ported step that runs multi-node, where a runtime clone needs its own
+  # rank-0-clones/others-wait guard against a real race (measured on build
+  # 7e9995b3) -- baking the source into the image sidesteps that race entirely
+  # instead of guarding it, and gives every recipe the CE-anchor/entropy-guard
+  # fields unconditionally with no checkout to point at. See the static
+  # CODE_DIR/PYBIN at the top of `run` below instead of a clone.
   # ── Per-checkpoint artifact emission ──────────────────────────────────────
   # OFF by default, and that default is the contract: with it off this step emits
   # exactly one artifact, `checkpoint`, at the end of the run — which is what every
@@ -220,16 +182,17 @@ config:
     use_liger_fused_jsd: false
 
     # ── The CE anchor, and the instruments that watch for its absence ────────
-    # All five need the DELIVERED trainer to carry the ce_anchor_and_entropy_guard patch
-    # (patches/ce_anchor_and_entropy_guard.diff, whose header has the invocation and the
-    # directory remap). That trainer now comes from code_config, and the default pin does
-    # NOT carry the patch -- so a recipe using these keys points code_config.code_dir at a
-    # checkout that does, as recipes/granite4-350m/lsf/distill-stage1-v2 does.
+    # All five need the trainer to carry the ce_anchor_and_entropy_guard fields. That
+    # trainer is now the shared GPU image's baked-in vendored copy of
+    # gb_steps_post_training (steps/distill/src/), which carries this patch permanently
+    # (folded in directly -- see steps/distill/src/VENDORED.md) -- so every recipe gets
+    # these keys unconditionally, with no checkout to point at.
     #
     # They are rendered into the trainer's config ONLY when non-default, so a recipe that
-    # leaves them alone runs against any checkout. When one does not,
-    # verify_trainer_accepts_keys below is what turns "TrlParser rejected your config after
-    # the allocation was held" into a refusal that names the patch.
+    # leaves them alone renders the same config it always has. If the vendor pin is ever
+    # bumped past an upstream commit that carries an equivalent change natively,
+    # verify_trainer_accepts_keys below still catches a mismatch rather than failing deep
+    # inside TrlParser after the allocation was held.
     #
     # ce_coef ADDS cross entropy on the corpus tokens to the divergence:
     #   loss = divergence + ce_coef * CE(student, labels)
@@ -278,14 +241,15 @@ config:
     check_corpus_tokenizer: false
     # Check every key this step is about to emit that upstream trl's GOLDConfig does not
     # define (the CE anchor, the collapse guard, the on-policy shaping pair) against the
-    # DELIVERED trainer's dataclass, and refuse before accelerate launches.
+    # baked-in trainer's dataclass (steps/distill/src/), and refuse before accelerate
+    # launches.
     #
-    # ON by default, and that default is the point: code_config's pin is not guaranteed to
-    # carry those fields -- at a5d59bc4 it carries lmbda_schedule and not ce_coef -- and the
-    # two ways it goes wrong are both expensive. TrlParser rejects an unknown top-level key
-    # only after the teacher has loaded on every node of a held allocation, and
-    # min_completion_length fails the other way, silently, by never reaching the sampler at
-    # all. Costs one import of a package the run block already puts on PYTHONPATH.
+    # ON by default: the vendor pin could in principle be bumped to a commit whose fields
+    # drift from what this template emits, and the two ways that goes wrong are both
+    # expensive. TrlParser rejects an unknown top-level key only after the teacher has
+    # loaded on every node of a held allocation, and min_completion_length fails the
+    # other way, silently, by never reaching the sampler at all. Costs one import of a
+    # package the image's own PYTHONPATH already provides.
     #
     # It only looks at keys that are actually emitted, so a recipe leaving all of them at
     # their defaults never triggers it. Set false only to render deliberately against a
@@ -413,7 +377,7 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-gold:7685d7d"
+          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:0395d28"
           # Node count and accelerators come from the build.yaml
           # (compute_config.num_nodes and launcher_config.resources) so one step
           # serves the smoke and reference runs.
@@ -448,234 +412,31 @@ environment_configs:
             exit 1
             {% endfor %}
 
-            # This node's rank, read once up front: the clone guard right below
-            # needs it before the full topology snapshot (further down, after
-            # source delivery) runs. SKYPILOT_NODE_RANK is SkyPilot's own
-            # generic var, confirmed present on both the lsf and slurm subtypes
-            # (see the header comment) — unlike RANK, which only LSF's
-            # provisioner sets.
+            # This node's rank. SKYPILOT_NODE_RANK is SkyPilot's own generic var,
+            # confirmed present on both the lsf and slurm subtypes (see the header
+            # comment) — unlike RANK, which only LSF's provisioner sets.
             NODE_RANK="${SKYPILOT_NODE_RANK:-0}"
 
-            # --- distill source delivery: BEGIN (identical in all ported steps) ---
-            # `set -eu` is already in effect: the launcher prefixes it.
-            CODE_DIR="{{ config.code_config.code_dir }}"
-            REPO="{{ config.code_config.repo }}"
-            REF="{{ config.code_config.ref }}"
-            PYBIN="{{ config.code_config.python }}"
-            WORK="${GB_BUILD_WORKDIR:-$PWD}"
-
-            if [ -n "$CODE_DIR" ] && [ -d "$CODE_DIR/src/gb_steps_post_training" ]; then
-              echo "distill: source = filesystem checkout $CODE_DIR"
-              CODE_SOURCE="filesystem"
-              # A shared checkout is mutable state, so say what is actually there.
-              # Uncommitted edits are not fatal — someone may be deliberately testing
-              # a fix — but a run whose code came from a dirty tree must not report a
-              # bare commit as its provenance.
-              DIRTY="$(git -C "$CODE_DIR" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
-              if [ "${DIRTY:-0}" != "0" ]; then
-                echo "distill: WARNING: $CODE_DIR has $DIRTY uncommitted change(s)." >&2
-                echo "         This run's code is NOT the commit recorded below." >&2
-              fi
-              echo "GB_STEP_METADATA_KEY:distill_code_dirty GB_STEP_METADATA_VALUE:${DIRTY:-0}"
-              # And fail loudly if the checkout is not where the recipe expects. A
-              # silently-moved shared checkout is how two runs that report the same
-              # pin end up having trained on different code.
-              EXPECT_REF="{{ config.code_config.expect_ref }}"
-              if [ -n "$EXPECT_REF" ]; then
-                AT="$(git -C "$CODE_DIR" rev-parse HEAD 2>/dev/null || true)"
-                if [ -n "$AT" ] && [ "$AT" != "$EXPECT_REF" ]; then
-                  echo "distill: FATAL: $CODE_DIR is at $AT but code_config.expect_ref" >&2
-                  echo "         is $EXPECT_REF. Either check that checkout out to the" >&2
-                  echo "         expected commit, or change expect_ref deliberately:" >&2
-                  echo "           git -C $CODE_DIR fetch --all" >&2
-                  echo "           git -C $CODE_DIR checkout $EXPECT_REF" >&2
-                  exit 1
-                fi
-              fi
-            elif [ -n "$REPO" ]; then
-              CODE_DIR="$WORK/{{ config.code_config.workdir }}"
-              CODE_SOURCE="git"
-              # code_dir is on the SHARED filesystem (GB_BUILD_WORKDIR), and distill-gold
-              # is the one ported step that runs multi-node: every rank reaches this
-              # branch with the same CODE_DIR. Letting every rank rm -rf/clone it
-              # concurrently is a real race, not a hypothetical one -- measured on build
-              # 7e9995b3, where rank 0's clone crashed inside git's ref-transaction code
-              # ("initial ref transaction called with existing refs") while rank 1's
-              # clone into the same path succeeded. Only rank 0 clones; every other rank
-              # waits for a completion marker rank 0 writes after checkout succeeds.
-              #
-              # The marker holds a token naming THIS attempt, and a waiting rank continues
-              # only on a match. Its mere existence is not enough: a relaunch into the same
-              # per-run workdir finds the previous attempt's marker still there, and the
-              # other ranks would go straight to training while rank 0 rm -rf's and
-              # re-clones the tree under them. The launch id alone does not name an attempt
-              # (a retry_workload replay reuses it); the job id distinguishes a resubmit to
-              # the same cluster, and the scheduler's allocation id a fresh cluster.
-              # All three empty would make every attempt's token "::" and bring the
-              # stale-marker race back; that cannot happen here, because gbserver sets
-              # GB_SKYPILOT_LAUNCH_ID on every launch and SkyPilot sets the job id.
-              DONE_MARKER="$CODE_DIR.gb-clone-done"
-              CLONE_TOKEN="${GB_SKYPILOT_LAUNCH_ID:-}:${SKYPILOT_INTERNAL_JOB_ID:-}:${LSB_JOBID:-${SLURM_JOB_ID:-}}"
-              if [ "$NODE_RANK" != "0" ]; then
-                echo "distill: rank $NODE_RANK waiting for rank 0 to deliver $CODE_DIR (token $CLONE_TOKEN)"
-                WAITED=0
-                while [ "$(cat "$DONE_MARKER" 2>/dev/null || true)" != "$CLONE_TOKEN" ]; do
-                  sleep 2
-                  WAITED=$((WAITED + 2))
-                  if [ "$WAITED" -ge 600 ]; then
-                    echo "distill: FATAL: rank $NODE_RANK waited ${WAITED}s for rank 0 to" >&2
-                    echo "         deliver $CODE_DIR and it never appeared." >&2
-                    exit 1
-                  fi
-                done
-              else
-                TOKEN_VAR="{{ config.code_config.token_secret }}"
-                # Indirect expansion, with :- so `set -u` does not abort when the space
-                # has no such secret. The dispatcher runs this with `bash <file>`, so
-                # bash-isms are available. Guarded on TOKEN_VAR itself: a public repo
-                # leaves token_secret empty, and "${!:-}" is a bash syntax error
-                # ("invalid variable name"), not an empty expansion.
-                TOKEN=""
-                if [ -n "$TOKEN_VAR" ]; then
-                  TOKEN="${!TOKEN_VAR:-}"
-                fi
-                echo "distill: source = git clone $REPO (ref=${REF:-<default>}) -> $CODE_DIR"
-                rm -rf "$CODE_DIR" "$DONE_MARKER"
-                if [ -n "$TOKEN" ]; then
-                  # GIT_ASKPASS, not a token in the URL: the URL form puts the secret in
-                  # argv (readable via /proc on a shared node) and persists it into
-                  # .git/config on the SHARED filesystem. The helper is written 0700 into
-                  # the node's own tmp and deleted immediately after use.
-                  ASKPASS="$(mktemp)"
-                  cat > "$ASKPASS" <<'ASKPASS_EOF'
-            #!/bin/sh
-            case "$1" in
-              Username*) printf '%s' "x-access-token" ;;
-              *)         printf '%s' "$GB_DISTILL_TOKEN" ;;
-            esac
-            ASKPASS_EOF
-                  chmod 700 "$ASKPASS"
-                  CLONE_RC=0
-                  GB_DISTILL_TOKEN="$TOKEN" GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 \
-                    git clone --quiet "$REPO" "$CODE_DIR" || CLONE_RC=$?
-                  rm -f "$ASKPASS"
-                  if [ "$CLONE_RC" != "0" ]; then
-                    echo "distill: FATAL: clone of $REPO failed (rc=$CLONE_RC) using the token in" >&2
-                    echo "         \$$TOKEN_VAR. Check that secret's scope, not this step." >&2
-                    exit 1
-                  fi
-                elif [ -n "$TOKEN_VAR" ]; then
-                  echo "distill: FATAL: code_config.token_secret names '$TOKEN_VAR' but this" >&2
-                  echo "         space has no secret by that name. Either create that secret," >&2
-                  echo "         or leave code_config.token_secret empty if $REPO is public." >&2
-                  exit 1
-                else
-                  # No token_secret configured at all: REPO is a public clone, same as an
-                  # anonymous `git clone` from a terminal.
-                  CLONE_RC=0
-                  git clone --quiet "$REPO" "$CODE_DIR" || CLONE_RC=$?
-                  if [ "$CLONE_RC" != "0" ]; then
-                    echo "distill: FATAL: unauthenticated clone of $REPO failed (rc=$CLONE_RC)." >&2
-                    echo "         If this repo is private, set code_config.token_secret." >&2
-                    exit 1
-                  fi
-                fi
-                if [ -n "$REF" ]; then
-                  git -C "$CODE_DIR" checkout --quiet "$REF"
-                fi
-                if [ ! -d "$CODE_DIR/src/gb_steps_post_training" ]; then
-                  echo "distill: FATAL: $REPO@${REF:-default} has no src/gb_steps_post_training." >&2
-                  exit 1
-                fi
-                # tmp + mv, so a waiting rank never reads a half-written token.
-                printf '%s\n' "$CLONE_TOKEN" > "$DONE_MARKER.tmp.$$"
-                mv -f "$DONE_MARKER.tmp.$$" "$DONE_MARKER"
-              fi
-            else
-              echo "distill: FATAL: no source. code_config.code_dir ('$CODE_DIR') does not" >&2
-              echo "         contain src/gb_steps_post_training, and code_config.repo is empty." >&2
-              exit 1
-            fi
-
-            # The package ROOT, not the distillation/ directory: every module is
-            # imported by its full dotted path, so a flat path does not resolve. The
-            # absence of this export is what killed two upstream jobs at import time.
-            export PYTHONPATH="$CODE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
-
-            # Lineage. A filesystem checkout is mutable and a clone may name a branch,
-            # so record the resolved commit either way. NEVER fail the build for
-            # metadata — and written as a full if/fi rather than `[ -n "$X" ] && echo`,
-            # which under `set -e` aborts the run when X is empty.
-            CODE_SHA="$(git -C "$CODE_DIR" rev-parse HEAD 2>/dev/null || true)"
-            if [ -n "$CODE_SHA" ]; then
-              echo "GB_STEP_METADATA_KEY:distill_code_commit GB_STEP_METADATA_VALUE:$CODE_SHA"
-            else
-              echo "distill: WARNING: $CODE_DIR is not a git checkout, so this run has no" >&2
-              echo "         record of which code ran." >&2
-            fi
-            echo "GB_STEP_METADATA_KEY:distill_code_source GB_STEP_METADATA_VALUE:$CODE_SOURCE"
-            {% if config.code_config.setup_command %}
-            echo "distill: running setup_command in $(pwd)"
-            {{ config.code_config.setup_command }}
-            {% endif %}
-            # --- distill source delivery: END ---
-
-            # --- distill runtime venv sync: BEGIN ---
-            # This image carries no baked venv: distill-gold-train's own
-            # pinned dependencies (torch, transformers, trl, vllm,
-            # deepspeed, kernels, etc. -- see its own pyproject.toml/uv.lock
-            # in the just-cloned $CODE_DIR) install HERE, at job launch
-            # time, via `uv sync --locked`. The assembled venv is cached on
-            # shared storage keyed by the lock file's own hash, so a second
-            # job with the same lock reuses it directly (confirmed locally:
-            # a cache hit against an existing UV_PROJECT_ENVIRONMENT target
-            # completes in ~0.07s with zero network activity, vs. a full
-            # install on a cache miss) -- one slim image, no per-pin-change
-            # rebuild needed.
+            # --- distill source: baked into the shared GPU image, no clone ---
+            # Unlike every other ported distillation step, this step's trainer source
+            # and venv are both baked into steps/distill/gpu/Dockerfile at build time,
+            # not cloned/synced at job-launch time -- see the "Source delivery" comment
+            # above config: for why. Both paths are fixed by that Dockerfile's own
+            # COPY/ENV lines; nothing here resolves them dynamically.
+            CODE_DIR="/opt/gb-steps-distillation"
+            PYBIN="/stage/.venv/bin/python"
+            export PATH="/stage/.venv/bin:${PATH}"
+            # PYTHONPATH=/opt/gb-steps-distillation/src is already set by the image
+            # itself (ENV PYTHONPATH in steps/distill/gpu/Dockerfile); nothing to export
+            # here.
             #
-            # Same rank-0-syncs/others-wait shape as the git-clone guard
-            # above, for the same reason: distill-gold is multi-node, and N
-            # ranks hitting `uv sync` on the same shared cache path
-            # concurrently is the same class of race the clone guard exists
-            # for (measured there on build 7e9995b3; not yet measured here,
-            # but the mechanism is identical and the race is structural, not
-            # specific to git). Uses NODE_RANK (SkyPilot's generic var,
-            # subtype-blind), not RANK (LSF-only).
-            VENV_PROJECT_DIR="$CODE_DIR/steps/distill-gold-train"
-            LOCK_HASH="$(sha256sum "$VENV_PROJECT_DIR/uv.lock" | cut -d' ' -f1)"
-            VENV_CACHE_ROOT="${GB_SHARED_WORKDIR:-$WORK}/uv-venv-cache"
-            VENV_CACHE_DIR="$VENV_CACHE_ROOT/$LOCK_HASH"
-            VENV_DONE_MARKER="$VENV_CACHE_DIR.gb-sync-done"
-            VENV_SYNC_TOKEN="${GB_SKYPILOT_LAUNCH_ID:-}:${SKYPILOT_INTERNAL_JOB_ID:-}:${LSB_JOBID:-${SLURM_JOB_ID:-}}"
-            echo "distill: venv cache key = $LOCK_HASH"
-            echo "distill: venv cache dir = $VENV_CACHE_DIR"
-
-            if [ "$NODE_RANK" != "0" ]; then
-              echo "distill: rank $NODE_RANK waiting for rank 0 to sync venv at $VENV_CACHE_DIR"
-              WAITED=0
-              while [ "$(cat "$VENV_DONE_MARKER" 2>/dev/null || true)" != "$VENV_SYNC_TOKEN" ]; do
-                sleep 2
-                WAITED=$((WAITED + 2))
-                if [ "$WAITED" -ge 1800 ]; then
-                  echo "distill: FATAL: rank $NODE_RANK waited ${WAITED}s for rank 0 to" >&2
-                  echo "         sync the venv at $VENV_CACHE_DIR and it never appeared." >&2
-                  exit 1
-                fi
-              done
-            else
-              mkdir -p "$VENV_CACHE_DIR"
-              export UV_CACHE_DIR="${GB_SHARED_WORKDIR:-$WORK}/.uv-cache"
-              export UV_PROJECT_ENVIRONMENT="$VENV_CACHE_DIR/.venv"
-              SYNC_START=$(date +%s)
-              ( cd "$VENV_PROJECT_DIR" && uv sync --locked )
-              SYNC_END=$(date +%s)
-              echo "distill: venv sync took $((SYNC_END - SYNC_START))s"
-              printf '%s\n' "$VENV_SYNC_TOKEN" > "$VENV_DONE_MARKER.tmp.$$"
-              mv -f "$VENV_DONE_MARKER.tmp.$$" "$VENV_DONE_MARKER"
-            fi
-            PYBIN="$VENV_CACHE_DIR/.venv/bin/python"
-            export PATH="$VENV_CACHE_DIR/.venv/bin:$PATH"
-            # --- distill runtime venv sync: END ---
+            # The commit is a fixed fact of the image, not something to discover via
+            # `git rev-parse` at run time (the baked-in tree is a COPY, not a checkout --
+            # see steps/distill/src/VENDORED.md), so it's recorded as a literal here,
+            # matching the SAME pin every other GPU step clones at this commit.
+            echo "GB_STEP_METADATA_KEY:distill_code_source GB_STEP_METADATA_VALUE:baked-image"
+            echo "GB_STEP_METADATA_KEY:distill_code_commit GB_STEP_METADATA_VALUE:a5d59bc45524a8d75706e20d44ae1a254f273f23"
+            # --- distill source: END ---
 
             # Snapshot the rest of the node-level topology from SkyPilot's own
             # generic vars (NODE_RANK was already read above, before source
@@ -1099,7 +860,7 @@ environment_configs:
                 # LD_LIBRARY_PATH) fails with "libcuda.so cannot found!".
                 # Unconditional and harmless where the gap doesn't exist (LSF,
                 # or a cache that's already current) — see
-                # images/cuda-devel-base/README.md.
+                # steps/distill/gpu/README.md.
                 ldconfig 2>/dev/null || true
                 exec "$PYBIN" -m gb_steps_post_training.distillation.run_vllm_serve \
                   --port "${KD_VLLM_API_PORT:-8001}" \

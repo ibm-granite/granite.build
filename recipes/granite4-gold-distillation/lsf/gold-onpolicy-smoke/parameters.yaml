@@ -16,11 +16,11 @@
 RUN_NAME: "gold-onpolicy-smoke"
 
 # ─── Trainer code and image ───────────────────────────────────────────
-# One code_config clone for BOTH targets: run_vllm_serve.py and gold.py come from
-# the same pinned public repo, so a server built from different code than the
+# gold.py is baked into the shared GPU image; run_vllm_serve.py (the vllm-server
+# step) still clones gb-steps-distillation at job-launch time -- but both pull the
+# SAME pinned commit (a5d59bc4), so a server built from different code than the
 # trainer expects is not a failure mode this recipe can produce.
 DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
-IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
 
 # ─── Model pair and data ──────────────────────────────────────────────
 # The same three artifacts as gold-sweep-*, all verified readable from the

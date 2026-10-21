@@ -36,8 +36,6 @@ ON_POLICY: false
 # same mechanism every ported step uses — recorded automatically as
 # distill_code_commit.
 DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
-# SM90 (H100) build — it will not run on A100.
-IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
 
 # ─── The pair and the data ──────────────────────────────────────────────
 # TEACHER_MODEL_URI / STUDENT_MODEL_URI carry a FULL uri, not a bare path —

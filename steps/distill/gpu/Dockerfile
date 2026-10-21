@@ -61,11 +61,12 @@ ENV CUDA_HOME=/usr/local/cuda
 ENV PATH="${CUDA_HOME}/bin:${PATH}"
 ENV LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}"
 
-# The shared trainer library every GPU step that carries a vendored source
-# tree imports (gold does; the others currently clone gb-steps-distillation
-# at job-launch time via their own code_config, same as they do against the
-# opaque image today -- this just gives that clone a known-good venv to
-# land in).
+# The shared trainer library every GPU step imports. gold and vllm-server use
+# this baked-in copy directly (no code_config, no clone); the remaining GPU
+# steps (sft, logit-precompute, eval, gen-smoke, probe) still clone
+# gb-steps-distillation at job-launch time via their own code_config, same as
+# they do against the opaque image today -- this just gives that clone a
+# known-good venv to land in.
 COPY src/gb_steps_post_training /opt/gb-steps-distillation/src/gb_steps_post_training
 ENV PYTHONPATH=/opt/gb-steps-distillation/src
 

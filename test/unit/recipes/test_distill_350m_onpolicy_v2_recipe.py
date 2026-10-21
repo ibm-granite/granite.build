@@ -281,8 +281,6 @@ class TestItIsStage1V2PlusOnPolicy:
             "MAX_LENGTH",
             "TARGET_ROWS",
             "GOLD_LEARNING_RATE",
-            "CODE_DIR",
-            "CODE_EXPECT_REF",
             "NCCL_DEBUG",
             "CORPUS_DIR",
         ],
@@ -291,20 +289,18 @@ class TestItIsStage1V2PlusOnPolicy:
         assert _params()[key] == _params(_OFFPOLICY)[key], key
 
     def test_the_trainer_and_the_server_read_the_same_revision(self, on):
-        """On-policy is the arm where this can go wrong quietly. train-gold runs the trainer
-        and vllm-server runs run_vllm_serve out of the SAME package, so two different
-        checkouts would pair a patched trainer with an unpatched sampler -- and the symptom is
-        not a crash, it is a floor that never applies and completions the teacher scores as
-        rollouts. Both override the shared steps pin (see the off-policy arm's test for why
-        that is allowed at all); this asserts they agree."""
-        overrides = {}
-        for name, target in _targets(on).items():
-            for step in target["steps"]:
-                if "code_config" in step.get("config", {}):
-                    overrides[name] = step["config"]["code_config"]
-        assert set(overrides) == {"train-gold", "vllm-server"}, overrides
-        distinct = {tuple(sorted(c.items())) for c in overrides.values()}
-        assert len(distinct) == 1, f"trainer and server disagree: {overrides}"
+        """On-policy is the arm where this could go wrong quietly: train-gold runs the
+        trainer and vllm-server runs run_vllm_serve out of the SAME package, so two
+        different sources would pair a patched trainer with an unpatched sampler -- and
+        the symptom is not a crash, it is a floor that never applies and completions the
+        teacher scores as rollouts. Both steps now get their source from the SAME baked
+        shared GPU image (steps/distill/src/, see VENDORED.md) rather than either cloning
+        a configurable checkout, so there is no longer a pair of pins that COULD disagree
+        -- this asserts neither step has a code_config to disagree with in the first
+        place."""
+        for name in ("train-gold", "vllm-server"):
+            config = _config(on, name)
+            assert "code_config" not in config, (name, config)
 
     def test_a_stopping_guard_and_a_fixed_ladder_cannot_both_be_asked_for(self, on):
         """Build d1acf1c0 hit this in the off-policy arm -- guard tripped at step 77 of
@@ -326,23 +322,23 @@ class TestItIsStage1V2PlusOnPolicy:
         what it says is that non-zero CE costs capability in ordered amounts and that the
         collapse it prevented damaged nothing. This arm starts where the evidence is.
 
-        If the on-policy entropy curve argues otherwise, CE_COEF is one --param plus a
-        CODE_DIR at a patched checkout -- and it must match the off-policy arm it is
-        compared against, which test_it_matches_the_off_policy_arm already enforces."""
+        If the on-policy entropy curve argues otherwise, CE_COEF is now a bare --param
+        (the trainer carries the field unconditionally) -- and it must match the
+        off-policy arm it is compared against, which test_it_matches_the_off_policy_arm
+        already enforces."""
         gold = _config(on, "train-gold")["gold_config"]
         assert float(gold.get("ce_coef", 0.0)) == 0.0
         assert gold.get("log_student_entropy", False) is False
         assert float(gold.get("entropy_guard_drop_frac", 0.0)) == 0.0
 
-    def test_the_two_code_config_overrides_are_the_steps_own_pin(self, on):
-        """train-gold and vllm-server both restate code_config, and with the anchor
-        retired both restate the step's PUBLIC pin rather than a /proj checkout. That is
-        what makes this recipe runnable off BlueVela -- and it is the pairing that goes
-        wrong quietly, since a patched trainer with an unpatched sampler is a floor that
-        never applies rather than a crash."""
-        assert _params()["CODE_DIR"] == ""
+    def test_neither_step_overrides_its_image(self, on):
+        """train-gold and vllm-server both default to the shared GPU image now (no
+        per-recipe IMAGE_ID override to restate or disagree on) -- that is what makes
+        this recipe runnable anywhere the image is reachable, with no /proj dependency
+        and no pairing that could go wrong quietly."""
         for name in ("train-gold", "vllm-server"):
-            assert _config(on, name)["code_config"]["code_dir"] == ""
+            launcher = _config(on, name).get("launcher_config", {})
+            assert "image_id" not in launcher, (name, launcher)
 
     def test_the_effective_batch_is_unchanged_by_the_server_node(self):
         """The server has its own allocation, so GOLD_NUM_NODES still counts trainers

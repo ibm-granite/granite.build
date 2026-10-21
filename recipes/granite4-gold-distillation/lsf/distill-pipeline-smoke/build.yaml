@@ -107,7 +107,6 @@ granite.build:
               num_nodes: 1
               num_cpus_per_node: $${CPU_ONLY_CPUS}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -150,7 +149,6 @@ granite.build:
               num_nodes: 1
               num_cpus_per_node: $${CPU_ONLY_CPUS}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -218,7 +216,6 @@ granite.build:
               num_nodes: 1
               num_gpus_per_node: $${SFT_NUM_GPUS}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 accelerators: "H100:$${SFT_NUM_GPUS}"
                 cluster: "$${CLUSTER}"
@@ -302,9 +299,6 @@ granite.build:
               num_nodes: $${GOLD_NUM_NODES}
               num_gpus_per_node: $${GOLD_NUM_GPUS}
             launcher_config:
-              # Overrides the step's own image (gbserver prefers a build.yaml
-              # image_id over the launcher's).
-              image_id: "$${IMAGE_ID}"
               resources:
                 # accelerators is PER NODE; memory is host memory per node, and
                 # it has to be stated — the LSF provisioner defaults to 16G and a
@@ -374,7 +368,6 @@ granite.build:
               num_nodes: 1
               num_cpus_per_node: $${EXPORT_CPUS}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -437,7 +430,6 @@ granite.build:
               num_nodes: 1
               num_gpus_per_node: $${EVAL_NUM_GPUS}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 # Real GPU work: a forward pass through each of two models.
                 accelerators: "H100:$${EVAL_NUM_GPUS}"
@@ -488,7 +480,6 @@ granite.build:
               num_nodes: 1
               num_gpus_per_node: $${EVAL_NUM_GPUS}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 accelerators: "H100:$${EVAL_NUM_GPUS}"
                 cluster: "$${CLUSTER}"

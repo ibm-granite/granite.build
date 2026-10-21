@@ -22,7 +22,6 @@ RUN_NAME: "gold-sweep-smoke"
 # Identical to gold-sweep-100: a smoke run against a different trainer commit or a
 # different image would not gate anything.
 DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
-IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
 
 # ─── Model pair and data ──────────────────────────────────────────────
 # Identical to gold-sweep-100, and that is the main thing this recipe gates: these are

@@ -22,8 +22,6 @@ RUN_NAME: "gold-sweep-100"
 # mismatch against the published arm is a finding rather than a bug: see README,
 # "What this does and does not reproduce".
 DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
-# SM90 (H100) build — it will not run on A100.
-IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
 
 # ─── Model pair and data ──────────────────────────────────────────────
 # The published sweep's own three artifacts, read directly rather than copied. All three

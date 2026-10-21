@@ -4,7 +4,7 @@ Turns a conversation dataset into the GOLD training corpus: filter by rendered l
 think-tag policy, enforce the completion boundary, split deterministically, and record what was
 done in a manifest the trainer checks. It is a `data_processing` step that runs on the LSF
 SkyPilot environment only (`subtypes: [lsf]`), on CPU, in the prebuilt
-`docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv` image; it builds no image.
+`docker:us.icr.io/cil15-shared-registry/gb-step-distillation-cpu:6fb1236` image; it builds no image.
 
 > **Developing or testing this step?** See `steps/distill/corpus-prep/skypilot/README.md` in the
 > granite.build repository for how the step is generated, tested, and published — including the

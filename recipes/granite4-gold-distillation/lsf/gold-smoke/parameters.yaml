@@ -10,14 +10,11 @@
 RUN_NAME: "gold-smoke"
 
 # ─── Trainer code and image ───────────────────────────────────────────
-# The GOLD trainer's commit is recorded automatically as distill_code_commit by
-# code_config's clone -- the same pin every ported step uses -- so there is
-# nothing to set here.
-# accelerate + DeepSpeed ZeRO-3 config, resolved relative to code_config's clone.
+# The GOLD trainer is baked into the shared GPU image (steps/distill/src/, pinned
+# a5d59bc4 -- see steps/distill/src/VENDORED.md) -- nothing to set here.
+# accelerate + DeepSpeed ZeRO-3 config, resolved relative to $CODE_DIR
+# (/opt/gb-steps-distillation, baked into the image).
 DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
-# SM90 (H100) build — it will not run on A100. Carries the pinned torch/transformers/
-# trl/vllm/deepspeed set the step was validated against, with its venv at /stage/.venv.
-IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
 
 # ─── Model pair and data ──────────────────────────────────────────────
 # The REFERENCE pair, deliberately not something smaller. GOLD compares student and

@@ -10,11 +10,9 @@ whether or not ``make space`` has been run.
 """
 
 import json
-import os
 import re
 import subprocess
 import sys
-import textwrap
 from pathlib import Path
 
 import pytest
@@ -69,9 +67,9 @@ class TestRunScriptIsValidShell:
         assert result.returncode == 0, result.stderr
 
     def test_container_venv_is_put_on_path(self, run_script):
-        """This image carries no baked venv: the runtime uv-sync block exports
-        PATH itself, once the sync (or wait) completes."""
-        assert 'export PATH="$VENV_CACHE_DIR/.venv/bin:$PATH"' in run_script
+        """This image carries a baked venv at /stage/.venv: the run script exports
+        PATH to it directly, no runtime uv-sync needed."""
+        assert 'export PATH="/stage/.venv/bin:${PATH}"' in run_script
 
     def test_no_login_shell_anywhere(self, run_script):
         """A login shell re-runs /etc/profile and drops the venv from PATH."""
@@ -471,70 +469,53 @@ class TestExternalVllmServer:
 
 
 class TestDistillSourceDelivery:
-    """The shared-checkout block, unconditional here like the other six ported steps.
-
-    distill-gold used to be the one ported step whose trainer came from a separate,
-    unpinned kd_code_dir checkout rather than this block's clone. That field is gone:
-    the trainer (gold.py, custom_gold_trainer.py, and friends) is now part of the same
-    public source-of-truth repo every other ported step clones, so delivery is
-    unconditional rather than opt-in.
+    """No code_config here, unlike the other six ported steps: the trainer is baked
+    into the shared GPU image (steps/distill/gpu/Dockerfile COPYs
+    steps/distill/src/), not cloned at job-launch time. distill-gold is the one
+    ported step that runs multi-node, where a runtime clone needs its own
+    rank-0-clones/others-wait guard against a real race (measured on build
+    7e9995b3) -- baking the source in sidesteps that race entirely instead of
+    guarding it.
     """
 
-    def test_the_contract_block_is_present(self, step):
-        """test_source_contract.py asserts it is byte-identical to the reference; this only
-        asserts distill-gold has one at all, so a failure here reads as "missing" rather
-        than as an obscure ValueError from that file's .index()."""
-        assert "code_config" in step["config"]
-        cc = step["config"]["code_config"]
-        # The public source repo, not a /proj checkout -- the value itself is owned by
-        # test_source_contract.py's _PINNED_REPO/_PINNED_REF, which assert it for
-        # distill-gold too now that the contract glob is `*distill*`.
-        assert cc["code_dir"] == ""
-        # Empty on purpose: this image carries no baked venv to point at (see
-        # steps/distill/gold/skypilot/Dockerfile) -- PYBIN/PATH come from the
-        # "distill runtime venv sync" block instead, same as _OWNS_ITS_OWN_IMAGE
-        # documents in test_source_contract.py.
-        assert cc["python"] == ""
-        # Empty on purpose: gb-steps-distillation is public, so the clone needs no
-        # credential in the container.
-        assert cc["repo"] != "" and cc["token_secret"] == ""
-
-    def test_no_separate_trainer_checkout_field_remains(self, step):
-        """kd_code_dir and deliver_distill_source are gone. Their reappearance would mean
-        the trainer split back into a second, unpinned source of code."""
+    def test_no_code_config_remains(self, step):
+        """code_config (and the separate, older kd_code_dir it replaced) are both
+        gone: this step's trainer source has no runtime delivery mechanism to
+        configure at all."""
+        assert "code_config" not in step["config"]
         assert "kd_code_dir" not in step["config"]["gold_config"]
         assert "deliver_distill_source" not in step["config"]["gold_config"]
 
-    def test_the_region_is_unconditional(self, run_script):
-        """No Jinja guard around the shared block: every ported step, including this one,
-        now delivers the source unconditionally."""
-        begin = run_script.index("# --- distill source delivery: BEGIN")
-        end = run_script.index("# --- distill source delivery: END")
-        region = run_script[begin:end]
-        assert "deliver_distill_source" not in region
-        assert "{% if" not in region.split("\n")[0]
+    def test_code_dir_and_pybin_are_static(self, run_script):
+        """Both paths are fixed by steps/distill/gpu/Dockerfile's own COPY/ENV
+        lines, not resolved from a config field or a clone destination."""
+        assert 'CODE_DIR="/opt/gb-steps-distillation"' in run_script
+        assert 'PYBIN="/stage/.venv/bin/python"' in run_script
+
+    def test_no_clone_or_runtime_venv_sync_remains(self, run_script):
+        """A clone or a uv sync reappearing here would mean this step regressed
+        back to runtime source delivery, defeating the point of baking the GPU
+        image."""
+        assert "git clone" not in run_script
+        assert "uv sync" not in run_script
+        assert "UV_PROJECT_ENVIRONMENT" not in run_script
 
     def test_the_region_runs_above_the_rank_split(self, run_script):
-        """Asserted because it is the reason two tests in this file had to name their
-        full anchor, and because it is a property worth being explicit about: the region
-        runs on EVERY node, so its three metadata echoes are emitted N times on an
-        N-node run. That is the shared region's behaviour, byte-identical in all seven
-        ported steps and untested in the reference step (which asserts only that the
-        keys exist, not that they are guarded) -- so it is recorded here rather than
-        diverged from, since guarding it in one step would break the byte-identity
-        contract for the other six.
-        """
-        assert run_script.index(
-            "# --- distill source delivery: BEGIN"
-        ) < run_script.index('if [ "$NODE_RANK" = "0" ]; then')
-        assert "GB_STEP_METADATA_KEY:distill_code_dirty" in run_script
+        """The static CODE_DIR/PYBIN assignment (and its metadata echoes) sits
+        above the rank-0 guard: every node needs PYBIN/PATH set before training
+        starts, same position the old source-delivery region held."""
+        assert run_script.index('CODE_DIR="/opt/gb-steps-distillation"') < run_script.index(
+            'if [ "$NODE_RANK" = "0" ]; then'
+        )
+        assert "GB_STEP_METADATA_KEY:distill_code_source" in run_script
+        assert "GB_STEP_METADATA_KEY:distill_code_commit" in run_script
 
     def test_pythonpath_reaches_the_renderer(self, run_script):
-        """The point of delivering the source at all: the renderer is what imports it, so
-        the export must precede the invocation rather than merely existing."""
-        assert run_script.index('export PYTHONPATH="$CODE_DIR/src') < run_script.index(
-            '"$PYBIN" ./src/render_gold_config.py'
-        )
+        """The renderer imports gb_steps_post_training, so PYTHONPATH (set by the
+        image itself, not exported here) must already be in effect before the
+        invocation -- there is just nothing to export in this script any more."""
+        assert 'export PYTHONPATH="$CODE_DIR/src' not in run_script
+        assert '"$PYBIN" ./src/render_gold_config.py' in run_script
 
     def test_trainer_runs_as_a_module_from_the_delivered_source(self, run_script):
         """gold.py's imports are package-qualified now (gb_steps_post_training.distillation),
@@ -1303,79 +1284,3 @@ class TestResumeEmitSeeded:
 
     def test_off_renders_nothing_without_a_resume_source(self):
         assert "not re-emitting seeded" not in self._render(resume_emit_seeded=False)
-
-
-class TestCloneHandshake:
-    """Ranks other than 0 wait for rank 0's clone, and only for THIS attempt's.
-
-    The marker used to be checked for existence alone. A relaunch into the same per-run
-    workdir found the previous attempt's marker still there, so the other ranks went
-    straight to training while rank 0 was deleting and re-cloning the tree.
-    """
-
-    @staticmethod
-    def _wait_snippet(run_script):
-        """From the marker definition through the end of the waiting branch, with the
-        600s timeout cut to one 2s poll so a refusal is quick to observe."""
-        anchor = run_script.index('DONE_MARKER="$CODE_DIR.gb-clone-done"')
-        begin = run_script.rindex("\n", 0, anchor) + 1
-        indent = run_script[begin:anchor]
-        end = run_script.index(f"\n{indent}else\n", begin)
-        snippet = textwrap.dedent(run_script[begin:end]) + "\nfi\n"
-        return snippet.replace("-ge 600 ]", "-ge 2 ]")
-
-    @staticmethod
-    def _write_snippet(run_script):
-        lines = [
-            line.strip()
-            for line in run_script.splitlines()
-            if "$DONE_MARKER.tmp.$$" in line
-        ]
-        assert len(lines) == 2, lines  # the printf and the mv
-        return "\n".join(lines)
-
-    @staticmethod
-    def _run(script, tmp_path, rank, launch_id):
-        env = {
-            "PATH": os.environ["PATH"],
-            "CODE_DIR": str(tmp_path / "code"),
-            # NODE_RANK is read, not RANK: the real script snapshots it from
-            # SKYPILOT_NODE_RANK once, before this snippet, and the snippet
-            # just reads the already-set shell variable.
-            "NODE_RANK": rank,
-            "GB_SKYPILOT_LAUNCH_ID": launch_id,
-            "SKYPILOT_INTERNAL_JOB_ID": "1",
-            "LSB_JOBID": "4242",
-        }
-        return subprocess.run(
-            ["bash", "-c", "set -euo pipefail\n" + script],
-            env=env,
-            capture_output=True,
-            text=True,
-        )
-
-    def test_a_previous_attempts_marker_is_not_accepted(self, run_script, tmp_path):
-        (tmp_path / "code.gb-clone-done").write_text("launch-a:1:4242\n")
-
-        result = self._run(self._wait_snippet(run_script), tmp_path, "1", "launch-b")
-
-        assert result.returncode == 1
-        assert "never appeared" in result.stderr
-
-    def test_this_attempts_marker_is_accepted(self, run_script, tmp_path):
-        wait = self._wait_snippet(run_script)
-        # Rank 0's side: the same token definition, then the atomic write.
-        token_lines = "\n".join(wait.splitlines()[:2])
-        assert "CLONE_TOKEN=" in token_lines
-        rank0 = self._run(
-            token_lines + "\n" + self._write_snippet(run_script),
-            tmp_path,
-            "0",
-            "launch-b",
-        )
-        assert rank0.returncode == 0, rank0.stderr
-        assert (tmp_path / "code.gb-clone-done").read_text() == "launch-b:1:4242\n"
-
-        result = self._run(wait, tmp_path, "1", "launch-b")
-
-        assert result.returncode == 0, result.stderr

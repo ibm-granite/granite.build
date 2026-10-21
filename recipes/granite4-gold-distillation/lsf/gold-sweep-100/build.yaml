@@ -61,9 +61,6 @@ granite.build:
               num_nodes: $${NUM_NODES}
               num_gpus_per_node: $${NUM_GPUS_PER_NODE}
             launcher_config:
-              # Overrides the step's own image (gbserver prefers a build.yaml
-              # image_id over the launcher's).
-              image_id: "$${IMAGE_ID}"
               resources:
                 # accelerators is PER NODE; memory is host memory per node.
                 accelerators: "$${ACCELERATORS}"

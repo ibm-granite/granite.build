@@ -150,7 +150,6 @@ granite.build:
               num_nodes: 1
               num_cpus_per_node: $${SOURCES_CPUS}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -205,7 +204,6 @@ granite.build:
               num_nodes: 1
               num_cpus_per_node: $${CPU_ONLY_CPUS}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -259,7 +257,6 @@ granite.build:
               num_nodes: 1
               num_cpus_per_node: $${CPU_ONLY_CPUS}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -346,7 +343,6 @@ granite.build:
               num_nodes: 1
               num_cpus_per_node: $${CPU_ONLY_CPUS}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -401,7 +397,6 @@ granite.build:
               num_nodes: 1
               num_gpus_per_node: $${SFT_NUM_GPUS}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 accelerators: "H100:$${SFT_NUM_GPUS}"
                 cluster: "$${CLUSTER}"
@@ -498,9 +493,6 @@ granite.build:
               num_nodes: $${GOLD_NUM_NODES}
               num_gpus_per_node: $${GOLD_NUM_GPUS}
             launcher_config:
-              # Overrides the step's own image (gbserver prefers a build.yaml
-              # image_id over the launcher's).
-              image_id: "$${IMAGE_ID}"
               resources:
                 # accelerators is PER NODE; memory is host memory per node, and
                 # it has to be stated — the LSF provisioner defaults to 16G and a
@@ -510,32 +502,6 @@ granite.build:
                 cluster: "$${CLUSTER}"
                 # For the LSF cloud, SkyPilot's zone is the queue name.
                 zone: "$${QUEUE}"
-            code_config:
-              # The step's own public pin, restated. CODE_DIR is empty by default, so the
-              # step clones github.com/laminair/gb-steps-distillation at `ref` below --
-              # the same trainer every other distillation recipe here runs. This block
-              # used to point at a local patched checkout, because the CE anchor and the
-              # collapse guard need trainer fields that commit does not define; both are
-              # off now, nothing patch-gated renders, and the override is gone.
-              #
-              # Every key is restated rather than overriding code_dir alone, so this block
-              # does not depend on how a partial config override merges.
-              #
-              # To re-arm CE_COEF or the guard, build a patched checkout once on a node
-              # that can reach github.com and pass it as CODE_DIR (with CODE_EXPECT_REF):
-              #   git clone https://github.com/laminair/gb-steps-distillation.git $CODE_DIR
-              #   git -C $CODE_DIR checkout a5d59bc45524a8d75706e20d44ae1a254f273f23
-              #   cd $CODE_DIR/src/gb_steps_post_training/distillation
-              #   patch -p2 -F3 < <this repo>/steps/distill/gold/skypilot/patches/ce_anchor_and_entropy_guard.diff
-              #   git -C $CODE_DIR commit -am "ce anchor and entropy guard"
-              code_dir: "$${CODE_DIR}"
-              expect_ref: "$${CODE_EXPECT_REF}"
-              repo: "https://github.com/laminair/gb-steps-distillation.git"
-              ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
-              workdir: "distill-code"
-              token_secret: ""
-              python: "/stage/.venv/bin/python"
-              setup_command: ""
             gold_config:
               run_name: "$${RUN_NAME}"
               ds_config: "$${DS_CONFIG}"
@@ -567,14 +533,13 @@ granite.build:
               use_liger_fused_jsd: $${USE_LIGER_FUSED_JSD}
 
               # ── the anchor and the guard, both off ──────────────────────────
-              # All six are patch-gated: they need trainer fields the step's public pin
-              # does not define, and render_gold_config.py emits each one only when it is
-              # non-default. At the zeroed defaults in parameters.yaml nothing here
-              # reaches the config, which is exactly what lets this recipe run on that
-              # public pin — and what makes its objective df8512e0's, unanchored.
+              # All six fields are unconditionally available (the trainer carries them
+              # permanently now -- see parameters.yaml's GOLD trainer note), and
+              # render_gold_config.py emits each one only when it is non-default. At the
+              # zeroed defaults in parameters.yaml nothing here reaches the config, which
+              # is what makes this recipe's objective df8512e0's, unanchored.
               #
-              # Setting any of them non-zero requires CODE_DIR at a patched checkout. See
-              # CE_COEF in parameters.yaml for the sweep that retired them.
+              # See CE_COEF in parameters.yaml for the sweep that retired these at zero.
               ce_coef: $${CE_COEF}
               log_student_entropy: $${LOG_STUDENT_ENTROPY}
               entropy_guard_drop_frac: $${ENTROPY_GUARD_DROP_FRAC}
@@ -622,7 +587,6 @@ granite.build:
               num_nodes: 1
               num_cpus_per_node: $${EXPORT_CPUS}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -697,7 +661,6 @@ granite.build:
               num_nodes: 1
               num_gpus_per_node: $${EVAL_NUM_GPUS}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 # Real GPU work: a forward pass through each of two models.
                 accelerators: "H100:$${EVAL_NUM_GPUS}"
@@ -776,7 +739,6 @@ granite.build:
               num_nodes: 1
               num_gpus_per_node: $${EVAL_NUM_GPUS}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 accelerators: "H100:$${EVAL_NUM_GPUS}"
                 cluster: "$${CLUSTER}"
@@ -837,7 +799,6 @@ granite.build:
               num_nodes: 1
               num_gpus_per_node: 1
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 accelerators: "H100:1"
                 cluster: "$${CLUSTER}"

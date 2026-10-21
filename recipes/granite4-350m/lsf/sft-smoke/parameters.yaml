@@ -14,8 +14,6 @@ WORKDIR_ROOT: "/proj/granite-build/g4os/gbtest/distill"
 BUILD_SUBDIR: "{{ run_metadata.build_id }}"
 SEED: 42
 
-# ─── Image and trainer code ────────────────────────────────────────────
-IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
 
 # ─── The pair, the data, and the chat template ─────────────────────────
 # See distill-smoke/parameters.yaml for why this pair, why the teacher needs a

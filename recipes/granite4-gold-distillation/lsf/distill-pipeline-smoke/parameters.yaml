@@ -57,8 +57,6 @@ INCLUDE_SFT: false
 # image; naming it here makes the pin visible and overridable in one place). The
 # BFCL target is deliberately NOT given it — that step runs its own harness
 # image.
-# SM90 (H100) build; it will not run on A100.
-IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
 # The GOLD trainer (gb_steps_post_training.distillation.gold and friends) is
 # delivered by distill-gold's own code_config, the same pinned public-repo
 # clone every ported step uses — so a source bump is one edit in the step,

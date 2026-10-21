@@ -170,7 +170,7 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:0395d28"
           # REAL GPU WORK, unlike the three ported steps before it: two models' forward
           # passes over the corpus. Accelerators come from the build.yaml so one step
           # serves a 3B-teacher smoke run and a 30B-teacher reference run.

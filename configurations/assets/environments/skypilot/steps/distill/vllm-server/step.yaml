@@ -23,23 +23,19 @@ version: 1.0.0
 # the two allocations, and the teardown target ended the server.
 #
 # Division of labour, as in distill-gold: SkyPilot's LSF provisioner owns bsub,
-# enroot and the node topology; deps come from the image; the server code (now
-# gb_steps_post_training.distillation.run_vllm_serve) comes from the same public
-# source-of-truth clone every ported distillation step uses.
+# enroot and the node topology; deps AND the server code (now
+# gb_steps_post_training.distillation.run_vllm_serve) come from the shared GPU
+# image, same baked-in source every GPU distillation step uses — see
+# steps/distill/src/VENDORED.md.
 type: SERVICE
 config:
-  code_config:
-    # Same mechanism and same pin as the ported distillation steps: an
-    # unauthenticated HTTPS clone of the public source repo at run time. See
-    # distill-gold's step-template.yaml for the full rationale.
-    code_dir: ""
-    expect_ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
-    repo: "https://github.com/laminair/gb-steps-distillation.git"
-    ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
-    workdir: "distill-code"
-    token_secret: ""
-    python: "/stage/.venv/bin/python"
-    setup_command: ""
+  # No code_config: run_vllm_serve.py is baked into the shared GPU image
+  # (steps/distill/gpu/Dockerfile COPYs steps/distill/src/, pinned
+  # a5d59bc45524a8d75706e20d44ae1a254f273f23), same as distill-gold, rather than
+  # cloned at job-launch time. This step is single-node (a SERVICE, not a
+  # multi-node training job), so there was never a clone-guard race to avoid here
+  # either way — baking it in just drops the clone's network round-trip from
+  # every server bring-up.
   vllm_config:
     # ── Code and model ──────────────────────────────────────────────────────
     # The model to serve is the `model` target input — see `inputs:` below.
@@ -123,7 +119,7 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:0395d28"
           resources: {}
           envs:
             HF_HOME: /opt/hf-cache
@@ -147,43 +143,35 @@ environment_configs:
             export PATH=/stage/.venv/bin:$PATH
             PYBIN=/stage/.venv/bin/python
 
-            # Minimal source delivery: an unauthenticated HTTPS clone of the public
-            # repo, same mechanism as the ported distillation steps (see
-            # distill-gold's step-template.yaml for the full rationale on why this
-            # replaced a /proj checkout). Simplified here since this step has no
-            # filesystem-checkout fallback to support.
-            CODE_DIR="${GB_BUILD_WORKDIR:-$PWD}/{{ config.code_config.workdir }}"
-            REPO="{{ config.code_config.repo }}"
-            REF="{{ config.code_config.ref }}"
-            rm -rf "$CODE_DIR"
-            git clone --quiet "$REPO" "$CODE_DIR"
-            if [ -n "$REF" ]; then
-              git -C "$CODE_DIR" checkout --quiet "$REF"
-            fi
-            export PYTHONPATH="$CODE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+            # Source: baked into the shared GPU image, no clone. Both paths are
+            # fixed by steps/distill/gpu/Dockerfile's own COPY/ENV lines.
+            CODE_DIR="/opt/gb-steps-distillation"
+            # PYTHONPATH=/opt/gb-steps-distillation/src is already set by the image
+            # itself; nothing to export here.
 
             # run_vllm_serve.py reads this and raises SamplingParams.min_tokens to it
             # for every request, which is the only place a floor can be applied: the
             # trainer's own min_completion_length does not travel with a served
             # request.
             export GOLD_MIN_TOKENS="{{ config.vllm_config.min_completion_length | default(0) }}"
-            # And refuse if the delivered server cannot act on it. This export is the whole
+            # And refuse if the baked-in server cannot act on it. This export is the whole
             # mechanism -- there is no other place a floor can be applied -- so against a
             # revision of run_vllm_serve that does not read the variable it is a no-op that
             # LOOKS configured: the step logs the floor, the server ignores it, and the run
             # collapses into immediate-EOS completions the teacher scores as rollouts. At the
-            # pin this step defaults to (a5d59bc4) the handling is absent, which is why this
+            # pin this image bakes in (a5d59bc4) the handling is absent, which is why this
             # is a check and not a comment. Grepped rather than imported: run_vllm_serve
             # execs a server at import time, so asking Python would start one.
             if [ "$GOLD_MIN_TOKENS" != "0" ]; then
               SERVE_SRC="$CODE_DIR/src/gb_steps_post_training/distillation/run_vllm_serve.py"
               if ! grep -q "GOLD_MIN_TOKENS" "$SERVE_SRC" 2>/dev/null; then
                 echo "vllm-server: FATAL: vllm_config.min_completion_length is $GOLD_MIN_TOKENS," >&2
-                echo "  but the delivered $SERVE_SRC does not read GOLD_MIN_TOKENS, so the floor" >&2
+                echo "  but the baked-in $SERVE_SRC does not read GOLD_MIN_TOKENS, so the floor" >&2
                 echo "  would silently never reach SamplingParams.min_tokens and the student could" >&2
                 echo "  emit an immediate EOS on every rollout." >&2
-                echo "  Either point code_config at a checkout whose run_vllm_serve honours it, or" >&2
-                echo "  set min_completion_length 0 and accept that there is no floor." >&2
+                echo "  Either bump the vendor pin (steps/distill/src/VENDORED.md) to a commit whose" >&2
+                echo "  run_vllm_serve honours it, or set min_completion_length 0 and accept that" >&2
+                echo "  there is no floor." >&2
                 exit 1
               fi
             fi

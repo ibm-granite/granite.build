@@ -2,7 +2,7 @@
 
 Plain SFT on the distillation corpus, with **no teacher**. It is a `training` step that runs on
 the LSF SkyPilot environment only (`subtypes: [lsf]`), on one GPU node, in the prebuilt
-`docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv` image; it builds no image.
+`docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:0395d28` image; it builds no image.
 With `precomputed_logits_dir` set, the same step becomes forward-KL distillation against a
 frozen teacher — see [Two uses](#two-uses-and-the-second-one-is-not-a-control).
 
