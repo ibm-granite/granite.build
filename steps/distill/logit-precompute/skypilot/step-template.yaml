@@ -185,7 +185,7 @@ environment_configs:
             # exporting CHECKOUT_ROOT is silently discarded; these two are the guarded knobs.
             # Learned the expensive way on distill-sft (builds 739898ab, 07b9e09a).
             export PRECOMPUTE_SRC="$CODE_DIR/src/gb_steps_post_training/distillation"
-            export LIB_DIR="$DISTILL_HOME/lib"
+            export LIB_DIR="$DISTILL_HOME/shell"
 
             # This step reads the teacher and nothing else, so a teacher on tape is the whole
             # step waiting on a recall. Metadata only; refuses only on an authoritative
