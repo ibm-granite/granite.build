@@ -186,10 +186,11 @@ class TestTheUnanchoredObjective:
     def test_the_per_step_entropy_log_is_off_and_the_metric_survives_elsewhere(
         self, off
     ):
-        """log_student_entropy is one of the six patch-gated fields, so leaving it true
-        alone would hold CODE_DIR at a patched checkout for an instrument. The quantity
-        is not lost: distill-eval computes entropy and rkld from a checkpoint with no
-        trainer involvement, and every rung is transfer-evaluated."""
+        """log_student_entropy is left off because this recipe does not need the
+        WITHIN-run resolution, not because the baked-in trainer can't provide it (it
+        can, unconditionally, now). The quantity is not lost: distill-eval computes
+        entropy and rkld from a checkpoint with no trainer involvement, and every rung
+        is transfer-evaluated."""
         gold = _config(off, "train-gold")["gold_config"]
         assert gold.get("log_student_entropy", False) is False
         assert int(gold["logging_steps"]) == 1
@@ -257,13 +258,12 @@ class TestTheUnanchoredObjective:
             assert gold["log_student_entropy"] is True
 
     def test_no_patch_gated_key_renders_at_the_defaults(self, off):
-        """THE PROPERTY THE WHOLE REMOVAL IS FOR, and the one that breaks silently.
-
-        render_gold_config.py emits each of these keys only when it is non-default, and
-        refuses to emit any of them against a trainer whose CustomGOLDConfig lacks the
-        field -- at the step's pin (a5d59bc4) none of the six exist. So a single one of
-        them slipping back into the rendered config does not misconfigure the run, it
-        makes the recipe unrunnable on the public pin and drags CODE_DIR back with it.
+        """THE PROPERTY THIS RECIPE RELIES ON: these keys stay present and at their
+        off defaults, so this recipe's own objective is the unanchored one df8512e0
+        ran, not because the baked-in trainer would reject a non-default (it now
+        defines all six fields unconditionally -- see TestTheTrainerPin) but because a
+        non-default value would change the objective under measurement, which is a
+        deliberate --param away, not this recipe's default.
 
         Read off the step's gold_config -- the INPUT render_gold_config.py decides from --
         rather than off parameters.yaml, so a stray literal or a Jinja default in build.yaml
@@ -288,8 +288,8 @@ class TestTheUnanchoredObjective:
             "entropy_guard_drop_frac": float(gold["entropy_guard_drop_frac"]) > 0,
         }
         assert not any(emitted.values()), (
-            "these reach the trainer's config and the step's pinned trainer has no such "
-            f"field: {sorted(k for k, v in emitted.items() if v)}"
+            "these reach the trainer's config and would change this recipe's objective "
+            f"away from the unanchored one it measures: {sorted(k for k, v in emitted.items() if v)}"
         )
 
     def test_the_objective_is_df8512e0s(self, off):
@@ -301,7 +301,8 @@ class TestTheUnanchoredObjective:
 
     def test_the_sweep_arms_are_still_reachable(self, tmp_path):
         """Retiring the anchor must not mean deleting the plumbing: the safety question
-        the sweep left open is run from here, and it is one --param plus a CODE_DIR."""
+        the sweep left open is run from here, and it is now a bare --param -- the
+        trainer carries the field unconditionally, no checkout to bring along."""
         arm = _render(tmp_path, INCLUDE_SFT=False, CE_COEF=0.15)
         gold = _config(arm, "train-gold")["gold_config"]
         assert float(gold["ce_coef"]) == 0.15
@@ -346,75 +347,34 @@ class TestTheUnanchoredObjective:
 
 
 class TestTheTrainerPin:
-    """train-gold reads the step's own pinned trainer again, which is the point of having
-    retired the CE anchor.
+    """train-gold and vllm-server both get their trainer baked into the shared GPU
+    image (steps/distill/src/, pinned a5d59bc4 -- see steps/distill/src/VENDORED.md),
+    not cloned from a recipe-configurable checkout, so there is no CODE_DIR/
+    CODE_EXPECT_REF parameter and no code_config to override here at all.
 
     This recipe used to override CODE_DIR with a local patched checkout under /proj,
-    because CE_COEF and the guard need fields the pinned trainer does not define. That
+    because CE_COEF and the guard needed fields the pinned trainer did not define. That
     override was also what made the recipe BlueVela-only: a /proj path resolves nowhere
-    else. With the anchor retired the override is gone, and the invariant that replaces
-    it is a conditional one -- whoever re-arms a patch-gated key must bring a CODE_DIR
-    with it.
-
-    The provenance requirement behind the original pin has not gone away. df8512e0
-    recorded kd_sandbox_commit fc7d66e from a tree carrying 159 uncommitted files, so its
-    single record of what trained described a commit whose code did not run. The clone
-    path cannot drift that way -- it checks out code_config.ref by construction -- which
-    is why empty is now the safer value rather than merely the simpler one.
+    else. The patch is now folded permanently into the vendored source every GPU step's
+    image bakes in, so re-arming any of those fields is a bare --param, with no checkout
+    to point at and no BlueVela dependency to reintroduce.
     """
 
-    def test_the_trainer_is_the_steps_own_public_pin(self):
-        """Empty means the step clones github.com/laminair/gb-steps-distillation at the
-        commit it pins. Not a /proj path, and specifically not the shared mutable tree:
-        /proj/granite-build/g4os/kd-sandbox is another project's working copy."""
-        code_dir = _params()["CODE_DIR"]
-        assert code_dir == "", (
-            "CODE_DIR is set, so this recipe no longer runs on the step's public pin and "
-            "no longer runs anywhere but BlueVela. Only a patch-gated key justifies that"
-        )
+    def test_no_trainer_checkout_parameters_remain(self):
+        """CODE_DIR/CODE_EXPECT_REF are gone: there is no runtime trainer checkout left
+        to point at or pin."""
+        params = _params()
+        assert "CODE_DIR" not in params
+        assert "CODE_EXPECT_REF" not in params
 
-    def test_any_patch_gated_key_brings_a_code_dir_with_it(self, off, tmp_path):
-        """THE INVARIANT THAT REPLACES THE PIN, and the expensive failure it prevents.
-
-        None of the six patch-gated keys exist in CustomGOLDConfig at a5d59bc4. Emitting
-        one against that trainer is caught by the renderer -- but only after the step has
-        started, so a run that asks for CE without a patched checkout fails having already
-        queued. Asserting both directions here catches it at test time instead.
-        """
-        gold = _config(off, "train-gold")["gold_config"]
-        asks = (
-            float(gold.get("ce_coef", 0)) > 0
-            or gold.get("log_student_entropy", False) is True
-            or float(gold.get("entropy_guard_drop_frac", 0)) > 0
-        )
-        assert not asks or _params()["CODE_DIR"], (
-            "this recipe emits keys the pinned trainer does not define; CODE_DIR must "
-            "name a checkout carrying ce_anchor_and_entropy_guard.diff"
-        )
-        # And the same recipe re-armed must still be able to reach a patched checkout.
-        armed = _render(
-            tmp_path, INCLUDE_SFT=False, CE_COEF=0.15, CODE_DIR="/proj/somewhere-gb"
-        )
-        assert _config(armed, "train-gold")["code_config"]["code_dir"] == (
-            "/proj/somewhere-gb"
-        )
-
-    def test_the_pin_is_a_full_commit_or_deliberately_empty(self):
-        """A branch head moves, which is the failure the pin exists for -- so if this names
-        anything, it names a full commit.
-
-        Empty is the shipped value and it disables nothing that matters: expect_ref is read
-        only on the CODE_DIR path, and the clone path is at code_config.ref by
-        construction. It is the value to FILL IN the moment a CODE_DIR is set, because that
-        is when a checkout becomes mutable state again -- and it brings the dirty-tree check
-        with it."""
-        ref = _params()["CODE_EXPECT_REF"]
-        assert ref == "" or re.fullmatch(r"[0-9a-f]{40}", ref), ref
-
-    def test_the_pin_reaches_the_step(self, off):
-        code_config = _config(off, "train-gold")["code_config"]
-        assert code_config["code_dir"] == _params()["CODE_DIR"]
-        assert code_config["expect_ref"] == _params()["CODE_EXPECT_REF"]
+    def test_a_patch_gated_key_needs_nothing_extra(self, off, tmp_path):
+        """THE INVARIANT THAT REPLACED THE PIN: re-arming any of the CE-anchor/
+        entropy-guard fields no longer requires a checkout at all, because the baked-in
+        trainer defines them unconditionally now."""
+        armed = _render(tmp_path, INCLUDE_SFT=False, CE_COEF=0.15)
+        gold = _config(armed, "train-gold")["gold_config"]
+        assert float(gold["ce_coef"]) == 0.15
+        assert "code_config" not in _config(armed, "train-gold")
 
     def test_the_renderers_field_check_stays_on(self, off):
         """It is what stands between any future re-arm and a config TrlParser rejects on
@@ -423,57 +383,32 @@ class TestTheTrainerPin:
         gold = _config(off, "train-gold")["gold_config"]
         assert gold.get("verify_trainer_accepts_keys", True) is not False
 
-    def test_the_patch_that_builds_that_checkout_ships_with_the_repo(self):
-        """Otherwise the pin names a tree nobody can rebuild, which is a different
-        way of having no provenance at all."""
-        patch = (
+    def test_the_fold_in_is_recorded_in_the_vendor_docs(self):
+        """Otherwise the fold-in has no provenance trail at all: where the fields came
+        from, and why they are safe to rely on unconditionally now."""
+        vendored_md = (
             _RECIPE.parents[3]
             / "steps"
             / "distill"
-            / "gold"
-            / "skypilot"
-            / "patches"
-            / "ce_anchor_and_entropy_guard.diff"
+            / "src"
+            / "VENDORED.md"
         )
-        assert patch.is_file()
-        text = patch.read_text(encoding="utf-8")
-        assert "Base commit:" in text
-        # CODE_EXPECT_REF is empty until the patched checkout is built, so the pin cannot
-        # be asserted against the patch yet. What still must hold is that the patch says
-        # which commit it applies to and under which directory -- without the remap the
-        # hunks land nowhere, and that is the part a reader needs.
-        assert "a5d59bc4" in text, "the patch must name the pin it applies to"
-        assert (
-            "src/gb_steps_post_training/distillation" in text
-        ), "the patch must state the directory remap it needs"
-        for key in ("ce_coef", "log_student_entropy", "entropy_guard_drop_frac"):
-            assert key in text, f"{key} is pinned but not in the patch"
+        assert vendored_md.is_file()
+        text = vendored_md.read_text(encoding="utf-8")
+        assert "a5d59bc4" in text, "VENDORED.md must name the pin the fold-in applies to"
+        for key in ("ce_coef", "log_student_entropy", "entropy_guard"):
+            assert key in text, f"{key} is not documented in VENDORED.md"
 
-    def test_only_the_trainer_targets_override_the_shared_step_pin(self, off):
-        """The ported steps' pin belongs to the step, once, for all of them. A recipe-level
-        override is what left align reading a patched tree while corpus read the shared one
-        -- build 1820703f -- so an override is an exception that has to justify itself.
-
-        train-gold is the one justified exception, and it is not new: this recipe always read
-        its trainer from somewhere other than the shared steps checkout. Before the two
-        sources became one repo that was invisible here, because the trainer arrived through
-        gold_config.kd_code_dir and this test only ever looked at code_config. Now it is
-        visible, so it is bounded instead: exactly the targets that run trainer code may
-        override, every other target keeps the shared pin (which is what keeps align, corpus,
-        export and eval runnable off BlueVela at all), and every override is identical -- one
-        revision per build is the property 1820703f was really about."""
-        allowed = {"train-gold", "vllm-server"}
-        overrides = {}
+    def test_no_target_overrides_the_shared_step_image(self, off):
+        """The ported steps' image belongs to the step, once, for all of them. A
+        recipe-level image_id override is what left align reading a patched tree while
+        corpus read the shared one -- build 1820703f -- so an override is an exception
+        that has to justify itself. With the trainer baked into every GPU step's shared
+        image, there is no override left to justify: no target should carry one."""
         for name, target in _targets(off).items():
             for step in target["steps"]:
-                if "code_config" in step.get("config", {}):
-                    assert name in allowed, f"{name} overrides the shared steps pin"
-                    overrides[name] = step["config"]["code_config"]
-        assert overrides, "the patched trainer has to reach train-gold somehow"
-        distinct = {tuple(sorted(c.items())) for c in overrides.values()}
-        assert (
-            len(distinct) == 1
-        ), f"targets disagree on the trainer revision: {overrides}"
+                launcher = step.get("config", {}).get("launcher_config", {})
+                assert "image_id" not in launcher, f"{name} overrides the shared image"
 
 
 # ─── The horizon and the ladder ────────────────────────────────────────────────

@@ -397,9 +397,10 @@ class TestConfigDefaults:
         assert "FATAL: nodes=" in sft_sh
 
     def test_tracking_is_entirely_off(self, step):
-        """All five empty means off. MEASURED: clearml and wandb are both ABSENT from this
-        image, so setting any of them would fail at import; tracking.py imports them lazily
-        and only when a project is configured."""
+        """All five empty means off. The shared GPU image now carries both clearml and
+        wandb (steps/distill/gpu/pyproject.toml), so setting any of them works rather
+        than failing at import; tracking.py still imports them lazily and only when a
+        project is configured, so leaving all five empty stays the safe default."""
         assert set(step["config"]["tracking"].values()) == {""}
 
     def test_step_type_is_a_real_enum_member(self, step):

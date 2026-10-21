@@ -262,7 +262,7 @@ capability evaluation — it is what makes the checkpoint loadable by anything b
 ### Runtime
 
 - **Type** `data_processing`; **environment** SkyPilot, LSF only (`subtypes: [lsf]`).
-- **Image** `docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv`, prebuilt; this
+- **Image** `docker:us.icr.io/cil15-shared-registry/gb-step-distillation-cpu:6fb1236`, prebuilt; this
   step builds none.
 - **No GPU**, by design — if this step appears to need one, something has been misdiagnosed.
   CPUs and memory come from the build.yaml.
