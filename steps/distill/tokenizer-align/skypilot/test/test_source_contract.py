@@ -29,14 +29,18 @@ _SR_BEGIN = "            # --- distill source delivery: BEGIN"
 _SR_END = "            # --- distill source delivery: END"
 
 
-# The steps under steps/distill/ that do not carry the contract. vllm-server clones the
-# trainer too, but with its own single-purpose region; the rest clone nothing. Everything
-# else under steps/distill/ is discovered, so a new step is checked with no edit here and
-# has to be named in this set to be left out.
+# The steps under steps/distill/ that do not carry the contract. gold and vllm-server
+# both get their trainer source baked into the shared GPU image
+# (steps/distill/gpu/Dockerfile, COPY of steps/distill/src/) rather than cloned at
+# job-launch time, so neither has a code_config/source-delivery region at all -- not a
+# drifted copy of one. corpus-pin-check/corpus-sources/gen-smoke/probe clone nothing.
+# Everything else under steps/distill/ is discovered, so a new step is checked with no
+# edit here and has to be named in this set to be left out.
 _NOT_PORTED = {
     "corpus-pin-check",
     "corpus-sources",
     "gen-smoke",
+    "gold",
     "probe",
     "vllm-server",
 }
@@ -77,27 +81,22 @@ def test_at_least_one_other_step_is_compared():
     assert len(_templates()) >= 2, "only the reference step exists; nothing to compare"
 
 
-# distill-gold is the one ported step that runs multi-node, and code_config.workdir
-# is a path on the SHARED filesystem (GB_BUILD_WORKDIR) -- every other ported step is
-# single-node, so its copy of the byte-identical region can rm -rf/clone unconditionally
-# with no other rank racing it on the same path. distill-gold's region additionally
-# guards the clone on rank 0 and has every other rank wait for a completion marker,
-# which is real, necessary drift, not decay: measured on build 7e9995b3, where two
-# ranks' concurrent clones into the same CODE_DIR crashed one of them inside git's own
-# ref-transaction code. So it is exempted from the byte-identity check below rather than
-# forcing a single-node contract onto a multi-node step.
-_MULTI_NODE_STEPS = {"gold"}
+# A ported step that runs multi-node needs its own clone guard (code_config.workdir is
+# a path on the SHARED filesystem, GB_BUILD_WORKDIR, so concurrent ranks rm -rf/cloning
+# the same path race each other -- measured on build 7e9995b3, where two ranks' clones
+# into the same CODE_DIR crashed one of them inside git's own ref-transaction code), so
+# its source-delivery region legitimately drifts from the single-node reference's. Empty
+# today: gold (the one multi-node ported step) now gets its trainer baked into the
+# shared GPU image instead of cloning at job-launch time, so it carries no
+# source-delivery region to compare at all (see _NOT_PORTED above). Add a step here,
+# rather than loosening the check for everyone, if a future multi-node step clones.
+_MULTI_NODE_STEPS = set()
 
-# distill-gold is also the one ported step with its own Dockerfile/image (see
-# steps/distill/gold/skypilot/Dockerfile): its image carries no baked venv, so
-# code_config.python is deliberately "" there -- PYBIN/PATH come from the
-# "distill runtime venv sync" block instead, not a path baked into the opaque
-# shared image every other ported step still uses. That one field's divergence
-# is real, necessary drift (same category as the multi-node clone guard above),
-# not decay, so distill-gold is exempted from the code_config byte-identity
-# check too. If a second ported step grows its own image, add it here rather
-# than loosening the check for everyone.
-_OWNS_ITS_OWN_IMAGE = {"gold"}
+# A ported step with its own per-step Dockerfile/image would deliberately diverge in
+# code_config.python (baked venv path vs. "" for a runtime-synced one). Empty today --
+# add a step here, rather than loosening the check for everyone, if one ever owns its
+# own image again.
+_OWNS_ITS_OWN_IMAGE = set()
 
 
 @pytest.mark.parametrize(

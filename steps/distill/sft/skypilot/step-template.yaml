@@ -184,9 +184,11 @@ config:
   # backend fails on an incomplete config — they log to their own defaults — which is how a
   # multi-day run ends up somewhere nobody looks.
   #
-  # MEASURED CAVEAT for this image: clearml and wandb are BOTH ABSENT from
-  # kd-sandbox-distill:0.1.0-uv. tracking.py imports them lazily and only when a project is
-  # configured, so empty is safe — but setting any of these five here would fail at import.
+  # The shared GPU image (steps/distill/gpu/, replacing the opaque
+  # kd-sandbox-distill:0.1.0-uv) DOES carry clearml==2.1.12 and wandb==0.28.2 (both in
+  # steps/distill/gpu/pyproject.toml), so setting any of these five now works rather
+  # than failing at import. tracking.py still imports them lazily and only when a
+  # project is configured, so leaving all five empty (tracking off) stays safe either way.
   tracking:
     clearml_project: ""
     clearml_run_name: ""
@@ -231,7 +233,7 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:0395d28"
           resources: {}
           file_mounts:
             src: src

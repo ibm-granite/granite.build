@@ -160,7 +160,7 @@ granite.build:
 |---|---|
 | **Type** | `data_generation` — it samples from a model (the distinction the `space://steps/distill/corpus-prep` step draws from the other side) |
 | **Environment** | SkyPilot, LSF only (`subtypes: [lsf]`) |
-| **Image** | `docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv` (prebuilt; builds none) |
+| **Image** | `docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:0395d28` (prebuilt; builds none) |
 | **GPU** | yes — this is the only step that holds the teacher without a student |
 | **Nodes** | 1 only; more is refused, and the reason is unusual (below) |
 | **Emits** | `teacher_logits` (`type: fileset`) → `<output_dir>/{shards/,index.jsonl,meta.json}` |

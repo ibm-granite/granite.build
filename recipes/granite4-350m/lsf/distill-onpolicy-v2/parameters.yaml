@@ -23,8 +23,8 @@
 # output is where a collapse could feed itself, and nothing in the off-policy sweep
 # measures that. What the sweep does establish is that the collapse it was built to
 # prevent did not damage the off-policy model, and that non-zero CE costs capability in
-# ordered amounts. If on-policy turns out to behave differently, CE_COEF is one --param
-# and a patched CODE_DIR away -- but it starts here where the evidence is, at zero.
+# ordered amounts. If on-policy turns out to behave differently, CE_COEF is a bare
+# --param away -- but it starts here where the evidence is, at zero.
 #
 # Override any value with: gb build start --param KEY=VALUE
 
@@ -109,41 +109,16 @@ CORPUS_DIR: ""
 INCLUDE_SFT: false
 
 # ─── Image and trainer code ───────────────────────────────────────────
-# One image for every distillation step (each step's own default is this same
-# image; naming it here makes the pin visible and overridable in one place). The
-# BFCL target is deliberately NOT given it — that step runs its own harness
-# image.
-# SM90 (H100) build; it will not run on A100.
-IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
-# The GOLD trainer: the step's own public pin, which is the default again.
-#
-# EMPTY means the step clones github.com/laminair/gb-steps-distillation at the commit
-# its own code_config pins, which resolves on any environment class that can reach
-# github.com. This recipe used to override it with a local checkout at
+# The GOLD trainer: no CODE_DIR/CODE_EXPECT_REF override here any more. This recipe
+# used to point gold's code_config at a local checkout at
 # /proj/granite-build/g4os/gb-steps-distillation-gb carrying
-# patches/ce_anchor_and_entropy_guard.diff, because CE_COEF and the entropy guard need
-# trainer fields the public pin does not define. Both are off now -- see CE_COEF below
-# for the sweep that retired them -- so nothing patch-gated renders, the override has
-# no purpose left, and this recipe runs the same trainer as every other distillation
-# recipe here, on any cluster rather than only on BlueVela.
-#
-# To re-arm either key, point this at a checkout carrying that patch and set
-# CODE_EXPECT_REF to its HEAD; the diff header states its base commit and the directory
-# remap it needs. render_gold_config.py refuses to emit a patch-gated key against a
-# trainer whose CustomGOLDConfig lacks the field, so the wrong combination fails in
-# seconds instead of after the allocation is held.
-CODE_DIR: ""
-# The full 40-char commit CODE_DIR must be at, and be clean at. Consulted ONLY on the
-# CODE_DIR path: the clone path checks out code_config.ref by construction, so there is
-# nothing there for this to catch. Empty is therefore the right value while CODE_DIR is
-# empty, and the value to fill in the moment one is set -- it is what turns a mutable
-# shared checkout back into a recorded provenance, and it brings the dirty-tree check
-# with it.
-CODE_EXPECT_REF: ""
+# patches/ce_anchor_and_entropy_guard.diff, because CE_COEF and the entropy guard
+# needed trainer fields the step's default public pin did not define. That patch is
+# now folded in permanently (steps/distill/src/VENDORED.md), baked into the shared
+# GPU image every GOLD recipe already uses, and gold itself no longer has a
+# code_config field to override at all -- so CE_COEF and the entropy guard below work
+# out of the box, with nothing to point anywhere.
 DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
-# The five ported steps read their own code from a separate pinned checkout,
-# declared by each step's code_config (code_dir plus expect_ref) rather than
-# here — so a source bump is one edit in the step, not one per recipe.
 
 # ─── The pair, the data, and the chat template ────────────────────────
 # granite-4.1-3b, via a PINNED-TOKENIZER copy rather than the model directory.
@@ -492,31 +467,28 @@ BETA: 0.5
 # HumanEval and BFCL level. The premise these keys were added under, "the objective is
 # wrong", is withdrawn. Longer, unanchored, off-policy is the best recipe on record.
 #
-# THE KEYS STAY, AT ZERO, rather than being deleted. Zero is what lets this recipe run
-# on the step's own public trainer pin: render_gold_config.py emits each of them only
-# when non-default, and emitting any one against a trainer that lacks the field makes
-# TrlParser reject the config on every node after the allocation is already held. And
-# the sweep left one question open -- no CE arm was ever measured for safety, which is
-# the only axis where the unanchored epoch went backwards (SALAD 93.5 -> 90.7, AttaQ
-# -1.2). If that experiment is run, it is --param CE_COEF=<x> plus a CODE_DIR pointing
-# at a patched checkout, and nothing else.
+# THE KEYS STAY, AT ZERO, rather than being deleted: render_gold_config.py emits each
+# of them only when non-default, so zero reproduces exactly the unanchored objective
+# this recipe has always run. And the sweep left one question open -- no CE arm was
+# ever measured for safety, which is the only axis where the unanchored epoch went
+# backwards (SALAD 93.5 -> 90.7, AttaQ -1.2). If that experiment is run, it is just
+# --param CE_COEF=<x> -- the trainer carrying these fields is now unconditional (see
+# the GOLD trainer note above), no checkout to point at.
 #
 # loss = JSD(student || teacher) + CE_COEF * CE(student, corpus tokens)
 CE_COEF: 0.0
 # Mean student entropy and reverse KL in the trainer log, every logging_steps.
 #
-# FALSE for pin reasons, not because the metric stopped mattering. It is one of the six
-# patch-gated fields, so leaving this true alone would hold CODE_DIR at a patched
-# checkout for an instrument. The quantity survives without it: distill-eval computes
-# entropy and rkld from a checkpoint with no trainer involvement (see EVAL_METRICS
-# below), and the eval-transfer targets read every checkpoint this recipe exports. What
-# is lost is resolution WITHIN a run, not the measurement.
+# FALSE because this recipe does not need the WITHIN-run resolution, not because
+# nothing can turn it on any more. The quantity survives without it: distill-eval
+# computes entropy and rkld from a checkpoint with no trainer involvement (see
+# EVAL_METRICS below), and the eval-transfer targets read every checkpoint this
+# recipe exports. Flipping this to true is now a bare --param, nothing else to wire up.
 LOG_STUDENT_ENTROPY: false
 # 0 disables the guard, and disabling it changes no behaviour: ENTROPY_GUARD_ACTION has
 # been "warn" for as long as there has been a ladder, so the guard has only ever printed
 # the trip step and never ended a run. With the collapse now known not to damage the
-# model there is nothing left for it to warn about, and it is patch-gated like the two
-# keys above.
+# model there is nothing left for it to warn about.
 ENTROPY_GUARD_DROP_FRAC: 0.0
 # INERT while ENTROPY_GUARD_DROP_FRAC is 0 -- the renderer emits this trio only when the
 # fraction is positive. Left at the values every sweep arm ran with, so re-arming the

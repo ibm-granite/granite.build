@@ -42,31 +42,20 @@ see [Inputs](#inputs) below. For on-policy GOLD this is the **student**, not the
 | `health_poll_seconds` | integer | Sleep between `/health` probes. Default: `10`. |
 | `max_lifetime_seconds` | integer | Ceiling on how long the server holds its allocation once healthy. `0` means no ceiling: hold until the teardown target downs the cluster, which multi-hour runs rely on. Counted from the moment the server is healthy. Set it as a backstop against a stranded server (see [Nothing reaps the cluster](#nothing-reaps-the-cluster-but-the-teardown-target)); it must outlast the consumer's run. Default: `0`. |
 
-### Code delivery (`code_config`)
+### Code delivery
 
-The server code (`gb_steps_post_training.distillation.run_vllm_serve`) comes from an
-unauthenticated HTTPS clone of the public source repo at run time, the same mechanism
-and pin as the other ported distillation steps. Only `repo`, `ref` and `workdir` are
-read by this step's run script; the other keys are accepted for parity with those steps
-and have no effect here.
-
-| Field | Type | Purpose |
-|---|---|---|
-| `repo` | string | Git repository cloned at run time. Default: `https://github.com/laminair/gb-steps-distillation.git`. |
-| `ref` | string | Commit checked out after the clone; skipped when empty. Default: `a5d59bc45524a8d75706e20d44ae1a254f273f23`. |
-| `workdir` | string | Directory under the workdir root the repo is cloned into. Any existing directory there is removed first. Default: `distill-code`. |
-| `code_dir` | string | Not read by this step: there is no pre-built-checkout path, so setting it does not replace the clone. Default: `""`. |
-| `expect_ref` | string | Not read by this step. Default: `a5d59bc45524a8d75706e20d44ae1a254f273f23`. |
-| `token_secret` | string | Not read by this step; the clone is unauthenticated. Default: `""`. |
-| `python` | string | Not read by this step; the interpreter is fixed at `/stage/.venv/bin/python`. Default: `/stage/.venv/bin/python`. |
-| `setup_command` | string | Not read by this step. Default: `""`. |
+No `code_config` field: the server code
+(`gb_steps_post_training.distillation.run_vllm_serve`) is baked into the shared GPU
+image this step runs in (`steps/distill/gpu/Dockerfile` COPYs `steps/distill/src/`,
+pinned `a5d59bc45524a8d75706e20d44ae1a254f273f23` — see `steps/distill/src/VENDORED.md`),
+the same as `distill-gold`. There is no per-run clone to configure.
 
 ### Top-level config
 
 | Field | Type | Purpose |
 |---|---|---|
 | `compute_config` | mapping | Node and GPU counts, e.g. `{num_nodes: 1, num_gpus_per_node: 8}`. The server runs on one node; its GPU count sets the default data-parallel size. |
-| `launcher_config` | mapping | SkyPilot launcher overrides: `image_id` (default `docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv`) and `resources` (`accelerators`, `memory`, `cluster`, `zone`). |
+| `launcher_config` | mapping | SkyPilot launcher overrides: `image_id` (default `docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:0395d28`) and `resources` (`accelerators`, `memory`, `cluster`, `zone`). |
 | `poll_interval_seconds` | integer | Monitor status-poll interval. Default: `300`. |
 | `log_retrieval_mode` | string | Monitor log-retrieval mode. Default: `periodic` (see [log_retrieval.mode](#log_retrievalmode-is-periodic-not-startup_window)). |
 | `log_retrieval_interval_seconds` | integer | How often the monitor retrieves the log, and so how soon after `/health` the URL is seen. Default: `15`. |
@@ -115,8 +104,8 @@ value through filesystem-path normalisation and mangles `http://host:8001` into
 The run script starts in the step's per-run workdir (`GB_BUILD_WORKDIR`, or the current
 directory if that is unset). It:
 
-- clones `code_config.repo` into `<workdir>/<code_config.workdir>` (default
-  `distill-code/`), checks out `ref`, and puts its `src/` on `PYTHONPATH`;
+- uses the server code already baked into the image at `/opt/gb-steps-distillation`
+  (`PYTHONPATH` already set by the image itself) — no clone;
 - runs the server with the image's interpreter, `/stage/.venv/bin/python`, with
   `/stage/.venv/bin` prepended to `PATH`;
 - sets `VLLM_RPC_BASE_PATH` and `TMPDIR` to `/tmp/vllm-<user>-<LSF job id>`, created on
@@ -222,8 +211,7 @@ both directions.
 
 | | |
 |---|---|
-| deps | the image (`/stage/.venv`), the same one the `space://steps/distill/gold` step uses |
-| server code | `gb_steps_post_training.distillation.run_vllm_serve`, from `code_config`'s clone |
+| deps + server code | baked into the shared GPU image (`/stage/.venv` + `/opt/gb-steps-distillation`), the same image the `space://steps/distill/gold` step uses |
 | bsub, enroot, node topology | SkyPilot's LSF provisioner |
 | readiness, address publication, teardown hook | this step |
 
@@ -284,11 +272,12 @@ field, so `run_vllm_serve.py` is meant to patch `SamplingParams.min_tokens` from
 the trainer sets a floor, the student is free to emit an immediate EOS and the run
 collapses into empty completions the teacher then scores as if they were rollouts.
 
-At the default pin (`a5d59bc4`) `run_vllm_serve.py` does not read `GOLD_MIN_TOKENS`, so
-the export alone would be a no-op that looks configured. The step therefore greps the
-delivered `run_vllm_serve.py` for `GOLD_MIN_TOKENS` and refuses to start when
-`min_completion_length` is non-zero and the handling is absent. To have a floor, point
-`code_config` at a revision whose `run_vllm_serve.py` honours it; otherwise keep `0`.
+At the pin this image bakes in (`a5d59bc4`) `run_vllm_serve.py` does not read
+`GOLD_MIN_TOKENS`, so the export alone would be a no-op that looks configured. The step
+therefore greps the baked-in `run_vllm_serve.py` for `GOLD_MIN_TOKENS` and refuses to
+start when `min_completion_length` is non-zero and the handling is absent. To have a
+floor, bump the vendor pin (`steps/distill/src/VENDORED.md`) to a commit whose
+`run_vllm_serve.py` honours it; otherwise keep `0`.
 
 ### `log_retrieval.mode` is `periodic`, not `startup_window`
 
@@ -315,9 +304,3 @@ nothing underneath reclaims it. Build `d77546a9` held 8 H100s that way until the
 downed by hand. `max_lifetime_seconds` is the backstop, not the normal path: the
 `gold-onpolicy-smoke` recipe sets 3600 and `distill-onpolicy-v2` 5 h.
 
-### `code_config.code_dir` does not apply
-
-Unlike the other distillation steps, this step always clones `repo` at `ref`; it has no
-filesystem-checkout fallback, and `code_dir`, `expect_ref`, `token_secret`, `python` and
-`setup_command` are not read. Setting `code_dir` here does not change the server's
-source.

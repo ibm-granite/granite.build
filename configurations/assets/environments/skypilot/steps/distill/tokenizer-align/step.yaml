@@ -199,7 +199,7 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-cpu:6fb1236"
           # NO GPU is needed: this loads two tokenizers and one embedding matrix on
           # CPU. Node count and any accelerators come from the build.yaml
           # (compute_config / launcher_config.resources) so one step serves both a
