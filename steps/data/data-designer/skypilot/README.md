@@ -53,7 +53,7 @@ repo's IBM tree and never ship.
 | IBM-only tests: RITS, BlueVela | `test/integration/ibm/buildrunner/skypilot/...` | IBM suites (`pytest.mark.ibm`) | No |
 
 The open build tests use `local_model` (Ollama on the node), so they need no key, no
-secret and no model endpoint. Only `slurm-ollama` exists so far; kube and aws are next.
+secret and no model endpoint. `slurm-ollama` and `kube-ollama` exist; aws is next.
 
 ### Unit tests (here)
 
@@ -91,6 +91,19 @@ Mode 1 only; no infrastructure and no model endpoint:
     process was left on any node afterwards.
 
   Run with `GB_ENVIRONMENT=STANDALONE GBTEST_MODE=live make test TEST_DIR=test/slurm-ollama`.
+
+- **kube-ollama**: the same fixture in a pod on `skypilot/kubernetes/local`, the local
+  kind cluster (`make test-setup-kube`, once). It self-skips unless that cluster and its
+  `gb-shared` volume are up.
+  - **Pod image:** SkyPilot's default kube image has no `python3`, `pip` or `zstd` of
+    its own. The install works anyway, through SkyPilot's runtime Python and the venv's
+    `zstandard`, as on SLURM.
+  - **Cache:** goes to the env's ReadWriteMany `gb-shared` volume at `/shared`, so a
+    second run reuses Ollama and the model.
+  - **Timing:** green on 2026-10-21 in 3m53s with a cold cache. The workdir-teardown pod
+    (`-td-`) removed itself about 50s later, leaving no data-designer pods behind.
+
+  Run with `GB_ENVIRONMENT=STANDALONE GBTEST_MODE=live make test TEST_DIR=test/kube-ollama`.
 
 ### IBM-only tests (`test/integration/ibm/buildrunner/skypilot/slurm_local/`)
 
@@ -151,8 +164,9 @@ Measured history: resume was first checked off-cluster against RITS (8 rows,
 
 ### Planned
 
-- **More open build tests**: `kube-ollama` and `aws-ollama` (copies of `slurm-ollama` with
-  another `environment_uri`), then keep-output and resume variants. These ship with the step.
+- **More open build tests**: `aws-ollama` (a copy of `slurm-ollama` with another
+  `environment_uri`, gated on AWS credentials), then keep-output and resume variants.
+  These ship with the step.
 - **BlueVela**: siblings under `slurm_bluevela/`, once the step is in the gb-test assets
   repo.
 
