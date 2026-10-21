@@ -17,6 +17,25 @@ import yaml
 from gbserver.utils.template import fill_template
 
 _DIR = Path(__file__).resolve().parent.parent
+
+
+def _image_env(tmp_path, step, python=None):
+    """Emulate the baked image: DISTILL_HOME/steps/<step> holds this step's scripts, and
+    `uv python find` (how the launcher picks its interpreter) answers with the test's own."""
+    home = tmp_path / "distill-home"
+    (home / "steps").mkdir(parents=True)
+    (home / "steps" / step).symlink_to(_DIR / "src")
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    uv = shim / "uv"
+    uv.write_text(f'#!/bin/sh\necho "{python or sys.executable}"\n')
+    uv.chmod(0o755)
+    return {
+        **os.environ,
+        "GB_BUILD_WORKDIR": str(tmp_path),
+        "DISTILL_HOME": str(home),
+        "PATH": f"{shim}{os.pathsep}{os.environ['PATH']}",
+    }
 _STEP = _DIR / "step-template.yaml"
 
 
@@ -37,7 +56,7 @@ def _render(step, launcher, **overrides):
 
 def test_it_is_an_lsf_skypilot_step(step):
     assert step["name"] == "corpus-sources"
-    assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf"]
+    assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf", "slurm"]
 
 
 def test_it_declares_the_output_it_registers(step):
@@ -45,7 +64,7 @@ def test_it_declares_the_output_it_registers(step):
 
 
 def test_the_script_is_shipped_with_the_step(launcher):
-    assert launcher["file_mounts"] == {"src": "src"}
+    assert "file_mounts" not in launcher
     assert (_DIR / "src" / "build_sources.py").is_file()
 
 
@@ -75,7 +94,7 @@ def test_the_rendered_script_runs_and_registers_the_corpus(step, launcher, tmp_p
     result = subprocess.run(
         ["bash", "-c", script],
         cwd=_DIR,
-        env={**os.environ, "GB_BUILD_WORKDIR": str(tmp_path)},
+        env=_image_env(tmp_path, "corpus-sources"),
         capture_output=True,
         text=True,
     )
@@ -99,7 +118,7 @@ def test_an_absolute_output_dir_is_used_as_given(step, launcher, tmp_path):
     result = subprocess.run(
         ["bash", "-c", script],
         cwd=_DIR,
-        env={**os.environ, "GB_BUILD_WORKDIR": str(tmp_path / "elsewhere")},
+        env={**_image_env(tmp_path, "corpus-sources"), "GB_BUILD_WORKDIR": str(tmp_path / "elsewhere")},
         capture_output=True,
         text=True,
     )

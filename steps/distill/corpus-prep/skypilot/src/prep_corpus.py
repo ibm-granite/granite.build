@@ -107,7 +107,7 @@ VALID_ROLES = ("system", "user", "assistant", "tool")
 # dropped -- but COUNTED in the manifest, because renaming roles is a transformation of the
 # data and an operator is entitled to see how much of it happened.
 #
-# FOUND ON REAL DATA (LSF job 1137876): `data/distillation/en_sft_4.1` spells tool results
+# FOUND ON REAL DATA: `data/distillation/en_sft_4.1` spells tool results
 # `tool_response`, and 10,665 of its messages use it. granite-4.2's chat template accepts
 # only system/user/assistant/tool -- and its `tool` branch renders the content wrapped in
 # literal `<tool_response>` tags (chat_template.jinja:176-178). So the two spellings are the
@@ -509,8 +509,7 @@ def normalise(
     # them would silently change what the rendered prompt looks like relative to the source
     # dataset, which is the kind of difference that shows up only as a worse eval.
     #
-    # COERCED, NOT FORWARDED VERBATIM, and that distinction cost a job (LSF 1137876, where
-    # 395,007 of 405,672 en_sft_4.1 records died as `template_error:ValueError`). That
+    # COERCED, NOT FORWARDED VERBATIM, and that distinction cost a job . That
     # dataset stores `tools` as the JSON *string* `"[]"`, not as a list.
     # `apply_chat_template` iterates `tools` and demands each element be a dict or a
     # callable, so a string is iterated CHARACTER BY CHARACTER -- `'['` is neither, and it
@@ -635,8 +634,7 @@ def last_mask_span(mask) -> int:
     assistant turn. Summing the whole mask therefore reports more supervised tokens than
     the trainer will actually supervise, by exactly the earlier assistant turns.
 
-    The error is invisible on single-turn data, which is why it survived the first scale run
-    (LSF job 1137876): `bespoke_stratos_17k` is one user turn and one assistant turn, so
+    The error is invisible on single-turn data, which is why it survived the first scale run: `bespoke_stratos_17k` is one user turn and one assistant turn, so
     last_message and all_assistant produced byte-identical corpora and identical token
     stats. On a multi-turn corpus the same code would have overstated the supervised token
     count without any signal that it had.

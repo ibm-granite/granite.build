@@ -88,7 +88,7 @@ class TestLauncherFactsLearnedElsewhere:
             in run_script
         )
         assert (
-            'export LIB_DIR="$CODE_DIR/steps/distill-logit-precompute/src/lib"'
+            'export LIB_DIR="$DISTILL_HOME/lib"'
             in run_script
         )
         assert "export CHECKOUT_ROOT=" not in run_script
@@ -103,7 +103,8 @@ class TestLauncherFactsLearnedElsewhere:
         assert 'if [[ -z "${LIB_DIR:-}" ]]' in pc_sh
 
     def test_the_venv_is_on_path_for_the_bare_accelerate(self, run_script, pc_sh):
-        assert "export PATH=/stage/.venv/bin:$PATH" in run_script
+        assert "/stage/" not in run_script
+        assert 'PYBIN="$(uv python find)"' in run_script
         assert "export ACCELERATE=" in run_script
         assert 'ACCELERATE="${ACCELERATE:-accelerate}"' in pc_sh
 
@@ -112,7 +113,8 @@ class TestLauncherFactsLearnedElsewhere:
 
     def test_the_hub_is_reachable_because_this_step_loads_the_teacher(self, launcher):
         assert "HF_HUB_OFFLINE" not in launcher["envs"]
-        assert launcher["envs"]["HF_HOME"] == "/opt/hf-cache"
+        # HF_HOME is the image's ENV (a fixed in-container mount point), never a step setting.
+        assert "HF_HOME" not in launcher["envs"]
 
 
 class TestResponseTemplateNewline:

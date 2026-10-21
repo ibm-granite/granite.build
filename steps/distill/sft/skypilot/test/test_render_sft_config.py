@@ -71,7 +71,18 @@ _CHECKOUT = Path(
     )
 )
 _GOLD_SRC = _CHECKOUT / "steps" / "distill-gold-train" / "src"
-if _GOLD_SRC.is_dir() and str(_GOLD_SRC) not in _sys.path:
+
+# The parity tests need the UPSTREAM gold renderer, which is not vendored here and is only
+# reachable from an IBM-internal /proj checkout (or GB_DISTILL_CODE_DIR). Tagged `ibm`, and
+# skipped when the checkout is absent.
+import pytest as _pytest  # noqa: E402
+
+pytestmark = _pytest.mark.ibm
+if not _GOLD_SRC.is_dir():
+    _pytest.skip(
+        f"upstream gold renderer not found at {_GOLD_SRC}", allow_module_level=True
+    )
+if str(_GOLD_SRC) not in _sys.path:
     _sys.path.insert(0, str(_GOLD_SRC))
 
 import render_gold_config  # noqa: E402

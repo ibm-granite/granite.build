@@ -66,10 +66,11 @@ class TestRunScriptIsValidShell:
         )
         assert result.returncode == 0, result.stderr
 
-    def test_container_venv_is_put_on_path(self, run_script):
-        """This image carries a baked venv at /stage/.venv: the run script exports
-        PATH to it directly, no runtime uv-sync needed."""
-        assert 'export PATH="/stage/.venv/bin:${PATH}"' in run_script
+    def test_container_venv_comes_from_the_image_not_the_script(self, run_script):
+        """The image sets VIRTUAL_ENV and puts its bin on PATH; the script asks uv for the
+        interpreter and hardcodes no venv path."""
+        assert 'PYBIN="$(uv python find)"' in run_script
+        assert "/stage/" not in run_script
 
     def test_no_login_shell_anywhere(self, run_script):
         """A login shell re-runs /etc/profile and drops the venv from PATH."""
@@ -203,8 +204,9 @@ class TestStepDeclaration:
         """One step serves the smoke and reference runs."""
         assert launcher["resources"] == {}
 
-    def test_renderer_is_shipped_as_a_file_mount(self, launcher):
-        assert launcher["file_mounts"] == {"src": "src"}
+    def test_renderer_is_baked_into_the_image_not_mounted(self, launcher):
+        assert "file_mounts" not in launcher
+        assert (_STEP.parent / "src" / "render_gold_config.py").is_file()
 
     def test_nccl_timeout_env_is_present(self, launcher):
         """The 30B teacher forward plus ZeRO-3 collectives outlast the default
@@ -325,7 +327,7 @@ class TestRendererInvocation:
     def test_renderer_is_run_with_the_container_interpreter(self, run_script):
         """So the config is dumped by the same PyYAML the trainer parses with --
         the synced venv's python, not a baked image path."""
-        assert '"$PYBIN" ./src/render_gold_config.py' in run_script
+        assert '"$PYBIN" "$DISTILL_HOME/steps/gold/render_gold_config.py"' in run_script
 
     def test_total_nodes_is_passed_from_the_allocation(self, run_script):
         assert '--total-nodes "$NODES"' in run_script
@@ -489,8 +491,8 @@ class TestDistillSourceDelivery:
     def test_code_dir_and_pybin_are_static(self, run_script):
         """Both paths are fixed by steps/distill/gpu/Dockerfile's own COPY/ENV
         lines, not resolved from a config field or a clone destination."""
-        assert 'CODE_DIR="/opt/gb-steps-distillation"' in run_script
-        assert 'PYBIN="/stage/.venv/bin/python"' in run_script
+        assert 'CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"' in run_script
+        assert 'PYBIN="$(uv python find)"' in run_script
 
     def test_no_clone_or_runtime_venv_sync_remains(self, run_script):
         """A clone or a uv sync reappearing here would mean this step regressed
@@ -504,7 +506,7 @@ class TestDistillSourceDelivery:
         """The static CODE_DIR/PYBIN assignment (and its metadata echoes) sits
         above the rank-0 guard: every node needs PYBIN/PATH set before training
         starts, same position the old source-delivery region held."""
-        assert run_script.index('CODE_DIR="/opt/gb-steps-distillation"') < run_script.index(
+        assert run_script.index('CODE_DIR="${DISTILL_HOME') < run_script.index(
             'if [ "$NODE_RANK" = "0" ]; then'
         )
         assert "GB_STEP_METADATA_KEY:distill_code_source" in run_script
@@ -515,7 +517,7 @@ class TestDistillSourceDelivery:
         image itself, not exported here) must already be in effect before the
         invocation -- there is just nothing to export in this script any more."""
         assert 'export PYTHONPATH="$CODE_DIR/src' not in run_script
-        assert '"$PYBIN" ./src/render_gold_config.py' in run_script
+        assert '"$PYBIN" "$DISTILL_HOME/steps/gold/render_gold_config.py"' in run_script
 
     def test_trainer_runs_as_a_module_from_the_delivered_source(self, run_script):
         """gold.py's imports are package-qualified now (gb_steps_post_training.distillation),
@@ -792,6 +794,10 @@ class TestResumeFromCheckpointDir:
         """Run the seeding block as rank `rank` of this attempt (`launch_id`).
         quick_wait cuts a worker's 900s wait for rank 0 to one 1s poll."""
         dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        home = tmp_path / "distill-home"
+        (home / "steps").mkdir(parents=True, exist_ok=True)
+        if not (home / "steps" / "gold").exists():
+            (home / "steps" / "gold").symlink_to(_STEP.parent / "src")
         script = "set -eu\n" + self._seed_block(src, vllm_server_url, **gold)
         if quick_wait:
             script = script.replace("-ge 900 ]", "-ge 1 ]").replace(
@@ -807,13 +813,14 @@ class TestResumeFromCheckpointDir:
                 "VLLM_SERVERS": vllm_servers,
                 "CKPT_DIR": str(dst),
                 "PYBIN": sys.executable,
+                # The block calls $DISTILL_HOME/steps/gold/align_resume_state.py, as in the image.
+                "DISTILL_HOME": str(home),
                 "GB_SKYPILOT_LAUNCH_ID": launch_id,
             },
             capture_output=True,
             text=True,
             check=False,
             timeout=60,
-            # The block calls ./src/align_resume_state.py, as on the node.
             cwd=_STEP.parent,
         )
         return result, dst

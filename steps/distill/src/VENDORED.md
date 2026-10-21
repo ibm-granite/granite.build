@@ -30,7 +30,7 @@ new fields default to off/0.0, so an unpatched config computes exactly the
 same loss as before.
 
 This used to be a recipe-applied patch against a `code_config.code_dir`
-checkout (see `recipes/granite4-350m/lsf/distill-stage1-v2`), which only
+checkout (the LSF stage-1 recipe), which only
 worked for `gold` because `gold` was the one step still cloning source at
 job-launch time with a recipe-overridable checkout path. Since `gold` now
 uses this vendored copy baked into the image instead (no more

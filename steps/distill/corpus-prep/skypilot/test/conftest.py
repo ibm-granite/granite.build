@@ -15,18 +15,15 @@ honest about what that means: a green ``make test`` in CI proves the STEP CONTRA
 holds, not that the upstream code does.
 
     make test                                          # contract tests only
-    GB_DISTILL_CODE_DIR=/path/to/checkout make test     # + the ported suites
 """
 
 import os
 import sys
 from pathlib import Path
 
-# The same default the step template ships, so a developer on a host with /proj
-# mounted needs no environment variable at all.
-_DEFAULT = "/proj/granite-build/g4os/gb-steps-collection-post-training"
-_ROOT = Path(os.environ.get("GB_DISTILL_CODE_DIR", _DEFAULT))
-_PKG_PARENT = _ROOT / "src"
+# The trainer package is vendored in-tree (steps/distill/src, see VENDORED.md) and baked
+# into the shared images, so the suite needs no external checkout.
+_PKG_PARENT = Path(__file__).resolve().parents[3] / "src"
 
 # Files that import the upstream package at module scope. Listing them explicitly
 # (rather than ignoring on ImportError) keeps a genuine breakage in this repo's own
@@ -43,21 +40,7 @@ _NEEDS_UPSTREAM = ["test_merge_shards.py", "test_prep_corpus.py"]
 
 
 def _delivered_package_is_readable() -> bool:
-    """Whether the delivered package is present AND this account may stat it.
-
-    ``is_dir()`` is not a two-valued answer for this path. The default checkout lives under
-    /proj/granite-build, which is mode ``drwxrws---``: an account outside that group gets
-    ``PermissionError`` from any ``stat()`` below it rather than ``False``. Unguarded, that
-    turns this module into a collection ERROR — taking the step's whole suite down, not just
-    the gated files — on exactly the hosts the default was written for. Measured on BlueVela
-    from an account not in ``proj_granite-build``::
-
-        PermissionError: [Errno 13] Permission denied:
-          '/proj/granite-build/g4os/gb-steps-collection-post-training/src/gb_steps_post_training'
-
-    Unreadable is treated as absent, which is what this module already documents: without a
-    checkout the ported suites skip and the hermetic tests still run.
-    """
+    """Whether the vendored package is present and readable."""
     try:
         return (_PKG_PARENT / "gb_steps_post_training").is_dir()
     except OSError:
