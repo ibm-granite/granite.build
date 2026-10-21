@@ -114,14 +114,23 @@ cmd_kind_load() {
         echo "usage: $0 kind-load NAME..." >&2
         return 2
     fi
-    local name image
+    local name image archive arch
+    # kind nodes run on the Docker host's architecture.
+    arch=$(docker version --format '{{.Server.Arch}}')
     for name in "$@"; do
         image=$(image_named "$name")
         if ! docker image inspect "$image" >/dev/null 2>&1; then
             echo "::error::$image is not loaded; run '$0 load' first" >&2
             return 1
         fi
-        kind load docker-image --name "$KIND_CLUSTER_NAME" "$image"
+        # Save only the node's platform: under Docker's containerd image store,
+        # `kind load docker-image` exports the full multi-arch index without the
+        # other platforms' content, and the node's `ctr import --all-platforms`
+        # then fails with "content digest ...: not found".
+        archive="$(mktemp)"
+        docker image save --platform "linux/$arch" --output "$archive" "$image"
+        kind load image-archive --name "$KIND_CLUSTER_NAME" "$archive"
+        rm -f "$archive"
     done
 }
 
