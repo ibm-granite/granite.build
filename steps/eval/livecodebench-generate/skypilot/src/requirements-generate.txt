@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# Python packages eval/livecodebench-generate needs besides vLLM (which brings
+# torch and transformers) and LiveCodeBench itself (installed --no-deps from its
+# pinned checkout).
+#
+# Only the light packages LiveCodeBench's prompt, extraction and dataset modules
+# import, measured by importing them in a venv without vLLM. Their versions follow
+# LiveCodeBench's uv.lock at lcb_commit, except where vLLM requires a newer one:
+# vLLM is deliberately NOT pinned to the lock (0.8.4, torch 2.6), so the GPU path
+# can match the node's driver. See the step's README.md.
+anthropic==0.49.0
+datasets==3.5.0
+tqdm==4.67.1
