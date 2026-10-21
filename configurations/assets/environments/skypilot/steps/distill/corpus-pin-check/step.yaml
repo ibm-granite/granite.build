@@ -26,7 +26,6 @@ config:
     # This build's retagged tokenizer is the `tokenizer` target input — see `inputs:`.
     # Where corpus_pin.json is written. A relative path lands under GB_BUILD_WORKDIR.
     output_dir: "corpus-pin"
-    python: "/stage/.venv/bin/python"
 
 # I/O schema, validated against the build.yaml target at build time: a target that
 # does not bind a required input fails validation before anything is queued. The
@@ -50,6 +49,7 @@ environment_configs:
   Skypilot:
     subtypes:
       - lsf
+      - slurm
     default_launcher: pin_check
     launchers:
       pin_check:
@@ -57,12 +57,10 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-cpu:6fb1236"
+          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-cpu:91ea4880"
           # Cloud-agnostic: the build supplies cpus/memory via
           # config.compute_config and config.launcher_config.resources.
           resources: {}
-          file_mounts:
-            src: src
           run: |
             set -euo pipefail
             echo "=== corpus-pin-check on $(hostname) ==="
@@ -76,7 +74,7 @@ environment_configs:
             OUT_DIR="{{ config.pin_check_config.output_dir }}"
             case "$OUT_DIR" in /*) ;; *) OUT_DIR="$WORK/$OUT_DIR" ;; esac
             mkdir -p "$OUT_DIR"
-            "{{ config.pin_check_config.python }}" ./src/check_corpus_pin.py \
+            "$(uv python find)" "$DISTILL_HOME/steps/corpus-pin-check/check_corpus_pin.py" \
               "{{ config.pin_check_config.corpus_dir }}" \
               "{{ config.pin_check_config.teacher_model }}" \
               "{{ config.pin_check_config.max_length }}" \
