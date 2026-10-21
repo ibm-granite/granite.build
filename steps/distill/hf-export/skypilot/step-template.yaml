@@ -119,7 +119,7 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-cpu:6fb1236"
+          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-cpu:91ea4880"
           # CPU-only BY DESIGN. If this step ever appears to need a GPU, something has
           # been misdiagnosed. cpus/memory come from the build.yaml like every other
           # ported step, rather than being pinned here.

@@ -28,55 +28,6 @@ version: 1.0.0
 # over at packaging time — which is what the expected_tokenizer input is for.
 type: data_processing
 config:
-  # ─── Source delivery ──────────────────────────────────────────────────────────
-  # IDENTICAL IN EVERY PORTED DISTILLATION STEP. The block and the delimited region
-  # of `run` below are asserted byte-identical across the ported steps by
-  # test/test_source_contract.py — one contract, learned once. Change it here and
-  # the other steps' tests fail until they are changed to match.
-  code_config:
-    # THE DEFAULT: an unauthenticated HTTPS clone of the public source repo at run time.
-    # No /proj checkout, no BlueVela-specific path — this resolves identically on any
-    # environment class that can reach github.com, which is the point: the six ported
-    # distillation steps used to depend on a pre-staged /proj clone that only existed on
-    # BlueVela, so this step (and every other one pinned to it) could not run anywhere
-    # else. It also used to point at a personal-namespace private repo, which meant an
-    # outside reader of this pin could not even inspect the code, let alone run it.
-    #
-    # THE SOURCE OF TRUTH IS github.com/laminair/gb-steps-distillation, a small public
-    # repo holding exactly the vendored entrypoints and shared package these six steps
-    # import — see its README for what it is and is not. It is NOT the shared,
-    # continuously-advancing tree this pin used to track: that one broke every ported
-    # step's expect_ref out from under it whenever its upstream author moved it, and the
-    # failure looked like a recipe bug rather than a moved dependency. This repo only
-    # advances when this pin is deliberately bumped.
-    code_dir: ""
-    # The commit code_dir is EXPECTED to be at. Recorded either way, but when this is
-    # set and the checkout is at a different commit the step says so loudly rather
-    # than training against whatever happens to be checked out. Empty => no check.
-    expect_ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
-    # code_dir is empty, so this is the path actually taken: an unauthenticated HTTPS
-    # clone. Public repos only — see token_secret below for why no credential is wired
-    # up here on purpose.
-    repo: "https://github.com/laminair/gb-steps-distillation.git"
-    # Branch, tag or commit checked out after that clone. Pinned to the same commit as
-    # expect_ref rather than a branch head, so two runs a week apart are the same run
-    # rather than silently drifting — bump both together.
-    ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
-    # Clone destination, RELATIVE to the step's working directory.
-    workdir: "distill-code"
-    # The NAME of a space secret holding a read-scoped credential — never a value.
-    # Only consulted on the clone path. Left EMPTY on purpose: gb-steps-distillation is
-    # public, so the clone needs no credential at all.
-    token_secret: ""
-    # The interpreter. NOT a bare `python`: this image's venv is not on PATH, and a
-    # bare python resolves to the system interpreter, which has no transformers.
-    python: "/stage/.venv/bin/python"
-    # Optional bash run after the source resolves and before the workload, from the
-    # step's working directory. Empty => skipped. Not needed on this image: it
-    # already carries torch 2.8.0, transformers 5.8.0, tokenizers 0.22.1 and
-    # safetensors 0.7.0, confirmed by direct measurement on a real GPU node.
-    setup_command: ""
-
   # ─── Export ───────────────────────────────────────────────────────────────────
   export_config:
     # The trainer's output directory and the expected tokenizer are target INPUTS, not
@@ -160,6 +111,7 @@ environment_configs:
   Skypilot:
     subtypes:
       - lsf
+      - slurm
     default_launcher: export
     launchers:
       export:
@@ -167,16 +119,13 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-cpu:6fb1236"
+          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-cpu:91ea4880"
           # CPU-only BY DESIGN. If this step ever appears to need a GPU, something has
           # been misdiagnosed. cpus/memory come from the build.yaml like every other
           # ported step, rather than being pinned here.
           resources: {}
-          file_mounts:
-            src: src
           envs:
             HF_HUB_OFFLINE: "1"
-            HF_HOME: /opt/hf-cache
           run: |
             echo "=== distill-hf-export on $(hostname) ==="
 
@@ -187,138 +136,22 @@ environment_configs:
             exit 1
             {% endfor %}
 
-            # --- distill source delivery: BEGIN (identical in all ported steps) ---
-            # `set -eu` is already in effect: the launcher prefixes it.
-            CODE_DIR="{{ config.code_config.code_dir }}"
-            REPO="{{ config.code_config.repo }}"
-            REF="{{ config.code_config.ref }}"
-            PYBIN="{{ config.code_config.python }}"
+            # --- distill source: baked into the image, nothing cloned or mounted ---
+            # DISTILL_HOME, the venv (VIRTUAL_ENV) and PYTHONPATH are all set by the image's
+            # own ENV lines. The interpreter is asked of uv rather than hardcoded.
+            PYBIN="$(uv python find)"
+            CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"
             WORK="${GB_BUILD_WORKDIR:-$PWD}"
-
-            if [ -n "$CODE_DIR" ] && [ -d "$CODE_DIR/src/gb_steps_post_training" ]; then
-              echo "distill: source = filesystem checkout $CODE_DIR"
-              CODE_SOURCE="filesystem"
-              # A shared checkout is mutable state, so say what is actually there.
-              # Uncommitted edits are not fatal — someone may be deliberately testing
-              # a fix — but a run whose code came from a dirty tree must not report a
-              # bare commit as its provenance.
-              DIRTY="$(git -C "$CODE_DIR" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
-              if [ "${DIRTY:-0}" != "0" ]; then
-                echo "distill: WARNING: $CODE_DIR has $DIRTY uncommitted change(s)." >&2
-                echo "         This run's code is NOT the commit recorded below." >&2
-              fi
-              echo "GB_STEP_METADATA_KEY:distill_code_dirty GB_STEP_METADATA_VALUE:${DIRTY:-0}"
-              # And fail loudly if the checkout is not where the recipe expects. A
-              # silently-moved shared checkout is how two runs that report the same
-              # pin end up having trained on different code.
-              EXPECT_REF="{{ config.code_config.expect_ref }}"
-              if [ -n "$EXPECT_REF" ]; then
-                AT="$(git -C "$CODE_DIR" rev-parse HEAD 2>/dev/null || true)"
-                if [ -n "$AT" ] && [ "$AT" != "$EXPECT_REF" ]; then
-                  echo "distill: FATAL: $CODE_DIR is at $AT but code_config.expect_ref" >&2
-                  echo "         is $EXPECT_REF. Either check that checkout out to the" >&2
-                  echo "         expected commit, or change expect_ref deliberately:" >&2
-                  echo "           git -C $CODE_DIR fetch --all" >&2
-                  echo "           git -C $CODE_DIR checkout $EXPECT_REF" >&2
-                  exit 1
-                fi
-              fi
-            elif [ -n "$REPO" ]; then
-              CODE_DIR="$WORK/{{ config.code_config.workdir }}"
-              CODE_SOURCE="git"
-              TOKEN_VAR="{{ config.code_config.token_secret }}"
-              # Indirect expansion, with :- so `set -u` does not abort when the space
-              # has no such secret. The dispatcher runs this with `bash <file>`, so
-              # bash-isms are available. Guarded on TOKEN_VAR itself: a public repo
-              # leaves token_secret empty, and "${!:-}" is a bash syntax error
-              # ("invalid variable name"), not an empty expansion.
-              TOKEN=""
-              if [ -n "$TOKEN_VAR" ]; then
-                TOKEN="${!TOKEN_VAR:-}"
-              fi
-              echo "distill: source = git clone $REPO (ref=${REF:-<default>}) -> $CODE_DIR"
-              rm -rf "$CODE_DIR"
-              if [ -n "$TOKEN" ]; then
-                # GIT_ASKPASS, not a token in the URL: the URL form puts the secret in
-                # argv (readable via /proc on a shared node) and persists it into
-                # .git/config on the SHARED filesystem. The helper is written 0700 into
-                # the node's own tmp and deleted immediately after use.
-                ASKPASS="$(mktemp)"
-                cat > "$ASKPASS" <<'ASKPASS_EOF'
-            #!/bin/sh
-            case "$1" in
-              Username*) printf '%s' "x-access-token" ;;
-              *)         printf '%s' "$GB_DISTILL_TOKEN" ;;
-            esac
-            ASKPASS_EOF
-                chmod 700 "$ASKPASS"
-                CLONE_RC=0
-                GB_DISTILL_TOKEN="$TOKEN" GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 \
-                  git clone --quiet "$REPO" "$CODE_DIR" || CLONE_RC=$?
-                rm -f "$ASKPASS"
-                if [ "$CLONE_RC" != "0" ]; then
-                  echo "distill: FATAL: clone of $REPO failed (rc=$CLONE_RC) using the token in" >&2
-                  echo "         \$$TOKEN_VAR. Check that secret's scope, not this step." >&2
-                  exit 1
-                fi
-              elif [ -n "$TOKEN_VAR" ]; then
-                echo "distill: FATAL: code_config.token_secret names '$TOKEN_VAR' but this" >&2
-                echo "         space has no secret by that name. Either create that secret," >&2
-                echo "         or leave code_config.token_secret empty if $REPO is public." >&2
-                exit 1
-              else
-                # No token_secret configured at all: REPO is a public clone, same as an
-                # anonymous `git clone` from a terminal.
-                CLONE_RC=0
-                git clone --quiet "$REPO" "$CODE_DIR" || CLONE_RC=$?
-                if [ "$CLONE_RC" != "0" ]; then
-                  echo "distill: FATAL: unauthenticated clone of $REPO failed (rc=$CLONE_RC)." >&2
-                  echo "         If this repo is private, set code_config.token_secret." >&2
-                  exit 1
-                fi
-              fi
-              if [ -n "$REF" ]; then
-                git -C "$CODE_DIR" checkout --quiet "$REF"
-              fi
-              if [ ! -d "$CODE_DIR/src/gb_steps_post_training" ]; then
-                echo "distill: FATAL: $REPO@${REF:-default} has no src/gb_steps_post_training." >&2
-                exit 1
-              fi
-            else
-              echo "distill: FATAL: no source. code_config.code_dir ('$CODE_DIR') does not" >&2
-              echo "         contain src/gb_steps_post_training, and code_config.repo is empty." >&2
-              exit 1
-            fi
-
-            # The package ROOT, not the distillation/ directory: every module is
-            # imported by its full dotted path, so a flat path does not resolve. The
-            # absence of this export is what killed two upstream jobs at import time.
-            export PYTHONPATH="$CODE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
-
-            # Lineage. A filesystem checkout is mutable and a clone may name a branch,
-            # so record the resolved commit either way. NEVER fail the build for
-            # metadata — and written as a full if/fi rather than `[ -n "$X" ] && echo`,
-            # which under `set -e` aborts the run when X is empty.
-            CODE_SHA="$(git -C "$CODE_DIR" rev-parse HEAD 2>/dev/null || true)"
-            if [ -n "$CODE_SHA" ]; then
-              echo "GB_STEP_METADATA_KEY:distill_code_commit GB_STEP_METADATA_VALUE:$CODE_SHA"
-            else
-              echo "distill: WARNING: $CODE_DIR is not a git checkout, so this run has no" >&2
-              echo "         record of which code ran." >&2
-            fi
-            echo "GB_STEP_METADATA_KEY:distill_code_source GB_STEP_METADATA_VALUE:$CODE_SOURCE"
-            {% if config.code_config.setup_command %}
-            echo "distill: running setup_command in $(pwd)"
-            {{ config.code_config.setup_command }}
-            {% endif %}
-            # --- distill source delivery: END
+            echo "GB_STEP_METADATA_KEY:distill_code_source GB_STEP_METADATA_VALUE:baked-image"
+            echo "GB_STEP_METADATA_KEY:distill_code_commit GB_STEP_METADATA_VALUE:a5d59bc45524a8d75706e20d44ae1a254f273f23"
+            # --- distill source: END ---
 
             # Absolutise before the marker: the monitor hands this path to the env:// store,
             # possibly from another host, and a relative env: URI is rejected at config load.
             DEST="{{ config.export_config.dest }}"
             case "$DEST" in /*) ;; *) DEST="$WORK/$DEST" ;; esac
 
-            "$PYBIN" ./src/export_hf_model.py \
+            "$PYBIN" "$DISTILL_HOME/steps/hf-export/export_hf_model.py" \
               --train-output-dir "{{ bindings.train_output.binding.path }}" \
               --dest "$DEST" \
               --checkpoint "{{ config.export_config.checkpoint }}" \

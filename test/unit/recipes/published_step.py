@@ -11,7 +11,9 @@ launcher's ``run`` is then filled from the merged config and the same ``bindings
 """
 
 import importlib.util
+import os
 import pathlib
+import sys
 
 import yaml
 
@@ -47,8 +49,8 @@ def render_run(step_path, step_config, *, bindings=None, **config_overrides):
         given as ``{name: {"state": value}}``.
     :param config_overrides: per-section overrides applied last (e.g. a stand-in
         ``python``), as ``{section: {key: value}}``.
-    :returns: the filled run script, and the published step dir to run it from (its
-        ``./src`` is what the step's file_mount ships).
+    :returns: the filled run script, and the published step dir (whose ``src/`` is what
+        the image bakes in at ``$DISTILL_HOME/steps/<name>``; see ``image_env``).
     """
     step_dir = _ASSETS / step_path
     step = yaml.safe_load((step_dir / "step.yaml").read_text(encoding="utf-8"))
@@ -81,3 +83,27 @@ def gen_smoke_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def image_env(step_path, tmp_path, python=None):
+    """An environment that emulates the baked image for a rendered run script.
+
+    ``DISTILL_HOME/steps/<name>`` is the published step's ``src/`` (what the Dockerfile
+    COPYs there), and a ``uv`` shim answers ``uv python find`` with ``python`` (default:
+    this interpreter), as the image's ``VIRTUAL_ENV`` makes the real one do.
+    """
+    home = tmp_path / "distill-home"
+    (home / "steps").mkdir(parents=True, exist_ok=True)
+    link = home / "steps" / pathlib.PurePosixPath(step_path).name
+    if not link.exists():
+        link.symlink_to(_ASSETS / step_path / "src")
+    shim = tmp_path / "uv-shim"
+    shim.mkdir(exist_ok=True)
+    uv = shim / "uv"
+    uv.write_text(f'#!/bin/sh\necho "{python or sys.executable}"\n', encoding="utf-8")
+    uv.chmod(0o755)
+    return {
+        **os.environ,
+        "DISTILL_HOME": str(home),
+        "PATH": f"{shim}{os.pathsep}{os.environ['PATH']}",
+    }
