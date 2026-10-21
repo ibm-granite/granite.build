@@ -58,14 +58,12 @@ SEED: 42
 INCLUDE_SFT: false
 
 # ─── Image and trainer code ───────────────────────────────────────────
-# One image for every distillation step (each step's own default is this same
-# image; naming it here makes the pin visible and overridable in one place). The
-# BFCL target is deliberately NOT given it — that step runs its own harness
-# image.
-# The GOLD trainer (gb_steps_post_training.distillation.gold and friends) is
-# delivered by distill-gold's own code_config, the same pinned public-repo
-# clone every ported step uses — so a source bump is one edit in the step,
-# not one per recipe.
+# Every GPU step defaults to the shared GPU image (steps/distill/gpu/) and every
+# CPU step to the shared CPU image (steps/distill/cpu/) -- no per-recipe override
+# needed. The GOLD trainer (gb_steps_post_training.distillation.gold and friends)
+# is baked into the GPU image from steps/distill/src/ (see
+# steps/distill/src/VENDORED.md), so a source bump is one edit there, not one per
+# recipe or per step.
 DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
 
 # ─── The pair, the data, and the chat template ────────────────────────
