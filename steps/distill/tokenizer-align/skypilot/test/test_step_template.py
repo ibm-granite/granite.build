@@ -92,104 +92,42 @@ class TestRunScriptIsValidShell:
         )
 
 
-class TestSourceDeliveryContract:
-    """The block asserted byte-identical across the ported steps.
+class TestSourceIsBakedIntoTheImage:
+    """Nothing is cloned or mounted at launch: the trainer package, this step's scripts
+    and the venv are all in the shared CPU image (steps/distill/cpu/Dockerfile)."""
 
-    Its shape is load-bearing, not stylistic: the default must need no credential,
-    the clone branch must refuse rather than hang when it has none, and the
-    resolved commit must be recorded whichever branch ran.
-    """
+    def test_there_is_no_code_config(self, step):
+        assert "code_config" not in step["config"]
 
-    EXPECTED_KEYS = {
-        "code_dir",
-        "expect_ref",
-        "repo",
-        "ref",
-        "workdir",
-        "token_secret",
-        "python",
-        "setup_command",
-    }
+    def test_nothing_is_cloned(self, run_script):
+        assert "git clone" not in run_script
+        assert "GIT_ASKPASS" not in run_script
 
-    def test_code_config_has_exactly_the_contract_keys(self, step):
-        assert set(step["config"]["code_config"]) == self.EXPECTED_KEYS
+    def test_nothing_is_mounted_from_the_step_directory(self, launcher):
+        assert "file_mounts" not in launcher
+        assert "setup" not in launcher
 
-    def test_unauthenticated_clone_is_the_default(self, step):
-        """No credential reaches the container by default. Every other step in this
-        repo either clones nothing or clones a public repo unauthenticated -- and this
-        one clones gb-steps-distillation, a public repo, so it needs no secret either.
-        """
-        code = step["config"]["code_config"]
-        assert code["code_dir"] == "", "no filesystem checkout is pinned by default"
-        assert code["repo"].startswith("https://"), "the default must clone a real repo"
-        assert (
-            code["ref"] != ""
-        ), "the clone must pin a commit, not a moving branch head"
-        assert code["token_secret"] == "", "a public repo needs no secret"
+    def test_the_interpreter_comes_from_uv_not_a_hardcoded_path(self, run_script):
+        assert 'PYBIN="$(uv python find)"' in run_script
+        assert "/stage/" not in run_script
 
-    def test_the_pin_is_a_full_sha(self, step):
-        """A branch name here makes two runs a week apart different runs while
-        reporting the same provenance."""
-        assert re.fullmatch(
-            r"[0-9a-f]{40}", step["config"]["code_config"]["expect_ref"]
-        )
+    def test_the_launcher_is_run_from_the_baked_step_dir(self, run_script):
+        assert '"$DISTILL_HOME/steps/tokenizer-align/run-align.sh"' in run_script
 
-    def test_both_branches_are_present(self, run_script):
-        assert 'CODE_SOURCE="filesystem"' in run_script
-        assert 'CODE_SOURCE="git"' in run_script
-
-    def test_package_root_goes_on_pythonpath(self, run_script):
-        """The package ROOT, not the distillation/ directory: every module is
-        imported by its full dotted path. Omitting this killed two upstream jobs
-        at import time."""
-        assert 'export PYTHONPATH="$CODE_DIR/src' in run_script
-
-    def test_the_resolved_commit_is_recorded(self, run_script):
+    def test_the_baked_commit_is_recorded(self, run_script):
         assert "GB_STEP_METADATA_KEY:distill_code_commit" in run_script
         assert "GB_STEP_METADATA_KEY:distill_code_source" in run_script
 
-    def test_a_dirty_shared_checkout_is_reported(self, run_script):
-        """A shared checkout is mutable state, so a run whose code came from a
-        dirty tree must not report a bare commit as its provenance."""
-        assert "status --porcelain" in run_script
-        assert "GB_STEP_METADATA_KEY:distill_code_dirty" in run_script
-
-    def test_an_unexpected_checkout_commit_is_fatal(self, run_script):
-        assert "expect_ref" in run_script
-        assert re.search(r"AT.*!=.*EXPECT_REF|EXPECT_REF.*!=.*AT", run_script)
-
-    def test_the_clone_branch_refuses_without_a_credential(self, run_script):
-        """Unauthenticated against a private repo either hangs on a prompt or 404s,
-        so it must say which secret is missing instead."""
-        assert "GIT_TERMINAL_PROMPT=0" in run_script
-        assert "has no secret" in run_script
-
-    def test_the_token_never_reaches_argv_or_git_config(self, run_script):
-        """A token in the URL is readable via /proc on a shared node and persists
-        into .git/config on the SHARED filesystem. Verified on BlueVela: with
-        GIT_ASKPASS, .git/config had 0 matches for the token."""
-        assert "GIT_ASKPASS" in run_script
-        assert "x-access-token:" not in run_script
-        assert "@github" not in run_script
-
-    def test_source_delivery_region_is_delimited(self, run_script):
-        """test_source_contract.py extracts this region from every ported step and
-        asserts they are byte-identical, so the markers must exist."""
-        assert run_script.count("--- distill source delivery: BEGIN") == 1
-        assert run_script.count("--- distill source delivery: END") == 1
-
-    def test_no_setup_phase(self, launcher):
-        """``task.setup`` is unexercised on the LSF cloud in this repo: the only
-        shipped step with one is byoc, whose build tests are slurm/aws. Source
-        delivery happens in ``run``, which distill-gold has proven on LSF."""
-        assert "setup" not in launcher
+    def test_no_chat_template_is_baked_in(self, step):
+        """Which template is right depends on the model; users bind their own."""
+        assert step["config"]["align_config"]["chat_template"] == ""
 
 
 class TestLauncher:
     def test_lsf_only(self, step):
         """SM90 image, and the contract assumes the LSF provisioner's
         identity-mounted /proj workdir."""
-        assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf"]
+        assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf", "slurm"]
 
     def test_runs_in_a_prebuilt_registry_image(self, launcher):
         """A non-image step: no Dockerfile, so no ${IMAGE_REF} to substitute."""
@@ -204,8 +142,9 @@ class TestLauncher:
         one step serves a smoke run and the reference run."""
         assert launcher["resources"] == {}
 
-    def test_the_launcher_script_is_shipped(self, launcher):
-        assert launcher["file_mounts"] == {"src": "src"}
+    def test_the_launcher_script_is_baked_into_the_image(self, launcher):
+        assert "file_mounts" not in launcher
+        assert (_HERE / "src" / "run-align.sh").is_file()
 
     def test_uses_the_shipped_monitor(self, step):
         monitors = step["environment_configs"]["Skypilot"]["monitors"]
@@ -283,13 +222,12 @@ class TestFlagSurface:
                 continue
             assert flag in handled, f"run-align.sh does not parse {flag}"
 
-    def test_a_relative_chat_template_resolves_against_the_checkout(
-        self, step, run_script
-    ):
-        """The marked-up template lives in the delivered checkout. Upstream defaults
-        this to an in-image /opt path that does not exist in this image."""
-        assert not step["config"]["align_config"]["chat_template"].startswith("/")
-        assert 'CHAT_TEMPLATE="$CODE_DIR/$CHAT_TEMPLATE"' in run_script
+    def test_a_bound_chat_template_wins_and_is_never_baked(self, step, run_script):
+        """The image carries no template (which one is right depends on the model); a
+        recipe binds one, and an empty default means --no-chat-template."""
+        assert step["config"]["align_config"]["chat_template"] == ""
+        assert "bindings.chat_template.binding.path" in run_script
+        assert "$CODE_DIR/$CHAT_TEMPLATE" not in run_script
 
 
 class TestConfigDefaults:

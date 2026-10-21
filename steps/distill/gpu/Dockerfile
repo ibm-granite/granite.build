@@ -61,14 +61,16 @@ ENV CUDA_HOME=/usr/local/cuda
 ENV PATH="${CUDA_HOME}/bin:${PATH}"
 ENV LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}"
 
-# The shared trainer library every GPU step imports. gold and vllm-server use
-# this baked-in copy directly (no code_config, no clone); the remaining GPU
-# steps (sft, logit-precompute, eval, gen-smoke, probe) still clone
-# gb-steps-distillation at job-launch time via their own code_config, same as
-# they do against the opaque image today -- this just gives that clone a
-# known-good venv to land in.
-COPY src/gb_steps_post_training /opt/gb-steps-distillation/src/gb_steps_post_training
-ENV PYTHONPATH=/opt/gb-steps-distillation/src
+# Everything the GPU steps run lives under DISTILL_HOME, baked in at build time:
+# nothing is cloned or mounted at job launch (site-specific files such as the NCCL
+# tuning config, the HF cache and chat templates are supplied by the environment).
+#   src/    the shared trainer library (gb_steps_post_training)
+#   lib/    shell helpers sourced by the launchers
+#   steps/distill-gold-train/configs  DeepSpeed / accelerate configs
+#   steps/  each step's launcher scripts, one directory per step
+ENV DISTILL_HOME=/opt/distill
+COPY src/gb_steps_post_training ${DISTILL_HOME}/src/gb_steps_post_training
+ENV PYTHONPATH=${DISTILL_HOME}/src
 
 # Let uv own the venv's location and activation -- UV_PROJECT_ENVIRONMENT is
 # uv's own supported mechanism for this, so `uv sync` itself places the venv
@@ -77,13 +79,25 @@ ENV PYTHONPATH=/opt/gb-steps-distillation/src
 # here beyond what `uv python install/pin` above already did.
 COPY gpu/pyproject.toml gpu/uv.lock /opt/gold-train-src/
 WORKDIR /opt/gold-train-src
+# VIRTUAL_ENV makes `uv python find` (what the step launchers use) resolve to this
+# venv's interpreter; UV_PROJECT_ENVIRONMENT makes `uv sync` build it here.
 ENV UV_PROJECT_ENVIRONMENT=/stage/.venv
+ENV VIRTUAL_ENV=/stage/.venv
 RUN uv sync --locked
-ENV PATH="/stage/.venv/bin:${PATH}"
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
-# gold's own DeepSpeed ZeRO-3 config, read via $CODE_DIR/steps/distill-gold-train/configs/...
-# (gold's run: script sets CODE_DIR to a baked path under this image; the
-# other GPU steps don't reference this file).
-COPY gpu/configs /opt/gb-steps-distillation/steps/distill-gold-train/configs
+# Kept at its historical relative path: recipes pass ds_config relative to DISTILL_HOME.
+COPY gpu/configs ${DISTILL_HOME}/steps/distill-gold-train/configs
+COPY gpu/lib ${DISTILL_HOME}/lib
+COPY gold/skypilot/src ${DISTILL_HOME}/steps/gold
+COPY sft/skypilot/src ${DISTILL_HOME}/steps/sft
+COPY logit-precompute/skypilot/src ${DISTILL_HOME}/steps/logit-precompute
+COPY eval/skypilot/src ${DISTILL_HOME}/steps/eval
+COPY gen-smoke/skypilot/src ${DISTILL_HOME}/steps/gen-smoke
+COPY probe/skypilot/src ${DISTILL_HOME}/steps/probe
+
+# The HF cache's fixed in-container mount point. The environment bind-mounts its
+# cache here (or overrides HF_HOME); the steps never set it themselves.
+ENV HF_HOME=/opt/hf-cache
 
 WORKDIR /

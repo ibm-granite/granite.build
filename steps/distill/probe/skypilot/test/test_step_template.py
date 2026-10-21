@@ -7,6 +7,7 @@ script in its place fails here.
 
 import json
 import os
+import sys
 import stat
 import subprocess
 from pathlib import Path
@@ -17,6 +18,25 @@ import yaml
 from gbserver.utils.template import fill_template
 
 _DIR = Path(__file__).resolve().parent.parent
+
+
+def _image_env(tmp_path, step, python=None):
+    """Emulate the baked image: DISTILL_HOME/steps/<step> holds this step's scripts, and
+    `uv python find` (how the launcher picks its interpreter) answers with the test's own."""
+    home = tmp_path / "distill-home"
+    (home / "steps").mkdir(parents=True)
+    (home / "steps" / step).symlink_to(_DIR / "src")
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    uv = shim / "uv"
+    uv.write_text(f'#!/bin/sh\necho "{python or sys.executable}"\n')
+    uv.chmod(0o755)
+    return {
+        **os.environ,
+        "GB_BUILD_WORKDIR": str(tmp_path),
+        "DISTILL_HOME": str(home),
+        "PATH": f"{shim}{os.pathsep}{os.environ['PATH']}",
+    }
 _STEP = _DIR / "step-template.yaml"
 
 
@@ -32,7 +52,7 @@ def launcher(step):
 
 def test_it_is_an_lsf_skypilot_step(step):
     assert step["name"] == "probe"
-    assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf"]
+    assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf", "slurm"]
 
 
 def test_it_declares_no_output(step):
@@ -41,7 +61,7 @@ def test_it_declares_no_output(step):
 
 
 def test_the_script_is_shipped_with_the_step(launcher):
-    assert launcher["file_mounts"] == {"src": "src"}
+    assert "file_mounts" not in launcher
     assert (_DIR / "src" / "distill_probe.py").is_file()
 
 
@@ -55,9 +75,11 @@ def test_the_hub_is_not_forced_offline(launcher):
     assert "HF_HUB_OFFLINE" not in (launcher.get("envs") or {})
 
 
-def test_the_python_is_the_image_venv(step):
-    """/stage/.venv is not on PATH in this image; a bare `python` is rc=127."""
-    assert step["config"]["probe_config"]["python"] == "/stage/.venv/bin/python"
+def test_the_python_comes_from_uv_not_a_hardcoded_venv(step, launcher):
+    """The image sets VIRTUAL_ENV, so `uv python find` names its interpreter."""
+    assert "python" not in step["config"]["probe_config"]
+    assert '"$(uv python find)"' in launcher["run"]
+    assert "/stage/" not in launcher["run"]
 
 
 @pytest.mark.parametrize("probe", ["load-student", "tokenizer", "tokenizer-fit"])
@@ -76,7 +98,6 @@ def test_every_setting_reaches_the_script_in_place(step, launcher, tmp_path, pro
             "probe": probe,
             "checkpoint": "/ckpt/epoch_hf_2",
             "corpus": "/data/smoke.jsonl",
-            "python": str(fake),
         }
     }
     script = fill_template(templ=launcher["run"], data={"config": config})
@@ -84,14 +105,14 @@ def test_every_setting_reaches_the_script_in_place(step, launcher, tmp_path, pro
     result = subprocess.run(
         ["bash", "-c", script],
         cwd=_DIR,
-        env={**os.environ, "GB_BUILD_WORKDIR": str(tmp_path)},
+        env=_image_env(tmp_path, "probe", python=str(fake)),
         capture_output=True,
         text=True,
     )
 
     assert result.returncode == 0, result.stderr
     assert json.loads(argv_log.read_text()) == [
-        "./src/distill_probe.py",
+        str(tmp_path / "distill-home" / "steps" / "probe" / "distill_probe.py"),
         probe,
         "--checkpoint",
         "/ckpt/epoch_hf_2",

@@ -76,7 +76,7 @@ class TestRunScriptIsValidShell:
 
 class TestLauncher:
     def test_lsf_only(self, step):
-        assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf"]
+        assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf", "slurm"]
 
     def test_runs_in_a_prebuilt_registry_image(self, launcher):
         assert launcher["image_id"].startswith("docker:")
@@ -92,7 +92,7 @@ class TestLauncher:
         assert launcher["resources"] == {}
 
     def test_the_launcher_script_is_shipped(self, launcher):
-        assert launcher["file_mounts"] == {"src": "src"}
+        assert "file_mounts" not in launcher
 
     def test_the_hub_is_reachable_because_this_step_loads_models(self, launcher):
         """NOT symmetric with the tokenizer-only ported steps, on purpose.
@@ -103,8 +103,9 @@ class TestLauncher:
         measured on build 15267e81. distill-gold, which loads a granite 4.x student and
         a 30B teacher on this same image, sets HF_HOME and leaves the Hub reachable.
         """
-        assert "HF_HUB_OFFLINE" not in launcher["envs"]
-        assert launcher["envs"]["HF_HOME"] == "/opt/hf-cache"
+        assert "HF_HUB_OFFLINE" not in (launcher.get("envs") or {})
+        # HF_HOME is the image's ENV (a fixed in-container mount point), never a step setting.
+        assert "HF_HOME" not in (launcher.get("envs") or {})
 
 
 @pytest.fixture(scope="module")
