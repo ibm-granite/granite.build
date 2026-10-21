@@ -113,6 +113,13 @@ granite.build:
       steps:
         - step_uri: space://steps/distill/gold-slurm
           config:
+            # Override the step.yaml default trainer pin (laminair @ 39b2790) with a fork
+            # carrying the pre-tokenized-dataset patch — see CODE_REPO/CODE_REF in
+            # parameters.yaml. expect_ref matches ref so the step verifies the checkout.
+            code_config:
+              repo: "$${CODE_REPO}"
+              ref: "$${CODE_REF}"
+              expect_ref: "$${CODE_REF}"
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             compute_config:

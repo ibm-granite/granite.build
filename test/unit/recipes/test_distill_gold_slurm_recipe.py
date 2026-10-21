@@ -63,12 +63,12 @@ def _targets(rendered):
 def test_parameter_sets_match_exactly():
     """Every marker is declared, and every declaration is used.
 
-    ON_POLICY only appears inside the <% %> target conditionals (not a $${}
-    marker), so it is added to the used set by hand.
+    ON_POLICY and SKIP_ALIGN only appear inside the <% %> target conditionals
+    (not a $${} marker), so they are added to the used set by hand.
     """
     text = (_RECIPE / "build.yaml").read_text(encoding="utf-8")
     used = set(_MARKER.findall(text))
-    used.add("ON_POLICY")
+    used.update({"ON_POLICY", "SKIP_ALIGN"})
     declared = set(get_params_from_file(str(_RECIPE / "parameters.yaml")))
 
     assert used - declared == set(), "markers with no declared parameter"

@@ -21,6 +21,14 @@ ON_POLICY: false
 
 # ─── Trainer code and image ────────────────────────────────────────────
 DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
+# Trainer source clone (gold-slurm's code_config). Overrides the step.yaml default pin
+# (laminair @ 39b2790) so this recipe can run a fork carrying the pre-tokenized-dataset
+# patch (gold.py load_from_disk a save_to_disk dir + trainer input_ids short-circuit),
+# needed to train on an Arrow pretok dir / sidestep the pd.read_json "Value is too big!"
+# overflow. Point CODE_REPO/CODE_REF at a fork+SHA that has those commits; leave at the
+# step default by matching the step.yaml values.
+CODE_REPO: "https://github.com/thinkahead/gb-steps-distillation.git"
+CODE_REF: "f049b5b4db44635149f278ef5f244758391b8d39"
 # PRE-STAGED enroot squashfs on /proj — pyxis mounts it directly, skipping the
 # ~15-20 min per-job registry pull + mksquashfs. Registry alternative:
 #   docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv

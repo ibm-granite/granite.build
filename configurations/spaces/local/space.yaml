@@ -4,8 +4,14 @@
 # the shared assets directory.
 name: public
 secret_manager:
-  type: local
-  config: {}
+  type: hybrid
+  config:
+    managers:
+      - type: env
+        config:
+          prefix: "GBSERVER_SECRET_"
+      - type: local
+        config: {}
 base_uris:
   # Pull assetstores, environments, and steps from configurations/assets/.
   # Relative paths resolve against this space.yaml's directory.

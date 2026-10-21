@@ -42,9 +42,16 @@ granite.build:
     target_reuse_enabled: true
   targets:
 
-    # ─── align ──────────────────────────────────────────────────────────────
+    # ─── align (skipped when SKIP_ALIGN=true) ────────────────────────────────
     # Re-embeds the raw student onto the teacher's tokenizer and emits the
     # tokenizer artifacts the rest of the pipeline reads. Single-node CPU.
+    # SKIP_ALIGN=true: the student is ALREADY retagged onto the teacher vocab (its
+    # tokenizer == the teacher's), so there is nothing to align — drop this target
+    # and bind corpus.tokenizer + train-gold.student straight to STUDENT_MODEL_URI.
+    # Use it for a pre-retagged instruct student (e.g. granite-4.0-1b-instruct_retagged_42),
+    # which the align masking-contract verify rejects for multi-turn agentic+thinking
+    # data under the start_of_role template.
+<% if SKIP_ALIGN | string | lower not in ("true", "yes", "1", "on") %>
     align:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
@@ -84,13 +91,20 @@ granite.build:
               require_chatml: $${REQUIRE_CHATML}
               verify: true
               dry_run: false
+<% endif %>
 
     # ─── corpus ─────────────────────────────────────────────────────────────
     corpus:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
         tokenizer:
+<% if SKIP_ALIGN | string | lower in ("true", "yes", "1", "on") %>
+          # Pre-retagged student: its tokenizer IS the teacher's, prep against it directly.
+          uri: "$${STUDENT_MODEL_URI}"
+          type: model
+<% else %>
           binding: align.retagged_student
+<% endif %>
         source_dataset:
           uri: "$${DATASET_URI}"
           type: dataset
@@ -181,7 +195,12 @@ granite.build:
           binding: vllm-server.vllm_url
 <% endif %>
         student:
+<% if SKIP_ALIGN | string | lower in ("true", "yes", "1", "on") %>
+          uri: "$${STUDENT_MODEL_URI}"
+          type: model
+<% else %>
           binding: align.retagged_student
+<% endif %>
         corpus:
           binding: corpus.corpus
         teacher:

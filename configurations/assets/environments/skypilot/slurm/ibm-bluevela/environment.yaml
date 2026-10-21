@@ -71,8 +71,11 @@ config:
   # docs/environments/skypilot-slurm.md#sbatch_options--slurm-sbatch-directives.
   sbatch_options:
     # A ceiling, not a reservation; must be <= the partition MaxTime. SLURM format
-    # (bare minutes, "4:00:00", or "7-00:00:00"). Raise for a real (non-smoke) run.
-    time: "4:00:00"
+    # (bare minutes, "4:00:00", or "7-00:00:00"). Set to the gpu-mid MaxTime (7 days)
+    # for the real (non-smoke) epoch run. NB: do NOT delete this key to "get the
+    # default" — an absent --time makes SLURM apply the partition DefaultTime (1 day),
+    # not MaxTime, so a long run would be killed at 24h. 7-00:00:00 is the explicit max.
+    time: "7-00:00:00"
     # EXCLUDE BROKEN HOSTS. "CUDA error: illegal memory access" at the first ZeRO-3
     # all-gather — reproduced across our jobs, independent of GDR; hardware, not config.
     # SLURM does NOT drain these (sinfo shows them healthy), so they must be excluded by
@@ -83,7 +86,13 @@ config:
     # (p1-r10-n4 was carried over from that doc's note about the DIRECT SkyPilot runs,
     # but we never reproduced a failure on it ourselves and it is in active use by others
     # — removed to avoid cargo-culting a stale exclusion. Re-add if it actually fails.)
-    exclude: p1-r18-n1
+    #
+    # p1-r10-n1: `nvidia-container-cli: initialization error: driver rpc error: timed
+    # out` at enroot/pyxis container start (rank 0), so the container-init handshake
+    # never completed and the 2-node trainer wedged at 0% GPU until scancel. Hit on the
+    # 1b distill-gold-trainonly build c3698cfd (2026-10-20). Likely transient driver
+    # flake (the GPUs answered nvidia-smi fine afterwards) — DROP once confirmed healthy.
+    exclude: p1-r18-n1,p1-r10-n1
     # Target H200 nodes. When H100 capacity is full, sbatch on gpu-mid rejects an
     # H100 job ("Not enough H100 nodes are free ... resubmit with
     # --constraint=h200"); H200 nodes are free (billed at 1.4x the H100 rate). The

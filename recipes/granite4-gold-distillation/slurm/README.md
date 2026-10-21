@@ -86,11 +86,91 @@ gb build start -f recipes/granite4-gold-distillation/slurm/distill-gold-trainonl
 #   --param RETAGGED_STUDENT_URI=env:///proj/.../distill-gold-slurm/<BUILD>/align/retagged_student
 #   --param CORPUS_URI=env:///proj/.../distill-gold-slurm/<BUILD>/corpus/train.jsonl
 ```
-`RETAGGED_STUDENT_URI` and `CORPUS_URI` **must be from the same build** — gold.py
-reads the tokenizer the corpus was prepped against; a mismatch trains on
-mis-segmented text silently. What these two artifacts are and how the `align` /
-`corpus` steps build them is documented in
+`RETAGGED_STUDENT_URI` and `CORPUS_URI` **must share a tokenizer** — gold.py reads the
+tokenizer the corpus was built against; a mismatch trains on mis-segmented text silently.
+`CORPUS_URI` may be **either** a corpus-prep `train.jsonl` (cleaned, length-filtered
+`{messages}` text) **or** a pre-tokenized `save_to_disk` Arrow dir carrying `input_ids`
+(see the 1b worked example below). It may **not** be a raw messages JSONL that still
+carries bare integer literals > 2^64 (see the pitfall in the worked example). What the
+`align` / `corpus` artifacts are and how those steps build them is documented in
 [UPSTREAM_ARTIFACTS.md](UPSTREAM_ARTIFACTS.md).
+
+#### Worked example — granite-4.0-1b ← 4.2-30b on the all-category ~1.1M set (pretokenized)
+Validated 2026-10-21 (smoke build `45d1bde5`, full epoch `567da1c4`). The student is
+**already** retagged onto the teacher's ChatML (`granite-4.0-1b-instruct_retagged_42`, a
+hand-staged `model_copies/` dir — NOT a prior build's `align/retagged_student`), the
+teacher is the `-slurm` overlay, and the corpus is a **pre-tokenized Arrow dir**
+(`g42sft_allcat_rh_pretok_basehub`, 1,100,909 rows). ChatML student ⇒
+`RESPONSE_TEMPLATE='<|im_start|>assistant'`.
+
+> **Why the pretok Arrow dir, not the raw `..._messages.jsonl`.** gold.py's
+> `_load_dataset` reads a `.jsonl` corpus with `pd.read_json`, whose ujson backend
+> raises `ValueError: Value is too big!` on the bare >2^64 integer literals the
+> all-category `messages` text contains (that 29 GB `g42sft_allcat_rh_messages.jsonl` is
+> the **input to the `corpus` step**, not a trainer corpus). The fix is to feed a
+> pre-tokenized dir: the trainonly recipe pins a trainer fork
+> (`CODE_REPO`/`CODE_REF` in `parameters.yaml` → `thinkahead/gb-steps-distillation`)
+> that (a) `load_from_disk`'s a `save_to_disk` dir when `CORPUS_URI` is one, and (b)
+> short-circuits the tokenize pass when `input_ids` is already a column. The dir was
+> built once with gbansible's `gold.py --prep_only` (see `gbansible/docs/distill-runs.md`
+> "ALL-CATEGORY"); its tokenizer is byte-identical to the 1b retagged student, so it is
+> reusable as-is. To re-pretokenize a different corpus, run `--prep_only` with the 1b
+> tokenizer against the **original** `g42sft_allcat_rh.jsonl` (messages/tools as JSON
+> strings — big ints safe inside quotes), NOT the decoded `_messages.jsonl`.
+
+**Smoke (test) — 50 steps, ~1.5 h on 2 nodes:**
+```bash
+gb build start -f recipes/granite4-gold-distillation/slurm/distill-gold-trainonly/build.yaml \
+  --param RETAGGED_STUDENT_URI=env:///proj/granite-build/g4os/kd-sandbox/model_copies/granite-4.0-1b-instruct_retagged_42 \
+  --param CORPUS_URI=env:///proj/granite-build/g4os/kd-sandbox/data/g42sft_allcat_rh_pretok_basehub \
+  --param TEACHER_MODEL_URI=env:///proj/granite-build/g4os/kd-sandbox/teacher_overlays/granite-4.2-30b-slurm \
+  --param MAX_STEPS=50 --param SAVE_STEPS=25 \
+  --param NUM_TRAIN_EPOCHS=1.0 --param NUM_NODES=2 \
+  --param MAX_LENGTH=16384 --param MAX_COMPLETION_LENGTH=15872 \
+  --param PER_DEVICE_TRAIN_BATCH_SIZE=4 --param GRADIENT_ACCUMULATION_STEPS=2 \
+  --param USE_LIGER_FUSED_JSD=true \
+  --param RESPONSE_TEMPLATE='<|im_start|>assistant' \
+  --param ON_POLICY=false \
+  --param LOG_RETRIEVAL_INTERVAL_SECONDS=30 --param POLL_INTERVAL_SECONDS=30 \
+  --skip-version-check
+```
+
+**Full epoch — same corpus, `MAX_STEPS=-1`, checkpoint every 500:**
+```bash
+gb build start -f recipes/granite4-gold-distillation/slurm/distill-gold-trainonly/build.yaml \
+  --param RETAGGED_STUDENT_URI=env:///proj/granite-build/g4os/kd-sandbox/model_copies/granite-4.0-1b-instruct_retagged_42 \
+  --param CORPUS_URI=env:///proj/granite-build/g4os/kd-sandbox/data/g42sft_allcat_rh_pretok_basehub \
+  --param TEACHER_MODEL_URI=env:///proj/granite-build/g4os/kd-sandbox/teacher_overlays/granite-4.2-30b-slurm \
+  --param MAX_STEPS=-1 --param NUM_TRAIN_EPOCHS=1.0 --param SAVE_STEPS=500 \
+  --param NUM_NODES=2 \
+  --param MAX_LENGTH=16384 --param MAX_COMPLETION_LENGTH=15872 \
+  --param PER_DEVICE_TRAIN_BATCH_SIZE=4 --param GRADIENT_ACCUMULATION_STEPS=2 \
+  --param USE_LIGER_FUSED_JSD=true \
+  --param RESPONSE_TEMPLATE='<|im_start|>assistant' \
+  --param ON_POLICY=false \
+  --param LOG_RETRIEVAL_INTERVAL_SECONDS=30 --param POLL_INTERVAL_SECONDS=30 \
+  --skip-version-check
+```
+Off-policy (`ON_POLICY=false`), so only `train-gold` runs — no vllm-server/teardown.
+Remaining values (LR, NCCL pins, image, queues, the fork pin) are the trainonly
+`parameters.yaml` defaults. Notes that cost real runs to learn:
+- **`MAX_COMPLETION_LENGTH` (15872) must stay strictly below `MAX_LENGTH` (16384)** —
+  equal values trip `gold_config.__post_init__` (`max_completion_length must be smaller
+  than max_length to leave room for the prompt`) at config validation, before any GPU work.
+- **`PER_DEVICE_TRAIN_BATCH_SIZE=4` + `GRADIENT_ACCUMULATION_STEPS=2` + Liger** is the
+  throughput sweet spot: ~76 s/step vs ~97 s/step at the `parameters.yaml` default 2×4
+  (effective batch 128 either way). batch=8/ga=1 gives no further gain (compute-bound);
+  memory is never the limit (ZeRO-3 shards the 30B teacher, ~7 GB/rank peak).
+- **A full epoch is ~8,601 steps ≈ 7.5 days at ~76 s/step — over the gpu-mid 7-day
+  `MaxTime`.** The env sets `time: 7-00:00:00`; the run checkpoints every 500 steps,
+  hits the wall near step ~7,850, and is **finished with a resume submit** — rerun the
+  same command adding `--param` for the step's `code_config.resume_from` (the
+  `<run_name>_node<N>` checkpoint dir of the interrupted run); HF resumes weights +
+  optimizer + scheduler + data position from the highest `checkpoint-<N>`. gpu-mid is
+  preemptible (`PreemptMode=REQUEUE`), so an eviction resumes the same way.
+- The first 1b attempt (build `c3698cfd`, 2026-10-20) was scancelled after a transient
+  `nvidia-container-cli` driver-rpc timeout wedged container-init on `p1-r10-n1`; that
+  host is now in the env's `sbatch_options.exclude` list.
 
 > **"Reuse" is text-level, not token-level — the trainer still tokenizes.**
 > corpus-prep's `train.jsonl` is cleaned, length-filtered conversation **text**
@@ -108,8 +188,92 @@ mis-segmented text silently. What these two artifacts are and how the `align` /
 > `distill-gold-trainonly` reuses is the prepped **corpus + retagged tokenizer**
 > (skipping the align + corpus-prep targets), not the trainer's own tokenization.
 
+##### Step timing vs batch size (1b ← 30b, 2 nodes / 16× H200, off-policy, pretok corpus)
+Measured 2026-10-21 on the pretok all-category corpus. Effective batch is held at **128**
+(`per_device × grad_accum × 16 GPU`), so these isolate microbatch size + the Liger fused
+JSD kernel — same training dynamics, different throughput. Settled s/step (steps ~5–20,
+after warmup); `t_train` is the per-metric-window train time the trainer logs.
+
+| per_device × grad_accum | Liger fused JSD | settled s/step | t_train | notes |
+|---|---|---|---|---|
+| 2 × 4 (`parameters.yaml` default) | off | **~97 s** | ~480 s | baseline |
+| 4 × 2 | on | **~76 s** | ~419 s | **−22%; the sweet spot** |
+| 8 × 1 | on | **~76 s** | ~398 s | no gain over 4×2 — compute-bound; don't bother |
+
+Why it plateaus: fitting `step = grad_accum × allgather + compute` to the first two rows
+gives per-microstep teacher all-gather ≈ 10.5 s and fixed-per-token compute ≈ 55 s. Going
+2→1 microbatch removes one all-gather but doubles per-microstep compute, so it washes out.
+Memory is never the gate (ZeRO-3 shards the 30B teacher; ~7 GB/rank peak even at batch 8),
+so batch 8 does **not** OOM — it just isn't faster. **Use 4 × 2 + Liger.** At ~76 s/step a
+full epoch (~8,601 steps) is ~7.5 days — see the resume note above.
+
 ### First bring-up
 Start single-node (`--param NUM_NODES=1`) to validate before scaling to 2.
+
+### Worked example — granite-4.0-1b ← 4.2-30b, all-category ~1.1M (full pipeline)
+
+Distill the **granite-4.0-1b-instruct** student from the **granite-4.2-30b** teacher on
+the all-category set (`g42sft_allcat_rh`, 1,100,909 rows — the 758k reasoning+agentic
+`both_think` slice + ~335k general/chat/IF/safety), via the full `distill-gold` pipeline
+(`align` → `corpus` → `train-gold`). Mirrors the gbansible tracking-doc run
+"Full suite — 4.1-3b-base distill (ALL-CATEGORY ~1.1M)", but into a 1b student.
+
+Two one-time prep facts, because the inputs are NOT drop-in:
+
+1. **Student needs retagging — `align` does it, no manual step.** `granite-4.0-1b-instruct`'s
+   tokenizer does NOT match the teacher (shared-vocab JSD requires student==teacher;
+   `1b-instruct-clean` sha `e2bad664` ≠ teacher `88397531`). The full recipe's `align`
+   step (`tokenizer-align-slurm`) retags the 1b onto the teacher's ChatML using
+   `CHAT_TEMPLATE` and emits `retagged_student` — so bind `STUDENT_MODEL_URI` to the
+   **raw** `granite-4.0-1b-instruct-clean`, not a pre-retagged dir. (The train-only
+   recipe, by contrast, needs an already-retagged student — which is why this uses the
+   full pipeline.) The chat template emits `<|start_of_role|>assistant<|end_of_role|>`,
+   which matches the recipe's default `RESPONSE_TEMPLATE`, so no override is needed.
+
+2. **The all-category corpus needed a format conversion.** The source
+   `/proj/granite-build/g4os/kd-sandbox/data/g42sft_allcat_rh.jsonl` stores `messages`
+   and `tools` as **stringified JSON**, but `corpus-prep` (`prep_corpus.py`) requires
+   `isinstance(messages, list)` and drops any row that fails it — so fed as-is it would
+   drop ALL 1.1M rows and produce an empty corpus. A streaming converter decodes those
+   two fields into native arrays (keeping `reasoning_content` for the thinking run):
+   ```bash
+   # on a BlueVela login node; streams, does not load 28G into RAM
+   python3 /proj/granite-build/g4os/kd-sandbox/convert_allcat_messages.py \
+     /proj/granite-build/g4os/kd-sandbox/data/g42sft_allcat_rh.jsonl \
+     /proj/granite-build/g4os/kd-sandbox/data/g42sft_allcat_rh_messages.jsonl
+   # → DONE in=1100909 out=1100909 skipped=0  (29G; all rows kept)
+   ```
+   `corpus-prep` then re-tokenizes this text at train time (the recipe consumes a
+   `{messages}` JSONL, NOT a pre-tokenized HF dataset dir — so the old
+   `g42sft_allcat_rh_pretok_basehub` 3b-tokenizer pretok is irrelevant here).
+
+Launch (full one-epoch run; `MAX_STEPS=-1` lets `NUM_TRAIN_EPOCHS=1.0` define the epoch,
+`MAX_LENGTH=16384` keeps the long agentic/reasoning rows as the tracking-doc run did):
+```bash
+gb build start -f recipes/granite4-gold-distillation/slurm/distill-gold/build.yaml \
+  --param STUDENT_MODEL_URI=env:///proj/granite-build/g4os/kd-sandbox/student_overlays/granite-4.0-1b-instruct-clean \
+  --param TEACHER_MODEL_URI=env:///proj/granite-build/g4os/kd-sandbox/teacher_overlays/granite-4.2-30b \
+  --param DATASET_URI=env:///proj/granite-build/g4os/kd-sandbox/data/g42sft_allcat_rh_messages.jsonl \
+  --param MAX_STEPS=-1 --param NUM_TRAIN_EPOCHS=1.0 \
+  --param MAX_LENGTH=16384 --param MAX_COMPLETION_LENGTH=15872 \
+  --param THINK_POLICY=keep --param SAVE_STEPS=500 --param NUM_NODES=2 \
+  --param LOG_RETRIEVAL_INTERVAL_SECONDS=30 --param POLL_INTERVAL_SECONDS=30 \
+  --skip-version-check
+```
+`MAX_COMPLETION_LENGTH` **must be strictly less than** `MAX_LENGTH` — the gold trainer
+reserves `MAX_LENGTH − MAX_COMPLETION_LENGTH` tokens for the prompt and
+`gold_config.__post_init__` raises `ValueError` if they are equal (or completion >
+length). 15872 leaves a 512-token prompt reserve (the ratio the default
+`parameters.yaml` ships, 4096/3584). Off-policy JSD (`ON_POLICY=false`, the default). At 2 nodes the effective batch is
+`per_device(2) × grad_accum(4) × 16 GPU = 128`, so one epoch over 1.1M rows is ~8,600
+steps (fewer if `MAX_LENGTH=16384` filtering drops long rows). **Smoke first:** rerun
+with `--param MAX_STEPS=50 --param SAVE_STEPS=25` to validate align-retag → corpus
+(keeps ~1.1M rows) → train → checkpoint → teardown before committing the multi-day run.
+
+> The converter `convert_allcat_messages.py` lives on `/proj` next to the data (not in
+> this repo); it is reproducible from the snippet above if deleted. The 28G source
+> `g42sft_allcat_rh.jsonl` is itself rebuilt by `convert_g42sft.py` + concat — see
+> `gbansible/docs/distill-runs.md` "ALL-CATEGORY".
 
 ### Scaling: more trainer nodes is NOT faster at smoke scale
 Measured on BlueVela, external-server on-policy, identical config except trainer size:

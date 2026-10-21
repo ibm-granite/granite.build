@@ -333,6 +333,14 @@ environment_configs:
               export HF_HOME="$HF_HOME_CFG"
             fi
 
+            # Tee prep output to the SHARED filesystem. SkyPilot's SLURM backend streams
+            # this step's stdout only to the ephemeral driver (reaped on the post-step
+            # `sky down`), so a prep failure — or the row-drop histogram that tells you
+            # WHY rows were dropped (no_messages / too-few / length) — otherwise leaves no
+            # persisted trace. $OUT_DIR is on /proj; this log survives teardown.
+            # PIPESTATUS keeps prep_corpus.py's real exit code through the tee.
+            PREP_LOG="${GB_BUILD_WORKDIR:-$WORK}/corpus-prep.log"
+            echo "distill-corpus-prep: teeing prep output to $PREP_LOG"
             "$PYBIN" ./src/prep_corpus.py \
               --dataset "{{ bindings.source_dataset.binding.path }}" \
               --dataset-split "{{ config.corpus_config.dataset_split }}" \
@@ -349,7 +357,13 @@ environment_configs:
               --seed {{ config.corpus_config.seed }} \
               --max-examples {{ config.corpus_config.max_examples }} \
               --hf-home "{{ config.corpus_config.hf_home }}" \
-              {% if config.corpus_config.emit_row_id %}--emit-row-id{% else %}--no-emit-row-id{% endif %}
+              {% if config.corpus_config.emit_row_id %}--emit-row-id{% else %}--no-emit-row-id{% endif %} \
+              2>&1 | tee "$PREP_LOG"
+            _prep_rc=${PIPESTATUS[0]}
+            if [ "$_prep_rc" != "0" ]; then
+              echo "distill-corpus-prep: FATAL: prep_corpus.py exited $_prep_rc (full log: $PREP_LOG)" >&2
+              exit "$_prep_rc"
+            fi
 
             # The FILE, per the outputs comment above.
             echo "GB_ARTIFACT_ID:corpus GB_ARTIFACT_PATH:${OUT_DIR}/train.jsonl"

@@ -39,6 +39,9 @@ IMAGE_ID: "docker:/proj/granite-build/g4os/enroot/us.icr.io-cil15-shared-registr
 # on /proj; these mirror the overlays the 2node sky yaml used.
 TEACHER_MODEL_URI: "env:///proj/granite-build/g4os/kd-sandbox/teacher_overlays/granite-4.1-30b_r260401a"
 STUDENT_MODEL_URI: "env:///proj/granite-build/g4os/kd-sandbox/student_overlays/granite-4.0-350m-base-ct"
+# true => the student is ALREADY retagged onto the teacher vocab; drop the align
+# target and bind corpus.tokenizer + train-gold.student straight to STUDENT_MODEL_URI.
+SKIP_ALIGN: false
 # align's own default chat template (relative to the step's code checkout) is
 # currently broken, so override with an absolute verified-on-BlueVela path.
 CHAT_TEMPLATE: "/proj/granite-build/g4os/chat_templates/granite_4_role_generation.jinja"

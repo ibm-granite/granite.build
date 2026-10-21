@@ -370,6 +370,15 @@ environment_configs:
               *) CHAT_TEMPLATE="$CODE_DIR/$CHAT_TEMPLATE" ;;
             esac
 
+            # Tee the retag output to the SHARED filesystem. SkyPilot's SLURM backend
+            # streams this step's stdout only to the ephemeral driver (reaped on the
+            # post-step `sky down`), so a run-align.sh failure otherwise leaves NO
+            # persisted traceback — which is exactly what blocked diagnosing the first
+            # 1b-instruct retag failure. $OUT_DIR is on /proj; this log survives teardown.
+            # PIPESTATUS keeps run-align.sh's real exit code through the tee so a failed
+            # retag still fails the step.
+            ALIGN_LOG="${GB_BUILD_WORKDIR:-$WORK}/align.log"
+            echo "distill-align: teeing retag output to $ALIGN_LOG"
             PYBIN="$PYBIN" bash ./src/run-align.sh \
               --teacher-model "{{ bindings.teacher.binding.path }}" \
               --student-model "{{ bindings.student.binding.path }}" \
@@ -378,7 +387,13 @@ environment_configs:
               --copy-mode "{{ config.align_config.copy_mode }}" \
               {% if config.align_config.require_chatml %}--require-chatml{% else %}--no-require-chatml{% endif %} \
               {% if config.align_config.verify %}--verify{% else %}--no-verify{% endif %} \
-              {% if config.align_config.dry_run %}--dry-run{% else %}--no-dry-run{% endif %}
+              {% if config.align_config.dry_run %}--dry-run{% else %}--no-dry-run{% endif %} \
+              2>&1 | tee "$ALIGN_LOG"
+            _align_rc=${PIPESTATUS[0]}
+            if [ "$_align_rc" != "0" ]; then
+              echo "distill-align: FATAL: run-align.sh exited $_align_rc (full log: $ALIGN_LOG)" >&2
+              exit "$_align_rc"
+            fi
     monitors:
       # The shipped monitor library as-is. Inherits the standard artifact convention
       # (GB_ARTIFACT_ID / GB_ARTIFACT_PATH, with binding) and the default poll and
