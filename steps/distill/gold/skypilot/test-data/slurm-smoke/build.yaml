@@ -1,0 +1,80 @@
+granite.build:
+  name: distill-gold-smoke-slurm
+  # First real SLURM run of the combined (subtypes: [lsf, slurm]) gold step,
+  # on BlueVela's gpu-mid (H200) partition, under hew's personal identity
+  # (ibm-bluevela-hew, gitignored — schedules far faster than granitebuild's
+  # shared-service-account fair-share standing; confirmed job 169528
+  # completed in 0s elapsed vs. granitebuild jobs sitting for hours). The
+  # point is mechanism, not training: does the new per-step image pull and
+  # the runtime `uv sync` complete on SLURM's pyxis/enroot runtime, do
+  # SKYPILOT_NODE_RANK et al. resolve correctly (this step's whole
+  # subtype-blind design rests on that), and does the vLLM ldconfig fix
+  # matter (off here — lmbda: 0.0, no vLLM server, so that fix isn't
+  # exercised by this particular run; a separate on-policy smoke would be
+  # needed to validate it directly).
+  #
+  # Single GPU, one node, few steps: gpu-mid is heavily contended, and
+  # this run's job is to prove the mechanism works at all, not to produce
+  # a usable checkpoint. Inputs are the SAME validated pair already used by
+  # the real distill-gold LSF recipes (recipes/granite4-gold-distillation/
+  # lsf/distill-gold/parameters.yaml and siblings) — under /proj/data-eng,
+  # NOT /proj/granite-build, since hew is not in the proj_granite-build
+  # group (see ibm-bluevela-hew/environment.yaml's header comment). The
+  # student here is already RETAGGED onto the teacher's tokenizer; do not
+  # substitute a different student without re-checking that relationship.
+  targets:
+    gold-smoke-slurm:
+      environment_uri: space://environments/skypilot/slurm/ibm-bluevela-hew
+      inputs:
+        teacher:
+          uri: "env:///proj/data-eng/hew/.cache/hf/hub/models--ibm-granite--granite-4.2-30b/snapshots/a0057a78b9d98a88aba90b6ef6e00d292440a222"
+          type: model
+        student:
+          uri: "env:///proj/data-eng/hew/gb-steps-collection-post-training/data/distillation/work/model_copies/granite-4.1-3b-base_retagged_v2"
+          type: model
+        corpus:
+          uri: "env:///proj/data-eng/hew/gb-steps-collection-post-training/data/distillation/prepped/en-sft-4.1-0.2-16K-v2/merged/train.jsonl"
+          type: dataset
+      outputs:
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/distill/gold
+          config:
+            poll_interval_seconds: 30
+            log_retrieval_interval_seconds: 30
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: 1
+            launcher_config:
+              resources:
+                accelerators: "H200:1"
+                # The first smoke attempt OOM-killed during enroot's
+                # docker->sqsh conversion of this step's new (uncached)
+                # image, before the container even started — nothing to do
+                # with this step's own code. docs/environments/
+                # skypilot-slurm.md: the compute_config memory floor is
+                # intentionally skipped on slurm/lsf, so this must be set
+                # explicitly. SkyPilot resource-string syntax ("N+" = at
+                # least N, unit-suffixed).
+                memory: "128+"
+            gold_config:
+              run_name: gold-smoke-slurm
+              max_length: 4096
+              max_completion_length: 1024
+              save_steps: 5
+              save_total_limit: 1
+              logging_steps: 1
+              dataset_num_proc: 8
+              gradient_accumulation_steps: 1
+              max_steps: 10
+              lmbda: 0.0
+              vllm_num_servers: 0
+              # Same diagnostics rationale as the LSF 1-node fixture: a
+              # stalled collective must fail loudly within the allocation,
+              # not hang forever.
+              nccl_enable_monitoring: true
+              nccl_timeout_ms: 600000
+              nccl_debug: "INFO"
+              nccl_debug_subsys: "INIT,NET"

@@ -1,0 +1,151 @@
+[project]
+name = "distill-gold-train-step"
+version = "0.1.0"
+description = "Runtime environment for the distill-gold-train step -- GOLD knowledge distillation (TRL + DeepSpeed ZeRO-3 + vLLM) from a Granite 4.2 teacher into a retagged Granite 4.1 student."
+# 3.12 EXACTLY, expressed as a range of one minor version, and that is deliberate.
+# ">=3.11" was aspirational: the only interpreter this code has ever run under is the
+# CPython 3.12 in the environment this step was validated against, and with an open upper
+# bound `uv lock` resolved against CPython 3.14 -- i.e. it would have locked a graph for an
+# interpreter nothing here has ever executed. Pinning the minor version makes the lock
+# below describe the interpreter that actually runs, and makes a base image with a
+# different python fail loudly at `uv sync` instead of quietly resolving a different
+# dependency graph. Widen it by testing on the wider interpreter, not by editing this line.
+requires-python = ">=3.12,<3.13"
+
+# NOTE ON PINS. Every version constraint below is a finding, not a preference, and the
+# reason belongs next to it -- the whole point of a maintained collection over an
+# exploratory checkout is that nobody has to guess later why a bound exists.
+#
+# WHERE THESE NUMBERS COME FROM. Not from taste and not from "latest": they are the
+# versions actually present in the environment every recorded successful run of this code
+# used -- including the run that trained this step's off-policy arm end-to-end through the
+# rendered step command. Read out of that venv's installed metadata on 2026-08-25.
+#
+# HOW FAR THE PINS ARE VERIFIED. `uv lock` resolves them against PyPI (see uv.lock, and
+# `uv lock --check` re-verifies), and the venv above proves the same set runs. What is
+# NOT verified is that they INSTALL from these pins into this step's base image: no
+# container build environment is available here (Dockerfile header), and the sandbox
+# venv was assembled by hand rather than from this file. `deepspeed` is sdist-only and
+# compiles against the CUDA toolkit in the base image, which is the part a resolution check
+# cannot speak to.
+#
+# WHY EXACT `==` AND NOT RANGES, for this step specifically. Two of this step's
+# entrypoints reach into private internals of the pinned packages to work around bugs in
+# them -- gold.py rewrites `trl.import_utils._vllm_ascend_available` and patches
+# `vllm.model_executor.models.{granitemoehybrid,granite}`, and run_vllm_serve.py also
+# patches `trl.scripts.vllm_serve`. A monkeypatch against a private attribute is not
+# version-tolerant: it either no-ops or raises when upstream moves the attribute, and
+# upstream HAS moved it (trl main has deleted `trl/extras/vllm_client.py`, the module
+# whose import failure the trl patch exists to prevent, and is at v1.9.2 against the
+# 0.26.2 pinned here). A range would let a resolver pick a release these patches do not
+# describe. Bumping any of them is therefore a deliberate change with its own test, not
+# a resolver's choice -- see the patch inventory in README.md.
+dependencies = [
+    # GOLD lives in trl.experimental.gold, which is not a stable public API: the module
+    # path and GOLDConfig's field set have both moved between releases, and
+    # src/gb_steps_post_training/distillation/custom_gold_config.py subclasses GOLDConfig
+    # directly.
+    #
+    # 0.26.2 EXACTLY, and this is the pin with the most evidence behind it. Under
+    # transformers >= 4.57 `trl.import_utils._is_package_available()` returns a
+    # (bool, version) TUPLE, and trl/import_utils.py:43 stores it raw --
+    # `_vllm_ascend_available = _is_package_available("vllm_ascend")` with no
+    # `return_version=True` -- so the guard is truthy even though the package is absent,
+    # and trl/extras/vllm_client.py:42 then unconditionally runs
+    # `from vllm_ascend.distributed...import PyHcclCommunicator`. Reproduced directly in
+    # the sandbox venv: `import trl.experimental.gold` raises
+    # `ModuleNotFoundError: No module named 'vllm_ascend'`. gold.py and
+    # run_vllm_serve.py each undo it before their first `from trl...` import, which is
+    # why training ran anyway. The bug is still unfixed on trl main (that function
+    # still omits return_version), but its consumer has moved, so neither the failure nor
+    # the workaround transfers to a newer release unexamined.
+    "trl==0.26.2",
+    # 5.8.0 EXACTLY. This is a 5.x-only codebase in ways that are load-bearing rather
+    # than incidental: the chat template is read from `chat_template.jinja` as a FILE and
+    # not from tokenizer_config.json (patches/granite-chat-template-generation-markers/),
+    # the legacy vocab.json/merges.txt sidecars are inert (docs/tokenizer_mismatch.md),
+    # `rope_theta` has moved into `config.rope_parameters` (which is what gold.py's vLLM
+    # patches exist for), and the tuple-returning `_is_package_available` above is a
+    # transformers change. Held exactly rather than as >=5.8,<6 because the vLLM pin
+    # below has to agree with it and one of them moving alone is the failure mode.
+    "transformers==5.8.0",
+    # 1.12.0 EXACTLY. accelerate is the DeepSpeed integration layer here, not a
+    # convenience: configs/distillation/deepspeed/accelerate_deepspeed_zero3.yaml is an
+    # ACCELERATE config, the launcher invokes `accelerate launch`, and ZeRO-3 checkpoint
+    # saving (zero3_save_16bit_model) is what makes distill-hf-export a selector rather
+    # than a converter. The accelerate/deepspeed/torch triple is the one this step has
+    # actually trained and resumed under, confirmed by direct measurement.
+    "accelerate==1.12.0",
+    # 0.17.5 EXACTLY, which is what `deepspeed<0.17.6` already meant in practice: 0.17.5
+    # was the newest release under that ceiling and is the version installed in the
+    # sandbox venv. The ceiling was inherited from the recorded environment with NO
+    # recorded reason, and this pin does not invent one -- it records that the only
+    # version this code has ever run under is 0.17.5 and stops a resolver from choosing
+    # differently. What breaks at 0.17.6+ is still unknown; finding out is a deliberate
+    # experiment (one bump, one training run, one recorded result), not something to
+    # discover during a distillation run on preemptable capacity.
+    "deepspeed==0.17.5",
+    # Serves the STUDENT for on-policy rollouts (lmbda > 0), not the teacher -- the teacher
+    # is sharded by the trainer's own ZeRO-3.
+    #
+    # 0.11.0 EXACTLY, and it is coupled to BOTH neighbours. Downwards: vllm 0.11.0 pins
+    # torch==2.8.0, which must equal the torch in the base image, because the Mamba2 Hub
+    # kernels are resolved per-variant and the cache baked into the image is
+    # torch28-cxx11-cu128-x86_64-linux, confirmed by direct measurement -- a torch bump silently invalidates
+    # it. Upwards: gold.py and run_vllm_serve.py patch
+    # `GraniteMoeHybridAttention.__init__` and `GraniteDecoderLayer.__init__` inside
+    # vllm.model_executor, private surfaces that vLLM reorganises freely.
+    "vllm==0.11.0",
+    # Mamba2 mixer kernels for Granite 4 hybrid models, resolved from the Hub at gold.py
+    # import time. The image must ship a warm cache or the step fails after allocation;
+    # see run-gold.sh's kernel gate and the companion cache-prefetch tool.
+    #
+    # 0.12.3 EXACTLY, because gold.py does not use the public `kernels` API for the
+    # preflight: it imports `kernels.utils.install_kernel` and `kernels.utils.
+    # _import_from_path` (a private name, hence the leading underscore) and hand-builds
+    # the entry `transformers.integrations.hub_kernels` would otherwise create. Same
+    # reasoning as trl: a private-surface consumer cannot take a range.
+    "kernels==0.12.3",
+    # 1.14.0 EXACTLY, for the same reason and in the same code path: gold.py imports
+    # `huggingface_hub.constants.HF_HUB_CACHE` and computes cache paths itself, so the
+    # on-disk cache layout is part of this step's contract rather than an implementation
+    # detail it is insulated from. (This replaces a >=0.25.0 floor that predated the
+    # kernel preflight.)
+    "huggingface_hub==1.14.0",
+    # Liger fused-linear JSD, for loss_arm=liger_fused_jsd. Optional at runtime for the
+    # default jsd arm, but the arm must not be a config value that fails on import.
+    # 0.6.4 is the sandbox version; the arm itself is a scaffold and has not been trained,
+    # so this pin records what is installed rather than what has been exercised.
+    "liger-kernel==0.6.4",
+    # 4.4.1 EXACTLY, and this pin is NEW -- datasets was previously not declared at all
+    # and arrived transitively, which meant an unconstrained resolve picked 5.0.1, a MAJOR
+    # version ahead of anything this code has run under. gold.py imports
+    # `datasets.{Dataset, DatasetDict, load_dataset, load_from_disk}` directly and
+    # corpus-prep's output is consumed through them, so datasets is a direct dependency
+    # of this step whether or not it is listed; listing it is what makes the version a
+    # decision instead of a side effect.
+    "datasets==4.4.1",
+    # render_gold_config.py's only third-party dependency. Deliberately NOT pinned exactly:
+    # nothing here touches a private pyyaml surface, safe_load/safe_dump are stable across
+    # its releases, and an exact pin on a leaf utility only creates conflicts with whatever
+    # else the base image has installed.
+    "pyyaml",
+    # Tracking backends. EXACT pins, matching this step's convention rather than the ranges
+    # `uv add` writes: unlike pyyaml above, these are not leaf utilities whose surface is stable
+    # -- transformers' ClearMLCallback drives them through an env-var contract (CLEARML_PROJECT,
+    # CLEARML_TASK, CLEARML_LOG_MODEL) that a backend release can reinterpret, and this is the
+    # step whose run IS the deliverable. Pinning also brings them under a companion
+    # pin-verification tool, which checks only the exact pins for this step -- a range here
+    # would be declared but unchecked.
+    "clearml==2.1.12",
+    "wandb==0.28.2",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+# Not a package in its own right -- this pyproject.toml exists only so uv lock/uv sync can
+# produce a reproducible venv for the step's runtime, not to build a wheel. Same as every
+# other step in this repo.
+[tool.uv]
+package = false
