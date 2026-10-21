@@ -47,14 +47,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 RUN uv python install ${UV_PYTHON} \
     && uv python pin ${UV_PYTHON} --no-workspace
 
-# The shared trainer library: only tokenizer-align among this image's steps
-# imports from it today (confirmed: corpus-pin-check/corpus-sources are
-# stdlib-only per their own step-template.yaml headers; corpus-prep/
-# hf-export use their own standalone scripts). Copied in anyway so any of
-# these steps CAN import it without a code change if one starts needing a
-# shared helper.
-COPY src/gb_steps_post_training /opt/gb-steps-distillation/src/gb_steps_post_training
-ENV PYTHONPATH=/opt/gb-steps-distillation/src
+# Everything the CPU steps run lives under DISTILL_HOME, baked in at build time
+# (see steps/distill/gpu/Dockerfile for the layout); nothing is cloned or mounted
+# at job launch.
+ENV DISTILL_HOME=/opt/distill
+COPY src/gb_steps_post_training ${DISTILL_HOME}/src/gb_steps_post_training
+ENV PYTHONPATH=${DISTILL_HOME}/src
 
 # Let uv own the venv's location/activation -- same convention as the GPU
 # image, /stage/.venv for compatibility with every CPU step's existing
@@ -64,7 +62,17 @@ ENV PYTHONPATH=/opt/gb-steps-distillation/src
 COPY cpu/pyproject.toml cpu/uv.lock /opt/distill-cpu-src/
 WORKDIR /opt/distill-cpu-src
 ENV UV_PROJECT_ENVIRONMENT=/stage/.venv
+ENV VIRTUAL_ENV=/stage/.venv
 RUN uv sync --locked
-ENV PATH="/stage/.venv/bin:${PATH}"
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+
+COPY corpus-pin-check/skypilot/src ${DISTILL_HOME}/steps/corpus-pin-check
+COPY corpus-sources/skypilot/src ${DISTILL_HOME}/steps/corpus-sources
+COPY corpus-prep/skypilot/src ${DISTILL_HOME}/steps/corpus-prep
+COPY tokenizer-align/skypilot/src ${DISTILL_HOME}/steps/tokenizer-align
+COPY hf-export/skypilot/src ${DISTILL_HOME}/steps/hf-export
+
+# The HF cache's fixed in-container mount point (see the GPU image).
+ENV HF_HOME=/opt/hf-cache
 
 WORKDIR /

@@ -1,9 +1,7 @@
 #!/bin/bash
 #
 # PORTED, not authored here. Upstream source of truth:
-#   repo   github.ibm.com/Herbert-Woisetschlaeger/gb-steps-collection-post-training
 #   path   steps/distill-logit-precompute/src/run-precompute.sh
-#   commit 70c1550a171aa8e09a9ad9047a5bf763c39e8579
 #
 # The ONLY intentional divergence is the artifact marker prefix: LLMB_ARTIFACT_* ->
 # GB_ARTIFACT_*. The monitor accepts both; GB_ is what every other step here prints.
@@ -65,7 +63,6 @@ fi
 if [[ -z "${LIB_DIR:-}" ]]; then
   LIB_DIR="$(first_dir \
     "$STEP_HOME/lib" \
-    "${CHECKOUT_ROOT:-/nonexistent}/scripts/bluevela/lib" \
   )" || LIB_DIR="$STEP_HOME/lib"
 fi
 # The package root goes on PYTHONPATH because we launch `-m gb_steps_post_training.distillation.…`
@@ -352,8 +349,8 @@ if (( NODES > 1 )); then
   echo "FATAL: nodes=$NODES needs a multi-node rendezvous (main_process_ip/port and a" >&2
   echo "       machine_rank per host) that a step is not handed. Tracked as D3 -- see" >&2
   echo "       docs/planning/distillation-steps-plan.md. Use nodes=1 here, or run the" >&2
-  echo "       multi-node shape from scripts/bluevela/ inside an LSF allocation where" >&2
-  echo "       LSB_HOSTS supplies the host list." >&2
+  echo "       multi-node shape from the upstream tooling inside a scheduler allocation where" >&2
+  echo "       the scheduler supplies the host list." >&2
   exit 1
 fi
 
