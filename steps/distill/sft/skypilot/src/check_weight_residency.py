@@ -7,7 +7,7 @@ asserted by test_source_contract.py: three copies that drift are worse than one 
 is checked. distill-gold is the reference, and its test_check_weight_residency.py is where
 this module's behaviour is pinned -- including the fixtures from the incident below.
 
-WHY THIS EXISTS. /proj on BlueVela is tape-backed GPFS. A migrated file is fully
+WHY THIS EXISTS. A shared network filesystem may be tape-backed (e.g. GPFS with HSM). A migrated file is fully
 readable -- `open()` succeeds, the bytes are correct -- and reading it blocks on a recall
 that can run to tens of GB. So every cheap gate passes and the expensive one pays: on
 2026-09-21 a teacher checkpoint cleared a tokenizer-load gate, a config-key gate and a
@@ -95,7 +95,7 @@ def mmlsattr_env(mm: str) -> dict[str, str]:
     mmlsattr links libgpfs.so, which a GPFS host resolves through /lib64/libgpfs.so -- a
     symlink into /usr/lpp/mmfs/lib that exists on the HOST only. Inside the step's container,
     with /usr/lpp/mmfs bind-mounted, the tool is found and then fails to load (rc 127), and
-    every file silently falls back to the weaker instrument. Measured on BlueVela,
+    every file silently falls back to the weaker instrument. Measured on a production cluster,
     2026-09-25: the same bind mount answers `Misc attributes: ARCHIVE` once the lib/ beside
     the tool's bin/ is on the path. Derived from where the tool actually resolves, not
     hardcoded, and added only if it exists -- elsewhere this is a no-op.
@@ -291,7 +291,7 @@ def main() -> int:
         "roles",
         nargs="*",
         metavar="ROLE=PATH",
-        help="e.g. student=/proj/kd/x teacher=/proj/kd/y; an empty PATH is skipped",
+        help="e.g. student=/data/x teacher=/data/y; an empty PATH is skipped",
     )
     ap.add_argument(
         "--allow-offline",

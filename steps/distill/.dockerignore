@@ -1,0 +1,6 @@
+**/__pycache__
+**/*.pyc
+**/test
+**/test-data
+**/USAGE.md
+**/README.md

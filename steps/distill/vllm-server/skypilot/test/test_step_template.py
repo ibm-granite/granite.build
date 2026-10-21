@@ -51,7 +51,7 @@ class TestShape:
     def test_it_is_an_lsf_skypilot_service(self, step):
         assert step["name"] == "vllm-server"
         assert step["type"] == "SERVICE"
-        assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf"]
+        assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf", "slurm"]
 
     def test_it_declares_both_outputs(self, step):
         """The URL for the trainer, the cluster name for teardown. An undeclared
@@ -78,8 +78,8 @@ class TestRunScriptIsValidShell:
         assert result.returncode == 0, result.stderr
 
     def test_it_uses_the_container_interpreter(self, run_script):
-        assert "PATH=/stage/.venv/bin:$PATH" in run_script
-        assert "PYBIN=/stage/.venv/bin/python" in run_script
+        assert "/stage/" not in run_script
+        assert 'PYBIN="$(uv python find)"' in run_script
 
 
 class TestReadinessGate:
