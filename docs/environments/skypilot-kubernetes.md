@@ -44,6 +44,13 @@ ways to supply them:
         allowed_contexts: [my-cluster]
   ```
 
+  `kubeconfig` is the **name** of a space secret whose value is the whole kubeconfig (YAML); no
+  credentials appear in `environment.yaml`. Unlike `cluster_ssh_configs` and `aws_credentials` values,
+  which fall back to the literal text when no secret of that name exists, `kubeconfig` must name an
+  existing secret: a missing one fails setup ("not in the space's secrets"). A kubeconfig is all
+  credentials, so a pasted kubeconfig or a mistyped name is refused rather than used. Secret names are
+  matched exactly, including case. `context` is a plain context name and is never looked up in secrets.
+
   gbserver merges each context, with the cluster and user it names, into its own
   `~/.sky/gbserver-kubeconfig` (mode 0600) and adds that file, last, to `KUBECONFIG` in its process. The
   cluster and user are renamed `gbserver/<context>`, so a secret's generic names (`default`, say) can never
