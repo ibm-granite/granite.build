@@ -88,7 +88,7 @@ class TestLauncherFactsLearnedElsewhere:
             in run_script
         )
         assert (
-            'export LIB_DIR="$DISTILL_HOME/lib"'
+            'export LIB_DIR="$DISTILL_HOME/shell"'
             in run_script
         )
         assert "export CHECKOUT_ROOT=" not in run_script

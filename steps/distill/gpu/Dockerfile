@@ -65,7 +65,7 @@ ENV LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}"
 # nothing is cloned or mounted at job launch (site-specific files such as the NCCL
 # tuning config, the HF cache and chat templates are supplied by the environment).
 #   src/    the shared trainer library (gb_steps_post_training)
-#   lib/    shell helpers sourced by the launchers
+#   shell/  shell helpers sourced by the launchers
 #   steps/distill-gold-train/configs  DeepSpeed / accelerate configs
 #   steps/  each step's launcher scripts, one directory per step
 ENV DISTILL_HOME=/opt/distill
@@ -88,7 +88,7 @@ ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 # Kept at its historical relative path: recipes pass ds_config relative to DISTILL_HOME.
 COPY gpu/configs ${DISTILL_HOME}/steps/distill-gold-train/configs
-COPY gpu/lib ${DISTILL_HOME}/lib
+COPY gpu/shell ${DISTILL_HOME}/shell
 COPY gold/skypilot/src ${DISTILL_HOME}/steps/gold
 COPY sft/skypilot/src ${DISTILL_HOME}/steps/sft
 COPY logit-precompute/skypilot/src ${DISTILL_HOME}/steps/logit-precompute
