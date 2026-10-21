@@ -354,23 +354,34 @@ define render-step-template
 	sed "s#\$${IMAGE_REF}#$$ref#g" "$(TEMPLATE)" > "$(1)"
 endef
 
-# write-gbignore — drop a .gbignore next to the published step.yaml so the g.b
-# build process ships the listed files verbatim instead of Jinja-rendering them.
-# The .gbignore is an ADDITIVE glob list (this impl has NO gitignore-style "!"
-# negation — see utils/filesystem.py:_get_matching_ignored_files), so it must
-# enumerate what to SKIP rather than "ignore all but step.yaml": that keeps
-# step.yaml's runtime {{ ... }} rendered while sparing the docs (README.md, which
-# may show {{ ... }} examples) and the whole src/ tree (step scripts/helpers,
-# shipped as-is). The .gbignore is itself a dotfile, so the renderer's glob never
-# picks it up — its own {{ ... }} in the comment is safe. $(1) is the target dir.
-define write-gbignore
-	@printf '%s\n' \
-		'# The following allows the docs to contain {{ ... }} but be ignored by the g.b build process.' \
-		'**/*.md' \
-		'# Ship the src/ tree verbatim — do not jinja-process step scripts/helpers.' \
-		'src/**' \
-		> "$(1)/.gbignore"
-	@echo "[$(STEP_NAME)] wrote $(1)/.gbignore (skip Jinja for docs + src/)"
+# copy-gbignore — copy the step's own .gbignore next to the rendered step.yaml, so
+# the g.b build process ships the listed files verbatim instead of Jinja-rendering
+# them. Every step carries one next to its Makefile (the create-framework-step
+# skill writes it for new steps); common.mk generates nothing, so the file in the
+# step source is exactly what is tested and published. Both `space` (so `make
+# test`) and `publish-step` use this macro, so a step renders the same way when
+# tested and when published. The usual list is `**/*.md` (docs may show {{ ... }}
+# examples) and `src/**` (scripts ship as is). The .gbignore is an ADDITIVE glob
+# list (no gitignore-style "!" negation; see
+# utils/filesystem.py:_get_matching_ignored_files), so it names what to SKIP
+# rather than "ignore all but step.yaml". It is a dotfile, so the renderer's glob
+# never picks it up itself. $(1) is the target dir.
+define copy-gbignore
+	@cp .gbignore "$(1)/.gbignore"
+	@echo "[$(STEP_NAME)] copied .gbignore to $(1)/"
+endef
+
+# require-gbignore — fail before anything is written when the step has no
+# .gbignore. Shipping a step without one would Jinja-render its docs and scripts,
+# which fails silently on a cluster rather than here.
+define require-gbignore
+	@test -f .gbignore || { \
+		echo "[$(STEP_NAME)] ERROR: no .gbignore next to this Makefile." >&2; \
+		echo "[$(STEP_NAME)] Add one listing the files to ship without Jinja rendering, usually:" >&2; \
+		echo "[$(STEP_NAME)]   **/*.md" >&2; \
+		echo "[$(STEP_NAME)]   src/**" >&2; \
+		echo "[$(STEP_NAME)] (see steps/README.md, .gbignore)." >&2; \
+		exit 1; }
 endef
 
 # guard-publish-paths — fail fast before `publish-step` runs any rm -rf. The publish
@@ -432,7 +443,7 @@ endef
 
 # Render a self-contained Space into $(SPACE_DIR)/:
 #   $(SPACE_DIR)/steps/$(STEP_PATH)/step.yaml   (+ bundled src/)
-#   $(SPACE_DIR)/steps/$(STEP_PATH)/.gbignore   (skip Jinja for **/*.md + src/)
+#   $(SPACE_DIR)/steps/$(STEP_PATH)/.gbignore   (the step's own, copied)
 #   $(SPACE_DIR)/space.yaml                       (base_uris -> $(SPACE_BASE_URI))
 # step-template.yaml is rendered substituting ONLY ${IMAGE_REF} so runtime Jinja
 # ({{ ... }}) and shell expansions (${VAR}, $(cmd)) in the run/setup blocks pass
@@ -442,6 +453,7 @@ endef
 # slash-free STEP_NAME) is used for the steps/ tree so a nested step's identity is
 # preserved locally exactly as it will be once published.
 space:
+	$(call require-gbignore)
 	@mkdir -p $(SPACE_DIR)/steps/$(STEP_PATH)
 	$(call render-step-template,$(SPACE_DIR)/steps/$(STEP_PATH)/step.yaml)
 	@if [ -d "$(SRC_DIR)" ] && [ -n "$$(ls -A $(SRC_DIR) 2>/dev/null)" ]; then \
@@ -449,7 +461,7 @@ space:
 		cp -R "$(SRC_DIR)" "$(SPACE_DIR)/steps/$(STEP_PATH)/$(SRC_DIR)"; \
 		echo "[$(STEP_NAME)] bundled $(SRC_DIR)/ into $(SPACE_DIR)/steps/$(STEP_PATH)/"; \
 	fi
-	$(call write-gbignore,$(SPACE_DIR)/steps/$(STEP_PATH))
+	$(call copy-gbignore,$(SPACE_DIR)/steps/$(STEP_PATH))
 	@printf 'name: %s\nsecret_manager:\n  type: local\n  config: {}\nbase_uris:\n  - %s\n' \
 		"$(SPACE_NAME)" "$(SPACE_BASE_URI)" > $(SPACE_DIR)/space.yaml
 	@if [ -n "$(DEFAULT_ENVIRONMENT)" ]; then \
@@ -463,15 +475,15 @@ space:
 # the repo's parallel top-level test/ <-> test-data/ trees:
 #   $(PUBLISH_STEP_DIR)/step.yaml               (+ bundled src/)   — the published step
 #   $(PUBLISH_STEP_DIR)/README.md               (from USAGE.md)    — user-facing usage doc
-#   $(PUBLISH_STEP_DIR)/.gbignore                                  — skip Jinja for **/*.md + src/
+#   $(PUBLISH_STEP_DIR)/.gbignore                                  — the step's own, copied
 #   $(PUBLISH_TEST_DIR)/<cluster>/              — per-cluster build tests (copied)
 #   $(PUBLISH_TESTDATA_DIR)/<cluster>/          — their fixtures, with space_uri rewritten
 #
 # The step's own README.md (development-oriented) is NOT published; only USAGE.md is,
 # renamed to README.md so a user browsing the released assets tree finds usage docs.
-# A .gbignore is written beside step.yaml so the g.b build process ships the docs
-# (**/*.md) and the src/ tree verbatim instead of Jinja-rendering them — docs may
-# contain {{ ... }} examples and src scripts must not be templated (see write-gbignore).
+# The step's .gbignore is copied beside step.yaml so the g.b build process ships the
+# files it lists (usually the docs and src/) verbatim instead of Jinja-rendering
+# them (see copy-gbignore). A step without one is refused (require-gbignore).
 #
 # The step's own `test/<cluster>/` nesting is flattened on copy (the inner `test`
 # segment is dropped) so the published test lands at test/steps/<path>/<env>/<cluster>/
@@ -495,6 +507,7 @@ space:
 # of `all`: publish-step writes the committed assets tree.
 publish-step:
 	$(call require-publishable)
+	$(call require-gbignore)
 	$(call require-image-published)
 	$(call guard-publish-paths)
 	@mkdir -p $(PUBLISH_STEP_DIR)
@@ -509,7 +522,7 @@ publish-step:
 	else \
 		echo "[$(STEP_NAME)] WARNING: no USAGE.md to publish as README.md"; \
 	fi
-	$(call write-gbignore,$(PUBLISH_STEP_DIR))
+	$(call copy-gbignore,$(PUBLISH_STEP_DIR))
 	@rm -rf "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)"
 	@mkdir -p "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)"
 	@copied=0; for d in $(TEST_DIR)/*/; do \

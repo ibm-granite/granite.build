@@ -86,6 +86,8 @@ steps/<path>/<env>/
   src/setup.sh          comment-only stub, called by the launcher's setup:
   src/run.sh            comment-only stub, called by the launcher's run:
   Dockerfile            custom-image steps only (skeleton in templates.md)
+  .gbignore             files shipped verbatim, not Jinja-rendered (docs, src/); required:
+                        make space and publish-step copy it, and refuse a step without one
   test/test_<env>_<category>_<name>_render.py   render test: passes on the skeleton (Mode 1 only)
   test/<cluster>/test_<env>_<cluster>_<category>_<name>.py   one build test per cluster
   test-data/<cluster>/{build.yaml,buildtest.yaml}    its fixtures

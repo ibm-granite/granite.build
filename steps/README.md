@@ -69,7 +69,7 @@ builds on) does five things and no more:
 1. **Renders one token.** `step-template.yaml` → `step.yaml` substituting only the
    literal `${IMAGE_REF}` (empty for public-image steps); all runtime Jinja `{{ … }}`
    and shell `${VAR}` pass through verbatim.
-2. **Copies `src/`** into the released step.
+2. **Copies `src/` and the step's `.gbignore`** into the released step.
 3. **Publishes `USAGE.md` as `README.md`** beside the released `step.yaml`, so the
    step ships user docs (the authoring `README.md` is dev-oriented and is *not*
    published).
@@ -196,6 +196,14 @@ Present or absent depending on what the step needs:
 * **`src/`** — a directory of code referenced by the step. For image
   steps it is baked into the image; for public-image steps it can be made
   available to the running step (e.g. via SkyPilot `file_mounts`).
+* **`.gbignore`** — the files gbserver ships verbatim instead of Jinja-rendering them,
+  as an additive list of globs (no `!` negation). Every step needs one, next to its
+  Makefile: `make space` (and so `make test`) and `make publish-step` both copy it
+  beside the rendered `step.yaml`, so the step renders the same way when tested and
+  when published, and both refuse a step that has none. The usual list is `**/*.md`
+  (docs can show `{{ … }}` examples) and `src/**` (scripts are never templated); the
+  `create-framework-step` skill writes that for new steps. Edit it when a step needs a
+  different list.
 * **`test/`** — the step's own tests, run with `make test` (`src/` is
   put on `PYTHONPATH`; pytest recurses the whole tree). These are developed and
   run **independently** of the repository's central suite (they are not in its

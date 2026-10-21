@@ -79,6 +79,7 @@ def _make_step(root: pathlib.Path) -> pathlib.Path:
     (step / "test").mkdir(parents=True)
     (step / "Makefile").write_text("STEP_NAME := fake\ninclude ../../common.mk\n")
     (step / "step-template.yaml").write_text("name: fake\n")
+    (step / ".gbignore").write_text("**/*.md\nsrc/**\n")  # common.mk requires one
     (step / "test" / "test_probe.py").write_text(_PROBE)
     venv_bin = root / "venv" / "bin"
     venv_bin.mkdir(parents=True)

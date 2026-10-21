@@ -87,6 +87,7 @@ def _make_step(root: pathlib.Path) -> pathlib.Path:
     step.mkdir(parents=True)
     (step / "Makefile").write_text("STEP_NAME := fake\ninclude ../../common.mk\n")
     (step / "step-template.yaml").write_text("name: fake\n")
+    (step / ".gbignore").write_text("**/*.md\nsrc/**\n")  # common.mk requires one
     (step / "USAGE.md").write_text("# fake\n")
     for cluster, uri in {**LOCAL_URIS, **REMOTE_URIS}.items():
         (step / "test" / cluster).mkdir(parents=True)

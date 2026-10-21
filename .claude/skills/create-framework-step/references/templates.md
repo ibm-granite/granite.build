@@ -170,6 +170,24 @@ COPY --chown=appuser:appuser src/ /opt/<name>/
 USER 1001
 ```
 
+## .gbignore
+
+Write it as is: no placeholders. It is required: `make space` and `make publish-step`
+copy it beside the rendered `step.yaml` and refuse a step that has none. Every existing
+step's `.gbignore` has these same two patterns (a unit test checks that).
+
+```gitignore
+# Files gbserver ships verbatim instead of Jinja-rendering them, one glob per line.
+# Additive only: there is no `!` negation. `make space` (and so `make test`) and
+# `make publish-step` both copy this file, so the step renders the same way when
+# tested and when published. Remove a line only if those files must be rendered.
+#
+# Docs: USAGE.md and README.md may show {{ ... }} examples.
+**/*.md
+# Scripts: src/ runs as is; its values arrive as argv from step-template.yaml.
+src/**
+```
+
 ## src/setup.sh and src/run.sh (comment-only stubs)
 
 Generate exactly these two files in `src/` and nothing else there. They hold comments

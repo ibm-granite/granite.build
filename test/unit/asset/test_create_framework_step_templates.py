@@ -119,6 +119,7 @@ def _write_step(root: pathlib.Path, inputs: list[str], outputs: list[str]) -> No
         (root / "src" / script).write_text(_expand(stub, inputs, outputs))
     render = _section(md, "## test/test_<env>_<category>_<name>_render.py", "python")
     (root / "test" / "test_render.py").write_text(_expand(render, inputs, outputs))
+    (root / ".gbignore").write_text(_section(md, "## .gbignore", "gitignore"))
 
 
 SHAPES = {
@@ -152,3 +153,38 @@ def test_generated_render_test_passes(tmp_path, shape):
     summary = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
     assert proc.returncode == 0, proc.stdout[-3000:] + proc.stderr[-2000:]
     assert "1 xfailed" in summary, summary
+
+
+def _patterns(text: str) -> list[str]:
+    """Return a .gbignore's glob lines, without comments or blanks."""
+    return [
+        ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")
+    ]
+
+
+STEP_SOURCES = sorted(
+    mk.parent
+    for mk in (REPO_ROOT / "steps").glob("**/Makefile")
+    if "space" not in mk.parts and "common.mk" in mk.read_text()
+)
+
+
+def test_there_are_step_sources():
+    """Guard against the glob silently matching nothing."""
+    assert STEP_SOURCES
+
+
+@pytest.mark.parametrize(
+    "step", STEP_SOURCES, ids=lambda p: p.relative_to(REPO_ROOT).as_posix()
+)
+def test_every_step_source_has_the_skeleton_gbignore(step):
+    """Each step source ships a .gbignore with the same patterns the skill writes.
+
+    common.mk only copies a step's .gbignore and refuses a step without one, so every
+    step source needs the file. A step that needs a different list may diverge; add it
+    to an allow-list here with a comment saying why.
+    """
+    gbignore = step / ".gbignore"
+    assert gbignore.is_file(), f"{gbignore} is missing"
+    template = _section(TEMPLATES_MD.read_text(), "## .gbignore", "gitignore")
+    assert _patterns(gbignore.read_text()) == _patterns(template)
