@@ -388,10 +388,11 @@ launch fails with `NotSupportedError`; the `run:` command then executes directly
 > **GPU steps needing runtime CUDA JIT compilation**: a plain `python:slim`/`ubuntu` base with only
 > pip-installed `nvidia-*-cu12` wheels has no `nvcc`/dev toolkit, so anything that JIT-compiles CUDA at
 > runtime (`torch.compile`/Inductor, raw Triton kernels, FlashInfer's JIT sampler) fails with
-> `libcuda.so cannot found!` or `Could not find nvcc`. Build your step's own image `FROM` a CUDA
-> **devel** base (e.g. an NGC `nvcr.io/nvidia/cuda:<ver>-devel-<distro>` tag) directly, matching the
-> CUDA minor version your step's own pinned wheels expect. Two residual gaps that image does NOT
-> solve on its own, split across two different layers:
+> `libcuda.so cannot found!` or `Could not find nvcc`. Build your step's image `FROM` an NGC CUDA
+> **devel** tag directly (e.g.
+> [`steps/distill/gpu/Dockerfile`](../../steps/distill/gpu/Dockerfile)/
+> [`README.md`](../../steps/distill/gpu/README.md), the distillation steps' shared GPU image). That
+> image's own README covers two residual gaps it does NOT solve, split across two different layers:
 > the generated Pyxis GPU sbatch directives (opt-in via
 > `slurm_gpu_sbatch_directives: true` — see
 > [`sbatch_options`](#sbatch_options--slurm-sbatch-directives)) already set
