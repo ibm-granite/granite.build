@@ -160,12 +160,29 @@ log "SLURM cluster is ready with $node_count compute nodes."
 # SkyPilot requires rsync for file transfer and SSH access to compute nodes
 # for running setup commands after SLURM job allocation.
 
-log "Installing rsync in SLURM containers..."
-for node in slurm-slurmctld slurm-c1 slurm-c2 slurm-c3 slurm-c4; do
-    if ! $DOCKER_CMD exec "$node" which rsync &>/dev/null; then
-        $DOCKER_CMD exec "$node" dnf install -y -q rsync 2>/dev/null
+# Install rsync in one container if it is missing. Each dnf run fetches the full
+# repo metadata first (slow), so callers run this per node in parallel.
+# Args: $1 = container name. Returns dnf's exit status (0 if already present).
+install_rsync() {
+    if ! $DOCKER_CMD exec "$1" which rsync &>/dev/null; then
+        $DOCKER_CMD exec "$1" dnf install -y -q rsync 2>/dev/null
     fi
+}
+
+log "Installing rsync in SLURM containers (in parallel)..."
+rsync_pids=()
+rsync_nodes=(slurm-slurmctld slurm-c1 slurm-c2 slurm-c3 slurm-c4)
+for node in "${rsync_nodes[@]}"; do
+    install_rsync "$node" &
+    rsync_pids+=($!)
 done
+rsync_failed=()
+for i in "${!rsync_pids[@]}"; do
+    wait "${rsync_pids[$i]}" || rsync_failed+=("${rsync_nodes[$i]}")
+done
+if [ "${#rsync_failed[@]}" -gt 0 ]; then
+    err "rsync install failed on: ${rsync_failed[*]}"
+fi
 log "rsync installed."
 
 # Make the stock image's sshd PAM stack usable inside a container on a real
