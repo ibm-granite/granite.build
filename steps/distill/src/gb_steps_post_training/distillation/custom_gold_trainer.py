@@ -2322,6 +2322,21 @@ class CustomGOLDTrainer(GOLDTrainer):
         self._sampled_opd_sum = 0.0
         self._sampled_opd_step_eq = 0.0
 
+        # CE anchor and collapse diagnostics. Accumulated per microbatch, all-reduced and
+        # flushed in log(), which is the idiom hidden_loss already uses.
+        self._ce_anchor_sum = 0.0
+        self._ce_anchor_step_eq = 0.0
+        self._entropy_sum = 0.0
+        self._rkld_sum = 0.0
+        self._diag_tokens = 0
+        # Guard state. The baseline is measured rather than configured, because the
+        # starting entropy depends on the student and its SFT history.
+        self._entropy_baseline = None
+        self._entropy_baseline_acc = 0.0
+        self._entropy_baseline_n = 0
+        self._entropy_below_floor = 0
+        self._entropy_guard_tripped = False
+
         if self.args.opd_importance_sampling:
             self._is_stats_accum = {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "masked_fraction": 0.0}
             self._is_stats_count = 0
@@ -4507,6 +4522,35 @@ class CustomGOLDTrainer(GOLDTrainer):
                         tokenizer=self.processing_class,
                     )
 
+                # CE GROUND-TRUTH ANCHOR, and the instruments that watch for its absence.
+                #
+                # The loss above IS the divergence: nothing in it prefers real text. On an
+                # already-SFT'd student the divergence is nearly satisfied at init (build
+                # df8512e0 started at 0.0825 against a ln2 = 0.693 ceiling and banked ~68%
+                # of the realisable gain by step 509), so for the remaining 7,640 steps the
+                # only descent direction left was to become more certain. Entropy fell 42%,
+                # reverse KL moved 1.8%, and the model ended up emitting repetition loops
+                # instead of code -- while the logged loss sat flat and showed nothing.
+                #
+                # ce_coef prices that drift; log_student_entropy is what sees it happening.
+                # Both are off by default, so an unset config computes exactly the loss it
+                # computed before this change.
+                if self.args.ce_coef > 0:
+                    ce_anchor = self.cross_entropy_loss(
+                        student_logits=shifted_student_logits,
+                        labels=shifted_labels,
+                    )
+                    loss = loss + self.args.ce_coef * ce_anchor
+
+                    ga = max(1, int(self.args.gradient_accumulation_steps))
+                    self._ce_anchor_sum += ce_anchor.item()
+                    self._ce_anchor_step_eq += 1.0 / ga
+
+                if self.args.log_student_entropy:
+                    self._accumulate_collapse_diagnostics(
+                        shifted_student_logits, shifted_teacher_logits, shifted_labels
+                    )
+
                 # Hidden state matching loss (auxiliary)
                 if self.args.use_hidden_loss:
                     hidden_loss = self.compute_hidden_loss(
@@ -4603,6 +4647,121 @@ class CustomGOLDTrainer(GOLDTrainer):
         empty_cache()
 
         return (loss, outputs_student) if return_outputs else loss
+
+    # Positions per chunk in _accumulate_collapse_diagnostics. At V = 100,352 one chunk
+    # of fp32 log-probs is ~100 MB and three live at once per model, so 256 keeps the
+    # transient under ~0.6 GB. These diagnostics run INSIDE compute_loss, before the
+    # backward, so the activations are still resident and the headroom is not free.
+    _DIAG_CHUNK_POSITIONS = 256
+
+    @torch.no_grad()
+    def _accumulate_collapse_diagnostics(self, student_logits, teacher_logits, labels):
+        """Accumulate summed student entropy and reverse KL over the supervised positions.
+
+        ORIENTATION MATTERS. distill-eval computes rkld as (exp(log_q) * (log_q - log_p))
+        with p = TEACHER and q = STUDENT, clamped at zero, on RAW logits with no
+        temperature scaling (gb_steps_post_training/distillation/divergence.py). This
+        mirrors it exactly, so a per-step rkld here is comparable to the rkld in that
+        step's metrics.json rather than merely similarly named. temperature is 1.0 in
+        every recipe that runs this, but reading off raw logits keeps the correspondence
+        true if that ever changes.
+
+        Summed, not averaged: log() divides by the all-reduced token count, so a rank
+        holding fewer supervised tokens does not weigh the same as a rank holding more.
+        """
+        vocab = student_logits.size(-1)
+        keep = (labels.reshape(-1) != -100).nonzero(as_tuple=True)[0]
+        if keep.numel() == 0:
+            return
+
+        student_flat = student_logits.reshape(-1, vocab)
+        teacher_flat = teacher_logits.reshape(-1, vocab)
+
+        # Accumulated on device and read once at the end: a .item() per chunk would
+        # serialise ~32 host syncs into every microbatch.
+        entropy_acc = torch.zeros((), device=student_logits.device, dtype=torch.float32)
+        rkld_acc = torch.zeros((), device=student_logits.device, dtype=torch.float32)
+
+        for start in range(0, keep.numel(), self._DIAG_CHUNK_POSITIONS):
+            index = keep[start : start + self._DIAG_CHUNK_POSITIONS]
+            student_lp = F.log_softmax(student_flat.index_select(0, index).float(), dim=-1)
+            teacher_lp = F.log_softmax(teacher_flat.index_select(0, index).float(), dim=-1)
+            student_p = student_lp.exp()
+            entropy_acc += -(student_p * student_lp).sum(dim=-1).sum()
+            rkld_acc += (student_p * (student_lp - teacher_lp)).sum(dim=-1).clamp(min=0.0).sum()
+
+        self._entropy_sum += float(entropy_acc)
+        self._rkld_sum += float(rkld_acc)
+        self._diag_tokens += int(keep.numel())
+
+    def _maybe_act_on_entropy_collapse(self, entropy: float) -> None:
+        """Act when entropy has fallen entropy_guard_drop_frac below baseline.
+
+        entropy_guard_action decides what "act" means: "stop" ends the run at the trip
+        step, "warn" reports it and lets training continue. Both save a checkpoint
+        there, and both fire exactly once -- the latch matters for "warn", which would
+        otherwise re-report and re-save on every subsequent log.
+
+        Called from log() with the ALREADY ALL-REDUCED mean, so every rank evaluates the
+        identical number and reaches the same verdict without a second collective. That is
+        why this is not implemented by raising from compute_loss: an exception there has to
+        be agreed by every rank inside the accelerate/DeepSpeed step, and a disagreement is
+        a hung collective rather than a clean stop.
+
+        should_save is set because Trainer checks it after log() in the same
+        _maybe_log_save_evaluate call, so there is a checkpoint at the step the guard
+        fired -- the run's most interesting one, whether or not it is also the last.
+        """
+        if self.args.entropy_guard_drop_frac <= 0 or self._entropy_guard_tripped:
+            return
+        control = getattr(self, "control", None)
+        if control is None:
+            return
+
+        if self._entropy_baseline is None:
+            self._entropy_baseline_acc += entropy
+            self._entropy_baseline_n += 1
+            if self.state.global_step >= max(1, int(self.args.entropy_guard_baseline_steps)):
+                self._entropy_baseline = self._entropy_baseline_acc / self._entropy_baseline_n
+                floor = (1.0 - self.args.entropy_guard_drop_frac) * self._entropy_baseline
+                print(
+                    f"[entropy-guard] armed: baseline {self._entropy_baseline:.5f} nats "
+                    f"over {self._entropy_baseline_n} log(s), floor {floor:.5f} nats "
+                    f"({self.args.entropy_guard_drop_frac:.0%} drop), patience "
+                    f"{self.args.entropy_guard_patience}",
+                    flush=True,
+                )
+            return
+
+        floor = (1.0 - self.args.entropy_guard_drop_frac) * self._entropy_baseline
+        if entropy < floor:
+            self._entropy_below_floor += 1
+        else:
+            self._entropy_below_floor = 0
+
+        if self._entropy_below_floor >= max(1, int(self.args.entropy_guard_patience)):
+            self._entropy_guard_tripped = True
+            stopping = self.args.entropy_guard_action == "stop"
+            verdict = "STOPPING" if stopping else "TRIPPED"
+            tail = (
+                "saving and stopping."
+                if stopping
+                else "saving a checkpoint here and CONTINUING, because "
+                     'entropy_guard_action is "warn". This step is the finding; the rest '
+                     "of the run is the curve past it."
+            )
+            print(
+                f"[entropy-guard] {verdict} at step {self.state.global_step}: student "
+                f"entropy {entropy:.5f} nats is below the floor {floor:.5f} "
+                f"(baseline {self._entropy_baseline:.5f}) for "
+                f"{self._entropy_below_floor} consecutive logs. An effective branching "
+                f"factor of {pow(2.718281828459045, entropy):.2f} tokens is the signature "
+                f"of a student narrowing rather than learning; {tail}",
+                flush=True,
+            )
+            control.should_save = True
+            if stopping:
+                control.should_training_stop = True
 
     def log(self, logs: dict[str, float], start_time: float | None = None) -> None:
         mode = "train" if self.model.training else "eval"
@@ -4876,5 +5035,53 @@ class CustomGOLDTrainer(GOLDTrainer):
             and self.uld_loss_fn._reward_html_buffer
         ):
             self.uld_loss_fn._flush_reward_html(self.state.global_step)
+
+        if mode == "train" and (self.args.ce_coef > 0 or self.args.log_student_entropy):
+            device = self.accelerator.device if hasattr(self.accelerator, "device") else torch.device("cpu")
+
+            diag_vec = torch.tensor(
+                [
+                    self._ce_anchor_sum,
+                    self._ce_anchor_step_eq,
+                    self._entropy_sum,
+                    self._rkld_sum,
+                    float(self._diag_tokens),
+                ],
+                dtype=torch.float64,
+                device=device,
+            )
+
+            if (
+                getattr(self.accelerator, "distributed_type", DistributedType.NO) != DistributedType.NO
+                and dist.is_available()
+                and dist.is_initialized()
+            ):
+                dist.all_reduce(diag_vec, op=dist.ReduceOp.SUM)
+
+            ce_sum, ce_eq, entropy_sum, rkld_sum, diag_tokens = diag_vec.tolist()
+
+            if ce_eq > 0:
+                # The unweighted CE, so the ce_coef * CE contribution can be compared
+                # against the divergence in `loss` without recovering it from the product.
+                #
+                # Divided by gradient_accumulation_steps because _ce_anchor_sum gains one
+                # term per MICROBATCH while _ce_anchor_step_eq gains 1/ga: their quotient
+                # is the per-optimizer-step SUM, whereas `loss` carries the per-microbatch
+                # MEAN. Without this the log reads ga times high and the comparison it
+                # exists for is wrong by that factor -- on build d1acf1c0 (ce_coef 0.05,
+                # ga 3) it said 1.922 where the CE actually added to the loss was 0.643.
+                ga = max(1, int(self.args.gradient_accumulation_steps))
+                logs["ce_anchor_loss"] = round(ce_sum / ce_eq / ga, 4)
+            if diag_tokens > 0:
+                entropy = entropy_sum / diag_tokens
+                logs["student_entropy"] = round(entropy, 5)
+                logs["rkld"] = round(rkld_sum / diag_tokens, 5)
+                self._maybe_act_on_entropy_collapse(entropy)
+
+            self._ce_anchor_sum = 0.0
+            self._ce_anchor_step_eq = 0.0
+            self._entropy_sum = 0.0
+            self._rkld_sum = 0.0
+            self._diag_tokens = 0
 
         super().log(logs, start_time)

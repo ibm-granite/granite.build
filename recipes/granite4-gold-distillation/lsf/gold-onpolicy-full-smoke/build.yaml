@@ -71,7 +71,6 @@ granite.build:
               num_nodes: 1
               num_gpus_per_node: $${VLLM_NUM_GPUS_PER_NODE}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 accelerators: "$${VLLM_ACCELERATORS}"
                 memory: $${MEMORY}
@@ -126,7 +125,6 @@ granite.build:
               num_nodes: $${NUM_NODES}
               num_gpus_per_node: $${NUM_GPUS_PER_NODE}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 accelerators: "$${ACCELERATORS}"
                 memory: $${MEMORY}

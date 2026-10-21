@@ -131,6 +131,57 @@ class CustomGOLDConfig(GOLDConfig):
         default=2.0,
         metadata={"help": "Upper bound for IS weight truncation (tokens with weight > this are masked out)."},
     )
+    ce_coef: float = field(
+        default=0.0,
+        metadata={"help": "Weight of an ADDITIVE cross-entropy anchor on the corpus tokens: "
+                  "loss = divergence + ce_coef * CE(student, labels). 0.0 = off, which "
+                  "reproduces the pure-divergence objective exactly. Unlike use_ce_loss, "
+                  "which REPLACES the divergence, this anchors it: without a ground-truth "
+                  "term nothing prices drift away from real text, so once the student "
+                  "matches the teacher as closely as it is going to, sharpening its own "
+                  "distribution is the only descent direction left. Additive rather than a "
+                  "convex mix because the two terms differ by ~an order of magnitude on an "
+                  "already-SFT'd pair (JSD ~0.07, CE ~1), so a convex mix is CE-dominated."},
+    )
+    log_student_entropy: bool = field(
+        default=False,
+        metadata={"help": "Log mean student entropy and reverse KL (nats, over the "
+                  "supervised positions) every logging_steps as `student_entropy` and "
+                  "`rkld`. The train loss is blind to entropy collapse -- it can sit flat "
+                  "while the student narrows -- so this is the instrument that sees it. "
+                  "Costs one extra fp32 softmax pair per microbatch, chunked over "
+                  "positions; no effect on the gradient."},
+    )
+    entropy_guard_drop_frac: float = field(
+        default=0.0,
+        metadata={"help": "Trip the collapse guard when mean student entropy falls this "
+                  "fraction below its early-training baseline (e.g. 0.15 = a 15% drop). "
+                  "0.0 = off. Requires log_student_entropy. entropy_guard_action decides "
+                  "whether tripping stops the run or only reports it; a stop is graceful "
+                  "via TrainerControl -- the checkpoint is saved and the process exits 0 "
+                  "-- so downstream export and eval targets still run and the stop is a "
+                  "finding, not a failed build."},
+    )
+    entropy_guard_baseline_steps: int = field(
+        default=20,
+        metadata={"help": "Optimizer steps over which the entropy baseline is averaged "
+                  "before the guard arms."},
+    )
+    entropy_guard_patience: int = field(
+        default=3,
+        metadata={"help": "Consecutive logs below the floor before the guard stops the "
+                  "run, so one noisy batch cannot end a multi-hour job."},
+    )
+    entropy_guard_action: str = field(
+        default="stop",
+        metadata={"help": "What the guard does when it trips. \"stop\" (default) ends the "
+                  "run at that step. \"warn\" reports it, saves a checkpoint there and "
+                  "lets training continue to max_steps -- for a bounded run whose PURPOSE "
+                  "is to measure the collapse curve, where stopping at the trip step "
+                  "destroys the very data being collected and leaves any fixed downstream "
+                  "checkpoint ladder naming steps that never happened. Either way the trip "
+                  "step is printed and a checkpoint exists at it."},
+    )
     uld_hybrid_sampled_opd_weight: float = field(
         default=0.0,
         metadata={"help": "Weight for sampled OPD (REINFORCE-style) loss in hybrid ULD mode. "
@@ -341,6 +392,41 @@ class CustomGOLDConfig(GOLDConfig):
         # Validate clip_alpha
         if not (0.0 <= self.clip_alpha < 1.0):
             raise ValueError("clip_alpha must be in range [0.0, 1.0).")
+
+        # Validate the CE anchor and the collapse guard
+        if self.ce_coef < 0.0:
+            raise ValueError(f"ce_coef must be >= 0.0, got {self.ce_coef}.")
+        if self.ce_coef > 0.0 and self.use_ce_loss:
+            # use_ce_loss REPLACES the divergence with CE, and the anchor ADDS CE to it, so
+            # together they apply CE twice and never compute a divergence at all. Refused
+            # here rather than silently: both keys read as "use cross entropy".
+            raise ValueError(
+                "ce_coef > 0 and use_ce_loss are mutually exclusive: use_ce_loss replaces "
+                "the divergence with cross entropy, ce_coef anchors the divergence with it. "
+                "Set use_ce_loss=False for an anchored distillation run, or ce_coef=0.0 for "
+                "the pure-CE SFT control."
+            )
+        if not (0.0 <= self.entropy_guard_drop_frac < 1.0):
+            raise ValueError(
+                f"entropy_guard_drop_frac must be in range [0.0, 1.0), got "
+                f"{self.entropy_guard_drop_frac}."
+            )
+        if self.entropy_guard_drop_frac > 0.0 and not self.log_student_entropy:
+            # The guard reads the metric log_student_entropy produces. Without it the guard
+            # would never arm, which looks identical to a run that simply never collapsed.
+            raise ValueError(
+                "entropy_guard_drop_frac > 0 requires log_student_entropy=True; the guard "
+                "reads the entropy that flag computes."
+            )
+        if self.entropy_guard_baseline_steps < 1:
+            raise ValueError("entropy_guard_baseline_steps must be >= 1.")
+        if self.entropy_guard_patience < 1:
+            raise ValueError("entropy_guard_patience must be >= 1.")
+        if self.entropy_guard_action not in ("stop", "warn"):
+            raise ValueError(
+                f"entropy_guard_action must be \"stop\" or \"warn\", got "
+                f"{self.entropy_guard_action!r}."
+            )
 
         # Validate hidden loss parameters
         if self.use_hidden_loss and self.hidden_loss_gamma < 0:
