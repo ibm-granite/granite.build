@@ -1,0 +1,172 @@
+# data-designer (SkyPilot) — development
+
+> **Using this step?** See [USAGE.md](USAGE.md) for how to reference and configure
+> `data-designer` in a `build.yaml`. This file covers how the step is *generated, tested,
+> and published*.
+
+A [NeMo Data Designer](https://github.com/NVIDIA-NeMo/DataDesigner) runner for SkyPilot
+clusters. Runs on the **bare launcher node** by default, installing `data-designer` from
+PyPI with `uv` during `setup`. No custom image is built or published. It is modelled on
+the [dpk](../../dpk/skypilot/README.md) step and keeps its shape: Jinja computes only
+*values*, the shell and logic live in bundled `src/` files that are tested directly, the
+required-config guards run in both phases, and the artifact marker is the last thing
+printed.
+
+## Design: dpk with three deltas
+
+| | dpk | data-designer |
+|---|---|---|
+| **What the build names** | one DPK `transform` (module + pip extra derived) | one Data Designer `config` (inline) + the `model_providers` it calls |
+| **Invocation** | `python -m dpk_<t>.runtime` from `dpk_run.sh` | Data Designer's Python API from `src/dd_run.py` |
+| **External dependency** | none | an LLM endpoint, with a credential delivered as a space secret |
+
+**Why the Python API, not `data-designer create`.** The CLI reads providers from
+`$DATA_DESIGNER_HOME/model_providers.yaml`, so a credential would have to be written to
+a file on the node. Some endpoints need a custom header: RITS takes `RITS_API_KEY: <key>`,
+and Data Designer's `extra_headers` are literal strings. `dd_run.py` builds the providers
+in process, resolving `api_key_env` / `extra_headers_from_env` from the environment, so a
+key never reaches disk, the persisted config, or the log.
+
+**How the config reaches the node.** The `config` and `model_providers` travel together
+as base64 JSON in `$GB_DD_SPEC_B64`, which the launcher's `envs` render with the server's
+`json_dumps | b64encode` filters. This avoids YAML and shell quoting, and the Data
+Designer prompts inside are data at that point, never re-rendered. They *are* rendered
+once before that, as part of the step config, which is why USAGE.md asks for
+`{% raw %}` around prompts.
+
+| File | Invoked from | Does |
+|---|---|---|
+| `src/dd_guard.sh` | `setup` and `run` | required fields, enums, counts, marker-safe `output`, unrendered `seed` binding |
+| `src/dd_setup.sh` | `setup` (bare-node only) | the dpk uv install: bootstrap `uv`, shared `UV_CACHE_DIR`, venv, `data-designer==<pin>` |
+| `src/dd_run.py` | `run` (always) | decode spec → resolve credentials → seed-path override → `validate()` → `create()` → row-count check → optional export → metadata + artifact marker |
+
+## Running the tests
+
+The step's tests split the way dpk's do. What lives in this directory is what anyone can
+run, and what `make publish-step` ships. Tests that need IBM infrastructure live in the
+repo's IBM tree and never ship.
+
+| Kind | Where | Runs in | Ships? |
+|---|---|---|---|
+| Unit tests | `test/*.py` here | `make test` (Mode 1) | No: only per-cluster subdirs are copied |
+| Open build tests: no keys, no IBM network | `test/<cluster>/` + `test-data/<cluster>/` here | `make test`, then `test/steps/...` (Mode 2) | **Yes** |
+| IBM-only tests: RITS, BlueVela | `test/integration/ibm/buildrunner/skypilot/...` | IBM suites (`pytest.mark.ibm`) | No |
+
+The open build tests use `local_model` (Ollama on the node), so they need no key, no
+secret and no model endpoint. Only `slurm-ollama` exists so far; kube and aws are next.
+
+### Unit tests (here)
+
+```
+make -C steps/data/data-designer/skypilot test    # uses the repo-root .venv; runs `make space` first
+```
+
+Mode 1 only; no infrastructure and no model endpoint:
+
+- `test_dd_step_render.py` pins what the template computes:
+  - the rendered blocks parse under `bash -n`;
+  - the guard receives identical argv from both phases;
+  - every runner argument arrives intact, quotes included;
+  - `dd_image` switches between installing and the `docker:` image;
+  - `$GB_DD_SPEC_B64` decodes back to the config, with prompts verbatim, and carries `run_config`.
+- `test_dd_guard_sh.py` runs the guard on every refusal and on the passing case.
+- `test_dd_run.py` covers the runner's pure logic:
+  - spec decoding, including `run_config`;
+  - credential resolution, including that no value appears in an error;
+  - the seed-path override;
+  - the `resume: never` refusal;
+  - clearing a changed-config run under `if_possible`;
+  - the `resumed_records` count.
+
+### Open build tests (here)
+
+- **slurm-ollama**: the local Docker SLURM cluster (`make test-setup`, once). A 4-row
+  sampler + `llm-text` generation against `granite4:350m` served on the node by
+  `local_model`, with `model_providers` empty, `min_records: 4` and a jsonl export.
+  - **Setup:** installs data-designer and Ollama (CPU libraries only, via the venv's
+    `zstandard` because these nodes have no `zstd`) and pulls the model.
+  - **Run:** starts the server on `127.0.0.1`, generates through it, and stops it.
+  - **Checked:** the build expects `records_generated: 4` and `resumed_records: 0`.
+  - **Timing:** green on 2026-10-21, 4m39s with a cold cache and 3m04s warm. No Ollama
+    process was left on any node afterwards.
+
+  Run with `GB_ENVIRONMENT=STANDALONE GBTEST_MODE=live make test TEST_DIR=test/slurm-ollama`.
+
+### IBM-only tests (`test/integration/ibm/buildrunner/skypilot/slurm_local/`)
+
+These run against RITS (IBM-internal) on the local Docker SLURM cluster, and are marked
+`pytest.mark.ibm`. Fixtures are under the matching `test-data/...` directory.
+
+| Test | What it proves |
+|---|---|
+| `test_data_designer_runner_rits.py` | `src/dd_run.py` in-process against RITS: header auth, generation, export, marker. No cluster. Fastest check. |
+| `test_data_designer_rits.py` | A 4-row build reaches SUCCESS: install, spec hand-off, space secret → header, live generation, marker. |
+| `test_data_designer_rits_keep.py` | 6 rows into `/shared/data-designer-test/slurm-rits-keep`, which survives teardown. Reads them back: 3 row groups, every `question` non-empty, no key in any file; lineage metadata `records_generated: 6`, `resumed_records: 0`. |
+| `test_data_designer_rits_resume.py` | Two builds: the first cancelled after ≥2 row groups, the second resubmitted. The second must keep those row groups byte-identical and generate only the rest. |
+
+**Before running:**
+
+1. **Cluster:** `make slurm-setup` from the repo root, once.
+2. **Space:** `make -C steps/data/data-designer/skypilot space`. The fixtures resolve the
+   unpublished step from that rendered Space, whose space name is `public` (the
+   `common.mk` default since #513, the same name as `configurations/spaces/local`).
+3. **Secret:** store the RITS key in that space, with `gb secret create RITS_API_KEY
+   --value "$RITS_API_KEY" --space public` (needs a running gbserver). Without
+   gbserver, the file must be the local secret manager's own YAML format under
+   `~/.granite.build/space_secrets/public/`. A hand-written plain JSON file is
+   silently ignored, and the build then fails with "declared secret 'RITS_API_KEY' ...
+   was not found among the 0 available secret(s)".
+4. **Skip gate:** export `RITS_API_KEY`. That only decides whether the tests run; the
+   builds read the space secret.
+
+```
+GB_ENVIRONMENT=STANDALONE GBTEST_MODE=live \
+  .venv/bin/python -m pytest -s test/integration/ibm/buildrunner/skypilot/slurm_local/test_data_designer_rits.py
+```
+
+`test_data_designer_runner_rits.py` imports nothing from gbserver, but needs
+`data-designer`, which is deliberately not in the repo venv: installing it there
+replaces the repo's pinned duckdb, fsspec, pyarrow and opentelemetry. Run it with a
+separate venv: `<venv>/bin/python -m pytest -c /dev/null --noconftest <file>`.
+
+**Cancellation and the resume test.** Cancelling a SkyPilot SLURM build doesn't stop its
+task with the currently pinned SkyPilot fork
+(https://github.com/ibm-granite/granite.build/issues/533). The fix is in
+https://github.com/cmadam/skypilot/pull/5. Until that lands, the resume test also
+`scancel`s the step's SLURM job after requesting cancellation. With
+`GBTEST_DD_BUILD_CANCEL_ONLY=true` it relies on the build cancellation alone, which
+passes only against a SkyPilot carrying the fix. The fix was verified that way on
+2026-10-21: the task step was CANCELLED at the signal, and nothing was written after it.
+
+Measured history: resume was first checked off-cluster against RITS (8 rows,
+`buffer_size: 2`):
+
+1. A `kill -9` after 2 of 4 row groups resumed with "2 of 4 row group(s) already complete
+   … skipping them", and `batch_00000.parquet` was unchanged.
+2. A re-run of the finished dataset was a no-op.
+3. A changed prompt under `always` refused.
+4. A changed prompt under `if_possible` showed that Data Designer starts fresh in a
+   timestamped sibling directory, not in place. `dd_run.clear_stale_output` now corrects
+   that.
+
+### Planned
+
+- **More open build tests**: `kube-ollama` and `aws-ollama` (copies of `slurm-ollama` with
+  another `environment_uri`), then keep-output and resume variants. These ship with the step.
+- **BlueVela**: siblings under `slurm_bluevela/`, once the step is in the gb-test assets
+  repo.
+
+## Known gaps
+
+- **No model-server option yet.** `distill/vllm-server` publishes its URL as a `mem://`
+  binding but only runs on LSF. An optional `model_endpoint` input that overrides a
+  provider's `endpoint` is the intended way in, once there is a non-LSF server to test it
+  against.
+- **Config size.** The spec travels in one environment variable, so a very large inline
+  config (thousands of lines, or a long inline category list) could hit OS argument
+  limits. A `config` file input would lift that.
+- **Mistyped `output`** behaves as in dpk: the marker names an undeclared output, the
+  server logs and ignores it, and the target goes green having registered nothing.
+- **Personas.** Nemotron-Personas samplers download 0.3–4 GB per locale into
+  `DATA_DESIGNER_HOME`, which is per-run here, so they would re-download each run.
+  Nothing caches them yet.
