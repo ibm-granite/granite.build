@@ -109,9 +109,9 @@ outputs:
 
 environment_configs:
   Skypilot:
-    # The LSF topology contract and the SM90 image are both LSF/BlueVela specific.
     subtypes:
       - lsf
+      - slurm
     default_launcher: vllm
     launchers:
       vllm:
@@ -119,10 +119,9 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:0395d28"
+          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:91ea4880"
           resources: {}
           envs:
-            HF_HOME: /opt/hf-cache
             # From the reference launcher, which is the only configuration that has
             # served this model successfully.
             VLLM_ATTENTION_BACKEND: FLASH_ATTN
@@ -140,12 +139,11 @@ environment_configs:
 
             # The image's venv is not on PATH by default; the dispatcher runs this
             # with `bash <file>` (non-login), so this export sticks.
-            export PATH=/stage/.venv/bin:$PATH
-            PYBIN=/stage/.venv/bin/python
+            PYBIN="$(uv python find)"
 
             # Source: baked into the shared GPU image, no clone. Both paths are
             # fixed by steps/distill/gpu/Dockerfile's own COPY/ENV lines.
-            CODE_DIR="/opt/gb-steps-distillation"
+            CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"
             # PYTHONPATH=/opt/gb-steps-distillation/src is already set by the image
             # itself; nothing to export here.
 
@@ -186,7 +184,7 @@ environment_configs:
             # ZeroMQ refuses anything over 107 — the reference launcher measured a
             # default TMPDIR yielding 111, failing AFTER the engine had started
             # loading. Keep this short and per-job.
-            export VLLM_RPC_BASE_PATH="/tmp/vllm-${USER:-gb}-${LSB_JOBID:-nojob}"
+            export VLLM_RPC_BASE_PATH="/tmp/vllm-${USER:-gb}-${SKYPILOT_INTERNAL_JOB_ID:-nojob}"
             export TMPDIR="$VLLM_RPC_BASE_PATH"
             mkdir -p "$VLLM_RPC_BASE_PATH"
 

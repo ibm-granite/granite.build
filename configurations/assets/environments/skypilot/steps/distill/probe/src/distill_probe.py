@@ -27,7 +27,7 @@ produces anything: the answer is a `PROBE VERDICT` line in the log.
                  the SFT stage most likely went through AutoTokenizer (the as-is one). One
                  number, two GPU-minutes instead of 27 eval jobs.
 
-Was three inline `command` targets in recipes/granite4-350m/lsf/distill-probe. torch and
+Was three inline `command` targets in the original LSF recipe. torch and
 transformers are imported inside each probe, so the module imports without them.
 
 Usage: distill_probe.py <probe> --checkpoint <hf_dir> [--corpus <jsonl>] [--rows N]

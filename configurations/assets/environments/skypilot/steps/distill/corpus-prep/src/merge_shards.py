@@ -1,8 +1,6 @@
 #
 # PORTED, not authored here. Upstream source of truth:
-#   repo   github.ibm.com/Herbert-Woisetschlaeger/gb-steps-collection-post-training
 #   path   steps/distill-corpus-prep/src/merge_shards.py
-#   commit 70c1550a171aa8e09a9ad9047a5bf763c39e8579
 #
 # Verbatim apart from `black`/`isort` reflow, which CI requires repo-wide. Keep it that
 # way so re-syncing upstream stays a three-way merge; behaviour changes belong upstream.

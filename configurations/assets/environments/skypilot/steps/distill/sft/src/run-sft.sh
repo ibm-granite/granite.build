@@ -1,9 +1,7 @@
 #!/bin/bash
 #
 # PORTED, not authored here. Upstream source of truth:
-#   repo   github.ibm.com/Herbert-Woisetschlaeger/gb-steps-collection-post-training
 #   path   steps/distill-sft/src/run-sft.sh
-#   commit 70c1550a171aa8e09a9ad9047a5bf763c39e8579
 #
 # Verbatim apart from `black`/`isort` reflow where the file is Python, which CI requires
 # repo-wide. Keep it that way so re-syncing upstream stays a three-way merge; behaviour
@@ -57,7 +55,6 @@ fi
 if [[ -z "${LIB_DIR:-}" ]]; then
   LIB_DIR="$(first_dir \
     "$STEP_HOME/lib" \
-    "${CHECKOUT_ROOT:-/nonexistent}/scripts/bluevela/lib" \
   )" || LIB_DIR="$STEP_HOME/lib"
 fi
 # THE PACKAGE ROOT, and it is load-bearing twice over. render_sft_config.py imports
@@ -66,7 +63,7 @@ fi
 # gb_steps_post_training.distillation at MODULE scope. sft.py is launched FLAT (`cd $SFT_SRC`;
 # `accelerate launch sft.py`), which puts the flat directory on sys.path and the package root
 # nowhere -- so without this every rank dies during import, before argv is parsed. That is jobs
-# 1162604 and 1162625 on the BlueVela path: 49 s of allocation each, zero optimizer steps.
+# two real jobs: 49 s of allocation each, zero optimizer steps.
 # checks/import-layout.sh asserts this line against the real import graph.
 SFT_PKG_ROOT="$(cd -- "$SFT_SRC/../.." 2>/dev/null && pwd || echo "")"
 [[ -n "$SFT_PKG_ROOT" ]] && export PYTHONPATH="$SFT_PKG_ROOT${PYTHONPATH:+:$PYTHONPATH}"
@@ -204,7 +201,7 @@ fi
 # not from the `flash_attn` package (absent from the venv, unbuildable here: system CUDA 13.1 vs
 # torch's cu128). transformers resolves flash_attention_2 to kernels-community/flash-attn2 at
 # MODEL-LOAD time, which is offline and after the allocation, so a cold cache is fatal ~30 s in.
-# scripts/bluevela/checks/fa2-alias.sh asserts that repo id by reading it out of transformers
+# the upstream checks asserts that repo id by reading it out of transformers
 # instead of duplicating it here, and asserts it is cached.
 if [[ -f "$LIB_DIR/gold-kernels.sh" ]]; then
   source "$LIB_DIR/gold-kernels.sh"
@@ -319,7 +316,7 @@ if (( NODES > 1 )); then
   # trained at 1/NODES of the declared global batch and report it as the declared one.
   echo "FATAL: nodes=$NODES needs a multi-node rendezvous (main_process_ip/port and a" >&2
   echo "       machine_rank per host) that this step is not handed. Use nodes=1 here, or run" >&2
-  echo "       it inside an LSF allocation where LSB_HOSTS supplies the host list. Tracked" >&2
+  echo "       it inside a scheduler allocation that supplies the host list. Tracked" >&2
   echo "       as D3 -- see distill-gold-train/src/run-gold.sh for the full statement." >&2
   exit 1
 fi

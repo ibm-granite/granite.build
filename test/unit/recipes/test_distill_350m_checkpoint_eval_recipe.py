@@ -46,7 +46,7 @@ import subprocess
 
 import pytest
 import yaml
-from unit.recipes.published_step import render_run
+from unit.recipes.published_step import image_env, render_run
 
 from gbcli.services.service_build import get_params_from_file
 from gbcli.utils.buildutil import apply_parameters
@@ -543,7 +543,7 @@ def test_gen_smoke_hands_the_interpreter_every_rung(built, tmp_path):
     script, step_dir = render_run(
         "distill/gen-smoke",
         _config(built, "gen-smoke"),
-        gen_smoke_config={"python": str(stub), "output_dir": str(tmp_path / "gs")},
+        gen_smoke_config={"output_dir": str(tmp_path / "gs")},
     )
 
     result = subprocess.run(
@@ -552,6 +552,7 @@ def test_gen_smoke_hands_the_interpreter_every_rung(built, tmp_path):
         capture_output=True,
         text=True,
         check=False,
+        env=image_env("distill/gen-smoke", tmp_path, python=str(stub)),
     )
 
     assert result.returncode == 0, result.stderr

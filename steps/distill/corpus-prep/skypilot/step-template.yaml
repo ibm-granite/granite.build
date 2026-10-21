@@ -125,7 +125,7 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-cpu:6fb1236"
+          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-cpu:91ea4880"
           # No GPU: this renders and counts tokens on CPU.
           resources: {}
           envs:

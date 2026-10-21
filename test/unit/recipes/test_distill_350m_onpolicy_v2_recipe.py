@@ -41,7 +41,7 @@ import subprocess
 
 import pytest
 import yaml
-from unit.recipes.published_step import render_run
+from unit.recipes.published_step import image_env, render_run
 
 from gbcli.services.service_build import get_params_from_file
 from gbcli.utils.buildutil import apply_parameters
@@ -388,17 +388,21 @@ class TestGenSmoke:
         script, step_dir = render_run(
             "distill/gen-smoke",
             _config(rendered, "gen-smoke"),
-            gen_smoke_config={"python": str(stub)},
+            gen_smoke_config={},
         )
 
         result = subprocess.run(
-            ["bash", "-c", script], cwd=step_dir, text=True, capture_output=True
+            ["bash", "-c", script],
+            cwd=step_dir,
+            text=True,
+            capture_output=True,
+            env=image_env("distill/gen-smoke", tmp_path, python=str(stub)),
         )
 
         assert result.returncode == 0, result.stderr
         argv = json.loads(argv_log.read_text(encoding="utf-8"))
         rungs = _params()["CKPT_LADDER"].split(",")
-        assert argv[0] == "./src/gen_smoke.py", f"interpreter got {argv}"
+        assert argv[0] == str(tmp_path / "distill-home/steps/gen-smoke/gen_smoke.py"), f"interpreter got {argv}"
         assert len(argv) == 5 + len(rungs), f"interpreter got {argv}"
         assert argv[4] == "true", "the on-policy arm gates on its final rung"
         for rung, got in zip(rungs, argv[5:]):

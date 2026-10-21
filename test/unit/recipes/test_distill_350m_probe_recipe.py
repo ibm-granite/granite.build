@@ -32,7 +32,7 @@ import subprocess
 
 import pytest
 import yaml
-from unit.recipes.published_step import render_run
+from unit.recipes.published_step import image_env, render_run
 
 _BUILD = (
     pathlib.Path(__file__).resolve().parents[3]
@@ -118,16 +118,20 @@ def test_each_target_asks_its_own_probe_of_the_same_checkpoint(build, name, tmp_
     script, step_dir = render_run(
         "distill/probe",
         _step(build, name)["config"],
-        probe_config={"python": str(stub)},
+        probe_config={},
     )
 
     result = subprocess.run(
-        ["bash", "-c", script], cwd=step_dir, text=True, capture_output=True
+        ["bash", "-c", script],
+        cwd=step_dir,
+        text=True,
+        capture_output=True,
+        env=image_env("distill/probe", tmp_path, python=str(stub)),
     )
 
     assert result.returncode == 0, result.stderr
     argv = json.loads(argv_log.read_text(encoding="utf-8"))
-    assert argv[:4] == ["./src/distill_probe.py", name, "--checkpoint", _CHECKPOINT]
+    assert argv[:4] == [str(tmp_path / "distill-home/steps/probe/distill_probe.py"), name, "--checkpoint", _CHECKPOINT]
     if name == "tokenizer-fit":
         assert argv[4:] == [
             "--corpus",

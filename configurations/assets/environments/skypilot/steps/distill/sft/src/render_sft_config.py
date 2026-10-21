@@ -1,8 +1,6 @@
 #
 # PORTED, not authored here. Upstream source of truth:
-#   repo   github.ibm.com/Herbert-Woisetschlaeger/gb-steps-collection-post-training
 #   path   steps/distill-sft/src/render_sft_config.py
-#   commit 70c1550a171aa8e09a9ad9047a5bf763c39e8579
 #
 # Verbatim apart from `black`/`isort` reflow where the file is Python, which CI requires
 # repo-wide. Keep it that way so re-syncing upstream stays a three-way merge; behaviour
@@ -96,7 +94,7 @@ def _has_generation_markers(student_path: Path) -> bool | None:
 
     Only a textual test, on purpose. Whether the fallback marker actually OCCURS in a render is
     a question about a tokenizer and a corpus, which is what
-    gb_steps_post_training.distillation.masking and scripts/bluevela/checks/collator-masking.py
+    gb_steps_post_training.distillation.masking and the upstream checks
     answer; duplicating a weaker version of that here would produce a second, disagreeing
     authority on the one question this recipe has already got wrong once.
     """
@@ -389,7 +387,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--deepspeed-config", required=True)
     # BooleanOptionalAction is the house rule: the step template renders a --flag/--no-flag PAIR
     # because jinja writes a YAML boolean with PYTHON casing, so `--flag {{ x }}` reaches the
-    # script as the literal string "False" and silently does nothing (LSF job 1138651).
+    # script as the literal string "False" and silently does nothing.
     p.add_argument(
         "--use-liger-memory-opt", action=argparse.BooleanOptionalAction, default=False
     )

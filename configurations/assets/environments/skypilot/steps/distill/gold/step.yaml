@@ -377,18 +377,12 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:0395d28"
+          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:91ea4880"
           # Node count and accelerators come from the build.yaml
           # (compute_config.num_nodes and launcher_config.resources) so one step
           # serves the smoke and reference runs.
           resources: {}
-          # Ships the config renderer. A relative dest lands under
-          # $GB_BUILD_WORKDIR, which on BlueVela is on /proj — identity-mounted
-          # into the container at the same path and exempt from symlink-wrapping.
-          file_mounts:
-            src: src
           envs:
-            HF_HOME: /opt/hf-cache
             TORCH_NCCL_ENABLE_MONITORING: '{{ "1" if config.gold_config.nccl_enable_monitoring else "0" }}'
             TORCH_NCCL_TIMEOUT_MS: "{{ config.gold_config.nccl_timeout_ms }}"
             NCCL_TIMEOUT: "{{ config.gold_config.nccl_timeout_ms }}"
@@ -423,9 +417,8 @@ environment_configs:
             # not cloned/synced at job-launch time -- see the "Source delivery" comment
             # above config: for why. Both paths are fixed by that Dockerfile's own
             # COPY/ENV lines; nothing here resolves them dynamically.
-            CODE_DIR="/opt/gb-steps-distillation"
-            PYBIN="/stage/.venv/bin/python"
-            export PATH="/stage/.venv/bin:${PATH}"
+            PYBIN="$(uv python find)"
+            CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"
             # PYTHONPATH=/opt/gb-steps-distillation/src is already set by the image
             # itself (ENV PYTHONPATH in steps/distill/gpu/Dockerfile); nothing to export
             # here.
@@ -462,7 +455,7 @@ environment_configs:
             # mmlsattr calls), because a rank-0-only check that refused would leave the
             # other ranks waiting on a rendezvous that is never coming.
             {% if config.gold_config.check_weight_residency %}
-            "$PYBIN" ./src/check_weight_residency.py \
+            "$PYBIN" "$DISTILL_HOME/steps/gold/check_weight_residency.py" \
               {% if config.gold_config.allow_offline_weights %}--allow-offline{% endif %} \
               "student={{ bindings.student.binding.path }}" \
               "teacher={{ bindings.teacher.binding.path }}"
@@ -621,7 +614,7 @@ environment_configs:
               # 4c758672, A1: a 250-step ladder on c2000's 1000). Rewrite both in the
               # checkpoint the trainer resumes from. Single-quoted so an unsubstituted
               # value reaches its FATAL message instead of tripping `set -u`.
-              "$PYBIN" ./src/align_resume_state.py --checkpoint "$RESUME_CKPT" \
+              "$PYBIN" "$DISTILL_HOME/steps/gold/align_resume_state.py" --checkpoint "$RESUME_CKPT" \
                 --save-steps '{{ config.gold_config.save_steps }}' \
                 --logging-steps '{{ config.gold_config.logging_steps }}'
               echo "distill-gold: resume: $RESUME_COUNT checkpoint(s) seeded; the trainer resumes from $RESUME_NAME"
@@ -760,7 +753,7 @@ environment_configs:
             # Rendered per node (each has its own container filesystem) but into
             # a shared path, so the content must be identical on every node — it
             # is, since every input is a build parameter except the node count.
-            "$PYBIN" ./src/render_gold_config.py \
+            "$PYBIN" "$DISTILL_HOME/steps/gold/render_gold_config.py" \
               --output "$CFG" \
               --total-nodes "$NODES" \
               --model-name-or-path "{{ bindings.student.binding.path }}" \

@@ -119,7 +119,7 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:0395d28"
+          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:91ea4880"
           resources: {}
           envs:
             # From the reference launcher, which is the only configuration that has

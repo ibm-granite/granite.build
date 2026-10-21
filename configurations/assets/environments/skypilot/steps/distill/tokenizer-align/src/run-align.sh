@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 #
 # PORTED, not authored here. Upstream source of truth:
-#   repo   github.ibm.com/Herbert-Woisetschlaeger/gb-steps-collection-post-training
 #   path   steps/distill-tokenizer-align/src/run-align.sh
-#   commit 70c1550a171aa8e09a9ad9047a5bf763c39e8579
 #
 # The ONLY intentional divergence from upstream is the artifact marker prefix:
 # LLMB_ARTIFACT_* -> GB_ARTIFACT_*. granite.build's shipped monitor accepts both
@@ -19,7 +17,7 @@
 # THE THREE STAGES ARE INDEPENDENT, and an earlier version of this header claimed
 # otherwise. It said the order was load-bearing because the retag had to read the teacher's
 # tokenizer from the overlay rather than from the teacher directory. That was wrong, and
-# executing the rendered step command (LSF job 1137372) proved it: stage 3 died on a
+# executing the rendered step command proved it: stage 3 died on a
 # missing config.json, because an overlay is a tokenizer and retag_student needs a MODEL --
 # vocab_size and the bos/eos/pad id scheme live in config.json and nowhere else.
 #
@@ -57,9 +55,9 @@
 # model's own likelihood prefers the imposed plain ByteLevel by 17.0-19.8% of TOTAL NLL
 # over 512 documents (jobs 1857118, 1857242), so the pin ALONE turned a working directory
 # into one that cost an 8-GPU arm at 0/24 steps. Such a teacher needs the pin PLUS a
-# pre_tokenizer transplant (scripts/bluevela/build-model-mirror.py --pre-tokenizer-from),
+# pre_tokenizer transplant (the upstream tooling),
 # and which rule it was trained with is a MEASUREMENT, not a reading of its files:
-# scripts/bluevela/compare-tokenizer-nll.py, ranked on TOTAL NLL and never PPL/token --
+# the upstream tooling, ranked on TOTAL NLL and never PPL/token --
 # two pre-split rules emit different token counts, so a per-token mean is not comparable
 # across them, and the older 26.1-vs-3.29 band does not transfer because that was a slow
 # class rebuilding the MERGES.
@@ -287,7 +285,7 @@ echo "--- [1/4] teacher overlay -> ${TEACHER_OVERLAY}"
   --copy-mode "$COPY_MODE" "$(verify_flag)" "$(chatml_flag)"
 
 # The student overlay is NOT consumed by the retag. It exists because the plan's coupling
-# note is real and now measured (LSF job 1136957): the teacher's tokenizer.json carries a
+# note is real and now measured: the teacher's tokenizer.json carries a
 # plain ByteLevel pre_tokenizer while the student's carries Sequence[Split(regex),ByteLevel],
 # so the SAME TEXT segments differently, and corpus-prep needs a trustworthy student
 # tokenizer to compare against when it asserts one-tokenizer-per-run.

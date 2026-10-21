@@ -27,7 +27,6 @@ config:
     gate_final_rung: true
     # Where repetition.json is written. A relative path lands under GB_BUILD_WORKDIR.
     output_dir: "gen-smoke"
-    python: "/stage/.venv/bin/python"
 
 # No named inputs, by design: gen_smoke_config.rungs is a variable-length list, one
 # entry per exported checkpoint, so there is no fixed set of input names to declare.
@@ -45,6 +44,7 @@ environment_configs:
   Skypilot:
     subtypes:
       - lsf
+      - slurm
     default_launcher: gen_smoke
     launchers:
       gen_smoke:
@@ -52,15 +52,12 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:0395d28"
+          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:91ea4880"
           # Cloud-agnostic: the build supplies the GPU, cpus and memory via
           # config.compute_config and config.launcher_config.resources.
           resources: {}
-          file_mounts:
-            src: src
           envs:
             HF_HUB_OFFLINE: "1"
-            HF_HOME: /opt/hf-cache
           # The rungs go into an array, one append per entry, and NOT into a
           # backslash-continued argument list. Jinja block tags are not trimmed here, so
           # every one of them leaves a blank line where it stood, and a blank line after
@@ -80,7 +77,7 @@ environment_configs:
             {% for rung in config.gen_smoke_config.rungs %}
             RUNGS+=("{{ rung }}")
             {% endfor %}
-            "{{ config.gen_smoke_config.python }}" ./src/gen_smoke.py \
+            "$(uv python find)" "$DISTILL_HOME/steps/gen-smoke/gen_smoke.py" \
               "$OUT_DIR/repetition.json" \
               "{{ config.gen_smoke_config.max_repetition }}" \
               "{{ config.gen_smoke_config.new_tokens }}" \
