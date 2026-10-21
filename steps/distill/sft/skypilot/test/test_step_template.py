@@ -245,7 +245,7 @@ class TestDeepspeedConfig:
             'export SFT_SRC="$CODE_DIR/src/gb_steps_post_training/distillation"'
             in run_script
         )
-        assert 'export LIB_DIR="$DISTILL_HOME/lib"' in run_script
+        assert 'export LIB_DIR="$DISTILL_HOME/shell"' in run_script
 
     def test_checkout_root_is_not_used_because_the_script_overwrites_it(
         self, run_script, sft_sh

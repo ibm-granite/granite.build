@@ -292,7 +292,7 @@ environment_configs:
             # which the script derives as $SFT_SRC/../.. — the package ROOT, whose absence
             # killed two upstream jobs at import time.
             export SFT_SRC="$CODE_DIR/src/gb_steps_post_training/distillation"
-            export LIB_DIR="$DISTILL_HOME/lib"
+            export LIB_DIR="$DISTILL_HOME/shell"
 
             # Weights on tape read back at recall speed, inside the allocation. Metadata
             # only; refuses only on an authoritative OFFLINE. Every node runs it, because a
