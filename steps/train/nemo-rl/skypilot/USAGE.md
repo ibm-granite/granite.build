@@ -35,13 +35,15 @@ All fields live under the step's `config.nemo_rl_config`.
 | `algorithm` | string | **yes** | Selects `examples/run_<algorithm>.py` in the image (`sft`, `dpo`, `grpo`, `ppo`, `rm`, …). |
 | `config_name` | string | **yes** | A named YAML under `examples/configs/`, e.g. `sft.yaml`. Decoupled from `algorithm` on purpose — `run_grpo.py` has several configs (`grpo_math_1B.yaml`, …), so the step cannot derive one from the other. |
 | `output` | string | **yes** | Name of a declared target `outputs:` entry (type `model`). Used as the registered artifact's ID. |
+| `output_path` | string | no | Where the converted HF model is written and registered from. Defaults to `./hf_output` in the step's working directory, which is removed when the target finishes. **Set it when another target reads the model** — on shared storage, matching the output's `uri`. See [When a downstream target reads the model](#when-a-downstream-target-reads-the-model). |
 | `overrides` | map | no | Hydra overrides, rendered after `--` as `key=value`, one argv word each. Values are shell-quoted and reach Hydra byte-for-byte; booleans render lowercased (`true`/`false`); `null` omits the key. Default `{}`. |
 | `image_id` | string | no | NGC image to run in. Default is the pinned `nemo-rl` **release** image (bundles source + prefetched venvs). The step adds SkyPilot's `docker:` scheme marker. |
 | `nemo_rl_root` | string | no | Where the bundled NeMo-RL source lives in the image. Default `/opt/nemo-rl`. `uv` runs with its cwd here so it resolves the prefetched project environment. |
 | `dataset_override_key` | string | no | The Hydra key a **bound** `dataset`'s path is injected under (e.g. `data.train.input_file`). Required *if and only if* you bind a `dataset` — NeMo-RL data configs have no single universal path field, so you name it. Leave empty to use the config's built-in dataset. |
 | `clearml_enabled` | string | no | `auto` (default — on iff `CLEARML_*` server creds are present), `true` (force on), or `false` (hard off: `clearml` is never imported). |
 | `clearml_project` / `clearml_task_name` | string | no | ClearML grouping. Only used when ClearML is enabled. |
-| `hf_output_repo` | string | no | Optional push target — the converted HF model is also uploaded here via `hf upload`. |
+| `hf_output_repo` | string | no | Optional push target — the converted HF model is also uploaded here via `hf upload`. Needs a write-capable `HF_TOKEN` in the step env. |
+| `hf_output_private` | bool | no | Create a **missing** `hf_output_repo` private (`true`, default) or public (`false`). The Hub ignores it for a repo that already exists, so an existing public repo stays public. |
 
 ## Inputs
 
@@ -60,10 +62,44 @@ env (a GB space secret).
 ## Output
 
 After training, the step finds the latest checkpoint under `results/<algorithm>/`,
-runs `examples/converters/convert_dcp_to_hf.py` on it, verifies the HF directory is
-non-empty, and only then registers it as the `model` artifact named by `output`. A
-run that fails or produces no checkpoint registers nothing — a half-finished run
-never emits a bogus artifact.
+runs `examples/converters/convert_dcp_to_hf.py` on it into `<output_path>.partial`,
+verifies the result is non-empty, moves it to `output_path`, and only then registers
+it as the `model` artifact named by `output`. A run that fails or produces no
+checkpoint registers nothing — a half-finished run never emits a bogus artifact.
+
+A re-run replaces a previous model at `output_path`. To avoid deleting anything
+else, the step refuses — before training — an `output_path` that is non-empty but
+has no `config.json` at its root (i.e. is not a previous HF model).
+
+### When a downstream target reads the model
+
+The default `output_path` lands in the per-target working directory, which is
+removed when the target finishes. That is fine for a terminal target (and for
+`hf_output_repo`, which pushes before the target ends). If another target binds the
+`model` output — an eval, an `hfpush`, a second RL stage — write it to storage that
+outlives the target:
+
+```yaml
+      outputs:
+        model:
+          uri: "env:///shared/models/sft-run1"
+          type: model
+      steps:
+        - step_uri: space://steps/train/nemo-rl
+          config:
+            nemo_rl_config:
+              output: model
+              output_path: /shared/models/sft-run1   # must match the uri above
+```
+
+| Endpoint | Output URI for a handoff | `output_path` |
+|---|---|---|
+| `skypilot/slurm`, `skypilot/lsf` | `env:///<shared path>` (e.g. under `/proj` on `ibm-bluevela`) | explicit, matching the `uri` |
+| `skypilot/aws` | `s3://bucket/…` (the S3 assetstore pushes it; the consumer pulls it) | may be left default |
+
+Make the path unique per run (e.g. a `$${PARAM}` or
+`{{ run_metadata.targetsteprun_id | short_hash }}` suffix): a re-run of the same
+path replaces the earlier model.
 
 ## ClearML tracking (optional, server-agnostic)
 

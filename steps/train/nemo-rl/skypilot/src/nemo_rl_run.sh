@@ -16,10 +16,18 @@
 #   nemo_rl_run.sh --algorithm <a> --config-name <c> --nemo-rl-root <root> \
 #                  --base-model <path> [--dataset <path> --dataset-key <key>] \
 #                  [--num-gpus-per-node <n>] \
-#                  --artifact-id <id> --clearml-mode <auto|on|off> \
+#                  --artifact-id <id> --output-path <dir> \
+#                  --clearml-mode <auto|on|off> \
 #                  [--clearml-project <p>] [--clearml-task <t>] \
-#                  [--hf-output-repo <repo>] [--] [hydra overrides...]
+#                  [--hf-output-repo <repo> [--hf-output-private <true|false>]] \
+#                  [--] [hydra overrides...]
 #
+#   --hf-output-private  create a MISSING Hub repo private (default true; `hf
+#                 upload` would otherwise create it public). Ignored by the Hub
+#                 for a repo that already exists.
+#   --output-path where the converted HF model is written and registered from.
+#                 May be relative (to the step's working dir). Replaced on a
+#                 re-run, so it must be absent, empty, or a previous HF model.
 #   --            everything after it is a Hydra override passed to the driver
 #                 verbatim, one argv word each.
 set -euo pipefail
@@ -32,10 +40,12 @@ dataset=""
 dataset_key=""
 num_gpus_per_node=""
 artifact_id=""
+output_path=""
 clearml_mode=""
 clearml_project=""
 clearml_task=""
 hf_output_repo=""
+hf_output_private="true"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -47,10 +57,12 @@ while [ "$#" -gt 0 ]; do
     --dataset-key)     dataset_key="$2";     shift 2 ;;
     --num-gpus-per-node) num_gpus_per_node="$2"; shift 2 ;;
     --artifact-id)     artifact_id="$2";     shift 2 ;;
+    --output-path)     output_path="$2";     shift 2 ;;
     --clearml-mode)    clearml_mode="$2";    shift 2 ;;
     --clearml-project) clearml_project="$2"; shift 2 ;;
     --clearml-task)    clearml_task="$2";    shift 2 ;;
     --hf-output-repo)  hf_output_repo="$2";  shift 2 ;;
+    --hf-output-private) hf_output_private="$2"; shift 2 ;;
     --)                shift; break ;;
     *)                 break ;;
   esac
@@ -62,7 +74,14 @@ done
 : "${nemo_rl_root:?--nemo-rl-root is required}"
 : "${base_model:?--base-model is required}"
 : "${artifact_id:?--artifact-id is required}"
+: "${output_path:?--output-path is required}"
 : "${clearml_mode:?--clearml-mode is required}"
+case $hf_output_private in
+  true|false) ;;
+  *)
+    echo "nemo-rl: ERROR --hf-output-private must be true or false, got '${hf_output_private}'" >&2
+    exit 1 ;;
+esac
 
 # MARKER-VALUE GUARD, pre-flight (the guard script checks this too, but this
 # script is the one that prints the marker, so it refuses here as well).
@@ -100,16 +119,39 @@ fi
 results_dir="$(pwd)/results/${algorithm}"
 logs_dir="$(pwd)/logs"
 mkdir -p "$results_dir" "$logs_dir"
+# The HF model goes to output_path, which a build points at shared storage when a
+# downstream target reads it (the per-target workdir is removed at teardown).
+# Absolutized because the marker is consumed off-node. Only the PARENT is created:
 # convert_dcp_to_hf.py raises FileExistsError if --hf-ckpt-path already exists,
-# so hf_output must NOT be pre-created — the converter creates it itself. Its
-# parent (the working dir) already exists, so `$(pwd)/hf_output` is a canonical
-# absolute path without needing to `cd` into the (deliberately absent) leaf.
-hf_dir="$(pwd)/hf_output"
+# so the converter writes a fresh `<output_path>.partial` sibling (same FS, so
+# the final move is a rename) that then replaces output_path. That also makes a
+# re-run of this phase on a warm cluster replace the previous conversion instead
+# of failing on it.
+case $output_path in
+  /*) ;;
+  *) output_path="$(pwd)/${output_path}" ;;
+esac
+output_path="${output_path%/}"
+mkdir -p "$(dirname "$output_path")"
+hf_dir="$(cd "$(dirname "$output_path")" && pwd)/$(basename "$output_path")"
+hf_stage="${hf_dir}.partial"
 case $hf_dir in
   *'"'*)
     echo "nemo-rl: ERROR HF output path contains a double quote: '${hf_dir}'" >&2
     exit 1 ;;
 esac
+# Replacing output_path deletes it, which is only safe when it holds nothing or a
+# previous HF model (a config.json at its root). Refuse anything else up front,
+# before any GPU time, rather than wiping a mistyped directory after training.
+if [ -e "$hf_dir" ] && [ ! -d "$hf_dir" ]; then
+  echo "nemo-rl: ERROR output path ${hf_dir} exists and is not a directory." >&2
+  exit 1
+fi
+if [ -d "$hf_dir" ] && [ -n "$(ls -A "$hf_dir")" ] && [ ! -f "$hf_dir/config.json" ]; then
+  echo "nemo-rl: ERROR output path ${hf_dir} is non-empty and not a previous model output" >&2
+  echo "nemo-rl: (no config.json). Point output_path at a new or empty directory." >&2
+  exit 1
+fi
 
 # --- assemble the Hydra override argv -------------------------------------------
 # Injected first, user overrides ("$@") next, forced tail last. Hydra applies
@@ -141,13 +183,24 @@ overrides+=(
 # exactly what NeMo-RL's own converter CI does for a V2 checkpoint. The key is
 # absent from the resolved config, so it is force-added with Hydra's `++`.
 #
-# This is gated on the config declaring `_v2: true`: for a V1 worker (dpo/rm,
-# where _v2 is false or omitted) lm_policy raises "model_save_format must be
-# None or omitted if using DTensorPolicyWorker (_v2=False)", and V1 already
-# writes DCP natively, so the converter works unchanged there.
-if grep -Eq '^[[:space:]]*_v2:[[:space:]]*true([[:space:]]|$)' "$config"; then
-  overrides+=("++checkpointing.model_save_format=torch_save")
-fi
+# Only for V2: a V1 worker (dpo/rm) raises "model_save_format must be None or
+# omitted if using DTensorPolicyWorker (_v2=False)", and already writes DCP. V2
+# vs V1 is decided on the config the DRIVER will see — `defaults:` inheritance
+# (recipes inherit _v2 from a parent) plus these overrides (a user may set _v2) —
+# by resolving it with NeMo-RL's own loader in the image env. That also rejects
+# a bad override here, before any GPU time, exactly as the driver would.
+probe_out="$(
+  cd "$nemo_rl_root"
+  uv run python "${script_dir}/nemo_rl_v2_probe.py" "$config" "${overrides[@]}"
+)"
+case "$(printf '%s\n' "$probe_out" | tail -n 1)" in
+  NEMO_RL_V2=true)  overrides+=("++checkpointing.model_save_format=torch_save") ;;
+  NEMO_RL_V2=false) ;;
+  *)
+    echo "nemo-rl: ERROR V2 probe gave no answer; output was:" >&2
+    printf '%s\n' "$probe_out" >&2
+    exit 1 ;;
+esac
 # Pin NeMo-RL's cluster view to the node's GPU count. The shipped configs
 # default cluster.gpus_per_node=1 (sft.yaml), so without this a multi-GPU node
 # would still train on one GPU. Forced (after "$@") so it stays locked to the
@@ -209,27 +262,36 @@ if [ -z "$latest" ]; then
 fi
 
 # --- convert the DCP checkpoint to HF format ------------------------------------
+# Into the staging sibling (cleared first: a conversion that died mid-write leaves
+# it behind), then swapped into place only once it is non-empty.
+rm -rf "$hf_stage"
 (
   cd "$nemo_rl_root"
   uv run python "${nemo_rl_root}/examples/converters/convert_dcp_to_hf.py" \
     --config "${latest}/config.yaml" \
     --dcp-ckpt-path "${latest}/policy/weights" \
-    --hf-ckpt-path "$hf_dir"
+    --hf-ckpt-path "$hf_stage"
 )
 
 # A half-finished conversion must never register a bogus artifact.
-if [ -z "$(ls -A "$hf_dir" 2>/dev/null)" ]; then
-  echo "nemo-rl: ERROR HF conversion produced an empty directory: ${hf_dir}" >&2
+if [ -z "$(ls -A "$hf_stage" 2>/dev/null)" ]; then
+  echo "nemo-rl: ERROR HF conversion produced an empty directory: ${hf_stage}" >&2
   exit 1
 fi
+rm -rf "$hf_dir"
+mv "$hf_stage" "$hf_dir"
 
 # --- optional push to the Hub ---------------------------------------------------
 if [ -n "$hf_output_repo" ]; then
+  # `hf upload` creates a missing repo PUBLIC unless --private is passed; trained
+  # weights default to private so a mistyped repo name never publishes them.
+  upload_opts=()
+  if [ "$hf_output_private" = true ]; then upload_opts+=(--private); fi
   (
     cd "$nemo_rl_root"
     # `hf`, not `huggingface-cli`: the image's huggingface_hub removed the old
     # CLI ("deprecated and no longer works"). "." uploads to the repo root.
-    uv run hf upload "$hf_output_repo" "$hf_dir" .
+    uv run hf upload "$hf_output_repo" "$hf_dir" . ${upload_opts[@]+"${upload_opts[@]}"}
   )
 fi
 

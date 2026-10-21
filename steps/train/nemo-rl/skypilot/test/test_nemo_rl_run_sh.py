@@ -38,7 +38,8 @@ def _write_uv_stub(bin_dir: pathlib.Path, uvlog: pathlib.Path) -> None:
     convert_dcp_to_hf.py) it mirrors the real convert_dcp_to_hf.py: it REFUSES a
     --hf-ckpt-path that already exists (the real converter raises FileExistsError
     there), and otherwise creates the dir and drops a file into it so the step's
-    HF-dir non-empty check passes.
+    HF-dir non-empty check passes. For the V2 probe it prints log noise and then
+    the probe's answer line, NEMO_RL_V2=$FAKE_V2 (or fails on FAKE_PROBE_FAIL).
     """
     stub = bin_dir / "uv"
     stub.write_text(
@@ -52,12 +53,19 @@ def _write_uv_stub(bin_dir: pathlib.Path, uvlog: pathlib.Path) -> None:
         '  prev="$a"\n'
         "done\n"
         'case "$*" in\n'
+        "  *nemo_rl_v2_probe.py*)\n"
+        '    if [ -n "${FAKE_PROBE_FAIL:-}" ]; then\n'
+        '      echo "OverridesError: Failed to parse Hydra overrides" >&2\n'
+        "      exit 1\n"
+        "    fi\n"
+        '    echo "INFO:nemo_rl: import noise"\n'
+        '    echo "NEMO_RL_V2=${FAKE_V2:-false}" ;;\n'
         "  *convert_dcp_to_hf.py*)\n"
         '    if [ -e "$hf" ]; then\n'
         '      echo "FileExistsError: HF checkpoint already exists at $hf" >&2\n'
         "      exit 1\n"
         "    fi\n"
-        '    mkdir -p "$hf"; : > "$hf/model.safetensors" ;;\n'
+        '    mkdir -p "$hf"; : > "$hf/model.safetensors"; echo "{}" > "$hf/config.json" ;;\n'
         "esac\n"
     )
     stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
@@ -88,6 +96,7 @@ def _run(
     clearml_mode="off",
     env_extra=None,
     config_body="policy: {}\n",
+    output_path="hf_output",
 ):
     root = _fake_root(tmp_path, algo, config_name, config_body)
     if not make_driver:
@@ -99,6 +108,7 @@ def _run(
     # The run script invokes <its own dir>/clearml_launch.py via uv; a stub file
     # is enough since uv is faked.
     (workdir / "src" / "clearml_launch.py").write_text("# stub\n")
+    (workdir / "src" / "nemo_rl_v2_probe.py").write_text("# stub\n")
     src_run = workdir / "src" / "nemo_rl_run.sh"
     src_run.write_text(_SCRIPT.read_text())
     src_run.chmod(src_run.stat().st_mode | stat.S_IEXEC)
@@ -131,6 +141,8 @@ def _run(
         str(root),
         "--artifact-id",
         "model",
+        "--output-path",
+        output_path,
         "--clearml-mode",
         clearml_mode,
     ] + extra_argv
@@ -251,26 +263,31 @@ class TestArgAssembly:
         assert cfg.endswith("examples/configs/sft.yaml")
 
 
+def _probe_argv(runs):
+    """What the V2 probe received after its script path."""
+    for words in runs:
+        for i, w in enumerate(words):
+            if w.endswith("nemo_rl_v2_probe.py"):
+                return words[i + 1 :]
+    raise AssertionError(f"no V2 probe run found in {runs}")
+
+
 class TestModelSaveFormat:
     # NeMo-RL's V2 DTensor worker (policy.dtensor_cfg._v2: true, the default for
     # sft/grpo_math_1B/ppo_math_1B) defaults model_save_format=safetensors, which
     # writes sharded HF safetensors under weights/model/ with NO DCP .metadata.
     # But the step always runs convert_dcp_to_hf.py, which REQUIRES a .metadata.
-    # So for a V2 config the step must force checkpointing.model_save_format=
+    # So for a V2 run the step must force checkpointing.model_save_format=
     # torch_save (the DCP writer that emits .metadata). For a V1 worker the same
     # override is FORBIDDEN — lm_policy raises "model_save_format must be None or
-    # omitted if using DTensorPolicyWorker (_v2=False)" — so it must be gated on
-    # the config declaring _v2: true. The key is absent from the resolved config,
-    # so it is force-added with Hydra's `++` prefix (plain `key=value` raises in
-    # struct mode).
-    _V2 = "policy:\n  dtensor_cfg:\n    _v2: true\n"
-    _V1_EXPLICIT = "policy:\n  dtensor_cfg:\n    _v2: false\n"
-    _V1_ABSENT = "policy:\n  dtensor_cfg: {}\n"
-    _V2_COMMENTED = "policy:\n  dtensor_cfg:\n    # _v2: true\n    enabled: true\n"
+    # omitted if using DTensorPolicyWorker (_v2=False)". Whether a run is V2 is
+    # decided by nemo_rl_v2_probe.py on the config the driver will see (defaults:
+    # inheritance + the Hydra overrides). The key is absent from the resolved
+    # config, so it is force-added with Hydra's `++` prefix.
 
-    def test_v2_config_forces_torch_save(self, tmp_path):
+    def test_v2_forces_torch_save(self, tmp_path):
         proc, runs, _ = _run(
-            tmp_path, ["--base-model", "/staged/base"], config_body=self._V2
+            tmp_path, ["--base-model", "/staged/base"], env_extra={"FAKE_V2": "true"}
         )
         assert proc.returncode == 0, proc.stderr
         ov = _hydra_overrides(_train_argv(runs))
@@ -280,29 +297,41 @@ class TestModelSaveFormat:
             "logger.wandb_enabled=false"
         )
 
-    def test_v1_explicit_false_omits_model_save_format(self, tmp_path):
+    def test_v1_omits_model_save_format(self, tmp_path):
         proc, runs, _ = _run(
-            tmp_path, ["--base-model", "/staged/base"], config_body=self._V1_EXPLICIT
+            tmp_path, ["--base-model", "/staged/base"], env_extra={"FAKE_V2": "false"}
         )
         assert proc.returncode == 0, proc.stderr
         ov = _hydra_overrides(_train_argv(runs))
         assert not any("model_save_format" in o for o in ov)
 
-    def test_v1_absent_omits_model_save_format(self, tmp_path):
+    def test_probe_sees_the_config_and_the_driver_overrides(self, tmp_path):
+        # A user override of _v2 (or anything else) changes the worker, so the
+        # probe must resolve the same config + overrides the driver gets.
         proc, runs, _ = _run(
-            tmp_path, ["--base-model", "/staged/base"], config_body=self._V1_ABSENT
+            tmp_path,
+            ["--base-model", "/staged/base", "--", "policy.dtensor_cfg._v2=false"],
         )
         assert proc.returncode == 0, proc.stderr
-        ov = _hydra_overrides(_train_argv(runs))
-        assert not any("model_save_format" in o for o in ov)
+        probe = _probe_argv(runs)
+        assert probe[0].endswith("examples/configs/sft.yaml")
+        assert "policy.dtensor_cfg._v2=false" in probe[1:]
+        assert "policy.model_name=/staged/base" in probe[1:]
+        # It is asked BEFORE the gated override exists.
+        assert not any("model_save_format" in w for w in probe)
 
-    def test_commented_v2_is_not_treated_as_v2(self, tmp_path):
+    def test_probe_failure_aborts_before_training(self, tmp_path):
+        # The probe applies the overrides exactly as the driver will, so a bad
+        # override fails here — before any GPU time — and never registers.
         proc, runs, _ = _run(
-            tmp_path, ["--base-model", "/staged/base"], config_body=self._V2_COMMENTED
+            tmp_path,
+            ["--base-model", "/staged/base"],
+            env_extra={"FAKE_PROBE_FAIL": "1"},
         )
-        assert proc.returncode == 0, proc.stderr
-        ov = _hydra_overrides(_train_argv(runs))
-        assert not any("model_save_format" in o for o in ov)
+        assert proc.returncode != 0
+        assert "OverridesError" in proc.stderr
+        assert not any(w.endswith("clearml_launch.py") for r in runs for w in r)
+        assert _marker(proc.stdout) is None
 
 
 class TestClearmlWith:
@@ -411,6 +440,117 @@ class TestConversionAndMarker:
             str(work / "hf_output"),
             ".",
         ]
+
+    def test_push_creates_a_private_repo_by_default(self, tmp_path):
+        # `hf upload` creates a missing repo PUBLIC unless --private is passed, so
+        # a mistyped hf_output_repo would publish trained weights to the world.
+        proc, runs, _ = _run(
+            tmp_path,
+            ["--base-model", "/staged/base", "--hf-output-repo", "org/model"],
+        )
+        assert proc.returncode == 0, proc.stderr
+        up = next(r for r in runs if "upload" in r)
+        assert "--private" in up
+
+    def test_push_public_only_when_asked(self, tmp_path):
+        proc, runs, _ = _run(
+            tmp_path,
+            [
+                "--base-model",
+                "/staged/base",
+                "--hf-output-repo",
+                "org/model",
+                "--hf-output-private",
+                "false",
+            ],
+        )
+        assert proc.returncode == 0, proc.stderr
+        up = next(r for r in runs if "upload" in r)
+        assert "--private" not in up
+
+    def test_rejects_a_non_boolean_hf_output_private(self, tmp_path):
+        proc, runs, _ = _run(
+            tmp_path,
+            [
+                "--base-model",
+                "/staged/base",
+                "--hf-output-repo",
+                "org/model",
+                "--hf-output-private",
+                "maybe",
+            ],
+        )
+        assert proc.returncode != 0
+        assert "hf-output-private" in proc.stderr
+        assert runs == []
+
+    def test_registers_explicit_output_path(self, tmp_path):
+        # A downstream target binds the model by the registered path, so it must
+        # be able to live OUTSIDE the per-target workdir that teardown removes
+        # (e.g. on a shared FS). The converter writes there and the marker names it.
+        shared = tmp_path / "shared" / "models" / "sft"
+        proc, runs, _ = _run(
+            tmp_path, ["--base-model", "/staged/base"], output_path=str(shared)
+        )
+        assert proc.returncode == 0, proc.stderr
+        conv = next(r for r in runs if any("convert_dcp_to_hf.py" in w for w in r))
+        # Staged next to the destination, so the final move is a same-FS rename.
+        assert conv[conv.index("--hf-ckpt-path") + 1] == f"{shared}.partial"
+        assert (shared / "model.safetensors").is_file()
+        assert not (tmp_path / "shared" / "models" / "sft.partial").exists()
+        assert _marker(proc.stdout) == (
+            f"GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:{shared}"
+        )
+
+    def test_relative_output_path_registers_absolute(self, tmp_path):
+        proc, _, work = _run(
+            tmp_path, ["--base-model", "/staged/base"], output_path="out/model"
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert _marker(proc.stdout) == (
+            f"GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:{work / 'out' / 'model'}"
+        )
+
+    def test_rerun_replaces_a_previous_conversion(self, tmp_path):
+        # The run phase can be re-entered on a warm cluster. A finished HF dir
+        # from the earlier attempt must not make the converter raise
+        # FileExistsError: the new conversion replaces it.
+        out = tmp_path / "work" / "hf_output"
+        out.mkdir(parents=True)
+        (out / "stale.bin").write_text("old")
+        (out / "config.json").write_text("{}")
+        proc, _, _ = _run(tmp_path, ["--base-model", "/staged/base"])
+        assert proc.returncode == 0, proc.stderr
+        assert (out / "model.safetensors").is_file()
+        assert not (out / "stale.bin").exists()
+
+    def test_rerun_clears_a_partial_conversion(self, tmp_path):
+        # A conversion that died mid-write leaves <out>.partial behind; it must
+        # not block (FileExistsError) or leak into the next attempt.
+        partial = tmp_path / "work" / "hf_output.partial"
+        partial.mkdir(parents=True)
+        (partial / "half.bin").write_text("x")
+        proc, _, work = _run(tmp_path, ["--base-model", "/staged/base"])
+        assert proc.returncode == 0, proc.stderr
+        assert (work / "hf_output" / "model.safetensors").is_file()
+        assert not (work / "hf_output" / "half.bin").exists()
+        assert not partial.exists()
+
+    def test_refuses_a_nonempty_non_model_output_path_before_training(self, tmp_path):
+        # Replacing output_path is only safe when it holds a previous model. A
+        # typo pointing it at some other non-empty directory must not be wiped,
+        # and must be refused before any GPU time is spent.
+        other = tmp_path / "data"
+        other.mkdir()
+        (other / "precious.txt").write_text("keep me")
+        proc, runs, _ = _run(
+            tmp_path, ["--base-model", "/staged/base"], output_path=str(other)
+        )
+        assert proc.returncode != 0
+        assert "not a previous model output" in proc.stderr
+        assert (other / "precious.txt").read_text() == "keep me"
+        assert runs == []
+        assert _marker(proc.stdout) is None
 
     def test_no_push_without_hf_output_repo(self, tmp_path):
         _, runs, _ = _run(tmp_path, ["--base-model", "/staged/base"])

@@ -19,6 +19,11 @@ config:
     # Name of the declared target output (type model) to register. REQUIRED. Stays
     # a NAME because the artifact marker needs the id, not a path.
     output: ""
+    # Where the converted HF model is written and registered from. Empty =
+    # ./hf_output in the per-target workdir, which teardown removes — so when a
+    # downstream target reads the model, set this to shared storage, matching the
+    # output's env:/// uri (see USAGE.md "When a downstream target reads the model").
+    output_path: ""
     # Public NGC release image: bundles the NeMo-RL source (examples/) and
     # prefetched venvs. Pinned by digest for reproducibility; this is the
     # multi-arch index for the `v0.7.0` release tag. The step adds SkyPilot's
@@ -38,6 +43,9 @@ config:
     clearml_task_name: ""
     # Optional push target for the converted HF model (hf upload).
     hf_output_repo: ""
+    # Create a MISSING hf_output_repo private (true, default) or public (false).
+    # The Hub ignores it for a repo that already exists.
+    hf_output_private: true
   compute_config:
     # Iteration 1 is single-node, multi-GPU only; the guard rejects num_nodes != 1.
     num_nodes: 1
@@ -142,6 +150,7 @@ environment_configs:
               --dataset-key '{{ q(nrl.dataset_override_key) }}' \
               {%- endif %}
               --artifact-id '{{ q(nrl.output) }}' \
+              --output-path '{{ q(nrl.output_path if nrl.output_path else "./hf_output") }}' \
               --clearml-mode '{{ clearml_mode }}' \
               {%- if nrl.clearml_project %}
               --clearml-project '{{ q(nrl.clearml_project) }}' \
@@ -151,6 +160,7 @@ environment_configs:
               {%- endif %}
               {%- if nrl.hf_output_repo %}
               --hf-output-repo '{{ q(nrl.hf_output_repo) }}' \
+              --hf-output-private '{{ "false" if (nrl.hf_output_private | string | lower) in ["false", "off", "0"] else "true" }}' \
               {%- endif %}
               -- {% for k, v in nrl.overrides.items() %}{% if v is not none %}'{{ q(k) }}={{ (v | lower) if (v is sameas true or v is sameas false) else q(v) }}' {% endif %}{% endfor %}
     monitors:

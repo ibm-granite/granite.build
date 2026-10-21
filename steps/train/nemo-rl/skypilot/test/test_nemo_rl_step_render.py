@@ -273,6 +273,17 @@ class TestRunArgv:
         )
         assert _opt(argv, "--num-gpus-per-node") == "4"
 
+    def test_output_path_defaults_to_workdir_hf_output(self, launcher, nrl_defaults):
+        argv = _argv_from(
+            _render(launcher["run"], _cfg(nrl_defaults)), "nemo_rl_run.sh"
+        )
+        assert _opt(argv, "--output-path") == "./hf_output"
+
+    def test_output_path_passes_through(self, launcher, nrl_defaults):
+        cfg = _cfg(nrl_defaults, output_path="/shared/models/it's-sft")
+        argv = _argv_from(_render(launcher["run"], cfg), "nemo_rl_run.sh")
+        assert _opt(argv, "--output-path") == "/shared/models/it's-sft"
+
     def test_overrides_render_as_key_equals_value(self, launcher, nrl_defaults):
         cfg = _cfg(nrl_defaults, overrides={"sft.max_num_steps": 5})
         argv = _argv_from(_render(launcher["run"], cfg), "nemo_rl_run.sh")
@@ -306,6 +317,33 @@ class TestRunArgv:
         assert _opt(argv, "--clearml-project") == "proj"
         assert _opt(argv, "--clearml-task") == "t"
         assert _opt(argv, "--hf-output-repo") == "org/repo"
+
+
+class TestHfOutputPrivate:
+    @pytest.mark.parametrize(
+        "value,want",
+        [
+            (None, "true"),
+            (True, "true"),
+            ("true", "true"),
+            (False, "false"),
+            ("false", "false"),
+        ],
+    )
+    def test_maps_to_run_flag(self, launcher, nrl_defaults, value, want):
+        over = {"hf_output_repo": "org/repo"}
+        if value is not None:
+            over["hf_output_private"] = value
+        argv = _argv_from(
+            _render(launcher["run"], _cfg(nrl_defaults, **over)), "nemo_rl_run.sh"
+        )
+        assert _opt(argv, "--hf-output-private") == want
+
+    def test_omitted_without_a_push(self, launcher, nrl_defaults):
+        argv = _argv_from(
+            _render(launcher["run"], _cfg(nrl_defaults)), "nemo_rl_run.sh"
+        )
+        assert "--hf-output-private" not in argv
 
 
 class TestClearmlMode:

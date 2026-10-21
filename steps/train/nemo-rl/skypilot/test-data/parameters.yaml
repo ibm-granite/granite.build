@@ -13,9 +13,12 @@ ENVIRONMENT: "skypilot/aws"
 BASE_MODEL: "hf:///meta-llama/Llama-3.2-1B"
 
 # --- Output ------------------------------------------------------------------
-# Where the converted HF model is registered. env:/// is cross-node-safe on a
-# shared FS (slurm/lsf); on aws a terminal env:// is registered inline. Use
-# s3://<bucket>/... to persist off-cluster on aws.
+# Where the converted HF model is registered. This exemplar is a single terminal
+# target, so the env:// output is registered inline from the step's default
+# output_path (./hf_output, removed when the target ends). If another target
+# reads the model, see USAGE.md "When a downstream target reads the model": a
+# shared env:/// path plus a matching nemo_rl_config.output_path on slurm/lsf,
+# or s3://<bucket>/... on aws.
 MODEL_URI: "env:///model"
 
 # --- Training ----------------------------------------------------------------

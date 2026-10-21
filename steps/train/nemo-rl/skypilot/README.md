@@ -66,7 +66,8 @@ only entrypoint into the image) so they can pin the exact argv the step emits:
 
 | Test | Pins |
 |---|---|
-| `test_nemo_rl_run_sh.py` | Hydra override order, the V2-only `torch_save` gate, converter argv, `hf upload` argv, and the artifact marker against the shipped monitor's regexes |
+| `test_nemo_rl_run_sh.py` | Hydra override order, the V2-only `torch_save` gate, `output_path` and the staged, re-run-safe conversion, converter argv, `hf upload` argv (private by default), and the artifact marker against the shipped monitor's regexes |
+| `test_nemo_rl_v2_probe.py` | the V2 decision, and that the probe resolves config + overrides through NeMo-RL's own loader |
 | `test_nemo_rl_guard_sh.py` | pre-flight rejections (missing keys, unrendered bindings, bad artifact ids, `num_nodes != 1`) |
 | `test_nemo_rl_step_render.py` | the rendered template: accelerators, image ref (including `.sqsh`), guard/run argv |
 | `test_exemplar_build.py` | every shipped build.yaml (exemplar and both cluster fixtures) against the step contract |
@@ -108,11 +109,17 @@ change that undoes one fails fast instead of on a GPU node.
 - **`torch_save` only for V2 workers.** NeMo-RL's V2 DTensor worker (`_v2: true`, the
   default for SFT/GRPO/PPO) saves sharded HF safetensors with no DCP `.metadata`, and
   `convert_dcp_to_hf.py` requires one. `nemo_rl_run.sh` adds
-  `++checkpointing.model_save_format=torch_save` only when the config declares
-  `_v2: true`; V1 workers (DPO/RM) reject a non-null `model_save_format` and already
-  write DCP. `++` is needed because the key is absent and Hydra runs in struct mode.
-- **Never pre-create the HF output dir.** The converter raises `FileExistsError` if
-  `--hf-ckpt-path` exists, so neither the setup nor the run phase may create it.
+  `++checkpointing.model_save_format=torch_save` only for a V2 run; V1 workers
+  (DPO/RM) reject a non-null `model_save_format` and already write DCP. `++` is
+  needed because the key is absent and Hydra runs in struct mode. V2 vs V1 is
+  decided by `src/nemo_rl_v2_probe.py`, which resolves the config with NeMo-RL's own
+  loader inside the image (`defaults:` inheritance plus the Hydra overrides), because
+  recipe configs inherit `_v2` from a parent and a user may override it. A text grep
+  of the named file misses both.
+- **Convert into a staging dir, then move.** The converter raises `FileExistsError`
+  if `--hf-ckpt-path` exists, so it writes `<output_path>.partial` (cleared first),
+  which replaces `output_path` once non-empty. A re-run of the run phase therefore
+  replaces the previous model instead of failing on it.
 - **`hf upload`, not `huggingface-cli`.** The image's `huggingface_hub` removed the old
   CLI.
 - **wandb off by default.** The shipped configs default `logger.wandb_enabled: true`,
