@@ -16,7 +16,7 @@ gbmcp runs as a **stdio** server: the MCP client (Claude Code, via a project `.m
 Because gbmcp is a separate process, its tools respond even when gbserver is down — manage the backend through tools:
 
 - `gbserver_status()` — is it running **and** reachable?
-- `gbserver_start()` — launch `gbserver standalone` and wait until ready (idempotent). It finds the `gbserver` executable next to the running interpreter (same distribution), so the one-time install (`pip install 'granite.build[standalone]'`, or a checkout's `make standalone-venv`) is the only prerequisite.
+- `gbserver_start()` — launch `gbserver standalone` and wait until ready (idempotent). It finds the `gbserver` executable next to the running interpreter (same distribution), so the one-time install (`pip install 'granite.build[standalone]'`, or a checkout's `make venv`) is the only prerequisite.
 - `gbserver_stop()` — stop it.
 
 ### Lifecycle — a long-lived dev service
@@ -48,7 +48,7 @@ Ensure `gbserver_status()` is `ready`, then poll **`build_status(build_id)`**; d
 - `[project.optional-dependencies]`: `mcp = ["fastmcp>=3.4,<4", "httpx>=0.27"]`. The `standalone` extra pulls `granite.build[mcp]`, so a standalone install includes gbmcp by default.
 - `[project.scripts]`: `gbmcp = "gbmcp.server:main"` (stdio).
 
-Install: `pip install 'granite.build[standalone]'` (Python ≥3.11; the default 3.9 fails on `sqlite_database`), or in a checkout `make standalone-venv PYTHON=python3.13`.
+Install: `pip install 'granite.build[standalone]'` (Python ≥3.11; the default 3.9 fails on `sqlite_database`), or in a checkout `make venv PYTHON=python3.13`.
 
 ## Run
 

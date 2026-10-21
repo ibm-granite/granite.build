@@ -123,7 +123,7 @@ def _local_postgres_skip_reason() -> Optional[str]:
     if not HAS_PSYCOPG:
         return (
             "psycopg (PostgreSQL driver) not installed: install the `thirdparty` "
-            "extra, e.g. `make g4os-skypilot-venv` or `make venv`"
+            "extra, e.g. `make venv` or `make ibm-venv`"
         )
     host = os.getenv("GBSERVER_SQL_HOST", "")
     port = os.getenv("GBSERVER_SQL_PORT", "")

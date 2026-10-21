@@ -93,7 +93,7 @@ git clone https://github.com/ibm-granite/granite.build.git
 cd granite.build
 
 # 2. Create the venv and install (no Artifactory or cloud creds needed)
-make standalone-venv PYTHON=python3.13
+make venv PYTHON=python3.13
 source .venv/bin/activate
 
 # 3. Compile the web dashboard (run once, or after any frontend/ change)
@@ -195,7 +195,7 @@ For the full schema, see [`docs/builds/build-yaml-reference.md`](docs/builds/bui
 | `scripts/` | Helper scripts including the standalone and SLURM demos. |
 | `k8s/` | Helm charts for production Kubernetes deployment. |
 | `.claude/` | Coding-agent config: [`skills/`](.claude/skills/) (Agent Skills a coding agent uses to drive granite.build — see [below](#coding-agent-skills)) and [`commands/`](.claude/commands/) (repo slash commands). |
-| `Makefile` | `make standalone-venv`, `make demo-venv`, `make image`, format/lint targets. |
+| `Makefile` | `make venv` (standalone) / `make ibm-venv`, `make image`, format/lint targets. |
 
 ## Features
 
@@ -410,7 +410,7 @@ Skills teach an agent *how* to work with granite.build; **`gbmcp`** lets it *act
 Setup is zero-config in a checkout. The `standalone` install includes gbmcp, and this repo ships the per-agent config both editors discover automatically when your working directory is inside the repo — [`.mcp.json`](.mcp.json) for **Claude Code** and [`opencode.json`](opencode.json) for **OpenCode**. Just approve/enable it once:
 
 ```bash
-make standalone-venv PYTHON=python3.13     # installs gbmcp + gbserver
+make venv PYTHON=python3.13     # installs gbmcp + gbserver
 # open Claude Code (or OpenCode) in the repo, approve/enable the "gbmcp"
 # server, then ask it to "list my builds" or "run the quickstart build"
 ```
@@ -429,11 +429,11 @@ End-to-end demos with TRL fine-tuning and unitxt evaluation. Each runs locally a
 
 ```bash
 # Standalone Docker — fine-tune + eval in containers on this machine
-make demo-venv PYTHON=python3.13 && source .venv/bin/activate
+make venv PYTHON=python3.13 && source .venv/bin/activate
 bash scripts/demo-standalone.sh
 
 # SLURM via SkyPilot — same workload on a local Docker SLURM cluster, with S3 push
-make g4os-skypilot-venv PYTHON=python3.13 && source .venv/bin/activate
+make venv PYTHON=python3.13 && source .venv/bin/activate
 make s3-setup && make slurm-setup
 bash scripts/demo-slurm.sh
 ```

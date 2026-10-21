@@ -2,7 +2,7 @@
 # End-to-end demo: TRL fine-tuning + unitxt evaluation via SkyPilot on SLURM
 #
 # Quick start:
-#   1. make g4os-skypilot-venv PYTHON=python3.13
+#   1. make venv PYTHON=python3.13
 #   2. source .venv/bin/activate
 #   3. make s3-setup
 #   4. make slurm-setup

@@ -17,7 +17,7 @@ configuration that runs against this cluster, see [skypilot-slurm.md](../skypilo
 ## Prerequisites
 
 - **Docker** or **Podman** with the `compose` plugin
-- **Python 3.11+** with a virtual environment (`make standalone-venv` or `make venv`)
+- **Python 3.11+** with a virtual environment (`make venv`)
 - **SSH client** (for verifying SLURM connectivity)
 - **nvidia-container-toolkit** (optional, for GPU passthrough)
 

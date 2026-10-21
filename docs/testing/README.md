@@ -10,9 +10,11 @@ Tests are driven through the **Makefile** (which wraps `pytest`) and, for build-
 
 | Target | Use |
 |--------|-----|
-| `make venv` | Full/IBM development venv (needs `ARTIFACTORY_USER` / `ARTIFACTORY_API_KEY`). |
-| `make standalone-venv` | Open-source venv — no IBM Artifactory (`SKIP_ARTIFACTORY_CHECK=1`). |
-| `make g4os-skypilot-venv` | Venv used by the quick/extended suites (standalone + third-party + dev). |
+| `make venv` (= `make standalone-venv`) | Standalone venv (`[standalone,thirdparty,dev]`, PyPI only). Used by the quick/extended suites. |
+| `make ibm-venv` | IBM venv (`[all,dev]`); needs `ARTIFACTORY_USER` / `ARTIFACTORY_API_KEY`. Used by the `ibm-*` and `cicd-*` suites. |
+
+Both build into the single `.venv`, so building one replaces the other. The old names
+(`dev-venv`, `cicd-venv`, `demo-venv`, `g4os-skypilot-venv`) are deprecated aliases.
 
 Then `source .venv/bin/activate`. Loading test secrets from IBM Secrets Manager requires
 `GBTEST_SPS_IBMCLOUD_API_KEY` (see [env vars](#test-modes-and-environment-variables)).

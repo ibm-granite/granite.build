@@ -83,7 +83,7 @@ standalone = [
     "granite.build[analytics]",
     # gbmcp (the bundled stdio MCP server) is a standalone feature,
     # so ship it by default — `pip install 'granite.build[standalone]'` and
-    # `make standalone-venv` both get the MCP server with no extra step. The
+    # `make venv` both get the MCP server with no extra step. The
     # only deps beyond the analytics overlap are fastmcp + httpx.
     "granite.build[mcp]",
     # Chat assistant — calls gbmcp's tools on the user's behalf. Ship the

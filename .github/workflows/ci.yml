@@ -32,7 +32,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[standalone,thirdparty,dev]"
+          make venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Check formatting (isort)
         run: isort --profile black --check .
@@ -145,10 +146,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      # make venv builds .venv; put it on PATH so the demo script finds gbserver/gbcli.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[standalone,docker,dev]"
+          make venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       # Same preload as the test job; covers the Dockerfile's FROM image.
       - name: Restore cached Docker images

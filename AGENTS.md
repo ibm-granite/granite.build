@@ -18,8 +18,8 @@ gbserver is the build orchestration server for LLM.Build (Granite.Build). It man
 
 ### Virtual Environment Setup
 ```shell
-# Requires ARTIFACTORY_USER and ARTIFACTORY_API_KEY env vars
-make venv
+make venv        # standalone: [standalone,thirdparty,dev], PyPI only
+make ibm-venv    # IBM: [all,dev]; requires ARTIFACTORY_USER and ARTIFACTORY_API_KEY
 source .venv/bin/activate
 ```
 
@@ -87,7 +87,7 @@ The central registry is `src/gbserver/types/constants.py`. All gbserver env vars
 - `GBSERVER_DEFAULT_BUILDRUNNER_TYPE` — `job` (k8s), `process`, or `thread` (useful for local dev: set to `thread` to avoid needing a cluster)
 - `GBSERVER_METADATA_STORAGE` — Storage backend selection (default: `sql`)
 - `GBTEST_SPS_IBMCLOUD_API_KEY` — IBM Cloud API key for test secret retrieval
-- `ARTIFACTORY_USER` / `ARTIFACTORY_API_KEY` — Required for `make venv` (dmf-lib installation)
+- `ARTIFACTORY_USER` / `ARTIFACTORY_API_KEY` — Required for `make ibm-venv` (dmf-lib installation)
 
 ## Code Style
 

@@ -5,7 +5,10 @@ PIP=$(PYTHON) -m pip
 DOCKER ?= podman
 GB_GH_DOMAIN ?= github.ibm.com
 VENVDIR=.venv
-VENV_INSTALL_TARGET='.[dev]'
+# Defaults for the $(VENVDIR) rule (`make build` and others depend on it directly);
+# standalone-venv / ibm-venv override them.
+VENV_INSTALL_TARGET ?= .[standalone,thirdparty,dev]
+VENV_USE_ARTIFACTORY ?=
 ARTIFACTORY_DESTINATION=https://na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-engineering-team-pypi-local
 # Eventually this number (a percentage over all the code) needs to be bumped up.
 MIN_COVERAGE?=20
@@ -279,12 +282,12 @@ cicd-test:
 
 .PHONY: cicd-pr-test
 cicd-pr-test: 
-	$(MAKE) cicd-venv
+	$(MAKE) ibm-venv
 	$(MAKE) test-pr 
 
 .PHONY: quick-tests-setup
 quick-tests-setup:
-	$(MAKE) g4os-skypilot-venv
+	$(MAKE) standalone-venv
 
 # Setup does not setup slurm, so the skypilot/slurm tests are skipped
 # GBTEST_MODE=mock defaults GBTEST_MOCK_HF=true (see test/libgbtest/mock_env.py), so
@@ -303,7 +306,7 @@ quick-tests:
 # kind cluster for the skypilot/kubernetes tests (either one missing fails setup),
 # plus a best-effort local PostgreSQL.
 extended-tests-setup:
-	$(MAKE) g4os-skypilot-venv
+	$(MAKE) standalone-venv
 	$(MAKE) slurm-setup
 	$(MAKE) kube-setup
 	@# Best-effort: without a container runtime/openssl or a free port, the
@@ -334,7 +337,7 @@ extended-tests: check-image-tag-not-dirty
 
 .PHONY: ibm-quick-tests-setup
 ibm-quick-tests-setup:
-	$(MAKE) venv
+	$(MAKE) ibm-venv
 
 # GBTEST_MODE=mock defaults GBTEST_MOCK_HF=true so HF is never touched (no HF_TOKEN
 # secret on PRs; avoids HF rate-limit flakes).
@@ -349,7 +352,7 @@ ibm-quick-tests: check_ibm_sps_api_key
 
 .PHONY: ibm-extended-tests-setup
 ibm-extended-tests-setup: start-nats
-	$(MAKE) venv
+	$(MAKE) ibm-venv
 
 .PHONY: ibm-extended-tests
 ibm-extended-tests: check_ibm_sps_api_key check-image-tag-not-dirty
@@ -382,7 +385,7 @@ test-pr: check-image-tag-not-dirty
 
 .PHONY: cicd-merge-test
 cicd-merge-test:
-	$(MAKE) cicd-venv
+	$(MAKE) ibm-venv
 	$(MAKE) test-merge 
 
 .PHONY: test-merge
@@ -435,7 +438,7 @@ py-test:
 	# - Default (all tests): make py-test
 	# - Specific test: make py-test ARGS=test/integration/ibm/utils/test_user_spaces_list.py
 	# - Multiple args: make py-test ARGS="test/integration/ibm/api -k test_artifact_get"
-	# $(MAKE) cicd-venv
+	# $(MAKE) ibm-venv
 	source $(VENVDIR)/bin/activate && \
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
@@ -615,7 +618,7 @@ clean::
 
 .check-build-env:
 	@if [ -z "$(SKIP_ARTIFACTORY_CHECK)" ]; then \
-		if [ -z "$(ARTIFACTORY_USER)" ] || [ -z "$(ARTIFACTORY_API_KEY)" ]; then echo "You must set ARTIFACTORY_USER and ARTIFACTORY_API_KEY env vars"; false ; fi; \
+		if [ -z "$$ARTIFACTORY_USER" ] || [ -z "$$ARTIFACTORY_API_KEY" ]; then echo "You must set ARTIFACTORY_USER and ARTIFACTORY_API_KEY env vars"; exit 1 ; fi; \
 		echo "Artifactory checks passed."; \
 	fi
 
@@ -662,7 +665,7 @@ publish:: .check-build-env
 		dist/*
 
 .PHONY: venv
-venv: 	dev-venv
+venv: standalone-venv
 
 # This publishes a bash image for use in build tests in CI/CD 
 publish-test-images-icr:
@@ -683,53 +686,54 @@ publish-icr:
 # (especially with a different Python version) while the server runs, it keeps
 # serving from a now-missing path and fails with
 #   "FileNotFoundError: .../site-packages/sky/__init__.py".
-# Run this BEFORE deleting the venv. Harmless no-op if there is no venv or server.
+# Run this BEFORE deleting the venv. Skipped when the venv (or its sky CLI) does
+# not exist; a no-op when no server is running.
 .PHONY: sky-api-stop
 sky-api-stop:
-	-source $(VENVDIR)/bin/activate 2>/dev/null && sky api stop >/dev/null 2>&1 || true
+	@if [ -f "$(VENVDIR)/bin/activate" ] && [ -x "$(VENVDIR)/bin/sky" ]; then	\
+		echo "Stopping any SkyPilot API server running from $(VENVDIR)";	\
+		source $(VENVDIR)/bin/activate && sky api stop >/dev/null 2>&1 || true;	\
+	fi
 
-.PHONY: dev-venv
-dev-venv: sky-api-stop
-	rm -rf $(VENVDIR)
-	$(MAKE) VENV_INSTALL_TARGET='.[all,dev]' $(VENVDIR)
-
-.PHONY: cicd-venv
-cicd-venv: sky-api-stop
-	rm -rf $(VENVDIR)
-	$(MAKE) VENV_INSTALL_TARGET='.[all,dev]' $(VENVDIR)	# [all,dev] installs all optional deps + test tools
+# Two venv flavors, both built into the single $(VENVDIR) by the $(VENVDIR) rule
+# below (building one replaces the other):
+#   standalone-venv  [standalone,thirdparty,dev] from PyPI only — no IBM Artifactory.
+#                    Runs gbserver/gbmcp and the non-ibm suites (quick/extended tests).
+#   ibm-venv         [all,dev] — adds the IBM-only deps (dmf-lib etc.) from IBM
+#                    Artifactory; needs ARTIFACTORY_USER / ARTIFACTORY_API_KEY.
+# `make venv` builds the standalone flavor.
+STANDALONE_VENV_EXTRAS = .[standalone,thirdparty,dev]
+IBM_VENV_EXTRAS = .[all,dev]
 
 .PHONY: standalone-venv
 standalone-venv: sky-api-stop
 	rm -rf $(VENVDIR)
-	$(MAKE) VENV_INSTALL_TARGET='.[standalone,dev]' SKIP_ARTIFACTORY_CHECK=1 $(VENVDIR)
+	$(MAKE) VENV_INSTALL_TARGET='$(STANDALONE_VENV_EXTRAS)' VENV_USE_ARTIFACTORY= $(VENVDIR)
 
-.PHONY: demo-venv
-demo-venv: sky-api-stop
+.PHONY: ibm-venv
+ibm-venv: sky-api-stop
 	rm -rf $(VENVDIR)
-	$(MAKE) VENV_INSTALL_TARGET='.[standalone,docker,dev]' SKIP_ARTIFACTORY_CHECK=1 $(VENVDIR)
+	$(MAKE) VENV_INSTALL_TARGET='$(IBM_VENV_EXTRAS)' VENV_USE_ARTIFACTORY=1 $(VENVDIR)
 
-.PHONY: g4os-skypilot-venv
-g4os-skypilot-venv: sky-api-stop
-	rm -rf $(VENVDIR)
-	$(PYTHON) -m venv $(VENVDIR)
-	source $(VENVDIR)/bin/activate; \
-	${PIP} install --upgrade pip; \
-	${PIP} install -e '.[standalone,thirdparty,dev]'
+# Deprecated aliases for the targets above; to be removed in a follow-up commit.
+.PHONY: dev-venv cicd-venv demo-venv g4os-skypilot-venv
+dev-venv cicd-venv: ibm-venv
+demo-venv g4os-skypilot-venv: standalone-venv
 
+# Builds $(VENVDIR) from VENV_INSTALL_TARGET (pip extras). VENV_USE_ARTIFACTORY=1
+# checks for and configures the IBM Artifactory index (needed by the [ibm] extras).
 $(VENVDIR): pyproject.toml
-	$(MAKE) .check-build-env
-	-@source $(VENVDIR)/bin/activate 2>/dev/null && sky api stop >/dev/null 2>&1 || true	# stop stale SkyPilot server before rebuild (see sky-api-stop)
+	$(if $(VENV_USE_ARTIFACTORY),$(MAKE) .check-build-env)
+	$(MAKE) sky-api-stop
 	rm -rf $(VENVDIR)
 	$(PYTHON) -m venv $(VENVDIR)
 	echo '[global]' > $(VENVDIR)/pip.conf
-	#echo "extra-index-url = https://$$ARTIFACTORY_USER:$$ARTIFACTORY_API_KEY@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-engineering-team-pypi-local/simple" >> $(VENVDIR)/pip.conf
-	if [ -z "$(SKIP_ARTIFACTORY_CHECK)" ]; then \
+	if [ -n "$(VENV_USE_ARTIFACTORY)" ]; then \
 		echo "extra-index-url = https://$$ARTIFACTORY_USER:$$ARTIFACTORY_API_KEY@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-model-factory-team-pypi-local/simple" >> $(VENVDIR)/pip.conf; \
 	fi
 	source $(VENVDIR)/bin/activate; 	\
 	${PIP} install --upgrade pip;		\
-	${PIP} install -e '$(VENV_INSTALL_TARGET)';	\
-	#${PIP} install pytest pytest-cov pytest-asyncio pytest-xdist coverage # Why are these not in the [dev] part of pyproject.toml
+	${PIP} install -e '$(VENV_INSTALL_TARGET)'
 
 gbcli:
 	source $(VENVDIR)/bin/activate; 	\
