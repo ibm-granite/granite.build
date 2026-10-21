@@ -1,0 +1,178 @@
+# distill — the granite4-350m distillation pipeline, for BlueVela (SkyPilot /
+# SLURM).
+#
+# Same pipeline shape and pair as recipes/granite4-350m/lsf/distill-smoke, as a
+# REUSABLE recipe: the values below start at plumbing scale (64 rows, 2
+# optimizer steps) to validate the shared distillation GPU/CPU images
+# (steps/distill/gpu/, steps/distill/cpu/) and every ported step's image_id
+# default against SLURM's pyxis/enroot container runtime, not just LSF's
+# enroot, and the same build.yaml is meant to scale up to a full experiment
+# later via --param rather than forking a second file. It is the gate for the
+# same three failures the LSF recipe's README documents (align's teacher gate,
+# the teacher's own tokenizer pin, the student's granitemoehybrid
+# architecture) PLUS whatever is genuinely different about SLURM as a
+# provisioner (partition naming, H200 rather than H100 hardware, the pyxis
+# ldconfig gap documented in steps/distill/gpu/README.md).
+#
+# At the scale below, this recipe's subject is the PLUMBING of the chain —
+# align -> corpus -> [train-sft] -> train-gold -> export -> eval-transfer x2 ->
+# eval-bfcl — not the science: nothing it produces at these values is a
+# publishable measurement.
+#
+# Override any value with: gb build start --param KEY=VALUE
+
+# ─── Run identification ───────────────────────────────────────────────
+RUN_NAME: "distill-350m-slurm"
+# The shared root every composed path hangs off. Same /proj/granite-build path
+# as the LSF recipe: granitebuild's identity (see ENVIRONMENT_URI below) is in
+# that group on both the LSF and SLURM provisioners, since both reach the same
+# /proj GPFS mount.
+WORKDIR_ROOT: "/proj/granite-build/g4os/gbtest/distill"
+# One directory per BUILD under that root, same correctness reasoning as the
+# LSF recipe's parameters.yaml: gbserver refuses to register an artifact whose
+# URI another build in the space already registered, and the target that hit
+# that refusal still reports SUCCESS with an empty output list. See that
+# file's comment for the full failure mode (build b5f030cd).
+BUILD_SUBDIR: "{{ run_metadata.build_id }}"
+SEED: 42
+
+# ─── The SFT arm ──────────────────────────────────────────────────────
+# Off by default, same reasoning as the LSF recipe: the shortest path through
+# the pipeline is the one to prove first.
+INCLUDE_SFT: false
+
+# ─── Image and trainer code ───────────────────────────────────────────
+# Every GPU step defaults to the shared GPU image (steps/distill/gpu/) and every
+# CPU step to the shared CPU image (steps/distill/cpu/) -- no per-recipe override
+# needed, and nothing SLURM-specific about that default: the same image works
+# on both provisioners' pyxis/enroot runtimes. The GOLD trainer
+# (gb_steps_post_training.distillation.gold and friends) is baked into the GPU
+# image from steps/distill/src/ (see steps/distill/src/VENDORED.md).
+DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
+
+# ─── The pair, the data, and the chat template ────────────────────────
+# Identical to the LSF recipe's values -- same /proj/granite-build paths,
+# reachable from this environment because it also runs as granitebuild. See
+# recipes/granite4-350m/lsf/distill-smoke/parameters.yaml for the full
+# rationale behind each one (the teacher's pinned-tokenizer copy, the SFT
+# checkpoint choice, the granite-native chat template).
+TEACHER_MODEL_URI: "env:///proj/granite-build/g4os/models/granite-4.1-3b-pinned"
+STUDENT_MODEL_URI: "env:///proj/granite-build/g4os/skypilot-test/sft/checkpoints/v0-20260529-20260529_212150-hf/epoch_hf_2"
+# A small plumbing fixture, not stage 1's real corpus — override with --param
+# DATASET_URI=... to point this recipe at the real training set once it scales
+# past plumbing validation.
+DATASET_URI: "env:///proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_2000_nothink.jsonl"
+CHAT_TEMPLATE_URI: "env:///proj/granite-build/g4os/chat_templates/granite_4_role_generation.jinja"
+REQUIRE_CHATML: false
+THINK_POLICY: "keep"
+
+# ─── The corpus ───────────────────────────────────────────────────────
+# Same scale as the LSF recipe: 64 rows, 48 train / 16 eval. See that recipe's
+# parameters.yaml for why these specific values.
+MAX_EXAMPLES: 64
+EVAL_FRACTION: 0.25
+MAX_LENGTH: 4096
+DATASET_NUM_PROC: 8
+DOCUMENTS_POLICY: "keep"
+
+# ─── GOLD ─────────────────────────────────────────────────────────────
+# Same geometry as the LSF recipe: 2 optimizer steps, enough to produce a
+# checkpoint and a loss trajectory, not enough to mean anything.
+GOLD_MAX_STEPS: 2
+GOLD_NUM_TRAIN_EPOCHS: 1.0
+GOLD_SAVE_STEPS: 1
+GOLD_SAVE_TOTAL_LIMIT: 2
+GOLD_PER_DEVICE_TRAIN_BATCH_SIZE: 1
+GOLD_GRADIENT_ACCUMULATION_STEPS: 1
+GOLD_LEARNING_RATE: "2.0e-06"
+GOLD_MIN_LR: "2.0e-07"
+WARMUP_RATIO: 0.05
+LR_SCHEDULER_TYPE: "cosine_with_min_lr"
+MAX_COMPLETION_LENGTH: 1024
+TEMPERATURE: 1.0
+LMBDA: 0.0
+BETA: 0.5
+USE_LIGER_FUSED_JSD: false
+RESPONSE_TEMPLATE: '<|start_of_role|>assistant<|end_of_role|>'
+
+# ─── The SFT stage (only read when INCLUDE_SFT is on) ─────────────────
+SFT_LEARNING_RATE: "1.0e-05"
+SFT_NUM_TRAIN_EPOCHS: 1
+SFT_PER_DEVICE_TRAIN_BATCH_SIZE: 1
+SFT_GRADIENT_ACCUMULATION_STEPS: 8
+SFT_NUM_GPUS: 1
+
+# ─── Export ───────────────────────────────────────────────────────────
+EXPORT_CHECKPOINT: ""
+CHAT_TEMPLATE_THINKING: "keep"
+
+# ─── The transfer evaluations ─────────────────────────────────────────
+EVAL_METRICS: "jsd,kld,rkld,entropy"
+EVAL_MAX_SAMPLES: 8
+EVAL_BATCH_SIZE: 4
+EVAL_DTYPE: "bfloat16"
+MAX_INCOMPLETE_FRACTION: 0.25
+EVAL_NUM_GPUS: 1
+
+# ─── BFCL ─────────────────────────────────────────────────────────────
+BFCL_TEST_CATEGORIES: "simple"
+BFCL_EVAL_NAME: "bfclv3"
+BFCL_MODEL_ID: "ibm-granite/granite-4"
+BFCL_NUM_GPUS: 1
+BFCL_GPU_MEMORY_UTILIZATION: "0.5"
+
+# ─── Topology and resources ───────────────────────────────────────────
+# Same node/GPU count as the LSF recipe: one node, two GPUs for GOLD, so the
+# distributed path (and the per-rank checkpoint files the export has to
+# tolerate) is exercised rather than skipped.
+GOLD_NUM_NODES: 1
+GOLD_NUM_GPUS: 2
+# HOST memory per node for the GPU targets, same value as the LSF recipe and
+# for the same reason: it has to be stated explicitly on slurm/lsf (the
+# compute_config memory floor is intentionally skipped there — see
+# docs/environments/skypilot-slurm.md), and 256G avoided LSF's TERM_MEMLIMIT
+# at 46.5G on this same pair/scale.
+GPU_MEMORY: 256
+CPU_ONLY_CPUS: 1
+CPU_ONLY_MEMORY: 32
+EXPORT_CPUS: 4
+EXPORT_MEMORY: 64
+CLUSTER: "bluevela"
+# Where every target runs, under granitebuild's SLURM identity (not hew's
+# personal one): granitebuild is in the proj_granite-build group that owns the
+# TEACHER_MODEL_URI/STUDENT_MODEL_URI/DATASET_URI/CHAT_TEMPLATE_URI paths
+# above, which hew's identity cannot reach (see
+# configurations/assets/environments/skypilot/slurm/ibm-bluevela-hew/environment.yaml's
+# header comment). Slower scheduling than hew's personal identity, but no
+# asset relocation needed to reuse the LSF recipe's exact pair/corpus/template.
+ENVIRONMENT_URI: "space://environments/skypilot/slurm/ibm-bluevela"
+# SkyPilot's `zone` is the SLURM partition name for this cloud (--partition).
+# gpu-mid is the environment's own default (H200, confirmed via `sinfo`) and
+# what every target below inherits unless overridden; gpu-low is a real,
+# separate partition on the SAME underlying node pool (confirmed via `sinfo -s`
+# on login1: both list identical NODES/NODELIST), differing only in QOS/
+# priority tier -- pass --param QUEUE=gpu-low to try it instead. gpu-high
+# exists too but is not tested here.
+QUEUE: "gpu-mid"
+
+# ─── NCCL / distributed diagnostics ───────────────────────────────────
+# Single node, so there are no cross-node collectives to diagnose and INFO
+# would only add noise. Same values as the LSF recipe.
+NCCL_DEBUG: ""
+NCCL_DEBUG_SUBSYS: "INIT,NET"
+NCCL_TIMEOUT_MS: 600000
+
+# ─── Retries ──────────────────────────────────────────────────────────
+# Carried over from the LSF recipe as a precaution, not a confirmed SLURM
+# need: no SLURM-specific bad-host fault has been measured yet (the LSF
+# recipe's retry exists for a MEASURED LSF host fault, p2-r03-n1 failing CUDA
+# init). Revisit once a real SLURM host fault is observed on this partition.
+#
+# Set to 0 to make a failure final, which is what you want while debugging a
+# failure of your own rather than the cluster's.
+MAX_RETRIES: 1
+
+# ─── Monitoring ───────────────────────────────────────────────────────
+# Short targets, so poll often enough to follow them.
+POLL_INTERVAL_SECONDS: 30
+LOG_RETRIEVAL_INTERVAL_SECONDS: 30
