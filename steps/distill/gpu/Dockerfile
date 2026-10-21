@@ -74,7 +74,7 @@ ENV PYTHONPATH=/opt/gb-steps-distillation/src
 # exactly where every GPU step's code_config.python/PATH convention already
 # expects it (/stage/.venv), with no separate manual PATH bookkeeping needed
 # here beyond what `uv python install/pin` above already did.
-COPY pyproject.toml uv.lock /opt/gold-train-src/
+COPY gpu/pyproject.toml gpu/uv.lock /opt/gold-train-src/
 WORKDIR /opt/gold-train-src
 ENV UV_PROJECT_ENVIRONMENT=/stage/.venv
 RUN uv sync --locked
@@ -83,6 +83,6 @@ ENV PATH="/stage/.venv/bin:${PATH}"
 # gold's own DeepSpeed ZeRO-3 config, read via $CODE_DIR/steps/distill-gold-train/configs/...
 # (gold's run: script sets CODE_DIR to a baked path under this image; the
 # other GPU steps don't reference this file).
-COPY configs /opt/gb-steps-distillation/steps/distill-gold-train/configs
+COPY gpu/configs /opt/gb-steps-distillation/steps/distill-gold-train/configs
 
 WORKDIR /

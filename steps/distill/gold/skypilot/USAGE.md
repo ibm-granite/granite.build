@@ -126,7 +126,7 @@ On the SLURM subtype, the vLLM-serving branch runs `ldconfig` before starting th
 SLURM's pyxis/enroot builds the container in a separate `srun` from the one that injects
 the NVIDIA driver, so the image's own `/etc/ld.so.cache` misses `libcuda.so` and Triton's
 driver discovery fails with "libcuda.so cannot found!" otherwise. Unconditional and
-harmless where the gap doesn't exist — see `images/cuda-devel-base/README.md`.
+harmless where the gap doesn't exist — see `steps/distill/gpu/README.md`.
 
 | Field | Type | Purpose |
 |---|---|---|

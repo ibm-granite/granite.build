@@ -1099,7 +1099,7 @@ environment_configs:
                 # LD_LIBRARY_PATH) fails with "libcuda.so cannot found!".
                 # Unconditional and harmless where the gap doesn't exist (LSF,
                 # or a cache that's already current) — see
-                # images/cuda-devel-base/README.md.
+                # steps/distill/gpu/README.md.
                 ldconfig 2>/dev/null || true
                 exec "$PYBIN" -m gb_steps_post_training.distillation.run_vllm_serve \
                   --port "${KD_VLLM_API_PORT:-8001}" \
