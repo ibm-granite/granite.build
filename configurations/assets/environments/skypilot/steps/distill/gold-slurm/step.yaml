@@ -486,7 +486,12 @@ environment_configs:
             # pyxis/enroot container GDR device support (gdrdrv/nvidia_peermem) is NOT
             # guaranteed, and a GDR write to an unmapped GPU address hangs the first
             # ZeRO-3 all-gather (NCCL negotiates "GDR 1", connects all rings, then the
-            # first transfer never completes — observed on p3-r01-n1/p3-r03-n2, 2026-10-17)
+            # first transfer never completes — observed on p3-r01-n1/p3-r03-n2, 2026-10-17;
+            # RE-CONFIRMED 2026-10-21 on p1-r26-n2 with GDR on: NCCL logged "GPU Direct RDMA
+            # Enabled for GPU 0-7 / HCA 0-7" and "Connected all rings, use ring PXN 0 GDR 1",
+            # the 30B teacher finished initializing, then the first all-gather wedged — GPUs
+            # pinned 100% util, rank0 log frozen, zero training steps. So the hang is NOT
+            # node-specific; GDR-in-container is broken fleet-wide here. Keep it off.)
             # or surfaces as "CUDA error: illegal memory access". The validated direct
             # run (gbansible/skypilot/kd_distill_bluevela_slurm_2node.yaml) stages through
             # host for exactly this reason. Override with GB_NCCL_GDR_LEVEL to re-enable:
