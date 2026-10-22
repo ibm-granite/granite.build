@@ -1,7 +1,10 @@
 SHELL=/bin/bash
 # Useful commands for building and running
 PYTHON=python3
-PIP=$(PYTHON) -m pip
+# PIP_USER is unset for every pip call: a globally exported PIP_USER=1 (common on
+# rootless hosts) makes pip refuse to install into a venv ("Can not perform a
+# '--user' install"), and every pip call here runs inside $(VENVDIR).
+PIP=env -u PIP_USER $(PYTHON) -m pip
 DOCKER ?= podman
 GB_GH_DOMAIN ?= github.ibm.com
 VENVDIR=.venv
@@ -655,8 +658,8 @@ build-frontend:
 
 .PHONY: build
 build: $(VENVDIR)
-	source $(VENVDIR)/bin/activate;	\
-	${PIP} install --upgrade build;	\
+	source $(VENVDIR)/bin/activate &&	\
+	${PIP} install --upgrade build &&	\
 	${PYTHON} -m build
 
 .PHONY: publish 
@@ -734,10 +737,9 @@ standalone-venv demo-venv g4os-skypilot-venv: venv
 # Builds $(VENVDIR) from VENV_INSTALL_TARGET (pip extras) and records its flavor.
 # VENV_USE_ARTIFACTORY=1 checks for and configures the IBM Artifactory index
 # (needed by the [ibm] extras).
-# The install steps are chained with && so any failure fails the target, and pip
-# runs with PIP_USER unset: a globally exported PIP_USER=1 (common on rootless
-# hosts) makes pip refuse to install into a venv ("Can not perform a '--user'
-# install"). The final check catches an install that quietly left no gbserver.
+# The install steps are chained with && so any failure fails the target (pip runs
+# with PIP_USER unset; see PIP). The final check catches an install that quietly
+# left no gbserver.
 $(VENVDIR): pyproject.toml
 	$(if $(VENV_USE_ARTIFACTORY),$(MAKE) .check-build-env)
 	$(MAKE) sky-api-stop
@@ -748,14 +750,14 @@ $(VENVDIR): pyproject.toml
 		echo "extra-index-url = https://$$ARTIFACTORY_USER:$$ARTIFACTORY_API_KEY@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-model-factory-team-pypi-local/simple" >> $(VENVDIR)/pip.conf; \
 	fi
 	source $(VENVDIR)/bin/activate &&			\
-	env -u PIP_USER ${PIP} install --upgrade pip &&		\
-	env -u PIP_USER ${PIP} install -e '$(VENV_INSTALL_TARGET)'
+	${PIP} install --upgrade pip &&		\
+	${PIP} install -e '$(VENV_INSTALL_TARGET)'
 	@test -x $(VENVDIR)/bin/gbserver ||					\
 		{ echo "venv install failed: $(VENVDIR)/bin/gbserver missing" >&2; exit 1; }
 	echo '$(if $(VENV_USE_ARTIFACTORY),ibm,standalone)' > $(VENV_FLAVOR_FILE)
 
 gbcli:
-	source $(VENVDIR)/bin/activate; 	\
+	source $(VENVDIR)/bin/activate &&	\
 	${PIP} install "gbcli @ git+ssh://git@${GB_GH_DOMAIN}/granite-dot-build/gbcli.git"
 
 .PHONY: image
