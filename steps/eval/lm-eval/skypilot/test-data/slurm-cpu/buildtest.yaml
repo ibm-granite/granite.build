@@ -1,4 +1,4 @@
-# YAML-driven spec for test_skypilot_slurm_lm_eval_cpu.py (located by the test/ <->
+# YAML-driven spec for test_skypilot_slurm_cpu_eval_lm_eval.py (located by the test/ <->
 # test-data/ helper, so this pairing holds in both test modes; see steps/README.md).
 #
 # One target on the local Docker SLURM cluster: aime25 against a tiny hf:// model,
