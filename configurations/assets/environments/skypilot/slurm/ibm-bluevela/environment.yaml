@@ -103,8 +103,8 @@ config:
                 qos: cpu
       # Env-wide #SBATCH defaults, forwarded verbatim to sbatch (keys without the
       # leading --). `account` is granitebuild's own SLURM association
-      # (confirmed via `sacctmgr show associations user=granitebuild`); there is
-      # no `hew` association under this login, since jobs run as granitebuild.
+      # (confirmed via `sacctmgr show associations user=granitebuild`); jobs run as
+      # granitebuild, so that is the association to use.
       #
       # `qos` MUST be grp_granite_dot_build_medium on gpu-mid, not the
       # higher-priority grp_granite_dot_build_high: confirmed by direct sbatch
