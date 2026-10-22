@@ -402,7 +402,9 @@ class TestGenSmoke:
         assert result.returncode == 0, result.stderr
         argv = json.loads(argv_log.read_text(encoding="utf-8"))
         rungs = _params()["CKPT_LADDER"].split(",")
-        assert argv[0] == str(tmp_path / "distill-home/steps/gen-smoke/gen_smoke.py"), f"interpreter got {argv}"
+        assert argv[0] == str(
+            tmp_path / "distill-home/steps/gen-smoke/gen_smoke.py"
+        ), f"interpreter got {argv}"
         assert len(argv) == 5 + len(rungs), f"interpreter got {argv}"
         assert argv[4] == "true", "the on-policy arm gates on its final rung"
         for rung, got in zip(rungs, argv[5:]):

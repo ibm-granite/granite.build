@@ -20,7 +20,8 @@ _DIR = Path(__file__).resolve().parent.parent
 
 def _image_env(tmp_path, step, python=None):
     """Emulate the baked image: DISTILL_HOME/steps/<step> holds this step's scripts, and a
-    `python` first on PATH (the image puts its venv there) is the test's own interpreter."""
+    `python` first on PATH (the image puts its venv there) is the test's own interpreter.
+    """
     home = tmp_path / "distill-home"
     (home / "steps").mkdir(parents=True)
     (home / "steps" / step).symlink_to(_DIR / "src")
@@ -35,6 +36,8 @@ def _image_env(tmp_path, step, python=None):
         "DISTILL_HOME": str(home),
         "PATH": f"{shim}{os.pathsep}{os.environ['PATH']}",
     }
+
+
 _STEP = _DIR / "step-template.yaml"
 
 
@@ -154,6 +157,7 @@ def test_the_retired_tokenizer_dir_key_is_refused(step, launcher, tmp_path):
     )
     assert result.returncode != 0
     assert "pin_check_config.tokenizer_dir is no longer read" in result.stderr
+
 
 def test_the_slurm_executors_stripped_env_is_restored(launcher):
     """The SLURM executor runs tasks under `env -u PYTHONPATH` with no VIRTUAL_ENV, so the

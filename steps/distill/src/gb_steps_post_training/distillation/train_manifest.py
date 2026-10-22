@@ -52,6 +52,7 @@ numbers rather than left for a reader to discover:
 Recording the available set exactly and naming the gap is the honest version. Claiming a
 per-step consumption log this does not have would not be.
 """
+
 from __future__ import annotations
 
 import json
@@ -103,8 +104,15 @@ def _prep_manifest(dataset_path: str | None) -> tuple[dict | None, str | None]:
     return None, None
 
 
-def rows_scheduled(*, max_steps: int, num_train_epochs: float, n_available: int,
-                   world_size: int, per_device_batch: int, grad_accum: int) -> dict[str, Any]:
+def rows_scheduled(
+    *,
+    max_steps: int,
+    num_train_epochs: float,
+    n_available: int,
+    world_size: int,
+    per_device_batch: int,
+    grad_accum: int,
+) -> dict[str, Any]:
     """How many row-visits the schedule asks for, against how many rows exist.
 
     Kept as arithmetic on named inputs rather than read off the trainer, so it is testable
@@ -126,7 +134,9 @@ def rows_scheduled(*, max_steps: int, num_train_epochs: float, n_available: int,
         # Below 1.0 the run does not finish an epoch, so the available set OVERSTATES what was
         # seen and by roughly this factor. Above 1.0 rows repeat. Either way the number is
         # stated rather than implied.
-        "epoch_fraction_scheduled": round(visits / n_available, 4) if n_available else None,
+        "epoch_fraction_scheduled": (
+            round(visits / n_available, 4) if n_available else None
+        ),
     }
 
 
@@ -143,18 +153,30 @@ def collect_ids(dataset) -> tuple[list[str] | None, str]:
     if cols is None:
         return None, f"dataset of type {type(dataset).__name__} exposes no column_names"
     if ROW_ID_FIELD not in cols:
-        return None, (f"the corpus carries no {ROW_ID_FIELD!r} column, so rows have no "
-                      "identity to report -- re-run distill-corpus-prep with --emit-row-id")
+        return None, (
+            f"the corpus carries no {ROW_ID_FIELD!r} column, so rows have no "
+            "identity to report -- re-run distill-corpus-prep with --emit-row-id"
+        )
     ids = list(dataset[ROW_ID_FIELD])
     if any(not isinstance(i, str) or not i for i in ids):
         return None, f"the {ROW_ID_FIELD!r} column holds non-string or empty values"
     return ids, ""
 
 
-def build(*, dataset, output_dir: str, dataset_path: str | None, lmbda: float,
-          max_length: int | None, max_completion_length: int | None, max_steps: int,
-          num_train_epochs: float, world_size: int, per_device_batch: int,
-          grad_accum: int) -> dict[str, Any]:
+def build(
+    *,
+    dataset,
+    output_dir: str,
+    dataset_path: str | None,
+    lmbda: float,
+    max_length: int | None,
+    max_completion_length: int | None,
+    max_steps: int,
+    num_train_epochs: float,
+    world_size: int,
+    per_device_batch: int,
+    grad_accum: int,
+) -> dict[str, Any]:
     """Write the manifest (and the id list, when there is one). Returns the manifest.
 
     Raises ManifestDrift only for a disagreement that means the trainer is NOT training on the
@@ -164,13 +186,18 @@ def build(*, dataset, output_dir: str, dataset_path: str | None, lmbda: float,
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     ids, why_not = collect_ids(dataset)
-    n_available = len(ids) if ids is not None else (len(dataset) if dataset is not None else 0)
+    n_available = (
+        len(ids) if ids is not None else (len(dataset) if dataset is not None else 0)
+    )
     prep, prep_path = _prep_manifest(dataset_path)
 
     # The arm, spelled out, because it is the reason the two counts can differ at all.
     onpolicy = float(lmbda) != 0.0
-    prompt_budget = (max_length - max_completion_length
-                     if onpolicy and max_length and max_completion_length else None)
+    prompt_budget = (
+        max_length - max_completion_length
+        if onpolicy and max_length and max_completion_length
+        else None
+    )
 
     manifest: dict[str, Any] = {
         "dataset_path": dataset_path,
@@ -184,17 +211,25 @@ def build(*, dataset, output_dir: str, dataset_path: str | None, lmbda: float,
             # paraphrase is what goes stale when it changes.
             "site": "custom_gold_trainer.py:1824",
             "drops_prompts_at_or_above": prompt_budget,
-            "note": ("off-policy keeps long prompts; on-policy drops them. The same corpus "
-                     "therefore yields different training sets in the two stages."),
+            "note": (
+                "off-policy keeps long prompts; on-policy drops them. The same corpus "
+                "therefore yields different training sets in the two stages."
+            ),
         },
-        "schedule": rows_scheduled(max_steps=max_steps, num_train_epochs=num_train_epochs,
-                                   n_available=n_available, world_size=world_size,
-                                   per_device_batch=per_device_batch, grad_accum=grad_accum),
+        "schedule": rows_scheduled(
+            max_steps=max_steps,
+            num_train_epochs=num_train_epochs,
+            n_available=n_available,
+            world_size=world_size,
+            per_device_batch=per_device_batch,
+            grad_accum=grad_accum,
+        ),
         "consumption_caveat": (
             "rows_available is every row the run could draw from for a full epoch. It is an "
             "UPPER BOUND on what this attempt saw: see schedule.epoch_fraction_scheduled, and "
             "note that preemption on this queue restarts rather than resumes, so a preempted "
-            "run's true consumption is the union over attempts."),
+            "run's true consumption is the union over attempts."
+        ),
     }
 
     if prep is not None:
@@ -216,7 +251,8 @@ def build(*, dataset, output_dir: str, dataset_path: str | None, lmbda: float,
                     f"the trainer's dataset has {n_available} rows but prep's manifest at "
                     f"{prep_path} reports {expected} training rows. Filtering can only "
                     "REMOVE rows, so this is not a filter result -- output_dir or "
-                    "dataset_name points at a corpus other than the one prep built.")
+                    "dataset_name points at a corpus other than the one prep built."
+                )
             # Off-policy filters on `prompts is not None` alone, and every render path in the
             # trainer either sets `prompts` or raises, so the count must match exactly. A gap
             # here means the trainer and prep disagree about renderability -- a template or
@@ -228,13 +264,16 @@ def build(*, dataset, output_dir: str, dataset_path: str | None, lmbda: float,
                     "whose tokenization produced no prompt, and every render path in "
                     "custom_gold_trainer.py raises rather than returning None -- so prep and "
                     "the trainer are not rendering this corpus the same way. Compare their "
-                    "chat templates and tokenizer directories before training on it.")
+                    "chat templates and tokenizer directories before training on it."
+                )
     else:
         manifest["prep"] = {
             "manifest": None,
-            "note": ("the dataset is not a prepped corpus (no corpus_manifest.json beside "
-                     "it), so there is nothing to cross-check and the `documents` policy and "
-                     "row ids of this run are unknown."),
+            "note": (
+                "the dataset is not a prepped corpus (no corpus_manifest.json beside "
+                "it), so there is nothing to cross-check and the `documents` policy and "
+                "row ids of this run are unknown."
+            ),
         }
 
     if ids is not None:
@@ -250,7 +289,9 @@ def build(*, dataset, output_dir: str, dataset_path: str | None, lmbda: float,
             # has to know. Counted rather than assumed away.
             manifest["rows_file"]["distinct"] = uniq
 
-    (out / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    (out / MANIFEST_NAME).write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+    )
     return manifest
 
 

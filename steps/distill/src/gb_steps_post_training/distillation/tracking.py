@@ -56,6 +56,7 @@ CREDENTIALS ARE NOT READ, ONLY DETECTED. This module never opens a secret to loo
 it establishes presence and reports which source supplied it. A tracking key must not end up in
 a log line, and the only way to guarantee that is to never hold it.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -175,9 +176,11 @@ class Plan:
             # `cd "$GOLD_SRC"` before exec'ing the trainer, so the same relative string typed from
             # the repo root and from the submit script would key two DIFFERENT runs -- the exact
             # failure this function exists to remove.
-            print(f"[tracking] WARNING: output_dir {out!r} is relative, so the pinned W&B run id "
-                  f"depends on the CWD ({os.getcwd()}). Pass an absolute --output_dir for a run "
-                  "id that survives a resubmit.")
+            print(
+                f"[tracking] WARNING: output_dir {out!r} is relative, so the pinned W&B run id "
+                f"depends on the CWD ({os.getcwd()}). Pass an absolute --output_dir for a run "
+                "id that survives a resubmit."
+            )
         key = os.path.abspath(str(out))
         # 16 hex chars of sha256. Short enough to read in a URL, far past collision concern for
         # the number of output dirs this recipe will ever have, and stable across machines --
@@ -281,10 +284,16 @@ class Plan:
             # lesser evil: with no output_dir there are no checkpoints, so there is no resume for
             # a task to be continued ACROSS.
             return
-        if str(env.get("CLEARML_OFFLINE_MODE", "")).strip().lower() in {"1", "true", "yes"}:
-            print("[tracking] clearml offline mode: not attempting task continuation (an offline "
-                  "task has no server-side id to continue). Legs of a restarted run will be "
-                  "separate offline tasks.")
+        if str(env.get("CLEARML_OFFLINE_MODE", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            print(
+                "[tracking] clearml offline mode: not attempting task continuation (an offline "
+                "task has no server-side id to continue). Legs of a restarted run will be "
+                "separate offline tasks."
+            )
             return
 
         out = os.path.abspath(str(out))
@@ -292,16 +301,20 @@ class Plan:
         prior = None
         try:
             if os.path.isfile(id_file):
-                prior = (open(id_file).read().strip() or None)
+                prior = open(id_file).read().strip() or None
         except OSError as exc:
-            print(f"[tracking] WARNING: cannot read {id_file}: {exc}. Treating this as a new run.")
+            print(
+                f"[tracking] WARNING: cannot read {id_file}: {exc}. Treating this as a new run."
+            )
 
         if task_init is None:
             try:
                 from clearml import Task
             except Exception as exc:  # pragma: no cover - resolve() already required it
-                print(f"[tracking] WARNING: clearml import failed at Task.init time ({exc}). "
-                      "Leaving the task to transformers' callback.")
+                print(
+                    f"[tracking] WARNING: clearml import failed at Task.init time ({exc}). "
+                    "Leaving the task to transformers' callback."
+                )
                 return
             task_init = Task.init
 
@@ -313,22 +326,32 @@ class Plan:
         task = None
         if prior:
             try:
-                task = task_init(reuse_last_task_id=prior, continue_last_task=0, **kwargs)
-                print(f"[tracking] clearml continuing task {prior} from {cls.CLEARML_ID_FILE} "
-                      "(previous console output and scalars kept, no iteration offset)")
+                task = task_init(
+                    reuse_last_task_id=prior, continue_last_task=0, **kwargs
+                )
+                print(
+                    f"[tracking] clearml continuing task {prior} from {cls.CLEARML_ID_FILE} "
+                    "(previous console output and scalars kept, no iteration offset)"
+                )
             except Exception as exc:
-                print(f"[tracking] WARNING: could not continue clearml task {prior} ({exc}). "
-                      "Creating a NEW task rather than letting the callback reuse-and-delete one.")
+                print(
+                    f"[tracking] WARNING: could not continue clearml task {prior} ({exc}). "
+                    "Creating a NEW task rather than letting the callback reuse-and-delete one."
+                )
                 task = None
         if task is None:
             try:
                 task = task_init(reuse_last_task_id=False, **kwargs)
             except Exception as exc:
-                print(f"[tracking] WARNING: clearml Task.init failed ({exc}). Continuing without "
-                      "tracking rather than failing a job that already holds its allocation.")
+                print(
+                    f"[tracking] WARNING: clearml Task.init failed ({exc}). Continuing without "
+                    "tracking rather than failing a job that already holds its allocation."
+                )
                 return
-            print(f"[tracking] clearml new task {getattr(task, 'id', '?')} "
-                  f"(reuse_last_task_id=False, so no previous task's logs were deleted)")
+            print(
+                f"[tracking] clearml new task {getattr(task, 'id', '?')} "
+                f"(reuse_last_task_id=False, so no previous task's logs were deleted)"
+            )
 
         # Record the id LAST and only when it changed, so the file always names a task that exists.
         new_id = getattr(task, "id", None)
@@ -340,9 +363,11 @@ class Plan:
                     fh.write(str(new_id) + "\n")
                 os.replace(tmp, id_file)
             except OSError as exc:
-                print(f"[tracking] WARNING: could not record the clearml task id in {id_file} "
-                      f"({exc}). A restart of this output_dir will start a new task instead of "
-                      "continuing this one.")
+                print(
+                    f"[tracking] WARNING: could not record the clearml task id in {id_file} "
+                    f"({exc}). A restart of this output_dir will start a new task instead of "
+                    "continuing this one."
+                )
 
 
 def _clean(value) -> str | None:
@@ -381,7 +406,9 @@ def clearml_credentials(environ: Mapping[str, str], home: Path) -> tuple[bool, s
     if environ.get("CLEARML_API_ACCESS_KEY") and environ.get("CLEARML_API_SECRET_KEY"):
         return True, "CLEARML_API_ACCESS_KEY/SECRET_KEY in the environment"
     conf = environ.get("CLEARML_CONFIG_FILE")
-    candidates = [Path(conf)] if conf else [home / "clearml.conf", home / ".clearml.conf"]
+    candidates = (
+        [Path(conf)] if conf else [home / "clearml.conf", home / ".clearml.conf"]
+    )
     for c in candidates:
         try:
             text = c.read_text(errors="replace")
@@ -389,7 +416,9 @@ def clearml_credentials(environ: Mapping[str, str], home: Path) -> tuple[bool, s
             continue
         # Presence of a non-empty access_key/secret_key pair. Deliberately crude: this is a
         # HOCON file and parsing it properly would mean holding the secret.
-        if re.search(_KEY_RE % "access_key", text) and re.search(_KEY_RE % "secret_key", text):
+        if re.search(_KEY_RE % "access_key", text) and re.search(
+            _KEY_RE % "secret_key", text
+        ):
             return True, f"{c}"
     return False, "no CLEARML_API_* env vars and no clearml.conf with a key pair"
 
@@ -403,7 +432,9 @@ def wandb_credentials(environ: Mapping[str, str], home: Path) -> tuple[bool, str
     except OSError:
         text = ""
     # `machine api.wandb.ai` followed by a password somewhere in the same entry.
-    if re.search(r"machine\s+api\.wandb\.ai", text) and re.search(r'password\s+"?[^"\s]', text):
+    if re.search(r"machine\s+api\.wandb\.ai", text) and re.search(
+        r'password\s+"?[^"\s]', text
+    ):
         return True, f"{netrc} (machine api.wandb.ai)"
     return False, "no WANDB_API_KEY and no ~/.netrc entry for api.wandb.ai"
 
@@ -416,7 +447,11 @@ def is_offline(backend: str, environ: Mapping[str, str]) -> bool:
     keeps "offline" from being reported as "no credentials, tracking off".
     """
     if backend == "clearml":
-        return str(environ.get("CLEARML_OFFLINE_MODE", "")).strip().lower() in {"1", "true", "yes"}
+        return str(environ.get("CLEARML_OFFLINE_MODE", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
     return str(environ.get("WANDB_MODE", "")).strip().lower() in {"offline", "dryrun"}
 
 
@@ -427,11 +462,21 @@ def _short(path_like: str | None) -> str | None:
     return Path(str(path_like)).name or None
 
 
-GENERIC_STEMS = {"gold-config.rendered", "gold-config", "config", "gold", "rendered",
-                 "sft-config.rendered", "sft-config", "sft"}
+GENERIC_STEMS = {
+    "gold-config.rendered",
+    "gold-config",
+    "config",
+    "gold",
+    "rendered",
+    "sft-config.rendered",
+    "sft-config",
+    "sft",
+}
 
 
-def auto_run_name(config_path: str | None, hints: Mapping[str, object], environ: Mapping[str, str]) -> str:
+def auto_run_name(
+    config_path: str | None, hints: Mapping[str, object], environ: Mapping[str, str]
+) -> str:
     """A run name derived from the build yaml, for when the config does not give one.
 
     TWO SOURCES, in order, because the two launch paths differ in what is meaningful:
@@ -474,7 +519,9 @@ def auto_run_name(config_path: str | None, hints: Mapping[str, object], environ:
             # forward-KL run composes through the branch below and reads as a distillation run.
             base = f"{student}_{corpus}_sft"
         else:
-            arm = "onpolicy" if (lmbda is not None and float(lmbda) > 0) else "offpolicy"
+            arm = (
+                "onpolicy" if (lmbda is not None and float(lmbda) > 0) else "offpolicy"
+            )
             base = f"{student}_from-{teacher or 'teacher'}_{corpus}_{arm}"
             if lmbda is not None:
                 base += f"_lmbda{lmbda}"
@@ -514,7 +561,9 @@ def resolve(
         role = "default" if backend == "clearml" else "optional"
 
         if not set_here:
-            plan.lines.append(f"tracking : {backend:8s} off      ({role}; nothing configured)")
+            plan.lines.append(
+                f"tracking : {backend:8s} off      ({role}; nothing configured)"
+            )
             continue
 
         missing = [k for k in REQUIRED[backend] if not vals.get(k)]
@@ -597,6 +646,7 @@ def resolve(
     # the preflight instead of after the allocation. It is NOT the same condition as "no key":
     # a missing key is an unconfigured environment, a missing package is a broken one.
     if is_installed is None:
+
         def is_installed(name: str) -> bool:
             import importlib.util
 
@@ -633,7 +683,15 @@ def load_yaml_fields(path: Path) -> tuple[dict, dict]:
     if not isinstance(doc, dict):
         raise ValueError(f"{path} is not a YAML mapping")
     fields = {k: doc.get(k) for k in ALL_CONFIG_FIELDS}
-    hints = {k: doc.get(k) for k in ("model_name_or_path", "teacher_model_name_or_path", "dataset_name", "lmbda")}
+    hints = {
+        k: doc.get(k)
+        for k in (
+            "model_name_or_path",
+            "teacher_model_name_or_path",
+            "dataset_name",
+            "lmbda",
+        )
+    }
     return fields, hints
 
 
@@ -655,149 +713,289 @@ def self_test() -> int:
 
     # 1. Nothing configured. The default-off case, which must be silent-but-reported, not fatal.
     p = resolve({}, environ={}, home=Path("/nonexistent"), is_installed=yes)
-    check("nothing configured -> both off, no fatal",
-          p.enabled == () and not p.fatal and len(p.lines) == 2, f"{p.enabled} {p.fatal}")
+    check(
+        "nothing configured -> both off, no fatal",
+        p.enabled == () and not p.fatal and len(p.lines) == 2,
+        f"{p.enabled} {p.fatal}",
+    )
 
     # 2. ClearML complete, key in env. The default backend on its happy path.
     env = {"CLEARML_API_ACCESS_KEY": "x", "CLEARML_API_SECRET_KEY": "y"}
-    p = resolve({"clearml_project": "distill"}, environ=env, home=Path("/nonexistent"),
-                config_path="/c/granite-4.1-3b_onpolicy_node2.yaml", is_installed=yes)
-    check("clearml complete + key -> ON, env set, name from stem",
-          p.enabled == ("clearml",)
-          and p.env["CLEARML_PROJECT"] == "distill"
-          and p.env["CLEARML_TASK"] == "granite-4.1-3b_onpolicy_node2"
-          and not p.fatal, f"{p.enabled} {p.env} {p.fatal}")
+    p = resolve(
+        {"clearml_project": "distill"},
+        environ=env,
+        home=Path("/nonexistent"),
+        config_path="/c/granite-4.1-3b_onpolicy_node2.yaml",
+        is_installed=yes,
+    )
+    check(
+        "clearml complete + key -> ON, env set, name from stem",
+        p.enabled == ("clearml",)
+        and p.env["CLEARML_PROJECT"] == "distill"
+        and p.env["CLEARML_TASK"] == "granite-4.1-3b_onpolicy_node2"
+        and not p.fatal,
+        f"{p.enabled} {p.env} {p.fatal}",
+    )
 
     # 3. Partial: a run name but no project. Must ABORT, because ClearML would silently use its
     #    own default project instead of failing.
-    p = resolve({"clearml_run_name": "mine"}, environ=env, home=Path("/nonexistent"), is_installed=yes)
-    check("clearml run_name without project -> FATAL",
-          not p.enabled and any("partially configured" in f and "clearml_project" in f for f in p.fatal),
-          f"{p.fatal}")
+    p = resolve(
+        {"clearml_run_name": "mine"},
+        environ=env,
+        home=Path("/nonexistent"),
+        is_installed=yes,
+    )
+    check(
+        "clearml run_name without project -> FATAL",
+        not p.enabled
+        and any(
+            "partially configured" in f and "clearml_project" in f for f in p.fatal
+        ),
+        f"{p.fatal}",
+    )
 
     # 4. Partial the other way round, on the backend where entity is real.
-    p = resolve({"wandb_entity": "ibm"}, environ={"WANDB_API_KEY": "k"}, home=Path("/nonexistent"),
-                is_installed=yes)
-    check("wandb entity without project -> FATAL",
-          not p.enabled and any("wandb_project" in f for f in p.fatal), f"{p.fatal}")
+    p = resolve(
+        {"wandb_entity": "ibm"},
+        environ={"WANDB_API_KEY": "k"},
+        home=Path("/nonexistent"),
+        is_installed=yes,
+    )
+    check(
+        "wandb entity without project -> FATAL",
+        not p.enabled and any("wandb_project" in f for f in p.fatal),
+        f"{p.fatal}",
+    )
 
     # 5. W&B complete. Note run_name lands on the PLAN (for training_args.run_name), not in env --
     #    the asymmetry the docstring describes.
-    p = resolve({"wandb_entity": "ibm", "wandb_project": "distill", "wandb_run_name": "r1"},
-                environ={"WANDB_API_KEY": "k"}, home=Path("/nonexistent"), is_installed=yes)
-    check("wandb complete -> ON, entity+project in env, name on the plan",
-          p.enabled == ("wandb",) and p.env["WANDB_ENTITY"] == "ibm"
-          and p.env["WANDB_PROJECT"] == "distill" and p.run_name == "r1"
-          and "WANDB_NAME" not in p.env, f"{p.enabled} {p.env} {p.run_name}")
+    p = resolve(
+        {"wandb_entity": "ibm", "wandb_project": "distill", "wandb_run_name": "r1"},
+        environ={"WANDB_API_KEY": "k"},
+        home=Path("/nonexistent"),
+        is_installed=yes,
+    )
+    check(
+        "wandb complete -> ON, entity+project in env, name on the plan",
+        p.enabled == ("wandb",)
+        and p.env["WANDB_ENTITY"] == "ibm"
+        and p.env["WANDB_PROJECT"] == "distill"
+        and p.run_name == "r1"
+        and "WANDB_NAME" not in p.env,
+        f"{p.enabled} {p.env} {p.run_name}",
+    )
 
     # 6. Complete but unkeyed -> off, NOT fatal, and loud. This is the specified behaviour and
     #    the one most likely to be quietly mis-implemented as either fatal or silent.
-    p = resolve({"clearml_project": "distill"}, environ={}, home=Path("/nonexistent"), is_installed=yes)
-    check("complete but no key -> off, not fatal, says NO CREDENTIALS",
-          not p.enabled and not p.fatal and any("NO CREDENTIALS" in l for l in p.lines), f"{p.lines}")
+    p = resolve(
+        {"clearml_project": "distill"},
+        environ={},
+        home=Path("/nonexistent"),
+        is_installed=yes,
+    )
+    check(
+        "complete but no key -> off, not fatal, says NO CREDENTIALS",
+        not p.enabled and not p.fatal and any("NO CREDENTIALS" in l for l in p.lines),
+        f"{p.lines}",
+    )
 
     # 7. Offline mode needs no key, so it must NOT be reported as unkeyed.
-    p = resolve({"clearml_project": "d"}, environ={"CLEARML_OFFLINE_MODE": "1"},
-                home=Path("/nonexistent"), is_installed=yes)
-    check("CLEARML_OFFLINE_MODE=1 satisfies the key requirement",
-          p.enabled == ("clearml",) and any("offline mode" in l for l in p.lines), f"{p.lines}")
-    p = resolve({"wandb_entity": "e", "wandb_project": "p"}, environ={"WANDB_MODE": "offline"},
-                home=Path("/nonexistent"), is_installed=yes)
-    check("WANDB_MODE=offline satisfies the key requirement", p.enabled == ("wandb",), f"{p.lines}")
+    p = resolve(
+        {"clearml_project": "d"},
+        environ={"CLEARML_OFFLINE_MODE": "1"},
+        home=Path("/nonexistent"),
+        is_installed=yes,
+    )
+    check(
+        "CLEARML_OFFLINE_MODE=1 satisfies the key requirement",
+        p.enabled == ("clearml",) and any("offline mode" in l for l in p.lines),
+        f"{p.lines}",
+    )
+    p = resolve(
+        {"wandb_entity": "e", "wandb_project": "p"},
+        environ={"WANDB_MODE": "offline"},
+        home=Path("/nonexistent"),
+        is_installed=yes,
+    )
+    check(
+        "WANDB_MODE=offline satisfies the key requirement",
+        p.enabled == ("wandb",),
+        f"{p.lines}",
+    )
 
     # 8. A name in the config beats the generated one, and says so.
-    p = resolve({"clearml_project": "d", "clearml_run_name": "explicit"}, environ=env,
-                home=Path("/nonexistent"), config_path="/c/some_config.yaml", is_installed=yes)
-    check("config run name wins over auto",
-          p.env["CLEARML_TASK"] == "explicit" and any("from config" in l for l in p.lines), f"{p.lines}")
+    p = resolve(
+        {"clearml_project": "d", "clearml_run_name": "explicit"},
+        environ=env,
+        home=Path("/nonexistent"),
+        config_path="/c/some_config.yaml",
+        is_installed=yes,
+    )
+    check(
+        "config run name wins over auto",
+        p.env["CLEARML_TASK"] == "explicit"
+        and any("from config" in l for l in p.lines),
+        f"{p.lines}",
+    )
 
     # 9. The granite.build path: the rendered stem carries nothing, so compose from the config.
-    name = auto_run_name("/out/gold-config.rendered.yaml", {
-        "model_name_or_path": "/m/granite-4.1-3b-base_retagged_v2",
-        "teacher_model_name_or_path": "/hub/snapshots/a0057a78",
-        "dataset_name": "/d/subsampled_0.2_shuffled.jsonl",
-        "lmbda": 0.3,
-    }, {})
-    check("generic rendered stem -> composed semantic name",
-          name == "granite-4.1-3b-base_retagged_v2_from-a0057a78_subsampled_0.2_shuffled_onpolicy_lmbda0.3",
-          name)
+    name = auto_run_name(
+        "/out/gold-config.rendered.yaml",
+        {
+            "model_name_or_path": "/m/granite-4.1-3b-base_retagged_v2",
+            "teacher_model_name_or_path": "/hub/snapshots/a0057a78",
+            "dataset_name": "/d/subsampled_0.2_shuffled.jsonl",
+            "lmbda": 0.3,
+        },
+        {},
+    )
+    check(
+        "generic rendered stem -> composed semantic name",
+        name
+        == "granite-4.1-3b-base_retagged_v2_from-a0057a78_subsampled_0.2_shuffled_onpolicy_lmbda0.3",
+        name,
+    )
 
     # 10. lmbda 0.0 is the off-policy arm and must not be called onpolicy -- the arm is the single
     #     most consequential key in this recipe, so a run name that lies about it is a real cost.
     off = auto_run_name("/out/gold-config.rendered.yaml", {"lmbda": 0.0}, {})
-    check("lmbda 0.0 -> offpolicy in the composed name", "offpolicy" in off and "onpolicy" not in off, off)
+    check(
+        "lmbda 0.0 -> offpolicy in the composed name",
+        "offpolicy" in off and "onpolicy" not in off,
+        off,
+    )
 
     # 10b. ...and a run with NEITHER a teacher NOR an lmbda is a plain SFT control, which must
     #      not be named as if it had either. Sits beside 10 because both are the same class of
     #      bug: a run name that misreports which arm produced the numbers. distill-sft-baseline
     #      renders to `sft-config.rendered.yaml`, a generic stem, so this branch is what its
     #      auto-generated names actually come from.
-    sft = auto_run_name("/out/sft-config.rendered.yaml", {
-        "model_name_or_path": "/m/granite-4.1-3b-base_retagged_v2",
-        "dataset_name": "/d/subsampled_0.2_shuffled.jsonl",
-    }, {})
-    check("no teacher and no lmbda -> plain sft name",
-          sft == "granite-4.1-3b-base_retagged_v2_subsampled_0.2_shuffled_sft", sft)
+    sft = auto_run_name(
+        "/out/sft-config.rendered.yaml",
+        {
+            "model_name_or_path": "/m/granite-4.1-3b-base_retagged_v2",
+            "dataset_name": "/d/subsampled_0.2_shuffled.jsonl",
+        },
+        {},
+    )
+    check(
+        "no teacher and no lmbda -> plain sft name",
+        sft == "granite-4.1-3b-base_retagged_v2_subsampled_0.2_shuffled_sft",
+        sft,
+    )
     #      The KD variant of that same step DOES have a teacher (the precompute directory), and
     #      must read as a distillation run rather than as the control.
-    kd = auto_run_name("/out/sft-config.rendered.yaml", {
-        "model_name_or_path": "/m/student",
-        "teacher_model_name_or_path": "/d/logits_granite-4.2-30b_top256",
-        "dataset_name": "/d/corpus.jsonl",
-    }, {})
-    check("teacher present, lmbda absent -> named as a distillation run",
-          kd == "student_from-logits_granite-4.2-30b_top256_corpus_offpolicy", kd)
+    kd = auto_run_name(
+        "/out/sft-config.rendered.yaml",
+        {
+            "model_name_or_path": "/m/student",
+            "teacher_model_name_or_path": "/d/logits_granite-4.2-30b_top256",
+            "dataset_name": "/d/corpus.jsonl",
+        },
+        {},
+    )
+    check(
+        "teacher present, lmbda absent -> named as a distillation run",
+        kd == "student_from-logits_granite-4.2-30b_top256_corpus_offpolicy",
+        kd,
+    )
 
     # 11. The LSF job id is appended, because it survives preemption and requeue where a
     #     timestamp would split one run into several.
-    check("LSB_JOBID is appended",
-          auto_run_name("/c/cfg_node2.yaml", {}, {"LSB_JOBID": "1152213"}) == "cfg_node2-lsf1152213")
+    check(
+        "LSB_JOBID is appended",
+        auto_run_name("/c/cfg_node2.yaml", {}, {"LSB_JOBID": "1152213"})
+        == "cfg_node2-lsf1152213",
+    )
 
     # 12. Enabled + package absent -> FATAL. Distinct from the no-key case above: this one refuses
     #     to train, because the config is fully honoured except by the interpreter.
-    p = resolve({"clearml_project": "d"}, environ=env, home=Path("/nonexistent"), is_installed=no)
-    check("enabled but package missing -> FATAL",
-          any("not installed" in f for f in p.fatal), f"{p.fatal}")
+    p = resolve(
+        {"clearml_project": "d"},
+        environ=env,
+        home=Path("/nonexistent"),
+        is_installed=no,
+    )
+    check(
+        "enabled but package missing -> FATAL",
+        any("not installed" in f for f in p.fatal),
+        f"{p.fatal}",
+    )
 
     # 13. Credential detection off disk, both backends, in a real temp HOME.
     with tempfile.TemporaryDirectory() as td:
         h = Path(td)
-        check("no creds on a bare home", not clearml_credentials({}, h)[0] and not wandb_credentials({}, h)[0])
-        (h / "clearml.conf").write_text('api {\n  access_key: "AK123"\n  secret_key: "SK456"\n}\n')
+        check(
+            "no creds on a bare home",
+            not clearml_credentials({}, h)[0] and not wandb_credentials({}, h)[0],
+        )
+        (h / "clearml.conf").write_text(
+            'api {\n  access_key: "AK123"\n  secret_key: "SK456"\n}\n'
+        )
         ok, where = clearml_credentials({}, h)
-        check("clearml.conf, documented `key: value` form, is detected", ok and "clearml.conf" in where, where)
+        check(
+            "clearml.conf, documented `key: value` form, is detected",
+            ok and "clearml.conf" in where,
+            where,
+        )
         # THE REAL LAYOUT, verbatim from the file the ClearML UI generates -- quoted key names and
         # `=`. The first version of this detector handled only the form above, and reported a real
         # credential file as absent. A fixture that is a copy of the real thing is the only kind
         # that would have caught it.
         (h / "clearml.conf").write_text(
-            'api {\n'
-            '  web_server: https://clearml-ext.example.com\n'
-            '  api_server: https://clearml-ext.example.com:8008\n'
-            '\n'
-            '  credentials {\n'
+            "api {\n"
+            "  web_server: https://clearml-ext.example.com\n"
+            "  api_server: https://clearml-ext.example.com:8008\n"
+            "\n"
+            "  credentials {\n"
             '    "access_key" = "AK123456"\n'
             '    "secret_key" = "SK789012"\n'
-            '  }\n'
-            '}\n')
+            "  }\n"
+            "}\n"
+        )
         ok, where = clearml_credentials({}, h)
-        check("clearml.conf, REAL quoted-name `\"access_key\" = ...` form, is detected",
-              ok and "clearml.conf" in where, where)
+        check(
+            'clearml.conf, REAL quoted-name `"access_key" = ...` form, is detected',
+            ok and "clearml.conf" in where,
+            where,
+        )
         # A conf that exists but carries no key must NOT read as credentialed -- otherwise a
         # default clearml.conf skeleton would enable tracking that then fails at Task.init.
-        (h / "clearml.conf").write_text('api {\n  access_key: ""\n  secret_key: ""\n}\n')
-        check("clearml.conf with EMPTY keys is not credentials", not clearml_credentials({}, h)[0])
-        (h / ".netrc").write_text("machine api.wandb.ai\n  login user\n  password abc123\n")
+        (h / "clearml.conf").write_text(
+            'api {\n  access_key: ""\n  secret_key: ""\n}\n'
+        )
+        check(
+            "clearml.conf with EMPTY keys is not credentials",
+            not clearml_credentials({}, h)[0],
+        )
+        (h / ".netrc").write_text(
+            "machine api.wandb.ai\n  login user\n  password abc123\n"
+        )
         ok, where = wandb_credentials({}, h)
-        check("netrc entry for api.wandb.ai is detected", ok and ".netrc" in where, where)
-        (h / ".netrc").write_text("machine example.com\n  login user\n  password abc123\n")
-        check("netrc for a DIFFERENT machine is not wandb credentials", not wandb_credentials({}, h)[0])
+        check(
+            "netrc entry for api.wandb.ai is detected", ok and ".netrc" in where, where
+        )
+        (h / ".netrc").write_text(
+            "machine example.com\n  login user\n  password abc123\n"
+        )
+        check(
+            "netrc for a DIFFERENT machine is not wandb credentials",
+            not wandb_credentials({}, h)[0],
+        )
 
     # 14. "" is not a value. step-template.yaml renders every unset string key as "", so if this
     #     were wrong every granite.build run would abort as half-configured.
-    p = resolve({"clearml_project": "", "clearml_run_name": "  "}, environ=env,
-                home=Path("/nonexistent"), is_installed=yes)
-    check('empty-string yaml keys count as unset', p.enabled == () and not p.fatal, f"{p.enabled} {p.fatal}")
+    p = resolve(
+        {"clearml_project": "", "clearml_run_name": "  "},
+        environ=env,
+        home=Path("/nonexistent"),
+        is_installed=yes,
+    )
+    check(
+        "empty-string yaml keys count as unset",
+        p.enabled == () and not p.fatal,
+        f"{p.enabled} {p.fatal}",
+    )
 
     # 15. apply(): report_to is EXTENDED, not replaced, and run_name is only touched for wandb.
     class FakeArgs:
@@ -806,18 +1004,34 @@ def self_test() -> int:
 
     a = FakeArgs()
     env2: dict[str, str] = {}
-    resolve({"wandb_entity": "e", "wandb_project": "p"}, environ={"WANDB_API_KEY": "k"},
-            home=Path("/nonexistent"), config_path="/c/cfg.yaml", is_installed=yes).apply(a, env2)
-    check("apply extends report_to and sets run_name for wandb",
-          a.report_to == ["tensorboard", "wandb"] and a.run_name == "cfg" and env2["WANDB_ENTITY"] == "e",
-          f"{a.report_to} {a.run_name} {env2}")
+    resolve(
+        {"wandb_entity": "e", "wandb_project": "p"},
+        environ={"WANDB_API_KEY": "k"},
+        home=Path("/nonexistent"),
+        config_path="/c/cfg.yaml",
+        is_installed=yes,
+    ).apply(a, env2)
+    check(
+        "apply extends report_to and sets run_name for wandb",
+        a.report_to == ["tensorboard", "wandb"]
+        and a.run_name == "cfg"
+        and env2["WANDB_ENTITY"] == "e",
+        f"{a.report_to} {a.run_name} {env2}",
+    )
 
     b = FakeArgs()
-    resolve({"clearml_project": "d"}, environ=env, home=Path("/nonexistent"),
-            config_path="/c/cfg.yaml", is_installed=yes).apply(b, {})
-    check("apply does NOT touch run_name for clearml (it reads CLEARML_TASK)",
-          b.report_to == ["tensorboard", "clearml"] and b.run_name == "/some/output_dir",
-          f"{b.report_to} {b.run_name}")
+    resolve(
+        {"clearml_project": "d"},
+        environ=env,
+        home=Path("/nonexistent"),
+        config_path="/c/cfg.yaml",
+        is_installed=yes,
+    ).apply(b, {})
+    check(
+        "apply does NOT touch run_name for clearml (it reads CLEARML_TASK)",
+        b.report_to == ["tensorboard", "clearml"] and b.run_name == "/some/output_dir",
+        f"{b.report_to} {b.run_name}",
+    )
 
     # 17. The wandb run id is pinned to output_dir, and only to output_dir.
     #     This is the one case where the assertion IS the design argument: the fix is worthless
@@ -847,7 +1061,11 @@ def self_test() -> int:
 
         def __call__(self, **kw):
             self.calls.append(kw)
-            if self.boom and "reuse_last_task_id" in kw and isinstance(kw["reuse_last_task_id"], str):
+            if (
+                self.boom
+                and "reuse_last_task_id" in kw
+                and isinstance(kw["reuse_last_task_id"], str)
+            ):
                 raise RuntimeError("simulated: server rejected the task id")
             return FakeTask(self.tid)
 
@@ -859,36 +1077,56 @@ def self_test() -> int:
         # something about a plan that did nothing. Merging is also what a real run looks like: one
         # environment, read by both.
         e: dict[str, str] = dict(environ or {})
-        resolve(cfg or {"wandb_entity": "e", "wandb_project": "p"},
-                environ={"WANDB_API_KEY": "k", **(environ or {})}, home=Path("/nonexistent"),
-                config_path="/c/cfg.yaml", is_installed=yes).apply(
-                    ArgsWithOut(out), e, task_init=rec or Recorder())
+        resolve(
+            cfg or {"wandb_entity": "e", "wandb_project": "p"},
+            environ={"WANDB_API_KEY": "k", **(environ or {})},
+            home=Path("/nonexistent"),
+            config_path="/c/cfg.yaml",
+            is_installed=yes,
+        ).apply(ArgsWithOut(out), e, task_init=rec or Recorder())
         return e
 
     j1 = pin("/runs/mine", {"LSB_JOBID": "111"})
     j2 = pin("/runs/mine", {"LSB_JOBID": "222"})
-    check("wandb run id is the same for one output_dir under two different LSF job ids",
-          j1.get("WANDB_RUN_ID") and j1["WANDB_RUN_ID"] == j2["WANDB_RUN_ID"],
-          f"{j1.get('WANDB_RUN_ID')} vs {j2.get('WANDB_RUN_ID')}")
-    check("wandb resume policy is allow, so the FIRST launch is not an error",
-          j1.get("WANDB_RESUME") == "allow", f"{j1.get('WANDB_RESUME')}")
+    check(
+        "wandb run id is the same for one output_dir under two different LSF job ids",
+        j1.get("WANDB_RUN_ID") and j1["WANDB_RUN_ID"] == j2["WANDB_RUN_ID"],
+        f"{j1.get('WANDB_RUN_ID')} vs {j2.get('WANDB_RUN_ID')}",
+    )
+    check(
+        "wandb resume policy is allow, so the FIRST launch is not an error",
+        j1.get("WANDB_RESUME") == "allow",
+        f"{j1.get('WANDB_RESUME')}",
+    )
     # A trailing slash and a relative path must land on the same run as the absolute form,
     # because a resubmit typed by hand is exactly where those differ.
-    check("wandb run id is path-normalised, not string-keyed",
-          pin("/runs/mine/").get("WANDB_RUN_ID") == j1["WANDB_RUN_ID"],
-          f"{pin('/runs/mine/').get('WANDB_RUN_ID')} vs {j1['WANDB_RUN_ID']}")
-    check("a DIFFERENT output_dir gets a different run id",
-          pin("/runs/other").get("WANDB_RUN_ID") != j1["WANDB_RUN_ID"])
+    check(
+        "wandb run id is path-normalised, not string-keyed",
+        pin("/runs/mine/").get("WANDB_RUN_ID") == j1["WANDB_RUN_ID"],
+        f"{pin('/runs/mine/').get('WANDB_RUN_ID')} vs {j1['WANDB_RUN_ID']}",
+    )
+    check(
+        "a DIFFERENT output_dir gets a different run id",
+        pin("/runs/other").get("WANDB_RUN_ID") != j1["WANDB_RUN_ID"],
+    )
     # setdefault, for the reason CLEARML_LOG_MODEL uses it: an operator who set the id by hand
     # meant it, and this code must not be able to overrule them.
-    check("a caller-set WANDB_RUN_ID survives",
-          pin("/runs/mine", {"WANDB_RUN_ID": "hand-picked"})["WANDB_RUN_ID"] == "hand-picked")
-    check("no output_dir -> no run id invented",
-          "WANDB_RUN_ID" not in env2, f"{env2}")
-    clearml_env = pin("/runs/mine", {"CLEARML_API_ACCESS_KEY": "a", "CLEARML_API_SECRET_KEY": "b"},
-                      cfg={"clearml_project": "d"})
-    check("clearml-only run does not get a WANDB_RUN_ID",
-          "WANDB_RUN_ID" not in clearml_env, f"{clearml_env}")
+    check(
+        "a caller-set WANDB_RUN_ID survives",
+        pin("/runs/mine", {"WANDB_RUN_ID": "hand-picked"})["WANDB_RUN_ID"]
+        == "hand-picked",
+    )
+    check("no output_dir -> no run id invented", "WANDB_RUN_ID" not in env2, f"{env2}")
+    clearml_env = pin(
+        "/runs/mine",
+        {"CLEARML_API_ACCESS_KEY": "a", "CLEARML_API_SECRET_KEY": "b"},
+        cfg={"clearml_project": "d"},
+    )
+    check(
+        "clearml-only run does not get a WANDB_RUN_ID",
+        "WANDB_RUN_ID" not in clearml_env,
+        f"{clearml_env}",
+    )
 
     # 18. ClearML task continuation. Nine cases, and the reason there are nine rather than two is
     #     that every one of them corresponds to a way this can silently do the WRONG thing --
@@ -903,72 +1141,118 @@ def self_test() -> int:
         rec = Recorder("task-first")
         pin(str(out), cl_env, cfg=cl_cfg, rec=rec)
         first = rec.calls[-1]
-        check("first launch creates a task with reuse_last_task_id=False (upstream's True DELETES "
-              "the previous execution's logs)",
-              len(rec.calls) == 1 and first.get("reuse_last_task_id") is False
-              and "continue_last_task" not in first, f"{rec.calls}")
-        check("first launch records the task id inside output_dir",
-              (out / Plan.CLEARML_ID_FILE).read_text().strip() == "task-first",
-              f"{list(out.iterdir())}")
-        check("the task carries the project and name the callback would have used",
-              first.get("project_name") == "d" and first.get("task_name"),
-              f"{first}")
-        check("frameworks are NOT auto-connected, so clearml does not upload checkpoints",
-              first.get("auto_connect_frameworks") == {"tensorboard": False, "pytorch": False},
-              f"{first}")
-        check("output_uri is left unset, so models do not default to the file server",
-              "output_uri" not in first, f"{first}")
+        check(
+            "first launch creates a task with reuse_last_task_id=False (upstream's True DELETES "
+            "the previous execution's logs)",
+            len(rec.calls) == 1
+            and first.get("reuse_last_task_id") is False
+            and "continue_last_task" not in first,
+            f"{rec.calls}",
+        )
+        check(
+            "first launch records the task id inside output_dir",
+            (out / Plan.CLEARML_ID_FILE).read_text().strip() == "task-first",
+            f"{list(out.iterdir())}",
+        )
+        check(
+            "the task carries the project and name the callback would have used",
+            first.get("project_name") == "d" and first.get("task_name"),
+            f"{first}",
+        )
+        check(
+            "frameworks are NOT auto-connected, so clearml does not upload checkpoints",
+            first.get("auto_connect_frameworks")
+            == {"tensorboard": False, "pytorch": False},
+            f"{first}",
+        )
+        check(
+            "output_uri is left unset, so models do not default to the file server",
+            "output_uri" not in first,
+            f"{first}",
+        )
 
         rec2 = Recorder("task-first")
         pin(str(out), cl_env, cfg=cl_cfg, rec=rec2)
         second = rec2.calls[-1]
-        check("a RELAUNCH into the same output_dir continues that task by id",
-              len(rec2.calls) == 1 and second.get("reuse_last_task_id") == "task-first",
-              f"{rec2.calls}")
-        check("the relaunch passes continue_last_task=0 -- the int, which continues with NO "
-              "iteration offset (True would replot resumed step 26 at 51)",
-              second.get("continue_last_task") == 0
-              and second["continue_last_task"] is not False, f"{second}")
+        check(
+            "a RELAUNCH into the same output_dir continues that task by id",
+            len(rec2.calls) == 1 and second.get("reuse_last_task_id") == "task-first",
+            f"{rec2.calls}",
+        )
+        check(
+            "the relaunch passes continue_last_task=0 -- the int, which continues with NO "
+            "iteration offset (True would replot resumed step 26 at 51)",
+            second.get("continue_last_task") == 0
+            and second["continue_last_task"] is not False,
+            f"{second}",
+        )
 
         # The failure path. What must NOT happen is a fall back to the callback's default, which
         # would reuse-and-delete; a fresh task loses continuity but never data.
         rec3 = Recorder("task-second", boom=True)
         pin(str(out), cl_env, cfg=cl_cfg, rec=rec3)
-        check("if continuation is refused, a NEW task is created with reuse_last_task_id=False "
-              "rather than deleting the old one",
-              len(rec3.calls) == 2 and rec3.calls[1].get("reuse_last_task_id") is False,
-              f"{rec3.calls}")
-        check("and the recorded id moves to the task that now exists",
-              (out / Plan.CLEARML_ID_FILE).read_text().strip() == "task-second")
+        check(
+            "if continuation is refused, a NEW task is created with reuse_last_task_id=False "
+            "rather than deleting the old one",
+            len(rec3.calls) == 2 and rec3.calls[1].get("reuse_last_task_id") is False,
+            f"{rec3.calls}",
+        )
+        check(
+            "and the recorded id moves to the task that now exists",
+            (out / Plan.CLEARML_ID_FILE).read_text().strip() == "task-second",
+        )
 
         rec4 = Recorder()
         pin(str(out), {**cl_env, "RANK": "3"}, cfg=cl_cfg, rec=rec4)
-        check("a non-zero RANK initialises nothing, so a 16-rank job makes 1 task and not 16",
-              rec4.calls == [], f"{rec4.calls}")
+        check(
+            "a non-zero RANK initialises nothing, so a 16-rank job makes 1 task and not 16",
+            rec4.calls == [],
+            f"{rec4.calls}",
+        )
 
         rec5 = Recorder()
         pin(str(out), {**cl_env, "CLEARML_OFFLINE_MODE": "1"}, cfg=cl_cfg, rec=rec5)
-        check("offline mode does not try to continue a task that has no server-side id",
-              rec5.calls == [], f"{rec5.calls}")
+        check(
+            "offline mode does not try to continue a task that has no server-side id",
+            rec5.calls == [],
+            f"{rec5.calls}",
+        )
 
         rec6 = Recorder()
         e6 = dict(cl_env)
-        resolve(cl_cfg, environ={"WANDB_API_KEY": "k"}, home=Path("/nonexistent"),
-                config_path="/c/cfg.yaml", is_installed=yes).apply(
-                    FakeArgs(), e6, task_init=rec6)
-        check("no output_dir -> no task pinned, because there is no resume to continue across",
-              rec6.calls == [], f"{rec6.calls}")
+        resolve(
+            cl_cfg,
+            environ={"WANDB_API_KEY": "k"},
+            home=Path("/nonexistent"),
+            config_path="/c/cfg.yaml",
+            is_installed=yes,
+        ).apply(FakeArgs(), e6, task_init=rec6)
+        check(
+            "no output_dir -> no task pinned, because there is no resume to continue across",
+            rec6.calls == [],
+            f"{rec6.calls}",
+        )
 
     # 16. Both at once. ClearML first, because it is the default.
-    p = resolve({"clearml_project": "d", "wandb_entity": "e", "wandb_project": "p"},
-                environ={**env, "WANDB_API_KEY": "k"}, home=Path("/nonexistent"),
-                config_path="/c/cfg.yaml", is_installed=yes)
-    check("both backends -> clearml first in report_to", p.enabled == ("clearml", "wandb"), f"{p.enabled}")
+    p = resolve(
+        {"clearml_project": "d", "wandb_entity": "e", "wandb_project": "p"},
+        environ={**env, "WANDB_API_KEY": "k"},
+        home=Path("/nonexistent"),
+        config_path="/c/cfg.yaml",
+        is_installed=yes,
+    )
+    check(
+        "both backends -> clearml first in report_to",
+        p.enabled == ("clearml", "wandb"),
+        f"{p.enabled}",
+    )
 
     if not bad:
-        print("\nTRACKING RESOLUTION EXERCISED: on, off, partial-fatal, unkeyed, offline, "
-              "auto-name (both sources), credential detection on disk, apply(), the "
-              "output_dir-pinned W&B run id, and output_dir-keyed ClearML task continuation")
+        print(
+            "\nTRACKING RESOLUTION EXERCISED: on, off, partial-fatal, unkeyed, offline, "
+            "auto-name (both sources), credential detection on disk, apply(), the "
+            "output_dir-pinned W&B run id, and output_dir-keyed ClearML task continuation"
+        )
     return bad
 
 

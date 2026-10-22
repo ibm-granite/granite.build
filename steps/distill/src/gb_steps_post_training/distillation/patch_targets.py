@@ -36,6 +36,7 @@ this pairing does not use -- see `_swa_arm.py`).
 Exit status: 0 if every probed target EXISTS, 1 otherwise. A MOOT patch is reported and does
 NOT fail -- a no-op patch is a cleanup task, not a broken run.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -47,7 +48,7 @@ from dataclasses import dataclass, field
 @dataclass
 class Probe:
     name: str
-    where: str          # where the patch lives, file:line, so the report is actionable
+    where: str  # where the patch lives, file:line, so the report is actionable
     exists: bool | None  # None = not probed
     needed: bool | None
     detail: str
@@ -57,6 +58,7 @@ class Probe:
 def _version(pkg: str) -> str:
     try:
         from importlib.metadata import version
+
         return version(pkg)
     except Exception:
         return "?"
@@ -71,19 +73,27 @@ def probe_trl_ascend() -> Probe:
     """
     m = importlib.import_module("trl.import_utils")
     if not hasattr(m, "_vllm_ascend_available"):
-        return Probe("trl ascend guard", "gold.py:26-35 / run_vllm_serve.py:12-14",
-                     False, None,
-                     "trl.import_utils._vllm_ascend_available is GONE -- the unwrap patches "
-                     "now setattr an attribute nothing reads. Re-derive: find what "
-                     "is_vllm_ascend_available() reads in this version.")
+        return Probe(
+            "trl ascend guard",
+            "gold.py:26-35 / run_vllm_serve.py:12-14",
+            False,
+            None,
+            "trl.import_utils._vllm_ascend_available is GONE -- the unwrap patches "
+            "now setattr an attribute nothing reads. Re-derive: find what "
+            "is_vllm_ascend_available() reads in this version.",
+        )
     val = getattr(m, "_vllm_ascend_available")
     is_tuple = isinstance(val, tuple)
-    return Probe("trl ascend guard", "gold.py:26-35 / run_vllm_serve.py:12-14",
-                 True, is_tuple,
-                 f"_vllm_ascend_available = {val!r} ({'tuple -> truthy, bug present' if is_tuple else 'not a tuple'})",
-                 "trl main has DELETED trl/extras/vllm_client.py, the consumer this "
-                 "workaround exists for. A bump can make this MOOT and the patch would "
-                 "not tell you.")
+    return Probe(
+        "trl ascend guard",
+        "gold.py:26-35 / run_vllm_serve.py:12-14",
+        True,
+        is_tuple,
+        f"_vllm_ascend_available = {val!r} ({'tuple -> truthy, bug present' if is_tuple else 'not a tuple'})",
+        "trl main has DELETED trl/extras/vllm_client.py, the consumer this "
+        "workaround exists for. A bump can make this MOOT and the patch would "
+        "not tell you.",
+    )
 
 
 def probe_vllm_rope(module: str, cls: str, where: str, label: str) -> Probe:
@@ -96,20 +106,35 @@ def probe_vllm_rope(module: str, cls: str, where: str, label: str) -> Probe:
     try:
         m = importlib.import_module(module)
     except Exception as exc:
-        return Probe(label, where, False, None,
-                     f"cannot import {module}: {type(exc).__name__}: {exc}")
+        return Probe(
+            label,
+            where,
+            False,
+            None,
+            f"cannot import {module}: {type(exc).__name__}: {exc}",
+        )
     obj = getattr(m, cls, None)
     if obj is None:
-        return Probe(label, where, False, None,
-                     f"{module}.{cls} is GONE -- the __init__ wrapper patches a class that "
-                     "no longer exists under that name, and vLLM will read config.rope_theta "
-                     "unpatched. Re-derive against this vLLM version.")
-    return Probe(label, where, True, None,
-                 f"{module}.{cls}.__init__ present",
-                 "NEEDED is not probed: it depends on the CONFIG of the model being served "
-                 "(a granite-4.x config.json under transformers 5.x has no top-level "
-                 "rope_theta). The patch is a no-op when the attribute is present, so it is "
-                 "safe either way -- what is not safe is the class disappearing.")
+        return Probe(
+            label,
+            where,
+            False,
+            None,
+            f"{module}.{cls} is GONE -- the __init__ wrapper patches a class that "
+            "no longer exists under that name, and vLLM will read config.rope_theta "
+            "unpatched. Re-derive against this vLLM version.",
+        )
+    return Probe(
+        label,
+        where,
+        True,
+        None,
+        f"{module}.{cls}.__init__ present",
+        "NEEDED is not probed: it depends on the CONFIG of the model being served "
+        "(a granite-4.x config.json under transformers 5.x has no top-level "
+        "rope_theta). The patch is a no-op when the attribute is present, so it is "
+        "safe either way -- what is not safe is the class disappearing.",
+    )
 
 
 def probe_deepspeed_defaults() -> Probe:
@@ -123,23 +148,48 @@ def probe_deepspeed_defaults() -> Probe:
         s3 = importlib.import_module("deepspeed.runtime.zero.stage3")
         s12 = importlib.import_module("deepspeed.runtime.zero.stage_1_and_2")
     except Exception as exc:
-        return Probe("deepspeed defaults", "gold.py:73-80", False, None,
-                     f"cannot import deepspeed zero modules: {type(exc).__name__}: {exc}")
-    missing = [n for n, mod, cls in (
-        ("DeepSpeedZeroOptimizer_Stage3", s3, "DeepSpeedZeroOptimizer_Stage3"),
-        ("DeepSpeedZeroOptimizer", s12, "DeepSpeedZeroOptimizer"),
-    ) if getattr(mod, cls, None) is None]
+        return Probe(
+            "deepspeed defaults",
+            "gold.py:73-80",
+            False,
+            None,
+            f"cannot import deepspeed zero modules: {type(exc).__name__}: {exc}",
+        )
+    missing = [
+        n
+        for n, mod, cls in (
+            ("DeepSpeedZeroOptimizer_Stage3", s3, "DeepSpeedZeroOptimizer_Stage3"),
+            ("DeepSpeedZeroOptimizer", s12, "DeepSpeedZeroOptimizer"),
+        )
+        if getattr(mod, cls, None) is None
+    ]
     if missing:
-        return Probe("deepspeed defaults", "gold.py:73-80", False, None,
-                     f"missing: {', '.join(missing)} -- re-derive against this deepspeed")
+        return Probe(
+            "deepspeed defaults",
+            "gold.py:73-80",
+            False,
+            None,
+            f"missing: {', '.join(missing)} -- re-derive against this deepspeed",
+        )
     needed = not any(
         hasattr(getattr(mod, cls), "defaults")
-        for mod, cls in ((s3, "DeepSpeedZeroOptimizer_Stage3"), (s12, "DeepSpeedZeroOptimizer"))
+        for mod, cls in (
+            (s3, "DeepSpeedZeroOptimizer_Stage3"),
+            (s12, "DeepSpeedZeroOptimizer"),
+        )
     )
-    return Probe("deepspeed defaults", "gold.py:73-80", True, needed,
-                 "both ZeRO optimizer classes present; "
-                 + ("neither exposes `defaults` -> patch needed"
-                    if needed else "at least one now exposes `defaults` -> upstream may have fixed it"))
+    return Probe(
+        "deepspeed defaults",
+        "gold.py:73-80",
+        True,
+        needed,
+        "both ZeRO optimizer classes present; "
+        + (
+            "neither exposes `defaults` -> patch needed"
+            if needed
+            else "at least one now exposes `defaults` -> upstream may have fixed it"
+        ),
+    )
 
 
 def probe_generation_aliases() -> Probe:
@@ -153,12 +203,22 @@ def probe_generation_aliases() -> Probe:
     have_new = hasattr(g, "GenerateDecoderOnlyOutput")
     have_old = hasattr(g, "GreedySearchDecoderOnlyOutput")
     if not have_new:
-        return Probe("generation output aliases", "gold.py:82-91", False, None,
-                     "transformers.generation.GenerateDecoderOnlyOutput is GONE -- the alias "
-                     "patch has nothing to alias TO. Re-derive.")
-    return Probe("generation output aliases", "gold.py:82-91", True, not have_old,
-                 "GenerateDecoderOnlyOutput present; GreedySearchDecoderOnlyOutput "
-                 + ("absent -> patch needed" if not have_old else "is BACK -> patch is moot"))
+        return Probe(
+            "generation output aliases",
+            "gold.py:82-91",
+            False,
+            None,
+            "transformers.generation.GenerateDecoderOnlyOutput is GONE -- the alias "
+            "patch has nothing to alias TO. Re-derive.",
+        )
+    return Probe(
+        "generation output aliases",
+        "gold.py:82-91",
+        True,
+        not have_old,
+        "GenerateDecoderOnlyOutput present; GreedySearchDecoderOnlyOutput "
+        + ("absent -> patch needed" if not have_old else "is BACK -> patch is moot"),
+    )
 
 
 def probe_sanitize_logprob() -> Probe:
@@ -189,64 +249,104 @@ def probe_sanitize_logprob() -> Probe:
         m = importlib.import_module("trl.scripts.vllm_serve")
     except ModuleNotFoundError as exc:
         if "vllm_ascend" not in str(exc):
-            return Probe(label, where, False, None,
-                         f"cannot import trl.scripts.vllm_serve: {type(exc).__name__}: {exc}")
+            return Probe(
+                label,
+                where,
+                False,
+                None,
+                f"cannot import trl.scripts.vllm_serve: {type(exc).__name__}: {exc}",
+            )
         # The documented precondition. Apply patch 1 exactly as run_vllm_serve.py:14 does,
         # then retry -- and say so in the report, because a silent retry would turn a
         # load-bearing ordering into an invisible one.
         importlib.import_module("trl.import_utils")._vllm_ascend_available = False
-        ordering = ("cold import raised ModuleNotFoundError('vllm_ascend') -- patch 1 is a "
-                    "PRECONDITION for this target; applied it and retried (run_vllm_serve.py:14 "
-                    "before :55 does the same, and that order is load-bearing). ")
+        ordering = (
+            "cold import raised ModuleNotFoundError('vllm_ascend') -- patch 1 is a "
+            "PRECONDITION for this target; applied it and retried (run_vllm_serve.py:14 "
+            "before :55 does the same, and that order is load-bearing). "
+        )
         try:
             m = importlib.import_module("trl.scripts.vllm_serve")
         except Exception as exc2:
-            return Probe(label, where, False, None,
-                         ordering + f"still cannot import: {type(exc2).__name__}: {exc2}")
+            return Probe(
+                label,
+                where,
+                False,
+                None,
+                ordering + f"still cannot import: {type(exc2).__name__}: {exc2}",
+            )
     except Exception as exc:
-        return Probe(label, where, False, None,
-                     f"cannot import trl.scripts.vllm_serve: {type(exc).__name__}: {exc}")
+        return Probe(
+            label,
+            where,
+            False,
+            None,
+            f"cannot import trl.scripts.vllm_serve: {type(exc).__name__}: {exc}",
+        )
     fn = getattr(m, "sanitize_logprob", None)
     if fn is None:
-        return Probe(label, where, False, None,
-                     ordering + "trl.scripts.vllm_serve.sanitize_logprob is GONE -- the "
-                     "replacement is a dead attribute and NaN logprobs return HTTP 500 again. "
-                     "Re-derive.")
+        return Probe(
+            label,
+            where,
+            False,
+            None,
+            ordering + "trl.scripts.vllm_serve.sanitize_logprob is GONE -- the "
+            "replacement is a dead attribute and NaN logprobs return HTTP 500 again. "
+            "Re-derive.",
+        )
     # Whether it still mishandles NaN is checked by calling it, which is cheap and exact.
     needed = None
     detail = ordering + "sanitize_logprob present"
     try:
+
         class _L:
             logprob = float("nan")
+
         out = fn(_L())
         needed = out is None
         detail += f"; on a NaN logprob it returns {out!r} -> " + (
             "None, rejected by the list[list[float]] response schema -> patch needed"
-            if needed else "a value the schema accepts -> patch may be moot")
+            if needed
+            else "a value the schema accepts -> patch may be moot"
+        )
     except Exception as exc:  # signature changed
-        detail += f"; could not call it with a stub logprob ({type(exc).__name__}) -- the "
+        detail += (
+            f"; could not call it with a stub logprob ({type(exc).__name__}) -- the "
+        )
         detail += "signature changed, re-check the patch"
     return Probe(label, where, True, needed, detail)
 
 
 def unprobed() -> list[Probe]:
     return [
-        Probe("causal_conv1d / mamba-ssm shim", "gold.py:103-209", None, None,
-              "NOT PROBED, and deliberately: its precondition is a warm HF kernel cache and a "
-              "specific `kernels` layout, not a symbol. It is self-diagnosing -- it exists "
-              "because the import raises, so a break is loud on the next run."),
-        Probe("granite_swa Auto*/vLLM registration", "gold.py:100-101, 211-219 / "
-              "run_vllm_serve.py:66-75", None, None,
-              "NOT PROBED: gated on the SWA arm, which nothing in the granite 4.1/4.2 pairing "
-              "uses (D4). Probing it would require the vendored package this collection does "
-              "not carry. See _swa_arm.py."),
+        Probe(
+            "causal_conv1d / mamba-ssm shim",
+            "gold.py:103-209",
+            None,
+            None,
+            "NOT PROBED, and deliberately: its precondition is a warm HF kernel cache and a "
+            "specific `kernels` layout, not a symbol. It is self-diagnosing -- it exists "
+            "because the import raises, so a break is loud on the next run.",
+        ),
+        Probe(
+            "granite_swa Auto*/vLLM registration",
+            "gold.py:100-101, 211-219 / " "run_vllm_serve.py:66-75",
+            None,
+            None,
+            "NOT PROBED: gated on the SWA arm, which nothing in the granite 4.1/4.2 pairing "
+            "uses (D4). Probing it would require the vendored package this collection does "
+            "not carry. See _swa_arm.py.",
+        ),
     ]
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--skip-vllm", action="store_true",
-                    help="skip the two vLLM probes (importing vllm is slow and pulls CUDA)")
+    ap.add_argument(
+        "--skip-vllm",
+        action="store_true",
+        help="skip the two vLLM probes (importing vllm is slow and pulls CUDA)",
+    )
     a = ap.parse_args()
 
     print("environment")
@@ -261,17 +361,32 @@ def main() -> int:
     # value this module just wrote and report the bug as already fixed.
     probes = [probe_trl_ascend()]
     if a.skip_vllm:
-        probes.append(Probe("vLLM rope_theta (x2)", "gold.py:37-71 / run_vllm_serve.py:16-49",
-                            None, None, "SKIPPED via --skip-vllm"))
+        probes.append(
+            Probe(
+                "vLLM rope_theta (x2)",
+                "gold.py:37-71 / run_vllm_serve.py:16-49",
+                None,
+                None,
+                "SKIPPED via --skip-vllm",
+            )
+        )
     else:
-        probes.append(probe_vllm_rope("vllm.model_executor.models.granitemoehybrid",
-                                      "GraniteMoeHybridAttention",
-                                      "gold.py:37-53 / run_vllm_serve.py:16-32",
-                                      "vLLM rope_theta (MoeHybrid)"))
-        probes.append(probe_vllm_rope("vllm.model_executor.models.granite",
-                                      "GraniteDecoderLayer",
-                                      "gold.py:55-71 / run_vllm_serve.py:34-49",
-                                      "vLLM rope_theta (dense Granite)"))
+        probes.append(
+            probe_vllm_rope(
+                "vllm.model_executor.models.granitemoehybrid",
+                "GraniteMoeHybridAttention",
+                "gold.py:37-53 / run_vllm_serve.py:16-32",
+                "vLLM rope_theta (MoeHybrid)",
+            )
+        )
+        probes.append(
+            probe_vllm_rope(
+                "vllm.model_executor.models.granite",
+                "GraniteDecoderLayer",
+                "gold.py:55-71 / run_vllm_serve.py:34-49",
+                "vLLM rope_theta (dense Granite)",
+            )
+        )
     probes.append(probe_deepspeed_defaults())
     probes.append(probe_generation_aliases())
     probes.append(probe_sanitize_logprob())
@@ -282,8 +397,10 @@ def main() -> int:
 
     failed = []
     for p in probes:
-        print(f"{flag(p.exists, 'EXISTS', 'MISSING')}  "
-              f"{flag(p.needed, 'NEEDED', ' MOOT ')}  {p.name}")
+        print(
+            f"{flag(p.exists, 'EXISTS', 'MISSING')}  "
+            f"{flag(p.needed, 'NEEDED', ' MOOT ')}  {p.name}"
+        )
         print(f"                    at {p.where}")
         print(f"                    {p.detail}")
         if p.notes:
@@ -293,17 +410,23 @@ def main() -> int:
             failed.append(p.name)
 
     if failed:
-        print(f"FAILED: {len(failed)} patch target(s) MISSING -- a patch is now a silent "
-              f"no-op and the bug it fixed is back:")
+        print(
+            f"FAILED: {len(failed)} patch target(s) MISSING -- a patch is now a silent "
+            f"no-op and the bug it fixed is back:"
+        )
         for n in failed:
             print(f"  - {n}")
-        print("Do not bump past this. Re-derive the patch, or delete it and record why.")
+        print(
+            "Do not bump past this. Re-derive the patch, or delete it and record why."
+        )
         return 1
     moot = [p.name for p in probes if p.needed is False]
     print("ALL PROBED TARGETS EXIST")
     if moot:
-        print(f"but {len(moot)} patch(es) look MOOT in this environment -- upstream may have "
-              "fixed the bug. Verify, then delete the patch and record it:")
+        print(
+            f"but {len(moot)} patch(es) look MOOT in this environment -- upstream may have "
+            "fixed the bug. Verify, then delete the patch and record it:"
+        )
         for n in moot:
             print(f"  - {n}")
     return 0

@@ -16,6 +16,7 @@ Each function raises ConfigError with an operator-facing message and returns Non
 not print, and they never repair a config: a guard that fixes things up silently changes the
 experiment the operator asked for, which is the failure mode all of this exists to prevent.
 """
+
 from __future__ import annotations
 
 import json
@@ -60,12 +61,16 @@ def corpus_tokenizer_identity(corpus_path: Path) -> str | None:
 def _corpus_manifest(corpus_path: Path) -> dict | None:
     """The corpus's manifest as a dict, or None when it has none. Both readers use this."""
     for name in ("manifest.json", "corpus_manifest.json"):
-        candidate = corpus_path.parent / name if corpus_path.is_file() else corpus_path / name
+        candidate = (
+            corpus_path.parent / name if corpus_path.is_file() else corpus_path / name
+        )
         if candidate.is_file():
             try:
                 return json.loads(candidate.read_text())
             except ValueError as exc:
-                raise ConfigError(f"corpus manifest {candidate} is not valid JSON: {exc}") from exc
+                raise ConfigError(
+                    f"corpus manifest {candidate} is not valid JSON: {exc}"
+                ) from exc
     return None
 
 
@@ -159,7 +164,9 @@ def validate_resume(mode: str, output_dir: str | Path, *, entrypoint: str) -> No
         )
 
 
-def validate_student_against_corpus(student_path: str | Path, corpus_path: str | Path) -> None:
+def validate_student_against_corpus(
+    student_path: str | Path, corpus_path: str | Path
+) -> None:
     """The student must carry a chat template, and must be the tokenizer the corpus was built for.
 
     Both halves are assertions rather than notes in a README because both failures are

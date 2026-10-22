@@ -43,6 +43,7 @@ template plus generation markers.
         --out <dest> --chat-template templates/chatml_granite_42_generation.jinja \
         --dry-run
 """
+
 from __future__ import annotations
 
 import argparse
@@ -58,13 +59,13 @@ from gb_steps_post_training.distillation import tokenizer_identity
 #
 #   new ChatML token  ->  original token whose embedding seeds it
 TRANSPLANT_BY_ROLE = {
-    "<|im_start|>": "<|start_of_role|>",   # turn open
-    "<|im_end|>": "<|end_of_text|>",       # turn end / EOS -- the critical one
-    "<s>": "<|end_of_text|>",              # sequence begin
-    "</s>": "<|end_of_text|>",             # sequence end
+    "<|im_start|>": "<|start_of_role|>",  # turn open
+    "<|im_end|>": "<|end_of_text|>",  # turn end / EOS -- the critical one
+    "<s>": "<|end_of_text|>",  # sequence begin
+    "</s>": "<|end_of_text|>",  # sequence end
     "<unk>": "<|unk|>",
-    "[INST]": "<|start_of_role|>",         # instruction open
-    "[/INST]": "<|end_of_role|>",          # instruction close
+    "[INST]": "<|start_of_role|>",  # instruction open
+    "[/INST]": "<|end_of_role|>",  # instruction close
     "[AVAILABLE_TOOLS]": "<tools>",
     "[/AVAILABLE_TOOLS]": "</tools>",
     "[TOOL_RESULTS]": "<tool_response>",
@@ -75,8 +76,7 @@ TRANSPLANT_BY_ROLE = {
 EMB_KEY = "model.embed_tokens.weight"
 LM_HEAD_KEY = "lm_head.weight"
 
-TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json",
-                   "special_tokens_map.json")
+TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json")
 
 
 def id_to_token(model_dir: str) -> dict[int, str]:
@@ -127,6 +127,7 @@ def shard_map(model_dir: str) -> dict[str, str]:
     single = os.path.join(model_dir, "model.safetensors")
     if os.path.exists(single):
         from safetensors import safe_open
+
         with safe_open(single, framework="pt") as f:
             return {k: "model.safetensors" for k in f.keys()}
     raise SystemExit(f"no safetensors weights found in {model_dir}")
@@ -167,8 +168,14 @@ def build_plan(student_dir: str, teacher_dir: str) -> dict:
     total = len(reuse) + len(move) + len(transplant) + len(meaninit)
     if total != len(T):
         raise SystemExit(f"id accounting: {total} classified vs {len(T)} teacher ids")
-    return dict(reuse=reuse, move=move, transplant=transplant, meaninit=meaninit,
-                n_student=len(S), n_teacher=len(T))
+    return dict(
+        reuse=reuse,
+        move=move,
+        transplant=transplant,
+        meaninit=meaninit,
+        n_student=len(S),
+        n_teacher=len(T),
+    )
 
 
 def special_ids_from(teacher_dir: str) -> dict[str, int]:
@@ -184,8 +191,10 @@ def special_ids_from(teacher_dir: str) -> dict[str, int]:
             out[key] = cfg[key]
     missing = {"bos_token_id", "eos_token_id", "pad_token_id"} - set(out)
     if missing:
-        raise SystemExit(f"teacher config.json lacks {sorted(missing)}; "
-                         f"cannot derive the student's special ids")
+        raise SystemExit(
+            f"teacher config.json lacks {sorted(missing)}; "
+            f"cannot derive the student's special ids"
+        )
     return out
 
 
@@ -200,36 +209,58 @@ def place(src: str, dst: str, mode: str) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--student", required=True,
-                    help="source model dir (weights + its own tokenizer)")
-    ap.add_argument("--teacher", required=True,
-                    help="tokenizer donor: the ChatML tokenizer to adopt")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--student",
+        required=True,
+        help="source model dir (weights + its own tokenizer)",
+    )
+    ap.add_argument(
+        "--teacher",
+        required=True,
+        help="tokenizer donor: the ChatML tokenizer to adopt",
+    )
     ap.add_argument("--out", required=True, help="destination model dir")
-    ap.add_argument("--chat-template",
-                    help="jinja file installed as <out>/chat_template.jinja. "
-                         "Required unless --no-chat-template: gold/sft.py has no "
-                         "config knob for one and reads it off the tokenizer.")
-    ap.add_argument("--no-chat-template", action="store_true",
-                    help="skip template installation (the resulting dir cannot "
-                         "train under gold/sft.py; for inspection only)")
-    ap.add_argument("--tokenizer-identity", default="",
-                    help="name recorded in tokenizer_identity.json and compared against "
-                         "the corpus manifest by distill-gold-train. Defaults to the "
-                         "teacher directory's basename, which is correct whenever that "
-                         "basename identifies the tokenizer.")
-    ap.add_argument("--copy-mode", choices=("copy", "hardlink"), default="copy",
-                    help="how to place unmodified shards. hardlink is instant and "
-                         "free but shares inodes with the source, so only use it "
-                         "where nothing rewrites weights in place (default: copy)")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="print the plan and write nothing")
+    ap.add_argument(
+        "--chat-template",
+        help="jinja file installed as <out>/chat_template.jinja. "
+        "Required unless --no-chat-template: gold/sft.py has no "
+        "config knob for one and reads it off the tokenizer.",
+    )
+    ap.add_argument(
+        "--no-chat-template",
+        action="store_true",
+        help="skip template installation (the resulting dir cannot "
+        "train under gold/sft.py; for inspection only)",
+    )
+    ap.add_argument(
+        "--tokenizer-identity",
+        default="",
+        help="name recorded in tokenizer_identity.json and compared against "
+        "the corpus manifest by distill-gold-train. Defaults to the "
+        "teacher directory's basename, which is correct whenever that "
+        "basename identifies the tokenizer.",
+    )
+    ap.add_argument(
+        "--copy-mode",
+        choices=("copy", "hardlink"),
+        default="copy",
+        help="how to place unmodified shards. hardlink is instant and "
+        "free but shares inodes with the source, so only use it "
+        "where nothing rewrites weights in place (default: copy)",
+    )
+    ap.add_argument(
+        "--dry-run", action="store_true", help="print the plan and write nothing"
+    )
     args = ap.parse_args()
 
     if not args.chat_template and not args.no_chat_template:
-        raise SystemExit("pass --chat-template <file>, or --no-chat-template to "
-                         "acknowledge the output cannot train")
+        raise SystemExit(
+            "pass --chat-template <file>, or --no-chat-template to "
+            "acknowledge the output cannot train"
+        )
     if args.chat_template and not os.path.exists(args.chat_template):
         raise SystemExit(f"--chat-template not found: {args.chat_template}")
 
@@ -261,8 +292,10 @@ def main() -> None:
     print(f"out     : {args.out}")
     print(f"vocab   : {s_cfg['vocab_size']}  tie_word_embeddings={tied}")
     print(f"specials from teacher: {specials}")
-    print(f"\nreuse_in_place={len(plan['reuse'])}  moved={len(plan['move'])}  "
-          f"transplant={len(plan['transplant'])}  mean_init={len(plan['meaninit'])}")
+    print(
+        f"\nreuse_in_place={len(plan['reuse'])}  moved={len(plan['move'])}  "
+        f"transplant={len(plan['transplant'])}  mean_init={len(plan['meaninit'])}"
+    )
     for nid, oid, tok in plan["move"]:
         print(f"  MOVE       new {nid} <- old {oid}  {tok!r}")
     for nid, oid, ntok, otok in plan["transplant"]:
@@ -288,17 +321,27 @@ def main() -> None:
         # visible in a log when someone later asks why a run masked the wrong span.
         # The boundary is still asserted, just elsewhere: the caller derives the
         # masking contract from the chat template this run installs.
-        print("teacher tokenizer has no <|im_start|> and is not a ChatML donor, "
-              "but its vocabulary is IDENTICAL to the student's "
-              f"({plan['n_teacher']} ids, all reuse) -- nothing to retag, so the "
-              "role map is vacuous rather than inapplicable")
+        print(
+            "teacher tokenizer has no <|im_start|> and is not a ChatML donor, "
+            "but its vocabulary is IDENTICAL to the student's "
+            f"({plan['n_teacher']} ids, all reuse) -- nothing to retag, so the "
+            "role map is vacuous rather than inapplicable"
+        )
     else:
-        raise SystemExit("teacher tokenizer has no <|im_start|>; not a ChatML "
-                         "donor, so the role map below does not apply")
+        raise SystemExit(
+            "teacher tokenizer has no <|im_start|>; not a ChatML "
+            "donor, so the role map below does not apply"
+        )
     for role, nid in critical:
-        kind = ("transplant" if any(t[0] == nid for t in plan["transplant"])
-                else "move" if any(m[0] == nid for m in plan["move"])
-                else "reuse" if nid in plan["reuse"] else "MEAN-INIT")
+        kind = (
+            "transplant"
+            if any(t[0] == nid for t in plan["transplant"])
+            else (
+                "move"
+                if any(m[0] == nid for m in plan["move"])
+                else "reuse" if nid in plan["reuse"] else "MEAN-INIT"
+            )
+        )
         print(f"\n  {role} id {nid} ({t_tokens.get(nid)!r}) is handled by: {kind}")
         if kind == "MEAN-INIT":
             raise SystemExit(
@@ -316,8 +359,10 @@ def main() -> None:
     if head_shard:
         print(f"lm_head tensor in shard  : {head_shard}  (untied -- retagged too)")
     elif not tied:
-        print("NOTE: tie_word_embeddings is False but no lm_head.weight found; "
-              "only the embedding is retagged.")
+        print(
+            "NOTE: tie_word_embeddings is False but no lm_head.weight found; "
+            "only the embedding is retagged."
+        )
 
     if args.dry_run:
         print("\n[dry-run] no files written.")
@@ -335,7 +380,8 @@ def main() -> None:
         # content both survive unchanged -- not over the whole matrix, which would
         # fold in the very untrained control rows we are trying to replace.
         mean_vec = orig.index_select(
-            0, torch.tensor(plan["reuse"], dtype=torch.long)).mean(dim=0)
+            0, torch.tensor(plan["reuse"], dtype=torch.long)
+        ).mean(dim=0)
         for nid, oid, _tok in plan["move"]:
             new[nid] = orig[oid]
         for nid, oid, _ntok, _otok in plan["transplant"]:
@@ -360,10 +406,13 @@ def main() -> None:
         print(f"wrote {head_shard}")
 
     for sh in sorted(set(weights.values()) - touched):
-        place(os.path.join(args.student, sh), os.path.join(args.out, sh),
-              args.copy_mode)
-    print(f"placed {len(set(weights.values()) - touched)} unmodified shard(s) "
-          f"({args.copy_mode})")
+        place(
+            os.path.join(args.student, sh), os.path.join(args.out, sh), args.copy_mode
+        )
+    print(
+        f"placed {len(set(weights.values()) - touched)} unmodified shard(s) "
+        f"({args.copy_mode})"
+    )
 
     index = os.path.join(args.student, "model.safetensors.index.json")
     if os.path.exists(index):
@@ -410,22 +459,26 @@ def main() -> None:
         json.dump(tc, fh, indent=2)
 
     if args.chat_template:
-        shutil.copy2(args.chat_template,
-                     os.path.join(args.out, "chat_template.jinja"))
+        shutil.copy2(args.chat_template, os.path.join(args.out, "chat_template.jinja"))
         print(f"installed chat_template.jinja from {args.chat_template}")
 
     manifest = {
         "student": os.path.abspath(args.student),
         "teacher": os.path.abspath(args.teacher),
-        "chat_template": (os.path.abspath(args.chat_template)
-                          if args.chat_template else None),
+        "chat_template": (
+            os.path.abspath(args.chat_template) if args.chat_template else None
+        ),
         "vocab_size": s_cfg["vocab_size"],
         "tie_word_embeddings": tied,
         "special_ids": specials,
-        "counts": {k: len(plan[k]) for k in ("reuse", "move", "transplant", "meaninit")},
+        "counts": {
+            k: len(plan[k]) for k in ("reuse", "move", "transplant", "meaninit")
+        },
         "move": [{"new": n, "old": o, "token": t} for n, o, t in plan["move"]],
-        "transplant": [{"new": n, "old": o, "new_token": nt, "old_token": ot}
-                       for n, o, nt, ot in plan["transplant"]],
+        "transplant": [
+            {"new": n, "old": o, "new_token": nt, "old_token": ot}
+            for n, o, nt, ot in plan["transplant"]
+        ],
         "mean_init": [{"id": n, "token": t} for n, t in plan["meaninit"]],
     }
     with open(os.path.join(args.out, "retag_manifest.json"), "w") as fh:
@@ -444,7 +497,8 @@ def main() -> None:
     # overrides it for the case where two distinct teachers share a directory name.
     identity = args.tokenizer_identity or tokenizer_identity.derive_name(args.teacher)
     ident_file = tokenizer_identity.write(
-        args.out, identity,
+        args.out,
+        identity,
         produced_by="distill-tokenizer-align/retag_student",
         student=os.path.abspath(args.student),
         teacher=os.path.abspath(args.teacher),
@@ -452,9 +506,11 @@ def main() -> None:
     print(f"recorded tokenizer identity {identity!r} -> {ident_file}")
 
     print(f"\nDONE -> {args.out}")
-    print("Verify before training: load with "
-          "PreTrainedTokenizerFast(tokenizer_file=...), render one example with "
-          "return_assistant_tokens_mask=True, and confirm the mask is non-empty.")
+    print(
+        "Verify before training: load with "
+        "PreTrainedTokenizerFast(tokenizer_file=...), render one example with "
+        "return_assistant_tokens_mask=True, and confirm the mask is non-empty."
+    )
 
 
 if __name__ == "__main__":

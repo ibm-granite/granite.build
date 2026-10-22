@@ -26,6 +26,7 @@ on. Loading goes through `fast_tokenizer.load` instead, and the two models' toke
 identities are CHECKED rather than warned about (the original printed a warning on a vocab-size
 mismatch and carried on computing a number that cannot mean anything).
 """
+
 from __future__ import annotations
 
 import json
@@ -49,8 +50,10 @@ class MetricError(Exception):
 def load_jsonl(path) -> list[dict]:
     path = Path(path)
     if not path.is_file():
-        raise MetricError(f"{path} does not exist. Pass distill-corpus-prep's corpus "
-                          "(train.jsonl or eval.jsonl).")
+        raise MetricError(
+            f"{path} does not exist. Pass distill-corpus-prep's corpus "
+            "(train.jsonl or eval.jsonl)."
+        )
     out = []
     with path.open() as fh:
         for i, line in enumerate(fh, 1):
@@ -100,13 +103,23 @@ def assistant_span(messages: list[dict], tok, max_length: int) -> dict | None:
 
     if not messages or messages[-1].get("role") != "assistant":
         return None
-    prompt = tok.apply_chat_template(messages[:-1], tokenize=False, add_generation_prompt=True)
-    full = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+    prompt = tok.apply_chat_template(
+        messages[:-1], tokenize=False, add_generation_prompt=True
+    )
+    full = tok.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=False
+    )
 
     # NO truncation here -- the untruncated length is the thing that has to be known before
     # it is thrown away. The cut is applied by slicing below.
-    enc = tok(full, truncation=False, padding=False, return_tensors="pt",
-              add_special_tokens=False, return_offsets_mapping=True)
+    enc = tok(
+        full,
+        truncation=False,
+        padding=False,
+        return_tensors="pt",
+        add_special_tokens=False,
+        return_offsets_mapping=True,
+    )
     full_len = int(enc["input_ids"].shape[1])
     keep_len = min(full_len, max_length)
     input_ids = enc["input_ids"][:, :keep_len]
@@ -119,19 +132,29 @@ def assistant_span(messages: list[dict], tok, max_length: int) -> dict | None:
         # entropy-only version had only the fallback, which is the drift this port removes.
         prompt_chars = len(prompt)
         offs = offsets[0].tolist()
-        start = next((i for i, (s, _) in enumerate(offs) if s >= prompt_chars), len(offs))
+        start = next(
+            (i for i, (s, _) in enumerate(offs) if s >= prompt_chars), len(offs)
+        )
     else:
-        start = len(tok(prompt, truncation=False, padding=False,
-                        add_special_tokens=False)["input_ids"])
+        start = len(
+            tok(prompt, truncation=False, padding=False, add_special_tokens=False)[
+                "input_ids"
+            ]
+        )
 
     if start >= keep_len:
         # The prompt alone fills the budget: there is no completion left to measure at all.
         return None
     mask = torch.zeros(keep_len, dtype=torch.bool)
     mask[start:] = True
-    return {"input_ids": input_ids, "attention_mask": attention_mask, "assistant_mask": mask,
-            "full_length": full_len, "truncated": full_len > max_length,
-            "dropped_tokens": max(0, full_len - max_length)}
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "assistant_mask": mask,
+        "full_length": full_len,
+        "truncated": full_len > max_length,
+        "dropped_tokens": max(0, full_len - max_length),
+    }
 
 
 def collate(items: list[dict], pad_token_id: int) -> dict:
@@ -144,9 +167,14 @@ def collate(items: list[dict], pad_token_id: int) -> dict:
         pad = max_len - it["input_ids"].shape[1]
         ids.append(F.pad(it["input_ids"], (0, pad), value=pad_token_id))
         att.append(F.pad(it["attention_mask"], (0, pad), value=0))
-        asst.append(F.pad(it["assistant_mask"].unsqueeze(0), (0, pad), value=False).squeeze(0))
-    return {"input_ids": torch.cat(ids, 0), "attention_mask": torch.cat(att, 0),
-            "assistant_mask": torch.stack(asst, 0)}
+        asst.append(
+            F.pad(it["assistant_mask"].unsqueeze(0), (0, pad), value=False).squeeze(0)
+        )
+    return {
+        "input_ids": torch.cat(ids, 0),
+        "attention_mask": torch.cat(att, 0),
+        "assistant_mask": torch.stack(asst, 0),
+    }
 
 
 def reduce_logits(logits_a, logits_b, metric: str):
@@ -231,7 +259,9 @@ def check_tokenizers(model_a, model_b, *, allow_mismatch: bool = False) -> dict:
     name_a = tokenizer_identity.derive_name(model_a)
     hash_a = tokenizer_identity.hash_tokenizer(model_a)
     if hash_a is None:
-        raise MetricError(f"{model_a} has no tokenizer.json, so it is not a model directory.")
+        raise MetricError(
+            f"{model_a} has no tokenizer.json, so it is not a model directory."
+        )
     if model_b is None:
         return {"tokenizer": name_a, "tokenizer_sha256": hash_a, "compared": False}
 
@@ -239,10 +269,17 @@ def check_tokenizers(model_a, model_b, *, allow_mismatch: bool = False) -> dict:
     name_b = tokenizer_identity.derive_name(model_b)
     hash_b = tokenizer_identity.hash_tokenizer(model_b)
     if hash_b is None:
-        raise MetricError(f"{model_b} has no tokenizer.json, so it is not a model directory.")
+        raise MetricError(
+            f"{model_b} has no tokenizer.json, so it is not a model directory."
+        )
 
-    result = {"tokenizer": name_a, "tokenizer_sha256": hash_a, "compared": True,
-              "student_tokenizer": name_a, "teacher_tokenizer": name_b}
+    result = {
+        "tokenizer": name_a,
+        "tokenizer_sha256": hash_a,
+        "compared": True,
+        "student_tokenizer": name_a,
+        "teacher_tokenizer": name_b,
+    }
     if hash_a == hash_b:
         result["agreement"] = "identical_tokenizer_json"
         return result
@@ -252,8 +289,10 @@ def check_tokenizers(model_a, model_b, *, allow_mismatch: bool = False) -> dict:
         # Different bytes, same ids on every probe. Recorded rather than silent: it means the
         # retag invariant does not hold for this pair and something re-serialized a tokenizer.
         result["agreement"] = "ids_agree_despite_differing_tokenizer_json"
-        result["note"] = (f"{name_a} ({hash_a}) and {name_b} ({hash_b}) are not byte-identical "
-                          "but agree on every probe string.")
+        result["note"] = (
+            f"{name_a} ({hash_a}) and {name_b} ({hash_b}) are not byte-identical "
+            "but agree on every probe string."
+        )
         return result
 
     first = disagreements[0]
@@ -301,7 +340,8 @@ def summarise(per_sample: list[float], counts: list[int]) -> dict:
     if not per_sample:
         raise MetricError(
             "no sample produced a measurable assistant span. Either every conversation was "
-            "truncated away by --max-length, or none ends on an assistant turn.")
+            "truncated away by --max-length, or none ends on an assistant turn."
+        )
     arr = np.asarray(per_sample, dtype=float)
     return {
         "n_samples": len(per_sample),

@@ -24,6 +24,7 @@ DESIGN CONSTRAINT: THIS MUST NEVER END A RUN. It is provenance, not a preconditi
 a recorded "unknown" with the reason attached, never to an exception. A run that dies because it could
 not describe itself would be a strictly worse outcome than one that cannot be compared later.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -38,7 +39,10 @@ def _git(root: Path, *args: str) -> str | None:
     try:
         out = subprocess.run(
             ("git", "-C", str(root), *args),
-            capture_output=True, text=True, timeout=GIT_TIMEOUT_S, check=False,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_S,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -110,10 +114,16 @@ def format_block(info: dict) -> str:
         state = "dirty state UNKNOWN"
     lines.append(f"commit   : {short}  on {info.get('branch', 'unknown')}  [{state}]")
     lines.append(f"src      : {info.get('src_dir')}")
-    lines.append(f"digest   : {info.get('tree_digest') or 'unknown'}"
-                 f"  (sha256 over {info.get('n_files', 0)} distillation/*.py, first 16 hex)")
-    lines.append("           two runs are comparable when this DIGEST matches; the commit alone is")
-    lines.append("           not enough, because this project runs uncommitted trees routinely.")
+    lines.append(
+        f"digest   : {info.get('tree_digest') or 'unknown'}"
+        f"  (sha256 over {info.get('n_files', 0)} distillation/*.py, first 16 hex)"
+    )
+    lines.append(
+        "           two runs are comparable when this DIGEST matches; the commit alone is"
+    )
+    lines.append(
+        "           not enough, because this project runs uncommitted trees routinely."
+    )
     for key in ("git_note", "tree_digest_note"):
         if info.get(key):
             lines.append(f"note     : {info[key]}")
@@ -126,6 +136,9 @@ def report(src_dir: Path | str | None = None) -> dict:
         info = describe(src_dir)
         print(format_block(info), flush=True)
         return info
-    except Exception as exc:                                          # noqa: BLE001
-        print(f"=== code provenance ===\nunavailable: {type(exc).__name__}: {exc}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"=== code provenance ===\nunavailable: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
         return {"error": f"{type(exc).__name__}: {exc}"}

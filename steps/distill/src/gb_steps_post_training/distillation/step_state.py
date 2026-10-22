@@ -53,6 +53,7 @@ Exit codes match checkpoints.py, so a step wrapper branches the same way in both
    64   SKIP   -- already done with this expectation
    65   REFUSE -- something differs; the message says what
 """
+
 from __future__ import annotations
 
 import argparse
@@ -121,7 +122,9 @@ def _describe(root: Path, rel: str) -> dict:
     return d
 
 
-def write_marker(out_dir: Path, step: str, expectation: dict, outputs: list[str]) -> dict:
+def write_marker(
+    out_dir: Path, step: str, expectation: dict, outputs: list[str]
+) -> dict:
     """Write the marker LAST and atomically. Returns what was written.
 
     Atomic via os.replace within the same directory, which is a rename on every filesystem this
@@ -138,7 +141,8 @@ def write_marker(out_dir: Path, step: str, expectation: dict, outputs: list[str]
     if missing:
         raise FileNotFoundError(
             f"{step} declared output(s) {missing} that do not exist under {out_dir} -- "
-            "refusing to write a completion marker for work that is not there")
+            "refusing to write a completion marker for work that is not there"
+        )
     doc = {
         "schema": SCHEMA,
         "step": step,
@@ -170,14 +174,17 @@ def _diff(want: dict, got: dict) -> list[str]:
                     walk(a[k], b[k], f"{prefix}{k}.")
             return
         if a != b:
-            lines.append(f"  {prefix.rstrip('.')}: {a!r} (recorded) -> {b!r} (requested)")
+            lines.append(
+                f"  {prefix.rstrip('.')}: {a!r} (recorded) -> {b!r} (requested)"
+            )
 
     walk(want, got, "")
     return lines
 
 
-def decide(out_dir: Path, step: str, expectation: dict,
-           outputs: list[str] | None = None) -> Decision:
+def decide(
+    out_dir: Path, step: str, expectation: dict, outputs: list[str] | None = None
+) -> Decision:
     """RUN, SKIP or REFUSE, from the marker alone plus a stat of each declared output."""
     out_dir = Path(out_dir)
     marker = out_dir / MARKER_NAME
@@ -188,47 +195,79 @@ def decide(out_dir: Path, step: str, expectation: dict,
     except (OSError, json.JSONDecodeError) as exc:
         # Not RUN: a marker that will not parse is a damaged directory, and the outputs beside it
         # may be anything. Naming the file and stopping is the only honest move.
-        return Decision(REFUSE, [
-            f"{marker} will not parse ({exc.__class__.__name__}: {exc}).",
-            "Delete it by hand once you have decided whether the outputs beside it are usable."])
+        return Decision(
+            REFUSE,
+            [
+                f"{marker} will not parse ({exc.__class__.__name__}: {exc}).",
+                "Delete it by hand once you have decided whether the outputs beside it are usable.",
+            ],
+        )
     if not isinstance(doc, dict):
         return Decision(REFUSE, [f"{marker} is not a JSON object"])
     if doc.get("schema") != SCHEMA:
-        return Decision(REFUSE, [
-            f"{marker} has schema {doc.get('schema')!r}; this code writes {SCHEMA}. "
-            "The comparison below would not mean what it says, so it is not attempted."])
+        return Decision(
+            REFUSE,
+            [
+                f"{marker} has schema {doc.get('schema')!r}; this code writes {SCHEMA}. "
+                "The comparison below would not mean what it says, so it is not attempted."
+            ],
+        )
     if doc.get("step") != step:
-        return Decision(REFUSE, [
-            f"{marker} was written by step {doc.get('step')!r}, but {step!r} is asking. "
-            "Two steps are sharing one output directory."])
+        return Decision(
+            REFUSE,
+            [
+                f"{marker} was written by step {doc.get('step')!r}, but {step!r} is asking. "
+                "Two steps are sharing one output directory."
+            ],
+        )
 
     diff = _diff(doc.get("expectation", {}), expectation)
     if diff:
-        return Decision(REFUSE, [
-            f"{out_dir} already holds output from {step}, built under a DIFFERENT expectation:",
-            *diff,
-            "Point --out-dir somewhere else, or delete the directory if the recorded run is "
-            "no longer wanted. Nothing here is overwritten."], marker=doc)
+        return Decision(
+            REFUSE,
+            [
+                f"{out_dir} already holds output from {step}, built under a DIFFERENT expectation:",
+                *diff,
+                "Point --out-dir somewhere else, or delete the directory if the recorded run is "
+                "no longer wanted. Nothing here is overwritten.",
+            ],
+            marker=doc,
+        )
 
     for rec in doc.get("outputs", []):
         p = out_dir / rec["path"]
         if not p.exists():
-            return Decision(REFUSE, [
-                f"the marker says {step} produced {rec['path']}, and it is not there.",
-                "Not rebuilding on a guess: something removed a declared output. Delete "
-                f"{MARKER_NAME} to rebuild deliberately."], marker=doc)
+            return Decision(
+                REFUSE,
+                [
+                    f"the marker says {step} produced {rec['path']}, and it is not there.",
+                    "Not rebuilding on a guess: something removed a declared output. Delete "
+                    f"{MARKER_NAME} to rebuild deliberately.",
+                ],
+                marker=doc,
+            )
         size = p.stat().st_size
         if size != rec["bytes"]:
-            return Decision(REFUSE, [
-                f"{rec['path']} is {size} bytes; the marker recorded {rec['bytes']}.",
-                f"Delete {MARKER_NAME} to rebuild deliberately."], marker=doc)
+            return Decision(
+                REFUSE,
+                [
+                    f"{rec['path']} is {size} bytes; the marker recorded {rec['bytes']}.",
+                    f"Delete {MARKER_NAME} to rebuild deliberately.",
+                ],
+                marker=doc,
+            )
         if rec.get("sha256"):
             got = _describe(out_dir, rec["path"]).get("sha256")
             if got != rec["sha256"]:
-                return Decision(REFUSE, [
-                    f"{rec['path']} has the recorded size but a different sha256 "
-                    f"({rec['sha256'][:16]} recorded, {str(got)[:16]} now).",
-                    f"Delete {MARKER_NAME} to rebuild deliberately."], marker=doc)
+                return Decision(
+                    REFUSE,
+                    [
+                        f"{rec['path']} has the recorded size but a different sha256 "
+                        f"({rec['sha256'][:16]} recorded, {str(got)[:16]} now).",
+                        f"Delete {MARKER_NAME} to rebuild deliberately.",
+                    ],
+                    marker=doc,
+                )
 
     # The DECLARATION itself, which until now was accepted and ignored. `outputs` was a
     # parameter this function took and never read, so a caller passing its current output list --
@@ -243,21 +282,30 @@ def decide(out_dir: Path, step: str, expectation: dict,
         added = sorted(set(outputs) - recorded)
         removed = sorted(recorded - set(outputs))
         if added or removed:
-            return Decision(REFUSE, [
-                f"{out_dir} was completed by {step}, but the set of outputs {step} DECLARES has "
-                "changed since:",
-                *(f"  now declared, not in the marker: {a}" for a in added),
-                *(f"  in the marker, no longer declared: {r}" for r in removed),
-                "The recorded run is not wrong, it is answering an older question. Point the "
-                f"output directory elsewhere, or delete {MARKER_NAME} to rebuild deliberately."],
-                marker=doc)
+            return Decision(
+                REFUSE,
+                [
+                    f"{out_dir} was completed by {step}, but the set of outputs {step} DECLARES has "
+                    "changed since:",
+                    *(f"  now declared, not in the marker: {a}" for a in added),
+                    *(f"  in the marker, no longer declared: {r}" for r in removed),
+                    "The recorded run is not wrong, it is answering an older question. Point the "
+                    f"output directory elsewhere, or delete {MARKER_NAME} to rebuild deliberately.",
+                ],
+                marker=doc,
+            )
 
     checked = sum(1 for r in doc.get("outputs", []) if r.get("sha256"))
     sized = len(doc.get("outputs", [])) - checked
     note = f"{checked} digested, {sized} size-only" if sized else f"{checked} digested"
-    return Decision(SKIP, [
-        f"{step} already completed in {out_dir} under this exact expectation ({note}).",
-        "Nothing to do."], marker=doc)
+    return Decision(
+        SKIP,
+        [
+            f"{step} already completed in {out_dir} under this exact expectation ({note}).",
+            "Nothing to do.",
+        ],
+        marker=doc,
+    )
 
 
 # --------------------------------------------------------------------------- self test
@@ -274,7 +322,10 @@ def self_test() -> int:
             print(f"  FAIL {name}" + (f"  [{detail}]" if detail else ""))
             bad = 1
 
-    exp = {"dataset": "a.jsonl", "policies": {"max_length": 16384, "length_policy": "drop"}}
+    exp = {
+        "dataset": "a.jsonl",
+        "policies": {"max_length": 16384, "length_policy": "drop"},
+    }
 
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)
@@ -292,66 +343,108 @@ def self_test() -> int:
         # would otherwise SKIP into a directory missing the new file, and a shrunk one means the
         # marker is vouching for something the step no longer claims to produce.
         DECL = ["train.jsonl", "corpus_manifest.json"]
-        check("matching declaration -> still SKIP", decide(d, "prep", exp, DECL).kind == SKIP)
+        check(
+            "matching declaration -> still SKIP",
+            decide(d, "prep", exp, DECL).kind == SKIP,
+        )
         v = decide(d, "prep", exp, DECL + ["row_ids.parquet"])
-        check("a GROWN output declaration -> REFUSE, naming the new output",
-              v.kind == REFUSE and any("row_ids.parquet" in l for l in v.lines), f"{v.lines}")
+        check(
+            "a GROWN output declaration -> REFUSE, naming the new output",
+            v.kind == REFUSE and any("row_ids.parquet" in l for l in v.lines),
+            f"{v.lines}",
+        )
         v = decide(d, "prep", exp, ["train.jsonl"])
-        check("a SHRUNK output declaration -> REFUSE, naming the dropped one",
-              v.kind == REFUSE and any("corpus_manifest.json" in l for l in v.lines), f"{v.lines}")
+        check(
+            "a SHRUNK output declaration -> REFUSE, naming the dropped one",
+            v.kind == REFUSE and any("corpus_manifest.json" in l for l in v.lines),
+            f"{v.lines}",
+        )
 
         # THE distinction none of the existing steps draws.
         other = json.loads(json.dumps(exp))
         other["policies"]["max_length"] = 4096
         v = decide(d, "prep", other)
-        check("a changed policy -> REFUSE, naming the key and both values",
-              v.kind == REFUSE and any("policies.max_length: 16384" in l and "4096" in l
-                                       for l in v.lines), f"{v.lines}")
+        check(
+            "a changed policy -> REFUSE, naming the key and both values",
+            v.kind == REFUSE
+            and any("policies.max_length: 16384" in l and "4096" in l for l in v.lines),
+            f"{v.lines}",
+        )
         added = json.loads(json.dumps(exp))
         added["policies"]["think_policy"] = "strip"
         v = decide(d, "prep", added)
-        check("a NEW key -> REFUSE (absent before)",
-              v.kind == REFUSE and any("absent before" in l for l in v.lines), f"{v.lines}")
+        check(
+            "a NEW key -> REFUSE (absent before)",
+            v.kind == REFUSE and any("absent before" in l for l in v.lines),
+            f"{v.lines}",
+        )
         removed = {"dataset": "a.jsonl"}
         v = decide(d, "prep", removed)
-        check("a REMOVED key -> REFUSE (absent now)",
-              v.kind == REFUSE and any("absent now" in l for l in v.lines), f"{v.lines}")
+        check(
+            "a REMOVED key -> REFUSE (absent now)",
+            v.kind == REFUSE and any("absent now" in l for l in v.lines),
+            f"{v.lines}",
+        )
 
-        check("another step asking about the same dir -> REFUSE",
-              decide(d, "align", exp).kind == REFUSE)
+        check(
+            "another step asking about the same dir -> REFUSE",
+            decide(d, "align", exp).kind == REFUSE,
+        )
 
         # A declared output that vanished must not trigger a silent multi-hour rebuild.
         (d / "train.jsonl").unlink()
         v = decide(d, "prep", exp)
-        check("a vanished output -> REFUSE, not RUN",
-              v.kind == REFUSE and any("not there" in l for l in v.lines), f"{v.lines}")
+        check(
+            "a vanished output -> REFUSE, not RUN",
+            v.kind == REFUSE and any("not there" in l for l in v.lines),
+            f"{v.lines}",
+        )
         (d / "train.jsonl").write_text("x\n")
-        check("restoring it identically -> SKIP again", decide(d, "prep", exp).kind == SKIP)
+        check(
+            "restoring it identically -> SKIP again",
+            decide(d, "prep", exp).kind == SKIP,
+        )
         (d / "train.jsonl").write_text("xy\n")
         v = decide(d, "prep", exp)
-        check("a resized output -> REFUSE", v.kind == REFUSE and any("bytes" in l for l in v.lines))
-        (d / "train.jsonl").write_text("y\n")   # same size, different content
+        check(
+            "a resized output -> REFUSE",
+            v.kind == REFUSE and any("bytes" in l for l in v.lines),
+        )
+        (d / "train.jsonl").write_text("y\n")  # same size, different content
         v = decide(d, "prep", exp)
-        check("same size, different content -> REFUSE via sha256",
-              v.kind == REFUSE and any("sha256" in l for l in v.lines), f"{v.lines}")
+        check(
+            "same size, different content -> REFUSE via sha256",
+            v.kind == REFUSE and any("sha256" in l for l in v.lines),
+            f"{v.lines}",
+        )
 
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)
         (d / MARKER_NAME).write_text("{not json")
         v = decide(d, "prep", exp)
-        check("an unparseable marker -> REFUSE, not RUN",
-              v.kind == REFUSE and any("will not parse" in l for l in v.lines), f"{v.lines}")
-        (d / MARKER_NAME).write_text(json.dumps({"schema": 99, "step": "prep", "expectation": exp}))
-        check("a future schema -> REFUSE rather than a comparison that means nothing",
-              decide(d, "prep", exp).kind == REFUSE)
+        check(
+            "an unparseable marker -> REFUSE, not RUN",
+            v.kind == REFUSE and any("will not parse" in l for l in v.lines),
+            f"{v.lines}",
+        )
+        (d / MARKER_NAME).write_text(
+            json.dumps({"schema": 99, "step": "prep", "expectation": exp})
+        )
+        check(
+            "a future schema -> REFUSE rather than a comparison that means nothing",
+            decide(d, "prep", exp).kind == REFUSE,
+        )
 
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)
         try:
             write_marker(d, "prep", exp, ["train.jsonl"])
         except FileNotFoundError as exc:
-            check("marking a declared output that does not exist raises",
-                  "refusing to write a completion marker" in str(exc), str(exc))
+            check(
+                "marking a declared output that does not exist raises",
+                "refusing to write a completion marker" in str(exc),
+                str(exc),
+            )
         else:
             check("marking a declared output that does not exist raises", False)
 
@@ -368,13 +461,19 @@ def self_test() -> int:
         (d / "small.txt").write_text("s")
         doc = write_marker(d, "prep", exp, ["big.bin", "small.txt"])
         recs = {r["path"]: r for r in doc["outputs"]}
-        check("a file over the digest limit records sha256 None and says why",
-              recs["big.bin"]["sha256"] is None
-              and recs["big.bin"]["digest_skipped_over_bytes"] == DIGEST_LIMIT, f"{recs}")
+        check(
+            "a file over the digest limit records sha256 None and says why",
+            recs["big.bin"]["sha256"] is None
+            and recs["big.bin"]["digest_skipped_over_bytes"] == DIGEST_LIMIT,
+            f"{recs}",
+        )
         check("a small file records a real sha256", bool(recs["small.txt"]["sha256"]))
         v = decide(d, "prep", exp)
-        check("the SKIP message says how many were digested and how many size-only",
-              v.kind == SKIP and "1 digested, 1 size-only" in " ".join(v.lines), f"{v.lines}")
+        check(
+            "the SKIP message says how many were digested and how many size-only",
+            v.kind == SKIP and "1 digested, 1 size-only" in " ".join(v.lines),
+            f"{v.lines}",
+        )
 
         # A marker written under a SMALLER digest cap says sha256: null for a file that today's cap
         # would digest. It must still be compared on size alone -- otherwise raising the cap would
@@ -386,55 +485,89 @@ def self_test() -> int:
                 rec["sha256"] = None
                 rec["digest_skipped_over_bytes"] = 4 << 20
         (d / MARKER_NAME).write_text(json.dumps(marker))
-        check("an entry the marker did NOT digest is compared on size alone, so raising "
-              "DIGEST_LIMIT cannot invalidate an older marker",
-              decide(d, "prep", exp).kind == SKIP, f"{decide(d, 'prep', exp).lines}")
-        (d / "small.txt").write_text("S")   # same size, different content, undigested by the marker
-        check("...and such an entry therefore cannot catch a same-size rewrite, which is what "
-              "recording sha256: null MEANS",
-              decide(d, "prep", exp).kind == SKIP)
+        check(
+            "an entry the marker did NOT digest is compared on size alone, so raising "
+            "DIGEST_LIMIT cannot invalidate an older marker",
+            decide(d, "prep", exp).kind == SKIP,
+            f"{decide(d, 'prep', exp).lines}",
+        )
+        (d / "small.txt").write_text(
+            "S"
+        )  # same size, different content, undigested by the marker
+        check(
+            "...and such an entry therefore cannot catch a same-size rewrite, which is what "
+            "recording sha256: null MEANS",
+            decide(d, "prep", exp).kind == SKIP,
+        )
 
     # Nested outputs. distill-tokenizer-align writes three files called tokenizer.json in three
     # subdirectories, so a marker keyed on the basename would collide and then look for a file at
     # the top level that was never there.
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)
-        for sub, body in (("teacher_overlay", "T"), ("student_overlay", "S"), ("retagged_student", "R")):
+        for sub, body in (
+            ("teacher_overlay", "T"),
+            ("student_overlay", "S"),
+            ("retagged_student", "R"),
+        ):
             (d / sub).mkdir()
             (d / sub / "tokenizer.json").write_text(body)
-        decl = [f"{s}/tokenizer.json" for s in ("teacher_overlay", "student_overlay", "retagged_student")]
+        decl = [
+            f"{s}/tokenizer.json"
+            for s in ("teacher_overlay", "student_overlay", "retagged_student")
+        ]
         doc = write_marker(d, "align", exp, decl)
-        check("nested outputs keep their declared relative paths, so three same-named files stay "
-              "three entries", sorted(r["path"] for r in doc["outputs"]) == sorted(decl),
-              f"{[r['path'] for r in doc['outputs']]}")
-        check("three distinct digests, not one repeated",
-              len({r["sha256"] for r in doc["outputs"]}) == 3)
-        check("a nested marker verifies", decide(d, "align", exp).kind == SKIP,
-              f"{decide(d, 'align', exp).lines}")
+        check(
+            "nested outputs keep their declared relative paths, so three same-named files stay "
+            "three entries",
+            sorted(r["path"] for r in doc["outputs"]) == sorted(decl),
+            f"{[r['path'] for r in doc['outputs']]}",
+        )
+        check(
+            "three distinct digests, not one repeated",
+            len({r["sha256"] for r in doc["outputs"]}) == 3,
+        )
+        check(
+            "a nested marker verifies",
+            decide(d, "align", exp).kind == SKIP,
+            f"{decide(d, 'align', exp).lines}",
+        )
         (d / "retagged_student" / "tokenizer.json").write_text("X")
         v = decide(d, "align", exp)
-        check("a rewritten nested output is caught, and named with its subdirectory",
-              v.kind == REFUSE and any("retagged_student/tokenizer.json" in l for l in v.lines),
-              f"{v.lines}")
+        check(
+            "a rewritten nested output is caught, and named with its subdirectory",
+            v.kind == REFUSE
+            and any("retagged_student/tokenizer.json" in l for l in v.lines),
+            f"{v.lines}",
+        )
 
     if not bad:
-        print("\nSTEP COMPLETION EXERCISED: run/skip/refuse, changed+added+removed expectation "
-              "keys, wrong step, vanished/resized/rewritten output, damaged and future markers, "
-              "and the digest-limit distinction")
+        print(
+            "\nSTEP COMPLETION EXERCISED: run/skip/refuse, changed+added+removed expectation "
+            "keys, wrong step, vanished/resized/rewritten output, damaged and future markers, "
+            "and the digest-limit distinction"
+        )
     return bad
 
 
 def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("action", choices=["check", "mark", "self-test"])
     ap.add_argument("--out-dir")
     ap.add_argument("--step")
-    ap.add_argument("--expectation-file",
-                    help="JSON file holding the expectation. A FILE and not a --expectation string, "
-                         "because these hold paths and templates that shell quoting mangles.")
-    ap.add_argument("--output", action="append", default=[],
-                    help="repeatable; a filename relative to --out-dir")
+    ap.add_argument(
+        "--expectation-file",
+        help="JSON file holding the expectation. A FILE and not a --expectation string, "
+        "because these hold paths and templates that shell quoting mangles.",
+    )
+    ap.add_argument(
+        "--output",
+        action="append",
+        default=[],
+        help="repeatable; a filename relative to --out-dir",
+    )
     a = ap.parse_args(argv)
 
     if a.action == "self-test":
@@ -446,8 +579,10 @@ def main(argv: list[str]) -> int:
 
     if a.action == "mark":
         doc = write_marker(Path(a.out_dir), a.step, expectation, a.output)
-        print(f"marked {a.step} complete in {a.out_dir} "
-              f"({len(doc['outputs'])} output(s) recorded)")
+        print(
+            f"marked {a.step} complete in {a.out_dir} "
+            f"({len(doc['outputs'])} output(s) recorded)"
+        )
         return 0
 
     v = decide(Path(a.out_dir), a.step, expectation, a.output)

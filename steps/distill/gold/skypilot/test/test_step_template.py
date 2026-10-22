@@ -88,7 +88,12 @@ class TestRankHandling:
     """
 
     def test_topology_is_snapshotted_from_skypilot_generic_vars(self, run_script):
-        for var in ("SKYPILOT_NODE_RANK", "SKYPILOT_NUM_NODES", "SKYPILOT_NUM_GPUS_PER_NODE", "SKYPILOT_NODE_IPS"):
+        for var in (
+            "SKYPILOT_NODE_RANK",
+            "SKYPILOT_NUM_NODES",
+            "SKYPILOT_NUM_GPUS_PER_NODE",
+            "SKYPILOT_NODE_IPS",
+        ):
             assert f"${{{var}" in run_script
 
     def test_master_addr_is_required_not_defaulted(self, run_script):
@@ -381,7 +386,7 @@ class TestMasterAddressIsAnIp:
     """
 
     def test_master_is_derived_from_skypilot_node_ips(self, run_script):
-        assert 'MADDR="$(printf \'%s\\n\' "${SKYPILOT_NODE_IPS:?' in run_script
+        assert "MADDR=\"$(printf '%s\\n' \"${SKYPILOT_NODE_IPS:?" in run_script
         assert run_script.index("MADDR=") < run_script.index("--main_process_ip")
 
     def test_accelerate_receives_the_resolved_address(self, run_script):
@@ -492,7 +497,9 @@ class TestDistillSourceDelivery:
     def test_code_dir_and_pybin_are_static(self, run_script):
         """Both paths are fixed by steps/distill/gpu/Dockerfile's own COPY/ENV
         lines, not resolved from a config field or a clone destination."""
-        assert 'CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"' in run_script
+        assert (
+            'CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"' in run_script
+        )
         assert 'PYBIN="python"' in run_script
 
     def test_no_clone_or_runtime_venv_sync_remains(self, run_script):

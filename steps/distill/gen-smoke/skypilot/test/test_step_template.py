@@ -7,9 +7,9 @@ script whole (build bb779f1f) fails here.
 
 import json
 import os
-import sys
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -22,7 +22,8 @@ _DIR = Path(__file__).resolve().parent.parent
 
 def _image_env(tmp_path, step, python=None):
     """Emulate the baked image: DISTILL_HOME/steps/<step> holds this step's scripts, and a
-    `python` first on PATH (the image puts its venv there) is the test's own interpreter."""
+    `python` first on PATH (the image puts its venv there) is the test's own interpreter.
+    """
     home = tmp_path / "distill-home"
     (home / "steps").mkdir(parents=True)
     (home / "steps" / step).symlink_to(_DIR / "src")
@@ -37,6 +38,8 @@ def _image_env(tmp_path, step, python=None):
         "DISTILL_HOME": str(home),
         "PATH": f"{shim}{os.pathsep}{os.environ['PATH']}",
     }
+
+
 _STEP = _DIR / "step-template.yaml"
 
 
@@ -108,6 +111,7 @@ def test_every_rung_reaches_the_script_as_its_own_argument(
         flag,
         *rungs,
     ]
+
 
 def test_the_slurm_executors_stripped_env_is_restored(launcher):
     """The SLURM executor runs tasks under `env -u PYTHONPATH` with no VIRTUAL_ENV, so the

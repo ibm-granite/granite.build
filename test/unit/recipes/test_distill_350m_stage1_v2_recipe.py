@@ -386,16 +386,12 @@ class TestTheTrainerPin:
     def test_the_fold_in_is_recorded_in_the_vendor_docs(self):
         """Otherwise the fold-in has no provenance trail at all: where the fields came
         from, and why they are safe to rely on unconditionally now."""
-        vendored_md = (
-            _RECIPE.parents[3]
-            / "steps"
-            / "distill"
-            / "src"
-            / "VENDORED.md"
-        )
+        vendored_md = _RECIPE.parents[3] / "steps" / "distill" / "src" / "VENDORED.md"
         assert vendored_md.is_file()
         text = vendored_md.read_text(encoding="utf-8")
-        assert "a5d59bc4" in text, "VENDORED.md must name the pin the fold-in applies to"
+        assert (
+            "a5d59bc4" in text
+        ), "VENDORED.md must name the pin the fold-in applies to"
         for key in ("ce_coef", "log_student_entropy", "entropy_guard"):
             assert key in text, f"{key} is not documented in VENDORED.md"
 
@@ -552,7 +548,9 @@ class TestGenSmoke:
         assert result.returncode == 0, result.stderr
         argv = json.loads(argv_log.read_text(encoding="utf-8"))
         rungs = _params()["CKPT_LADDER"].split(",")
-        assert argv[0] == str(tmp_path / "distill-home/steps/gen-smoke/gen_smoke.py"), f"interpreter got {argv}"
+        assert argv[0] == str(
+            tmp_path / "distill-home/steps/gen-smoke/gen_smoke.py"
+        ), f"interpreter got {argv}"
         assert len(argv) == 5 + len(rungs), f"interpreter got {argv}"
         assert argv[1].endswith("/gen-smoke/repetition.json")
         assert argv[2] == str(_params()["GEN_SMOKE_MAX_REPETITION"])

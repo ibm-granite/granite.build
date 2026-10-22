@@ -76,6 +76,8 @@ from packaging.utils import canonicalize_name
 
 REPO = pathlib.Path(__file__).resolve().parents[3]
 STEPS = REPO / "steps"
+
+
 # Which steps are exact-pinned is DERIVED, not listed. A name here went stale within a day:
 # it said distill-gold-train, and by then three steps carried `==` pyprojects and locks.
 def exact_pin_step(deps: list[str]) -> bool:
@@ -144,25 +146,43 @@ def self_test() -> int:
 
     have = installed("transformers")
     if have is None:
-        print("  FAIL transformers is not installed, so the self-test has no real version to")
-        print("       build cases from. Run this against the reference training environment.")
+        print(
+            "  FAIL transformers is not installed, so the self-test has no real version to"
+        )
+        print(
+            "       build cases from. Run this against the reference training environment."
+        )
         return 1
 
     major = int(have.split(".")[0])
     admits = Requirement(f"transformers>={have},<{major + 1}")
-    excludes = Requirement(f"transformers>={major + 1}.0.0")  # a floor above anything installed
+    excludes = Requirement(
+        f"transformers>={major + 1}.0.0"
+    )  # a floor above anything installed
 
-    report(admits.specifier.contains(have, prereleases=True),
-           "a specifier built around the installed version SATISFIES", f"{admits} vs {have}")
-    report(not excludes.specifier.contains(have, prereleases=True),
-           "a floor above the installed version is VIOLATED", f"{excludes} vs {have}")
-    report(installed("a-package-that-cannot-exist-91b3f") is None,
-           "an unknown distribution reports ABSENT rather than raising")
+    report(
+        admits.specifier.contains(have, prereleases=True),
+        "a specifier built around the installed version SATISFIES",
+        f"{admits} vs {have}",
+    )
+    report(
+        not excludes.specifier.contains(have, prereleases=True),
+        "a floor above the installed version is VIOLATED",
+        f"{excludes} vs {have}",
+    )
+    report(
+        installed("a-package-that-cannot-exist-91b3f") is None,
+        "an unknown distribution reports ABSENT rather than raising",
+    )
 
     # And the shape of the real hf-export bug, stated as the case it was: a floor naming a real
     # release that the verified environment predates.
-    report(not Requirement("transformers>=5.15.0").specifier.contains("5.8.0", prereleases=True),
-           "the historical bug is caught: >=5.15.0 excludes the verified 5.8.0")
+    report(
+        not Requirement("transformers>=5.15.0").specifier.contains(
+            "5.8.0", prereleases=True
+        ),
+        "the historical bug is caught: >=5.15.0 excludes the verified 5.8.0",
+    )
 
     print()
     print("SELF-TEST PASSES" if not fail else "SELF-TEST FAILED")
@@ -187,17 +207,31 @@ def main() -> int:
         # today; both existed as an unnoticed state for a day, which is why they are checked.
         if exact and not lock.exists():
             print(f"{step.name}")
-            print("  NO LOCK    every dependency is `==` pinned but there is no uv.lock, so")
-            print("             nothing checks the pins and `uv sync --locked` cannot run")
-            findings.append(f"{step.name}: exact `==` pins with no uv.lock to check them against")
+            print(
+                "  NO LOCK    every dependency is `==` pinned but there is no uv.lock, so"
+            )
+            print(
+                "             nothing checks the pins and `uv sync --locked` cannot run"
+            )
+            findings.append(
+                f"{step.name}: exact `==` pins with no uv.lock to check them against"
+            )
             print()
             continue
         if lock.exists() and not exact:
             print(f"{step.name}")
-            print("  LOCK/RANGE a uv.lock is present -- so the image installs `uv sync --locked`")
-            print("             -- while the pyproject declares ranges. The two disagree about")
-            print("             what this step depends on; the lock is what actually ships.")
-            findings.append(f"{step.name}: uv.lock present but pyproject declares ranges")
+            print(
+                "  LOCK/RANGE a uv.lock is present -- so the image installs `uv sync --locked`"
+            )
+            print(
+                "             -- while the pyproject declares ranges. The two disagree about"
+            )
+            print(
+                "             what this step depends on; the lock is what actually ships."
+            )
+            findings.append(
+                f"{step.name}: uv.lock present but pyproject declares ranges"
+            )
             print()
             continue
 
@@ -210,7 +244,9 @@ def main() -> int:
                     findings.append(f"{step.name}: {name} pinned =={want} but absent")
                 elif have != want:
                     print(f"  DEVIATES   {name}  pinned =={want}, installed {have}")
-                    findings.append(f"{step.name}: {name} pinned =={want}, installed {have}")
+                    findings.append(
+                        f"{step.name}: {name} pinned =={want}, installed {have}"
+                    )
                 else:
                     print(f"  EQUAL      {name}  =={want}")
             # Every declared dependency has to appear in this block or the count silently
@@ -235,7 +271,9 @@ def main() -> int:
                 # No specifier admits every version, so there is nothing to satisfy. Saying
                 # SATISFIED here would claim a check that did not run; this is not a finding
                 # (see the docstring on deliberately-unpinned leaf utilities).
-                print(f"  UNPINNED   {raw}   (installed {have}; no specifier, nothing checked)")
+                print(
+                    f"  UNPINNED   {raw}   (installed {have}; no specifier, nothing checked)"
+                )
                 continue
             if have is None:
                 print(f"  ABSENT     {raw}")
@@ -261,10 +299,14 @@ def main() -> int:
             print(f"  - {f}")
         print()
         print("Fix the DECLARATION to admit the observed version, or record why the")
-        print("environment should move. Do not raise a floor to a version no run has used.")
+        print(
+            "environment should move. Do not raise a floor to a version no run has used."
+        )
         return 1
 
-    print("EVERY DECLARED RANGE ADMITS, AND EVERY EXACT PIN EQUALS, THE VERIFIED ENVIRONMENT")
+    print(
+        "EVERY DECLARED RANGE ADMITS, AND EVERY EXACT PIN EQUALS, THE VERIFIED ENVIRONMENT"
+    )
     return 0
 
 

@@ -37,6 +37,7 @@ GPU, a model, or an allocation, but importing custom_gold_trainer pulls in vllm,
 `No module named 'vllm_ascend'`). A decision function that cannot be exercised cheaply is a decision
 function that ships untested, and this one had already cost a run.
 """
+
 from __future__ import annotations
 
 import os
@@ -55,10 +56,16 @@ def verify_enabled() -> bool:
     The probe is itself unconditional across ranks, so it cannot become the thing that desynchronises
     them.
     """
-    return os.environ.get("GOLD_VERIFY_DRAW_AGREEMENT", "1").lower() not in ("0", "false", "no")
+    return os.environ.get("GOLD_VERIFY_DRAW_AGREEMENT", "1").lower() not in (
+        "0",
+        "false",
+        "no",
+    )
 
 
-def draw_on_policy(current_lmbda: float, seed: int, global_step: int, device=None) -> bool:
+def draw_on_policy(
+    current_lmbda: float, seed: int, global_step: int, device=None
+) -> bool:
     """True if this step should draw from the teacher. Same answer on every rank, by construction.
 
     `device` is only used by the agreement probe; pass the accelerator's device so the probe rides
@@ -70,7 +77,9 @@ def draw_on_policy(current_lmbda: float, seed: int, global_step: int, device=Non
         return True
 
     step = int(global_step or 0)
-    decision = random.Random(f"{int(seed)}:{step}:{DRAW_SALT}").random() <= current_lmbda
+    decision = (
+        random.Random(f"{int(seed)}:{step}:{DRAW_SALT}").random() <= current_lmbda
+    )
 
     if verify_enabled() and dist.is_available() and dist.is_initialized():
         probe = torch.tensor([1 if decision else 0], dtype=torch.int64, device=device)

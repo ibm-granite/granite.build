@@ -65,6 +65,7 @@ consumer should use `find_series()` below for the same reason.
 Stdlib only at module scope, on purpose: the routing is a pure function of a string, and the check
 script exercises it on the login node where transformers/clearml are not importable.
 """
+
 from __future__ import annotations
 
 # Mirrors the local list in transformers.integrations.integration_utils.ClearMLCallback.on_log.
@@ -98,7 +99,7 @@ def scalar_destination(key: str) -> tuple[str, str]:
     would render as a series literally named "train/is_weight_mean" inside a plot named "train".
     Stripping it lets those keys be classified like any other and keeps the series name readable.
     """
-    series = key[len("train/"):] if key.startswith("train/") else key
+    series = key[len("train/") :] if key.startswith("train/") else key
 
     # FIRST, deliberately, and the ordering is the whole decision. The ULD diagnostics
     # (`uld/span_mismatch_rows`, `uld/regions_per_row`, `uld/relaxed_boundaries`,
@@ -135,7 +136,11 @@ def scalar_destination(key: str) -> tuple[str, str]:
     # integers, and only the derived ratios land here.
     if series.startswith("gen_"):
         return "gen", series
-    if series.startswith("n_") or series.startswith("num_") or series.endswith(_COUNTER_SUFFIXES):
+    if (
+        series.startswith("n_")
+        or series.startswith("num_")
+        or series.endswith(_COUNTER_SUFFIXES)
+    ):
         return "counters", series
     return "train", series
 
@@ -150,7 +155,11 @@ def partition(logs: dict) -> tuple[dict, dict]:
     ours, theirs = {}, {}
     for k, v in (logs or {}).items():
         numeric = isinstance(v, (int, float)) and not isinstance(v, bool)
-        if numeric and k not in SINGLE_VALUE_SCALARS and not k.startswith(("eval_", "test_")):
+        if (
+            numeric
+            and k not in SINGLE_VALUE_SCALARS
+            and not k.startswith(("eval_", "test_"))
+        ):
             ours[k] = v
         else:
             theirs[k] = v
@@ -195,25 +204,32 @@ def install(trainer, emit=print) -> bool:
     """
     try:
         from transformers.integrations.integration_utils import ClearMLCallback
-    except Exception as exc:                                    # transformers without the extra
+    except Exception as exc:  # transformers without the extra
         emit(f"[scalar-groups] not installed: cannot import ClearMLCallback ({exc})")
         return False
 
-    present = [cb for cb in trainer.callback_handler.callbacks
-               if isinstance(cb, ClearMLCallback)]
+    present = [
+        cb
+        for cb in trainer.callback_handler.callbacks
+        if isinstance(cb, ClearMLCallback)
+    ]
     if not present:
         # report_to has no "clearml" -- nothing to regroup, and saying so beats silence when
         # someone is looking for grouped plots that never appear.
-        emit("[scalar-groups] no ClearMLCallback on the trainer (report_to has no 'clearml'); "
-             "nothing to regroup")
+        emit(
+            "[scalar-groups] no ClearMLCallback on the trainer (report_to has no 'clearml'); "
+            "nothing to regroup"
+        )
         return False
 
     grouped = _grouped_callback_class(ClearMLCallback)
     for cb in present:
         trainer.remove_callback(cb)
     trainer.add_callback(grouped())
-    emit(f"[scalar-groups] ClearML train scalars will be split across plots: "
-         f"{', '.join(TITLES)}")
+    emit(
+        f"[scalar-groups] ClearML train scalars will be split across plots: "
+        f"{', '.join(TITLES)}"
+    )
     return True
 
 
@@ -224,15 +240,30 @@ def _grouped_callback_class(base):
     class GroupedClearMLCallback(base):
         """Re-titles train-time scalars; delegates everything else to the base implementation."""
 
-        def on_log(self, args, state, control, model=None, processing_class=None, logs=None,
-                   **kwargs):
+        def on_log(
+            self,
+            args,
+            state,
+            control,
+            model=None,
+            processing_class=None,
+            logs=None,
+            **kwargs,
+        ):
             ours, theirs = partition(logs)
 
             # Always delegate, even with an empty dict: the base method owns the `self._clearml is
             # None` guard, the lazy `setup()` call and the world-process-zero check, and we need all
             # three to have happened before touching the task below.
-            super().on_log(args, state, control, model=model, processing_class=processing_class,
-                           logs=theirs, **kwargs)
+            super().on_log(
+                args,
+                state,
+                control,
+                model=model,
+                processing_class=processing_class,
+                logs=theirs,
+                **kwargs,
+            )
 
             if getattr(self, "_clearml", None) is None or not ours:
                 return
@@ -246,7 +277,11 @@ def _grouped_callback_class(base):
             suffix = getattr(base, "log_suffix", "")
             for key, value in ours.items():
                 title, series = scalar_destination(key)
-                logger.report_scalar(title=title + suffix, series=series, value=value,
-                                     iteration=state.global_step)
+                logger.report_scalar(
+                    title=title + suffix,
+                    series=series,
+                    value=value,
+                    iteration=state.global_step,
+                )
 
     return GroupedClearMLCallback

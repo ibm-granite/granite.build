@@ -14,25 +14,31 @@
 
 import html
 import json
+import math
 import os
 import random
+import re
 import textwrap
+import time
 import warnings
 from collections import defaultdict, deque
 from collections.abc import Callable
 from contextlib import nullcontext
 from typing import Any, Optional
-import math
-import re
-import time
 
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 from accelerate import PartialState
-from accelerate.utils import DistributedType, broadcast_object_list, gather_object, is_peft_model
+from accelerate.utils import (
+    DistributedType,
+    broadcast_object_list,
+    gather_object,
+    is_peft_model,
+)
 from datasets import Dataset, IterableDataset
+from gb_steps_post_training.distillation.on_policy_draw import draw_on_policy
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from transformers import AutoTokenizer, is_bitsandbytes_available
 from transformers.data.data_collator import DataCollator
@@ -51,22 +57,28 @@ from transformers.utils import (
     is_peft_available,
     is_rich_available,
 )
-
-from trl.data_utils import is_conversational, maybe_convert_to_chatml, pack_dataset, truncate_dataset
+from trl.data_utils import (
+    is_conversational,
+    maybe_convert_to_chatml,
+    pack_dataset,
+    truncate_dataset,
+)
 from trl.extras.profiling import profiling_decorator
 from trl.extras.vllm_client import VLLMClient
-
-from gb_steps_post_training.distillation.on_policy_draw import draw_on_policy
 
 # Patch VLLMClient to read group_port from VLLM_NCCL_COORDINATOR_PORT env var
 # instead of using the hardcoded default (51216), which causes port collisions
 # on shared nodes.
 _orig_vllm_client_init = VLLMClient.__init__
 
+
 def _patched_vllm_client_init(self, *args, **kwargs):
     if "group_port" not in kwargs:
-        kwargs["group_port"] = int(os.environ.get("VLLM_NCCL_COORDINATOR_PORT", "51216"))
+        kwargs["group_port"] = int(
+            os.environ.get("VLLM_NCCL_COORDINATOR_PORT", "51216")
+        )
     _orig_vllm_client_init(self, *args, **kwargs)
+
 
 VLLMClient.__init__ = _patched_vllm_client_init
 
@@ -99,7 +111,7 @@ class MultiVLLMClient:
         offset = 0
         for i in range(n_servers):
             size = base + (1 if i < remainder else 0)
-            chunks.append(prompts[offset:offset + size])
+            chunks.append(prompts[offset : offset + size])
             offset += size
 
         from concurrent.futures import ThreadPoolExecutor
@@ -127,7 +139,9 @@ class MultiVLLMClient:
             client.update_named_param(name, weights)
 
         with ThreadPoolExecutor(max_workers=len(self.clients)) as pool:
-            futures = [pool.submit(_sync, c, s) for c, s in zip(self.clients, self._streams)]
+            futures = [
+                pool.submit(_sync, c, s) for c, s in zip(self.clients, self._streams)
+            ]
             for f in futures:
                 f.result()
 
@@ -210,7 +224,9 @@ def build_teacher_inputs_from_texts_with_eos_control(
     pad_value = pad_token_id if pad_token_id is not None else 0
 
     prompt_token_ids = tokenizer(prompt_texts, add_special_tokens=True)["input_ids"]
-    completion_token_ids = tokenizer(completion_texts, add_special_tokens=False)["input_ids"]
+    completion_token_ids = tokenizer(completion_texts, add_special_tokens=False)[
+        "input_ids"
+    ]
 
     # First pass: strip trailing EOS from prompts and compute max_prompt_length
     cleaned_prompt_ids: list[list[int]] = []
@@ -219,17 +235,23 @@ def build_teacher_inputs_from_texts_with_eos_control(
             prompt_ids = prompt_ids[:-1]
         cleaned_prompt_ids.append(prompt_ids)
 
-    max_prompt_length = max(len(p) for p in cleaned_prompt_ids) if cleaned_prompt_ids else 0
+    max_prompt_length = (
+        max(len(p) for p in cleaned_prompt_ids) if cleaned_prompt_ids else 0
+    )
 
     # Second pass: build left-padded sequences
     sequences: list[torch.Tensor] = []
     attention_masks: list[torch.Tensor] = []
     labels_list: list[torch.Tensor] = []
 
-    for i, (prompt_ids, completion_ids) in enumerate(zip(cleaned_prompt_ids, completion_token_ids, strict=True)):
+    for i, (prompt_ids, completion_ids) in enumerate(
+        zip(cleaned_prompt_ids, completion_token_ids, strict=True)
+    ):
         left_pad_count = max_prompt_length - len(prompt_ids)
 
-        sequence = [pad_value] * left_pad_count + list(prompt_ids) + list(completion_ids)
+        sequence = (
+            [pad_value] * left_pad_count + list(prompt_ids) + list(completion_ids)
+        )
         should_append = append_eos is None or append_eos[i]
         if eos_token_id is not None and should_append:
             sequence.append(eos_token_id)
@@ -250,14 +272,23 @@ def build_teacher_inputs_from_texts_with_eos_control(
         labels_list.append(labels_tensor)
 
     teacher_input_ids = pad(sequences, padding_side="right", padding_value=pad_value)
-    teacher_attention_mask = pad(attention_masks, padding_side="right", padding_value=0).bool()
+    teacher_attention_mask = pad(
+        attention_masks, padding_side="right", padding_value=0
+    ).bool()
     teacher_labels = pad(labels_list, padding_side="right", padding_value=-100)
 
     teacher_prompt_length = max_prompt_length
-    return teacher_input_ids, teacher_labels, teacher_attention_mask, teacher_prompt_length
+    return (
+        teacher_input_ids,
+        teacher_labels,
+        teacher_attention_mask,
+        teacher_prompt_length,
+    )
 
 
-def contiguous_label_spans(labels_row, ignore_index: int = -100) -> list[tuple[int, int]]:
+def contiguous_label_spans(
+    labels_row, ignore_index: int = -100
+) -> list[tuple[int, int]]:
     """Every maximal run of supervised positions in one label row, as (start, size).
 
     WHY THIS IS NOT `_get_start_and_size_answers`. That helper (trl gold_trainer.py:687)
@@ -353,7 +384,8 @@ def build_teacher_inputs_from_turn_segments(
             f"tokenizer for this teacher ({type(tokenizer).__name__}) is not fast. Convert it "
             "(a tokenizer.json next to the weights is enough) rather than removing this "
             "check: the alternative is the segment-wise render this replaced, which feeds "
-            "the teacher ids it never sees at inference.")
+            "the teacher ids it never sees at inference."
+        )
 
     sequences: list[torch.Tensor] = []
     attention_masks: list[torch.Tensor] = []
@@ -380,8 +412,13 @@ def build_teacher_inputs_from_turn_segments(
         # the render's own `<|im_end|>` (that one carries a real offset span). A prepended
         # BOS is kept -- the old builder kept it too, and its empty span means it can never
         # fall inside a region.
-        while (ids and offsets and offsets[-1][1] <= offsets[-1][0]
-               and eos_token_id is not None and ids[-1] == eos_token_id):
+        while (
+            ids
+            and offsets
+            and offsets[-1][1] <= offsets[-1][0]
+            and eos_token_id is not None
+            and ids[-1] == eos_token_id
+        ):
             ids.pop()
             offsets.pop()
 
@@ -393,7 +430,9 @@ def build_teacher_inputs_from_turn_segments(
             # WHOLLY inside, not merely overlapping: a token that straddles the boundary
             # belongs to the context side (see the docstring). `b > a` drops the specials
             # that carry no characters.
-            idx = [k for k, (a, b) in enumerate(offsets) if b > a and a >= lo and b <= hi]
+            idx = [
+                k for k, (a, b) in enumerate(offsets) if b > a and a >= lo and b <= hi
+            ]
             if not idx:
                 # The turn's characters do not contain a single whole token. Nothing to
                 # supervise, so no region -- the same outcome the old builder reached for an
@@ -407,7 +446,8 @@ def build_teacher_inputs_from_turn_segments(
                     f"tokenisation: token indices {idx[0]}..{idx[-1]} span "
                     f"{idx[-1] - idx[0] + 1} positions but only {len(idx)} lie inside it. "
                     "That means a token with no character span sits in the middle of a turn, "
-                    "which contiguous_label_spans cannot represent.")
+                    "which contiguous_label_spans cannot represent."
+                )
             spans.append((idx[0], len(idx)))
             for k in idx:
                 # The EOS is the region's last token, not an appended one: the region's end
@@ -428,7 +468,9 @@ def build_teacher_inputs_from_turn_segments(
         spans_out.append(spans)
 
     teacher_input_ids = pad(sequences, padding_side="right", padding_value=pad_value)
-    teacher_attention_mask = pad(attention_masks, padding_side="right", padding_value=0).bool()
+    teacher_attention_mask = pad(
+        attention_masks, padding_side="right", padding_value=0
+    ).bool()
     teacher_labels = pad(labels_list, padding_side="right", padding_value=-100)
     return teacher_input_ids, teacher_labels, teacher_attention_mask, spans_out
 
@@ -481,21 +523,26 @@ def _turn_boundary(full: str, prefix: str, through: str, j: int) -> tuple[int, b
             f"prefix of render(msgs), so the full render does not contain this turn's own "
             f"rendered text and no offset can recover it. A template that strips reasoning from "
             f"historical turns does exactly this; if it takes a flag for that (granite: "
-            f"truncate_history_thinking), pass it through uld_teacher_template_kwargs")
+            f"truncate_history_thinking), pass it through uld_teacher_template_kwargs"
+        )
     if full.startswith(prefix):
         if len(through) < len(prefix):
             raise ValueError(
                 f"teacher renders are not prefix-monotone at turn {j}: render(msgs[:j+1]) is "
                 f"shorter than render(msgs[:j], add_generation_prompt=True), so the turn would "
-                f"have negative length")
+                f"have negative length"
+            )
         return len(prefix), False
-    k = next((c for c in range(min(len(prefix), len(full))) if prefix[c] != full[c]),
-             min(len(prefix), len(full)))
+    k = next(
+        (c for c in range(min(len(prefix), len(full))) if prefix[c] != full[c]),
+        min(len(prefix), len(full)),
+    )
     if prefix[k:].strip() or k > len(through):
         raise ValueError(
             f"teacher renders are not prefix-monotone at turn {j}: the generation-prompt render "
             f"diverges from the full render at char {k} by more than trailing whitespace "
-            f"({prefix[k:k + 40]!r} vs {full[k:k + 40]!r}), so where this turn begins is a guess")
+            f"({prefix[k:k + 40]!r} vs {full[k:k + 40]!r}), so where this turn begins is a guess"
+        )
     return k, True
 
 
@@ -522,6 +569,7 @@ def teacher_turn_segments(
     is computed from the assumption that they are, and a template that violates it would
     otherwise yield silently mislabelled regions.
     """
+
     def _render(m, gen_prompt):
         kw = dict(tokenize=False, add_generation_prompt=gen_prompt, **tools_kwargs)
         if enable_thinking is not None:
@@ -531,8 +579,9 @@ def teacher_turn_segments(
     segments: list[tuple[str, bool]] = []
     cursor = 0
     full = _render(msgs, False)
-    last_assistant = max((j for j, m in enumerate(msgs) if m.get("role") == "assistant"),
-                         default=-1)
+    last_assistant = max(
+        (j for j, m in enumerate(msgs) if m.get("role") == "assistant"), default=-1
+    )
     for j, msg in enumerate(msgs):
         if msg.get("role") != "assistant":
             continue
@@ -556,7 +605,12 @@ def teacher_turn_segments(
         # the teacher's last turn must not carry one either. Intermediate turns are
         # unaffected: their EOS is in the middle of the sequence and cannot be the
         # truncation point.
-        if j == last_assistant and not append_eos and eos_str and content.endswith(eos_str):
+        if (
+            j == last_assistant
+            and not append_eos
+            and eos_str
+            and content.endswith(eos_str)
+        ):
             content = content[: -len(eos_str)]
         if not content:
             continue
@@ -602,7 +656,9 @@ class CustomULDLoss(ULDLoss):
     and ensures EOS tokens are properly aligned between student and teacher vocabularies.
     """
 
-    def __init__(self, config, student_tokenizer=None, teacher_tokenizer=None, trainer=None):
+    def __init__(
+        self, config, student_tokenizer=None, teacher_tokenizer=None, trainer=None
+    ):
         self._trainer = trainer
 
         # Resolve EOS token IDs BEFORE super().__init__ because it calls
@@ -621,10 +677,14 @@ class CustomULDLoss(ULDLoss):
         self.skip_teacher_eos = False
 
         self._max_group_size = getattr(config, "max_alignment_group_size", 10)
-        self._hybrid_sampled_opd_weight = getattr(config, "uld_hybrid_sampled_opd_weight", 0.0)
+        self._hybrid_sampled_opd_weight = getattr(
+            config, "uld_hybrid_sampled_opd_weight", 0.0
+        )
         self._opd_normalize_by_group = getattr(config, "opd_normalize_by_group", False)
         self._opd_ignore_multi_loss = getattr(config, "opd_ignore_multi_loss", False)
-        self._opd_ignore_unbalanced_loss = getattr(config, "opd_ignore_unbalanced_loss", False)
+        self._opd_ignore_unbalanced_loss = getattr(
+            config, "opd_ignore_unbalanced_loss", False
+        )
         self._uld_ignore_multi_loss = getattr(config, "uld_ignore_multi_loss", False)
         self._matched_top_k = getattr(config, "uld_matched_top_k", 0)
         self._renormalize_probs = getattr(config, "uld_renormalize_probs", False)
@@ -632,32 +692,74 @@ class CustomULDLoss(ULDLoss):
         # in torch.utils.checkpoint so its full-vocabulary probability tensors are freed and
         # recomputed in backward instead of being held. 0 keeps the historical whole-region
         # behaviour. See _region_terms_chunked for why this exists and what it costs.
-        self._region_chunk_groups = int(getattr(config, "uld_region_chunk_groups", 0) or 0)
-        self._opd_normalize_reward_with_baseline = getattr(config, "uld_opd_normalize_reward_with_baseline", False)
+        self._region_chunk_groups = int(
+            getattr(config, "uld_region_chunk_groups", 0) or 0
+        )
+        self._opd_normalize_reward_with_baseline = getattr(
+            config, "uld_opd_normalize_reward_with_baseline", False
+        )
         self._current_vllm_logprobs = None
 
         self._align_at_bytes = getattr(config, "uld_align_at_bytes", False)
         if self._align_at_bytes:
             from transformers.convert_slow_tokenizer import bytes_to_unicode
+
             self._unicode_to_byte = {v: k for k, v in bytes_to_unicode().items()}
 
-        self._opd_is_stats_accum = {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "masked_fraction": 0.0}
+        self._opd_is_stats_accum = {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "masked_fraction": 0.0,
+        }
         self._opd_is_stats_count = 0
 
         self._opd_reward_stats_accum = {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0}
         self._opd_reward_stats_count = 0
-        self._opd_reward_1to1_stats_accum = {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0}
+        self._opd_reward_1to1_stats_accum = {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+        }
         self._opd_reward_1to1_stats_count = 0
-        self._opd_reward_multi_stats_accum = {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0}
+        self._opd_reward_multi_stats_accum = {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+        }
         self._opd_reward_multi_stats_count = 0
-        self._opd_reward_1toN_stats_accum = {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0}
+        self._opd_reward_1toN_stats_accum = {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+        }
         self._opd_reward_1toN_stats_count = 0
-        self._opd_reward_Nto1_stats_accum = {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0}
+        self._opd_reward_Nto1_stats_accum = {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+        }
         self._opd_reward_Nto1_stats_count = 0
-        self._opd_reward_NtoN_stats_accum = {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0}
+        self._opd_reward_NtoN_stats_accum = {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+        }
         self._opd_reward_NtoN_stats_count = 0
 
-        self._opd_group_type_accum = {"total": 0, "1to1": 0, "1toN": 0, "Nto1": 0, "NtoN": 0}
+        self._opd_group_type_accum = {
+            "total": 0,
+            "1to1": 0,
+            "1toN": 0,
+            "Nto1": 0,
+            "NtoN": 0,
+        }
 
         self._alignment_total = 0
         self._alignment_truncated = 0
@@ -673,7 +775,11 @@ class CustomULDLoss(ULDLoss):
         student_vocab = self.student_tokenizer.get_vocab()
         teacher_vocab = self.teacher_tokenizer.get_vocab()
         matched = len(self._vocab_mapping)
-        self.jaccard = matched / (len(student_vocab) + len(teacher_vocab) - matched) if (len(student_vocab) + len(teacher_vocab) - matched) > 0 else 0.0
+        self.jaccard = (
+            matched / (len(student_vocab) + len(teacher_vocab) - matched)
+            if (len(student_vocab) + len(teacher_vocab) - matched) > 0
+            else 0.0
+        )
         print(f"Student Vocab: {len(student_vocab)}")
         print(f"Teacher Vocab: {len(teacher_vocab)}")
         print(f"Matched Vocab: {matched}")
@@ -689,17 +795,35 @@ class CustomULDLoss(ULDLoss):
                 self._vocab_mapping[self._teacher_eos_id] = self._student_eos_id
                 self._teacher_matched_ids.add(self._teacher_eos_id)
                 self._student_matched_ids.add(self._student_eos_id)
-                print(f"Forced EOS mapping: teacher {self._teacher_eos_id} -> student {self._student_eos_id}")
+                print(
+                    f"Forced EOS mapping: teacher {self._teacher_eos_id} -> student {self._student_eos_id}"
+                )
             else:
-                print(f"EOS mapping already present: teacher {self._teacher_eos_id} -> student {self._student_eos_id}")
+                print(
+                    f"EOS mapping already present: teacher {self._teacher_eos_id} -> student {self._student_eos_id}"
+                )
 
         # self._inverse_vocab_mapping = {v:k for k,v in self._vocab_mapping.items()} # for degub; remove later
 
-    def __call__(self, student_logits, teacher_logits, student_labels, teacher_labels,
-                 student_input_ids, teacher_input_ids, vllm_logprobs=None):
+    def __call__(
+        self,
+        student_logits,
+        teacher_logits,
+        student_labels,
+        teacher_labels,
+        student_input_ids,
+        teacher_input_ids,
+        vllm_logprobs=None,
+    ):
         self._current_vllm_logprobs = vllm_logprobs
-        result = super().__call__(student_logits, teacher_logits, student_labels, teacher_labels,
-                                  student_input_ids, teacher_input_ids)
+        result = super().__call__(
+            student_logits,
+            teacher_logits,
+            student_labels,
+            teacher_labels,
+            student_input_ids,
+            teacher_input_ids,
+        )
         self._current_vllm_logprobs = None
         return result
 
@@ -711,8 +835,12 @@ class CustomULDLoss(ULDLoss):
         mismatches cause the greedy matcher to lump all remaining tokens into one
         mega-group).  EOS is only appended when the full body aligned successfully.
         """
-        s_has_eos = len(student_token_ids) > 0 and student_token_ids[-1] == self._student_eos_id
-        t_has_eos = len(teacher_token_ids) > 0 and teacher_token_ids[-1] == self._teacher_eos_id
+        s_has_eos = (
+            len(student_token_ids) > 0 and student_token_ids[-1] == self._student_eos_id
+        )
+        t_has_eos = (
+            len(teacher_token_ids) > 0 and teacher_token_ids[-1] == self._teacher_eos_id
+        )
 
         s_ids_core = student_token_ids[:-1] if s_has_eos else student_token_ids
         t_ids_core = teacher_token_ids[:-1] if t_has_eos else teacher_token_ids
@@ -722,13 +850,17 @@ class CustomULDLoss(ULDLoss):
         truncated = False
 
         if s_ids_core and t_ids_core:
+
             def to_canonical_pieces(tok, ids):
                 pieces = []
                 prev = ""
                 for k in range(len(ids)):
-                    cur = tok.decode(ids[: k + 1], skip_special_tokens=False,
-                                     clean_up_tokenization_spaces=False)
-                    pieces.append(cur[len(prev):])
+                    cur = tok.decode(
+                        ids[: k + 1],
+                        skip_special_tokens=False,
+                        clean_up_tokenization_spaces=False,
+                    )
+                    pieces.append(cur[len(prev) :])
                     prev = cur
                 return pieces
 
@@ -755,7 +887,8 @@ class CustomULDLoss(ULDLoss):
 
                 # Check size limit before accumulating more tokens
                 if self._max_group_size > 0 and (
-                    len(s_group) >= self._max_group_size or len(t_group) >= self._max_group_size
+                    len(s_group) >= self._max_group_size
+                    or len(t_group) >= self._max_group_size
                 ):
                     truncated = True
                     break
@@ -852,7 +985,9 @@ class CustomULDLoss(ULDLoss):
             n = idx + 1
         return n
 
-    def _build_alignment_groups_at_bytes_from_ids(self, student_token_ids, teacher_token_ids):
+    def _build_alignment_groups_at_bytes_from_ids(
+        self, student_token_ids, teacher_token_ids
+    ):
         """Build alignment groups using byte-level matching instead of string-level.
 
         Same greedy matching structure as _build_alignment_groups_from_ids, but
@@ -860,8 +995,12 @@ class CustomULDLoss(ULDLoss):
         corruption from partial multi-byte sequences (e.g. emojis) that cause
         replacement characters in incremental string decoding.
         """
-        s_has_eos = len(student_token_ids) > 0 and student_token_ids[-1] == self._student_eos_id
-        t_has_eos = len(teacher_token_ids) > 0 and teacher_token_ids[-1] == self._teacher_eos_id
+        s_has_eos = (
+            len(student_token_ids) > 0 and student_token_ids[-1] == self._student_eos_id
+        )
+        t_has_eos = (
+            len(teacher_token_ids) > 0 and teacher_token_ids[-1] == self._teacher_eos_id
+        )
 
         s_ids_core = student_token_ids[:-1] if s_has_eos else student_token_ids
         t_ids_core = teacher_token_ids[:-1] if t_has_eos else teacher_token_ids
@@ -871,6 +1010,7 @@ class CustomULDLoss(ULDLoss):
         truncated = False
 
         if s_ids_core and t_ids_core:
+
             def to_byte_pieces(tok, ids):
                 pieces = []
                 for tid in ids:
@@ -902,7 +1042,8 @@ class CustomULDLoss(ULDLoss):
                     continue
 
                 if self._max_group_size > 0 and (
-                    len(s_group) >= self._max_group_size or len(t_group) >= self._max_group_size
+                    len(s_group) >= self._max_group_size
+                    or len(t_group) >= self._max_group_size
                 ):
                     truncated = True
                     break
@@ -964,12 +1105,18 @@ class CustomULDLoss(ULDLoss):
 
         return s_groups, t_groups
 
-    def _compute_sampled_opd_for_groups(self, student_probs, teacher_probs,
-                                         s_token_ids, t_token_ids,
-                                         s_groups, t_groups,
-                                         vllm_lp_per_pos=None,
-                                         student_logits_slice=None,
-                                         teacher_logits_slice=None):
+    def _compute_sampled_opd_for_groups(
+        self,
+        student_probs,
+        teacher_probs,
+        s_token_ids,
+        t_token_ids,
+        s_groups,
+        t_groups,
+        vllm_lp_per_pos=None,
+        student_logits_slice=None,
+        teacher_logits_slice=None,
+    ):
         """Sampled OPD loss at alignment group level.
 
         For each group g:
@@ -980,7 +1127,9 @@ class CustomULDLoss(ULDLoss):
 
         When vllm_lp_per_pos is provided, applies truncated IS correction.
         """
-        _zero_grad_source = student_probs if student_probs is not None else student_logits_slice
+        _zero_grad_source = (
+            student_probs if student_probs is not None else student_logits_slice
+        )
 
         if not s_groups:
             return (_zero_grad_source.sum() * 0.0, 0)
@@ -988,44 +1137,79 @@ class CustomULDLoss(ULDLoss):
         s_ids_t = torch.tensor(s_token_ids, device=_zero_grad_source.device)
         t_ids_t = torch.tensor(t_token_ids, device=_zero_grad_source.device)
         if student_logits_slice is not None and teacher_logits_slice is not None:
-            s_lp_all = F.log_softmax(student_logits_slice / self.student_temperature, dim=-1)
-            t_lp_all = F.log_softmax(teacher_logits_slice / self.teacher_temperature, dim=-1)
+            s_lp_all = F.log_softmax(
+                student_logits_slice / self.student_temperature, dim=-1
+            )
+            t_lp_all = F.log_softmax(
+                teacher_logits_slice / self.teacher_temperature, dim=-1
+            )
         else:
-            assert student_probs is not None and teacher_probs is not None, \
-                "Either logits slices or probability tensors must be provided"
+            assert (
+                student_probs is not None and teacher_probs is not None
+            ), "Either logits slices or probability tensors must be provided"
             s_lp_all = torch.log(student_probs.clamp_min(1e-8))
             t_lp_all = torch.log(teacher_probs.clamp_min(1e-8))
 
-        s_lp_per_pos = s_lp_all[torch.arange(len(s_token_ids), device=s_ids_t.device), s_ids_t]
-        t_lp_per_pos = t_lp_all[torch.arange(len(t_token_ids), device=t_ids_t.device), t_ids_t]
+        s_lp_per_pos = s_lp_all[
+            torch.arange(len(s_token_ids), device=s_ids_t.device), s_ids_t
+        ]
+        t_lp_per_pos = t_lp_all[
+            torch.arange(len(t_token_ids), device=t_ids_t.device), t_ids_t
+        ]
 
         group_s_lps = []
         group_t_lps = []
         group_vllm_lps = []
         for s_group, t_group in zip(s_groups, t_groups):
             if self._opd_normalize_by_group:
-                group_s_lps.append(s_lp_per_pos[s_group].mean() if s_group else s_lp_per_pos.new_tensor(0.0))
-                group_t_lps.append(t_lp_per_pos[t_group].mean() if t_group else t_lp_per_pos.new_tensor(0.0))
+                group_s_lps.append(
+                    s_lp_per_pos[s_group].mean()
+                    if s_group
+                    else s_lp_per_pos.new_tensor(0.0)
+                )
+                group_t_lps.append(
+                    t_lp_per_pos[t_group].mean()
+                    if t_group
+                    else t_lp_per_pos.new_tensor(0.0)
+                )
                 if vllm_lp_per_pos is not None:
-                    group_vllm_lps.append(vllm_lp_per_pos[s_group].mean() if s_group else vllm_lp_per_pos.new_tensor(0.0))
+                    group_vllm_lps.append(
+                        vllm_lp_per_pos[s_group].mean()
+                        if s_group
+                        else vllm_lp_per_pos.new_tensor(0.0)
+                    )
             else:
-                group_s_lps.append(s_lp_per_pos[s_group].sum() if s_group else s_lp_per_pos.new_tensor(0.0))
-                group_t_lps.append(t_lp_per_pos[t_group].sum() if t_group else t_lp_per_pos.new_tensor(0.0))
+                group_s_lps.append(
+                    s_lp_per_pos[s_group].sum()
+                    if s_group
+                    else s_lp_per_pos.new_tensor(0.0)
+                )
+                group_t_lps.append(
+                    t_lp_per_pos[t_group].sum()
+                    if t_group
+                    else t_lp_per_pos.new_tensor(0.0)
+                )
                 if vllm_lp_per_pos is not None:
-                    group_vllm_lps.append(vllm_lp_per_pos[s_group].sum() if s_group else vllm_lp_per_pos.new_tensor(0.0))
+                    group_vllm_lps.append(
+                        vllm_lp_per_pos[s_group].sum()
+                        if s_group
+                        else vllm_lp_per_pos.new_tensor(0.0)
+                    )
 
         s_lps = torch.stack(group_s_lps)
         t_lps = torch.stack(group_t_lps)
 
         # Skew teacher group log-probs: log(alpha * exp(s_lps) + (1-alpha) * exp(t_lps))
-        current_alpha = self._trainer._get_current_alpha() if self._trainer is not None else 0.0
+        current_alpha = (
+            self._trainer._get_current_alpha() if self._trainer is not None else 0.0
+        )
         if current_alpha > 0:
             log_alpha = math.log(current_alpha)
             log_1_minus_alpha = math.log(1 - current_alpha)
             t_lps = torch.logaddexp(log_alpha + s_lps, log_1_minus_alpha + t_lps)
 
         reward = (t_lps - s_lps).detach()
-        
+
         ### debug extremely long numbers; remove later
         # N = 10
         # if re.search(rf"\d{{{N},}}", self.student_tokenizer.decode(s_token_ids)):
@@ -1124,8 +1308,7 @@ class CustomULDLoss(ULDLoss):
 
         if self._trainer is not None and reward.numel() > 0:
             is_1to1 = [
-                len(sg) == 1 and len(tg) == 1
-                for sg, tg in zip(s_groups, t_groups)
+                len(sg) == 1 and len(tg) == 1 for sg, tg in zip(s_groups, t_groups)
             ]
             reward_vals = reward.detach()
             all_stats = {
@@ -1166,9 +1349,21 @@ class CustomULDLoss(ULDLoss):
                     self._opd_reward_multi_stats_accum[k] += stats_multi[k]
 
             # Sub-classify multi groups: 1-to-N, N-to-1, N-to-N
-            idx_1toN = [i for i, (sg, tg) in enumerate(zip(s_groups, t_groups)) if len(sg) == 1 and len(tg) > 1]
-            idx_Nto1 = [i for i, (sg, tg) in enumerate(zip(s_groups, t_groups)) if len(sg) > 1 and len(tg) == 1]
-            idx_NtoN = [i for i, (sg, tg) in enumerate(zip(s_groups, t_groups)) if len(sg) > 1 and len(tg) > 1]
+            idx_1toN = [
+                i
+                for i, (sg, tg) in enumerate(zip(s_groups, t_groups))
+                if len(sg) == 1 and len(tg) > 1
+            ]
+            idx_Nto1 = [
+                i
+                for i, (sg, tg) in enumerate(zip(s_groups, t_groups))
+                if len(sg) > 1 and len(tg) == 1
+            ]
+            idx_NtoN = [
+                i
+                for i, (sg, tg) in enumerate(zip(s_groups, t_groups))
+                if len(sg) > 1 and len(tg) > 1
+            ]
 
             self._opd_group_type_accum["total"] += len(s_groups)
             self._opd_group_type_accum["1to1"] += len(one_to_one_indices)
@@ -1177,9 +1372,21 @@ class CustomULDLoss(ULDLoss):
             self._opd_group_type_accum["NtoN"] += len(idx_NtoN)
 
             for idx_list, accum_attr, count_attr in [
-                (idx_1toN, "_opd_reward_1toN_stats_accum", "_opd_reward_1toN_stats_count"),
-                (idx_Nto1, "_opd_reward_Nto1_stats_accum", "_opd_reward_Nto1_stats_count"),
-                (idx_NtoN, "_opd_reward_NtoN_stats_accum", "_opd_reward_NtoN_stats_count"),
+                (
+                    idx_1toN,
+                    "_opd_reward_1toN_stats_accum",
+                    "_opd_reward_1toN_stats_count",
+                ),
+                (
+                    idx_Nto1,
+                    "_opd_reward_Nto1_stats_accum",
+                    "_opd_reward_Nto1_stats_count",
+                ),
+                (
+                    idx_NtoN,
+                    "_opd_reward_NtoN_stats_accum",
+                    "_opd_reward_NtoN_stats_count",
+                ),
             ]:
                 if idx_list:
                     r_sub = reward_vals[idx_list]
@@ -1195,7 +1402,11 @@ class CustomULDLoss(ULDLoss):
                         acc[k] += sub_stats[k]
 
             if self._opd_ignore_unbalanced_loss:
-                balanced_indices = [i for i, (sg, tg) in enumerate(zip(s_groups, t_groups)) if len(sg) == len(tg)]
+                balanced_indices = [
+                    i
+                    for i, (sg, tg) in enumerate(zip(s_groups, t_groups))
+                    if len(sg) == len(tg)
+                ]
                 if balanced_indices:
                     keep = balanced_indices
                     s_groups = [s_groups[i] for i in keep]
@@ -1227,7 +1438,9 @@ class CustomULDLoss(ULDLoss):
                         display_reward = clipped_reward.clone()
                         for i in multi_indices:
                             display_reward[i] = 0.0
-                    self._print_reward_html(s_token_ids, s_groups_for_vis, display_reward)
+                    self._print_reward_html(
+                        s_token_ids, s_groups_for_vis, display_reward
+                    )
 
         is_w = None
         if vllm_lp_per_pos is not None and group_vllm_lps:
@@ -1244,9 +1457,19 @@ class CustomULDLoss(ULDLoss):
             }
 
             # Per-token truncation mask
-            eps_lo = getattr(self._trainer.args, "opd_is_epsilon_low", 0.5) if self._trainer else 0.5
-            eps_hi = getattr(self._trainer.args, "opd_is_epsilon_high", 2.0) if self._trainer else 2.0
-            is_mask_per_pos = (is_weights_per_pos >= eps_lo) & (is_weights_per_pos <= eps_hi)
+            eps_lo = (
+                getattr(self._trainer.args, "opd_is_epsilon_low", 0.5)
+                if self._trainer
+                else 0.5
+            )
+            eps_hi = (
+                getattr(self._trainer.args, "opd_is_epsilon_high", 2.0)
+                if self._trainer
+                else 2.0
+            )
+            is_mask_per_pos = (is_weights_per_pos >= eps_lo) & (
+                is_weights_per_pos <= eps_hi
+            )
             is_stats["masked_fraction"] = 1.0 - is_mask_per_pos.float().mean().item()
 
             # Accumulate stats for logging
@@ -1280,7 +1503,12 @@ class CustomULDLoss(ULDLoss):
             return (_zero_grad_source.sum() * 0.0, 0)
 
         if self._opd_normalize_reward_with_baseline:
-            return {"s_lps": s_lps, "reward": reward, "is_w": is_w, "n_groups": s_lps.numel()}
+            return {
+                "s_lps": s_lps,
+                "reward": reward,
+                "is_w": is_w,
+                "n_groups": s_lps.numel(),
+            }
 
         if is_w is not None:
             loss = -(s_lps * reward * is_w).mean()
@@ -1300,7 +1528,9 @@ class CustomULDLoss(ULDLoss):
         for g_idx, s_group in enumerate(s_groups):
             if not s_group:
                 continue
-            text = self.student_tokenizer.decode(s_token_ids[s_group[0]:s_group[-1] + 1])
+            text = self.student_tokenizer.decode(
+                s_token_ids[s_group[0] : s_group[-1] + 1]
+            )
             val = reward_np[g_idx].item()
             if val >= 0:
                 t = min(val / pos_max, 1.0)
@@ -1318,12 +1548,12 @@ class CustomULDLoss(ULDLoss):
         rmax = reward_np.max().item()
         legend = (
             f'<div class="legend" style="display:flex;align-items:center;gap:4px;font-family:monospace;font-size:12px">'
-            f'<span>{rmin:.2f}</span>'
+            f"<span>{rmin:.2f}</span>"
             f'<div class="legend-bar" style="width:120px;height:14px;'
-            f'background:linear-gradient(to right,rgb(255,0,0),rgb(255,255,255),rgb(0,0,255));'
+            f"background:linear-gradient(to right,rgb(255,0,0),rgb(255,255,255),rgb(0,0,255));"
             f'border:1px solid #ccc;border-radius:2px"></div>'
-            f'<span>{rmax:.2f}</span>'
-            f'</div>'
+            f"<span>{rmax:.2f}</span>"
+            f"</div>"
         )
         html_str = "\n<p>" + "".join(spans) + "</p>\n" + legend + "\n"
         self._reward_html_buffer.append(html_str)
@@ -1375,9 +1605,19 @@ class CustomULDLoss(ULDLoss):
     # chunked, and compares the loss and the student-logit gradients.
 
     def _region_chunk_terms(
-        self, s_logits, t_logits, idx_s, idx_t, sg, tg,
-        student_matched_indices, teacher_matched_indices,
-        student_unmatched_mask, teacher_unmatched_mask, want_matched, want_unmatched,
+        self,
+        s_logits,
+        t_logits,
+        idx_s,
+        idx_t,
+        sg,
+        tg,
+        student_matched_indices,
+        teacher_matched_indices,
+        student_unmatched_mask,
+        teacher_unmatched_mask,
+        want_matched,
+        want_unmatched,
     ):
         """One chunk's matched and unmatched loss SUMS (no division). Runs under checkpoint.
 
@@ -1395,9 +1635,11 @@ class CustomULDLoss(ULDLoss):
             # Same tensors as :1502-1533 and the same sorted-L1 with the detached teacher tail
             # mass as :1654-1694, minus the final division by the aligned length.
             s_al = self._merge_probabilities_with_alignment_groups(
-                F.softmax(s_sel / self.student_temperature, dim=-1), sg)
+                F.softmax(s_sel / self.student_temperature, dim=-1), sg
+            )
             t_al = self._merge_probabilities_with_alignment_groups(
-                F.softmax(t_sel / self.teacher_temperature, dim=-1), tg)
+                F.softmax(t_sel / self.teacher_temperature, dim=-1), tg
+            )
             t_un = t_al[:, teacher_unmatched_mask]
             s_un = s_al[:, student_unmatched_mask]
             if t_un.size(-1) > 0 and s_un.size(-1) > 0:
@@ -1414,25 +1656,56 @@ class CustomULDLoss(ULDLoss):
                     u_sum = F.l1_loss(s_sorted, t_sorted, reduction="sum")
 
         if want_matched:
-            keep = [k for k, (a, b) in enumerate(zip(sg, tg)) if len(a) == 1 and len(b) == 1]
+            keep = [
+                k for k, (a, b) in enumerate(zip(sg, tg)) if len(a) == 1 and len(b) == 1
+            ]
             if keep:
-                pos_s = torch.tensor([sg[k][0] for k in keep], dtype=torch.long, device=s_sel.device)
-                pos_t = torch.tensor([tg[k][0] for k in keep], dtype=torch.long, device=t_sel.device)
-                s_ml = (s_sel[pos_s] / self.student_temperature)[:, student_matched_indices]
-                t_ml = (t_sel[pos_t] / self.teacher_temperature)[:, teacher_matched_indices]
-                beta = self._trainer._get_current_beta() if self._trainer is not None else self.beta
-                alpha = self._trainer._get_current_alpha() if self._trainer is not None else 0.0
+                pos_s = torch.tensor(
+                    [sg[k][0] for k in keep], dtype=torch.long, device=s_sel.device
+                )
+                pos_t = torch.tensor(
+                    [tg[k][0] for k in keep], dtype=torch.long, device=t_sel.device
+                )
+                s_ml = (s_sel[pos_s] / self.student_temperature)[
+                    :, student_matched_indices
+                ]
+                t_ml = (t_sel[pos_t] / self.teacher_temperature)[
+                    :, teacher_matched_indices
+                ]
+                beta = (
+                    self._trainer._get_current_beta()
+                    if self._trainer is not None
+                    else self.beta
+                )
+                alpha = (
+                    self._trainer._get_current_alpha()
+                    if self._trainer is not None
+                    else 0.0
+                )
                 m_sum = CustomGOLDTrainer.generalized_jsd_loss(
-                    F.softmax(s_ml, dim=-1), F.softmax(t_ml, dim=-1), labels=None,
-                    beta=beta, temperature=1.0, alpha=alpha,
-                    reduction="sum", logits_are_probs=True,
+                    F.softmax(s_ml, dim=-1),
+                    F.softmax(t_ml, dim=-1),
+                    labels=None,
+                    beta=beta,
+                    temperature=1.0,
+                    alpha=alpha,
+                    reduction="sum",
+                    logits_are_probs=True,
                 )
         return m_sum, u_sum
 
     def _region_terms_chunked(
-        self, s_logits_slice, t_logits_slice, s_groups, t_groups,
-        student_matched_indices, teacher_matched_indices,
-        student_unmatched_mask, teacher_unmatched_mask, want_matched, want_unmatched,
+        self,
+        s_logits_slice,
+        t_logits_slice,
+        s_groups,
+        t_groups,
+        student_matched_indices,
+        teacher_matched_indices,
+        student_unmatched_mask,
+        teacher_unmatched_mask,
+        want_matched,
+        want_unmatched,
     ):
         """(matched_sum, unmatched_sum, n_1to1, n_groups) over the region, chunk by chunk."""
         from torch.utils.checkpoint import checkpoint
@@ -1445,7 +1718,9 @@ class CustomULDLoss(ULDLoss):
         for lo in range(0, n_groups, chunk):
             hi = min(lo + chunk, n_groups)
             sg_raw, tg_raw = s_groups[lo:hi], t_groups[lo:hi]
-            n_1to1 += sum(1 for a, b in zip(sg_raw, tg_raw) if len(a) == 1 and len(b) == 1)
+            n_1to1 += sum(
+                1 for a, b in zip(sg_raw, tg_raw) if len(a) == 1 and len(b) == 1
+            )
             pos_s = sorted({p for g in sg_raw for p in g})
             pos_t = sorted({p for g in tg_raw for p in g})
             base_s = {p: k for k, p in enumerate(pos_s)}
@@ -1454,11 +1729,18 @@ class CustomULDLoss(ULDLoss):
             tg = [[base_t[p] for p in g] for g in tg_raw]
             ms, us = checkpoint(
                 self._region_chunk_terms,
-                s_logits_slice, t_logits_slice,
+                s_logits_slice,
+                t_logits_slice,
                 torch.tensor(pos_s, dtype=torch.long, device=s_logits_slice.device),
                 torch.tensor(pos_t, dtype=torch.long, device=t_logits_slice.device),
-                sg, tg, student_matched_indices, teacher_matched_indices,
-                student_unmatched_mask, teacher_unmatched_mask, want_matched, want_unmatched,
+                sg,
+                tg,
+                student_matched_indices,
+                teacher_matched_indices,
+                student_unmatched_mask,
+                teacher_unmatched_mask,
+                want_matched,
+                want_unmatched,
                 use_reentrant=False,
             )
             m_sum = m_sum + ms
@@ -1466,19 +1748,40 @@ class CustomULDLoss(ULDLoss):
         return m_sum, u_sum, n_1to1, n_groups
 
     def _compute_distillation_loss(
-        self, student_logits, teacher_logits, student_labels, teacher_labels, student_input_ids, teacher_input_ids
+        self,
+        student_logits,
+        teacher_logits,
+        student_labels,
+        teacher_labels,
+        student_input_ids,
+        teacher_input_ids,
     ):
-        import os, sys
-        _dbg = os.environ.get("ULD_DEBUG") == "1" and int(os.environ.get("RANK", "0")) == 0 and not getattr(self, "_dbg_done", False)
+        import os
+        import sys
+
+        _dbg = (
+            os.environ.get("ULD_DEBUG") == "1"
+            and int(os.environ.get("RANK", "0")) == 0
+            and not getattr(self, "_dbg_done", False)
+        )
         if not (self.use_hybrid_loss and self._vocab_mapping is not None):
             if _dbg:
                 _ss = self._get_start_and_size_answers(student_labels)[1]
                 _ts = self._get_start_and_size_answers(teacher_labels)[1]
-                print(f"[ULD_DEBUG] BASE path (hybrid={self.use_hybrid_loss} vocab_map={self._vocab_mapping is not None}) "
-                      f"s_sizes={_ss} t_sizes={_ts} s_ids={list(student_logits.shape)} t_ids={list(teacher_logits.shape)}", file=sys.stderr, flush=True)
+                print(
+                    f"[ULD_DEBUG] BASE path (hybrid={self.use_hybrid_loss} vocab_map={self._vocab_mapping is not None}) "
+                    f"s_sizes={_ss} t_sizes={_ts} s_ids={list(student_logits.shape)} t_ids={list(teacher_logits.shape)}",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 self._dbg_done = True
             return super()._compute_distillation_loss(
-                student_logits, teacher_logits, student_labels, teacher_labels, student_input_ids, teacher_input_ids
+                student_logits,
+                teacher_logits,
+                student_labels,
+                teacher_labels,
+                student_input_ids,
+                teacher_input_ids,
             )
 
         # ONE ENTRY PER SUPERVISED REGION, NOT PER ROW. On a single-region row these lists
@@ -1507,19 +1810,36 @@ class CustomULDLoss(ULDLoss):
                 student_answer_size.append(s_size)
                 teacher_answer_index.append(t_start)
                 teacher_answer_size.append(t_size)
-        self._uld_span_mismatch_rows = getattr(self, "_uld_span_mismatch_rows", 0) + n_mismatch
+        self._uld_span_mismatch_rows = (
+            getattr(self, "_uld_span_mismatch_rows", 0) + n_mismatch
+        )
         self._uld_regions_seen = getattr(self, "_uld_regions_seen", 0) + len(row_of)
-        self._uld_rows_seen = getattr(self, "_uld_rows_seen", 0) + student_logits.size(0)
+        self._uld_rows_seen = getattr(self, "_uld_rows_seen", 0) + student_logits.size(
+            0
+        )
 
         if _dbg:
-            print(f"[ULD_DEBUG] HYBRID path regions={len(row_of)} rows={student_logits.size(0)} "
-                  f"mismatch_rows={n_mismatch} s_sizes={student_answer_size} "
-                  f"t_sizes={teacher_answer_size}", file=sys.stderr, flush=True)
+            print(
+                f"[ULD_DEBUG] HYBRID path regions={len(row_of)} rows={student_logits.size(0)} "
+                f"mismatch_rows={n_mismatch} s_sizes={student_answer_size} "
+                f"t_sizes={teacher_answer_size}",
+                file=sys.stderr,
+                flush=True,
+            )
             self._dbg_done = True
 
         # Handle edge case where all answer sizes are 0
-        if max(max(student_answer_size, default=0), max(teacher_answer_size, default=0)) <= 0:
-            return torch.zeros(1, device=student_logits.device, requires_grad=True) * student_logits.sum() * 1e-8
+        if (
+            max(
+                max(student_answer_size, default=0), max(teacher_answer_size, default=0)
+            )
+            <= 0
+        ):
+            return (
+                torch.zeros(1, device=student_logits.device, requires_grad=True)
+                * student_logits.sum()
+                * 1e-8
+            )
 
         device = student_logits.device
         # `batch_size` now counts REGIONS, because that is what the loop iterates and what
@@ -1549,17 +1869,25 @@ class CustomULDLoss(ULDLoss):
         if chunked:
             unsupported = []
             if not (self.use_extended_uld and self._align_at_bytes):
-                unsupported.append("needs use_extended_uld with uld_align_at_bytes (chunks ARE alignment groups)")
+                unsupported.append(
+                    "needs use_extended_uld with uld_align_at_bytes (chunks ARE alignment groups)"
+                )
             if not self._renormalize_probs:
                 unsupported.append("needs uld_renormalize_probs=true")
             if self._matched_top_k:
-                unsupported.append("uld_matched_top_k>0 unsupported (its mask is built per position over the full matched block)")
+                unsupported.append(
+                    "uld_matched_top_k>0 unsupported (its mask is built per position over the full matched block)"
+                )
             if self._uld_ignore_multi_loss:
                 unsupported.append("uld_ignore_multi_loss unsupported")
             if w_opd > 0:
-                unsupported.append("uld_hybrid_sampled_opd_weight>0 unsupported (OPD reads the whole-region prob tensors)")
+                unsupported.append(
+                    "uld_hybrid_sampled_opd_weight>0 unsupported (OPD reads the whole-region prob tensors)"
+                )
             if use_adaptive:
-                unsupported.append("adaptive weights unsupported (set uld_hybrid_matched_weight)")
+                unsupported.append(
+                    "adaptive weights unsupported (set uld_hybrid_matched_weight)"
+                )
             if unsupported:
                 raise ValueError(
                     "uld_region_chunk_groups=%d, but this config is outside the chunked path: %s"
@@ -1573,16 +1901,31 @@ class CustomULDLoss(ULDLoss):
             teacher_vocab_size = teacher_logits.size(-1)
 
             if self._teacher_matched_ids:
-                teacher_matched_indices = torch.tensor(sorted(self._teacher_matched_ids), dtype=torch.long, device=device)
+                teacher_matched_indices = torch.tensor(
+                    sorted(self._teacher_matched_ids), dtype=torch.long, device=device
+                )
                 student_matched_indices = torch.tensor(
-                    [self._vocab_mapping[tid.item()] for tid in teacher_matched_indices], dtype=torch.long, device=device
+                    [
+                        self._vocab_mapping[tid.item()]
+                        for tid in teacher_matched_indices
+                    ],
+                    dtype=torch.long,
+                    device=device,
                 )
             else:
-                teacher_matched_indices = torch.tensor([], dtype=torch.long, device=device)
-                student_matched_indices = torch.tensor([], dtype=torch.long, device=device)
+                teacher_matched_indices = torch.tensor(
+                    [], dtype=torch.long, device=device
+                )
+                student_matched_indices = torch.tensor(
+                    [], dtype=torch.long, device=device
+                )
 
-            teacher_matched_mask = torch.zeros(teacher_vocab_size, dtype=torch.bool, device=device)
-            student_matched_mask = torch.zeros(student_vocab_size, dtype=torch.bool, device=device)
+            teacher_matched_mask = torch.zeros(
+                teacher_vocab_size, dtype=torch.bool, device=device
+            )
+            student_matched_mask = torch.zeros(
+                student_vocab_size, dtype=torch.bool, device=device
+            )
             if len(teacher_matched_indices) > 0:
                 teacher_matched_mask[teacher_matched_indices] = True
                 student_matched_mask[student_matched_indices] = True
@@ -1613,14 +1956,18 @@ class CustomULDLoss(ULDLoss):
                 s_drop = min(
                     self._scaffold_prefix_len(
                         self.student_tokenizer,
-                        student_input_ids[row, student_start : student_start + student_size].tolist(),
+                        student_input_ids[
+                            row, student_start : student_start + student_size
+                        ].tolist(),
                     ),
                     student_size,
                 )
                 t_drop = min(
                     self._scaffold_prefix_len(
                         self.teacher_tokenizer,
-                        teacher_input_ids[row, teacher_start : teacher_start + teacher_size].tolist(),
+                        teacher_input_ids[
+                            row, teacher_start : teacher_start + teacher_size
+                        ].tolist(),
                     ),
                     teacher_size,
                 )
@@ -1649,26 +1996,46 @@ class CustomULDLoss(ULDLoss):
             # (matched loss works directly on logits at matched indices).
             # `not chunked`: these are the tensors the chunked path exists to avoid materialising
             # whole-region. It builds the same ones per chunk, inside checkpoint.
-            need_full_probs = not opd_only and not chunked and (not self._renormalize_probs or w_u > 0 or use_adaptive)
+            need_full_probs = (
+                not opd_only
+                and not chunked
+                and (not self._renormalize_probs or w_u > 0 or use_adaptive)
+            )
             if need_full_probs:
                 student_probs = F.softmax(
-                    student_logits[row, student_start - 1 : student_start + student_size - 1] / self.student_temperature, dim=-1
+                    student_logits[
+                        row, student_start - 1 : student_start + student_size - 1
+                    ]
+                    / self.student_temperature,
+                    dim=-1,
                 )
                 teacher_probs = F.softmax(
-                    teacher_logits[row, teacher_start - 1 : teacher_start + teacher_size - 1] / self.teacher_temperature, dim=-1
+                    teacher_logits[
+                        row, teacher_start - 1 : teacher_start + teacher_size - 1
+                    ]
+                    / self.teacher_temperature,
+                    dim=-1,
                 )
             else:
                 student_probs = None
                 teacher_probs = None
 
-            student_token_ids = student_input_ids[row, student_start : student_start + student_size].tolist()
-            teacher_token_ids = teacher_input_ids[row, teacher_start : teacher_start + teacher_size].tolist()
+            student_token_ids = student_input_ids[
+                row, student_start : student_start + student_size
+            ].tolist()
+            teacher_token_ids = teacher_input_ids[
+                row, teacher_start : teacher_start + teacher_size
+            ].tolist()
 
             if self.use_extended_uld:
                 if self._align_at_bytes:
-                    s_groups, t_groups = self._build_alignment_groups_at_bytes_from_ids(student_token_ids, teacher_token_ids)
+                    s_groups, t_groups = self._build_alignment_groups_at_bytes_from_ids(
+                        student_token_ids, teacher_token_ids
+                    )
                 else:
-                    s_groups, t_groups = self._build_alignment_groups_from_ids(student_token_ids, teacher_token_ids)
+                    s_groups, t_groups = self._build_alignment_groups_from_ids(
+                        student_token_ids, teacher_token_ids
+                    )
 
                 if not s_groups:
                     # Alignment failed entirely (e.g. full Unicode mismatch + truncation);
@@ -1680,12 +2047,17 @@ class CustomULDLoss(ULDLoss):
                     continue
 
                 if need_full_probs:
-                    student_aligned = self._merge_probabilities_with_alignment_groups(student_probs, s_groups)
-                    teacher_aligned = self._merge_probabilities_with_alignment_groups(teacher_probs, t_groups)
+                    student_aligned = self._merge_probabilities_with_alignment_groups(
+                        student_probs, s_groups
+                    )
+                    teacher_aligned = self._merge_probabilities_with_alignment_groups(
+                        teacher_probs, t_groups
+                    )
 
                     if self._uld_ignore_multi_loss:
                         one_to_one = [
-                            idx for idx, (sg, tg) in enumerate(zip(s_groups, t_groups))
+                            idx
+                            for idx, (sg, tg) in enumerate(zip(s_groups, t_groups))
                             if len(sg) == 1 and len(tg) == 1
                         ]
                         if one_to_one:
@@ -1724,11 +2096,18 @@ class CustomULDLoss(ULDLoss):
                     # p90 row's ~41 GiB of probability tensors never coexist. Same arithmetic as
                     # the two branches below: sums here, one division at the end.
                     m_sum, u_sum, n_1to1, n_align = self._region_terms_chunked(
-                        student_logits[row, student_start - 1 : student_start + student_size - 1],
-                        teacher_logits[row, teacher_start - 1 : teacher_start + teacher_size - 1],
-                        s_groups, t_groups,
-                        student_matched_indices, teacher_matched_indices,
-                        student_unmatched_mask, teacher_unmatched_mask,
+                        student_logits[
+                            row, student_start - 1 : student_start + student_size - 1
+                        ],
+                        teacher_logits[
+                            row, teacher_start - 1 : teacher_start + teacher_size - 1
+                        ],
+                        s_groups,
+                        t_groups,
+                        student_matched_indices,
+                        teacher_matched_indices,
+                        student_unmatched_mask,
+                        teacher_unmatched_mask,
                         want_matched=(w_m > 0 and len(teacher_matched_indices) > 0),
                         want_unmatched=(w_u > 0),
                     )
@@ -1746,33 +2125,70 @@ class CustomULDLoss(ULDLoss):
                     # did not. Region weighting has to match or the two paths differ in the mean.
                     chunk_align_n = n_align if w_u > 0 else n_1to1
                     self._uld_region_chunks = getattr(self, "_uld_region_chunks", 0) + (
-                        (n_align + self._region_chunk_groups - 1) // self._region_chunk_groups
+                        (n_align + self._region_chunk_groups - 1)
+                        // self._region_chunk_groups
                     )
 
-                elif self._renormalize_probs and len(teacher_matched_indices) > 0 and (use_adaptive or w_m > 0):
+                elif (
+                    self._renormalize_probs
+                    and len(teacher_matched_indices) > 0
+                    and (use_adaptive or w_m > 0)
+                ):
                     # --- Renormalized matched loss path ---
                     # Operates on 1-to-1 alignment groups only; skips full-vocab softmax merge.
-                    one_to_one = [(sg[0], tg[0]) for sg, tg in zip(s_groups, t_groups) if len(sg) == 1 and len(tg) == 1] if s_groups is not None else []
+                    one_to_one = (
+                        [
+                            (sg[0], tg[0])
+                            for sg, tg in zip(s_groups, t_groups)
+                            if len(sg) == 1 and len(tg) == 1
+                        ]
+                        if s_groups is not None
+                        else []
+                    )
 
                     if one_to_one:
                         student_positions = [s for s, t in one_to_one]
                         teacher_positions = [t for s, t in one_to_one]
 
-                        student_logits_slice = student_logits[row, student_start - 1 : student_start + student_size - 1]
-                        teacher_logits_slice = teacher_logits[row, teacher_start - 1 : teacher_start + teacher_size - 1]
-                        student_logits_1to1 = student_logits_slice[student_positions] / self.student_temperature
-                        teacher_logits_1to1 = teacher_logits_slice[teacher_positions] / self.teacher_temperature
+                        student_logits_slice = student_logits[
+                            row, student_start - 1 : student_start + student_size - 1
+                        ]
+                        teacher_logits_slice = teacher_logits[
+                            row, teacher_start - 1 : teacher_start + teacher_size - 1
+                        ]
+                        student_logits_1to1 = (
+                            student_logits_slice[student_positions]
+                            / self.student_temperature
+                        )
+                        teacher_logits_1to1 = (
+                            teacher_logits_slice[teacher_positions]
+                            / self.teacher_temperature
+                        )
 
-                        student_matched_logits = student_logits_1to1[:, student_matched_indices]
-                        teacher_matched_logits = teacher_logits_1to1[:, teacher_matched_indices]
+                        student_matched_logits = student_logits_1to1[
+                            :, student_matched_indices
+                        ]
+                        teacher_matched_logits = teacher_logits_1to1[
+                            :, teacher_matched_indices
+                        ]
 
                         if self._matched_top_k > 0:
                             num_matched = teacher_matched_logits.size(-1)
-                            valid_mask = self._compute_topk_matched_mask(student_matched_logits, device)
-                            student_matched_logits = student_matched_logits.masked_fill(~valid_mask, float('-inf'))
-                            teacher_matched_logits = teacher_matched_logits.masked_fill(~valid_mask, float('-inf'))
-                            student_matched_probs = F.softmax(student_matched_logits, dim=-1)
-                            teacher_matched_probs = F.softmax(teacher_matched_logits, dim=-1)
+                            valid_mask = self._compute_topk_matched_mask(
+                                student_matched_logits, device
+                            )
+                            student_matched_logits = student_matched_logits.masked_fill(
+                                ~valid_mask, float("-inf")
+                            )
+                            teacher_matched_logits = teacher_matched_logits.masked_fill(
+                                ~valid_mask, float("-inf")
+                            )
+                            student_matched_probs = F.softmax(
+                                student_matched_logits, dim=-1
+                            )
+                            teacher_matched_probs = F.softmax(
+                                teacher_matched_logits, dim=-1
+                            )
                             matched_token_count = min(self._matched_top_k, num_matched)
 
                             # DEBUG: print overlapping top_k/top_p token ids per position
@@ -1790,27 +2206,45 @@ class CustomULDLoss(ULDLoss):
                             # END DEBUG
 
                             if valid_mask.any():
-                                matched_loss = self._compute_jsd_loss_for_matched_tokens(
-                                    student_matched_probs, teacher_matched_probs, mask=valid_mask
+                                matched_loss = (
+                                    self._compute_jsd_loss_for_matched_tokens(
+                                        student_matched_probs,
+                                        teacher_matched_probs,
+                                        mask=valid_mask,
+                                    )
                                 )
                         else:
-                            student_matched_probs = F.softmax(student_matched_logits, dim=-1)
-                            teacher_matched_probs = F.softmax(teacher_matched_logits, dim=-1)
+                            student_matched_probs = F.softmax(
+                                student_matched_logits, dim=-1
+                            )
+                            teacher_matched_probs = F.softmax(
+                                teacher_matched_logits, dim=-1
+                            )
                             matched_token_count = student_matched_probs.size(-1)
                             matched_loss = self._compute_jsd_loss_for_matched_tokens(
                                 student_matched_probs, teacher_matched_probs
                             )
 
-                elif uld_student_aligned is not None and len(teacher_matched_indices) > 0 and (use_adaptive or w_m > 0):
+                elif (
+                    uld_student_aligned is not None
+                    and len(teacher_matched_indices) > 0
+                    and (use_adaptive or w_m > 0)
+                ):
                     # --- Standard (non-renormalized) matched loss path ---
-                    teacher_matched_probs = uld_teacher_aligned[:, teacher_matched_indices]
-                    student_matched_probs = uld_student_aligned[:, student_matched_indices]
+                    teacher_matched_probs = uld_teacher_aligned[
+                        :, teacher_matched_indices
+                    ]
+                    student_matched_probs = uld_student_aligned[
+                        :, student_matched_indices
+                    ]
                     matched_token_count = teacher_matched_probs.size(-1)
 
                     if self._matched_top_k > 0:
                         # top-k on probs gives same ordering as on logits (softmax is monotonic)
                         num_matched = teacher_matched_probs.size(-1)
-                        valid_mask = self._compute_topk_matched_mask(student_matched_probs, device)
+                        valid_mask = self._compute_topk_matched_mask(
+                            student_matched_probs, device
+                        )
                         matched_token_count = min(self._matched_top_k, num_matched)
 
                         # DEBUG: print overlapping top_k/top_p token ids per position
@@ -1829,22 +2263,35 @@ class CustomULDLoss(ULDLoss):
 
                         if valid_mask.any():
                             matched_loss = self._compute_jsd_loss_for_matched_tokens(
-                                student_matched_probs, teacher_matched_probs, mask=valid_mask
+                                student_matched_probs,
+                                teacher_matched_probs,
+                                mask=valid_mask,
                             )
                     else:
-                        matched_loss = self._compute_jsd_loss_for_matched_tokens(student_matched_probs, teacher_matched_probs)
+                        matched_loss = self._compute_jsd_loss_for_matched_tokens(
+                            student_matched_probs, teacher_matched_probs
+                        )
 
                 # --- Unmatched (sorted L1) component ---
                 # `unmatched_loss` is initialised with matched_loss above, so the chunked branch's
                 # value survives. uld_student_aligned is None on that path, so this block is skipped.
                 if uld_student_aligned is not None and (use_adaptive or w_u > 0):
-                    teacher_unmatched_probs = uld_teacher_aligned[:, teacher_unmatched_mask]
-                    student_unmatched_probs = uld_student_aligned[:, student_unmatched_mask]
+                    teacher_unmatched_probs = uld_teacher_aligned[
+                        :, teacher_unmatched_mask
+                    ]
+                    student_unmatched_probs = uld_student_aligned[
+                        :, student_unmatched_mask
+                    ]
 
-                    if teacher_unmatched_probs.size(-1) > 0 and student_unmatched_probs.size(-1) > 0:
+                    if (
+                        teacher_unmatched_probs.size(-1) > 0
+                        and student_unmatched_probs.size(-1) > 0
+                    ):
                         t_usize = teacher_unmatched_probs.size(-1)
                         s_usize = student_unmatched_probs.size(-1)
-                        student_unmatched_sorted = student_unmatched_probs.sort(dim=-1, descending=True).values
+                        student_unmatched_sorted = student_unmatched_probs.sort(
+                            dim=-1, descending=True
+                        ).values
                         if t_usize > s_usize:
                             # A direct measurement OOMed on the line below as it used to be written: it
                             # sorted the FULL teacher unmatched block (151,457 cols for the
@@ -1860,22 +2307,37 @@ class CustomULDLoss(ULDLoss):
                             # topk returns values already sorted descending, matching the student.
                             # Valid because teacher probs are non-negative, so each dropped tail
                             # column j contributes |0 - t_j| = t_j to the L1 sum.
-                            teacher_unmatched_top = teacher_unmatched_probs.topk(s_usize, dim=-1).values
+                            teacher_unmatched_top = teacher_unmatched_probs.topk(
+                                s_usize, dim=-1
+                            ).values
                             teacher_tail_mass = (
-                                teacher_unmatched_probs.sum() - teacher_unmatched_top.sum()
+                                teacher_unmatched_probs.sum()
+                                - teacher_unmatched_top.sum()
                             ).detach()
                             unmatched_loss = (
-                                F.l1_loss(student_unmatched_sorted, teacher_unmatched_top, reduction="sum")
+                                F.l1_loss(
+                                    student_unmatched_sorted,
+                                    teacher_unmatched_top,
+                                    reduction="sum",
+                                )
                                 + teacher_tail_mass
                             )
                         else:
                             # Student at least as wide as the teacher. Here the padding is on the
                             # TEACHER side, and the student's extra columns are real parameters
                             # carrying real gradient, so there is nothing to fold away.
-                            teacher_unmatched_sorted = teacher_unmatched_probs.sort(dim=-1, descending=True).values
+                            teacher_unmatched_sorted = teacher_unmatched_probs.sort(
+                                dim=-1, descending=True
+                            ).values
                             if t_usize < s_usize:
-                                teacher_unmatched_sorted = F.pad(teacher_unmatched_sorted, (0, s_usize - t_usize))
-                            unmatched_loss = F.l1_loss(student_unmatched_sorted, teacher_unmatched_sorted, reduction="sum")
+                                teacher_unmatched_sorted = F.pad(
+                                    teacher_unmatched_sorted, (0, s_usize - t_usize)
+                                )
+                            unmatched_loss = F.l1_loss(
+                                student_unmatched_sorted,
+                                teacher_unmatched_sorted,
+                                reduction="sum",
+                            )
                         unmatched_loss = unmatched_loss / uld_student_aligned.size(0)
 
                 # --- Resolve weights ---
@@ -1907,7 +2369,11 @@ class CustomULDLoss(ULDLoss):
             elif chunked and chunk_align_n is not None:
                 uld_token_counts.append(chunk_align_n)
             elif self._renormalize_probs and s_groups is not None:
-                n_1to1 = sum(1 for sg, tg in zip(s_groups, t_groups) if len(sg) == 1 and len(tg) == 1)
+                n_1to1 = sum(
+                    1
+                    for sg, tg in zip(s_groups, t_groups)
+                    if len(sg) == 1 and len(tg) == 1
+                )
                 uld_token_counts.append(n_1to1)
             else:
                 uld_token_counts.append(0)
@@ -1919,14 +2385,23 @@ class CustomULDLoss(ULDLoss):
                 vllm_lp_item = None
                 if self._current_vllm_logprobs is not None:
                     vllm_lp_full = self._current_vllm_logprobs[row]
-                    vllm_lp_item = vllm_lp_full[student_start : student_start + student_size]
+                    vllm_lp_item = vllm_lp_full[
+                        student_start : student_start + student_size
+                    ]
 
-                student_logits_slice = student_logits[row, student_start - 1 : student_start + student_size - 1]
-                teacher_logits_slice = teacher_logits[row, teacher_start - 1 : teacher_start + teacher_size - 1]
+                student_logits_slice = student_logits[
+                    row, student_start - 1 : student_start + student_size - 1
+                ]
+                teacher_logits_slice = teacher_logits[
+                    row, teacher_start - 1 : teacher_start + teacher_size - 1
+                ]
                 opd_result = self._compute_sampled_opd_for_groups(
-                    student_probs, teacher_probs,
-                    student_token_ids, teacher_token_ids,
-                    s_groups, t_groups,
+                    student_probs,
+                    teacher_probs,
+                    student_token_ids,
+                    teacher_token_ids,
+                    s_groups,
+                    t_groups,
                     vllm_lp_per_pos=vllm_lp_item,
                     student_logits_slice=student_logits_slice,
                     teacher_logits_slice=teacher_logits_slice,
@@ -1938,7 +2413,9 @@ class CustomULDLoss(ULDLoss):
                     opd_loss_val, opd_n = opd_result
                     opd_loss_i = w_opd * opd_loss_val
                     opd_count_i = opd_n
-                    opd_loss_weighted_sum = opd_loss_weighted_sum + opd_loss_val.detach() * opd_n
+                    opd_loss_weighted_sum = (
+                        opd_loss_weighted_sum + opd_loss_val.detach() * opd_n
+                    )
                     opd_token_total += opd_n
             opd_losses.append(opd_loss_i)
             opd_token_counts.append(opd_count_i)
@@ -1966,8 +2443,12 @@ class CustomULDLoss(ULDLoss):
                 return torch.stack(losses).mean()
             return sum(l * c for l, c in zip(losses, counts)) / total
 
-        distillation_loss = _weighted_avg(uld_losses, uld_token_counts) + _weighted_avg(opd_losses, opd_token_counts)
-        self.last_sampled_opd_loss = (opd_loss_weighted_sum / opd_token_total) if opd_token_total > 0 else None
+        distillation_loss = _weighted_avg(uld_losses, uld_token_counts) + _weighted_avg(
+            opd_losses, opd_token_counts
+        )
+        self.last_sampled_opd_loss = (
+            (opd_loss_weighted_sum / opd_token_total) if opd_token_total > 0 else None
+        )
         return self.distillation_weight * distillation_loss
 
     def _compute_topk_matched_mask(self, matched_logits, device):
@@ -1990,7 +2471,9 @@ class CustomULDLoss(ULDLoss):
 
         return valid_mask
 
-    def _compute_jsd_loss_for_matched_tokens(self, student_logits, teacher_logits, mask=None):
+    def _compute_jsd_loss_for_matched_tokens(
+        self, student_logits, teacher_logits, mask=None
+    ):
         batch_seq_len, num_matched = student_logits.shape
         student_logits_reshaped = student_logits.view(-1, num_matched)
         teacher_logits_reshaped = teacher_logits.view(-1, num_matched)
@@ -2029,6 +2512,7 @@ class CustomULDLoss(ULDLoss):
             )
             return jsd_loss
 
+
 class CustomGOLDTrainer(GOLDTrainer):
     """Custom trainer extending GOLDTrainer"""
 
@@ -2053,7 +2537,11 @@ class CustomGOLDTrainer(GOLDTrainer):
         """
         super()._set_signature_columns_if_needed()
         col = getattr(self.args, "length_column_name", None)
-        if col and self._signature_columns is not None and col not in self._signature_columns:
+        if (
+            col
+            and self._signature_columns is not None
+            and col not in self._signature_columns
+        ):
             self._signature_columns.append(col)
 
     def _get_train_sampler(self, *args, **kwargs):
@@ -2079,28 +2567,40 @@ class CustomGOLDTrainer(GOLDTrainer):
         strategy = getattr(self.args, "train_sampling_strategy", "random")
         if strategy == "group_by_length":
             col = getattr(self.args, "length_column_name", None)
-            ds = kwargs.get("train_dataset") or (args[0] if args else None) or self.train_dataset
+            ds = (
+                kwargs.get("train_dataset")
+                or (args[0] if args else None)
+                or self.train_dataset
+            )
             cols = list(getattr(ds, "column_names", None) or [])
             # The same two conditions transformers checks at trainer.py:1014-1019, in the same
             # order, so this reports the branch that will actually be taken rather than a guess.
             is_hf = type(ds).__module__.startswith("datasets.")
             have = bool(col) and col in cols
             if is_hf and have:
-                print(f"[sampler] group_by_length: lengths from column {col!r} -- no extra pass", flush=True)
+                print(
+                    f"[sampler] group_by_length: lengths from column {col!r} -- no extra pass",
+                    flush=True,
+                )
             else:
-                why = ("dataset is not a datasets.Dataset "
-                       f"(got {type(ds).__module__}.{type(ds).__name__})" if not is_hf
-                       else f"column {col!r} absent; dataset has {len(cols)} columns: {sorted(cols)}")
+                why = (
+                    "dataset is not a datasets.Dataset "
+                    f"(got {type(ds).__module__}.{type(ds).__name__})"
+                    if not is_hf
+                    else f"column {col!r} absent; dataset has {len(cols)} columns: {sorted(cols)}"
+                )
                 # flush=True is load-bearing, not tidiness. Under `accelerate launch` with the
                 # launcher's output redirected, stdout is BLOCK-buffered, so this line sits in a
                 # buffer until something else fills it -- which for a serial per-row pass is after
                 # the stall it exists to warn about. A direct measurement spent 57 minutes in dataset
                 # preparation and this guard printed NOTHING the whole time, which is how a warning
                 # about an hour-long stall becomes useless.
-                print(f"[sampler] WARNING group_by_length will RE-DERIVE every length "
-                      f"({len(ds) if hasattr(ds,'__len__') else '?'} rows, serial, no progress "
-                      f"output) because {why}. Expect a long GPU-idle stall before step 1.",
-                      flush=True)
+                print(
+                    f"[sampler] WARNING group_by_length will RE-DERIVE every length "
+                    f"({len(ds) if hasattr(ds,'__len__') else '?'} rows, serial, no progress "
+                    f"output) because {why}. Expect a long GPU-idle stall before step 1.",
+                    flush=True,
+                )
         else:
             print(f"[sampler] train_sampling_strategy={strategy!r}", flush=True)
         return super()._get_train_sampler(*args, **kwargs)
@@ -2126,10 +2626,10 @@ class CustomGOLDTrainer(GOLDTrainer):
         # rank-divergent guard cost 2,081 s for zero steps; a per-rank number that is honestly
         # labelled beats a global one that risks that.
         self._gen_calls = 0
-        self._gen_batch_total = 0        # sum over calls of the prompts the SERVER saw
-        self._gen_prompt_rows = 0       # this rank's prompts, i.e. sum of micro-batch sizes
-        self._gen_tokens = 0            # completion tokens decoded for this rank
-        self._gen_truncated = 0         # completions that hit max_completion_length exactly
+        self._gen_batch_total = 0  # sum over calls of the prompts the SERVER saw
+        self._gen_prompt_rows = 0  # this rank's prompts, i.e. sum of micro-batch sizes
+        self._gen_tokens = 0  # completion tokens decoded for this rank
+        self._gen_truncated = 0  # completions that hit max_completion_length exactly
 
         reinit_sinks_to = getattr(self.args, "reinit_sinks_to", None)
         if reinit_sinks_to is not None:
@@ -2143,9 +2643,12 @@ class CustomGOLDTrainer(GOLDTrainer):
                 )
 
             deepspeed_plugin = self.accelerator.state.deepspeed_plugin
-            zero_stage_3 = deepspeed_plugin is not None and deepspeed_plugin.zero_stage == 3
+            zero_stage_3 = (
+                deepspeed_plugin is not None and deepspeed_plugin.zero_stage == 3
+            )
             if zero_stage_3:
                 import deepspeed
+
                 gather_ctx = lambda params: deepspeed.zero.GatheredParameters(
                     params, modifier_rank=0
                 )
@@ -2168,7 +2671,11 @@ class CustomGOLDTrainer(GOLDTrainer):
                     n_reinit = len(sink_params)
 
             if self.accelerator.is_main_process:
-                observed = sink_params[0].detach().float().mean().item() if sink_params else float("nan")
+                observed = (
+                    sink_params[0].detach().float().mean().item()
+                    if sink_params
+                    else float("nan")
+                )
                 print(
                     f"[reinit_sinks_to={reinit_sinks_to}] Reinitialized "
                     f"{n_reinit} attention-sink parameter tensors "
@@ -2185,15 +2692,16 @@ class CustomGOLDTrainer(GOLDTrainer):
         self._timing_weight_sync_params = 0
 
         # New: overlap-mode breakdown (rank 0 captures gen_actual/gen_wait via future timestamps)
-        self._timing_generation_actual = 0.0   # async gen wall-clock (submit → done)
-        self._timing_generation_wait = 0.0     # main-thread block on .result()
-        self._timing_training_pure = 0.0       # super().training_step() only
+        self._timing_generation_actual = 0.0  # async gen wall-clock (submit → done)
+        self._timing_generation_wait = 0.0  # main-thread block on .result()
+        self._timing_training_pure = 0.0  # super().training_step() only
 
         # Overlap generation state
         self._overlap_buffer = None
         self._overlap_executor = None
         if self.args.overlap_generation:
             from concurrent.futures import ThreadPoolExecutor
+
             self._overlap_executor = ThreadPoolExecutor(max_workers=1)
 
         # Replace single VLLMClient with MultiVLLMClient when multiple servers are configured
@@ -2234,10 +2742,16 @@ class CustomGOLDTrainer(GOLDTrainer):
                 clients.append(client)
 
             self.vllm_client = MultiVLLMClient(clients)
-            print(f"MultiVLLMClient initialized with {len(clients)} servers: "
-                  f"{list(zip(hosts, ports, nccl_ports))}")
+            print(
+                f"MultiVLLMClient initialized with {len(clients)} servers: "
+                f"{list(zip(hosts, ports, nccl_ports))}"
+            )
 
-        if self.use_uld_loss and self.uld_loss_fn is not None and not self.args.use_old_uld_loss:
+        if (
+            self.use_uld_loss
+            and self.uld_loss_fn is not None
+            and not self.args.use_old_uld_loss
+        ):
             self.uld_loss_fn = CustomULDLoss(
                 config=self.args,
                 student_tokenizer=self.processing_class,
@@ -2252,27 +2766,38 @@ class CustomGOLDTrainer(GOLDTrainer):
 
         if self.use_uld_loss and self.teacher_tokenizer is not None:
             _s = [{"role": "user", "content": ""}]
-            _prompt = self.teacher_tokenizer.apply_chat_template(_s, tokenize=False, add_generation_prompt=True, enable_thinking=False)
-            _full = self.teacher_tokenizer.apply_chat_template(
-                _s + [{"role": "assistant", "content": ""}], tokenize=False, add_generation_prompt=False, enable_thinking=False
+            _prompt = self.teacher_tokenizer.apply_chat_template(
+                _s, tokenize=False, add_generation_prompt=True, enable_thinking=False
             )
-            self._teacher_turn_suffix = _full[len(_prompt):]
+            _full = self.teacher_tokenizer.apply_chat_template(
+                _s + [{"role": "assistant", "content": ""}],
+                tokenize=False,
+                add_generation_prompt=False,
+                enable_thinking=False,
+            )
+            self._teacher_turn_suffix = _full[len(_prompt) :]
         else:
             self._teacher_turn_suffix = ""
 
         # Parsed ONCE, and echoed, because a mis-spelled template variable is silently ignored
         # by every jinja template: a typo here would look exactly like the flag not working.
         self._uld_teacher_template_kwargs = parse_template_kwargs(
-            getattr(self.args, "uld_teacher_template_kwargs", None))
+            getattr(self.args, "uld_teacher_template_kwargs", None)
+        )
         if self._uld_teacher_template_kwargs:
-            print(f"[uld] per-turn teacher template kwargs: "
-                  f"{self._uld_teacher_template_kwargs}", flush=True)
+            print(
+                f"[uld] per-turn teacher template kwargs: "
+                f"{self._uld_teacher_template_kwargs}",
+                flush=True,
+            )
 
         if self.args.use_liger_fused_jsd and not self.use_liger_gkd_loss:
             self.use_liger_gkd_loss = True
 
         if self.use_liger_gkd_loss:
-            from gb_steps_post_training.distillation.liger_losses import LigerFusedLinearSkewedJSDLoss
+            from gb_steps_post_training.distillation.liger_losses import (
+                LigerFusedLinearSkewedJSDLoss,
+            )
 
             self.liger_jsd_loss = LigerFusedLinearSkewedJSDLoss(
                 weight_hard_loss=0.0,
@@ -2338,11 +2863,18 @@ class CustomGOLDTrainer(GOLDTrainer):
         self._entropy_guard_tripped = False
 
         if self.args.opd_importance_sampling:
-            self._is_stats_accum = {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "masked_fraction": 0.0}
+            self._is_stats_accum = {
+                "mean": 0.0,
+                "std": 0.0,
+                "min": 0.0,
+                "max": 0.0,
+                "masked_fraction": 0.0,
+            }
             self._is_stats_count = 0
 
             if self.args.use_uld_loss:
                 from transformers.convert_slow_tokenizer import bytes_to_unicode
+
                 self._unicode_to_byte = {v: k for k, v in bytes_to_unicode().items()}
 
     def _get_current_lmbda(self) -> float:
@@ -2379,7 +2911,9 @@ class CustomGOLDTrainer(GOLDTrainer):
                 return self.args.lmbda_init
 
             progress = min(1.0, current_step / max_steps)
-            current_lmbda = self.args.lmbda_init + progress * (self.args.lmbda - self.args.lmbda_init)
+            current_lmbda = self.args.lmbda_init + progress * (
+                self.args.lmbda - self.args.lmbda_init
+            )
             return current_lmbda
 
         return self.lmbda
@@ -2402,7 +2936,9 @@ class CustomGOLDTrainer(GOLDTrainer):
                 return self.args.beta_init
 
             progress = min(1.0, current_step / max_steps)
-            current_beta = self.args.beta_init + progress * (self.beta - self.args.beta_init)
+            current_beta = self.args.beta_init + progress * (
+                self.beta - self.args.beta_init
+            )
             return current_beta
 
         return self.beta
@@ -2419,7 +2955,9 @@ class CustomGOLDTrainer(GOLDTrainer):
                 return self.args.alpha_init
 
             progress = min(1.0, current_step / max_steps)
-            return self.args.alpha_init + progress * (self.args.alpha - self.args.alpha_init)
+            return self.args.alpha_init + progress * (
+                self.args.alpha - self.args.alpha_init
+            )
 
         return self.args.alpha
 
@@ -2430,16 +2968,23 @@ class CustomGOLDTrainer(GOLDTrainer):
             # With DeepSpeed ZeRO-3 (zero3_init_flag), hidden_proj params are already
             # registered and included in the optimizer. Only add manually without DeepSpeed.
             if not self.is_deepspeed_enabled:
-                self.optimizer.add_param_group({
-                    "params": list(self.hidden_proj.parameters()),
-                    "lr": self.args.learning_rate,
-                })
+                self.optimizer.add_param_group(
+                    {
+                        "params": list(self.hidden_proj.parameters()),
+                        "lr": self.args.learning_rate,
+                    }
+                )
         return optimizer
 
     def _prepare_dataset_with_original_text(
         self,
         dataset: Dataset | IterableDataset,
-        processing_class: PreTrainedTokenizerBase | BaseImageProcessor | FeatureExtractionMixin | ProcessorMixin,
+        processing_class: (
+            PreTrainedTokenizerBase
+            | BaseImageProcessor
+            | FeatureExtractionMixin
+            | ProcessorMixin
+        ),
         args,
         packing: bool,
         formatting_func: Callable[[dict], str] | None,
@@ -2456,8 +3001,12 @@ class CustomGOLDTrainer(GOLDTrainer):
         with PartialState().main_process_first():
             # Apply the formatting function if any
             if formatting_func is not None:
-                if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`
-                    map_kwargs["desc"] = f"Applying formatting function to {dataset_name} dataset"
+                if isinstance(
+                    dataset, Dataset
+                ):  # `IterableDataset.map` does not support `desc`
+                    map_kwargs["desc"] = (
+                        f"Applying formatting function to {dataset_name} dataset"
+                    )
 
                 def _func(example):
                     return {"text": formatting_func(example)}
@@ -2465,45 +3014,65 @@ class CustomGOLDTrainer(GOLDTrainer):
                 dataset = dataset.map(_func, batched=False, **map_kwargs)
 
             # Convert the dataset to ChatML if needed
-            if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`
+            if isinstance(
+                dataset, Dataset
+            ):  # `IterableDataset.map` does not support `desc`
                 map_kwargs["desc"] = f"Converting {dataset_name} dataset to ChatML"
             column_names = next(iter(dataset)).keys()
             dataset = dataset.map(
                 maybe_convert_to_chatml,
-                remove_columns="conversations" if "conversations" in column_names else None,
+                remove_columns=(
+                    "conversations" if "conversations" in column_names else None
+                ),
                 **map_kwargs,
             )
 
             # Apply the chat template if needed and preserve original text
             first_example = next(iter(dataset))
             if not is_conversational(first_example):
-                if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`
+                if isinstance(
+                    dataset, Dataset
+                ):  # `IterableDataset.map` does not support `desc`
                     map_kwargs["desc"] = f"Adding EOS to {dataset_name} dataset"
 
                 def add_eos(example, eos_token):
-                    if "text" in example and not example["text"].endswith(eos_token):  # language modeling case
+                    if "text" in example and not example["text"].endswith(
+                        eos_token
+                    ):  # language modeling case
                         example["text"] = example["text"] + eos_token
-                    elif "completion" in example and not example["completion"].endswith(eos_token):
+                    elif "completion" in example and not example["completion"].endswith(
+                        eos_token
+                    ):
                         example["completion"] = example["completion"] + eos_token
                     return example
 
                 dataset = dataset.map(
                     add_eos,
                     fn_kwargs={"eos_token": processing_class.eos_token},
-                    remove_columns="messages" if "messages" in column_names else None,  # renamed to "text"
+                    remove_columns=(
+                        "messages" if "messages" in column_names else None
+                    ),  # renamed to "text"
                     **map_kwargs,
                 )
 
             # Tokenize the dataset while preserving original text
-            if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`
-                map_kwargs["desc"] = f"Tokenizing {dataset_name} dataset (preserving original text)"
+            if isinstance(
+                dataset, Dataset
+            ):  # `IterableDataset.map` does not support `desc`
+                map_kwargs["desc"] = (
+                    f"Tokenizing {dataset_name} dataset (preserving original text)"
+                )
 
-            def tokenize_with_original_text(example, processing_class, dataset_text_field, assistant_only_loss):
+            def tokenize_with_original_text(
+                example, processing_class, dataset_text_field, assistant_only_loss
+            ):
                 """Modified tokenization function that preserves original text."""
                 result = {}
 
                 if "prompt" in example:  # prompt-completion case
-                    raise ValueError("Unsupported format: prompt-completion case is not supported yet")
+                    raise ValueError(
+                        "Unsupported format: prompt-completion case is not supported yet"
+                    )
                 else:  # language modeling or conversational case
                     if is_conversational(example):
                         # For conversational data (ChatML), extract prompt and completion properly
@@ -2546,7 +3115,9 @@ class CustomGOLDTrainer(GOLDTrainer):
                             tools_raw = json.dumps(tools)
                         else:
                             tools, tools_raw = [], "[]"
-                        result["tools"] = tools_raw  # keep as string for Arrow compatibility
+                        result["tools"] = (
+                            tools_raw  # keep as string for Arrow compatibility
+                        )
 
                         # Same NaN hazard, opposite contract: `documents` is forwarded to the
                         # template AS A LIST (a string would be iterated character by character --
@@ -2602,9 +3173,11 @@ class CustomGOLDTrainer(GOLDTrainer):
                         # Extract completion as everything after the prompt
                         # This ensures we capture any extra tokens (like <think> tags) that the template adds
                         if full_text.startswith(prompt_text):
-                            completion_text = full_text[len(prompt_text):]
+                            completion_text = full_text[len(prompt_text) :]
                         else:
-                            raise ValueError("Failed to extract completion text: full text does not start with prompt text. ")
+                            raise ValueError(
+                                "Failed to extract completion text: full text does not start with prompt text. "
+                            )
                             # print("Failed to extract completion text: full text does not start with prompt text.")
                             return None
 
@@ -2633,7 +3206,10 @@ class CustomGOLDTrainer(GOLDTrainer):
                             return_assistant_tokens_mask=assistant_only_loss,
                             **example.get("chat_template_kwargs", {}),
                         )
-                        if "assistant_masks" in processed and 1 not in processed["assistant_masks"]:
+                        if (
+                            "assistant_masks" in processed
+                            and 1 not in processed["assistant_masks"]
+                        ):
                             raise RuntimeError(
                                 "You're using `assistant_only_loss=True`, but at least one example has no "
                                 "assistant tokens. This usually means the tokenizer's chat template doesn't "
@@ -2641,7 +3217,13 @@ class CustomGOLDTrainer(GOLDTrainer):
                                 "check the template and ensure it's correctly configured to support assistant "
                                 "masking."
                             )
-                        result.update({k: processed[k] for k in ("input_ids", "assistant_masks") if k in processed})
+                        result.update(
+                            {
+                                k: processed[k]
+                                for k in ("input_ids", "assistant_masks")
+                                if k in processed
+                            }
+                        )
                         # Strip trailing post-EOS tokens (e.g. newline from Granite's chat template)
                         eos_id = processing_class.eos_token_id
                         if eos_id is not None and len(result["input_ids"]) >= 2:
@@ -2649,9 +3231,11 @@ class CustomGOLDTrainer(GOLDTrainer):
                             for k in range(len(ids) - 1, -1, -1):
                                 if ids[k] == eos_id:
                                     if k < len(ids) - 1:
-                                        result["input_ids"] = ids[:k + 1]
+                                        result["input_ids"] = ids[: k + 1]
                                         if "assistant_masks" in result:
-                                            result["assistant_masks"] = result["assistant_masks"][:k + 1]
+                                            result["assistant_masks"] = result[
+                                                "assistant_masks"
+                                            ][: k + 1]
                                     break
                         # Add attention_mask if not already present
                         if "attention_mask" not in result:
@@ -2672,7 +3256,9 @@ class CustomGOLDTrainer(GOLDTrainer):
                         # pre-empt it -- length-grouped batching is NOT ordering-neutral.
                         result["length"] = len(result["input_ids"])
                     else:
-                        raise ValueError("Unsupported format: non-conversational data is not supported yet")
+                        raise ValueError(
+                            "Unsupported format: non-conversational data is not supported yet"
+                        )
 
                 return result
 
@@ -2687,7 +3273,11 @@ class CustomGOLDTrainer(GOLDTrainer):
                 **map_kwargs,
             )
 
-            if args.max_length is None or args.max_completion_length is None or args.lmbda == 0.0:
+            if (
+                args.max_length is None
+                or args.max_completion_length is None
+                or args.lmbda == 0.0
+            ):
                 # Filter out skipped examples (where tokenization returned None)
                 dataset = dataset.filter(
                     lambda x: x.get("prompts") is not None,
@@ -2696,16 +3286,22 @@ class CustomGOLDTrainer(GOLDTrainer):
             else:
                 # Also filter out examples with long prompts
                 dataset = dataset.filter(
-                    lambda x: x.get("prompts") is not None and len(x["prompts"]) < args.max_length - args.max_completion_length,
+                    lambda x: x.get("prompts") is not None
+                    and len(x["prompts"])
+                    < args.max_length - args.max_completion_length,
                     **map_kwargs,
-                    )
+                )
             print(f"dataset: {len(dataset)} (after filtering)")
 
             # Pack or truncate
             if packing:
                 if args.max_length is None:
-                    raise ValueError("When packing is enabled, `max_length` can't be `None`.")
-                if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`
+                    raise ValueError(
+                        "When packing is enabled, `max_length` can't be `None`."
+                    )
+                if isinstance(
+                    dataset, Dataset
+                ):  # `IterableDataset.map` does not support `desc`
                     map_kwargs["desc"] = f"Packing {dataset_name} dataset"
 
                 # THE SUPERVISION MASK MUST SURVIVE PACKING, and it did not.
@@ -2730,12 +3326,19 @@ class CustomGOLDTrainer(GOLDTrainer):
                 #                   can be RECONSTRUCTED per packed segment afterwards; a pre-packing
                 #                   copy would number the tokens wrongly.
                 # Both are regenerated downstream from seq_lengths, which is the intended contract.
-                columns_to_keep = ["input_ids", "original_prompt_text", "original_completion_text",
-                                   "assistant_masks", "completion_mask"]
+                columns_to_keep = [
+                    "input_ids",
+                    "original_prompt_text",
+                    "original_completion_text",
+                    "assistant_masks",
+                    "completion_mask",
+                ]
                 if args.use_uld_loss:
                     columns_to_keep.append("messages")
                 existing_columns = set(dataset.column_names)
-                columns_to_select = [col for col in columns_to_keep if col in existing_columns]
+                columns_to_select = [
+                    col for col in columns_to_keep if col in existing_columns
+                ]
 
                 # Refuse rather than mis-supervise -- but only where the mask is actually owed.
                 #
@@ -2753,8 +3356,10 @@ class CustomGOLDTrainer(GOLDTrainer):
                 # reporting the configured boundary. The check reads columns_to_select -- what
                 # actually reaches pack_dataset -- so an edit to either the allowlist or the
                 # upstream producer cannot silently reopen the hole.
-                if getattr(args, "assistant_only_loss", False) and \
-                        "assistant_masks" not in columns_to_select:
+                if (
+                    getattr(args, "assistant_only_loss", False)
+                    and "assistant_masks" not in columns_to_select
+                ):
                     raise ValueError(
                         "packing is enabled and assistant_only_loss=True, but 'assistant_masks' is "
                         f"not in the dataset (columns: {sorted(existing_columns)}). That mask is "
@@ -2765,9 +3370,13 @@ class CustomGOLDTrainer(GOLDTrainer):
                     )
 
                 dataset = dataset.select_columns(columns_to_select)
-                dataset = pack_dataset(dataset, args.max_length, args.packing_strategy, map_kwargs)
+                dataset = pack_dataset(
+                    dataset, args.max_length, args.packing_strategy, map_kwargs
+                )
             elif args.max_length is not None:
-                if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`
+                if isinstance(
+                    dataset, Dataset
+                ):  # `IterableDataset.map` does not support `desc`
                     map_kwargs["desc"] = f"Truncating {dataset_name} dataset"
                 dataset = truncate_dataset(dataset, args.max_length, map_kwargs)
 
@@ -2783,13 +3392,18 @@ class CustomGOLDTrainer(GOLDTrainer):
                 }
                 if args.use_uld_loss:
                     required_columns.add("messages")
-                dataset = dataset.select_columns(required_columns.intersection(dataset.column_names))
+                dataset = dataset.select_columns(
+                    required_columns.intersection(dataset.column_names)
+                )
 
         return dataset
 
     @profiling_decorator
     def training_step(
-        self, model: nn.Module, inputs: dict[str, torch.Tensor | Any], num_items_in_batch: int | None = None
+        self,
+        model: nn.Module,
+        inputs: dict[str, torch.Tensor | Any],
+        num_items_in_batch: int | None = None,
     ) -> torch.Tensor:
         """
         Perform a training step for the General Online Logit Distillation (GOLD) model.
@@ -2807,9 +3421,16 @@ class CustomGOLDTrainer(GOLDTrainer):
         _overlap_n_all_prompts = 0
         current_lmbda = self._get_current_lmbda()
         # --- Overlap generation path (lookahead scheduling) ---
-        if self.args.overlap_generation and self.use_vllm and self.vllm_mode == "server":
+        if (
+            self.args.overlap_generation
+            and self.use_vllm
+            and self.vllm_mode == "server"
+        ):
             self._wake_vllm_if_needed()
-            IS_enabled = self.args.opd_importance_sampling or self.args.uld_hybrid_sampled_opd_weight > 0
+            IS_enabled = (
+                self.args.opd_importance_sampling
+                or self.args.uld_hybrid_sampled_opd_weight > 0
+            )
 
             # Step 1: Determine if current step is on-policy
             if self._overlap_buffer is not None:
@@ -2824,7 +3445,9 @@ class CustomGOLDTrainer(GOLDTrainer):
                 inputs["original_prompt_text"] = buf["prompt_texts"]
                 inputs["original_completion_text"] = buf["completion_texts"]
                 self._textual_logs["prompt"].extend(gather_object(buf["prompt_texts"]))
-                self._textual_logs["completion"].extend(gather_object(buf["completion_texts"]))
+                self._textual_logs["completion"].extend(
+                    gather_object(buf["completion_texts"])
+                )
                 self._overlap_buffer = None
 
             elif current_lmbda >= 1.0:
@@ -2833,7 +3456,14 @@ class CustomGOLDTrainer(GOLDTrainer):
                 result = self._generate_on_policy_outputs_vllm(
                     inputs, self.generation_config, self.processing_class.pad_token_id
                 )
-                new_input_ids, new_attention_mask, new_labels, prompt_texts, completion_texts, vllm_logprobs = result
+                (
+                    new_input_ids,
+                    new_attention_mask,
+                    new_labels,
+                    prompt_texts,
+                    completion_texts,
+                    vllm_logprobs,
+                ) = result
                 inputs["input_ids"] = new_input_ids
                 inputs["attention_mask"] = new_attention_mask
                 inputs["labels"] = new_labels
@@ -2849,13 +3479,23 @@ class CustomGOLDTrainer(GOLDTrainer):
             if self._draw_on_policy(current_lmbda):
                 _overlap_saved_inputs = {k: v for k, v in inputs.items()}
 
-                max_prompt_tokens = self.args.max_length - self.generation_config.max_new_tokens
+                max_prompt_tokens = (
+                    self.args.max_length - self.generation_config.max_new_tokens
+                )
                 prompts_to_decode = inputs["prompts"]
-                if max_prompt_tokens > 0 and prompts_to_decode.shape[1] > max_prompt_tokens:
+                if (
+                    max_prompt_tokens > 0
+                    and prompts_to_decode.shape[1] > max_prompt_tokens
+                ):
                     prompts_to_decode = prompts_to_decode[:, -max_prompt_tokens:]
-                prompts_text_for_vllm = self.processing_class.batch_decode(prompts_to_decode)
+                prompts_text_for_vllm = self.processing_class.batch_decode(
+                    prompts_to_decode
+                )
                 if self.processing_class.pad_token:
-                    prompts_text_for_vllm = [p.replace(self.processing_class.pad_token, "") for p in prompts_text_for_vllm]
+                    prompts_text_for_vllm = [
+                        p.replace(self.processing_class.pad_token, "")
+                        for p in prompts_text_for_vllm
+                    ]
                 _overlap_n_per_process = len(prompts_text_for_vllm)
                 all_prompts_text = gather_object(prompts_text_for_vllm)
                 _overlap_n_all_prompts = len(all_prompts_text)
@@ -2865,7 +3505,11 @@ class CustomGOLDTrainer(GOLDTrainer):
                 _temperature = self.args.vllm_temperature
                 _top_k = _gen_cfg.top_k if _gen_cfg.top_k and _gen_cfg.top_k > 0 else -1
                 _top_p = self.args.top_p if hasattr(self.args, "top_p") else 1.0
-                _rep_pen = self.args.repetition_penalty if hasattr(self.args, "repetition_penalty") else 1.0
+                _rep_pen = (
+                    self.args.repetition_penalty
+                    if hasattr(self.args, "repetition_penalty")
+                    else 1.0
+                )
                 _min_p = self.args.min_p if hasattr(self.args, "min_p") else 0.0
                 if self.accelerator.is_main_process:
                     if not hasattr(self, "vllm_client") or self.vllm_client is None:
@@ -2887,8 +3531,10 @@ class CustomGOLDTrainer(GOLDTrainer):
                         guided_decoding_regex=self.vllm_guided_decoding_regex,
                     )
                     _overlap_future._submit_time = _t_submit
+
                     def _on_done(fut, _trainer=self):
                         fut._done_time = time.perf_counter()
+
                     _overlap_future.add_done_callback(_on_done)
 
         # --- Standard (non-overlap) path ---
@@ -2900,47 +3546,91 @@ class CustomGOLDTrainer(GOLDTrainer):
                 result = self._generate_on_policy_outputs_vllm(
                     inputs, self.generation_config, self.processing_class.pad_token_id
                 )
-                new_input_ids, new_attention_mask, new_labels, prompt_texts, completion_texts, vllm_logprobs = result
+                (
+                    new_input_ids,
+                    new_attention_mask,
+                    new_labels,
+                    prompt_texts,
+                    completion_texts,
+                    vllm_logprobs,
+                ) = result
             else:
-                with (
-                    unwrap_model_for_generation(
-                        model,
-                        self.accelerator,
-                        generation_kwargs=self.generation_kwargs,  # Override model.generation_config with generation_kwargs to fix transformers#42762
-                    ) as unwrapped_model
-                ):
+                with unwrap_model_for_generation(
+                    model,
+                    self.accelerator,
+                    generation_kwargs=self.generation_kwargs,  # Override model.generation_config with generation_kwargs to fix transformers#42762
+                ) as unwrapped_model:
                     result = self.generate_on_policy_outputs(
-                        unwrapped_model, inputs, self.generation_config, self.processing_class.pad_token_id
+                        unwrapped_model,
+                        inputs,
+                        self.generation_config,
+                        self.processing_class.pad_token_id,
                     )
-                    new_input_ids, new_attention_mask, new_labels, prompt_texts, completion_texts = result
+                    (
+                        new_input_ids,
+                        new_attention_mask,
+                        new_labels,
+                        prompt_texts,
+                        completion_texts,
+                    ) = result
 
             # Reconstruct messages for cross-tokenizer distillation
-            if self.use_uld_loss and "messages" in inputs and inputs["messages"] is not None and inputs["messages"][0] is not None:
+            if (
+                self.use_uld_loss
+                and "messages" in inputs
+                and inputs["messages"] is not None
+                and inputs["messages"][0] is not None
+            ):
                 on_policy_messages = []
                 for msgs, comp_text in zip(inputs["messages"], completion_texts):
                     prompt_msgs = msgs[:-1]
                     clean_completion = comp_text
-                    if hasattr(self.processing_class, 'eos_token') and self.processing_class.eos_token:
-                        clean_completion = clean_completion.replace(self.processing_class.eos_token, "")
-                    on_policy_messages.append(prompt_msgs + [{"role": "assistant", "content": clean_completion}])
+                    if (
+                        hasattr(self.processing_class, "eos_token")
+                        and self.processing_class.eos_token
+                    ):
+                        clean_completion = clean_completion.replace(
+                            self.processing_class.eos_token, ""
+                        )
+                    on_policy_messages.append(
+                        prompt_msgs
+                        + [{"role": "assistant", "content": clean_completion}]
+                    )
 
             if self.args.use_distillm2:
-                inputs["input_ids"] = torch.cat([inputs["input_ids"], new_input_ids], dim=0)
-                inputs["attention_mask"] = torch.cat([inputs["attention_mask"], new_attention_mask], dim=0)
+                inputs["input_ids"] = torch.cat(
+                    [inputs["input_ids"], new_input_ids], dim=0
+                )
+                inputs["attention_mask"] = torch.cat(
+                    [inputs["attention_mask"], new_attention_mask], dim=0
+                )
                 inputs["labels"] = torch.cat([inputs["labels"], new_labels], dim=0)
                 inputs["on_policy"] += [True] * new_input_ids.shape[0]
-                if self.use_uld_loss and "messages" in inputs and inputs["messages"] is not None and inputs["messages"][0] is not None:
+                if (
+                    self.use_uld_loss
+                    and "messages" in inputs
+                    and inputs["messages"] is not None
+                    and inputs["messages"][0] is not None
+                ):
                     inputs["messages"] = inputs["messages"] + on_policy_messages
             else:
                 inputs["input_ids"] = new_input_ids
                 inputs["attention_mask"] = new_attention_mask
                 inputs["labels"] = new_labels
                 inputs["on_policy"] = [True] * new_input_ids.shape[0]
-                if self.use_uld_loss and "messages" in inputs and inputs["messages"] is not None and inputs["messages"][0] is not None:
+                if (
+                    self.use_uld_loss
+                    and "messages" in inputs
+                    and inputs["messages"] is not None
+                    and inputs["messages"][0] is not None
+                ):
                     inputs["messages"] = on_policy_messages
 
             # Store vLLM logprobs for importance sampling (only from vLLM path)
-            if self.use_vllm and (self.args.opd_importance_sampling or self.args.uld_hybrid_sampled_opd_weight > 0):
+            if self.use_vllm and (
+                self.args.opd_importance_sampling
+                or self.args.uld_hybrid_sampled_opd_weight > 0
+            ):
                 inputs["vllm_logprobs"] = vllm_logprobs
 
             # CRITICAL: Preserve original text for cross-tokenizer ULD loss
@@ -2984,15 +3674,27 @@ class CustomGOLDTrainer(GOLDTrainer):
 
             _prev_gen_timing = self._timing_generation
             result = self._generate_on_policy_outputs_vllm(
-                _overlap_saved_inputs, self.generation_config, self.processing_class.pad_token_id,
+                _overlap_saved_inputs,
+                self.generation_config,
+                self.processing_class.pad_token_id,
                 _prefetched=(completion_ids, vllm_logprobs_raw),
             )
             self._timing_generation = _prev_gen_timing
-            new_input_ids, new_attention_mask, new_labels, prompt_texts, completion_texts, vllm_logprobs = result
+            (
+                new_input_ids,
+                new_attention_mask,
+                new_labels,
+                prompt_texts,
+                completion_texts,
+                vllm_logprobs,
+            ) = result
             self._overlap_buffer = {
-                "input_ids": new_input_ids, "attention_mask": new_attention_mask,
-                "labels": new_labels, "prompt_texts": prompt_texts,
-                "completion_texts": completion_texts, "vllm_logprobs": vllm_logprobs,
+                "input_ids": new_input_ids,
+                "attention_mask": new_attention_mask,
+                "labels": new_labels,
+                "prompt_texts": prompt_texts,
+                "completion_texts": completion_texts,
+                "vllm_logprobs": vllm_logprobs,
             }
             _collect_elapsed = time.perf_counter() - _t0_collect
             self._timing_generation += _collect_elapsed
@@ -3004,20 +3706,30 @@ class CustomGOLDTrainer(GOLDTrainer):
         # backprop loss is handled separately; here we only protect the running-average METRIC
         # so one bad microbatch does not poison it forever (nan + x = nan).
         import math as _math
+
         _metric_finite = _math.isfinite(loss_scalar)
         ga = max(1, int(self.args.gradient_accumulation_steps))
         step_equiv = 1.0 / ga
 
         # Log current lmbda if using linear schedule
-        if self.args.lmbda_schedule == "linear" and self.state.global_step % self.args.logging_steps == 0:
+        if (
+            self.args.lmbda_schedule == "linear"
+            and self.state.global_step % self.args.logging_steps == 0
+        ):
             self.log({"train/current_lmbda": current_lmbda})
 
         # Log current beta if using linear schedule
-        if self.args.beta_schedule == "linear" and self.state.global_step % self.args.logging_steps == 0:
+        if (
+            self.args.beta_schedule == "linear"
+            and self.state.global_step % self.args.logging_steps == 0
+        ):
             self.log({"train/current_beta": self._get_current_beta()})
 
         # Log current alpha if using linear schedule
-        if self.args.alpha_schedule == "linear" and self.state.global_step % self.args.logging_steps == 0:
+        if (
+            self.args.alpha_schedule == "linear"
+            and self.state.global_step % self.args.logging_steps == 0
+        ):
             self.log({"train/current_alpha": self._get_current_alpha()})
 
         if on_policy:
@@ -3056,6 +3768,7 @@ class CustomGOLDTrainer(GOLDTrainer):
         zero_stage_3 = deepspeed_plugin is not None and deepspeed_plugin.zero_stage == 3
         if zero_stage_3:
             import deepspeed
+
             gather_if_zero3 = deepspeed.zero.GatheredParameters
         else:
             gather_if_zero3 = nullcontext
@@ -3077,18 +3790,25 @@ class CustomGOLDTrainer(GOLDTrainer):
                     self._sync_fsdp_params_to_vllm(self.model)
                 else:
                     for name, param in self.model.named_parameters():
-                        name = name.removeprefix("base_model.model.").replace(".base_layer", "")
+                        name = name.removeprefix("base_model.model.").replace(
+                            ".base_layer", ""
+                        )
                         if self.model.prefix in name:
                             continue
                         if "original_module" in name:
                             continue
                         name = name.replace("modules_to_save.default.", "")
-                        if self.vllm_mode == "server" and self.accelerator.is_main_process:
+                        if (
+                            self.vllm_mode == "server"
+                            and self.accelerator.is_main_process
+                        ):
                             t_bc = time.perf_counter()
                             self.vllm_client.update_named_param(name, param.data)
                             t_broadcast_total += time.perf_counter() - t_bc
                         elif self.vllm_mode == "colocate":
-                            llm_model = self.vllm_engine.llm_engine.model_executor.driver_worker.model_runner.model
+                            llm_model = (
+                                self.vllm_engine.llm_engine.model_executor.driver_worker.model_runner.model
+                            )
                             llm_model.load_weights([(name, param.data)])
                         n_params += 1
                 self.model.unmerge_adapter()
@@ -3100,12 +3820,17 @@ class CustomGOLDTrainer(GOLDTrainer):
                     t_ag = time.perf_counter()
                     with gather_if_zero3([param]):
                         t_allgather_total += time.perf_counter() - t_ag
-                        if self.vllm_mode == "server" and self.accelerator.is_main_process:
+                        if (
+                            self.vllm_mode == "server"
+                            and self.accelerator.is_main_process
+                        ):
                             t_bc = time.perf_counter()
                             self.vllm_client.update_named_param(name, param.data)
                             t_broadcast_total += time.perf_counter() - t_bc
                         elif self.vllm_mode == "colocate":
-                            llm_model = self.vllm_engine.llm_engine.model_executor.driver_worker.model_runner.model
+                            llm_model = (
+                                self.vllm_engine.llm_engine.model_executor.driver_worker.model_runner.model
+                            )
                             llm_model.load_weights([(name, param.data)])
                     n_params += 1
 
@@ -3120,7 +3845,9 @@ class CustomGOLDTrainer(GOLDTrainer):
         self._timing_weight_sync_broadcast += t_broadcast_total
         self._timing_weight_sync_params = n_params
 
-    def _build_alignment_groups_at_bytes_from_completion_ids(self, completion_ids, new_completion_ids):
+    def _build_alignment_groups_at_bytes_from_completion_ids(
+        self, completion_ids, new_completion_ids
+    ):
         """
         Build alignment groups using byte-level matching to align original completion ids and new (retokenized) ids.
         (Mostly a duplication of CustomULDLoss's _build_alignment_groups_at_bytes_from_ids)
@@ -3139,6 +3866,7 @@ class CustomGOLDTrainer(GOLDTrainer):
         max_group_size = 20
 
         if s_ids_core and t_ids_core:
+
             def to_byte_pieces(tok, ids):
                 pieces = []
                 for tid in ids:
@@ -3222,10 +3950,12 @@ class CustomGOLDTrainer(GOLDTrainer):
         return s_groups, t_groups
 
     @profiling_decorator
-    def _generate_on_policy_outputs_vllm(self, inputs, generation_config, pad_token_id=None, _prefetched=None):
+    def _generate_on_policy_outputs_vllm(
+        self, inputs, generation_config, pad_token_id=None, _prefetched=None
+    ):
         _t0_gen = time.perf_counter()
         device = self.accelerator.device
-        
+
         # Decode prompts for vLLM (without special tokens - vLLM expects clean text)
         max_prompt_tokens = self.args.max_length - generation_config.max_new_tokens
         prompts_to_decode = inputs["prompts"]
@@ -3239,7 +3969,10 @@ class CustomGOLDTrainer(GOLDTrainer):
         )
         # Remove padding token text if it appears, as vLLM expects clean prompts
         if self.processing_class.pad_token:
-            prompts_text_for_vllm = [p.replace(self.processing_class.pad_token, "") for p in prompts_text_for_vllm]
+            prompts_text_for_vllm = [
+                p.replace(self.processing_class.pad_token, "")
+                for p in prompts_text_for_vllm
+            ]
 
         # Also decode prompts WITH special tokens for ULD loss computation
         prompts_text_with_special = self.processing_class.batch_decode(
@@ -3255,10 +3988,18 @@ class CustomGOLDTrainer(GOLDTrainer):
         max_completion_length = generation_config.max_new_tokens
         temperature = self.args.vllm_temperature
         # vLLM uses top_k=-1 for no top_k, transformers uses 0 or None.
-        top_k = generation_config.top_k if generation_config.top_k and generation_config.top_k > 0 else -1
+        top_k = (
+            generation_config.top_k
+            if generation_config.top_k and generation_config.top_k > 0
+            else -1
+        )
         # top_p, repetition_penalty, min_p are not directly in generation_config, get from trainer args
         top_p = self.args.top_p if hasattr(self.args, "top_p") else 1.0
-        repetition_penalty = self.args.repetition_penalty if hasattr(self.args, "repetition_penalty") else 1.0
+        repetition_penalty = (
+            self.args.repetition_penalty
+            if hasattr(self.args, "repetition_penalty")
+            else 1.0
+        )
         min_p = self.args.min_p if hasattr(self.args, "min_p") else 0.0
 
         # How many prompts the SERVING side is asked for in this one call. None when the work was
@@ -3299,7 +4040,9 @@ class CustomGOLDTrainer(GOLDTrainer):
             vllm_logprobs_raw = vllm_logprobs_raw[process_slice]
         elif self.vllm_mode == "colocate":
             if self.vllm_guided_decoding_regex:
-                guided_decoding = GuidedDecodingParams(backend="outlines", regex=self.vllm_guided_decoding_regex)
+                guided_decoding = GuidedDecodingParams(
+                    backend="outlines", regex=self.vllm_guided_decoding_regex
+                )
             else:
                 guided_decoding = None
             sampling_params = SamplingParams(
@@ -3319,25 +4062,45 @@ class CustomGOLDTrainer(GOLDTrainer):
                 # Each rank starts with its own prompts; after gathering, all ranks see the full group set.
                 orig_size = len(prompts_text_for_vllm)
                 gathered_prompts = [None for _ in range(self.vllm_tensor_parallel_size)]
-                torch.distributed.all_gather_object(gathered_prompts, prompts_text_for_vllm, group=self.vllm_tp_group)
+                torch.distributed.all_gather_object(
+                    gathered_prompts, prompts_text_for_vllm, group=self.vllm_tp_group
+                )
                 all_prompts_text = [p for sublist in gathered_prompts for p in sublist]
             else:
                 all_prompts_text = prompts_text_for_vllm
 
             _gen_batch_seen = len(all_prompts_text)
-            all_outputs = self.vllm_engine.generate(all_prompts_text, sampling_params=sampling_params, use_tqdm=False)
-            completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
+            all_outputs = self.vllm_engine.generate(
+                all_prompts_text, sampling_params=sampling_params, use_tqdm=False
+            )
+            completion_ids = [
+                output.token_ids
+                for outputs in all_outputs
+                for output in outputs.outputs
+            ]
             vllm_logprobs_raw = [
-                [lp_dict[tok_id].logprob for tok_id, lp_dict in zip(output.token_ids, output.logprobs)]
-                if output.logprobs else [0.0] * len(output.token_ids)
-                for outputs in all_outputs for output in outputs.outputs
+                (
+                    [
+                        lp_dict[tok_id].logprob
+                        for tok_id, lp_dict in zip(output.token_ids, output.logprobs)
+                    ]
+                    if output.logprobs
+                    else [0.0] * len(output.token_ids)
+                )
+                for outputs in all_outputs
+                for output in outputs.outputs
             ]
 
             if hasattr(self, "vllm_tp_group") and self.vllm_tensor_parallel_size > 1:
                 # Slice completions for this rank within its TP group.
                 # Each rank generates all outputs — we keep only our share.
-                local_rank_in_group = torch.distributed.get_rank(group=self.vllm_tp_group)
-                tp_slice = slice(local_rank_in_group * orig_size, (local_rank_in_group + 1) * orig_size)
+                local_rank_in_group = torch.distributed.get_rank(
+                    group=self.vllm_tp_group
+                )
+                tp_slice = slice(
+                    local_rank_in_group * orig_size,
+                    (local_rank_in_group + 1) * orig_size,
+                )
                 completion_ids = completion_ids[tp_slice]
                 vllm_logprobs_raw = vllm_logprobs_raw[tp_slice]
 
@@ -3348,20 +4111,30 @@ class CustomGOLDTrainer(GOLDTrainer):
 
         ### Re-tokenize completions
         if self.args.uld_rebuild_student_input:
-            completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=False) #, clean_up_tokenization_spaces=False)
+            completions = self.processing_class.batch_decode(
+                completion_ids, skip_special_tokens=False
+            )  # , clean_up_tokenization_spaces=False)
             if self.args.opd_importance_sampling:
-                new_completion_ids = self.processing_class(completions)['input_ids']
+                new_completion_ids = self.processing_class(completions)["input_ids"]
                 new_vllm_logprobs_raw = []
                 for i in range(len(completion_ids)):
-                    s_groups, t_groups = self._build_alignment_groups_at_bytes_from_completion_ids(completion_ids[i], new_completion_ids[i])
+                    s_groups, t_groups = (
+                        self._build_alignment_groups_at_bytes_from_completion_ids(
+                            completion_ids[i], new_completion_ids[i]
+                        )
+                    )
                     # if len(t_groups) != len(new_completion_ids[i]):
                     #     print(f"Completion alignment went wrong: {len(t_groups)} != {len(new_completion_ids[i])}")
                     #     import pdb; pdb.set_trace()
                     # new_vllm_lps = [0.0] * len(new_completion_ids[i]) # default: 0
-                    new_vllm_lps = [100.0] * len(new_completion_ids[i]) # default: inf
+                    new_vllm_lps = [100.0] * len(new_completion_ids[i])  # default: inf
                     for group_i, t_group in enumerate(t_groups):
                         if len(t_group) == 1:
-                            new_vllm_lps[t_group[0]] = sum(vllm_logprobs_raw[i][s_groups[group_i][0]:s_groups[group_i][-1]+1])
+                            new_vllm_lps[t_group[0]] = sum(
+                                vllm_logprobs_raw[i][
+                                    s_groups[group_i][0] : s_groups[group_i][-1] + 1
+                                ]
+                            )
                     # for group_i in range(len(t_groups)):
                     #     if len(t_groups[group_i]) == 1:
                     #         new_vllm_lps[group_i] = sum(vllm_logprobs_raw[i][s_groups[group_i][0]:s_groups[group_i][-1]+1])
@@ -3370,14 +4143,18 @@ class CustomGOLDTrainer(GOLDTrainer):
                 completion_ids = new_completion_ids
                 vllm_logprobs_raw = new_vllm_logprobs_raw
             else:
-                completion_ids = self.processing_class(completions)['input_ids']
+                completion_ids = self.processing_class(completions)["input_ids"]
 
         # We need to combine prompt and completion for new_input_ids
         # Tokenize prompts again to get prompt_ids on the correct device and format
         # Use prompts_text_for_vllm (without special tokens) for tokenization since vLLM expects clean text
         # Ensure add_special_tokens=False as vLLM typically handles prompts as raw text
         # Calculate max_length for prompts, ensuring it's positive
-        prompt_max_length = max(1, self.args.max_length - max_completion_length) if self.args.max_length else None
+        prompt_max_length = (
+            max(1, self.args.max_length - max_completion_length)
+            if self.args.max_length
+            else None
+        )
         prompt_tokenized = self.processing_class(
             prompts_text_for_vllm,
             return_tensors="pt",
@@ -3388,20 +4165,29 @@ class CustomGOLDTrainer(GOLDTrainer):
         ).to(device)
         prompt_ids = prompt_tokenized.input_ids
 
-        completion_ids_tensors = [torch.tensor(ids, device=device) for ids in completion_ids]
+        completion_ids_tensors = [
+            torch.tensor(ids, device=device) for ids in completion_ids
+        ]
         # Manually pad/truncate completions to max_completion_length length before using pad function
         padded_completion_ids_list = []
         for completion_tensor in completion_ids_tensors:
             if len(completion_tensor) > max_completion_length:
                 # Truncate if longer than max_completion_length
-                padded_completion_ids_list.append(completion_tensor[:max_completion_length])
+                padded_completion_ids_list.append(
+                    completion_tensor[:max_completion_length]
+                )
             elif len(completion_tensor) < max_completion_length:
                 # Pad if shorter than max_completion_length
                 padding_needed = max_completion_length - len(completion_tensor)
                 padded_tensor = torch.cat(
                     [
                         completion_tensor,
-                        torch.full((padding_needed,), pad_token_id, device=device, dtype=completion_tensor.dtype),
+                        torch.full(
+                            (padding_needed,),
+                            pad_token_id,
+                            device=device,
+                            dtype=completion_tensor.dtype,
+                        ),
                     ]
                 )
                 padded_completion_ids_list.append(padded_tensor)
@@ -3420,10 +4206,16 @@ class CustomGOLDTrainer(GOLDTrainer):
                 padded_logprobs_list.append(lp_tensor[:max_completion_length])
             elif len(lp_tensor) < max_completion_length:
                 padding_needed = max_completion_length - len(lp_tensor)
-                padded_logprobs_list.append(torch.cat([
-                    lp_tensor,
-                    torch.zeros(padding_needed, device=device, dtype=torch.float32),
-                ]))
+                padded_logprobs_list.append(
+                    torch.cat(
+                        [
+                            lp_tensor,
+                            torch.zeros(
+                                padding_needed, device=device, dtype=torch.float32
+                            ),
+                        ]
+                    )
+                )
             else:
                 padded_logprobs_list.append(lp_tensor)
         padded_completion_logprobs = torch.stack(padded_logprobs_list)
@@ -3437,8 +4229,12 @@ class CustomGOLDTrainer(GOLDTrainer):
         new_input_ids = torch.cat([prompt_ids, padded_completion_ids], dim=1)
 
         # Build full-sequence logprobs: zeros for prompt, actual logprobs for completion
-        prompt_logprobs_pad = torch.zeros(prompt_ids.shape[0], prompt_ids.shape[1], device=device, dtype=torch.float32)
-        vllm_completion_logprobs = torch.cat([prompt_logprobs_pad, padded_completion_logprobs], dim=1)
+        prompt_logprobs_pad = torch.zeros(
+            prompt_ids.shape[0], prompt_ids.shape[1], device=device, dtype=torch.float32
+        )
+        vllm_completion_logprobs = torch.cat(
+            [prompt_logprobs_pad, padded_completion_logprobs], dim=1
+        )
 
         # Ensure new_input_ids has the same shape as original input_ids
         original_seq_len = inputs["input_ids"].shape[1]
@@ -3447,29 +4243,68 @@ class CustomGOLDTrainer(GOLDTrainer):
         if new_seq_len < original_seq_len:
             # Pad new_input_ids to match original length (from left)
             padding_added = original_seq_len - new_seq_len
-            new_input_ids = torch.cat([
-                torch.full((new_input_ids.shape[0], padding_added), pad_token_id, device=device, dtype=new_input_ids.dtype),
-                new_input_ids,
-            ], dim=1)
-            vllm_completion_logprobs = torch.cat([
-                torch.zeros(vllm_completion_logprobs.shape[0], padding_added, device=device, dtype=torch.float32),
-                vllm_completion_logprobs,
-            ], dim=1)
+            new_input_ids = torch.cat(
+                [
+                    torch.full(
+                        (new_input_ids.shape[0], padding_added),
+                        pad_token_id,
+                        device=device,
+                        dtype=new_input_ids.dtype,
+                    ),
+                    new_input_ids,
+                ],
+                dim=1,
+            )
+            vllm_completion_logprobs = torch.cat(
+                [
+                    torch.zeros(
+                        vllm_completion_logprobs.shape[0],
+                        padding_added,
+                        device=device,
+                        dtype=torch.float32,
+                    ),
+                    vllm_completion_logprobs,
+                ],
+                dim=1,
+            )
         elif new_seq_len > original_seq_len:
             # Pad original inputs to match new length (from left)
             padding_needed = new_seq_len - original_seq_len
-            inputs["input_ids"] = torch.cat([
-                torch.full((inputs["input_ids"].shape[0], padding_needed), pad_token_id, device=device, dtype=inputs["input_ids"].dtype),
-                inputs["input_ids"],
-            ], dim=1)
-            inputs["attention_mask"] = torch.cat([
-                torch.zeros((inputs["attention_mask"].shape[0], padding_needed), device=device, dtype=inputs["attention_mask"].dtype),
-                inputs["attention_mask"],
-            ], dim=1)
-            inputs["labels"] = torch.cat([
-                torch.full((inputs["labels"].shape[0], padding_needed), -100, device=device, dtype=inputs["labels"].dtype),
-                inputs["labels"],
-            ], dim=1)
+            inputs["input_ids"] = torch.cat(
+                [
+                    torch.full(
+                        (inputs["input_ids"].shape[0], padding_needed),
+                        pad_token_id,
+                        device=device,
+                        dtype=inputs["input_ids"].dtype,
+                    ),
+                    inputs["input_ids"],
+                ],
+                dim=1,
+            )
+            inputs["attention_mask"] = torch.cat(
+                [
+                    torch.zeros(
+                        (inputs["attention_mask"].shape[0], padding_needed),
+                        device=device,
+                        dtype=inputs["attention_mask"].dtype,
+                    ),
+                    inputs["attention_mask"],
+                ],
+                dim=1,
+            )
+            inputs["labels"] = torch.cat(
+                [
+                    torch.full(
+                        (inputs["labels"].shape[0], padding_needed),
+                        -100,
+                        device=device,
+                        dtype=inputs["labels"].dtype,
+                    ),
+                    inputs["labels"],
+                ],
+                dim=1,
+            )
 
         new_attention_mask = torch.ones_like(new_input_ids, device=device)
         new_labels = new_input_ids.clone()
@@ -3493,7 +4328,9 @@ class CustomGOLDTrainer(GOLDTrainer):
         # Extract completion texts from the generated completion IDs
         completion_texts = []
         for comp_ids in completion_ids:
-            completion_text = self.processing_class.decode(comp_ids, skip_special_tokens=False)
+            completion_text = self.processing_class.decode(
+                comp_ids, skip_special_tokens=False
+            )
             completion_texts.append(completion_text)
 
         _gen_elapsed = time.perf_counter() - _t0_gen
@@ -3517,10 +4354,18 @@ class CustomGOLDTrainer(GOLDTrainer):
             # max_tokens). `len(c) >= None` is a TypeError, and this runs in the generation hot path
             # of every on-policy step -- a counter must not be able to kill a run.
             if max_completion_length:
-                self._gen_truncated += sum(1 for c in completion_ids
-                                           if len(c) >= max_completion_length)
+                self._gen_truncated += sum(
+                    1 for c in completion_ids if len(c) >= max_completion_length
+                )
 
-        return new_input_ids, new_attention_mask, new_labels, prompts_text_with_special, completion_texts, vllm_completion_logprobs
+        return (
+            new_input_ids,
+            new_attention_mask,
+            new_labels,
+            prompts_text_with_special,
+            completion_texts,
+            vllm_completion_logprobs,
+        )
 
     @staticmethod
     def cross_entropy_loss(
@@ -3544,7 +4389,9 @@ class CustomGOLDTrainer(GOLDTrainer):
         """
         if labels is not None:
             mask = labels != -100
-            student_logits = student_logits.reshape(-1, student_logits.size(-1))[mask.view(-1)]
+            student_logits = student_logits.reshape(-1, student_logits.size(-1))[
+                mask.view(-1)
+            ]
             labels = labels.reshape(-1)[mask.view(-1)]
 
         loss = F.cross_entropy(
@@ -3556,7 +4403,13 @@ class CustomGOLDTrainer(GOLDTrainer):
         return loss
 
     @staticmethod
-    def compute_hidden_loss(student_hidden_states, teacher_hidden_states, hidden_proj, layer_ids, shifted_labels):
+    def compute_hidden_loss(
+        student_hidden_states,
+        teacher_hidden_states,
+        hidden_proj,
+        layer_ids,
+        shifted_labels,
+    ):
         """
         Compute cosine similarity loss between projected teacher and student hidden states.
 
@@ -3571,7 +4424,7 @@ class CustomGOLDTrainer(GOLDTrainer):
             shifted_labels: Labels tensor already shifted (labels[:, 1:]), with -100 for tokens to ignore
         """
         # Mask: only compute loss on completion tokens
-        mask = (shifted_labels != -100)  # [B, T-1]
+        mask = shifted_labels != -100  # [B, T-1]
 
         total_loss = 0.0
         for lid in layer_ids:
@@ -3579,18 +4432,27 @@ class CustomGOLDTrainer(GOLDTrainer):
             hs = student_hidden_states[lid + 1][:, :-1, :]  # [B, T-1, student_dim]
             ht = teacher_hidden_states[lid + 1][:, :-1, :]  # [B, T-1, teacher_dim]
             if hidden_proj is not None:
-                ht = hidden_proj(ht)                          # [B, T-1, student_dim]
+                ht = hidden_proj(ht)  # [B, T-1, student_dim]
             # cosine similarity per token, loss = 1 - cos_sim
-            cos_sim = F.cosine_similarity(hs, ht, dim=-1)    # [B, T-1]
-            cos_loss = 1.0 - cos_sim                          # [B, T-1]
+            cos_sim = F.cosine_similarity(hs, ht, dim=-1)  # [B, T-1]
+            cos_loss = 1.0 - cos_sim  # [B, T-1]
             total_loss += (cos_loss * mask).sum() / mask.sum().clamp_min(1)
 
         return total_loss / max(len(layer_ids), 1)
 
     @staticmethod
-    def sampled_opd_loss(student_logits, teacher_logits, labels, temperature=1.0, clip_alpha=0.0,
-                         entropy_filter=False, entropy_threshold=1.0,
-                         vllm_logprobs=None, is_epsilon_low=0.5, is_epsilon_high=2.0):
+    def sampled_opd_loss(
+        student_logits,
+        teacher_logits,
+        labels,
+        temperature=1.0,
+        clip_alpha=0.0,
+        entropy_filter=False,
+        entropy_threshold=1.0,
+        vllm_logprobs=None,
+        is_epsilon_low=0.5,
+        is_epsilon_high=2.0,
+    ):
         """
         Sampled on-policy distillation loss (REINFORCE-style policy gradient).
 
@@ -3624,15 +4486,23 @@ class CustomGOLDTrainer(GOLDTrainer):
             loss if vllm_logprobs is None, else (loss, is_stats_dict)
         """
         mask = labels != -100
-        student_logits = student_logits.reshape(-1, student_logits.size(-1))[mask.view(-1)]
-        teacher_logits = teacher_logits.reshape(-1, teacher_logits.size(-1))[mask.view(-1)]
+        student_logits = student_logits.reshape(-1, student_logits.size(-1))[
+            mask.view(-1)
+        ]
+        teacher_logits = teacher_logits.reshape(-1, teacher_logits.size(-1))[
+            mask.view(-1)
+        ]
         sampled_tokens = labels.reshape(-1)[mask.view(-1)]
 
         student_log_probs = F.log_softmax(student_logits / temperature, dim=-1)
         teacher_log_probs = F.log_softmax(teacher_logits / temperature, dim=-1)
 
-        student_lp = student_log_probs.gather(-1, sampled_tokens.unsqueeze(-1)).squeeze(-1)
-        teacher_lp = teacher_log_probs.gather(-1, sampled_tokens.unsqueeze(-1)).squeeze(-1)
+        student_lp = student_log_probs.gather(-1, sampled_tokens.unsqueeze(-1)).squeeze(
+            -1
+        )
+        teacher_lp = teacher_log_probs.gather(-1, sampled_tokens.unsqueeze(-1)).squeeze(
+            -1
+        )
 
         if entropy_filter and entropy_threshold < 1.0:
             entropy = -(student_log_probs.exp() * student_log_probs).sum(dim=-1)
@@ -3720,14 +4590,22 @@ class CustomGOLDTrainer(GOLDTrainer):
             teacher_logits = teacher_logits.reshape(-1, vocab_size)[flat_mask]
             num_tokens = mask.sum()
 
-            on_policy_mask = torch.tensor(on_policy, dtype=torch.bool, device=student_logits.device)
-            token_on_policy = on_policy_mask.unsqueeze(1).expand(-1, seq_len).reshape(-1)[flat_mask]
+            on_policy_mask = torch.tensor(
+                on_policy, dtype=torch.bool, device=student_logits.device
+            )
+            token_on_policy = (
+                on_policy_mask.unsqueeze(1).expand(-1, seq_len).reshape(-1)[flat_mask]
+            )
         else:
             num_tokens = student_logits.size(0) * student_logits.size(1)
             student_logits = student_logits.reshape(-1, vocab_size)
             teacher_logits = teacher_logits.reshape(-1, vocab_size)
-            on_policy_mask = torch.tensor(on_policy, dtype=torch.bool, device=student_logits.device)
-            token_on_policy = on_policy_mask.unsqueeze(1).expand(-1, seq_len).reshape(-1)
+            on_policy_mask = torch.tensor(
+                on_policy, dtype=torch.bool, device=student_logits.device
+            )
+            token_on_policy = (
+                on_policy_mask.unsqueeze(1).expand(-1, seq_len).reshape(-1)
+            )
 
         student_log_probs = F.log_softmax(student_logits / temperature, dim=-1)
         teacher_log_probs = F.log_softmax(teacher_logits / temperature, dim=-1)
@@ -3740,7 +4618,9 @@ class CustomGOLDTrainer(GOLDTrainer):
             s_on = student_log_probs[token_on_policy]
             t_on = teacher_log_probs[token_on_policy]
             if alpha > 0:
-                t_on = torch.logaddexp(s_on + math.log(alpha), t_on + math.log(1 - alpha))
+                t_on = torch.logaddexp(
+                    s_on + math.log(alpha), t_on + math.log(1 - alpha)
+                )
             total_loss += (torch.exp(s_on) * (s_on - t_on)).sum()
 
         # Off-policy tokens: Forward KL (mean-seeking)
@@ -3750,7 +4630,9 @@ class CustomGOLDTrainer(GOLDTrainer):
             s_off = student_log_probs[off_policy]
             t_off = teacher_log_probs[off_policy]
             if alpha > 0:
-                s_off = torch.logaddexp(s_off + math.log(1 - alpha), t_off + math.log(alpha))
+                s_off = torch.logaddexp(
+                    s_off + math.log(1 - alpha), t_off + math.log(alpha)
+                )
             total_loss += F.kl_div(s_off, t_off, reduction="sum", log_target=True)
 
         return total_loss / num_tokens
@@ -3803,8 +4685,12 @@ class CustomGOLDTrainer(GOLDTrainer):
         if labels is not None:
             mask = labels != -100
             # Flatten and filter early
-            student_logits = student_logits.reshape(-1, student_logits.size(-1))[mask.view(-1)]
-            teacher_logits = teacher_logits.reshape(-1, teacher_logits.size(-1))[mask.view(-1)]
+            student_logits = student_logits.reshape(-1, student_logits.size(-1))[
+                mask.view(-1)
+            ]
+            teacher_logits = teacher_logits.reshape(-1, teacher_logits.size(-1))[
+                mask.view(-1)
+            ]
 
         if logits_are_probs:
             student_log_probs = torch.log(student_logits.clamp_min(1e-8))
@@ -3838,17 +4724,26 @@ class CustomGOLDTrainer(GOLDTrainer):
                 if alpha > 0:
                     # skew teacher_log_probs
                     teacher_log_probs = torch.logaddexp(
-                        student_log_probs + math.log(alpha), teacher_log_probs + math.log(1 - alpha)
+                        student_log_probs + math.log(alpha),
+                        teacher_log_probs + math.log(1 - alpha),
                     )
-                jsd = torch.exp(student_log_probs) * (student_log_probs - teacher_log_probs)
+                jsd = torch.exp(student_log_probs) * (
+                    student_log_probs - teacher_log_probs
+                )
             else:
                 """Compute Forward KL"""
                 if alpha > 0:
                     # skew student_log_probs
                     student_log_probs = torch.logaddexp(
-                        student_log_probs + math.log(1 - alpha), teacher_log_probs + math.log(alpha)
+                        student_log_probs + math.log(1 - alpha),
+                        teacher_log_probs + math.log(alpha),
                     )
-                jsd = F.kl_div(student_log_probs, teacher_log_probs, reduction="none", log_target=True)
+                jsd = F.kl_div(
+                    student_log_probs,
+                    teacher_log_probs,
+                    reduction="none",
+                    log_target=True,
+                )
         elif use_reversed_distillm2_like:
             """
             Compute reversed DISTILLM-2 like loss
@@ -3858,45 +4753,73 @@ class CustomGOLDTrainer(GOLDTrainer):
                 if alpha > 0:
                     # skew teacher_log_probs
                     teacher_log_probs = torch.logaddexp(
-                        student_log_probs + math.log(alpha), teacher_log_probs + math.log(1 - alpha)
+                        student_log_probs + math.log(alpha),
+                        teacher_log_probs + math.log(1 - alpha),
                     )
-                jsd = torch.exp(student_log_probs) * (student_log_probs - teacher_log_probs)
+                jsd = torch.exp(student_log_probs) * (
+                    student_log_probs - teacher_log_probs
+                )
             else:
                 """Compute Forward KL"""
                 if alpha > 0:
                     # skew student_log_probs
                     student_log_probs = torch.logaddexp(
-                        student_log_probs + math.log(1 - alpha), teacher_log_probs + math.log(alpha)
+                        student_log_probs + math.log(1 - alpha),
+                        teacher_log_probs + math.log(alpha),
                     )
-                jsd = F.kl_div(student_log_probs, teacher_log_probs, reduction="none", log_target=True)
+                jsd = F.kl_div(
+                    student_log_probs,
+                    teacher_log_probs,
+                    reduction="none",
+                    log_target=True,
+                )
         elif alpha > 0:
             if beta == 0:
                 # skew student_log_probs
                 student_log_probs = torch.logaddexp(
-                    student_log_probs + math.log(1 - alpha), teacher_log_probs + math.log(alpha)
+                    student_log_probs + math.log(1 - alpha),
+                    teacher_log_probs + math.log(alpha),
                 )
-                jsd = F.kl_div(student_log_probs, teacher_log_probs, reduction="none", log_target=True)
+                jsd = F.kl_div(
+                    student_log_probs,
+                    teacher_log_probs,
+                    reduction="none",
+                    log_target=True,
+                )
             elif beta == 1:
                 # skew teacher_log_probs
                 teacher_log_probs = torch.logaddexp(
-                    student_log_probs + math.log(alpha), teacher_log_probs + math.log(1 - alpha)
+                    student_log_probs + math.log(alpha),
+                    teacher_log_probs + math.log(1 - alpha),
                 )
                 # compute reverse KL
-                jsd = torch.exp(student_log_probs) * (student_log_probs - teacher_log_probs)
+                jsd = torch.exp(student_log_probs) * (
+                    student_log_probs - teacher_log_probs
+                )
             else:
                 # skew student_log_probs
                 skewed_student_log_probs = torch.logaddexp(
-                    student_log_probs + math.log(1 - alpha), teacher_log_probs + math.log(alpha)
+                    student_log_probs + math.log(1 - alpha),
+                    teacher_log_probs + math.log(alpha),
                 )
                 # skew teacher_log_probs
                 skewed_teacher_log_probs = torch.logaddexp(
-                    student_log_probs + math.log(alpha), teacher_log_probs + math.log(1 - alpha)
+                    student_log_probs + math.log(alpha),
+                    teacher_log_probs + math.log(1 - alpha),
                 )
-                jsd = (1 - beta) * F.kl_div(skewed_student_log_probs, teacher_log_probs, reduction="none", log_target=True) + \
-                      beta * torch.exp(student_log_probs) * (student_log_probs - skewed_teacher_log_probs)
+                jsd = (1 - beta) * F.kl_div(
+                    skewed_student_log_probs,
+                    teacher_log_probs,
+                    reduction="none",
+                    log_target=True,
+                ) + beta * torch.exp(student_log_probs) * (
+                    student_log_probs - skewed_teacher_log_probs
+                )
         elif use_adaptive_kld:
             # Sort teacher log probabilities in descending order
-            sorted_log_probs, sorted_indices = torch.sort(teacher_log_probs, descending=True, dim=-1)
+            sorted_log_probs, sorted_indices = torch.sort(
+                teacher_log_probs, descending=True, dim=-1
+            )
 
             # Convert sorted log probs to probs, compute cumulative probs, and find indices where cumsum <= 0.5
             top_mask_sorted = torch.cumsum(torch.exp(sorted_log_probs), dim=-1) <= 0.5
@@ -3909,39 +4832,73 @@ class CustomGOLDTrainer(GOLDTrainer):
             jsd = torch.where(
                 top_mask,
                 # KLD for high-prob tokens
-                F.kl_div(student_log_probs, teacher_log_probs, reduction="none", log_target=True),
+                F.kl_div(
+                    student_log_probs,
+                    teacher_log_probs,
+                    reduction="none",
+                    log_target=True,
+                ),
                 # Reverse KLD for low-prob tokens
-                torch.exp(student_log_probs) * (student_log_probs - teacher_log_probs)
+                torch.exp(student_log_probs) * (student_log_probs - teacher_log_probs),
             )
         else:
             if beta == 0:
-                jsd = F.kl_div(student_log_probs, teacher_log_probs, reduction="none", log_target=True)
+                jsd = F.kl_div(
+                    student_log_probs,
+                    teacher_log_probs,
+                    reduction="none",
+                    log_target=True,
+                )
             elif beta == 1:
                 # compute reverse KL
-                jsd = torch.exp(student_log_probs) * (student_log_probs - teacher_log_probs)
+                jsd = torch.exp(student_log_probs) * (
+                    student_log_probs - teacher_log_probs
+                )
             elif use_kl_interpolation:
                 # Convex FKL/RKL interpolation (degenerate limit of the alpha > 0 branch with alpha = 0).
-                fkl = F.kl_div(student_log_probs, teacher_log_probs, reduction="none", log_target=True)
-                rkl = torch.exp(student_log_probs) * (student_log_probs - teacher_log_probs)
+                fkl = F.kl_div(
+                    student_log_probs,
+                    teacher_log_probs,
+                    reduction="none",
+                    log_target=True,
+                )
+                rkl = torch.exp(student_log_probs) * (
+                    student_log_probs - teacher_log_probs
+                )
                 jsd = (1 - beta) * fkl + beta * rkl
             else:
                 # Compute the log of the mixture distribution
                 # log(a + b) = log(exp(log(a)) + exp(log(b))) -> for mixture
                 mixture_log_probs = torch.logaddexp(
-                    student_log_probs + math.log(1 - beta), teacher_log_probs + math.log(beta)
+                    student_log_probs + math.log(1 - beta),
+                    teacher_log_probs + math.log(beta),
                 )
 
                 # Compute KL divergences using F.kl_div
                 # PyTorch differs from the standard mathematical definition, so the order of the probability distributions is swapped compared to that defined in the paper.
-                kl_teacher = F.kl_div(mixture_log_probs, teacher_log_probs, reduction="none", log_target=True)
-                kl_student = F.kl_div(mixture_log_probs, student_log_probs, reduction="none", log_target=True)
+                kl_teacher = F.kl_div(
+                    mixture_log_probs,
+                    teacher_log_probs,
+                    reduction="none",
+                    log_target=True,
+                )
+                kl_student = F.kl_div(
+                    mixture_log_probs,
+                    student_log_probs,
+                    reduction="none",
+                    log_target=True,
+                )
 
                 # Compute the Generalized Jensen-Shannon Divergence
                 jsd = beta * kl_teacher + (1 - beta) * kl_student
 
         # Apply reduction
         if reduction == "batchmean":
-            return jsd.sum() / mask.sum() if labels is not None else jsd.sum() / jsd.size(0)
+            return (
+                jsd.sum() / mask.sum()
+                if labels is not None
+                else jsd.sum() / jsd.size(0)
+            )
         elif reduction == "sum":
             return jsd.sum()
         elif reduction == "mean":
@@ -3962,13 +4919,17 @@ class CustomGOLDTrainer(GOLDTrainer):
         for row in range(inputs["input_ids"].size(0)):
             s_mask = inputs["attention_mask"][row].bool()
             if s_mask.any():
-                s_last = inputs["input_ids"][row, s_mask.nonzero(as_tuple=True)[0][-1]].item()
+                s_last = inputs["input_ids"][
+                    row, s_mask.nonzero(as_tuple=True)[0][-1]
+                ].item()
                 out.append(s_last == eos_id)
             else:
                 out.append(False)
         return out
 
-    def _pack_teacher_regions(self, hidden, teacher_input_ids, teacher_labels, teacher_spans):
+    def _pack_teacher_regions(
+        self, hidden, teacher_input_ids, teacher_labels, teacher_spans
+    ):
         """Gather the positions the per-turn regions name, packed into [B, Kmax, ...].
 
         Each region (start, size) contributes positions start-1 .. start+size-1 inclusive.
@@ -3986,16 +4947,16 @@ class CustomGOLDTrainer(GOLDTrainer):
         idx_rows, lab_rows = [], []
         for b in range(B):
             positions, labels = [], []
-            for (start, size) in teacher_spans[b]:
+            for start, size in teacher_spans[b]:
                 lo = max(0, start - 1)
                 hi = min(T, start + size)
-                if hi - lo < 2:          # a region with no predictable position
+                if hi - lo < 2:  # a region with no predictable position
                     continue
                 block = list(range(lo, hi))
                 positions.extend(block)
                 # first position of the block predicts, it is not predicted
                 labels.append(-100)
-                labels.extend(teacher_input_ids[b, lo + 1:hi].tolist())
+                labels.extend(teacher_input_ids[b, lo + 1 : hi].tolist())
             idx_rows.append(positions)
             lab_rows.append(labels)
         kmax = max((len(p) for p in idx_rows), default=0)
@@ -4004,13 +4965,19 @@ class CustomGOLDTrainer(GOLDTrainer):
         lab = torch.full((B, kmax), -100, dtype=teacher_labels.dtype, device=device)
         for b, (positions, labels) in enumerate(zip(idx_rows, lab_rows)):
             if positions:
-                idx[b, :len(positions)] = torch.tensor(positions, dtype=torch.long, device=device)
-                lab[b, :len(labels)] = torch.tensor(labels, dtype=teacher_labels.dtype, device=device)
+                idx[b, : len(positions)] = torch.tensor(
+                    positions, dtype=torch.long, device=device
+                )
+                lab[b, : len(labels)] = torch.tensor(
+                    labels, dtype=teacher_labels.dtype, device=device
+                )
         packed_hidden = hidden.gather(1, idx.unsqueeze(-1).expand(-1, -1, D))
         packed_ids = teacher_input_ids.gather(1, idx)
         return packed_hidden, packed_ids, lab
 
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+    def compute_loss(
+        self, model, inputs, return_outputs=False, num_items_in_batch=None
+    ):
 
         if self.use_uld_loss and self.teacher_tokenizer is not None:
             # Initialised before the branch chain because only ONE of those branches can
@@ -4025,7 +4992,8 @@ class CustomGOLDTrainer(GOLDTrainer):
             # needs it afterwards, and two copies are two chances for the teacher's final
             # position to disagree with the student's.
             append_eos = (
-                None if self.args.uld_reuse_student_input
+                None
+                if self.args.uld_reuse_student_input
                 else self._student_rows_end_with_eos(inputs)
             )
             if self.args.uld_reuse_student_input:
@@ -4033,7 +5001,11 @@ class CustomGOLDTrainer(GOLDTrainer):
                 teacher_labels = inputs["labels"]
                 teacher_attention_mask = inputs["attention_mask"]
                 teacher_prompt_length = inputs["prompts"].shape[1]
-            elif "messages" in inputs and inputs["messages"] is not None and inputs["messages"][0] is not None:
+            elif (
+                "messages" in inputs
+                and inputs["messages"] is not None
+                and inputs["messages"][0] is not None
+            ):
                 prompt_texts = []
                 completion_texts = []
                 tools_list = inputs.get("tools", None)
@@ -4048,28 +5020,42 @@ class CustomGOLDTrainer(GOLDTrainer):
                         "(removeprefix('<|channel|>final<|message|>') and the analysis-channel "
                         "insertion), which is a one-region-per-row transformation. Supporting it "
                         "means deciding what those markers mean for an intermediate turn, and "
-                        "guessing that silently is how a teacher region ends up off by a marker.")
-                if per_turn and self.args.uld_rebuild_student_input_with_teacher_template:
+                        "guessing that silently is how a teacher region ends up off by a marker."
+                    )
+                if (
+                    per_turn
+                    and self.args.uld_rebuild_student_input_with_teacher_template
+                ):
                     raise ValueError(
                         "uld_per_turn_regions is not supported with "
                         "uld_rebuild_student_input_with_teacher_template: that debug path rebuilds "
                         "the STUDENT from (prompt_texts, completion_texts), which the per-turn "
                         "render never fills -- it emits turn segments instead. It would rebuild "
-                        "the student batch from two empty lists.")
+                        "the student batch from two empty lists."
+                    )
                 teacher_segment_rows = [] if per_turn else None
                 for i, msgs in enumerate(inputs["messages"]):
                     # system_prompt = "You are a helpful assistant. Focus on diversity in your response."
                     # msgs = [{"role": "system", "content": system_prompt}] + msgs
 
                     # Qwen3.5 chat template uses |items on tool_call.arguments, requiring a dict not a JSON string
-                    if self.args.teacher_model_name_or_path and self.args.teacher_model_name_or_path.rstrip("/").endswith("Qwen3.5-4B"):
+                    if (
+                        self.args.teacher_model_name_or_path
+                        and self.args.teacher_model_name_or_path.rstrip("/").endswith(
+                            "Qwen3.5-4B"
+                        )
+                    ):
                         for msg in msgs:
                             if "tool_calls" in msg and msg["tool_calls"]:
                                 for tc in msg["tool_calls"]:
                                     if isinstance(tc.get("arguments"), str):
                                         tc["arguments"] = json.loads(tc["arguments"])
-                                    if "function" in tc and isinstance(tc["function"].get("arguments"), str):
-                                        tc["function"]["arguments"] = json.loads(tc["function"]["arguments"])
+                                    if "function" in tc and isinstance(
+                                        tc["function"].get("arguments"), str
+                                    ):
+                                        tc["function"]["arguments"] = json.loads(
+                                            tc["function"]["arguments"]
+                                        )
 
                     prompt_msgs = msgs[:-1]
                     tools_raw = tools_list[i] if tools_list is not None else None
@@ -4077,15 +5063,25 @@ class CustomGOLDTrainer(GOLDTrainer):
                     tools_kwargs = {"tools": tools} if tools else {}
                     if self.args.is_gptoss_teacher:
                         teacher_prompt = self.teacher_tokenizer.apply_chat_template(
-                            prompt_msgs, tokenize=False, add_generation_prompt=True, reasoning_effort="low", **tools_kwargs
+                            prompt_msgs,
+                            tokenize=False,
+                            add_generation_prompt=True,
+                            reasoning_effort="low",
+                            **tools_kwargs,
                         )
                         teacher_full = self.teacher_tokenizer.apply_chat_template(
-                            msgs, tokenize=False, add_generation_prompt=False, reasoning_effort="low", **tools_kwargs
+                            msgs,
+                            tokenize=False,
+                            add_generation_prompt=False,
+                            reasoning_effort="low",
+                            **tools_kwargs,
                         )
-                        teacher_completion = teacher_full[len(teacher_prompt):]
+                        teacher_completion = teacher_full[len(teacher_prompt) :]
 
                         # Strip final channel prefix/suffix
-                        teacher_completion = teacher_completion.removeprefix("<|channel|>final<|message|>").removesuffix("<|return|>")
+                        teacher_completion = teacher_completion.removeprefix(
+                            "<|channel|>final<|message|>"
+                        ).removesuffix("<|return|>")
                         # Add empty analysis channel
                         if self.args.add_empty_analysis:
                             teacher_prompt += "<|channel|>analysis<|message|><|end|>"
@@ -4106,7 +5102,10 @@ class CustomGOLDTrainer(GOLDTrainer):
                         # That is prompt-side and never enters an alignment group: the loss aligns
                         # the answer region, and those are byte-identical, confirmed by a separate
                         # direct measurement.
-                        _teacher_think = self.args.uld_teacher_enable_thinking and _row_teacher_enable_thinking(msgs)
+                        _teacher_think = (
+                            self.args.uld_teacher_enable_thinking
+                            and _row_teacher_enable_thinking(msgs)
+                        )
                         if per_turn:
                             # One region per assistant turn. The per-row thinking flag, the tools
                             # and the turn suffix are all reused unchanged -- only the number of
@@ -4120,26 +5119,40 @@ class CustomGOLDTrainer(GOLDTrainer):
                             # rather than into tools_kwargs above so the single-region path below
                             # is byte-identical to before.
                             _turn_stats: dict = {}
-                            teacher_segment_rows.append(teacher_turn_segments(
-                                self.teacher_tokenizer, msgs,
-                                {**tools_kwargs, **self._uld_teacher_template_kwargs},
-                                enable_thinking=_teacher_think,
-                                turn_suffix=self._teacher_turn_suffix,
-                                eos_str=self.teacher_tokenizer.eos_token,
-                                append_eos=append_eos[i],
-                                stats=_turn_stats,
-                            ))
-                            self._uld_relaxed_boundaries = (
-                                getattr(self, "_uld_relaxed_boundaries", 0)
-                                + _turn_stats.get("relaxed_ws_boundaries", 0))
+                            teacher_segment_rows.append(
+                                teacher_turn_segments(
+                                    self.teacher_tokenizer,
+                                    msgs,
+                                    {
+                                        **tools_kwargs,
+                                        **self._uld_teacher_template_kwargs,
+                                    },
+                                    enable_thinking=_teacher_think,
+                                    turn_suffix=self._teacher_turn_suffix,
+                                    eos_str=self.teacher_tokenizer.eos_token,
+                                    append_eos=append_eos[i],
+                                    stats=_turn_stats,
+                                )
+                            )
+                            self._uld_relaxed_boundaries = getattr(
+                                self, "_uld_relaxed_boundaries", 0
+                            ) + _turn_stats.get("relaxed_ws_boundaries", 0)
                             continue
                         teacher_prompt = self.teacher_tokenizer.apply_chat_template(
-                            prompt_msgs, tokenize=False, add_generation_prompt=True, enable_thinking=_teacher_think, **tools_kwargs
+                            prompt_msgs,
+                            tokenize=False,
+                            add_generation_prompt=True,
+                            enable_thinking=_teacher_think,
+                            **tools_kwargs,
                         )
                         teacher_full = self.teacher_tokenizer.apply_chat_template(
-                            msgs, tokenize=False, add_generation_prompt=False, enable_thinking=_teacher_think, **tools_kwargs
+                            msgs,
+                            tokenize=False,
+                            add_generation_prompt=False,
+                            enable_thinking=_teacher_think,
+                            **tools_kwargs,
                         )
-                        teacher_completion = teacher_full[len(teacher_prompt):]
+                        teacher_completion = teacher_full[len(teacher_prompt) :]
                         # No <think> move here, deliberately, and do not restore one. It existed because a
                         # GLOBAL enable_thinking put the teacher's opening "<think>\n" in the prompt while the
                         # student's per-row flag (:1875) left the student's in the completion. With the flag
@@ -4148,12 +5161,19 @@ class CustomGOLDTrainer(GOLDTrainer):
                         # confirmed directly, and 94.0% of student answer tokens covered by the trainer's own matcher
                         # against 0.0% before, confirmed by a separate direct measurement. Re-adding the move would offset the teacher by
                         # two tokens and overflow every alignment group again.
-                        if self._teacher_turn_suffix and teacher_completion.endswith(self._teacher_turn_suffix):
-                            teacher_completion = teacher_completion[:-len(self._teacher_turn_suffix)]
+                        if self._teacher_turn_suffix and teacher_completion.endswith(
+                            self._teacher_turn_suffix
+                        ):
+                            teacher_completion = teacher_completion[
+                                : -len(self._teacher_turn_suffix)
+                            ]
 
                     prompt_texts.append(teacher_prompt)
                     completion_texts.append(teacher_completion)
-            elif "original_prompt_text" in inputs and "original_completion_text" in inputs:
+            elif (
+                "original_prompt_text" in inputs
+                and "original_completion_text" in inputs
+            ):
                 # Fallback: use student-formatted text (existing behavior)
                 prompt_texts = inputs["original_prompt_text"]
                 completion_texts = inputs["original_completion_text"]
@@ -4161,17 +5181,25 @@ class CustomGOLDTrainer(GOLDTrainer):
                 # Last resort fallback: decode student input_ids
                 # WARNING: This may not work perfectly for cross-tokenizer distillation
                 full_sequences = inputs["input_ids"]
-                full_texts = self.processing_class.batch_decode(full_sequences, skip_special_tokens=False)
+                full_texts = self.processing_class.batch_decode(
+                    full_sequences, skip_special_tokens=False
+                )
 
                 # Try to split prompt/completion using original prompt length
                 prompt_lengths = inputs["prompts"].shape[1]
-                prompt_texts = self.processing_class.batch_decode(inputs["prompts"], skip_special_tokens=False)
+                prompt_texts = self.processing_class.batch_decode(
+                    inputs["prompts"], skip_special_tokens=False
+                )
                 completion_texts = [
-                    full.replace(prompt, "", 1) for full, prompt in zip(full_texts, prompt_texts, strict=True)
+                    full.replace(prompt, "", 1)
+                    for full, prompt in zip(full_texts, prompt_texts, strict=True)
                 ]
 
             teacher_spans = None
-            if getattr(self.args, "uld_per_turn_regions", False) and teacher_segment_rows is None:
+            if (
+                getattr(self.args, "uld_per_turn_regions", False)
+                and teacher_segment_rows is None
+            ):
                 raise ValueError(
                     "uld_per_turn_regions=True but the teacher was rendered by a path that cannot "
                     "produce per-turn regions. Per-turn rendering needs the ROW's messages: it is "
@@ -4179,7 +5207,8 @@ class CustomGOLDTrainer(GOLDTrainer):
                     "teacher render at all, and the two fallbacks (original_prompt_text, and "
                     "decoding student input_ids) carry a prompt/completion split already collapsed "
                     "to one region. Continuing would supervise the last turn only, which is the "
-                    "behaviour this flag was set to avoid.")
+                    "behaviour this flag was set to avoid."
+                )
             if not self.args.uld_reuse_student_input:
                 if teacher_segment_rows is not None:
                     (
@@ -4188,7 +5217,8 @@ class CustomGOLDTrainer(GOLDTrainer):
                         teacher_attention_mask,
                         teacher_spans,
                     ) = build_teacher_inputs_from_turn_segments(
-                        self.teacher_tokenizer, teacher_segment_rows,
+                        self.teacher_tokenizer,
+                        teacher_segment_rows,
                     )
                     # No teacher_prompt_length: there is no column all regions start at. Set to
                     # None so any code path that still reads one fails loudly instead of
@@ -4209,7 +5239,9 @@ class CustomGOLDTrainer(GOLDTrainer):
 
                 teacher_input_ids = teacher_input_ids.to(self.accelerator.device)
                 teacher_labels = teacher_labels.to(self.accelerator.device)
-                teacher_attention_mask = teacher_attention_mask.to(self.accelerator.device)
+                teacher_attention_mask = teacher_attention_mask.to(
+                    self.accelerator.device
+                )
 
             ## rebuild with teacher chat template (for debugging)
             if self.args.uld_rebuild_student_input_with_teacher_template:
@@ -4224,10 +5256,16 @@ class CustomGOLDTrainer(GOLDTrainer):
                     completion_texts,
                     append_eos=append_eos,
                 )
-                inputs["input_ids"] = student_input_ids_rebuilt.to(self.accelerator.device)
+                inputs["input_ids"] = student_input_ids_rebuilt.to(
+                    self.accelerator.device
+                )
                 inputs["labels"] = student_labels_rebuilt.to(self.accelerator.device)
-                inputs["attention_mask"] = student_attention_mask_rebuilt.to(self.accelerator.device)
-                inputs["prompts"] = inputs["input_ids"][:, :student_prompt_length_rebuilt]
+                inputs["attention_mask"] = student_attention_mask_rebuilt.to(
+                    self.accelerator.device
+                )
+                inputs["prompts"] = inputs["input_ids"][
+                    :, :student_prompt_length_rebuilt
+                ]
 
             outputs_student = model(
                 input_ids=inputs["input_ids"],
@@ -4245,7 +5283,9 @@ class CustomGOLDTrainer(GOLDTrainer):
                 captured_teacher_hidden["value"] = args[0]
                 return args, kwargs
 
-            hook_t = teacher_head.register_forward_pre_hook(_capture_teacher_hidden, with_kwargs=True)
+            hook_t = teacher_head.register_forward_pre_hook(
+                _capture_teacher_hidden, with_kwargs=True
+            )
             orig_t_fwd = teacher_head.forward
             teacher_head.forward = lambda x: x
             try:
@@ -4273,13 +5313,20 @@ class CustomGOLDTrainer(GOLDTrainer):
                 # ids[1..size], so the loss's `logits[t_start-1 : t_start+t_size-1]` and
                 # `ids[t_start : t_start+t_size]` are both correct with t_start = block+1, and
                 # the loop needs no separate coordinate system for the teacher.
-                teacher_hidden, teacher_input_ids, teacher_labels = self._pack_teacher_regions(
-                    captured_teacher_hidden["value"], teacher_input_ids, teacher_labels, teacher_spans
+                teacher_hidden, teacher_input_ids, teacher_labels = (
+                    self._pack_teacher_regions(
+                        captured_teacher_hidden["value"],
+                        teacher_input_ids,
+                        teacher_labels,
+                        teacher_spans,
+                    )
                 )
             else:
                 # Slice hidden states to completion-only (from teacher_prompt_length - 1 onward)
                 # Position teacher_prompt_length - 1 is the last prompt token whose logit predicts the first answer token
-                teacher_hidden = captured_teacher_hidden["value"][:, teacher_prompt_length - 1:, :]
+                teacher_hidden = captured_teacher_hidden["value"][
+                    :, teacher_prompt_length - 1 :, :
+                ]
             del captured_teacher_hidden
 
             # Apply logits scaling (Granite models divide logits by config.logits_scaling)
@@ -4295,12 +5342,17 @@ class CustomGOLDTrainer(GOLDTrainer):
 
             if self.is_deepspeed_enabled:
                 import deepspeed
-                ctx = deepspeed.zero.GatheredParameters(gather_params, modifier_rank=None)
+
+                ctx = deepspeed.zero.GatheredParameters(
+                    gather_params, modifier_rank=None
+                )
             else:
                 ctx = nullcontext()
 
             with torch.no_grad(), ctx:
-                teacher_logits = F.linear(teacher_hidden, teacher_head.weight, teacher_bias)
+                teacher_logits = F.linear(
+                    teacher_hidden, teacher_head.weight, teacher_bias
+                )
 
             del teacher_hidden
 
@@ -4309,8 +5361,8 @@ class CustomGOLDTrainer(GOLDTrainer):
             # the ids and labels with the SAME index tensor as the hidden states or the two
             # would describe different positions.
             if teacher_spans is None:
-                teacher_input_ids = teacher_input_ids[:, teacher_prompt_length - 1:]
-                teacher_labels = teacher_labels[:, teacher_prompt_length - 1:]
+                teacher_input_ids = teacher_input_ids[:, teacher_prompt_length - 1 :]
+                teacher_labels = teacher_labels[:, teacher_prompt_length - 1 :]
         else:
             if self.use_liger_gkd_loss:
                 # Update beta/alpha dynamically if using a schedule
@@ -4330,7 +5382,9 @@ class CustomGOLDTrainer(GOLDTrainer):
                     captured_student["value"] = args[0]
                     return args, kwargs
 
-                hook_s = student_head.register_forward_pre_hook(_capture_student, with_kwargs=True)
+                hook_s = student_head.register_forward_pre_hook(
+                    _capture_student, with_kwargs=True
+                )
                 orig_s_fwd = student_head.forward
                 student_head.forward = lambda x: x
                 try:
@@ -4352,7 +5406,9 @@ class CustomGOLDTrainer(GOLDTrainer):
                     captured_teacher["value"] = args[0]
                     return args, kwargs
 
-                hook_t = teacher_head.register_forward_pre_hook(_capture_teacher, with_kwargs=True)
+                hook_t = teacher_head.register_forward_pre_hook(
+                    _capture_teacher, with_kwargs=True
+                )
                 orig_t_fwd = teacher_head.forward
                 teacher_head.forward = lambda x: x
                 try:
@@ -4371,11 +5427,15 @@ class CustomGOLDTrainer(GOLDTrainer):
                 teacher_hidden = captured_teacher["value"][:, :-1]
 
                 # Apply model-specific logits scaling (e.g. Granite divides logits by config.logits_scaling)
-                student_scaling = getattr(unwrapped_student.config, "logits_scaling", 1.0)
+                student_scaling = getattr(
+                    unwrapped_student.config, "logits_scaling", 1.0
+                )
                 if student_scaling != 1.0:
                     student_hidden = student_hidden / student_scaling
 
-                teacher_scaling = getattr(unwrapped_teacher.config, "logits_scaling", 1.0)
+                teacher_scaling = getattr(
+                    unwrapped_teacher.config, "logits_scaling", 1.0
+                )
                 if teacher_scaling != 1.0:
                     teacher_hidden = teacher_hidden / teacher_scaling
 
@@ -4384,18 +5444,28 @@ class CustomGOLDTrainer(GOLDTrainer):
                 # hidden_loss_layers is ignored here.
                 if self.args.use_hidden_loss:
                     shift_labels_for_hidden = inputs["labels"][:, 1:]
-                    mask_h = (shift_labels_for_hidden != -100)
-                    ht = teacher_hidden if self.hidden_proj is None else self.hidden_proj(teacher_hidden)
+                    mask_h = shift_labels_for_hidden != -100
+                    ht = (
+                        teacher_hidden
+                        if self.hidden_proj is None
+                        else self.hidden_proj(teacher_hidden)
+                    )
                     cos_sim = F.cosine_similarity(student_hidden, ht, dim=-1)
-                    hidden_loss = ((1.0 - cos_sim) * mask_h).sum() / mask_h.sum().clamp_min(1)
+                    hidden_loss = (
+                        (1.0 - cos_sim) * mask_h
+                    ).sum() / mask_h.sum().clamp_min(1)
 
                 # Mask to completion tokens only before fused loss (same as non-liger path, line 990-991).
                 # This dramatically reduces the number of tokens processed through the expensive
                 # JSD computation and avoids CUDA OOM from torch.func intermediate retention.
                 shift_labels = inputs["labels"][:, 1:]
                 mask = shift_labels != -100
-                student_hidden = student_hidden.reshape(-1, student_hidden.size(-1))[mask.view(-1)]
-                teacher_hidden = teacher_hidden.reshape(-1, teacher_hidden.size(-1))[mask.view(-1)]
+                student_hidden = student_hidden.reshape(-1, student_hidden.size(-1))[
+                    mask.view(-1)
+                ]
+                teacher_hidden = teacher_hidden.reshape(-1, teacher_hidden.size(-1))[
+                    mask.view(-1)
+                ]
                 true_labels = shift_labels.reshape(-1)[mask.view(-1)]
 
                 # Free full [B, T, D] hidden state tensors before gathering lm_head weights
@@ -4413,7 +5483,10 @@ class CustomGOLDTrainer(GOLDTrainer):
 
                 if self.is_deepspeed_enabled:
                     import deepspeed
-                    ctx = deepspeed.zero.GatheredParameters(gather_params, modifier_rank=None)
+
+                    ctx = deepspeed.zero.GatheredParameters(
+                        gather_params, modifier_rank=None
+                    )
                 else:
                     ctx = nullcontext()
 
@@ -4434,7 +5507,9 @@ class CustomGOLDTrainer(GOLDTrainer):
                 # Add hidden state matching loss (auxiliary) to liger JSD loss
                 if self.args.use_hidden_loss:
                     lmbda_weight = 1.0 - self._get_current_lmbda()
-                    loss = loss + self.args.hidden_loss_gamma * lmbda_weight * hidden_loss
+                    loss = (
+                        loss + self.args.hidden_loss_gamma * lmbda_weight * hidden_loss
+                    )
                     ga = max(1, int(self.args.gradient_accumulation_steps))
                     self._hidden_loss_total += hidden_loss.item()
                     self._hidden_loss_step_equiv += 1.0 / ga
@@ -4467,10 +5542,15 @@ class CustomGOLDTrainer(GOLDTrainer):
                     )
                 elif self.args.use_sampled_opd_loss:
                     progress = self.state.global_step / max(self.state.max_steps, 1)
-                    switched = self.args.opd_switch_steps > 0 and progress >= self.args.opd_switch_steps
+                    switched = (
+                        self.args.opd_switch_steps > 0
+                        and progress >= self.args.opd_switch_steps
+                    )
                     vllm_lp = None
                     if self.args.opd_importance_sampling and "vllm_logprobs" in inputs:
-                        vllm_lp = inputs["vllm_logprobs"][:, 1:]  # shift to align with shifted_labels
+                        vllm_lp = inputs["vllm_logprobs"][
+                            :, 1:
+                        ]  # shift to align with shifted_labels
 
                     opd_result = self.sampled_opd_loss(
                         student_logits=shifted_student_logits,
@@ -4491,7 +5571,9 @@ class CustomGOLDTrainer(GOLDTrainer):
                         self._is_stats_accum["std"] += is_stats["std"]
                         self._is_stats_accum["min"] += is_stats["min"]
                         self._is_stats_accum["max"] += is_stats["max"]
-                        self._is_stats_accum["masked_fraction"] += is_stats["masked_fraction"]
+                        self._is_stats_accum["masked_fraction"] += is_stats[
+                            "masked_fraction"
+                        ]
                         self._is_stats_count += 1
                     else:
                         loss = opd_result
@@ -4561,7 +5643,9 @@ class CustomGOLDTrainer(GOLDTrainer):
                         shifted_labels=shifted_labels,
                     )
                     lmbda_weight = 1.0 - self._get_current_lmbda()
-                    loss = loss + self.args.hidden_loss_gamma * lmbda_weight * hidden_loss
+                    loss = (
+                        loss + self.args.hidden_loss_gamma * lmbda_weight * hidden_loss
+                    )
 
                     # Track for logging
                     ga = max(1, int(self.args.gradient_accumulation_steps))
@@ -4575,13 +5659,24 @@ class CustomGOLDTrainer(GOLDTrainer):
             student_input_ids = inputs["input_ids"]
 
             # Use the *teacher* labels created above, not the student's.
-            teacher_labels_for_loss = teacher_labels if "teacher_labels" in locals() else inputs["labels"]
-            teacher_input_ids_for_loss = teacher_input_ids if "teacher_input_ids" in locals() else inputs["input_ids"]
+            teacher_labels_for_loss = (
+                teacher_labels if "teacher_labels" in locals() else inputs["labels"]
+            )
+            teacher_input_ids_for_loss = (
+                teacher_input_ids
+                if "teacher_input_ids" in locals()
+                else inputs["input_ids"]
+            )
 
             # Create properly masked student labels (fixing batch size > 1 issue)
             student_labels = inputs["labels"].clone()
-            if hasattr(self.processing_class, "pad_token_id") and self.processing_class.pad_token_id is not None:
-                student_labels[student_labels == self.processing_class.pad_token_id] = -100
+            if (
+                hasattr(self.processing_class, "pad_token_id")
+                and self.processing_class.pad_token_id is not None
+            ):
+                student_labels[student_labels == self.processing_class.pad_token_id] = (
+                    -100
+                )
 
             # Also mask pad tokens in teacher labels for consistency
             if (
@@ -4589,15 +5684,22 @@ class CustomGOLDTrainer(GOLDTrainer):
                 and hasattr(self.teacher_tokenizer, "pad_token_id")
                 and self.teacher_tokenizer.pad_token_id is not None
             ):
-                teacher_labels[teacher_labels == self.teacher_tokenizer.pad_token_id] = -100
+                teacher_labels[
+                    teacher_labels == self.teacher_tokenizer.pad_token_id
+                ] = -100
 
             vllm_lp = (
                 inputs.get("vllm_logprobs")
-                if self.args.uld_hybrid_sampled_opd_weight > 0 and self.args.opd_importance_sampling
+                if self.args.uld_hybrid_sampled_opd_weight > 0
+                and self.args.opd_importance_sampling
                 else None
             )
 
-            teacher_logits_for_loss = teacher_logits if "teacher_logits" in locals() else outputs_teacher.logits
+            teacher_logits_for_loss = (
+                teacher_logits
+                if "teacher_logits" in locals()
+                else outputs_teacher.logits
+            )
 
             uld_kwargs = dict(
                 student_logits=outputs_student.logits,
@@ -4613,7 +5715,9 @@ class CustomGOLDTrainer(GOLDTrainer):
 
             # If ULD hybrid mode produced per-step matched/unmatched components, accumulate them for logging.
             # Use gradient_accumulation_steps to mirror Trainer's windowing behavior.
-            if hasattr(self.uld_loss_fn, "last_matched_loss") and hasattr(self.uld_loss_fn, "last_unmatched_loss"):
+            if hasattr(self.uld_loss_fn, "last_matched_loss") and hasattr(
+                self.uld_loss_fn, "last_unmatched_loss"
+            ):
                 try:
                     ga = max(1, int(self.args.gradient_accumulation_steps))
                 except Exception:
@@ -4684,11 +5788,17 @@ class CustomGOLDTrainer(GOLDTrainer):
 
         for start in range(0, keep.numel(), self._DIAG_CHUNK_POSITIONS):
             index = keep[start : start + self._DIAG_CHUNK_POSITIONS]
-            student_lp = F.log_softmax(student_flat.index_select(0, index).float(), dim=-1)
-            teacher_lp = F.log_softmax(teacher_flat.index_select(0, index).float(), dim=-1)
+            student_lp = F.log_softmax(
+                student_flat.index_select(0, index).float(), dim=-1
+            )
+            teacher_lp = F.log_softmax(
+                teacher_flat.index_select(0, index).float(), dim=-1
+            )
             student_p = student_lp.exp()
             entropy_acc += -(student_p * student_lp).sum(dim=-1).sum()
-            rkld_acc += (student_p * (student_lp - teacher_lp)).sum(dim=-1).clamp(min=0.0).sum()
+            rkld_acc += (
+                (student_p * (student_lp - teacher_lp)).sum(dim=-1).clamp(min=0.0).sum()
+            )
 
         self._entropy_sum += float(entropy_acc)
         self._rkld_sum += float(rkld_acc)
@@ -4721,9 +5831,15 @@ class CustomGOLDTrainer(GOLDTrainer):
         if self._entropy_baseline is None:
             self._entropy_baseline_acc += entropy
             self._entropy_baseline_n += 1
-            if self.state.global_step >= max(1, int(self.args.entropy_guard_baseline_steps)):
-                self._entropy_baseline = self._entropy_baseline_acc / self._entropy_baseline_n
-                floor = (1.0 - self.args.entropy_guard_drop_frac) * self._entropy_baseline
+            if self.state.global_step >= max(
+                1, int(self.args.entropy_guard_baseline_steps)
+            ):
+                self._entropy_baseline = (
+                    self._entropy_baseline_acc / self._entropy_baseline_n
+                )
+                floor = (
+                    1.0 - self.args.entropy_guard_drop_frac
+                ) * self._entropy_baseline
                 print(
                     f"[entropy-guard] armed: baseline {self._entropy_baseline:.5f} nats "
                     f"over {self._entropy_baseline_n} log(s), floor {floor:.5f} nats "
@@ -4747,8 +5863,8 @@ class CustomGOLDTrainer(GOLDTrainer):
                 "saving and stopping."
                 if stopping
                 else "saving a checkpoint here and CONTINUING, because "
-                     'entropy_guard_action is "warn". This step is the finding; the rest '
-                     "of the run is the curve past it."
+                'entropy_guard_action is "warn". This step is the finding; the rest '
+                "of the run is the curve past it."
             )
             print(
                 f"[entropy-guard] {verdict} at step {self.state.global_step}: student "
@@ -4801,7 +5917,8 @@ class CustomGOLDTrainer(GOLDTrainer):
                 logs["n_gen_truncated"] = self._gen_truncated
                 if self._gen_prompt_rows:
                     logs["gen_tokens_per_row"] = round(
-                        self._gen_tokens / self._gen_prompt_rows, 1)
+                        self._gen_tokens / self._gen_prompt_rows, 1
+                    )
                     # PERCENT, so it does not sit invisibly at the bottom of a plot whose other two
                     # series are in the hundreds and thousands. Emitted ONLY when a cap exists to be
                     # hit: with max_completion_length unset the counter is structurally 0, and
@@ -4809,13 +5926,15 @@ class CustomGOLDTrainer(GOLDTrainer):
                     # measured.
                     if getattr(self.args, "max_completion_length", None):
                         logs["gen_truncated_pct"] = round(
-                            100.0 * self._gen_truncated / self._gen_prompt_rows, 2)
+                            100.0 * self._gen_truncated / self._gen_prompt_rows, 2
+                        )
                 # Rank-0 decode throughput. Not a cluster total -- see the note in __init__ -- but
                 # it is the quantity that says whether a bigger batch actually bought anything:
                 # tokens/s should rise roughly with n_gen_batch while t_gen stays flat.
                 if self._timing_generation > 0:
                     logs["gen_tokens_per_s"] = round(
-                        self._gen_tokens / self._timing_generation, 1)
+                        self._gen_tokens / self._timing_generation, 1
+                    )
             self._gen_calls = 0
             self._gen_batch_total = 0
             self._gen_prompt_rows = 0
@@ -4830,7 +5949,11 @@ class CustomGOLDTrainer(GOLDTrainer):
             self._last_log_time = now
 
         if mode == "train" and self.args.use_hidden_loss:
-            device = self.accelerator.device if hasattr(self.accelerator, "device") else torch.device("cpu")
+            device = (
+                self.accelerator.device
+                if hasattr(self.accelerator, "device")
+                else torch.device("cpu")
+            )
 
             hidden_vec = torch.tensor(
                 [self._hidden_loss_total, self._hidden_loss_step_equiv],
@@ -4839,7 +5962,8 @@ class CustomGOLDTrainer(GOLDTrainer):
             )
 
             if (
-                getattr(self.accelerator, "distributed_type", DistributedType.NO) != DistributedType.NO
+                getattr(self.accelerator, "distributed_type", DistributedType.NO)
+                != DistributedType.NO
                 and dist.is_available()
                 and dist.is_initialized()
             ):
@@ -4872,7 +5996,11 @@ class CustomGOLDTrainer(GOLDTrainer):
             # those two as its pass criteria and neither could ever fail. `_uld_relaxed_boundaries`
             # is the odd one out and stays on self: it is written at :3853-3854, in this class.
             loss_fn = getattr(self, "uld_loss_fn", None)
-            device = self.accelerator.device if hasattr(self.accelerator, "device") else torch.device("cpu")
+            device = (
+                self.accelerator.device
+                if hasattr(self.accelerator, "device")
+                else torch.device("cpu")
+            )
             # The last three are the byte-path's own work counters, and they are here for the same
             # reason the first three are: a number nobody logs is a number nobody can falsify. The
             # scaffold pair says how much head trimming the render fix is actually doing (a sudden
@@ -4882,24 +6010,28 @@ class CustomGOLDTrainer(GOLDTrainer):
             # are appended to the SAME tensor rather than reduced separately, so the collective
             # count stays rank-uniform under the config gate above.
             span_vec = torch.tensor(
-                [getattr(loss_fn, "_uld_span_mismatch_rows", 0),
-                 getattr(loss_fn, "_uld_regions_seen", 0),
-                 getattr(loss_fn, "_uld_rows_seen", 0),
-                 getattr(self, "_uld_relaxed_boundaries", 0),
-                 getattr(loss_fn, "_uld_scaffold_tokens_trimmed", 0),
-                 getattr(loss_fn, "_uld_scaffold_regions_trimmed", 0),
-                 getattr(loss_fn, "_uld_region_chunks", 0)],
+                [
+                    getattr(loss_fn, "_uld_span_mismatch_rows", 0),
+                    getattr(loss_fn, "_uld_regions_seen", 0),
+                    getattr(loss_fn, "_uld_rows_seen", 0),
+                    getattr(self, "_uld_relaxed_boundaries", 0),
+                    getattr(loss_fn, "_uld_scaffold_tokens_trimmed", 0),
+                    getattr(loss_fn, "_uld_scaffold_regions_trimmed", 0),
+                    getattr(loss_fn, "_uld_region_chunks", 0),
+                ],
                 dtype=torch.float64,
                 device=device,
             )
             if (
-                getattr(self.accelerator, "distributed_type", DistributedType.NO) != DistributedType.NO
+                getattr(self.accelerator, "distributed_type", DistributedType.NO)
+                != DistributedType.NO
                 and dist.is_available()
                 and dist.is_initialized()
             ):
                 dist.all_reduce(span_vec, op=dist.ReduceOp.SUM)
-            (mismatch, regions, rows, relaxed,
-             scaf_tok, scaf_reg, chunks) = span_vec.tolist()
+            mismatch, regions, rows, relaxed, scaf_tok, scaf_reg, chunks = (
+                span_vec.tolist()
+            )
             logs["uld/span_mismatch_rows"] = int(mismatch)
             if rows > 0:
                 logs["uld/regions_per_row"] = round(regions / rows, 3)
@@ -4928,15 +6060,23 @@ class CustomGOLDTrainer(GOLDTrainer):
                 loss_fn._uld_region_chunks = 0
             self._uld_relaxed_boundaries = 0
 
-        if mode == "train" and getattr(self.args, "uld_hybrid_sampled_opd_weight", 0.0) > 0:
-            device = self.accelerator.device if hasattr(self.accelerator, "device") else torch.device("cpu")
+        if (
+            mode == "train"
+            and getattr(self.args, "uld_hybrid_sampled_opd_weight", 0.0) > 0
+        ):
+            device = (
+                self.accelerator.device
+                if hasattr(self.accelerator, "device")
+                else torch.device("cpu")
+            )
             opd_vec = torch.tensor(
                 [self._sampled_opd_sum, self._sampled_opd_step_eq],
                 dtype=torch.float64,
                 device=device,
             )
             if (
-                getattr(self.accelerator, "distributed_type", DistributedType.NO) != DistributedType.NO
+                getattr(self.accelerator, "distributed_type", DistributedType.NO)
+                != DistributedType.NO
                 and dist.is_available()
                 and dist.is_initialized()
             ):
@@ -4947,13 +6087,19 @@ class CustomGOLDTrainer(GOLDTrainer):
             self._sampled_opd_sum = 0.0
             self._sampled_opd_step_eq = 0.0
 
-        if mode == "train" and getattr(self.args, "opd_importance_sampling", False) and self._is_stats_count > 0:
+        if (
+            mode == "train"
+            and getattr(self.args, "opd_importance_sampling", False)
+            and self._is_stats_count > 0
+        ):
             n = self._is_stats_count
             logs["train/is_weight_mean"] = self._is_stats_accum["mean"] / n
             logs["train/is_weight_std"] = self._is_stats_accum["std"] / n
             logs["train/is_weight_min"] = self._is_stats_accum["min"] / n
             logs["train/is_weight_max"] = self._is_stats_accum["max"] / n
-            logs["train/is_masked_fraction"] = self._is_stats_accum["masked_fraction"] / n
+            logs["train/is_masked_fraction"] = (
+                self._is_stats_accum["masked_fraction"] / n
+            )
             self._is_stats_accum = {k: 0.0 for k in self._is_stats_accum}
             self._is_stats_count = 0
 
@@ -4983,11 +6129,31 @@ class CustomGOLDTrainer(GOLDTrainer):
         ):
             for suffix, attr_accum, attr_count in [
                 ("", "_opd_reward_stats_accum", "_opd_reward_stats_count"),
-                ("_1to1", "_opd_reward_1to1_stats_accum", "_opd_reward_1to1_stats_count"),
-                ("_multi", "_opd_reward_multi_stats_accum", "_opd_reward_multi_stats_count"),
-                ("_1toN", "_opd_reward_1toN_stats_accum", "_opd_reward_1toN_stats_count"),
-                ("_Nto1", "_opd_reward_Nto1_stats_accum", "_opd_reward_Nto1_stats_count"),
-                ("_NtoN", "_opd_reward_NtoN_stats_accum", "_opd_reward_NtoN_stats_count"),
+                (
+                    "_1to1",
+                    "_opd_reward_1to1_stats_accum",
+                    "_opd_reward_1to1_stats_count",
+                ),
+                (
+                    "_multi",
+                    "_opd_reward_multi_stats_accum",
+                    "_opd_reward_multi_stats_count",
+                ),
+                (
+                    "_1toN",
+                    "_opd_reward_1toN_stats_accum",
+                    "_opd_reward_1toN_stats_count",
+                ),
+                (
+                    "_Nto1",
+                    "_opd_reward_Nto1_stats_accum",
+                    "_opd_reward_Nto1_stats_count",
+                ),
+                (
+                    "_NtoN",
+                    "_opd_reward_NtoN_stats_accum",
+                    "_opd_reward_NtoN_stats_count",
+                ),
             ]:
                 count = getattr(self.uld_loss_fn, attr_count, 0)
                 if count > 0:
@@ -5000,9 +6166,13 @@ class CustomGOLDTrainer(GOLDTrainer):
             if self.uld_loss_fn._opd_batch_norm_stats_count > 0:
                 n = self.uld_loss_fn._opd_batch_norm_stats_count
                 acc_norm = self.uld_loss_fn._opd_batch_norm_stats_accum
-                logs["train/hybrid_opd_batch_reward_baseline_mean"] = acc_norm["mean"] / n
+                logs["train/hybrid_opd_batch_reward_baseline_mean"] = (
+                    acc_norm["mean"] / n
+                )
                 logs["train/hybrid_opd_batch_reward_baseline_std"] = acc_norm["std"] / n
-                self.uld_loss_fn._opd_batch_norm_stats_accum = {k: 0.0 for k in acc_norm}
+                self.uld_loss_fn._opd_batch_norm_stats_accum = {
+                    k: 0.0 for k in acc_norm
+                }
                 self.uld_loss_fn._opd_batch_norm_stats_count = 0
 
             acc = self.uld_loss_fn._opd_group_type_accum
@@ -5037,7 +6207,11 @@ class CustomGOLDTrainer(GOLDTrainer):
             self.uld_loss_fn._flush_reward_html(self.state.global_step)
 
         if mode == "train" and (self.args.ce_coef > 0 or self.args.log_student_entropy):
-            device = self.accelerator.device if hasattr(self.accelerator, "device") else torch.device("cpu")
+            device = (
+                self.accelerator.device
+                if hasattr(self.accelerator, "device")
+                else torch.device("cpu")
+            )
 
             diag_vec = torch.tensor(
                 [
@@ -5052,7 +6226,8 @@ class CustomGOLDTrainer(GOLDTrainer):
             )
 
             if (
-                getattr(self.accelerator, "distributed_type", DistributedType.NO) != DistributedType.NO
+                getattr(self.accelerator, "distributed_type", DistributedType.NO)
+                != DistributedType.NO
                 and dist.is_available()
                 and dist.is_initialized()
             ):

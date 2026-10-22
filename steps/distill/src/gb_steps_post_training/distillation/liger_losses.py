@@ -3,13 +3,16 @@ from typing import Tuple, Union
 
 import torch
 import torch.nn.functional as F
-
-from liger_kernel.chunked_loss.fused_linear_distillation import LigerFusedLinearDistillationBase
+from liger_kernel.chunked_loss.fused_linear_distillation import (
+    LigerFusedLinearDistillationBase,
+)
 
 
 class LigerFusedLinearSkewedJSDFunction(LigerFusedLinearDistillationBase):
     @staticmethod
-    def distillation_loss_fn(student_logits, teacher_logits, beta=0.5, alpha=0.0, use_kl_interpolation=False):
+    def distillation_loss_fn(
+        student_logits, teacher_logits, beta=0.5, alpha=0.0, use_kl_interpolation=False
+    ):
         student_log_probs = F.log_softmax(student_logits, dim=-1)
         teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
 
@@ -19,13 +22,17 @@ class LigerFusedLinearSkewedJSDFunction(LigerFusedLinearDistillationBase):
                     student_log_probs + math.log(1 - alpha),
                     teacher_log_probs + math.log(alpha),
                 )
-                return F.kl_div(skewed_student, teacher_log_probs, reduction="sum", log_target=True)
+                return F.kl_div(
+                    skewed_student, teacher_log_probs, reduction="sum", log_target=True
+                )
             elif beta == 1:
                 skewed_teacher = torch.logaddexp(
                     student_log_probs + math.log(alpha),
                     teacher_log_probs + math.log(1 - alpha),
                 )
-                return (torch.exp(student_log_probs) * (student_log_probs - skewed_teacher)).sum()
+                return (
+                    torch.exp(student_log_probs) * (student_log_probs - skewed_teacher)
+                ).sum()
             else:
                 skewed_student = torch.logaddexp(
                     student_log_probs + math.log(1 - alpha),
@@ -35,25 +42,55 @@ class LigerFusedLinearSkewedJSDFunction(LigerFusedLinearDistillationBase):
                     student_log_probs + math.log(alpha),
                     teacher_log_probs + math.log(1 - alpha),
                 )
-                fwd = F.kl_div(skewed_student, teacher_log_probs, reduction="sum", log_target=True)
-                rev = (torch.exp(student_log_probs) * (student_log_probs - skewed_teacher)).sum()
+                fwd = F.kl_div(
+                    skewed_student, teacher_log_probs, reduction="sum", log_target=True
+                )
+                rev = (
+                    torch.exp(student_log_probs) * (student_log_probs - skewed_teacher)
+                ).sum()
                 return (1 - beta) * fwd + beta * rev
         else:
             if beta == 0:
-                return F.kl_div(student_log_probs, teacher_log_probs, reduction="sum", log_target=True)
+                return F.kl_div(
+                    student_log_probs,
+                    teacher_log_probs,
+                    reduction="sum",
+                    log_target=True,
+                )
             elif beta == 1:
-                return (torch.exp(student_log_probs) * (student_log_probs - teacher_log_probs)).sum()
+                return (
+                    torch.exp(student_log_probs)
+                    * (student_log_probs - teacher_log_probs)
+                ).sum()
             elif use_kl_interpolation:
-                fkl = F.kl_div(student_log_probs, teacher_log_probs, reduction="sum", log_target=True)
-                rkl = (torch.exp(student_log_probs) * (student_log_probs - teacher_log_probs)).sum()
+                fkl = F.kl_div(
+                    student_log_probs,
+                    teacher_log_probs,
+                    reduction="sum",
+                    log_target=True,
+                )
+                rkl = (
+                    torch.exp(student_log_probs)
+                    * (student_log_probs - teacher_log_probs)
+                ).sum()
                 return (1 - beta) * fkl + beta * rkl
             else:
                 log_mean = torch.logsumexp(
-                    torch.stack([student_log_probs + math.log(1 - beta), teacher_log_probs + math.log(beta)], dim=0),
+                    torch.stack(
+                        [
+                            student_log_probs + math.log(1 - beta),
+                            teacher_log_probs + math.log(beta),
+                        ],
+                        dim=0,
+                    ),
                     dim=0,
                 )
-                student_kl = F.kl_div(log_mean, student_log_probs, reduction="sum", log_target=True)
-                teacher_kl = F.kl_div(log_mean, teacher_log_probs, reduction="sum", log_target=True)
+                student_kl = F.kl_div(
+                    log_mean, student_log_probs, reduction="sum", log_target=True
+                )
+                teacher_kl = F.kl_div(
+                    log_mean, teacher_log_probs, reduction="sum", log_target=True
+                )
                 return beta * teacher_kl + (1 - beta) * student_kl
 
     @classmethod

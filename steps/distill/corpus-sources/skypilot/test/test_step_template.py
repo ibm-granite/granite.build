@@ -21,7 +21,8 @@ _DIR = Path(__file__).resolve().parent.parent
 
 def _image_env(tmp_path, step, python=None):
     """Emulate the baked image: DISTILL_HOME/steps/<step> holds this step's scripts, and a
-    `python` first on PATH (the image puts its venv there) is the test's own interpreter."""
+    `python` first on PATH (the image puts its venv there) is the test's own interpreter.
+    """
     home = tmp_path / "distill-home"
     (home / "steps").mkdir(parents=True)
     (home / "steps" / step).symlink_to(_DIR / "src")
@@ -36,6 +37,8 @@ def _image_env(tmp_path, step, python=None):
         "DISTILL_HOME": str(home),
         "PATH": f"{shim}{os.pathsep}{os.environ['PATH']}",
     }
+
+
 _STEP = _DIR / "step-template.yaml"
 
 
@@ -118,12 +121,16 @@ def test_an_absolute_output_dir_is_used_as_given(step, launcher, tmp_path):
     result = subprocess.run(
         ["bash", "-c", script],
         cwd=_DIR,
-        env={**_image_env(tmp_path, "corpus-sources"), "GB_BUILD_WORKDIR": str(tmp_path / "elsewhere")},
+        env={
+            **_image_env(tmp_path, "corpus-sources"),
+            "GB_BUILD_WORKDIR": str(tmp_path / "elsewhere"),
+        },
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "abs" / "train.jsonl").is_file()
+
 
 def test_the_slurm_executors_stripped_env_is_restored(launcher):
     """The SLURM executor runs tasks under `env -u PYTHONPATH` with no VIRTUAL_ENV, so the

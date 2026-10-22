@@ -18,6 +18,7 @@ import_utils._vllm_ascend_available = False
 _vllm_gmh = importlib.import_module("vllm.model_executor.models.granitemoehybrid")
 _orig_gmh_attn_init = _vllm_gmh.GraniteMoeHybridAttention.__init__
 
+
 def _patched_gmh_attn_init(self, config, *args, _orig=_orig_gmh_attn_init, **kwargs):
     if not hasattr(config, "rope_theta"):
         rp = getattr(config, "rope_parameters", None)
@@ -26,6 +27,7 @@ def _patched_gmh_attn_init(self, config, *args, _orig=_orig_gmh_attn_init, **kwa
         else:
             config.rope_theta = 10000
     _orig(self, config, *args, **kwargs)
+
 
 _vllm_gmh.GraniteMoeHybridAttention.__init__ = _patched_gmh_attn_init
 del _vllm_gmh, _orig_gmh_attn_init
@@ -36,7 +38,10 @@ del _vllm_gmh, _orig_gmh_attn_init
 _vllm_granite = importlib.import_module("vllm.model_executor.models.granite")
 _orig_granite_layer_init = _vllm_granite.GraniteDecoderLayer.__init__
 
-def _patched_granite_layer_init(self, config, *args, _orig=_orig_granite_layer_init, **kwargs):
+
+def _patched_granite_layer_init(
+    self, config, *args, _orig=_orig_granite_layer_init, **kwargs
+):
     if not hasattr(config, "rope_theta"):
         rp = getattr(config, "rope_parameters", None)
         if isinstance(rp, dict) and "rope_theta" in rp:
@@ -45,6 +50,7 @@ def _patched_granite_layer_init(self, config, *args, _orig=_orig_granite_layer_i
             config.rope_theta = 10000
     _orig(self, config, *args, **kwargs)
 
+
 _vllm_granite.GraniteDecoderLayer.__init__ = _patched_granite_layer_init
 del _vllm_granite, _orig_granite_layer_init
 
@@ -52,13 +58,16 @@ del _vllm_granite, _orig_granite_layer_init
 # response schema (GenerateResponse.logprobs: list[list[float]]) rejects None,
 # causing a FastAPI ResponseValidationError → HTTP 500. Replace NaN with 0.0.
 import math as _math
+
 _vllm_serve = importlib.import_module("trl.scripts.vllm_serve")
+
 
 def _patched_sanitize_logprob(logprob):
     value = logprob.logprob
     if _math.isnan(value):
         return 0.0
     return value
+
 
 _vllm_serve.sanitize_logprob = _patched_sanitize_logprob
 del _vllm_serve
@@ -73,6 +82,7 @@ from gb_steps_post_training.distillation._swa_arm import (
     activate_swa_arm,
     activate_swa_vllm_model,
 )
+
 activate_swa_arm()
 activate_swa_vllm_model()
 
@@ -96,11 +106,12 @@ if __name__ == "__main__":
     # the variant table. The check below is unaffected and correct either way:
     # verify_fast_tokenizer compares the resolved backend against
     # tokenizer.json rather than keying on which files are present.
+    from gb_steps_post_training.distillation.utils import verify_fast_tokenizer
     from transformers import AutoTokenizer
 
-    from gb_steps_post_training.distillation.utils import verify_fast_tokenizer
-
-    _model_path = getattr(script_args, "model", None) or getattr(script_args, "model_name_or_path", None)
+    _model_path = getattr(script_args, "model", None) or getattr(
+        script_args, "model_name_or_path", None
+    )
     if _model_path is not None:
         _tok = AutoTokenizer.from_pretrained(_model_path, trust_remote_code=True)
         verify_fast_tokenizer(_tok, _model_path, source_label="vllm-server")
