@@ -540,11 +540,13 @@ granite.build:
                     type: str
               output_path: /shared/fm-tune-test/model
             launcher_config:
-              resources:
-                memory: "4"
               # Read by SkyPilotEnvironment._launch_env_layers (skypilot.py:3052).
               # Ray's off-CUDA object store defaults to 2 GiB; 256 MiB is plenty here.
               envs:
                 FMTUNE_OBJECT_STORE_BYTES: "268435456"
             compute_config:
+              # Asking for CPUs is what Slurm matches here: the local nodes advertise
+              # CPUs=2. Memory is not a consumable resource on this cluster
+              # (SelectTypeParameters=CR_Core), so no memory request.
+              num_cpus_per_node: 2
               num_gpus_per_node: 0
