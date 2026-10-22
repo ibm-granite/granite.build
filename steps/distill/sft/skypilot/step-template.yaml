@@ -185,7 +185,7 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:91ea4880"
+          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:e9501415"
           resources: {}
           envs:
             # The SLURM executor runs the task under `env -u PYTHONPATH` and without
