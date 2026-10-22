@@ -133,18 +133,6 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            {%- if config.unitxt_config.model is defined %}
-            # The model used to be named in config (`model` + `model_args`). It is now
-            # the bound `model` input, so refuse the old key rather than ignore it.
-            echo "eval/unitxt: ERROR unitxt_config.model is no longer read; bind the target's 'model' input instead (see USAGE.md)." >&2
-            exit 1
-            {%- endif %}
-            {%- if config.unitxt_config.unitxt_image is defined %}
-            # `unitxt_image` used to both pick the image and skip the install. It is now
-            # two keys, `image` and `install`, so refuse the old one rather than ignore it.
-            echo "eval/unitxt: ERROR unitxt_config.unitxt_image is no longer read; set unitxt_config.image (and install: false if that image already provides unitxt-evaluate)." >&2
-            exit 1
-            {%- endif %}
             {%- if config.unitxt_config.install %}
             . ./venv/bin/activate
             {%- endif %}

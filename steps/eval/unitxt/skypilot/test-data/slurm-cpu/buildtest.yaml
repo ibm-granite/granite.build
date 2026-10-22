@@ -1,4 +1,4 @@
-# YAML-driven spec for test_skypilot_slurm_unitxt_cpu.py (located by the test/ <->
+# YAML-driven spec for test_skypilot_slurm_cpu_eval_unitxt.py (located by the test/ <->
 # test-data/ helper, so this pairing holds in both test modes; see steps/README.md).
 #
 # ONE target on the local Docker SLURM cluster: unitxt-evaluate in hf mode on CPU,

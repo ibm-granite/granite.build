@@ -25,9 +25,8 @@ The step declares one required input, read as `{{ bindings.model.binding.path }}
 | `model` | yes | model | `uri: hf:///models/<org>/<name>` (the SkyPilot launcher downloads it before setup), or a `binding` to the checkpoint another target produced |
 
 The step passes the path to the CLI as `--model_args pretrained=<path>`. A target that
-doesn't bind `model` fails build validation before anything is queued.
-`unitxt_config.model`, and `pretrained=` inside `unitxt_config.model_args`, are not
-read; a target that still sets either fails at run time with a message naming the
+doesn't bind `model` fails build validation before anything is queued. `pretrained=`
+inside `unitxt_config.model_args` is refused at run time, with a message naming the
 input to bind instead.
 
 ### Outputs
@@ -53,10 +52,6 @@ input to bind instead.
 | `torch_index_url` | string | optional (default: `pip_index_url`) | Index for torch only, to pick the build: `https://download.pytorch.org/whl/cpu` on a CPU-only node, or a `.../whl/cuXXX` index to match the node's CUDA driver. PyPI's default Linux wheel bundles CUDA. |
 | `hf_packages` | list | optional (default `[transformers, accelerate, tabulate]`) | Installed with unitxt, after torch. `hf` mode needs transformers and accelerate; the CLI's score summary needs tabulate. Pin entries as needed. Ignored when `install` is false. |
 | `pip_index_url` | string | optional | Package index for the install. |
-
-`unitxt_config.model` is no longer read. The step refuses it, so bind the `model`
-input instead. `unitxt_config.unitxt_image` is no longer read either: use `image`, plus
-`install: false` if that image already provides `unitxt-evaluate`.
 
 ## Example build.yaml
 

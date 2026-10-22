@@ -231,15 +231,6 @@ class TestRefusedConfig:
             "unitxt_config.tasks is required",
         )
 
-    @pytest.mark.parametrize("model", ["hf", "cross_provider"])
-    def test_the_old_model_key_is_refused(self, launcher, defaults, model, tmp_path):
-        self._refused(
-            launcher,
-            _cfg(defaults, model=model),
-            tmp_path,
-            "unitxt_config.model is no longer read",
-        )
-
     @pytest.mark.parametrize(
         "model_args",
         ["pretrained=ibm-granite/granite-4.2-3b", "device=cuda,pretrained=x"],
@@ -252,14 +243,6 @@ class TestRefusedConfig:
             _cfg(defaults, model_args=model_args),
             tmp_path,
             "must not set pretrained",
-        )
-
-    def test_the_old_unitxt_image_key_is_refused(self, launcher, defaults, tmp_path):
-        self._refused(
-            launcher,
-            _cfg(defaults, unitxt_image="quay.io/org/unitxt:1"),
-            tmp_path,
-            "unitxt_config.unitxt_image is no longer read",
         )
 
     def test_json_model_args_is_refused(self, launcher, defaults, tmp_path):
