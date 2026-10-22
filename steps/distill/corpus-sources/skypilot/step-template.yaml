@@ -51,6 +51,11 @@ environment_configs:
           # Cloud-agnostic: the build supplies cpus/memory via
           # config.compute_config and config.launcher_config.resources.
           resources: {}
+          envs:
+            # The SLURM executor runs the task under `env -u PYTHONPATH` and without
+            # VIRTUAL_ENV, so the image's ENV values for both are gone at run time.
+            PYTHONPATH: /opt/distill/src
+            VIRTUAL_ENV: /stage/.venv
           # The sources go into an array, one append per entry, and NOT into a
           # backslash-continued argument list: a Jinja block tag leaves a blank line
           # where it stood, and a blank line after a `\` ends the command (build
@@ -66,7 +71,7 @@ environment_configs:
             {% for source in config.sources_config.sources %}
             SOURCES+=("{{ source }}")
             {% endfor %}
-            "$(uv python find)" "$DISTILL_HOME/steps/corpus-sources/build_sources.py" \
+            python "$DISTILL_HOME/steps/corpus-sources/build_sources.py" \
               "$OUT_DIR/train.jsonl" \
               "{{ config.sources_config.target_rows }}" \
               "{{ config.sources_config.shuffle_seed }}" \

@@ -122,6 +122,10 @@ environment_configs:
           image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:91ea4880"
           resources: {}
           envs:
+            # The SLURM executor runs the task under `env -u PYTHONPATH` and without
+            # VIRTUAL_ENV, so the image's ENV values for both are gone at run time.
+            PYTHONPATH: /opt/distill/src
+            VIRTUAL_ENV: /stage/.venv
             # From the reference launcher, which is the only configuration that has
             # served this model successfully.
             VLLM_ATTENTION_BACKEND: FLASH_ATTN
@@ -139,7 +143,7 @@ environment_configs:
 
             # The image's venv is not on PATH by default; the dispatcher runs this
             # with `bash <file>` (non-login), so this export sticks.
-            PYBIN="$(uv python find)"
+            PYBIN="python"
 
             # Source: baked into the shared GPU image, no clone. Both paths are
             # fixed by steps/distill/gpu/Dockerfile's own COPY/ENV lines.

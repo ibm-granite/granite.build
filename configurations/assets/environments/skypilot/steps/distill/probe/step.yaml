@@ -51,10 +51,15 @@ environment_configs:
           # Cloud-agnostic: the build supplies the GPU, cpus and memory via
           # config.compute_config and config.launcher_config.resources.
           resources: {}
+          envs:
+            # The SLURM executor runs the task under `env -u PYTHONPATH` and without
+            # VIRTUAL_ENV, so the image's ENV values for both are gone at run time.
+            PYTHONPATH: /opt/distill/src
+            VIRTUAL_ENV: /stage/.venv
           run: |
             set -euo pipefail
             echo "=== distill-probe {{ config.probe_config.probe }} on $(hostname) ==="
-            "$(uv python find)" "$DISTILL_HOME/steps/probe/distill_probe.py" \
+            python "$DISTILL_HOME/steps/probe/distill_probe.py" \
               "{{ config.probe_config.probe }}" \
               --checkpoint "{{ config.probe_config.checkpoint }}" \
               --corpus "{{ config.probe_config.corpus }}" \
