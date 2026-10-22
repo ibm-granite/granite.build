@@ -40,6 +40,11 @@ Keys are the **exact OpenSSH directive names**, so the env mirrors `~/.slurm/con
 via a secret — gbserver writes a `0600` file and points `IdentityFile` at it); specifying both is an
 error. The SSH private key and the cluster itself stay out-of-band — gbserver does not provision them.
 
+A host can instead authenticate via an already-issued rotating SSH cert (e.g. Smallstep `step`) with
+`IdentityStepCert: true` in place of `IdentityFile`/`IdentityKey` — see
+[LSF: rotating SSH cert](skypilot-lsf.md#clusterssh_configslsf--reachability) for the full explanation;
+the same check applies to SLURM hosts.
+
 gbserver merges this block into `~/.slurm/config` with last-writer-wins semantics: a differing
 gbserver-managed block for the same alias is **overwritten** (so a stale or re-keyed entry self-heals
 — no manual `rm ~/.slurm/config`); a *foreign* (non-gbserver) entry for the same alias is refused
@@ -256,6 +261,27 @@ launch fails with `NotSupportedError`; the `run:` command then executes directly
 > `sacct -j <job_id> --format=JobID,State,ExitCode,Reason`: the container-setup sub-steps show
 > `FAILED 1:0` while the host-side steps complete. The image must also grant passwordless `sudo` (or run
 > as root).
+
+> **GPU steps needing runtime CUDA JIT compilation**: a plain `python:slim`/`ubuntu` base with only
+> pip-installed `nvidia-*-cu12` wheels has no `nvcc`/dev toolkit, so anything that JIT-compiles CUDA at
+> runtime (`torch.compile`/Inductor, raw Triton kernels, FlashInfer's JIT sampler) fails with
+> `libcuda.so cannot found!` or `Could not find nvcc`. Build your step's image `FROM` an NGC CUDA
+> **devel** tag directly (e.g.
+> [`steps/distill/gpu/Dockerfile`](../../steps/distill/gpu/Dockerfile)/
+> [`README.md`](../../steps/distill/gpu/README.md), the distillation steps' shared GPU image). That
+> image's own README covers two residual gaps it does NOT solve, split across two different layers:
+> this environment's `sbatch_options.export` already sets `NVIDIA_VISIBLE_DEVICES`/
+> `NVIDIA_DRIVER_CAPABILITIES` so pyxis actually injects the host's driver libraries into the
+> container (without it, pyxis's NVIDIA hook sees `NVIDIA_VISIBLE_DEVICES` unset, defaults to
+> `"void"`, and skips injection entirely — no `ldconfig` can fix a library that was never injected);
+> but once injected, the container's own `/etc/ld.so.cache` is still stale (built at image time, never
+> refreshed), so Triton's driver discovery (`ldconfig -p` first, `LD_LIBRARY_PATH` only as a fallback)
+> still won't find it until a step's own launch script runs `ldconfig` as root at container start —
+> that part stays a genuine per-consumer concern, pip/uv can also still shadow the toolkit at the
+> package level regardless of either fix.
+>
+> Enroot's image cache is confirmed per-node (local NVMe, not shared) — the first job to land on a
+> given node after an image changes pays a real cold-import cost; that's expected, not a hang.
 
 ### `workdir` (containerized steps)
 

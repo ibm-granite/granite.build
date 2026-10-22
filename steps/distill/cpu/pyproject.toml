@@ -1,0 +1,54 @@
+# Union of the CPU-only distillation steps' own dependency declarations
+# (checked directly against the real pyproject.toml files in
+# github.com/laminair/gb-steps-distillation at a5d59bc4 -- not guessed):
+#
+#   distill-corpus-prep:     transformers>=5.8.0,<6, tokenizers>=0.22, datasets>=3.0,
+#                            clearml>=2.1.12, wandb>=0.28.2
+#                            (deliberately NO torch -- see that step's own
+#                            pyproject.toml header: it never does tensor
+#                            arithmetic, only chat-template rendering and
+#                            token counting)
+#   distill-tokenizer-align: transformers>=5.8.0,<6, torch>=2.8 (CPU build --
+#                            tensor load/save for the embedding transplant,
+#                            no CUDA needed), safetensors>=0.4, tokenizers>=0.22,
+#                            clearml>=2.1.12, wandb>=0.28.2
+#   distill-hf-export:       transformers>=5.8.0,<6, safetensors>=0.4,
+#                            clearml>=2.1.12, wandb>=0.28.2
+#
+# All three agree on requires-python>=3.10; pinned here to 3.12 for
+# consistency with steps/distill/gpu/'s image, not because any step needs
+# exactly 3.12 (none of these three pin an exact minor version the way
+# distill-gold-train/distill-logit-precompute do).
+#
+# This set also covers corpus-pin-check and corpus-sources (granite.build's
+# own steps, not vendored from gb-steps-distillation): both are explicitly
+# "CPU-only and stdlib-only" per their own step-template.yaml header
+# comments, so they need no third-party package this manifest doesn't
+# already provide.
+[project]
+name = "distill-cpu-image"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "transformers>=5.8.0,<6",
+    "tokenizers>=0.22",
+    "datasets>=3.0",
+    "torch>=2.8",
+    "safetensors>=0.4",
+    "clearml>=2.1.12",
+    "wandb>=0.28.2",
+]
+
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+# CPU-only torch wheels, not the default cu12x ones -- this image has no
+# CUDA toolkit and does not need one; a default-index torch pull would drag
+# in multi-GB nvidia-*-cu12 packages for nothing.
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

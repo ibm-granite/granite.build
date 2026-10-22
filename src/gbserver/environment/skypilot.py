@@ -2163,12 +2163,15 @@ class Skypilot(Environment):
         :raises SkypilotConfigCollisionError: On a foreign (non-gbserver) clash, or
             a differing (non-``HostName``) block for the same alias owned by another
             environment.
+        :raises StepCertExpiredError: If a host sets ``IdentityStepCert`` but no
+            currently-loaded Smallstep certificate is still valid.
         """
         cfg = self.config.config if self.config else {}
         ssh_raw = cfg.get("cluster_ssh_configs")
         if not ssh_raw:
             return None
         from gbserver.environment.skypilot_config import (
+            _check_step_certs,
             _read_managed_hostnames,
             _resolve_cloud_hosts,
         )
@@ -2181,6 +2184,9 @@ class Skypilot(Environment):
         hosts = await asyncio.to_thread(_resolve_cloud_hosts, ssh, secrets, cloud)
         if not hosts:
             return None
+        # Check any IdentityStepCert directive against already-loaded Smallstep
+        # certs before rendering (check-only, never refreshes).
+        hosts = await asyncio.to_thread(_check_step_certs, hosts, cloud)
         # Bare infra (no cluster segment) + exactly one declared host: that host is
         # the unambiguous target, so its login nodes can still fail over (issue #439).
         if target_alias is None and len(hosts) == 1:
@@ -2281,6 +2287,61 @@ class Skypilot(Environment):
         if self.config is None:
             return 10
         return self.config.config.get("idle_minutes_to_autostop", 10)
+
+    def _pyxis_gpu_sbatch_directives(
+        self: Self,
+        accelerators: Optional[Any],
+        image_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """GPU env/``--gpus`` sbatch directives a containerized GPU step needs.
+
+        Pyxis's own NVIDIA hook (``/etc/enroot/hooks.d/98-nvidia.sh``) treats an
+        unset ``NVIDIA_VISIBLE_DEVICES`` as ``"void"`` and skips driver
+        injection entirely, and this cluster's own sbatch submission filter
+        silently reinterprets a bare ``--gres=gpu:h200:N`` as an H100 request
+        unless ``--gpus=h200:N`` is also present — see issue #510. Both follow
+        from the step itself (it requested an accelerator and runs a container
+        image), not from site policy, so they are generated here rather than
+        hardcoded per-environment.
+
+        Only applies when the step both requests an accelerator and runs a
+        container image: a bare-node SLURM step needs neither, and a CPU-only
+        container step has no driver to inject.
+
+        :param accelerators: the step's ``resources.accelerators`` value
+            (``"H200:2"`` or ``{"H200": 2}``; ``None``/empty for a bare node).
+        :param image_id: the step's resolved ``image_id`` (``None`` for a bare
+            node).
+        :returns: the directives to merge into ``sbatch_options``, or ``{}``
+            when they don't apply or ``slurm_gpu_sbatch_directives: false`` in
+            environment.yaml opts out (e.g. a cluster whose Pyxis/driver setup
+            differs from BlueVela's).
+        """
+        if not accelerators or not image_id:
+            return {}
+        if self.config and not self.config.config.get(
+            "slurm_gpu_sbatch_directives", True
+        ):
+            return {}
+        directives: Dict[str, Any] = {
+            "export": (
+                "ALL,NVIDIA_VISIBLE_DEVICES=all,NVIDIA_DRIVER_CAPABILITIES=all,"
+                "LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu,"
+                "TRITON_LIBCUDA_PATH=/usr/lib/x86_64-linux-gnu"
+            ),
+        }
+        # Only the simple "<name>:<cnt>" form matters here (what every recipe
+        # actually sets, e.g. "H200:$${TENSOR_PARALLEL_SIZE}") -- sky.Resources
+        # itself (resources.py:_set_accelerators) accepts a richer memory-based
+        # grammar ("80GB+") we don't need to replicate; a value we can't parse
+        # this way just skips --gpus and keeps the env exports only.
+        if isinstance(accelerators, str) and ":" in accelerators:
+            gpu_type, _, count = accelerators.partition(":")
+            directives["gpus"] = f"{gpu_type.lower()}:{count}"
+        elif isinstance(accelerators, dict) and accelerators:
+            gpu_type, count = next(iter(accelerators.items()))
+            directives["gpus"] = f"{gpu_type.lower()}:{count}"
+        return directives
 
     def _resolve_sbatch_options(
         self: Self,
@@ -3292,12 +3353,28 @@ class Skypilot(Environment):
             # sbatch_options still wins, as it is merged last).
             apply_slurm_comment_override(cluster_config_overrides, run_metadata)
 
+            # Trailing `or None` maps an empty image_id to None: the merged
+            # `command` step renders image_id to "" when no image is given, and
+            # sky.Resources expects None (bare node) rather than an empty string.
+            image_id = (
+                (config.get("launcher_config") or {}).get("image_id")
+                or launcher_config.get("image_id")
+            ) or None
+
             # Per-step SLURM sbatch directives (--time, --gres, --qos, ...).
             # SLURM is the only cloud whose SkyPilot fork exposes a per-task
             # sbatch_options override; on any other cloud it is a documented
             # no-op (warn and drop). Deep-merge under `slurm` so a sibling
-            # slurm.* override is never clobbered.
-            sbatch_options = self._resolve_sbatch_options(launcher_config, config)
+            # slurm.* override is never clobbered. The Pyxis GPU directives are
+            # folded in as the lowest-precedence layer (merged first, below)
+            # so an explicit env/step/build sbatch_options.export or .gpus
+            # still wins per-key.
+            sbatch_options = {
+                **self._pyxis_gpu_sbatch_directives(
+                    res_config.get("accelerators"), image_id
+                ),
+                **self._resolve_sbatch_options(launcher_config, config),
+            }
             if sbatch_options:
                 if cloud_group == "slurm":
                     slurm_over = cluster_config_overrides.get("slurm", {})
@@ -3323,14 +3400,6 @@ class Skypilot(Environment):
                         "ignoring it.",
                         cloud_group,
                     )
-
-            # Trailing `or None` maps an empty image_id to None: the merged
-            # `command` step renders image_id to "" when no image is given, and
-            # sky.Resources expects None (bare node) rather than an empty string.
-            image_id = (
-                (config.get("launcher_config") or {}).get("image_id")
-                or launcher_config.get("image_id")
-            ) or None
 
             # A containerized shared_filesystem step relies on SkyPilot's own
             # container run options for the in-container mount: docker_start_cmds

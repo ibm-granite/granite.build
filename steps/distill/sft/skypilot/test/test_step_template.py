@@ -136,7 +136,7 @@ class TestResponseTemplateNewline:
 
 class TestLauncher:
     def test_lsf_only(self, step):
-        assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf"]
+        assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf", "slurm"]
 
     def test_runs_in_a_prebuilt_registry_image(self, launcher):
         assert launcher["image_id"].startswith("docker:")
@@ -149,7 +149,7 @@ class TestLauncher:
         assert launcher["resources"] == {}
 
     def test_the_entrypoints_are_shipped(self, launcher):
-        assert launcher["file_mounts"] == {"src": "src"}
+        assert "file_mounts" not in launcher
 
     def test_both_entrypoints_are_present(self):
         """run-sft.sh renders the config with render_sft_config.py before launching."""
@@ -162,7 +162,8 @@ class TestLauncher:
         found` (rc=127) after the model is resolved and the kernels are fetched, which is
         the most expensive place to discover it (build 75fa47d2).
         """
-        assert "export PATH=/stage/.venv/bin:$PATH" in run_script
+        assert "/stage/" not in run_script
+        assert 'PYBIN="python"' in run_script
         assert "export ACCELERATE=" in run_script
         # The bare call is what makes both necessary; if upstream ever qualifies it, this
         # test should be revisited rather than silently kept.
@@ -187,7 +188,8 @@ class TestLauncher:
         into OfflineModeIsEnabled after the load has begun. distill-gold, which trains on
         this same image, sets HF_HOME and leaves the Hub reachable."""
         assert "HF_HUB_OFFLINE" not in launcher["envs"]
-        assert launcher["envs"]["HF_HOME"] == "/opt/hf-cache"
+        # HF_HOME is the image's ENV (a fixed in-container mount point), never a step setting.
+        assert "HF_HOME" not in launcher["envs"]
 
 
 class TestMonitor:
@@ -243,7 +245,7 @@ class TestDeepspeedConfig:
             'export SFT_SRC="$CODE_DIR/src/gb_steps_post_training/distillation"'
             in run_script
         )
-        assert 'export LIB_DIR="$CODE_DIR/steps/distill-sft/src/lib"' in run_script
+        assert 'export LIB_DIR="$DISTILL_HOME/shell"' in run_script
 
     def test_checkout_root_is_not_used_because_the_script_overwrites_it(
         self, run_script, sft_sh
@@ -397,12 +399,19 @@ class TestConfigDefaults:
         assert "FATAL: nodes=" in sft_sh
 
     def test_tracking_is_entirely_off(self, step):
-        """All five empty means off. MEASURED: clearml and wandb are both ABSENT from this
-        image, so setting any of them would fail at import; tracking.py imports them lazily
-        and only when a project is configured."""
+        """All five empty means off. The shared GPU image now carries both clearml and
+        wandb (steps/distill/gpu/pyproject.toml), so setting any of them works rather
+        than failing at import; tracking.py still imports them lazily and only when a
+        project is configured, so leaving all five empty stays the safe default."""
         assert set(step["config"]["tracking"].values()) == {""}
 
     def test_step_type_is_a_real_enum_member(self, step):
         from gbcommon.types.stepconfig import StepType
 
         assert step["type"] in {m.value for m in StepType}
+
+
+class TestSlurmExecutorEnv:
+    def test_the_stripped_env_is_restored(self, launcher):
+        assert launcher["envs"]["PYTHONPATH"] == "/opt/distill/src"
+        assert launcher["envs"]["VIRTUAL_ENV"] == "/stage/.venv"

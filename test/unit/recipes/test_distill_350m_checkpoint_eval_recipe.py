@@ -46,7 +46,7 @@ import subprocess
 
 import pytest
 import yaml
-from unit.recipes.published_step import render_run
+from unit.recipes.published_step import image_env, render_run
 
 from gbcli.services.service_build import get_params_from_file
 from gbcli.utils.buildutil import apply_parameters
@@ -543,7 +543,7 @@ def test_gen_smoke_hands_the_interpreter_every_rung(built, tmp_path):
     script, step_dir = render_run(
         "distill/gen-smoke",
         _config(built, "gen-smoke"),
-        gen_smoke_config={"python": str(stub), "output_dir": str(tmp_path / "gs")},
+        gen_smoke_config={"output_dir": str(tmp_path / "gs")},
     )
 
     result = subprocess.run(
@@ -552,6 +552,7 @@ def test_gen_smoke_hands_the_interpreter_every_rung(built, tmp_path):
         capture_output=True,
         text=True,
         check=False,
+        env=image_env("distill/gen-smoke", tmp_path, python=str(stub)),
     )
 
     assert result.returncode == 0, result.stderr
@@ -577,26 +578,29 @@ def test_nothing_can_stop_this_run_early():
     assert params["ENTROPY_GUARD_ACTION"] == "warn"
 
 
-def test_the_objective_is_unanchored_and_needs_no_patched_trainer():
+def test_the_objective_is_unanchored():
     """This recipe measures WHERE in an epoch the gains land, and the epoch it measures is
-    df8512e0's: pure divergence, lmbda 0, no CE anchor. Keeping it that way is also what
-    keeps it runnable on the step's own public trainer pin -- none of the six patch-gated
-    fields exist in CustomGOLDConfig at a5d59bc4, so any one of them being set both changes
-    the objective under measurement and drags CODE_DIR back to a BlueVela-only /proj path.
+    df8512e0's: pure divergence, lmbda 0, no CE anchor. Keeping it that way at zero is what
+    keeps this the SAME objective df8512e0 ran -- the CE-anchor/entropy-guard fields are
+    now unconditionally available on the trainer (folded into
+    steps/distill/src/gb_steps_post_training/distillation/, see VENDORED.md), so setting
+    any one of them is just a --param now, not a patched-checkout dependency -- but doing
+    so would change the objective under measurement, which is why this recipe leaves them
+    at zero.
     """
     params = _params()
     assert float(params["CE_COEF"]) == 0
     assert params["LOG_STUDENT_ENTROPY"] is False
     assert float(params["ENTROPY_GUARD_DROP_FRAC"]) == 0
     assert float(params["LMBDA"]) == 0
-    assert params["CODE_DIR"] == ""
 
 
 def test_entropy_is_still_measured_without_the_trainers_help():
-    """The per-step entropy log went off with the patch dependency; the quantity did not
-    go away. distill-eval computes entropy and reverse KL from a checkpoint with no
-    trainer involvement, and this recipe evaluates every rung -- which is the resolution
-    that actually matters for the question it asks."""
+    """This recipe leaves LOG_STUDENT_ENTROPY off (see test_the_objective_is_unanchored),
+    so the per-step trainer log carries no entropy reading. distill-eval computes entropy
+    and reverse KL from a checkpoint with no trainer involvement instead, and this recipe
+    evaluates every rung -- which is the resolution that actually matters for the question
+    it asks."""
     assert set(_params()["EVAL_METRICS"].split(",")) >= {"entropy", "rkld"}
 
 

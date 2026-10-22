@@ -69,7 +69,7 @@ class TestRunScriptIsValidShell:
 
 class TestLauncher:
     def test_lsf_only(self, step):
-        assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf"]
+        assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf", "slurm"]
 
     def test_uses_image_id_not_image(self, launcher):
         """``image:`` is not the SkyPilot launcher's key — upstream's template used it,
@@ -91,7 +91,7 @@ class TestLauncher:
         assert launcher["resources"] == {}
 
     def test_the_entrypoint_is_shipped(self, launcher):
-        assert launcher["file_mounts"] == {"src": "src"}
+        assert "file_mounts" not in launcher
 
     def test_uses_the_shipped_monitor(self, step):
         monitors = step["environment_configs"]["Skypilot"]["monitors"]
@@ -218,3 +218,9 @@ class TestVendoredTemplate:
         assert re.search(
             r"\{%-? *generation *-?%\}", tpl.read_text()
         ), "the vendored template must carry a real {% generation %} block tag"
+
+
+class TestSlurmExecutorEnv:
+    def test_the_stripped_env_is_restored(self, launcher):
+        assert launcher["envs"]["PYTHONPATH"] == "/opt/distill/src"
+        assert launcher["envs"]["VIRTUAL_ENV"] == "/stage/.venv"

@@ -1,8 +1,6 @@
 #
 # PORTED, not authored here. Upstream source of truth:
-#   repo   github.ibm.com/Herbert-Woisetschlaeger/gb-steps-collection-post-training
 #   path   steps/distill-hf-export/src/export_hf_model.py
-#   commit 70c1550a171aa8e09a9ad9047a5bf763c39e8579
 #
 # Verbatim apart from `black`/`isort` reflow, which CI requires repo-wide, and ONE
 # behaviour divergence recorded below. Keep it otherwise verbatim so re-syncing upstream
@@ -1091,7 +1089,7 @@ def main(argv: list[str] | None = None) -> int:
     # belongs to the launcher, because that is where the declared name lives -- keeping the
     # echo next to the outputs block is what stops the two from drifting apart. (Same
     # reasoning removed a duplicate from build_overlay.py, where the problem was first
-    # measured: LSF job 1137372.)
+    # measured: .)
     return 0
 
 

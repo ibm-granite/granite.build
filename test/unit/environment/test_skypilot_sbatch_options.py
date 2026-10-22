@@ -229,3 +229,138 @@ class TestSbatchOptionsWithMetadataComment:
             run_metadata={"build_id": "b1"},
         )
         assert overrides["slurm"]["sbatch_options"]["comment"] == "operator-note"
+
+
+# ---------------------------------------------------------------------------
+# Pyxis GPU directives (issue #510 item 2): generated from the step's own
+# resources.accelerators + image_id rather than hardcoded per-environment, so
+# a step requesting a different GPU count/type is never silently miscounted.
+# ---------------------------------------------------------------------------
+_PYXIS_EXPORT = (
+    "ALL,NVIDIA_VISIBLE_DEVICES=all,NVIDIA_DRIVER_CAPABILITIES=all,"
+    "LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu,"
+    "TRITON_LIBCUDA_PATH=/usr/lib/x86_64-linux-gnu"
+)
+
+
+class TestPyxisGpuSbatchDirectives:
+    @pytest.mark.asyncio
+    async def test_gpu_and_image_id_generates_export_and_gpus(self):
+        env = _make_env({"default_cloud": "slurm"})
+        overrides = await _overrides_for(
+            env,
+            "sb-gpu-image",
+            launcher_config={
+                "run": "hostname",
+                "resources": {"accelerators": "H200:1"},
+                "image_id": "docker:my-image:tag",
+            },
+            config={},
+        )
+        assert overrides["slurm"]["sbatch_options"] == {
+            "export": _PYXIS_EXPORT,
+            "gpus": "h200:1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_two_gpu_count_is_reflected_in_gpus(self):
+        # The acceptance criterion in issue #510: a TP=2 step must produce
+        # gpus: "h200:2", not a hardcoded "h200:1" regardless of count.
+        env = _make_env({"default_cloud": "slurm"})
+        overrides = await _overrides_for(
+            env,
+            "sb-gpu-tp2",
+            launcher_config={
+                "run": "hostname",
+                "resources": {"accelerators": "H200:2"},
+                "image_id": "docker:my-image:tag",
+            },
+            config={},
+        )
+        assert overrides["slurm"]["sbatch_options"]["gpus"] == "h200:2"
+
+    @pytest.mark.asyncio
+    async def test_bare_node_gpu_request_without_image_is_noop(self):
+        # A bare-node GPU step (no container) has no Pyxis driver injection to
+        # fix, so no directives should be generated.
+        env = _make_env({"default_cloud": "slurm"})
+        overrides = await _overrides_for(
+            env,
+            "sb-gpu-bare",
+            launcher_config={
+                "run": "hostname",
+                "resources": {"accelerators": "H200:1"},
+            },
+            config={},
+        )
+        assert overrides is None
+
+    @pytest.mark.asyncio
+    async def test_cpu_container_without_accelerators_is_noop(self):
+        # A CPU-only containerized step has no driver to inject either.
+        env = _make_env({"default_cloud": "slurm"})
+        overrides = await _overrides_for(
+            env,
+            "sb-cpu-image",
+            launcher_config={
+                "run": "hostname",
+                "resources": {},
+                "image_id": "docker:my-image:tag",
+            },
+            config={},
+        )
+        assert overrides is None
+
+    @pytest.mark.asyncio
+    async def test_explicit_export_overrides_generated_one_per_key(self):
+        # An explicit sbatch_options.export set by the step/build still wins,
+        # same per-key precedence as every other sbatch_options layer; `gpus`
+        # (not touched by the override) still comes from the generated value.
+        env = _make_env({"default_cloud": "slurm"})
+        overrides = await _overrides_for(
+            env,
+            "sb-gpu-override",
+            launcher_config={
+                "run": "hostname",
+                "resources": {"accelerators": "H200:1"},
+                "image_id": "docker:my-image:tag",
+                "sbatch_options": {"export": "ALL,CUSTOM=1"},
+            },
+            config={},
+        )
+        assert overrides["slurm"]["sbatch_options"] == {
+            "export": "ALL,CUSTOM=1",
+            "gpus": "h200:1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_opt_out_flag_suppresses_generation(self):
+        env = _make_env(
+            {"default_cloud": "slurm", "slurm_gpu_sbatch_directives": False}
+        )
+        overrides = await _overrides_for(
+            env,
+            "sb-gpu-optout",
+            launcher_config={
+                "run": "hostname",
+                "resources": {"accelerators": "H200:1"},
+                "image_id": "docker:my-image:tag",
+            },
+            config={},
+        )
+        assert overrides is None
+
+    @pytest.mark.asyncio
+    async def test_dict_accelerators_form_is_also_parsed(self):
+        env = _make_env({"default_cloud": "slurm"})
+        overrides = await _overrides_for(
+            env,
+            "sb-gpu-dict",
+            launcher_config={
+                "run": "hostname",
+                "resources": {"accelerators": {"H200": 2}},
+                "image_id": "docker:my-image:tag",
+            },
+            config={},
+        )
+        assert overrides["slurm"]["sbatch_options"]["gpus"] == "h200:2"

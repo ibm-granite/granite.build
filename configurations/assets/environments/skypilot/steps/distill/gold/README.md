@@ -1,7 +1,8 @@
-# gold (SkyPilot / LSF)
+# gold (SkyPilot / LSF or SLURM)
 
 Distils a small **student** from a larger **teacher** with the GOLD trainer (generalized
-JSD, `gb_steps_post_training.distillation.gold`), multi-node via the SkyPilot LSF cloud.
+JSD, `gb_steps_post_training.distillation.gold`), multi-node via the SkyPilot LSF or SLURM
+cloud (one step, both subtypes).
 The step renders the trainer's config, assigns each node its role (trainer, or vLLM server
 on the on-policy path) and starts `accelerate` with that node's rank. It registers the
 checkpoint directory as a `model` artifact, and optionally each intermediate checkpoint as
@@ -24,7 +25,8 @@ steps:
 ## Config contract (`gold_config`)
 
 The trainer's settings live under `config.gold_config`. Checkpoint emission, resume and
-the monitor are top-level `config` keys; the trainer source is `config.code_config`.
+the monitor are top-level `config` keys. The trainer source has no config field at all —
+it's baked into the shared GPU image (see [Source delivery](#source-delivery)).
 
 The student, teacher and corpus are no longer config fields; they are the required
 `student`, `teacher` and `corpus` target inputs — see [Inputs](#inputs) below. The
@@ -40,7 +42,7 @@ think-filtered** (`*_nothink.jsonl`): an assistant completion containing an inli
 
 | Field | Type | Purpose |
 |---|---|---|
-| `ds_config` | string | DeepSpeed ZeRO-3 `accelerate` config, relative to `code_config`'s clone. Default: `steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml`. |
+| `ds_config` | string | DeepSpeed ZeRO-3 `accelerate` config, relative to `$CODE_DIR` (the baked-in trainer source, `/opt/gb-steps-distillation`). Default: `steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml`. |
 | `run_name` | string | Names the checkpoint directory and the rendered config. The node count is appended at run time, from the allocation (`<run_name>_node<N>`), so the two cannot disagree. Default: `gold`. |
 
 #### Weight residency
@@ -84,9 +86,11 @@ think-filtered** (`*_nothink.jsonl`): an assistant completion containing an inli
 
 #### CE anchor and entropy guard
 
-These keys are rendered into the trainer's config **only when non-default**, and they need
-a trainer that carries the CE-anchor patch, which the default `code_config` pin does not;
-see [CE anchor and entropy guard](#ce-anchor-and-entropy-guard-1).
+These keys are rendered into the trainer's config **only when non-default**. The baked-in
+trainer carries the CE-anchor/entropy-guard fields unconditionally (folded into
+`steps/distill/src/`'s vendored copy — see [Source delivery](#source-delivery)), so no
+separate checkout is needed to use them; see
+[CE anchor and entropy guard](#ce-anchor-and-entropy-guard-1).
 
 | Field | Type | Purpose |
 |---|---|---|
@@ -121,6 +125,12 @@ longer a config field; it is the optional `vllm` mem:// input (see [Inputs](#inp
 binding it requires `vllm_num_servers > 0` and `lmbda > 0`, and makes every node train.
 Not yet run on a cluster.
 
+On the SLURM subtype, the vLLM-serving branch runs `ldconfig` before starting the server:
+SLURM's pyxis/enroot builds the container in a separate `srun` from the one that injects
+the NVIDIA driver, so the image's own `/etc/ld.so.cache` misses `libcuda.so` and Triton's
+driver discovery fails with "libcuda.so cannot found!" otherwise. Unconditional and
+harmless where the gap doesn't exist — see `steps/distill/gpu/README.md`.
+
 | Field | Type | Purpose |
 |---|---|---|
 | `vllm_num_servers` | integer | `> 0` selects on-policy. Without the optional `vllm` input bound, dedicates the **last** N nodes of the allocation to serving the student under vLLM and trains on the rest. Default: `0`. |
@@ -152,16 +162,28 @@ Not yet run on a cluster.
 | `log_retrieval_mode` | string | Default: `periodic`, because a distillation run lasts hours and `on_completion` surfaces nothing until the end. |
 | `log_retrieval_interval_seconds` | integer | Periodic log retrieval interval. Default: `900`. |
 
-### Source delivery (`code_config`)
+### Source delivery
 
-`code_config` (`code_dir`, `expect_ref`, `repo`, `ref`, `workdir`, `token_secret`, `python`,
-`setup_command`) is identical in every ported distillation step and documented once — see
-"Source delivery" in the `space://steps/distill/tokenizer-align` step's README. The trainer
-(`gold.py`, `custom_gold_trainer.py`, `run_vllm_serve.py` and their shared helpers) comes
-from that clone. Its commit is pinned by `code_config.expect_ref` and recorded as
-`distill_code_commit` step metadata on every run. In this step the renderer, the residency
-check and the vLLM server run with `/stage/.venv/bin/python` directly, not with
-`code_config.python`.
+Unlike every other ported distillation step, this step has no `code_config` and clones
+nothing at job-launch time. The trainer (`gold.py`, `custom_gold_trainer.py`,
+`run_vllm_serve.py` and their shared helpers) is baked directly into the shared GPU
+image (`steps/distill/gpu/Dockerfile` COPYs `steps/distill/src/`, pinned to
+`gb-steps-distillation` commit `a5d59bc45524a8d75706e20d44ae1a254f273f23`), including a
+locally-folded-in CE-anchor/entropy-guard patch — see
+[CE anchor and entropy guard](#ce-anchor-and-entropy-guard-1) and
+`steps/distill/src/VENDORED.md`. `$PYBIN` and `$CODE_DIR` are static paths baked into that
+image (`/stage/.venv/bin/python` and `/opt/gb-steps-distillation`), not resolved from a
+config field.
+
+### Image
+
+This step runs in the shared GPU image used by every GPU distillation step (`gold`, `sft`,
+`logit-precompute`, `eval`, `vllm-server`, `gen-smoke`, `probe`) — see
+`steps/distill/gpu/README.md`. The image bakes in CUDA, a uv-managed Python 3.12, the
+trainer's own pinned deps (torch, transformers, trl, vllm, deepspeed, etc.) via
+`uv sync --locked` at build time, and the vendored trainer source itself, so nothing
+installs or clones at job-launch time. A dependency-pin bump means rebuilding and
+republishing this image (and bumping every GPU step's `image_id`), not a per-run resync.
 
 ## Inputs and outputs
 
@@ -217,15 +239,17 @@ and checks one.
 
 ## Working directory and paths
 
-`run` executes on **every** node with that node's own rank (`RANK`, `TOTAL_NODES`,
-`MASTER_ADDR`, `MASTER_PORT`, `NUM_GPUS_PER_NODE` from SkyPilot's LSF provisioner). All
-paths are under `$GB_BUILD_WORKDIR` (the per-run workdir, on `/proj` on BlueVela and
-identity-mounted into the container), falling back to the current directory when unset:
+`run` executes on **every** node with that node's own rank, read from SkyPilot's own
+generic topology vars (`SKYPILOT_NODE_RANK`, `SKYPILOT_NUM_NODES`, `SKYPILOT_NODE_IPS`,
+`SKYPILOT_NUM_GPUS_PER_NODE` — present on both the lsf and slurm subtypes, unlike LSF's
+provisioner-specific `RANK`/`TOTAL_NODES`/`MASTER_ADDR`/`MASTER_PORT`). All paths are under
+`$GB_BUILD_WORKDIR` (the per-run workdir, on `/proj` on BlueVela and identity-mounted into
+the container), falling back to the current directory when unset:
 
 - `./src` — the step's `src/` (config renderer and residency check), file-mounted.
-- `distill-code/` (`code_config.workdir`) — the trainer source clone. Only rank 0 clones;
-  the other ranks wait (up to 600 s) for a completion marker naming this attempt.
-  `ds_config` resolves relative to it.
+- `/opt/gb-steps-distillation` (`$CODE_DIR`) — the trainer source, baked into the image.
+  No per-run clone, so no rank-0-clones/others-wait delay. `ds_config` resolves relative
+  to it.
 - `gold_config_<run_name>_node<N>.yaml` — the rendered trainer config, printed to the log by
   rank 0.
 - `checkpoints/<run_name>_node<N>/` — the trainer's `--output_dir`, and the `checkpoint`
@@ -285,9 +309,9 @@ repository.
 
 | Piece | Source |
 |---|---|
-| Pinned deps (torch, transformers, trl, vllm, deepspeed) | the container image, venv at `/stage/.venv` |
-| Trainer (`gold.py`, `custom_gold_trainer.py`, DeepSpeed config) | `code_config`'s clone of the public source repo |
-| `bsub`, `blaunch`, enroot, per-node rank/master | SkyPilot's LSF provisioner |
+| Pinned deps (torch, transformers, trl, vllm, deepspeed) | baked into the shared GPU image via `uv sync --locked` at build time (see "Image" above) |
+| Trainer (`gold.py`, `custom_gold_trainer.py`, DeepSpeed config) | baked into the shared GPU image, from `steps/distill/src/` (see [Source delivery](#source-delivery)) |
+| Job submission, container import, per-node rank/master | the provisioner (LSF's `bsub`/`blaunch`/enroot, or SLURM's `sbatch`/`srun`/pyxis) |
 | Config rendering, node roles, `accelerate` launch | this step |
 
 ### Choosing a student/teacher pair
@@ -347,12 +371,11 @@ data instead.
 - **Keep `save_total_limit` high.** An early, less-forgotten checkpoint is often the best one
   to evaluate; a small limit deletes it irrecoverably.
 - **The image is an SM90 (H100) build** and will not run on A100.
-- **LSF only.** enroot and the LSF topology contract this step reads are LSF-specific
-  (`subtypes: [lsf]`).
-- **Multi-node needs a SkyPilot with LSF multi-node support.** gbserver refuses the launch
-  otherwise rather than silently running on one node.
-- **State host memory.** The LSF provisioner defaults to 16G per node, and a host-memory kill
-  presents as a cross-node NCCL hang.
+- **LSF and SLURM only** (`subtypes: [lsf, slurm]`) — not yet validated on aws/kubernetes.
+- **Multi-node needs a SkyPilot build with multi-node support for the subtype in use.**
+  gbserver refuses the launch otherwise rather than silently running on one node.
+- **State host memory on LSF.** The LSF provisioner defaults to 16G per node, and a
+  host-memory kill presents as a cross-node NCCL hang.
 
 ### Weight residency refusal
 
@@ -413,19 +436,19 @@ boundary and so carries none.
 
 ### CE anchor and entropy guard
 
-`ce_coef`, `log_student_entropy` and the four `entropy_guard_*` keys need the **delivered**
-trainer to carry the `ce_anchor_and_entropy_guard` patch
-(`steps/distill/gold/skypilot/patches/ce_anchor_and_entropy_guard.diff` in the granite.build
-repository; its header has the invocation and the directory remap). The default
-`code_config` pin does **not** carry it — at `a5d59bc4` the trainer has `lmbda_schedule` but
-not `ce_coef` — so a recipe using these keys points `code_config.code_dir` at a checkout that
-does, as `recipes/granite4-350m/lsf/distill-stage1-v2` does. Because the keys are rendered
-only when non-default, a recipe that leaves them alone runs against any checkout; when one
-does not, `verify_trainer_accepts_keys` turns "TrlParser rejected your config after the
-allocation was held" into a refusal that names the patch. Without that check the two
-failures are both expensive: TrlParser rejects an unknown top-level key only after the
-teacher has loaded on every node, and `min_completion_length` fails the other way, silently,
-by never reaching the sampler.
+`ce_coef`, `log_student_entropy` and the four `entropy_guard_*` keys need the trainer to
+carry the `ce_anchor_and_entropy_guard` fields. Unlike before, this is not something a
+recipe has to arrange: the fields are folded permanently into
+`steps/distill/src/gb_steps_post_training/distillation/{custom_gold_config,custom_gold_trainer}.py`
+(see `steps/distill/src/VENDORED.md` for the fold-in's provenance and history), baked into
+the shared GPU image every recipe already uses. Because the keys are rendered only when
+non-default, a recipe that leaves them alone renders the same config it always has.
+`verify_trainer_accepts_keys` still guards against a future vendor-pin bump that drops or
+renames these fields, turning "TrlParser rejected your config after the allocation was
+held" into a refusal that names the mismatch rather than failing deep inside TrlParser.
+Without that check the two failures are both expensive: TrlParser rejects an unknown
+top-level key only after the teacher has loaded on every node, and
+`min_completion_length` fails the other way, silently, by never reaching the sampler.
 
 - **`ce_coef` is not the trainer's `use_ce_loss`**, which *replaces* the divergence. Without an
   anchor the objective has no opinion about real text, so an already-SFT'd student — one that
