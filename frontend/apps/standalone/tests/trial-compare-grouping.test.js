@@ -161,7 +161,7 @@ describe('getOddOnesOut', () => {
 
 // Rows are built per-trial (toCompareRow spreads that trial's own config and
 // metrics), so two trials in one comparison can genuinely carry different field
-// sets — TrialsTable's radar code notes the same thing about `loss`. Both
+// sets (one trial can report `loss` while another does not). Both
 // functions used to take their field list from rows[0] alone, so anything the
 // first row lacked was invisible: not in Results, not in Differences, not in
 // Similarities, and absent from the counts the section headings assert are

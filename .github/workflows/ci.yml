@@ -115,6 +115,7 @@ jobs:
         with:
           path: ~/.cache/ci-docker-images
           key: ci-docker-images-${{ hashFiles('test-data/ci-docker-images.env') }}
+          restore-keys: ci-docker-images-
 
       - name: Load Docker images (pull with retry on cache miss)
         run: scripts/ci-docker-images.sh load
@@ -156,6 +157,7 @@ jobs:
         with:
           path: ~/.cache/ci-docker-images
           key: ci-docker-images-${{ hashFiles('test-data/ci-docker-images.env') }}
+          restore-keys: ci-docker-images-
 
       - name: Load Docker images (pull with retry on cache miss)
         run: scripts/ci-docker-images.sh load

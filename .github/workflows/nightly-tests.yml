@@ -51,14 +51,67 @@ jobs:
         with:
           path: ~/.cache/ci-docker-images
           key: ci-docker-images-${{ hashFiles('test-data/ci-docker-images.env') }}
+          restore-keys: ci-docker-images-
 
       - name: Load Docker images (pull with retry on cache miss)
         run: scripts/ci-docker-images.sh load
+
+      # Images only the nightly uses, in their own cache (ci.yml never saves
+      # them). Non-fatal: a failed pull fails only the test that needs the image.
+      - name: Restore cached nightly Docker images
+        id: nightly-images-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/nightly-docker-images
+          key: nightly-docker-images-${{ hashFiles('test-data/nightly-docker-images.env') }}
+          restore-keys: nightly-docker-images-
+
+      - name: Load nightly Docker images (pull with retry on cache miss)
+        id: nightly-images-load
+        continue-on-error: true
+        run: |
+          CI_DOCKER_IMAGE_LIST=test-data/nightly-docker-images.env \
+          CI_DOCKER_IMAGE_CACHE_DIR="$HOME/.cache/nightly-docker-images" \
+            scripts/ci-docker-images.sh load
+
+      - name: Save nightly Docker images to cache
+        if: steps.nightly-images-cache.outputs.cache-hit != 'true' && steps.nightly-images-load.outcome == 'success'
+        continue-on-error: true
+        run: |
+          CI_DOCKER_IMAGE_LIST=test-data/nightly-docker-images.env \
+          CI_DOCKER_IMAGE_CACHE_DIR="$HOME/.cache/nightly-docker-images" \
+            scripts/ci-docker-images.sh save
+
+      - name: Upload nightly Docker image cache
+        if: steps.nightly-images-cache.outputs.cache-hit != 'true' && steps.nightly-images-load.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/nightly-docker-images
+          key: ${{ steps.nightly-images-cache.outputs.cache-primary-key }}
+
+      # kind pods don't see the host's images.
+      - name: Load Docker images into the kind cluster
+        if: steps.nightly-images-load.outcome == 'success'
+        continue-on-error: true
+        run: |
+          source .venv/bin/activate
+          CI_DOCKER_IMAGE_LIST=test-data/nightly-docker-images.env \
+            scripts/ci-docker-images.sh kind-load UBUNTU_IMAGE
 
       - name: Run extended tests
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: make extended-tests
+
+      # The SkyPilot API server logs only here.
+      - name: Upload SkyPilot API server log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: skypilot-api-server-log-${{ matrix.python-version }}
+          path: ~/.sky/api_server/server.log
+          if-no-files-found: ignore
 
   report-failure:
     # Open (or update) a tracking issue when the nightly run fails, so failures

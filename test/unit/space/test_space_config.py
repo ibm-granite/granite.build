@@ -8,6 +8,7 @@ consumed by `gbserver standalone` and the build tests).
 
 import pathlib
 
+import pytest
 import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -169,6 +170,33 @@ class TestSkyKubeLocalEnvironmentYaml:
         mounts = [m["mountPath"] for m in spec["containers"][0]["volumeMounts"]]
         assert claims == ["gb-shared"]
         assert mounts == ["/shared"]
+
+    def test_pods_use_images_preloaded_into_kind(self):
+        """SkyPilot's own default is Always."""
+        kube = self._load()["config"]["cloud_config"]["kubernetes"]
+        spec = kube["context_configs"]["kind-skypilot"]["pod_config"]["spec"]
+        (container,) = spec["containers"]
+        assert container["name"] == "ray-node"
+        assert container["imagePullPolicy"] == "IfNotPresent"
+
+    @pytest.mark.parametrize("step", ["hfpull", "hfpush"])
+    def test_hf_steps_request_less_than_their_10gi_default(self, step):
+        """config.steps launcher resources must outrank the step.yaml 10Gi floor."""
+        from gbserver.build.targetstep import _seed_step_config_with_env_defaults
+        from gbserver.utils.filesystem import merge_dicts
+
+        step_yaml = (
+            REPO_ROOT / "src/gbserver/builtins/steps/skypilot" / step / "step.yaml"
+        )
+        step_config = yaml.safe_load(step_yaml.read_text())["config"]
+        assert step_config["compute_config"]["total_memory_per_node"] == "10Gi"
+        merged = merge_dicts(
+            _seed_step_config_with_env_defaults(
+                self._load()["config"], f"space://steps/{step}", {}
+            ),
+            step_config,
+        )
+        assert merged["launcher_config"]["resources"]["memory"] == "1+"
 
     def test_shared_workdir_and_hf_cache_live_on_the_volume(self):
         data = self._load()

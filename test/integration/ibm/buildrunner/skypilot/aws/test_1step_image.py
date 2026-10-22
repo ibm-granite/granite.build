@@ -58,11 +58,11 @@ def _aws_credentials_available() -> bool:
 
 
 # Real-infra build test (SkyPilot provisions an EC2 instance) — only run in the
-# extended suite (make extended-tests), not the fast quick-tests suite. Its own
-# xdist group serializes concurrent AWS provisions so they don't race on
-# SkyPilot's local state.
+# extended suite (make extended-tests), not the fast quick-tests suite. The
+# skypilot_integration group serializes concurrent AWS provisions so they don't
+# race on SkyPilot's local state.
 @extended_testing_only
-@pytest.mark.xdist_group(name="buildtest_aws")
+@pytest.mark.skypilot_integration
 @pytest.mark.skipif(
     not _aws_credentials_available(),
     reason="AWS credentials not configured (set AWS_ACCESS_KEY_ID/"

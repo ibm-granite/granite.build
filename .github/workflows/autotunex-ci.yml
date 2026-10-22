@@ -6,6 +6,14 @@
 # prefix ([tool.black] extend-exclude / [tool.isort] extend_skip_glob), so this
 # workflow is the subtree's gate instead.
 #
+# A second job, fm-tune, runs the vendored src/fm-tune suite, which `make check`
+# does not: the check job installs fm-tune torch-free, and most of its tests import
+# the training stack. It installs fm-tune[core] and runs `make test-fm-tune`, which
+# deselects the `slow` (HF weights), `gpu` (CUDA) and `full` (verl/hydra) markers.
+# torch is installed first from the CPU index so [core]'s torch==2.8.0 pin is
+# already met and pip skips the multi-GB default CUDA wheel; keep the two pins in
+# step, or the [core] install swaps CPU torch for the CUDA wheel (slow, still green).
+#
 # Install extras: [dev] and [mcp] are both CI-only additions. fastmcp is an opt-in
 # leaf feature that no runtime install should pay for (see pyproject.toml), but
 # tests/api/test_mcp.py importorskips it — without [mcp] here that suite silently
@@ -66,3 +74,28 @@ jobs:
 
       - name: make check (ruff + mypy strict + pytest)
         run: make check
+
+  fm-tune:
+    if: ${{ !github.event.repository.fork }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    defaults:
+      run:
+        working-directory: autotunex
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install (fm-tune[core] on CPU torch)
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install -e "./src/fm-tune[core]" pytest==9.1.1
+
+      - name: make test-fm-tune
+        run: make test-fm-tune

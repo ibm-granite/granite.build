@@ -237,3 +237,14 @@ export function createApiClient(
 export function autotunexApiBase(path: string): string {
   return apiBase(`/api/autotunex${path}`)
 }
+
+/**
+ * The scope an admin's AutoTuneX lists (tunings, configurations, datasets) are
+ * fetched with; there is no in-page toggle. Set
+ * AUTOTUNEX_ADMIN_DEFAULT_SCOPE=all at build time (next.config.ts inlines it) to
+ * open them on every user's rows; unset or any other value keeps "own". Non-admins never read this — AutoTuneX 403s
+ * their `scope=all`, so their lists stay on "own" regardless.
+ */
+export function adminDefaultScope(): 'own' | 'all' {
+  return process.env.AUTOTUNEX_ADMIN_DEFAULT_SCOPE === 'all' ? 'all' : 'own'
+}

@@ -86,7 +86,7 @@ export function SettingsConfigCreate({ open, onClose, onCreated }: Props) {
     // through -- TimeInput calls onChange even when it is displaying one -- so
     // without this the modal happily created a configuration the fields had
     // already flagged as invalid.
-    const outOfRange = findOutOfRangeFields(configSections)
+    const outOfRange = findOutOfRangeFields(configSections, { tuner: tuner_type, rlTuner: rl_tuner_type })
     if (outOfRange.length > 0) {
       setRangeError(
         `Some values are outside their allowed range: ${outOfRange.join(', ')}. Correct the highlighted fields and try again.`

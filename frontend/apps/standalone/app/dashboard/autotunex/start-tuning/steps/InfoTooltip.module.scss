@@ -1,0 +1,24 @@
+/* Narrower than Carbon's 288px default so the bubble fits the 380px settings
+   column it is used in.
+
+   `white-space` is the load-bearing half. It is an inherited property, and these
+   triggers sit inside label spans that set `nowrap` to stop the label itself
+   wrapping (.fileLabel here and in Step1DatasetUpload.module.scss). That nowrap
+   reached the bubble, which then laid its text out on one 389px line inside a
+   240px box and clipped it -- measured, not guessed. Carbon's own
+   `overflow-wrap: break-word` does not help: it breaks long words, it does not
+   re-enable wrapping. */
+.tooltip :global(.cds--tooltip-content) {
+  max-inline-size: 15rem;
+  white-space: normal;
+}
+
+.tooltipTrigger {
+  background: none;
+  border: none;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--cds-icon-secondary, #525252);
+}

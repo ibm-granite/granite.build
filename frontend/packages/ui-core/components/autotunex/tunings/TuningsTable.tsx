@@ -23,7 +23,6 @@ import {
   Pagination,
   Link as CarbonLink,
   Button,
-  Toggle,
 } from '@carbon/react'
 import { Compare, Launch, Rocket, TrashCan } from '@carbon/icons-react'
 import { Fragment } from 'react'
@@ -47,11 +46,8 @@ interface Props {
   onRowClick: (id: string) => void
   onDeleteSelected: () => void
   onCompareSelected: () => void
-  /** Current list scope. Only meaningful (and only shown as a control) when `showScopeToggle` is true. */
+  /** Current list scope. */
   scope: 'own' | 'all'
-  onScopeChange: (scope: 'own' | 'all') => void
-  /** Show the own/all scope toggle — gate this on the viewer being a space admin. */
-  showScopeToggle: boolean
 }
 
 const HEADERS = [
@@ -110,8 +106,6 @@ export function TuningsTable({
   onDeleteSelected,
   onCompareSelected,
   scope,
-  onScopeChange,
-  showScopeToggle,
 }: Props) {
   if (isLoading) {
     return <DataTableSkeleton headers={HEADERS} rowCount={6} showHeader={false} showToolbar={false} />
@@ -180,19 +174,6 @@ export function TuningsTable({
               </TableBatchActions>
               <TableToolbarContent>
                 <TableToolbarSearch persistent placeholder="Search tunings…" onChange={(_e, value) => onSearch(value ?? '')} />
-                  {showScopeToggle && (
-                    <div style={{ display: 'flex', alignItems: 'center', marginInline: '1rem' }}>
-                      <Toggle
-                        id="tunings-scope-toggle"
-                        size="sm"
-                        labelText="Scope"
-                        labelA="My tunings"
-                        labelB="All tunings"
-                        toggled={scope === 'all'}
-                        onToggle={(checked) => onScopeChange(checked ? 'all' : 'own')}
-                      />
-                    </div>
-                  )}
                   <Button as={Link} href="/dashboard/autotunex/start-tuning" renderIcon={Rocket}>
                     Start Tuning
                   </Button>
