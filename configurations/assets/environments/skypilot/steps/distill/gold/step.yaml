@@ -383,6 +383,10 @@ environment_configs:
           # serves the smoke and reference runs.
           resources: {}
           envs:
+            # The SLURM executor runs the task under `env -u PYTHONPATH` and without
+            # VIRTUAL_ENV, so the image's ENV values for both are gone at run time.
+            PYTHONPATH: /opt/distill/src
+            VIRTUAL_ENV: /stage/.venv
             TORCH_NCCL_ENABLE_MONITORING: '{{ "1" if config.gold_config.nccl_enable_monitoring else "0" }}'
             TORCH_NCCL_TIMEOUT_MS: "{{ config.gold_config.nccl_timeout_ms }}"
             NCCL_TIMEOUT: "{{ config.gold_config.nccl_timeout_ms }}"
@@ -417,7 +421,8 @@ environment_configs:
             # not cloned/synced at job-launch time -- see the "Source delivery" comment
             # above config: for why. Both paths are fixed by that Dockerfile's own
             # COPY/ENV lines; nothing here resolves them dynamically.
-            PYBIN="$(uv python find)"
+            PYBIN="python"
+            export PATH="$VIRTUAL_ENV/bin:$PATH"
             CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"
             # PYTHONPATH=/opt/gb-steps-distillation/src is already set by the image
             # itself (ENV PYTHONPATH in steps/distill/gpu/Dockerfile); nothing to export

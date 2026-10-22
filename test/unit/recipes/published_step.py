@@ -89,8 +89,8 @@ def image_env(step_path, tmp_path, python=None):
     """An environment that emulates the baked image for a rendered run script.
 
     ``DISTILL_HOME/steps/<name>`` is the published step's ``src/`` (what the Dockerfile
-    COPYs there), and a ``uv`` shim answers ``uv python find`` with ``python`` (default:
-    this interpreter), as the image's ``VIRTUAL_ENV`` makes the real one do.
+    COPYs there), and a ``python`` shim first on PATH stands in for the image's venv python (default:
+    this interpreter).
     """
     home = tmp_path / "distill-home"
     (home / "steps").mkdir(parents=True, exist_ok=True)
@@ -99,9 +99,9 @@ def image_env(step_path, tmp_path, python=None):
         link.symlink_to(_ASSETS / step_path / "src")
     shim = tmp_path / "uv-shim"
     shim.mkdir(exist_ok=True)
-    uv = shim / "uv"
-    uv.write_text(f'#!/bin/sh\necho "{python or sys.executable}"\n', encoding="utf-8")
-    uv.chmod(0o755)
+    py = shim / "python"
+    py.write_text(f'#!/bin/sh\nexec "{python or sys.executable}" "$@"\n', encoding="utf-8")
+    py.chmod(0o755)
     return {
         **os.environ,
         "DISTILL_HOME": str(home),

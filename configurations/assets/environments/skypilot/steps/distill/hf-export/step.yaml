@@ -125,6 +125,10 @@ environment_configs:
           # ported step, rather than being pinned here.
           resources: {}
           envs:
+            # The SLURM executor runs the task under `env -u PYTHONPATH` and without
+            # VIRTUAL_ENV, so the image's ENV values for both are gone at run time.
+            PYTHONPATH: /opt/distill/src
+            VIRTUAL_ENV: /stage/.venv
             HF_HUB_OFFLINE: "1"
           run: |
             echo "=== distill-hf-export on $(hostname) ==="
@@ -139,7 +143,7 @@ environment_configs:
             # --- distill source: baked into the image, nothing cloned or mounted ---
             # DISTILL_HOME, the venv (VIRTUAL_ENV) and PYTHONPATH are all set by the image's
             # own ENV lines. The interpreter is asked of uv rather than hardcoded.
-            PYBIN="$(uv python find)"
+            PYBIN="python"
             CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"
             WORK="${GB_BUILD_WORKDIR:-$PWD}"
             echo "GB_STEP_METADATA_KEY:distill_code_source GB_STEP_METADATA_VALUE:baked-image"
