@@ -5,9 +5,11 @@ PIP=$(PYTHON) -m pip
 DOCKER ?= podman
 GB_GH_DOMAIN ?= github.ibm.com
 VENVDIR=.venv
-# Defaults for the $(VENVDIR) rule (`make build` and others depend on it directly);
-# standalone-venv / ibm-venv override them.
+# pip install targets (extras) for the $(VENVDIR) rule. VENV_INSTALL_TARGET is the
+# default, used by `make venv` and by targets that depend on $(VENVDIR) directly
+# (e.g. `make build`); `make ibm-venv` builds with IBM_VENV_INSTALL_TARGET instead.
 VENV_INSTALL_TARGET ?= .[standalone,thirdparty,dev]
+IBM_VENV_INSTALL_TARGET ?= .[all,dev]
 VENV_USE_ARTIFACTORY ?=
 ARTIFACTORY_DESTINATION=https://na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-engineering-team-pypi-local
 # Eventually this number (a percentage over all the code) needs to be bumped up.
@@ -287,7 +289,7 @@ cicd-pr-test:
 
 .PHONY: quick-tests-setup
 quick-tests-setup:
-	$(MAKE) standalone-venv
+	$(MAKE) venv
 
 # Setup does not setup slurm, so the skypilot/slurm tests are skipped
 # GBTEST_MODE=mock defaults GBTEST_MOCK_HF=true (see test/libgbtest/mock_env.py), so
@@ -306,7 +308,7 @@ quick-tests:
 # kind cluster for the skypilot/kubernetes tests (either one missing fails setup),
 # plus a best-effort local PostgreSQL.
 extended-tests-setup:
-	$(MAKE) standalone-venv
+	$(MAKE) venv
 	$(MAKE) slurm-setup
 	$(MAKE) kube-setup
 	@# Best-effort: without a container runtime/openssl or a free port, the
@@ -664,9 +666,6 @@ publish:: .check-build-env
 		-p ${ARTIFACTORY_API_KEY} \
 		dist/*
 
-.PHONY: venv
-venv: standalone-venv
-
 # This publishes a bash image for use in build tests in CI/CD 
 publish-test-images-icr:
 	$(DOCKER) pull bash:latest
@@ -697,28 +696,25 @@ sky-api-stop:
 
 # Two venv flavors, both built into the single $(VENVDIR) by the $(VENVDIR) rule
 # below (building one replaces the other):
-#   standalone-venv  [standalone,thirdparty,dev] from PyPI only — no IBM Artifactory.
-#                    Runs gbserver/gbmcp and the non-ibm suites (quick/extended tests).
-#   ibm-venv         [all,dev] — adds the IBM-only deps (dmf-lib etc.) from IBM
-#                    Artifactory; needs ARTIFACTORY_USER / ARTIFACTORY_API_KEY.
-# `make venv` builds the standalone flavor.
-STANDALONE_VENV_EXTRAS = .[standalone,thirdparty,dev]
-IBM_VENV_EXTRAS = .[all,dev]
+#   venv      $(VENV_INSTALL_TARGET) from PyPI only — no IBM Artifactory.
+#             Runs gbserver/gbmcp and the non-ibm suites (quick/extended tests).
+#   ibm-venv  $(IBM_VENV_INSTALL_TARGET) — adds the IBM-only deps (dmf-lib etc.)
+#             from IBM Artifactory; needs ARTIFACTORY_USER / ARTIFACTORY_API_KEY.
 
-.PHONY: standalone-venv
-standalone-venv: sky-api-stop
+.PHONY: venv
+venv: sky-api-stop
 	rm -rf $(VENVDIR)
-	$(MAKE) VENV_INSTALL_TARGET='$(STANDALONE_VENV_EXTRAS)' VENV_USE_ARTIFACTORY= $(VENVDIR)
+	$(MAKE) VENV_INSTALL_TARGET='$(VENV_INSTALL_TARGET)' VENV_USE_ARTIFACTORY= $(VENVDIR)
 
 .PHONY: ibm-venv
 ibm-venv: sky-api-stop
 	rm -rf $(VENVDIR)
-	$(MAKE) VENV_INSTALL_TARGET='$(IBM_VENV_EXTRAS)' VENV_USE_ARTIFACTORY=1 $(VENVDIR)
+	$(MAKE) VENV_INSTALL_TARGET='$(IBM_VENV_INSTALL_TARGET)' VENV_USE_ARTIFACTORY=1 $(VENVDIR)
 
 # Deprecated aliases for the targets above; to be removed in a follow-up commit.
-.PHONY: dev-venv cicd-venv demo-venv g4os-skypilot-venv
+.PHONY: standalone-venv dev-venv cicd-venv demo-venv g4os-skypilot-venv
 dev-venv cicd-venv: ibm-venv
-demo-venv g4os-skypilot-venv: standalone-venv
+standalone-venv demo-venv g4os-skypilot-venv: venv
 
 # Builds $(VENVDIR) from VENV_INSTALL_TARGET (pip extras). VENV_USE_ARTIFACTORY=1
 # checks for and configures the IBM Artifactory index (needed by the [ibm] extras).
