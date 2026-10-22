@@ -9,6 +9,12 @@ config:
     dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered_10k"
     #dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered"
     checkpoint_s3_uri: "s3://granite-build-checkpoints"
+    # Chat template copied into each checkpoint dir so evals using
+    # AutoTokenizer.from_pretrained(<ckpt>) format prompts with the granite
+    # template instead of the tulu default SFT bakes in. Path is resolved
+    # inside the container: checkpoint_s3_uri is MOUNTed at /output, so a file
+    # at s3://granite-build-checkpoints/chat_template.jinja is /output/chat_template.jinja.
+    chat_template_path: "/output/chat_template.jinja"
     num_epochs: "3"
     per_device_train_batch_size: "1"
     gradient_accumulation_steps: "16"
@@ -27,6 +33,7 @@ config:
     #checkpointing_steps: "2500"
     keep_last_n_checkpoints: "5"
     use_flash_attn: "false"
+    attn_implementation: ""
     gradient_checkpointing: "true"
     use_fast: "true"
     padfree: "true"
@@ -72,6 +79,7 @@ environment_configs:
             disk_size: 256
             #use_spot: true
           file_mounts:
+            /tmp/finetune_override.py: ../open-instruct-finetuning/open_instruct/finetune.py
             /data/datasets:
               source: "{{ config.sft_config.dataset_s3_uri }}"
               mode: COPY
@@ -87,6 +95,7 @@ environment_configs:
             HF_TOKEN: "{{ config.sft_config.hf_token }}"
             TOKENIZED_DATA_PATH: "/data/datasets"
             OUTPUT_DIR: "/output/{{ config.sft_config.build_name }}"
+            CHAT_TEMPLATE_PATH: "{{ config.sft_config.chat_template_path }}"
             NUM_EPOCHS: "{{ config.sft_config.num_epochs }}"
             PER_DEVICE_TRAIN_BATCH_SIZE: "{{ config.sft_config.per_device_train_batch_size }}"
             GRADIENT_ACCUMULATION_STEPS: "{{ config.sft_config.gradient_accumulation_steps }}"
@@ -102,6 +111,7 @@ environment_configs:
             CHECKPOINTING_STEPS: "{{ config.sft_config.checkpointing_steps }}"
             KEEP_LAST_N_CHECKPOINTS: "{{ config.sft_config.keep_last_n_checkpoints }}"
             USE_FLASH_ATTN: "{{ config.sft_config.use_flash_attn }}"
+            ATTN_IMPLEMENTATION: "{{ config.sft_config.attn_implementation }}"
             GRADIENT_CHECKPOINTING: "{{ config.sft_config.gradient_checkpointing }}"
             USE_FAST: "{{ config.sft_config.use_fast }}"
             PADFREE: "{{ config.sft_config.padfree }}"
@@ -116,6 +126,12 @@ environment_configs:
           setup: |
             source deactivate 2>/dev/null || true
             export PATH=/opt/miniconda3/bin:$PATH
+
+            # Override finetune.py with local version (mounted to /tmp to avoid symlink conflict)
+            if [[ -f /tmp/finetune_override.py ]]; then
+              cp /tmp/finetune_override.py /stage/open_instruct/finetune.py
+              echo "Replaced /stage/open_instruct/finetune.py with local override"
+            fi
 
             sed -i 's/keep_in_memory=True/keep_in_memory=False/g' /stage/open_instruct/finetune.py
             sed -i 's/keep_in_memory=True/keep_in_memory=False/g' /stage/open_instruct/dataset_transformation.py
@@ -202,7 +218,8 @@ environment_configs:
               --seed "${SEED}"
             )
 
-            [[ "${USE_FLASH_ATTN}" == "true" ]] && TRAIN_ARGS+=(--use_flash_attn)
+            [[ "${USE_FLASH_ATTN}" == "true" ]] && TRAIN_ARGS+=(--use_flash_attn) || TRAIN_ARGS+=(--no_use_flash_attn)
+            [[ -n "${ATTN_IMPLEMENTATION}" ]] && TRAIN_ARGS+=(--attn_implementation "${ATTN_IMPLEMENTATION}")
             [[ "${GRADIENT_CHECKPOINTING}" == "true" ]] && TRAIN_ARGS+=(--gradient_checkpointing)
             [[ "${USE_FAST}" == "true" ]] && TRAIN_ARGS+=(--use_fast)
             [[ "${PADFREE}" == "true" ]] && TRAIN_ARGS+=(--padfree)
@@ -226,6 +243,24 @@ environment_configs:
 
             echo "[$(date)] Training complete. Output at: ${OUTPUT_MODEL_PATH}"
             echo "[$(date)] HF export at: ${HF_OUTPUT_PATH}"
+
+            # Save the chat template alongside the checkpoints so evals using
+            # AutoTokenizer.from_pretrained(<ckpt-dir>) pick up the granite template
+            # instead of the tulu default SFT writes. A separate chat_template.jinja
+            # file overrides the template embedded in tokenizer_config.json on reload.
+            # CHAT_TEMPLATE_PATH resolves inside the container (default /output/chat_template.jinja,
+            # readable via the checkpoint bucket MOUNT). Covers the raw output dir, the
+            # HF dir root (final checkpoint), and each per-epoch epoch_hf_* subdir.
+            if [[ -n "${CHAT_TEMPLATE_PATH}" && -f "${CHAT_TEMPLATE_PATH}" ]]; then
+              echo "[$(date)] Copying chat template ${CHAT_TEMPLATE_PATH} into checkpoint dirs"
+              cp "${CHAT_TEMPLATE_PATH}" "${OUTPUT_MODEL_PATH}/chat_template.jinja" 2>/dev/null || true
+              [[ -d "${HF_OUTPUT_PATH}" ]] && cp "${CHAT_TEMPLATE_PATH}" "${HF_OUTPUT_PATH}/chat_template.jinja" 2>/dev/null || true
+              for d in "${HF_OUTPUT_PATH}"/epoch_hf_* "${HF_OUTPUT_PATH}"/step_hf_*; do
+                [[ -d "$d" ]] && cp "${CHAT_TEMPLATE_PATH}" "$d/chat_template.jinja" 2>/dev/null || true
+              done
+            else
+              echo "[$(date)] WARNING: chat template not found at '${CHAT_TEMPLATE_PATH}' — checkpoints keep the SFT default (tulu) template"
+            fi
     monitors:
       skypilot_monitor:
         type: skypilot_monitor

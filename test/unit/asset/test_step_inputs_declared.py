@@ -63,6 +63,15 @@ EXPECTED = {
     f"{_SKY}/distill/corpus-sources": (set(), set()),  # variable-length sources list
     f"{_SKY}/distill/gen-smoke": (set(), set()),  # variable-length rungs list
     f"{_SKY}/distill/probe": (set(), set()),  # diagnostic, literal paths
+    # SLURM (BlueVela SLURM) copies of the distill steps — same inputs as the LSF
+    # originals above; they differ only in subtype and (for gold) node topology.
+    f"{_SKY}/distill/tokenizer-align-slurm": (
+        {"teacher", "student"},
+        {"chat_template"},
+    ),
+    f"{_SKY}/distill/corpus-prep-slurm": ({"source_dataset", "tokenizer"}, set()),
+    f"{_SKY}/distill/gold-slurm": ({"student", "teacher", "corpus"}, {"vllm"}),
+    f"{_SKY}/distill/vllm-server-slurm": ({"model"}, set()),
     # Shipped in v0.3.x: optional during the deprecation window, with the old config
     # key as a fallback.
     f"{_LSF}/sage-eval": (set(), {"model"}),

@@ -490,6 +490,75 @@ With 8192 sequence length on A100 40GB GPUs, use:
 - `per_device_train_batch_size: 2` (batch_size=8 causes OOM at backward pass)
 - `gradient_accumulation_steps: 8` (effective batch = 2 * 8 * 8 GPUs = 128)
 
+## Attention Implementation: flash_attention_2 vs sdpa (L40S)
+
+The SFT step supports selecting the attention kernel via `attn_implementation` in
+`build.yaml` (`"flash_attention_2"`, `"sdpa"`, or `"eager"`). It overrides the
+`use_flash_attn` flag when set. To train with FlashAttention-2:
+
+```yaml
+steps:
+  - step_uri: space://steps/openinstruct-sft
+    config:
+      sft_config:
+        attn_implementation: "flash_attention_2"
+```
+
+### Measured speed comparison (8x L40S 48GB)
+
+Two runs of granite-4.0-350m with **identical** hyperparameters (per_device_batch=3,
+grad_accum=5, 8192 seq len, padfree, gradient_checkpointing, 41,818 steps/epoch,
+5,018,043 examples) differing only in the attention kernel. Steady-state over
+steps 201–41,818:
+
+| Metric | flash_attention_2 | sdpa | FA2 advantage |
+|--------|-------------------|------|---------------|
+| Median s/it | 3.640 | 3.990 | **8.8% faster** |
+| Median TPS (tokens/s) | 34,686 | 31,567 | **+9.9%** |
+| Epoch-1 wall clock (actual) | **42.29 h** | **46.47 h** | **~4.2 h saved (9.0%)** |
+
+FA2 is ~9% faster on this workload (≈4.2 h saved per epoch, ≈12–13 h over 3 epochs).
+The gain is modest — at 350M with `padfree` already eliminating pad-token attention,
+the attention block is a limited fraction of total compute — but FA2 is also slightly
+more stable (tighter p10–p90 spread: 3.53–3.76 s/it for FA2 vs 3.82–4.19 for sdpa).
+
+> **Note:** The attention kernel affects training speed only, **not** SALAD-Bench
+> quality. Both runs above scored ~34 on SALAD-Bench. Low SALAD-Bench scores on AWS
+> stem from a chat-template mismatch (the checkpoint's `chat_template.jinja` is written
+> by SFT as the default tulu template and must be replaced with the granite template
+> before evals — BlueVela/Vela eval watchers do this automatically via
+> `ensure_chat_template()`; the AWS/SkyPilot eval path does not). See the
+> gbansible troubleshooting notes for the full explanation.
+
+### Chat Template Injection into AWS Checkpoints
+
+The AWS SFT path now writes the granite chat template into every checkpoint so evals
+using `AutoTokenizer.from_pretrained(<ckpt>)` format prompts correctly (a standalone
+`chat_template.jinja` overrides the tulu template embedded in `tokenizer_config.json`
+on reload).
+
+**How to use it:** place the granite template at
+`s3://granite-build-checkpoints/chat_template.jinja` (already present). The SFT step's
+`chat_template_path` defaults to `/output/chat_template.jinja`, which resolves to that
+S3 object via the checkpoint bucket MOUNT — no extra config needed. To disable, set
+`sft_config.chat_template_path: ""`.
+
+**Where the copy happens:** the overridden `open_instruct/finetune.py` calls
+`copy_chat_template_to_checkpoint()` right after **each** `save_with_accelerate` —
+per-epoch (`epoch_hf_*`), per-step (`step_hf_*`), and the final checkpoint. This is
+done in-training (not as a post-run bash sweep) because the `skypilot_monitor` fires
+the eval-triggering `NEWARTIFACT` event on the per-epoch "Special tokens file saved"
+log line **mid-training**, so an end-of-run copy would lose the race for
+intermediate-epoch evals. A backstop `cp` in the step's `run:` also covers the final
+dirs.
+
+**Verified end-to-end** (A10G:1, FA2, 1 epoch, 10k subset): all three checkpoint dirs
+(`epoch_hf_0/`, the `-hf/` root, and the raw output dir) received the 6418-byte granite
+`chat_template.jinja`, and `AutoTokenizer.from_pretrained` reloads it as granite
+(`<|start_of_role|>`), not tulu. This run also confirmed **FA2 fits 8192 seq len on the
+22 GB A10G** (the default `eager` attention OOMs there — `eager` materializes the full
+attention matrix, so set `attn_implementation: "flash_attention_2"` on memory-tight GPUs).
+
 ## Docker SSH Fix (sage/bfcl images)
 
 The sage and bfcl Docker images set `ENV HOME=/workspace` in their Dockerfile, but
@@ -509,6 +578,48 @@ docker:
 This overrides `HOME` at `docker run` time so SkyPilot places SSH keys where sshd
 expects them. If you create custom steps using these Docker images, include this
 `docker` section in your launcher config.
+
+## File Mounts: Local Files vs Cloud Storage
+
+Steps declare a single `file_mounts` map in their launcher config. The **mounting
+capability is SkyPilot's**; granite.build provides the unified config key and
+dispatches each entry to the right SkyPilot API based on its **value type**:
+
+```yaml
+file_mounts:
+  # STRING value → local path rsync'd to the cluster (SkyPilot set_file_mounts)
+  /tmp/finetune_override.py: ../open-instruct-finetuning/open_instruct/finetune.py
+  # DICT value → cloud bucket mounted (SkyPilot set_storage_mounts / sky.Storage)
+  /data/datasets:
+    source: "s3://granite-build-datasets/tokenized/8192/data_filtered"
+    mode: COPY
+  /output:
+    source: "s3://granite-build-checkpoints"
+    mode: MOUNT
+```
+
+| Entry value | Routed to | SkyPilot mechanism | Effect |
+|---|---|---|---|
+| **string** (local path) | `task.set_file_mounts()` | rsync at provisioning | Local file/dir copied up to the remote path (one-time) |
+| **dict** (`source` + `mode`) | `task.set_storage_mounts()` (`sky.Storage`) | cloud bucket mount | Bucket mounted/copied; `MOUNT` writes propagate back to the bucket |
+
+**How it works** (`src/gbserver/environment/skypilot.py`, mirrored in
+`skypilot_managed.py`): granite.build reads `file_mounts` from the launcher config (or
+step `config`), iterates the map, and for each entry checks `isinstance(value, dict)`.
+Dict entries build a `sky.Storage(mode=..., source=...)`; string entries go straight
+into a plain file-mounts dict. For `MOUNT`-mode dicts it also splits a bucket sub-path
+(e.g. `s3://bucket/prefix` → `source=s3://bucket`, `_bucket_sub_path=prefix`) because
+SkyPilot's MOUNT mode requires a bucket-only source.
+
+**Why the openinstruct-sft step uses both:**
+- `/tmp/finetune_override.py` (string) — syncs the local `open-instruct-finetuning`
+  copy of `finetune.py` up to the cluster; the `setup:` phase then `cp`s it over
+  `/stage/open_instruct/finetune.py` in the image (this is how sdpa/attn and the
+  chat-template copy land in the running code).
+- `/output` (dict, `MOUNT`) — mounts `s3://granite-build-checkpoints`, so checkpoint
+  writes propagate to S3, and a file already in that bucket (e.g.
+  `chat_template.jinja`) is readable at `/output/chat_template.jinja` with a plain `cp`
+  (no AWS CLI needed).
 
 ## Post-Launch Tasks (Advanced)
 

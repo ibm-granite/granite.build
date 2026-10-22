@@ -116,11 +116,20 @@ environment_configs:
             # ── Run execution phase with --recompute-metrics ──
             cd /workspace/sage
 
+            # oe-eval writes aggregate metrics.json via atomic rename, which S3
+            # FUSE doesn't support. Override OUTPUT_BASE_PATH so the sage script
+            # constructs --output-dir on local disk, then copy everything to S3.
+            S3_OUTPUT_PATH=${OUTPUT_BASE_PATH}/${EXPERIMENT}
+            export OUTPUT_BASE_PATH=/tmp/sage-output
+            export OUTPUT_PATH=/tmp/sage-output/${EXPERIMENT}
+            mkdir -p "$OUTPUT_PATH"
+
+            # Copy predictions from S3 mount to local (needed for execution phase)
+            cp -r "${S3_OUTPUT_PATH}"/code "$OUTPUT_PATH"/code 2>/dev/null || true
+
             [[ -n "${HF_TOKEN}" ]] && sage set hf-token "${HF_TOKEN}"
-            export OUTPUT_PATH=${OUTPUT_BASE_PATH}/${EXPERIMENT}
             sage set setup-dir /tmp/setup-dir
-            sage set scripts-dir ${OUTPUT_PATH}/scripts-dir
-            # Use local logs-dir (tee writes break on S3 FUSE mounts entirely)
+            sage set scripts-dir /tmp/sage-scripts-dir
             sage set logs-dir /tmp/sage-logs-dir
 
             export EXPERIMENT NUM_GPUS BATCH_SIZE MAX_LENGTH MODEL_PATH OUTPUT_BASE_PATH OE_EVAL_BCB_API_URL
@@ -128,7 +137,8 @@ environment_configs:
             echo "[$(date)] Running BCB execution phase"
             echo "[$(date)] Model: ${MODEL_PATH}"
             echo "[$(date)] BCB API: ${OE_EVAL_BCB_API_URL}"
-            echo "[$(date)] Output: ${OUTPUT_PATH}"
+            echo "[$(date)] Output (local): ${OUTPUT_PATH}"
+            echo "[$(date)] Output (S3):    ${S3_OUTPUT_PATH}"
 
             # Verify predictions exist from generate phase
             PRED_FILE=$(find "$OUTPUT_PATH" -name "*predictions.jsonl" -print -quit)
@@ -142,18 +152,54 @@ environment_configs:
             bash /workspace/sage/sage/cluster/gb/scripts/${GB_SCRIPT} \
               2>&1 | tee /tmp/${EVAL_NAME}-execute.log
 
-            echo "$(date)" > ${OUTPUT_PATH}/${EVAL_NAME}.done
+            # oe-eval doesn't write aggregate files for single-task cached-prediction
+            # runs. Synthesize them from per-task files for the sage exporter.
+            echo "[$(date)] Creating aggregate metrics files..."
+            for f in "${OUTPUT_PATH}"/code/olmes-instruct/*/task-*-metrics.json; do
+              if [[ -f "$f" ]]; then
+                TASK_DIR=$(dirname "$f")
+                # metrics-all.jsonl: one line per task (same as per-task metrics)
+                cp "$f" "${TASK_DIR}/metrics-all.jsonl"
+                # metrics.json: aggregate format with all_primary_scores + tasks array
+                python3 <<PYEOF
+            import json
+            with open('$f') as fh:
+                t = json.load(fh)
+            alias = t.get('task_config', {}).get('metadata', {}).get('alias', t.get('task_name', ''))
+            score = t.get('metrics', {}).get('primary_score', 0)
+            agg = {
+                'all_primary_scores': [f'{alias}: {score}'],
+                'tasks': [{
+                    'alias': alias,
+                    'metrics': t.get('metrics', {}),
+                    'num_instances': t.get('num_instances', 0),
+                    'processing_time': t.get('processing_time', 0),
+                    'task_config': t.get('task_config', {})
+                }],
+                'model_config': t.get('model_config', {})
+            }
+            with open('${TASK_DIR}/metrics.json', 'w') as out:
+                json.dump(agg, out, indent=2)
+            PYEOF
+                echo "[$(date)] Created ${TASK_DIR}/metrics.json and metrics-all.jsonl"
+              fi
+            done
+
+            # Copy results to S3 mount
+            cp -r "${OUTPUT_PATH}/"* "${S3_OUTPUT_PATH}/"
+            cp /tmp/${EVAL_NAME}-execute.log ${S3_OUTPUT_PATH}/${EVAL_NAME}.log
+            echo "$(date)" > ${S3_OUTPUT_PATH}/${EVAL_NAME}.done
             echo "[$(date)] Execution phase complete: ${EVAL_NAME}"
 
-            # Emit artifact for gbserver
-            RESULT_FILE=$(find "$OUTPUT_PATH" -type f -name '*-metrics.json' -print -quit 2>/dev/null)
+            # Emit artifact for gbserver (use S3 path so gbserver can access it)
+            RESULT_FILE=$(find "$S3_OUTPUT_PATH" -type f -name '*-metrics.json' -print -quit 2>/dev/null)
             if [ -z "$RESULT_FILE" ]; then
-              RESULT_FILE=$(find "$OUTPUT_PATH" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' \) -print -quit 2>/dev/null || true)
+              RESULT_FILE=$(find "$S3_OUTPUT_PATH" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' \) -print -quit 2>/dev/null || true)
             fi
             if [ -n "$RESULT_FILE" ]; then
               echo "GB_ARTIFACT_ID:sage_eval_results GB_ARTIFACT_PATH:${RESULT_FILE}"
             else
-              echo "WARNING: No results file found in $OUTPUT_PATH"
+              echo "WARNING: No results file found in $S3_OUTPUT_PATH"
             fi
           post_launch_task:
             run: |

@@ -65,7 +65,7 @@ environment_configs:
             SKYPILOT_DOCKER_USERNAME: "AWS"
             SKYPILOT_DOCKER_SERVER: "022767362696.dkr.ecr.us-east-2.amazonaws.com"
           run: |
-            set -e
+            set -eo pipefail
             echo "=== BFCLv3 Evaluation on $(hostname) ==="
             nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
@@ -74,7 +74,6 @@ environment_configs:
 
             export MODEL_PATH="{{ config.bfcl_config.model_path }}"
             export MODEL_ID="{{ config.bfcl_config.model_id }}"
-            export OUTPUT_DIR="{{ config.bfcl_config.output_dir }}/{{ config.bfcl_config.experiment }}/{{ config.bfcl_config.eval_name }}"
             export EXP_NAME="{{ config.bfcl_config.experiment }}"
             export TEST_CATEGORIES="{{ config.bfcl_config.test_categories }}"
             export NUM_GPUS_GENERATE={{ config.bfcl_config.num_gpus_generate }}
@@ -86,7 +85,12 @@ environment_configs:
             export NCCL_IGNORE_DISABLED_P2P=1
             export PYTHONUNBUFFERED=1
 
-            mkdir -p "$OUTPUT_DIR"
+            # BFCL writes result files using append mode (open(file, "a")), which
+            # S3 FUSE mounts don't support (OSError: [Errno 95] Operation not supported).
+            # Write to local NVMe first, then copy to S3 mount after completion.
+            S3_OUTPUT="{{ config.bfcl_config.output_dir }}/{{ config.bfcl_config.experiment }}/{{ config.bfcl_config.eval_name }}"
+            export OUTPUT_DIR="/tmp/bfcl-output"
+            mkdir -p "$OUTPUT_DIR" "$S3_OUTPUT"
 
             echo "=== Starting BFCL evaluation ==="
             echo "  Model:      $MODEL_PATH"
@@ -95,12 +99,16 @@ environment_configs:
             echo "  Categories: $TEST_CATEGORIES"
             echo "  GPUs gen:   $NUM_GPUS_GENERATE"
             echo "  GPUs eval:  $NUM_GPUS_EVALUATE"
-            echo "  Output:     $OUTPUT_DIR"
+            echo "  Output:     $OUTPUT_DIR (local), $S3_OUTPUT (S3)"
 
             bash /workspace/scripts/run-bfcl.sh 2>&1 | tee "${OUTPUT_DIR}/bfcl.log"
 
+            # Copy results from local disk to S3 mount
+            echo "[$(date)] Copying results to S3 mount..."
+            cp -r "${OUTPUT_DIR}/"* "${S3_OUTPUT}/"
+
             # Write completion marker (used by run_all_evals.sh to detect preempted vs completed)
-            echo "$(date)" > "${OUTPUT_DIR}/bfcl.done"
+            echo "$(date)" > "${S3_OUTPUT}/bfcl.done"
 
             # Emit artifact for gbserver. The BFCL harness produces
             # multiple JSON files (per category and a summary). Pick the
@@ -117,13 +125,13 @@ environment_configs:
             # candidates list to a temp file to avoid that pair of
             # characters appearing in this template's source.
             CANDIDATES_FILE="/tmp/.bfcl-candidates.list"
-            find "$OUTPUT_DIR" -type f \( -name '*score*.json' -o -name '*summary*.json' -o -name 'BFCL_*.json' \) -printf '%T@ %p\n' \
+            find "$S3_OUTPUT" -type f \( -name '*score*.json' -o -name '*summary*.json' -o -name 'BFCL_*.json' \) -printf '%T@ %p\n' \
               | sort -nr | awk '{print $2}' > "$CANDIDATES_FILE"
             CANDIDATE_COUNT=$(wc -l < "$CANDIDATES_FILE")
             if [ "$CANDIDATE_COUNT" -eq 0 ]; then
-              echo "ERROR: No BFCL result file found in $OUTPUT_DIR"
-              echo "Contents of $OUTPUT_DIR:"
-              find "$OUTPUT_DIR" -maxdepth 2 -type f | head -20
+              echo "ERROR: No BFCL result file found in $S3_OUTPUT"
+              echo "Contents of $S3_OUTPUT:"
+              find "$S3_OUTPUT" -maxdepth 2 -type f | head -20
               exit 1
             fi
             if [ "$CANDIDATE_COUNT" -gt 1 ]; then

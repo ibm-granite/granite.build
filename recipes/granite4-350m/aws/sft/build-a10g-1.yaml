@@ -40,3 +40,14 @@ granite.build:
               #dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered"
               dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered_10k"
               checkpoint_s3_uri: "s3://granite-build-checkpoints"
+              # Smoke test: 1 epoch is enough to produce epoch_hf_0 + the final
+              # checkpoint and confirm chat_template.jinja lands in both.
+              num_epochs: "3"
+              # Default attn is "eager" (both use_flash_attn=false and
+              # attn_implementation="" in step.yaml) which materializes the full
+              # attention matrix and OOMs on A10G 22GB. FA2 never materializes it.
+              # Use PyTorch SDPA on L40S — FA2 kernel differences on sm_89 vs sm_90
+              #attn_implementation: "sdpa"
+              attn_implementation: "flash_attention_2"
+              # chat_template_path defaults to /output/chat_template.jinja
+              # (= s3://granite-build-checkpoints/chat_template.jinja via the MOUNT)

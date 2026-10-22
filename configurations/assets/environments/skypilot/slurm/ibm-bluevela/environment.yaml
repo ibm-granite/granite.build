@@ -1,0 +1,151 @@
+name: sky-slurm-bluevela
+type: Skypilot
+subtype: slurm
+config:
+  default_cloud: slurm
+  # The SLURM cluster SkyPilot provisions on (infra=slurm/bluevela/<partition>).
+  # Must match the Host alias in cluster_ssh_configs and the cluster_configs key
+  # below.
+  cluster: bluevela
+  # SkyPilot's `zone` is the SLURM partition for this cloud. gpu-mid is the
+  # H100 partition on BlueVela; recipes exposing a QUEUE/partition param plumb it
+  # through `zone`. Override precedence: docs/environments/skypilot-slurm.md#cluster--zone.
+  zone: gpu-mid
+  # Autostop is omitted: gbserver forces autostop=None for the slurm cloud (SLURM
+  # does not support cluster autostop), so any value here has no effect. Per-step
+  # cleanup_skypilot() runs `sky down` after each step to release the allocation.
+
+  # Env-level shared filesystem root for per-run build workdirs. gbserver derives
+  # ${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/ from this (see
+  # skypilot.py:setup_skypilot), exports it as GB_BUILD_WORKDIR, and makes it the
+  # CWD of both the setup and run scripts. On BlueVela this must be on /proj (the
+  # shared network FS). UNLIKE the LSF backend, the SLURM backend does NOT
+  # identity-mount all of /proj into the enroot container — it bind-mounts only
+  # home, ccache, and the SkyPilot `workdir`. So shared_workdir must fall UNDER
+  # the workdir set in cloud_config below, or $GB_BUILD_WORKDIR will not exist
+  # inside a containerized step. See docs/environments/skypilot-slurm.md#workdir-containerized-steps.
+  shared_workdir: /proj/granite-build/g4os/gbtest/builds
+
+  # Inline SLURM cluster SSH reachability. gbserver materializes this into
+  # ~/.slurm/config at launch so SkyPilot's SLURM provisioner can reach the login
+  # node and submit jobs. Each field is secret-name-or-literal (no matching
+  # secret -> literal). If a ~/.slurm/config already exists on the host with a
+  # bluevela entry, remove it first — gbserver refuses to overwrite foreign
+  # entries (refuse-on-conflict). Testing a changed key? Set GBTEST_SKY_SSH_RESET=true
+  # (env) — SkyPilot reuses a persisted SSH ControlMaster socket keyed on
+  # (host, port, user), not the key, which can mask an edited config for the
+  # ControlPersist window.
+  #
+  # MULTIPLE LOGIN NODES: `HostName` may be a single value OR (as below) a list of
+  # interchangeable candidate login hostnames under one `Host` block. gbserver picks
+  # one at random at launch (spreading load); all candidates share this block's
+  # User/IdentityFile/etc. The candidates are also a failover pool: on a transient
+  # SSH control-plane error during provisioning gbserver rewrites ~/.slurm/config to
+  # the next candidate before retrying the launch.
+  cluster_ssh_configs:
+    slurm:
+      - Host: bluevela
+        # Must agree field-for-field with any pre-existing ~/.slurm/config
+        # `bluevela` block, or gbserver refuses to materialize it
+        # (SkypilotConfigCollisionError). BlueVela now exposes three interchangeable
+        # login nodes; listing all of them makes gbserver pick one at random per
+        # launch (load spreading) and fail over to the next on a transient SSH
+        # control-plane error. If a pre-existing ~/.slurm/config `bluevela` block
+        # still pins a single host, either delete it so this list can materialize or
+        # make it match this list.
+        HostName:
+          - login0.bluevela.rmf.ibm.com
+          - login1.bluevela.rmf.ibm.com
+          - login2.bluevela.rmf.ibm.com
+        User: granitebuild
+        # Set GBTEST_SKY_SSH_RESET=true (env) when testing modified credentials.
+        IdentityFile: ~/granite_build_id_ed25519
+        #IdentityKey: BV_SSH_PRIVATE_KEY
+
+  # Env-wide #SBATCH defaults, forwarded verbatim to sbatch. Keys are directive
+  # names without the `--`; a step's config.launcher_config.sbatch_options
+  # overrides these per key. SkyPilot-managed keys (gres, mem, cpus-per-task,
+  # partition, nodes, job-name, output, error) are silently dropped — use
+  # resources.accelerators / resources.memory / the infra string / zone instead.
+  # Only time/qos/account/constraint/nodelist/exclude pass through unchanged. See
+  # docs/environments/skypilot-slurm.md#sbatch_options--slurm-sbatch-directives.
+  sbatch_options:
+    # A ceiling, not a reservation; must be <= the partition MaxTime. SLURM format
+    # (bare minutes, "4:00:00", or "7-00:00:00"). Set to the gpu-mid MaxTime (7 days)
+    # for the real (non-smoke) epoch run. NB: do NOT delete this key to "get the
+    # default" — an absent --time makes SLURM apply the partition DefaultTime (1 day),
+    # not MaxTime, so a long run would be killed at 24h. 7-00:00:00 is the explicit max.
+    time: "7-00:00:00"
+    # EXCLUDE BROKEN HOSTS. "CUDA error: illegal memory access" at the first ZeRO-3
+    # all-gather — reproduced across our jobs, independent of GDR; hardware, not config.
+    # SLURM does NOT drain these (sinfo shows them healthy), so they must be excluded by
+    # name. p1-r18-n1 hit this in OUR colocated on-policy runs 793d5aab + 19c70de8
+    # (2026-10-17). DROP a host once it is repaired. See
+    # gbansible/docs/skypilot_kd_bluevela_slurm.md#node-exclude--gotchas.
+    #
+    # (p1-r10-n4 was carried over from that doc's note about the DIRECT SkyPilot runs,
+    # but we never reproduced a failure on it ourselves and it is in active use by others
+    # — removed to avoid cargo-culting a stale exclusion. Re-add if it actually fails.)
+    #
+    # p1-r10-n1: `nvidia-container-cli: initialization error: driver rpc error: timed
+    # out` at enroot/pyxis container start (rank 0), so the container-init handshake
+    # never completed and the 2-node trainer wedged at 0% GPU until scancel. Hit on the
+    # 1b distill-gold-trainonly build c3698cfd (2026-10-20). Likely transient driver
+    # flake (the GPUs answered nvidia-smi fine afterwards) — DROP once confirmed healthy.
+    exclude: p1-r18-n1,p1-r10-n1
+    # Target H200 nodes. When H100 capacity is full, sbatch on gpu-mid rejects an
+    # H100 job ("Not enough H100 nodes are free ... resubmit with
+    # --constraint=h200"); H200 nodes are free (billed at 1.4x the H100 rate). The
+    # recipe's GPU accelerators must agree (H200:8), or --gres would ask for H100
+    # on an H200-constrained node. Drop this (or set h100) once H100 capacity frees
+    # up.
+    constraint: h200
+    # account/qos are cluster-policy specific; set per-recipe or here if needed.
+    # account: grp_granite_dot_build
+    # qos: high
+
+  # SLURM behavioral config. gbserver deep-merges this into the API server's
+  # ~/.sky/config.yaml at launch (see merge_cloud_config): the env's values win and
+  # unrelated keys are preserved.
+  cloud_config:
+    slurm:
+      cluster_configs:
+        bluevela:                                    # must match config.cluster
+          # The one host tree bind-mounted into the enroot/Pyxis container. It MUST
+          # be an ANCESTOR of (or equal to) shared_workdir above, so the derived
+          # $GB_BUILD_WORKDIR falls inside the workdir:workdir bind mount and a
+          # containerized step's relative outputs land on the real shared FS (and
+          # are visible to a later bare hfpush). See
+          # docs/environments/skypilot-slurm.md#workdir-containerized-steps.
+          workdir: /proj/granite-build/g4os
+          # SkyPilot relocates its shared runtime (venv + skylet state) here; built
+          # once and reused for fast iterative relaunch.
+          tmpdir: /proj/granite-build/g4os/sky-runtime
+
+assetstores:
+  - store_uri: space://assetstores/hf
+    pull:
+      - mode: default
+        config:
+          # On /proj (shared across the login and compute nodes), not /tmp: a
+          # compute node's /tmp is per-node, so an hf:// input pulled there would be
+          # invisible to the container and to later steps.
+          cache_path: /proj/granite-build/g4os/gbtest/hfcache
+    push:
+      - mode: default
+        config: {}
+  # s3:// / cos:// — lets a recipe source a teacher/student model, dataset or chat
+  # template from S3-compatible object storage instead of only /proj or the Hub,
+  # via cosrclone. Credentials are the store's own defaults
+  # (COS_ACCESS_KEY_ID / COS_SECRET_ACCESS_KEY) resolved from the space's secret
+  # manager.
+  - store_uri: space://assetstores/s3/
+    pull:
+      - mode: default
+        config: {}
+    push:
+      - mode: default
+        config: {}
+  # NOTE: mem:// (in-memory) store is auto-registered for every environment by the
+  # base class (Environment._register_default_memstore), so no per-environment
+  # entry is needed.

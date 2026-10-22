@@ -36,10 +36,10 @@ granite.build:
           config:
             launcher_config:
               resources:
-                #accelerators: "L40S:8"
+                accelerators: "L40S:8"
                 #accelerators: "L40S:4"
                 #accelerators: "A10G:4"
-                accelerators: "A100:8"
+                #accelerators: "A100:8"
               docker:
                 # Override host AMI for A100 (p4d) instances. SkyPilot's default
                 # AMI has driver 535 which is broken on kernel 6.8 (cuInit error 802).
@@ -55,13 +55,25 @@ granite.build:
               dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered"
               #dataset_s3_uri: "s3://granite-build-datasets/tokenized/8192/data_filtered_10k"
               checkpoint_s3_uri: "s3://granite-build-checkpoints"
+              # Granite chat template copied into every checkpoint so evals format
+              # prompts correctly (overrides the tulu default SFT bakes in). Resolves
+              # via the checkpoint bucket MOUNT: /output == s3://granite-build-checkpoints,
+              # so this is s3://granite-build-checkpoints/chat_template.jinja. Set to ""
+              # to disable. See docs/granite4_nano.md "Chat Template Injection".
+              chat_template_path: "/output/chat_template.jinja"
               num_epochs: "3"
+              # A10G 24GB
               #per_device_train_batch_size: "1"
               #gradient_accumulation_steps: "16"
+              # A100 40GB
               #per_device_train_batch_size: "2"
               #gradient_accumulation_steps: "8"
-              per_device_train_batch_size: "2"
-              gradient_accumulation_steps: "8"
+              # L40S 48GB
+              per_device_train_batch_size: "3"
+              gradient_accumulation_steps: "5"
+              # Use PyTorch SDPA on L40S — FA2 kernel differences on sm_89 vs sm_90
+              #attn_implementation: "sdpa"
+              attn_implementation: "flash_attention_2"
 
     multilingual-evals:
       environment_uri: space://environments/skypilot/aws

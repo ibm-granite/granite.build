@@ -632,6 +632,7 @@ class TestSkypilotRetry:
 
         async def fake_cleanup(launch_id, **_):
             slurm_env._cluster_names.pop(launch_id, None)
+            slurm_env._provisioned.discard(launch_id)
             slurm_env._relaunch_attempts.pop(launch_id, None)
 
         async def fake_launch(launch_id, **_):
@@ -1008,6 +1009,7 @@ class TestMonitorRetryHandoff:
         async def fake_launch(launch_id, **_):
             await asyncio.sleep(0.05)  # slow: completes after monitor starts waiting
             slurm_env._cluster_names[launch_id] = "gb-new"
+            slurm_env._provisioned.add(launch_id)  # provisioning succeeded
 
         async def fake_poll(launch_id, **_):
             poll_calls.append(launch_id)
@@ -1192,11 +1194,13 @@ class TestMonitorTerminalNoRetry:
 
         async def fake_cleanup(launch_id, **_):
             slurm_env._cluster_names.pop(launch_id, None)
+            slurm_env._provisioned.discard(launch_id)
             slurm_env._relaunch_attempts.pop(launch_id, None)
 
         async def fake_launch(launch_id, **_):
             launch_calls.append(launch_id)
             slurm_env._cluster_names[launch_id] = f"gb-{launch_id}-r{len(launch_calls)}"
+            slurm_env._provisioned.add(launch_id)  # provisioning succeeded
 
         @asynccontextmanager
         async def handler_cm(*_a, **_k):

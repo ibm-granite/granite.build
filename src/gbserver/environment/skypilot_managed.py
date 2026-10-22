@@ -216,6 +216,13 @@ class Skypilot_managed(Environment):
                 launch_id=launch_id,
                 job_name=job_name,
             )
+            # Refresh ECR docker password if needed (tokens expire after 12h).
+            # get_launch_env_vars does not touch SKYPILOT_DOCKER_PASSWORD, so this
+            # must run after it to refresh any ECR token carried in the launcher
+            # envs before the sky.Task is built.
+            from gbserver.environment.skypilot import _refresh_ecr_docker_password
+
+            _refresh_ecr_docker_password(env_vars)
 
             # num_nodes resolution is shared with the unmanaged launcher: it is
             # a sky.Task field, so a num_nodes under resources: is dropped

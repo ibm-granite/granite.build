@@ -1,0 +1,128 @@
+# distill-gold-trainonly (SLURM) — train-gold only, reusing a prior build's align +
+# corpus outputs. See build.yaml's header. Override any value with --param KEY=VALUE.
+
+# ─── Pre-produced inputs (the whole point of this recipe) ────────────────
+# The align output (retagged student tokenizer) and corpus output (prepped
+# train.jsonl) from an EARLIER distill-gold build whose align+corpus SUCCEEDED.
+# gold.py reads the tokenizer the corpus was prepped against, so these two MUST
+# come from the same build. Defaults point at build cc33e2e2 (verified on disk).
+RETAGGED_STUDENT_URI: "env:///proj/granite-build/g4os/gbtest/distill/distill-gold-slurm/cc33e2e2-3c77-4018-9880-45071c66b571/align/retagged_student"
+CORPUS_URI: "env:///proj/granite-build/g4os/gbtest/distill/distill-gold-slurm/cc33e2e2-3c77-4018-9880-45071c66b571/corpus/train.jsonl"
+# The teacher is a pre-staged overlay, unchanged from the main recipe.
+TEACHER_MODEL_URI: "env:///proj/granite-build/g4os/kd-sandbox/teacher_overlays/granite-4.1-30b_r260401a"
+
+# ─── Run identification ────────────────────────────────────────────────
+RUN_NAME: "distill-gold-trainonly"
+
+# ─── On-policy switch ──────────────────────────────────────────────────
+# false => train-gold only (1 target). true adds vllm-server + teardown; set LMBDA>0
+# and LMBDA_SCHEDULE=linear for a ramped on-policy run (see build.yaml header).
+ON_POLICY: false
+
+# ─── Trainer code and image ────────────────────────────────────────────
+DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
+# Trainer source clone (gold-slurm's code_config). Overrides the step.yaml default pin
+# (laminair @ 39b2790) so this recipe can run a fork carrying the pre-tokenized-dataset
+# patch (gold.py load_from_disk a save_to_disk dir + trainer input_ids short-circuit),
+# needed to train on an Arrow pretok dir / sidestep the pd.read_json "Value is too big!"
+# overflow. Point CODE_REPO/CODE_REF at a fork+SHA that has those commits; leave at the
+# step default by matching the step.yaml values.
+CODE_REPO: "https://github.com/thinkahead/gb-steps-distillation.git"
+CODE_REF: "f049b5b4db44635149f278ef5f244758391b8d39"
+# PRE-STAGED enroot squashfs on /proj — pyxis mounts it directly, skipping the
+# ~15-20 min per-job registry pull + mksquashfs. Registry alternative:
+#   docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv
+IMAGE_ID: "docker:/proj/granite-build/g4os/enroot/us.icr.io-cil15-shared-registry-kd-sandbox-distill-0.1.0-uv.sqsh"
+
+# ─── Training hyperparameters ──────────────────────────────────────────
+MAX_STEPS: 30
+NUM_TRAIN_EPOCHS: 1.0
+LEARNING_RATE: "1.0e-05"
+MIN_LR: "1.0e-06"
+WARMUP_RATIO: 0.05
+LR_SCHEDULER_TYPE: "cosine_with_min_lr"
+PER_DEVICE_TRAIN_BATCH_SIZE: 2
+GRADIENT_ACCUMULATION_STEPS: 4
+MAX_LENGTH: 4096
+MAX_COMPLETION_LENGTH: 3584
+GRADIENT_CHECKPOINTING: true
+SAVE_STRATEGY: "steps"
+SAVE_STEPS: 20
+SAVE_TOTAL_LIMIT: 20
+LOGGING_STEPS: 5
+DATASET_NUM_PROC: 64
+
+# ─── GOLD / distillation loss ──────────────────────────────────────────
+TEMPERATURE: 1.0
+# 0.0 = off-policy. Set > 0.0 with --param ON_POLICY=true for an on-policy run.
+LMBDA: 0.0
+# "constant" (default) holds lmbda at LMBDA; "linear" ramps from LMBDA_INIT up to
+# LMBDA (needs ON_POLICY=true, vllm_num_servers>0). Ramp run:
+#   --param LMBDA_SCHEDULE=linear --param LMBDA=1.0 --param ON_POLICY=true
+LMBDA_SCHEDULE: "constant"
+LMBDA_INIT: 0.0
+BETA: 0.0
+USE_LIGER_FUSED_JSD: false
+RESPONSE_TEMPLATE: '<|start_of_role|>assistant<|end_of_role|>'
+# Pre-flight check that the delivered trainer's dataclass accepts the emitted
+# gold_config keys. FALSE here because on-policy emits lmbda_schedule/lmbda_init,
+# and in the kd-sandbox image the verify import chains vllm -> vllm_ascend (a
+# Huawei NPU backend not installed) -> ImportError, which aborts the step (exit 2)
+# before the trainer even starts. The keys ARE accepted by the pinned trainer; the
+# verify just can't import to confirm it in this image. Set true only on an image
+# where `import gb_steps_post_training` succeeds.
+VERIFY_TRAINER_ACCEPTS_KEYS: false
+
+# ─── On-policy (inert unless ON_POLICY=true) ───────────────────────────
+VLLM_NUM_SERVERS: 1
+VLLM_MODE: "server"
+VLLM_SYNC_FREQUENCY: 1
+VLLM_PORT: 8001
+# RIGHT-SIZED to the 350m student. The server runs data_parallel across these GPUs
+# (one full model copy each). 8× H200 for a 350m model is massive overkill: the
+# request batch splits 8 ways so each engine is lightly fed and under-imbalanced DP
+# per-GPU util sat at ~15-80% (≈50% avg). 2 GPUs concentrate the stream onto
+# better-fed engines (higher util) and free 6 H200s, with no throughput loss at smoke
+# scale. Raise only if t_gen is the wall-clock gate AND the trainer's generation batch
+# is large enough to fill more engines. 1 also works (proven); 2 keeps a little DP.
+VLLM_NUM_GPUS_PER_NODE: 2
+VLLM_ACCELERATORS: "H200:2"
+VLLM_HEALTH_TIMEOUT_SECONDS: 1800
+VLLM_MAX_LIFETIME_SECONDS: 14400
+TOP_P: 0.95
+USE_SAMPLED_OPD_LOSS: false
+LAST_MESSAGE_ONLY: false
+CLIP_ALPHA: 0.1
+OPD_IMPORTANCE_SAMPLING: false
+
+# ─── NCCL / distributed diagnostics ─────────────────────────────────────
+NCCL_DEBUG: ""
+NCCL_DEBUG_SUBSYS: "INIT,NET"
+NCCL_TIMEOUT_MS: 3600000
+NCCL_ENABLE_MONITORING: true
+# 1 forces NCCL onto TCP sockets (no IB verbs). Diagnostic for the cross-allocation
+# weight-sync hang on the external-server (ON_POLICY=true) path. Default 0 = IB on.
+NCCL_IB_DISABLE: 0
+
+# ─── Topology and resources ─────────────────────────────────────────────
+NUM_NODES: 2
+NUM_GPUS_PER_NODE: 8
+ACCELERATORS: "H200:8"
+# CPUs/node for the GPU targets. 64 of 96 so the task spans both sockets of the
+# gpu:h200:8(S:0-1) nodes and sees all 8 GPUs (see the main recipe's note).
+GPU_CPUS: 64
+MEMORY: 256
+CLUSTER: "bluevela"
+ENVIRONMENT_URI: "space://environments/skypilot/slurm/ibm-bluevela"
+# Trainer partition.
+QUEUE: "gpu-mid"
+# vLLM server partition (on-policy only) + its required QOS. gpu-high denies normal.
+VLLM_QUEUE: "gpu-high"
+VLLM_QOS: "grp_granite_dot_build_high_1n"
+
+# ─── Retries ─────────────────────────────────────────────────────────────
+MAX_RETRIES: 1
+
+# ─── Monitoring ──────────────────────────────────────────────────────────
+POLL_INTERVAL_SECONDS: 300
+LOG_RETRIEVAL_INTERVAL_SECONDS: 300

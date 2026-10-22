@@ -120,41 +120,23 @@ environment_configs:
                 /workspace/bigcode-evaluation-harness/bigcode_eval/tasks/multiple.py
             fi
 
-            # ── Run all 7 CODE evals sequentially ──
-            # evalplus evals use max_length=4096, multiple_* evals use max_length=512
+            # ── Run CODE evals ──
+            # evalplus evals run sequentially (each needs GPU for generation)
+            # multiple_all runs all 5 languages in one vLLM pass + parallel metrics
             declare -a EVAL_NAMES=(
               "code-evalplus-humaneval"
               "code-evalplus-mbpp"
-              "code-multiple-sh"
-              "code-multiple-cpp"
-              "code-multiple-java"
-              "code-multiple-js"
-              "code-multiple-rs"
+              "code-multiple-all"
             )
             declare -A EVAL_SCRIPTS=(
               ["code-evalplus-humaneval"]="code_evalplus_humaneval_slim.sh"
               ["code-evalplus-mbpp"]="code_evalplus_mbpp_slim.sh"
-              ["code-multiple-sh"]="code_multiple_slim.sh"
-              ["code-multiple-cpp"]="code_multiple_slim.sh"
-              ["code-multiple-java"]="code_multiple_slim.sh"
-              ["code-multiple-js"]="code_multiple_slim.sh"
-              ["code-multiple-rs"]="code_multiple_slim.sh"
-            )
-            declare -A EVAL_LANGS=(
-              ["code-multiple-sh"]="sh"
-              ["code-multiple-cpp"]="cpp"
-              ["code-multiple-java"]="java"
-              ["code-multiple-js"]="js"
-              ["code-multiple-rs"]="rs"
+              ["code-multiple-all"]="code_multiple_all_slim.sh"
             )
             declare -A EVAL_MAXLEN=(
               ["code-evalplus-humaneval"]="4096"
               ["code-evalplus-mbpp"]="4096"
-              ["code-multiple-sh"]="512"
-              ["code-multiple-cpp"]="512"
-              ["code-multiple-java"]="512"
-              ["code-multiple-js"]="512"
-              ["code-multiple-rs"]="512"
+              ["code-multiple-all"]="512"
             )
 
             FAIL_COUNT=0
@@ -165,19 +147,11 @@ environment_configs:
               export EVAL_CATEGORY="code"
               export MAX_LENGTH="${EVAL_MAXLEN[$eval_name]}"
 
-              # Set MULTIPLE_LANG for multiple_* evals
-              if [[ -n "${EVAL_LANGS[$eval_name]}" ]]; then
-                export MULTIPLE_LANG="${EVAL_LANGS[$eval_name]}"
-              else
-                unset MULTIPLE_LANG
-              fi
-
               echo ""
               echo "============================================================"
               echo "[$(date)] START: ${eval_name} (${gb_script})"
               echo "[$(date)] Model: ${MODEL_PATH}"
               echo "[$(date)] Output: ${OUTPUT_PATH}"
-              [[ -n "${MULTIPLE_LANG:-}" ]] && echo "[$(date)] Language: ${MULTIPLE_LANG}"
               echo "============================================================"
 
               if bash /workspace/sage/sage/cluster/gb/scripts/${gb_script} \
@@ -194,7 +168,7 @@ environment_configs:
             echo ""
             echo "============================================================"
             echo "[$(date)] All CODE evals complete."
-            echo "  Total: 7, Failed: ${FAIL_COUNT}"
+            echo "  Total: 3 (evalplus-humaneval, evalplus-mbpp, multiple-all[sh,cpp,java,js,rs]), Failed: ${FAIL_COUNT}"
             if [[ ${FAIL_COUNT} -gt 0 ]]; then
               echo "  Failed evals:${FAILED_NAMES}"
               exit 1
