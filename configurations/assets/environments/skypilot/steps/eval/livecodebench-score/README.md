@@ -1,6 +1,6 @@
 # eval/livecodebench-score (SkyPilot)
 
-Scores [LiveCodeBench](https://github.com/LiveCodeBench/LiveCodeBench) code
+Scores [LiveCodeBench](https://livecodebench.github.io/) ([code](https://github.com/LiveCodeBench/LiveCodeBench)) code
 generation completions, as written by `eval/livecodebench-generate`, and registers
 the result files as the step's `results` artifact. CPU only.
 
