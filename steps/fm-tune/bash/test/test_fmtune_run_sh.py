@@ -207,3 +207,49 @@ def test_no_echoed_line_starts_with_the_marker_prefix_on_failure(env):
     env["STUB_EXIT"] = "1"
     proc = _run(env)
     assert not any(ln.startswith("GB_ARTIFACT_") for ln in proc.stdout.splitlines())
+
+
+def _git(*args, cwd):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def test_git_source_is_cloned_and_cached(env, tmp_path):
+    """source.repo clones once at ref and runs <clone>/<subdir>/main.py."""
+    if shutil.which("git") is None:  # pragma: no cover
+        pytest.skip("git not available")
+    repo = tmp_path / "repo"
+    shutil.copytree(env["FMTUNE_SOURCE_PATH"], repo / "sub" / "fm-tune")
+    _git("init", "-q", "-b", "rel", cwd=repo)
+    _git("add", ".", cwd=repo)
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x", cwd=repo)
+    env.update(
+        FMTUNE_SOURCE_PATH="",
+        FMTUNE_SOURCE_REPO=f"file://{repo}",
+        FMTUNE_SOURCE_REF="rel",
+        FMTUNE_SOURCE_SUBDIR="sub/fm-tune",
+    )
+    assert _run(env).returncode == 0
+    assert _record(env)["cwd"].endswith("/sub/fm-tune")
+    clones = list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("src-*"))
+    assert len(clones) == 1
+    assert _run(env).returncode == 0  # second run reuses the clone
+    assert list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("src-*")) == clones
+
+
+@pytest.mark.slow
+def test_venv_is_built_once_and_reused(env):
+    """Without FMTUNE_SKIP_INSTALL a venv is built from pyproject and then reused."""
+    root = pathlib.Path(env["FMTUNE_SOURCE_PATH"])
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='autotune'\nversion='0'\n[project.optional-dependencies]\ncore=[]\n"
+        "[build-system]\nrequires=['setuptools']\nbuild-backend='setuptools.build_meta'\n"
+        "[tool.setuptools]\npy-modules=[]\n"
+    )
+    env.pop("FMTUNE_SKIP_INSTALL")
+    assert _run(env).returncode == 0, "first run"
+    venvs = list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("venv-*/.installed"))
+    assert len(venvs) == 1
+    stamp = venvs[0].stat().st_mtime_ns
+    assert _run(env).returncode == 0, "second run"
+    assert venvs[0].stat().st_mtime_ns == stamp
+    assert not list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("*.lock"))
