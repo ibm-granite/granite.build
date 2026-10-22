@@ -209,6 +209,18 @@ def test_bash_builtins_default_output_cache_and_python(env, tmp_path):
     assert not (out.parents[1] / ".fm-tune-cache").exists()
 
 
+def test_cache_cuts_at_the_last_workdir_segment(env, tmp_path):
+    """A GB_HOME that itself sits under some /workdir/ must not move the cache up."""
+    env.pop("FMTUNE_CACHE_DIR")
+    home = tmp_path / "workdir" / "gbhome"
+    out = home / "workdir" / "llm-build-b" / "target-t" / "launch-l" / "outputs"
+    env["LLMB_BASH_OUTPUT_DIR"] = str(out)
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    assert (home / ".fm-tune-cache").is_dir()
+    assert not (tmp_path / ".fm-tune-cache").exists()
+
+
 def test_cache_falls_back_to_two_levels_up_outside_a_workdir(env, tmp_path):
     env.pop("FMTUNE_CACHE_DIR")
     env["LLMB_BASH_OUTPUT_DIR"] = str(tmp_path / "w" / "a" / "outputs")
@@ -230,6 +242,21 @@ def _git(*args, cwd):
 
 def test_git_source_is_cloned_and_cached(env, tmp_path):
     """source.repo clones once at ref and runs <clone>/<subdir>/main.py."""
+    _git_repo(env, tmp_path)
+    first = _run(env)
+    assert first.returncode == 0, first.stderr
+    assert first.stdout.count("[fm-tune] cloning") == 1
+    assert _record(env)["cwd"].endswith("/sub/fm-tune")
+    clones = list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("src-*"))
+    assert len(clones) == 1
+    second = _run(env)  # second run reuses the clone
+    assert second.returncode == 0, second.stderr
+    assert second.stdout.count("[fm-tune] cloning") == 0
+    assert list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("src-*")) == clones
+
+
+def _git_repo(env, tmp_path):
+    """A local file:// repo on branch rel holding the stub fm-tune under sub/fm-tune."""
     if shutil.which("git") is None:  # pragma: no cover
         pytest.skip("git not available")
     repo = tmp_path / "repo"
@@ -243,16 +270,61 @@ def test_git_source_is_cloned_and_cached(env, tmp_path):
         FMTUNE_SOURCE_REF="rel",
         FMTUNE_SOURCE_SUBDIR="sub/fm-tune",
     )
-    first = _run(env)
-    assert first.returncode == 0, first.stderr
-    assert first.stdout.count("[fm-tune] cloning") == 1
-    assert _record(env)["cwd"].endswith("/sub/fm-tune")
-    clones = list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("src-*"))
-    assert len(clones) == 1
-    second = _run(env)  # second run reuses the clone
+    return repo
+
+
+def _head(path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_cached_clone_is_updated_to_the_current_ref(env, tmp_path):
+    """The cache is shared across builds, so a moving ref must not stay pinned."""
+    repo = _git_repo(env, tmp_path)
+    assert _run(env).returncode == 0
+    (repo / "sub" / "fm-tune" / "NEW").write_text("2\n")
+    _git("add", ".", cwd=repo)
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "y", cwd=repo)
+    second = _run(env)
     assert second.returncode == 0, second.stderr
+    assert "[fm-tune] updating" in second.stdout
     assert second.stdout.count("[fm-tune] cloning") == 0
-    assert list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("src-*")) == clones
+    # src-<cksum> only: the [0-9] tail excludes src-<key>.lock and src-<key>.tmp.
+    (clone,) = pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("src-*[0-9]")
+    assert _head(clone) == _head(repo)
+    assert (clone / "sub" / "fm-tune" / "NEW").is_file()
+
+
+def test_failed_update_of_a_cached_clone_dies(env, tmp_path):
+    """A fetch failure on reuse must stop the run, not train on the stale copy."""
+    repo = _git_repo(env, tmp_path)
+    assert _run(env).returncode == 0
+    pathlib.Path(env["STUB_RECORD"]).unlink()  # run 1's record; run 2 must not make one
+    shutil.rmtree(repo)  # the remote is gone: the fetch fails
+    proc = _run(env)
+    assert proc.returncode != 0
+    assert "fm-tune: " in proc.stderr and "update" in proc.stderr
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()  # main.py never ran
+    assert "GB_ARTIFACT_ID:" not in proc.stdout
+
+
+def test_stale_clone_lock_from_a_dead_pid_is_taken_over(env, tmp_path):
+    _git_repo(env, tmp_path)
+    key = subprocess.run(
+        ["bash", "-c", 'printf "%s@%s" "$0" "$1" | cksum | cut -d" " -f1',
+         env["FMTUNE_SOURCE_REPO"], env["FMTUNE_SOURCE_REF"]],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    lock = pathlib.Path(env["FMTUNE_CACHE_DIR"]) / f"src-{key}.lock"
+    lock.mkdir(parents=True)
+    (lock / "pid").write_text(f"{dead.pid}\n")
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    assert "taking over stale" in proc.stdout
+    assert not list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("*.lock"))
 
 
 @pytest.mark.slow

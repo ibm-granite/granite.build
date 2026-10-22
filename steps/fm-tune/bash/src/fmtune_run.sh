@@ -11,6 +11,24 @@ set -euo pipefail
 
 die() { echo "fm-tune: $*" >&2; exit 2; }
 log() { echo "[fm-tune] $*"; }
+# One cache lock at a time: a mkdir lock dir holding the owner's pid. A lock whose
+# owner is dead is taken over. Builds share the cache, so the clone and the venv
+# are both built under one.
+held_lock=""
+lock() {
+  local owner
+  until mkdir "$1" 2>/dev/null; do
+    owner="$(cat "$1/pid" 2>/dev/null || true)"
+    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+      log "taking over stale lock $1 from dead pid $owner"; rm -rf "$1"; continue
+    fi
+    log "waiting for lock $1"; sleep 5
+  done
+  echo $$ > "$1/pid"
+  held_lock="$1"
+  trap 'rm -rf "$held_lock"' EXIT
+}
+unlock() { rm -rf "$held_lock"; held_lock=""; trap - EXIT; }
 
 : "${FMTUNE_PYTHON:=}"
 # Bash launcher env values reach the child unexpanded (bash.py _launch_env_layers
@@ -23,7 +41,7 @@ if [ -z "${FMTUNE_CACHE_DIR:-}" ] && [ -n "${LLMB_BASH_OUTPUT_DIR:-}" ]; then
   # The bash output dir is <GB_HOME>/workdir/llm-build-<id>/.../launch-<id>/outputs
   # (per build), so cache beside workdir/ to reuse the venv across builds.
   case "$LLMB_BASH_OUTPUT_DIR" in
-    */workdir/*) FMTUNE_CACHE_DIR="${LLMB_BASH_OUTPUT_DIR%%/workdir/*}/.fm-tune-cache" ;;
+    */workdir/*) FMTUNE_CACHE_DIR="${LLMB_BASH_OUTPUT_DIR%/workdir/*}/.fm-tune-cache" ;;
     *) FMTUNE_CACHE_DIR="$LLMB_BASH_OUTPUT_DIR/../../.fm-tune-cache" ;;
   esac
 fi
@@ -81,12 +99,20 @@ if [ -n "$FMTUNE_SOURCE_PATH" ]; then
 else
   key="$(printf '%s@%s' "$FMTUNE_SOURCE_REPO" "$FMTUNE_SOURCE_REF" | cksum | cut -d' ' -f1)"
   clone="$FMTUNE_CACHE_DIR/src-$key"
+  lock "$clone.lock"
   if [ ! -d "$clone/.git" ]; then
     log "cloning $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF"
     rm -rf "$clone.tmp"
     git clone --quiet --depth 1 --branch "$FMTUNE_SOURCE_REF" "$FMTUNE_SOURCE_REPO" "$clone.tmp"
     mv "$clone.tmp" "$clone"
+  else
+    # The cache outlives builds: move a reused clone to the ref's current commit.
+    log "updating $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF"
+    { git -C "$clone" fetch --quiet --depth 1 origin "$FMTUNE_SOURCE_REF" \
+        && git -C "$clone" reset --quiet --hard FETCH_HEAD; } \
+      || die "could not update the cached clone $clone to $FMTUNE_SOURCE_REF"
   fi
+  unlock
   root="$clone/$FMTUNE_SOURCE_SUBDIR"
 fi
 [ -f "$root/main.py" ] || die "no main.py under fm-tune source $root"
@@ -110,16 +136,7 @@ else
     || die "fm-tune needs Python >= 3.10, $FMTUNE_PYTHON is $pyver"
   vkey="$( { printf '%s\n%s\n%s\n' "$root" "$FMTUNE_EXTRA" "$pyver"; cat "$root/pyproject.toml"; } | cksum | cut -d' ' -f1)"
   venv="$FMTUNE_CACHE_DIR/venv-$vkey"
-  lock="$venv.lock"
-  until mkdir "$lock" 2>/dev/null; do
-    owner="$(cat "$lock/pid" 2>/dev/null || true)"
-    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
-      log "taking over stale venv lock from dead pid $owner"; rm -rf "$lock"; continue
-    fi
-    log "waiting for venv lock $lock"; sleep 5
-  done
-  echo $$ > "$lock/pid"
-  trap 'rm -rf "$lock"' EXIT
+  lock "$venv.lock"
   if [ ! -f "$venv/.installed" ]; then
     log "building venv $venv (extra: $FMTUNE_EXTRA)"
     rm -rf "$venv"
@@ -128,7 +145,7 @@ else
     "$venv/bin/python" -m pip install --quiet -e "$root[$FMTUNE_EXTRA]"
     touch "$venv/.installed"
   fi
-  rm -rf "$lock"; trap - EXIT
+  unlock
   py="$venv/bin/python"
 fi
 
