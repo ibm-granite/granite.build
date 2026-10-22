@@ -1,0 +1,99 @@
+# fm-tune: run one fm-tune (autotunex/src/fm-tune) tuning job on the SkyPilot env (slurm subtype).
+# Source: steps/fm-tune/skypilot/ — published by `make publish-step`; do not edit the
+# copy under configurations/assets. The run script src/fmtune_run.sh is shared,
+# byte-identical, with steps/fm-tune/bash/. See USAGE.md.
+name: fm-tune
+version: 1.0.0
+type: training
+config:
+  fm_tune_config:
+    source:
+      path: ""                    # local fm-tune checkout (one of path | repo)
+      repo: ""                    # git URL to clone
+      ref: main                   # branch / tag for repo
+      subdir: autotunex/src/fm-tune
+    extra: core                   # pip extra: core | full | mlx
+    model: ""                     # --model_name_or_path when base_model is not bound
+    train_file: ""                # relative to the dataset input
+    validation_file: ""           # relative to the dataset input
+    tuning_algo: lora             # sft | lora | qlora | alora | loha | lokr | vera | none
+    rl_algo: ""                   # dpo | kto | ppo | grpo | dapo; empty = none
+    run_name: fm-tune             # --run_name and --output_model_name
+    autotune: true                # false adds --no_autotune
+    backend: ""                   # torch | mlx; empty = fm-tune's default
+    seed: ""                      # empty = fm-tune's default (42)
+    config_preset: autotune.yaml  # bundled autotune/configs/<preset> when hpo_config is empty
+    hpo_config: {}                # inline HPO config (AutoTuneX config_data)
+    output_path: ""               # skypilot only; unused on bash
+    extra_args: ""                # appended verbatim to main.py argv
+    python: ""                    # interpreter that creates the venv; empty = injected python
+    autotunex:
+      server_url: ""              # --autotunex_server_url; empty = offline
+      job_id: ""                  # --job_id
+inputs:
+  allow_unknown: true             # recipes may bind extra inputs to order targets
+  required:
+    dataset:
+      type: dataset
+      accept: [uri, binding]
+  optional:
+    base_model:
+      type: model
+      accept: [uri, binding]
+outputs:
+  required:
+    model:
+      type: model
+environment_configs:
+  Skypilot:
+    subtypes:
+      - slurm
+    default_launcher: fm-tune
+    launchers:
+      fm-tune:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # Bare node: the local Slurm cluster has no Pyxis, so no container image.
+          image_id: ""
+          resources: {}
+          file_mounts:
+            src: src
+          run: |
+            {%- macro q(v) -%}'{{ v | string | replace("'", "'\"'\"'") }}'{%- endmacro %}
+            {%- set c = config.fm_tune_config %}
+            export FMTUNE_DATASET_DIR={{ q(bindings.dataset.binding.path) }}
+            export FMTUNE_BASE_MODEL_DIR={{ q(bindings.base_model.binding.path if bindings.base_model is defined else "") }}
+            export FMTUNE_MODEL={{ q(c.model) }}
+            export FMTUNE_SOURCE_PATH={{ q(c.source.path) }}
+            export FMTUNE_SOURCE_REPO={{ q(c.source.repo) }}
+            export FMTUNE_SOURCE_REF={{ q(c.source.ref) }}
+            export FMTUNE_SOURCE_SUBDIR={{ q(c.source.subdir) }}
+            export FMTUNE_EXTRA={{ q(c.extra) }}
+            export FMTUNE_TRAIN_FILE={{ q(c.train_file) }}
+            export FMTUNE_VALIDATION_FILE={{ q(c.validation_file) }}
+            export FMTUNE_TUNING_ALGO={{ q(c.tuning_algo) }}
+            export FMTUNE_RL_ALGO={{ q(c.rl_algo) }}
+            export FMTUNE_RUN_NAME={{ q(c.run_name) }}
+            export FMTUNE_AUTOTUNE={{ q(c.autotune | string | lower) }}
+            export FMTUNE_BACKEND={{ q(c.backend) }}
+            export FMTUNE_SEED={{ q(c.seed) }}
+            export FMTUNE_CONFIG_PRESET={{ q(c.config_preset) }}
+            export FMTUNE_HPO_CONFIG_JSON={{ q(c.hpo_config | json_dumps) }}
+            export FMTUNE_EXTRA_ARGS={{ q(c.extra_args) }}
+            export FMTUNE_SERVER_URL={{ q(c.autotunex.server_url) }}
+            export FMTUNE_JOB_ID={{ q(c.autotunex.job_id) }}
+            export FMTUNE_PYTHON={{ q(c.python or "python3") }}
+            {%- if c.output_path %}
+            export FMTUNE_OUTPUT_DIR={{ q(c.output_path) }}
+            {%- else %}
+            export FMTUNE_OUTPUT_DIR="$PWD/model"
+            {%- endif %}
+            export FMTUNE_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache"
+            bash ./src/fmtune_run.sh
+    monitors:
+      skypilot_monitor:
+        ref: space://monitors/skypilot
+        config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(300) }}"
