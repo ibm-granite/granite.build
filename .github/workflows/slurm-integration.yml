@@ -30,7 +30,6 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
           make venv
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 

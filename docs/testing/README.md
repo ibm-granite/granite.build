@@ -10,8 +10,8 @@ Tests are driven through the **Makefile** (which wraps `pytest`) and, for build-
 
 | Target | Use |
 |--------|-----|
-| `make venv` | Standalone venv (`[standalone,thirdparty,dev]`, PyPI only). Used by the quick/extended suites. |
-| `make ibm-venv` | IBM venv (`[all,dev]`); needs `ARTIFACTORY_USER` / `ARTIFACTORY_API_KEY`. Used by the `ibm-*` and `cicd-*` suites. |
+| `make venv` | Standalone venv (`[standalone,thirdparty,dev]`, no IBM Artifactory). Used by the quick/extended suites and `cicd-skypilot-pr`. |
+| `make ibm-venv` | IBM venv (`[all,dev]`); needs `ARTIFACTORY_USER` / `ARTIFACTORY_API_KEY`. Used by the `ibm-quick-tests`/`ibm-extended-tests` suites and `cicd-pr-test`/`cicd-merge-test`. |
 
 Both build into the single `.venv`, so building one replaces the other. The old names
 (`standalone-venv`, `dev-venv`, `cicd-venv`, `demo-venv`, `g4os-skypilot-venv`) are deprecated aliases.

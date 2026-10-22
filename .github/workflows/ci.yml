@@ -31,7 +31,6 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
           make venv
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
@@ -105,7 +104,6 @@ jobs:
 
       - name: Install quick test dependencies
         run: |
-          python -m pip install --upgrade pip
           make quick-tests-setup
 
       # Preload Docker test images from the Actions cache, not a rate-limited
@@ -149,7 +147,6 @@ jobs:
       # make venv builds .venv; put it on PATH so the demo script finds gbserver/gbcli.
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
           make venv
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 

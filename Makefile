@@ -701,15 +701,16 @@ sky-api-stop:
 #   ibm-venv  $(IBM_VENV_INSTALL_TARGET) — adds the IBM-only deps (dmf-lib etc.)
 #             from IBM Artifactory; needs ARTIFACTORY_USER / ARTIFACTORY_API_KEY.
 
+# Both force (-B) a rebuild through the $(VENVDIR) rule, which owns the cleanup
+# (sky-api-stop + rm) and, for ibm-venv, checks the Artifactory credentials before
+# deleting the existing venv.
 .PHONY: venv
-venv: sky-api-stop
-	rm -rf $(VENVDIR)
-	$(MAKE) VENV_INSTALL_TARGET='$(VENV_INSTALL_TARGET)' VENV_USE_ARTIFACTORY= $(VENVDIR)
+venv:
+	$(MAKE) -B VENV_USE_ARTIFACTORY= $(VENVDIR)
 
 .PHONY: ibm-venv
-ibm-venv: sky-api-stop
-	rm -rf $(VENVDIR)
-	$(MAKE) VENV_INSTALL_TARGET='$(IBM_VENV_INSTALL_TARGET)' VENV_USE_ARTIFACTORY=1 $(VENVDIR)
+ibm-venv:
+	$(MAKE) -B VENV_INSTALL_TARGET='$(IBM_VENV_INSTALL_TARGET)' VENV_USE_ARTIFACTORY=1 $(VENVDIR)
 
 # Deprecated aliases for the targets above; to be removed in a follow-up commit.
 .PHONY: standalone-venv dev-venv cicd-venv demo-venv g4os-skypilot-venv
