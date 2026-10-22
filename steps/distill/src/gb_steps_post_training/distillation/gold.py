@@ -21,12 +21,13 @@
 # ///
 
 import atexit
-import shutil
 
 # Workaround: In transformers>=4.57.0, _is_package_available() returns a tuple (bool, version).
 # TRL stores the raw tuple for some packages, making guards truthy even when packages are absent.
 # Patch affected values before any other TRL imports to prevent spurious ModuleNotFoundErrors.
 import importlib
+import shutil
+
 _trl_import_utils = importlib.import_module("trl.import_utils")
 for _attr in ("_mergekit_available", "_vllm_ascend_available"):
     _val = getattr(_trl_import_utils, _attr, None)
@@ -40,6 +41,7 @@ del _trl_import_utils, _attr, _val
 _vllm_gmh = importlib.import_module("vllm.model_executor.models.granitemoehybrid")
 _orig_gmh_attn_init = _vllm_gmh.GraniteMoeHybridAttention.__init__
 
+
 def _patched_gmh_attn_init(self, config, *args, _orig=_orig_gmh_attn_init, **kwargs):
     if not hasattr(config, "rope_theta"):
         rp = getattr(config, "rope_parameters", None)
@@ -48,6 +50,7 @@ def _patched_gmh_attn_init(self, config, *args, _orig=_orig_gmh_attn_init, **kwa
         else:
             config.rope_theta = 10000
     _orig(self, config, *args, **kwargs)
+
 
 _vllm_gmh.GraniteMoeHybridAttention.__init__ = _patched_gmh_attn_init
 del _vllm_gmh, _orig_gmh_attn_init
@@ -58,7 +61,10 @@ del _vllm_gmh, _orig_gmh_attn_init
 _vllm_granite = importlib.import_module("vllm.model_executor.models.granite")
 _orig_granite_layer_init = _vllm_granite.GraniteDecoderLayer.__init__
 
-def _patched_granite_layer_init(self, config, *args, _orig=_orig_granite_layer_init, **kwargs):
+
+def _patched_granite_layer_init(
+    self, config, *args, _orig=_orig_granite_layer_init, **kwargs
+):
     if not hasattr(config, "rope_theta"):
         rp = getattr(config, "rope_parameters", None)
         if isinstance(rp, dict) and "rope_theta" in rp:
@@ -67,6 +73,7 @@ def _patched_granite_layer_init(self, config, *args, _orig=_orig_granite_layer_i
             config.rope_theta = 10000
     _orig(self, config, *args, **kwargs)
 
+
 _vllm_granite.GraniteDecoderLayer.__init__ = _patched_granite_layer_init
 del _vllm_granite, _orig_granite_layer_init
 
@@ -74,6 +81,7 @@ del _vllm_granite, _orig_granite_layer_init
 # from the underlying optimizer. transformers' cosine_with_min_lr scheduler needs it.
 from deepspeed.runtime.zero.stage3 import DeepSpeedZeroOptimizer_Stage3 as _DS3Opt
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer as _DS12Opt
+
 for _cls in (_DS3Opt, _DS12Opt):
     if not hasattr(_cls, "defaults"):
         _cls.defaults = property(lambda self: self.optimizer.defaults)
@@ -83,8 +91,10 @@ del _DS3Opt, _DS12Opt, _cls
 # GreedySearchDecoderOnlyOutput and SampleDecoderOnlyOutput which were removed in
 # transformers 5.x. Inject them as aliases for GenerateDecoderOnlyOutput.
 import transformers.generation as _tf_gen
+
 if not hasattr(_tf_gen, "GreedySearchDecoderOnlyOutput"):
     from transformers.generation import GenerateDecoderOnlyOutput as _GenOut
+
     _tf_gen.GreedySearchDecoderOnlyOutput = _GenOut
     _tf_gen.SampleDecoderOnlyOutput = _GenOut
     del _GenOut
@@ -101,6 +111,7 @@ from gb_steps_post_training.distillation._swa_arm import (
     activate_swa_arm,
     activate_swa_vllm_model,
 )
+
 activate_swa_arm()
 
 # Workaround: The kernels-community/mamba-ssm HF Hub kernel internally does
@@ -112,8 +123,11 @@ activate_swa_arm()
 # and provide a shim for causal_conv1d_cuda wrapping the new cpp_functions API.
 # This requires transformers 5.x hub_kernels module; skip on older versions.
 import sys as _sys
+
 try:
-    from transformers.integrations.hub_kernels import lazy_load_kernel as _lazy_load_kernel
+    from transformers.integrations.hub_kernels import (
+        lazy_load_kernel as _lazy_load_kernel,
+    )
 except (ImportError, ModuleNotFoundError):
     _lazy_load_kernel = None
 
@@ -126,11 +140,13 @@ except (ImportError, ModuleNotFoundError):
 # perform `os.readlink` on existing symlinks and are rank-safe.
 try:
     from pathlib import Path as _Path
+
     from huggingface_hub.constants import HF_HUB_CACHE as _HF_HUB_CACHE
-    from kernels.utils import install_kernel as _install_kernel, _import_from_path
+    from kernels.utils import _import_from_path
+    from kernels.utils import install_kernel as _install_kernel
     from transformers.integrations.hub_kernels import (
-        _KERNEL_MODULE_MAPPING,
         _HUB_KERNEL_MAPPING,
+        _KERNEL_MODULE_MAPPING,
     )
 
     def _read_cached_sha(_repo_id):
@@ -152,6 +168,7 @@ try:
         # later showing up as a hard-to-diagnose ImportError under the FA3
         # dispatcher.
         import json as _json
+
         _meta_path = _Path(_variant_path) / "metadata.json"
         if _meta_path.exists():
             _json.loads(_meta_path.read_text())
@@ -159,6 +176,7 @@ try:
 
     def _preload_kernel_into_mapping(_kernel_name, _repo_id):
         from types import ModuleType as _ModuleType
+
         _existing = _KERNEL_MODULE_MAPPING.get(_kernel_name)
         if isinstance(_existing, _ModuleType):
             return
@@ -180,7 +198,12 @@ try:
     del _kname, _kspec, _Path, _HF_HUB_CACHE, _install_kernel, _import_from_path
     del _KERNEL_MODULE_MAPPING, _HUB_KERNEL_MAPPING
     del _read_cached_sha, _preload_kernel_into_mapping, _validated_import_from_path
-except (FileNotFoundError, OSError, ImportError, ModuleNotFoundError) as _kernel_preload_err:
+except (
+    FileNotFoundError,
+    OSError,
+    ImportError,
+    ModuleNotFoundError,
+) as _kernel_preload_err:
     # Fresh node / kernels API change / missing cache. Fall through to the
     # online `lazy_load_kernel` path below; preflight will repopulate the cache.
     # Note: ValueError (incl. JSONDecodeError) is intentionally NOT caught here.
@@ -188,7 +211,9 @@ except (FileNotFoundError, OSError, ImportError, ModuleNotFoundError) as _kernel
     # must surface as a hard failure so the launcher's pre-download cleanup runs,
     # rather than fall through to the racing kernel-hub fallback path that would
     # produce a confusing downstream `ImportError: FlashAttention3 has been toggled on`.
-    print(f"[gold preamble] kernel pre-population skipped: {type(_kernel_preload_err).__name__}: {_kernel_preload_err}")
+    print(
+        f"[gold preamble] kernel pre-population skipped: {type(_kernel_preload_err).__name__}: {_kernel_preload_err}"
+    )
     del _kernel_preload_err
 
 if _lazy_load_kernel is not None:
@@ -202,6 +227,7 @@ if _lazy_load_kernel is not None:
             _bwd = getattr(_cc1d_iface, "causal_conv1d_bwd_function", None)
 
             if _fwd is not None and _bwd is not None:
+
                 class _CausalConv1dCudaShim:
                     causal_conv1d_fwd = staticmethod(_fwd)
                     causal_conv1d_bwd = staticmethod(_bwd)
@@ -221,9 +247,27 @@ if _lazy_load_kernel is not None:
 activate_swa_arm()
 activate_swa_vllm_model()
 
-from datasets import Dataset, DatasetDict, load_dataset
-from transformers import AutoTokenizer, GenerationConfig
+import glob
+import os
+from dataclasses import dataclass, field
+from pprint import pprint
 
+import torch.distributed as dist
+from accelerate import PartialState
+from datasets import Dataset, DatasetDict, load_dataset
+
+# Top-level, unlike `tracking` (imported inside main at the point where report_to must be
+# final): train_manifest is stdlib-only, so importing it here costs nothing and a typo in it
+# fails before the allocation does any work, rather than after a 30B teacher has been loaded.
+from gb_steps_post_training.distillation import train_manifest
+from gb_steps_post_training.distillation.custom_gold_config import CustomGOLDConfig
+from gb_steps_post_training.distillation.custom_gold_trainer import CustomGOLDTrainer
+from gb_steps_post_training.distillation.utils import (
+    CustomDataCollatorForChatML,
+    verify_fast_tokenizer,
+    verify_tokenizer_consistency,
+)
+from transformers import AutoTokenizer, GenerationConfig
 from trl import (
     LogCompletionsCallback,
     ModelConfig,
@@ -237,40 +281,22 @@ from trl.experimental.gold.gold_config import GOLDConfig
 from trl.experimental.gold.gold_trainer import GOLDTrainer
 from trl.trainer.utils import DataCollatorForChatML
 
-from gb_steps_post_training.distillation.custom_gold_trainer import CustomGOLDTrainer
-from gb_steps_post_training.distillation.custom_gold_config import CustomGOLDConfig
-from gb_steps_post_training.distillation.utils import (
-    CustomDataCollatorForChatML,
-    verify_fast_tokenizer,
-    verify_tokenizer_consistency,
-)
-# Top-level, unlike `tracking` (imported inside main at the point where report_to must be
-# final): train_manifest is stdlib-only, so importing it here costs nothing and a typo in it
-# fails before the allocation does any work, rather than after a 30B teacher has been loaded.
-from gb_steps_post_training.distillation import train_manifest
-
-from dataclasses import dataclass, field
-
-from pprint import pprint
-
-import os
-import glob
-import torch.distributed as dist
-from accelerate import PartialState
 
 @dataclass
 class CustomArguments:
     """
     Custom arguments for your training script.
     """
+
     max_dataset_size: int = field(
-        default=-1,
-        metadata={"help": "Reduce dataset size for quick debugging"}
+        default=-1, metadata={"help": "Reduce dataset size for quick debugging"}
     )
     teacher_attn_implementation: str | None = field(
         default=None,
-        metadata={"help": "Override attn_implementation for the teacher model. "
-                          "If None, falls back to model_args.attn_implementation."},
+        metadata={
+            "help": "Override attn_implementation for the teacher model. "
+            "If None, falls back to model_args.attn_implementation."
+        },
     )
     # A DECLARED INVARIANT, not a knob. Nothing downstream reads it; setting it changes no
     # behaviour. What it does is let a config state the batch shape it was tuned for, so that a
@@ -292,16 +318,20 @@ class CustomArguments:
     # the case worth catching.
     effective_batch_size: int | None = field(
         default=None,
-        metadata={"help": "Optional. The per_device x grad_accum x world_size product this "
-                          "config was tuned for. When set, a run whose actual product differs "
-                          "aborts before the model is loaded. Nothing reads it as a setting."},
+        metadata={
+            "help": "Optional. The per_device x grad_accum x world_size product this "
+            "config was tuned for. When set, a run whose actual product differs "
+            "aborts before the model is loaded. Nothing reads it as a setting."
+        },
     )
     use_liger_swiglu_mlp: bool = field(
         default=False,
-        metadata={"help": "Monkey-patch GraniteSWAMLP.forward to use Liger's "
-                          "tiled SwiGLU MLP (see gold/_liger_granite_swa_patch.py). "
-                          "Required for long-context GraniteSWA training to avoid "
-                          "backward-pass OOM on the MLP intermediate activations."},
+        metadata={
+            "help": "Monkey-patch GraniteSWAMLP.forward to use Liger's "
+            "tiled SwiGLU MLP (see gold/_liger_granite_swa_patch.py). "
+            "Required for long-context GraniteSWA training to avoid "
+            "backward-pass OOM on the MLP intermediate activations."
+        },
     )
 
     # ---- Experiment tracking. ClearML is the DEFAULT backend; W&B is optional. The rules and
@@ -316,15 +346,19 @@ class CustomArguments:
     # go, and it gets validated by the same parser as everything else.
     clearml_project: str | None = field(
         default=None,
-        metadata={"help": "ClearML project name (-> CLEARML_PROJECT). Required to enable ClearML. "
-                          "ClearML has no `entity`: which workspace receives the task is carried "
-                          "by the credentials (clearml.conf / CLEARML_API_*), not by this config."},
+        metadata={
+            "help": "ClearML project name (-> CLEARML_PROJECT). Required to enable ClearML. "
+            "ClearML has no `entity`: which workspace receives the task is carried "
+            "by the credentials (clearml.conf / CLEARML_API_*), not by this config."
+        },
     )
     clearml_run_name: str | None = field(
         default=None,
-        metadata={"help": "ClearML task name (-> CLEARML_TASK). Optional: derived from this "
-                          "config's filename when omitted, plus the LSF job id when there is one. "
-                          "Note ClearML ignores TrainingArguments.run_name entirely."},
+        metadata={
+            "help": "ClearML task name (-> CLEARML_TASK). Optional: derived from this "
+            "config's filename when omitted, plus the LSF job id when there is one. "
+            "Note ClearML ignores TrainingArguments.run_name entirely."
+        },
     )
     # `wandb_entity` and `wandb_project` are DELIBERATELY ABSENT here. They are already fields of
     # upstream `GOLDConfig` (trl/experimental/gold/gold_config.py:339,343), which CustomGOLDConfig
@@ -340,12 +374,17 @@ class CustomArguments:
     # so `wandb_run_name` stays here.
     wandb_run_name: str | None = field(
         default=None,
-        metadata={"help": "W&B run name (-> TrainingArguments.run_name, which is what transformers "
-                          "passes to wandb.init as `name`). Optional; auto-derived when omitted."},
+        metadata={
+            "help": "W&B run name (-> TrainingArguments.run_name, which is what transformers "
+            "passes to wandb.init as `name`). Optional; auto-derived when omitted."
+        },
     )
 
+
 if __name__ == "__main__":
-    parser = TrlParser((ScriptArguments, CustomGOLDConfig, ModelConfig, CustomArguments))
+    parser = TrlParser(
+        (ScriptArguments, CustomGOLDConfig, ModelConfig, CustomArguments)
+    )
     script_args, training_args, model_args, custom_args = parser.parse_args_and_config()
 
     # WHICH CODE IS THIS. Printed before anything else that can fail, because a run that dies during
@@ -354,6 +393,7 @@ if __name__ == "__main__":
     # asserts the arms' CONFIGS match while nothing asserted their code did. Compare the DIGEST, not
     # the commit -- see code_provenance.py. Cannot end a run: every failure path prints "unavailable".
     from gb_steps_post_training.distillation import code_provenance as _code_provenance
+
     _code_provenance.report()
 
     print("Script args:")
@@ -379,12 +419,15 @@ if __name__ == "__main__":
     ################
     from gb_steps_post_training.distillation.tracking import (
         ALL_CONFIG_FIELDS as _TRACK_FIELDS,
+    )
+    from gb_steps_post_training.distillation.tracking import (
         resolve as _resolve_tracking,
     )
 
     _cfg_path = None
     if "--config" in _sys.argv:
         _cfg_path = _sys.argv[_sys.argv.index("--config") + 1]
+
     # Two objects, because the five fields have two owners: `clearml_*` and `wandb_run_name` are
     # ours (CustomArguments), `wandb_entity`/`wandb_project` are upstream GOLDConfig's and arrive on
     # training_args. `custom_args` is asked FIRST and only falls through when it has no such
@@ -397,7 +440,8 @@ if __name__ == "__main__":
         raise AttributeError(
             f"tracking field {name!r} is on neither CustomArguments nor the GOLDConfig. "
             "tracking.py's ALL_CONFIG_FIELDS and gold.py's dataclasses have diverged; "
-            "a companion config check asserts they agree and would have said so.")
+            "a companion config check asserts they agree and would have said so."
+        )
 
     _track = _resolve_tracking(
         {f: _track_field(f) for f in _TRACK_FIELDS},
@@ -427,8 +471,11 @@ if __name__ == "__main__":
     # hosts carved off the tail of the allocation, not members of this group.
     if custom_args.effective_batch_size:
         _ws = int(os.environ.get("WORLD_SIZE", "1"))
-        _actual = (training_args.per_device_train_batch_size
-                   * training_args.gradient_accumulation_steps * _ws)
+        _actual = (
+            training_args.per_device_train_batch_size
+            * training_args.gradient_accumulation_steps
+            * _ws
+        )
         if _actual != custom_args.effective_batch_size:
             raise SystemExit(
                 f"FATAL: this config declares effective_batch_size "
@@ -437,13 +484,17 @@ if __name__ == "__main__":
                 f"{training_args.gradient_accumulation_steps} (grad-accum) x {_ws} (ranks).\n"
                 "       The learning rate in this config was chosen for the declared batch, so a "
                 "silent change of shape is a silent change of experiment. Fix the node shape, or "
-                "change effective_batch_size AND re-justify the LR.")
+                "change effective_batch_size AND re-justify the LR."
+            )
         if int(os.environ.get("RANK", "0")) == 0:
-            print(f"batch shape: {_actual} = {training_args.per_device_train_batch_size} x "
-                  f"{training_args.gradient_accumulation_steps} x {_ws} ranks, as declared")
+            print(
+                f"batch shape: {_actual} = {training_args.per_device_train_batch_size} x "
+                f"{training_args.gradient_accumulation_steps} x {_ws} ranks, as declared"
+            )
 
     if custom_args.use_liger_swiglu_mlp:
         from _liger_granite_swa_patch import apply_liger_swiglu_to_granite_swa
+
         apply_liger_swiglu_to_granite_swa()
 
     ################
@@ -461,12 +512,18 @@ if __name__ == "__main__":
     )
     training_args.model_init_kwargs = model_kwargs
 
-    if training_args.teacher_tokenizer_name_or_path is None and training_args.use_uld_loss:
-        training_args.teacher_tokenizer_name_or_path = training_args.teacher_model_name_or_path
+    if (
+        training_args.teacher_tokenizer_name_or_path is None
+        and training_args.use_uld_loss
+    ):
+        training_args.teacher_tokenizer_name_or_path = (
+            training_args.teacher_model_name_or_path
+        )
     teacher_model_kwargs = dict(
         revision=model_args.model_revision,
         trust_remote_code=model_args.trust_remote_code,
-        attn_implementation=custom_args.teacher_attn_implementation or model_args.attn_implementation,
+        attn_implementation=custom_args.teacher_attn_implementation
+        or model_args.attn_implementation,
         torch_dtype=model_args.dtype,
         device_map=get_kbit_device_map() if quantization_config is not None else None,
         quantization_config=quantization_config,
@@ -488,7 +545,9 @@ if __name__ == "__main__":
         tokenizer.pad_token = tokenizer.eos_token
 
     # Check if student and teacher use the same tokenizer
-    assert training_args.teacher_model_name_or_path is not None, "--teacher_model_name_or_path missing"
+    assert (
+        training_args.teacher_model_name_or_path is not None
+    ), "--teacher_model_name_or_path missing"
     teacher_tokenizer = AutoTokenizer.from_pretrained(
         training_args.teacher_model_name_or_path,
         trust_remote_code=model_args.trust_remote_code,
@@ -523,7 +582,9 @@ if __name__ == "__main__":
             context=f"{mode} GOLD (lmbda={training_args.lmbda})",
         )
     else:
-        print("ULD loss enabled: skipping verify_tokenizer_consistency (cross-tokenizer distillation expects differing tokenizers)")
+        print(
+            "ULD loss enabled: skipping verify_tokenizer_consistency (cross-tokenizer distillation expects differing tokenizers)"
+        )
 
     ################
     # Dataset
@@ -534,7 +595,9 @@ if __name__ == "__main__":
     dataset_tmpdir = [None]
 
     def _load_dataset():
-        if script_args.dataset_name.endswith(".json") or script_args.dataset_name.endswith(".jsonl"):
+        if script_args.dataset_name.endswith(
+            ".json"
+        ) or script_args.dataset_name.endswith(".jsonl"):
             import pandas as pd
             from datasets import load_from_disk
 
@@ -542,7 +605,10 @@ if __name__ == "__main__":
 
             if state.is_main_process:
                 os.makedirs(dataset_tmpdir[0], exist_ok=True)
-                df = pd.read_json(script_args.dataset_name, lines=script_args.dataset_name.endswith(".jsonl"))
+                df = pd.read_json(
+                    script_args.dataset_name,
+                    lines=script_args.dataset_name.endswith(".jsonl"),
+                )
                 dataset = Dataset.from_pandas(df)
                 dataset.save_to_disk(dataset_tmpdir[0])
 
@@ -555,10 +621,14 @@ if __name__ == "__main__":
                 "HuggingFaceTB/Countdown-Task-GOLD",
                 "verified_Qwen3-4B-Instruct-2507",
             )
-            assert training_args.eval_strategy == "no", "Countdown dataset does not contain eval split"
+            assert (
+                training_args.eval_strategy == "no"
+            ), "Countdown dataset does not contain eval split"
             return ds
         else:
-            return load_dataset(script_args.dataset_name, name=script_args.dataset_config)
+            return load_dataset(
+                script_args.dataset_name, name=script_args.dataset_config
+            )
 
     def _cleanup_dataset_tmpdir():
         if dataset_tmpdir[0] and os.path.exists(dataset_tmpdir[0]):
@@ -569,10 +639,19 @@ if __name__ == "__main__":
     dataset = _load_dataset()
 
     if custom_args.max_dataset_size > 0:
-        dataset[script_args.dataset_train_split] = dataset[script_args.dataset_train_split].select(
-            range(min(custom_args.max_dataset_size, len(dataset[script_args.dataset_train_split])))
+        dataset[script_args.dataset_train_split] = dataset[
+            script_args.dataset_train_split
+        ].select(
+            range(
+                min(
+                    custom_args.max_dataset_size,
+                    len(dataset[script_args.dataset_train_split]),
+                )
+            )
         )
-    print(f"{script_args.dataset_name}: {len(dataset[script_args.dataset_train_split])}")
+    print(
+        f"{script_args.dataset_name}: {len(dataset[script_args.dataset_train_split])}"
+    )
 
     ################
     # Training
@@ -592,7 +671,11 @@ if __name__ == "__main__":
         teacher_model=training_args.teacher_model_name_or_path,
         args=training_args,
         train_dataset=dataset[script_args.dataset_train_split],
-        eval_dataset=dataset[script_args.dataset_test_split] if training_args.eval_strategy != "no" else None,
+        eval_dataset=(
+            dataset[script_args.dataset_test_split]
+            if training_args.eval_strategy != "no"
+            else None
+        ),
         processing_class=tokenizer,
         peft_config=get_peft_config(model_args),
         data_collator=data_collator,
@@ -600,7 +683,10 @@ if __name__ == "__main__":
 
     if getattr(training_args, "vllm_mode", None) == "server":
         _probe_failure = None
-        if trainer.accelerator.is_main_process and getattr(trainer, "vllm_client", None) is not None:
+        if (
+            trainer.accelerator.is_main_process
+            and getattr(trainer, "vllm_client", None) is not None
+        ):
             for _probe in ("a\n\nb", "public.roads2", "1200"):
                 _local_ids = tokenizer.encode(_probe, add_special_tokens=False)
                 _vllm_resp = trainer.vllm_client.generate(
@@ -622,6 +708,7 @@ if __name__ == "__main__":
                     break
         trainer.accelerator.wait_for_everyone()
         from accelerate.utils import broadcast_object_list as _bcast
+
         _probe_list = _bcast([_probe_failure], from_process=0)
         if _probe_list[0] is not None:
             raise RuntimeError(_probe_list[0])
@@ -631,17 +718,29 @@ if __name__ == "__main__":
         from transformers import AutoConfig
 
         _CONFIG_FIELDS = [
-            "architectures", "model_type",
-            "hidden_size", "intermediate_size", "num_hidden_layers",
-            "num_attention_heads", "num_key_value_heads", "vocab_size",
+            "architectures",
+            "model_type",
+            "hidden_size",
+            "intermediate_size",
+            "num_hidden_layers",
+            "num_attention_heads",
+            "num_key_value_heads",
+            "vocab_size",
             "max_position_embeddings",
-            "rope_theta", "rope_parameters", "rope_scaling",
-            "torch_dtype", "tie_word_embeddings", "use_cache",
-            "num_local_experts", "num_experts_per_tok",
+            "rope_theta",
+            "rope_parameters",
+            "rope_scaling",
+            "torch_dtype",
+            "tie_word_embeddings",
+            "use_cache",
+            "num_local_experts",
+            "num_experts_per_tok",
         ]
 
         def _log_config(label, model_path):
-            cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=model_args.trust_remote_code)
+            cfg = AutoConfig.from_pretrained(
+                model_path, trust_remote_code=model_args.trust_remote_code
+            )
             print(f"\n{'='*60}")
             print(f"  {label} config: {model_path}")
             print(f"{'='*60}")
@@ -656,16 +755,23 @@ if __name__ == "__main__":
 
     if training_args.eval_strategy != "no":
         generation_config = GenerationConfig(
-            max_new_tokens=training_args.max_new_tokens, do_sample=True, temperature=training_args.temperature
+            max_new_tokens=training_args.max_new_tokens,
+            do_sample=True,
+            temperature=training_args.temperature,
         )
-        completions_callback = LogCompletionsCallback(trainer, generation_config, num_prompts=8)
+        completions_callback = LogCompletionsCallback(
+            trainer, generation_config, num_prompts=8
+        )
         trainer.add_callback(completions_callback)
 
     if custom_args.use_liger_swiglu_mlp:
         from _liger_granite_swa_patch import verify_liger_swiglu_active
+
         failures = verify_liger_swiglu_active(trainer.model)
         if failures:
-            raise RuntimeError("Liger tiled-MLP patch not active: " + "; ".join(failures))
+            raise RuntimeError(
+                "Liger tiled-MLP patch not active: " + "; ".join(failures)
+            )
 
     # WHICH ROWS THIS RUN TRAINS ON, recorded before the first step.
     #
@@ -681,25 +787,36 @@ if __name__ == "__main__":
     # being trained on, and that is worth catching while the only cost is a model load. It
     # writes on rank 0 only and never fails for a merely absent id column.
     _tm_manifest = train_manifest.build_from_trainer(
-        trainer, dataset_path=script_args.dataset_name)
+        trainer, dataset_path=script_args.dataset_name
+    )
     if _tm_manifest is not None:
         _tm_rows = _tm_manifest.get("rows_file", {}).get("entries")
-        print(f"provenance : {_tm_manifest['arm']} arm, "
-              f"{_tm_manifest['rows_available']} rows available"
-              + (f", {_tm_rows} ids -> {train_manifest.CONSUMED_NAME}"
-                 if _tm_rows else f" (no row ids: {_tm_manifest['ids_unavailable_reason']})")
-              + f"; {train_manifest.MANIFEST_NAME} written")
+        print(
+            f"provenance : {_tm_manifest['arm']} arm, "
+            f"{_tm_manifest['rows_available']} rows available"
+            + (
+                f", {_tm_rows} ids -> {train_manifest.CONSUMED_NAME}"
+                if _tm_rows
+                else f" (no row ids: {_tm_manifest['ids_unavailable_reason']})"
+            )
+            + f"; {train_manifest.MANIFEST_NAME} written"
+        )
         _tm_frac = (_tm_manifest.get("schedule") or {}).get("epoch_fraction_scheduled")
         if _tm_frac is not None and _tm_frac < 1.0:
             # Said out loud because the rows-available count is the number a reader will quote,
             # and for a short run it overstates what was seen by roughly this factor.
-            print(f"provenance : NOTE this schedule covers {_tm_frac:.1%} of an epoch, so the "
-                  "rows-available count above is an upper bound on rows actually seen")
+            print(
+                f"provenance : NOTE this schedule covers {_tm_frac:.1%} of an epoch, so the "
+                "rows-available count above is an upper bound on rows actually seen"
+            )
 
     # Split ClearML train scalars across per-quantity plots. AFTER the Trainer exists (it adds the
     # ClearMLCallback itself from `report_to`) and BEFORE train() (the callback's setup runs lazily
     # on the first log).
-    from gb_steps_post_training.distillation.clearml_scalar_groups import install as _install_scalar_groups
+    from gb_steps_post_training.distillation.clearml_scalar_groups import (
+        install as _install_scalar_groups,
+    )
+
     _install_scalar_groups(trainer)
 
     if glob.glob(os.path.join(training_args.output_dir, "checkpoint-*")):
@@ -709,7 +826,10 @@ if __name__ == "__main__":
         trainer.train()
 
     # Reset tokenizer truncation state before saving to avoid polluting the saved config
-    if hasattr(tokenizer, 'backend_tokenizer') and tokenizer.backend_tokenizer.truncation is not None:
+    if (
+        hasattr(tokenizer, "backend_tokenizer")
+        and tokenizer.backend_tokenizer.truncation is not None
+    ):
         tokenizer.backend_tokenizer.no_truncation()
 
     # Save and push to hub

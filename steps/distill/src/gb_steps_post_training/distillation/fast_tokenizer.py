@@ -23,6 +23,7 @@ computation does not crash and the numbers look plausible -- they are simply mea
 in a segmentation neither model was ever trained on. A JSD that says the student moved
 toward the teacher, computed on out-of-distribution inputs, is worse than no JSD.
 """
+
 from __future__ import annotations
 
 import json
@@ -49,7 +50,8 @@ def load(tokenizer_dir, *, require_chat_template: bool = True):
         raise TokenizerLoadError(
             f"{tok_file} is missing, so there is no fast tokenizer to load. Pass a model "
             "directory or one of distill-tokenizer-align's outputs (retagged_student, "
-            "teacher_overlay, student_overlay).")
+            "teacher_overlay, student_overlay)."
+        )
     tok = PreTrainedTokenizerFast(tokenizer_file=str(tok_file))
 
     # pad_token_id is set from eos when absent, because batching needs one and a base model
@@ -79,5 +81,6 @@ def load(tokenizer_dir, *, require_chat_template: bool = True):
         raise TokenizerLoadError(
             f"no chat template in {tokenizer_dir} (looked for chat_template.jinja and an "
             "inline chat_template in tokenizer_config.json). Rendering conversations is not "
-            "possible without one; distill-tokenizer-align installs it via --chat-template.")
+            "possible without one; distill-tokenizer-align installs it via --chat-template."
+        )
     return tok, ""

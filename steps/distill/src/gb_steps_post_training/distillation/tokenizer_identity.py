@@ -28,6 +28,7 @@ TWO FORMS, deliberately, and the preference order is not arbitrary:
      A hash is a poor error message but a real check, and the fallback is symmetric on both
      sides, so it can only compare equal for byte-identical tokenizers.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -60,7 +61,7 @@ def derive_name(model_dir: Path) -> str:
     p = Path(model_dir).resolve()
     for parent in (p, *p.parents):
         if parent.name.startswith("models--"):
-            return parent.name[len("models--"):].replace("--", "/")
+            return parent.name[len("models--") :].replace("--", "/")
     return p.name
 
 
@@ -152,7 +153,11 @@ def write(model_dir: Path, identity: str, **extra: object) -> Path:
     model_dir = Path(model_dir)
     if not identity:
         raise IdentityError("identity must be a non-empty string")
-    payload = {IDENTITY_KEY: identity, "tokenizer_sha256": hash_tokenizer(model_dir), **extra}
+    payload = {
+        IDENTITY_KEY: identity,
+        "tokenizer_sha256": hash_tokenizer(model_dir),
+        **extra,
+    }
     dest = model_dir / IDENTITY_FILE
     dest.write_text(json.dumps(payload, indent=2) + "\n")
     return dest

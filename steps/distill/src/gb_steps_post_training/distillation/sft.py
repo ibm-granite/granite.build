@@ -13,18 +13,19 @@
 # limitations under the License.
 
 import atexit
-import json
-import shutil
-
-from collections.abc import Callable
-from contextlib import nullcontext
-from datasets import Dataset, DatasetDict, IterableDataset, load_dataset
-from transformers import AutoTokenizer, GenerationConfig
 
 # Workaround: In transformers>=4.57.0, _is_package_available() returns a tuple (bool, version).
 # TRL stores the raw tuple for some packages, making guards truthy even when packages are absent.
 # Patch affected values before any other TRL imports to prevent spurious ModuleNotFoundErrors.
 import importlib
+import json
+import shutil
+from collections.abc import Callable
+from contextlib import nullcontext
+
+from datasets import Dataset, DatasetDict, IterableDataset, load_dataset
+from transformers import AutoTokenizer, GenerationConfig
+
 _trl_import_utils = importlib.import_module("trl.import_utils")
 for _attr in ("_mergekit_available", "_vllm_ascend_available"):
     _val = getattr(_trl_import_utils, _attr, None)
@@ -36,6 +37,7 @@ del _trl_import_utils, _attr, _val
 # from the underlying optimizer. transformers' cosine_with_min_lr scheduler needs it.
 from deepspeed.runtime.zero.stage3 import DeepSpeedZeroOptimizer_Stage3 as _DS3Opt
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer as _DS12Opt
+
 for _cls in (_DS3Opt, _DS12Opt):
     if not hasattr(_cls, "defaults"):
         _cls.defaults = property(lambda self: self.optimizer.defaults)
@@ -50,6 +52,7 @@ del _DS3Opt, _DS12Opt, _cls
 # as gold.py -- see _swa_arm.py for why the preamble's refusal is correct for the model
 # it was written for and must not be softened.
 from gb_steps_post_training.distillation._swa_arm import activate_swa_arm
+
 activate_swa_arm()
 
 # `granite_swa` Auto*-API registration, so TRL's `create_model_from_path` can
@@ -65,6 +68,33 @@ activate_swa_arm()
 # that has no use for it.
 activate_swa_arm()
 
+import glob
+import hashlib
+import os
+
+# `sys` under an underscore alias for the same reason gold.py:111 does it: this module's
+# __main__ block reads sys.argv to find `--config`, and a bare `sys` at module scope in a
+# file this long is easy to shadow.
+import sys as _sys
+from dataclasses import dataclass, field
+from pprint import pprint
+
+import numpy as np
+import torch
+import torch.distributed as dist
+import torch.nn.functional as F
+from accelerate import PartialState
+
+# Top-level, unlike `tracking` (imported inside main at the point where report_to must be
+# final): train_manifest is stdlib-only, so importing it here costs nothing and a typo in it
+# fails before the allocation does any work rather than after a corpus has been tokenized.
+from gb_steps_post_training.distillation import train_manifest
+from gb_steps_post_training.distillation.custom_sft_config import CustomSFTConfig
+from gb_steps_post_training.distillation.utils import (
+    verify_fast_tokenizer,
+    verify_tokenizer_consistency,
+)
+from transformers.utils import is_liger_kernel_available
 from trl import (
     LogCompletionsCallback,
     ModelConfig,
@@ -75,35 +105,6 @@ from trl import (
     get_peft_config,
     get_quantization_config,
 )
-
-from gb_steps_post_training.distillation.custom_sft_config import CustomSFTConfig
-
-from dataclasses import dataclass, field
-import hashlib
-
-from pprint import pprint
-
-import os
-import glob
-# `sys` under an underscore alias for the same reason gold.py:111 does it: this module's
-# __main__ block reads sys.argv to find `--config`, and a bare `sys` at module scope in a
-# file this long is easy to shadow.
-import sys as _sys
-import numpy as np
-import torch
-import torch.nn.functional as F
-import torch.distributed as dist
-from accelerate import PartialState
-from transformers.utils import is_liger_kernel_available
-
-from gb_steps_post_training.distillation.utils import (
-    verify_fast_tokenizer,
-    verify_tokenizer_consistency,
-)
-# Top-level, unlike `tracking` (imported inside main at the point where report_to must be
-# final): train_manifest is stdlib-only, so importing it here costs nothing and a typo in it
-# fails before the allocation does any work rather than after a corpus has been tokenized.
-from gb_steps_post_training.distillation import train_manifest
 
 
 def verify_optimization_stack(model, *, expect_liger_swiglu: bool) -> None:
@@ -130,6 +131,7 @@ def verify_optimization_stack(model, *, expect_liger_swiglu: bool) -> None:
     `barrier()` and `raise RuntimeError`.
     """
     import sys
+
     import torch
     import torch.distributed as dist
 
@@ -140,7 +142,9 @@ def verify_optimization_stack(model, *, expect_liger_swiglu: bool) -> None:
     cfg = getattr(model, "config", None)
     attn_impl = getattr(cfg, "_attn_implementation", None)
     model_type = getattr(cfg, "model_type", None)
-    is_swa = (model_type == "granite_swa") or type(model).__name__.startswith("GraniteSWA")
+    is_swa = (model_type == "granite_swa") or type(model).__name__.startswith(
+        "GraniteSWA"
+    )
 
     if is_swa:
         # NOT given the kernel-fallback treatment the non-SWA branch gets below, on purpose:
@@ -172,6 +176,7 @@ def verify_optimization_stack(model, *, expect_liger_swiglu: bool) -> None:
 
         if expect_liger_swiglu:
             from _liger_granite_swa_patch import verify_liger_swiglu_active
+
             failures.extend(verify_liger_swiglu_active(model))
     else:
         # WHAT COUNTS AS FA2 IS NOT ONE STRING, and this is the correction the upstream copy of
@@ -195,7 +200,10 @@ def verify_optimization_stack(model, *, expect_liger_swiglu: bool) -> None:
         # otherwise abort a run over a check.
         accepted = {"flash_attention_2"}
         try:
-            from transformers.modeling_flash_attention_utils import FLASH_ATTN_KERNEL_FALLBACK
+            from transformers.modeling_flash_attention_utils import (
+                FLASH_ATTN_KERNEL_FALLBACK,
+            )
+
             accepted.add(FLASH_ATTN_KERNEL_FALLBACK["flash_attention_2"])
         except Exception:
             accepted.add("kernels-community/flash-attn2")
@@ -220,12 +228,18 @@ def verify_optimization_stack(model, *, expect_liger_swiglu: bool) -> None:
             )
 
     local_failed = 1 if failures else 0
-    device = torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu")
+    device = (
+        torch.device("cuda", torch.cuda.current_device())
+        if torch.cuda.is_available()
+        else torch.device("cpu")
+    )
 
     total_mem_gib = None
     if torch.cuda.is_available():
         try:
-            total_mem_gib = torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)
+            total_mem_gib = torch.cuda.get_device_properties(device).total_memory / (
+                1024**3
+            )
         except Exception:
             total_mem_gib = None
 
@@ -257,16 +271,22 @@ def verify_optimization_stack(model, *, expect_liger_swiglu: bool) -> None:
 
     if rank == 0:
         if is_swa:
-            print("[opt-stack check] [OK] FA3 active: config._attn_implementation=flash_attention_3, "
-                  "flash_attn_interface kernel loaded")
+            print(
+                "[opt-stack check] [OK] FA3 active: config._attn_implementation=flash_attention_3, "
+                "flash_attn_interface kernel loaded"
+            )
             if expect_liger_swiglu:
-                print("[opt-stack check] [OK] Liger tiled SwiGLU MLP active on all GraniteSWAMLP layers")
+                print(
+                    "[opt-stack check] [OK] Liger tiled SwiGLU MLP active on all GraniteSWAMLP layers"
+                )
         else:
             # Print the value we ACTUALLY saw, not the literal: on this account it is the
             # kernels-hub repo id, and a log line asserting otherwise is how the next reader
             # concludes the package route is in use when it is not.
-            print(f"[opt-stack check] [OK] FA2 active: config._attn_implementation={attn_impl!r} "
-                  f"(non-SWA model_type={model_type!r})")
+            print(
+                f"[opt-stack check] [OK] FA2 active: config._attn_implementation={attn_impl!r} "
+                f"(non-SWA model_type={model_type!r})"
+            )
 
 
 @dataclass
@@ -274,47 +294,61 @@ class CustomArguments:
     """
     Custom arguments for SFT training script.
     """
+
     max_dataset_size: int = field(
-        default=-1,
-        metadata={"help": "Reduce dataset size for quick debugging"}
+        default=-1, metadata={"help": "Reduce dataset size for quick debugging"}
     )
     response_template: str = field(
         default="<|start_of_role|>assistant<|end_of_role|>",
-        metadata={"help": "Response template string to identify assistant turns for loss masking (e.g. '<|start_of_role|>assistant<|end_of_role|>')"}
+        metadata={
+            "help": "Response template string to identify assistant turns for loss masking (e.g. '<|start_of_role|>assistant<|end_of_role|>')"
+        },
     )
     use_liger_memory_opt: bool = field(
         default=False,
-        metadata={"help": "Enable Liger-style memory optimization without patching model "
-                  "internals (safe for GraniteMoEHybrid/Mamba models). In the CE-only path, "
-                  "uses LigerFusedLinearCrossEntropyLoss (hidden capture + fused linear+CE "
-                  "kernel). In the KD path, uses only the hidden-capture trick (mask-first, "
-                  "project survivors); KD math runs on the resulting [N, V] tensor."}
+        metadata={
+            "help": "Enable Liger-style memory optimization without patching model "
+            "internals (safe for GraniteMoEHybrid/Mamba models). In the CE-only path, "
+            "uses LigerFusedLinearCrossEntropyLoss (hidden capture + fused linear+CE "
+            "kernel). In the KD path, uses only the hidden-capture trick (mask-first, "
+            "project survivors); KD math runs on the resulting [N, V] tensor."
+        },
     )
     use_liger_swiglu_mlp: bool = field(
         default=False,
-        metadata={"help": "Monkey-patch GraniteSWAMLP.forward to use Liger's "
-                  "tiled SwiGLU MLP (apply_tiled_mlp + LigerSiLUMulFunction). "
-                  "Shards the MLP along the sequence dim (auto "
-                  "num_shards = ceil(seqlen / hidden_size)) so per-shard "
-                  "activation peak is intermediate_size * seqlen/num_shards "
-                  "instead of intermediate_size * seqlen. Recomputes forward "
-                  "per shard in backward, so MLP forward cost grows ~2-3x. "
-                  "Required for long-context (>=64K) GraniteSWA training "
-                  "to avoid backward-pass OOM. Distinct from "
-                  "use_liger_memory_opt, which only touches the loss path."}
+        metadata={
+            "help": "Monkey-patch GraniteSWAMLP.forward to use Liger's "
+            "tiled SwiGLU MLP (apply_tiled_mlp + LigerSiLUMulFunction). "
+            "Shards the MLP along the sequence dim (auto "
+            "num_shards = ceil(seqlen / hidden_size)) so per-shard "
+            "activation peak is intermediate_size * seqlen/num_shards "
+            "instead of intermediate_size * seqlen. Recomputes forward "
+            "per shard in backward, so MLP forward cost grows ~2-3x. "
+            "Required for long-context (>=64K) GraniteSWA training "
+            "to avoid backward-pass OOM. Distinct from "
+            "use_liger_memory_opt, which only touches the loss path."
+        },
     )
 
     # ---- Off-policy KD with precomputed top-K teacher logits ----
     precomputed_logits_dir: str = field(
         default="",
-        metadata={"help": "Path to a directory produced by data/precompute_logits.py. "
-                  "If set, the trainer reads precomputed teacher top-K logits "
-                  "from this directory and uses a forward-KL distillation loss."}
+        metadata={
+            "help": "Path to a directory produced by data/precompute_logits.py. "
+            "If set, the trainer reads precomputed teacher top-K logits "
+            "from this directory and uses a forward-KL distillation loss."
+        },
     )
-    kd_top_k: int = field(default=256, metadata={"help": "Sanity-check top-K against meta.json."})
+    kd_top_k: int = field(
+        default=256, metadata={"help": "Sanity-check top-K against meta.json."}
+    )
     kd_weight: float = field(default=1.0, metadata={"help": "Weight on the KL term."})
-    ce_weight: float = field(default=0.0, metadata={"help": "Weight on the cross-entropy term."})
-    kd_temperature: float = field(default=1.0, metadata={"help": "Softmax temperature for KD."})
+    ce_weight: float = field(
+        default=0.0, metadata={"help": "Weight on the cross-entropy term."}
+    )
+    kd_temperature: float = field(
+        default=1.0, metadata={"help": "Softmax temperature for KD."}
+    )
 
     # Index-side slicing/filter flags (applied to non-skipped index.jsonl rows)
     dataset_subsample_start: float = field(default=0.0)
@@ -327,8 +361,10 @@ class CustomArguments:
     filter_rag_only: bool = field(default=False)
     filter_strict: bool = field(
         default=False,
-        metadata={"help": "Kept for compatibility with subsample_sft_4.1.py CLI; "
-                  "filtering on the merged index is already per-row strict."}
+        metadata={
+            "help": "Kept for compatibility with subsample_sft_4.1.py CLI; "
+            "filtering on the merged index is already per-row strict."
+        },
     )
 
     # ---- Added for the granite.build step. Everything above this line is the earlier checkout's.
@@ -346,9 +382,11 @@ class CustomArguments:
     # ['--effective_batch_size', '192']`.
     effective_batch_size: int | None = field(
         default=None,
-        metadata={"help": "Optional. The per_device x grad_accum x world_size product this "
-                          "config was tuned for. When set, a run whose actual product differs "
-                          "aborts before the model is loaded. Nothing reads it as a setting."},
+        metadata={
+            "help": "Optional. The per_device x grad_accum x world_size product this "
+            "config was tuned for. When set, a run whose actual product differs "
+            "aborts before the model is loaded. Nothing reads it as a setting."
+        },
     )
 
     # ---- Experiment tracking. ClearML is the DEFAULT backend; W&B is optional. The rules and
@@ -370,29 +408,39 @@ class CustomArguments:
     # files consistent" by copying gold.py's omission across; the asymmetry is upstream's.
     clearml_project: str | None = field(
         default=None,
-        metadata={"help": "ClearML project name (-> CLEARML_PROJECT). Required to enable ClearML. "
-                          "ClearML has no `entity`: which workspace receives the task is carried "
-                          "by the credentials (clearml.conf / CLEARML_API_*), not by this config."},
+        metadata={
+            "help": "ClearML project name (-> CLEARML_PROJECT). Required to enable ClearML. "
+            "ClearML has no `entity`: which workspace receives the task is carried "
+            "by the credentials (clearml.conf / CLEARML_API_*), not by this config."
+        },
     )
     clearml_run_name: str | None = field(
         default=None,
-        metadata={"help": "ClearML task name (-> CLEARML_TASK). Optional: derived from this "
-                          "config's filename when omitted, plus the LSF job id when there is one. "
-                          "Note ClearML ignores TrainingArguments.run_name entirely."},
+        metadata={
+            "help": "ClearML task name (-> CLEARML_TASK). Optional: derived from this "
+            "config's filename when omitted, plus the LSF job id when there is one. "
+            "Note ClearML ignores TrainingArguments.run_name entirely."
+        },
     )
     wandb_entity: str | None = field(
         default=None,
-        metadata={"help": "W&B entity (-> WANDB_ENTITY). Required together with wandb_project to "
-                          "enable W&B; a partial config aborts rather than logging to a default."},
+        metadata={
+            "help": "W&B entity (-> WANDB_ENTITY). Required together with wandb_project to "
+            "enable W&B; a partial config aborts rather than logging to a default."
+        },
     )
     wandb_project: str | None = field(
         default=None,
-        metadata={"help": "W&B project (-> WANDB_PROJECT). Required together with wandb_entity."},
+        metadata={
+            "help": "W&B project (-> WANDB_PROJECT). Required together with wandb_entity."
+        },
     )
     wandb_run_name: str | None = field(
         default=None,
-        metadata={"help": "W&B run name (-> TrainingArguments.run_name, which is what transformers "
-                          "passes to wandb.init as `name`). Optional; auto-derived when omitted."},
+        metadata={
+            "help": "W&B run name (-> TrainingArguments.run_name, which is what transformers "
+            "passes to wandb.init as `name`). Optional; auto-derived when omitted."
+        },
     )
 
 
@@ -426,14 +474,18 @@ class KDDataCollator:
         lg_path = os.path.join(self.shards_dir, f"logits_{shard_id:06d}.bin")
         idx_bytes = os.path.getsize(idx_path)
         lg_bytes = os.path.getsize(lg_path)
-        idx_rows = idx_bytes // (self.top_k * 4)   # int32
-        lg_rows = lg_bytes // (self.top_k * 2)     # float16
+        idx_rows = idx_bytes // (self.top_k * 4)  # int32
+        lg_rows = lg_bytes // (self.top_k * 2)  # float16
         if idx_rows != lg_rows:
             raise RuntimeError(
                 f"Shard {shard_id}: indices rows={idx_rows} != logits rows={lg_rows}"
             )
-        idx_mm = np.memmap(idx_path, dtype=np.int32, mode="r", shape=(idx_rows, self.top_k))
-        lg_mm = np.memmap(lg_path, dtype=np.float16, mode="r", shape=(lg_rows, self.top_k))
+        idx_mm = np.memmap(
+            idx_path, dtype=np.int32, mode="r", shape=(idx_rows, self.top_k)
+        )
+        lg_mm = np.memmap(
+            lg_path, dtype=np.float16, mode="r", shape=(lg_rows, self.top_k)
+        )
         self._idx_mmaps[shard_id] = idx_mm
         self._lg_mmaps[shard_id] = lg_mm
         return idx_mm, lg_mm
@@ -458,15 +510,23 @@ class KDDataCollator:
             if n <= 0:
                 continue
             idx_mm, lg_mm = self._get_mmap(shard_id)
-            idx_chunks.append(torch.from_numpy(np.asarray(idx_mm[offset:offset + n])).long())
-            lg_chunks.append(torch.from_numpy(np.asarray(lg_mm[offset:offset + n])).float())
+            idx_chunks.append(
+                torch.from_numpy(np.asarray(idx_mm[offset : offset + n])).long()
+            )
+            lg_chunks.append(
+                torch.from_numpy(np.asarray(lg_mm[offset : offset + n])).float()
+            )
 
         if idx_chunks:
             batch["teacher_topk_indices"] = torch.cat(idx_chunks, dim=0)
             batch["teacher_topk_logits"] = torch.cat(lg_chunks, dim=0)
         else:
-            batch["teacher_topk_indices"] = torch.zeros((0, self.top_k), dtype=torch.long)
-            batch["teacher_topk_logits"] = torch.zeros((0, self.top_k), dtype=torch.float32)
+            batch["teacher_topk_indices"] = torch.zeros(
+                (0, self.top_k), dtype=torch.long
+            )
+            batch["teacher_topk_logits"] = torch.zeros(
+                (0, self.top_k), dtype=torch.float32
+            )
         return batch
 
 
@@ -504,8 +564,11 @@ class CustomSFTTrainer(SFTTrainer):
 
         if use_liger_memory_opt or self.args.use_liger_kernel:
             if not is_liger_kernel_available():
-                raise ImportError("use_liger_memory_opt=True but liger-kernel is not installed.")
+                raise ImportError(
+                    "use_liger_memory_opt=True but liger-kernel is not installed."
+                )
             from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
+
             self.liger_ce_loss = LigerFusedLinearCrossEntropyLoss(
                 ignore_index=-100,
                 reduction="mean",
@@ -527,12 +590,20 @@ class CustomSFTTrainer(SFTTrainer):
                 if col not in self._signature_columns:
                     self._signature_columns.append(col)
 
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+    def compute_loss(
+        self, model, inputs, return_outputs=False, num_items_in_batch=None
+    ):
         if self.precomputed_logits_dir:
-            return self._compute_loss_kd(model, inputs, return_outputs, num_items_in_batch)
+            return self._compute_loss_kd(
+                model, inputs, return_outputs, num_items_in_batch
+            )
         if hasattr(self, "liger_ce_loss"):
-            return self._compute_loss_liger(model, inputs, return_outputs, num_items_in_batch)
-        return self._compute_loss_default(model, inputs, return_outputs, num_items_in_batch)
+            return self._compute_loss_liger(
+                model, inputs, return_outputs, num_items_in_batch
+            )
+        return self._compute_loss_default(
+            model, inputs, return_outputs, num_items_in_batch
+        )
 
     def _mark_lm_head_persistent(self):
         """On ZeRO-3, mark lm_head.weight (and bias) with is_external_param=True
@@ -583,7 +654,9 @@ class CustomSFTTrainer(SFTTrainer):
     def _project_masked_hidden(self, hidden_masked, lm_head, lm_head_bias):
         return F.linear(hidden_masked, lm_head.weight, lm_head_bias)
 
-    def _compute_loss_liger(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+    def _compute_loss_liger(
+        self, model, inputs, return_outputs=False, num_items_in_batch=None
+    ):
         self._mark_lm_head_persistent()
         labels = inputs.pop("labels")
         inputs["use_cache"] = False
@@ -630,6 +703,7 @@ class CustomSFTTrainer(SFTTrainer):
 
         if self.is_deepspeed_enabled:
             import deepspeed
+
             ctx = deepspeed.zero.GatheredParameters(gather_params, modifier_rank=None)
         else:
             ctx = nullcontext()
@@ -646,7 +720,11 @@ class CustomSFTTrainer(SFTTrainer):
 
         if mode == "train":
             if "attention_mask" in inputs:
-                num_tokens = self.accelerator.gather_for_metrics(inputs["attention_mask"].sum()).sum().item()
+                num_tokens = (
+                    self.accelerator.gather_for_metrics(inputs["attention_mask"].sum())
+                    .sum()
+                    .item()
+                )
             else:
                 raise ValueError("Expected 'attention_mask' in inputs.")
             self._total_train_tokens += num_tokens
@@ -654,7 +732,9 @@ class CustomSFTTrainer(SFTTrainer):
 
         return (loss, outputs) if return_outputs else loss
 
-    def _compute_loss_default(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+    def _compute_loss_default(
+        self, model, inputs, return_outputs=False, num_items_in_batch=None
+    ):
         # Pop labels to prevent model from computing loss internally on full logits.
         # Model-internal CE stores full log_softmax [B*T, V] for backward → OOM.
         # Instead, mask first then CE on the small subset (same as GOLD's cross_entropy_loss).
@@ -686,7 +766,11 @@ class CustomSFTTrainer(SFTTrainer):
 
         if mode == "train":
             if "attention_mask" in inputs:
-                num_tokens = self.accelerator.gather_for_metrics(inputs["attention_mask"].sum()).sum().item()
+                num_tokens = (
+                    self.accelerator.gather_for_metrics(inputs["attention_mask"].sum())
+                    .sum()
+                    .item()
+                )
             else:
                 raise ValueError("Expected 'attention_mask' in inputs.")
             self._total_train_tokens += num_tokens
@@ -694,17 +778,25 @@ class CustomSFTTrainer(SFTTrainer):
 
         return (loss, outputs) if return_outputs else loss
 
-    def _compute_loss_kd(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+    def _compute_loss_kd(
+        self, model, inputs, return_outputs=False, num_items_in_batch=None
+    ):
         # Forward KL on the renormalized top-K teacher distribution, plus
         # optional CE blend. Mirrors `_compute_loss_default`'s mask-first
         # idiom to avoid materializing full [B*T, V] log_softmax for backward.
         labels = inputs.pop("labels")
-        t_idx = inputs.pop("teacher_topk_indices").to(self.accelerator.device, non_blocking=True)
-        t_lg = inputs.pop("teacher_topk_logits").to(self.accelerator.device, non_blocking=True)
+        t_idx = inputs.pop("teacher_topk_indices").to(
+            self.accelerator.device, non_blocking=True
+        )
+        t_lg = inputs.pop("teacher_topk_logits").to(
+            self.accelerator.device, non_blocking=True
+        )
         inputs["use_cache"] = False
 
         if hasattr(self, "liger_ce_loss"):
-            outputs, hidden, lm_head, lm_head_bias, logits_scaling = self._forward_capture_hidden(model, inputs)
+            outputs, hidden, lm_head, lm_head_bias, logits_scaling = (
+                self._forward_capture_hidden(model, inputs)
+            )
             hidden = hidden[:, :-1].contiguous()
             if logits_scaling != 1.0:
                 hidden = hidden / logits_scaling
@@ -715,14 +807,16 @@ class CustomSFTTrainer(SFTTrainer):
             if flat_labels.numel() == 0:
                 loss = hidden.sum() * 0.0
                 return (loss, outputs) if return_outputs else loss
-            flat_logits = self._project_masked_hidden(hidden_masked, lm_head, lm_head_bias)
+            flat_logits = self._project_masked_hidden(
+                hidden_masked, lm_head, lm_head_bias
+            )
         else:
             outputs = model(**inputs)
             logits = outputs.logits[:, :-1, :]
             shift_labels = labels[:, 1:]
             mask = (shift_labels != -100).view(-1)
-            flat_logits = logits.reshape(-1, logits.size(-1))[mask]   # [N, V]
-            flat_labels = shift_labels.reshape(-1)[mask]              # [N]
+            flat_logits = logits.reshape(-1, logits.size(-1))[mask]  # [N, V]
+            flat_labels = shift_labels.reshape(-1)[mask]  # [N]
 
         if flat_logits.size(0) != t_idx.size(0):
             raise RuntimeError(
@@ -733,12 +827,13 @@ class CustomSFTTrainer(SFTTrainer):
             )
 
         T = self.kd_temperature
-        t_log_probs = F.log_softmax(t_lg.float() / T, dim=-1)              # [N, K]
+        t_log_probs = F.log_softmax(t_lg.float() / T, dim=-1)  # [N, K]
         t_probs = t_log_probs.exp()
         s_log_probs_topk = torch.gather(
             F.log_softmax(flat_logits / T, dim=-1),
-            dim=-1, index=t_idx.long(),
-        )                                                                   # [N, K]
+            dim=-1,
+            index=t_idx.long(),
+        )  # [N, K]
         kl = (t_probs * (t_log_probs - s_log_probs_topk)).sum(-1).mean()
         loss = self.kd_weight * (T * T) * kl
         if self.ce_weight > 0.0:
@@ -762,8 +857,10 @@ class CustomSFTTrainer(SFTTrainer):
             # step that amplified first-step NCCL watchdog hangs on 192-rank
             # ZeRO-3, confirmed by direct measurement, and added measurable step-0 latency.
             local_count = inputs["attention_mask"].sum().detach()
-            if not hasattr(self, "_pending_local_tokens") \
-                    or self._pending_local_tokens.device != local_count.device:
+            if (
+                not hasattr(self, "_pending_local_tokens")
+                or self._pending_local_tokens.device != local_count.device
+            ):
                 self._pending_local_tokens = torch.zeros(
                     (), dtype=torch.long, device=local_count.device
                 )
@@ -772,7 +869,11 @@ class CustomSFTTrainer(SFTTrainer):
             self._pending_step_count += 1
             flush_every = max(int(getattr(self.args, "logging_steps", 1) or 1), 1)
             if self._pending_step_count >= flush_every:
-                synced = self.accelerator.gather_for_metrics(self._pending_local_tokens).sum().item()
+                synced = (
+                    self.accelerator.gather_for_metrics(self._pending_local_tokens)
+                    .sum()
+                    .item()
+                )
                 self._total_train_tokens += synced
                 self._pending_local_tokens.zero_()
                 self._pending_step_count = 0
@@ -807,20 +908,33 @@ class CustomSFTTrainer(SFTTrainer):
             # also makes the ONE failure mode legible -- a key that changes when it should not
             # (an mtime in the dataset fingerprint, say) shows up as MISS on every run.
             if state.is_main_process:
-                print(f"[sft-cache] {'HIT ' if os.path.exists(info_path) else 'MISS'} "
-                      f"{cache_split_dir}", flush=True)
+                print(
+                    f"[sft-cache] {'HIT ' if os.path.exists(info_path) else 'MISS'} "
+                    f"{cache_split_dir}",
+                    flush=True,
+                )
             with state.main_process_first():
                 if not os.path.exists(info_path):
                     if state.is_main_process:
                         prepared = self._run_map_chain(
-                            dataset, processing_class, args, packing, formatting_func, dataset_name
+                            dataset,
+                            processing_class,
+                            args,
+                            packing,
+                            formatting_func,
+                            dataset_name,
                         )
                         os.makedirs(cache_dir, exist_ok=True)
                         prepared.save_to_disk(cache_split_dir)
                         key_path = os.path.join(cache_dir, "key.json")
-                        if not os.path.exists(key_path) and self.sft_cache_key_blob is not None:
+                        if (
+                            not os.path.exists(key_path)
+                            and self.sft_cache_key_blob is not None
+                        ):
                             with open(key_path, "w") as f:
-                                json.dump(self.sft_cache_key_blob, f, indent=2, sort_keys=True)
+                                json.dump(
+                                    self.sft_cache_key_blob, f, indent=2, sort_keys=True
+                                )
 
             loaded = load_from_disk(cache_split_dir)
             if args.shuffle_dataset:
@@ -873,7 +987,9 @@ class CustomSFTTrainer(SFTTrainer):
 
         if formatting_func is not None and not is_processed:
             if isinstance(dataset, Dataset):
-                map_kwargs["desc"] = f"Applying formatting function to {dataset_name} dataset"
+                map_kwargs["desc"] = (
+                    f"Applying formatting function to {dataset_name} dataset"
+                )
 
             def _func(example):
                 return {"text": formatting_func(example)}
@@ -888,7 +1004,9 @@ class CustomSFTTrainer(SFTTrainer):
                 column_names = get_dataset_column_names(dataset)
                 dataset = dataset.map(
                     maybe_convert_to_chatml,
-                    remove_columns="conversations" if "conversations" in column_names else None,
+                    remove_columns=(
+                        "conversations" if "conversations" in column_names else None
+                    ),
                     **map_kwargs,
                 )
 
@@ -900,11 +1018,17 @@ class CustomSFTTrainer(SFTTrainer):
                 def add_eos(example, eos_token):
                     if "text" in example and not example["text"].endswith(eos_token):
                         example["text"] = example["text"] + eos_token
-                    elif "completion" in example and not example["completion"].endswith(eos_token):
+                    elif "completion" in example and not example["completion"].endswith(
+                        eos_token
+                    ):
                         example["completion"] = example["completion"] + eos_token
                     return example
 
-                eos_token = processing_class.tokenizer.eos_token if self._is_vlm else processing_class.eos_token
+                eos_token = (
+                    processing_class.tokenizer.eos_token
+                    if self._is_vlm
+                    else processing_class.eos_token
+                )
                 dataset = dataset.map(
                     add_eos,
                     fn_kwargs={"eos_token": eos_token},
@@ -917,11 +1041,19 @@ class CustomSFTTrainer(SFTTrainer):
 
             response_template_ids = None
             if self.response_template:
-                response_template_ids = processing_class.encode(self.response_template, add_special_tokens=False)
+                response_template_ids = processing_class.encode(
+                    self.response_template, add_special_tokens=False
+                )
 
             kd_mode = bool(self.precomputed_logits_dir)
 
-            def _tokenize_one_row(example, processing_class, dataset_text_field, assistant_only_loss, response_template_ids):
+            def _tokenize_one_row(
+                example,
+                processing_class,
+                dataset_text_field,
+                assistant_only_loss,
+                response_template_ids,
+            ):
                 # Parse tools from JSON string before passing to apply_chat_template
                 tools = example.get("tools")
                 if tools and isinstance(tools, str):
@@ -949,7 +1081,11 @@ class CustomSFTTrainer(SFTTrainer):
                             tools=tools,
                             **chat_template_kwargs,
                         )
-                        prompt_ids = prompt_ids[0] if isinstance(prompt_ids[0], list) else prompt_ids
+                        prompt_ids = (
+                            prompt_ids[0]
+                            if isinstance(prompt_ids[0], list)
+                            else prompt_ids
+                        )
                         prompt_completion_processed = processing_class.apply_chat_template(
                             prompt + completion,
                             return_dict=True,
@@ -960,7 +1096,9 @@ class CustomSFTTrainer(SFTTrainer):
                             # response-template fallback below, whose span ends at <|im_end|> while
                             # {% generation %} also covers the newline after it -- one token of disagreement
                             # per assistant turn, and every KD run died on its first row, confirmed directly.
-                            return_assistant_tokens_mask=(assistant_only_loss or kd_mode),
+                            return_assistant_tokens_mask=(
+                                assistant_only_loss or kd_mode
+                            ),
                             tools=tools,
                             **chat_template_kwargs,
                         )
@@ -970,20 +1108,30 @@ class CustomSFTTrainer(SFTTrainer):
                         }
                         prompt_completion_ids = prompt_completion_processed["input_ids"]
                         if "assistant_masks" in prompt_completion_processed:
-                            output["assistant_masks"] = prompt_completion_processed["assistant_masks"]
+                            output["assistant_masks"] = prompt_completion_processed[
+                                "assistant_masks"
+                            ]
                     else:
-                        prompt_ids = processing_class(text=example["prompt"])["input_ids"]
-                        prompt_completion_ids = processing_class(text=example["prompt"] + example["completion"])[
+                        prompt_ids = processing_class(text=example["prompt"])[
                             "input_ids"
                         ]
-                        prompt_ids = prompt_ids[0] if isinstance(prompt_ids[0], list) else prompt_ids
+                        prompt_completion_ids = processing_class(
+                            text=example["prompt"] + example["completion"]
+                        )["input_ids"]
+                        prompt_ids = (
+                            prompt_ids[0]
+                            if isinstance(prompt_ids[0], list)
+                            else prompt_ids
+                        )
                         prompt_completion_ids = (
                             prompt_completion_ids[0]
                             if isinstance(prompt_completion_ids[0], list)
                             else prompt_completion_ids
                         )
 
-                    completion_mask = [0] * len(prompt_ids) + [1] * (len(prompt_completion_ids) - len(prompt_ids))
+                    completion_mask = [0] * len(prompt_ids) + [1] * (
+                        len(prompt_completion_ids) - len(prompt_ids)
+                    )
                     output["input_ids"] = prompt_completion_ids
                     output["completion_mask"] = completion_mask
 
@@ -996,14 +1144,27 @@ class CustomSFTTrainer(SFTTrainer):
                             tokenize=True,
                             # `or kd_mode` for the same reason as the prompt/completion branch above: the
                             # mask is KD's alignment key, independent of what the loss covers.
-                            return_assistant_tokens_mask=(assistant_only_loss or kd_mode),
+                            return_assistant_tokens_mask=(
+                                assistant_only_loss or kd_mode
+                            ),
                             tools=tools,
                             **chat_template_kwargs,
                         )
-                        processed = {k: v[0] if isinstance(v[0], list) else v for k, v in processed.items()}
-                        output = {k: processed[k] for k in ("input_ids", "assistant_masks") if k in processed}
+                        processed = {
+                            k: v[0] if isinstance(v[0], list) else v
+                            for k, v in processed.items()
+                        }
+                        output = {
+                            k: processed[k]
+                            for k in ("input_ids", "assistant_masks")
+                            if k in processed
+                        }
                     else:
-                        output = {"input_ids": processing_class(text=example[dataset_text_field])["input_ids"]}
+                        output = {
+                            "input_ids": processing_class(
+                                text=example[dataset_text_field]
+                            )["input_ids"]
+                        }
 
                 needs_fallback = (
                     "assistant_masks" not in output
@@ -1015,7 +1176,7 @@ class CustomSFTTrainer(SFTTrainer):
                     template_len = len(response_template_ids)
                     i = 0
                     while i <= len(input_ids) - template_len:
-                        if input_ids[i:i + template_len] == response_template_ids:
+                        if input_ids[i : i + template_len] == response_template_ids:
                             start_idx = i + template_len
                             end_idx = len(input_ids)
                             eos_id = processing_class.eos_token_id
@@ -1057,7 +1218,13 @@ class CustomSFTTrainer(SFTTrainer):
 
                 return output
 
-            def tokenize_fn(examples, processing_class, dataset_text_field, assistant_only_loss, response_template_ids=None):
+            def tokenize_fn(
+                examples,
+                processing_class,
+                dataset_text_field,
+                assistant_only_loss,
+                response_template_ids=None,
+            ):
                 keys = list(examples.keys())
                 batch_size = len(examples[keys[0]])
                 output_batch: dict = {}
@@ -1095,8 +1262,12 @@ class CustomSFTTrainer(SFTTrainer):
                                 f"mechanism; a large or erratic difference points at the template."
                             )
                     output_batch["shard_id"] = [int(x) for x in examples["shard_id"]]
-                    output_batch["shard_offset"] = [int(x) for x in examples["shard_offset"]]
-                    output_batch["num_assistant_tokens"] = [int(x) for x in expected_batch]
+                    output_batch["shard_offset"] = [
+                        int(x) for x in examples["shard_offset"]
+                    ]
+                    output_batch["num_assistant_tokens"] = [
+                        int(x) for x in expected_batch
+                    ]
 
                 return output_batch
 
@@ -1114,7 +1285,9 @@ class CustomSFTTrainer(SFTTrainer):
 
         if packing:
             if args.max_length is None:
-                raise ValueError("When packing is enabled, `max_length` can't be `None`.")
+                raise ValueError(
+                    "When packing is enabled, `max_length` can't be `None`."
+                )
             if isinstance(dataset, Dataset):
                 map_kwargs["desc"] = f"Packing {dataset_name} dataset"
 
@@ -1129,7 +1302,9 @@ class CustomSFTTrainer(SFTTrainer):
             if args.shuffle_dataset:
                 dataset = dataset.shuffle(seed=args.seed)
 
-            dataset = pack_dataset(dataset, args.max_length, args.packing_strategy, map_kwargs)
+            dataset = pack_dataset(
+                dataset, args.max_length, args.packing_strategy, map_kwargs
+            )
         elif args.max_length is not None:
             if isinstance(dataset, Dataset):
                 map_kwargs["desc"] = f"Truncating {dataset_name} dataset"
@@ -1152,39 +1327,59 @@ class CustomSFTTrainer(SFTTrainer):
                 }
 
             if isinstance(dataset, Dataset):
-                map_kwargs["desc"] = f"Computing assistant_logits_used for {dataset_name} dataset"
+                map_kwargs["desc"] = (
+                    f"Computing assistant_logits_used for {dataset_name} dataset"
+                )
             dataset = dataset.map(_assistant_logits_used, batched=True, **map_kwargs)
 
         if args.use_liger_kernel:
-            collator_expected_keys = {"input_ids", "seq_lengths", "completion_mask", "assistant_masks"}
-            column_names = get_dataset_column_names(dataset)
-            dataset = dataset.select_columns(collator_expected_keys.intersection(column_names))
-        elif kd_mode:
             collator_expected_keys = {
-                "input_ids", "seq_lengths", "completion_mask", "assistant_masks",
-                "shard_id", "shard_offset", "assistant_logits_used",
+                "input_ids",
+                "seq_lengths",
+                "completion_mask",
+                "assistant_masks",
             }
             column_names = get_dataset_column_names(dataset)
-            dataset = dataset.select_columns(collator_expected_keys.intersection(column_names))
+            dataset = dataset.select_columns(
+                collator_expected_keys.intersection(column_names)
+            )
+        elif kd_mode:
+            collator_expected_keys = {
+                "input_ids",
+                "seq_lengths",
+                "completion_mask",
+                "assistant_masks",
+                "shard_id",
+                "shard_offset",
+                "assistant_logits_used",
+            }
+            column_names = get_dataset_column_names(dataset)
+            dataset = dataset.select_columns(
+                collator_expected_keys.intersection(column_names)
+            )
 
         return dataset
 
 
 class DebugSFTTrainer(CustomSFTTrainer):
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+    def compute_loss(
+        self, model, inputs, return_outputs=False, num_items_in_batch=None
+    ):
         # --- Debug: inspect tokenization and loss masking ---
         print(inputs["input_ids"].shape)
         for i in range(inputs["input_ids"].shape[0]):
-            print('-' * 60)
+            print("-" * 60)
             print(self.processing_class.decode(inputs["input_ids"][i]))
-        print('-' * 60)
+        print("-" * 60)
         valid_mask = inputs["labels"] != -100
         decoded_labels = [
             self.processing_class.decode(ids[mask])
             for ids, mask in zip(inputs["input_ids"], valid_mask)
         ]
         print(decoded_labels)
-        import pdb; pdb.set_trace()
+        import pdb
+
+        pdb.set_trace()
         # --- End debug ---
         return super().compute_loss(model, inputs, return_outputs, num_items_in_batch)
 
@@ -1220,7 +1415,9 @@ def _compute_sft_cache_dir(script_args, training_args, custom_args, tokenizer):
             dataset_id["index_size"] = st.st_size
         except OSError:
             pass
-    elif script_args.dataset_name.endswith(".json") or script_args.dataset_name.endswith(".jsonl"):
+    elif script_args.dataset_name.endswith(
+        ".json"
+    ) or script_args.dataset_name.endswith(".jsonl"):
         try:
             st = os.stat(script_args.dataset_name)
             dataset_id["mtime"] = st.st_mtime
@@ -1275,7 +1472,8 @@ def _compute_sft_cache_dir(script_args, training_args, custom_args, tokenizer):
     if not cache_root:
         cache_root = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "data", "preprocessed_sft_cache",
+            "data",
+            "preprocessed_sft_cache",
         )
     cache_dir = os.path.join(cache_root, hash_hex)
     return cache_dir, key_blob
@@ -1292,6 +1490,7 @@ if __name__ == "__main__":
     # if both were the same code. Compare the DIGEST, not the commit -- see code_provenance.py.
     # Cannot end a run: every failure path prints "unavailable".
     from gb_steps_post_training.distillation import code_provenance as _code_provenance
+
     _code_provenance.report()
 
     print("Script args:")
@@ -1317,12 +1516,15 @@ if __name__ == "__main__":
     ################
     from gb_steps_post_training.distillation.tracking import (
         ALL_CONFIG_FIELDS as _TRACK_FIELDS,
+    )
+    from gb_steps_post_training.distillation.tracking import (
         resolve as _resolve_tracking,
     )
 
     _cfg_path = None
     if "--config" in _sys.argv:
         _cfg_path = _sys.argv[_sys.argv.index("--config") + 1]
+
     # Same two-object fallthrough as gold.py even though all five fields are on CustomArguments
     # here: `custom_args` is asked FIRST and only falls through when it has no such attribute, so
     # a field that ever moves onto SFTConfig (upstream could add wandb_project at any release)
@@ -1335,7 +1537,8 @@ if __name__ == "__main__":
         raise AttributeError(
             f"tracking field {name!r} is on neither CustomArguments nor the SFTConfig. "
             "tracking.py's ALL_CONFIG_FIELDS and sft.py's dataclasses have diverged; "
-            "a companion config check asserts they agree and would have said so.")
+            "a companion config check asserts they agree and would have said so."
+        )
 
     # The teacher hint is the PRECOMPUTE DIRECTORY, and only when there is one. That is what makes
     # the auto-generated run name tell the truth about which of this step's two modes ran: with
@@ -1368,8 +1571,11 @@ if __name__ == "__main__":
     # no server processes carved off the allocation, so the count is simply nodes x gpus_per_node.
     if custom_args.effective_batch_size:
         _ws = int(os.environ.get("WORLD_SIZE", "1"))
-        _actual = (training_args.per_device_train_batch_size
-                   * training_args.gradient_accumulation_steps * _ws)
+        _actual = (
+            training_args.per_device_train_batch_size
+            * training_args.gradient_accumulation_steps
+            * _ws
+        )
         if _actual != custom_args.effective_batch_size:
             raise SystemExit(
                 f"FATAL: this config declares effective_batch_size "
@@ -1378,13 +1584,17 @@ if __name__ == "__main__":
                 f"{training_args.gradient_accumulation_steps} (grad-accum) x {_ws} (ranks).\n"
                 "       The learning rate in this config was chosen for the declared batch, so a "
                 "silent change of shape is a silent change of experiment. Fix the node shape, or "
-                "change effective_batch_size AND re-justify the LR.")
+                "change effective_batch_size AND re-justify the LR."
+            )
         if int(os.environ.get("RANK", "0")) == 0:
-            print(f"batch shape: {_actual} = {training_args.per_device_train_batch_size} x "
-                  f"{training_args.gradient_accumulation_steps} x {_ws} ranks, as declared")
+            print(
+                f"batch shape: {_actual} = {training_args.per_device_train_batch_size} x "
+                f"{training_args.gradient_accumulation_steps} x {_ws} ranks, as declared"
+            )
 
     if custom_args.use_liger_swiglu_mlp:
         from _liger_granite_swa_patch import apply_liger_swiglu_to_granite_swa
+
         apply_liger_swiglu_to_granite_swa()
 
     ################
@@ -1457,7 +1667,9 @@ if __name__ == "__main__":
 
             if state.is_main_process:
                 os.makedirs(dataset_tmpdir[0], exist_ok=True)
-                index_path = os.path.join(custom_args.precomputed_logits_dir, "index.jsonl")
+                index_path = os.path.join(
+                    custom_args.precomputed_logits_dir, "index.jsonl"
+                )
                 rows = []
                 with open(index_path) as f:
                     for line in f:
@@ -1503,6 +1715,7 @@ if __name__ == "__main__":
 
                 if custom_args.dataset_shuffle:
                     import random
+
                     rng = random.Random(custom_args.dataset_subsample_seed)
                     rng.shuffle(rows)
 
@@ -1518,7 +1731,9 @@ if __name__ == "__main__":
                 dist.barrier()
 
             return DatasetDict({"train": load_from_disk(dataset_tmpdir[0])})
-        elif script_args.dataset_name.endswith(".json") or script_args.dataset_name.endswith(".jsonl"):
+        elif script_args.dataset_name.endswith(
+            ".json"
+        ) or script_args.dataset_name.endswith(".jsonl"):
             import pandas as pd
             from datasets import load_from_disk
 
@@ -1526,7 +1741,10 @@ if __name__ == "__main__":
 
             if state.is_main_process:
                 os.makedirs(dataset_tmpdir[0], exist_ok=True)
-                df = pd.read_json(script_args.dataset_name, lines=script_args.dataset_name.endswith(".jsonl"))
+                df = pd.read_json(
+                    script_args.dataset_name,
+                    lines=script_args.dataset_name.endswith(".jsonl"),
+                )
                 dataset = Dataset.from_pandas(df)
                 dataset.save_to_disk(dataset_tmpdir[0])
 
@@ -1539,10 +1757,14 @@ if __name__ == "__main__":
                 "HuggingFaceTB/Countdown-Task-GOLD",
                 "verified_Qwen3-4B-Instruct-2507",
             )
-            assert training_args.eval_strategy == "no", "Countdown dataset does not contain eval split"
+            assert (
+                training_args.eval_strategy == "no"
+            ), "Countdown dataset does not contain eval split"
             return ds
         else:
-            return load_dataset(script_args.dataset_name, name=script_args.dataset_config)
+            return load_dataset(
+                script_args.dataset_name, name=script_args.dataset_config
+            )
 
     def _cleanup_dataset_tmpdir():
         if dataset_tmpdir[0] and os.path.exists(dataset_tmpdir[0]):
@@ -1553,10 +1775,19 @@ if __name__ == "__main__":
     dataset = _load_dataset()
 
     if custom_args.max_dataset_size > 0:
-        dataset[script_args.dataset_train_split] = dataset[script_args.dataset_train_split].select(
-            range(min(custom_args.max_dataset_size, len(dataset[script_args.dataset_train_split])))
+        dataset[script_args.dataset_train_split] = dataset[
+            script_args.dataset_train_split
+        ].select(
+            range(
+                min(
+                    custom_args.max_dataset_size,
+                    len(dataset[script_args.dataset_train_split]),
+                )
+            )
         )
-    print(f"{script_args.dataset_name}: {len(dataset[script_args.dataset_train_split])}")
+    print(
+        f"{script_args.dataset_name}: {len(dataset[script_args.dataset_train_split])}"
+    )
 
     sft_cache_dir, sft_cache_key_blob = _compute_sft_cache_dir(
         script_args, training_args, custom_args, tokenizer
@@ -1564,8 +1795,11 @@ if __name__ == "__main__":
     # Printed with its PROVENANCE. A cache path is the kind of line a reader skims, and the two
     # cases mean different things: an env-set root is a deliberate, persistent location, while
     # the fallback is inside the source tree (or, in an image, inside a discarded layer).
-    _cache_src = ("SFT_PREPROCESS_CACHE_ROOT" if os.environ.get("SFT_PREPROCESS_CACHE_ROOT", "").strip()
-                  else "fallback beside sft.py -- NOT persistent in a container")
+    _cache_src = (
+        "SFT_PREPROCESS_CACHE_ROOT"
+        if os.environ.get("SFT_PREPROCESS_CACHE_ROOT", "").strip()
+        else "fallback beside sft.py -- NOT persistent in a container"
+    )
     print(f"SFT preprocessing cache dir: {sft_cache_dir}  [{_cache_src}]")
 
     ################
@@ -1600,7 +1834,11 @@ if __name__ == "__main__":
         model=model_args.model_name_or_path,
         args=training_args,
         train_dataset=dataset[script_args.dataset_train_split],
-        eval_dataset=dataset[script_args.dataset_test_split] if training_args.eval_strategy != "no" else None,
+        eval_dataset=(
+            dataset[script_args.dataset_test_split]
+            if training_args.eval_strategy != "no"
+            else None
+        ),
         processing_class=tokenizer,
         peft_config=get_peft_config(model_args),
     )
@@ -1609,7 +1847,9 @@ if __name__ == "__main__":
         generation_config = GenerationConfig(
             max_new_tokens=training_args.max_length, do_sample=True, temperature=0.7
         )
-        completions_callback = LogCompletionsCallback(trainer, generation_config, num_prompts=8)
+        completions_callback = LogCompletionsCallback(
+            trainer, generation_config, num_prompts=8
+        )
         trainer.add_callback(completions_callback)
 
     verify_optimization_stack(
@@ -1632,23 +1872,34 @@ if __name__ == "__main__":
     # whose manifests were built by two different implementations could not be compared row for
     # row, which is the one thing this manifest exists to allow.
     _tm_manifest = train_manifest.build_from_trainer(
-        trainer, dataset_path=script_args.dataset_name)
+        trainer, dataset_path=script_args.dataset_name
+    )
     if _tm_manifest is not None:
         _tm_rows = _tm_manifest.get("rows_file", {}).get("entries")
-        print(f"provenance : {_tm_manifest['arm']} arm, "
-              f"{_tm_manifest['rows_available']} rows available"
-              + (f", {_tm_rows} ids -> {train_manifest.CONSUMED_NAME}"
-                 if _tm_rows else f" (no row ids: {_tm_manifest['ids_unavailable_reason']})")
-              + f"; {train_manifest.MANIFEST_NAME} written")
+        print(
+            f"provenance : {_tm_manifest['arm']} arm, "
+            f"{_tm_manifest['rows_available']} rows available"
+            + (
+                f", {_tm_rows} ids -> {train_manifest.CONSUMED_NAME}"
+                if _tm_rows
+                else f" (no row ids: {_tm_manifest['ids_unavailable_reason']})"
+            )
+            + f"; {train_manifest.MANIFEST_NAME} written"
+        )
         _tm_frac = (_tm_manifest.get("schedule") or {}).get("epoch_fraction_scheduled")
         if _tm_frac is not None and _tm_frac < 1.0:
-            print(f"provenance : NOTE this schedule covers {_tm_frac:.1%} of an epoch, so the "
-                  "rows-available count above is an upper bound on rows actually seen")
+            print(
+                f"provenance : NOTE this schedule covers {_tm_frac:.1%} of an epoch, so the "
+                "rows-available count above is an upper bound on rows actually seen"
+            )
 
     # Split ClearML train scalars across per-quantity plots. AFTER the Trainer exists (it adds the
     # ClearMLCallback itself from `report_to`) and BEFORE train() (the callback's setup runs lazily
     # on the first log).
-    from gb_steps_post_training.distillation.clearml_scalar_groups import install as _install_scalar_groups
+    from gb_steps_post_training.distillation.clearml_scalar_groups import (
+        install as _install_scalar_groups,
+    )
+
     _install_scalar_groups(trainer)
 
     if glob.glob(os.path.join(training_args.output_dir, "checkpoint-*")):

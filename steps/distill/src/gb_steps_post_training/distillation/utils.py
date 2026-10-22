@@ -83,15 +83,25 @@ _TOKENIZER_MODE1_PROBES = ("a\n\nb", "public.roads2", "1200", "schema\n\nfollow"
 # id table on the two sides disagrees, these literals encode to different id
 # sequences on each side.
 _TOKENIZER_MODE2_PROBES = (
-    "<tool_call>", "</tool_call>",
-    "<tool_response>", "</tool_response>",
-    "<think>", "</think>",
-    "<think_on>", "<think_off>",
-    "<|start_of_role|>", "<|end_of_role|>",
-    "<schema>", "</schema>",
-    "<tools>", "</tools>",
-    "<documents>", "</documents>",
-    "<|end_of_text|>", "<|pad|>", "<|unk|>",
+    "<tool_call>",
+    "</tool_call>",
+    "<tool_response>",
+    "</tool_response>",
+    "<think>",
+    "</think>",
+    "<think_on>",
+    "<think_off>",
+    "<|start_of_role|>",
+    "<|end_of_role|>",
+    "<schema>",
+    "</schema>",
+    "<tools>",
+    "</tools>",
+    "<documents>",
+    "</documents>",
+    "<|end_of_text|>",
+    "<|pad|>",
+    "<|unk|>",
 )
 
 # Compound chat-template-shaped probe — catches interactions between mode-1
@@ -150,7 +160,7 @@ def verify_fast_tokenizer(tokenizer, model_dir: str, *, source_label: str) -> No
     footer = (
         "See docs/tokenizer_mismatch.md → "
         "'Which tokenizer was the teacher trained with?' for root cause. "
-        "Remediation: set tokenizer_class=\"PreTrainedTokenizerFast\" in "
+        'Remediation: set tokenizer_class="PreTrainedTokenizerFast" in '
         "tokenizer_config.json (what retag_student.py does), or drop the key "
         "entirely for a tokenizer-only dir with no config.json (what "
         "build_overlay.py does). Stripping legacy vocab.json/merges.txt is NOT "
@@ -165,19 +175,15 @@ def verify_fast_tokenizer(tokenizer, model_dir: str, *, source_label: str) -> No
 
     if not getattr(tokenizer, "is_fast", False):
         raise RuntimeError(
-            header
-            + f"  loaded tokenizer class is {type(tokenizer).__name__!r} "
-              "(is_fast=False). tokenizer.json was not honored on load.\n"
-            + footer
+            header + f"  loaded tokenizer class is {type(tokenizer).__name__!r} "
+            "(is_fast=False). tokenizer.json was not honored on load.\n" + footer
         )
 
     tokenizer_json = os.path.join(model_dir, "tokenizer.json")
     if not os.path.isfile(tokenizer_json):
         raise RuntimeError(
-            header
-            + f"  {tokenizer_json} does not exist; cannot verify against a "
-              "declared fast tokenizer.\n"
-            + footer
+            header + f"  {tokenizer_json} does not exist; cannot verify against a "
+            "declared fast tokenizer.\n" + footer
         )
 
     ref = PreTrainedTokenizerFast(tokenizer_file=tokenizer_json)
@@ -186,10 +192,8 @@ def verify_fast_tokenizer(tokenizer, model_dir: str, *, source_label: str) -> No
     ref_backend = _tokenizer_backend(ref)
     if loaded_backend is None or ref_backend is None:
         raise RuntimeError(
-            header
-            + "  could not access the tokenizers-lib backend on one of the "
-              "tokenizers (mixed fast/slow load path).\n"
-            + footer
+            header + "  could not access the tokenizers-lib backend on one of the "
+            "tokenizers (mixed fast/slow load path).\n" + footer
         )
     for attr in ("pre_tokenizer", "post_processor", "normalizer", "decoder"):
         loaded_val = repr(getattr(loaded_backend, attr, None))
@@ -208,9 +212,8 @@ def verify_fast_tokenizer(tokenizer, model_dir: str, *, source_label: str) -> No
         ref_ids = ref.encode(probe, add_special_tokens=False)
         if loaded_ids != ref_ids:
             raise RuntimeError(
-                header
-                + f"  Mode-1 encoding probe {probe!r} differs vs "
-                  "tokenizer.json reference:\n"
+                header + f"  Mode-1 encoding probe {probe!r} differs vs "
+                "tokenizer.json reference:\n"
                 + f"    loaded ids:    {loaded_ids}\n"
                 + f"    reference ids: {ref_ids}\n"
                 + footer
@@ -270,10 +273,8 @@ def verify_tokenizer_consistency(
     ref_backend = _tokenizer_backend(ref_tokenizer)
     if (train_backend is None) != (ref_backend is None):
         raise RuntimeError(
-            header
-            + "  one tokenizer exposes a rust backend and the other does "
-              "not (mixed fast/slow load path).\n"
-            + footer
+            header + "  one tokenizer exposes a rust backend and the other does "
+            "not (mixed fast/slow load path).\n" + footer
         )
     if train_backend is not None and ref_backend is not None:
         for attr in ("pre_tokenizer", "post_processor", "normalizer", "decoder"):
@@ -309,7 +310,11 @@ def verify_tokenizer_consistency(
             )
 
     # 6. Extended encoding probe battery — Mode-1 + Mode-2 + one compound.
-    for probe in (*_TOKENIZER_MODE1_PROBES, *_TOKENIZER_MODE2_PROBES, *_TOKENIZER_COMPOUND_PROBES):
+    for probe in (
+        *_TOKENIZER_MODE1_PROBES,
+        *_TOKENIZER_MODE2_PROBES,
+        *_TOKENIZER_COMPOUND_PROBES,
+    ):
         train_ids = train_tokenizer.encode(probe, add_special_tokens=False)
         ref_ids = ref_tokenizer.encode(probe, add_special_tokens=False)
         if train_ids != ref_ids:
@@ -339,19 +344,25 @@ class CustomDataCollatorForChatML:
 
     def __post_init__(self):
         if self.tokenizer.pad_token_id is None:
-            raise ValueError("The tokenizer does not have a pad token. Please set `pad_token_id` in the tokenizer.")
+            raise ValueError(
+                "The tokenizer does not have a pad token. Please set `pad_token_id` in the tokenizer."
+            )
         if self.max_length is None:
             # set a sensible default
             self.max_length = min(self.tokenizer.model_max_length, 1024)
 
         # Tokenize templates once during initialization
         if self.response_template is not None:
-            self.response_token_ids = self.tokenizer.encode(self.response_template, add_special_tokens=False)
+            self.response_token_ids = self.tokenizer.encode(
+                self.response_template, add_special_tokens=False
+            )
         else:
             self.response_token_ids = None
 
         if self.instruction_template is not None:
-            self.instruction_token_ids = self.tokenizer.encode(self.instruction_template, add_special_tokens=False)
+            self.instruction_token_ids = self.tokenizer.encode(
+                self.instruction_template, add_special_tokens=False
+            )
         else:
             self.instruction_token_ids = None
 
@@ -369,7 +380,7 @@ class CustomDataCollatorForChatML:
         for example in examples:
             formatted_prompt = example.get(self.prompt_key, None)
             if formatted_prompt is None:
-                formatted_prompt = example['original_prompt_text']
+                formatted_prompt = example["original_prompt_text"]
             #     prompt = example[self.messages_key][:-1]
             #     formatted_prompt = self.tokenizer.apply_chat_template(
             #         prompt,
@@ -418,7 +429,7 @@ class CustomDataCollatorForChatML:
                 #         add_special_tokens=False,
                 #     )
                 #     completion_start_idx_full = len(tokenized_prompt_full["input_ids"])
-                
+
                 # prompt_tokens_full = message_input_ids_full[:completion_start_idx_full]
                 # completion_input_ids_full = message_input_ids_full[completion_start_idx_full:]
 
@@ -479,7 +490,10 @@ class CustomDataCollatorForChatML:
                 i = 0
                 while i <= len(sequence) - response_template_len:
                     # Check if response_template matches at position i
-                    if sequence[i:i + response_template_len] == self.response_token_ids:
+                    if (
+                        sequence[i : i + response_template_len]
+                        == self.response_token_ids
+                    ):
                         # Found response template, find where this assistant message ends
                         start_idx = i + response_template_len
 
@@ -502,16 +516,30 @@ class CustomDataCollatorForChatML:
 
         # convert to list of tensors and pad
         input_ids = [torch.tensor(ids, dtype=torch.long) for ids in input_ids]
-        attention_mask = [torch.tensor(mask, dtype=torch.long) for mask in attention_mask]
+        attention_mask = [
+            torch.tensor(mask, dtype=torch.long) for mask in attention_mask
+        ]
         labels = [torch.tensor(label, dtype=torch.long) for label in labels]
-        input_ids = pad(input_ids, padding_side="left", padding_value=self.tokenizer.pad_token_id)
+        input_ids = pad(
+            input_ids, padding_side="left", padding_value=self.tokenizer.pad_token_id
+        )
         attention_mask = pad(attention_mask, padding_side="left", padding_value=0)
         labels = pad(labels, padding_side="left", padding_value=self.ignore_index)
 
-        prompts_input_ids = [torch.tensor(ids, dtype=torch.long) for ids in prompts_input_ids]
-        prompt_attention_mask = [torch.tensor(mask, dtype=torch.long) for mask in prompt_attention_mask]
-        prompts_input_ids = pad(prompts_input_ids, padding_side="left", padding_value=self.tokenizer.pad_token_id)
-        prompt_attention_mask = pad(prompt_attention_mask, padding_side="left", padding_value=0)
+        prompts_input_ids = [
+            torch.tensor(ids, dtype=torch.long) for ids in prompts_input_ids
+        ]
+        prompt_attention_mask = [
+            torch.tensor(mask, dtype=torch.long) for mask in prompt_attention_mask
+        ]
+        prompts_input_ids = pad(
+            prompts_input_ids,
+            padding_side="left",
+            padding_value=self.tokenizer.pad_token_id,
+        )
+        prompt_attention_mask = pad(
+            prompt_attention_mask, padding_side="left", padding_value=0
+        )
 
         return {
             "input_ids": input_ids,
@@ -523,6 +551,7 @@ class CustomDataCollatorForChatML:
             "messages": messages_list,
             "tools": tools_list,
         }
+
 
 def pad(
     tensors: list[torch.Tensor],
@@ -572,7 +601,12 @@ def pad(
             output_shape[0] += pad_to_multiple_of - remainder
 
     # Create an output tensor filled with the padding value
-    output = torch.full((len(tensors), *output_shape), padding_value, dtype=tensors[0].dtype, device=tensors[0].device)
+    output = torch.full(
+        (len(tensors), *output_shape),
+        padding_value,
+        dtype=tensors[0].dtype,
+        device=tensors[0].device,
+    )
 
     for i, t in enumerate(tensors):
         if padding_side == "left":

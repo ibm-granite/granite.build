@@ -75,6 +75,7 @@ Both are named so both are stat'd and digested -- per_sample.jsonl is the per-re
 behind the means, and a marker that vouched only for the summary would let the evidence go
 missing while the step still reported complete.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -115,7 +116,9 @@ def _weights(model_dir: Path) -> list[list]:
     Sorted because glob order is filesystem order, and an expectation that compared unequal
     because a directory was re-created would refuse a correct run.
     """
-    return sorted([p.name, p.stat().st_size] for p in Path(model_dir).glob("*.safetensors"))
+    return sorted(
+        [p.name, p.stat().st_size] for p in Path(model_dir).glob("*.safetensors")
+    )
 
 
 def model_identity(model_dir: Path | None) -> dict | None:
@@ -148,12 +151,15 @@ def corpus_identity(corpus: Path) -> dict:
     if not p.is_file():
         return {"name": p.name, "bytes": None, "sha256": None}
     size = p.stat().st_size
-    return {"name": p.name, "bytes": size,
-            "sha256": _sha16(p) if size <= step_state.DIGEST_LIMIT else None}
+    return {
+        "name": p.name,
+        "bytes": size,
+        "sha256": _sha16(p) if size <= step_state.DIGEST_LIMIT else None,
+    }
 
 
 def parse_metrics(spec: str) -> list[str]:
-    """"jsd, entropy ,jsd" -> ["entropy", "jsd"].
+    """ "jsd, entropy ,jsd" -> ["entropy", "jsd"].
 
     Sorted and de-duplicated so that the ORDER a caller happens to type does not decide whether
     a completed eval is recognised. Empty entries are dropped: a trailing comma is a typo, not a
@@ -162,15 +168,27 @@ def parse_metrics(spec: str) -> list[str]:
     return sorted({m.strip() for m in spec.split(",") if m.strip()})
 
 
-def expectation(*, student: Path, teacher: Path | None, corpus: Path, metrics: str | list[str],
-                max_samples: int, seed: int, max_length: int, max_incomplete_fraction: float,
-                dtype: str, allow_tokenizer_mismatch: bool) -> dict:
+def expectation(
+    *,
+    student: Path,
+    teacher: Path | None,
+    corpus: Path,
+    metrics: str | list[str],
+    max_samples: int,
+    seed: int,
+    max_length: int,
+    max_incomplete_fraction: float,
+    dtype: str,
+    allow_tokenizer_mismatch: bool,
+) -> dict:
     """Everything that changes the numbers this step writes, and nothing that does not."""
     return {
         "student": model_identity(student),
         "teacher": model_identity(teacher),
         "corpus": corpus_identity(corpus),
-        "metrics": parse_metrics(metrics) if isinstance(metrics, str) else sorted(set(metrics)),
+        "metrics": (
+            parse_metrics(metrics) if isinstance(metrics, str) else sorted(set(metrics))
+        ),
         "max_samples": int(max_samples),
         "seed": int(seed),
         "max_length": int(max_length),
@@ -201,8 +219,11 @@ def _common(ap: argparse.ArgumentParser) -> None:
     expectation() above, which simply does not read it.
     """
     ap.add_argument("--student-model", required=True)
-    ap.add_argument("--teacher-model", default="",
-                    help="empty means NO teacher, which is its own expectation -- not a default")
+    ap.add_argument(
+        "--teacher-model",
+        default="",
+        help="empty means NO teacher, which is its own expectation -- not a default",
+    )
     ap.add_argument("--corpus", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--metrics", default="jsd,entropy")
@@ -211,16 +232,27 @@ def _common(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--max-length", type=int, default=4096)
     ap.add_argument("--max-incomplete-fraction", type=float, default=0.25)
     ap.add_argument("--dtype", default="bfloat16")
-    ap.add_argument("--batch-size", type=int, default=4,
-                    help="accepted and NOT compared; see this function's docstring")
-    ap.add_argument("--allow-tokenizer-mismatch", dest="mismatch",
-                    action="store_true", default=False)
-    ap.add_argument("--no-allow-tokenizer-mismatch", dest="mismatch", action="store_false")
+    ap.add_argument(
+        "--batch-size",
+        type=int,
+        default=4,
+        help="accepted and NOT compared; see this function's docstring",
+    )
+    ap.add_argument(
+        "--allow-tokenizer-mismatch",
+        dest="mismatch",
+        action="store_true",
+        default=False,
+    )
+    ap.add_argument(
+        "--no-allow-tokenizer-mismatch", dest="mismatch", action="store_false"
+    )
 
 
 def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("action", choices=["check", "mark", "self-test"])
     _common(ap)
     if argv and argv[0] == "self-test":
@@ -230,15 +262,23 @@ def main(argv: list[str]) -> int:
     want = expectation(
         student=Path(a.student_model),
         teacher=Path(a.teacher_model) if a.teacher_model else None,
-        corpus=Path(a.corpus), metrics=a.metrics, max_samples=a.max_samples, seed=a.seed,
-        max_length=a.max_length, max_incomplete_fraction=a.max_incomplete_fraction,
-        dtype=a.dtype, allow_tokenizer_mismatch=a.mismatch)
+        corpus=Path(a.corpus),
+        metrics=a.metrics,
+        max_samples=a.max_samples,
+        seed=a.seed,
+        max_length=a.max_length,
+        max_incomplete_fraction=a.max_incomplete_fraction,
+        dtype=a.dtype,
+        allow_tokenizer_mismatch=a.mismatch,
+    )
     out_dir = Path(a.out_dir)
 
     if a.action == "mark":
         doc = step_state.write_marker(out_dir, STEP_NAME, want, declared_outputs())
-        print(f"marked {STEP_NAME} complete in {out_dir} "
-              f"({len(doc['outputs'])} output(s) recorded)")
+        print(
+            f"marked {STEP_NAME} complete in {out_dir} "
+            f"({len(doc['outputs'])} output(s) recorded)"
+        )
         return 0
 
     v = step_state.decide(out_dir, STEP_NAME, want, declared_outputs())
@@ -251,8 +291,9 @@ def main(argv: list[str]) -> int:
 def _fake_model(d: Path, *, vocab: int = 8, shard: int = 1024, name: str = "m") -> Path:
     """A directory with just enough in it for model_identity to have something to say."""
     d.mkdir(parents=True, exist_ok=True)
-    (d / "tokenizer.json").write_text(json.dumps({"model": {"vocab": {f"t{i}": i
-                                                                     for i in range(vocab)}}}))
+    (d / "tokenizer.json").write_text(
+        json.dumps({"model": {"vocab": {f"t{i}": i for i in range(vocab)}}})
+    )
     (d / "tokenizer_config.json").write_text(json.dumps({"name_or_path": name}))
     (d / "config.json").write_text(json.dumps({"vocab_size": vocab}))
     (d / f"{name}.safetensors").write_bytes(b"\0" * shard)
@@ -269,7 +310,9 @@ def self_test() -> int:
     """
     bad = 0
 
-    def case(desc: str, a: dict, b: dict, *, differ: bool, key: str | None = None) -> None:
+    def case(
+        desc: str, a: dict, b: dict, *, differ: bool, key: str | None = None
+    ) -> None:
         nonlocal bad
         same = a == b
         if differ and same:
@@ -280,8 +323,10 @@ def self_test() -> int:
             print(f"  FAIL {desc}: expected EQUAL, but {moved} differ")
             bad = 1
         elif differ and key is not None and a.get(key) == b.get(key):
-            print(f"  FAIL {desc}: it differs, but NOT at {key!r} -- the case is passing for "
-                  f"the wrong reason")
+            print(
+                f"  FAIL {desc}: it differs, but NOT at {key!r} -- the case is passing for "
+                f"the wrong reason"
+            )
             bad = 1
         else:
             print(f"  OK   {desc}")
@@ -293,71 +338,162 @@ def self_test() -> int:
         corpus = t / "eval.jsonl"
         corpus.write_text('{"messages": []}\n')
 
-        base = dict(student=student, teacher=teacher, corpus=corpus,
-                    metrics="jsd,entropy", max_samples=256, seed=42, max_length=4096,
-                    max_incomplete_fraction=0.25, dtype="bfloat16",
-                    allow_tokenizer_mismatch=False)
+        base = dict(
+            student=student,
+            teacher=teacher,
+            corpus=corpus,
+            metrics="jsd,entropy",
+            max_samples=256,
+            seed=42,
+            max_length=4096,
+            max_incomplete_fraction=0.25,
+            dtype="bfloat16",
+            allow_tokenizer_mismatch=False,
+        )
         ref = expectation(**base)
 
         # --- must NOT differ
         case("the identical call", ref, expectation(**base), differ=False)
-        case("metrics reordered", ref, expectation(**{**base, "metrics": "entropy,jsd"}),
-             differ=False)
-        case("metrics with a trailing comma and spaces", ref,
-             expectation(**{**base, "metrics": " jsd , entropy , "}), differ=False)
-        case("metrics as a list", ref, expectation(**{**base, "metrics": ["entropy", "jsd"]}),
-             differ=False)
-        case("a different batch size (not a parameter here)", ref, expectation(**base),
-             differ=False)
-        case("max_incomplete_fraction as a string", ref,
-             expectation(**{**base, "max_incomplete_fraction": "0.25"}), differ=False)
-        case("max_samples as a string", ref, expectation(**{**base, "max_samples": "256"}),
-             differ=False)
+        case(
+            "metrics reordered",
+            ref,
+            expectation(**{**base, "metrics": "entropy,jsd"}),
+            differ=False,
+        )
+        case(
+            "metrics with a trailing comma and spaces",
+            ref,
+            expectation(**{**base, "metrics": " jsd , entropy , "}),
+            differ=False,
+        )
+        case(
+            "metrics as a list",
+            ref,
+            expectation(**{**base, "metrics": ["entropy", "jsd"]}),
+            differ=False,
+        )
+        case(
+            "a different batch size (not a parameter here)",
+            ref,
+            expectation(**base),
+            differ=False,
+        )
+        case(
+            "max_incomplete_fraction as a string",
+            ref,
+            expectation(**{**base, "max_incomplete_fraction": "0.25"}),
+            differ=False,
+        )
+        case(
+            "max_samples as a string",
+            ref,
+            expectation(**{**base, "max_samples": "256"}),
+            differ=False,
+        )
 
         # --- MUST differ, and at the named key
-        case("a superset of metrics", ref, expectation(**{**base, "metrics": "jsd,entropy,kld"}),
-             differ=True, key="metrics")
-        case("a different seed", ref, expectation(**{**base, "seed": 43}),
-             differ=True, key="seed")
-        case("a different max_samples", ref, expectation(**{**base, "max_samples": 512}),
-             differ=True, key="max_samples")
-        case("a shorter max_length -- the SILENT truncation case", ref,
-             expectation(**{**base, "max_length": 2048}), differ=True, key="max_length")
-        case("a looser incomplete threshold", ref,
-             expectation(**{**base, "max_incomplete_fraction": 1.0}),
-             differ=True, key="max_incomplete_fraction")
-        case("float32 instead of bfloat16", ref, expectation(**{**base, "dtype": "float32"}),
-             differ=True, key="dtype")
-        case("the tokenizer-mismatch override", ref,
-             expectation(**{**base, "allow_tokenizer_mismatch": True}),
-             differ=True, key="allow_tokenizer_mismatch")
-        case("no teacher at all", ref, expectation(**{**base, "teacher": None}),
-             differ=True, key="teacher")
+        case(
+            "a superset of metrics",
+            ref,
+            expectation(**{**base, "metrics": "jsd,entropy,kld"}),
+            differ=True,
+            key="metrics",
+        )
+        case(
+            "a different seed",
+            ref,
+            expectation(**{**base, "seed": 43}),
+            differ=True,
+            key="seed",
+        )
+        case(
+            "a different max_samples",
+            ref,
+            expectation(**{**base, "max_samples": 512}),
+            differ=True,
+            key="max_samples",
+        )
+        case(
+            "a shorter max_length -- the SILENT truncation case",
+            ref,
+            expectation(**{**base, "max_length": 2048}),
+            differ=True,
+            key="max_length",
+        )
+        case(
+            "a looser incomplete threshold",
+            ref,
+            expectation(**{**base, "max_incomplete_fraction": 1.0}),
+            differ=True,
+            key="max_incomplete_fraction",
+        )
+        case(
+            "float32 instead of bfloat16",
+            ref,
+            expectation(**{**base, "dtype": "float32"}),
+            differ=True,
+            key="dtype",
+        )
+        case(
+            "the tokenizer-mismatch override",
+            ref,
+            expectation(**{**base, "allow_tokenizer_mismatch": True}),
+            differ=True,
+            key="allow_tokenizer_mismatch",
+        )
+        case(
+            "no teacher at all",
+            ref,
+            expectation(**{**base, "teacher": None}),
+            differ=True,
+            key="teacher",
+        )
 
         # THE CASE THIS MODULE EXISTS FOR: same path, different model. A path-keyed marker
         # cannot tell these apart, and the consequence is the previous student's jsd reported
         # as the new one's.
         (student / "s.safetensors").write_bytes(b"\0" * 2048)
-        case("A RETRAINED STUDENT AT THE SAME PATH (bigger shard)", ref, expectation(**base),
-             differ=True, key="student")
+        case(
+            "A RETRAINED STUDENT AT THE SAME PATH (bigger shard)",
+            ref,
+            expectation(**base),
+            differ=True,
+            key="student",
+        )
         (student / "s.safetensors").write_bytes(b"\0" * 1024)
-        (student / "config.json").write_text(json.dumps({"vocab_size": 8, "n_layer": 4}))
-        case("a student whose config changed but whose shard size did not", ref,
-             expectation(**base), differ=True, key="student")
+        (student / "config.json").write_text(
+            json.dumps({"vocab_size": 8, "n_layer": 4})
+        )
+        case(
+            "a student whose config changed but whose shard size did not",
+            ref,
+            expectation(**base),
+            differ=True,
+            key="student",
+        )
 
         # And the corpus, for the same reason: prep regenerates the eval split in place.
-        student2 = expectation(**base)          # a local baseline; `ref` is stale by now
+        student2 = expectation(**base)  # a local baseline; `ref` is stale by now
         corpus.write_text('{"messages": [{"role": "user", "content": "x"}]}\n')
-        case("A REGENERATED EVAL SPLIT AT THE SAME PATH", student2, expectation(**base),
-             differ=True, key="corpus")
+        case(
+            "A REGENERATED EVAL SPLIT AT THE SAME PATH",
+            student2,
+            expectation(**base),
+            differ=True,
+            key="corpus",
+        )
 
         # A blind spot, asserted so it stays KNOWN rather than becoming a surprise. Same size,
         # different bytes, in a weight shard -> compares equal. Stated in the docstring; a test
         # that pretended otherwise would be the more dangerous kind of green.
         before = expectation(**base)
         (student / "s.safetensors").write_bytes(b"\xff" * 1024)
-        case("KNOWN BLIND SPOT: a same-size shard rewrite compares equal", before,
-             expectation(**base), differ=False)
+        case(
+            "KNOWN BLIND SPOT: a same-size shard rewrite compares equal",
+            before,
+            expectation(**base),
+            differ=False,
+        )
 
         # declared_outputs must be stable across configurations -- the metrics are columns.
         if declared_outputs() != ["metrics.json", "per_sample.jsonl"]:
@@ -375,8 +511,9 @@ def self_test() -> int:
         want = expectation(**base)
         step_state.write_marker(out, STEP_NAME, want, declared_outputs())
         d1 = step_state.decide(out, STEP_NAME, want, declared_outputs())
-        d2 = step_state.decide(out, STEP_NAME, expectation(**{**base, "seed": 7}),
-                               declared_outputs())
+        d2 = step_state.decide(
+            out, STEP_NAME, expectation(**{**base, "seed": 7}), declared_outputs()
+        )
         if d1.kind != step_state.SKIP:
             print(f"  FAIL an identical re-run decided {d1.kind}, not SKIP")
             bad = 1
@@ -387,7 +524,9 @@ def self_test() -> int:
             print(f"  FAIL the refusal did not name seed: {d2.lines}")
             bad = 1
         else:
-            print("  OK   through step_state: identical -> SKIP, changed seed -> REFUSE by name")
+            print(
+                "  OK   through step_state: identical -> SKIP, changed seed -> REFUSE by name"
+            )
 
     print("  self-test FAILED" if bad else "  self-test: all cases pass")
     return bad
