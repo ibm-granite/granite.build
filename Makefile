@@ -11,6 +11,8 @@ VENVDIR=.venv
 VENV_INSTALL_TARGET ?= .[standalone,thirdparty,dev]
 IBM_VENV_INSTALL_TARGET ?= .[all,dev]
 VENV_USE_ARTIFACTORY ?=
+# The $(VENVDIR) rule records the flavor it built here (ibm or standalone).
+VENV_FLAVOR_FILE = $(VENVDIR)/.flavor
 ARTIFACTORY_DESTINATION=https://na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-engineering-team-pypi-local
 # Eventually this number (a percentage over all the code) needs to be bumped up.
 MIN_COVERAGE?=20
@@ -345,7 +347,7 @@ ibm-quick-tests-setup:
 # secret on PRs; avoids HF rate-limit flakes).
 # secret_manager tests require IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL env var, which SPS is not providing or so it seems
 .PHONY: ibm-quick-tests
-ibm-quick-tests: check_ibm_sps_api_key
+ibm-quick-tests: check_ibm_sps_api_key .check-ibm-venv
 	export GB_ENVIRONMENT=STAGING &&			\
 	$(MAKE) GBTEST_MODE=mock				\
 		PYTEST_MARKERS="ibm and not extended" 	\
@@ -357,7 +359,7 @@ ibm-extended-tests-setup: start-nats
 	$(MAKE) ibm-venv
 
 .PHONY: ibm-extended-tests
-ibm-extended-tests: check_ibm_sps_api_key check-image-tag-not-dirty
+ibm-extended-tests: check_ibm_sps_api_key check-image-tag-not-dirty .check-ibm-venv
 	export GB_ENVIRONMENT=STAGING &&			\
 	$(MAKE) GBTEST_MODE=live				\
 		PYTEST_MARKERS="ibm" 			\
@@ -375,7 +377,7 @@ check_ibm_sps_api_key:
 	echo The GBTEST_SPS_IBMCLOUD_API_KEY env var is present for IBM tests. 
 
 .PHONY: test-pr
-test-pr: check-image-tag-not-dirty
+test-pr: check-image-tag-not-dirty .check-ibm-venv
 	# NOTE: #92 switched this target to GBTEST_MODE=mock, but the full PR suite is
 	# not green under mock yet (some tests need an admin GitHub token and the
 	# IBM-backed secret manager). Revert to live for now; making test-pr pass under
@@ -391,7 +393,7 @@ cicd-merge-test:
 	$(MAKE) test-merge 
 
 .PHONY: test-merge
-test-merge: check-image-tag-not-dirty
+test-merge: check-image-tag-not-dirty .check-ibm-venv
 	$(MAKE) GBTEST_MODE=live				\
 		PYTEST_MARKERS="$(MERGE_PYTEST_MARKERS)" 	\
 		PYTEST_TEST_TARGETS="test/unit test/e2e test/integration/ibm"	\
@@ -712,13 +714,26 @@ venv:
 ibm-venv:
 	$(MAKE) -B VENV_INSTALL_TARGET='$(IBM_VENV_INSTALL_TARGET)' VENV_USE_ARTIFACTORY=1 $(VENVDIR)
 
+# Fails if $(VENVDIR) was built as a non-IBM flavor. Guards the targets that run
+# the ibm-marked tests, which otherwise fail or skip far from the cause (missing
+# dmf-lib / kubernetes_asyncio) when run in a standalone venv. A venv built before
+# the flavor file existed has none; it only gets a warning, so it keeps working.
+.PHONY: .check-ibm-venv
+.check-ibm-venv:
+	@if [ ! -f $(VENV_FLAVOR_FILE) ]; then						\
+		echo "WARNING: $(VENV_FLAVOR_FILE) not found, assuming an IBM venv; run 'make ibm-venv' if ibm tests fail" >&2; \
+	elif ! grep -qx ibm $(VENV_FLAVOR_FILE); then					\
+		echo "IBM venv required (found: $$(cat $(VENV_FLAVOR_FILE))); run 'make ibm-venv'" >&2; exit 1; \
+	fi
+
 # Deprecated aliases for the targets above; to be removed in a follow-up commit.
 .PHONY: standalone-venv dev-venv cicd-venv demo-venv g4os-skypilot-venv
 dev-venv cicd-venv: ibm-venv
 standalone-venv demo-venv g4os-skypilot-venv: venv
 
-# Builds $(VENVDIR) from VENV_INSTALL_TARGET (pip extras). VENV_USE_ARTIFACTORY=1
-# checks for and configures the IBM Artifactory index (needed by the [ibm] extras).
+# Builds $(VENVDIR) from VENV_INSTALL_TARGET (pip extras) and records its flavor.
+# VENV_USE_ARTIFACTORY=1 checks for and configures the IBM Artifactory index
+# (needed by the [ibm] extras).
 # The install steps are chained with && so any failure fails the target, and pip
 # runs with PIP_USER unset: a globally exported PIP_USER=1 (common on rootless
 # hosts) makes pip refuse to install into a venv ("Can not perform a '--user'
@@ -737,6 +752,7 @@ $(VENVDIR): pyproject.toml
 	env -u PIP_USER ${PIP} install -e '$(VENV_INSTALL_TARGET)'
 	@test -x $(VENVDIR)/bin/gbserver ||					\
 		{ echo "venv install failed: $(VENVDIR)/bin/gbserver missing" >&2; exit 1; }
+	echo '$(if $(VENV_USE_ARTIFACTORY),ibm,standalone)' > $(VENV_FLAVOR_FILE)
 
 gbcli:
 	source $(VENVDIR)/bin/activate; 	\
