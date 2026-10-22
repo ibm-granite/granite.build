@@ -139,6 +139,17 @@ dependencies = [
     # would be declared but unchecked.
     "clearml==2.1.12",
     "wandb==0.28.2",
+    # 0.53.12 EXACTLY. NOT used by this code: trl 0.26.2 imports it. trl/trainer/callbacks.py
+    # does `import weave` whenever trl.import_utils._weave_available is truthy, and that guard
+    # is `_is_package_available("weave")` with no return_version -- the same tuple-returning
+    # call as the vllm_ascend one above. On the transformers pinned here that call returns a
+    # (bool, version) tuple, which is truthy even when weave is absent, so `import
+    # trl.trainer.callbacks` (reached from `from trl import ...` in gold.py) raises
+    # `ModuleNotFoundError: No module named 'weave'`. Measured on BlueVela SLURM: both ranks
+    # died at import, before any model loaded. Installing it makes the guard's import real.
+    # Pinned exactly, like the other trl-adjacent packages, because it is reached through a
+    # private guard rather than an API this step chose.
+    "weave==0.53.12",
 ]
 
 [dependency-groups]
