@@ -10,7 +10,7 @@ Tests are driven through the **Makefile** (which wraps `pytest`) and, for build-
 
 | Target | Use |
 |--------|-----|
-| `make venv` | Standalone venv (`[standalone,thirdparty,dev]`, no IBM Artifactory). Used by the quick/extended suites and `cicd-skypilot-pr`. |
+| `make venv` | Standalone venv (`[standalone,thirdparty,dev]`, no IBM Artifactory). Used by the quick/extended suites and the SkyPilot PR workflow (`skypilot-pr.yml`). |
 | `make ibm-venv` | IBM venv (`[all,dev]`); needs `ARTIFACTORY_USER` / `ARTIFACTORY_API_KEY`. Used by the `ibm-quick-tests`/`ibm-extended-tests` suites and `cicd-pr-test`/`cicd-merge-test`. |
 
 Both build into the single `.venv`, so building one replaces the other. The build records
