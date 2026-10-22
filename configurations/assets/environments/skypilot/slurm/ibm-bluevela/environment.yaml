@@ -24,6 +24,25 @@ config:
   retry:
     max_retries: 20
     provision_backoff_max: 180
+  # The auto-queued HF I/O steps need no GPU, so send them to the cpu partition
+  # (keyed by step-type slug; a build can still override). The cpu partition has
+  # no H200 nodes, so they also drop the h200 constraint below: `null` removes the
+  # directive, where "" would emit a bare `--constraint=`.
+  steps:
+    hfpull:
+      zone: cpu
+      launcher_config: { sbatch_options: { constraint: null } }
+    hfpush:
+      zone: cpu
+      launcher_config: { sbatch_options: { constraint: null } }
+  # Pin every job to H200 nodes (#SBATCH --constraint=h200, billed at 1.4x H100).
+  # gpu-mid's submit filter rejects ANY job -- even a CPU-only one with 0 GPUs --
+  # when no H100 node is free. A step requesting GPUs must therefore ask for H200
+  # (gpu_model: H200), or clear this per build with
+  # config.launcher_config.sbatch_options.constraint: null. See
+  # docs/environments/skypilot-slurm.md#sbatch_options--slurm-sbatch-directives.
+  sbatch_options:
+    constraint: h200
   # Env-level shared filesystem root for per-run build workdirs (same path the
   # LSF bluevela environment uses — both backends reach the same /proj GPFS
   # mount). gbserver derives ${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/
@@ -36,14 +55,17 @@ config:
   # entry, remove it first — gbserver refuses to overwrite foreign entries
   # (refuse-on-conflict).
   #
-  # MULTIPLE LOGIN NODES: `HostName` may be a single value OR a list of
-  # interchangeable candidate login hostnames under one `Host` block, as the LSF
-  # bluevela environment does. Only one login node (login1) has been confirmed
-  # reachable for SLURM so far; add more candidates here once confirmed.
+  # MULTIPLE LOGIN NODES: `HostName` lists interchangeable candidate login hostnames
+  # under one `Host` block: gbserver picks one at random per launch and fails over to
+  # the next on a transient SSH control-plane error. login1-login3 are all confirmed
+  # reachable for SLURM.
   cluster_ssh_configs:
     slurm:
       - Host: bluevela
-        HostName: login1.bluevela.rmf.ibm.com
+        HostName:
+          - login1.bluevela.rmf.ibm.com
+          - login2.bluevela.rmf.ibm.com
+          - login3.bluevela.rmf.ibm.com
         User: granitebuild
         # granitebuild's SSH identity is a 1Password-managed key, not a
         # Smallstep cert (confirmed: no `step` CLI and no loaded cert for this
@@ -83,7 +105,7 @@ config:
           # workdir, so a containerized step's $GB_BUILD_WORKDIR only exists
           # inside the container if it falls under this path. See
           # docs/environments/skypilot-slurm.md#workdir-containerized-steps.
-          workdir: /proj/data-eng/llmb-read-write/builds
+          workdir: /proj/data-eng/llmb-read-write
           tmpdir: /opt/nvme/$USER/skypilot-tmp
           # The SLURM backend bind-mounts only $HOME, ccache and `workdir` into the
           # container, so anything else a step reads or writes on the shared filesystem
@@ -141,7 +163,9 @@ assetstores:
     pull:
       - mode: default
         config:
-          cache_path: /tmp/hf_cache
+          # On /proj (shared), not /tmp: a compute node's /tmp is per-node, so an
+          # hf:// input pulled there would be invisible to the training node.
+          cache_path: /proj/data-eng/llmb-read-write/hfcache/
     push:
       - mode: default
         config: {}
