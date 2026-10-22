@@ -1,6 +1,6 @@
 # eval/livecodebench-generate (SkyPilot)
 
-Generates [LiveCodeBench](https://github.com/LiveCodeBench/LiveCodeBench) code
+Generates [LiveCodeBench](https://livecodebench.github.io/) ([code](https://github.com/LiveCodeBench/LiveCodeBench)) code
 generation completions for the bound `model` with [vLLM](https://docs.vllm.ai), and
 registers them as the step's `completions` artifact. Needs a GPU. Score them with
 `eval/livecodebench-score`.
