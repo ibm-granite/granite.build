@@ -1,0 +1,88 @@
+# fm-tune: run one fm-tune (autotunex/src/fm-tune) tuning job on the bash env.
+# Source: steps/fm-tune/bash/ — published by `make publish-step`; do not edit the
+# copy under configurations/assets. The run script src/fmtune_run.sh is shared,
+# byte-identical, with steps/fm-tune/skypilot/. See USAGE.md.
+name: fm-tune
+version: 1.0.0
+type: training
+config:
+  fm_tune_config:
+    source:
+      path: ""                    # local fm-tune checkout (one of path | repo)
+      repo: ""                    # git URL to clone
+      ref: main                   # branch / tag for repo
+      subdir: autotunex/src/fm-tune
+    extra: core                   # pip extra: core | full | mlx
+    model: ""                     # --model_name_or_path when base_model is not bound
+    train_file: ""                # relative to the dataset input
+    validation_file: ""           # relative to the dataset input
+    tuning_algo: lora             # sft | lora | qlora | alora | loha | lokr | vera | none
+    rl_algo: ""                   # dpo | kto | ppo | grpo | dapo; empty = none
+    run_name: fm-tune             # --run_name and --output_model_name
+    autotune: true                # false adds --no_autotune
+    backend: ""                   # torch | mlx; empty = fm-tune's default
+    seed: ""                      # empty = fm-tune's default (42)
+    config_preset: autotune.yaml  # bundled autotune/configs/<preset> when hpo_config is empty
+    hpo_config: {}                # inline HPO config (AutoTuneX config_data)
+    output_path: ""               # skypilot only; unused on bash
+    extra_args: ""                # appended verbatim to main.py argv
+    python: ""                    # interpreter that creates the venv; empty = injected python
+    autotunex:
+      server_url: ""              # --autotunex_server_url; empty = offline
+      job_id: ""                  # --job_id
+inputs:
+  allow_unknown: true             # recipes may bind extra inputs to order targets
+  required:
+    dataset:
+      type: dataset
+      accept: [uri, binding]
+  optional:
+    base_model:
+      type: model
+      accept: [uri, binding]
+outputs:
+  required:
+    model:
+      type: model
+environment_configs:
+  Bash:
+    launchers:
+      fm-tune:
+        type: nohup
+        monitors:
+          - log_monitor
+        config:
+          # Resolves under ${LLMB_BASH_ASSET_DIR}/bash_scripts/fm-tune/, so ../../
+          # lands on the shipped src/ (llmb_bash_jobsub.sh:20-22).
+          script_path: ../../src/fmtune_run.sh
+          env:
+            FMTUNE_DATASET_DIR: "{{ bindings.dataset.binding.path }}"
+            FMTUNE_BASE_MODEL_DIR: "{{ bindings.base_model.binding.path if bindings.base_model is defined else '' }}"
+            FMTUNE_MODEL: "{{ config.fm_tune_config.model }}"
+            FMTUNE_SOURCE_PATH: "{{ config.fm_tune_config.source.path }}"
+            FMTUNE_SOURCE_REPO: "{{ config.fm_tune_config.source.repo }}"
+            FMTUNE_SOURCE_REF: "{{ config.fm_tune_config.source.ref }}"
+            FMTUNE_SOURCE_SUBDIR: "{{ config.fm_tune_config.source.subdir }}"
+            FMTUNE_EXTRA: "{{ config.fm_tune_config.extra }}"
+            FMTUNE_TRAIN_FILE: "{{ config.fm_tune_config.train_file }}"
+            FMTUNE_VALIDATION_FILE: "{{ config.fm_tune_config.validation_file }}"
+            FMTUNE_TUNING_ALGO: "{{ config.fm_tune_config.tuning_algo }}"
+            FMTUNE_RL_ALGO: "{{ config.fm_tune_config.rl_algo }}"
+            FMTUNE_RUN_NAME: "{{ config.fm_tune_config.run_name }}"
+            FMTUNE_AUTOTUNE: "{{ config.fm_tune_config.autotune | string | lower }}"
+            FMTUNE_BACKEND: "{{ config.fm_tune_config.backend }}"
+            FMTUNE_SEED: "{{ config.fm_tune_config.seed }}"
+            FMTUNE_CONFIG_PRESET: "{{ config.fm_tune_config.config_preset }}"
+            FMTUNE_HPO_CONFIG_JSON: "{{ config.fm_tune_config.hpo_config | json_dumps }}"
+            # Launcher env is passed to the script unexpanded, so these can't
+            # name ${LLMB_BASH_OUTPUT_DIR}; fmtune_run.sh defaults them from the
+            # LLMB_BASH_* builtins (output -> $LLMB_BASH_OUTPUT_DIR/model).
+            FMTUNE_OUTPUT_DIR: ""
+            FMTUNE_CACHE_DIR: ""
+            FMTUNE_PYTHON: "{{ config.fm_tune_config.python }}"
+            FMTUNE_EXTRA_ARGS: "{{ config.fm_tune_config.extra_args }}"
+            FMTUNE_SERVER_URL: "{{ config.fm_tune_config.autotunex.server_url }}"
+            FMTUNE_JOB_ID: "{{ config.fm_tune_config.autotunex.job_id }}"
+    monitors:
+      log_monitor:
+        ref: space://monitors/bash
