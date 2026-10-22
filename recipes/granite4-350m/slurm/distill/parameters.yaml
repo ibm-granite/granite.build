@@ -133,9 +133,15 @@ GOLD_NUM_GPUS: 2
 # docs/environments/skypilot-slurm.md), and 256G avoided LSF's TERM_MEMLIMIT
 # at 46.5G on this same pair/scale.
 GPU_MEMORY: 256
-CPU_ONLY_CPUS: 1
+# CPU-only targets (align, corpus, export) run in BlueVela's `cpu` partition: its submission
+# filter refuses a job with no GPUs on any gpu-* partition. That partition grants 8 GB per
+# CPU and forces cpus-per-task up to fit the memory, which makes srun abort when the task
+# asked for fewer ("cpus-per-task set by two different environment variables"), so size
+# the CPU count to the memory (>= memory / 8).
+CPU_QUEUE: "cpu"
+CPU_ONLY_CPUS: 4
 CPU_ONLY_MEMORY: 32
-EXPORT_CPUS: 4
+EXPORT_CPUS: 8
 EXPORT_MEMORY: 64
 CLUSTER: "bluevela"
 # Where every target runs, under granitebuild's SLURM identity (not hew's
