@@ -7,7 +7,7 @@ target_expectations:
     # pull, so each hf:// input queues its own hfpull step (2) plus the fm-tune
     # step (see steps/data/dpk/skypilot/test-data/slurm-tok/buildtest.yaml).
     # The env:// output moves no bytes, so no push step.
-    step_count: 3              # hfpull(dataset) + hfpull(base_model) + fm-tune  # CALIBRATE against the first green run
+    step_count: 3              # hfpull(dataset) + hfpull(base_model) + fm-tune
     input_artifact_count: 2
     output_artifact_count: 1
     expected_steps:

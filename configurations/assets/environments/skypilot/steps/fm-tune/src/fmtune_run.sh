@@ -11,20 +11,39 @@ set -euo pipefail
 
 die() { echo "fm-tune: $*" >&2; exit 2; }
 log() { echo "[fm-tune] $*"; }
-# One cache lock at a time: a mkdir lock dir holding the owner's pid. A lock whose
-# owner is dead is taken over. Builds share the cache, so the clone and the venv
-# are both built under one.
+# One cache lock at a time: a mkdir lock dir holding the owner's <host>:<pid>.
+# Builds share the cache, so the clone and the venv are both built under one. A
+# lock is stale only if its owner ran on this host and is dead; another host's pid
+# can't be checked from here, so such a lock is waited on for FMTUNE_LOCK_TIMEOUT
+# seconds and then reported, never taken over. A lock with no pid file (owner
+# killed between mkdir and the write) is stale once older than the timeout.
+: "${FMTUNE_LOCK_TIMEOUT:=1800}"
+case "$FMTUNE_LOCK_TIMEOUT" in ''|*[!0-9]*) die "FMTUNE_LOCK_TIMEOUT must be a whole number of seconds" ;; esac
+host="$(uname -n)"
 held_lock=""
 lock() {
-  local owner
-  until mkdir "$1" 2>/dev/null; do
+  local owner start=$SECONDS
+  while ! mkdir "$1" 2>/dev/null; do
+    if [ ! -d "$1" ]; then
+      mkdir "$1" 2>/dev/null && break  # released between the two mkdirs
+      die "cannot create lock $1 (is $(dirname "$1") writable?)"
+    fi
     owner="$(cat "$1/pid" 2>/dev/null || true)"
-    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
-      log "taking over stale lock $1 from dead pid $owner"; rm -rf "$1"; continue
+    if [ -z "$owner" ]; then
+      # find -mmin (whole minutes, rounded up) is the same on GNU and BSD; stat is not.
+      if [ -n "$(find "$1" -maxdepth 0 -mmin +$(( (FMTUNE_LOCK_TIMEOUT + 59) / 60 )) 2>/dev/null)" ]; then
+        log "taking over stale lock $1 (no owner recorded)"; rm -rf "$1"; continue
+      fi
+    elif [ "${owner%:*}" = "$host" ]; then
+      if ! kill -0 "${owner##*:}" 2>/dev/null; then
+        log "taking over stale lock $1 from dead pid $owner"; rm -rf "$1"; continue
+      fi
+    elif [ $((SECONDS - start)) -ge "$FMTUNE_LOCK_TIMEOUT" ]; then
+      die "lock $1 is held by $owner (another host) after ${FMTUNE_LOCK_TIMEOUT}s; remove it if no fm-tune build is running"
     fi
     log "waiting for lock $1"; sleep 5
   done
-  echo $$ > "$1/pid"
+  echo "$host:$$" > "$1/pid"
   held_lock="$1"
   trap 'rm -rf "$held_lock"' EXIT
 }
@@ -85,6 +104,15 @@ elif [ -n "$FMTUNE_MODEL" ]; then
 else
   die "set fm_tune_config.model or bind the base_model input"
 fi
+# run_name names the output model dir and is echoed in logs: keep it to a safe set
+# (spelled out, not a range, so no locale can widen it).
+case "$FMTUNE_RUN_NAME" in
+  *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*)
+    die "run_name must match ^[A-Za-z0-9._-]+$" ;;
+esac
+# Both go to git as positional args; a leading '-' would be read as an option.
+case "$FMTUNE_SOURCE_REPO" in -*) die "source.repo must not start with '-'" ;; esac
+case "$FMTUNE_SOURCE_REF" in -*) die "source.ref must not start with '-'" ;; esac
 [ -n "${FMTUNE_TRAIN_FILE:-}" ] || die "train_file is empty"
 [ -n "${FMTUNE_VALIDATION_FILE:-}" ] || die "validation_file is empty"
 train="$FMTUNE_DATASET_DIR/$FMTUNE_TRAIN_FILE"
@@ -106,15 +134,17 @@ else
   if [ ! -d "$clone/.git" ]; then
     log "cloning $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF"
     rm -rf "$clone.tmp"
-    git clone --quiet --depth 1 --branch "$FMTUNE_SOURCE_REF" "$FMTUNE_SOURCE_REPO" "$clone.tmp"
+    git clone --quiet --depth 1 --branch "$FMTUNE_SOURCE_REF" -- "$FMTUNE_SOURCE_REPO" "$clone.tmp"
     mv "$clone.tmp" "$clone"
-    sha="$(git -C "$clone" rev-parse HEAD)"
+    # ^{commit}: an annotated tag's FETCH_HEAD is the tag object, so peel both
+    # sides or one commit gets two trees (and two venvs).
+    sha="$(git -C "$clone" rev-parse 'HEAD^{commit}')"
   else
     # The cache outlives builds: resolve the ref's current commit, not the first one.
     log "updating $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF"
-    git -C "$clone" fetch --quiet --depth 1 origin "$FMTUNE_SOURCE_REF" \
+    git -C "$clone" fetch --quiet --depth 1 -- origin "$FMTUNE_SOURCE_REF" \
       || die "could not update the cached clone $clone to $FMTUNE_SOURCE_REF"
-    sha="$(git -C "$clone" rev-parse FETCH_HEAD)"
+    sha="$(git -C "$clone" rev-parse 'FETCH_HEAD^{commit}')"
   fi
   tree="$FMTUNE_CACHE_DIR/tree-$sha"
   if [ ! -d "$tree" ]; then
@@ -192,11 +222,17 @@ args=(
 [ -n "$FMTUNE_SERVER_URL" ] && args+=(--autotunex_server_url "$FMTUNE_SERVER_URL")
 [ -n "$FMTUNE_JOB_ID" ] && args+=(--job_id "$FMTUNE_JOB_ID")
 if [ -n "$FMTUNE_EXTRA_ARGS" ]; then
-  read -r -a extra <<< "$FMTUNE_EXTRA_ARGS"
-  args+=("${extra[@]}")
+  # read stops at the first newline, so join lines first. The ${x+...} form keeps
+  # an empty array (whitespace-only input) from tripping set -u on bash 3.2.
+  read -r -a extra <<< "${FMTUNE_EXTRA_ARGS//$'\n'/ }"
+  args+=(${extra[@]+"${extra[@]}"})
 fi
 
 mkdir -p "$FMTUNE_OUTPUT_DIR"
+# fm-tune's AutoTuneX bridge logs under $LOG_PATH (default ./logs, the source tree).
+export LOG_PATH="${LOG_PATH:-$(cd "$FMTUNE_OUTPUT_DIR/.." && pwd)}"
+# The venv's console scripts (ray, ...) must win over any others on PATH.
+case "$py" in */*) export PATH="$(dirname "$py"):${PATH:-/usr/local/bin:/usr/bin:/bin}" ;; esac
 log "running main.py (run_name=$FMTUNE_RUN_NAME)"
 cd "$root"
 status=0

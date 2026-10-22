@@ -35,7 +35,7 @@ subtraction in Jinja.
 | Key | Default | Maps to |
 |---|---|---|
 | `source.path` | `""` | Local fm-tune checkout. Exactly one of `path` and `repo` must be set |
-| `source.repo` | `""` | Git URL to clone |
+| `source.repo` | `""` | Git URL to clone (must not start with `-`) |
 | `source.ref` | `main` | Branch or tag for `repo` (a bare commit SHA is not supported) |
 | `source.subdir` | `autotunex/src/fm-tune` | fm-tune's location inside `repo` |
 | `extra` | `core` | pip extra installed: `core`, `full` or `mlx` |
@@ -44,14 +44,14 @@ subtraction in Jinja.
 | `validation_file` | `""` | `--validation_file`, relative to the `dataset` input (required) |
 | `tuning_algo` | `lora` | `--tuning_algo` |
 | `rl_algo` | `""` | `--rl_algo`, omitted when empty |
-| `run_name` | `fm-tune` | `--run_name` and `--output_model_name` |
+| `run_name` | `fm-tune` | `--run_name` and `--output_model_name`. Letters, digits, `.`, `_` and `-` only |
 | `autotune` | `true` | `false` adds `--no_autotune` |
 | `backend` | `""` | `--backend`, omitted when empty (fm-tune's default, `torch`) |
 | `seed` | `""` | `--seed`, omitted when empty (fm-tune's default, 42) |
 | `config_preset` | `autotune.yaml` | Bundled `autotune/configs/<preset>`, used when `hpo_config` is empty |
 | `hpo_config` | `{}` | Inline HPO config (AutoTuneX's `config_data`), written to a file for `--config_file` |
 | `output_path` | `""` | SkyPilot only. `""` means `./model` in the run workdir. Ignored on bash |
-| `extra_args` | `""` | Appended to the `main.py` command line, split on whitespace (no quoting) |
+| `extra_args` | `""` | Appended to the `main.py` command line, split on whitespace and newlines (no quoting) |
 | `python` | `""` | Interpreter that creates the venv. Empty means the injected python (bash) or `python3` (SkyPilot). Must be 3.10 or newer |
 | `autotunex.server_url` | `""` | `--autotunex_server_url`, omitted when empty |
 | `autotunex.job_id` | `""` | `--job_id`, omitted when empty |
@@ -141,7 +141,7 @@ granite.build:
               validation_file: alpaca-mini_validation.jsonl
               run_name: granite-lora
               autotune: false
-              output_path: /shared/fm-tune/model   # must match the output uri
+              output_path: /shared/fm-tune/model   # must match the output uri; one per build
             launcher_config:
               envs:
                 FMTUNE_OBJECT_STORE_BYTES: "268435456"   # optional, small machines
@@ -155,9 +155,9 @@ The SkyPilot step supports the `slurm` subtype only. Size the job with `compute_
 ## Caches and cleanup
 
 - The cache lives at `.fm-tune-cache`: beside `workdir/` under `~/.granite.build/` on bash,
-  and in `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache` on SkyPilot: shared across nodes only
-  when `GB_SHARED_WORKDIR` is set (the local Slurm environment sets `/shared`, giving
-  `/shared/.fm-tune-cache`).
+  and in `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache/<uid>` on SkyPilot (one per user, `id -u`):
+  shared across nodes only when `GB_SHARED_WORKDIR` is set (the local Slurm environment sets
+  `/shared`, giving `/shared/.fm-tune-cache/<uid>`).
 - A cached `source.repo` clone is refreshed on every run (`[fm-tune] updating ...`), so a
   warm-cache run still needs network access to the repo. If the fetch fails, the run stops.
 - Every commit trained gets its own immutable `tree-<sha>` and its own `venv-<key>`. The
@@ -167,8 +167,11 @@ The SkyPilot step supports the `slurm` subtype only. Size the job with `compute_
   `.fm-tune-cache/src-*` (the clone mirrors) and any stale `*.lock` directories, only while
   no fm-tune build is running. They are rebuilt on the next run.
 - A lock in the cache serialises only the clone and tree extraction and the venv build, not
-  training, so concurrent builds still train in parallel. A lock whose owner died is taken
-  over.
+  training, so concurrent builds still train in parallel. Each lock records its owner as
+  `<host>:<pid>`. A lock whose owner ran on the same host and died is taken over. A lock held
+  from another host is never taken over: the run waits up to `FMTUNE_LOCK_TIMEOUT` seconds
+  (default 1800) and then fails, naming the lock directory. Remove it only if no fm-tune build
+  is running. A lock with no owner recorded is taken over once it is older than the timeout.
 
 ## Memory knob: `FMTUNE_OBJECT_STORE_BYTES`
 
@@ -191,9 +194,19 @@ this step's build shape:
 | `autotune` | `autotune` |
 | `seed` | `seed` |
 | `config_data` | `hpo_config` |
+| `config_name` | not carried: the step always writes `fm_tune_hpo.yaml` |
 | `dataset_name` + `data_format` | `train_file` / `validation_file` as `<dataset_name>_train.<fmt>` and `<dataset_name>_validation.<fmt>` |
 | `job_id` | `autotunex.job_id` |
 | callback URL | `autotunex.server_url` |
+
+- A `LaunchContext` field that is `None` (`seed`, `rl_tuner_type`, `tuning_type`) must be
+  left out of `fm_tune_config`, not written as `null`. A null renders as the string `None`,
+  which fm-tune's argparse rejects (`--seed None`), or passes on as an algorithm called `None`.
+- `LOG_PATH` is set by the step (to the output directory's parent, unless already set), so
+  AutoTuneX need not export it.
+- AutoTuneX's `CUDA_HOME` export goes in the launcher env: `bash.env` on bash,
+  `launcher_config.envs` on SkyPilot.
+- Follow-up: `config_name` (AutoTuneX names the config file after it) is not carried.
 
 ## Known limits
 
@@ -206,6 +219,11 @@ this step's build shape:
   Python 3.10 or newer, `git` for `source.repo`, and network access to PyPI).
 - No GPU validation. The Slurm build test ran on CPU-only arm64 nodes, so it proves the
   wiring, not GPU training. On CPU, bf16 is downgraded to fp32.
+- On a CUDA node the default `config_preset: autotune.yaml` asks for
+  `use_flash_attention: flash_attention_2`, but `extra: core` does not install `flash-attn`
+  (only `full` does; on MPS and CPU fm-tune falls back to eager itself). On CUDA use
+  `extra: full`, or an `hpo_config` with `use_flash_attention` set to `eager`. Unverified,
+  like all GPU use.
 - Online-RL reward functions are not supported yet: AutoTuneX's `inject_reward_function`
   needs an additional-file mechanism this step does not have.
 - In the step's tests `eval_loss` is `nan`: a 1-epoch, 4-step run on a random-weight
@@ -216,14 +234,22 @@ this step's build shape:
 Submit the build with `environment_uri: space://environments/skypilot/slurm`.
 
 - The step ships `src/` with `file_mounts` and runs `bash ./src/fmtune_run.sh`. Every config
-  value is shell-quoted by the launcher.
-- Set `output_path` and an `env://` output URI to the same shared-filesystem directory.
-  With `output_path` empty the model goes to `./model` in the run workdir, which is not
-  shared.
+  value is shell-quoted by the step template.
+- Set `output_path` explicitly, to the same directory the `env://` output URI names. With
+  `output_path` empty the model goes to `./model` in the run workdir, which is on the shared
+  filesystem when the environment sets `shared_workdir`. But that workdir is
+  `<shared_workdir>/builds/<build_id>/runs/<targetrun_id>`, known only at run time, so the
+  output URI can't name it.
+- Give every build its own `output_path` (and the matching output URI). The example's fixed
+  `/shared/fm-tune/model` is shared by every build that uses it, so concurrent builds
+  overwrite each other's model. The step has no per-build default, and no per-build template
+  for it has been tested; write a distinct path into each build.yaml (for example
+  `/shared/fm-tune/<run_name>/model`, with a new `run_name` per build).
 - The node needs `python3` 3.10 or newer on its PATH (or set `fm_tune_config.python`), plus
   `git` for `source.repo`. The local Slurm test nodes needed a python3.10 for this.
-- The cache is `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache`: nodes share one venv only when
-  `GB_SHARED_WORKDIR` is set (the local Slurm environment sets `/shared`).
+- The cache is `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache/$(id -u)`, one per user: a user's
+  nodes share one venv only when `GB_SHARED_WORKDIR` is set (the local Slurm environment
+  sets `/shared`).
 - SkyPilot builds write no local `job.log`. The step's output is in
   `~/sky_logs/<cluster>/1-<cluster>/run.log` on the machine running gbserver.
 - Launcher env goes through `launcher_config.envs`, for example
