@@ -55,7 +55,7 @@ the same as `distill-gold`. There is no per-run clone to configure.
 | Field | Type | Purpose |
 |---|---|---|
 | `compute_config` | mapping | Node and GPU counts, e.g. `{num_nodes: 1, num_gpus_per_node: 8}`. The server runs on one node; its GPU count sets the default data-parallel size. |
-| `launcher_config` | mapping | SkyPilot launcher overrides: `image_id` (default `docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:91ea4880`) and `resources` (`accelerators`, `memory`, `cluster`, `zone`). |
+| `launcher_config` | mapping | SkyPilot launcher overrides: `image_id` (default `docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:e9501415`) and `resources` (`accelerators`, `memory`, `cluster`, `zone`). |
 | `poll_interval_seconds` | integer | Monitor status-poll interval. Default: `300`. |
 | `log_retrieval_mode` | string | Monitor log-retrieval mode. Default: `periodic` (see [log_retrieval.mode](#log_retrievalmode-is-periodic-not-startup_window)). |
 | `log_retrieval_interval_seconds` | integer | How often the monitor retrieves the log, and so how soon after `/health` the URL is seen. Default: `15`. |
