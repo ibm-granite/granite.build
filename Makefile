@@ -719,6 +719,10 @@ standalone-venv demo-venv g4os-skypilot-venv: venv
 
 # Builds $(VENVDIR) from VENV_INSTALL_TARGET (pip extras). VENV_USE_ARTIFACTORY=1
 # checks for and configures the IBM Artifactory index (needed by the [ibm] extras).
+# The install steps are chained with && so any failure fails the target, and pip
+# runs with PIP_USER unset: a globally exported PIP_USER=1 (common on rootless
+# hosts) makes pip refuse to install into a venv ("Can not perform a '--user'
+# install"). The final check catches an install that quietly left no gbserver.
 $(VENVDIR): pyproject.toml
 	$(if $(VENV_USE_ARTIFACTORY),$(MAKE) .check-build-env)
 	$(MAKE) sky-api-stop
@@ -728,9 +732,11 @@ $(VENVDIR): pyproject.toml
 	if [ -n "$(VENV_USE_ARTIFACTORY)" ]; then \
 		echo "extra-index-url = https://$$ARTIFACTORY_USER:$$ARTIFACTORY_API_KEY@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-model-factory-team-pypi-local/simple" >> $(VENVDIR)/pip.conf; \
 	fi
-	source $(VENVDIR)/bin/activate; 	\
-	${PIP} install --upgrade pip;		\
-	${PIP} install -e '$(VENV_INSTALL_TARGET)'
+	source $(VENVDIR)/bin/activate &&			\
+	env -u PIP_USER ${PIP} install --upgrade pip &&		\
+	env -u PIP_USER ${PIP} install -e '$(VENV_INSTALL_TARGET)'
+	@test -x $(VENVDIR)/bin/gbserver ||					\
+		{ echo "venv install failed: $(VENVDIR)/bin/gbserver missing" >&2; exit 1; }
 
 gbcli:
 	source $(VENVDIR)/bin/activate; 	\
