@@ -49,10 +49,13 @@ pure-filesystem (no ``sky`` import) so it is unit-testable without the SDK.
 
 import configparser
 import copy
+import datetime
 import hashlib
 import io
 import os
 import random
+import re
+import subprocess
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -64,7 +67,7 @@ from gbserver.types.environmentconfig import (
     AwsCredentialProfile,
     ClusterSshConfigs,
 )
-from gbserver.types.errors import SkypilotConfigCollisionError
+from gbserver.types.errors import SkypilotConfigCollisionError, StepCertExpiredError
 from gbserver.utils.logger import get_logger
 from gbserver.utils.ssh_keys import write_private_key_file
 
@@ -204,6 +207,14 @@ def render_ssh_hosts(
 # a path; materialized to a managed key file and rewritten as ``IdentityFile``.
 IDENTITY_KEY_DIRECTIVE = "IdentityKey"
 
+# Directive marking a host as authenticated via an already-issued Smallstep
+# (`step`) SSH certificate rather than a static key. gbserver only *checks* the
+# cert's validity at materialize time — it never triggers `step ssh login`
+# itself (that requires interactive browser/OIDC auth) — and drops the
+# directive on success without adding IdentityFile/CertificateFile, since the
+# cert is already loaded in the local ssh-agent.
+IDENTITY_STEP_CERT_DIRECTIVE = "IdentityStepCert"
+
 
 def _identity_key_path(cloud: str, alias: str, contents: str, home_path: Path) -> Path:
     """Return the managed key-file path for ``contents`` (content-addressed).
@@ -252,10 +263,10 @@ def _materialize_identity_keys(
             result.append(host)
             continue
         alias = host.get("Host")
-        if "IdentityFile" in host:
+        if "IdentityFile" in host or IDENTITY_STEP_CERT_DIRECTIVE in host:
             raise ValueError(
-                f"SSH host {alias!r}: specify either IdentityFile or "
-                f"{IDENTITY_KEY_DIRECTIVE}, not both."
+                f"SSH host {alias!r}: specify only one of IdentityFile, "
+                f"{IDENTITY_KEY_DIRECTIVE}, or {IDENTITY_STEP_CERT_DIRECTIVE}."
             )
         raw = host[IDENTITY_KEY_DIRECTIVE]
         raw_str = str(raw) if raw is not None else ""
@@ -341,6 +352,155 @@ def _collapse_to_random_hostname(host: Dict[str, Any]) -> Dict[str, Any]:
     """
     candidates = _expand_hostname_candidates(host)
     return host if candidates is None else candidates[0]
+
+
+_VALID_RANGE_RE = re.compile(r"Valid:\s*from\s*(\S+)\s*to\s*(\S+)")
+
+
+def _step_loaded_certs() -> List[str]:
+    """Return each Smallstep SSH cert currently loaded, as ``ssh-keygen -L`` text.
+
+    Fully offline/non-interactive: ``step ssh list --raw`` prints one
+    ``authorized_keys``-format line per loaded cert; each is decoded via
+    ``ssh-keygen -L -f -``. Neither command triggers a login prompt.
+
+    :returns: One human-readable cert description per loaded cert (possibly empty).
+    """
+    raw = subprocess.run(
+        ["step", "ssh", "list", "--raw"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    descriptions = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        descriptions.append(
+            subprocess.run(
+                ["ssh-keygen", "-L", "-f", "-"],
+                input=line,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )
+    return descriptions
+
+
+def _parse_cert_description(text: str) -> Tuple[Optional[str], List[str]]:
+    """Parse an ``ssh-keygen -L`` cert description into ``(valid_to, principals)``.
+
+    :param text: One cert's ``ssh-keygen -L -f -`` output.
+    :returns: ``(valid_to, principals)`` — ``valid_to`` is the raw ``Valid: ...
+        to <X>`` timestamp text (``None`` if not found); ``principals`` is the
+        indented lines under ``Principals:``.
+    """
+    valid_to = None
+    match = _VALID_RANGE_RE.search(text)
+    if match:
+        valid_to = match.group(2)
+    principals: List[str] = []
+    in_principals = False
+    for line in text.splitlines():
+        if line.strip().startswith("Principals:"):
+            in_principals = True
+            continue
+        if in_principals:
+            if line.startswith("\t\t") or line.startswith("        "):
+                principals.append(line.strip())
+            else:
+                break
+    return valid_to, principals
+
+
+def _check_step_certs(hosts: List[Dict[str, Any]], cloud: str) -> List[Dict[str, Any]]:
+    """Check ``IdentityStepCert`` hosts have at least one valid, loaded Smallstep cert.
+
+    For each host declaring ``IdentityStepCert`` (any truthy value), looks at the
+    certs currently loaded via ``step``/the local ssh-agent and requires at least
+    one whose validity window has not yet passed. On success the directive is
+    dropped and nothing else is added — the cert is already loaded in the
+    ssh-agent, so no ``IdentityFile`` is needed, which keeps the rendered
+    ``Host`` block stable across cert rotations (unaffected by
+    ``_blocks_equivalent`` idempotency checks). Hosts without ``IdentityStepCert``
+    pass through unchanged.
+
+    This does not attempt to match a cert's principals against the host's
+    ``User`` directive: a cert's principals are the identity-provider-issued
+    identity (e.g. an IBM email-derived username), which need not match the
+    remote account name used to log in — the two are reconciled server-side, not
+    client-side. So this only confirms "some usable cert is loaded", not "a cert
+    for this specific user" — that final check is the remote server's job.
+
+    gbserver never runs ``step ssh login`` itself — that requires interactive
+    browser/OIDC auth — so no loaded cert (or all loaded certs expired) is a
+    fail-fast, actionable error, not something this function attempts to fix.
+
+    :param hosts: Host directive mappings for one cloud.
+    :param cloud: Cloud name (``lsf``/``slurm``) — used in error messages.
+    :returns: A new host list with ``IdentityStepCert`` resolved (dropped).
+    :raises ValueError: If a host sets both ``IdentityStepCert`` and
+        ``IdentityKey``/``IdentityFile``, or sets a truthy ``IdentitiesOnly``
+        alongside ``IdentityStepCert``.
+    :raises StepCertExpiredError: If no loaded cert is currently valid.
+    """
+    result: List[Dict[str, Any]] = []
+    cert_descriptions: Optional[List[str]] = None
+    for host in hosts:
+        if (
+            IDENTITY_STEP_CERT_DIRECTIVE not in host
+            or not host[IDENTITY_STEP_CERT_DIRECTIVE]
+        ):
+            result.append(host)
+            continue
+        alias = host.get("Host")
+        if "IdentityFile" in host or IDENTITY_KEY_DIRECTIVE in host:
+            raise ValueError(
+                f"SSH host {alias!r}: specify either {IDENTITY_STEP_CERT_DIRECTIVE} "
+                f"or IdentityFile/{IDENTITY_KEY_DIRECTIVE}, not both."
+            )
+        identities_only = str(host.get("IdentitiesOnly", "")).strip().lower()
+        if identities_only in ("yes", "true", "1"):
+            raise ValueError(
+                f"SSH host {alias!r}: IdentitiesOnly cannot be set together with "
+                f"{IDENTITY_STEP_CERT_DIRECTIVE} — it would tell ssh to offer no "
+                "identities at all (IdentityStepCert deliberately adds no "
+                "IdentityFile, since the certificate is already loaded in the "
+                "local ssh-agent), so ssh would never offer the agent-loaded "
+                "certificate and auth would fail. Drop IdentitiesOnly for this host."
+            )
+        if cert_descriptions is None:
+            cert_descriptions = _step_loaded_certs()
+        now = datetime.datetime.now()
+        has_valid_cert = False
+        for desc in cert_descriptions:
+            valid_to, _principals = _parse_cert_description(desc)
+            if valid_to is None:
+                continue
+            try:
+                expiry = datetime.datetime.fromisoformat(valid_to)
+            except ValueError:
+                logger.warning(
+                    "SSH host %s: could not parse cert validity timestamp %r; "
+                    "skipping this cert for the check.",
+                    alias,
+                    valid_to,
+                )
+                continue
+            if expiry >= now:
+                has_valid_cert = True
+                break
+        if not has_valid_cert:
+            raise StepCertExpiredError(
+                f"SSH host {alias!r} (cloud={cloud}): no valid Smallstep SSH "
+                "certificate is loaded (missing or expired). Run `step ssh login` "
+                "to obtain a fresh certificate, then retry."
+            )
+        new_host = {k: v for k, v in host.items() if k != IDENTITY_STEP_CERT_DIRECTIVE}
+        result.append(new_host)
+    return result
 
 
 def _normalize(block: str) -> str:
@@ -928,10 +1088,16 @@ def materialize_ssh_for_cloud(
     :param home: Home dir override (tests).
     :raises SkypilotConfigCollisionError: On a foreign clash (see
         :func:`merge_ssh_blocks`).
+    :raises StepCertExpiredError: If a host sets ``IdentityStepCert`` but no
+        currently-loaded Smallstep certificate is still valid (see
+        :func:`_check_step_certs`).
     """
     hosts = _resolve_cloud_hosts(ssh, secrets, cloud, home=home)
     if not hosts:
         return
+    # Check any IdentityStepCert directive against already-loaded Smallstep
+    # certs before rendering (check-only, never refreshes).
+    hosts = _check_step_certs(hosts, cloud)
     # Capture candidate hostnames before collapsing, so the merge can gate its
     # HostName-only cross-env relaxation on them (see _merge_ssh).
     candidates = _candidate_hostnames(hosts)
