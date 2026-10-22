@@ -104,7 +104,7 @@ class TestLauncherFactsLearnedElsewhere:
 
     def test_the_venv_is_on_path_for_the_bare_accelerate(self, run_script, pc_sh):
         assert "/stage/" not in run_script
-        assert 'PYBIN="$(uv python find)"' in run_script
+        assert 'PYBIN="python"' in run_script
         assert "export ACCELERATE=" in run_script
         assert 'ACCELERATE="${ACCELERATE:-accelerate}"' in pc_sh
 
@@ -292,3 +292,9 @@ class TestMonitor:
     def test_log_retrieval_is_periodic(self, monitor):
         """One forward pass of a 30B teacher over a real corpus is an hours-long job."""
         assert monitor["config"]["log_retrieval"]["mode"].endswith("'periodic') }}")
+
+
+class TestSlurmExecutorEnv:
+    def test_the_stripped_env_is_restored(self, launcher):
+        assert launcher["envs"]["PYTHONPATH"] == "/opt/distill/src"
+        assert launcher["envs"]["VIRTUAL_ENV"] == "/stage/.venv"

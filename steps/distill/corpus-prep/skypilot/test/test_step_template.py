@@ -211,3 +211,9 @@ class TestConfigDefaults:
         from gbcommon.types.stepconfig import StepType
 
         assert step["type"] in {m.value for m in StepType}
+
+
+class TestSlurmExecutorEnv:
+    def test_the_stripped_env_is_restored(self, launcher):
+        assert launcher["envs"]["PYTHONPATH"] == "/opt/distill/src"
+        assert launcher["envs"]["VIRTUAL_ENV"] == "/stage/.venv"

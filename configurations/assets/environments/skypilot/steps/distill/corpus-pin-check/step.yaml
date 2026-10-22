@@ -61,6 +61,11 @@ environment_configs:
           # Cloud-agnostic: the build supplies cpus/memory via
           # config.compute_config and config.launcher_config.resources.
           resources: {}
+          envs:
+            # The SLURM executor runs the task under `env -u PYTHONPATH` and without
+            # VIRTUAL_ENV, so the image's ENV values for both are gone at run time.
+            PYTHONPATH: /opt/distill/src
+            VIRTUAL_ENV: /stage/.venv
           run: |
             set -euo pipefail
             echo "=== corpus-pin-check on $(hostname) ==="
@@ -74,7 +79,7 @@ environment_configs:
             OUT_DIR="{{ config.pin_check_config.output_dir }}"
             case "$OUT_DIR" in /*) ;; *) OUT_DIR="$WORK/$OUT_DIR" ;; esac
             mkdir -p "$OUT_DIR"
-            "$(uv python find)" "$DISTILL_HOME/steps/corpus-pin-check/check_corpus_pin.py" \
+            python "$DISTILL_HOME/steps/corpus-pin-check/check_corpus_pin.py" \
               "{{ config.pin_check_config.corpus_dir }}" \
               "{{ config.pin_check_config.teacher_model }}" \
               "{{ config.pin_check_config.max_length }}" \

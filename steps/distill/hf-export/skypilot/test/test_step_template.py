@@ -218,3 +218,9 @@ class TestVendoredTemplate:
         assert re.search(
             r"\{%-? *generation *-?%\}", tpl.read_text()
         ), "the vendored template must carry a real {% generation %} block tag"
+
+
+class TestSlurmExecutorEnv:
+    def test_the_stripped_env_is_restored(self, launcher):
+        assert launcher["envs"]["PYTHONPATH"] == "/opt/distill/src"
+        assert launcher["envs"]["VIRTUAL_ENV"] == "/stage/.venv"

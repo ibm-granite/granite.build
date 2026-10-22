@@ -107,9 +107,13 @@ class TestSourceIsBakedIntoTheImage:
         assert "file_mounts" not in launcher
         assert "setup" not in launcher
 
-    def test_the_interpreter_comes_from_uv_not_a_hardcoded_path(self, run_script):
-        assert 'PYBIN="$(uv python find)"' in run_script
+    def test_the_interpreter_is_the_images_venv_python_on_path(self, run_script):
+        assert 'PYBIN="python"' in run_script
         assert "/stage/" not in run_script
+
+    def test_the_slurm_executors_stripped_env_is_restored(self, launcher):
+        assert launcher["envs"]["PYTHONPATH"] == "/opt/distill/src"
+        assert launcher["envs"]["VIRTUAL_ENV"] == "/stage/.venv"
 
     def test_the_launcher_is_run_from_the_baked_step_dir(self, run_script):
         assert '"$DISTILL_HOME/steps/tokenizer-align/run-align.sh"' in run_script

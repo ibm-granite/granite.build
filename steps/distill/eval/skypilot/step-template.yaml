@@ -128,6 +128,10 @@ environment_configs:
           # serves a 3B-teacher smoke run and a 30B-teacher reference run.
           resources: {}
           envs:
+            # The SLURM executor runs the task under `env -u PYTHONPATH` and without
+            # VIRTUAL_ENV, so the image's ENV values for both are gone at run time.
+            PYTHONPATH: /opt/distill/src
+            VIRTUAL_ENV: /stage/.venv
             # NO HF_HUB_OFFLINE here, unlike the three tokenizer-only ported steps —
             # and that is measured, not stylistic. This step loads MODELS, and granite
             # 4.x is hybrid Mamba: at load time the `kernels` package resolves
@@ -160,7 +164,7 @@ environment_configs:
             # --- distill source: baked into the image, nothing cloned or mounted ---
             # DISTILL_HOME, the venv (VIRTUAL_ENV) and PYTHONPATH are all set by the image's
             # own ENV lines. The interpreter is asked of uv rather than hardcoded.
-            PYBIN="$(uv python find)"
+            PYBIN="python"
             CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"
             WORK="${GB_BUILD_WORKDIR:-$PWD}"
             echo "GB_STEP_METADATA_KEY:distill_code_source GB_STEP_METADATA_VALUE:baked-image"
