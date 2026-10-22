@@ -78,7 +78,7 @@ PYTHONPATH=src <venv>/bin/python -m pytest -c /dev/null --noconftest \
   test/test_dd_step_render.py test/test_dd_guard_sh.py test/test_dd_run.py test/test_dd_ollama_sh.py
 ```
 
-There are 120 tests in all:
+There are 136 tests in all:
 
 - `test_dd_step_render.py` pins what the template computes:
   - the rendered blocks parse under `bash -n`;
@@ -100,8 +100,10 @@ There are 120 tests in all:
     symlinks;
   - `count_resumable_records`.
 
-  With `data-designer`, `TestRunEndToEnd` also runs the whole runner with a sampler-only
-  config, so no model is called:
+  With `data-designer`, `TestRunEndToEnd` also runs the whole runner with configs that
+  call no model. Each run is a subprocess with its own `DATA_DESIGNER_HOME`, as on the
+  node. Data Designer reads that path once at import, so in-process runs shared the
+  developer's real `~/.data-designer` and hid a bug (third review). Checks:
   - the marker is the last line, and the export is written;
   - `min_records` is checked before any work;
   - a finished run is extended;
@@ -109,12 +111,16 @@ There are 120 tests in all:
     `preserve_dropped_columns`, with no timestamped sibling dir;
   - `always` refuses a mismatch, and starts fresh when there is no checkpoint yet
     (a first run, or one interrupted before its first row group);
-  - an unchanged **expression-only** or **seeded** config resumes (the second review's
-    blocker: Data Designer stores the fingerprint of the *compiled* config, which adds
-    an internal row-id column or the seed's columns, so comparing the raw config made
-    these look changed and cleared them);
+  - an unchanged **expression-only** or **seeded** config resumes, in the same home and
+    with a fresh home on each run, which is how a new build looks. These cases fail if
+    either the compiled-fingerprint fix or the builder-ordering fix is reverted (both
+    checked);
+  - a `metadata.json` that Data Designer didn't write is refused, with nothing removed;
+  - duplicate provider names are reported without the key;
+  - no phantom "will be saved to `<name>_<timestamp>`" line on a resume;
   - a lower `num_records` is refused in both resume modes, and keeps the data;
-  - `scheduler_events.jsonl` is cleared on a restart;
+  - `scheduler_events.jsonl` is cleared on a restart (checked by run count; content
+    merely differing would pass without the clear, since Data Designer appends);
   - user files survive a restart;
   - a malformed provider, or a credential of the wrong type, is reported without its
     key.
@@ -127,6 +133,8 @@ There are 120 tests in all:
     when our server would only fail to bind 0.5s later (the race the second review
     reproduced), and a server that never logs "Listening on" is not trusted;
   - `OLLAMA_NOPRUNE` is set, so a starting server can't prune another build's pull;
+  - the pinned 0.40.7 hash wins over a fetched one, and an unfetchable checksum gets the
+    explanation rather than a bare exit;
   - `run` returns the wrapped command's exit status and always stops the server.
 
 ### Open build tests (here)

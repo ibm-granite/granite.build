@@ -57,8 +57,9 @@ the node:
 | `api_key_env: NAME` | `api_key: $NAME` (bearer token) |
 | `extra_headers_from_env: {Header: NAME}` | `extra_headers: {Header: $NAME}` |
 
-A missing variable fails the target and names the variable. A malformed provider entry
-fails the same way, naming the bad field without printing any credential.
+A missing variable fails the target and names the variable. A malformed provider entry,
+or two providers with the same `name`, fails the same way, naming the problem without
+printing any credential.
 
 **Never put a credential in the build.yaml as a literal**, whether as `api_key` or as an
 `extra_headers` value. Step config is stored with the build and travels to the node, so a
@@ -123,9 +124,12 @@ Things to know:
   generated 4 short rows in about 20s on 2 CPUs. It writes fluent text whose facts are
   often wrong.
 - **Downloads, verified and cached.** Ollama's Linux bundle is about 1.5 GB, almost all
-  of it CUDA libraries. The step downloads it once, checks it against the sha256 Ollama
-  publishes for the release, and keeps only the CPU parts (about 50 MB); a download that
-  fails its checksum installs nothing. The model is extra (`granite4:350m` is about
+  of it CUDA libraries. The step downloads it once, checks its sha256, and keeps only the
+  CPU parts (about 50 MB); a download that fails its checksum installs nothing. For the
+  default `version` (0.40.7) the hash is pinned in the step, so a tampered release is
+  refused too. For any other `version` the step checks against the `sha256sum.txt`
+  Ollama publishes with that release, which catches corruption but not a tampered
+  release. The model is extra (`granite4:350m` is about
   0.7 GB). Both are cached under the environment's shared workdir
   (`<shared_workdir>/.data-designer-cache`), so they download once per cluster. Measured
   on the local SLURM cluster: 4m39s cold, 3m04s warm.
@@ -192,10 +196,18 @@ previous run:
 | `always` | As above. | Fails before generating, naming what changed. | Starts fresh, so a target interrupted before its first checkpoint can still be retried. |
 | `never` | Refuses a non-empty `output_path`. | Refuses a non-empty `output_path`. | Starts fresh. |
 
-**`num_records` can grow, never shrink.** Raising it extends the dataset. Lowering it below
-what the previous run was started with is refused in every mode, before anything is
-removed: resume never deletes rows to honour a smaller target. Use a new `output_path`
-for a smaller dataset.
+**`num_records` can grow, never shrink.** When the previous run matches, raising it
+extends the dataset, and lowering it below what that run was started with is refused
+before anything is removed: resume never deletes rows to honour a smaller target. Use a
+new `output_path` for a smaller dataset. (If the previous run does *not* match,
+`if_possible` starts fresh regardless, so `num_records` can be anything.) A dataset
+whose after-generation processors have already run can't be extended either; that is
+refused up front too.
+
+**Only Data Designer's own output is ever resumed or cleared.** If `output_path` holds a
+`metadata.json` that Data Designer didn't write (one without its fields, or without the
+`builder_config.json` beside it), the run is refused and nothing is removed. Give the step
+an `output_path` of its own.
 
 The fingerprint ignores `max_parallel_requests`, `timeout`, `skip_health_check` and
 profilers, so you can retune concurrency and still resume. **Changing `buffer_size`

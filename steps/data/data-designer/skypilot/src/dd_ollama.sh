@@ -30,12 +30,17 @@
 # installs `zstandard` into when local_model is set), else python3.
 #
 # VERIFYING THE DOWNLOAD
-# The archive is checked against the sha256 Ollama publishes for each release
-# (sha256sum.txt beside the assets) before anything from it is installed, and the
-# result is cached and reused by later builds, so an unverified download must never
-# reach the cache. The archive is saved to a temporary file first, hashed, then
+# The archive is checked against a known sha256 before anything from it is installed,
+# and the result is cached and reused by later builds, so an unverified download must
+# never reach the cache. The archive is saved to a temporary file first, hashed, then
 # extracted: verifying a stream while extracting it would install files before the
 # hash is known.
+#
+# For the step's default release the hashes are PINNED below, copied from that
+# release's sha256sum.txt. That protects against a tampered release, not only a
+# corrupt download: a hash fetched from the same place as the archive would agree
+# with a replaced archive (third review). For any other --version the script falls
+# back to the published sha256sum.txt, which still catches corruption.
 #
 # THE CACHE
 # <dir> should be on the environment's shared filesystem ($GB_SHARED_WORKDIR) so the
@@ -123,8 +128,22 @@ with tarfile.open(fileobj=reader, mode="r|") as tar:
   fi
 }
 
-# The published sha256 for this release's archive, from sha256sum.txt beside the assets.
+# Pinned sha256 of ollama-linux-<arch>.tar.zst for the step's default release, from
+# https://github.com/ollama/ollama/releases/download/v0.40.7/sha256sum.txt. Update both
+# together with local_model.version's default in step-template.yaml.
+pinned_sha256() {
+  case "$version/$arch" in
+    0.40.7/amd64) echo 7f082e625b4c334df84ed1558fe282d6d8091fe3545790aef30b3a9c50d44d41 ;;
+    0.40.7/arm64) echo c74249e87795b1437ce0f484adfd05b4628d7497472c475b13ec6db69ecc69cf ;;
+  esac
+}
+
+# The sha256 to verify against: pinned for the default release, otherwise the one
+# published in that release's sha256sum.txt. Prints nothing when neither is available.
 expected_sha256() {
+  local pinned
+  pinned="$(pinned_sha256)"
+  if [ -n "$pinned" ]; then echo "$pinned"; return; fi
   curl -fsSL "https://github.com/ollama/ollama/releases/download/v$version/sha256sum.txt" \
     | awk -v f="./ollama-linux-$arch.tar.zst" '$2 == f || $2 == substr(f, 3) {print $1; exit}'
 }
@@ -149,9 +168,13 @@ install_ollama() {
   echo "data-designer: installing Ollama $version ($arch, CPU libraries only) into $install_dir"
 
   local want got
-  want="$(expected_sha256)"
+  # `|| true`: under `set -e -o pipefail` a failed fetch would otherwise exit inside the
+  # command substitution, skipping the explanation below (third review).
+  want="$(expected_sha256 || true)"
   [ -n "$want" ] || {
-    echo "data-designer: ERROR no published sha256 for ollama-linux-$arch.tar.zst in Ollama $version's sha256sum.txt" >&2
+    echo "data-designer: ERROR could not get a sha256 for ollama-linux-$arch.tar.zst" \
+         "of Ollama $version (not pinned, and its sha256sum.txt could not be fetched" \
+         "or has no entry); nothing was installed" >&2
     exit 1; }
   curl -fsSL -o "$install_tmp/archive.tar.zst" "$url"
   got="$(sha256_of "$install_tmp/archive.tar.zst")"

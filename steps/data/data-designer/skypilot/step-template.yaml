@@ -40,7 +40,7 @@ config:
     local_model:
       runtime: ""          # "" (off) | ollama
       model: ""            # Ollama model name, e.g. granite4:350m
-      version: "0.40.7"    # Ollama release
+      version: "0.40.7"    # Ollama release; its archive sha256 is pinned in src/dd_ollama.sh
       port: 11434
       name: "local"        # provider name to reference from model_configs
     # Data Designer RunConfig fields, passed through verbatim, e.g. buffer_size (rows per

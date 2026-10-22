@@ -23,6 +23,10 @@ only. A live run of the runner against a real model endpoint is IBM-only, in
 
 import base64
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import dd_run
 import pytest
@@ -32,6 +36,8 @@ from dd_run import StepError
 # repo .venv that `make test` uses (installing it there replaces the repo's pinned
 # duckdb, fsspec, pyarrow and opentelemetry). They skip there; run them with a venv
 # that has it — see the step README.md, "Unit tests".
+_RUNNER = Path(__file__).resolve().parents[1] / "src" / "dd_run.py"
+
 _NEEDS_DD = (
     "needs data-designer (not in the repo .venv): "
     "<venv>/bin/python -m pytest -c /dev/null --noconftest test/test_dd_run.py"
@@ -348,6 +354,75 @@ class TestClearPreviousRun:
         assert (target / "precious").exists() and not (out / "parquet-files").exists()
 
 
+class TestDuplicateProviders:
+    def test_refused_before_any_secret_is_resolved(self):
+        """Data Designer's own duplicate-name error printed the whole list, secrets too."""
+        providers = [
+            {"name": "p", "endpoint": "e"},
+            {"name": "p", "endpoint": "e", "api_key_env": "K"},
+        ]
+        with pytest.raises(StepError, match="must be unique; repeated: p") as e:
+            dd_run.build_providers(providers, {"K": "sk-DUP-SECRET"})
+        assert "sk-DUP-SECRET" not in str(e.value)
+
+    def test_unique_names_pass(self):
+        assert len(dd_run.build_providers([{"name": "a"}, {"name": "b"}], {})) == 2
+
+
+class TestForeignContents:
+    def _dd_dir(self, tmp_path, **overrides):
+        out = tmp_path / "out"
+        out.mkdir()
+        meta = {"config_hash": "h", "config_hash_version": 2, "target_num_records": 4}
+        meta.update(overrides)
+        (out / "metadata.json").write_text(json.dumps(meta))
+        (out / "builder_config.json").write_text("{}")
+        return out
+
+    def test_data_designer_dir_is_not_foreign(self, tmp_path):
+        assert dd_run.foreign_contents(self._dd_dir(tmp_path)) is None
+        assert dd_run.foreign_contents(tmp_path / "absent") is None
+
+    @pytest.mark.parametrize(
+        "setup,needle",
+        [
+            (
+                lambda o: (o / "metadata.json").write_text('{"owner": "me"}'),
+                "not one Data Designer wrote",
+            ),
+            (lambda o: (o / "metadata.json").write_text("not json"), "not valid JSON"),
+            (lambda o: (o / "builder_config.json").unlink(), "no builder_config.json"),
+        ],
+        ids=["someone-elses-metadata", "corrupt", "no-builder-config"],
+    )
+    def test_foreign_dirs_are_recognised(self, tmp_path, setup, needle):
+        out = self._dd_dir(tmp_path)
+        setup(out)
+        assert needle in dd_run.foreign_contents(out)
+
+
+class TestPostProcessedRefusal:
+    def _meta(self, tmp_path, **meta):
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "metadata.json").write_text(
+            json.dumps({"target_num_records": 4, **meta})
+        )
+        return out
+
+    def test_extending_a_processed_dataset_is_refused(self, tmp_path):
+        out = self._meta(tmp_path, post_generation_processed=True)
+        assert "can't be extended to 6" in dd_run.post_processed_refusal(out, 6)
+        assert dd_run.post_processed_refusal(out, 4) is None  # finished: nothing to do
+
+    def test_interrupted_processing_is_refused(self, tmp_path):
+        out = self._meta(tmp_path, post_generation_state="started")
+        assert "did not finish" in dd_run.post_processed_refusal(out, 4)
+
+    def test_unprocessed_dataset_is_fine(self, tmp_path):
+        assert dd_run.post_processed_refusal(self._meta(tmp_path), 6) is None
+
+
 class TestValidateProviders:
     def test_invalid_entry_never_shows_the_secret(self):
         pytest.importorskip("data_designer", reason=_NEEDS_DD)
@@ -421,12 +496,27 @@ _SAMPLER_CONFIG = {
 _DEAD = [{"name": "p", "endpoint": "http://127.0.0.1:9/v1"}]
 
 
+class _Run:
+    """One subprocess run of the runner: exit code plus captured output."""
+
+    def __init__(self):
+        self.rc, self.out, self.err = None, "", ""
+
+
 @pytest.fixture
-def run_dd(tmp_path, monkeypatch):
+def run_dd(tmp_path):
+    """Run src/dd_run.py in a SUBPROCESS with its own DATA_DESIGNER_HOME, as on the node.
+
+    In-process runs can't isolate Data Designer's settings: it reads DATA_DESIGNER_HOME
+    once, at import, so every in-process test shared the developer's real
+    ~/.data-designer. That home is already seeded with default model configs, which hid
+    the builder-ordering bug the test below exists to catch (third review: with the fix
+    reverted, the whole file still passed). Each run here starts a fresh interpreter,
+    and ``fresh_home=True`` gives that run a brand-new home, as a new build gets.
+    """
     pytest.importorskip("data_designer", reason=_NEEDS_DD)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("NEMO_TELEMETRY_ENABLED", "false")
-    monkeypatch.setenv("DATA_DESIGNER_HOME", str(tmp_path / "home"))
+    last = _Run()
+    homes = iter(range(1, 1000))
 
     def run(
         num,
@@ -436,17 +526,26 @@ def run_dd(tmp_path, monkeypatch):
         providers=None,
         extra=(),
         env=None,
+        fresh_home=False,
     ):
         spec = {
             "config": config or _SAMPLER_CONFIG,
             "model_providers": providers or _DEAD,
             "run_config": run_config or {},
         }
-        monkeypatch.setenv(dd_run.SPEC_ENV, _b64(spec))
-        for k, v in (env or {}).items():
-            monkeypatch.setenv(k, v)
-        return dd_run.main(
+        home = tmp_path / (f"home{next(homes)}" if fresh_home else "home")
+        child_env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": str(tmp_path),
+            "NEMO_TELEMETRY_ENABLED": "false",
+            "DATA_DESIGNER_HOME": str(home),
+            dd_run.SPEC_ENV: _b64(spec),
+            **(env or {}),
+        }
+        proc = subprocess.run(
             [
+                sys.executable,
+                str(_RUNNER),
                 "--output-path",
                 str(tmp_path / "out"),
                 "--artifact-id",
@@ -456,39 +555,44 @@ def run_dd(tmp_path, monkeypatch):
                 "--resume",
                 resume,
                 *extra,
-            ]
+            ],
+            capture_output=True,
+            text=True,
+            env=child_env,
+            cwd=tmp_path,
+            timeout=300,
         )
+        last.rc, last.out, last.err = proc.returncode, proc.stdout, proc.stderr
+        return proc.returncode
 
+    run.last = last
     return run
 
 
-def _last_line(capsys):
-    return capsys.readouterr().out.rstrip().splitlines()[-1]
+def _last_line(run_dd):
+    return run_dd.last.out.rstrip().splitlines()[-1]
 
 
 class TestRunEndToEnd:
-    def test_marker_is_last_and_export_written(self, run_dd, tmp_path, capsys):
+    def test_marker_is_last_and_export_written(self, run_dd, tmp_path):
         assert run_dd(4, extra=("--export-format", "csv", "--min-records", "4")) == 0
         assert (
-            _last_line(capsys)
+            _last_line(run_dd)
             == f"GB_ARTIFACT_ID:q GB_ARTIFACT_PATH:{tmp_path / 'out'}"
         )
         assert (
             len((tmp_path / "out" / "out.csv").read_text().splitlines()) == 5
         )  # header + 4
 
-    def test_min_records_above_num_records_fails_before_work(
-        self, run_dd, tmp_path, capsys
-    ):
+    def test_min_records_above_num_records_fails_before_work(self, run_dd, tmp_path):
         assert run_dd(2, extra=("--min-records", "3")) == 1
-        assert "greater than num_records" in capsys.readouterr().err
+        assert "greater than num_records" in run_dd.last.err
         assert not (tmp_path / "out").exists()
 
-    def test_resume_extends_a_finished_run(self, run_dd, tmp_path, capsys):
+    def test_resume_extends_a_finished_run(self, run_dd, tmp_path):
         assert run_dd(2, run_config={"buffer_size": 2}) == 0
-        capsys.readouterr()
         assert run_dd(4, run_config={"buffer_size": 2}) == 0
-        out = capsys.readouterr().out
+        out = run_dd.last.out
         assert "resuming — 2 record(s)" in out
         assert "GB_STEP_METADATA_KEY:resumed_records GB_STEP_METADATA_VALUE:2" in out
 
@@ -510,49 +614,44 @@ class TestRunEndToEnd:
         ],
     )
     def test_if_possible_restarts_in_place_on_any_mismatch(
-        self, run_dd, tmp_path, capsys, second
+        self, run_dd, tmp_path, second
     ):
         assert run_dd(2, run_config={"buffer_size": 2}) == 0
-        capsys.readouterr()
         assert run_dd(2, **second) == 0
-        out = capsys.readouterr().out
+        out = run_dd.last.out
         assert "not resuming" in out and "resuming —" not in out
         assert "GB_STEP_METADATA_KEY:resumed_records GB_STEP_METADATA_VALUE:0" in out
         assert [
             p.name for p in tmp_path.iterdir() if p.name.startswith("out_")
         ] == [], "Data Designer wrote to a timestamped sibling dir"
 
-    def test_always_refuses_a_mismatch_before_work(self, run_dd, capsys):
+    def test_always_refuses_a_mismatch_before_work(self, run_dd):
         assert run_dd(2, run_config={"buffer_size": 2}) == 0
-        capsys.readouterr()
         assert run_dd(2, resume="always", run_config={"buffer_size": 4}) == 1
-        assert "buffer_size changed" in capsys.readouterr().err
+        assert "buffer_size changed" in run_dd.last.err
 
-    def test_always_on_a_first_run_starts_fresh(self, run_dd, tmp_path, capsys):
+    def test_always_on_a_first_run_starts_fresh(self, run_dd, tmp_path):
         """As Data Designer documents for ALWAYS: no checkpoint yet means a fresh start."""
         assert run_dd(2, resume="always") == 0
-        assert "no checkpoint yet; starting fresh" in capsys.readouterr().out
+        assert "no checkpoint yet; starting fresh" in run_dd.last.out
         assert [p.name for p in tmp_path.iterdir() if p.name.startswith("out_")] == []
 
-    def test_always_after_an_interruption_before_any_checkpoint(
-        self, run_dd, tmp_path, capsys
-    ):
+    def test_always_after_an_interruption_before_any_checkpoint(self, run_dd, tmp_path):
         """Only partial batches and no metadata.json: retried under always, starts fresh."""
         partial = tmp_path / "out" / "tmp-partial-parquet-files"
         partial.mkdir(parents=True)
         (partial / "batch.parquet").write_text("x")
         assert run_dd(2, resume="always") == 0
-        assert "starting fresh" in capsys.readouterr().out
+        assert "starting fresh" in run_dd.last.out
 
     @pytest.mark.parametrize("resume", ["if_possible", "always"])
     def test_lower_num_records_is_refused_and_keeps_the_data(
-        self, run_dd, tmp_path, capsys, resume
+        self, run_dd, tmp_path, resume
     ):
         assert run_dd(4, run_config={"buffer_size": 2}) == 0
         before = sorted(p.name for p in (tmp_path / "out" / "parquet-files").iterdir())
-        capsys.readouterr()
         assert run_dd(2, resume=resume, run_config={"buffer_size": 2}) == 1
-        err = capsys.readouterr().err
+        err = run_dd.last.err
         assert "below the 4" in err and "Nothing was removed" in err
         assert (
             sorted(p.name for p in (tmp_path / "out" / "parquet-files").iterdir())
@@ -569,43 +668,88 @@ class TestRunEndToEnd:
         ],
         ids=["expression-only", "seeded"],
     )
-    def test_unchanged_compiled_config_resumes(self, run_dd, tmp_path, capsys, config):
-        """The second review's blocker: these always looked "changed" and were cleared.
+    @pytest.mark.parametrize(
+        "home", ["same", "fresh"], ids=["same-home", "fresh-home-each-run"]
+    )
+    def test_unchanged_compiled_config_resumes(self, run_dd, tmp_path, config, home):
+        """Same config twice must resume. Two bugs used to break this (second review):
 
-        The step compared the build's raw config fingerprint with the COMPILED one Data
-        Designer stores. Both runs here use the same config, so the second must resume.
+        - the step fingerprinted the RAW config, but Data Designer stores the COMPILED
+          one (it adds an internal row-id column, or the seed's columns);
+        - the builder was made before DataDesigner(), which seeds Data Designer's
+          default model configs into DATA_DESIGNER_HOME, so the first run in an empty
+          home fingerprinted a different model list from every later run.
+
+        "fresh-home-each-run" is how a new build looks on the node (each run gets its
+        own ``./.data-designer-home``). Both cases fail if either fix is reverted.
         """
         if config == "SEEDED":
             seed = tmp_path / "seed.csv"
-            seed.write_text("city\nParis\nLima\nOslo\nRome\n")
+            seed.write_text("city\nParis\nLima\nOslo\nRome\nKyiv\nCairo\n")
             config = {
                 "seed_config": {"source": {"seed_type": "local", "path": str(seed)}},
                 "columns": [
                     {"name": "e", "column_type": "expression", "expr": "{{ city }}!"}
                 ],
             }
-        assert run_dd(2, config=config, run_config={"buffer_size": 2}) == 0
-        capsys.readouterr()
-        assert run_dd(4, config=config, run_config={"buffer_size": 2}) == 0
-        out = capsys.readouterr().out
+        fresh = home == "fresh"
+        rc = {"buffer_size": 2}
+        assert (
+            run_dd(2, config=config, run_config=rc, fresh_home=fresh) == 0
+        ), run_dd.last.err
+        assert (
+            run_dd(4, config=config, run_config=rc, fresh_home=fresh) == 0
+        ), run_dd.last.err
+        out = run_dd.last.out
         assert "not resuming" not in out
         assert "resuming — 2 record(s)" in out
         assert "GB_STEP_METADATA_KEY:resumed_records GB_STEP_METADATA_VALUE:2" in out
         assert (
-            run_dd(6, resume="always", config=config, run_config={"buffer_size": 2})
+            run_dd(6, resume="always", config=config, run_config=rc, fresh_home=fresh)
             == 0
         )
 
     def test_scheduler_events_are_cleared_on_restart(self, run_dd, tmp_path):
+        """Data Designer APPENDS to this file, so a restart that didn't clear it would
+        leave the first run's events at its start. Checked by run count, not by content
+        merely differing, which appending alone satisfies (third review)."""
         rc = {"buffer_size": 2, "write_scheduler_events": True}
         assert run_dd(2, run_config=rc) == 0
         events = tmp_path / "out" / "scheduler_events.jsonl"
-        assert events.is_file()
         first = events.read_text()
-        assert (
-            run_dd(2, run_config={**rc, "buffer_size": 4}) == 0
-        )  # mismatch -> restart
-        assert events.read_text() != first or not events.exists()
+        assert first.strip(), "Data Designer wrote no scheduler events"
+        assert run_dd(2, run_config={**rc, "buffer_size": 4}) == 0  # mismatch: restart
+        assert not events.read_text().startswith(first), "previous run's events kept"
+
+    def test_foreign_metadata_is_refused_and_nothing_removed(self, run_dd, tmp_path):
+        """Third review: a user's own metadata.json made the step clear the dir."""
+        out = tmp_path / "out"
+        (out / "images").mkdir(parents=True)
+        (out / "metadata.json").write_text('{"owner": "me"}')
+        (out / "images" / "cat.png").write_text("png")
+        (out / "out.csv").write_text("a,b")
+        assert run_dd(1) == 1
+        assert "Nothing was removed" in run_dd.last.err
+        assert (out / "images" / "cat.png").exists() and (out / "out.csv").exists()
+
+    def test_duplicate_provider_names_report_without_the_key(self, run_dd):
+        dup = [
+            {"name": "p", "endpoint": "http://127.0.0.1:9/v1"},
+            {
+                "name": "p",
+                "endpoint": "http://127.0.0.1:9/v1",
+                "extra_headers_from_env": {"X": "MYKEY"},
+            },
+        ]
+        assert run_dd(1, providers=dup, env={"MYKEY": "sk-FAKE-DUP"}) == 1
+        assert "sk-FAKE-DUP" not in run_dd.last.out + run_dd.last.err
+        assert "Traceback" not in run_dd.last.err and "unique" in run_dd.last.err
+
+    def test_resume_logs_no_phantom_sibling_dir(self, run_dd):
+        """The fingerprint pre-check used to log "will be saved to out_<timestamp>"."""
+        assert run_dd(2, run_config={"buffer_size": 2}) == 0
+        assert run_dd(4, run_config={"buffer_size": 2}) == 0
+        assert "will be saved to" not in run_dd.last.out + run_dd.last.err
 
     def test_user_files_survive_a_restart(self, run_dd, tmp_path):
         assert run_dd(2, run_config={"buffer_size": 2}) == 0
@@ -613,7 +757,7 @@ class TestRunEndToEnd:
         assert run_dd(2, run_config={"buffer_size": 4}) == 0
         assert (tmp_path / "out" / "notes.txt").read_text() == "keep me"
 
-    def test_bad_provider_reports_without_the_key(self, run_dd, capsys):
+    def test_bad_provider_reports_without_the_key(self, run_dd):
         bad = [
             {
                 "name": "gw",
@@ -622,6 +766,6 @@ class TestRunEndToEnd:
             }
         ]
         assert run_dd(1, providers=bad, env={"MYKEY": "sk-FAKE-SECRET"}) == 1
-        captured = capsys.readouterr()
+        captured = run_dd.last
         assert "sk-FAKE-SECRET" not in captured.out + captured.err
         assert "Traceback" not in captured.err and "endpoint" in captured.err

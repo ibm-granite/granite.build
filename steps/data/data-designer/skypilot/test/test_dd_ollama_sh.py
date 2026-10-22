@@ -233,3 +233,48 @@ def test_run_propagates_status_and_stops_server(tmp_path, status):
     proc, _ = _ollama(tmp_path, env, "run", "--", "bash", "-c", f"exit {status}")
     assert proc.returncode == status, proc.stderr
     assert not (tmp_path / "serve.pid").exists(), "server was not stopped"
+
+
+def test_default_release_uses_the_pinned_hash_not_the_fetched_one(tmp_path):
+    """For 0.40.7 the pinned hash wins: a tampered release whose published
+    sha256sum.txt agrees with the tampered archive must still be refused."""
+    env = _setup(tmp_path)  # sha256sum.txt agrees with the fake archive...
+    cache = tmp_path / "cache"
+    proc = subprocess.run(
+        [
+            "bash",
+            str(_SCRIPT),
+            "install",
+            "--version",
+            "0.40.7",
+            "--model",
+            "m:1",
+            "--cache-dir",
+            str(cache),
+            "--port",
+            "11434",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=60,
+    )
+    assert proc.returncode != 0  # ...but it isn't the real 0.40.7 archive
+    assert "failed its checksum" in proc.stderr
+    assert not (cache / f"ollama-0.40.7-{_ARCH}").exists()
+
+
+def test_unfetchable_checksum_gives_the_explanation(tmp_path):
+    env = _setup(tmp_path)
+    (tmp_path / "assets" / "sha256sum.txt").unlink()  # its fetch now fails
+    bin_curl = tmp_path / "bin" / "curl"
+    bin_curl.write_text(
+        bin_curl.read_text().replace(
+            '*sha256sum.txt) cat "', '*sha256sum.txt) exit 22; cat "'
+        )
+    )
+    proc, cache = _ollama(tmp_path, env, "install")
+    assert proc.returncode != 0
+    assert "could not get a sha256" in proc.stderr
+    assert not list(cache.glob(".ollama-install.*"))

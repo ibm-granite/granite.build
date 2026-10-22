@@ -159,6 +159,15 @@ def build_providers(
     to the literal string, so a missing variable is sent as the key itself. Prefer
     ``api_key_env``.
     """
+    # Duplicate names are refused here, BEFORE any credential is resolved: Data
+    # Designer rejects them too, but its error prints the whole provider list, secrets
+    # included (third review, reproduced).
+    names = [e.get("name") for e in providers if isinstance(e, dict)]
+    dupes = sorted({str(n) for n in names if names.count(n) > 1})
+    if dupes:
+        raise StepError(
+            f"model_providers names must be unique; repeated: {', '.join(dupes)}."
+        )
     resolved = []
     for i, entry in enumerate(providers):
         if not isinstance(entry, dict):
@@ -245,6 +254,34 @@ _DD_ARTIFACTS = (
 )
 
 
+# Keys every Data Designer 0.9.5 metadata.json has (checked against a real run). Together
+# with builder_config.json they mark output_path as Data Designer's own artifact dir.
+_DD_METADATA_KEYS = ("config_hash", "config_hash_version", "target_num_records")
+
+
+def foreign_contents(output_path: Path) -> str | None:
+    """Why output_path holds a ``metadata.json`` that is NOT a Data Designer run's.
+
+    Returns None when there is no metadata.json, or it is Data Designer's. Anything
+    else must never be cleared: the third review reproduced a user's ``metadata.json``
+    being taken for a previous run, and ``images/`` plus a csv beside it deleted.
+    """
+    metadata_path = output_path / "metadata.json"
+    if not metadata_path.is_file():
+        return None
+    try:
+        metadata = json.loads(metadata_path.read_text())
+    except (OSError, ValueError):
+        return "its metadata.json is not valid JSON"
+    if not isinstance(metadata, dict) or not all(
+        k in metadata for k in _DD_METADATA_KEYS
+    ):
+        return "its metadata.json is not one Data Designer wrote"
+    if not (output_path / "builder_config.json").is_file():
+        return "it has a metadata.json but no builder_config.json"
+    return None
+
+
 def resume_mismatch(
     output_path: Path,
     fingerprint: Mapping[str, Any],
@@ -262,17 +299,13 @@ def resume_mismatch(
         a timestamped sibling dir, which the step then refused to register.
     Also returns None when there is no previous run (no metadata.json) — nothing to
     resume or to clear. ``run_config`` is the build's RunConfig fields; omitted ones take
-    Data Designer's defaults.
+    Data Designer's defaults. Call only after foreign_contents() found nothing foreign,
+    so a metadata.json here is Data Designer's.
     """
     metadata_path = output_path / "metadata.json"
     if not metadata_path.is_file():
         return None
-    try:
-        metadata = json.loads(metadata_path.read_text())
-    except (OSError, ValueError):
-        return "its metadata.json is unreadable"
-    if not isinstance(metadata, dict):
-        return "its metadata.json is not an object"
+    metadata = json.loads(metadata_path.read_text())
 
     from data_designer.config.run_config import RunConfig
 
@@ -294,6 +327,37 @@ def resume_mismatch(
     return None
 
 
+def post_processed_refusal(output_path: Path, num_records: int) -> str | None:
+    """Why a previous run's after-generation processing rules out this resume, or None.
+
+    Mirrors ``_post_generation_processed_resume_result`` (Data Designer 0.9.5): once
+    after-generation processors have run, or started, the parquet files may already be
+    rewritten, so the dataset can't be extended. Data Designer only refuses that inside
+    create(), after the step has printed "resuming" (third review); checked up front
+    here. The same num_records with a finished, processed dataset is fine — nothing to do.
+    """
+    try:
+        metadata = json.loads((output_path / "metadata.json").read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    state = metadata.get("post_generation_state")
+    if state == "started":
+        return (
+            "its after-generation processing started but did not finish, so its files "
+            "may be part-rewritten"
+        )
+    processed = metadata.get("post_generation_processed", False) or state == "complete"
+    target = metadata.get("target_num_records")
+    if processed and isinstance(target, int) and num_records > target:
+        return (
+            f"after-generation processors already ran on its {target} records, so it "
+            f"can't be extended to {num_records}"
+        )
+    return None
+
+
 def num_records_below_target(output_path: Path, num_records: int) -> int | None:
     """The previous run's target when num_records is below it, else None.
 
@@ -310,9 +374,7 @@ def num_records_below_target(output_path: Path, num_records: int) -> int | None:
     return target if isinstance(target, int) and num_records < target else None
 
 
-def compiled_fingerprint(
-    designer: Any, builder: Any, dataset_name: str
-) -> dict[str, Any]:
+def compiled_fingerprint(designer: Any, builder: Any) -> dict[str, Any]:
     """The fingerprint Data Designer records for this config: of the COMPILED config.
 
     Data Designer compiles the config before generating (``DatasetBuilder.__init__`` calls
@@ -328,7 +390,11 @@ def compiled_fingerprint(
     """
     from data_designer.engine.compiler import compile_data_designer_config
 
-    provider = designer._create_resource_provider(dataset_name, builder)
+    # Named as DataDesigner.validate names it, not after output_path: with the real
+    # dataset name, ArtifactStorage logs "will be saved to <name>_<timestamp> instead"
+    # for an existing output_path, which nothing does (third review). The name doesn't
+    # enter the fingerprint.
+    provider = designer._create_resource_provider("validate-configuration", builder)
     return compile_data_designer_config(builder.build(), provider).fingerprint()
 
 
@@ -337,8 +403,10 @@ def clear_previous_run(output_path: Path) -> None:
 
     Only the entries in ``_DD_ARTIFACTS`` and Data Designer's export file
     (``<name>.<format>``) are removed, so other files a user keeps in output_path
-    survive. Called only after resume_mismatch found a metadata.json there, so
-    output_path is a Data Designer artifact dir and never ``/`` or a parent of one.
+    survive. Called only after foreign_contents() confirmed output_path is a Data
+    Designer artifact dir (its metadata.json keys plus builder_config.json), so it is
+    never ``/``, a parent of one, or a directory that only happens to hold a
+    metadata.json.
     """
     import shutil
 
@@ -486,10 +554,23 @@ def run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     # artifact_path/dataset_name are output_path's parent/basename, so Data Designer
     # writes the dataset exactly at output_path — the path the marker registers.
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    designer = DataDesigner(
-        artifact_path=str(output_path.parent),
-        model_providers=provider_objects,
-    )
+    from pydantic import ValidationError
+
+    try:
+        designer = DataDesigner(
+            artifact_path=str(output_path.parent),
+            model_providers=provider_objects,
+        )
+    except ValidationError as e:
+        # Its input_value is the provider list with credentials resolved; report the
+        # failing locations only.
+        raise StepError(
+            "model_providers were rejected: "
+            + "; ".join(
+                f"{'.'.join(str(x) for x in err['loc']) or '<providers>'}: {err['msg']}"
+                for err in e.errors(include_input=False, include_url=False)
+            )
+        ) from None
     # The builder must come AFTER DataDesigner(): constructing DataDesigner seeds
     # Data Designer's default model configs into DATA_DESIGNER_HOME, and a config that
     # names no model_configs picks those defaults up when the builder is created. Built
@@ -502,10 +583,17 @@ def run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     designer.validate(builder)
 
     # Settle what happens to a previous run in output_path BEFORE generating, so a
-    # mismatch costs nothing: Data Designer only discovers it inside create().
+    # mismatch costs nothing: Data Designer only discovers it inside create(). First make
+    # sure there IS a Data Designer run there; never clear anything else.
+    foreign = None if args.resume == "never" else foreign_contents(output_path)
+    if foreign:
+        raise StepError(
+            f"output_path {str(output_path)!r} can't be resumed or reused: {foreign}. "
+            f"Nothing was removed. Use an output_path of its own for this step."
+        )
     mismatch = resume_mismatch(
         output_path,
-        compiled_fingerprint(designer, builder, output_path.name),
+        compiled_fingerprint(designer, builder),
         spec["run_config"],
     )
     target = (
@@ -517,6 +605,16 @@ def run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
             f"{str(output_path)!r} was started with. Resume keeps or extends a dataset, "
             f"never shrinks it: use num_records >= {target}, or a new output_path. "
             f"Nothing was removed."
+        )
+    processed = (
+        None
+        if mismatch or args.resume == "never"
+        else post_processed_refusal(output_path, args.num_records)
+    )
+    if processed:
+        raise StepError(
+            f"cannot resume the run in {str(output_path)!r}: {processed}. Use a new "
+            f"output_path. Nothing was removed."
         )
     if mismatch and args.resume == "always":
         raise StepError(
