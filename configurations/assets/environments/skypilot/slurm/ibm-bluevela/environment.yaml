@@ -61,6 +61,10 @@ config:
         # on-disk private key is the only identity SlurmClient can use.
         # Path is this machine's; adjust if running gbserver elsewhere.
         IdentityFile: ~/.ssh/granitebuild
+        # Offer ONLY the key above. Without it ssh also offers every key in the agent, and
+        # login1 drops the connection with "Too many authentication failures" before this
+        # one is tried. (Not valid together with IdentityStepCert; this host uses a key.)
+        IdentitiesOnly: "yes"
 
   # Inline SLURM behavioral config. gbserver deep-merges this into the API
   # server's ~/.sky/config.yaml at launch (see merge_cloud_config).
@@ -76,6 +80,22 @@ config:
           # docs/environments/skypilot-slurm.md#workdir-containerized-steps.
           workdir: /proj/data-eng/llmb-read-write/builds
           tmpdir: /opt/nvme/$USER/skypilot-tmp
+          # The SLURM backend bind-mounts only $HOME, ccache and `workdir` into the
+          # container, so anything else a step reads or writes on the shared filesystem
+          # is invisible inside it. Mount the group tree that holds the models, corpora
+          # and run outputs (container path -> host path).
+          container_mounts:
+            /proj/granite-build:
+              host_path: /proj/granite-build
+              mode: rw
+          # BlueVela's CPU-only lane. Its submission filter refuses a job with no GPUs on
+          # any gpu-* partition, and `cpu` only accepts qos=cpu, so CPU-only targets set
+          # `zone: cpu` (see CPU_QUEUE in the distill recipe) and get this QOS here rather
+          # than the env-wide grp_granite_dot_build_medium below.
+          partition_configs:
+            cpu:
+              sbatch_options:
+                qos: cpu
       # Env-wide #SBATCH defaults, forwarded verbatim to sbatch (keys without the
       # leading --). `account` is granitebuild's own SLURM association
       # (confirmed via `sacctmgr show associations user=granitebuild`); there is
