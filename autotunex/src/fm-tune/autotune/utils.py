@@ -26,6 +26,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from autotune.catalog import get_autotune_config, get_autotune_dataset_types  # noqa: F401  (back-compat re-export)
 
+# Lightweight (stdlib-only at import time); the shadow_residual package itself
+# is imported lazily inside this module, so this stays import-safe without it.
+from autotune.shadow_residual import SR_PEFT_TYPE
+
 try:
     import numpy as np
     import pandas as pd
@@ -642,20 +646,27 @@ def get_tokenizer(
     """
     source = tokenizer_name_or_path if tokenizer_name_or_path else model_name_or_path
 
+    # Fast (Rust) tokenizer: ~2.4x the slow pure-Python BPE on Granite 4.x and
+    # id-for-id identical (tests/test_tokenize_arrays.py pins the parity).
+    # AutoTokenizer falls back to the slow class on its own when a checkpoint
+    # ships no fast tokenizer, so this never breaks a load the slow path allowed.
     tokenizer = AutoTokenizer.from_pretrained(
         pretrained_model_name_or_path=source,
         padding_side="left",
-        use_fast=False,
+        use_fast=True,
         trust_remote_code=resolve_trust_remote_code(),
     )
 
     num_new_tokens = 0
 
     if additional_special_tokens:
-        existing = tokenizer.additional_special_tokens or []
+        # transformers 5 renamed `additional_special_tokens` to `extra_special_tokens`,
+        # and add_special_tokens() *replaces* that list rather than extending it --
+        # hence `existing + new_tokens`, which keeps the checkpoint's own extras.
+        existing = list(tokenizer.extra_special_tokens or [])
         new_tokens = [t for t in additional_special_tokens if t not in existing]
         if new_tokens:
-            num_new_tokens += tokenizer.add_special_tokens({"additional_special_tokens": existing + new_tokens})
+            num_new_tokens += tokenizer.add_special_tokens({"extra_special_tokens": existing + new_tokens})
 
     if additional_tokens:
         num_new_tokens += tokenizer.add_tokens(additional_tokens)
@@ -732,36 +743,47 @@ def extract_tokenizer_kwargs(training_config: Dict[str, Any]) -> Dict[str, Any]:
     return {k: training_config[k] for k in keys if training_config.get(k) is not None}
 
 
-def tokenize_batch(
+def _column_values(batch: Union[pd.DataFrame, Dict[str, Any]], col: str) -> List[str]:
+    """Return ``batch[col]`` as a list of ``str`` for a DataFrame or a column dict."""
+    values = batch[col].tolist() if isinstance(batch, pd.DataFrame) else list(batch[col])
+    return [str(v) for v in values]
+
+
+def tokenize_batch_arrays(
     batch: Union[pd.DataFrame, Dict[str, Any]],
     tokenizer: PreTrainedTokenizer,
     input_col: str = "input",
     output_col: str = "output",
     max_length: int = 1024,
     stride: int = 512,
-) -> Dict[str, List[List[int]]]:
+) -> Dict[str, "np.ndarray"]:
     """
     Tokenizes a batch of input-output pairs for LLM fine-tuning.
     Loss is computed only on output tokens.
 
+    The input is not truncated: a window of ``max_length - len(output) - 1``
+    tokens slides across it with step ``stride``, and every window gets the
+    output tokens plus EOS appended, so one record can expand into several rows.
+    Rows are left-padded to ``max_length``; prompt and pad positions are -100 in
+    ``labels``.
+
+    Both columns are encoded with one batched tokenizer call each (a single
+    Rust call for a fast tokenizer), and rows are written into preallocated
+    ``int32`` arrays instead of per-token Python lists. Under Ray Data that
+    matters more than the tokenizer: the arrays become fixed-shape tensor
+    blocks, where lists of lists had to be converted to Arrow element by element.
+
     Args:
-        batch: Pandas DataFrame (Ray) or list of dicts (HF).
+        batch: Pandas DataFrame (Ray) or a dict of columns (HF datasets / Ray numpy).
         input_col: Column name for input text.
         output_col: Column name for output text.
         max_length: Maximum sequence length.
         stride: Sliding window stride for long inputs.
 
     Returns:
-        Dict with keys: input_ids, attention_mask, labels
+        Dict with keys input_ids, attention_mask, labels, each an ``int32``
+        array of shape ``(num_windows, max_length)``.
     """
-    # Normalize batch to list of dicts
-    if isinstance(batch, pd.DataFrame):
-        examples = batch.to_dict(orient="records")
-    else:
-        examples = [dict(zip(batch.keys(), values)) for values in zip(*batch.values())]
-
-    input_ids_list, attention_masks_list, labels_list = [], [], []
-
     # Guard against negative or 0 stride
     if stride <= 0:
         raise ValueError("stride must be > 0")
@@ -770,46 +792,48 @@ def tokenize_batch(
     if stride > max_length:
         stride = max_length // 2
 
-    for ex in examples:
-        input_text = ex[input_col]
-        output_text = ex[output_col]
-
-        # Tokenize output separately
-        output_tokens = tokenizer(str(output_text), add_special_tokens=False)["input_ids"]
-
-        # Check if enough capacity
-        capacity = max_length - len(output_tokens) - 1
-        if capacity < 0:
+    output_ids = tokenizer(_column_values(batch, output_col), add_special_tokens=False)["input_ids"]
+    for output_tokens in output_ids:
+        if max_length - len(output_tokens) - 1 < 0:
             raise ValueError(f"Not enough capacity for output + EOS at given max_length = {max_length} tokens.")
+    input_ids = tokenizer(_column_values(batch, input_col), add_special_tokens=False)["input_ids"]
 
-        # Sliding window over input
-        input_tokens = tokenizer(str(input_text), add_special_tokens=False)["input_ids"]
-        start = 0
-        while start < len(input_tokens):
-            end = start + (max_length - len(output_tokens) - 1)  # Reserve space for output + EOS
-            chunk = input_tokens[start:end]
-            combined = chunk + output_tokens + [tokenizer.eos_token_id]
+    # One window per stride step while start < len(input); an empty input yields none.
+    num_windows = sum(-(-len(tokens) // stride) for tokens in input_ids)
+    all_input_ids = np.full((num_windows, max_length), tokenizer.pad_token_id, dtype=np.int32)
+    all_attention_mask = np.zeros((num_windows, max_length), dtype=np.int32)
+    all_labels = np.full((num_windows, max_length), -100, dtype=np.int32)
 
-            # Attention mask
-            attention_mask = [1] * len(combined)
+    eos = tokenizer.eos_token_id
+    row = 0
+    for input_tokens, output_tokens in zip(input_ids, output_ids):
+        target = output_tokens + [eos]
+        capacity = max_length - len(target)  # Reserve space for output + EOS
+        for start in range(0, len(input_tokens), stride):
+            chunk = input_tokens[start : start + capacity]
+            pad_len = max_length - len(chunk) - len(target)  # pad left
+            all_input_ids[row, pad_len : pad_len + len(chunk)] = chunk
+            all_input_ids[row, max_length - len(target) :] = target
+            all_attention_mask[row, pad_len:] = 1
+            all_labels[row, max_length - len(target) :] = target
+            row += 1
 
-            # Labels: mask input tokens with -100
-            labels = [-100] * len(chunk) + output_tokens + [tokenizer.eos_token_id]
+    return {"input_ids": all_input_ids, "attention_mask": all_attention_mask, "labels": all_labels}
 
-            # Pad if needed
-            pad_len = max_length - len(combined)
-            if pad_len > 0:  # pad left
-                combined = [tokenizer.pad_token_id] * pad_len + combined
-                attention_mask = [0] * pad_len + attention_mask
-                labels = [-100] * pad_len + labels
 
-            input_ids_list.append(combined)
-            attention_masks_list.append(attention_mask)
-            labels_list.append(labels)
-
-            start += stride  # Move sliding window
-
-    return {"input_ids": input_ids_list, "attention_mask": attention_masks_list, "labels": labels_list}
+def tokenize_batch(
+    batch: Union[pd.DataFrame, Dict[str, Any]],
+    tokenizer: PreTrainedTokenizer,
+    input_col: str = "input",
+    output_col: str = "output",
+    max_length: int = 1024,
+    stride: int = 512,
+) -> Dict[str, List[List[int]]]:
+    """List-of-lists form of :func:`tokenize_batch_arrays` (same rows, same args),
+    for callers that build Arrow tables or HF ``datasets`` columns from lists.
+    """
+    arrays = tokenize_batch_arrays(batch, tokenizer, input_col, output_col, max_length, stride)
+    return {k: v.tolist() for k, v in arrays.items()}
 
 
 # Set the random seed globally
@@ -1423,6 +1447,19 @@ def get_peft_config(
             bias=base_kwargs.get("bias"),
             alora_invocation_tokens=inv_tokens,
         )
+    elif peft_type == SR_PEFT_TYPE:
+        # Shadow Residual: a dual-stream Granite architecture adapted with
+        # *stock* LoRA, so the config we return is a plain LoraConfig -- the
+        # architecture change happens at model-construction time inside
+        # autotune.shadow_residual.build_sr_peft_model (which also does the
+        # PEFT wrapping). Callers must therefore NOT call get_peft_model on it.
+        # Without this branch SR would fall through to `peft_config = None`
+        # below and silently train as a full fine-tune.
+        from autotune.shadow_residual import build_sr_lora_config
+
+        peft_config = build_sr_lora_config(base_kwargs)
+        print(f"[AutoTune] Shadow Residual LoRA configuration: {base_kwargs}")
+        logger.info(f"[AutoTune] Shadow Residual LoRA configuration: {base_kwargs}")
     else:
         peft_config = None  # SFT
 
@@ -1524,6 +1561,12 @@ def assert_dp_sharding(
       - Global effective batch size = per_device * world_size * grad_accum.
       - HF Trainer's computed max_steps vs the driver's
         steps_per_epoch * num_train_epochs. Warns if they disagree.
+      - HF's own per-epoch update count, ``len(train_dataloader) //
+        gradient_accumulation_steps``, vs the driver's ``steps_per_epoch``. This
+        is the check with teeth: the drivers *set* max_steps, so the comparison
+        above can only restate their arithmetic, whereas this one catches a
+        ``steps_per_epoch`` expressed in micro-batches rather than optimizer
+        steps (see :mod:`autotune.trainers._steps`).
 
     Call this **after** ``trainer.train()`` has returned. Calling it before
     training starts sees the pre-Accelerate-prepare dataloader, whose sampler
@@ -1553,12 +1596,24 @@ def assert_dp_sharding(
         expected_max_steps = max(1, steps_per_epoch * max(1, num_train_epochs))
         hf_max_steps = getattr(trainer.state, "max_steps", None) or getattr(trainer.args, "max_steps", None)
 
+        # HF's own per-epoch update count, for a cross-check that can actually
+        # fail. The drivers *set* max_steps from steps_per_epoch * epochs, so
+        # comparing the two below is tautological -- it reproduced the
+        # missing-gradient-accumulation bug instead of catching it (see
+        # trainers/_steps.py). len(train_dataloader) is the per-rank micro-batch
+        # count Accelerate really produced, so //grad_accum is what HF would have
+        # derived from num_train_epochs alone, and that *can* disagree.
+        try:
+            hf_updates_per_epoch = max(1, len(train_loader) // max(1, gradient_accumulation_steps))
+        except TypeError:
+            hf_updates_per_epoch = None  # iterable dataset (Ray Data): no length
+
         logger.info(
             "[DP audit] train_sampler=%s(num_replicas=%s, rank=%s) "
             "train_batch_sampler=%s(num_processes=%s, process_index=%s) "
             "eval_sampler=%s world_size=%s per_device_bs=%s grad_accum=%s "
             "effective_bs=%s steps_per_epoch=%s epochs=%s "
-            "expected_max_steps=%s hf_max_steps=%s",
+            "expected_max_steps=%s hf_max_steps=%s hf_updates_per_epoch=%s",
             sampler_cls,
             num_replicas,
             sampler_rank,
@@ -1574,6 +1629,7 @@ def assert_dp_sharding(
             num_train_epochs,
             expected_max_steps,
             hf_max_steps,
+            hf_updates_per_epoch,
         )
 
         # Correctness — sharding is OK if ANY of:
@@ -1637,6 +1693,26 @@ def assert_dp_sharding(
                 "[DP audit] BatchSamplerShard num_processes=%s != world_size=%s",
                 bs_nprocs,
                 world_size,
+            )
+        # A difference of 1 is expected: DistributedSampler pads to a whole
+        # number of batches per rank, so the real dataloader length can round up
+        # where the driver's floor division rounded down. A larger gap means the
+        # driver's step math and HF's disagree -- classically by a factor of
+        # gradient_accumulation_steps.
+        if hf_updates_per_epoch is not None and abs(hf_updates_per_epoch - steps_per_epoch) > 1:
+            logger.warning(
+                "[DP audit] driver steps_per_epoch=%s but HF's own dataloader "
+                "gives %s update steps/epoch (len(train_dataloader)=%s // "
+                "grad_accum=%s). max_steps=%s therefore trains for ~%.2f epochs, "
+                "not %s. Check that steps_per_epoch is in OPTIMIZER steps "
+                "(trainers/_steps.py), not micro-batches.",
+                steps_per_epoch,
+                hf_updates_per_epoch,
+                len(train_loader),
+                max(1, gradient_accumulation_steps),
+                hf_max_steps,
+                (hf_max_steps or 0) / hf_updates_per_epoch,
+                num_train_epochs,
             )
         if hf_max_steps is not None and hf_max_steps != expected_max_steps:
             logger.warning(

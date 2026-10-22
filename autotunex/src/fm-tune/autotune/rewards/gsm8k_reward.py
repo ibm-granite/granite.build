@@ -16,7 +16,7 @@
 # gsm8k_reward.py
 #
 # Custom reward function for GSM8K math problems.
-# Compatible with verl 0.7.0's NaiveRewardManager which calls:
+# Compatible with verl's naive reward manager (0.7.x and 0.9.x), which calls:
 #   compute_score(data_source=..., solution_str=..., ground_truth=..., extra_info=...)
 # and expects a scalar float (or dict with "score" key) in return.
 
@@ -62,8 +62,11 @@ def extract_final_answer(text: str) -> Optional[str]:
 CORRECT_REWARD = 1.0
 WRONG_REWARD = -1.0
 FORMAT_BONUS = 0.05
-LENGTH_PENALTY_COEF = 1.0 / 4000.0
-MAX_LENGTH_PENALTY = 0.2
+# No length penalty. It used to subtract up to 0.2 (len/4000), which GRPO's
+# per-group std normalization amplified into the dominant learning signal in
+# groups whose answers were all right or all wrong: responses collapsed from
+# ~150 tokens to a bare "#### N" within 15 steps. Without it, the same GRPO run
+# kept ~180-token responses and a positive reward.
 
 
 def _score_one(
@@ -77,18 +80,13 @@ def _score_one(
     used_hash = "####" in (response or "")
     bonus = FORMAT_BONUS if used_hash else 0.0
 
-    # Length penalty (small, PPO-stabilizing)
-    lp = 0.0
-    if response:
-        lp = -min(len(response) * LENGTH_PENALTY_COEF, MAX_LENGTH_PENALTY)
-
     if pred is None or gt_str is None:
-        return WRONG_REWARD + bonus + lp
+        return WRONG_REWARD + bonus
 
-    return (CORRECT_REWARD if pred == gt_str else WRONG_REWARD) + bonus + lp
+    return (CORRECT_REWARD if pred == gt_str else WRONG_REWARD) + bonus
 
 
-# -------- entry point for verl 0.7.0 --------
+# -------- verl custom reward function entry point --------
 
 
 def compute_score(
@@ -99,7 +97,7 @@ def compute_score(
     **kwargs,
 ) -> float:
     """
-    verl 0.7.0 custom reward function entrypoint.
+    verl custom reward function entrypoint (0.7.x and 0.9.x).
 
     Called per-sample by NaiveRewardManager with:
         compute_score(data_source=..., solution_str=..., ground_truth=..., extra_info=...)

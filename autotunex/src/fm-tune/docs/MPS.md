@@ -14,7 +14,7 @@ MacBook, not as a replacement for a CUDA cluster.
 
 ```bash
 git clone https://github.com/ibm-granite/granite.build.git
-cd granite.build/autotunex/fm-tune
+cd granite.build/autotunex/src/fm-tune
 
 uv venv --python 3.12 .venv
 source .venv/bin/activate
@@ -37,6 +37,7 @@ error at startup, before Ray starts and before any model download:
 | Not supported on MPS | Why |
 |---|---|
 | QLoRA (`--tuning_algo qlora`) | bitsandbytes NF4 kernels are CUDA-only |
+| Shadow Residual (`--tuning_algo sr`) | CUDA-only: its FSDP rank-0 meta-init path and bf16 dual-stream forward are validated on NVIDIA GPUs only |
 | Online RL (`ppo`, `grpo`, `dapo`) | requires vLLM; no Metal backend |
 | Offline RL (`dpo`, `kto`) | not implemented yet on MPS (see below) |
 | Multi-GPU (`num_gpus_per_trial > 1`) | no NCCL backend on Metal |

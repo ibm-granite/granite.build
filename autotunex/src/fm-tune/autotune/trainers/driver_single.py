@@ -23,29 +23,49 @@ import shutil
 from copy import deepcopy
 from typing import Any, Dict
 
+import numpy as np
 import torch
 from peft import get_peft_model
 from ray import tune
 from transformers import (
     AutoModelForCausalLM,
-    Trainer,
     TrainingArguments,
 )
 
 from autotune.callbacks.training_metrics import TrainingMetricsCallback
 from autotune.device import (
     detect_accelerator,
+    disable_cudnn_sdpa,
     model_load_kwargs,
     resolve_attn_implementation,
     resolve_precision,
 )
+from autotune.shadow_residual import (
+    SR_TUNING_ALGO,
+    assert_no_vocab_resize,
+    assert_sr_supported,
+    build_sr_peft_model,
+    patch_sr_adapter_config,
+    require_sr,
+    share_moe_routing_flag,
+)
 
 # Local
-from autotune.tools._chat_utils import template_supports_kwarg
+from autotune.tools.chat_utils import template_supports_kwarg
 from autotune.trainers._alora_gc import (
     AloraGradCheckpointDrainCallback,
     install_alora_gc_safety_wrapper,
 )
+from autotune.trainers._checkpointing import resolve_checkpoint_strategy
+from autotune.trainers._collate import (
+    LengthGroupedTrainer,
+    build_collator,
+    group_by_length_enabled,
+    log_padding_efficiency,
+    resolve_padding_mode,
+    row_lengths,
+)
+from autotune.trainers._steps import resolve_epoch_steps
 from autotune.utils import (
     extract_tokenizer_kwargs,
     get_peft_config,
@@ -145,6 +165,7 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         A dict summarizing the progress of the training loop (per ray.tune).
     """
+    disable_cudnn_sdpa()  # per process: NaN grads on left-padded batches, see device.py
     from autotune.logging_setup import bind_trial_id, setup_logging
 
     setup_logging()
@@ -192,6 +213,14 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
             "Use --tuning_algo lora instead. (This driver is reachable via "
             "--resume_from_checkpoint, which bypasses the main.py guard.)"
         )
+    # Shadow Residual: a different way to *construct* the model (dual-stream
+    # Granite), then a stock LoRA on top -- structurally the same shape as the
+    # qlora special-case above. Guard again here: this driver is reachable
+    # directly via --resume_from_checkpoint, which bypasses the main.py guard.
+    is_sr = tuning_algorithm == SR_TUNING_ALGO
+    if is_sr:
+        require_sr()
+        assert_sr_supported(training_config, accel=accel, backend=training_config.get("backend", "hf"))
     model_name_or_path = training_config.get("model_name_or_path")
     output_dir = training_config.get("output_dir")
     max_length = training_config.get("max_length", None)
@@ -213,22 +242,31 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Create the appropriate pretrained model (causal). For QLoRA, load the
     # frozen base in 4-bit (NF4) via bitsandbytes; otherwise load in bf16.
-    quantization_config = get_qlora_quantization_config() if is_qlora else None
-    model_kwargs = dict(
-        **model_load_kwargs(accel, precision),
-        trust_remote_code=resolve_trust_remote_code(),
-        use_cache=False,
-        attn_implementation=attn_implementation,
-    )
-    if quantization_config is not None:
-        model_kwargs["quantization_config"] = quantization_config
-        logger.info("[AutoTune] Loading model in 4-bit (NF4) precision for QLoRA")
+    if is_sr:
+        # SR builds its own model from the upstream checkpoint and returns it
+        # already PEFT-wrapped, so there is nothing to load here -- and nothing
+        # for get_peft_config's LORA/LOHA/LOKR/VERA/ALORA branches to inspect
+        # (the SR branch never dereferences `model`). The real build happens
+        # after get_peft_config below, once the LoraConfig exists.
+        model = None
+        logger.info("[AutoTune] Shadow Residual: deferring the model build until the LoRA config is resolved")
     else:
-        logger.info("[AutoTune] Loading model in bf16 precision")
-    model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_kwargs)
+        quantization_config = get_qlora_quantization_config() if is_qlora else None
+        model_kwargs = dict(
+            **model_load_kwargs(accel, precision),
+            trust_remote_code=resolve_trust_remote_code(),
+            use_cache=False,
+            attn_implementation=attn_implementation,
+        )
+        if quantization_config is not None:
+            model_kwargs["quantization_config"] = quantization_config
+            logger.info("[AutoTune] Loading model in 4-bit (NF4) precision for QLoRA")
+        else:
+            logger.info("[AutoTune] Loading model in bf16 precision")
+        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_kwargs)
 
-    # Log the model structure
-    logger.info(f"[AutoTune] Model architecture:\n{model}")
+        # Log the model structure
+        logger.info(f"[AutoTune] Model architecture:\n{model}")
 
     # Get and update the Trainer specific params
     train_kwargs = {k: v for k, v in local_config.items() if tuner_flags[k] is False}
@@ -252,7 +290,12 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # and for dataset tokenization later)
     tokenizer_kwargs = extract_tokenizer_kwargs(training_config)
     tokenizer, num_new_tokens = get_tokenizer(model_name_or_path, **tokenizer_kwargs)
-    resize_model_embeddings(model, tokenizer, num_new_tokens)
+    if is_sr:
+        # SR's transfer_base_weights slices an upstream checkpoint at its
+        # original vocab size, and the model does not exist yet here anyway.
+        assert_no_vocab_resize(num_new_tokens)
+    else:
+        resize_model_embeddings(model, tokenizer, num_new_tokens)
 
     # Get the peft config (if no peft type then return None)
     peft_config = get_peft_config(
@@ -262,6 +305,22 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         base_kwargs=peft_kwargs,
         tokenizer=tokenizer,
     )
+
+    if is_sr:
+        # Build the dual-stream model and PEFT-wrap it in one step. `fsdp_active=False`
+        # is explicit (not inherited from a possibly-stale ACCELERATE_USE_FSDP left
+        # behind by an earlier TrainingArguments in this process): single-GPU means
+        # no sync_module_states broadcast, so every rank must materialize its own
+        # real weights or the Trainer's .to(device) hits a meta tensor.
+        model = build_sr_peft_model(
+            model_name_or_path,
+            peft_config,
+            torch_dtype=torch.bfloat16 if bf16_flag else torch.float32,
+            attn_implementation=attn_implementation,
+            share_moe_routing=share_moe_routing_flag(training_config),
+            fsdp_active=False,
+        )
+        logger.info(f"[AutoTune] Model architecture:\n{model}")
 
     if peft_config is not None:
         # If PEFT is used, prepare the model for training
@@ -341,7 +400,15 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     logging_dir = os.path.join(output_dir, "logs", f"{trial_id}")
 
     # Prepare the model for PEFT training
-    if peft_config is not None:
+    if peft_config is not None and is_sr:
+        # Already a PeftModel: SR's factory wrapped it. Calling get_peft_model
+        # again would nest a second LoraModel over the first (and, because the
+        # cross_stream sites would then be wrapped lora.Linear *inside* a
+        # lora.Linear, silently change the architecture). enable_input_require_grads
+        # / use_cache=False / the rank-0 print_trainable_parameters all already
+        # happened inside build_sr_peft_model.
+        logger.info("[AutoTune] Shadow Residual model is already PEFT-wrapped; skipping get_peft_model")
+    elif peft_config is not None:
         if is_qlora:
             # QLoRA: prep the 4-bit base for k-bit training (fp32 layernorms,
             # input-require-grads, gradient checkpointing) before attaching LoRA.
@@ -351,85 +418,96 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()
 
+    # Collate each batch to its own length instead of max_length (_collate.py):
+    # flattened varlen batches under flash attention, else cropped batches of
+    # length-grouped rows.
+    padding_mode = resolve_padding_mode(
+        training_config,
+        attn_implementation=attn_implementation,
+        device_kind=accel.kind,
+        model_config=getattr(model, "config", None),
+        peft_type=peft_type,
+        is_sr=is_sr,
+    )
+    # Chunked: the whole mask at once would be an N x max_length int64 array.
+    train_lengths = np.concatenate(
+        [row_lengths(b["attention_mask"]) for b in train_ds.with_format("numpy").iter(batch_size=8192)]
+    )
+    log_padding_efficiency(train_lengths, max_length)
+    logger.info(f"[AutoTune] Batch padding mode: {padding_mode}")
+    if not group_by_length_enabled(training_config, padding_mode):
+        train_lengths = None
+
     # Checkpoint strategy
     effective_epochs = num_hpo_epochs if hpo_search else num_train_epochs
     batch_size = train_kwargs.get("per_device_train_batch_size", 1)
     train_ds_size = len(train_ds)
-    steps_per_epoch = max(1, train_ds_size // batch_size)
+    # Optimizer steps, not micro-batches: logging_steps and the single-epoch
+    # save/eval cadence below are both counted in optimizer steps by HF. This
+    # driver sets no max_steps, so num_train_epochs already bounds the run --
+    # but a cadence computed in micro-batches would be grad_accum times too
+    # coarse, collapsing the five best-model candidates of a 1-epoch run to one.
+    epoch_steps = resolve_epoch_steps(
+        train_ds_size=train_ds_size,
+        per_device_batch_size=batch_size,
+        gradient_accumulation_steps=train_kwargs.get("gradient_accumulation_steps", 1),
+    )
+    steps_per_epoch = epoch_steps.optimizer_steps
     logging_steps = max(1, min(10, steps_per_epoch // 10))
 
-    if hpo_search:
-        # HPO trials report metrics only — no model checkpoint is written.
-        # Metrics come from trainer.state.log_history (read after train()) and
-        # per-epoch tune.report() via PerEpochTuneReportCallback, neither of
-        # which depends on a saved checkpoint.
-        save_strategy = "no"
-        eval_strategy = "epoch"
-        save_steps = None
-        eval_steps = None
-        save_total_limit = None
-        load_best_model_at_end = False
-    else:
-        # Final training — checkpoint and track best model by eval_loss
-        if effective_epochs > 1:
-            save_strategy = "epoch"
-            eval_strategy = "epoch"
-            save_steps = None
-            eval_steps = None
-        else:
-            save_steps = max(1, steps_per_epoch // 5)
-            eval_steps = save_steps
-            save_strategy = "steps"
-            eval_strategy = "steps"
-        save_total_limit = 3
-        load_best_model_at_end = True
+    # HPO trials report metrics only — no model checkpoint is written. Metrics
+    # come from trainer.state.log_history (read after train()) and per-epoch
+    # tune.report() via PerEpochTuneReportCallback, neither of which depends on a
+    # saved checkpoint, so HPO saves nothing at all here ("no").
+    #
+    # Final training tracks the best model by eval_loss; see _checkpointing.py.
+    ckpt_strategy = resolve_checkpoint_strategy(
+        hpo_search=hpo_search,
+        num_train_epochs=effective_epochs,
+        steps_per_epoch=steps_per_epoch,
+        hpo_save_strategy="no",
+    )
 
     # Build TrainingArguments
     training_args_kwargs = dict(
         output_dir=outputs_dir,
         logging_dir=logging_dir,
-        overwrite_output_dir=True,
         do_train=True,
         do_eval=True,
         remove_unused_columns=False,
         logging_steps=logging_steps,
         logging_strategy="steps",
-        save_strategy=save_strategy,
-        save_total_limit=save_total_limit,
         save_only_model=True,
-        eval_strategy=eval_strategy,
         seed=seed,
         run_name=run_name,
         report_to="none",
         bf16=bf16_flag,
         weight_decay=weight_decay,
-        label_names=["input_ids", "attention_mask"],
+        # "labels", not the batch's other keys: the padding-free collator emits
+        # no attention_mask, and a missing label key drops eval_loss.
+        label_names=["labels"],
         # aLoRA: PEFT 0.18 (PR #2860, fixes huggingface/peft#2826) raises
         # "Multiple invocations of PEFT forward hooks before .backward()" if
         # eval forwards under no_grad leak hooks. _alora_gc.py drains them.
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
-        load_best_model_at_end=load_best_model_at_end,
+        # save/eval strategy, save_total_limit, load_best_model_at_end and the
+        # best-model metric keys all come from the resolved strategy.
+        **ckpt_strategy.as_training_arguments(),
         **train_kwargs,
     )
-
-    if save_steps is not None:
-        training_args_kwargs["save_steps"] = save_steps
-    if eval_steps is not None:
-        training_args_kwargs["eval_steps"] = eval_steps
-    if load_best_model_at_end:
-        training_args_kwargs["metric_for_best_model"] = "eval_loss"
-        training_args_kwargs["greater_is_better"] = False
 
     training_args = TrainingArguments(**training_args_kwargs)
 
     # Create the HuggingFace Trainer
-    trainer = Trainer(
+    trainer = LengthGroupedTrainer(
         model=model,
         args=training_args,
         processing_class=None,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
+        data_collator=build_collator(padding_mode),
+        train_lengths=train_lengths,
     )
 
     if peft_type == "ALORA":
@@ -509,6 +587,14 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
 
         trainer.save_model(output_model_id)
         tokenizer.save_pretrained(output_model_id)
+
+        if is_sr:
+            # The saved adapter_config.json says peft_type: LORA, which is true
+            # but not sufficient: reloading it onto a plain Granite base would
+            # silently produce the wrong architecture (PEFT drops the unmatched
+            # cross_stream target without warning). Record that the base must be
+            # an SR model, plus the routing mode the adapter was trained with.
+            patch_sr_adapter_config(output_model_id, share_moe_routing=share_moe_routing_flag(training_config))
 
         logger.info(f"[AutoTune] Model saved to: {output_model_id}")
 

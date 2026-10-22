@@ -13,11 +13,11 @@ from autotune.lsf.ray_up_blaunch import (
 
 
 class TestDefaultIbHca:
-    def test_a100_single_rail(self):
-        assert _default_ib_hca("a100") == "mlx5_0"
+    def test_ccc_a100_single_rail(self):
+        assert _default_ib_hca("ccc-a100") == "mlx5_0"
 
-    def test_h100_eight_compute_rails_in_order(self):
-        rails = _default_ib_hca("h100").split(",")
+    def test_bv_h100_eight_compute_rails_in_order(self):
+        rails = _default_ib_hca("bv-h100").split(",")
         assert rails == [f"mlx5_{i}" for i in range(8)]
         # Storage/management rails must NOT be present.
         assert "mlx5_8" not in rails
@@ -76,7 +76,7 @@ class TestRdmaEnv:
         assert env["NCCL_SOCKET_IFNAME"] == "ib0"
 
 
-@pytest.mark.parametrize("fleet", ["a100", "h100"])
+@pytest.mark.parametrize("fleet", ["ccc-a100", "bv-h100"])
 def test_known_fleet_default_resolves(fleet):
     """Every advertised fleet must produce a non-empty rail list."""
     rails = _default_ib_hca(fleet)
@@ -86,11 +86,11 @@ def test_known_fleet_default_resolves(fleet):
 
 
 class TestGpuModelForFleet:
-    def test_a100(self):
-        assert _gpu_model_for_fleet("a100") == "NVIDIAA100_SXM4_80GB"
+    def test_ccc_a100(self):
+        assert _gpu_model_for_fleet("ccc-a100") == "NVIDIAA100_SXM4_80GB"
 
-    def test_h100(self):
-        assert _gpu_model_for_fleet("h100") == "NVIDIAH10080GBHBM3"
+    def test_bv_h100(self):
+        assert _gpu_model_for_fleet("bv-h100") == "NVIDIAH10080GBHBM3"
 
     def test_unknown_fleet_falls_back_to_default(self):
         assert _gpu_model_for_fleet("not-a-real-fleet") == _GPU_MODEL_BY_FLEET[DEFAULT_FLEET]

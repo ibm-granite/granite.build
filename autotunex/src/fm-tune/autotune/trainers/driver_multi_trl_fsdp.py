@@ -27,6 +27,7 @@
 import logging
 import math
 import os
+import shutil
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
@@ -42,13 +43,20 @@ from transformers.utils.logging import disable_progress_bar, enable_progress_bar
 # TRL imports
 from trl import DPOConfig, DPOTrainer, KTOConfig, KTOTrainer
 
-# Local
+from autotune.callbacks.sync_best_checkpoint import SyncBestCheckpointCallback
 from autotune.callbacks.training_metrics import TrainingMetricsCallback
+
+# Local
+from autotune.device import disable_cudnn_sdpa
+from autotune.shadow_residual import SR_TUNING_ALGO
 from autotune.trainers._alora_gc import (
     AloraGradCheckpointDrainCallback,
     install_alora_gc_safety_wrapper,
 )
+from autotune.trainers._moe import router_aux_loss_coef as moe_router_aux_loss_coef
+from autotune.trainers._peft_fsdp import peft_adapter_toggle_keeps_requires_grad
 from autotune.trainers._resume import peft_adapter_load_on_cpu
+from autotune.trainers._steps import resolve_epoch_steps
 from autotune.utils import (
     estimate_fsdp_strategy,
     extract_tokenizer_kwargs,
@@ -106,7 +114,7 @@ def _resolve_resume_checkpoint(training_output_dir: str, resume_flag: bool):
 # --- FSDP config builder (from driver_multi_hf_fsdp.py) ---
 
 
-def _build_fsdp_config(strategy: str) -> tuple[str, dict]:
+def _build_fsdp_config(strategy: str, num_workers: int = 1) -> tuple[str, dict]:
     """
     Build FSDP configuration for HuggingFace/TRL Trainer.
 
@@ -115,15 +123,36 @@ def _build_fsdp_config(strategy: str) -> tuple[str, dict]:
 
     Returns:
         (fsdp_strategy_str, fsdp_config_dict) — the fsdp and fsdp_config args
-        for TrainingArguments. If strategy is "no_shard", returns ("", {}).
+        for TrainingArguments. Returns ("", {}) — i.e. no FSDP at all — when
+        strategy is "no_shard" or when there is only one worker.
     """
     if strategy == "no_shard":
+        return "", {}
+
+    # A single worker gets no FSDP wrap at all: FSDP degrades to NO_SHARD at
+    # world size 1, which is broken with fsdp_use_orig_params=True (see the
+    # same guard in driver_multi_hf_fsdp._build_fsdp_config). Here it surfaced
+    # as `AssertionError: Invalid: _post_backward_hook_state` on the first DPO
+    # backward of a 1-GPU final training, which fit_best_config() routes to
+    # this driver with num_workers=1.
+    if num_workers <= 1:
+        logger.info(
+            "[AutoTune] Single worker: skipping the FSDP wrap "
+            f"(requested strategy {strategy!r} would degrade to NO_SHARD)."
+        )
         return "", {}
 
     fsdp_config = {
         "fsdp_auto_wrap_policy": "TRANSFORMER_BASED_WRAP",
         "fsdp_backward_prefetch_policy": "BACKWARD_PRE",
-        "fsdp_forward_prefetch": True,
+        # Forward prefetch assumes a static graph: FSDP records the module order on
+        # the first iteration and prefetches the next unit from it. DPO/KTO's
+        # in-step reference pass runs with the adapter disabled, which skips the
+        # separately wrapped LoRA units, so the order differs between the policy
+        # and reference forwards. With it on, a 2-rank DPO run died at its first
+        # checkpoint save: `AssertionError: Expects 163840 numel but got 81920`
+        # (81920 = one r=32 lora_A on a 2560-wide model).
+        "fsdp_forward_prefetch": False,
         "fsdp_use_orig_params": True,
         "fsdp_sync_module_states": True,
         "fsdp_cpu_ram_efficient_loading": True,
@@ -234,6 +263,7 @@ def _build_trl_config(
     loss_type: str = "sigmoid",
     kto_desirable_weight: float = 1.0,
     kto_undesirable_weight: float = 1.0,
+    router_aux_loss_coef: Optional[float] = None,
 ):
     """
     Build the TRL training config with FSDP and return (config, trainer_class).
@@ -285,6 +315,11 @@ def _build_trl_config(
         common_kwargs["ddp_backend"] = "nccl"
         common_kwargs["ddp_find_unused_parameters"] = False
         common_kwargs["ddp_broadcast_buffers"] = False
+
+    # Granite MoE / 4.0-H classes cannot emit router logits in transformers 5.9, so
+    # TRL's aux-loss term is an int 0 that crashes its metric gather; see _moe.py.
+    if router_aux_loss_coef is not None:
+        common_kwargs["router_aux_loss_coef"] = router_aux_loss_coef
 
     if save_steps is not None:
         common_kwargs["save_steps"] = save_steps
@@ -351,6 +386,7 @@ def _extract_metrics_from_log_history(log_history: list) -> Dict[str, Any]:
 
 def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     """Training function executed by each Ray Train worker (one per GPU)."""
+    disable_cudnn_sdpa()  # per process: NaN grads on left-padded batches, see device.py
 
     print("[AutoTune] Worker starting train_loop_per_worker")
     logger.info("[AutoTune] Worker starting train_loop_per_worker")
@@ -369,6 +405,9 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     peft_kwargs = train_loop_config.get("peft_config")
     peft_type = train_loop_config.get("peft_type")
     is_qlora = training_config.get("tuning_algorithm") == "qlora"
+    # Optimizer steps per epoch (already divided by gradient_accumulation_steps
+    # by the driver -- see _steps.py). Every step-valued knob below counts in
+    # these, not in micro-batches.
     steps_per_epoch = train_loop_config.get("steps_per_epoch")
     trial_id = train_loop_config.get("trial_id")
     from autotune.logging_setup import bind_trial_id
@@ -508,6 +547,7 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     # Build TRL config and trainer
     training_args, trainer_class = _build_trl_config(
         rl_algorithm=rl_algorithm,
+        router_aux_loss_coef=moe_router_aux_loss_coef(model),
         fsdp_strategy=fsdp_strategy,
         fsdp_config=fsdp_config,
         output_dir=training_output_dir,
@@ -553,6 +593,8 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     # Added unconditionally on every worker; on_log self-guards to rank 0 via
     # state.is_world_process_zero.
     trainer.add_callback(TrainingMetricsCallback(trial_id=trial_id))
+    # Rank 0's best checkpoint is the one rotation keeps: make every rank load it.
+    trainer.add_callback(SyncBestCheckpointCallback())
 
     # RayTrainReportCallback reports metrics from the worker back to the
     # driver process via Ray Train. Without it, train_result.metrics is empty.
@@ -573,13 +615,22 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
             )
     print(f"[AutoTune] Worker starting {rl_algorithm.upper()} training (trial {trial_id})...")
     logger.info(f"[AutoTune] Worker starting training (trial {trial_id})...")
-    # When resuming a PEFT checkpoint, force the adapter load onto CPU to avoid
-    # the exclusive-process GPU-0 contention across ranks (see _resume.py).
-    if resume_arg:
+    # Force any PEFT adapter load inside train() onto CPU, avoiding the
+    # exclusive-process GPU-0 contention across ranks (see _resume.py).
+    #
+    # Wraps train() unconditionally: both _load_from_checkpoint() (resume, at the
+    # start) and _load_best_model() (load_best_model_at_end=True, at the end) call
+    # model.load_adapter() -> load_peft_weights() ->
+    # safe_load_file(device=infer_device()), which resolves to a bare "cuda"
+    # (cuda:0) on every rank. Final training sets load_best_model_at_end=True, so
+    # gating on resume_arg left that load unprotected.
+    # The context manager is a no-op for non-PEFT models.
+    # The outer context keeps TRL's in-step reference pass (adapter disabled under
+    # no_grad) from flipping requires_grad between FSDP's forward and backward --
+    # see _peft_fsdp.py.
+    with peft_adapter_toggle_keeps_requires_grad():
         with peft_adapter_load_on_cpu():
             trainer.train(resume_from_checkpoint=resume_arg)
-    else:
-        trainer.train(resume_from_checkpoint=resume_arg)
 
     # Collect metrics in-memory
     metrics = _extract_metrics_from_log_history(trainer.state.log_history)
@@ -611,7 +662,6 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
             keep_checkpoints = training_config.get("keep_checkpoints", False)
             if not keep_checkpoints:
                 import glob as _glob
-                import shutil
 
                 # training_output_dir is the stable final_checkpoints dir for final
                 # training. Removing the checkpoints on success means a later
@@ -630,11 +680,12 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
                     shutil.rmtree(outputs_dir, ignore_errors=True)
                     print(f"[AutoTune] Cleaned up training outputs dir: {outputs_dir}")
                     logger.info(f"[AutoTune] Cleaned up training outputs dir: {outputs_dir}")
-                train_results_dir = os.path.join(output_dir, "train_results")
-                if os.path.exists(train_results_dir):
-                    shutil.rmtree(train_results_dir, ignore_errors=True)
-                    print(f"[AutoTune] Cleaned up training results dir: {train_results_dir}")
-                    logger.info(f"[AutoTune] Cleaned up training results dir: {train_results_dir}")
+                # NOTE: do NOT rmtree output_dir/train_results here — Ray Train's
+                # TrainController periodically writes checkpoint_manager_snapshot.json
+                # into that directory, and is still alive until ray_trainer.fit()
+                # returns on the driver. Deleting it from the worker races with the
+                # controller and raises "No such file or directory". The driver
+                # cleans up train_results after fit() returns.
                 data_cache_dir = os.path.join(output_dir, "data_cache")
                 if os.path.exists(data_cache_dir):
                     shutil.rmtree(data_cache_dir, ignore_errors=True)
@@ -673,6 +724,20 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Unpack config sections (discard unused ones — pop for side effect)
     training_config = local_config.pop("training_config")
+
+    # Shadow Residual is not supported by this driver. This is a hard rejection
+    # rather than a fallthrough because the failure would otherwise be SILENT:
+    # peft_type "SR" resolves to a plain LoraConfig whose target_modules include
+    # "cross_stream", and PEFT's inject_adapter raises only when *nothing*
+    # matched (peft/tuners/tuners_utils.py) -- so on a plain Granite base the
+    # cross_stream target is dropped without a warning and the run trains as
+    # ordinary LoRA while being labelled and reported as "sr".
+    if training_config.get("tuning_algorithm") == SR_TUNING_ALGO:
+        raise ValueError(
+            "[AutoTune] Shadow Residual supports SFT only and is not supported by "
+            "this driver, which trains offline RL (DPO/KTO) via TRL. Use "
+            "--rl_algo none (which routes to the HF SFT drivers instead)."
+        )
     local_config.pop("training_rl_config")
     tuner_flags = local_config.pop("tuner_flags")
     local_config.pop("tune_config")
@@ -735,7 +800,7 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     # Build FSDP config
-    fsdp_str, fsdp_config = _build_fsdp_config(fsdp_strategy)
+    fsdp_str, fsdp_config = _build_fsdp_config(fsdp_strategy, num_workers)
     print(f"[AutoTune] FSDP strategy: {fsdp_strategy}")
     logger.info(f"[AutoTune] FSDP strategy: {fsdp_strategy}")
     if fsdp_config:
@@ -763,10 +828,20 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         column_mapping=column_mapping,
     )
 
-    # Calculate steps per epoch
     batch_size = train_kwargs["per_device_train_batch_size"]
+    grad_accum = local_config.get("gradient_accumulation_steps", 1)
     train_ds_size = len(train_ds)
-    steps_per_epoch = max(1, train_ds_size // (batch_size * num_workers))
+    # Optimizer steps per epoch -- the unit every step-valued TrainingArguments
+    # knob counts in (max_steps, logging_steps, save_steps/eval_steps). Dividing
+    # the per-rank micro-batch count by gradient_accumulation_steps is
+    # load-bearing; see _steps.py for what omitting it did to the schedule.
+    epoch_steps = resolve_epoch_steps(
+        train_ds_size=train_ds_size,
+        per_device_batch_size=batch_size,
+        gradient_accumulation_steps=grad_accum,
+        num_workers=num_workers,
+    )
+    steps_per_epoch = epoch_steps.optimizer_steps
 
     print(
         f"[AutoTune] Dataset: {train_ds_size} train samples, {steps_per_epoch} steps/epoch, "
@@ -863,12 +938,19 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # Always removed, independent of --keep_checkpoints (which governs only
     # final-training artifacts).
     if hpo_search:
-        import shutil
-
         hpo_trial_dir = os.path.join(output_dir, "outputs", f"{trial_id}")
         if os.path.isdir(hpo_trial_dir):
             shutil.rmtree(hpo_trial_dir, ignore_errors=True)
             logger.info(f"[AutoTune] Cleaned up HPO trial dir: {hpo_trial_dir}")
+
+    # Clean up Ray Train's run directory now that fit() has returned and the
+    # TrainController has shut down. Doing this from inside the worker races
+    # with the controller's periodic snapshot writes and raises ENOENT.
+    if not hpo_search and not training_config.get("keep_checkpoints", False):
+        train_results_dir = os.path.join(output_dir, "train_results")
+        if os.path.isdir(train_results_dir):
+            shutil.rmtree(train_results_dir, ignore_errors=True)
+            logger.info(f"[AutoTune] Cleaned up training results dir: {train_results_dir}")
 
     # Return trial result
     result = {

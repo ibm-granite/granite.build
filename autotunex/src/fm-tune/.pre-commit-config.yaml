@@ -12,10 +12,10 @@
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.6
+    rev: v0.17.0
     hooks:
       # Run the linter first (with --fix) so format doesn't re-wrap lines
       # that the fixer is about to rewrite.
-      - id: ruff
+      - id: ruff-check
         args: [--fix]
       - id: ruff-format

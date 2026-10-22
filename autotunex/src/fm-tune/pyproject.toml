@@ -1,6 +1,6 @@
 [project]
 name = "autotune"
-version = "0.8.0"
+version = "0.9.0"
 description = "AutoTune: Automated Tuning for Foundation Models"
 authors = [
     {name = "RADU MARINESCU", email = "radu.marinescu@ie.ibm.com"},
@@ -32,38 +32,57 @@ dependencies = [
 ## don't build on a CPU-only box. `full` is defined as `core` + those heavy
 ## deps so every shared pin lives in exactly one place.
 ##
-## (`core` previously existed to spare `dmf-lib` from verl/flash-attn and was
-## removed when `dmf-lib` retired; it is back because the lean CPU/demo install
+## (`core` previously existed to spare a downstream consumer from verl/flash-attn
+## and was removed when that consumer retired; it is back because the lean CPU/demo install
 ## it provided is needed independently — e.g. the AIO `local` backend.)
 [project.optional-dependencies]
 core = [
-    "datasets==4.6.0",
-    "ray[tune,default]==2.54.0",
-    "pyzmq==27.0",
-    "accelerate>=1.10.1",
+    "datasets==4.8.5",
+    "ray[tune,default]==2.59.0",
+    "pyzmq==27.2.0",
+    "accelerate>=1.15.0",
     "tokenizers>=0.22.0",
     "sentencepiece>=0.2.0",
     "hyperopt==0.2.7",
     "packaging>=25.0",
     "tabulate>=0.10",
     "tensorboardx>=2.6.4",
-    "torch==2.8.0",
-    "transformers==4.57.6",
-    "peft==0.18.0",
-    "trl==0.29.0",
-    "bitsandbytes==0.49.0",
+    "torch==2.11.0",
+    "transformers==5.9.0",
+    # 0.19.1, not 0.21.x: 0.21.0 rebuilt get_peft_model_state_dict on module-name
+    # prefixes that strip `_fsdp_wrapped_module.` only when leading, so a
+    # multi-rank FSDP save (per-layer wraps put it mid-path) writes a 0-tensor
+    # adapter. Also the version shadow-residual pins.
+    "peft==0.19.1",
+    # 1.12.0 is the last release with trl.experimental.ppo, which verl's PPO
+    # critic falls back to for AutoModelForCausalLMWithValueHead (Granite has no
+    # *ForTokenClassification). 1.13 removed it.
+    "trl==1.12.0",
+    "bitsandbytes==0.50.2",
 ]
 # full = core + the online-RL / GPU-only stack. Keep these markers: verl and
-# deepspeed skip macOS; flash-attn is Linux-only (and installed from a prebuilt
-# wheel via [tool.uv.sources] to avoid an nvcc source build).
+# deepspeed skip macOS; flash-attn is Linux-only and compiled from source at
+# install time (needs nvcc 13; see [tool.uv.extra-build-dependencies] below).
 full = [
     "autotune[core]",
-    "verl[vllm]==0.7.1; sys_platform != 'darwin'",
-    "flash-attn==2.8.1; sys_platform == 'linux'",
-    "deepspeed==0.18.7; sys_platform != 'darwin'",
+    # verl[vllm]==0.9.1 pins torch==2.11.0, vllm==0.24.0 and transformers==5.9.0,
+    # which is what fixes the torch / transformers pins above.
+    "verl[vllm]==0.9.1; sys_platform != 'darwin'",
+    "flash-attn==2.8.3; sys_platform == 'linux'",
+    # Fast Mamba kernels for hybrid bases (Granite 4.0-H): without them
+    # transformers falls back to a pure-torch scan that is several times slower
+    # and needs far more memory (KTO on 1 GPU ran out at 80 GB). Compiled at
+    # install time like flash-attn. mamba-ssm 2.3.1 exactly: 2.2.x's top-level
+    # import pulls GreedySearchDecoderOnlyOutput, which transformers 5 removed
+    # (and transformers imports that top-level module, so it silently falls
+    # back to the slow path); 2.3.2 adds tilelang / apache-tvm-ffi /
+    # quack-kernels runtime deps.
+    "mamba-ssm==2.3.1; sys_platform == 'linux'",
+    "causal-conv1d==1.7.0; sys_platform == 'linux'",
+    "deepspeed==0.19.7; sys_platform != 'darwin'",
 ]
 dev = [
-    "ruff>=0.8.0",
+    "ruff>=0.17.0",
     "pre-commit>=3.7.0",
 ]
 mlx = [
@@ -86,14 +105,51 @@ autotune = ["configs/*.yaml"]
 [tool.uv]
 prerelease = "if-necessary"
 
-# flash-attn is installed from a pre-built wheel (cxx11abi=False) to avoid building from source.
-# The wheel URL is pinned below in [tool.uv.sources].
-# Manual alternative:
-# wget -nv https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl && \
-# pip install --no-cache-dir flash_attn-2.8.1+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl
+# flash-attn is compiled from source at install time: there is no official
+# prebuilt wheel for torch 2.11 + CUDA 13. Run `uv pip install -e ".[full]"` on
+# a GPU node (or any host with nvcc 13 under /usr/local/cuda or $CUDA_HOME);
+# the compile takes ~10 min with 32 cores. Its setup.py imports torch, so the
+# build env gets the *same* torch as the runtime env (match-runtime) rather than
+# whatever torch an isolated build would resolve.
+[tool.uv.extra-build-dependencies]
+flash-attn = [
+    { requirement = "torch", match-runtime = true },
+    "ninja",
+    "psutil",
+    "einops",
+    "packaging",
+    "setuptools",
+    "wheel",
+]
+# mamba-ssm's own build-system deliberately omits torch (an isolated build would
+# resolve CPU torch), which is exactly what match-runtime fixes.
+mamba-ssm = [
+    { requirement = "torch", match-runtime = true },
+    "ninja",
+    "einops",
+    "packaging",
+    "setuptools",
+    "wheel",
+]
+causal-conv1d = [
+    { requirement = "torch", match-runtime = true },
+    "ninja",
+    "packaging",
+    "setuptools",
+    "wheel",
+]
 
-[tool.uv.sources]
-flash-attn = { url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl" }
+# sm80 + sm90 (A100 + H100), the combination fm-tune is tested on; add "100" for
+# Blackwell. FLASH_ATTENTION_FORCE_BUILD skips setup.py's attempt to download a
+# prebuilt wheel that does not exist for this torch/CUDA pair. MAX_JOBS caps
+# parallel nvcc jobs (each needs several GB of RAM); override it in the shell.
+[tool.uv.extra-build-variables]
+flash-attn = { FLASH_ATTN_CUDA_ARCHS = "80;90", FLASH_ATTENTION_FORCE_BUILD = "TRUE", MAX_JOBS = "16" }
+# The mamba-ssm / causal-conv1d setup.py hard-code their arch list (sm75-sm121 on
+# CUDA 13, no env override), so they compile longer than flash-attn. *_FORCE_BUILD
+# skips the prebuilt-wheel download attempt, as for flash-attn.
+mamba-ssm = { MAMBA_FORCE_BUILD = "TRUE", MAX_JOBS = "16" }
+causal-conv1d = { CAUSAL_CONV1D_FORCE_BUILD = "TRUE", MAX_JOBS = "16" }
 
 # --- Tool configuration ---
 [tool.ruff]
@@ -128,5 +184,4 @@ markers = [
     "slow: tests that download or load HF model weights (>50MB)",
     "gpu: tests that require CUDA",
     "mps: tests that require an Apple Silicon MPS device",
-    "full: tests that import the [full] online-RL stack (verl, hydra, omegaconf)",
 ]

@@ -47,6 +47,8 @@ from autotune.lsf import (
 # Local
 from autotune.optimizer import AutotuneOptimizer
 from autotune.pipeline import AutotunePipeline
+from autotune.shadow_residual import SR_TUNING_ALGO, assert_sr_supported, require_sr
+from autotune.slurm import start_multinode_ray_cluster_srun, stop_multinode_ray_cluster_srun
 from autotune.template_utils import resolve_dataset_uri, stem_from_path
 from autotune.utils import (
     cleanup,
@@ -109,7 +111,11 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--tuning_algo", type=str, help="Type of finetuning (e.g., alora, lora, sft).", default="none", required=False
+        "--tuning_algo",
+        type=str,
+        help="Type of finetuning (e.g., alora, lora, qlora, sr, sft).",
+        default="none",
+        required=False,
     )
 
     parser.add_argument(
@@ -147,9 +153,10 @@ if __name__ == "__main__":
         type=int,
         default=1,
         help=(
-            "Number of GPU hosts in the cluster (== hosts in the LSF allocation; the Ray "
-            "head colocates with a worker on host[0]). Combined with --conda_env, this "
-            "triggers the multi-node blaunch launch."
+            "Number of GPU hosts in the cluster (== hosts in the LSF/Slurm allocation; the "
+            "Ray head colocates with a worker on host[0]). With --scheduler lsf, combined "
+            "with --conda_env, this triggers the multi-node blaunch launch; with "
+            "--scheduler slurm the srun launch always runs."
         ),
     )
 
@@ -164,7 +171,25 @@ if __name__ == "__main__":
         "--conda_env",
         type=str,
         default=None,
-        help="Conda env path/name workers must activate before starting Ray (required when --num_nodes > 1).",
+        help=(
+            "Conda env path/name workers must activate before starting Ray (LSF only; "
+            "required for the multi-node blaunch launch). Ignored with --scheduler slurm, "
+            "where srun propagates the driver's environment to the workers."
+        ),
+    )
+
+    parser.add_argument(
+        "--scheduler",
+        type=str,
+        choices=["lsf", "slurm"],
+        default="lsf",
+        help=(
+            "Batch scheduler that owns the multi-node allocation. 'lsf' (default): "
+            "workers are started with blaunch inside a multi-host bsub, and only when "
+            "--conda_env is given (otherwise a local single-node cluster). 'slurm': "
+            "main.py must run inside an sbatch allocation of --num_nodes nodes; workers "
+            "are started as one srun step per node."
+        ),
     )
 
     parser.add_argument(
@@ -175,19 +200,20 @@ if __name__ == "__main__":
             "Hard deadline (seconds) for the multi-node Ray cluster bring-up "
             "(head start + blaunch'd workers + driver ray.init + worker-attach wait). "
             "If exceeded, partial teardown runs and main.py exits 0 with a warning. "
-            "Default 1200 (20 minutes). Only applies on the multi-node LSF path."
+            "Default 1200 (20 minutes). Only applies on the multi-node LSF/Slurm paths."
         ),
     )
 
     parser.add_argument(
         "--fleet",
         type=str,
-        choices=["a100", "h100"],
-        default="a100",
+        choices=["ccc-a100", "bv-h100", "bv-h200"],
+        default="ccc-a100",
         help=(
             "Deployment fleet. Selects the GPU model and the per-fleet default "
-            "for NCCL_IB_HCA. 'a100' (default): A100, single rail (mlx5_0). "
-            "'h100' (H100, 8-rail): H100, 8 compute rails (mlx5_0..mlx5_7). "
+            "for NCCL_IB_HCA. 'ccc-a100' (default): A100, single rail (mlx5_0). "
+            "'bv-h100' (BlueVela H100): H100, 8 compute rails (mlx5_0..mlx5_7). "
+            "'bv-h200' (BlueVela H200, Slurm): H200, same 8 compute rails. "
             "Override the rails with --ib_hca for ad-hoc benchmarking."
         ),
     )
@@ -357,9 +383,10 @@ if __name__ == "__main__":
         default=None,
         help=(
             "Number of parallel map_batches tasks for ray_data tokenization. "
-            "Default (auto) = floor(total_cluster_cpus) - num_workers, i.e. all "
-            "CPUs not reserved by this trial's GPU workers. For large concurrent "
-            "HPO sweeps, set this explicitly to avoid cross-trial oversubscription."
+            "Default (auto) = floor(available_cpus / ray_data_num_cpus) when "
+            "tokenization starts; it finishes before the GPU workers are "
+            "scheduled. For wide concurrent HPO sweeps, set this explicitly "
+            "for predictable startup."
         ),
     )
     parser.add_argument(
@@ -398,7 +425,7 @@ if __name__ == "__main__":
     if bridge_enabled:
         try:
             user_email = get_user_details(base_url=base_url, build_id=args.job_id)
-            logger.info(f"user_email: {user_email}")
+            logger.info(f"[AutoTune] Bridge identity resolved for job_id: {args.job_id}")
             autotunex = AutoTuneXAPI(base_url=base_url, email=user_email)
 
             if args.job_id is not None:
@@ -547,6 +574,21 @@ if __name__ == "__main__":
         backend=args.backend,
     )
 
+    # Shadow Residual: fail fast, here, in the driver process. The drivers guard
+    # again (they are reachable directly), but a driver-level raise only ERRORs
+    # the Ray trial -- an HPO sweep would then burn its entire budget producing
+    # N identical failures. This also surfaces the missing-install ImportError
+    # (with the exact pip command) before Ray starts.
+    if pipeline.get_tuning_algo() == SR_TUNING_ALGO:
+        require_sr()
+        assert_sr_supported(
+            config.training_config,
+            accel=accel,
+            backend=args.backend,
+            model_name_or_path=args.model_name_or_path,
+            rl_algo=pipeline.get_rl_algo(),
+        )
+
     # Propagate the resolved precision to the pipeline so the optimizer's
     # precision assert and the drivers agree.
     from autotune.device import resolve_precision
@@ -559,7 +601,7 @@ if __name__ == "__main__":
     # in the driver script.
     logger.info("[AutoTune] Connecting to ray cluster...")
     ray_info = None  # only set for local clusters
-    multinode_info = None  # only set for multi-node LSF launches
+    multinode_info = None  # only set for multi-node LSF/Slurm launches
     if args.ray_address is not None:
         ray.init(address=args.ray_address, log_to_driver=True, logging_level=logging.INFO)
         logger.info(f"[AutoTune] Connected to remote ray cluster at {args.ray_address}")
@@ -570,6 +612,35 @@ if __name__ == "__main__":
             "accordingly (or RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION=0.5 set on "
             "the cluster nodes). Client-side env vars do not affect an already-running cluster."
         )
+    elif args.scheduler == "slurm":
+        # Multi-node Ray cluster via srun: one multi-node sbatch allocation;
+        # the head colocates with a worker on node[0] and each other node runs
+        # its worker as an srun step.
+        try:
+            log_dir = os.path.join(os.path.expanduser(args.output_dir), "logs")
+            multinode_info = start_multinode_ray_cluster_srun(
+                num_workers=args.num_nodes,
+                gpus_per_worker=args.gpus_per_node,
+                bringup_deadline_s=args.bringup_deadline_s,
+                rl_algo=args.rl_algo,
+                fleet=args.fleet,
+                ib_hca=args.ib_hca,
+                ib_ifname=args.ib_ifname,
+                log_dir=log_dir,
+            )
+        except RayUpTimeoutError as e:
+            logger.warning(
+                f"[AutoTune] Ray cluster bring-up did not complete within "
+                f"{args.bringup_deadline_s}s. Aborting run gracefully without HPO. "
+                f"Details: {e}"
+            )
+            sys.exit(0)
+        logger.info(
+            f"[AutoTune] Multi-node Ray cluster ready (srun): "
+            f"head + {args.num_nodes} worker(s), "
+            f"head={multinode_info['head_address']}, GPUs={multinode_info['num_gpus']}"
+        )
+        configure_ray_data_context()
     elif args.conda_env and args.num_nodes >= 1:
         # Multi-node Ray cluster via blaunch: one multi-host bsub allocation;
         # the head colocates with a worker on host[0] and blaunch starts a
@@ -605,7 +676,7 @@ if __name__ == "__main__":
         )
         configure_ray_data_context()
     else:
-        # For single-node runs, use start_local_ray_cluster. Otherwise, use ray.init()
+        # If running on CCC, use start_local_ray_cluster. Otherwise, use ray.init()
         ray_info = start_local_ray_cluster()
 
         # Otherwise, on LLM.build just use ray.init()
@@ -716,6 +787,21 @@ if __name__ == "__main__":
             result_grid = optimizer.fit_best_config(
                 use_default=args.no_autotune,
             )
+        # Final training is a single Tune trial, and Tune reports a crashed
+        # trial by putting the exception in the ResultGrid rather than raising:
+        # get_best_result() then happily returns the errored trial (with empty
+        # metrics) and the run exits 0. That silently turned a worker crash --
+        # e.g. a `ray.train.WorkerGroupError` on the very first training step,
+        # with no model saved -- into "Successfully completed" as far as LSF and
+        # the granite.build step were concerned. Surface it so the non-zero exit
+        # code promised below is actually produced.
+        if result_grid.num_errors:
+            raise RuntimeError(
+                "[AutoTune] Final training failed: "
+                f"{result_grid.num_errors} errored trial(s). "
+                f"First error: {result_grid.errors[0]!r}"
+            )
+
         best_result = result_grid.get_best_result(metric="loss", mode="min")
 
         logger.info("[AutoTune] Finished training best/default config.")
@@ -740,7 +826,9 @@ if __name__ == "__main__":
         # log lines to <output_dir>/logs/... before cleanup() deletes that
         # tree. (cleanup also wipes ray_results / train_results, which Ray
         # could in principle still write to during shutdown.)
-        if multinode_info is not None:
+        if multinode_info is not None and multinode_info.get("scheduler") == "slurm":
+            stop_multinode_ray_cluster_srun(multinode_info)
+        elif multinode_info is not None:
             stop_multinode_ray_cluster(multinode_info)
         elif ray_info is not None:
             stop_local_ray_cluster(ray_info["temp_dir"])

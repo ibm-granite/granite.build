@@ -3,7 +3,7 @@
 They build fm-tune's verl override dict from a trial config shaped the way
 AutotuneOptimizer.setup_pipeline builds it (sampled values at the top level,
 fixed sections nested), using the shipped autotune.yaml, and check that each
-value lands on the verl key verl 0.7.1 reads. The module under test imports
+value lands on the verl key verl (0.7.1, 0.9.1) reads. The module under test imports
 no torch/verl/hydra/omegaconf, so these run on any platform.
 """
 
@@ -191,6 +191,40 @@ def test_non_dapo_has_no_reward_kwargs(shipped, algo):
 
 
 def test_ppo_clip_range_sets_every_clip_bound_verl_reads(shipped):
-    # verl 0.7.1's policy loss reads clip_ratio_low/high (default 0.2) before clip_ratio.
+    # verl's (0.7.1, 0.9.1) policy loss reads clip_ratio_low/high (default 0.2) before clip_ratio.
     actor = _build(shipped, "ppo", {"clip_range": 0.3})["actor_rollout_ref"]["actor"]
     assert (actor["clip_ratio"], actor["clip_ratio_low"], actor["clip_ratio_high"]) == (0.3, 0.3, 0.3)
+
+
+# --- GRPO length collapse: advantage normalization and a working KL term ---
+
+
+def test_grpo_does_not_std_normalize_advantages_by_default(shipped):
+    """Std normalization turned small reward-shaping terms into +-1 advantages."""
+    assert _build(shipped, "grpo")["algorithm"]["norm_adv_by_std_in_grpo"] is False
+
+
+def test_grpo_std_normalization_is_opt_in(shipped):
+    out = _build(shipped, "grpo", rl_overrides={"norm_adv_by_std_in_grpo": True})
+    assert out["algorithm"]["norm_adv_by_std_in_grpo"] is True
+
+
+@pytest.mark.parametrize("algo", ["grpo", "dapo"])
+def test_kl_coef_drives_the_kl_loss(shipped, algo):
+    """kl_coef used to be swept with use_kl_loss=False, i.e. with no effect."""
+    actor = _build(shipped, algo, sampled={"kl_coef": 0.01})["actor_rollout_ref"]["actor"]
+    assert actor["use_kl_loss"] is True
+    assert actor["kl_loss_coef"] == 0.01
+
+
+@pytest.mark.parametrize("algo", ["grpo", "dapo"])
+def test_zero_kl_coef_keeps_the_kl_loss_off(shipped, algo):
+    """No reference model is loaded for a zero-weight KL term."""
+    actor = _build(shipped, algo, sampled={"kl_coef": 0.0})["actor_rollout_ref"]["actor"]
+    assert actor["use_kl_loss"] is False
+
+
+def test_ppo_kl_handling_unchanged(shipped):
+    out = _build(shipped, "ppo", sampled={"kl_coef": 0.01})
+    assert out["actor_rollout_ref"]["actor"]["use_kl_loss"] is False
+    assert "norm_adv_by_std_in_grpo" not in out["algorithm"]

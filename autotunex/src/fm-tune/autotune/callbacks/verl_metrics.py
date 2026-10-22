@@ -95,7 +95,7 @@ class _InMemoryMetricsLogger:
         entropies = [s["actor/entropy"] for s in all_steps if "actor/entropy" in s]
 
         result["pg_loss"] = sum(pg_losses) / len(pg_losses) if pg_losses else float("nan")
-        # verl 0.7.1 emits no separate PPO loss, so actor_loss reports the policy-gradient loss.
+        # verl (0.7.1, 0.9.1) emits no separate PPO loss, so actor_loss reports the policy-gradient loss.
         result["actor_loss"] = result["pg_loss"]
         result["actor_entropy"] = sum(entropies) / len(entropies) if entropies else float("nan")
 
@@ -130,7 +130,7 @@ class _InMemoryMetricsLogger:
         result["total_steps_logged"] = len(all_steps)
 
         # Throughput
-        # verl 0.7.1 has no "perf/overall_tokens_per_second"; "perf/throughput" is tokens/s per GPU.
+        # verl (0.7.1, 0.9.1) has no "perf/overall_tokens_per_second"; "perf/throughput" is tokens/s per GPU.
         result["tokens_per_second_per_gpu"] = last.get("perf/throughput", float("nan"))
 
         logger.info(f"[AutoTune] Collected {len(all_steps)} training steps from in-memory metrics logger")
@@ -167,7 +167,7 @@ def _last_hf_model_dir(ckpt_dirs):
     return None
 
 
-# verl 0.7.1 keys that fill training_metrics' fixed columns; every other numeric
+# verl (0.7.1, 0.9.1) keys that fill training_metrics' fixed columns; every other numeric
 # key goes to `extra`. There is no "loss" in RL — the policy-gradient loss is the
 # honest occupant of that column (reward is in extra as critic/score/mean).
 _COLUMN_KEYS = {

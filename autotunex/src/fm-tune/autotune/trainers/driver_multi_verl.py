@@ -26,11 +26,6 @@
 # Supports PPO, GRPO, and DAPO algorithms.
 
 import os
-import sys
-
-import autotune.trainers._trl_compat  # noqa: F401 — patch trl in the main process
-
-_TRL_COMPAT_MODULE = "autotune.trainers._trl_compat"
 
 # Fail fast if GPUs are in Exclusive Process compute mode.
 # vLLM v1 uses a multi-process architecture (vLLMHttpServer → EngineCore →
@@ -38,6 +33,7 @@ _TRL_COMPAT_MODULE = "autotune.trainers._trl_compat"
 # Exclusive Process mode only allows one context per GPU, causing
 # "CUDA-capable device(s) is/are busy or unavailable" errors.
 import subprocess as _sp
+import sys
 
 try:
     _nvsmi = _sp.run(
@@ -82,6 +78,16 @@ if "expandable_segments:True" in _cuda_alloc_conf:
         "Unset it before running: unset PYTORCH_CUDA_ALLOC_CONF"
     )
 
+# vLLM 0.24 depends on model_hosting_container_standards (SageMaker), whose
+# configure_root_logger() sets the ROOT logger and every root handler to
+# $SAGEMAKER_CONTAINER_LOG_LEVEL, default ERROR. verl 0.9 imports vLLM's serving
+# modules in this (trial) process during init_workers(), so without this every
+# INFO/WARNING fm-tune logs afterwards -- per-step "[AutoTune] verl step N" lines,
+# trial results, cleanup -- was silently dropped while print() kept working.
+# setdefault so an operator can still choose a level. Read at call time, so it
+# must be set before init_workers(), not necessarily before import.
+os.environ.setdefault("SAGEMAKER_CONTAINER_LOG_LEVEL", "INFO")
+
 import glob
 import json
 import logging
@@ -97,7 +103,17 @@ from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
 from ray import tune
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer, ResourcePoolManager, Role
-from verl.workers.fsdp_workers import AsyncActorRolloutRefWorker, CriticWorker
+from verl.trainer.ppo.utils import need_reference_policy
+
+# RayPPOTrainer is verl's v0 trainer (deprecated; the default is trainer.use_v1).
+# fm-tune stays on v0 on purpose: V1's TransferQueue controller is a cluster-wide
+# named Ray actor, so concurrent HPO trials would share one rollout queue. See
+# tests/test_verl_v0_trainer.py and CLAUDE.md ("verl Integration").
+#
+# verl 0.9 replaced the per-role FSDP workers (fsdp_workers.AsyncActorRolloutRefWorker
+# / CriticWorker) with the unified model-engine workers: one ActorRolloutRefWorker
+# that also hosts the reference policy, and a generic TrainingWorker for the critic.
+from verl.workers.engine_workers import ActorRolloutRefWorker, TrainingWorker
 
 # Local
 from autotune.callbacks.verl_metrics import (
@@ -106,6 +122,7 @@ from autotune.callbacks.verl_metrics import (
     _last_hf_model_dir,
     set_active_reporter,
 )
+from autotune.trainers._verl_cleanup import cleanup_ray_resources
 from autotune.trainers.verl_overrides import build_verl_overrides
 from autotune.utils import (
     extract_tokenizer_kwargs,
@@ -116,6 +133,41 @@ from autotune.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _snapshot_logging() -> tuple:
+    """Root logger level and its handlers' levels, for :func:`_restore_logging`."""
+    return logging.root.level, [(h, h.level) for h in logging.root.handlers]
+
+
+def _restore_logging(snapshot: tuple, where: str) -> None:
+    """Undo a dependency silencing logging in this process during verl setup.
+
+    Safety net for the ``SAGEMAKER_CONTAINER_LOG_LEVEL`` default set at import
+    (see the top of this module), and for vLLM 0.24's ``suppress_logging``,
+    which calls ``logging.disable(INFO)`` without a ``try/finally`` and leaves
+    it on when the wrapped config factory raises. Reported with ``print``: a
+    silenced logging module cannot report its own state.
+    """
+    root_level, handler_levels = snapshot
+    if logging.root.manager.disable:
+        print(f"[AutoTune] WARNING: logging was left disabled ({where}); re-enabling it.", flush=True)
+        logging.disable(logging.NOTSET)
+    # Compare effective thresholds: a NOTSET handler under an INFO root raised to
+    # INFO filters nothing new, so only a higher max(root, handler) counts.
+    raised = logging.root.level > root_level or any(
+        max(logging.root.level, h.level) > max(root_level, lvl) for h, lvl in handler_levels
+    )
+    if raised:
+        print(
+            f"[AutoTune] WARNING: a dependency raised the root logger to "
+            f"{logging.getLevelName(logging.root.level)} ({where}); restoring "
+            f"{logging.getLevelName(root_level)}.",
+            flush=True,
+        )
+        logging.root.setLevel(root_level)
+        for h, lvl in handler_levels:
+            h.setLevel(lvl)
 
 
 def _load_verl_default_config() -> OmegaConf:
@@ -236,10 +288,22 @@ def build_verl_config(
     return cfg
 
 
+def actor_role(use_reference_policy: bool) -> "Role":
+    """The actor worker's role: verl 0.9 fuses the reference policy into the actor worker.
+
+    Mirrors verl's own ``main_ppo_v0.TaskRunner.add_actor_rollout_worker`` for a
+    full (non-LoRA) fine-tune: ``ActorRolloutRef`` when a reference policy is
+    needed (KL loss or KL-in-reward), else ``ActorRollout``, which does not load
+    the reference weights at all.
+    """
+    return Role.ActorRolloutRef if use_reference_policy else Role.ActorRollout
+
+
 def build_resource_pool_manager(
     num_workers: int,
     rl_algorithm: str,
     use_reward_model: bool = False,
+    use_reference_policy: bool = True,
 ) -> ResourcePoolManager:
     """
     Create verl's ResourcePoolManager with COLOCATED GPU pools.
@@ -257,8 +321,7 @@ def build_resource_pool_manager(
         "global_pool": [num_workers],
     }
     role_mapping = {
-        Role.ActorRollout: "global_pool",
-        Role.RefPolicy: "global_pool",
+        actor_role(use_reference_policy): "global_pool",
     }
 
     if algo == "ppo":
@@ -290,61 +353,6 @@ def _install_metrics_logger():
         self.logger["_autotune"] = _InMemoryMetricsLogger()
 
     Tracking.__init__ = _patched_init
-
-
-def _cleanup_verl_workers(trainer):
-    """Kill all Ray actor workers and release GPU resources from a RayPPOTrainer.
-
-    verl's RayPPOTrainer has no shutdown method. Between HPO trials the old
-    vLLM server processes, FSDP workers, and ref-policy actors may still hold
-    GPU memory and POSIX shared-memory segments, causing the next trial's
-    vLLM EngineCore to crash with "died unexpectedly".
-
-    Additionally, verl reserves GPUs via Ray placement groups. If these are
-    not explicitly removed, subsequent trials see 0 available GPUs and fail
-    with "Total available GPUs 0 is less than total desired GPUs N".
-
-    We iterate over every WorkerGroup the trainer created and ray.kill each
-    underlying actor handle, then remove all placement groups to free GPUs.
-    """
-    import time
-
-    import ray as _ray
-
-    # 1. Kill worker actors
-    wg_names = ["actor_rollout_wg", "critic_wg", "ref_policy_wg", "reward_wg"]
-    killed = 0
-    for name in wg_names:
-        wg = getattr(trainer, name, None)
-        if wg is None:
-            continue
-        workers = getattr(wg, "_workers", None) or []
-        for w in workers:
-            try:
-                _ray.kill(w)
-                killed += 1
-            except Exception:
-                pass
-
-    # 2. Remove placement groups to release GPU reservations
-    removed_pgs = 0
-    rpm = getattr(trainer, "resource_pool_manager", None)
-    if rpm is not None:
-        for pool in rpm.resource_pool_dict.values():
-            for pg in pool.pgs or []:
-                try:
-                    _ray.util.remove_placement_group(pg)
-                    removed_pgs += 1
-                except Exception:
-                    pass
-            pool.pgs = None
-
-    if killed or removed_pgs:
-        # Brief pause to let Ray reclaim GPU/shared-memory resources
-        time.sleep(2)
-        logger.info(f"[AutoTune] Cleaned up {killed} verl worker(s) and {removed_pgs} placement group(s)")
-    else:
-        logger.info("[AutoTune] No verl workers to clean up")
 
 
 # --- Main driver ---
@@ -450,18 +458,12 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         dataset_size=dataset_size,
     )
 
-    # Patch trl inside actor/rollout Ray workers so verl's monkey_patch.py
-    # can do ``from trl import AutoModelForCausalLMWithValueHead`` (moved to
-    # trl.experimental.ppo in trl >= 0.29.0).
-    verl_config.actor_rollout_ref.model.external_lib = _TRL_COMPAT_MODULE
-
     # Configure algorithm-specific settings
     if rl_algorithm == "ppo":
         logger.info(f"[AutoTune] Configuring PPO (TP={tensor_model_parallel_size})")
         verl_config.algorithm.adv_estimator = "gae"
         verl_config.actor_rollout_ref.rollout.n = 1
         verl_config.critic.enable = True
-        verl_config.critic.model.external_lib = _TRL_COMPAT_MODULE
 
         if reward_function_path is not None:
             verl_config.reward.reward_model.enable = False
@@ -513,11 +515,17 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     else:
         logger.info("[AutoTune] Using default_compute_score via data_source routing")
 
+    # Ask verl itself whether this config needs a reference policy (KL loss or
+    # KL-in-reward), so the role matches what RayPPOTrainer.init_workers expects.
+    use_reference_policy = need_reference_policy(verl_config)
+    role = actor_role(use_reference_policy)
+
     # Build resource pool manager (colocated pools)
     resource_pool_manager = build_resource_pool_manager(
         num_workers=num_workers,
         rl_algorithm=rl_algorithm,
         use_reward_model=use_reward_model,
+        use_reference_policy=use_reference_policy,
     )
 
     # Initialize tokenizer (with optional customization)
@@ -538,16 +546,12 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
             f"may not resize embeddings automatically — verify model compatibility."
         )
 
-    # Set up worker classes
-    # Always include RefPolicy — the trainer's init_workers() uses
-    # need_reference_policy(config) internally to decide whether to create it.
-    worker_classes = {
-        Role.ActorRollout: ray.remote(AsyncActorRolloutRefWorker),
-        Role.RefPolicy: ray.remote(AsyncActorRolloutRefWorker),
-    }
+    # Set up worker classes. The reference policy has no worker of its own: it
+    # lives on the actor worker (role ActorRolloutRef) when needed.
+    worker_classes = {role: ray.remote(ActorRolloutRefWorker)}
 
     if rl_algorithm == "ppo":
-        worker_classes[Role.Critic] = ray.remote(CriticWorker)
+        worker_classes[Role.Critic] = ray.remote(TrainingWorker)
 
     # Prepare output directories
     training_output_dir = os.path.join(output_dir, "outputs", f"{trial_id}")
@@ -580,8 +584,10 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     reporter = VerlStepReporter(trial_id=trial_id, steps_per_epoch=steps_per_epoch)
     set_active_reporter(reporter)
 
+    logging_snapshot = _snapshot_logging()
     try:
         trainer.init_workers()
+        _restore_logging(logging_snapshot, "after init_workers")
         trainer.fit()
         logger.info("[AutoTune] Training finished successfully.")
     except Exception as e:
@@ -589,12 +595,13 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         raise  # Let Ray Tune mark trial as ERRORED
     finally:
         # Never raises, so it cannot mask the re-raise above or skip the cleanup.
+        _restore_logging(logging_snapshot, "after fit")
         set_active_reporter(None)
         reporter.close()
-        # Kill verl's Ray actor workers (vLLM server, FSDP workers, etc.)
-        # so the next HPO trial can start cleanly without stale processes
-        # holding GPU memory or shared memory segments.
-        _cleanup_verl_workers(trainer)
+        # Kill every Ray actor and placement group the trainer created (FSDP
+        # workers, vLLM servers, agent/reward loop workers) so the next HPO
+        # trial does not inherit their GPU memory or GPU reservations.
+        cleanup_ray_resources(trainer)
 
     # Collect metrics
     metrics = _InMemoryMetricsLogger.collect(rl_algorithm)

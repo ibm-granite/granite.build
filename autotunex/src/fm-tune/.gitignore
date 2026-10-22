@@ -150,6 +150,9 @@ ray_results/
 final_checkpoints/
 data_cache/
 global_step_*/
+checkpoint-*/
+diagnostics/
+*.safetensors
 lightning_logs/
 input_texts
 debug.sh
