@@ -1,0 +1,34 @@
+granite.build:
+  name: bash-fm-tune
+  # One fm-tune LoRA run on the bash env, small enough for a laptop CPU/MPS:
+  # a tiny random Llama, 100 alpaca rows, --no_autotune. Reaching SUCCESS
+  # proves the step resolves, the venv builds, main.py trains, and the model
+  # output registers from the GB_ARTIFACT marker.
+  targets:
+    tune:
+      environment_uri: space://environments/bash
+      inputs:
+        dataset:
+          uri: hf:///datasets/axolotl-ai-co/alpaca_100_test
+        base_model:
+          uri: hf:///hf-internal-testing/tiny-random-LlamaForCausalLM
+      outputs:
+        model:
+          type: model
+          # env:// keeps the artifact where the step wrote it (the push is a
+          # no-op). A relative file: URI would resolve against gbserver's own
+          # process CWD, which is unstable.
+          uri: "env://{{ binding.path }}"
+      steps:
+        - step_uri: space://steps/fm-tune
+          config:
+            fm_tune_config:
+              source:
+                repo: https://github.com/ibm-granite/granite.build.git
+                ref: main
+              train_file: data/train-00000-of-00001.parquet
+              validation_file: data/train-00000-of-00001.parquet
+              tuning_algo: lora
+              run_name: fm-tune-bash-test
+              autotune: false
+              config_preset: autotune_mac.yaml

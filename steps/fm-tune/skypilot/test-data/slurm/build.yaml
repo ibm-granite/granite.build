@@ -1,0 +1,37 @@
+granite.build:
+  name: skypilot-slurm-fm-tune
+  # One fm-tune LoRA run on the local podman Slurm cluster (CPU-only, arm64
+  # nodes). Proves wiring (resolve, venv on the bare node, train, register),
+  # not GPU training.
+  targets:
+    tune:
+      environment_uri: space://environments/skypilot/slurm
+      inputs:
+        dataset:
+          uri: hf:///datasets/axolotl-ai-co/alpaca_100_test
+        base_model:
+          uri: hf:///hf-internal-testing/tiny-random-LlamaForCausalLM
+      outputs:
+        model:
+          type: model
+          uri: "env:///shared/fm-tune-test/model"
+      steps:
+        - step_uri: space://steps/fm-tune
+          config:
+            poll_interval_seconds: 15
+            fm_tune_config:
+              source:
+                repo: https://github.com/ibm-granite/granite.build.git
+                ref: main
+              train_file: data/train-00000-of-00001.parquet
+              validation_file: data/train-00000-of-00001.parquet
+              tuning_algo: lora
+              run_name: fm-tune-slurm-test
+              autotune: false
+              config_preset: autotune_mac.yaml
+              output_path: /shared/fm-tune-test/model
+            launcher_config:
+              resources:
+                memory: "4"
+            compute_config:
+              num_gpus_per_node: 0
