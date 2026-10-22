@@ -20,6 +20,7 @@ script actually receives after bash unquotes it. Mode 1 only.
 """
 
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -77,7 +78,8 @@ def test_defaults_reach_the_script(tmp_path):
     assert env["FMTUNE_TUNING_ALGO"] == "lora"
     assert env["FMTUNE_HPO_CONFIG_JSON"] == "{}"
     assert env["FMTUNE_OUTPUT_DIR"] == f"{tmp_path}/model"
-    assert env["FMTUNE_CACHE_DIR"] == f"{tmp_path}/.fm-tune-cache"
+    # Per user: a shared GB_SHARED_WORKDIR is written by every user's builds.
+    assert env["FMTUNE_CACHE_DIR"] == f"{tmp_path}/.fm-tune-cache/{os.getuid()}"
     assert env["FMTUNE_PYTHON"] == "python3"
 
 
@@ -87,6 +89,10 @@ def test_quotes_and_json_survive(tmp_path):
     assert json.loads(env["FMTUNE_HPO_CONFIG_JSON"]) == hpo
     assert env["FMTUNE_RUN_NAME"] == "a b'c"
     assert env["FMTUNE_EXTRA_ARGS"] == "--x 'y z'"
+
+
+def test_cache_dir_is_per_user_under_the_shared_workdir():
+    assert 'FMTUNE_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache/$(id -u)"' in _render()
 
 
 def test_output_path_overrides_the_workdir_default(tmp_path):

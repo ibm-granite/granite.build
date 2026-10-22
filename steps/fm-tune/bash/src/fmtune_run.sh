@@ -11,20 +11,39 @@ set -euo pipefail
 
 die() { echo "fm-tune: $*" >&2; exit 2; }
 log() { echo "[fm-tune] $*"; }
-# One cache lock at a time: a mkdir lock dir holding the owner's pid. A lock whose
-# owner is dead is taken over. Builds share the cache, so the clone and the venv
-# are both built under one.
+# One cache lock at a time: a mkdir lock dir holding the owner's <host>:<pid>.
+# Builds share the cache, so the clone and the venv are both built under one. A
+# lock is stale only if its owner ran on this host and is dead; another host's pid
+# can't be checked from here, so such a lock is waited on for FMTUNE_LOCK_TIMEOUT
+# seconds and then reported, never taken over. A lock with no pid file (owner
+# killed between mkdir and the write) is stale once older than the timeout.
+: "${FMTUNE_LOCK_TIMEOUT:=1800}"
+case "$FMTUNE_LOCK_TIMEOUT" in ''|*[!0-9]*) die "FMTUNE_LOCK_TIMEOUT must be a whole number of seconds" ;; esac
+host="$(uname -n)"
 held_lock=""
 lock() {
-  local owner
-  until mkdir "$1" 2>/dev/null; do
+  local owner start=$SECONDS
+  while ! mkdir "$1" 2>/dev/null; do
+    if [ ! -d "$1" ]; then
+      mkdir "$1" 2>/dev/null && break  # released between the two mkdirs
+      die "cannot create lock $1 (is $(dirname "$1") writable?)"
+    fi
     owner="$(cat "$1/pid" 2>/dev/null || true)"
-    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
-      log "taking over stale lock $1 from dead pid $owner"; rm -rf "$1"; continue
+    if [ -z "$owner" ]; then
+      # find -mmin (whole minutes, rounded up) is the same on GNU and BSD; stat is not.
+      if [ -n "$(find "$1" -maxdepth 0 -mmin +$(( (FMTUNE_LOCK_TIMEOUT + 59) / 60 )) 2>/dev/null)" ]; then
+        log "taking over stale lock $1 (no owner recorded)"; rm -rf "$1"; continue
+      fi
+    elif [ "${owner%:*}" = "$host" ]; then
+      if ! kill -0 "${owner##*:}" 2>/dev/null; then
+        log "taking over stale lock $1 from dead pid $owner"; rm -rf "$1"; continue
+      fi
+    elif [ $((SECONDS - start)) -ge "$FMTUNE_LOCK_TIMEOUT" ]; then
+      die "lock $1 is held by $owner (another host) after ${FMTUNE_LOCK_TIMEOUT}s; remove it if no fm-tune build is running"
     fi
     log "waiting for lock $1"; sleep 5
   done
-  echo $$ > "$1/pid"
+  echo "$host:$$" > "$1/pid"
   held_lock="$1"
   trap 'rm -rf "$held_lock"' EXIT
 }

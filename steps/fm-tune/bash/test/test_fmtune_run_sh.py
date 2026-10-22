@@ -365,22 +365,91 @@ def test_failed_update_of_a_cached_clone_dies(env, tmp_path):
     assert "GB_ARTIFACT_ID:" not in proc.stdout
 
 
-def test_stale_clone_lock_from_a_dead_pid_is_taken_over(env, tmp_path):
-    _git_repo(env, tmp_path)
+def _clone_lock(env) -> pathlib.Path:
     key = subprocess.run(
         ["bash", "-c", 'printf "%s@%s" "$0" "$1" | cksum | cut -d" " -f1',
          env["FMTUNE_SOURCE_REPO"], env["FMTUNE_SOURCE_REF"]],
         check=True, capture_output=True, text=True,
     ).stdout.strip()
+    return pathlib.Path(env["FMTUNE_CACHE_DIR"]) / f"src-{key}.lock"
+
+
+def test_stale_clone_lock_from_a_dead_pid_is_taken_over(env, tmp_path):
+    _git_repo(env, tmp_path)
     dead = subprocess.Popen(["true"])
     dead.wait()
-    lock = pathlib.Path(env["FMTUNE_CACHE_DIR"]) / f"src-{key}.lock"
+    lock = _clone_lock(env)
     lock.mkdir(parents=True)
-    (lock / "pid").write_text(f"{dead.pid}\n")
+    (lock / "pid").write_text(f"{os.uname().nodename}:{dead.pid}\n")
     proc = _run(env)
     assert proc.returncode == 0, proc.stderr
     assert "taking over stale" in proc.stdout
     assert not list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("*.lock"))
+
+
+def test_the_lock_records_host_and_pid(env, tmp_path):
+    """While held, the lock's pid file names this host, so other nodes never judge it."""
+    _git_repo(env, tmp_path)
+    env["STUB_LOCKS"] = env["FMTUNE_CACHE_DIR"]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    real_git = shutil.which("git")
+    (bin_dir / "git").write_text(
+        "#!/bin/sh\ncat \"$STUB_LOCKS\"/*.lock/pid >> \"$STUB_LOCKS/../owners\" 2>/dev/null\n"
+        f'exec "{real_git}" "$@"\n'
+    )
+    (bin_dir / "git").chmod(0o755)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    assert _run(env).returncode == 0
+    owners = set((tmp_path / "owners").read_text().split())
+    assert len(owners) == 1
+    host, pid = owners.pop().rsplit(":", 1)
+    assert host == os.uname().nodename and pid.isdigit()
+
+
+def test_a_lock_held_by_another_host_is_never_taken_over(env, tmp_path):
+    _git_repo(env, tmp_path)
+    lock = _clone_lock(env)
+    lock.mkdir(parents=True)
+    (lock / "pid").write_text("otherhost:1\n")  # pid 1 is alive here, dead there: unknowable
+    env["FMTUNE_LOCK_TIMEOUT"] = "2"
+    proc = _run(env)
+    assert proc.returncode != 0
+    assert f"fm-tune: lock {lock}" in proc.stderr
+    assert "remove it if no fm-tune build is running" in proc.stderr
+    assert (lock / "pid").read_text() == "otherhost:1\n"
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+
+
+def test_an_old_pid_less_lock_is_taken_over(env, tmp_path):
+    """Killed between mkdir and the pid write: stale once older than the timeout."""
+    _git_repo(env, tmp_path)
+    lock = _clone_lock(env)
+    lock.mkdir(parents=True)
+    old = lock.stat().st_mtime - 3600
+    os.utime(lock, (old, old))
+    env["FMTUNE_LOCK_TIMEOUT"] = "60"
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    assert "taking over stale" in proc.stdout
+    assert not lock.exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the read-only mode")
+def test_an_unwritable_cache_dir_dies_fast(env, tmp_path):
+    _git_repo(env, tmp_path)
+    cache = pathlib.Path(env["FMTUNE_CACHE_DIR"])
+    cache.mkdir()
+    cache.chmod(0o555)
+    try:
+        proc = subprocess.run(
+            ["bash", str(_SCRIPT)], env=env, capture_output=True, text=True, timeout=20
+        )
+    finally:
+        cache.chmod(0o755)
+    assert proc.returncode != 0
+    assert "fm-tune: cannot create lock" in proc.stderr
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
 
 
 @pytest.mark.slow
