@@ -8,6 +8,10 @@
 # LiveCodeBench's uv.lock at lcb_commit, except where vLLM requires a newer one:
 # vLLM is deliberately NOT pinned to the lock (0.8.4, torch 2.6), so the GPU path
 # can match the node's driver. See the step's README.md.
-anthropic==0.49.0
+#
+# anthropic: vLLM 0.32 requires >=0.71.0, while LiveCodeBench imports HUMAN_PROMPT
+# and AI_PROMPT from it at import time, which later releases removed (1.9.0 lacks
+# them). 0.71.0 satisfies both; the lock's 0.49.0 does not satisfy vLLM.
+anthropic==0.71.0
 datasets==3.5.0
 tqdm==4.67.1
