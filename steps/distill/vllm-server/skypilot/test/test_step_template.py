@@ -79,7 +79,7 @@ class TestRunScriptIsValidShell:
 
     def test_it_uses_the_container_interpreter(self, run_script):
         assert "/stage/" not in run_script
-        assert 'PYBIN="$(uv python find)"' in run_script
+        assert 'PYBIN="python"' in run_script
 
 
 class TestReadinessGate:
@@ -278,3 +278,9 @@ class TestFailuresAreReportedUnderTheLauncherPrefix:
         )
         assert "lifetime cap" not in err.replace("lifetime cap 60s armed", "")
         assert rc == 3
+
+
+class TestSlurmExecutorEnv:
+    def test_the_stripped_env_is_restored(self, launcher):
+        assert launcher["envs"]["PYTHONPATH"] == "/opt/distill/src"
+        assert launcher["envs"]["VIRTUAL_ENV"] == "/stage/.venv"

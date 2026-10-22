@@ -303,3 +303,9 @@ class TestTheRenamedTeacherInputIsRefused:
         )
         assert "renamed to 'teacher'" not in rendered
         assert '--teacher-model "/t"' in rendered
+
+
+class TestSlurmExecutorEnv:
+    def test_the_stripped_env_is_restored(self, launcher):
+        assert launcher["envs"]["PYTHONPATH"] == "/opt/distill/src"
+        assert launcher["envs"]["VIRTUAL_ENV"] == "/stage/.venv"

@@ -163,7 +163,7 @@ class TestLauncher:
         the most expensive place to discover it (build 75fa47d2).
         """
         assert "/stage/" not in run_script
-        assert 'PYBIN="$(uv python find)"' in run_script
+        assert 'PYBIN="python"' in run_script
         assert "export ACCELERATE=" in run_script
         # The bare call is what makes both necessary; if upstream ever qualifies it, this
         # test should be revisited rather than silently kept.
@@ -409,3 +409,9 @@ class TestConfigDefaults:
         from gbcommon.types.stepconfig import StepType
 
         assert step["type"] in {m.value for m in StepType}
+
+
+class TestSlurmExecutorEnv:
+    def test_the_stripped_env_is_restored(self, launcher):
+        assert launcher["envs"]["PYTHONPATH"] == "/opt/distill/src"
+        assert launcher["envs"]["VIRTUAL_ENV"] == "/stage/.venv"

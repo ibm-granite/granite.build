@@ -69,7 +69,8 @@ class TestRunScriptIsValidShell:
     def test_container_venv_comes_from_the_image_not_the_script(self, run_script):
         """The image sets VIRTUAL_ENV and puts its bin on PATH; the script asks uv for the
         interpreter and hardcodes no venv path."""
-        assert 'PYBIN="$(uv python find)"' in run_script
+        assert 'PYBIN="python"' in run_script
+        assert 'export PATH="$VIRTUAL_ENV/bin:$PATH"' in run_script
         assert "/stage/" not in run_script
 
     def test_no_login_shell_anywhere(self, run_script):
@@ -492,7 +493,7 @@ class TestDistillSourceDelivery:
         """Both paths are fixed by steps/distill/gpu/Dockerfile's own COPY/ENV
         lines, not resolved from a config field or a clone destination."""
         assert 'CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"' in run_script
-        assert 'PYBIN="$(uv python find)"' in run_script
+        assert 'PYBIN="python"' in run_script
 
     def test_no_clone_or_runtime_venv_sync_remains(self, run_script):
         """A clone or a uv sync reappearing here would mean this step regressed
@@ -1291,3 +1292,9 @@ class TestResumeEmitSeeded:
 
     def test_off_renders_nothing_without_a_resume_source(self):
         assert "not re-emitting seeded" not in self._render(resume_emit_seeded=False)
+
+
+class TestSlurmExecutorEnv:
+    def test_the_stripped_env_is_restored(self, launcher):
+        assert launcher["envs"]["PYTHONPATH"] == "/opt/distill/src"
+        assert launcher["envs"]["VIRTUAL_ENV"] == "/stage/.venv"

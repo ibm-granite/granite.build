@@ -21,16 +21,16 @@ _DIR = Path(__file__).resolve().parent.parent
 
 
 def _image_env(tmp_path, step, python=None):
-    """Emulate the baked image: DISTILL_HOME/steps/<step> holds this step's scripts, and
-    `uv python find` (how the launcher picks its interpreter) answers with the test's own."""
+    """Emulate the baked image: DISTILL_HOME/steps/<step> holds this step's scripts, and a
+    `python` first on PATH (the image puts its venv there) is the test's own interpreter."""
     home = tmp_path / "distill-home"
     (home / "steps").mkdir(parents=True)
     (home / "steps" / step).symlink_to(_DIR / "src")
     shim = tmp_path / "shim"
     shim.mkdir()
-    uv = shim / "uv"
-    uv.write_text(f'#!/bin/sh\necho "{python or sys.executable}"\n')
-    uv.chmod(0o755)
+    py = shim / "python"
+    py.write_text(f'#!/bin/sh\nexec "{python or sys.executable}" "$@"\n')
+    py.chmod(0o755)
     return {
         **os.environ,
         "GB_BUILD_WORKDIR": str(tmp_path),
@@ -75,10 +75,9 @@ def test_the_hub_is_not_forced_offline(launcher):
     assert "HF_HUB_OFFLINE" not in (launcher.get("envs") or {})
 
 
-def test_the_python_comes_from_uv_not_a_hardcoded_venv(step, launcher):
-    """The image sets VIRTUAL_ENV, so `uv python find` names its interpreter."""
+def test_the_python_is_the_images_venv_on_path(step, launcher):
+    """The image puts /stage/.venv/bin first on PATH, so a bare `python` is its venv."""
     assert "python" not in step["config"]["probe_config"]
-    assert '"$(uv python find)"' in launcher["run"]
     assert "/stage/" not in launcher["run"]
 
 
@@ -121,3 +120,10 @@ def test_every_setting_reaches_the_script_in_place(step, launcher, tmp_path, pro
         "--rows",
         "200",
     ]
+
+def test_the_slurm_executors_stripped_env_is_restored(launcher):
+    """The SLURM executor runs tasks under `env -u PYTHONPATH` with no VIRTUAL_ENV, so the
+    image's ENV values for both are gone at run time and each step sets them itself."""
+    envs = launcher["envs"]
+    assert envs["PYTHONPATH"] == "/opt/distill/src"
+    assert envs["VIRTUAL_ENV"] == "/stage/.venv"
