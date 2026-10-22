@@ -7,7 +7,7 @@ target_expectations:
     # binding directly; see test-data/integration/standalone/buildrunner/bash/
     # 1step/buildtest.yaml, step_count 1 with an hf input), so no hfpull steps
     # are queued: just the fm-tune step.
-    step_count: 1              # fm-tune only; hf pulls are inline  # CALIBRATE against the first green run
+    step_count: 1              # fm-tune only; hf pulls are inline (build 66b91b4d)
     input_artifact_count: 2
     output_artifact_count: 1
     expected_steps:

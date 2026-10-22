@@ -31,4 +31,8 @@ granite.build:
               tuning_algo: lora
               run_name: fm-tune-bash-test
               autotune: false
-              config_preset: autotune_mac.yaml
+              # autotune_mac.yaml caps max_length at 512, and one alpaca_100 row
+              # has a 515-token output, so tokenization fails (build a2313afe).
+              # autotune.yaml allows 1024; its flash_attention_2 falls back to
+              # eager on the single-trial driver off CUDA.
+              config_preset: autotune.yaml
