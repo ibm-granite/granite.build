@@ -15,8 +15,8 @@
 # ldconfig gap documented in steps/distill/gpu/README.md).
 #
 # At the scale below, this recipe's subject is the PLUMBING of the chain —
-# align -> corpus -> [train-sft] -> train-gold -> export -> eval-transfer x2 ->
-# eval-bfcl — not the science: nothing it produces at these values is a
+# align -> corpus -> [train-sft] -> train-gold -> export -> eval-transfer x2 —
+# not the science: nothing it produces at these values is a
 # publishable measurement.
 #
 # Override any value with: gb build start --param KEY=VALUE
@@ -113,13 +113,6 @@ EVAL_BATCH_SIZE: 4
 EVAL_DTYPE: "bfloat16"
 MAX_INCOMPLETE_FRACTION: 0.25
 EVAL_NUM_GPUS: 1
-
-# ─── BFCL ─────────────────────────────────────────────────────────────
-BFCL_TEST_CATEGORIES: "simple"
-BFCL_EVAL_NAME: "bfclv3"
-BFCL_MODEL_ID: "ibm-granite/granite-4"
-BFCL_NUM_GPUS: 1
-BFCL_GPU_MEMORY_UTILIZATION: "0.5"
 
 # ─── Topology and resources ───────────────────────────────────────────
 # Same node/GPU count as the LSF recipe: one node, two GPUs for GOLD, so the
