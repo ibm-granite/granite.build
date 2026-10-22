@@ -16,8 +16,9 @@
 
 The stub ``main.py`` records its argv and cwd as JSON, then fakes a saved model at
 ``<output_dir>/<output_model_name>/``, so each test asserts the exact command
-line fm-tune would get. ``FMTUNE_SKIP_INSTALL=1`` skips the venv, so these run in
-well under a second. Mode 1 only.
+line fm-tune would get. ``FMTUNE_SKIP_INSTALL=1`` skips the venv, so most tests run
+in well under a second. The exception is the ``slow`` venv test, which builds a real
+venv and needs network access for pip. Mode 1 only.
 """
 
 import json
@@ -228,11 +229,15 @@ def test_git_source_is_cloned_and_cached(env, tmp_path):
         FMTUNE_SOURCE_REF="rel",
         FMTUNE_SOURCE_SUBDIR="sub/fm-tune",
     )
-    assert _run(env).returncode == 0
+    first = _run(env)
+    assert first.returncode == 0, first.stderr
+    assert first.stdout.count("[fm-tune] cloning") == 1
     assert _record(env)["cwd"].endswith("/sub/fm-tune")
     clones = list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("src-*"))
     assert len(clones) == 1
-    assert _run(env).returncode == 0  # second run reuses the clone
+    second = _run(env)  # second run reuses the clone
+    assert second.returncode == 0, second.stderr
+    assert second.stdout.count("[fm-tune] cloning") == 0
     assert list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("src-*")) == clones
 
 
