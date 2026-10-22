@@ -39,7 +39,7 @@ sources here by the shared Makefile conventions; see
   modules import.
 - `test/test_lcb_generate.py`: unit tests for `lcb_generate.py`, with LiveCodeBench's
   two library functions stubbed, under the repo venv.
-- `test/test_livecodebench_generate_step_render.py`: Mode-1 render tests. They
+- `test/test_skypilot_eval_livecodebench_generate_render.py`: Mode-1 render tests. They
   execute the rendered `run` block with a stub `python` on `PATH`.
 
 ## Building, testing and publishing
