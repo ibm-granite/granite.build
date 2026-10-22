@@ -25,7 +25,7 @@ Set by the launcher; defaults are applied by the script.
 |---|---|---|
 | `FMTUNE_DATASET_DIR` | required | Dataset input directory |
 | `FMTUNE_OUTPUT_DIR` | bash: `$LLMB_BASH_OUTPUT_DIR/model` | Where `main.py` writes the model; required elsewhere |
-| `FMTUNE_CACHE_DIR` | bash: `<GB_HOME>/.fm-tune-cache` (beside `workdir/`) | Clone, tree and venv cache; required elsewhere |
+| `FMTUNE_CACHE_DIR` | bash: `<GB_HOME>/.fm-tune-cache` (beside `workdir/`); the skypilot template sets `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache/$(id -u)` | Clone, tree and venv cache; required elsewhere |
 | `FMTUNE_PYTHON` | `$LLMB_BASH_PYTHON_DIR/python3`, else `python3` | Interpreter that creates the venv (>= 3.10) |
 | `FMTUNE_SOURCE_PATH` / `FMTUNE_SOURCE_REPO` | empty | Exactly one must be set |
 | `FMTUNE_SOURCE_REF` | `main` | Branch or tag for the repo (`git clone --branch`; a bare SHA fails) |
@@ -36,13 +36,15 @@ Set by the launcher; defaults are applied by the script.
 | `FMTUNE_TRAIN_FILE` / `FMTUNE_VALIDATION_FILE` | required | Relative to the dataset dir |
 | `FMTUNE_TUNING_ALGO` | empty | `--tuning_algo` (templates default to `lora`) |
 | `FMTUNE_RL_ALGO` | empty | `--rl_algo`, omitted when empty |
-| `FMTUNE_RUN_NAME` | `fm-tune` | `--run_name`, `--output_model_name` |
+| `FMTUNE_RUN_NAME` | `fm-tune` | `--run_name`, `--output_model_name`; must match `^[A-Za-z0-9._-]+$` |
 | `FMTUNE_AUTOTUNE` | `true` | `false` adds `--no_autotune` |
 | `FMTUNE_BACKEND` / `FMTUNE_SEED` | empty | Flags omitted when empty |
 | `FMTUNE_CONFIG_PRESET` | `autotune.yaml` | Bundled preset used when the HPO config is empty |
 | `FMTUNE_HPO_CONFIG_JSON` | empty (`{}` = empty) | Inline HPO config as JSON; the script converts it to `fm_tune_hpo.yaml` |
 | `FMTUNE_EXTRA_ARGS` | empty | Whitespace-split and appended to argv |
 | `FMTUNE_SERVER_URL` / `FMTUNE_JOB_ID` | empty | AutoTuneX bridge flags |
+| `FMTUNE_LOCK_TIMEOUT` | `1800` | Seconds to wait on another host's cache lock before failing; also the age at which a lock with no owner recorded is stale |
+| `LOG_PATH` | the output dir's parent | Where fm-tune's AutoTuneX bridge writes `logs/`; kept if already set |
 | `FMTUNE_SKIP_INSTALL` | unset | `1` uses `FMTUNE_PYTHON` as is (unit tests only) |
 
 Bash launcher env values reach the child unexpanded, so the bash template leaves
@@ -79,7 +81,7 @@ needs the local podman Slurm VM: stop the VM when you are not testing slurm.
 - The slurm test needs a venv with the `thirdparty` extra (the SkyPilot fork); the repo's main
   `.venv` may not have it.
 - The node venv needs python3.10 (fm-tune needs >= 3.10). On the local Slurm cluster the cache
-  is `/shared/.fm-tune-cache` and the model goes to `/shared/fm-tune-test/model`. The nodes are
+  is `/shared/.fm-tune-cache/<uid>` and the model goes to `/shared/fm-tune-test/model`. The nodes are
   CPU-only arm64, so bf16 is downgraded to fp32.
 - SkyPilot builds write no local `job.log`; read `~/sky_logs/<cluster>/1-<cluster>/run.log`.
 - `eval_loss` is `nan` in both fixtures (1 epoch, 4 steps, random weights); the tests check
