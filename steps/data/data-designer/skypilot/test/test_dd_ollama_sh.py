@@ -33,6 +33,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tarfile
 
 import pytest
@@ -114,7 +115,11 @@ esac
         "PATH": f"{bin_dir}:/usr/bin:/bin",
         "TRACE_DIR": str(tmp_path),
         "OLLAMA_LOG": str(tmp_path / "serve.log"),
-        "PYTHON": shutil.which("python3") or "python3",
+        # The interpreter running this test, which the zstandard skip check just
+        # imported from. Not whatever python3 is first on PATH: with another venv
+        # activated that python3 can lack zstandard, and the script's Python fallback then
+        # fails although the test didn't skip (found when the repo .venv was active).
+        "PYTHON": sys.executable,
     }
     if curl_fails:
         env["CURL_FAILS"] = "1"
