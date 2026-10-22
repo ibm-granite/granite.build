@@ -43,20 +43,30 @@ zstandard = pytest.importorskip(
     "zstandard",
     reason="needs the zstandard module (not in the repo .venv); run with the venv used for test_dd_run.py",
 )
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+pytestmark = pytest.mark.skipif(
+    shutil.which("bash") is None, reason="bash not available"
+)
 
-_ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[os.uname().machine]
+_ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[
+    os.uname().machine
+]
 
-# A fake `ollama`: `serve` answers until killed, unless FAKE_SERVE_FAILS is set, which
-# makes it exit at once the way a server on a taken port does. `show`/`pull` record
-# themselves. Its PID file lets a test check the server was stopped.
+# A fake `ollama` that logs like Ollama 0.40.7 (checked on the SLURM node): `serve`
+# prints "Listening on <OLLAMA_HOST>" once bound and runs until killed. FAKE_SERVE_FAILS
+# makes it print the real bind error and exit; FAKE_SERVE_DELAY delays that exit, which
+# is how a real server on a taken port behaves while another job's server already
+# answers. `show`/`pull` record themselves; the PID file lets a test check the stop.
 _FAKE_OLLAMA = r"""#!/usr/bin/env bash
 case "$1" in
   serve)
     if [ -n "${FAKE_SERVE_FAILS:-}" ]; then
-      echo "Error: listen tcp 127.0.0.1:11434: bind: address already in use"; exit 1
+      sleep "${FAKE_SERVE_DELAY:-0}"
+      echo "Error: listen tcp $OLLAMA_HOST: bind: address already in use"; exit 1
     fi
-    echo $$ > "$TRACE_DIR/serve.pid"; trap 'exit 0' TERM; while :; do sleep 0.1; done ;;
+    echo $$ > "$TRACE_DIR/serve.pid"
+    echo "level=INFO msg=\"Listening on $OLLAMA_HOST (version 9.9.9)\""
+    [ "${OLLAMA_NOPRUNE:-}" = 1 ] && echo NOPRUNE >> "$TRACE_DIR/calls"
+    trap 'rm -f "$TRACE_DIR/serve.pid"; exit 0' TERM; while :; do sleep 0.1; done ;;
   show) [ -f "$TRACE_DIR/pulled" ] ;;
   pull) echo pull >> "$TRACE_DIR/calls"; touch "$TRACE_DIR/pulled" ;;
 esac
@@ -94,7 +104,7 @@ def _setup(tmp_path, *, published_sha=None, curl_fails=False):
 out=""; url=""
 while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; -*) shift;; *) url="$1"; shift;; esac; done
 case "$url" in
-  http://127.0.0.1*) exit 0 ;;
+  http://127.0.0.1*) [ -n "${{OTHER_SERVER:-}}" ] || [ -f "{tmp_path}/serve.pid" ] ;;
   *sha256sum.txt) cat "{assets}/sha256sum.txt" ;;
   *) [ -z "${{CURL_FAILS:-}}" ] || exit 22; cp "{assets}/archive" "$out" ;;
 esac
@@ -112,17 +122,38 @@ esac
     # any directory holding a real zstd from PATH (the stubs dir comes first).
     keep = [d for d in ("/usr/bin", "/bin") if not (pathlib.Path(d) / "zstd").exists()]
     if len(keep) < 2:
-        pytest.skip("zstd is in /usr/bin or /bin here; can't force the Python extractor")
+        pytest.skip(
+            "zstd is in /usr/bin or /bin here; can't force the Python extractor"
+        )
     return env
 
 
 def _ollama(tmp_path, env, *args):
     cache = tmp_path / "cache"
-    return subprocess.run(
-        ["bash", str(_SCRIPT), *args[:1], "--version", "9.9.9", "--model", "m:1",
-         "--cache-dir", str(cache), "--port", "11434", *args[1:]],
-        capture_output=True, text=True, env=env, cwd=tmp_path, timeout=60,
-    ), cache
+    return (
+        subprocess.run(
+            [
+                "bash",
+                str(_SCRIPT),
+                *args[:1],
+                "--version",
+                "9.9.9",
+                "--model",
+                "m:1",
+                "--cache-dir",
+                str(cache),
+                "--port",
+                "11434",
+                *args[1:],
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=tmp_path,
+            timeout=60,
+        ),
+        cache,
+    )
 
 
 def test_install_verifies_and_keeps_cpu_libs_only(tmp_path):
@@ -134,7 +165,7 @@ def test_install_verifies_and_keeps_cpu_libs_only(tmp_path):
     assert (install / "lib/ollama/libggml-base.so").is_file()
     assert not (install / "lib/ollama/cuda_v12").exists()
     assert not list(cache.glob(".ollama-install.*"))
-    assert (tmp_path / "calls").read_text().split() == ["pull"]
+    assert (tmp_path / "calls").read_text().split() == ["NOPRUNE", "pull"]
 
 
 def test_checksum_mismatch_installs_nothing(tmp_path):
@@ -160,16 +191,39 @@ def test_second_install_reuses_cache(tmp_path):
     proc, _ = _ollama(tmp_path, env, "install")
     assert proc.returncode == 0, proc.stderr
     assert "already installed" in proc.stdout
-    assert (tmp_path / "calls").read_text().split() == ["pull"], "model pulled twice"
+    assert (tmp_path / "calls").read_text().split().count(
+        "pull"
+    ) == 1, "model pulled twice"
 
 
-def test_taken_port_fails_instead_of_borrowing(tmp_path):
+def _run_with_port_held_by_another_server(tmp_path, delay):
     env = _setup(tmp_path)
     _ollama(tmp_path, env, "install")
-    env["FAKE_SERVE_FAILS"] = "1"  # our server dies; the probe would still answer
-    proc, _ = _ollama(tmp_path, env, "run", "--", "true")
+    env.update(OTHER_SERVER="1", FAKE_SERVE_FAILS="1", FAKE_SERVE_DELAY=str(delay))
+    return _ollama(tmp_path, env, "run", "--", "bash", "-c", "echo GENERATED")[0]
+
+
+@pytest.mark.parametrize("delay", [0, 0.5])
+def test_taken_port_fails_instead_of_borrowing(tmp_path, delay):
+    """Another server answers on the port; ours fails to bind, at once or after 0.5s.
+
+    The 0.5s case is the race the second review reproduced: the old check accepted the
+    other server's answer while ours was still alive.
+    """
+    proc = _run_with_port_held_by_another_server(tmp_path, delay)
     assert proc.returncode != 0
     assert "already in use" in proc.stderr
+    assert "GENERATED" not in proc.stdout, "ran against another job's server"
+
+
+def test_server_that_never_listens_is_not_trusted(tmp_path):
+    """No "Listening on" line, but the port answers: still not our server."""
+    env = _setup(tmp_path)
+    _ollama(tmp_path, env, "install")
+    env["OTHER_SERVER"] = "1"
+    proc, _ = _ollama(tmp_path, env, "run", "--", "bash", "-c", "echo GENERATED")
+    assert proc.returncode != 0 and "already in use" in proc.stderr
+    assert "GENERATED" not in proc.stdout
 
 
 @pytest.mark.parametrize("status", [0, 3])
@@ -178,6 +232,4 @@ def test_run_propagates_status_and_stops_server(tmp_path, status):
     _ollama(tmp_path, env, "install")
     proc, _ = _ollama(tmp_path, env, "run", "--", "bash", "-c", f"exit {status}")
     assert proc.returncode == status, proc.stderr
-    pid = int((tmp_path / "serve.pid").read_text())
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    assert not (tmp_path / "serve.pid").exists(), "server was not stopped"

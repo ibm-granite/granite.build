@@ -70,7 +70,9 @@ def _batches() -> dict[str, str]:
     out = on_cluster(
         f"cd {_OUTPUT}/parquet-files 2>/dev/null && sha256sum batch_*.parquet || true"
     )
-    return {name: digest for digest, name in (line.split() for line in out.splitlines())}
+    return {
+        name: digest for digest, name in (line.split() for line in out.splitlines())
+    }
 
 
 @extended_testing_only
@@ -133,7 +135,9 @@ class TestSkypilotSlurmDataDesignerRitsResume(AbstractYamlBuildRunnerTest):
 
         # 1. Interrupted.
         self._run_build_test(
-            tested_class=ClassTestedEnum.TEST_BUILDRUNNER, test_spec=spec, test_cancel=True
+            tested_class=ClassTestedEnum.TEST_BUILDRUNNER,
+            test_spec=spec,
+            test_cancel=True,
         )
         first = _batches()
         time.sleep(10)
@@ -146,12 +150,16 @@ class TestSkypilotSlurmDataDesignerRitsResume(AbstractYamlBuildRunnerTest):
             f"before the cancel took effect, so there is nothing left to resume. Make "
             f"the generation slower (more num_records) rather than accepting this."
         )
-        print(f"\ncancelled with {len(first)} of {_TOTAL_BATCHES} row groups checkpointed")
+        print(
+            f"\ncancelled with {len(first)} of {_TOTAL_BATCHES} row groups checkpointed"
+        )
 
         # 2. Resumed. The spec's expectations (records_generated 200, resumed_records
         # > 0) are checked against this run by the harness.
         self._run_build_test(
-            tested_class=ClassTestedEnum.TEST_BUILDRUNNER, test_spec=spec, test_cancel=False
+            tested_class=ClassTestedEnum.TEST_BUILDRUNNER,
+            test_spec=spec,
+            test_cancel=False,
         )
         final = _batches()
         assert len(final) == _TOTAL_BATCHES, sorted(final)

@@ -29,8 +29,9 @@ ORDER, and why it matters
      in seconds rather than after the generation.
   2. Data Designer's validate() checks the config with no model calls. Then a previous
      run in output_path is checked the way Data Designer would check it (config,
-     buffer_size, preserve_dropped_columns, num_records): resume=always refuses a
-     mismatch, resume=if_possible clears it and starts fresh in place.
+     buffer_size, preserve_dropped_columns): resume=always refuses a mismatch,
+     resume=if_possible clears it and starts fresh in place. A num_records below the
+     previous target is refused in both modes and nothing is cleared.
   3. create() — which health-checks each referenced model first.
   4. The row count is checked against --min-records, then the optional export.
   5. Only then is the artifact marker printed, so a failed or short run registers
@@ -73,7 +74,9 @@ def load_spec(env: Mapping[str, str]) -> dict[str, Any]:
     except (binascii.Error, ValueError) as e:
         raise StepError(f"${SPEC_ENV} is not base64-encoded JSON: {e}") from None
     if not isinstance(spec, dict):
-        raise StepError(f"${SPEC_ENV} must decode to an object, got {type(spec).__name__}.")
+        raise StepError(
+            f"${SPEC_ENV} must decode to an object, got {type(spec).__name__}."
+        )
     config = spec.get("config")
     if not isinstance(config, dict) or not config:
         raise StepError("data_designer_config.config must be a non-empty mapping.")
@@ -90,7 +93,9 @@ def load_spec(env: Mapping[str, str]) -> dict[str, Any]:
         )
     run_config = spec.get("run_config") or {}
     if not isinstance(run_config, dict):
-        raise StepError("data_designer_config.run_config must be a mapping of RunConfig fields.")
+        raise StepError(
+            "data_designer_config.run_config must be a mapping of RunConfig fields."
+        )
     return {
         "config": config,
         "model_providers": providers,
@@ -99,7 +104,9 @@ def load_spec(env: Mapping[str, str]) -> dict[str, Any]:
     }
 
 
-def local_model_provider(local_model: Mapping[str, Any], providers: list[Any]) -> dict[str, Any] | None:
+def local_model_provider(
+    local_model: Mapping[str, Any], providers: list[Any]
+) -> dict[str, Any] | None:
     """The provider for a model the step serves on the node, or None when there is none.
 
     The server listens on 127.0.0.1, so the endpoint never leaves the node. Ollama's
@@ -110,7 +117,9 @@ def local_model_provider(local_model: Mapping[str, Any], providers: list[Any]) -
     if not runtime:
         return None
     if runtime != "ollama":
-        raise StepError(f"local_model.runtime must be empty or 'ollama', got {runtime!r}.")
+        raise StepError(
+            f"local_model.runtime must be empty or 'ollama', got {runtime!r}."
+        )
     name = local_model.get("name") or "local"
     taken = {p.get("name") for p in providers if isinstance(p, dict)}
     if name in taken:
@@ -138,7 +147,9 @@ def _require_env(env: Mapping[str, str], name: Any, where: str) -> str:
     return value
 
 
-def build_providers(providers: list[Any], env: Mapping[str, str]) -> list[dict[str, Any]]:
+def build_providers(
+    providers: list[Any], env: Mapping[str, str]
+) -> list[dict[str, Any]]:
     """Resolve the step-only credential keys into plain ModelProvider dicts.
 
     ``api_key_env: NAME`` becomes ``api_key: $NAME``; ``extra_headers_from_env:
@@ -151,7 +162,9 @@ def build_providers(providers: list[Any], env: Mapping[str, str]) -> list[dict[s
     resolved = []
     for i, entry in enumerate(providers):
         if not isinstance(entry, dict):
-            raise StepError(f"model_providers[{i}] must be a mapping, got {type(entry).__name__}.")
+            raise StepError(
+                f"model_providers[{i}] must be a mapping, got {type(entry).__name__}."
+            )
         p = copy.deepcopy(entry)
         label = f"model_providers[{i}] ({p.get('name', '?')})"
 
@@ -164,7 +177,9 @@ def build_providers(providers: list[Any], env: Mapping[str, str]) -> list[dict[s
         header_env = p.pop("extra_headers_from_env", None)
         if header_env is not None:
             if not isinstance(header_env, dict):
-                raise StepError(f"{label}.extra_headers_from_env must map header -> env var.")
+                raise StepError(
+                    f"{label}.extra_headers_from_env must map header -> env var."
+                )
             headers = dict(p.get("extra_headers") or {})
             for header, name in header_env.items():
                 headers[header] = _require_env(
@@ -175,14 +190,18 @@ def build_providers(providers: list[Any], env: Mapping[str, str]) -> list[dict[s
     return resolved
 
 
-def apply_seed_path(config: dict[str, Any], seed_path: str, seed_glob: str) -> dict[str, Any]:
+def apply_seed_path(
+    config: dict[str, Any], seed_path: str, seed_glob: str
+) -> dict[str, Any]:
     """Point the config's seed source at the staged `seed` input, when one is bound."""
     if not seed_path:
         return config
     config = copy.deepcopy(config)
     inner = config["data_designer"] if "data_designer" in config else config
     seed_config = inner.get("seed_config") if isinstance(inner, dict) else None
-    if not isinstance(seed_config, dict) or not isinstance(seed_config.get("source"), dict):
+    if not isinstance(seed_config, dict) or not isinstance(
+        seed_config.get("source"), dict
+    ):
         raise StepError(
             "the `seed` input is bound but the config has no seed_config.source to point "
             "at it; add a seed_config (e.g. seed_type: local) or unbind the input."
@@ -222,6 +241,7 @@ _DD_ARTIFACTS = (
     "images",
     "metadata.json",
     "builder_config.json",
+    "scheduler_events.jsonl",  # only with run_config.write_scheduler_events
 )
 
 
@@ -229,13 +249,14 @@ def resume_mismatch(
     output_path: Path,
     fingerprint: Mapping[str, Any],
     run_config: Mapping[str, Any],
-    num_records: int,
 ) -> str | None:
     """Why the previous run in output_path can't be resumed, or None when it can.
 
     Mirrors the checks Data Designer 0.9.5 makes once generation has started
     (``_check_resume_config_compatibility`` and ``_load_resume_state``), so a mismatch is
-    caught BEFORE create(), not after a full generation. Measured before this existed:
+    caught BEFORE create(), not after a full generation. A num_records below the
+    previous target is deliberately NOT a mismatch here; see num_records_below_target.
+    Measured before this existed:
       - a changed buffer_size failed the run: "Cannot resume: buffer_size=4 does not match";
       - a changed preserve_dropped_columns made Data Designer regenerate everything into
         a timestamped sibling dir, which the step then refused to register.
@@ -265,12 +286,50 @@ def resume_mismatch(
             f"run_config.buffer_size changed ({metadata.get('buffer_size')} -> "
             f"{current.buffer_size})"
         )
-    if metadata.get("preserve_dropped_columns", True) != current.preserve_dropped_columns:
+    if (
+        metadata.get("preserve_dropped_columns", True)
+        != current.preserve_dropped_columns
+    ):
         return "run_config.preserve_dropped_columns changed"
-    target = metadata.get("target_num_records")
-    if isinstance(target, int) and num_records < target:
-        return f"num_records ({num_records}) is below the previous run's target ({target})"
     return None
+
+
+def num_records_below_target(output_path: Path, num_records: int) -> int | None:
+    """The previous run's target when num_records is below it, else None.
+
+    Not a resume mismatch: the previous run is the same dataset, and clearing it to honour
+    a smaller num_records would destroy rows for no reason. Data Designer refuses this
+    too; the step refuses it up front, in every resume mode, and never clears.
+    """
+    try:
+        target = json.loads((output_path / "metadata.json").read_text()).get(
+            "target_num_records"
+        )
+    except (OSError, ValueError, AttributeError):
+        return None
+    return target if isinstance(target, int) and num_records < target else None
+
+
+def compiled_fingerprint(
+    designer: Any, builder: Any, dataset_name: str
+) -> dict[str, Any]:
+    """The fingerprint Data Designer records for this config: of the COMPILED config.
+
+    Data Designer compiles the config before generating (``DatasetBuilder.__init__`` calls
+    ``compile_data_designer_config``): it adds the seed's columns, and an internal row-id
+    column when the config has no sampler or seed column. ``metadata.json`` stores the
+    fingerprint of that compiled config, so comparing the build's raw config against it
+    made every expression-only, LLM-only or seeded config look changed (found in the
+    second review, reproduced): ``if_possible`` then cleared a resumable run and
+    ``always`` never resumed. This compiles a fresh copy exactly as ``DataDesigner.validate``
+    does and fingerprints that. It uses Data Designer's private ``_create_resource_provider``,
+    acceptable because ``dd_version`` is pinned; ``test_dd_run.py`` covers the configs that
+    exposed the bug.
+    """
+    from data_designer.engine.compiler import compile_data_designer_config
+
+    provider = designer._create_resource_provider(dataset_name, builder)
+    return compile_data_designer_config(builder.build(), provider).fingerprint()
 
 
 def clear_previous_run(output_path: Path) -> None:
@@ -283,7 +342,9 @@ def clear_previous_run(output_path: Path) -> None:
     """
     import shutil
 
-    for name in _DD_ARTIFACTS + tuple(f"{output_path.name}.{f}" for f in EXPORT_FORMATS):
+    for name in _DD_ARTIFACTS + tuple(
+        f"{output_path.name}.{f}" for f in EXPORT_FORMATS
+    ):
         entry = output_path / name
         if entry.is_dir() and not entry.is_symlink():
             shutil.rmtree(entry)
@@ -315,44 +376,62 @@ def count_resumable_records(output_path: Path, resume: str) -> int:
     return sum(pq.read_metadata(b).num_rows for b in batches)
 
 
-def validate_providers(resolved: list[dict[str, Any]], model_provider_cls: Any) -> list[Any]:
+def _provider_error(i: int, entry: Mapping[str, Any], err: Any) -> StepError:
+    """A StepError naming the failing fields by location only — never their values."""
+    problems = "; ".join(
+        f"{'.'.join(str(x) for x in e['loc']) or '<entry>'}: {e['msg']}"
+        for e in err.errors(include_input=False, include_url=False)
+    )
+    return StepError(
+        f"model_providers[{i}] ({entry.get('name', '?')}) is not a valid provider: {problems}"
+    )
+
+
+def validate_providers(
+    resolved: list[dict[str, Any]], model_provider_cls: Any
+) -> list[Any]:
     """Build Data Designer ModelProvider objects without letting a credential reach an error.
 
     ``resolved`` already carries secrets (api_key, extra_headers values) read from the
     environment. A pydantic ValidationError prints the offending ``input_value`` — the
     whole entry, secrets included — so a typo such as ``endpont:`` used to put the key
-    in the traceback (found in review, reproduced). So each entry is validated first
-    with every credential value replaced by a placeholder, and errors are reported by
-    field location only, as a StepError.
+    in the traceback (found in review, reproduced).
+
+    Two passes, both reporting by field location only (``include_input=False``) and
+    without chaining the original exception:
+      1. with each credential replaced by a placeholder OF THE SAME TYPE CLASS (a string
+         stays a string; a non-string stays as given, since its type is the error), to
+         report structural problems — missing or misspelled fields — first;
+      2. the real entry, so a credential of the wrong type (``api_key: 12345``) is also
+         reported by location, not as a traceback quoting the value (second review).
     """
     from pydantic import ValidationError
 
     objects = []
     for i, entry in enumerate(resolved):
         redacted = dict(entry)
-        if redacted.get("api_key"):
+        if isinstance(redacted.get("api_key"), str) and redacted["api_key"]:
             redacted["api_key"] = "<redacted>"
         if isinstance(redacted.get("extra_headers"), dict):
-            redacted["extra_headers"] = {k: "<redacted>" for k in redacted["extra_headers"]}
-        try:
-            model_provider_cls.model_validate(redacted)
-        except ValidationError as e:
-            problems = "; ".join(
-                f"{'.'.join(str(x) for x in err['loc']) or '<entry>'}: {err['msg']}"
-                for err in e.errors(include_input=False, include_url=False)
-            )
-            raise StepError(
-                f"model_providers[{i}] ({entry.get('name', '?')}) is not a valid provider: "
-                f"{problems}"
-            ) from None
-        objects.append(model_provider_cls.model_validate(entry))
+            redacted["extra_headers"] = {
+                k: ("<redacted>" if isinstance(v, str) else v)
+                for k, v in redacted["extra_headers"].items()
+            }
+        for candidate in (redacted, entry):
+            try:
+                provider = model_provider_cls.model_validate(candidate)
+            except ValidationError as e:
+                raise _provider_error(i, entry, e) from None
+        objects.append(provider)
     return objects
 
 
 def check_marker_values(artifact_id: str, output_path: Path) -> None:
     """The marker is space-delimited and the monitor puts the path in a JSON string."""
     if not artifact_id or re.search(r'[\s"]', artifact_id):
-        raise StepError(f"artifact id must be non-empty with no whitespace or '\"': {artifact_id!r}")
+        raise StepError(
+            f"artifact id must be non-empty with no whitespace or '\"': {artifact_id!r}"
+        )
     if '"' in str(output_path):
         raise StepError(f"output path contains a double quote: {str(output_path)!r}")
 
@@ -403,7 +482,6 @@ def run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     from data_designer.config.run_config import ResumeMode, RunConfig
     from data_designer.interface import DataDesigner
 
-    builder = DataDesignerConfigBuilder.from_config(config)
     provider_objects = validate_providers(providers, ModelProvider)
     # artifact_path/dataset_name are output_path's parent/basename, so Data Designer
     # writes the dataset exactly at output_path — the path the marker registers.
@@ -412,6 +490,13 @@ def run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         artifact_path=str(output_path.parent),
         model_providers=provider_objects,
     )
+    # The builder must come AFTER DataDesigner(): constructing DataDesigner seeds
+    # Data Designer's default model configs into DATA_DESIGNER_HOME, and a config that
+    # names no model_configs picks those defaults up when the builder is created. Built
+    # before, the first run fingerprinted an empty model list and every later run (same
+    # workdir, home now seeded) the defaults, so an unchanged config looked changed
+    # (measured: sha256:d8e0… then a3e9…).
+    builder = DataDesignerConfigBuilder.from_config(config)
     if spec["run_config"]:
         designer.set_run_config(RunConfig.model_validate(spec["run_config"]))
     designer.validate(builder)
@@ -419,8 +504,20 @@ def run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     # Settle what happens to a previous run in output_path BEFORE generating, so a
     # mismatch costs nothing: Data Designer only discovers it inside create().
     mismatch = resume_mismatch(
-        output_path, builder.build().fingerprint(), spec["run_config"], args.num_records
+        output_path,
+        compiled_fingerprint(designer, builder, output_path.name),
+        spec["run_config"],
     )
+    target = (
+        None if mismatch else num_records_below_target(output_path, args.num_records)
+    )
+    if target is not None and args.resume != "never":
+        raise StepError(
+            f"num_records ({args.num_records}) is below the {target} the run in "
+            f"{str(output_path)!r} was started with. Resume keeps or extends a dataset, "
+            f"never shrinks it: use num_records >= {target}, or a new output_path. "
+            f"Nothing was removed."
+        )
     if mismatch and args.resume == "always":
         raise StepError(
             f"cannot resume the run in {str(output_path)!r}: {mismatch}. Use resume: "
@@ -432,20 +529,27 @@ def run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
             f"{mismatch}; clearing it and starting fresh in place"
         )
         clear_previous_run(output_path)
+    # `always` with no checkpoint yet (a first run, or one interrupted before its first
+    # row group finished) starts fresh, as Data Designer documents for ALWAYS. Data
+    # Designer itself raises instead when output_path doesn't exist at all (measured), so
+    # it is asked for if_possible in that one case, which starts fresh in place either way.
+    dd_resume = args.resume
     if args.resume == "always" and not (output_path / "metadata.json").is_file():
-        raise StepError(
-            f"resume: always needs a previous run to continue, and {str(output_path)!r} "
-            f"has none. Use resume: if_possible, which starts fresh when there is "
-            f"nothing to resume."
+        print(
+            f"data-designer: resume: always, but {str(output_path)!r} has no checkpoint "
+            f"yet; starting fresh"
         )
+        dd_resume = "if_possible"
     resumed = count_resumable_records(output_path, args.resume)
     if resumed:
-        print(f"data-designer: resuming — {resumed} record(s) already checkpointed in {str(output_path)!r}")
+        print(
+            f"data-designer: resuming — {resumed} record(s) already checkpointed in {str(output_path)!r}"
+        )
     results = designer.create(
         builder,
         num_records=args.num_records,
         dataset_name=output_path.name,
-        resume=ResumeMode(args.resume),
+        resume=ResumeMode(dd_resume),
     )
 
     written = Path(results.artifact_storage.base_dataset_path).resolve()
@@ -465,16 +569,21 @@ def run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
 
     if args.export_format:
         exported = results.export(
-            output_path / f"{output_path.name}.{args.export_format}", format=args.export_format
+            output_path / f"{output_path.name}.{args.export_format}",
+            format=args.export_format,
         )
         print(f"data-designer: exported {exported}")
 
     # Lineage, then the marker. Both must start at the beginning of a line for the
     # monitor's regex, and the marker must be last: nothing after it can fail the run.
-    print(f"GB_STEP_METADATA_KEY:data_designer_version GB_STEP_METADATA_VALUE:{version('data-designer')}")
+    print(
+        f"GB_STEP_METADATA_KEY:data_designer_version GB_STEP_METADATA_VALUE:{version('data-designer')}"
+    )
     print(f"GB_STEP_METADATA_KEY:records_generated GB_STEP_METADATA_VALUE:{count}")
     print(f"GB_STEP_METADATA_KEY:resumed_records GB_STEP_METADATA_VALUE:{resumed}")
-    print(f"GB_ARTIFACT_ID:{args.artifact_id} GB_ARTIFACT_PATH:{output_path}", flush=True)
+    print(
+        f"GB_ARTIFACT_ID:{args.artifact_id} GB_ARTIFACT_PATH:{output_path}", flush=True
+    )
     return 0
 
 

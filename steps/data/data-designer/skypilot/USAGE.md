@@ -131,9 +131,10 @@ Things to know:
   on the local SLURM cluster: 4m39s cold, 3m04s warm.
 - **Size the node for the model.** It runs alongside Data Designer, within the target's
   `compute_config`.
-- **One server per port, per node.** If another job already serves on `port` on the same
-  node, the run fails with "port … is already in use" rather than using that job's
-  server. Give concurrent builds that may share a node different `port`s.
+- **One server per port, per node.** If anything already answers on `port` on the node,
+  the run fails with "port … is already in use" before starting its own server, and it
+  only proceeds once its own server reports listening, so it never generates through
+  another job's server. Give concurrent builds that may share a node different `port`s.
 - **No authentication.** The server listens on `127.0.0.1` only, but on a shared node
   anyone else on the node can reach it while it runs. Don't use it for anything
   sensitive.
@@ -181,25 +182,33 @@ config in `metadata.json`. A later run on the same `output_path` compares itself
 record before generating anything. It can continue only when all of these match the
 previous run:
 
-- the config fingerprint (columns, prompts, models, inference parameters);
+- the config fingerprint (columns, prompts, models, inference parameters, the seed);
 - `run_config.buffer_size`, since it sets the row-group boundaries;
-- `run_config.preserve_dropped_columns`;
-- `num_records` is at least the previous run's target.
+- `run_config.preserve_dropped_columns`.
 
-| `resume` | Previous run matches | Previous run doesn't match | No previous run |
+| `resume` | Previous run matches | Previous run doesn't match | No checkpoint yet |
 |---|---|---|---|
 | `if_possible` (default) | Continues after the last finished row group; finished groups are kept as they are, and a finished dataset is not regenerated. | Clears the previous run's files and starts fresh in place. | Starts fresh. |
-| `always` | As above. | Fails before generating, naming what changed. | Fails: there is nothing to continue. |
+| `always` | As above. | Fails before generating, naming what changed. | Starts fresh, so a target interrupted before its first checkpoint can still be retried. |
 | `never` | Refuses a non-empty `output_path`. | Refuses a non-empty `output_path`. | Starts fresh. |
+
+**`num_records` can grow, never shrink.** Raising it extends the dataset. Lowering it below
+what the previous run was started with is refused in every mode, before anything is
+removed: resume never deletes rows to honour a smaller target. Use a new `output_path`
+for a smaller dataset.
 
 The fingerprint ignores `max_parallel_requests`, `timeout`, `skip_health_check` and
 profilers, so you can retune concurrency and still resume. **Changing `buffer_size`
 restarts the run** under `if_possible`, so pick it before a long run.
 
+The seed's path is part of the fingerprint, so resuming a seeded config across builds
+needs the seed staged at the same path each time. A path inside the per-run workdir
+changes on every build, so such a run starts fresh each time.
+
 "Clears" removes only what Data Designer writes there (`parquet-files/`, the other
 `*-parquet-files/` dirs, `processors-files/`, `images/`, `metadata.json`,
-`builder_config.json`, and the export file). Other files you keep in `output_path` are
-left alone.
+`builder_config.json`, `scheduler_events.jsonl`, and the export file). Other files you
+keep in `output_path` are left alone.
 
 Two things decide whether resume helps in practice:
 
@@ -210,8 +219,6 @@ Two things decide whether resume helps in practice:
 - **Checkpoints are only as fine as `buffer_size`.** With the default of 1000, a run of
   under 1000 rows has a single checkpoint, at the end. For long runs against a
   rate-limited API, set something like `run_config: {buffer_size: 100}`.
-
-Raising `num_records` on a finished dataset extends it.
 
 ## Multimodal
 

@@ -87,6 +87,11 @@ url="https://github.com/ollama/ollama/releases/download/v$version/ollama-linux-$
 
 export OLLAMA_HOST="127.0.0.1:$port"
 export OLLAMA_MODELS="$models_dir"
+# The model store is shared by every build on the cluster. By default `ollama serve`
+# deletes unreferenced blobs at startup, which would remove the partial blobs of a pull
+# another build is still running; disable that. (Pulls themselves are serialized with
+# flock below.)
+export OLLAMA_NOPRUNE=1
 
 # Decompress a .tar.zst on stdin into $1, keeping bin/ollama and lib/ollama/*.so only.
 extract_cpu_only() {
@@ -163,6 +168,7 @@ install_ollama() {
   # on one filesystem. If another run finished the same install meanwhile, dest exists:
   # `mv` would then nest src INSIDE it, so check first and keep the one that won.
   # (Portable on purpose: `mv -T` is GNU-only, and its failure used to be swallowed.)
+  # The EXIT trap's cleanup_install removes install_tmp (and root/ with it) either way.
   [ -e "$install_dir" ] || mv "$install_tmp/root" "$install_dir" 2>/dev/null || true
   cleanup_install
   install_tmp=""
@@ -182,32 +188,47 @@ pull_model() {
 }
 
 server_pid=""
+port_taken() {
+  echo "data-designer: ERROR port ${port} on this node is already in use (another job's" \
+       "server?). Set data_designer_config.local_model.port to a free port." >&2
+  exit 1
+}
+
 start_server() {
   mkdir -p "$models_dir"
   local log="${OLLAMA_LOG:-./ollama-serve.log}"
+  # 1. Before starting: anything already answering on the port belongs to someone else.
+  if curl -fs --max-time 2 "http://$OLLAMA_HOST/api/version" >/dev/null 2>&1; then
+    port_taken
+  fi
+  : >"$log"
   "$ollama" serve >"$log" 2>&1 &
   server_pid=$!
+  # 2. Readiness is OUR server saying it is listening on our address, not merely an answer
+  #    on the port: another job's server can answer while ours is still failing to bind,
+  #    which a "process alive + port answers" check accepted (second review, reproduced
+  #    with a server that exits 0.5s after start). Ollama logs
+  #    `Listening on 127.0.0.1:<port>` once bound, and
+  #    `bind: address already in use` when the port is taken (both checked against a
+  #    real `ollama serve`).
   local _
-  for _ in $(seq 1 60); do
-    # Our process must still be alive BEFORE an answer counts: if the port was taken,
-    # our server has exited and the answer came from another job's server.
-    if ! kill -0 "$server_pid" 2>/dev/null; then
-      server_pid=""
-      if grep -qiE "address already in use|bind" "$log" 2>/dev/null; then
-        echo "data-designer: ERROR port ${port} on this node is already in use (another" \
-             "job's server?). Set data_designer_config.local_model.port to a free port." >&2
-      else
-        echo "data-designer: ERROR the Ollama server exited during startup:" >&2
-        tail -20 "$log" >&2
-      fi
-      exit 1
-    fi
-    if curl -fs "http://$OLLAMA_HOST/api/version" >/dev/null 2>&1 && kill -0 "$server_pid" 2>/dev/null; then
+  for _ in $(seq 1 120); do
+    if grep -qF "Listening on $OLLAMA_HOST" "$log" 2>/dev/null \
+       && kill -0 "$server_pid" 2>/dev/null \
+       && curl -fs --max-time 2 "http://$OLLAMA_HOST/api/version" >/dev/null 2>&1; then
       return
     fi
-    sleep 1
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+      server_pid=""
+      grep -qiF "address already in use" "$log" 2>/dev/null && port_taken
+      echo "data-designer: ERROR the Ollama server exited during startup:" >&2
+      tail -20 "$log" >&2
+      exit 1
+    fi
+    sleep 0.5
   done
-  echo "data-designer: ERROR the Ollama server did not answer on $OLLAMA_HOST within 60s" >&2
+  echo "data-designer: ERROR the Ollama server did not start listening on $OLLAMA_HOST within 60s" >&2
+  tail -20 "$log" >&2
   exit 1
 }
 

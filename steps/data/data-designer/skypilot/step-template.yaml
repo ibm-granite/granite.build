@@ -177,7 +177,9 @@ environment_configs:
                 environment's shared workdir so a second run on the cluster reuses them.
                 dd_ollama.sh decompresses with zstd when the node has it, else with the
                 venv's python (zstandard is added to the install above for that). #}
-            PYTHON="{{ "python3" if c.dd_image else "./venv/bin/python" }}" bash ./src/dd_ollama.sh install \
+            {#- Always the step's venv: dd_guard.sh refuses local_model with dd_image, so
+                this block only runs in bare-node mode, where ./venv exists. #}
+            PYTHON=./venv/bin/python bash ./src/dd_ollama.sh install \
               --version '{{ q(c.local_model.version) }}' \
               --model '{{ q(c.local_model.model) }}' \
               --port '{{ q(c.local_model.port) }}' \

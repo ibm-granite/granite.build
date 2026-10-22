@@ -78,7 +78,10 @@ def test_runner_generates_against_rits(tmp_path, monkeypatch, capsys):
                     "alias": "text",
                     "model": "ibm-granite/granite-4.1-8b",
                     "provider": "rits",
-                    "inference_parameters": {"max_tokens": 64, "max_parallel_requests": 2},
+                    "inference_parameters": {
+                        "max_tokens": 64,
+                        "max_parallel_requests": 2,
+                    },
                 }
             ],
             "columns": [
@@ -97,23 +100,36 @@ def test_runner_generates_against_rits(tmp_path, monkeypatch, capsys):
             ],
         },
     }
-    monkeypatch.setenv(dd_run.SPEC_ENV, base64.b64encode(json.dumps(spec).encode()).decode())
+    monkeypatch.setenv(
+        dd_run.SPEC_ENV, base64.b64encode(json.dumps(spec).encode()).decode()
+    )
     out = tmp_path / "out"
     rc = dd_run.main(
         [
-            "--output-path", str(out),
-            "--artifact-id", "questions",
-            "--num-records", "2",
-            "--resume", "never",
-            "--min-records", "2",
-            "--export-format", "jsonl",
+            "--output-path",
+            str(out),
+            "--artifact-id",
+            "questions",
+            "--num-records",
+            "2",
+            "--resume",
+            "never",
+            "--min-records",
+            "2",
+            "--export-format",
+            "jsonl",
         ]
     )
     stdout = capsys.readouterr().out
     assert rc == 0
-    assert stdout.rstrip().splitlines()[-1] == f"GB_ARTIFACT_ID:questions GB_ARTIFACT_PATH:{out}"
+    assert (
+        stdout.rstrip().splitlines()[-1]
+        == f"GB_ARTIFACT_ID:questions GB_ARTIFACT_PATH:{out}"
+    )
     assert "GB_STEP_METADATA_KEY:resumed_records GB_STEP_METADATA_VALUE:0" in stdout
     rows = [json.loads(line) for line in (out / "out.jsonl").read_text().splitlines()]
     assert len(rows) == 2 and all(r["question"] for r in rows)
     key = os.environ["RITS_API_KEY"]
-    assert not [p for p in out.rglob("*") if p.is_file() and key in p.read_text(errors="ignore")]
+    assert not [
+        p for p in out.rglob("*") if p.is_file() and key in p.read_text(errors="ignore")
+    ]

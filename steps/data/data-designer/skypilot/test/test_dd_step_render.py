@@ -155,13 +155,19 @@ class TestRenderedShell:
         opts = _opts(calls["dd_guard.sh"][0])
         assert opts["--has-config"] == "x" and opts["--has-providers"] == "x"
         empty = _cfg(defaults, config={}, model_providers=[])
-        opts = _opts(_run_block(_render(launcher["run"], empty), tmp_path)["dd_guard.sh"][0])
+        opts = _opts(
+            _run_block(_render(launcher["run"], empty), tmp_path)["dd_guard.sh"][0]
+        )
         assert opts["--has-config"] == "" and opts["--has-providers"] == ""
 
 
 class TestRunnerArgv:
     def test_defaults(self, launcher, defaults, tmp_path):
-        opts = _opts(_run_block(_render(launcher["run"], _cfg(defaults)), tmp_path)["dd_run.py"][0])
+        opts = _opts(
+            _run_block(_render(launcher["run"], _cfg(defaults)), tmp_path)["dd_run.py"][
+                0
+            ]
+        )
         assert opts["--output-path"] == "./output"
         assert opts["--artifact-id"] == "questions"
         assert opts["--num-records"] == "10"
@@ -171,8 +177,12 @@ class TestRunnerArgv:
 
     def test_quotes_survive(self, launcher, defaults, tmp_path):
         """A quote in author config arrives as data, never as shell."""
-        cfg = _cfg(defaults, output_path="/shared/it's here", seed_glob="*`touch pwned`*")
-        opts = _opts(_run_block(_render(launcher["run"], cfg), tmp_path)["dd_run.py"][0])
+        cfg = _cfg(
+            defaults, output_path="/shared/it's here", seed_glob="*`touch pwned`*"
+        )
+        opts = _opts(
+            _run_block(_render(launcher["run"], cfg), tmp_path)["dd_run.py"][0]
+        )
         assert opts["--output-path"] == "/shared/it's here"
         assert opts["--seed-glob"] == "*`touch pwned`*"
         assert not (tmp_path / "pwned").exists()
@@ -191,7 +201,9 @@ class TestRunnerArgv:
 
 class TestLocalModel:
     def _on(self, defaults, **over):
-        lm = dict(defaults["local_model"], runtime="ollama", model="granite4:350m", **over)
+        lm = dict(
+            defaults["local_model"], runtime="ollama", model="granite4:350m", **over
+        )
         return _cfg(defaults, model_providers=[], local_model=lm)
 
     def test_off_by_default(self, launcher, defaults, tmp_path):
@@ -202,7 +214,10 @@ class TestLocalModel:
 
     def test_setup_installs_server_and_model(self, launcher, defaults, tmp_path):
         calls = _run_block(_render(launcher["setup"], self._on(defaults)), tmp_path)
-        assert _opts(calls["dd_setup.sh"][0])["--"] == f"data-designer=={defaults['dd_version']} zstandard==0.25.0"
+        assert (
+            _opts(calls["dd_setup.sh"][0])["--"]
+            == f"data-designer=={defaults['dd_version']} zstandard==0.25.0"
+        )
         assert "dd_ollama.sh install" in _render(launcher["setup"], self._on(defaults))
 
     @pytest.mark.parametrize("block", ["setup", "run"])
@@ -222,11 +237,18 @@ class TestLocalModel:
         run = _run_block(_render(launcher["run"], cfg), tmp_path)["dd_guard.sh"]
         assert setup == run
         opts = _opts(setup[0])
-        assert (opts["--local-runtime"], opts["--local-model"], opts["--local-port"]) == (
-            "ollama", "granite4:350m", "11434")
+        assert (
+            opts["--local-runtime"],
+            opts["--local-model"],
+            opts["--local-port"],
+        ) == ("ollama", "granite4:350m", "11434")
 
     def test_spec_carries_local_model(self, launcher, defaults):
-        spec = json.loads(base64.b64decode(_render(launcher["envs"]["GB_DD_SPEC_B64"], self._on(defaults))))
+        spec = json.loads(
+            base64.b64decode(
+                _render(launcher["envs"]["GB_DD_SPEC_B64"], self._on(defaults))
+            )
+        )
         assert spec["local_model"]["model"] == "granite4:350m"
 
 
@@ -251,10 +273,15 @@ class TestSpecEnv:
         prompt = "{% raw %}never rendered{% endraw %} {{ topic | upper }}"
         cfg = _cfg(
             defaults,
-            config={"columns": [{"name": "q", "column_type": "llm-text", "prompt": prompt}]},
+            config={
+                "columns": [{"name": "q", "column_type": "llm-text", "prompt": prompt}]
+            },
             model_providers=[
-                {"name": "rits", "endpoint": "https://e/v1",
-                 "extra_headers_from_env": {"RITS_API_KEY": "RITS_API_KEY"}}
+                {
+                    "name": "rits",
+                    "endpoint": "https://e/v1",
+                    "extra_headers_from_env": {"RITS_API_KEY": "RITS_API_KEY"},
+                }
             ],
         )
         # The value as it already stands in the step config (the build rendered it
@@ -267,7 +294,9 @@ class TestSpecEnv:
 
     def test_run_config_travels_in_spec(self, launcher, defaults):
         cfg = _cfg(defaults, run_config={"buffer_size": 2})
-        spec = json.loads(base64.b64decode(_render(launcher["envs"]["GB_DD_SPEC_B64"], cfg)))
+        spec = json.loads(
+            base64.b64decode(_render(launcher["envs"]["GB_DD_SPEC_B64"], cfg))
+        )
         assert spec["run_config"] == {"buffer_size": 2}
 
     def test_telemetry_is_off(self, launcher):

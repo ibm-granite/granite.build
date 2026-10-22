@@ -65,6 +65,7 @@ def files_containing(secret: str, *paths: str) -> list[str]:
     is neither visible in ``ps`` on the login node nor broken by a quote character in it.
     """
     out = on_cluster(
-        f"grep -rlF -f - {' '.join(paths)} {_SCANNED} 2>/dev/null || true", stdin=secret + "\n"
+        f"grep -rlF -f - {' '.join(paths)} {_SCANNED} 2>/dev/null || true",
+        stdin=secret + "\n",
     )
     return [line for line in out.splitlines() if line]

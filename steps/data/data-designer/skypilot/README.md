@@ -78,7 +78,7 @@ PYTHONPATH=src <venv>/bin/python -m pytest -c /dev/null --noconftest \
   test/test_dd_step_render.py test/test_dd_guard_sh.py test/test_dd_run.py test/test_dd_ollama_sh.py
 ```
 
-There are 110 tests in all:
+There are 120 tests in all:
 
 - `test_dd_step_render.py` pins what the template computes:
   - the rendered blocks parse under `bash -n`;
@@ -107,15 +107,26 @@ There are 110 tests in all:
   - a finished run is extended;
   - `if_possible` restarts in place on a changed config, `buffer_size` or
     `preserve_dropped_columns`, with no timestamped sibling dir;
-  - `always` refuses a mismatch, and explains a first run;
+  - `always` refuses a mismatch, and starts fresh when there is no checkpoint yet
+    (a first run, or one interrupted before its first row group);
+  - an unchanged **expression-only** or **seeded** config resumes (the second review's
+    blocker: Data Designer stores the fingerprint of the *compiled* config, which adds
+    an internal row-id column or the seed's columns, so comparing the raw config made
+    these look changed and cleared them);
+  - a lower `num_records` is refused in both resume modes, and keeps the data;
+  - `scheduler_events.jsonl` is cleared on a restart;
   - user files survive a restart;
-  - a malformed provider is reported without its key.
+  - a malformed provider, or a credential of the wrong type, is reported without its
+    key.
 - `test_dd_ollama_sh.py` runs the real `src/dd_ollama.sh` with `curl` and the Ollama
   binary stubbed, so nothing is downloaded:
   - the install keeps only the CPU libraries;
   - a checksum mismatch or a failed download leaves nothing in the cache;
   - a second install reuses the cache;
-  - a taken port fails instead of borrowing another server;
+  - a port already served by someone else fails before our server starts, including
+    when our server would only fail to bind 0.5s later (the race the second review
+    reproduced), and a server that never logs "Listening on" is not trusted;
+  - `OLLAMA_NOPRUNE` is set, so a starting server can't prune another build's pull;
   - `run` returns the wrapped command's exit status and always stops the server.
 
 ### Open build tests (here)
@@ -202,7 +213,12 @@ Measured history: resume was first checked off-cluster against RITS (8 rows,
    timestamped sibling directory, not in place. A later review found the same for a
    changed `preserve_dropped_columns`, and a hard failure for a changed `buffer_size`.
    `dd_run.resume_mismatch` now runs Data Designer's own checks before generating, and
-   `clear_previous_run` clears just the previous run's files.
+   `clear_previous_run` clears just the previous run's files. A second review then
+   found the check compared the wrong fingerprint (raw vs compiled config), which
+   disabled resume for expression-only and seeded configs. It was fixed with
+   `compiled_fingerprint`, plus building the config only after `DataDesigner()`
+   (which seeds its default model configs) so the first run and later runs fingerprint
+   the same thing.
 
 ### Planned
 

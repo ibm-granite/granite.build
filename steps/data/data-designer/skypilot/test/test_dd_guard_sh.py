@@ -78,12 +78,30 @@ def test_valid_config_passes():
         ({"dd_version": ""}, "dd_version is required"),
         ({"seed_path": "{{ bindings.sede.binding.path }}"}, "unrendered Jinja"),
         ({"local_runtime": "vllm"}, "local_model.runtime must be empty or 'ollama'"),
-        ({"local_runtime": "ollama", "local_model": ""}, "local_model.model is required"),
-        ({"local_runtime": "ollama", "local_model": "m", "local_port": "0"}, "local_model.port"),
-        ({"local_runtime": "ollama", "local_model": "m", "local_port": "x1"}, "local_model.port"),
-        ({"local_runtime": "ollama", "local_model": "m", "local_port": "65536"}, "at most 65535"),
-        ({"local_runtime": "ollama", "local_model": "m", "dd_image": "quay.io/o/dd:1"},
-         "cannot be used together with dd_image"),
+        (
+            {"local_runtime": "ollama", "local_model": ""},
+            "local_model.model is required",
+        ),
+        (
+            {"local_runtime": "ollama", "local_model": "m", "local_port": "0"},
+            "local_model.port",
+        ),
+        (
+            {"local_runtime": "ollama", "local_model": "m", "local_port": "x1"},
+            "local_model.port",
+        ),
+        (
+            {"local_runtime": "ollama", "local_model": "m", "local_port": "65536"},
+            "at most 65535",
+        ),
+        (
+            {
+                "local_runtime": "ollama",
+                "local_model": "m",
+                "dd_image": "quay.io/o/dd:1",
+            },
+            "cannot be used together with dd_image",
+        ),
         ({"num_records": "4", "min_records": "5"}, "min_records (5) is greater than"),
     ],
 )
@@ -109,7 +127,12 @@ def test_accented_output_is_not_whitespace():
 
 def test_local_model_satisfies_providers():
     """A model served on the node is a provider; no model_providers needed."""
-    assert _guard(has_providers="", local_runtime="ollama", local_model="granite4:350m").returncode == 0
+    assert (
+        _guard(
+            has_providers="", local_runtime="ollama", local_model="granite4:350m"
+        ).returncode
+        == 0
+    )
 
 
 def test_no_providers_and_no_local_model_names_both_options():
