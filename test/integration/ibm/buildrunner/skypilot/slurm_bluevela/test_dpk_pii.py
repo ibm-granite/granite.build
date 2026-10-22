@@ -10,8 +10,8 @@
 
 Runs the `dpk` step's ``pii_redactor`` transform against the BlueVela SLURM
 environment (space://environments/skypilot/slurm/bluevela), which reaches
-BlueVela's SLURM login node (login1) over SSH and submits to the `gpu-mid`
-partition (set via the environment's `zone`). This is the real-cluster
+BlueVela's SLURM login node (login1) over SSH and submits to the `cpu`
+partition (the step's `zone: cpu`, overriding the environment's `gpu-mid`). This is the real-cluster
 counterpart of the step's own local fixture at
 ``steps/data/dpk/skypilot/test/slurm-pii`` (Docker SLURM) and of its
 ``test/aws-pii`` (EC2): same step, same transform, same two derivations —
@@ -115,7 +115,7 @@ pytestmark = pytest.mark.ibm
     reason="Skip in SPS CI/CD until we have environments/skypilot/slurm/bluevela/environment.yaml with key reference in gb-test and other space repos",
 )
 class TestDPKBlueVelaSlurm(AbstractYamlBuildRunnerTest):
-    """dpk step running pii_redactor on BlueVela SLURM (gpu-mid), bare launcher node."""
+    """dpk step running pii_redactor on BlueVela SLURM (cpu partition), bare launcher node."""
 
     def _get_yaml_spec_dir(self) -> Path:
         """Return the fixture dir holding this test's build.yaml and buildtest.yaml."""

@@ -159,6 +159,7 @@ targets:
           launcher_config:
             resources:
               zone: gpu-high        # override the env's gpu-mid partition
+              accelerators: "H200:1"  # BlueVela GPU partitions need a GPU request (see below)
               # cluster: bluevela   # only if the environment doesn't already set one
 ```
 
@@ -168,6 +169,9 @@ Layer 3 — a plain top-level `zone` in the step `config` (shorter; overridden b
 ```yaml
         config:
           zone: gpu-high            # override the partition
+          launcher_config:
+            resources:
+              accelerators: "H200:1"  # still needed on a BlueVela GPU partition
 ```
 
 > **BlueVela: CPU-only steps must use the `cpu` partition.** BlueVela rejects a job that requests
@@ -184,9 +188,12 @@ Layer 3 — a plain top-level `zone` in the step `config` (shorter; overridden b
 >               constraint: null
 > ```
 >
-> A step that does use GPUs stays on a GPU partition and requests them (e.g. `--gpus=h200:1`).
-> The CPU-only BlueVela fixtures (`1step`, `2target`, `filemount`, `dpk-pii`, `dpk-tok-image`) all
-> do this; `custom_code` requests a GPU and stays on `gpu-mid`.
+> A step that does use GPUs stays on a GPU partition and requests them with
+> `launcher_config.resources.accelerators` (e.g. `"H200:1"` → `--gres=gpu:H200:1`).
+> `compute_config.num_gpus_per_node` alone is **not** a GPU request on SLURM, so a step that sets
+> only that is still rejected. The CPU-only BlueVela fixtures (`1step`, `2target`, `filemount`,
+> `dpk-pii`, `dpk-tok-image`) use `zone: cpu`; `custom_code` stays on `gpu-mid` with
+> `accelerators: "H200:1"`.
 
 ### Autostop is ignored
 

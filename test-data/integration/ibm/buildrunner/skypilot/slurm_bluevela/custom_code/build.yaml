@@ -39,6 +39,15 @@ granite.build:
             compute_config:
               num_nodes: 1
               num_gpus_per_node: 1
+            # The ACTUAL GPU request: compute_config.num_gpus_per_node is not
+            # turned into a SLURM GPU request (GPUs only flow via
+            # launcher_config.resources.accelerators), and BlueVela rejects a
+            # GPU-less job on gpu-mid ("This job requests no GPUs, so it cannot
+            # run in gpu-mid"). One H200 -> --gres=gpu:H200:1. Kept equal to
+            # num_gpus_per_node above.
+            launcher_config:
+              resources:
+                accelerators: "H200:1"
             byoc_config:
               # Schema: this block is the custom_code_skypilot step's own
               # byoc_config, validated at build time by that step's

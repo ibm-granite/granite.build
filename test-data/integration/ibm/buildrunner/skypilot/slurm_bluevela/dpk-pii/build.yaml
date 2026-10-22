@@ -4,7 +4,8 @@ granite.build:
   # submitted to the cpu partition. This is the REAL-CLUSTER counterpart of
   # steps/data/dpk/skypilot/test-data/slurm-pii/build.yaml (local Docker SLURM) and of
   # test-data/aws-pii (EC2): same step, same transform, same derivations —
-  # only `environment_uri` and the memory hint differ.
+  # only `environment_uri`, the memory hint, and the BlueVela partition override
+  # (`zone: cpu` + cleared `constraint`, see the step config) differ.
   #
   # From `transform: pii_redactor` the step derives, with no step change:
   #   module -> python -m dpk_pii_redactor.runtime

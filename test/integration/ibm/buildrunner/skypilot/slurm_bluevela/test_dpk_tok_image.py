@@ -9,7 +9,7 @@
 """DPK tokenization on BlueVela SLURM in IMAGE MODE (containerized Pyxis path).
 
 Runs the shared `dpk` step's ``tokenization2arrow`` transform against the BlueVela
-SLURM environment (space://environments/skypilot/slurm/bluevela, gpu-mid partition)
+SLURM environment (space://environments/skypilot/slurm/bluevela, cpu partition)
 with ``dpk_config.dpk_image`` set to a prebaked DPK image from IBM Container
 Registry. This is the real-cluster counterpart of the step's own local fixture at
 ``steps/data/dpk/skypilot/test/slurm-tok`` — same transform, same args, same derivations;
