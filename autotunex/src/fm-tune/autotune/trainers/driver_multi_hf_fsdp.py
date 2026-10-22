@@ -24,36 +24,55 @@
 import logging
 import math
 import os
+import shutil
 from copy import deepcopy
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
-import ray
 import torch
 from peft import get_peft_model
 from ray import train, tune
 from ray.train import FailureConfig, Result, RunConfig, ScalingConfig
 from ray.train.huggingface.transformers import RayTrainReportCallback, prepare_trainer
 from ray.train.torch import TorchConfig, TorchTrainer
-from torch.utils.data import IterableDataset
 from transformers import (
     AutoModelForCausalLM,
-    Trainer,
     TrainingArguments,
-    default_data_collator,
 )
 from transformers.utils.logging import disable_progress_bar, enable_progress_bar
 
-# Local
+from autotune.callbacks.sync_best_checkpoint import SyncBestCheckpointCallback
 from autotune.callbacks.training_metrics import TrainingMetricsCallback
-from autotune.cluster import compute_ray_data_sizing, ray_data_block_target
 
 # Local
-from autotune.tools._chat_utils import template_supports_kwarg
+from autotune.device import disable_cudnn_sdpa
+from autotune.shadow_residual import (
+    SR_TUNING_ALGO,
+    assert_no_vocab_resize,
+    assert_sr_supported,
+    build_sr_peft_model,
+    patch_sr_adapter_config,
+    require_sr,
+    resolve_fsdp_strategy,
+    share_moe_routing_flag,
+)
+
+# Local
+from autotune.tools.chat_utils import template_supports_kwarg
 from autotune.trainers._alora_gc import (
     AloraGradCheckpointDrainCallback,
     install_alora_gc_safety_wrapper,
 )
+from autotune.trainers._checkpointing import resolve_checkpoint_strategy
+from autotune.trainers._collate import (
+    LengthGroupedTrainer,
+    build_collator,
+    group_by_length_enabled,
+    log_padding_efficiency,
+    resolve_padding_mode,
+)
+from autotune.trainers._ray_data import RayShardIterableDataset, build_tokenized_datasets
 from autotune.trainers._resume import peft_adapter_load_on_cpu
+from autotune.trainers._steps import resolve_epoch_steps
 from autotune.utils import (
     assert_dp_sharding,
     estimate_fsdp_strategy,
@@ -158,177 +177,6 @@ def _apply_chat_template_to_df(df, tokenizer, input_col: str, thinking: bool = F
     df[input_col] = df.apply(_render, axis=1)
     return df
 
-    first_val = df[input_col].iloc[0]
-    if not isinstance(first_val, list):
-        return df
-
-    has_documents = "documents" in df.columns and isinstance(df["documents"].iloc[0], list)
-    has_tools = "tools" in df.columns and isinstance(df["tools"].iloc[0], list)
-
-    if has_documents and has_tools:
-        df[input_col] = df.apply(
-            lambda row: tokenizer.apply_chat_template(
-                row[input_col],
-                documents=row["documents"],
-                tools=row["tools"],
-                tokenize=False,
-                add_generation_prompt=True,
-            ),
-            axis=1,
-        )
-    elif has_documents:
-        df[input_col] = df.apply(
-            lambda row: tokenizer.apply_chat_template(
-                row[input_col],
-                documents=row["documents"],
-                tokenize=False,
-                add_generation_prompt=True,
-            ),
-            axis=1,
-        )
-    elif has_tools:
-        df[input_col] = df.apply(
-            lambda row: tokenizer.apply_chat_template(
-                row[input_col],
-                tools=row["tools"],
-                tokenize=False,
-                add_generation_prompt=True,
-            ),
-            axis=1,
-        )
-    else:
-        df[input_col] = df[input_col].apply(
-            lambda msgs: tokenizer.apply_chat_template(
-                msgs,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-        )
-    return df
-
-
-class _RayShardIterableDataset(IterableDataset):
-    """Wraps a Ray Data shard so HF Trainer can consume it as an IterableDataset.
-
-    Ray Train splits the parent Dataset across workers, so each worker only
-    iterates over its own rank-specific slice — no DistributedSampler needed.
-
-    When ``total_samples`` is set, iteration produces exactly that many
-    samples per rank, cycling through the shard as needed. This is critical
-    under FSDP/DDP: unequal iteration lengths across ranks cause NCCL
-    watchdog hangs because fast ranks reach end-of-epoch collectives while
-    slower ranks are still producing batches. Ray Data partitions by *block*,
-    not by row count, so shard sizes are not guaranteed equal — this cap
-    makes them equal by construction.
-    """
-
-    def __init__(
-        self,
-        shard,
-        batch_size: int,
-        total_samples: Optional[int] = None,
-        shuffle_buffer: Optional[int] = None,
-    ):
-        self.shard = shard
-        self.batch_size = batch_size
-        self.total_samples = total_samples
-        self.shuffle_buffer = shuffle_buffer
-
-    def _iter_once(self):
-        for batch in self.shard.iter_torch_batches(
-            batch_size=self.batch_size,
-            local_shuffle_buffer_size=self.shuffle_buffer,
-            dtypes={
-                "input_ids": torch.long,
-                "attention_mask": torch.long,
-                "labels": torch.long,
-            },
-        ):
-            bsz = batch["input_ids"].shape[0]
-            for i in range(bsz):
-                yield {k: v[i] for k, v in batch.items()}
-
-    def __iter__(self):
-        if self.total_samples is None:
-            yield from self._iter_once()
-            return
-
-        yielded = 0
-        while yielded < self.total_samples:
-            for sample in self._iter_once():
-                yield sample
-                yielded += 1
-                if yielded >= self.total_samples:
-                    return
-
-
-def _read_dataset(file_path: str) -> "ray.data.Dataset":
-    """Read a dataset file into a Ray Dataset, dispatching on file extension."""
-    ext = os.path.splitext(file_path)[1].lower()
-    if ext == ".parquet":
-        return ray.data.read_parquet(file_path)
-    if ext == ".csv":
-        return ray.data.read_csv(file_path)
-    if ext == ".jsonl":
-        return ray.data.read_json(file_path)
-    if ext == ".json":
-        # Ray Data's read_json expects line-delimited JSON; fall back to
-        # pandas for a single JSON array and wrap as a Ray Dataset.
-        import pandas as pd
-
-        df = pd.read_json(file_path, lines=False)
-        return ray.data.from_pandas(df)
-    raise ValueError(f"Unsupported dataset extension: {ext} ({file_path})")
-
-
-def _make_tokenize_fn(
-    model_name_or_path: str,
-    tokenizer_kwargs: Dict[str, Any],
-    input_col: str,
-    output_col: str,
-    max_length: int,
-    thinking: bool = False,
-) -> Callable[[Any], Dict[str, Any]]:
-    """Build a map_batches function that applies chat template (if needed)
-    and tokenizes the batch. The tokenizer is constructed lazily inside the
-    Ray Data worker — avoids pickling a loaded tokenizer across processes.
-    """
-
-    state: Dict[str, Any] = {"tokenizer": None}
-
-    def _fn(batch):
-        import pandas as pd
-
-        # Ray Data passes numpy-dict batches (batch_format="numpy"); convert
-        # to a DataFrame locally so the existing pandas-based chat-template
-        # and tokenize logic can stay as-is. We avoid batch_format="pandas"
-        # because Ray Data's pandas BlockAccessor references
-        # pandas.core.common.SettingWithCopyWarning, which was removed in
-        # pandas 3.0.
-        df = pd.DataFrame(batch)
-
-        if state["tokenizer"] is None:
-            tokenizer, _ = get_tokenizer(model_name_or_path, **tokenizer_kwargs)
-            state["tokenizer"] = tokenizer
-        tokenizer = state["tokenizer"]
-
-        df = _apply_chat_template_to_df(df, tokenizer, input_col, thinking)
-
-        tokenized = tokenize_batch(
-            batch=df,
-            tokenizer=tokenizer,
-            input_col=input_col,
-            output_col=output_col,
-            max_length=max_length,
-        )
-        return {
-            "input_ids": tokenized["input_ids"],
-            "attention_mask": tokenized["attention_mask"],
-            "labels": tokenized["labels"],
-        }
-
-    return _fn
-
 
 class _TokenizedArrowDataset(torch.utils.data.Dataset):
     """Map-style Dataset backed by a memory-mapped Arrow IPC file.
@@ -343,6 +191,9 @@ class _TokenizedArrowDataset(torch.utils.data.Dataset):
 
         self.table = pa.ipc.open_file(pa.memory_map(arrow_path, "r")).read_all()
         self._len = len(self.table)
+        # Real (unpadded) token count per row, written by _load_tokenize_and_save;
+        # the length-grouped sampler reads it once instead of scanning every row.
+        self.lengths = self.table.column("length").to_numpy() if "length" in self.table.column_names else None
 
     def __len__(self):
         return self._len
@@ -401,6 +252,7 @@ def _load_tokenize_and_save(
     all_input_ids = []
     all_attention_mask = []
     all_labels = []
+    all_lengths = []
     total_rows = len(df)
     dataset_name = os.path.basename(file_path)
 
@@ -419,6 +271,7 @@ def _load_tokenize_and_save(
             all_input_ids.extend(tokenized["input_ids"])
             all_attention_mask.extend(tokenized["attention_mask"])
             all_labels.extend(tokenized["labels"])
+            all_lengths.extend(sum(mask) for mask in tokenized["attention_mask"])
             pbar.update(end - start)
 
     table = pa.table(
@@ -426,6 +279,7 @@ def _load_tokenize_and_save(
             "input_ids": all_input_ids,
             "attention_mask": all_attention_mask,
             "labels": all_labels,
+            "length": pa.array(all_lengths, type=pa.int32()),
         }
     )
 
@@ -442,7 +296,7 @@ def _load_tokenize_and_save(
     return num_samples
 
 
-def _build_fsdp_config(strategy: str) -> tuple[str, dict]:
+def _build_fsdp_config(strategy: str, num_workers: int = 1) -> tuple[str, dict]:
     """
     Build FSDP configuration for HuggingFace Trainer.
 
@@ -451,9 +305,37 @@ def _build_fsdp_config(strategy: str) -> tuple[str, dict]:
 
     Returns:
         (fsdp_strategy_str, fsdp_config_dict) — the fsdp and fsdp_config args
-        for TrainingArguments. If strategy is "no_shard", returns ("", {}).
+        for TrainingArguments. Returns ("", {}) — i.e. no FSDP at all — when
+        strategy is "no_shard" or when there is only one worker.
     """
     if strategy == "no_shard":
+        return "", {}
+
+    # A single worker gets no FSDP wrap at all. Sharding across one rank is a
+    # no-op that FSDP itself refuses ("FSDP is switching to use NO_SHARD instead
+    # of ShardingStrategy.FULL_SHARD since the world size is 1"), and the
+    # NO_SHARD it falls back to is *actively broken* in combination with
+    # fsdp_use_orig_params=True, which we always set:
+    # _FlatParamHandle._writeback_orig_params (torch/distributed/fsdp/
+    # _flat_param.py) early-returns only when `uses_sharded_strategy` is True,
+    # which NO_SHARD is not -- yet it still computes
+    # `expected_shape = torch.Size([numel_in_shard])`, a 1-D shape, while
+    # use_orig_params keeps every parameter registered at its logical shape. So
+    # the first parameter needing writeback raises, unconditionally:
+    #   RuntimeError: Cannot writeback when the parameter shape changes
+    #   Expects torch.Size([81920]) but got torch.Size([32, 2560])
+    # (observed on a 1-GPU Shadow Residual run at the *first* training step,
+    # from a lora_A.weight inside an FSDP-wrapped LoRA submodule; the same run
+    # on 8 GPUs, genuinely sharded, is unaffected because the sharded path
+    # compares against a real 1-D shard view).
+    # Dropping FSDP here is also strictly cheaper -- no flatten, no all-gather,
+    # no CPU-RAM-efficient meta dance -- and it is the same ("", {}) return the
+    # no_shard branch above already produces, so nothing downstream is new.
+    if num_workers <= 1:
+        logger.info(
+            "[AutoTune] Single worker: skipping the FSDP wrap "
+            f"(requested strategy {strategy!r} would degrade to NO_SHARD)."
+        )
         return "", {}
 
     fsdp_config = {
@@ -533,6 +415,7 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     """
     Training function executed by each Ray Train worker (one per GPU).
     """
+    disable_cudnn_sdpa()  # per process: NaN grads on left-padded batches, see device.py
     from autotune.logging_setup import bind_trial_id, setup_logging
 
     setup_logging()
@@ -552,6 +435,13 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     peft_kwargs = train_loop_config.get("peft_config")
     peft_type = train_loop_config.get("peft_type")
     is_qlora = training_config.get("tuning_algorithm") == "qlora"
+    is_sr = training_config.get("tuning_algorithm") == SR_TUNING_ALGO
+    if is_sr:
+        require_sr()
+        assert_sr_supported(training_config, backend=training_config.get("backend", "hf"))
+    # Optimizer steps per epoch (already divided by gradient_accumulation_steps
+    # by the driver -- see _steps.py). Every step-valued knob below counts in
+    # these, not in micro-batches.
     steps_per_epoch = train_loop_config.get("steps_per_epoch")
     trial_id = train_loop_config.get("trial_id")
     bind_trial_id(trial_id)
@@ -574,6 +464,17 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     if hpo_search:
         num_train_epochs = training_config.get("hpo_num_epochs", 1)
 
+    # Seed the worker process before anything builds a model. The driver's own
+    # set_seed runs in the trial process, and HF's Trainer.__init__ seeds too --
+    # but that is after the model exists, so adapter initialization happens
+    # unseeded: every rank draws its own kaiming-uniform lora_A. Both wrappers
+    # correct that afterwards (FSDP via fsdp_sync_module_states, DDP via the
+    # unconditional rank-0 parameter broadcast in its constructor), so this is
+    # not load-bearing for correctness -- it just makes the ranks agree by
+    # construction instead of by repair, and makes a run reproducible from its
+    # seed. Applies to every tuner, not only SR.
+    set_seed(seed)
+
     run_name = f"{trial_id}" if hpo_search else f"final-{trial_id}"
     if hpo_search:
         training_output_dir = os.path.join(output_dir, "outputs", f"{trial_id}")
@@ -587,28 +488,15 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     # Save/checkpoint strategy
     logging_steps = max(1, min(10, steps_per_epoch // 10))
 
-    if hpo_search:
-        # Save once per epoch so RayTrainReportCallback.on_save() fires
-        # and metrics flow back to Result.metrics.
-        save_strategy = "epoch"
-        eval_strategy = "epoch"
-        save_steps = None
-        eval_steps = None
-        save_total_limit = 1
-    else:
-        # Final training — keep the last 3 checkpoints; the final saved model
-        # is the last step's weights (no best-model tracking).
-        if num_train_epochs > 1:
-            save_strategy = "epoch"
-            eval_strategy = "epoch"
-            save_steps = None
-            eval_steps = None
-        else:
-            save_steps = max(1, steps_per_epoch // 5)
-            eval_steps = save_steps
-            save_strategy = "steps"
-            eval_strategy = "steps"
-        save_total_limit = 3
+    # HPO saves once per epoch so RayTrainReportCallback.on_save() fires and
+    # metrics flow back to Result.metrics. Final training keeps the best
+    # checkpoint by eval_loss, so the persisted model is the best epoch rather
+    # than the last step. See _checkpointing.py for the HF preconditions.
+    ckpt_strategy = resolve_checkpoint_strategy(
+        hpo_search=hpo_search,
+        num_train_epochs=num_train_epochs,
+        steps_per_epoch=steps_per_epoch,
+    )
 
     # Build TrainingArguments (unified for FSDP and DDP)
     training_args_kwargs = dict(
@@ -618,11 +506,8 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
         do_train=True,
         do_eval=True,
         logging_steps=logging_steps,
-        save_strategy=save_strategy,
-        save_total_limit=save_total_limit,
         max_steps=steps_per_epoch * num_train_epochs,
         num_train_epochs=num_train_epochs,
-        eval_strategy=eval_strategy,
         logging_strategy="steps",
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=max(1, batch_size // 2),
@@ -631,7 +516,9 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
         lr_scheduler_type=lr_scheduler_type,
         weight_decay=0.01,
         warmup_ratio=warmup_ratio,
-        label_names=["input_ids", "attention_mask"],
+        # "labels", not the batch's other keys: the padding-free collator emits
+        # no attention_mask, and a missing label key drops eval_loss.
+        label_names=["labels"],
         push_to_hub=False,
         run_name=run_name,
         report_to="none",
@@ -641,7 +528,9 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
         dataloader_num_workers=0,  # avoid /dev/shm exhaustion in containers
         dataloader_pin_memory=False,
         ignore_data_skip=True,
-        load_best_model_at_end=False,
+        # save/eval strategy, save_total_limit, load_best_model_at_end and the
+        # best-model metric keys all come from the resolved strategy.
+        **ckpt_strategy.as_training_arguments(),
     )
 
     # Only force dispatch_batches=False under the Ray Data backend. Ray Data's
@@ -654,11 +543,6 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     data_backend = train_loop_config.get("data_backend", "arrow")
     if data_backend == "ray_data":
         training_args_kwargs["accelerator_config"] = {"dispatch_batches": False}
-
-    if save_steps is not None:
-        training_args_kwargs["save_steps"] = save_steps
-    if eval_steps is not None:
-        training_args_kwargs["eval_steps"] = eval_steps
 
     # aLoRA: PEFT 0.18 (PR #2860, fixes huggingface/peft#2826) raises
     # "Multiple invocations of PEFT forward hooks before .backward()" if
@@ -724,38 +608,131 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     else:
         device_label = "gpu"
 
+    # Shadow Residual inverts the usual order: the dual-stream architecture is
+    # built *from* the LoraConfig (the "cross_stream" target is what engages the
+    # two-stream forward), so the adapter config has to exist before the model.
+    # Neither `model` nor `tokenizer` is read by get_peft_config's SR branch.
+    sr_peft_config = None
+    sr_fsdp_active = False
+    if is_sr:
+        sr_peft_config = get_peft_config(
+            model=None,
+            model_name_or_path=model_name_or_path,
+            peft_type=peft_type,
+            base_kwargs=peft_kwargs,
+            tokenizer=None,
+        )
+        # ORDERING DEPENDENCY -- do not move the TrainingArguments construction
+        # above (currently ~80 lines up) below this point. Its __post_init__ sets
+        # os.environ["ACCELERATE_USE_FSDP"]="true" whenever len(self.fsdp) > 0,
+        # and SR's factory reads that env var to decide whether only rank 0
+        # materializes real CPU weights. Build the model first and every rank
+        # would materialize its own full copy of the base: N host-RAM copies per
+        # node instead of one. We recompute the same condition explicitly and
+        # pass it as a kwarg rather than trusting the env var, because nothing
+        # ever *clears* ACCELERATE_USE_FSDP once set (a stale "true" from an
+        # earlier trial in the same worker process would leave non-rank-0 ranks
+        # holding meta tensors).
+        sr_fsdp_active = bool(fsdp_strategy and fsdp_strategy != "no_shard" and fsdp_config)
+
     # Stagger model loading across ranks to avoid concurrent mmap SIGBUS.
     for loading_rank in range(world_size):
         if rank == loading_rank:
-            logger.info(f"[AutoTune] Worker {rank}/{world_size} loading model: {model_name_or_path} ({device_label})")
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name_or_path,
-                **model_kwargs,
-            )
+            if is_sr:
+                # Under FSDP only rank 0 reads the checkpoint (the others stay on
+                # meta until fsdp_sync_module_states broadcasts), so the stagger
+                # is mostly moot here -- but it costs nothing and keeps the ranks
+                # aligned through the barrier below.
+                logger.info(
+                    f"[AutoTune] Worker {rank}/{world_size} building Shadow Residual model: "
+                    f"{model_name_or_path} (fsdp_active={sr_fsdp_active})"
+                )
+                model = build_sr_peft_model(
+                    model_name_or_path,
+                    sr_peft_config,
+                    torch_dtype=torch.bfloat16,
+                    attn_implementation=attn_implementation,
+                    share_moe_routing=share_moe_routing_flag(training_config),
+                    fsdp_active=sr_fsdp_active,
+                )
+            else:
+                logger.info(
+                    f"[AutoTune] Worker {rank}/{world_size} loading model: {model_name_or_path} ({device_label})"
+                )
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_name_or_path,
+                    **model_kwargs,
+                )
         torch.distributed.barrier()
+
+    # Log the class(es) TRANSFORMER_BASED_WRAP will wrap. accelerate resolves
+    # these by reading `_no_split_modules` off the model and calling
+    # get_module_class_from_name (utils/dataclasses.py), and for a PEFT model the
+    # attribute has to travel PeftModel.__getattr__ -> BaseTuner.__getattr__ ->
+    # the wrapped base before it lands. That chain is silent when it works and
+    # raises a bare "Could not find the transformer layer class" when it does
+    # not, so record what the model actually advertises -- for SR this should
+    # name ShadowResidualDecoderLayer.
+    if fsdp_config:
+        logger.info(
+            f"[AutoTune] Worker {rank}/{world_size} FSDP wrap classes "
+            f"(_no_split_modules): {getattr(model, '_no_split_modules', None)}"
+        )
 
     # Resize token embeddings (with optional tokenizer customization)
     tokenizer_kwargs = extract_tokenizer_kwargs(training_config)
     tokenizer, num_new_tokens = get_tokenizer(model_name_or_path, **tokenizer_kwargs)
-    resize_model_embeddings(model, tokenizer, num_new_tokens)
+    if is_sr:
+        # SR's transfer_base_weights slices the upstream checkpoint at its
+        # original vocab size, and on non-rank-0 the embedding is still a meta
+        # tensor here -- resizing either one is not a supported operation.
+        assert_no_vocab_resize(num_new_tokens)
+    else:
+        resize_model_embeddings(model, tokenizer, num_new_tokens)
 
     # Apply PEFT if configured
-    peft_config = get_peft_config(
-        model=model,
-        model_name_or_path=model_name_or_path,
-        peft_type=peft_type,
-        base_kwargs=peft_kwargs,
-        tokenizer=tokenizer,
-    )
-    if peft_config is not None:
-        if is_qlora:
-            model = prepare_qlora_model(model, use_gradient_checkpointing=True)
-        else:
-            model.enable_input_require_grads()
-        model = get_peft_model(model, peft_config)
-        model.print_trainable_parameters()
+    if is_sr:
+        # Already resolved above (and already applied -- build_sr_peft_model
+        # returns a PeftModel). Re-running get_peft_model would nest a second
+        # LoraModel over the first and, because the cross_stream sites would then
+        # be a lora.Linear wrapped inside a lora.Linear, silently change the
+        # architecture. enable_input_require_grads / use_cache=False / the rank-0
+        # print_trainable_parameters all happen inside build_sr_peft_model.
+        peft_config = sr_peft_config
+        logger.info("[AutoTune] Shadow Residual model is already PEFT-wrapped; skipping get_peft_model")
+    else:
+        peft_config = get_peft_config(
+            model=model,
+            model_name_or_path=model_name_or_path,
+            peft_type=peft_type,
+            base_kwargs=peft_kwargs,
+            tokenizer=tokenizer,
+        )
+        if peft_config is not None:
+            if is_qlora:
+                model = prepare_qlora_model(model, use_gradient_checkpointing=True)
+            else:
+                model.enable_input_require_grads()
+            model = get_peft_model(model, peft_config)
+            model.print_trainable_parameters()
 
     enable_progress_bar()
+
+    # Collate each batch to its own length instead of max_length (_collate.py):
+    # flattened varlen batches under flash attention, else cropped batches of
+    # length-grouped rows.
+    padding_mode = resolve_padding_mode(
+        training_config,
+        attn_implementation=attn_implementation,
+        device_kind="cuda" if torch.cuda.is_available() else "cpu",
+        model_config=getattr(model, "config", None),
+        peft_type=peft_type,
+        is_sr=is_sr,
+    )
+    group_by_length = group_by_length_enabled(training_config, padding_mode)
+    if rank == 0:
+        logger.info(f"[AutoTune] Batch padding mode: {padding_mode} (group_by_length={group_by_length})")
+    train_lengths = None
 
     # Load datasets per configured backend (data_backend is read above).
     if data_backend == "arrow":
@@ -763,6 +740,10 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
         eval_arrow_path = train_loop_config["eval_arrow_path"]
         train_dataset = _TokenizedArrowDataset(train_arrow_path)
         eval_dataset = _TokenizedArrowDataset(eval_arrow_path)
+        if rank == 0 and train_dataset.lengths is not None:
+            log_padding_efficiency(train_dataset.lengths, training_config.get("max_length"))
+        if group_by_length:
+            train_lengths = train_dataset.lengths
         logger.info(
             f"[AutoTune] Worker {rank}/{world_size} using Arrow mmap "
             f"({len(train_dataset)} train, {len(eval_dataset)} eval)"
@@ -774,14 +755,19 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
         # when Ray Data block-level splits yield unequal shard row counts.
         train_shard = train.get_dataset_shard("train")
         eval_shard = train.get_dataset_shard("eval")
-        samples_per_rank = steps_per_epoch * batch_size * num_train_epochs
-        train_dataset = _RayShardIterableDataset(
+        # steps_per_epoch is in optimizer steps, so the sample budget has to be
+        # scaled back up by gradient_accumulation_steps -- otherwise the cap
+        # starves the dataloader well before max_steps is reached.
+        samples_per_rank = steps_per_epoch * max(1, gradient_accumulation_steps) * batch_size * num_train_epochs
+        train_dataset = RayShardIterableDataset(
             train_shard,
             batch_size=batch_size,
             total_samples=samples_per_rank,
             shuffle_buffer=4096,
+            group_by_length=group_by_length,
+            seed=seed + rank,
         )
-        eval_dataset = _RayShardIterableDataset(
+        eval_dataset = RayShardIterableDataset(
             eval_shard,
             batch_size=max(1, batch_size // 2),
         )
@@ -792,13 +778,14 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
         raise ValueError(f"Unknown data_backend: {data_backend}")
 
     # Create HF Trainer
-    trainer = Trainer(
+    trainer = LengthGroupedTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         processing_class=None,
-        data_collator=default_data_collator,
+        data_collator=build_collator(padding_mode),
+        train_lengths=train_lengths,
     )
 
     if peft_type == "ALORA":
@@ -809,6 +796,8 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     # Added unconditionally on every worker; on_log self-guards to rank 0 via
     # state.is_world_process_zero.
     trainer.add_callback(TrainingMetricsCallback(trial_id=trial_id))
+    # Rank 0's best checkpoint is the one rotation keeps: make every rank load it.
+    trainer.add_callback(SyncBestCheckpointCallback())
 
     # RayTrainReportCallback reports metrics from workers back to the driver
     # via train.report(). Without it, ray_trainer.fit() returns Result with
@@ -830,12 +819,22 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
                 f"under {training_output_dir!r}; training from scratch."
             )
     logger.info(f"[AutoTune] Worker starting training (trial {trial_id})...")
-    # When resuming a PEFT checkpoint, force the adapter load onto CPU to avoid
-    # the exclusive-process GPU-0 contention across ranks (see _resume.py).
-    if resume_arg:
-        with peft_adapter_load_on_cpu():
-            trainer.train(resume_from_checkpoint=resume_arg)
-    else:
+    # Force any PEFT adapter load inside train() onto CPU, avoiding the
+    # exclusive-process GPU-0 contention across ranks (see _resume.py).
+    #
+    # This wraps train() unconditionally because there are TWO adapter loads,
+    # not just the resume one:
+    #   1. _load_from_checkpoint() at the start, when resuming.
+    #   2. _load_best_model() at the *end*, whenever load_best_model_at_end=True
+    #      — which final training now always sets, so this fires on every run
+    #      even without --resume_from_checkpoint.
+    # Both go through model.load_adapter() -> load_peft_weights() ->
+    # safe_load_file(device=infer_device()), which resolves to a bare "cuda"
+    # (i.e. cuda:0) on every rank. Gating the guard on resume_arg left the
+    # best-model load unprotected and crashed ranks 1..N-1 with
+    # "CUDA-capable device(s) is/are busy or unavailable".
+    # The context manager is a no-op for non-PEFT models.
+    with peft_adapter_load_on_cpu():
         trainer.train(resume_from_checkpoint=resume_arg)
 
     # Audit data-parallel sharding post-hoc (rank-0 log only). Runs after
@@ -862,20 +861,28 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
 
     # Save model — ALL ranks must participate in trainer.save_model() for
     # FSDP because gathering the full state dict is a collective operation.
-    # load_best_model_at_end=False, so this writes the last step's weights.
+    # load_best_model_at_end=True, so train() already reloaded the best
+    # checkpoint (lowest eval_loss) — this writes the best epoch's weights.
     if not hpo_search and save_model_flag:
         model_name = training_config.get("output_model_name")
         output_model_path = output_dir  # os.path.join(output_dir, "models")
         output_model_id = os.path.join(output_model_path, model_name)
 
         if train.get_context().get_world_rank() == 0:
-            logger.info(f"[AutoTune] Saving last model to: {output_model_id}")
+            logger.info(f"[AutoTune] Saving best model (lowest eval_loss) to: {output_model_id}")
 
         # All ranks call save_model — FSDP state dict gather is collective
         trainer.save_model(output_model_id)
 
         if train.get_context().get_world_rank() == 0:
             tokenizer.save_pretrained(output_model_id)
+            if is_sr:
+                # peft_type: LORA in the saved adapter_config.json is true but not
+                # sufficient -- reloading it onto a plain Granite base would give
+                # the wrong architecture, because PEFT drops the unmatched
+                # cross_stream target without warning. Record that the base has to
+                # be an SR model, plus the routing mode it was trained with.
+                patch_sr_adapter_config(output_model_id, share_moe_routing=share_moe_routing_flag(training_config))
             logger.info(f"[AutoTune] Model saved to: {output_model_id}")
 
             # Clean up checkpoint dirs unless --keep_checkpoints is set (debug).
@@ -887,7 +894,6 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
                 # nothing and starts fresh; an interrupted run leaves them behind
                 # to resume from.
                 import glob as _glob
-                import shutil
 
                 ckpt_dirs = _glob.glob(os.path.join(training_output_dir, "checkpoint-*"))
                 for ckpt_dir in ckpt_dirs:
@@ -988,6 +994,12 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     else:
         peft_kwargs = None
 
+    # Shadow Residual: force 'auto' off the sizing heuristic (it is written for a
+    # single-stream LoRA and under-counts SR) and reject 'no_shard'. Runs before
+    # estimate_fsdp_strategy so the heuristic never gets the chance to answer.
+    if training_config.get("tuning_algorithm") == SR_TUNING_ALGO:
+        fsdp_strategy = resolve_fsdp_strategy(fsdp_strategy)
+
     # Find the optimal FSDP trategy based on model size, and training args.
     if fsdp_strategy == "auto":
         fsdp_strategy = estimate_fsdp_strategy(
@@ -1006,7 +1018,7 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     # Build FSDP config (auto-detects layer class)
-    fsdp_str, fsdp_config = _build_fsdp_config(fsdp_strategy)
+    fsdp_str, fsdp_config = _build_fsdp_config(fsdp_strategy, num_workers)
     logger.info(f"[AutoTune] FSDP strategy: {fsdp_strategy}")
     if fsdp_config:
         logger.info(f"[AutoTune] FSDP config: {fsdp_config}")
@@ -1020,6 +1032,9 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
 
     data_backend = training_config.get("data_backend", "arrow")
     batch_size = train_kwargs["per_device_train_batch_size"]
+    # Read from local_config, not train_kwargs: a config marking
+    # gradient_accumulation_steps for_tuner: true puts it in the PEFT bucket.
+    grad_accum = local_config.get("gradient_accumulation_steps", 1)
 
     # Per-backend dataset preparation. Each branch sets:
     #   train_ds_size (int), worker_data_kwargs (dict), datasets_arg (dict or None),
@@ -1034,8 +1049,6 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         # Guard against a stale cache from a prior run that reused this trial id.
         # HPO-only — final training runs one trial at a time, so it's safe regardless.
         if hpo_search and os.path.isdir(data_cache_dir):
-            import shutil
-
             shutil.rmtree(data_cache_dir, ignore_errors=True)
         train_arrow_path = os.path.join(data_cache_dir, "train.arrow")
         eval_arrow_path = os.path.join(data_cache_dir, "eval.arrow")
@@ -1069,64 +1082,24 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
 
     elif data_backend == "ray_data":
         logger.info(f"[AutoTune] Building Ray Data pipelines (percentage={percentage * 100:.0f}%)...")
-        train_ds = _read_dataset(train_file)
-        eval_ds = _read_dataset(eval_file)
-
-        train_rows = train_ds.count()
-        eval_rows = eval_ds.count()
-        if percentage < 1.0:
-            train_rows = max(1, int(train_rows * percentage))
-            eval_rows = max(1, int(eval_rows * percentage))
-            train_ds = train_ds.limit(train_rows)
-            eval_ds = eval_ds.limit(eval_rows)
-
-        tokenize_fn = _make_tokenize_fn(
+        # Tokenized and materialized before the TorchTrainer exists, exactly
+        # once: the row count below is then metadata, and every epoch reads the
+        # same blocks. See _ray_data.py for why a lazy count() was the problem.
+        train_ds, eval_ds, train_ds_size = build_tokenized_datasets(
+            train_file,
+            eval_file,
+            percentage=percentage,
+            seed=seed,
             model_name_or_path=model_name_or_path,
             tokenizer_kwargs=tokenizer_kwargs,
             input_col=input_col,
             output_col=output_col,
             max_length=max_length,
             thinking=thinking,
+            apply_chat_template=_apply_chat_template_to_df,
+            concurrency_override=training_config.get("ray_data_concurrency"),
+            num_cpus_override=training_config.get("ray_data_num_cpus"),
         )
-        # Fan tokenization out across the whole cluster. Two levers, both required:
-        #   1. Repartition into >= `concurrency` blocks. Ray Data launches at most
-        #      one stateless map task per input block, and a single source file
-        #      often reads as 1 block — so without this, tokenization runs on a
-        #      single CPU regardless of cluster size. repartition(n, shuffle=False)
-        #      is a cheap split/combine (no full shuffle, no materialization), so
-        #      it preserves the streaming/low-object-store behavior below.
-        #   2. concurrency / num_cpus cap how many of those tasks run at once.
-        # concurrency defaults to floor(total_cluster_cpus) − num_workers (the CPUs
-        # not reserved by this trial's GPU workers); overridable via config/CLI.
-        # num_cpus is the per-task CPU reservation (fractional allows oversubscribe).
-        # batch_format="numpy" (default) avoids pandas-block compat issues on
-        # pandas 3.x. No .materialize() — Ray Data streams tokenization during
-        # training to keep object-store pressure low on remote clusters.
-        ray_data_concurrency = training_config.get("ray_data_concurrency")
-        ray_data_num_cpus = training_config.get("ray_data_num_cpus")
-        concurrency, num_cpus = compute_ray_data_sizing(num_workers, ray_data_concurrency, ray_data_num_cpus)
-        train_blocks = ray_data_block_target(concurrency, train_rows)
-        eval_blocks = ray_data_block_target(concurrency, eval_rows)
-        # Skip repartition for trivially small datasets (single block already).
-        if train_rows > 1:
-            train_ds = train_ds.repartition(train_blocks, shuffle=False)
-        if eval_rows > 1:
-            eval_ds = eval_ds.repartition(eval_blocks, shuffle=False)
-        logger.info(
-            f"[AutoTune] Ray Data tokenize: concurrency={concurrency}, num_cpus={num_cpus}, "
-            f"repartition target train={train_blocks}/eval={eval_blocks} blocks (batch_size=1024)"
-        )
-        # concurrency=int is valid in Ray 2.54; newer Ray deprecates it toward compute=.
-        map_kwargs: Dict[str, Any] = {
-            "batch_size": 1024,
-            "concurrency": concurrency,
-            "num_cpus": num_cpus,
-        }
-        train_ds = train_ds.map_batches(tokenize_fn, **map_kwargs)
-        eval_ds = eval_ds.map_batches(tokenize_fn, **map_kwargs)
-
-        train_ds_size = train_ds.count()
-        logger.info(f"[AutoTune] Tokenized train={train_ds_size}, eval={eval_ds.count()}")
 
         worker_data_kwargs = {"data_backend": "ray_data"}
         datasets_arg = {"train": train_ds, "eval": eval_ds}
@@ -1135,12 +1108,23 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     else:
         raise ValueError(f"Unknown data_backend: {data_backend!r}. Expected 'arrow' or 'ray_data'.")
 
-    # Calculate steps per epoch
-    steps_per_epoch = max(1, train_ds_size // (batch_size * num_workers))
+    # Optimizer steps per epoch -- the unit every step-valued TrainingArguments
+    # knob counts in (max_steps, logging_steps, save_steps/eval_steps). Dividing
+    # the per-rank micro-batch count by gradient_accumulation_steps is
+    # load-bearing; see _steps.py for what omitting it did to the schedule.
+    epoch_steps = resolve_epoch_steps(
+        train_ds_size=train_ds_size,
+        per_device_batch_size=batch_size,
+        gradient_accumulation_steps=grad_accum,
+        num_workers=num_workers,
+    )
+    steps_per_epoch = epoch_steps.optimizer_steps
 
     logger.info(
-        f"[AutoTune] Dataset: {train_ds_size} train samples, {steps_per_epoch} steps/epoch, "
-        f"{num_workers} workers, batch_size={batch_size}"
+        f"[AutoTune] Dataset: {train_ds_size} train samples, {steps_per_epoch} optimizer "
+        f"steps/epoch ({epoch_steps.micro_batches} micro-batches / grad_accum="
+        f"{epoch_steps.gradient_accumulation_steps}), {num_workers} workers, "
+        f"batch_size={batch_size}"
     )
 
     # HF Trainer owns all checkpointing (save_strategy, load_best_model_at_end).
@@ -1155,7 +1139,7 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # leaves resources available for Ray Data streaming during training.
     resources_per_worker = {"CPU": 1, "GPU": 1}
 
-    # 30-minute NCCL collective timeout. Default (10 min in torch 2.8) is
+    # 30-minute NCCL collective timeout. Default (10 min in torch 2.8 and 2.11) is
     # too tight for first-step FSDP all-gathers on large models and for
     # staggered model loading; watchdog trips produce misleading "stuck"
     # errors before training has a chance to progress.
@@ -1247,8 +1231,6 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # Always removed, independent of --keep_checkpoints (which governs only
     # final-training artifacts).
     if hpo_search:
-        import shutil
-
         hpo_trial_dir = os.path.join(output_dir, "outputs", f"{trial_id}")
         if os.path.isdir(hpo_trial_dir):
             shutil.rmtree(hpo_trial_dir, ignore_errors=True)
@@ -1256,16 +1238,12 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Clean up tokenized Arrow cache (only the arrow backend writes it).
     if not keep_checkpoints and data_cache_dir is not None and os.path.isdir(data_cache_dir):
-        import shutil
-
         shutil.rmtree(data_cache_dir, ignore_errors=True)
 
     # Clean up Ray Train's run directory now that fit() has returned and the
     # TrainController has shut down. Doing this from inside the worker races
     # with the controller's periodic snapshot writes and raises ENOENT.
     if not hpo_search and not keep_checkpoints:
-        import shutil
-
         train_results_dir = os.path.join(output_dir, "train_results")
         if os.path.isdir(train_results_dir):
             shutil.rmtree(train_results_dir, ignore_errors=True)

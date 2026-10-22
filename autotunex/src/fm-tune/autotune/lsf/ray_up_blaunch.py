@@ -61,6 +61,7 @@ from autotune.lsf.log_utils import (
     phase_timer,
     summarize_ray_nodes,
 )
+from autotune.tmpdir import resolve_job_id, resolve_ray_temp_dir
 
 logger = logging.getLogger(__name__)
 
@@ -125,35 +126,38 @@ def _ray_init_with_timeout(address: str, timeout_s: float) -> bool:
 # Per-fleet default for ``NCCL_IB_HCA``. Resolved via ``_default_ib_hca(fleet)``
 # so callers can pick the right rail set without hardcoding hostnames.
 #
-# A100 fleet: only ``mlx5_0`` is reliably Active across the fleet (``mlx5_1``
-# is Down on several boxes we have evidence for).
+# CCC: only ``mlx5_0`` is reliably Active across the fleet (``mlx5_1`` is
+# Down on several boxes we have evidence for).
 #
-# H100 fleet (8-rail): each node has 10 × 400 Gb/s NDR HCAs (per ``ibstat``);
-# 8 are the per-GPU compute rails (one HCA per GPU on the same PCIe complex),
-# and ``mlx5_8``/``mlx5_9`` are storage/management. Listing all 8 compute
-# rails lets NCCL spread an all-reduce / all-gather across them — single-rail
-# use leaves ~7× of the inter-node bandwidth on the floor for collectives big
+# BlueVela H100: each node has 10 × 400 Gb/s NDR HCAs (per ``ibstat``); 8 are
+# the per-GPU compute rails (one HCA per GPU on the same PCIe complex), and
+# ``mlx5_8``/``mlx5_9`` are storage/management. BlueVela H200 (the Slurm
+# partitions) uses the same 8-rails-per-node layout. Listing all 8 compute rails
+# lets NCCL spread an all-reduce / all-gather across them — single-rail use
+# leaves ~7× of the inter-node bandwidth on the floor for collectives big
 # enough to be link-bound.
 _DEFAULT_IB_HCA_BY_FLEET: Dict[str, str] = {
-    "a100": "mlx5_0",
-    "h100": "mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_7",
+    "ccc-a100": "mlx5_0",
+    "bv-h100": "mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_7",
+    "bv-h200": "mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_7",
 }
-DEFAULT_FLEET = "a100"
+DEFAULT_FLEET = "ccc-a100"
 
 # Fleet → NVIDIA GPU model string. Purely informational (used only in the
 # bring-up log line); the real GPU resource request lives in the outer bsub
 # ``-gpu gmodel=...``. The fleet implies the GPU type, so this replaces the old
 # standalone --gpu_type CLI arg.
 _GPU_MODEL_BY_FLEET: Dict[str, str] = {
-    "a100": "NVIDIAA100_SXM4_80GB",
-    "h100": "NVIDIAH10080GBHBM3",
+    "ccc-a100": "NVIDIAA100_SXM4_80GB",
+    "bv-h100": "NVIDIAH10080GBHBM3",
+    "bv-h200": "NVIDIAH200",
 }
 
 
 def _default_ib_hca(fleet: str) -> str:
     """Return the per-fleet default for ``NCCL_IB_HCA``.
 
-    Unknown fleet names fall back to ``DEFAULT_FLEET`` (A100, single rail) and
+    Unknown fleet names fall back to ``DEFAULT_FLEET`` (CCC, single rail) and
     log a warning so the operator notices a typo before blaming NCCL.
     """
     if fleet not in _DEFAULT_IB_HCA_BY_FLEET:
@@ -186,8 +190,8 @@ def _rdma_env(ib_hca: str = "mlx5_0", ib_ifname: Optional[str] = None) -> Dict[s
     """Return the NCCL/RDMA env-var set required for inter-node GDR over IB.
 
     Notes:
-        * ``NCCL_IB_HCA`` is fleet-dependent. A100 = single rail (``mlx5_0``);
-          H100 (8-rail) = 8 compute rails (``mlx5_0..mlx5_7``); see
+        * ``NCCL_IB_HCA`` is fleet-dependent. CCC = single rail (``mlx5_0``);
+          BlueVela H100 = 8 compute rails (``mlx5_0..mlx5_7``); see
           ``_DEFAULT_IB_HCA_BY_FLEET``. Override per-call via the ``ib_hca``
           arg (``main.py`` exposes ``--ib_hca`` and ``--fleet``).
         * ``NCCL_SOCKET_IFNAME`` is **not** set by default. NCCL's bootstrap
@@ -203,7 +207,7 @@ def _rdma_env(ib_hca: str = "mlx5_0", ib_ifname: Optional[str] = None) -> Dict[s
           ``NCCL_IB_SPLIT_DATA_ON_QPS=1``, ``NCCL_BUFFSIZE=8388608``,
           ``NCCL_MIN_NCHANNELS=4``) were specifically chosen to be safe on
           single-rail and beneficial once multi-rail RDMA is in use, so they
-          are correct for both the A100 and H100 fleets without modification.
+          are correct for both CCC and BlueVela without modification.
     """
     env = {
         "NCCL_NET_GDR_LEVEL": "PXB",
@@ -693,8 +697,8 @@ def start_multinode_ray_cluster_blaunch(
         cores_per_worker: cores reserved by each Ray worker (default 32).
             Note: on the head host, the Ray head process itself competes
             for cores with the colocated worker; size accordingly.
-        fleet: name of the deployment fleet (e.g. ``"a100"``,
-            ``"h100"``). Selects the default ``NCCL_IB_HCA`` rail list via
+        fleet: name of the deployment fleet (e.g. ``"ccc-a100"``,
+            ``"bv-h100"``). Selects the default ``NCCL_IB_HCA`` rail list via
             ``_default_ib_hca(fleet)`` and the GPU model string (logged only)
             via ``_gpu_model_for_fleet(fleet)``. Default ``DEFAULT_FLEET``.
         ib_hca: explicit override for ``NCCL_IB_HCA`` (e.g. ``"mlx5_0,mlx5_1"``).
@@ -773,9 +777,10 @@ def start_multinode_ray_cluster_blaunch(
         f"[ray_up_blaunch] head_host={head_host!r} all_workers={all_worker_hosts} remote_workers={remote_worker_hosts}"
     )
 
-    job_id = os.environ.get("LSB_JOBID", "0")
-    head_temp_dir = f"/tmp/_ray/job_{job_id}"
-    os.makedirs(head_temp_dir, exist_ok=True)
+    # Per-uid, scheduler-aware temp dir; see autotune.tmpdir for why a shared
+    # /tmp parent breaks on nodes where another user created it first.
+    job_id = resolve_job_id()
+    head_temp_dir = resolve_ray_temp_dir(f"job_{job_id}")
 
     partial_info: Dict[str, Any] = {
         "head_address": None,

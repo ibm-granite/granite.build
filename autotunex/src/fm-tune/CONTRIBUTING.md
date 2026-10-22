@@ -43,12 +43,15 @@ By participating, you are expected to uphold this code. To report unacceptable
 behavior, contact one of the maintainers listed in
 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md#enforcement).
 
+To report a security vulnerability, follow [`SECURITY.md`](SECURITY.md) — do not open a public issue.
+
 ## Getting Started
 
 ### Prerequisites
 
 - **Python 3.10+** (3.12 recommended)
-- **CUDA 12.x compatible GPU(s)** for any training (CPU-only is not supported)
+- **NVIDIA GPU(s) with a CUDA 13 driver (>= 580)** for GPU training: torch
+  2.11's PyPI wheels are built for CUDA 13.0
 - **Linux** for training (flash-attn is Linux-only); macOS works for editing,
   config validation, and unit tests that don't require GPU
 - [`uv`](https://docs.astral.sh/uv/getting-started/installation/) recommended,
@@ -59,7 +62,7 @@ behavior, contact one of the maintainers listed in
 ```bash
 # Fork the granite.build monorepo on GitHub, then clone your fork:
 git clone git@github.com:<your-username>/granite.build.git
-cd granite.build/autotunex/fm-tune
+cd granite.build/autotunex/src/fm-tune
 
 # Create and activate a virtual environment
 uv venv .venv --python 3.12
@@ -72,15 +75,22 @@ uv pip install -e ".[full,dev]"
 pre-commit install
 ```
 
-The `full` extra resolves the flash-attn pre-built wheel automatically via
-`[tool.uv.sources]` in `pyproject.toml`. With plain `pip` you may need to install
-the wheel manually — see the comment block in `pyproject.toml`.
+There is no prebuilt flash-attn wheel for torch 2.11 + CUDA 13, so the `full`
+extra **compiles flash-attn and the Mamba kernels (`mamba-ssm`, `causal-conv1d`)
+from source**, configured by `[tool.uv.extra-build-dependencies]` /
+`[tool.uv.extra-build-variables]` in `pyproject.toml`. Run it on a GPU node or
+any host with nvcc 13 (~15 minutes cold; cached by uv afterwards). On macOS or a
+CPU-only box, install `".[core,dev]"` instead. See
+[Installation in `README.md`](README.md#installation) for details.
 
 ### Installation with `pip` and `conda`
 
 ```bash
 conda create -n autotune python=3.12 -y
 conda activate autotune
+# Plain pip ignores the [tool.uv] build settings: pre-build flash-attn and the
+# Mamba kernels with --no-build-isolation first, exactly as in
+# README.md "With pip and conda", then:
 pip install -e ".[full,dev]"
 pre-commit install
 ```
@@ -113,7 +123,8 @@ For a smoke test of the training pipeline, see the **Quick Start** section in
 | `autotune/rewards/` | Reward functions for online RL. |
 | `autotune/tools/` | Dataset builders (GSM8K, factuality) and parquet/JSON conversion helpers. |
 | `autotune/callbacks/` | Ray Tune callbacks, buffered logging service. |
-| `autotune/lsf/` | Optional multi-node Ray launcher for LSF/HPC clusters. |
+| `autotune/lsf/` | Optional multi-node Ray launcher for LSF/HPC clusters (`--scheduler lsf`, blaunch). |
+| `autotune/slurm/` | Optional multi-node Ray launcher for Slurm clusters (`--scheduler slurm`, srun); reuses the scheduler-agnostic pieces of `autotune/lsf/`. |
 | `tests/` | Pytest suite. |
 | `docs/` | Reference documentation: GPU sizing, MPS/MLX, dataset formats. |
 
@@ -332,7 +343,6 @@ Defined in `pyproject.toml` under `[tool.pytest.ini_options]`:
 |--------|---------|
 | `slow` | Downloads or loads HF model weights (>50 MB). Skip in fast iterations. |
 | `gpu`  | Requires CUDA. Skipped on CPU-only machines. |
-| `full` | Imports the `[full]` online-RL stack (verl, hydra, omegaconf). Skipped in CI, which installs `[core]`. |
 
 Use markers when adding tests:
 
@@ -386,10 +396,11 @@ pre-commit run --all-files
 
 | Problem | Fix |
 |---------|-----|
-| `flash-attn` install fails | macOS isn't supported. On Linux, use `uv pip install -e ".[full]"` so the pre-built wheel pinned in `[tool.uv.sources]` is used. With plain pip, install the wheel manually (URL in `pyproject.toml` comments). |
+| `flash-attn` install fails | macOS isn't supported. On Linux it is compiled from source (no prebuilt wheel exists for torch 2.11 + CUDA 13): run `uv pip install -e ".[full]"` on a host with nvcc 13 (`/usr/local/cuda` or `$CUDA_HOME`), which builds it against the env's torch via `[tool.uv.extra-build-dependencies]`. With plain pip, install torch first and then `pip install --no-build-isolation flash-attn==2.8.3` (see README). `undefined symbol` on import means it was built against a different torch. |
 | `ImportError: verl` | Install the `full` extra: `pip install -e ".[full]"`. The `core` extra omits verl. |
-| `No module named 'verl.experimental.reward_loop.router'` | Known verl 0.7.1 / 0.8.0 packaging bug. Manually copy `naive_router.py` and `inner_sglang_router.py` from the verl GitHub repo into the installed package and add an `__init__.py`. See the gotcha in `CLAUDE.md`. |
-| `Total available GPUs 0 is less than total desired GPUs N` | A previous trial's verl placement groups weren't released. See the worker cleanup pattern in `CLAUDE.md`. |
+| `CUDA-capable device(s) is/are busy or unavailable` in a verl (PPO/GRPO/DAPO) job | vLLM runs in its own processes next to the FSDP workers, which `exclusive_process` compute mode forbids. On LSF request `-gpu "num=N:mode=shared:j_exclusive=yes"` (`j_exclusive=yes` keeps other jobs off the GPUs, which `mode=shared` alone does not). |
+| RL run trains but logs nothing after startup (no `[AutoTune] verl step N` lines) | A vLLM dependency (`model_hosting_container_standards`) lowers the root logger to ERROR unless `SAGEMAKER_CONTAINER_LOG_LEVEL` is set; `driver_multi_verl.py` defaults it to `INFO`. If you set it yourself, use `INFO` or lower. |
+| `Total available GPUs 0 is less than total desired GPUs N` | A previous trial's verl placement groups weren't released. See `autotune/trainers/_verl_cleanup.py` and "verl Worker Cleanup" in `CLAUDE.md`. |
 | `Result(metrics=None)` from Ray Train | HPO trials must save at least one checkpoint per epoch. Use `save_strategy="epoch"`, `save_total_limit=1`. See `CLAUDE.md` "Key Gotchas". |
 | vLLM OOM on long-context models | `max_model_len` defaults to the model's full position embeddings (often 128K). Set it to `max_prompt_length + max_response_length`. |
 | `ConnectionRefusedError` on Ray init | A previous Ray cluster wasn't cleaned up. `ray stop --force`, then re-run. |
@@ -417,7 +428,7 @@ adding it here.
 
 ### Project Links
 
-- **Source:** [github.com/ibm-granite/granite.build](https://github.com/ibm-granite/granite.build) (the `autotunex/fm-tune` project)
+- **Source:** [github.com/ibm-granite/granite.build](https://github.com/ibm-granite/granite.build) (the `autotunex/src/fm-tune` project)
 - **Issues:** [github.com/ibm-granite/granite.build/issues](https://github.com/ibm-granite/granite.build/issues)
 
 ---

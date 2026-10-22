@@ -34,9 +34,17 @@ every builder relies on to adapt:
   block in the system message. Keys appear *verbatim*, so a stray ``doc_id``
   would leak into the prompt; only ``text`` is emitted.
 - **Granite 4.2** dropped ``documents`` support entirely (and moved to ChatML).
-  There the passages are inlined into a leading system message instead. It also
-  defaults to ``enable_thinking=True``, which would leave the prompt inside an
-  open ``<think>`` block — wrong for a structured SFT target.
+  There the passages go in as a ``tool`` message, which 4.2 renders as a
+  ``<tool_response>[...]</tool_response>`` block — how it natively represents RAG
+  context. Because that block is one JSON *array*, all passages are merged into a
+  **single** document (blank-line separated) so the rendered context matches 4.1's
+  single ``<documents>`` block rather than fragmenting into N array entries. For
+  judge/guardian data the message is placed *before the first assistant turn*,
+  since the documents ground the answer being judged. It also defaults to
+  ``enable_thinking=True``, which would leave the prompt inside an open ``<think>``
+  block — wrong for a structured SFT target.
+- **Other templates that ignore ``documents=``** (plain Llama, etc.) fall back to
+  inlining the passages into a leading system message.
 """
 
 from __future__ import annotations
@@ -52,9 +60,17 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 # Document-passing styles, keyed off what the chat template actually supports.
 DOC_STYLE_GRANITE3 = "granite3"  # native documents=, requires doc_id + text
 DOC_STYLE_GRANITE4 = "granite4"  # native documents=, verbatim keys -> text only
+DOC_STYLE_TOOL = "tool"  # ChatML/4.2: documents ride in a `tool` message
 DOC_STYLE_INLINE = "inline"  # template ignores documents= -> inline into messages
 
-DOC_STYLES = (DOC_STYLE_GRANITE3, DOC_STYLE_GRANITE4, DOC_STYLE_INLINE)
+DOC_STYLES = (DOC_STYLE_GRANITE3, DOC_STYLE_GRANITE4, DOC_STYLE_TOOL, DOC_STYLE_INLINE)
+
+# The ChatML turn marker. Its presence is what distinguishes Granite 4.2's ChatML
+# template from 4.1's `<|start_of_role|>` role tags.
+CHATML_MARKER = "<|im_start|>"
+
+# Default `source` for a normalized tool-response document.
+_TOOL_DOC_SOURCE = "knowledge_base"
 
 # Mirrors the Granite 4.x documents system message so inlined prompts look
 # like the native rendering the model was trained on.
@@ -72,18 +88,56 @@ _INLINE_DOCS_SUFFIX = (
 )
 
 
+def is_chatml_template(chat_template: Optional[str]) -> bool:
+    """True when the template is ChatML (Granite 4.2), detected by the turn marker.
+
+    Granite 4.2 moved to ChatML and dropped ``documents=``; there the RAG context
+    goes in as a ``tool`` message instead (see :func:`tool_documents_message`).
+    """
+    return bool(chat_template) and CHATML_MARKER in chat_template
+
+
+def tokenizer_is_chatml(tokenizer) -> bool:
+    """True for a ChatML tokenizer: template probe first, then vocab membership.
+
+    The template probe keeps this unit-testable with a template stand-in and no
+    model download. The vocab fallback catches a real 4.2 tokenizer whose template
+    text stops matching. ``convert_tokens_to_ids`` is deliberately *not* used as a
+    fallback: for an unknown token it returns the unk id (often 0), which would
+    false-positive on every non-ChatML tokenizer.
+    """
+    if is_chatml_template(getattr(tokenizer, "chat_template", None)):
+        return True
+    vocab_get = getattr(tokenizer, "get_vocab", None)
+    if callable(vocab_get):
+        try:
+            if CHATML_MARKER in vocab_get():
+                return True
+        except Exception:  # pragma: no cover - defensive
+            pass
+    added = getattr(tokenizer, "added_tokens_encoder", None)
+    if isinstance(added, dict) and CHATML_MARKER in added:
+        return True
+    return False
+
+
 def detect_document_style(chat_template: Optional[str]) -> str:
     """Classify how a chat template consumes the ``documents=`` kwarg.
 
     Pure string introspection so it stays unit-testable and needs no model
     download. Returns one of ``DOC_STYLES``.
 
+    - ChatML marker present          -> Granite 4.2 (documents= dropped; use a tool
+      message). Checked **first**: 4.2's template may still mention ``document``
+      elsewhere, and falling through to ``granite4`` would silently drop the context.
     - ``doc_id`` referenced          -> Granite 3.x (indexes doc_id directly)
     - ``documents`` referenced       -> Granite 4.0/4.1 (tojson, verbatim keys)
-    - ``document`` absent entirely   -> template ignores documents (4.2, Llama)
+    - ``document`` absent entirely   -> template ignores documents (Llama, etc.)
     """
     if not chat_template:
         return DOC_STYLE_INLINE
+    if is_chatml_template(chat_template):
+        return DOC_STYLE_TOOL
     if "doc_id" in chat_template:
         return DOC_STYLE_GRANITE3
     if "document" in chat_template:
@@ -97,19 +151,36 @@ def template_supports_kwarg(chat_template: Optional[str], name: str) -> bool:
 
 
 def tokenizer_document_style(tokenizer) -> str:
-    """Detect the document style from a tokenizer's chat template."""
+    """Detect the document style from a tokenizer.
+
+    Goes through :func:`tokenizer_is_chatml` first so a real Granite 4.2 tokenizer
+    resolves to ``tool`` via its vocab even if the template text does not match.
+    """
+    if tokenizer_is_chatml(tokenizer):
+        return DOC_STYLE_TOOL
     return detect_document_style(getattr(tokenizer, "chat_template", None))
 
 
 def build_documents(contexts: Sequence[str], doc_style: str) -> List[Dict[str, str]]:
-    """Build the documents list for ``doc_style``, one document per passage.
+    """Build the documents list for ``doc_style``.
+
+    One document per passage, except for ``tool`` (Granite 4.2) where all passages
+    are merged into a single document.
 
     Granite 4.x renders each document as its own JSON line with verbatim keys,
     so ``doc_id`` is omitted there to keep it out of the prompt. Granite 3.x
     indexes ``doc_id`` directly and would fail without it.
+
+    Granite 4.2 renders a ``tool`` message as one ``<tool_response>[...]``
+    JSON array, so N documents become N array entries — a different prompt shape
+    from 4.1's single ``<documents>`` block. Merging the passages into one document
+    (separated by a blank line) keeps the 4.2 block equivalent to the 4.1 one, so
+    data built for either generation trains the same context layout.
     """
     if doc_style == DOC_STYLE_GRANITE3:
         return [{"doc_id": str(i), "text": text} for i, text in enumerate(contexts)]
+    if doc_style == DOC_STYLE_TOOL:
+        return [{"text": "\n\n".join(contexts)}] if contexts else []
     return [{"text": text} for text in contexts]
 
 
@@ -123,17 +194,125 @@ def inline_documents_message(documents: Sequence[Dict[str, str]]) -> Dict[str, s
     return {"role": "system", "content": _INLINE_DOCS_PREFIX + "\n" + body + _INLINE_DOCS_SUFFIX}
 
 
+def normalize_document(doc: Any, idx: int) -> Dict[str, str]:
+    """Normalize a passage into the agentic ``{source, document_id, content}`` record.
+
+    Accepts a plain string (the builders' shape), a ``{"text": ...}`` dict, or a
+    ``{"content": ...}`` dict. ``document_id`` falls back to the positional index
+    when absent *or blank* — an empty ``doc_id`` would otherwise render as an empty
+    field in the prompt.
+    """
+    if isinstance(doc, dict):
+        content = doc.get("content", doc.get("text", ""))
+        doc_id = doc.get("document_id") or doc.get("doc_id")
+        return {
+            "source": str(doc.get("source") or _TOOL_DOC_SOURCE),
+            "document_id": str(doc_id) if doc_id else str(idx),
+            "content": content if isinstance(content, str) else str(content),
+        }
+    return {
+        "source": _TOOL_DOC_SOURCE,
+        "document_id": str(idx),
+        "content": doc if isinstance(doc, str) else str(doc),
+    }
+
+
+def tool_documents_message(documents: Sequence[Any]) -> Dict[str, str]:
+    """Build the ``tool`` message carrying the retrieved documents.
+
+    Granite 4.2 renders a ``tool`` message as a ``<tool_response>[...]</tool_response>``
+    block — how 4.2 natively represents RAG context. No assistant ``tool_calls`` turn
+    is synthesized and no tool schema is declared; 4.2 renders a bare ``tool`` message.
+
+    One array entry per element of ``documents``. The builders hand this a single
+    merged document (see :func:`build_documents`) so the block mirrors 4.1's single
+    ``<documents>`` block; callers passing pre-built records keep one entry each,
+    since their ``document_id``/``source`` values are theirs to preserve.
+    """
+    payload = [normalize_document(d, i) for i, d in enumerate(documents)]
+    return {"role": "tool", "content": json.dumps(payload, indent=2, ensure_ascii=False)}
+
+
+def insert_documents_as_tool(
+    messages: Sequence[Dict[str, str]],
+    documents: Sequence[Any],
+    *,
+    before_first_assistant: bool = True,
+) -> List[Dict[str, str]]:
+    """Return a copy of ``messages`` with the documents inserted as a ``tool`` message.
+
+    ``before_first_assistant=True`` (judge/guardian data) places it immediately before
+    the first assistant turn: the documents are the grounding for the answer being
+    judged, while a later user turn carries the judging *instruction*. Placing them
+    after the last user turn would bury the context after the instruction and just
+    before the label.
+
+    With no assistant turn (e.g. an inference prompt) there is no answer to precede,
+    so the message lands after the last user turn instead.
+    """
+    result = list(messages)
+    tool_msg = tool_documents_message(documents)
+
+    if before_first_assistant:
+        idx = next((i for i, m in enumerate(result) if m.get("role") == "assistant"), None)
+        if idx is not None:
+            return result[:idx] + [tool_msg] + result[idx:]
+
+    last_user = None
+    for i, m in enumerate(result):
+        if m.get("role") == "user":
+            last_user = i
+    if last_user is None:
+        idx = next((i for i, m in enumerate(result) if m.get("role") == "assistant"), len(result))
+        return result[:idx] + [tool_msg] + result[idx:]
+    return result[: last_user + 1] + [tool_msg] + result[last_user + 1 :]
+
+
+def documents_ride_in_messages(doc_style: str) -> bool:
+    """True when ``doc_style`` carries documents in the messages, not the kwarg."""
+    return doc_style in (DOC_STYLE_TOOL, DOC_STYLE_INLINE)
+
+
+def attach_documents(
+    messages: Sequence[Dict[str, str]],
+    documents: Sequence[Dict[str, str]],
+    doc_style: str,
+    *,
+    before_first_assistant: bool = True,
+) -> List[Dict[str, str]]:
+    """Attach message-borne documents to ``messages`` according to ``doc_style``.
+
+    The single seam for the two message-borne styles, so the dataset builders and the
+    eval-side prompt builders cannot drift:
+
+    - ``tool``   -> a ``tool`` message (Granite 4.2's native RAG representation)
+    - ``inline`` -> a leading system message mimicking Granite 4.x's ``<documents>``
+
+    Native styles (granite3/granite4) pass documents via the kwarg, so this is a
+    no-op for them.
+    """
+    if not documents:
+        return list(messages)
+    if doc_style == DOC_STYLE_TOOL:
+        return insert_documents_as_tool(messages, documents, before_first_assistant=before_first_assistant)
+    if doc_style == DOC_STYLE_INLINE:
+        return [inline_documents_message(documents), *messages]
+    return list(messages)
+
+
 def split_documents(
     contexts: Sequence[str],
     doc_style: str,
 ) -> Tuple[List[Dict[str, str]], Optional[List[Dict[str, str]]]]:
-    """Return ``(inline_documents, template_documents)`` for ``doc_style``.
+    """Return ``(message_documents, template_documents)`` for ``doc_style``.
 
-    Exactly one is populated: inline styles carry the context in the messages,
-    native styles pass it via the ``documents=`` kwarg / column.
+    Exactly one is populated: message-borne styles (``tool``, ``inline``) carry the
+    context inside the messages, native styles pass it via the ``documents=`` kwarg /
+    column. Hand the first to :func:`attach_documents` and the second to
+    :func:`render_chat_input`.
     """
     documents = build_documents(contexts, doc_style)
-    if doc_style == DOC_STYLE_INLINE:
+    if documents_ride_in_messages(doc_style):
         return documents, None
     return [], documents
 
@@ -357,9 +536,19 @@ NLI_SYSTEM_PROMPT = (
 
 GUARDIAN_DETECTION_SCHEMA = "If the last assistant's text meets the criteria, return 'yes'; otherwise, return 'no'."
 
+GUARDIAN_DETECTION_SCHEMA_JSON = (
+    "If the last assistant's text meets the criteria, provide the final answer as a JSON dict with the following "
+    'format: {"score": "yes" or "no"}.'
+)
+
 GUARDIAN_CORRECTION_SCHEMA = (
     "If the last assistant's text meets the criteria, return a corrected version of "
     "the assistant's message based on the given context; otherwise, return 'none'."
+)
+
+GUARDIAN_CORRECTION_SCHEMA_JSON = (
+    "If the last assistant's text meets the criteria, provide the final answer as a JSON dict with the following "
+    'format: {"correction": "corrected message" or "none"}.'
 )
 
 GUARDIAN_ATOMIZER_SCHEMA = (
@@ -401,6 +590,12 @@ _GUARDIAN_SPECS = {
             "detection": (GUARDIAN_DETECTION_SCHEMA, GUARDIAN_DETECTION_JSON_HINT),
             "correction": (GUARDIAN_CORRECTION_SCHEMA, GUARDIAN_CORRECTION_JSON_HINT),
         },
+        # Granite 4.2 asks for the verdict as a JSON dict directly in the schema
+        # instead of the "return 'yes'/'no'" phrasing plus an appended hint.
+        "json_schemas": {
+            "detection": GUARDIAN_DETECTION_SCHEMA_JSON,
+            "correction": GUARDIAN_CORRECTION_SCHEMA_JSON,
+        },
         "default_variant": "detection",
         "always_hint": False,
     },
@@ -420,8 +615,14 @@ _GUARDIAN_SPECS = {
 }
 
 
-def _guardian_spec(criteria_id: str, variant: Optional[str]):
-    """Resolve ``(system_prompt, schema, json_hint, always_hint)`` for a task."""
+def _guardian_spec(criteria_id: str, variant: Optional[str], *, json_schema: bool = False):
+    """Resolve ``(system_prompt, schema, json_hint, always_hint)`` for a task.
+
+    ``json_schema`` selects the task's JSON-dict schema where it has one (factuality
+    on Granite 4.2). That schema *replaces* the plain one and already spells out the
+    JSON format, so the appended hint is suppressed by returning ``None`` for it —
+    otherwise the format spec would appear twice.
+    """
     if criteria_id not in CRITERIA:
         raise KeyError(f"unknown criteria id {criteria_id!r}; known: {sorted(CRITERIA)}")
     spec = _GUARDIAN_SPECS.get(criteria_id)
@@ -434,6 +635,10 @@ def _guardian_spec(criteria_id: str, variant: Optional[str]):
         known = sorted(v for v in variants if v is not None) or ["<none>"]
         raise KeyError(f"unknown variant {variant!r} for {criteria_id!r}; known: {known}")
     schema, json_hint = variants[variant]
+    if json_schema:
+        json_only = spec.get("json_schemas", {}).get(variant)
+        if json_only is not None:
+            return spec["system_prompt"], json_only, None, spec["always_hint"]
     return spec["system_prompt"], schema, json_hint, spec["always_hint"]
 
 
@@ -442,6 +647,7 @@ def guardian_text(
     *,
     variant: Optional[str] = None,
     for_prompt: bool = False,
+    json_schema: bool = False,
     tag: str = "guardian",
 ) -> str:
     """Assemble a ``<guardian>`` user-turn block for any judging task.
@@ -461,10 +667,14 @@ def guardian_text(
     ``"detection"``). ``for_prompt`` appends the JSON dict hint; tasks whose
     target *is* JSON (NLI) always include it.
 
+    ``json_schema`` swaps in the task's JSON-dict schema instead (factuality on
+    Granite 4.2), which states the JSON format itself — so the appended hint is
+    suppressed and ``for_prompt`` becomes a no-op for that task.
+
     Adding a judging task means adding a :data:`CRITERIA` entry and a
     :data:`_GUARDIAN_SPECS` entry — no new assembly code.
     """
-    system_prompt, schema, json_hint, always_hint = _guardian_spec(criteria_id, variant)
+    system_prompt, schema, json_hint, always_hint = _guardian_spec(criteria_id, variant, json_schema=json_schema)
     if json_hint and (for_prompt or always_hint):
         schema = f"{schema} {json_hint}"
     return f"<{tag}>{system_prompt}\n\n### Criteria: {CRITERIA[criteria_id]}\n\n### Scoring Schema: {schema}"
@@ -474,9 +684,37 @@ def guardian_text(
 FACT_DETECTION_GUARDIAN_TEXT = guardian_text(CRITERIA_ID, variant="detection")
 FACT_CORRECTION_GUARDIAN_TEXT = guardian_text(CRITERIA_ID, variant="correction")
 
+# Granite 4.2 variants: the schema itself asks for a JSON dict (see the
+# ``json_schemas`` entry in :data:`_GUARDIAN_SPECS`).
+FACT_DETECTION_GUARDIAN_TEXT_JSON = guardian_text(CRITERIA_ID, variant="detection", json_schema=True)
+FACT_CORRECTION_GUARDIAN_TEXT_JSON = guardian_text(CRITERIA_ID, variant="correction", json_schema=True)
+
+
+def fact_guardian_text(variant: str, *, json_schema: bool = False) -> str:
+    """The factuality guardian block for ``variant``, plain or JSON-schema flavored.
+
+    The single lookup shared by the dataset builder and the eval-side prompt
+    builders, so a 4.2 run cannot end up training on one schema and evaluating
+    against the other.
+    """
+    if json_schema:
+        return FACT_DETECTION_GUARDIAN_TEXT_JSON if variant == "detection" else FACT_CORRECTION_GUARDIAN_TEXT_JSON
+    return FACT_DETECTION_GUARDIAN_TEXT if variant == "detection" else FACT_CORRECTION_GUARDIAN_TEXT
+
+
+def uses_json_schema(doc_style: str) -> bool:
+    """True when ``doc_style`` implies the JSON-dict guardian schema (Granite 4.2).
+
+    Tied to the ChatML/``tool`` style rather than a model name: ``model_type`` is
+    ``granite`` for both 4.1 and 4.2, so the template is the only reliable signal,
+    and it is already resolved wherever documents are shaped.
+    """
+    return doc_style == DOC_STYLE_TOOL
+
+
 # Atomizer and NLI guardian blocks (kept under their historical names).
-ATOMIZER_TEXT = guardian_text(ATOMIZER_CRITERIA_ID)
-NLI_TEXT = guardian_text(NLI_CRITERIA_ID)
+ATOMIZER_TEXT = guardian_text(ATOMIZER_CRITERIA_ID, tag="atomizer")
+NLI_TEXT = guardian_text(NLI_CRITERIA_ID, tag="nli")
 
 
 def _guardian_messages(query, response, unique_contexts, text):
@@ -501,17 +739,21 @@ def _guardian_prompt(query, response, unique_contexts, tokenizer, text, *, think
     The document shape is not portable across Granite generations: 3.x indexes
     ``doc_id``, 4.0/4.1 render keys verbatim (so ``doc_id`` would leak), and 4.2
     dropped ``documents`` entirely — passing it there silently drops the context.
-    :func:`split_documents` picks the right shape and, for templates that ignore
-    the kwarg, hands back documents to inline into a leading system message.
+    :func:`split_documents` picks the right shape and :func:`attach_documents` puts
+    message-borne documents in the right place (a ``tool`` message on 4.2, a leading
+    system message on templates that ignore the kwarg) — the same seam the dataset
+    builders use, so training and eval prompts cannot drift.
     """
-    inline_docs, template_docs = split_documents(unique_contexts, tokenizer_document_style(tokenizer))
+    doc_style = tokenizer_document_style(tokenizer)
+    message_docs, template_docs = split_documents(unique_contexts, doc_style)
     messages = [
         {"role": "user", "content": query},
         {"role": "assistant", "content": response},
         {"role": "user", "content": text},
     ]
-    if inline_docs:
-        messages.insert(0, inline_documents_message(inline_docs))
+    # before_first_assistant: the documents ground the response being judged, and the
+    # trailing user turn is the judging instruction.
+    messages = attach_documents(messages, message_docs, doc_style, before_first_assistant=True)
     return render_chat_input(messages, tokenizer, template_docs, thinking=thinking)
 
 
@@ -526,17 +768,23 @@ def get_correction_messages(query, response, unique_contexts):
 
 
 def get_detection_prompt(query, response, unique_contexts, tokenizer, *, thinking=False):
-    """Create the factuality detection prompt (chat-templated string)."""
-    return _guardian_prompt(
-        query, response, unique_contexts, tokenizer, FACT_DETECTION_GUARDIAN_TEXT, thinking=thinking
-    )
+    """Create the factuality detection prompt (chat-templated string).
+
+    The schema flavor follows the tokenizer's own template (JSON-dict on Granite
+    4.2), matching what the dataset builder wrote for that model.
+    """
+    text = fact_guardian_text("detection", json_schema=uses_json_schema(tokenizer_document_style(tokenizer)))
+    return _guardian_prompt(query, response, unique_contexts, tokenizer, text, thinking=thinking)
 
 
 def get_correction_prompt(query, response, unique_contexts, tokenizer, *, thinking=False):
-    """Create the factuality correction prompt (chat-templated string)."""
-    return _guardian_prompt(
-        query, response, unique_contexts, tokenizer, FACT_CORRECTION_GUARDIAN_TEXT, thinking=thinking
-    )
+    """Create the factuality correction prompt (chat-templated string).
+
+    The schema flavor follows the tokenizer's own template (JSON-dict on Granite
+    4.2), matching what the dataset builder wrote for that model.
+    """
+    text = fact_guardian_text("correction", json_schema=uses_json_schema(tokenizer_document_style(tokenizer)))
+    return _guardian_prompt(query, response, unique_contexts, tokenizer, text, thinking=thinking)
 
 
 # ------------------------------- atomizer ------------------------------------
