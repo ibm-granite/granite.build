@@ -62,6 +62,7 @@ new category, though: this step already writes export_manifest.json into dest, w
 not part of the model. A future publish step should exclude both by name rather than assume a
 model directory contains only model files.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -101,8 +102,9 @@ def _weights(checkpoint: Path) -> list[list]:
     digest is the guard that actually distinguishes two runs; this list guards against a shard
     going missing or being truncated.
     """
-    return sorted([p.name, p.stat().st_size]
-                  for p in Path(checkpoint).glob(f"*{_WEIGHT_SUFFIX}"))
+    return sorted(
+        [p.name, p.stat().st_size] for p in Path(checkpoint).glob(f"*{_WEIGHT_SUFFIX}")
+    )
 
 
 def checkpoint_identity(checkpoint: Path) -> dict:
@@ -127,9 +129,16 @@ def checkpoint_identity(checkpoint: Path) -> dict:
     }
 
 
-def expectation(*, checkpoint: Path, keep: list[str], dropped_unrecognised: list[str],
-                padding_side: str, chat_template_thinking: str, verify: bool,
-                expect_tokenizer_from: Path | None) -> dict:
+def expectation(
+    *,
+    checkpoint: Path,
+    keep: list[str],
+    dropped_unrecognised: list[str],
+    padding_side: str,
+    chat_template_thinking: str,
+    verify: bool,
+    expect_tokenizer_from: Path | None,
+) -> dict:
     """The full comparison key for one export."""
     return {
         "checkpoint": checkpoint_identity(checkpoint),
@@ -143,9 +152,14 @@ def expectation(*, checkpoint: Path, keep: list[str], dropped_unrecognised: list
         # them by returning None only for the second. The wrapper dict keeps them apart in the
         # diff output: absent key vs a key whose value is null.
         "expect_tokenizer": (
-            None if expect_tokenizer_from is None
-            else {"name": tokenizer_identity.derive_name(Path(expect_tokenizer_from)),
-                  "tokenizer": tokenizer_identity.hash_tokenizer(Path(expect_tokenizer_from))}
+            None
+            if expect_tokenizer_from is None
+            else {
+                "name": tokenizer_identity.derive_name(Path(expect_tokenizer_from)),
+                "tokenizer": tokenizer_identity.hash_tokenizer(
+                    Path(expect_tokenizer_from)
+                ),
+            }
         ),
     }
 
@@ -182,7 +196,8 @@ def self_test() -> int:
         ckpt = root / "checkpoint-50"
         ckpt.mkdir()
         (ckpt / "trainer_state.json").write_text(
-            json.dumps({"global_step": 50, "log_history": [{"loss": 0.1053}]}))
+            json.dumps({"global_step": 50, "log_history": [{"loss": 0.1053}]})
+        )
         (ckpt / "model.safetensors").write_bytes(b"\x00" * 2048)
         (ckpt / "config.json").write_text("{}")
 
@@ -191,30 +206,51 @@ def self_test() -> int:
         (ref / "tokenizer.json").write_text('{"version":"1.0"}')
 
         KEEP = ["config.json", "model.safetensors", "tokenizer_config.json"]
-        base = dict(checkpoint=ckpt, keep=KEEP, dropped_unrecognised=[],
-                    padding_side="right", chat_template_thinking="default-off",
-                    verify=True, expect_tokenizer_from=ref)
+        base = dict(
+            checkpoint=ckpt,
+            keep=KEEP,
+            dropped_unrecognised=[],
+            padding_side="right",
+            chat_template_thinking="default-off",
+            verify=True,
+            expect_tokenizer_from=ref,
+        )
         first = expectation(**base)
 
         def same(label: str, must_match: bool, **over) -> None:
             other = expectation(**{**base, **over})
             equal = not step_state._diff(first, other)
-            check(label, equal is must_match,
-                  f"equal={equal}, wanted equal={must_match}")
+            check(
+                label, equal is must_match, f"equal={equal}, wanted equal={must_match}"
+            )
 
         same("identical inputs compare equal", True)
         same("a different padding_side differs", False, padding_side="left")
-        same("a different thinking policy differs", False, chat_template_thinking="keep")
+        same(
+            "a different thinking policy differs", False, chat_template_thinking="keep"
+        )
         same("--no-verify differs from --verify", False, verify=False)
-        same("dropping an unrecognised file differs", False, dropped_unrecognised=["junk.bin"])
-        same("a different keep list differs", False, keep=KEEP + ["chat_template.jinja"])
-        same("no tokenizer reference differs from one given", False, expect_tokenizer_from=None)
+        same(
+            "dropping an unrecognised file differs",
+            False,
+            dropped_unrecognised=["junk.bin"],
+        )
+        same(
+            "a different keep list differs", False, keep=KEEP + ["chat_template.jinja"]
+        )
+        same(
+            "no tokenizer reference differs from one given",
+            False,
+            expect_tokenizer_from=None,
+        )
 
         # The selector is deliberately NOT part of the key; nothing to compare, so instead assert
         # the positive claim the docstring makes -- that the identity is the resolved directory.
-        check("checkpoint identity is read from the directory, not from a selector string",
-              checkpoint_identity(ckpt)["name"] == "checkpoint-50"
-              and checkpoint_identity(ckpt)["step"] == 50)
+        check(
+            "checkpoint identity is read from the directory, not from a selector string",
+            checkpoint_identity(ckpt)["name"] == "checkpoint-50"
+            and checkpoint_identity(ckpt)["step"] == 50,
+        )
 
         # Moving the tokenizer reference must not invalidate a completed export: the comparison is
         # on the vocabulary, and `derive_name` keeps a plain directory's basename, so a rename
@@ -222,28 +258,44 @@ def self_test() -> int:
         moved = root / "elsewhere" / "retagged_student"
         moved.parent.mkdir()
         ref.rename(moved)
-        same("the tokenizer reference MOVED but not renamed compares equal", True,
-             expect_tokenizer_from=moved)
+        same(
+            "the tokenizer reference MOVED but not renamed compares equal",
+            True,
+            expect_tokenizer_from=moved,
+        )
         renamed = root / "elsewhere" / "some_other_student"
         moved.rename(renamed)
-        same("a DIFFERENT reference directory name differs", False,
-             expect_tokenizer_from=renamed)
+        same(
+            "a DIFFERENT reference directory name differs",
+            False,
+            expect_tokenizer_from=renamed,
+        )
         (renamed / "tokenizer.json").write_text('{"version":"2.0"}')
-        same("the same reference name with a different vocabulary differs", False,
-             expect_tokenizer_from=renamed)
+        same(
+            "the same reference name with a different vocabulary differs",
+            False,
+            expect_tokenizer_from=renamed,
+        )
 
         # trainer_state.json is the decider. Same step, different loss history -> different run.
         (ckpt / "trainer_state.json").write_text(
-            json.dumps({"global_step": 50, "log_history": [{"loss": 0.1011}]}))
-        same("step 50 from a DIFFERENT trajectory differs (trainer_state digest)", False)
-        check("...and the step is still read as 50, so the diff names the trajectory not the step",
-              checkpoint_identity(ckpt)["step"] == 50)
+            json.dumps({"global_step": 50, "log_history": [{"loss": 0.1011}]})
+        )
+        same(
+            "step 50 from a DIFFERENT trajectory differs (trainer_state digest)", False
+        )
+        check(
+            "...and the step is still read as 50, so the diff names the trajectory not the step",
+            checkpoint_identity(ckpt)["step"] == 50,
+        )
 
         # A damaged state file must not make two checkpoints look alike.
         (ckpt / "trainer_state.json").write_text("{not json")
         idn = checkpoint_identity(ckpt)
-        check("an unparseable trainer_state.json gives step=None but still a digest",
-              idn["step"] is None and idn["state_sha"] is not None)
+        check(
+            "an unparseable trainer_state.json gives step=None but still a digest",
+            idn["step"] is None and idn["state_sha"] is not None,
+        )
 
         # A shard that changes SIZE differs; a same-size rewrite does not. The second is the
         # documented blind spot, asserted so that it stays a decision rather than becoming a
@@ -259,33 +311,47 @@ def self_test() -> int:
         check("a resized weight shard differs", bool(step_state._diff(first, resized)))
         (ckpt / "model.safetensors").write_bytes(b"\xff" * 4096)
         rewritten = expectation(**base)
-        check("a same-size shard REWRITE compares equal (documented blind spot)",
-              not step_state._diff(resized, rewritten))
+        check(
+            "a same-size shard REWRITE compares equal (documented blind spot)",
+            not step_state._diff(resized, rewritten),
+        )
 
         outs = declared_outputs(KEEP)
-        check("declared_outputs adds export_manifest.json and keeps the rest",
-              outs == sorted(set(KEEP) | {"export_manifest.json"}) and len(outs) == 4,
-              f"{outs}")
-        check("declared_outputs does not duplicate a manifest already in keep",
-              declared_outputs(KEEP + ["export_manifest.json"]) == outs)
+        check(
+            "declared_outputs adds export_manifest.json and keeps the rest",
+            outs == sorted(set(KEEP) | {"export_manifest.json"}) and len(outs) == 4,
+            f"{outs}",
+        )
+        check(
+            "declared_outputs does not duplicate a manifest already in keep",
+            declared_outputs(KEEP + ["export_manifest.json"]) == outs,
+        )
 
         # The expectation is written to JSON and read back by the next run, so it has to survive
         # the round trip byte for byte -- tuples-vs-lists is the classic way this quietly fails.
         rt = json.loads(json.dumps(first))
-        check("the expectation survives a JSON round trip", not step_state._diff(first, rt))
+        check(
+            "the expectation survives a JSON round trip",
+            not step_state._diff(first, rt),
+        )
 
     if not bad:
-        print("\nEXPORT EXPECTATION EXERCISED: checkpoint identity by trajectory digest, both "
-              "policy edits, the verify assertion, the kept/dropped lists, a moved vs renamed vs "
-              "revocalised tokenizer reference, and the size-only weight blind spot")
+        print(
+            "\nEXPORT EXPECTATION EXERCISED: checkpoint identity by trajectory digest, both "
+            "policy edits, the verify assertion, the kept/dropped lists, a moved vs renamed vs "
+            "revocalised tokenizer reference, and the size-only weight blind spot"
+        )
     return bad
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("action", choices=["self-test"],
-                   help="Only self-test: this step's gate is a function call inside "
-                        "export_hf_model.main(), not a subprocess. See the module docstring.")
+    p.add_argument(
+        "action",
+        choices=["self-test"],
+        help="Only self-test: this step's gate is a function call inside "
+        "export_hf_model.main(), not a subprocess. See the module docstring.",
+    )
     a = p.parse_args(argv)
     if a.action == "self-test":
         return self_test()
