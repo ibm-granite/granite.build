@@ -91,6 +91,7 @@ WHAT WAS KEPT DELIBERATELY, because it is right and non-obvious:
 SHARD IDS are `node_id * MAX_SHARDS_PER_NODE + local_idx`, which caps this at MAX_SHARDS_PER_NODE
 shards per node and 999 nodes at the current constant. Both are real ceilings and both raise.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -147,73 +148,101 @@ def get_args(argv=None):
     # unchanged instead of translating -- one fewer place for a name to drift.
     p.add_argument("--input-jsonl", required=True)
     p.add_argument("--output-dir", required=True)
-    p.add_argument("--teacher-model", required=True, help="Directory of teacher WEIGHTS.")
+    p.add_argument(
+        "--teacher-model", required=True, help="Directory of teacher WEIGHTS."
+    )
     p.add_argument(
         "--teacher-tokenizer",
         default="",
         help="Directory of the teacher TOKENIZER; defaults to --teacher-model. Pass "
-             "distill-tokenizer-align's teacher_overlay. Recorded in meta.json as "
-             "tokenizer_name_or_path, which is what the training-time consumer compares against.",
+        "distill-tokenizer-align's teacher_overlay. Recorded in meta.json as "
+        "tokenizer_name_or_path, which is what the training-time consumer compares against.",
     )
     p.add_argument("--top-k", type=int, default=256)
     p.add_argument(
-        "--max-length", type=int, default=8192,
+        "--max-length",
+        type=int,
+        default=8192,
         help="Rows whose rendered length exceeds this are SKIPPED, not truncated (they appear in "
-             "index.jsonl with skipped=true). A skip is a silent corpus reduction, so see "
-             "--max-skip-fraction.",
+        "index.jsonl with skipped=true). A skip is a silent corpus reduction, so see "
+        "--max-skip-fraction.",
     )
     p.add_argument("--batch-size", type=int, default=4)
-    p.add_argument("--dtype", choices=sorted(DTYPE_NAMES), default="bfloat16",
-                   help=f"Dtype the TEACHER is loaded in. Stored logits are always "
-                        f"{LOGITS_DTYPE} and stored ids {INDICES_DTYPE}.")
-    p.add_argument("--shard-target-tokens", type=int, default=4_000_000,
-                   help="Soft cap on rows per shard file. Affects file count, nothing else.")
+    p.add_argument(
+        "--dtype",
+        choices=sorted(DTYPE_NAMES),
+        default="bfloat16",
+        help=f"Dtype the TEACHER is loaded in. Stored logits are always "
+        f"{LOGITS_DTYPE} and stored ids {INDICES_DTYPE}.",
+    )
+    p.add_argument(
+        "--shard-target-tokens",
+        type=int,
+        default=4_000_000,
+        help="Soft cap on rows per shard file. Affects file count, nothing else.",
+    )
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--ignore-documents", action=argparse.BooleanOptionalAction, default=False,
-                   help="Drop each row's `documents` before rendering (RAG-free rendering).")
     p.add_argument(
-        "--response-template", default="<|im_start|>assistant\n",
+        "--ignore-documents",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Drop each row's `documents` before rendering (RAG-free rendering).",
+    )
+    p.add_argument(
+        "--response-template",
+        default="<|im_start|>assistant\n",
         help="Fallback assistant-span marker, used only when the chat template carries no "
-             "{% generation %} markers. Recorded in meta.json with its token ids.",
+        "{% generation %} markers. Recorded in meta.json with its token ids.",
     )
     p.add_argument(
-        "--max-skip-fraction", type=float, default=0.05,
+        "--max-skip-fraction",
+        type=float,
+        default=0.05,
         help="Refuse if more than this fraction of corpus rows were skipped. A skipped row is "
-             "one the trainer will not see: silently training on 60%% of a corpus is the failure "
-             "mode this number exists to make loud.",
+        "one the trainer will not see: silently training on 60%% of a corpus is the failure "
+        "mode this number exists to make loud.",
     )
     p.add_argument(
-        "--allow-tokenizer-mismatch", action=argparse.BooleanOptionalAction, default=False,
+        "--allow-tokenizer-mismatch",
+        action=argparse.BooleanOptionalAction,
+        default=False,
         help="Skip the check that --teacher-tokenizer agrees with the tokenizer shipped in "
-             "--teacher-model. Only for a deliberately re-tokenized teacher.",
+        "--teacher-model. Only for a deliberately re-tokenized teacher.",
     )
     p.add_argument(
-        "--expectation-file", default="",
+        "--expectation-file",
+        default="",
         help="A previously emitted expectation JSON, reused instead of recomputing the corpus "
-             "md5. Compared against the output dir's stored expectation before anything is "
-             "appended.",
+        "md5. Compared against the output dir's stored expectation before anything is "
+        "appended.",
     )
     p.add_argument(
-        "--emit-expectation", default="",
+        "--emit-expectation",
+        default="",
         help="Write the expectation JSON to this path and exit. No CUDA, no model load.",
     )
     p.add_argument(
-        "--shard-count", type=int, default=0,
+        "--shard-count",
+        type=int,
+        default=0,
         help="Total number of INDEPENDENT passes over this corpus. 0 (default) derives the DP "
-             "layout from the launcher's world size, which is the historical behaviour. With "
-             "--shard-index, this job precomputes one residue class in a SINGLE-NODE job, so N "
-             "such jobs occupy N x gpus_per_node GPUs with no rendezvous. The parts MUST then be "
-             "merged with a companion tool and certified with --verify-only: a "
-             "shard job cannot check completeness, because completeness is a property of the whole.",
+        "layout from the launcher's world size, which is the historical behaviour. With "
+        "--shard-index, this job precomputes one residue class in a SINGLE-NODE job, so N "
+        "such jobs occupy N x gpus_per_node GPUs with no rendezvous. The parts MUST then be "
+        "merged with a companion tool and certified with --verify-only: a "
+        "shard job cannot check completeness, because completeness is a property of the whole.",
     )
     p.add_argument(
-        "--shard-index", type=int, default=-1,
+        "--shard-index",
+        type=int,
+        default=-1,
         help="Which residue class this job owns, 0 <= --shard-index < --shard-count.",
     )
     p.add_argument(
-        "--verify-only", action="store_true",
+        "--verify-only",
+        action="store_true",
         help="Re-check an existing output directory (index vs corpus, shards vs index) and exit. "
-             "No CUDA, no model load.",
+        "No CUDA, no model load.",
     )
     a = p.parse_args(argv)
     if not a.teacher_tokenizer:
@@ -331,7 +360,7 @@ def _scan_response_template(input_ids, response_template_ids, eos_token_id):
     i = 0
     found = False
     while i <= n - m:
-        if input_ids[i:i + m] == response_template_ids:
+        if input_ids[i : i + m] == response_template_ids:
             found = True
             j = i + m
             while j < n:
@@ -489,11 +518,11 @@ def _reconcile_shards(shards_dir, node_id, rows_by_shard, top_k, emit=print):
         if not (name.startswith("indices_") and name.endswith(".bin")):
             continue
         try:
-            shard_id = int(name[len("indices_"):-len(".bin")])
+            shard_id = int(name[len("indices_") : -len(".bin")])
         except ValueError:
             continue
         if not (lo <= shard_id < hi):
-            continue          # another node's shard; not ours to touch
+            continue  # another node's shard; not ours to touch
         want_rows = rows_by_shard.get(shard_id, 0)
         for path, itemsize, label in (
             (shard_paths(shards_dir, shard_id)[0], INDICES_ITEMSIZE, "indices"),
@@ -530,7 +559,9 @@ def _reconcile_shards(shards_dir, node_id, rows_by_shard, top_k, emit=print):
 # ------------------------------------------------------------------ verification
 
 
-def verify_output(output_dir, *, top_k=None, n_source=None, max_skip_fraction=None, emit=print):
+def verify_output(
+    output_dir, *, top_k=None, n_source=None, max_skip_fraction=None, emit=print
+):
     """Post-condition: this directory is a COMPLETE, self-consistent precompute of its corpus.
 
     Everything here is checkable from files alone -- no GPU, no teacher -- which is what lets a
@@ -558,7 +589,7 @@ def verify_output(output_dir, *, top_k=None, n_source=None, max_skip_fraction=No
         max_skip_fraction = float(meta.get("max_skip_fraction", 1.0))
 
     seen = set()
-    spans = {}          # shard_id -> list[(offset, count)]
+    spans = {}  # shard_id -> list[(offset, count)]
     skips = {}
     n_kept = 0
     with open(index_path, encoding="utf-8") as f:
@@ -568,7 +599,9 @@ def verify_output(output_dir, *, top_k=None, n_source=None, max_skip_fraction=No
             row = json.loads(line)
             idx = row["source_idx"]
             if idx in seen:
-                raise RuntimeError(f"{index_path}:{lineno}: duplicate source_idx={idx}.")
+                raise RuntimeError(
+                    f"{index_path}:{lineno}: duplicate source_idx={idx}."
+                )
             seen.add(idx)
             if row.get("skipped"):
                 skips[row.get("skip_reason") or "unknown"] = (
@@ -581,7 +614,9 @@ def verify_output(output_dir, *, top_k=None, n_source=None, max_skip_fraction=No
                 raise RuntimeError(
                     f"{index_path}:{lineno}: a non-skipped row claims {n} assistant tokens."
                 )
-            spans.setdefault(int(row["shard_id"]), []).append((int(row["shard_offset"]), n))
+            spans.setdefault(int(row["shard_id"]), []).append(
+                (int(row["shard_offset"]), n)
+            )
 
     missing = sorted(set(range(n_source)) - seen)
     extra = sorted(i for i in seen if not 0 <= i < n_source)
@@ -593,8 +628,10 @@ def verify_output(output_dir, *, top_k=None, n_source=None, max_skip_fraction=No
                 f"{missing[:10]}"
             )
         if extra:
-            detail.append(f"  {len(extra)} index row(s) name a source_idx outside the corpus: "
-                          f"{extra[:10]}")
+            detail.append(
+                f"  {len(extra)} index row(s) name a source_idx outside the corpus: "
+                f"{extra[:10]}"
+            )
         raise RuntimeError(
             "INCOMPLETE precompute. A shard set is valid when incomplete -- it loads, it memmaps, "
             "and it trains -- so this is checked here because nothing downstream can notice it.\n"
@@ -636,19 +673,23 @@ def verify_output(output_dir, *, top_k=None, n_source=None, max_skip_fraction=No
             (shard_paths(shards_dir, shard_id)[1], LOGITS_ITEMSIZE, LOGITS_DTYPE),
         ):
             if not os.path.exists(path):
-                raise RuntimeError(f"{path} is missing but the index accounts for {cursor} rows.")
+                raise RuntimeError(
+                    f"{path} is missing but the index accounts for {cursor} rows."
+                )
             want = cursor * top_k * itemsize
             have = os.path.getsize(path)
             if have != want:
                 raise RuntimeError(
                     f"{path}: {have} bytes, but the index accounts for {cursor} row(s) x "
                     f"top_k={top_k} x {itemsize} ({label}) = {want} bytes. "
-                    + ("The file is LONGER than the index: orphan rows from a kill between the "
-                       "shard write and the index write. A fresh run of the step reconciles this; "
-                       "it is only fatal in a directory that claims to be finished."
-                       if have > want else
-                       "The file is SHORTER than the index claims, so some row's teacher logits "
-                       "do not exist.")
+                    + (
+                        "The file is LONGER than the index: orphan rows from a kill between the "
+                        "shard write and the index write. A fresh run of the step reconciles this; "
+                        "it is only fatal in a directory that claims to be finished."
+                        if have > want
+                        else "The file is SHORTER than the index claims, so some row's teacher logits "
+                        "do not exist."
+                    )
                 )
     emit(
         f"[verify] {output_dir}: {len(seen)} index rows over {n_source} corpus rows, "
@@ -657,8 +698,12 @@ def verify_output(output_dir, *, top_k=None, n_source=None, max_skip_fraction=No
         + f"), {len(spans)} shard(s), {total_rows} teacher rows x top_k {top_k}"
     )
     return {
-        "n_index_rows": len(seen), "n_source": n_source, "n_kept": n_kept,
-        "n_skipped": n_skipped, "skips": skips, "n_shards": len(spans),
+        "n_index_rows": len(seen),
+        "n_source": n_source,
+        "n_kept": n_kept,
+        "n_skipped": n_skipped,
+        "skips": skips,
+        "n_shards": len(spans),
         "total_teacher_rows": total_rows,
     }
 
@@ -680,7 +725,9 @@ def main(argv=None):
         print(f"  corpus  : {exp['source_jsonl']}")
         print(f"  rows    : {exp['source_rows']}  md5={exp['source_jsonl_md5']}")
         print(f"  teacher : {exp['teacher_model']}")
-        print(f"  tokenizer: {exp['teacher_tokenizer']}  sha={exp['teacher_tokenizer_sha']}")
+        print(
+            f"  tokenizer: {exp['teacher_tokenizer']}  sha={exp['teacher_tokenizer_sha']}"
+        )
         return 0
 
     if args.verify_only:
@@ -762,18 +809,21 @@ def run_precompute(args):
     import torch
     import torch.nn.functional as F
     from accelerate import PartialState
-    from torch.distributed.device_mesh import init_device_mesh
-    from tqdm import tqdm
-    from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
-
     from gb_steps_post_training.distillation.utils import (
         verify_fast_tokenizer,
         verify_tokenizer_consistency,
     )
+    from torch.distributed.device_mesh import init_device_mesh
+    from tqdm import tqdm
+    from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
-    dtypes = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
+    dtypes = {
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+        "float32": torch.float32,
+    }
 
-    set_seed(args.seed)   # nothing here samples; called so the flag is not a lie
+    set_seed(args.seed)  # nothing here samples; called so the flag is not a lie
 
     state = PartialState()
     rank = state.process_index
@@ -817,10 +867,13 @@ def run_precompute(args):
         node_id = args.shard_index
         mesh_dp = 1
         if rank == 0:
-            print(f"SHARD MODE: residue class {node_id} of {num_nodes} "
-                  f"(rows where i % {num_nodes} == {node_id}); mesh stays (1, {local_world_size}); "
-                  f"NO merge and NO completeness check here -- merge the parts and run "
-                  f"--verify-only.", flush=True)
+            print(
+                f"SHARD MODE: residue class {node_id} of {num_nodes} "
+                f"(rows where i % {num_nodes} == {node_id}); mesh stays (1, {local_world_size}); "
+                f"NO merge and NO completeness check here -- merge the parts and run "
+                f"--verify-only.",
+                flush=True,
+            )
 
     os.makedirs(args.output_dir, exist_ok=True)
     shards_dir = os.path.join(args.output_dir, "shards")
@@ -862,24 +915,34 @@ def run_precompute(args):
 
     if rank == 0:
         print(code_provenance.format_block(code_provenance.describe()), flush=True)
-        print(f"World size: {world_size} (num_nodes={num_nodes}, tp={local_world_size})")
+        print(
+            f"World size: {world_size} (num_nodes={num_nodes}, tp={local_world_size})"
+        )
         print(f"Corpus: {args.input_jsonl} ({n_source_declared} rows)")
 
     # ---- Tokenizer. SEPARATE from the weights; see difference 1 in the module docstring.
     if rank == 0:
         print(f"Loading tokenizer: {args.teacher_tokenizer}")
-    tokenizer = AutoTokenizer.from_pretrained(args.teacher_tokenizer, trust_remote_code=True)
-    verify_fast_tokenizer(tokenizer, args.teacher_tokenizer, source_label="precompute-teacher")
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.teacher_tokenizer, trust_remote_code=True
+    )
+    verify_fast_tokenizer(
+        tokenizer, args.teacher_tokenizer, source_label="precompute-teacher"
+    )
     if not args.allow_tokenizer_mismatch and os.path.abspath(
         args.teacher_tokenizer
     ) != os.path.abspath(args.teacher_model):
         # The overlay is BUILT from the teacher, so the two must agree on token ids. What this
         # catches is handing this step the STUDENT's tokenizer -- which would mis-segment the whole
         # corpus, and which nothing else in the pass would notice.
-        weights_tok = AutoTokenizer.from_pretrained(args.teacher_model, trust_remote_code=True)
+        weights_tok = AutoTokenizer.from_pretrained(
+            args.teacher_model, trust_remote_code=True
+        )
         verify_tokenizer_consistency(
-            tokenizer, weights_tok,
-            train_source=args.teacher_tokenizer, ref_source=args.teacher_model,
+            tokenizer,
+            weights_tok,
+            train_source=args.teacher_tokenizer,
+            ref_source=args.teacher_model,
             context="precompute (teacher tokenizer vs the tokenizer shipped with the weights)",
         )
         del weights_tok
@@ -888,7 +951,9 @@ def run_precompute(args):
 
     response_template_ids = None
     if args.response_template:
-        response_template_ids = tokenizer.encode(args.response_template, add_special_tokens=False)
+        response_template_ids = tokenizer.encode(
+            args.response_template, add_special_tokens=False
+        )
         if not response_template_ids:
             response_template_ids = None
 
@@ -899,9 +964,14 @@ def run_precompute(args):
     if rank == 0:
         print(f"Loading model: {args.teacher_model}")
     _ensure_process_group(torch, world_size)
-    mesh = init_device_mesh("cuda", (mesh_dp, local_world_size), mesh_dim_names=("dp", "tp"))
+    mesh = init_device_mesh(
+        "cuda", (mesh_dp, local_world_size), mesh_dim_names=("dp", "tp")
+    )
     model_kwargs = dict(
-        torch_dtype=torch_dtype, trust_remote_code=True, tp_plan="auto", device_mesh=mesh,
+        torch_dtype=torch_dtype,
+        trust_remote_code=True,
+        tp_plan="auto",
+        device_mesh=mesh,
     )
     try:
         model = AutoModelForCausalLM.from_pretrained(
@@ -920,10 +990,15 @@ def run_precompute(args):
         # usual cause of landing here is a cold kernel cache under HF_HUB_OFFLINE=1 -- which the
         # launcher preflights precisely so this fallback stays theoretical.
         if rank == 0:
-            print(f"WARNING: flash_attention_2 unavailable, falling back to the transformers "
-                  f"default: {type(e).__name__}: {e}", flush=True)
+            print(
+                f"WARNING: flash_attention_2 unavailable, falling back to the transformers "
+                f"default: {type(e).__name__}: {e}",
+                flush=True,
+            )
         model = AutoModelForCausalLM.from_pretrained(args.teacher_model, **model_kwargs)
-    model = model.eval()   # NOT .to(device): tp_plan="auto" has already placed the shards
+    model = (
+        model.eval()
+    )  # NOT .to(device): tp_plan="auto" has already placed the shards
     attn_impl = getattr(model.config, "_attn_implementation", "unknown")
 
     vocab_size = int(model.config.vocab_size)
@@ -987,12 +1062,13 @@ def run_precompute(args):
 
     pbar = tqdm(
         range(0, len(node_indices), args.batch_size),
-        desc=f"rank {rank}", disable=not is_node_writer,
+        desc=f"rank {rank}",
+        disable=not is_node_writer,
     )
     for batch_start in pbar:
-        batch_idx_list = node_indices[batch_start:batch_start + args.batch_size]
+        batch_idx_list = node_indices[batch_start : batch_start + args.batch_size]
 
-        tokenized = []   # (src_idx, input_ids, logit_positions, skip_reason, n_assist)
+        tokenized = []  # (src_idx, input_ids, logit_positions, skip_reason, n_assist)
         for src_idx in batch_idx_list:
             record = source_data[src_idx]
             messages = record.get("messages", [])
@@ -1001,13 +1077,19 @@ def run_precompute(args):
                 continue
 
             tools = parse_tools_for_template(record.get("tools"))
-            documents = [] if args.ignore_documents else record.get("documents", []) or []
+            documents = (
+                [] if args.ignore_documents else record.get("documents", []) or []
+            )
             chat_template_kwargs = {"documents": documents} if documents else {}
 
             try:
                 processed = tokenizer.apply_chat_template(
-                    messages, return_dict=True, tokenize=True,
-                    return_assistant_tokens_mask=True, tools=tools, **chat_template_kwargs,
+                    messages,
+                    return_dict=True,
+                    tokenize=True,
+                    return_assistant_tokens_mask=True,
+                    tools=tools,
+                    **chat_template_kwargs,
                 )
             except Exception:
                 tokenized.append((src_idx, None, None, "no_assistant", 0))
@@ -1015,7 +1097,11 @@ def run_precompute(args):
 
             input_ids = processed["input_ids"]
             assistant_masks = processed.get("assistant_masks", None)
-            if isinstance(input_ids, list) and input_ids and isinstance(input_ids[0], list):
+            if (
+                isinstance(input_ids, list)
+                and input_ids
+                and isinstance(input_ids[0], list)
+            ):
                 input_ids = input_ids[0]
                 if assistant_masks is not None:
                     assistant_masks = assistant_masks[0]
@@ -1036,14 +1122,18 @@ def run_precompute(args):
             # The logit that PREDICTS an assistant token sits one position earlier, so position 0
             # can never be scored. This is the definition the consumer mirrors when it recomputes
             # assistant_logits_used as sum(mask[1:]).
-            logit_positions = [i - 1 for i, m in enumerate(assistant_masks) if m == 1 and i >= 1]
+            logit_positions = [
+                i - 1 for i, m in enumerate(assistant_masks) if m == 1 and i >= 1
+            ]
             if not logit_positions:
                 tokenized.append((src_idx, None, None, "no_assistant", 0))
                 continue
             if len(input_ids) > args.max_length:
                 tokenized.append((src_idx, None, None, "too_long", 0))
                 continue
-            tokenized.append((src_idx, input_ids, logit_positions, None, len(logit_positions)))
+            tokenized.append(
+                (src_idx, input_ids, logit_positions, None, len(logit_positions))
+            )
 
         forward_batch = [t for t in tokenized if t[3] is None]
 
@@ -1054,8 +1144,8 @@ def run_precompute(args):
             padded_ids = torch.full((B, max_len), pad_token_id, dtype=torch.long)
             attn = torch.zeros((B, max_len), dtype=torch.long)
             for i, ids in enumerate(input_ids_list):
-                padded_ids[i, :len(ids)] = torch.tensor(ids, dtype=torch.long)
-                attn[i, :len(ids)] = 1
+                padded_ids[i, : len(ids)] = torch.tensor(ids, dtype=torch.long)
+                attn[i, : len(ids)] = 1
             padded_ids = padded_ids.to(state.device)
             attn = attn.to(state.device)
 
@@ -1078,24 +1168,30 @@ def run_precompute(args):
                 hook.remove()
                 lm_head.forward = orig_lm_head_forward
 
-            hidden = captured["h"]     # [B, T, H]
+            hidden = captured["h"]  # [B, T, H]
             captured.clear()
 
             if is_node_writer:
                 per_example_hidden = []
                 per_example_meta = []
-                for b_idx, (src_idx, _, logit_positions, _, n_assist) in enumerate(forward_batch):
-                    pos = torch.tensor(logit_positions, dtype=torch.long, device=hidden.device)
+                for b_idx, (src_idx, _, logit_positions, _, n_assist) in enumerate(
+                    forward_batch
+                ):
+                    pos = torch.tensor(
+                        logit_positions, dtype=torch.long, device=hidden.device
+                    )
                     per_example_hidden.append(hidden[b_idx].index_select(0, pos))
                     per_example_meta.append((src_idx, n_assist))
-                hidden_assist = torch.cat(per_example_hidden, dim=0)   # [N, H]
+                hidden_assist = torch.cat(per_example_hidden, dim=0)  # [N, H]
                 del per_example_hidden, hidden
 
                 topk_vals_chunks, topk_idx_chunks = [], []
                 with torch.inference_mode():
                     for s in range(0, hidden_assist.size(0), LM_HEAD_CHUNK):
                         chunk_logits = F.linear(
-                            hidden_assist[s:s + LM_HEAD_CHUNK], lm_head.weight, lm_head_bias
+                            hidden_assist[s : s + LM_HEAD_CHUNK],
+                            lm_head.weight,
+                            lm_head_bias,
                         )
                         if logits_scaling != 1.0:
                             chunk_logits = chunk_logits / logits_scaling
@@ -1109,23 +1205,30 @@ def run_precompute(args):
 
                 cursor = 0
                 for src_idx, n_assist in per_example_meta:
-                    topk_vals = topk_vals_all[cursor:cursor + n_assist]
-                    topk_idx = topk_idx_all[cursor:cursor + n_assist]
+                    topk_vals = topk_vals_all[cursor : cursor + n_assist]
+                    topk_idx = topk_idx_all[cursor : cursor + n_assist]
                     cursor += n_assist
                     topk_vals_np = topk_vals.detach().to(torch.float16).cpu().numpy()
                     topk_idx_np = topk_idx.detach().to(torch.int32).cpu().numpy()
 
-                    if (current_shard_token_count > 0
-                            and current_shard_token_count + n_assist > args.shard_target_tokens):
+                    if (
+                        current_shard_token_count > 0
+                        and current_shard_token_count + n_assist
+                        > args.shard_target_tokens
+                    ):
                         current_local_idx += 1
                         if current_local_idx >= MAX_SHARDS_PER_NODE:
                             raise RuntimeError(
                                 f"node {node_id} exhausted {MAX_SHARDS_PER_NODE} shard slots."
                             )
-                        current_shard_id = node_id * MAX_SHARDS_PER_NODE + current_local_idx
+                        current_shard_id = (
+                            node_id * MAX_SHARDS_PER_NODE + current_local_idx
+                        )
                         current_shard_token_count = 0
 
-                    indices_path, logits_path = shard_paths(shards_dir, current_shard_id)
+                    indices_path, logits_path = shard_paths(
+                        shards_dir, current_shard_id
+                    )
                     # Bytes first, index line second. A kill between them leaves orphan bytes,
                     # which _reconcile_shards truncates on the next start. The other order would
                     # leave an index row pointing at data that does not exist, which is NOT
@@ -1134,17 +1237,22 @@ def run_precompute(args):
                         f.write(topk_idx_np.tobytes())
                     with open(logits_path, "ab") as f:
                         f.write(topk_vals_np.tobytes())
-                    write_index_row({
-                        "source_idx": src_idx,
-                        "messages": source_data[src_idx].get("messages"),
-                        "tools": serialize_tools_for_index(source_data[src_idx].get("tools")),
-                        "documents": source_data[src_idx].get("documents", []) or [],
-                        "skipped": False,
-                        "skip_reason": None,
-                        "num_assistant_tokens": n_assist,
-                        "shard_id": current_shard_id,
-                        "shard_offset": current_shard_token_count,
-                    })
+                    write_index_row(
+                        {
+                            "source_idx": src_idx,
+                            "messages": source_data[src_idx].get("messages"),
+                            "tools": serialize_tools_for_index(
+                                source_data[src_idx].get("tools")
+                            ),
+                            "documents": source_data[src_idx].get("documents", [])
+                            or [],
+                            "skipped": False,
+                            "skip_reason": None,
+                            "num_assistant_tokens": n_assist,
+                            "shard_id": current_shard_id,
+                            "shard_offset": current_shard_token_count,
+                        }
+                    )
                     current_shard_token_count += n_assist
                     n_processed += 1
                 del topk_vals_all, topk_idx_all
@@ -1153,29 +1261,36 @@ def run_precompute(args):
             for src_idx, _, _, skip_reason, _ in tokenized:
                 if skip_reason is None:
                     continue
-                write_index_row({
-                    "source_idx": src_idx,
-                    "messages": source_data[src_idx].get("messages"),
-                    "tools": serialize_tools_for_index(source_data[src_idx].get("tools")),
-                    "documents": source_data[src_idx].get("documents", []) or [],
-                    "skipped": True,
-                    "skip_reason": skip_reason,
-                    "num_assistant_tokens": 0,
-                    "shard_id": -1,
-                    "shard_offset": -1,
-                })
+                write_index_row(
+                    {
+                        "source_idx": src_idx,
+                        "messages": source_data[src_idx].get("messages"),
+                        "tools": serialize_tools_for_index(
+                            source_data[src_idx].get("tools")
+                        ),
+                        "documents": source_data[src_idx].get("documents", []) or [],
+                        "skipped": True,
+                        "skip_reason": skip_reason,
+                        "num_assistant_tokens": 0,
+                        "shard_id": -1,
+                        "shard_offset": -1,
+                    }
+                )
                 if skip_reason == "no_assistant":
                     n_skipped_no_assist += 1
                 elif skip_reason == "too_long":
                     n_skipped_too_long += 1
 
             pbar.set_postfix(
-                processed=n_processed, skip_noassist=n_skipped_no_assist,
-                skip_toolong=n_skipped_too_long, shard=current_shard_id,
+                processed=n_processed,
+                skip_noassist=n_skipped_no_assist,
+                skip_toolong=n_skipped_too_long,
+                shard=current_shard_id,
             )
             n_batches = (len(node_indices) + args.batch_size - 1) // args.batch_size
-            if ((batch_start // args.batch_size) % 50 == 0
-                    or batch_start + args.batch_size >= len(node_indices)):
+            if (
+                batch_start // args.batch_size
+            ) % 50 == 0 or batch_start + args.batch_size >= len(node_indices):
                 print(
                     f"[rank {rank}] heartbeat: node={node_id} "
                     f"batch={batch_start // args.batch_size + 1}/{n_batches} "
@@ -1190,8 +1305,10 @@ def run_precompute(args):
         flush=True,
     )
     if torch.cuda.is_available():
-        print(f"[rank {rank}] peak alloc = {torch.cuda.max_memory_allocated() / 1e9:.2f} GB",
-              flush=True)
+        print(
+            f"[rank {rank}] peak alloc = {torch.cuda.max_memory_allocated() / 1e9:.2f} GB",
+            flush=True,
+        )
     sys.stdout.flush()
 
     # Free the teacher BEFORE the cross-node barrier. init_device_mesh only sets up subgroup
@@ -1205,10 +1322,13 @@ def run_precompute(args):
 
     rc = 0
     if args.shard_count and rank == 0:
-        print(f"SHARD MODE: wrote index_part_{node_id:04d}.jsonl and STOPPING. The other "
-              f"{num_nodes - 1} part(s) belong to other jobs, so merging here would silently "
-              f"emit a partial index. Run the companion merge tool once every "
-              f"shard is DONE, then --verify-only.", flush=True)
+        print(
+            f"SHARD MODE: wrote index_part_{node_id:04d}.jsonl and STOPPING. The other "
+            f"{num_nodes - 1} part(s) belong to other jobs, so merging here would silently "
+            f"emit a partial index. Run the companion merge tool once every "
+            f"shard is DONE, then --verify-only.",
+            flush=True,
+        )
     if rank == 0 and not args.shard_count:
         print("Merging index parts...", flush=True)
         all_rows = []
@@ -1225,8 +1345,11 @@ def run_precompute(args):
                 for line in f:
                     if line.strip():
                         all_rows.append(json.loads(line))
-            print(f"  read {part_path}: +{len(all_rows) - n_before} rows "
-                  f"(total={len(all_rows)})", flush=True)
+            print(
+                f"  read {part_path}: +{len(all_rows) - n_before} rows "
+                f"(total={len(all_rows)})",
+                flush=True,
+            )
 
         all_rows.sort(key=lambda x: x["source_idx"])
         index_path = os.path.join(args.output_dir, "index.jsonl")
@@ -1288,7 +1411,9 @@ def run_precompute(args):
         # meta.json in place on purpose: the directory is resumable and the message says so.
         try:
             verify_output(
-                args.output_dir, top_k=args.top_k, n_source=n_source,
+                args.output_dir,
+                top_k=args.top_k,
+                n_source=n_source,
                 max_skip_fraction=args.max_skip_fraction,
             )
         except RuntimeError as exc:

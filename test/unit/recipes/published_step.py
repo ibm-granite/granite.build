@@ -100,7 +100,9 @@ def image_env(step_path, tmp_path, python=None):
     shim = tmp_path / "uv-shim"
     shim.mkdir(exist_ok=True)
     py = shim / "python"
-    py.write_text(f'#!/bin/sh\nexec "{python or sys.executable}" "$@"\n', encoding="utf-8")
+    py.write_text(
+        f'#!/bin/sh\nexec "{python or sys.executable}" "$@"\n', encoding="utf-8"
+    )
     py.chmod(0o755)
     return {
         **os.environ,

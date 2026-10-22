@@ -13,6 +13,7 @@ invocations, which means loading a 30B teacher and re-running every forward pass
 Every metric here is a reduction over the same two logit tensors, so `--metrics jsd,kld,entropy`
 costs one pass, not three.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,53 +27,91 @@ from gb_steps_post_training.distillation import fast_tokenizer
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--student-model", required=True,
-                    help="Model whose distribution is measured. For a distillation run this "
-                         "is the checkpoint under test (distill-hf-export's export), or "
-                         "distill-tokenizer-align's retagged_student for a t=0 baseline.")
-    ap.add_argument("--teacher-model", default=None,
-                    help="Reference model. Required for jsd/kld/rkld; omit for entropy alone.")
-    ap.add_argument("--corpus", required=True,
-                    help="JSONL of {messages: [...]} records -- distill-corpus-prep's output. "
-                         "Use its eval split, not the split the student trained on.")
-    ap.add_argument("--out", required=True, help="Directory for metrics.json and per_sample.jsonl")
-    ap.add_argument("--metrics", default="jsd,entropy",
-                    help=f"Comma-separated subset of {','.join(dv.METRICS)} (default jsd,entropy)")
-    ap.add_argument("--max-samples", type=int, default=256,
-                    help="Cap on corpus records measured (default 256). A divergence mean is "
-                         "stable well before the corpus is exhausted and this runs a 30B "
-                         "forward pass per batch.")
-    ap.add_argument("--max-length", type=int, default=4096,
-                    help="Truncation length. Should match the training run's max_length, or "
-                         "the metric is measured on a different distribution than was trained.")
+    ap.add_argument(
+        "--student-model",
+        required=True,
+        help="Model whose distribution is measured. For a distillation run this "
+        "is the checkpoint under test (distill-hf-export's export), or "
+        "distill-tokenizer-align's retagged_student for a t=0 baseline.",
+    )
+    ap.add_argument(
+        "--teacher-model",
+        default=None,
+        help="Reference model. Required for jsd/kld/rkld; omit for entropy alone.",
+    )
+    ap.add_argument(
+        "--corpus",
+        required=True,
+        help="JSONL of {messages: [...]} records -- distill-corpus-prep's output. "
+        "Use its eval split, not the split the student trained on.",
+    )
+    ap.add_argument(
+        "--out", required=True, help="Directory for metrics.json and per_sample.jsonl"
+    )
+    ap.add_argument(
+        "--metrics",
+        default="jsd,entropy",
+        help=f"Comma-separated subset of {','.join(dv.METRICS)} (default jsd,entropy)",
+    )
+    ap.add_argument(
+        "--max-samples",
+        type=int,
+        default=256,
+        help="Cap on corpus records measured (default 256). A divergence mean is "
+        "stable well before the corpus is exhausted and this runs a 30B "
+        "forward pass per batch.",
+    )
+    ap.add_argument(
+        "--max-length",
+        type=int,
+        default=4096,
+        help="Truncation length. Should match the training run's max_length, or "
+        "the metric is measured on a different distribution than was trained.",
+    )
     ap.add_argument("--batch-size", type=int, default=4)
-    ap.add_argument("--seed", type=int, default=42,
-                    help="Seeds the corpus subsample, so two runs measure the same records.")
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Seeds the corpus subsample, so two runs measure the same records.",
+    )
     ap.add_argument("--device", default="cuda")
-    ap.add_argument("--dtype", default="bfloat16", choices=("bfloat16", "float16", "float32"))
-    ap.add_argument("--allow-tokenizer-mismatch", action="store_true",
-                    help="Compute anyway when the two tokenizers disagree on token ids. The "
-                         "resulting number is not comparable across models; see "
-                         "divergence.check_tokenizers.")
-    ap.add_argument("--max-incomplete-fraction", type=float, default=0.25,
-                    help="Refuse the run when more than this fraction of sampled records was "
-                         "measured incompletely (default 0.25). Two things count as "
-                         "incomplete, and they are different failures with the same cause -- "
-                         "a --max-length below what the corpus needs. SKIPPED: the prompt "
-                         "alone fills the budget, so no assistant tokens survive and the "
-                         "record contributes nothing (confirmed directly: --max-length 1024 "
-                         "against a corpus averaging 2347 tokens skipped 100%). TRUNCATED: "
-                         "the span survives but its tail is cut, so the record contributes a "
-                         "PREFIX of its completion (confirmed directly: --max-length 2048 "
-                         "skipped nothing at all and quietly measured partial answers). "
-                         "Neither skew is random -- both hit the longest conversations and "
-                         "only those -- so the reported mean is a length-biased estimate "
-                         "presented as the divergence. Set to 1.0 to measure a deliberately "
-                         "short slice anyway.")
-    ap.add_argument("--attn-implementation", default="eager",
-                    help="eager is the default deliberately: this needs full logits and does "
-                         "no generation, so flash-attention buys nothing here and is one more "
-                         "thing that can fail to build.")
+    ap.add_argument(
+        "--dtype", default="bfloat16", choices=("bfloat16", "float16", "float32")
+    )
+    ap.add_argument(
+        "--allow-tokenizer-mismatch",
+        action="store_true",
+        help="Compute anyway when the two tokenizers disagree on token ids. The "
+        "resulting number is not comparable across models; see "
+        "divergence.check_tokenizers.",
+    )
+    ap.add_argument(
+        "--max-incomplete-fraction",
+        type=float,
+        default=0.25,
+        help="Refuse the run when more than this fraction of sampled records was "
+        "measured incompletely (default 0.25). Two things count as "
+        "incomplete, and they are different failures with the same cause -- "
+        "a --max-length below what the corpus needs. SKIPPED: the prompt "
+        "alone fills the budget, so no assistant tokens survive and the "
+        "record contributes nothing (confirmed directly: --max-length 1024 "
+        "against a corpus averaging 2347 tokens skipped 100%). TRUNCATED: "
+        "the span survives but its tail is cut, so the record contributes a "
+        "PREFIX of its completion (confirmed directly: --max-length 2048 "
+        "skipped nothing at all and quietly measured partial answers). "
+        "Neither skew is random -- both hit the longest conversations and "
+        "only those -- so the reported mean is a length-biased estimate "
+        "presented as the divergence. Set to 1.0 to measure a deliberately "
+        "short slice anyway.",
+    )
+    ap.add_argument(
+        "--attn-implementation",
+        default="eager",
+        help="eager is the default deliberately: this needs full logits and does "
+        "no generation, so flash-attention buys nothing here and is one more "
+        "thing that can fail to build.",
+    )
     return ap.parse_args(argv)
 
 
@@ -82,7 +121,9 @@ def resolve_metrics(raw: str) -> list[str]:
         raise dv.MetricError("--metrics is empty")
     unknown = [m for m in wanted if m not in dv.METRICS]
     if unknown:
-        raise dv.MetricError(f"unknown metric(s) {unknown}; expected a subset of {dv.METRICS}")
+        raise dv.MetricError(
+            f"unknown metric(s) {unknown}; expected a subset of {dv.METRICS}"
+        )
     # Deduplicate but keep order, so --metrics jsd,jsd is not two passes.
     return list(dict.fromkeys(wanted))
 
@@ -95,13 +136,17 @@ def main(argv=None) -> int:
         if needs_teacher and not args.teacher_model:
             raise dv.MetricError(
                 f"--teacher-model is required for {needs_teacher} (a divergence needs two "
-                f"distributions). Use --metrics entropy to measure the student alone.")
+                f"distributions). Use --metrics entropy to measure the student alone."
+            )
 
         # The tokenizer check runs BEFORE any weights load. A 30B teacher takes minutes to
         # load and this refusal costs nothing, so ordering it first is the difference between
         # a fast error and a slow one.
-        ident = dv.check_tokenizers(args.student_model, args.teacher_model,
-                                    allow_mismatch=args.allow_tokenizer_mismatch)
+        ident = dv.check_tokenizers(
+            args.student_model,
+            args.teacher_model,
+            allow_mismatch=args.allow_tokenizer_mismatch,
+        )
         print(f"[tokenizer] {json.dumps(ident)}", flush=True)
 
         records = dv.load_jsonl(args.corpus)
@@ -122,17 +167,23 @@ def main(argv=None) -> int:
 
     print("\n=== divergence metrics ===")
     for name, summary in result["metrics"]["metrics"].items():
-        print(f"  {name:>8}: mean {summary['mean']:.6f}  median {summary['median']:.6f}  "
-              f"std {summary['std']:.6f}  (n={summary['n_samples']})")
+        print(
+            f"  {name:>8}: mean {summary['mean']:.6f}  median {summary['median']:.6f}  "
+            f"std {summary['std']:.6f}  (n={summary['n_samples']})"
+        )
     counts = result["metrics"]["counts"]
     if counts["skipped_no_assistant_span"]:
-        print(f"  NOTE: {counts['skipped_no_assistant_span']} record(s) had no measurable "
-              f"assistant span and were skipped.")
+        print(
+            f"  NOTE: {counts['skipped_no_assistant_span']} record(s) had no measurable "
+            f"assistant span and were skipped."
+        )
     if counts["truncated_at_max_length"]:
-        print(f"  NOTE: {counts['truncated_at_max_length']} record(s) were TRUNCATED at "
-              f"--max-length {result['metrics']['config']['max_length']}: "
-              f"{counts['truncated_tokens_dropped']} completion token(s) were not scored. "
-              f"The means above cover the measured prefixes only.")
+        print(
+            f"  NOTE: {counts['truncated_at_max_length']} record(s) were TRUNCATED at "
+            f"--max-length {result['metrics']['config']['max_length']}: "
+            f"{counts['truncated_tokens_dropped']} completion token(s) were not scored. "
+            f"The means above cover the measured prefixes only."
+        )
     print(f"\nwrote {out}/metrics.json and {out}/per_sample.jsonl")
     return 0
 
@@ -146,7 +197,9 @@ def rendered_length(tok, messages) -> int:
     no diagnostic, because it tells an operator whose --max-length is four times too small
     that length is not the problem. Render to text, then tokenize.
     """
-    text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+    text = tok.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=False
+    )
     return len(tok(text, add_special_tokens=False)["input_ids"])
 
 
@@ -156,7 +209,9 @@ def run(args, metrics: list[str], records: list[dict], ident: dict) -> dict:
     import torch
     from transformers import AutoModelForCausalLM
 
-    tok, template_source = fast_tokenizer.load(args.student_model, require_chat_template=True)
+    tok, template_source = fast_tokenizer.load(
+        args.student_model, require_chat_template=True
+    )
     print(f"[tokenizer] chat template from {template_source}", flush=True)
 
     if len(records) > args.max_samples:
@@ -190,24 +245,31 @@ def run(args, metrics: list[str], records: list[dict], ident: dict) -> dict:
     incomplete = skipped + truncated
     fraction = incomplete / len(records) if records else 1.0
     if not encoded or fraction > args.max_incomplete_fraction:
-        lengths = sorted(rendered_length(tok, r["messages"])
-                         for r in records[:64] if r.get("messages"))
+        lengths = sorted(
+            rendered_length(tok, r["messages"])
+            for r in records[:64]
+            if r.get("messages")
+        )
         median = lengths[len(lengths) // 2] if lengths else 0
         longest = lengths[-1] if lengths else 0
-        lengths_note = (f"  --max-length is {args.max_length}; a sample of this corpus renders "
-                        f"to a median of {median} and a maximum of {longest} tokens.\n")
+        lengths_note = (
+            f"  --max-length is {args.max_length}; a sample of this corpus renders "
+            f"to a median of {median} and a maximum of {longest} tokens.\n"
+        )
         if not encoded:
             # Distinct from the biased-subsample case and it needs a different fix: there is
             # no slice to measure, so --max-incomplete-fraction cannot rescue it.
             raise dv.MetricError(
                 f"none of {len(records)} sampled records yielded a measurable assistant span, "
-                f"so there is nothing to average.\n" + lengths_note +
-                f"  A record is skipped when the prompt alone fills --max-length, leaving no "
+                f"so there is nothing to average.\n"
+                + lengths_note
+                + f"  A record is skipped when the prompt alone fills --max-length, leaving no "
                 f"assistant tokens. Raise --max-length above {median} (ideally to the training "
                 f"run's value), or confirm the corpus ends each conversation on an assistant "
                 f"message -- distill-corpus-prep guarantees that, a raw corpus may not. "
                 f"--max-incomplete-fraction does not apply here: it selects among records that "
-                f"were measured at all, and none were.")
+                f"were measured at all, and none were."
+            )
         raise dv.MetricError(
             f"{incomplete} of {len(records)} sampled records ({fraction:.0%}) were measured "
             f"incompletely, above --max-incomplete-fraction "
@@ -216,12 +278,13 @@ def run(args, metrics: list[str], records: list[dict], ident: dict) -> dict:
             f"left to score.\n"
             f"    {truncated} truncated -- a span was scored, but {dropped} token(s) of "
             f"completion were cut off the ends.\n"
-            + lengths_note +
-            f"  Both only happen to conversations longer than --max-length, so what would be "
+            + lengths_note
+            + f"  Both only happen to conversations longer than --max-length, so what would be "
             f"reported is a length-biased estimate: the {len(encoded)} measured records are "
             f"the corpus's shorter ones, scored over the parts of their answers that fit.\n"
             f"  Raise --max-length (match the training run's), or pass "
-            f"--max-incomplete-fraction 1.0 to measure the short slice deliberately.")
+            f"--max-incomplete-fraction 1.0 to measure the short slice deliberately."
+        )
 
     dtype = getattr(torch, args.dtype)
     pad_id = tok.pad_token_id if tok.pad_token_id is not None else 0
@@ -229,11 +292,16 @@ def run(args, metrics: list[str], records: list[dict], ident: dict) -> dict:
     def load_model(path):
         print(f"[model] loading {path}", flush=True)
         m = AutoModelForCausalLM.from_pretrained(
-            path, dtype=dtype, attn_implementation=args.attn_implementation)
+            path, dtype=dtype, attn_implementation=args.attn_implementation
+        )
         return m.to(args.device).eval()
 
     student = load_model(args.student_model)
-    teacher = load_model(args.teacher_model) if any(m in dv.PAIRWISE for m in metrics) else None
+    teacher = (
+        load_model(args.teacher_model)
+        if any(m in dv.PAIRWISE for m in metrics)
+        else None
+    )
 
     # A vocab-size difference survives an id-agreeing tokenizer pair (a resized embedding
     # table), and torch would broadcast or raise deep in the reduction. Checked here, where
@@ -244,20 +312,23 @@ def run(args, metrics: list[str], records: list[dict], ident: dict) -> dict:
             raise dv.MetricError(
                 f"student vocab_size {vs} != teacher vocab_size {vt}. The tokenizers agree on "
                 f"ids but the models' output spaces do not, so the distributions are not over "
-                f"the same support.")
+                f"the same support."
+            )
 
     sums = {m: [] for m in metrics}
     tok_counts = []
     per_sample = []
     with torch.no_grad():
         for start in range(0, len(encoded), args.batch_size):
-            batch = dv.collate(encoded[start:start + args.batch_size], pad_id)
+            batch = dv.collate(encoded[start : start + args.batch_size], pad_id)
             ids = batch["input_ids"].to(args.device)
             att = batch["attention_mask"].to(args.device)
             asst = batch["assistant_mask"].to(args.device)
 
             s_logits = student(input_ids=ids, attention_mask=att).logits
-            t_logits = teacher(input_ids=ids, attention_mask=att).logits if teacher else None
+            t_logits = (
+                teacher(input_ids=ids, attention_mask=att).logits if teacher else None
+            )
 
             # Shift so position i predicts token i+1, and drop the mask's first slot to match.
             # An earlier version measured logits against the mask unshifted, i.e. compared the
@@ -267,7 +338,9 @@ def run(args, metrics: list[str], records: list[dict], ident: dict) -> dict:
             keep = asst[:, 1:] & att[:, 1:].bool()
 
             for name in metrics:
-                per_tok = dv.reduce_logits(s_pred, t_pred if name in dv.PAIRWISE else None, name)
+                per_tok = dv.reduce_logits(
+                    s_pred, t_pred if name in dv.PAIRWISE else None, name
+                )
                 for row in range(ids.shape[0]):
                     sel = per_tok[row][keep[row]]
                     if sel.numel() == 0:
@@ -279,28 +352,43 @@ def run(args, metrics: list[str], records: list[dict], ident: dict) -> dict:
                 if n == 0:
                     continue
                 tok_counts.append(n)
-                per_sample.append({"index": start + row, "assistant_tokens": n,
-                                   **{m: sums[m][-1] for m in metrics if sums[m]}})
+                per_sample.append(
+                    {
+                        "index": start + row,
+                        "assistant_tokens": n,
+                        **{m: sums[m][-1] for m in metrics if sums[m]},
+                    }
+                )
 
     summaries = {m: dv.summarise(sums[m], tok_counts) for m in metrics}
     return {
         "metrics": {
             "tokenizer": ident,
-            "config": {"student_model": args.student_model, "teacher_model": args.teacher_model,
-                       "corpus": args.corpus, "max_length": args.max_length,
-                       "max_samples": args.max_samples, "batch_size": args.batch_size,
-                       "seed": args.seed, "dtype": args.dtype,
-                       "max_incomplete_fraction": args.max_incomplete_fraction,
-                       "chat_template_source": template_source},
+            "config": {
+                "student_model": args.student_model,
+                "teacher_model": args.teacher_model,
+                "corpus": args.corpus,
+                "max_length": args.max_length,
+                "max_samples": args.max_samples,
+                "batch_size": args.batch_size,
+                "seed": args.seed,
+                "dtype": args.dtype,
+                "max_incomplete_fraction": args.max_incomplete_fraction,
+                "chat_template_source": template_source,
+            },
             # measured == truncated + fully-measured. A consumer that reads only `measured`
             # and `n_samples` cannot tell a complete run from a truncated one, which is
             # exactly the confusion a prior run walked into, so both are recorded.
-            "counts": {"corpus_records": len(records), "measured": len(encoded),
-                       "skipped_no_assistant_span": skipped,
-                       "truncated_at_max_length": truncated,
-                       "truncated_tokens_dropped": dropped,
-                       "incomplete_fraction": round(incomplete / len(records), 4)
-                       if records else None},
+            "counts": {
+                "corpus_records": len(records),
+                "measured": len(encoded),
+                "skipped_no_assistant_span": skipped,
+                "truncated_at_max_length": truncated,
+                "truncated_tokens_dropped": dropped,
+                "incomplete_fraction": (
+                    round(incomplete / len(records), 4) if records else None
+                ),
+            },
             "metrics": summaries,
         },
         "per_sample": per_sample,

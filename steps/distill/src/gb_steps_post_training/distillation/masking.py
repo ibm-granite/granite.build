@@ -67,6 +67,7 @@ is assigned at utils.py:354 and read nowhere, since the masking loop bounds span
 a companion check asserts that inertness continues to hold. Emitting
 a derived value for a field nothing reads would invite someone to start reading it.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -82,20 +83,32 @@ CONTRACT_VERSION = 1
 # step 3 is a real intersection and not one branch's whole prefix. `_assert_branch_coverage`
 # enforces that it did; the probes are not trusted to be sufficient just because they look varied.
 PROBES: tuple[tuple[str, list[dict]], ...] = (
-    ("plain single turn", [
-        {"role": "user", "content": "What is 2+2?"},
-        {"role": "assistant", "content": "4."},
-    ]),
-    ("reasoning content, explicit think tags", [
-        {"role": "user", "content": "What is 17*3?"},
-        {"role": "assistant", "content": "<think>\n17*3 = 51.\n</think>\n51."},
-    ]),
-    ("two assistant turns, mixed", [
-        {"role": "user", "content": "Name a colour."},
-        {"role": "assistant", "content": "Blue."},
-        {"role": "user", "content": "Now justify it."},
-        {"role": "assistant", "content": "<think>\nBlue is calm.\n</think>\nIt is calm."},
-    ]),
+    (
+        "plain single turn",
+        [
+            {"role": "user", "content": "What is 2+2?"},
+            {"role": "assistant", "content": "4."},
+        ],
+    ),
+    (
+        "reasoning content, explicit think tags",
+        [
+            {"role": "user", "content": "What is 17*3?"},
+            {"role": "assistant", "content": "<think>\n17*3 = 51.\n</think>\n51."},
+        ],
+    ),
+    (
+        "two assistant turns, mixed",
+        [
+            {"role": "user", "content": "Name a colour."},
+            {"role": "assistant", "content": "Blue."},
+            {"role": "user", "content": "Now justify it."},
+            {
+                "role": "assistant",
+                "content": "<think>\nBlue is calm.\n</think>\nIt is calm.",
+            },
+        ],
+    ),
 )
 
 
@@ -142,7 +155,9 @@ def _spans_from_mask(mask: list[int]) -> list[tuple[int, int]]:
     return spans
 
 
-def spans_from_scan(ids: list[int], resp: list[int], eos_id: int | None) -> list[tuple[int, int]]:
+def spans_from_scan(
+    ids: list[int], resp: list[int], eos_id: int | None
+) -> list[tuple[int, int]]:
     """Reimplements utils.py:475-497 EXACTLY, including the `i = end_idx` skip and the
     EOS-inclusive `end_idx = j + 1`.
 
@@ -158,7 +173,7 @@ def spans_from_scan(ids: list[int], resp: list[int], eos_id: int | None) -> list
         return spans
     i = 0
     while i <= len(ids) - n:
-        if ids[i:i + n] == resp:
+        if ids[i : i + n] == resp:
             start = i + n
             end = len(ids)
             if eos_id is not None:
@@ -186,12 +201,17 @@ def spans_from_scan(ids: list[int], resp: list[int], eos_id: int | None) -> list
 THINKING_VARIANTS = (True, False)
 
 
-def _render(tok, messages: list[dict], *, enable_thinking: bool = True) -> tuple[list[int], list[int]]:
+def _render(
+    tok, messages: list[dict], *, enable_thinking: bool = True
+) -> tuple[list[int], list[int]]:
     """(ids, assistant_mask) for one probe. `tokenize=True` with the mask requested, because the
     mask is only produced on the tokenizing path."""
     out = tok.apply_chat_template(
-        messages, tokenize=True, add_generation_prompt=False,
-        return_dict=True, return_assistant_tokens_mask=True,
+        messages,
+        tokenize=True,
+        add_generation_prompt=False,
+        return_dict=True,
+        return_assistant_tokens_mask=True,
         enable_thinking=enable_thinking,
     )
     ids = list(out["input_ids"])
@@ -209,14 +229,17 @@ def _assert_branch_coverage(preceding: list[list[int]], suffix: list[int]) -> No
     anything, so this refuses rather than reports.
     """
     if not preceding:
-        raise MaskingError("no assistant turns were found in any probe -- nothing to derive from")
+        raise MaskingError(
+            "no assistant turns were found in any probe -- nothing to derive from"
+        )
     if all(len(p) == len(suffix) for p in preceding):
         raise MaskingError(
             f"every probe's assistant turn was preceded by the SAME {len(suffix)} ids, so the "
             "probe set exercised only one branch of the chat template and the derived response "
             "template is untested. It may be longer than what precedes assistant content in "
             "general, which would mask some records and silently skip the rest. Add a probe that "
-            "renders differently (reasoning content present vs absent is the usual axis).")
+            "renders differently (reasoning content present vs absent is the usual axis)."
+        )
 
 
 def derive(tokenizer_dir: Path, *, config_dir: Path | None = None) -> dict:
@@ -225,7 +248,9 @@ def derive(tokenizer_dir: Path, *, config_dir: Path | None = None) -> dict:
     `config_dir` defaults to `tokenizer_dir` and is where config.json's eos is read from; they are
     separable only so a tokenizer-only overlay can be interrogated against a model elsewhere.
     """
-    from transformers import AutoTokenizer  # imported late: argparse and --help cost nothing
+    from transformers import (
+        AutoTokenizer,  # imported late: argparse and --help cost nothing
+    )
 
     tokenizer_dir = Path(tokenizer_dir)
     config_dir = Path(config_dir or tokenizer_dir)
@@ -233,7 +258,8 @@ def derive(tokenizer_dir: Path, *, config_dir: Path | None = None) -> dict:
     if not getattr(tok, "chat_template", None):
         raise MaskingError(
             f"{tokenizer_dir} has no chat template. Masking is a property OF the template, so "
-            "there is nothing to derive. run-align.sh's --chat-template installs one.")
+            "there is nothing to derive. run-align.sh's --chat-template installs one."
+        )
 
     tok_eos = tok.eos_token_id
     cfg_path = config_dir / "config.json"
@@ -250,12 +276,16 @@ def derive(tokenizer_dir: Path, *, config_dir: Path | None = None) -> dict:
                 f"({tok.convert_ids_to_tokens([tok_eos])[0]!r}) and config.json says {cfg_eos}. "
                 "The collator ends every assistant span at the TOKENIZER's eos (utils.py:487). "
                 "If the render never emits that id, each span runs to the end of the sequence and "
-                "swallows the following user turn into the labels.")
+                "swallows the following user turn into the labels."
+            )
 
     preceding: list[list[int]] = []
     per_probe: list[dict] = []
-    cases = [(f"{name} [thinking={t}]", messages, t)
-             for name, messages in PROBES for t in THINKING_VARIANTS]
+    cases = [
+        (f"{name} [thinking={t}]", messages, t)
+        for name, messages in PROBES
+        for t in THINKING_VARIANTS
+    ]
     for name, messages, thinking in cases:
         ids, mask = _render(tok, messages, enable_thinking=thinking)
         if not mask or not any(mask):
@@ -263,24 +293,29 @@ def derive(tokenizer_dir: Path, *, config_dir: Path | None = None) -> dict:
                 f"probe {name!r}: the chat template produced an all-zero assistant mask, so it "
                 "carries no {% generation %} markers and there is no ground truth for where "
                 "assistant content begins. GOLD fails on this template anyway (sft.py:909). "
-                "Apply patches/granite-chat-template-generation-markers/.")
+                "Apply patches/granite-chat-template-generation-markers/."
+            )
         spans = _spans_from_mask(mask)
         n_assistant = sum(1 for m in messages if m["role"] == "assistant")
         if len(spans) != n_assistant:
             raise MaskingError(
                 f"probe {name!r}: the mask marks {len(spans)} span(s) for {n_assistant} assistant "
                 "turn(s). The generation markers do not correspond one-to-one with assistant "
-                "messages, so a per-turn derivation would be guessing.")
+                "messages, so a per-turn derivation would be guessing."
+            )
         for start, _end in spans:
             preceding.append(ids[:start])
-        per_probe.append({"probe": name, "tokens": len(ids), "mask_spans": [list(s) for s in spans]})
+        per_probe.append(
+            {"probe": name, "tokens": len(ids), "mask_spans": [list(s) for s in spans]}
+        )
 
     maximal = _common_suffix(preceding)
     if not maximal:
         raise MaskingError(
             "the assistant turns across the probe set share NO common preceding token, so no "
             "single response template can mark them all. This template needs positional masking "
-            "(`last_message_only`), which is a different policy and must be chosen deliberately.")
+            "(`last_message_only`), which is a different policy and must be chosen deliberately."
+        )
     _assert_branch_coverage(preceding, maximal)
 
     # TRIM the maximal suffix, and this is not tidiness. The longest common suffix is
@@ -305,7 +340,7 @@ def derive(tokenizer_dir: Path, *, config_dir: Path | None = None) -> dict:
     # position would produce an extra span and be refused. Neither trim is a guess about where the
     # boundary is; the markers remain the ground truth and the trims only propose candidates.
     cut = max((i for i, t in enumerate(maximal) if t == tok_eos), default=-1)
-    trimmed = maximal[cut + 1:]
+    trimmed = maximal[cut + 1 :]
     while trimmed and not tok.decode(trimmed[:1]).strip():
         trimmed = trimmed[1:]
     if not trimmed:
@@ -313,12 +348,15 @@ def derive(tokenizer_dir: Path, *, config_dir: Path | None = None) -> dict:
             f"every token that always precedes assistant content in this template "
             f"({tok.decode(maximal)!r}) is the previous turn's terminator or whitespace, so there "
             "is no marker that opens an assistant turn. This template needs positional masking "
-            "(`last_message_only`), which is a different policy and must be chosen deliberately.")
+            "(`last_message_only`), which is a different policy and must be chosen deliberately."
+        )
 
     # The collator encodes the template TEXT and scans for THOSE ids (utils.py:349). A candidate
     # that re-tokenizes differently standalone would match nothing at all -- silently -- so the
     # round trip is a precondition, not a sanity check.
-    renders = [(name, _render(tok, messages, enable_thinking=t)) for name, messages, t in cases]
+    renders = [
+        (name, _render(tok, messages, enable_thinking=t)) for name, messages, t in cases
+    ]
     text = tok.decode(trimmed)
     standalone = tok.encode(text, add_special_tokens=False)
     if standalone != trimmed:
@@ -326,7 +364,8 @@ def derive(tokenizer_dir: Path, *, config_dir: Path | None = None) -> dict:
             f"the derived template {text!r} tokenizes differently standalone than it does in "
             f"context: standalone {standalone} vs in-context {trimmed}. The collator encodes the "
             "template text standalone (utils.py:349) and scans for THOSE ids, so it would find "
-            "nothing and every label would stay at ignore_index -- silently.")
+            "nothing and every label would stay at ignore_index -- silently."
+        )
     for name, (ids, mask) in renders:
         got = [st for st, _ in spans_from_scan(ids, trimmed, tok_eos)]
         want = [st for st, _ in _spans_from_mask(mask)]
@@ -336,13 +375,14 @@ def derive(tokenizer_dir: Path, *, config_dir: Path | None = None) -> dict:
                 f"spans at {got} but the template's own generation markers say {want}. The two "
                 "mechanisms disagree about which tokens are the assistant's, so masking cannot be "
                 f"trusted either way. (Longest common suffix was {tok.decode(maximal)!r}, trimmed "
-                f"to {text!r} at the previous turn's terminator.)")
+                f"to {text!r} at the previous turn's terminator.)"
+            )
 
     resp_in_context = trimmed
 
     # Now the whole point: does a scan with these ids reproduce the generation markers' spans?
     agreement: list[dict] = []
-    for (name, (ids, mask)) in renders:
+    for name, (ids, mask) in renders:
         scan = spans_from_scan(ids, resp_in_context, tok_eos)
         want = _spans_from_mask(mask)
         if [st for st, _ in scan] != [st for st, _ in want]:
@@ -351,17 +391,22 @@ def derive(tokenizer_dir: Path, *, config_dir: Path | None = None) -> dict:
             raise MaskingError(
                 f"probe {name!r}: scanning for {text!r} starts assistant spans at "
                 f"{[st for st, _ in scan]} but the template's own generation markers say "
-                f"{[st for st, _ in want]}.")
-        agreement.append({
-            "probe": name,
-            "spans": len(scan),
-            # Signed, and its SIGN is informative. Measured directly on granite-4.x: -1,
-            # because the generation block closes AFTER the turn's trailing newline while the
-            # collator's scan stops at the eos it includes. A positive delta would be the opposite
-            # convention. Recorded per span rather than tolerated, so a reader sees 1 and not 40.
-            "boundary_delta_tokens": [e1 - e2 for (_, e1), (_, e2) in zip(scan, want)],
-            "labelled_tokens": sum(e - st for st, e in scan),
-        })
+                f"{[st for st, _ in want]}."
+            )
+        agreement.append(
+            {
+                "probe": name,
+                "spans": len(scan),
+                # Signed, and its SIGN is informative. Measured directly on granite-4.x: -1,
+                # because the generation block closes AFTER the turn's trailing newline while the
+                # collator's scan stops at the eos it includes. A positive delta would be the opposite
+                # convention. Recorded per span rather than tolerated, so a reader sees 1 and not 40.
+                "boundary_delta_tokens": [
+                    e1 - e2 for (_, e1), (_, e2) in zip(scan, want)
+                ],
+                "labelled_tokens": sum(e - st for st, e in scan),
+            }
+        )
 
     return {
         "contract_version": CONTRACT_VERSION,
@@ -370,24 +415,33 @@ def derive(tokenizer_dir: Path, *, config_dir: Path | None = None) -> dict:
         "boundary": {
             "policy": "eos_inclusive",
             "eos_token_id": tok_eos,
-            "eos_token": tok.convert_ids_to_tokens([tok_eos])[0] if tok_eos is not None else None,
+            "eos_token": (
+                tok.convert_ids_to_tokens([tok_eos])[0] if tok_eos is not None else None
+            ),
             "config_eos_token_id": cfg_eos,
-            "note": ("utils.py:485-489 ends each span at the first eos at or after the span "
-                     "start and INCLUDES it in the labels."),
+            "note": (
+                "utils.py:485-489 ends each span at the first eos at or after the span "
+                "start and INCLUDES it in the labels."
+            ),
         },
         "instruction_template": None,
         "instruction_template_note": (
             "not derived: instruction_token_ids is assigned at utils.py:354 and read nowhere, and "
-            "a companion config check asserts that stays true."),
+            "a companion config check asserts that stays true."
+        ),
         "source": {
             "tokenizer_dir": str(tokenizer_dir),
             "tokenizer_json_sha256": _sha256(tokenizer_dir / "tokenizer.json"),
-            "chat_template_sha256": (_sha256(tokenizer_dir / "chat_template.jinja")
-                                     or hashlib.sha256(tok.chat_template.encode()).hexdigest()),
-            "derivation": ("longest common suffix of the ids preceding each generation-marked "
-                           "assistant span, over a probe set asserted to exercise more than one "
-                           "branch, trimmed through the previous turn's eos and leading "
-                           "whitespace, then re-validated against those same markers"),
+            "chat_template_sha256": (
+                _sha256(tokenizer_dir / "chat_template.jinja")
+                or hashlib.sha256(tok.chat_template.encode()).hexdigest()
+            ),
+            "derivation": (
+                "longest common suffix of the ids preceding each generation-marked "
+                "assistant span, over a probe set asserted to exercise more than one "
+                "branch, trimmed through the previous turn's eos and leading "
+                "whitespace, then re-validated against those same markers"
+            ),
             "maximal_common_suffix": tok.decode(maximal),
         },
         "probes": per_probe,
@@ -408,17 +462,20 @@ def check_config(doc: dict, cfg: dict) -> list[str]:
     if "response_template" not in cfg:
         problems.append(
             f"response_template ABSENT -- CustomGOLDConfig's stale default would apply. "
-            f"masking.json derives {want!r} from the installed chat template.")
+            f"masking.json derives {want!r} from the installed chat template."
+        )
     elif cfg["response_template"] != want:
         problems.append(
             f"response_template is {cfg['response_template']!r} but the chat template installed "
             f"on this student implies {want!r}. The config was not derived from the template it "
-            "will train against.")
+            "will train against."
+        )
     if cfg.get("last_message_only") is True:
         problems.append(
             "last_message_only: true bypasses the response_template scan entirely "
             "(utils.py:470) for a positional split. A different masking policy; masking.json "
-            "describes the scanning one.")
+            "describes the scanning one."
+        )
     return problems
 
 
@@ -443,7 +500,11 @@ def _self_test() -> int:
     eq("common suffix, single seq is itself", _common_suffix([[4, 5, 6]]), [4, 5, 6])
     eq("common suffix, empty input", _common_suffix([]), [])
 
-    eq("mask spans, two runs", _spans_from_mask([0, 1, 1, 0, 0, 1, 0]), [(1, 3), (5, 6)])
+    eq(
+        "mask spans, two runs",
+        _spans_from_mask([0, 1, 1, 0, 0, 1, 0]),
+        [(1, 3), (5, 6)],
+    )
     eq("mask spans, run to end", _spans_from_mask([0, 1, 1]), [(1, 3)])
     eq("mask spans, all zero", _spans_from_mask([0, 0]), [])
 
@@ -457,8 +518,11 @@ def _self_test() -> int:
     eq("scan, template absent", spans_from_scan(ids, [77, 78], 99), [])
     eq("scan, empty template", spans_from_scan(ids, [], 99), [])
     # `i = end_idx` means a template occurring INSIDE an assistant span is not re-matched.
-    eq("scan, template inside a span is skipped",
-       spans_from_scan([50, 51, 50, 51, 7, 99], [50, 51], 99), [(2, 6)])
+    eq(
+        "scan, template inside a span is skipped",
+        spans_from_scan([50, 51, 50, 51, 7, 99], [50, 51], 99),
+        [(2, 6)],
+    )
 
     # Branch coverage: identical prefixes must refuse, a proper suffix must pass.
     try:
@@ -482,12 +546,28 @@ def _self_test() -> int:
         pass
 
     doc = {"response_template": "<|im_start|>assistant\n"}
-    eq("config check, matching", check_config(doc, {"response_template": "<|im_start|>assistant\n"}), [])
+    eq(
+        "config check, matching",
+        check_config(doc, {"response_template": "<|im_start|>assistant\n"}),
+        [],
+    )
     for name, cfg, needle in (
         ("absent", {"lmbda": 0.3}, "ABSENT"),
-        ("stale", {"response_template": "<|start_of_role|>assistant<|end_of_role|>"}, "implies"),
-        ("literal backslash-n", {"response_template": "<|im_start|>assistant\\n"}, "implies"),
-        ("bypass", {"response_template": "<|im_start|>assistant\n", "last_message_only": True}, "bypasses"),
+        (
+            "stale",
+            {"response_template": "<|start_of_role|>assistant<|end_of_role|>"},
+            "implies",
+        ),
+        (
+            "literal backslash-n",
+            {"response_template": "<|im_start|>assistant\\n"},
+            "implies",
+        ),
+        (
+            "bypass",
+            {"response_template": "<|im_start|>assistant\n", "last_message_only": True},
+            "bypasses",
+        ),
     ):
         got = check_config(doc, cfg)
         if not any(needle in g for g in got):
@@ -495,21 +575,40 @@ def _self_test() -> int:
             bad = 1
 
     if not bad:
-        print("  OK   masking self-test: suffix, mask spans, the collator's scan reimplementation, "
-              "branch coverage and the config preflight")
+        print(
+            "  OK   masking self-test: suffix, mask spans, the collator's scan reimplementation, "
+            "branch coverage and the config preflight"
+        )
     return bad
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("action", choices=("emit", "check-config", "self-test"))
-    ap.add_argument("--tokenizer", type=Path, help="directory holding the installed chat template")
-    ap.add_argument("--config-dir", type=Path, default=None,
-                    help="where config.json is, if not --tokenizer")
-    ap.add_argument("--out", type=Path, default=None,
-                    help=f"emit: where to write {MASKING_NAME} (default --tokenizer's parent)")
-    ap.add_argument("--masking", type=Path, default=None, help=f"check-config: path to {MASKING_NAME}")
-    ap.add_argument("--gold-config", type=Path, default=None, help="check-config: the yaml to audit")
+    ap.add_argument(
+        "--tokenizer", type=Path, help="directory holding the installed chat template"
+    )
+    ap.add_argument(
+        "--config-dir",
+        type=Path,
+        default=None,
+        help="where config.json is, if not --tokenizer",
+    )
+    ap.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=f"emit: where to write {MASKING_NAME} (default --tokenizer's parent)",
+    )
+    ap.add_argument(
+        "--masking",
+        type=Path,
+        default=None,
+        help=f"check-config: path to {MASKING_NAME}",
+    )
+    ap.add_argument(
+        "--gold-config", type=Path, default=None, help="check-config: the yaml to audit"
+    )
     args = ap.parse_args(argv)
 
     if args.action == "self-test":
@@ -529,8 +628,15 @@ def main(argv: list[str] | None = None) -> int:
         # way it could be caught: the step emitted the contract, printed a path, and then REFUSED to
         # write its marker because the output it promised was not where it promised to put it.
         tokenizer = Path(args.tokenizer)
-        dest = Path(args.out) if args.out else (
-            tokenizer / MASKING_NAME if tokenizer.is_dir() else tokenizer.parent / MASKING_NAME)
+        dest = (
+            Path(args.out)
+            if args.out
+            else (
+                tokenizer / MASKING_NAME
+                if tokenizer.is_dir()
+                else tokenizer.parent / MASKING_NAME
+            )
+        )
         if dest.is_dir():
             dest = dest / MASKING_NAME
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -539,11 +645,15 @@ def main(argv: list[str] | None = None) -> int:
         tmp.replace(dest)
         print(f"  response_template : {doc['response_template']!r}")
         print(f"  token ids         : {doc['response_token_ids']}")
-        print(f"  eos               : {doc['boundary']['eos_token_id']} "
-              f"({doc['boundary']['eos_token']!r})")
+        print(
+            f"  eos               : {doc['boundary']['eos_token_id']} "
+            f"({doc['boundary']['eos_token']!r})"
+        )
         for a in doc["agreement"]:
-            print(f"  agrees on {a['spans']} span(s), {a['labelled_tokens']:>4} labelled tokens, "
-                  f"boundary delta {a['boundary_delta_tokens']} -- {a['probe']}")
+            print(
+                f"  agrees on {a['spans']} span(s), {a['labelled_tokens']:>4} labelled tokens, "
+                f"boundary delta {a['boundary_delta_tokens']} -- {a['probe']}"
+            )
         print(f"  wrote {dest}")
         return 0
 
@@ -551,6 +661,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.masking is None or args.gold_config is None:
         ap.error("check-config needs --masking and --gold-config")
     import yaml
+
     doc = json.loads(Path(args.masking).read_text())
     cfg = yaml.safe_load(Path(args.gold_config).read_text())
     if not isinstance(cfg, dict):
@@ -561,8 +672,10 @@ def main(argv: list[str] | None = None) -> int:
         for p in problems:
             print(f"  FAIL {Path(args.gold_config).name}: {p}", file=sys.stderr)
         return 1
-    print(f"  OK   {Path(args.gold_config).name}: response_template matches the contract derived "
-          f"from {doc['source']['tokenizer_dir']}")
+    print(
+        f"  OK   {Path(args.gold_config).name}: response_template matches the contract derived "
+        f"from {doc['source']['tokenizer_dir']}"
+    )
     return 0
 
 

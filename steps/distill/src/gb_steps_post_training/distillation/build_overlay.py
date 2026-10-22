@@ -144,12 +144,12 @@ from gb_steps_post_training.distillation import tokenizer_identity
 # a DROP list would silently admit whatever a future transformers release starts writing,
 # and the whole point of an overlay is that its contents are known exactly.
 OVERLAY_KEEP = (
-    "tokenizer.json",          # the fast tokenizer. The reason the overlay exists.
-    "tokenizer_config.json",   # special tokens, model_max_length, chat template pointer.
-    "special_tokens_map.json", # redundant with tokenizer.json for a fast tokenizer, but
-                               # harmless and some tooling still reads it.
-    "chat_template.jinja",     # transformers>=4.43 writes the template here.
-    "added_tokens.json",       # ditto: redundant-but-harmless for a fast tokenizer.
+    "tokenizer.json",  # the fast tokenizer. The reason the overlay exists.
+    "tokenizer_config.json",  # special tokens, model_max_length, chat template pointer.
+    "special_tokens_map.json",  # redundant with tokenizer.json for a fast tokenizer, but
+    # harmless and some tooling still reads it.
+    "chat_template.jinja",  # transformers>=4.43 writes the template here.
+    "added_tokens.json",  # ditto: redundant-but-harmless for a fast tokenizer.
     "generation_config.json",  # eos/pad ids -- read by vLLM when serving from a dir.
 )
 
@@ -265,7 +265,10 @@ def build(source: Path, dest: Path, *, copy_mode: str = "copy") -> dict:
                 # Different filesystem, or a filesystem without hardlinks. Copying is
                 # always correct, so degrade rather than fail -- but say so, because a
                 # silent fallback would make a 'hardlink' manifest entry a lie.
-                print(f"  note: hardlink failed for {name}, copied instead", file=sys.stderr)
+                print(
+                    f"  note: hardlink failed for {name}, copied instead",
+                    file=sys.stderr,
+                )
         shutil.copy2(src, dst)
 
     return {
@@ -287,7 +290,11 @@ def _backend_ids(tokenizer_json: Path, text: str) -> list[int]:
     """Ground-truth ids, straight from the backend, bypassing transformers entirely."""
     from tokenizers import Tokenizer
 
-    return Tokenizer.from_file(str(tokenizer_json)).encode(text, add_special_tokens=False).ids
+    return (
+        Tokenizer.from_file(str(tokenizer_json))
+        .encode(text, add_special_tokens=False)
+        .ids
+    )
 
 
 def verify(dest: Path, *, require_chatml: bool = True) -> list[str]:
@@ -348,7 +355,9 @@ def verify(dest: Path, *, require_chatml: bool = True) -> list[str]:
             "Text is being segmented with a pre_tokenizer this "
             "model was never trained with."
         )
-    lines.append(f"pre_tokenizer: matches tokenizer.json ({(on_disk or {}).get('type', 'none')})")
+    lines.append(
+        f"pre_tokenizer: matches tokenizer.json ({(on_disk or {}).get('type', 'none')})"
+    )
 
     mismatches = []
     for probe in PROBES:
@@ -366,7 +375,9 @@ def verify(dest: Path, *, require_chatml: bool = True) -> list[str]:
             "The tokenizer transformers hands the trainer is not the one in "
             "tokenizer.json. Training on this would silently mis-segment every sample."
         )
-    lines.append(f"round-trip: {len(PROBES)}/{len(PROBES)} probes match the raw backend")
+    lines.append(
+        f"round-trip: {len(PROBES)}/{len(PROBES)} probes match the raw backend"
+    )
 
     # Control tokens must be SINGLE ids -- for a model that is supposed to speak ChatML.
     # If <|im_end|> spells out into several pieces then EOS is unreachable, which is the
@@ -390,19 +401,35 @@ def verify(dest: Path, *, require_chatml: bool = True) -> list[str]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--source", required=True, help="model dir whose tokenizer to overlay")
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--source", required=True, help="model dir whose tokenizer to overlay"
+    )
     p.add_argument("--out", required=True, help="destination overlay dir")
-    p.add_argument("--copy-mode", choices=("copy", "hardlink"), default="copy",
-                   help="hardlink saves space when source and dest share a filesystem")
-    p.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True,
-                   help="load the overlay and assert it round-trips (needs transformers)")
+    p.add_argument(
+        "--copy-mode",
+        choices=("copy", "hardlink"),
+        default="copy",
+        help="hardlink saves space when source and dest share a filesystem",
+    )
+    p.add_argument(
+        "--verify",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="load the overlay and assert it round-trips (needs transformers)",
+    )
     # BooleanOptionalAction so a step-template can pass this flag unconditionally -- see
     # steps/distill-hf-export/src/export_hf_model.py for why that matters for jinja.
-    p.add_argument("--require-chatml", action=argparse.BooleanOptionalAction, default=True,
-                   help="assert <|im_start|>/<|im_end|> are single ids. Pass "
-                        "--no-require-chatml when overlaying a PRE-RETAG base model, "
-                        "whose vocabulary legitimately lacks them.")
+    p.add_argument(
+        "--require-chatml",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="assert <|im_start|>/<|im_end|> are single ids. Pass "
+        "--no-require-chatml when overlaying a PRE-RETAG base model, "
+        "whose vocabulary legitimately lacks them.",
+    )
     p.add_argument("--manifest-name", default="overlay_manifest.json")
     return p
 
@@ -415,7 +442,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"overlay {source} -> {dest}")
         print(f"  copied  : {manifest['overlay_files']}")
         print(f"  excluded: {manifest['sidecars_excluded'] or 'no sidecars present'}")
-        print(f"  forced:   {manifest['config_keys_forced'] or 'config keys already correct'}")
+        print(
+            f"  forced:   {manifest['config_keys_forced'] or 'config keys already correct'}"
+        )
         if args.verify:
             for line in verify(dest, require_chatml=args.require_chatml):
                 print(f"  verified: {line}")
@@ -432,7 +461,8 @@ def main(argv: list[str] | None = None) -> int:
         # Written in main() and not in build() on purpose: build() is the pure copy whose
         # output file set is asserted exactly, and metadata is the CLI's business.
         tokenizer_identity.write(
-            dest, tokenizer_identity.derive_name(source),
+            dest,
+            tokenizer_identity.derive_name(source),
             produced_by="distill-tokenizer-align/build_overlay",
             source=str(source.resolve()),
         )

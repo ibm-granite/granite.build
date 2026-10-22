@@ -53,6 +53,7 @@ Exit codes, chosen so a shell can branch on them without parsing text:
    64  DONE   -- the requested max_steps is already reached; the caller should NOT relaunch
    65  FATAL  -- something is wrong that a rename cannot fix; do not spend an allocation
 """
+
 from __future__ import annotations
 
 import argparse
@@ -127,12 +128,16 @@ def inspect(path: Path) -> Checkpoint:
         except (OSError, json.JSONDecodeError) as exc:
             # The single most likely artefact of a kill mid-save: a JSON file that was opened and
             # partially written. It is also the cheapest thing in the tree to check.
-            ck.problems.append(f"trainer_state.json will not parse ({exc.__class__.__name__}: {exc})")
+            ck.problems.append(
+                f"trainer_state.json will not parse ({exc.__class__.__name__}: {exc})"
+            )
         else:
             gs = state.get("global_step")
             ck.state_step = gs if isinstance(gs, int) else None
             if ck.state_step is None:
-                ck.problems.append(f"trainer_state.json has no integer global_step (got {gs!r})")
+                ck.problems.append(
+                    f"trainer_state.json has no integer global_step (got {gs!r})"
+                )
             elif ck.state_step != step:
                 # A directory named for one step holding state from another is not a checkpoint
                 # this code will guess about.
@@ -145,7 +150,9 @@ def inspect(path: Path) -> Checkpoint:
     # sharpest available signal that the save did not finish.
     ds_dir = path / f"global_step{step}"
     if "latest" not in names:
-        ck.problems.append("missing `latest` -- DeepSpeed writes it last, so the save did not finish")
+        ck.problems.append(
+            "missing `latest` -- DeepSpeed writes it last, so the save did not finish"
+        )
     else:
         latest = (path / "latest").read_text().strip()
         if latest != ds_dir.name:
@@ -162,14 +169,20 @@ def inspect(path: Path) -> Checkpoint:
             # A gap means some rank's write is missing, which is exactly what a kill during a
             # collective save produces, and it is invisible to a count-only check.
             missing = sorted(set(range(max(optim) + 1)) - set(optim))
-            ck.problems.append(f"{ds_dir.name}/ optim shards are not contiguous; ranks {missing} absent")
+            ck.problems.append(
+                f"{ds_dir.name}/ optim shards are not contiguous; ranks {missing} absent"
+            )
         else:
             ck.world_size = len(optim)
         if optim and model and len(model) != len(optim):
             ck.problems.append(
                 f"{ds_dir.name}/ has {len(optim)} optim shards but {len(model)} model shards"
             )
-        empty = sorted(n for n in shard_names if (ds_dir / n).is_file() and (ds_dir / n).stat().st_size == 0)
+        empty = sorted(
+            n
+            for n in shard_names
+            if (ds_dir / n).is_file() and (ds_dir / n).stat().st_size == 0
+        )
         if empty:
             ck.problems.append(f"{ds_dir.name}/ holds zero-byte shard(s): {empty}")
     return ck
@@ -221,8 +234,12 @@ class Verdict:
     lines: list[str] = field(default_factory=list)
 
 
-def preflight(output_dir: Path, max_steps: int | None = None, world_size: int | None = None,
-              do_quarantine: bool = True) -> Verdict:
+def preflight(
+    output_dir: Path,
+    max_steps: int | None = None,
+    world_size: int | None = None,
+    do_quarantine: bool = True,
+) -> Verdict:
     """What a relaunch into output_dir should do.
 
     max_steps and world_size are OPTIONAL and their absence is not an error, because the two
@@ -243,27 +260,39 @@ def preflight(output_dir: Path, max_steps: int | None = None, world_size: int | 
             v.lines.append(f"    - {p}")
         if do_quarantine:
             dest = quarantine(c)
-            v.lines.append(f"    quarantined -> {dest.relative_to(output_dir)}  (renamed, not deleted)")
+            v.lines.append(
+                f"    quarantined -> {dest.relative_to(output_dir)}  (renamed, not deleted)"
+            )
         else:
-            v.lines.append("    left in place (--no-quarantine): the resume selector will still "
-                           "prefer it if its step is the highest")
+            v.lines.append(
+                "    left in place (--no-quarantine): the resume selector will still "
+                "prefer it if its step is the highest"
+            )
     good = [c for c in cks if c.complete]
     if not good:
         v.kind = FATAL if not do_quarantine else FRESH
         if v.kind == FRESH:
-            v.lines.append("every checkpoint was incomplete and has been quarantined -- "
-                           "nothing left to resume from, so this will train from scratch")
+            v.lines.append(
+                "every checkpoint was incomplete and has been quarantined -- "
+                "nothing left to resume from, so this will train from scratch"
+            )
         else:
             v.lines.append("every checkpoint is incomplete and quarantine is disabled")
         return v
 
     last = good[-1]
     if bad and last.step < max(c.step for c in bad):
-        v.lines.append(f"note: {last.path.name} is now the resume point; the higher-numbered "
-                       "quarantined checkpoint(s) would have been chosen ahead of it")
+        v.lines.append(
+            f"note: {last.path.name} is now the resume point; the higher-numbered "
+            "quarantined checkpoint(s) would have been chosen ahead of it"
+        )
 
     mismatch = None
-    if world_size is not None and last.world_size is not None and last.world_size != world_size:
+    if (
+        world_size is not None
+        and last.world_size is not None
+        and last.world_size != world_size
+    ):
         mismatch = (
             f"WORLD SIZE MISMATCH: {last.path.name} was written by {last.world_size} ranks and this "
             f"launch has {world_size}. ZeRO-3 shards optimizer state per rank, so the load fails "
@@ -310,16 +339,28 @@ def preflight(output_dir: Path, max_steps: int | None = None, world_size: int | 
     if max_steps is not None:
         v.lines.append(f"  {max_steps - last.step} of {max_steps} steps remain")
     else:
-        v.lines.append("  max_steps not supplied, so 'already finished' was NOT checked")
+        v.lines.append(
+            "  max_steps not supplied, so 'already finished' was NOT checked"
+        )
     if world_size is None:
-        v.lines.append("  world size not supplied, so the ZeRO rank count was NOT checked")
+        v.lines.append(
+            "  world size not supplied, so the ZeRO rank count was NOT checked"
+        )
     return v
 
 
 # --------------------------------------------------------------------------- self test
-def _write_ckpt(root: Path, step: int, ranks: int = 8, *, latest: bool = True,
-                state_step: int | None = None, bad_json: bool = False,
-                drop_optim: list[int] | None = None, empty: bool = False) -> Path:
+def _write_ckpt(
+    root: Path,
+    step: int,
+    ranks: int = 8,
+    *,
+    latest: bool = True,
+    state_step: int | None = None,
+    bad_json: bool = False,
+    drop_optim: list[int] | None = None,
+    empty: bool = False,
+) -> Path:
     d = root / f"checkpoint-{step}"
     (d / f"global_step{step}").mkdir(parents=True)
     (d / "training_args.bin").write_bytes(b"x")
@@ -327,15 +368,22 @@ def _write_ckpt(root: Path, step: int, ranks: int = 8, *, latest: bool = True,
         (d / "trainer_state.json").write_text('{"global_step": 2')
     else:
         (d / "trainer_state.json").write_text(
-            json.dumps({"global_step": step if state_step is None else state_step}))
+            json.dumps({"global_step": step if state_step is None else state_step})
+        )
     if latest:
         (d / "latest").write_text(f"global_step{step}\n")
     for r in range(ranks):
         if drop_optim and r in (drop_optim or []):
             continue
-        f = d / f"global_step{step}" / f"bf16_zero_pp_rank_{r}_mp_rank_00_optim_states.pt"
+        f = (
+            d
+            / f"global_step{step}"
+            / f"bf16_zero_pp_rank_{r}_mp_rank_00_optim_states.pt"
+        )
         f.write_bytes(b"" if empty else b"x")
-        (d / f"global_step{step}" / f"zero_pp_rank_{r}_mp_rank_00_model_states.pt").write_bytes(b"x")
+        (
+            d / f"global_step{step}" / f"zero_pp_rank_{r}_mp_rank_00_model_states.pt"
+        ).write_bytes(b"x")
     return d
 
 
@@ -359,44 +407,73 @@ def self_test() -> int:
 
         _write_ckpt(root, 25)
         v = preflight(root)
-        check("one good checkpoint -> RESUME at its step", v.kind == RESUME and v.step == 25,
-              f"{v.kind} {v.step}")
+        check(
+            "one good checkpoint -> RESUME at its step",
+            v.kind == RESUME and v.step == 25,
+            f"{v.kind} {v.step}",
+        )
 
         # THE case this file exists for: a partial save with the HIGHEST step number.
         _write_ckpt(root, 50, latest=False)
         v = preflight(root)
-        check("partial checkpoint-50 is quarantined and 25 becomes the resume point",
-              v.kind == RESUME and v.step == 25 and not (root / "checkpoint-50").exists()
-              and (root / QUARANTINE_DIRNAME / "checkpoint-50").is_dir(), f"{v.kind} {v.step}")
-        check("quarantine is out of reach of a checkpoint-* glob",
-              not list(root.glob("checkpoint-5*")))
-        check("the quarantined payload still exists",
-              (root / QUARANTINE_DIRNAME / "checkpoint-50" / "trainer_state.json").is_file())
+        check(
+            "partial checkpoint-50 is quarantined and 25 becomes the resume point",
+            v.kind == RESUME
+            and v.step == 25
+            and not (root / "checkpoint-50").exists()
+            and (root / QUARANTINE_DIRNAME / "checkpoint-50").is_dir(),
+            f"{v.kind} {v.step}",
+        )
+        check(
+            "quarantine is out of reach of a checkpoint-* glob",
+            not list(root.glob("checkpoint-5*")),
+        )
+        check(
+            "the quarantined payload still exists",
+            (
+                root / QUARANTINE_DIRNAME / "checkpoint-50" / "trainer_state.json"
+            ).is_file(),
+        )
 
         # Twice in the same place must keep both, not overwrite the first.
         _write_ckpt(root, 50, latest=False)
         preflight(root)
-        check("a second quarantine of the same step does not overwrite the first",
-              (root / QUARANTINE_DIRNAME / "checkpoint-50.2").is_dir())
+        check(
+            "a second quarantine of the same step does not overwrite the first",
+            (root / QUARANTINE_DIRNAME / "checkpoint-50.2").is_dir(),
+        )
 
-        check("max_steps already reached -> DONE, not RESUME",
-              preflight(root, max_steps=25).kind == DONE)
-        check("max_steps beyond -> RESUME", preflight(root, max_steps=50).kind == RESUME)
-        check("world size match -> RESUME", preflight(root, world_size=8).kind == RESUME)
+        check(
+            "max_steps already reached -> DONE, not RESUME",
+            preflight(root, max_steps=25).kind == DONE,
+        )
+        check(
+            "max_steps beyond -> RESUME", preflight(root, max_steps=50).kind == RESUME
+        )
+        check(
+            "world size match -> RESUME", preflight(root, world_size=8).kind == RESUME
+        )
         v = preflight(root, world_size=24)
-        check("world size mismatch -> FATAL and says which shape wrote it",
-              v.kind == FATAL and "8 ranks" in " ".join(v.lines), f"{v.kind}")
+        check(
+            "world size mismatch -> FATAL and says which shape wrote it",
+            v.kind == FATAL and "8 ranks" in " ".join(v.lines),
+            f"{v.kind}",
+        )
         # DONE outranks the mismatch, and both halves are asserted: the verdict flips to DONE,
         # AND the demoted mismatch is still reported. Asserting only the kind would let a version
         # that silently swallowed the rank count pass, which is the failure this demotion could
         # plausibly introduce. See the reasoning at the decision itself, confirmed directly.
         v = preflight(root, max_steps=25, world_size=24)
-        check("DONE outranks the mismatch, which is demoted to a note, not dropped",
-              v.kind == DONE and any("written by 8 ranks" in ln for ln in v.lines),
-              f"{v.kind}: {v.lines}")
+        check(
+            "DONE outranks the mismatch, which is demoted to a note, not dropped",
+            v.kind == DONE and any("written by 8 ranks" in ln for ln in v.lines),
+            f"{v.kind}: {v.lines}",
+        )
         # ... and below DONE the mismatch still refuses, since there the load really would happen.
-        check("mismatch still FATAL when steps remain",
-              preflight(root, max_steps=99, world_size=24).kind == FATAL)
+        check(
+            "mismatch still FATAL when steps remain",
+            preflight(root, max_steps=99, world_size=24).kind == FATAL,
+        )
 
     # Each individual defect, so a green result cannot come from one over-broad rule.
     cases = [
@@ -418,26 +495,39 @@ def self_test() -> int:
         root = Path(td)
         _write_ckpt(root, 10, latest=False)
         v = preflight(root, do_quarantine=False)
-        check("--no-quarantine leaves the directory alone and refuses instead",
-              v.kind == FATAL and (root / "checkpoint-10").is_dir(), f"{v.kind}")
+        check(
+            "--no-quarantine leaves the directory alone and refuses instead",
+            v.kind == FATAL and (root / "checkpoint-10").is_dir(),
+            f"{v.kind}",
+        )
         v = preflight(root)
-        check("with quarantine, the same tree becomes FRESH rather than FATAL",
-              v.kind == FRESH and not (root / "checkpoint-10").exists(), f"{v.kind}")
+        check(
+            "with quarantine, the same tree becomes FRESH rather than FATAL",
+            v.kind == FRESH and not (root / "checkpoint-10").exists(),
+            f"{v.kind}",
+        )
 
     if not bad:
-        print("\nRESUME DECISION EXERCISED: fresh, resume, done-at-max-steps, world-size refusal, "
-              "five distinct partial-save shapes, and quarantine-by-rename (twice, non-destructive)")
+        print(
+            "\nRESUME DECISION EXERCISED: fresh, resume, done-at-max-steps, world-size refusal, "
+            "five distinct partial-save shapes, and quarantine-by-rename (twice, non-destructive)"
+        )
     return bad
 
 
 def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--output-dir")
     ap.add_argument("--max-steps", type=int, default=None)
     ap.add_argument("--world-size", type=int, default=None)
-    ap.add_argument("--no-quarantine", action="store_true",
-                    help="report and refuse instead of renaming. For an audit, not for a launcher: "
-                         "a job that dies unattended needs a recovery nobody has to be present for.")
+    ap.add_argument(
+        "--no-quarantine",
+        action="store_true",
+        help="report and refuse instead of renaming. For an audit, not for a launcher: "
+        "a job that dies unattended needs a recovery nobody has to be present for.",
+    )
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args(argv)
     if a.self_test:
@@ -455,10 +545,16 @@ def main(argv: list[str]) -> int:
         sys.stdout.write(buf.getvalue())
         print("\nFATAL: checkpoints.py self-test failed; not deciding anything")
         return EXIT[FATAL]
-    print("self-test: 19 resume decisions OK (silent when passing; --self-test to see them)")
+    print(
+        "self-test: 19 resume decisions OK (silent when passing; --self-test to see them)"
+    )
 
-    v = preflight(Path(a.output_dir), max_steps=a.max_steps, world_size=a.world_size,
-                  do_quarantine=not a.no_quarantine)
+    v = preflight(
+        Path(a.output_dir),
+        max_steps=a.max_steps,
+        world_size=a.world_size,
+        do_quarantine=not a.no_quarantine,
+    )
     print(f"\nresume: {v.kind}")
     for line in v.lines:
         print(f"  {line}")
