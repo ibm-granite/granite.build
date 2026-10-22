@@ -25,7 +25,7 @@ bare launcher node), installing `lm-eval` at setup time. There's no `Dockerfile`
 | `src/lm_eval_guard.sh` | Config refusals, run at the top of both `setup` and `run`, so a bad config fails before the install. |
 | `src/lm_eval_setup.sh` | uv bootstrap, `./venv`, then two install phases: torch from `torch_index_url`, then `lm-eval[extras]` from `pip_index_url`. |
 | `src/lm_eval_run.sh` | Runs `lm_eval run`, checks a results file exists, then emits the metadata and artifact markers. |
-| `test/test_lm_eval_step_render.py` | Render tests (Mode 1 only, no cluster, no network). |
+| `test/test_skypilot_eval_lm_eval_render.py` | Render tests (Mode 1 only, no cluster, no network). |
 | `test/slurm-cpu/`, `test-data/slurm-cpu/` | CPU build test on the local Docker SLURM cluster. |
 
 ## Running the tests
@@ -41,7 +41,7 @@ argv, the refusals, quoting, the two install phases and the marker:
 
 ```sh
 cd steps/eval/lm-eval/skypilot
-../../../../.venv/bin/python -m pytest test/test_lm_eval_step_render.py
+../../../../.venv/bin/python -m pytest test/test_skypilot_eval_lm_eval_render.py
 ```
 
 **SLURM build test (`slurm-cpu`).** Uses `aime25` with `--limit 1` against
