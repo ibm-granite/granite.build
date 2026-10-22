@@ -1,0 +1,193 @@
+name: livecodebench-score
+version: 1.0.0
+# Scores LiveCodeBench (https://github.com/LiveCodeBench/LiveCodeBench) code
+# generation completions, as written by eval/livecodebench-generate, and registers
+# the result files as an artifact. CPU only.
+#
+# It runs LiveCodeBench's own scorer (lcb_runner.runner.custom_evaluator), unchanged,
+# through the bundled src/lcb_score.py, which first checks that the completions
+# were generated for the same release, date window and problem set.
+#
+# SCORING EXECUTES MODEL-GENERATED CODE. LiveCodeBench runs each sample in a
+# subprocess with time and memory limits and some os/shutil/subprocess functions
+# disabled, but its own documentation says that guard is not a security sandbox.
+# What this step adds: it runs on its own (no model, no GPU), with no credentials
+# (run refuses to start when HF_TOKEN is set), and offline (its inputs arrive
+# through separate hfpull steps). Generated code can still use the network and
+# whatever the job user can write. See USAGE.md before scoring untrusted models.
+#
+# `custom` rather than EVAL: there is no EVAL member in StepType (see bfcl-eval's
+# step-template.yaml for the longer note).
+type: custom
+config:
+  lcb_score_config:
+    # LiveCodeBench release to score, e.g. "release_v6". Must equal the release the
+    # completions were generated for. REQUIRED.
+    release_version: ""
+    # Date window (YYYY-MM-DD, inclusive) on the problems' contest dates. Must equal
+    # the generate step's. Empty means no bound on that side.
+    start_date: ""
+    end_date: ""
+    # Seconds allowed per test case (LiveCodeBench's --timeout; its default is 6).
+    timeout: 6
+    # Scorer processes (LiveCodeBench's --num_process_evaluate). 0 keeps
+    # LiveCodeBench's default. Set it to the CPUs the build requests.
+    num_process_evaluate: 0
+    # Directory the result files are written to, registered as the `results`
+    # artifact. Relative paths resolve in the step's working directory.
+    output_path: "output"
+    # LiveCodeBench commit installed in setup (it is not on PyPI). The Python
+    # packages it needs are pinned in src/requirements-score.txt to the versions in
+    # that commit's uv.lock. Changing it means regenerating that file (README.md).
+    lcb_commit: "28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24"
+    lcb_repo: "https://github.com/LiveCodeBench/LiveCodeBench.git"
+    # LiveCodeBench imports torch even to score, though it computes nothing with it.
+    # torch is installed first, on its own, so it can come from a CPU-only index.
+    torch_package: "torch==2.6.0"
+    torch_index_url: "https://download.pytorch.org/whl/cpu"
+    pip_index_url: "https://pypi.org/simple"
+    # Public container image the step runs in, rendered as SkyPilot `docker:<image>`.
+    # "" runs on the bare launcher node (a SLURM cluster without the Pyxis plugin,
+    # such as the local Docker SLURM cluster). The image must be Debian/Ubuntu-based
+    # (SkyPilot bootstraps its shim with apt-get), run as root, and provide python3
+    # with pip, plus git for the LiveCodeBench checkout. python:3.12-slim has no
+    # git, so setup installs it with apt-get when it is missing.
+    image: "python:3.12-slim"
+    # Install LiveCodeBench and its packages into a venv at setup. Set false only
+    # when `image` already provides them and a LiveCodeBench checkout at
+    # lcb_checkout below.
+    install: true
+    # Where the LiveCodeBench checkout is (cloned at setup when install is true).
+    # Relative paths resolve in the step's working directory.
+    lcb_checkout: "LiveCodeBench"
+  compute_config:
+    num_gpus_per_node: 0
+    total_memory_per_node: "4Gi"
+
+# The completions directory and the dataset are declared inputs (the #457
+# convention). For an hf:// URI the SkyPilot launcher downloads each into its
+# binding path ahead of setup, through a separate hfpull step on SLURM. That is what
+# keeps HF_TOKEN out of this step's environment. allow_unknown stays true so a
+# recipe can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  required:
+    # The output directory of eval/livecodebench-generate.
+    completions:
+      type: dataset
+      accept: [uri, binding]
+    # A copy of the livecodebench/code_generation_lite dataset repo: its loading
+    # script plus the JSONL files the release needs.
+    dataset:
+      type: dataset
+      accept: [uri, binding]
+outputs:
+  optional:
+    results:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    # No `subtypes:` restriction: resolves on every SkyPilot endpoint.
+    default_launcher: lcb_score
+    launchers:
+      lcb_score:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # Not shell-escaped: passed to sky.Resources(image_id=...) as a python
+          # value, never through a shell.
+          image_id: '{{ ("docker:" ~ config.lcb_score_config.image) if config.lcb_score_config.image else "" }}'
+          # Cloud-agnostic: the build supplies cpus/memory via
+          # config.launcher_config.resources.
+          resources: {}
+          # The bundled scripts land at ./src, relative to the step's working
+          # directory, where setup and run start.
+          file_mounts:
+            src: src
+          setup: |
+            set -eu
+            {#- Shell-quote escaping for author-supplied values. Jinja macros are
+                block-scoped, so `run` carries its own identical copy. #}
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            {%- if config.lcb_score_config.install %}
+            # git for the LiveCodeBench checkout; slim images do not ship it.
+            if ! command -v git >/dev/null 2>&1; then
+              if command -v apt-get >/dev/null 2>&1; then
+                apt-get update -qq && apt-get install -y -qq --no-install-recommends git ca-certificates >/dev/null
+              else
+                echo "eval/livecodebench-score: ERROR git is required to fetch LiveCodeBench." >&2; exit 1
+              fi
+            fi
+            LCB_DIR='{{ q(config.lcb_score_config.lcb_checkout) }}'
+            rm -rf "$LCB_DIR"
+            git init -q "$LCB_DIR"
+            git -C "$LCB_DIR" fetch -q --depth 1 '{{ q(config.lcb_score_config.lcb_repo) }}' '{{ q(config.lcb_score_config.lcb_commit) }}'
+            git -C "$LCB_DIR" checkout -q FETCH_HEAD
+            # uv into a venv, as dpk does. --break-system-packages is needed on PEP
+            # 668 interpreters; older pip lacks it, so fall back.
+            if ! pip install --quiet --no-cache-dir --break-system-packages uv 2>/dev/null; then
+              pip install --quiet --no-cache-dir uv
+            fi
+            # Caches stay inside the build's own workdir (setup starts in it).
+            export UV_CACHE_DIR="$PWD/.uv-cache"
+            uv venv ./venv
+            . ./venv/bin/activate
+            uv pip install --index-url '{{ q(config.lcb_score_config.torch_index_url or config.lcb_score_config.pip_index_url) }}' \
+              '{{ q(config.lcb_score_config.torch_package) }}'
+            uv pip install --index-url '{{ q(config.lcb_score_config.pip_index_url) }}' \
+              -r ./src/requirements-score.txt
+            # --no-deps: the packages above are the pinned subset of its lock that
+            # scoring needs; its declared deps would also pull vLLM and CUDA.
+            uv pip install --no-deps -e "$LCB_DIR"
+            {%- endif %}
+          # run starts in the same working directory as setup.
+          run: |
+            set -euo pipefail
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            # Generated code runs here: refuse to do it with a Hugging Face token in
+            # the environment (see the comment at the top of this file).
+            if [ -n "${HF_TOKEN:-}" ]; then
+              echo "eval/livecodebench-score: ERROR HF_TOKEN is set; this step executes model-generated code and must run without credentials. Remove HF_TOKEN from the step's envs/secrets (its inputs are pulled by separate hfpull steps)." >&2
+              exit 1
+            fi
+            RELEASE='{{ q(config.lcb_score_config.release_version) }}'
+            if [ -z "$RELEASE" ]; then
+              echo "eval/livecodebench-score: ERROR lcb_score_config.release_version is required (e.g. release_v6)." >&2; exit 1
+            fi
+            {%- if config.lcb_score_config.install %}
+            . ./venv/bin/activate
+            {%- endif %}
+            SRC_DIR="$(pwd)/src"
+            OUTPUT_DIR='{{ q(config.lcb_score_config.output_path) }}'
+            mkdir -p "$OUTPUT_DIR"
+            # Absolute, because the server reads the artifact marker off-node, and
+            # because the scorer runs from inside the LiveCodeBench checkout.
+            OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
+            COMPLETIONS_DIR='{{ q(bindings.completions.binding.path) }}'
+            DATASET_DIR='{{ q(bindings.dataset.binding.path) }}'
+            export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1
+            export HF_HOME="$PWD/.hf-cache"
+            # LiveCodeBench reads its prompt files by relative path, so it runs from
+            # inside its checkout.
+            cd '{{ q(config.lcb_score_config.lcb_checkout) }}'
+            PYTHONPATH="$SRC_DIR" python "$SRC_DIR/lcb_score.py" \
+              --completions-dir "$COMPLETIONS_DIR" \
+              --dataset-dir "$DATASET_DIR" \
+              --output-dir "$OUTPUT_DIR" \
+              --release-version "$RELEASE" \
+              --start-date '{{ q(config.lcb_score_config.start_date) }}' \
+              --end-date '{{ q(config.lcb_score_config.end_date) }}' \
+              --timeout '{{ q(config.lcb_score_config.timeout) }}' \
+              --num-process-evaluate '{{ q(config.lcb_score_config.num_process_evaluate) }}'
+            # Must start the line for skypilot_monitor's regex to capture it.
+            echo "GB_ARTIFACT_ID:results GB_ARTIFACT_PATH:${OUTPUT_DIR}"
+    monitors:
+      # Standard artifact/status convention from the shipped monitor library.
+      skypilot_monitor:
+        ref: space://monitors/skypilot
