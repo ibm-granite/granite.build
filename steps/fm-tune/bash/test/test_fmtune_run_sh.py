@@ -195,11 +195,25 @@ def test_bash_builtins_default_output_cache_and_python(env, tmp_path):
     """On bash the template leaves these empty; the script derives them."""
     for k in ("FMTUNE_OUTPUT_DIR", "FMTUNE_CACHE_DIR", "FMTUNE_PYTHON"):
         env.pop(k)
-    env["LLMB_BASH_OUTPUT_DIR"] = str(tmp_path / "w" / "a" / "outputs")
+    # The real bash layout (build 2ad03fab): <GB_HOME>/workdir/llm-build-<b>/
+    # target-<t>/target-run-<r>/step-<s>/step-run-<sr>/launch-<l>/outputs. The cache
+    # must sit beside workdir/, shared by every build, so the venv is reused.
+    out = tmp_path / "gbhome" / "workdir" / "llm-build-b" / "target-t" / "target-run-r"
+    out = out / "step-fm-tune" / "step-run-s" / "launch-l" / "outputs"
+    env["LLMB_BASH_OUTPUT_DIR"] = str(out)
     env["LLMB_BASH_PYTHON_DIR"] = os.path.dirname(sys.executable)
     proc = _run(env)
     assert proc.returncode == 0, proc.stderr
     assert _flag(_record(env)["argv"], "--output_dir") == f"{env['LLMB_BASH_OUTPUT_DIR']}/model"
+    assert (tmp_path / "gbhome" / ".fm-tune-cache").is_dir()
+    assert not (out.parents[1] / ".fm-tune-cache").exists()
+
+
+def test_cache_falls_back_to_two_levels_up_outside_a_workdir(env, tmp_path):
+    env.pop("FMTUNE_CACHE_DIR")
+    env["LLMB_BASH_OUTPUT_DIR"] = str(tmp_path / "w" / "a" / "outputs")
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
     assert (tmp_path / "w" / ".fm-tune-cache").is_dir()
 
 

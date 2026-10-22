@@ -20,7 +20,12 @@ if [ -z "${FMTUNE_OUTPUT_DIR:-}" ] && [ -n "${LLMB_BASH_OUTPUT_DIR:-}" ]; then
   FMTUNE_OUTPUT_DIR="$LLMB_BASH_OUTPUT_DIR/model"   # a subdir: --model_at_root clears its output_dir, and job.log lives in LLMB_BASH_OUTPUT_DIR
 fi
 if [ -z "${FMTUNE_CACHE_DIR:-}" ] && [ -n "${LLMB_BASH_OUTPUT_DIR:-}" ]; then
-  FMTUNE_CACHE_DIR="$LLMB_BASH_OUTPUT_DIR/../../.fm-tune-cache"
+  # The bash output dir is <GB_HOME>/workdir/llm-build-<id>/.../launch-<id>/outputs
+  # (per build), so cache beside workdir/ to reuse the venv across builds.
+  case "$LLMB_BASH_OUTPUT_DIR" in
+    */workdir/*) FMTUNE_CACHE_DIR="${LLMB_BASH_OUTPUT_DIR%%/workdir/*}/.fm-tune-cache" ;;
+    *) FMTUNE_CACHE_DIR="$LLMB_BASH_OUTPUT_DIR/../../.fm-tune-cache" ;;
+  esac
 fi
 if [ -z "$FMTUNE_PYTHON" ]; then
   FMTUNE_PYTHON="${LLMB_BASH_PYTHON_DIR:+$LLMB_BASH_PYTHON_DIR/}python3"
