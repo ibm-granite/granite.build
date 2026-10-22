@@ -181,6 +181,12 @@ environment_configs:
             # Inputs are already downloaded; nothing here needs the Hub.
             export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1
             export HF_HOME="$PWD/.hf-cache"
+            # vLLM's FlashInfer top-p/top-k sampler JIT-compiles CUDA kernels with the
+            # node's nvcc when its prebuilt kernels (flashinfer-cubin) aren't available,
+            # and an older toolkit rejects FlashInfer's flags (seen: CUDA 12.4,
+            # "nvcc fatal: Unknown option '--compress-mode=size'"). vLLM's own sampler
+            # needs no compiler, so the step works whatever toolkit a node has.
+            export VLLM_USE_FLASHINFER_SAMPLER=0
             # LiveCodeBench reads its prompt files by relative path, so it runs from
             # inside its checkout.
             cd '{{ q(config.lcb_generate_config.lcb_checkout) }}'

@@ -80,6 +80,7 @@ def _run(rendered: str, cwd: pathlib.Path) -> subprocess.CompletedProcess:
     stub.write_text(
         '#!/usr/bin/env bash\nfor a in "$@"; do echo "ARG:$a"; done\n'
         'echo "CWD:$(pwd)"\necho "ENV:HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-}"\n'
+        'echo "ENV:VLLM_USE_FLASHINFER_SAMPLER=${VLLM_USE_FLASHINFER_SAMPLER:-}"\n'
     )
     stub.chmod(0o755)
     (cwd / "venv" / "bin").mkdir(parents=True)
@@ -221,7 +222,11 @@ class TestRun:
     def test_runs_offline_from_inside_the_checkout(self, defaults, launcher, tmp_path):
         proc = _run(_render(launcher["run"], _cfg(defaults)), tmp_path)
         assert _lines(proc, "CWD:") == [str(tmp_path / "LiveCodeBench")]
-        assert _lines(proc, "ENV:") == ["HF_HUB_OFFLINE=1"]
+        # The FlashInfer sampler is off, so vLLM never JIT-compiles with the node's nvcc.
+        assert _lines(proc, "ENV:") == [
+            "HF_HUB_OFFLINE=1",
+            "VLLM_USE_FLASHINFER_SAMPLER=0",
+        ]
 
     def test_marker_is_absolute_and_starts_the_line(self, defaults, launcher, tmp_path):
         proc = _run(_render(launcher["run"], _cfg(defaults)), tmp_path)
