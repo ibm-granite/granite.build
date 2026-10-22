@@ -241,18 +241,22 @@ def _git(*args, cwd):
 
 
 def test_git_source_is_cloned_and_cached(env, tmp_path):
-    """source.repo clones once at ref and runs <clone>/<subdir>/main.py."""
+    """source.repo clones once at ref and runs <tree>/<subdir>/main.py."""
     _git_repo(env, tmp_path)
     first = _run(env)
     assert first.returncode == 0, first.stderr
     assert first.stdout.count("[fm-tune] cloning") == 1
     assert _record(env)["cwd"].endswith("/sub/fm-tune")
-    clones = list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("src-*"))
+    cache = pathlib.Path(env["FMTUNE_CACHE_DIR"])
+    clones = list(cache.glob("src-*"))
     assert len(clones) == 1
-    second = _run(env)  # second run reuses the clone
+    trees = list(cache.glob("tree-*"))
+    assert len(trees) == 1
+    second = _run(env)  # second run reuses the clone, and the tree: same commit
     assert second.returncode == 0, second.stderr
     assert second.stdout.count("[fm-tune] cloning") == 0
-    assert list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("src-*")) == clones
+    assert list(cache.glob("src-*")) == clones
+    assert list(cache.glob("tree-*")) == trees
 
 
 def _git_repo(env, tmp_path):
@@ -290,10 +294,44 @@ def test_cached_clone_is_updated_to_the_current_ref(env, tmp_path):
     assert second.returncode == 0, second.stderr
     assert "[fm-tune] updating" in second.stdout
     assert second.stdout.count("[fm-tune] cloning") == 0
-    # src-<cksum> only: the [0-9] tail excludes src-<key>.lock and src-<key>.tmp.
-    (clone,) = pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("src-*[0-9]")
-    assert _head(clone) == _head(repo)
-    assert (clone / "sub" / "fm-tune" / "NEW").is_file()
+    tree = pathlib.Path(env["FMTUNE_CACHE_DIR"]) / f"tree-{_head(repo)}"
+    assert _record(env)["cwd"] == str(tree / "sub" / "fm-tune")
+    assert (tree / "sub" / "fm-tune" / "NEW").is_file()
+
+
+def _commit(repo, msg):
+    _git("add", "-A", ".", cwd=repo)
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", msg, cwd=repo)
+
+
+def test_main_py_runs_from_the_tree_of_the_repos_head(env, tmp_path):
+    repo = _git_repo(env, tmp_path)
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    sha = _head(repo)
+    tree = pathlib.Path(env["FMTUNE_CACHE_DIR"]) / f"tree-{sha}"
+    assert _record(env)["cwd"] == str(tree / "sub" / "fm-tune")
+    assert f"[fm-tune] using {env['FMTUNE_SOURCE_REPO']}@rel = {sha}" in proc.stdout
+
+
+def test_a_later_commit_never_touches_an_earlier_runs_tree(env, tmp_path):
+    """Two builds of one repo@ref can overlap; build 1 trains from (and pip -e
+    installs) its tree while build 2 refreshes the mirror to a newer commit."""
+    repo = _git_repo(env, tmp_path)
+    (repo / "sub" / "fm-tune" / "GONE").write_text("1\n")
+    _commit(repo, "add GONE")
+    assert _run(env).returncode == 0
+    tree1 = pathlib.Path(_record(env)["cwd"])
+    snap = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in tree1.rglob("*") if p.is_file()}
+    (repo / "sub" / "fm-tune" / "GONE").unlink()
+    _commit(repo, "drop GONE")
+    second = _run(env)
+    assert second.returncode == 0, second.stderr
+    tree2 = pathlib.Path(_record(env)["cwd"])
+    assert tree2 != tree1 and tree2.parents[1].name == f"tree-{_head(repo)}"
+    assert not (tree2 / "GONE").exists()
+    assert (tree1 / "GONE").is_file()
+    assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in tree1.rglob("*") if p.is_file()} == snap
 
 
 def test_failed_update_of_a_cached_clone_dies(env, tmp_path):

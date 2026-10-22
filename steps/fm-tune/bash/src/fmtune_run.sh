@@ -98,6 +98,9 @@ if [ -n "$FMTUNE_SOURCE_PATH" ]; then
   root="$FMTUNE_SOURCE_PATH"
 else
   key="$(printf '%s@%s' "$FMTUNE_SOURCE_REPO" "$FMTUNE_SOURCE_REF" | cksum | cut -d' ' -f1)"
+  # src-<key> (keyed on repo@ref) is only a fetch mirror; nothing runs from it.
+  # main.py runs from, and the venv pip -e installs, an immutable tree-<sha> per
+  # commit, so a build refreshing the mirror never changes a running build's tree.
   clone="$FMTUNE_CACHE_DIR/src-$key"
   lock "$clone.lock"
   if [ ! -d "$clone/.git" ]; then
@@ -105,15 +108,26 @@ else
     rm -rf "$clone.tmp"
     git clone --quiet --depth 1 --branch "$FMTUNE_SOURCE_REF" "$FMTUNE_SOURCE_REPO" "$clone.tmp"
     mv "$clone.tmp" "$clone"
+    sha="$(git -C "$clone" rev-parse HEAD)"
   else
-    # The cache outlives builds: move a reused clone to the ref's current commit.
+    # The cache outlives builds: resolve the ref's current commit, not the first one.
     log "updating $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF"
-    { git -C "$clone" fetch --quiet --depth 1 origin "$FMTUNE_SOURCE_REF" \
-        && git -C "$clone" reset --quiet --hard FETCH_HEAD; } \
+    git -C "$clone" fetch --quiet --depth 1 origin "$FMTUNE_SOURCE_REF" \
       || die "could not update the cached clone $clone to $FMTUNE_SOURCE_REF"
+    sha="$(git -C "$clone" rev-parse FETCH_HEAD)"
+  fi
+  tree="$FMTUNE_CACHE_DIR/tree-$sha"
+  if [ ! -d "$tree" ]; then
+    # git archive, not git worktree add: a plain directory with no .git link back
+    # to the mirror, so pruning or re-cloning the mirror can never affect it.
+    rm -rf "$tree.tmp"; mkdir -p "$tree.tmp"
+    git -C "$clone" archive "$sha" | tar -x -C "$tree.tmp" \
+      || die "could not extract $sha from $clone"
+    mv "$tree.tmp" "$tree"
   fi
   unlock
-  root="$clone/$FMTUNE_SOURCE_SUBDIR"
+  log "using $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF = $sha"
+  root="$tree/$FMTUNE_SOURCE_SUBDIR"
 fi
 [ -f "$root/main.py" ] || die "no main.py under fm-tune source $root"
 
