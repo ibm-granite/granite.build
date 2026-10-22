@@ -81,6 +81,10 @@ def test_valid_config_passes():
         ({"local_runtime": "ollama", "local_model": ""}, "local_model.model is required"),
         ({"local_runtime": "ollama", "local_model": "m", "local_port": "0"}, "local_model.port"),
         ({"local_runtime": "ollama", "local_model": "m", "local_port": "x1"}, "local_model.port"),
+        ({"local_runtime": "ollama", "local_model": "m", "local_port": "65536"}, "at most 65535"),
+        ({"local_runtime": "ollama", "local_model": "m", "dd_image": "quay.io/o/dd:1"},
+         "cannot be used together with dd_image"),
+        ({"num_records": "4", "min_records": "5"}, "min_records (5) is greater than"),
     ],
 )
 def test_refusals(over, needle):
@@ -111,3 +115,12 @@ def test_local_model_satisfies_providers():
 def test_no_providers_and_no_local_model_names_both_options():
     proc = _guard(has_providers="")
     assert proc.returncode != 0 and "local_model" in proc.stderr
+
+
+def test_min_records_equal_to_num_records_passes():
+    assert _guard(num_records="4", min_records="4").returncode == 0
+
+
+def test_dd_image_with_api_providers_still_allowed():
+    """Only the dd_image + local_model combination is refused."""
+    assert _guard(dd_version="", dd_image="quay.io/o/dd:1").returncode == 0

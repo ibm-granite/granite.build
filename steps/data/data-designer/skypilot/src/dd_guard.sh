@@ -94,6 +94,21 @@ if [ -n "$local_runtime" ]; then
       fail "ERROR data_designer_config.local_model.port must be a positive integer," \
            "got '${local_port}'." ;;
   esac
+  # Checked after the digits-only case above, so the arithmetic is safe.
+  if [ "$local_port" -gt 65535 ]; then
+    fail "ERROR data_designer_config.local_model.port must be at most 65535, got '${local_port}'."
+  fi
+  # Not supported together, deliberately. With dd_image the step skips its own install,
+  # so nothing adds the zstandard module Ollama's .tar.zst download needs to unpack, and
+  # the image may lack python3 or curl too. Refused here rather than failing midway
+  # through setup. To serve a model in your own image, bake Ollama into it and point
+  # model_providers at http://127.0.0.1:<port>/v1 instead.
+  if [ -n "$dd_image" ]; then
+    fail "ERROR data_designer_config.local_model cannot be used together with dd_image." \
+         "To serve a model in your own image, include Ollama in the image and point" \
+         "model_providers at it (http://127.0.0.1:<port>/v1); see USAGE.md," \
+         "\"A model on the node\"."
+  fi
 fi
 
 # Required rather than defaulted: Data Designer's built-in providers (nvidia, openai,
@@ -134,6 +149,13 @@ case $min_records in
     fail "ERROR data_designer_config.min_records must be a non-negative integer or null," \
          "got '${min_records}'." ;;
 esac
+
+# Checked here, before the install: otherwise it is found only after the generation,
+# which a min_records above num_records can never pass.
+if [ -n "$min_records" ] && [ "$min_records" -gt "$num_records" ]; then
+  fail "ERROR data_designer_config.min_records (${min_records}) is greater than" \
+       "num_records (${num_records}); the run could never pass."
+fi
 
 # --- enums ------------------------------------------------------------------------
 case $resume in

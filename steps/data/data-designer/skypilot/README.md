@@ -18,17 +18,20 @@ printed.
 |---|---|---|
 | **What the build names** | one DPK `transform` (module + pip extra derived) | one Data Designer `config` (inline) + the `model_providers` it calls |
 | **Invocation** | `python -m dpk_<t>.runtime` from `dpk_run.sh` | Data Designer's Python API from `src/dd_run.py` |
-| **External dependency** | none | an LLM endpoint, with a credential delivered as a space secret |
+| **External dependency** | none | an LLM endpoint with a credential delivered as a space secret, or a small model served on the node (`local_model`) |
 
 **Why the Python API, not `data-designer create`.** The CLI reads providers from
 `$DATA_DESIGNER_HOME/model_providers.yaml`, so a credential would have to be written to
 a file on the node. Some endpoints need a custom header: RITS takes `RITS_API_KEY: <key>`,
 and Data Designer's `extra_headers` are literal strings. `dd_run.py` builds the providers
 in process, resolving `api_key_env` / `extra_headers_from_env` from the environment, so a
-key never reaches disk, the persisted config, or the log.
+key never reaches disk or the persisted config. Each provider is validated with its
+credentials replaced by placeholders first, so a malformed entry is reported by field
+name without the key reaching the log (a pydantic error prints the whole entry; found in
+review).
 
-**How the config reaches the node.** The `config` and `model_providers` travel together
-as base64 JSON in `$GB_DD_SPEC_B64`, which the launcher's `envs` render with the server's
+**How the config reaches the node.** The `config`, `model_providers`, `run_config` and
+`local_model` travel together as base64 JSON in `$GB_DD_SPEC_B64`, which the launcher's `envs` render with the server's
 `json_dumps | b64encode` filters. This avoids YAML and shell quoting, and the Data
 Designer prompts inside are data at that point, never re-rendered. They *are* rendered
 once before that, as part of the step config, which is why USAGE.md asks for
@@ -36,9 +39,10 @@ once before that, as part of the step config, which is why USAGE.md asks for
 
 | File | Invoked from | Does |
 |---|---|---|
-| `src/dd_guard.sh` | `setup` and `run` | required fields, enums, counts, marker-safe `output`, unrendered `seed` binding |
-| `src/dd_setup.sh` | `setup` (bare-node only) | the dpk uv install: bootstrap `uv`, shared `UV_CACHE_DIR`, venv, `data-designer==<pin>` |
-| `src/dd_run.py` | `run` (always) | decode spec → resolve credentials → seed-path override → `validate()` → `create()` → row-count check → optional export → metadata + artifact marker |
+| `src/dd_guard.sh` | `setup` and `run` | required fields, enums, counts (incl. `min_records` ≤ `num_records`), marker-safe `output`, unrendered `seed` binding, `local_model` fields, and refuses `local_model` with `dd_image` |
+| `src/dd_setup.sh` | `setup` (bare-node only) | the dpk uv install: bootstrap `uv`, shared `UV_CACHE_DIR`, venv, `data-designer==<pin>` (plus `zstandard` with `local_model`) |
+| `src/dd_ollama.sh` | `setup` and `run` (`local_model` only) | install: download Ollama, verify its published sha256, keep the CPU libraries, pull the model under a lock; run: start the server, refuse a taken port, run `dd_run.py`, stop the server |
+| `src/dd_run.py` | `run` (always) | decode spec → resolve credentials → validate providers without secrets → seed-path override → `validate()` → check a previous run like Data Designer would (clear it, refuse, or resume) → `create()` → row-count check → optional export → metadata + artifact marker |
 
 ## Running the tests
 
@@ -61,22 +65,58 @@ secret and no model endpoint. `slurm-ollama` and `kube-ollama` exist; aws is nex
 make -C steps/data/data-designer/skypilot test    # uses the repo-root .venv; runs `make space` first
 ```
 
-Mode 1 only; no infrastructure and no model endpoint:
+Mode 1 only; no infrastructure and no model endpoint. Some of them need `data-designer`
+or `zstandard`, which are deliberately **not** in the repo `.venv` (installing
+data-designer there replaces the repo's pinned duckdb, fsspec, pyarrow and
+opentelemetry). Under `make test` those skip, and the skip reason names the command to
+run them. To run all of them, use a separate venv that has `data-designer==0.9.5`,
+`zstandard`, `pytest` and `pyyaml`:
+
+```
+cd steps/data/data-designer/skypilot
+PYTHONPATH=src <venv>/bin/python -m pytest -c /dev/null --noconftest \
+  test/test_dd_step_render.py test/test_dd_guard_sh.py test/test_dd_run.py test/test_dd_ollama_sh.py
+```
+
+There are 110 tests in all:
 
 - `test_dd_step_render.py` pins what the template computes:
   - the rendered blocks parse under `bash -n`;
   - the guard receives identical argv from both phases;
   - every runner argument arrives intact, quotes included;
   - `dd_image` switches between installing and the `docker:` image;
-  - `$GB_DD_SPEC_B64` decodes back to the config, with prompts verbatim, and carries `run_config`.
-- `test_dd_guard_sh.py` runs the guard on every refusal and on the passing case.
-- `test_dd_run.py` covers the runner's pure logic:
-  - spec decoding, including `run_config`;
-  - credential resolution, including that no value appears in an error;
+  - `local_model` on and off;
+  - `$GB_DD_SPEC_B64` decodes back to the config, with prompts verbatim, and carries
+    `run_config` and `local_model`.
+- `test_dd_guard_sh.py` runs the guard on every refusal and on the passing cases,
+  including `min_records` > `num_records`, an out-of-range port, and `local_model` with
+  `dd_image`.
+- `test_dd_run.py` covers the runner:
+  - spec decoding;
+  - credential resolution, including that no value appears in an error, and provider
+    validation that never shows a secret;
   - the seed-path override;
-  - the `resume: never` refusal;
-  - clearing a changed-config run under `if_possible`;
-  - the `resumed_records` count.
+  - `clear_previous_run` removing only Data Designer's files, and not following
+    symlinks;
+  - `count_resumable_records`.
+
+  With `data-designer`, `TestRunEndToEnd` also runs the whole runner with a sampler-only
+  config, so no model is called:
+  - the marker is the last line, and the export is written;
+  - `min_records` is checked before any work;
+  - a finished run is extended;
+  - `if_possible` restarts in place on a changed config, `buffer_size` or
+    `preserve_dropped_columns`, with no timestamped sibling dir;
+  - `always` refuses a mismatch, and explains a first run;
+  - user files survive a restart;
+  - a malformed provider is reported without its key.
+- `test_dd_ollama_sh.py` runs the real `src/dd_ollama.sh` with `curl` and the Ollama
+  binary stubbed, so nothing is downloaded:
+  - the install keeps only the CPU libraries;
+  - a checksum mismatch or a failed download leaves nothing in the cache;
+  - a second install reuses the cache;
+  - a taken port fails instead of borrowing another server;
+  - `run` returns the wrapped command's exit status and always stops the server.
 
 ### Open build tests (here)
 
@@ -152,15 +192,17 @@ passes only against a SkyPilot carrying the fix. The fix was verified that way o
 2026-10-21: the task step was CANCELLED at the signal, and nothing was written after it.
 
 Measured history: resume was first checked off-cluster against RITS (8 rows,
-`buffer_size: 2`):
+`buffer_size: 2`). These cases are now covered without a model by `TestRunEndToEnd`:
 
 1. A `kill -9` after 2 of 4 row groups resumed with "2 of 4 row group(s) already complete
    … skipping them", and `batch_00000.parquet` was unchanged.
 2. A re-run of the finished dataset was a no-op.
 3. A changed prompt under `always` refused.
 4. A changed prompt under `if_possible` showed that Data Designer starts fresh in a
-   timestamped sibling directory, not in place. `dd_run.clear_stale_output` now corrects
-   that.
+   timestamped sibling directory, not in place. A later review found the same for a
+   changed `preserve_dropped_columns`, and a hard failure for a changed `buffer_size`.
+   `dd_run.resume_mismatch` now runs Data Designer's own checks before generating, and
+   `clear_previous_run` clears just the previous run's files.
 
 ### Planned
 

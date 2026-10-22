@@ -41,7 +41,7 @@ All fields live under the step's `config.data_designer_config`.
 | `min_records` | int | no | Fail the target when fewer rows come back. Data Designer drops rows whose cells failed. Default `null`, meaning at least one row. |
 | `seed_glob` | string | no | Appended to the staged `seed` path, e.g. `"*.parquet"`, when a `local` seed source should read a directory. |
 | `dd_version` | string | no | data-designer release to install. Default `0.9.5`. Ignored when `dd_image` is set. |
-| `dd_image` | string | no | A container image that already provides data-designer. Setting it skips the install. Default `""`, the bare launcher node. No public image is published for the open-source library. |
+| `dd_image` | string | no | A container image that already provides data-designer. Setting it skips the install. Default `""`, the bare launcher node. No public image is published for the open-source library. Can't be combined with `local_model`. |
 | `pip_index_url` | string | no | Index for the install. Default `https://pypi.org/simple`. |
 
 ## Model providers
@@ -57,9 +57,15 @@ the node:
 | `api_key_env: NAME` | `api_key: $NAME` (bearer token) |
 | `extra_headers_from_env: {Header: NAME}` | `extra_headers: {Header: $NAME}` |
 
-A missing variable fails the target and names the variable. Avoid a plain `api_key`:
-Data Designer treats it as an environment variable name first and falls back to the
-literal string.
+A missing variable fails the target and names the variable. A malformed provider entry
+fails the same way, naming the bad field without printing any credential.
+
+**Never put a credential in the build.yaml as a literal**, whether as `api_key` or as an
+`extra_headers` value. Step config is stored with the build and travels to the node, so a
+literal there is visible to anyone who can read the build. Use `api_key_env` and
+`extra_headers_from_env`. A plain `api_key` is also risky for another reason: Data
+Designer treats it as an environment variable name first and falls back to the literal
+string.
 
 **Gateways that take the key in a custom header** rather than as a bearer token: name
 the header and the variable that holds the key. Some API gateways also give each model
@@ -116,13 +122,25 @@ Things to know:
 - **CPU only.** The step requests no GPU, so stick to small models. `granite4:350m`
   generated 4 short rows in about 20s on 2 CPUs. It writes fluent text whose facts are
   often wrong.
-- **Downloads, cached.** Ollama's Linux bundle is about 1.5 GB, almost all of it CUDA
-  libraries. The step streams it once and keeps only the CPU parts (about 50 MB). The
-  model is extra (`granite4:350m` is about 0.7 GB). Both are cached under the
-  environment's shared workdir (`<shared_workdir>/.data-designer-cache`), so they
-  download once per cluster. Measured on the local SLURM cluster: 4m39s cold, 3m04s warm.
+- **Downloads, verified and cached.** Ollama's Linux bundle is about 1.5 GB, almost all
+  of it CUDA libraries. The step downloads it once, checks it against the sha256 Ollama
+  publishes for the release, and keeps only the CPU parts (about 50 MB); a download that
+  fails its checksum installs nothing. The model is extra (`granite4:350m` is about
+  0.7 GB). Both are cached under the environment's shared workdir
+  (`<shared_workdir>/.data-designer-cache`), so they download once per cluster. Measured
+  on the local SLURM cluster: 4m39s cold, 3m04s warm.
 - **Size the node for the model.** It runs alongside Data Designer, within the target's
   `compute_config`.
+- **One server per port, per node.** If another job already serves on `port` on the same
+  node, the run fails with "port … is already in use" rather than using that job's
+  server. Give concurrent builds that may share a node different `port`s.
+- **No authentication.** The server listens on `127.0.0.1` only, but on a shared node
+  anyone else on the node can reach it while it runs. Don't use it for anything
+  sensitive.
+- **Not with `dd_image`.** With `dd_image` the step skips its own install, which is what
+  provides the tools Ollama's download needs, so the combination is refused up front. To
+  serve a model inside your own image, include Ollama in the image and point
+  `model_providers` at it (`endpoint: http://127.0.0.1:<port>/v1`).
 
 ### Credentials
 
@@ -151,21 +169,37 @@ build variable (`config`, `bindings`, `run_metadata`) would be evaluated by the 
 silently changed. Build-time values you *do* want substituted, such as `$${PARAM}` build
 parameters, go outside the raw block.
 
+**Quote dates.** YAML reads an unquoted `2024-01-01` as a date, which the step can't pass
+on, and the build then fails to render with an unhelpful "not JSON serializable" error.
+Write `"2024-01-01"`, for example in a `datetime` sampler's `start`/`end`.
+
 ## Resume
 
 Data Designer writes the dataset in row groups of `run_config.buffer_size` rows and
 checkpoints each finished group to `parquet-files/`, together with a fingerprint of the
-config in `metadata.json`. A later run on the same `output_path` reads that back:
+config in `metadata.json`. A later run on the same `output_path` compares itself with that
+record before generating anything. It can continue only when all of these match the
+previous run:
 
-| `resume` | Same config | Changed config |
-|---|---|---|
-| `if_possible` (default) | Continues after the last finished row group. Finished groups are kept as they are, and a finished dataset is not regenerated. | The step clears `output_path` and starts fresh in place. |
-| `always` | As above. | Fails: `Cannot resume: the current config … does not match`. |
-| `never` | Refuses a non-empty `output_path`. | Refuses a non-empty `output_path`. |
+- the config fingerprint (columns, prompts, models, inference parameters);
+- `run_config.buffer_size`, since it sets the row-group boundaries;
+- `run_config.preserve_dropped_columns`;
+- `num_records` is at least the previous run's target.
 
-The fingerprint covers what changes the rows: columns, prompts, models, inference
-parameters. It ignores `max_parallel_requests`, `timeout`, `skip_health_check` and
-profilers, so you can retune concurrency and still resume.
+| `resume` | Previous run matches | Previous run doesn't match | No previous run |
+|---|---|---|---|
+| `if_possible` (default) | Continues after the last finished row group; finished groups are kept as they are, and a finished dataset is not regenerated. | Clears the previous run's files and starts fresh in place. | Starts fresh. |
+| `always` | As above. | Fails before generating, naming what changed. | Fails: there is nothing to continue. |
+| `never` | Refuses a non-empty `output_path`. | Refuses a non-empty `output_path`. | Starts fresh. |
+
+The fingerprint ignores `max_parallel_requests`, `timeout`, `skip_health_check` and
+profilers, so you can retune concurrency and still resume. **Changing `buffer_size`
+restarts the run** under `if_possible`, so pick it before a long run.
+
+"Clears" removes only what Data Designer writes there (`parquet-files/`, the other
+`*-parquet-files/` dirs, `processors-files/`, `images/`, `metadata.json`,
+`builder_config.json`, and the export file). Other files you keep in `output_path` are
+left alone.
 
 Two things decide whether resume helps in practice:
 
@@ -177,8 +211,7 @@ Two things decide whether resume helps in practice:
   under 1000 rows has a single checkpoint, at the end. For long runs against a
   rate-limited API, set something like `run_config: {buffer_size: 100}`.
 
-Raising `num_records` on a finished dataset extends it. Lowering it below what is
-already on disk is an error.
+Raising `num_records` on a finished dataset extends it.
 
 ## Multimodal
 

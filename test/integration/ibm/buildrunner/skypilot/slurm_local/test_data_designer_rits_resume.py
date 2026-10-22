@@ -52,7 +52,7 @@ from libgbtest.buildrunner.buildtest import (
 )
 from libgbtest.constants import extended_testing_only
 
-from .cluster import on_cluster
+from .cluster import files_containing, on_cluster
 
 pytestmark = [pytest.mark.ibm, pytest.mark.skypilot_integration]
 
@@ -148,7 +148,7 @@ class TestSkypilotSlurmDataDesignerRitsResume(AbstractYamlBuildRunnerTest):
         )
         print(f"\ncancelled with {len(first)} of {_TOTAL_BATCHES} row groups checkpointed")
 
-        # 2. Resumed. The spec's expectations (records_generated 40, resumed_records
+        # 2. Resumed. The spec's expectations (records_generated 200, resumed_records
         # > 0) are checked against this run by the harness.
         self._run_build_test(
             tested_class=ClassTestedEnum.TEST_BUILDRUNNER, test_spec=spec, test_cancel=False
@@ -161,7 +161,7 @@ class TestSkypilotSlurmDataDesignerRitsResume(AbstractYamlBuildRunnerTest):
         rows = on_cluster(f"wc -l < {_OUTPUT}/slurm-rits-resume.jsonl").strip()
         assert rows == str(_NUM_RECORDS), rows
         key = os.environ["RITS_API_KEY"]
-        leaked = on_cluster(f"grep -rlF -- '{key}' {_OUTPUT} || true").strip()
+        leaked = files_containing(key, _OUTPUT)
         assert not leaked, f"RITS key found in: {leaked}"
         print(
             f"resumed: kept {len(first)} row groups byte-identical, generated the other "

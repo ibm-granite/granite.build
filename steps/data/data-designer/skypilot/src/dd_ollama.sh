@@ -29,11 +29,28 @@
 # back to Python's `zstandard` module: $PYTHON (the step's venv, which dd_setup.sh
 # installs `zstandard` into when local_model is set), else python3.
 #
+# VERIFYING THE DOWNLOAD
+# The archive is checked against the sha256 Ollama publishes for each release
+# (sha256sum.txt beside the assets) before anything from it is installed, and the
+# result is cached and reused by later builds, so an unverified download must never
+# reach the cache. The archive is saved to a temporary file first, hashed, then
+# extracted: verifying a stream while extracting it would install files before the
+# hash is known.
+#
 # THE CACHE
 # <dir> should be on the environment's shared filesystem ($GB_SHARED_WORKDIR) so the
 # binary and the model are fetched once and reused by later runs. Installs go to a
 # temporary directory that is renamed into place only when complete, so a run never
-# sees half an install.
+# sees half an install, and the temporary directory is removed if the install fails.
+# Model pulls are serialized with a lock on the cache, since two servers pulling into
+# the same model store at once could corrupt it.
+#
+# THE PORT
+# On a shared node another job may already serve on the same port. A readiness check
+# alone would then succeed against THAT server, and this run would generate through
+# another job's model, losing it when that job ends (found in review). So the server
+# must be our own process: if it exits during startup, the port is taken, and the run
+# fails with that reason rather than borrowing the other server.
 set -euo pipefail
 
 mode="${1:-}"; shift || true
@@ -101,32 +118,93 @@ with tarfile.open(fileobj=reader, mode="r|") as tar:
   fi
 }
 
+# The published sha256 for this release's archive, from sha256sum.txt beside the assets.
+expected_sha256() {
+  curl -fsSL "https://github.com/ollama/ollama/releases/download/v$version/sha256sum.txt" \
+    | awk -v f="./ollama-linux-$arch.tar.zst" '$2 == f || $2 == substr(f, 3) {print $1; exit}'
+}
+
+# sha256 of a file. GNU coreutils' sha256sum on Linux nodes; shasum where that is all
+# there is (macOS, which the unit tests run on).
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+  else shasum -a 256 "$1" | awk '{print $1}'; fi
+}
+
+install_tmp=""
+cleanup_install() { [ -z "$install_tmp" ] || rm -rf "$install_tmp"; }
+
 install_ollama() {
   if [ -x "$ollama" ]; then
     echo "data-designer: Ollama $version ($arch) already installed in $install_dir"
     return
   fi
   mkdir -p "$cache_dir"
-  local tmp
-  tmp="$(mktemp -d "$cache_dir/.ollama-install.XXXXXX")"
+  install_tmp="$(mktemp -d "$cache_dir/.ollama-install.XXXXXX")"
   echo "data-designer: installing Ollama $version ($arch, CPU libraries only) into $install_dir"
-  curl -fsSL "$url" | extract_cpu_only "$tmp"
-  [ -x "$tmp/bin/ollama" ] || { echo "data-designer: ERROR $url had no bin/ollama" >&2; exit 1; }
-  # Another run may have finished the same install meanwhile; keep whichever won.
-  mv -T "$tmp" "$install_dir" 2>/dev/null || rm -rf "$tmp"
+
+  local want got
+  want="$(expected_sha256)"
+  [ -n "$want" ] || {
+    echo "data-designer: ERROR no published sha256 for ollama-linux-$arch.tar.zst in Ollama $version's sha256sum.txt" >&2
+    exit 1; }
+  curl -fsSL -o "$install_tmp/archive.tar.zst" "$url"
+  got="$(sha256_of "$install_tmp/archive.tar.zst")"
+  if [ "$got" != "$want" ]; then
+    echo "data-designer: ERROR the Ollama $version archive failed its checksum" \
+         "(expected $want, got $got); nothing was installed" >&2
+    exit 1
+  fi
+  mkdir -p "$install_tmp/root"
+  extract_cpu_only "$install_tmp/root" <"$install_tmp/archive.tar.zst"
+  rm -f "$install_tmp/archive.tar.zst"
+  [ -x "$install_tmp/root/bin/ollama" ] || { echo "data-designer: ERROR $url had no bin/ollama" >&2; exit 1; }
+  # Rename into place. A plain `mv src dest` with no existing dest is an atomic rename
+  # on one filesystem. If another run finished the same install meanwhile, dest exists:
+  # `mv` would then nest src INSIDE it, so check first and keep the one that won.
+  # (Portable on purpose: `mv -T` is GNU-only, and its failure used to be swallowed.)
+  [ -e "$install_dir" ] || mv "$install_tmp/root" "$install_dir" 2>/dev/null || true
+  cleanup_install
+  install_tmp=""
+  [ -x "$ollama" ] || { echo "data-designer: ERROR could not install Ollama into $install_dir" >&2; exit 1; }
+}
+
+# Serialize model pulls into the shared store: two servers pulling the same model into
+# one OLLAMA_MODELS at once could leave a corrupt blob for every later build.
+# flock(1) is util-linux, present on the SLURM nodes and in SkyPilot's kube image; where
+# it isn't (macOS, where the unit tests run), the pull simply runs unlocked.
+pull_model() {
+  mkdir -p "$models_dir"
+  (
+    if command -v flock >/dev/null 2>&1; then flock 9; fi
+    "$ollama" show "$model" >/dev/null 2>&1 || "$ollama" pull "$model"
+  ) 9>"$cache_dir/.ollama-pull.lock"
 }
 
 server_pid=""
 start_server() {
   mkdir -p "$models_dir"
-  "$ollama" serve >"${OLLAMA_LOG:-./ollama-serve.log}" 2>&1 &
+  local log="${OLLAMA_LOG:-./ollama-serve.log}"
+  "$ollama" serve >"$log" 2>&1 &
   server_pid=$!
   local _
   for _ in $(seq 1 60); do
-    if curl -fs "http://$OLLAMA_HOST/api/version" >/dev/null 2>&1; then return; fi
-    kill -0 "$server_pid" 2>/dev/null || {
-      echo "data-designer: ERROR the Ollama server exited during startup:" >&2
-      tail -20 "${OLLAMA_LOG:-./ollama-serve.log}" >&2; exit 1; }
+    # Our process must still be alive BEFORE an answer counts: if the port was taken,
+    # our server has exited and the answer came from another job's server.
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+      server_pid=""
+      if grep -qiE "address already in use|bind" "$log" 2>/dev/null; then
+        echo "data-designer: ERROR port ${port} on this node is already in use (another" \
+             "job's server?). Set data_designer_config.local_model.port to a free port." >&2
+      else
+        echo "data-designer: ERROR the Ollama server exited during startup:" >&2
+        tail -20 "$log" >&2
+      fi
+      exit 1
+    fi
+    if curl -fs "http://$OLLAMA_HOST/api/version" >/dev/null 2>&1 && kill -0 "$server_pid" 2>/dev/null; then
+      return
+    fi
     sleep 1
   done
   echo "data-designer: ERROR the Ollama server did not answer on $OLLAMA_HOST within 60s" >&2
@@ -139,14 +217,14 @@ stop_server() {
   wait "$server_pid" 2>/dev/null || true
   server_pid=""
 }
-trap stop_server EXIT
+trap 'stop_server; cleanup_install' EXIT
 
 case "$mode" in
   install)
     install_ollama
     start_server
     echo "data-designer: pulling $model into $models_dir"
-    "$ollama" pull "$model"
+    pull_model
     stop_server
     ;;
   run)
@@ -154,7 +232,7 @@ case "$mode" in
     [ -x "$ollama" ] || { echo "data-designer: ERROR Ollama is not installed in $install_dir (setup did not run?)" >&2; exit 1; }
     start_server
     # Pulled in setup; a run on a warm cluster may reach here without it, so pull if absent.
-    "$ollama" show "$model" >/dev/null 2>&1 || "$ollama" pull "$model"
+    pull_model
     echo "data-designer: serving $model on http://$OLLAMA_HOST/v1"
     set +e
     "$@"

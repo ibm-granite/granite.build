@@ -202,7 +202,7 @@ class TestLocalModel:
 
     def test_setup_installs_server_and_model(self, launcher, defaults, tmp_path):
         calls = _run_block(_render(launcher["setup"], self._on(defaults)), tmp_path)
-        assert _opts(calls["dd_setup.sh"][0])["--"] == f"data-designer=={defaults['dd_version']} zstandard"
+        assert _opts(calls["dd_setup.sh"][0])["--"] == f"data-designer=={defaults['dd_version']} zstandard==0.25.0"
         assert "dd_ollama.sh install" in _render(launcher["setup"], self._on(defaults))
 
     @pytest.mark.parametrize("block", ["setup", "run"])

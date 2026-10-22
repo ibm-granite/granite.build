@@ -44,7 +44,7 @@ from libgbtest.buildrunner.buildtest import (
 )
 from libgbtest.constants import extended_testing_only
 
-from .cluster import on_cluster
+from .cluster import files_containing, on_cluster
 
 pytestmark = [pytest.mark.ibm, pytest.mark.skypilot_integration]
 
@@ -90,5 +90,5 @@ class TestSkypilotSlurmDataDesignerRitsKeep(AbstractYamlBuildRunnerTest):
         print(f"\n{_OUTPUT}/slurm-rits-keep.jsonl:\n{jsonl}")
 
         key = os.environ["RITS_API_KEY"]
-        leaked = on_cluster(f"grep -rlF -- '{key}' {_OUTPUT} || true").strip()
+        leaked = files_containing(key, _OUTPUT)
         assert not leaked, f"RITS key found in: {leaked}"

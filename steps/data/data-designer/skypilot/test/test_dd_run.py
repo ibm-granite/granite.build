@@ -29,6 +29,15 @@ import pytest
 import dd_run
 from dd_run import StepError
 
+# The runner's end-to-end tests import data-designer, which is deliberately NOT in the
+# repo .venv that `make test` uses (installing it there replaces the repo's pinned
+# duckdb, fsspec, pyarrow and opentelemetry). They skip there; run them with a venv
+# that has it — see the step README.md, "Unit tests".
+_NEEDS_DD = (
+    "needs data-designer (not in the repo .venv): "
+    "<venv>/bin/python -m pytest -c /dev/null --noconftest test/test_dd_run.py"
+)
+
 
 def _b64(obj) -> str:
     return base64.b64encode(json.dumps(obj).encode()).decode()
@@ -180,28 +189,6 @@ class TestPreWorkChecks:
         dd_run.check_output_dir(tmp_path, "if_possible")
         dd_run.check_output_dir(tmp_path / "absent", "never")
 
-    def _prior_run(self, tmp_path, config_hash="sha256:old"):
-        out = tmp_path / "out"
-        (out / "parquet-files").mkdir(parents=True)
-        (out / "parquet-files" / "batch_00000.parquet").write_text("x")
-        (out / "metadata.json").write_text(json.dumps({"config_hash": config_hash}))
-        return out
-
-    def test_changed_config_is_cleared_under_if_possible(self, tmp_path):
-        """Data Designer would otherwise start fresh in a timestamped sibling dir."""
-        out = self._prior_run(tmp_path)
-        assert dd_run.clear_stale_output(out, "if_possible", "sha256:new") is True
-        assert not out.exists()
-
-    @pytest.mark.parametrize(
-        "resume,current", [("if_possible", "sha256:old"), ("always", "sha256:new"), ("never", "sha256:new")]
-    )
-    def test_kept_otherwise(self, tmp_path, resume, current):
-        """Same config resumes; `always` must reach Data Designer's own refusal."""
-        out = self._prior_run(tmp_path)
-        assert dd_run.clear_stale_output(out, resume, current) is False
-        assert (out / "parquet-files" / "batch_00000.parquet").exists()
-
     def test_resumable_records_counts_checkpointed_rows(self, tmp_path):
         pa = pytest.importorskip("pyarrow")
         pq = pytest.importorskip("pyarrow.parquet")
@@ -210,17 +197,13 @@ class TestPreWorkChecks:
         for i, n in enumerate([2, 2, 1]):
             pq.write_table(pa.table({"q": ["x"] * n}), batches / f"batch_{i:05d}.parquet")
         out = tmp_path / "out"
+        (out / "metadata.json").write_text("{}")
         assert dd_run.count_resumable_records(out, "if_possible") == 5
         assert dd_run.count_resumable_records(out, "always") == 5
         assert dd_run.count_resumable_records(out, "never") == 0
         assert dd_run.count_resumable_records(tmp_path / "absent", "if_possible") == 0
-
-    def test_non_data_designer_dir_never_cleared(self, tmp_path):
-        out = tmp_path / "out"
-        out.mkdir()
-        (out / "precious.txt").write_text("x")
-        assert dd_run.clear_stale_output(out, "if_possible", "sha256:new") is False
-        assert (out / "precious.txt").exists()
+        (out / "metadata.json").unlink()  # batches without metadata: no resume, count 0
+        assert dd_run.count_resumable_records(out, "if_possible") == 0
 
     @pytest.mark.parametrize("bad", ["", "a b", 'a"b'])
     def test_marker_id(self, bad, tmp_path):
@@ -238,3 +221,144 @@ class TestPreWorkChecks:
         assert rc == 1
         err = capsys.readouterr().err
         assert err.startswith("data-designer: ERROR") and "Traceback" not in err
+
+
+class TestClearPreviousRun:
+    def test_removes_only_data_designer_artifacts(self, tmp_path):
+        out = tmp_path / "out"
+        for d in ("parquet-files", "tmp-partial-parquet-files", "images"):
+            (out / d).mkdir(parents=True)
+            (out / d / "x").write_text("x")
+        for f in ("metadata.json", "builder_config.json", "out.jsonl", "out.csv"):
+            (out / f).write_text("x")
+        (out / "notes").mkdir()
+        (out / "notes" / "mine.txt").write_text("keep me")
+        (out / "README").write_text("keep me")
+        dd_run.clear_previous_run(out)
+        assert sorted(p.name for p in out.iterdir()) == ["README", "notes"]
+        assert (out / "notes" / "mine.txt").read_text() == "keep me"
+
+    def test_symlink_is_unlinked_not_followed(self, tmp_path):
+        target = tmp_path / "elsewhere"
+        target.mkdir()
+        (target / "precious").write_text("x")
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "parquet-files").symlink_to(target, target_is_directory=True)
+        dd_run.clear_previous_run(out)
+        assert (target / "precious").exists() and not (out / "parquet-files").exists()
+
+
+class TestValidateProviders:
+    def test_invalid_entry_never_shows_the_secret(self):
+        pytest.importorskip("data_designer", reason=_NEEDS_DD)
+        from data_designer.config.models import ModelProvider
+
+        resolved = [{"name": "gw", "endpont": "http://e", "api_key": "sk-SECRET-1",
+                     "extra_headers": {"X-Key": "sk-SECRET-2"}}]
+        with pytest.raises(StepError) as e:
+            dd_run.validate_providers(resolved, ModelProvider)
+        msg = str(e.value)
+        assert "endpoint" in msg and "sk-SECRET" not in msg
+        assert e.value.__cause__ is None and e.value.__suppress_context__
+
+    def test_valid_entry_keeps_real_values(self):
+        pytest.importorskip("data_designer", reason=_NEEDS_DD)
+        from data_designer.config.models import ModelProvider
+
+        [p] = dd_run.validate_providers(
+            [{"name": "gw", "endpoint": "http://e", "api_key": "k", "extra_headers": {"H": "v"}}],
+            ModelProvider,
+        )
+        assert p.api_key == "k" and p.extra_headers == {"H": "v"}
+
+
+# The runner end to end with a sampler-only config: no column calls a model, so this
+# needs data-designer but no endpoint. The provider points at a closed port and is
+# never contacted. Covers what used to be reachable only through the IBM RITS tests.
+_SAMPLER_CONFIG = {"columns": [{"name": "t", "column_type": "sampler",
+                                "sampler_type": "category", "params": {"values": ["a", "b"]}}]}
+_DEAD = [{"name": "p", "endpoint": "http://127.0.0.1:9/v1"}]
+
+
+@pytest.fixture
+def run_dd(tmp_path, monkeypatch):
+    pytest.importorskip("data_designer", reason=_NEEDS_DD)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NEMO_TELEMETRY_ENABLED", "false")
+    monkeypatch.setenv("DATA_DESIGNER_HOME", str(tmp_path / "home"))
+
+    def run(num, resume="if_possible", run_config=None, config=None, providers=None,
+            extra=(), env=None):
+        spec = {"config": config or _SAMPLER_CONFIG, "model_providers": providers or _DEAD,
+                "run_config": run_config or {}}
+        monkeypatch.setenv(dd_run.SPEC_ENV, _b64(spec))
+        for k, v in (env or {}).items():
+            monkeypatch.setenv(k, v)
+        return dd_run.main(["--output-path", str(tmp_path / "out"), "--artifact-id", "q",
+                            "--num-records", str(num), "--resume", resume, *extra])
+
+    return run
+
+
+def _last_line(capsys):
+    return capsys.readouterr().out.rstrip().splitlines()[-1]
+
+
+class TestRunEndToEnd:
+    def test_marker_is_last_and_export_written(self, run_dd, tmp_path, capsys):
+        assert run_dd(4, extra=("--export-format", "csv", "--min-records", "4")) == 0
+        assert _last_line(capsys) == f"GB_ARTIFACT_ID:q GB_ARTIFACT_PATH:{tmp_path / 'out'}"
+        assert len((tmp_path / "out" / "out.csv").read_text().splitlines()) == 5  # header + 4
+
+    def test_min_records_above_num_records_fails_before_work(self, run_dd, tmp_path, capsys):
+        assert run_dd(2, extra=("--min-records", "3")) == 1
+        assert "greater than num_records" in capsys.readouterr().err
+        assert not (tmp_path / "out").exists()
+
+    def test_resume_extends_a_finished_run(self, run_dd, tmp_path, capsys):
+        assert run_dd(2, run_config={"buffer_size": 2}) == 0
+        capsys.readouterr()
+        assert run_dd(4, run_config={"buffer_size": 2}) == 0
+        out = capsys.readouterr().out
+        assert "resuming — 2 record(s)" in out
+        assert "GB_STEP_METADATA_KEY:resumed_records GB_STEP_METADATA_VALUE:2" in out
+
+    @pytest.mark.parametrize("second", [
+        {"run_config": {"buffer_size": 4}},                       # was a hard failure
+        {"run_config": {"buffer_size": 2, "preserve_dropped_columns": False}},  # was a sibling dir
+        {"config": {"columns": [{**_SAMPLER_CONFIG["columns"][0], "params": {"values": ["z"]}}]},
+         "run_config": {"buffer_size": 2}},
+    ])
+    def test_if_possible_restarts_in_place_on_any_mismatch(self, run_dd, tmp_path, capsys, second):
+        assert run_dd(2, run_config={"buffer_size": 2}) == 0
+        capsys.readouterr()
+        assert run_dd(2, **second) == 0
+        out = capsys.readouterr().out
+        assert "not resuming" in out and "resuming —" not in out
+        assert "GB_STEP_METADATA_KEY:resumed_records GB_STEP_METADATA_VALUE:0" in out
+        assert [p.name for p in tmp_path.iterdir() if p.name.startswith("out_")] == [], \
+            "Data Designer wrote to a timestamped sibling dir"
+
+    def test_always_refuses_a_mismatch_before_work(self, run_dd, capsys):
+        assert run_dd(2, run_config={"buffer_size": 2}) == 0
+        capsys.readouterr()
+        assert run_dd(2, resume="always", run_config={"buffer_size": 4}) == 1
+        assert "buffer_size changed" in capsys.readouterr().err
+
+    def test_always_on_a_first_run_explains(self, run_dd, capsys):
+        assert run_dd(2, resume="always") == 1
+        assert "needs a previous run" in capsys.readouterr().err
+
+    def test_user_files_survive_a_restart(self, run_dd, tmp_path):
+        assert run_dd(2, run_config={"buffer_size": 2}) == 0
+        (tmp_path / "out" / "notes.txt").write_text("keep me")
+        assert run_dd(2, run_config={"buffer_size": 4}) == 0
+        assert (tmp_path / "out" / "notes.txt").read_text() == "keep me"
+
+    def test_bad_provider_reports_without_the_key(self, run_dd, capsys):
+        bad = [{"name": "gw", "endpont": "http://e", "extra_headers_from_env": {"X-Key": "MYKEY"}}]
+        assert run_dd(1, providers=bad, env={"MYKEY": "sk-FAKE-SECRET"}) == 1
+        captured = capsys.readouterr()
+        assert "sk-FAKE-SECRET" not in captured.out + captured.err
+        assert "Traceback" not in captured.err and "endpoint" in captured.err

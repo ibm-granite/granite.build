@@ -170,7 +170,7 @@ environment_configs:
             bash ./src/dd_setup.sh \
               --venv ./venv \
               --index-url '{{ q(c.pip_index_url) }}' \
-              -- '{{ q("data-designer==" ~ c.dd_version) }}'{% if c.local_model.runtime %} 'zstandard'{% endif %}
+              -- '{{ q("data-designer==" ~ c.dd_version) }}'{% if c.local_model.runtime %} 'zstandard==0.25.0'{% endif %}
             {%- endif %}
             {%- if c.local_model.runtime %}
             {#- The model server: Ollama's CPU libraries plus the model, cached under the
