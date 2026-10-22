@@ -27,6 +27,7 @@ import yaml
 from gbcommon.utils.template import fill_template
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
+_REPO = _STEP_DIR.parents[2]
 _TEMPLATE = yaml.safe_load((_STEP_DIR / "step-template.yaml").read_text())
 _LAUNCHER = _TEMPLATE["environment_configs"]["Bash"]["launchers"]["fm-tune"]
 _DATASET = {"dataset": {"binding": {"path": "/staged/data it's"}}}
@@ -101,3 +102,29 @@ def test_inputs_and_outputs_are_declared():
 
 def test_script_path_points_at_the_shipped_src():
     assert _LAUNCHER["config"]["script_path"] == "../../src/fmtune_run.sh"
+
+
+def test_template_turns_off_the_wrappers_output_dir_scan():
+    assert _TEMPLATE["config"]["bash"] == {"skip_finding_output_artifacts": True}
+
+
+def test_rendered_wrapper_emits_no_marker_of_its_own():
+    """The wrapper's subdir scan prints GB_ARTIFACT_ID before it checks the exit
+    code, so it fired on failure (build a2313afe). With the template's config.bash
+    knob, the wrapper renders the skip branch; fmtune_run.sh's marker is the only one.
+
+    Renders with gbserver's file renderer in strict mode, as the final pass in
+    targetsteprun.py (fill_templates_in_dir(..., strict=True)) does.
+    """
+    from gbserver.utils.template import fill_template as fill_file_template
+
+    wrapper = next(
+        (_REPO / "src" / "gbserver" / "builtins" / "steps" / "gbstep" / "bash_scripts").glob(
+            "*/llmb_bash_wrapper.sh"
+        )
+    )
+    cfg = json.loads(json.dumps(_TEMPLATE["config"]))
+    out = fill_file_template(wrapper.read_text(), {"config": cfg}, strict=True)
+    assert "skip making artifacts out of ${LLMB_BASH_OUTPUT_DIR}" in out
+    assert "GB_ARTIFACT_ID" not in out
+    assert 'find "${LLMB_BASH_OUTPUT_DIR}"' not in out

@@ -39,6 +39,13 @@ def test_both_copies_are_executable():
 
 
 def test_both_templates_share_config_and_io():
+    """The user-facing contract (fm_tune_config, I/O, name, version) must match.
+
+    Only config.fm_tune_config is compared, not the whole config: the bash template
+    also sets config.bash.skip_finding_output_artifacts, an env-specific knob for
+    the bash wrapper that has no meaning on skypilot.
+    """
     t = {e: yaml.safe_load((_STEPS / e / "step-template.yaml").read_text()) for e in ("bash", "skypilot")}
-    for key in ("config", "inputs", "outputs", "name", "version"):
+    assert t["bash"]["config"]["fm_tune_config"] == t["skypilot"]["config"]["fm_tune_config"]
+    for key in ("inputs", "outputs", "name", "version"):
         assert t["bash"][key] == t["skypilot"][key], key

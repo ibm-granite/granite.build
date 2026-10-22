@@ -6,6 +6,11 @@ name: fm-tune
 version: 1.0.0
 type: training
 config:
+  bash:
+    # Turn off the bash wrapper's scan of the output dir's subdirs: it prints a
+    # GB_ARTIFACT marker before checking the exit code, so it fired on failure
+    # (build a2313afe). fmtune_run.sh registers `model` itself, on success only.
+    skip_finding_output_artifacts: true
   fm_tune_config:
     source:
       path: ""                    # local fm-tune checkout (one of path | repo)
