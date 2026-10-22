@@ -104,6 +104,15 @@ elif [ -n "$FMTUNE_MODEL" ]; then
 else
   die "set fm_tune_config.model or bind the base_model input"
 fi
+# run_name names the output model dir and is echoed in logs: keep it to a safe set
+# (spelled out, not a range, so no locale can widen it).
+case "$FMTUNE_RUN_NAME" in
+  *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*)
+    die "run_name must match ^[A-Za-z0-9._-]+$" ;;
+esac
+# Both go to git as positional args; a leading '-' would be read as an option.
+case "$FMTUNE_SOURCE_REPO" in -*) die "source.repo must not start with '-'" ;; esac
+case "$FMTUNE_SOURCE_REF" in -*) die "source.ref must not start with '-'" ;; esac
 [ -n "${FMTUNE_TRAIN_FILE:-}" ] || die "train_file is empty"
 [ -n "${FMTUNE_VALIDATION_FILE:-}" ] || die "validation_file is empty"
 train="$FMTUNE_DATASET_DIR/$FMTUNE_TRAIN_FILE"
@@ -125,15 +134,17 @@ else
   if [ ! -d "$clone/.git" ]; then
     log "cloning $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF"
     rm -rf "$clone.tmp"
-    git clone --quiet --depth 1 --branch "$FMTUNE_SOURCE_REF" "$FMTUNE_SOURCE_REPO" "$clone.tmp"
+    git clone --quiet --depth 1 --branch "$FMTUNE_SOURCE_REF" -- "$FMTUNE_SOURCE_REPO" "$clone.tmp"
     mv "$clone.tmp" "$clone"
-    sha="$(git -C "$clone" rev-parse HEAD)"
+    # ^{commit}: an annotated tag's FETCH_HEAD is the tag object, so peel both
+    # sides or one commit gets two trees (and two venvs).
+    sha="$(git -C "$clone" rev-parse 'HEAD^{commit}')"
   else
     # The cache outlives builds: resolve the ref's current commit, not the first one.
     log "updating $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF"
-    git -C "$clone" fetch --quiet --depth 1 origin "$FMTUNE_SOURCE_REF" \
+    git -C "$clone" fetch --quiet --depth 1 -- origin "$FMTUNE_SOURCE_REF" \
       || die "could not update the cached clone $clone to $FMTUNE_SOURCE_REF"
-    sha="$(git -C "$clone" rev-parse FETCH_HEAD)"
+    sha="$(git -C "$clone" rev-parse 'FETCH_HEAD^{commit}')"
   fi
   tree="$FMTUNE_CACHE_DIR/tree-$sha"
   if [ ! -d "$tree" ]; then
@@ -211,11 +222,17 @@ args=(
 [ -n "$FMTUNE_SERVER_URL" ] && args+=(--autotunex_server_url "$FMTUNE_SERVER_URL")
 [ -n "$FMTUNE_JOB_ID" ] && args+=(--job_id "$FMTUNE_JOB_ID")
 if [ -n "$FMTUNE_EXTRA_ARGS" ]; then
-  read -r -a extra <<< "$FMTUNE_EXTRA_ARGS"
-  args+=("${extra[@]}")
+  # read stops at the first newline, so join lines first. The ${x+...} form keeps
+  # an empty array (whitespace-only input) from tripping set -u on bash 3.2.
+  read -r -a extra <<< "${FMTUNE_EXTRA_ARGS//$'\n'/ }"
+  args+=(${extra[@]+"${extra[@]}"})
 fi
 
 mkdir -p "$FMTUNE_OUTPUT_DIR"
+# fm-tune's AutoTuneX bridge logs under $LOG_PATH (default ./logs, the source tree).
+export LOG_PATH="${LOG_PATH:-$(cd "$FMTUNE_OUTPUT_DIR/.." && pwd)}"
+# The venv's console scripts (ray, ...) must win over any others on PATH.
+case "$py" in */*) export PATH="$(dirname "$py"):${PATH:-/usr/local/bin:/usr/bin:/bin}" ;; esac
 log "running main.py (run_name=$FMTUNE_RUN_NAME)"
 cd "$root"
 status=0

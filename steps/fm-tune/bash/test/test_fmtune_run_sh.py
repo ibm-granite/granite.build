@@ -36,7 +36,8 @@ _SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "src" / "fmtune_run.sh"
 _STUB_MAIN = r"""
 import json, os, sys
 args = sys.argv[1:]
-rec = {"argv": args, "cwd": os.getcwd()}
+rec = {"argv": args, "cwd": os.getcwd(), "log_path": os.environ.get("LOG_PATH"),
+       "path": os.environ.get("PATH")}
 if os.environ.get("STUB_CONFIG_COPY"):
     cfg = args[args.index("--config_file") + 1]
     rec["config_text"] = open(cfg).read()
@@ -248,10 +249,59 @@ def test_cache_falls_back_to_two_levels_up_outside_a_workdir(env, tmp_path):
 
 
 def test_no_echoed_line_starts_with_the_marker_prefix_on_failure(env):
+    """A run_name carrying a marker is rejected before anything is echoed."""
     env["FMTUNE_RUN_NAME"] = "GB_ARTIFACT_ID:evil"
     env["STUB_EXIT"] = "1"
     proc = _run(env)
+    assert proc.returncode != 0
+    assert "fm-tune: run_name must match ^[A-Za-z0-9._-]+$" in proc.stderr
     assert not any(ln.startswith("GB_ARTIFACT_") for ln in proc.stdout.splitlines())
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+
+
+@pytest.mark.parametrize("name", ["a b", "a/b", "a\nb", "", "\u00e9t\u00e9"])
+def test_run_name_outside_the_safe_set_is_rejected(env, name):
+    env["FMTUNE_RUN_NAME"] = name
+    proc = _run(env)
+    if name == "":  # unset-or-empty falls back to the default fm-tune
+        assert proc.returncode == 0, proc.stderr
+        return
+    assert proc.returncode != 0
+    assert "fm-tune: run_name must match" in proc.stderr
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+
+
+def test_log_path_defaults_to_the_output_dirs_parent(env, tmp_path):
+    """fm-tune's bridge logs to $LOG_PATH/logs; unset, that is cwd (the source tree)."""
+    assert _run(env).returncode == 0
+    assert _record(env)["log_path"] == str(tmp_path)
+
+
+def test_a_preset_log_path_is_kept(env, tmp_path):
+    env["LOG_PATH"] = str(tmp_path / "mylogs")
+    assert _run(env).returncode == 0
+    assert _record(env)["log_path"] == str(tmp_path / "mylogs")
+
+
+def test_the_interpreters_dir_is_first_on_path(env):
+    assert _run(env).returncode == 0
+    assert _record(env)["path"].split(":")[0] == os.path.dirname(env["FMTUNE_PYTHON"])
+
+
+def test_multi_line_extra_args_keep_every_word(env):
+    env["FMTUNE_EXTRA_ARGS"] = "--data_backend ray_data\n--foo bar\n"
+    assert _run(env).returncode == 0
+    argv = _record(env)["argv"]
+    assert argv[-4:] == ["--data_backend", "ray_data", "--foo", "bar"]
+
+
+def test_whitespace_only_extra_args_add_nothing(env):
+    assert _run(env).returncode == 0
+    plain = _record(env)["argv"]
+    env["FMTUNE_EXTRA_ARGS"] = "  \n "
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    assert _record(env)["argv"] == plain
 
 
 def _git(*args, cwd):
@@ -450,6 +500,37 @@ def test_an_unwritable_cache_dir_dies_fast(env, tmp_path):
     assert proc.returncode != 0
     assert "fm-tune: cannot create lock" in proc.stderr
     assert not pathlib.Path(env["STUB_RECORD"]).exists()
+
+
+def test_an_annotated_tag_resolves_to_one_tree_and_its_commit(env, tmp_path):
+    repo = _git_repo(env, tmp_path)
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "tag", "-a", "v1", "-m", "v1", cwd=repo)
+    env["FMTUNE_SOURCE_REF"] = "v1"
+    commit = subprocess.run(
+        ["git", "rev-parse", "v1^{commit}"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    for _ in range(2):
+        proc = _run(env)
+        assert proc.returncode == 0, proc.stderr
+        assert f"@v1 = {commit}" in proc.stdout
+    trees = list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("tree-*"))
+    assert [t.name for t in trees] == [f"tree-{commit}"]
+
+
+@pytest.mark.parametrize("over", [{"FMTUNE_SOURCE_REF": "-uoops"},
+                                  {"FMTUNE_SOURCE_REPO": "--upload-pack=touch /tmp/x"}])
+def test_a_source_value_that_looks_like_an_option_dies_before_git(env, tmp_path, over):
+    _git_repo(env, tmp_path)
+    env.update(over)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "git").write_text(f"#!/bin/sh\ntouch {tmp_path}/git-ran\nexit 1\n")
+    (bin_dir / "git").chmod(0o755)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    proc = _run(env)
+    assert proc.returncode != 0
+    assert "fm-tune: source." in proc.stderr and "must not start with '-'" in proc.stderr
+    assert not (tmp_path / "git-ran").exists()
 
 
 @pytest.mark.slow
