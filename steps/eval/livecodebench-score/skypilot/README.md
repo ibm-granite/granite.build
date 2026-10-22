@@ -30,7 +30,7 @@ shared Makefile conventions; see [steps/README.md](../../../README.md).
   LiveCodeBench's `uv.lock` at `lcb_commit`.
 - `test/test_lcb_score.py`: unit tests for `lcb_score.py`'s own logic. They run
   under the repo venv, which has no LiveCodeBench.
-- `test/test_livecodebench_score_step_render.py`: Mode-1 render tests. They execute
+- `test/test_skypilot_eval_livecodebench_score_render.py`: Mode-1 render tests. They execute
   the rendered `run` block with a stub `python` on `PATH`.
 
 ## Regenerating the pinned packages
