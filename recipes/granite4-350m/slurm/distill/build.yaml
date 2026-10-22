@@ -114,7 +114,7 @@ granite.build:
             launcher_config:
               resources:
                 cluster: "$${CLUSTER}"
-                zone: "$${QUEUE}"
+                zone: "$${CPU_QUEUE}"
                 memory: $${CPU_ONLY_MEMORY}
             align_config:
               out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/align"
@@ -163,7 +163,7 @@ granite.build:
             launcher_config:
               resources:
                 cluster: "$${CLUSTER}"
-                zone: "$${QUEUE}"
+                zone: "$${CPU_QUEUE}"
                 memory: $${CPU_ONLY_MEMORY}
             corpus_config:
               # ABSOLUTE, and that is forced rather than chosen: the two eval
@@ -401,7 +401,7 @@ granite.build:
             launcher_config:
               resources:
                 cluster: "$${CLUSTER}"
-                zone: "$${QUEUE}"
+                zone: "$${CPU_QUEUE}"
                 memory: $${EXPORT_MEMORY}
             export_config:
               dest: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/export"
