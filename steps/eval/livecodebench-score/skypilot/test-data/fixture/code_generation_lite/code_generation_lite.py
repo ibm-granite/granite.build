@@ -12,16 +12,35 @@ import json
 import datasets
 
 _FILES = ["test.jsonl"]
-_VERSIONS = ["release_v1", "release_v2", "release_v3", "release_v4", "release_v5", "release_v6", "release_latest"]
+_VERSIONS = [
+    "release_v1",
+    "release_v2",
+    "release_v3",
+    "release_v4",
+    "release_v5",
+    "release_v6",
+    "release_latest",
+]
 _FIELDS = [
-    "question_title", "question_content", "platform", "question_id", "contest_id", "contest_date",
-    "starter_code", "difficulty", "public_test_cases", "private_test_cases", "metadata",
+    "question_title",
+    "question_content",
+    "platform",
+    "question_id",
+    "contest_id",
+    "contest_date",
+    "starter_code",
+    "difficulty",
+    "public_test_cases",
+    "private_test_cases",
+    "metadata",
 ]
 
 
 class FixtureConfig(datasets.BuilderConfig):
     def __init__(self, *args, version_tag="release_latest", **kwargs):
-        super().__init__(*args, name=version_tag, version=datasets.Version("1.0.0"), **kwargs)
+        super().__init__(
+            *args, name=version_tag, version=datasets.Version("1.0.0"), **kwargs
+        )
         assert version_tag in _VERSIONS, f"{version_tag} not in {_VERSIONS}"
         self.version_tag = version_tag
 
@@ -32,11 +51,17 @@ class Fixture(datasets.GeneratorBasedBuilder):
     DEFAULT_CONFIG_NAME = "release_latest"
 
     def _info(self):
-        return datasets.DatasetInfo(features=datasets.Features({f: datasets.Value("string") for f in _FIELDS}))
+        return datasets.DatasetInfo(
+            features=datasets.Features({f: datasets.Value("string") for f in _FIELDS})
+        )
 
     def _split_generators(self, dl_manager):
         paths = dl_manager.download(_FILES)
-        return [datasets.SplitGenerator(name=datasets.Split.TEST, gen_kwargs={"paths": paths})]
+        return [
+            datasets.SplitGenerator(
+                name=datasets.Split.TEST, gen_kwargs={"paths": paths}
+            )
+        ]
 
     def _generate_examples(self, paths):
         key = 0

@@ -17,6 +17,13 @@ passes through unchanged, and LiveCodeBench itself is not modified.
 The directory must be a copy of the dataset repo: the loading script
 (``code_generation_lite.py``) plus the JSONL files the release needs.
 
+The loader is pointed at the **script file**, not the directory. Given a
+directory, ``datasets`` looks at the repo's ``README.md`` first: the real repo's
+card has YAML front matter, and with it present ``datasets`` treats the directory
+as plain JSON data and ignores the script, failing with ``JsonConfig ... doesn't
+have a 'version_tag' key``. A directory copied by hfpull carries that README; a
+hand-made copy without one loads either way. Found on the first GPU run.
+
 It also fixes memory use, in two places (measured on ``release_v6``, a window of
 six problems, Linux, ``python:3.12-slim``):
 
@@ -79,7 +86,8 @@ def install(dataset_dir: str) -> None:
     """
     import datasets
 
-    local = str(check_dataset_dir(dataset_dir))
+    # The script itself, not the directory: see the module docstring.
+    local = str(check_dataset_dir(dataset_dir) / LOADING_SCRIPT)
     real: Callable[..., Any] = getattr(
         datasets.load_dataset, "_lcb_real", datasets.load_dataset
     )
