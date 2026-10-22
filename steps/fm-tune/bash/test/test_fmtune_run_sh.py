@@ -29,6 +29,7 @@ import subprocess
 import sys
 
 import pytest
+import yaml
 
 _SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "src" / "fmtune_run.sh"
 
@@ -154,12 +155,29 @@ def test_preset_is_used_when_hpo_config_is_empty(env):
 
 
 def test_inline_hpo_config_is_written_and_passed(env):
-    env["FMTUNE_HPO_CONFIG_JSON"] = json.dumps({"tune_config": {"num_samples": {"default": 2}}})
+    cfg = {
+        "tune_config": {"num_samples": {"default": 2}},
+        "lr": {"default": 5e-06, "values": [1e-06, 5e-06]},
+    }
+    env["FMTUNE_HPO_CONFIG_JSON"] = json.dumps(cfg)
     env["STUB_CONFIG_COPY"] = "1"
     assert _run(env).returncode == 0
     rec = _record(env)
-    assert json.loads(rec["config_text"]) == {"tune_config": {"num_samples": {"default": 2}}}
+    # fm-tune reads the file with yaml.safe_load, which reads JSON's 5e-06 as a str.
+    loaded = yaml.safe_load(rec["config_text"])
+    assert loaded == cfg
+    assert isinstance(loaded["lr"]["default"], float)
+    assert all(isinstance(v, float) for v in loaded["lr"]["values"])
     assert not _flag(rec["argv"], "--config_file").startswith(env["FMTUNE_SOURCE_PATH"])
+
+
+def test_invalid_hpo_config_json_fails_before_training(env):
+    env["FMTUNE_HPO_CONFIG_JSON"] = "{not json"
+    proc = _run(env)
+    assert proc.returncode != 0
+    assert "fm-tune:" in proc.stderr
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+    assert "GB_ARTIFACT_ID:" not in proc.stdout
 
 
 def test_failed_training_exits_non_zero_without_a_marker(env):

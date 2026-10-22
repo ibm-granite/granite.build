@@ -137,8 +137,8 @@ if [ "$FMTUNE_HPO_CONFIG_JSON" = "{}" ] || [ -z "$FMTUNE_HPO_CONFIG_JSON" ]; the
   config_file="$preset"
 else
   mkdir -p "$FMTUNE_OUTPUT_DIR"
-  config_file="$(cd "$FMTUNE_OUTPUT_DIR/.." && pwd)/fm_tune_hpo.json"
-  printf '%s\n' "$FMTUNE_HPO_CONFIG_JSON" > "$config_file"
+  config_file="$(cd "$FMTUNE_OUTPUT_DIR/.." && pwd)/fm_tune_hpo.yaml"
+  write_hpo_yaml=1  # converted after $py is known (below)
 fi
 
 # ---- venv ------------------------------------------------------------------
@@ -161,6 +161,16 @@ else
   fi
   unlock
   py="$venv/bin/python"
+fi
+
+# fm-tune reads --config_file with yaml.safe_load (YAML 1.1: a float needs a ".",
+# so JSON's 5e-06 would load as a string). Re-emit the JSON as YAML; safe_dump
+# writes 5.0e-06, which round-trips as a float.
+if [ "${write_hpo_yaml:-}" = "1" ]; then
+  printf '%s' "$FMTUNE_HPO_CONFIG_JSON" | "$py" -c '
+import json, sys, yaml
+sys.stdout.write(yaml.safe_dump(json.load(sys.stdin), sort_keys=False))
+' > "$config_file" || die "hpo_config is not valid JSON (or could not be converted to YAML)"
 fi
 
 # ---- run -------------------------------------------------------------------
