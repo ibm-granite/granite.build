@@ -4,6 +4,8 @@ granite.build:
   # step: BOTH `first` and `second` run INSIDE a container image
   # (`command_config.image` set → image_id docker:<image>), the SLURM
   # containerized path that needs the Pyxis SPANK plugin BlueVela provides.
+  # Both commands are CPU-only, so each step sets `zone: cpu` (overriding the
+  # environment's default `zone: gpu-mid`, which rejects GPU-less jobs).
   # Unlike the env_local no-op tests, these targets use hf:// URIs for their
   # inputs and outputs, so buildrunner auto-queues REAL HuggingFace pull/push
   # steps around each command: the command must write a real file for its output
@@ -35,6 +37,13 @@ granite.build:
           config:
             # Fast completion detection for the test (base skypilot default 300s).
             poll_interval_seconds: 5
+            # CPU-only command: bluevela rejects GPU-less jobs on gpu-mid, so run
+            # in the `cpu` partition and drop the env-wide `constraint: h200`, as
+            # the environment does for hfpull/hfpush. See 1step/build.yaml.
+            zone: cpu
+            launcher_config:
+              sbatch_options:
+                constraint: null
             command_config:
               image: quay.io/itsme/debian:slim
               # Runs INSIDE a container (image set → image_id docker:<image>), the
@@ -52,13 +61,13 @@ granite.build:
               command: >-
                 set -e;
                 pwd=$(pwd);
-                echo "first target on bluevela gpu-mid partition";
+                echo "first target on bluevela cpu partition";
                 echo "hf input path: {{ bindings.input_model.binding.path }}";
                 test -e "{{ bindings.input_model.binding.path }}";
                 file=out1.json; echo '{"artifact": "out1", "produced_by": "first"}' > $file;
                 echo "GB_ARTIFACT_ID:out1 GB_ARTIFACT_PATH:$pwd/$file"
-            # No launcher_config.resources.cluster or zone: the environment's
-            # cluster (bluevela) and zone (gpu-mid) resolve the infra.
+            # The environment's cluster (bluevela) resolves the infra; the
+            # `zone: cpu` above picks the partition.
     second:
       environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
@@ -74,6 +83,13 @@ granite.build:
           config:
             # Fast completion detection for the test (base skypilot default 300s).
             poll_interval_seconds: 5
+            # CPU-only command: bluevela rejects GPU-less jobs on gpu-mid, so run
+            # in the `cpu` partition and drop the env-wide `constraint: h200`, as
+            # the environment does for hfpull/hfpush. See 1step/build.yaml.
+            zone: cpu
+            launcher_config:
+              sbatch_options:
+                constraint: null
             command_config:
               image: quay.io/itsme/debian:slim
               # Checks the path bound from first.out1 exists (proving the

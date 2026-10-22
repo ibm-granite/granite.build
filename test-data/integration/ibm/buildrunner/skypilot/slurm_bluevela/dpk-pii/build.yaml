@@ -1,7 +1,7 @@
 granite.build:
   name: skypilot-bluevela-slurm-dpk-pii-redactor-test
   # PII redaction through the shared `dpk` step on BlueVela SLURM (via Skypilot),
-  # submitted to the gpu-mid partition. This is the REAL-CLUSTER counterpart of
+  # submitted to the cpu partition. This is the REAL-CLUSTER counterpart of
   # steps/data/dpk/skypilot/test-data/slurm-pii/build.yaml (local Docker SLURM) and of
   # test-data/aws-pii (EC2): same step, same transform, same derivations —
   # only `environment_uri` and the memory hint differ.
@@ -35,14 +35,11 @@ granite.build:
 
     redact:
       # The BlueVela SLURM env, resolved from the gb-test space (same space_uri
-      # the sibling 1step/2target fixtures use). The gpu-mid partition comes from
-      # the environment's `zone`, so no partition is set here.
-      #
-      # NOT overridden to a CPU partition even though this transform asks for zero
-      # GPUs: gpu-mid is the environment-wide default that the sibling fixtures
-      # also run on, and the env only names gpu-low for the auto-queued HF I/O
-      # steps (config.steps.hfpull/hfpush). Adding a third partition name here
-      # would be an untested guess about BlueVela's partition layout.
+      # the sibling 1step/2target fixtures use). The step overrides the
+      # environment's default `zone: gpu-mid` with `zone: cpu`: this transform
+      # asks for zero GPUs, and BlueVela rejects GPU-less jobs on gpu-mid
+      # ("This job requests no GPUs, so it cannot run in gpu-mid. CPU-only work
+      # runs in the cpu lane"), the same partition the env uses for hfpull/hfpush.
       environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
         docs:
@@ -96,7 +93,13 @@ granite.build:
                 # the column the redacted text is written to.
                 pii_redactor_transformed_contents: new_contents
                 pii_redactor_score_threshold: 0.6
+            # CPU-only step: bluevela rejects GPU-less jobs on gpu-mid, so run
+            # in the `cpu` partition and drop the env-wide `constraint: h200`, as
+            # the environment does for hfpull/hfpush. See 1step/build.yaml.
+            zone: cpu
             launcher_config:
+              sbatch_options:
+                constraint: null
               resources:
                 # The ACTUAL memory request. BlueVela enforces memory per job
                 # (cgroups), but gbserver drops compute_config's memory floor on

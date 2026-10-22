@@ -3,7 +3,7 @@
 # build_yaml defaults to ./build.yaml (sibling) when omitted.
 #
 # The shared `dpk` step running a real DPK transform (pii_redactor) on BlueVela
-# SLURM (Skypilot), gpu-mid partition, on the BARE launcher node (no dpk_image,
+# SLURM (Skypilot), cpu partition, on the BARE launcher node (no dpk_image,
 # so no Pyxis — unlike the sibling 1step/2target fixtures).
 targets:
   - redact

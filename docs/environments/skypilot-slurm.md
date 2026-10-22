@@ -129,8 +129,8 @@ step types not listed under `config.steps` (see
 [Per-step-type config defaults](README.md#per-step-type-config-defaults-configstepstype)). A `command`
 step with no `zone` of its own thus lands on the environment's partition, while `hfpull`/`hfpush` listed
 under `config.steps` take their per-type partition. For a real-cluster example, the SLURM/BlueVela
-integration fixtures under `test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/` target
-BlueVela's `gpu-mid` partition (reached at `login1`) via the `bluevela` environment.
+integration fixtures under `test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/` run on
+BlueVela (reached at `login1`) via the `bluevela` environment, whose default partition is `gpu-mid`.
 
 > **The `bluevela` environment lives in a remote space, not this repo.** Those fixtures resolve
 > `space://environments/skypilot/slurm/bluevela` against a remote space (e.g. `gb-test`), which is
@@ -169,6 +169,24 @@ Layer 3 — a plain top-level `zone` in the step `config` (shorter; overridden b
         config:
           zone: gpu-high            # override the partition
 ```
+
+> **BlueVela: CPU-only steps must use the `cpu` partition.** BlueVela rejects a job that requests
+> no GPUs on its GPU partitions (`sbatch: error: This job requests no GPUs, so it cannot run in
+> gpu-mid`). Only the build knows whether a step needs a GPU, so a CPU-only step sets `zone: cpu`
+> and clears the environment's `constraint: h200` (which the `cpu` partition doesn't take), the same
+> override the `bluevela` environment applies to its own `hfpull`/`hfpush` steps:
+>
+> ```yaml
+>         config:
+>           zone: cpu
+>           launcher_config:
+>             sbatch_options:
+>               constraint: null
+> ```
+>
+> A step that does use GPUs stays on a GPU partition and requests them (e.g. `--gpus=h200:1`).
+> The CPU-only BlueVela fixtures (`1step`, `2target`, `filemount`, `dpk-pii`, `dpk-tok-image`) all
+> do this; `custom_code` requests a GPU and stays on `gpu-mid`.
 
 ### Autostop is ignored
 
