@@ -28,7 +28,7 @@ Set by the launcher; defaults are applied by the script.
 | `FMTUNE_CACHE_DIR` | bash: `<GB_HOME>/.fm-tune-cache` (beside `workdir/`) | Clone, tree and venv cache; required elsewhere |
 | `FMTUNE_PYTHON` | `$LLMB_BASH_PYTHON_DIR/python3`, else `python3` | Interpreter that creates the venv (>= 3.10) |
 | `FMTUNE_SOURCE_PATH` / `FMTUNE_SOURCE_REPO` | empty | Exactly one must be set |
-| `FMTUNE_SOURCE_REF` | `main` | Branch, tag or commit for the repo |
+| `FMTUNE_SOURCE_REF` | `main` | Branch or tag for the repo (`git clone --branch`; a bare SHA fails) |
 | `FMTUNE_SOURCE_SUBDIR` | `autotunex/src/fm-tune` | fm-tune dir inside the repo |
 | `FMTUNE_EXTRA` | `core` | pip extra |
 | `FMTUNE_BASE_MODEL_DIR` | empty | Bound `base_model`; wins over `FMTUNE_MODEL` |
@@ -59,8 +59,9 @@ the exit code).
 
 ## Tests
 
-- Mode 1 (no cluster, fast): `test/test_fmtune_run_sh.py` (stub `main.py`), the two render
-  tests, and the script-copies test.
+- Mode 1 (no cluster, fast): `bash/test/test_fmtune_run_sh.py` (stub `main.py`),
+  `bash/test/test_bash_fm_tune_render.py`, `skypilot/test/test_skypilot_fm_tune_render.py` and
+  `skypilot/test/test_fm_tune_script_copies_match.py`.
 - Build tests (Mode 2): `bash/test/bash/` and `skypilot/test/slurm/`. Run with
   `make -C steps/fm-tune/<env> test`, which renders the Space first.
 
@@ -87,3 +88,12 @@ needs the local podman Slurm VM: stop the VM when you are not testing slurm.
   `5e-06` as a string (found in build c9d46858).
 - A cached clone is fetched on every run, and each trained commit adds a `tree-<sha>` and a
   `venv-<key>` that nothing prunes; see `USAGE.md`, "Caches and cleanup".
+
+## Verified
+
+- bash: build cfdb6814 succeeded on macOS/MPS with the 1-epoch fixture (train_runtime 4.2 s).
+- slurm: build 22aab68c succeeded on the local podman Slurm cluster (CPU-only arm64, node venv
+  on python3.10) with the 1-epoch fixture.
+- Build c9d46858 found the YAML-float bug (see above).
+- Not verified: GPU training, a commit SHA as `source.ref`, outputs other than `env://`,
+  `autotune: true`, RL algorithms.

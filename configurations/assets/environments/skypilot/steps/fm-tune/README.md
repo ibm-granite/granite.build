@@ -36,7 +36,7 @@ subtraction in Jinja.
 |---|---|---|
 | `source.path` | `""` | Local fm-tune checkout. Exactly one of `path` and `repo` must be set |
 | `source.repo` | `""` | Git URL to clone |
-| `source.ref` | `main` | Branch, tag or commit for `repo` |
+| `source.ref` | `main` | Branch or tag for `repo` (a bare commit SHA is not supported) |
 | `source.subdir` | `autotunex/src/fm-tune` | fm-tune's location inside `repo` |
 | `extra` | `core` | pip extra installed: `core`, `full` or `mlx` |
 | `model` | `""` | `--model_name_or_path` when `base_model` is not bound |
@@ -60,7 +60,8 @@ subtraction in Jinja.
 
 `hpo_config` is fm-tune's whole HPO config as a mapping (`tune_config`, `training_config`,
 `tuners_config`, ...). When non-empty it replaces the preset entirely, so it must be
-complete; it is about 500 lines for a full config. Start from a bundled preset in
+complete. The bundled presets are about 1250 lines; the step's test fixtures use a trimmed,
+LoRA-only copy of about 500 lines. Start from a bundled preset in
 `autotunex/src/fm-tune/autotune/configs/` (`autotune.yaml`, `autotune_mac.yaml`) and copy
 what you need. An excerpt:
 
@@ -93,20 +94,23 @@ granite.build:
         dataset: { uri: file:///data/datasets/alpaca-mini/ }
         base_model: { uri: hf:///ibm-granite/granite-4.0-h-350m }
       outputs:
-        model: { uri: file:///data/artifacts/fmtune_{{ binding.path | short_hash }}/ }
+        model: { uri: "env://{{ binding.path }}" }   # keeps the model where the step wrote it
       steps:
         - step_uri: space://steps/fm-tune
           config:
             fm_tune_config:
               source:
                 repo: https://github.com/ibm-granite/granite.build.git
-                ref: v1.2.3          # pin a tag or commit, see "Caches and cleanup"
+                ref: v1.2.3          # pin a tag, see "Caches and cleanup"
               train_file: alpaca-mini_train.jsonl
               validation_file: alpaca-mini_validation.jsonl
               tuning_algo: lora
               run_name: granite-lora
               autotune: false
 ```
+
+Other output stores (for example `hf://`) should also work as `model` outputs; only the
+`env://` form above was tested.
 
 Use `source: { path: /abs/path/to/granite.build/autotunex/src/fm-tune }` instead of `repo`
 to run a local checkout.
@@ -151,17 +155,20 @@ The SkyPilot step supports the `slurm` subtype only. Size the job with `compute_
 ## Caches and cleanup
 
 - The cache lives at `.fm-tune-cache`: beside `workdir/` under `~/.granite.build/` on bash,
-  and in `$GB_SHARED_WORKDIR` (else the run workdir) on SkyPilot. On the local test Slurm
-  cluster that is `/shared/.fm-tune-cache`.
+  and in `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache` on SkyPilot: shared across nodes only
+  when `GB_SHARED_WORKDIR` is set (the local Slurm environment sets `/shared`, giving
+  `/shared/.fm-tune-cache`).
 - A cached `source.repo` clone is refreshed on every run (`[fm-tune] updating ...`), so a
   warm-cache run still needs network access to the repo. If the fetch fails, the run stops.
 - Every commit trained gets its own immutable `tree-<sha>` and its own `venv-<key>`. The
-  venv for `extra: core` is several GB. Nothing prunes them. Pin `source.ref` to a tag or
-  commit so builds share one tree and one venv.
-- To clean up, delete `.fm-tune-cache/tree-*` and `.fm-tune-cache/venv-*` while no fm-tune
-  build is running. They are rebuilt on the next run.
-- Concurrent builds serialise on a lock inside the cache; a lock whose owner died is
-  taken over.
+  venv for `extra: core` is large (1.5 GB measured on the arm64 CPU Slurm nodes). Nothing
+  prunes them. Pin `source.ref` to a tag so builds share one tree and one venv.
+- To clean up, delete `.fm-tune-cache/tree-*`, `.fm-tune-cache/venv-*`,
+  `.fm-tune-cache/src-*` (the clone mirrors) and any stale `*.lock` directories, only while
+  no fm-tune build is running. They are rebuilt on the next run.
+- A lock in the cache serialises only the clone and tree extraction and the venv build, not
+  training, so concurrent builds still train in parallel. A lock whose owner died is taken
+  over.
 
 ## Memory knob: `FMTUNE_OBJECT_STORE_BYTES`
 
@@ -190,6 +197,10 @@ this step's build shape:
 
 ## Known limits
 
+- `source.ref` must be a branch or tag: the clone uses `git clone --branch`, which rejects a
+  bare commit SHA.
+- Verified only by the 1-epoch fixtures (macOS/MPS on bash, CPU-only arm64 Slurm); see
+  "Verified" in the step's developer README.
 - SkyPilot: `slurm` subtype only. LSF, Kubernetes, AWS and Docker are not supported.
 - No container image: the step runs on a bare node and builds its own venv (needs
   Python 3.10 or newer, `git` for `source.repo`, and network access to PyPI).
@@ -211,7 +222,8 @@ Submit the build with `environment_uri: space://environments/skypilot/slurm`.
   shared.
 - The node needs `python3` 3.10 or newer on its PATH (or set `fm_tune_config.python`), plus
   `git` for `source.repo`. The local Slurm test nodes needed a python3.10 for this.
-- The cache is `$GB_SHARED_WORKDIR/.fm-tune-cache`, so every node shares one venv.
+- The cache is `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache`: nodes share one venv only when
+  `GB_SHARED_WORKDIR` is set (the local Slurm environment sets `/shared`).
 - SkyPilot builds write no local `job.log`. The step's output is in
   `~/sky_logs/<cluster>/1-<cluster>/run.log` on the machine running gbserver.
 - Launcher env goes through `launcher_config.envs`, for example
