@@ -22,7 +22,7 @@ provides everything. It is generated from the sources here by the shared Makefil
   calls `unitxt-evaluate --model hf` with `pretrained=` set to
   `bindings.model.binding.path` and the rest of `unitxt_config`, then registers
   `output_path` as the `results` artifact.
-- `test/test_unitxt_step_render.py`: Mode-1 render tests. They execute the
+- `test/test_skypilot_eval_unitxt_render.py`: Mode-1 render tests. They execute the
   rendered `run` block with a stub `unitxt-evaluate` on `PATH`, so they need no
   unitxt install, network or cluster.
 - `test/slurm-cpu/` + `test-data/slurm-cpu/`: a build test on the local Docker
