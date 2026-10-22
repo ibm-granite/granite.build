@@ -35,7 +35,7 @@ All fields live under the step's `config.data_designer_config`.
 | `output` | string | **yes** | Name of a declared target `outputs:` entry. Used as the registered artifact's ID. |
 | `num_records` | int | no | Rows to generate. Default `10`. |
 | `output_path` | string | no | Directory the dataset is written to. Default `./output` in the step's working directory. Set it explicitly, on the shared filesystem, when the output's `uri` names a path or a downstream target reads it. The rules are the same as the dpk step's. |
-| `resume` | string | no | `if_possible` (default), `always` or `never`. See [Resume](#resume). |
+| `resume` | string | no | `if_possible` (default), `always`, `restart` or `never`. Only `restart` ever deletes a previous run. See [Resume](#resume). |
 | `run_config` | map | no | Data Designer `RunConfig` fields, passed through: `buffer_size` (rows per checkpoint, default 1000), `max_concurrent_row_groups` (3), `shutdown_error_rate` (0.5), `disable_early_shutdown`, … |
 | `export_format` | string | no | `jsonl`, `csv` or `parquet`: also write the whole dataset as one file, `<output_path>/<name>.<format>`. Default empty, which writes only the parquet batches. |
 | `min_records` | int | no | Fail the target when fewer rows come back. Data Designer drops rows whose cells failed. Default `null`, meaning at least one row. |
@@ -192,15 +192,22 @@ previous run:
 
 | `resume` | Previous run matches | Previous run doesn't match | No checkpoint yet |
 |---|---|---|---|
-| `if_possible` (default) | Continues after the last finished row group; finished groups are kept as they are, and a finished dataset is not regenerated. | Clears the previous run's files and starts fresh in place. | Starts fresh. |
-| `always` | As above. | Fails before generating, naming what changed. | Starts fresh, so a target interrupted before its first checkpoint can still be retried. |
+| `if_possible` (default) | Continues after the last finished row group; finished groups are kept as they are, and a finished dataset is not regenerated. | **Refuses** before generating, names what changed, and removes nothing. | Starts fresh. |
+| `always` | As above. | Refuses, as above. | Starts fresh, so a target interrupted before its first checkpoint can still be retried. |
+| `restart` | As above. | **Deletes the previous run** (Data Designer's files only) and starts fresh in place. | Starts fresh. |
 | `never` | Refuses a non-empty `output_path`. | Refuses a non-empty `output_path`. | Starts fresh. |
+
+**Deleting a previous dataset is opt-in.** Only `resume: restart` removes anything, and
+only when the previous run can't be continued. With the default, editing a prompt or a
+column and re-running into the same `output_path` stops with an error naming the change,
+and the previous dataset is untouched. Then choose: set `resume: restart` to discard it,
+or use a new `output_path` to keep it.
 
 **`num_records` can grow, never shrink.** When the previous run matches, raising it
 extends the dataset, and lowering it below what that run was started with is refused
 before anything is removed: resume never deletes rows to honour a smaller target. Use a
-new `output_path` for a smaller dataset. (If the previous run does *not* match,
-`if_possible` starts fresh regardless, so `num_records` can be anything.) A dataset
+new `output_path` for a smaller dataset. (If the previous run does *not* match, `restart`
+starts fresh regardless, so `num_records` can be anything there.) A dataset
 whose after-generation processors have already run can't be extended either; that is
 refused up front too.
 
@@ -211,13 +218,14 @@ an `output_path` of its own.
 
 The fingerprint ignores `max_parallel_requests`, `timeout`, `skip_health_check` and
 profilers, so you can retune concurrency and still resume. **Changing `buffer_size`
-restarts the run** under `if_possible`, so pick it before a long run.
+counts as a mismatch**, so pick it before a long run: the default then refuses, and
+`restart` starts over.
 
 The seed's path is part of the fingerprint, so resuming a seeded config across builds
 needs the seed staged at the same path each time. A path inside the per-run workdir
 changes on every build, so such a run starts fresh each time.
 
-"Clears" removes only what Data Designer writes there (`parquet-files/`, the other
+With `restart`, "clearing" removes only what Data Designer writes there (`parquet-files/`, the other
 `*-parquet-files/` dirs, `processors-files/`, `images/`, `metadata.json`,
 `builder_config.json`, `scheduler_events.jsonl`, and the export file). Other files you
 keep in `output_path` are left alone.

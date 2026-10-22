@@ -78,7 +78,7 @@ PYTHONPATH=src <venv>/bin/python -m pytest -c /dev/null --noconftest \
   test/test_dd_step_render.py test/test_dd_guard_sh.py test/test_dd_run.py test/test_dd_ollama_sh.py
 ```
 
-There are 136 tests in all:
+There are 146 tests in all:
 
 - `test_dd_step_render.py` pins what the template computes:
   - the rendered blocks parse under `bash -n`;
@@ -107,8 +107,9 @@ There are 136 tests in all:
   - the marker is the last line, and the export is written;
   - `min_records` is checked before any work;
   - a finished run is extended;
-  - `if_possible` restarts in place on a changed config, `buffer_size` or
-    `preserve_dropped_columns`, with no timestamped sibling dir;
+  - on a changed config, `buffer_size` or `preserve_dropped_columns`, the default
+    (`if_possible`) and `always` refuse and leave every file byte-identical, while
+    `restart` starts fresh in place with no timestamped sibling dir;
   - `always` refuses a mismatch, and starts fresh when there is no checkpoint yet
     (a first run, or one interrupted before its first row group);
   - an unchanged **expression-only** or **seeded** config resumes, in the same home and
@@ -121,7 +122,7 @@ There are 136 tests in all:
   - a lower `num_records` is refused in both resume modes, and keeps the data;
   - `scheduler_events.jsonl` is cleared on a restart (checked by run count; content
     merely differing would pass without the clear, since Data Designer appends);
-  - user files survive a restart;
+  - user files survive a `restart`;
   - a malformed provider, or a credential of the wrong type, is reported without its
     key.
 - `test_dd_ollama_sh.py` runs the real `src/dd_ollama.sh` with `curl` and the Ollama
@@ -221,7 +222,9 @@ Measured history: resume was first checked off-cluster against RITS (8 rows,
    timestamped sibling directory, not in place. A later review found the same for a
    changed `preserve_dropped_columns`, and a hard failure for a changed `buffer_size`.
    `dd_run.resume_mismatch` now runs Data Designer's own checks before generating, and
-   `clear_previous_run` clears just the previous run's files. A second review then
+   `clear_previous_run` clears just the previous run's files. Clearing was later made
+   opt-in: only `resume: restart` does it, and the default refuses a mismatch with
+   nothing removed. A second review then
    found the check compared the wrong fingerprint (raw vs compiled config), which
    disabled resume for expression-only and seeded configs. It was fixed with
    `compiled_fingerprint`, plus building the config only after `DataDesigner()`

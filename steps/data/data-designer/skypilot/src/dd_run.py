@@ -29,9 +29,10 @@ ORDER, and why it matters
      in seconds rather than after the generation.
   2. Data Designer's validate() checks the config with no model calls. Then a previous
      run in output_path is checked the way Data Designer would check it (config,
-     buffer_size, preserve_dropped_columns): resume=always refuses a mismatch,
-     resume=if_possible clears it and starts fresh in place. A num_records below the
-     previous target is refused in both modes and nothing is cleared.
+     buffer_size, preserve_dropped_columns). A run that matches is resumed. A mismatch
+     is refused by resume=if_possible (the default) and resume=always, with nothing
+     removed; only resume=restart clears it and starts fresh in place. A num_records
+     below the previous target is refused in every mode and nothing is cleared.
   3. create() — which health-checks each referenced model first.
   4. The row count is checked against --min-records, then the optional export.
   5. Only then is the artifact marker printed, so a failed or short run registers
@@ -52,7 +53,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 SPEC_ENV = "GB_DD_SPEC_B64"
-RESUME_MODES = ("never", "always", "if_possible")
+RESUME_MODES = ("never", "always", "if_possible", "restart")
 EXPORT_FORMATS = ("jsonl", "csv", "parquet")
 # Seed source types whose `path` names a file, glob or directory on the filesystem —
 # the ones a staged input can stand in for. `hf` names a Hub dataset and is left as is.
@@ -236,7 +237,8 @@ def check_output_dir(output_path: Path, resume: str) -> None:
     if resume == "never" and output_path.is_dir() and any(output_path.iterdir()):
         raise StepError(
             f"output_path {str(output_path)!r} is not empty and resume is 'never'. Use "
-            f"resume: if_possible to continue or restart in place, or a fresh output_path."
+            f"resume: if_possible to continue the run there, resume: restart to discard "
+            f"it, or a fresh output_path."
         )
 
 
@@ -382,7 +384,7 @@ def compiled_fingerprint(designer: Any, builder: Any) -> dict[str, Any]:
     column when the config has no sampler or seed column. ``metadata.json`` stores the
     fingerprint of that compiled config, so comparing the build's raw config against it
     made every expression-only, LLM-only or seeded config look changed (found in the
-    second review, reproduced): ``if_possible`` then cleared a resumable run and
+    second review, reproduced): the step then cleared a resumable run and
     ``always`` never resumed. This compiles a fresh copy exactly as ``DataDesigner.validate``
     does and fingerprints that. It uses Data Designer's private ``_create_resource_provider``,
     acceptable because ``dd_version`` is pinned; ``test_dd_run.py`` covers the configs that
@@ -616,22 +618,26 @@ def run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
             f"cannot resume the run in {str(output_path)!r}: {processed}. Use a new "
             f"output_path. Nothing was removed."
         )
-    if mismatch and args.resume == "always":
+    # Deleting a previous run is opt-in: only resume: restart does it. The default
+    # (if_possible) and always both refuse a run they can't continue, so changing a
+    # config never silently costs the previous dataset.
+    if mismatch and args.resume in ("always", "if_possible"):
         raise StepError(
-            f"cannot resume the run in {str(output_path)!r}: {mismatch}. Use resume: "
-            f"if_possible to start fresh there, or a new output_path."
+            f"cannot resume the run in {str(output_path)!r}: {mismatch}. Nothing was "
+            f"removed. To discard that run and start fresh there, set resume: restart; "
+            f"to keep it, use a new output_path."
         )
-    if mismatch and args.resume == "if_possible":
+    if mismatch and args.resume == "restart":
         print(
             f"data-designer: not resuming the run in {str(output_path)!r} because "
-            f"{mismatch}; clearing it and starting fresh in place"
+            f"{mismatch}; resume: restart, so clearing it and starting fresh in place"
         )
         clear_previous_run(output_path)
     # `always` with no checkpoint yet (a first run, or one interrupted before its first
     # row group finished) starts fresh, as Data Designer documents for ALWAYS. Data
     # Designer itself raises instead when output_path doesn't exist at all (measured), so
     # it is asked for if_possible in that one case, which starts fresh in place either way.
-    dd_resume = args.resume
+    dd_resume = "if_possible" if args.resume == "restart" else args.resume
     if args.resume == "always" and not (output_path / "metadata.json").is_file():
         print(
             f"data-designer: resume: always, but {str(output_path)!r} has no checkpoint "

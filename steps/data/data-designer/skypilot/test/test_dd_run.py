@@ -596,34 +596,54 @@ class TestRunEndToEnd:
         assert "resuming — 2 record(s)" in out
         assert "GB_STEP_METADATA_KEY:resumed_records GB_STEP_METADATA_VALUE:2" in out
 
-    @pytest.mark.parametrize(
-        "second",
-        [
-            {"run_config": {"buffer_size": 4}},  # was a hard failure
-            {
-                "run_config": {"buffer_size": 2, "preserve_dropped_columns": False}
-            },  # was a sibling dir
-            {
-                "config": {
-                    "columns": [
-                        {**_SAMPLER_CONFIG["columns"][0], "params": {"values": ["z"]}}
-                    ]
-                },
-                "run_config": {"buffer_size": 2},
+    _MISMATCHES = [
+        {"run_config": {"buffer_size": 4}},  # was a hard failure
+        {
+            "run_config": {"buffer_size": 2, "preserve_dropped_columns": False}
+        },  # was a sibling dir
+        {
+            "config": {
+                "columns": [
+                    {**_SAMPLER_CONFIG["columns"][0], "params": {"values": ["z"]}}
+                ]
             },
-        ],
-    )
-    def test_if_possible_restarts_in_place_on_any_mismatch(
+            "run_config": {"buffer_size": 2},
+        },
+    ]
+
+    @pytest.mark.parametrize("second", _MISMATCHES)
+    def test_restart_starts_fresh_in_place_on_any_mismatch(
         self, run_dd, tmp_path, second
     ):
         assert run_dd(2, run_config={"buffer_size": 2}) == 0
-        assert run_dd(2, **second) == 0
+        assert run_dd(2, resume="restart", **second) == 0
         out = run_dd.last.out
-        assert "not resuming" in out and "resuming —" not in out
+        assert "not resuming" in out and "resume: restart, so clearing" in out
+        assert "resuming —" not in out
         assert "GB_STEP_METADATA_KEY:resumed_records GB_STEP_METADATA_VALUE:0" in out
         assert [
             p.name for p in tmp_path.iterdir() if p.name.startswith("out_")
         ] == [], "Data Designer wrote to a timestamped sibling dir"
+
+    @pytest.mark.parametrize("second", _MISMATCHES)
+    @pytest.mark.parametrize("resume", ["if_possible", "always"])
+    def test_default_refuses_a_mismatch_and_removes_nothing(
+        self, run_dd, tmp_path, second, resume
+    ):
+        """Deleting a previous run is opt-in (resume: restart). The default, and always,
+        refuse a mismatch before any work and leave every file as it was."""
+        assert run_dd(2, run_config={"buffer_size": 2}) == 0
+        out = tmp_path / "out"
+        before = {
+            p.relative_to(out): p.read_bytes() for p in out.rglob("*") if p.is_file()
+        }
+        assert run_dd(2, resume=resume, **second) == 1
+        err = run_dd.last.err
+        assert "Nothing was removed" in err and "resume: restart" in err
+        after = {
+            p.relative_to(out): p.read_bytes() for p in out.rglob("*") if p.is_file()
+        }
+        assert after == before, "the previous run was modified"
 
     def test_always_refuses_a_mismatch_before_work(self, run_dd):
         assert run_dd(2, run_config={"buffer_size": 2}) == 0
@@ -718,7 +738,7 @@ class TestRunEndToEnd:
         events = tmp_path / "out" / "scheduler_events.jsonl"
         first = events.read_text()
         assert first.strip(), "Data Designer wrote no scheduler events"
-        assert run_dd(2, run_config={**rc, "buffer_size": 4}) == 0  # mismatch: restart
+        assert run_dd(2, resume="restart", run_config={**rc, "buffer_size": 4}) == 0
         assert not events.read_text().startswith(first), "previous run's events kept"
 
     def test_foreign_metadata_is_refused_and_nothing_removed(self, run_dd, tmp_path):
@@ -754,7 +774,7 @@ class TestRunEndToEnd:
     def test_user_files_survive_a_restart(self, run_dd, tmp_path):
         assert run_dd(2, run_config={"buffer_size": 2}) == 0
         (tmp_path / "out" / "notes.txt").write_text("keep me")
-        assert run_dd(2, run_config={"buffer_size": 4}) == 0
+        assert run_dd(2, resume="restart", run_config={"buffer_size": 4}) == 0
         assert (tmp_path / "out" / "notes.txt").read_text() == "keep me"
 
     def test_bad_provider_reports_without_the_key(self, run_dd):

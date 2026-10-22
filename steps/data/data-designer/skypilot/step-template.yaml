@@ -58,11 +58,16 @@ config:
     # explicitly (on the shared filesystem) when the output's `uri` names a path or a
     # downstream target reads it — the per-run workdir is removed at target teardown.
     output_path: ""
-    # never | always | if_possible (Data Designer's ResumeMode). The default makes a
-    # retried target pick up from its last completed row group when the config is
-    # unchanged, and start fresh into the same directory when it is not. `never`
-    # refuses a non-empty output_path rather than letting Data Designer write to a
-    # timestamped sibling the artifact marker would not point at.
+    # What to do with a previous run already in output_path:
+    #   if_possible (default) — continue it when it matches this config; otherwise refuse
+    #                           and remove nothing. Starts fresh when there is none.
+    #   always                — like if_possible, but needs a previous run to continue
+    #                           (starts fresh only when there is no checkpoint yet).
+    #   restart               — continue it when it matches; otherwise DELETE it (only
+    #                           Data Designer's own files) and start fresh in place. The
+    #                           only mode that removes anything.
+    #   never                 — refuse a non-empty output_path.
+    # Deleting a previous dataset is opt-in, so editing a config never costs data.
     resume: "if_possible"
     # Also write the whole dataset as one file, <output_path>/<name>.<format>:
     # jsonl | csv | parquet. Empty (the default) keeps only Data Designer's parquet

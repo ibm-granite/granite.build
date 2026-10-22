@@ -147,3 +147,8 @@ def test_min_records_equal_to_num_records_passes():
 def test_dd_image_with_api_providers_still_allowed():
     """Only the dd_image + local_model combination is refused."""
     assert _guard(dd_version="", dd_image="quay.io/o/dd:1").returncode == 0
+
+
+@pytest.mark.parametrize("mode", ["if_possible", "always", "restart", "never"])
+def test_every_resume_mode_is_accepted(mode):
+    assert _guard(resume=mode).returncode == 0

@@ -159,10 +159,10 @@ fi
 
 # --- enums ------------------------------------------------------------------------
 case $resume in
-  never|always|if_possible) ;;
+  never|always|if_possible|restart) ;;
   *)
-    fail "ERROR data_designer_config.resume must be one of never, always, if_possible;" \
-         "got '${resume}'." ;;
+    fail "ERROR data_designer_config.resume must be one of if_possible, always, restart," \
+         "never; got '${resume}'." ;;
 esac
 
 case $export_format in
