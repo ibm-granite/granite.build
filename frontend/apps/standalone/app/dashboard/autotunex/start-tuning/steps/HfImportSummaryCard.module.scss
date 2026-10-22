@@ -1,0 +1,42 @@
+.card {
+  border: 1px solid var(--cds-border-subtle, #e0e0e0);
+  padding: 1rem;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.title {
+  font-weight: 600;
+}
+
+.rows {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0 0 0.75rem;
+
+  dt {
+    color: var(--cds-text-secondary, #525252);
+  }
+
+  dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+.mapping {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.usable {
+  color: var(--cds-text-secondary, #525252);
+  margin: 0 0 0.75rem;
+}

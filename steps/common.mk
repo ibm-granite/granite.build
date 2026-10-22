@@ -138,8 +138,12 @@ endif
 # steps/$(STEP_PATH)/step.yaml and the bundled src/. Overridable on the command
 # line or in the including Makefile.
 SPACE_DIR  ?= space
-# `name:` written into the generated space.yaml. Defaults to the step name.
-SPACE_NAME ?= $(STEP_NAME)
+# `name:` written into the generated space.yaml. Defaults to `public`, the name of
+# the shared configurations/spaces/local that Mode-2 tests resolve through, because
+# an hf:// push derives its HF Enterprise resource group from the space name
+# (gbspace-<space>[-<env>]): a space named after the step would look for a
+# gbspace-<step> group that does not exist. Override it to push to another group.
+SPACE_NAME ?= public
 # When non-empty, a variables.DEFAULT_ENVIRONMENT entry is written into the
 # generated space.yaml (e.g. DEFAULT_ENVIRONMENT=skypilot/slurm). Empty by
 # default — builds that set environment_uri explicitly do not need it.
@@ -255,6 +259,18 @@ space := $(empty) $(empty)
 MODE2_PARENTS := test-data steps $(subst /, ,$(STEP_PATH)) $(STEP_ENV) cluster
 MODE2_DOTDOT  := $(subst $(space),,$(foreach s,$(MODE2_PARENTS),../))
 MODE2_SPACE_URI  ?= $(MODE2_DOTDOT)configurations/spaces/local
+# Which buildtest.yaml space_uris publish-step rewrites. LOCAL means a bare path or
+# a file:// URI, as libgbtest's _resolve_space_uri reads them; it is rewritten.
+# REMOTE means any other <scheme>:// URI (git://, git+ssh://, https://, ...) or the
+# scp-like user@host:path form; it is copied unchanged. An ERE can't say "any scheme
+# except file", so file:// lines are rewritten first (FILE_...), then every line
+# not matching REMOTE_... is. Both anchor the URI right after blanks and at most one
+# opening quote, so a local path containing `@`, `:` or `://` (../../a@b:c/space)
+# stays local. The RE is pasted into a single-quoted sed program, so the `'` in the
+# quote class is written as the shell's '"'"'.
+SPACE_URI_VALUE_RE  := ^space_uri:[[:space:]]*["'"'"']?
+FILE_SPACE_URI_RE   := $(SPACE_URI_VALUE_RE)file://
+REMOTE_SPACE_URI_RE := $(SPACE_URI_VALUE_RE)([a-zA-Z][a-zA-Z0-9+.-]*://|[a-zA-Z0-9_][a-zA-Z0-9._-]*@[a-zA-Z0-9.-]+:)
 
 # publish-step refuses to publish a custom-image step until its IMAGE_REF exists on
 # the registry — a step.yaml/build test referencing an unpublished image is broken
@@ -338,23 +354,34 @@ define render-step-template
 	sed "s#\$${IMAGE_REF}#$$ref#g" "$(TEMPLATE)" > "$(1)"
 endef
 
-# write-gbignore — drop a .gbignore next to the published step.yaml so the g.b
-# build process ships the listed files verbatim instead of Jinja-rendering them.
-# The .gbignore is an ADDITIVE glob list (this impl has NO gitignore-style "!"
-# negation — see utils/filesystem.py:_get_matching_ignored_files), so it must
-# enumerate what to SKIP rather than "ignore all but step.yaml": that keeps
-# step.yaml's runtime {{ ... }} rendered while sparing the docs (README.md, which
-# may show {{ ... }} examples) and the whole src/ tree (step scripts/helpers,
-# shipped as-is). The .gbignore is itself a dotfile, so the renderer's glob never
-# picks it up — its own {{ ... }} in the comment is safe. $(1) is the target dir.
-define write-gbignore
-	@printf '%s\n' \
-		'# The following allows the docs to contain {{ ... }} but be ignored by the g.b build process.' \
-		'**/*.md' \
-		'# Ship the src/ tree verbatim — do not jinja-process step scripts/helpers.' \
-		'src/**' \
-		> "$(1)/.gbignore"
-	@echo "[$(STEP_NAME)] wrote $(1)/.gbignore (skip Jinja for docs + src/)"
+# copy-gbignore — copy the step's own .gbignore next to the rendered step.yaml, so
+# the g.b build process ships the listed files verbatim instead of Jinja-rendering
+# them. Every step carries one next to its Makefile (the create-framework-step
+# skill writes it for new steps); common.mk generates nothing, so the file in the
+# step source is exactly what is tested and published. Both `space` (so `make
+# test`) and `publish-step` use this macro, so a step renders the same way when
+# tested and when published. The usual list is `**/*.md` (docs may show {{ ... }}
+# examples) and `src/**` (scripts ship as is). The .gbignore is an ADDITIVE glob
+# list (no gitignore-style "!" negation; see
+# utils/filesystem.py:_get_matching_ignored_files), so it names what to SKIP
+# rather than "ignore all but step.yaml". It is a dotfile, so the renderer's glob
+# never picks it up itself. $(1) is the target dir.
+define copy-gbignore
+	@cp .gbignore "$(1)/.gbignore"
+	@echo "[$(STEP_NAME)] copied .gbignore to $(1)/"
+endef
+
+# require-gbignore — fail before anything is written when the step has no
+# .gbignore. Shipping a step without one would Jinja-render its docs and scripts,
+# which fails silently on a cluster rather than here.
+define require-gbignore
+	@test -f .gbignore || { \
+		echo "[$(STEP_NAME)] ERROR: no .gbignore next to this Makefile." >&2; \
+		echo "[$(STEP_NAME)] Add one listing the files to ship without Jinja rendering, usually:" >&2; \
+		echo "[$(STEP_NAME)]   **/*.md" >&2; \
+		echo "[$(STEP_NAME)]   src/**" >&2; \
+		echo "[$(STEP_NAME)] (see steps/README.md, .gbignore)." >&2; \
+		exit 1; }
 endef
 
 # guard-publish-paths — fail fast before `publish-step` runs any rm -rf. The publish
@@ -416,7 +443,7 @@ endef
 
 # Render a self-contained Space into $(SPACE_DIR)/:
 #   $(SPACE_DIR)/steps/$(STEP_PATH)/step.yaml   (+ bundled src/)
-#   $(SPACE_DIR)/steps/$(STEP_PATH)/.gbignore   (skip Jinja for **/*.md + src/)
+#   $(SPACE_DIR)/steps/$(STEP_PATH)/.gbignore   (the step's own, copied)
 #   $(SPACE_DIR)/space.yaml                       (base_uris -> $(SPACE_BASE_URI))
 # step-template.yaml is rendered substituting ONLY ${IMAGE_REF} so runtime Jinja
 # ({{ ... }}) and shell expansions (${VAR}, $(cmd)) in the run/setup blocks pass
@@ -426,6 +453,7 @@ endef
 # slash-free STEP_NAME) is used for the steps/ tree so a nested step's identity is
 # preserved locally exactly as it will be once published.
 space:
+	$(call require-gbignore)
 	@mkdir -p $(SPACE_DIR)/steps/$(STEP_PATH)
 	$(call render-step-template,$(SPACE_DIR)/steps/$(STEP_PATH)/step.yaml)
 	@if [ -d "$(SRC_DIR)" ] && [ -n "$$(ls -A $(SRC_DIR) 2>/dev/null)" ]; then \
@@ -433,7 +461,7 @@ space:
 		cp -R "$(SRC_DIR)" "$(SPACE_DIR)/steps/$(STEP_PATH)/$(SRC_DIR)"; \
 		echo "[$(STEP_NAME)] bundled $(SRC_DIR)/ into $(SPACE_DIR)/steps/$(STEP_PATH)/"; \
 	fi
-	$(call write-gbignore,$(SPACE_DIR)/steps/$(STEP_PATH))
+	$(call copy-gbignore,$(SPACE_DIR)/steps/$(STEP_PATH))
 	@printf 'name: %s\nsecret_manager:\n  type: local\n  config: {}\nbase_uris:\n  - %s\n' \
 		"$(SPACE_NAME)" "$(SPACE_BASE_URI)" > $(SPACE_DIR)/space.yaml
 	@if [ -n "$(DEFAULT_ENVIRONMENT)" ]; then \
@@ -447,15 +475,15 @@ space:
 # the repo's parallel top-level test/ <-> test-data/ trees:
 #   $(PUBLISH_STEP_DIR)/step.yaml               (+ bundled src/)   — the published step
 #   $(PUBLISH_STEP_DIR)/README.md               (from USAGE.md)    — user-facing usage doc
-#   $(PUBLISH_STEP_DIR)/.gbignore                                  — skip Jinja for **/*.md + src/
+#   $(PUBLISH_STEP_DIR)/.gbignore                                  — the step's own, copied
 #   $(PUBLISH_TEST_DIR)/<cluster>/              — per-cluster build tests (copied)
 #   $(PUBLISH_TESTDATA_DIR)/<cluster>/          — their fixtures, with space_uri rewritten
 #
 # The step's own README.md (development-oriented) is NOT published; only USAGE.md is,
 # renamed to README.md so a user browsing the released assets tree finds usage docs.
-# A .gbignore is written beside step.yaml so the g.b build process ships the docs
-# (**/*.md) and the src/ tree verbatim instead of Jinja-rendering them — docs may
-# contain {{ ... }} examples and src scripts must not be templated (see write-gbignore).
+# The step's .gbignore is copied beside step.yaml so the g.b build process ships the
+# files it lists (usually the docs and src/) verbatim instead of Jinja-rendering
+# them (see copy-gbignore). A step without one is refused (require-gbignore).
 #
 # The step's own `test/<cluster>/` nesting is flattened on copy (the inner `test`
 # segment is dropped) so the published test lands at test/steps/<path>/<env>/<cluster>/
@@ -472,10 +500,14 @@ space:
 # itself are intentionally NOT copied; those stay Mode-1 only (run via `make
 # test`). The copied buildtest.yaml files have their space_uri rewritten to
 # $(MODE2_SPACE_URI) so the Mode-2 tests resolve the PUBLISHED step via
-# configurations/spaces/local instead of the local space/. Deliberately NOT part
+# configurations/spaces/local instead of the local space/. Only LOCAL space_uris
+# are rewritten. A REMOTE one (see REMOTE_SPACE_URI_RE, e.g. the IBM
+# git+ssh://github.ibm.com space used by tests marked `ibm`) is copied unchanged:
+# it already resolves the step from that remote space in both modes. Deliberately NOT part
 # of `all`: publish-step writes the committed assets tree.
 publish-step:
 	$(call require-publishable)
+	$(call require-gbignore)
 	$(call require-image-published)
 	$(call guard-publish-paths)
 	@mkdir -p $(PUBLISH_STEP_DIR)
@@ -490,7 +522,7 @@ publish-step:
 	else \
 		echo "[$(STEP_NAME)] WARNING: no USAGE.md to publish as README.md"; \
 	fi
-	$(call write-gbignore,$(PUBLISH_STEP_DIR))
+	$(call copy-gbignore,$(PUBLISH_STEP_DIR))
 	@rm -rf "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)"
 	@mkdir -p "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)"
 	@copied=0; for d in $(TEST_DIR)/*/; do \
@@ -509,7 +541,10 @@ publish-step:
 	@find "$(PUBLISH_STEP_DIR)" "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)" \
 		-name __pycache__ -type d -prune -exec rm -rf {} +
 	@find "$(PUBLISH_TESTDATA_DIR)" -name buildtest.yaml -exec \
-		sed -i.bak 's#^space_uri:.*#space_uri: $(MODE2_SPACE_URI)#' {} \; -exec rm -f {}.bak \;
+		sed -E -i.bak \
+			-e '\#$(FILE_SPACE_URI_RE)#s#^space_uri:.*#space_uri: $(MODE2_SPACE_URI)#' \
+			-e '\#$(REMOTE_SPACE_URI_RE)#!s#^space_uri:.*#space_uri: $(MODE2_SPACE_URI)#' \
+			{} \; -exec rm -f {}.bak \;
 	@echo "[$(STEP_NAME)] published step -> $(PUBLISH_STEP_DIR)"
 	@echo "[$(STEP_NAME)] copied build tests -> $(PUBLISH_TEST_DIR)"
 	@echo "[$(STEP_NAME)] copied fixtures   -> $(PUBLISH_TESTDATA_DIR) (space_uri -> $(MODE2_SPACE_URI))"
@@ -644,6 +679,15 @@ endef
 # virtualenv ($(VENV_DIR)). This recipe fails fast with a pointer to `make venv`
 # if that venv is absent, then activates it (sourced in the same shell as pytest,
 # since each recipe line is its own shell) before running the tests.
+#
+# pytest does not load the repo's test/conftest.py for tests under steps/, so two
+# variables the repo suites get from there (or from their Makefile targets) are
+# defaulted here, each only when the caller hasn't set it:
+#   * GB_ENVIRONMENT=STANDALONE: unset, gbserver defaults to PROD and the build-test
+#     base refuses to run ("Refusing to run storage tests with GB_ENVIRONMENT=PROD").
+#   * GBTEST_STANDALONE_ENVIRONMENT=STAGING: sends a STANDALONE hf:// push to the
+#     staging resource group, as test/conftest.py does, not the production one.
+# GBTEST_MODE is left alone: libgbtest already defaults it to live.
 test: space image
 	@if [ ! -d "$(TEST_DIR)" ] || [ -z "$$(ls -A $(TEST_DIR) 2>/dev/null)" ]; then \
 		echo "[$(STEP_NAME)] no tests in $(TEST_DIR)/; nothing to run."; \
@@ -656,6 +700,9 @@ test: space image
 	fi; \
 	echo "[$(STEP_NAME)] activating venv $(VENV_DIR)"; \
 	. "$(VENV_DIR)/bin/activate"; \
+	export GB_ENVIRONMENT="$${GB_ENVIRONMENT:-STANDALONE}"; \
+	export GBTEST_STANDALONE_ENVIRONMENT="$${GBTEST_STANDALONE_ENVIRONMENT:-STAGING}"; \
+	echo "[$(STEP_NAME)] GB_ENVIRONMENT=$$GB_ENVIRONMENT GBTEST_STANDALONE_ENVIRONMENT=$$GBTEST_STANDALONE_ENVIRONMENT"; \
 	PYTHONPATH="$(SRC_DIR)$${PYTHONPATH:+:$$PYTHONPATH}" $(PYTHON) -m pytest $(PYTEST_CAPTURE) $(TEST_DIR)
 
 # ---- Optional pre-test setup hook ------------------------------------------

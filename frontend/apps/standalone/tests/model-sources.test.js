@@ -1,6 +1,6 @@
 /**
  * The PVC (`dmf`) model source was retired. New tunings can only be launched
- * against Huggingface or Local, but jobs already in the database still carry
+ * against Hugging Face or Local, but jobs already in the database still carry
  * `dmf` and must keep reading "PVC" in the detail view.
  *
  * Usage: node --test tests/model-sources.test.js
@@ -13,13 +13,14 @@ const {
   MODEL_SOURCE_LABELS,
   MODEL_SOURCE_OPTIONS,
   modelSourceLabel,
+  toWireModelSource,
 } = require('../app/dashboard/autotunex/modelSources.ts')
 
 describe('selectable model sources', () => {
-  it('offers Huggingface and Local, in that order', () => {
+  it('offers Hugging Face, Tuned Models and Local, in that order', () => {
     assert.deepEqual(
       MODEL_SOURCE_OPTIONS.map((o) => o.value),
-      ['huggingface', 'custom_path'],
+      ['huggingface', 'tuned_model', 'custom_path'],
     )
   })
 
@@ -36,8 +37,9 @@ describe('selectable model sources', () => {
 
 describe('modelSourceLabel', () => {
   it('labels the sources that are still selectable', () => {
-    assert.equal(modelSourceLabel('huggingface'), 'Huggingface')
+    assert.equal(modelSourceLabel('huggingface'), 'Hugging Face')
     assert.equal(modelSourceLabel('custom_path'), 'Local')
+    assert.equal(modelSourceLabel('tuned_model'), 'Tuned Models')
   })
 
   it('still labels jobs launched against the retired PVC source', () => {
@@ -46,5 +48,16 @@ describe('modelSourceLabel', () => {
 
   it('falls back to the raw value for anything else', () => {
     assert.equal(modelSourceLabel('some_future_backend'), 'some_future_backend')
+  })
+})
+
+describe('toWireModelSource', () => {
+  it('sends a tuned model as huggingface', () => {
+    assert.equal(toWireModelSource('tuned_model'), 'huggingface')
+  })
+
+  it('passes the wire sources through', () => {
+    assert.equal(toWireModelSource('huggingface'), 'huggingface')
+    assert.equal(toWireModelSource('custom_path'), 'custom_path')
   })
 })

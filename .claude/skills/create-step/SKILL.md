@@ -1,6 +1,6 @@
 ---
 name: create-step
-description: Author a full, reusable Granite.build custom step — a step directory (step.yaml + bash_scripts/) referenced from a build.yaml by a file:// URI. Use this (instead of create-build's inline command+heredoc) when you have owned/multi-file code, a step you want to version and reuse across builds, or need per-environment launch behavior. Covers the step.yaml launch contract, the artifact monitor, the runtime env-var contract, and per-compute-environment differences.
+description: Author a full, reusable Granite.build custom step — a step directory (step.yaml + bash_scripts/) referenced from a build.yaml by a file:// URI. Use this (instead of create-build's inline command+heredoc) when you have owned/multi-file code, a step you want to version and reuse across builds, or need per-environment launch behavior. Covers the step.yaml launch contract, the artifact monitor, the runtime env-var contract, and per-compute-environment differences. Not for a step added to the granite.build repo's own steps/ framework (published to configurations/ and referenced as space://steps/...); in a granite.build checkout, use create-framework-step for that.
 argument-hint: "[step-name]"
 allowed-tools: Bash(ls *) Bash(test *) Bash(cat *) Bash(grep *) Bash(find *) Bash(mkdir *) Bash(chmod *) mcp__gbmcp__gbserver_status mcp__gbmcp__gbserver_start mcp__gbmcp__build_start mcp__gbmcp__build_status mcp__gbmcp__build_log mcp__gbmcp__build_list mcp__gbmcp__build_describe mcp__gbmcp__build_job_log
 ---
@@ -15,6 +15,8 @@ A **step** is the reusable unit of execution: a directory containing a `step.yam
 - you want a clean step/build separation, or per-environment launch behavior.
 
 **Use `create-build` instead when:** it's a self-contained one-off — the `command` step + a heredoc is simpler and needs nothing on disk.
+
+**Use `create-framework-step` instead when:** you're adding the step to granite.build itself, under the repo's `steps/` framework (`steps/<category>/<name>/<env>/`), to be published into `configurations/` with `make publish-step` and referenced as `space://steps/<category>/<name>`. This skill is for steps that live in your own project. (`create-framework-step` is available only inside a granite.build checkout; it isn't part of the gbmcp plugin.)
 
 **Before authoring anything, check whether a step already ships for your workload** (`inference`, `lora-finetune`, `inference-lora`, …) — see `create-build`'s **`references/steps.md`**. If one fits, don't author a duplicate; just reference `space://steps/<name>`.
 

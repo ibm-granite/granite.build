@@ -16,7 +16,7 @@
 const { describe, it } = require('node:test')
 const assert = require('node:assert/strict')
 
-const { findOutOfRangeFields } = require('../../../packages/ui-core/lib/autotunex/hyperparamValues.ts')
+const { defaultOutsideChoice, findOutOfRangeFields } = require('../../../packages/ui-core/lib/autotunex/hyperparamValues.ts')
 
 const TEMPLATE = {
   tune_config: {
@@ -137,6 +137,60 @@ describe('findOutOfRangeFields', () => {
 
     it('does not apply to a uniform range, which has no list', () => {
       assert.deepEqual(findOutOfRangeFields(withChoice(0.0005, [0.0001, 0.0002], 'uniform')), [])
+    })
+  })
+
+  describe('defaultOutsideChoice, the rule the Default field and the submit gate share', () => {
+    const param = (def, values, strategy = 'choice') => ({ default: def, values, strategy })
+
+    it('is true for a choice default missing from its candidates', () => {
+      assert.equal(defaultOutsideChoice(param(2, [8, 16, 32])), true)
+    })
+
+    it('is false when the default is a candidate', () => {
+      assert.equal(defaultOutsideChoice(param(16, [8, 16, 32])), false)
+    })
+
+    it('is false for a uniform range, an empty list or an unset default', () => {
+      assert.equal(defaultOutsideChoice(param(2, [8, 16, 32], 'uniform')), false)
+      assert.equal(defaultOutsideChoice(param(2, [])), false)
+      assert.equal(defaultOutsideChoice(param(null, [8, 16, 32])), false)
+    })
+  })
+
+  describe('only the selected tuner is judged', () => {
+    // The reviewer's screenshot: LoRA selected, yet the message named aLoRA's
+    // batch size too -- a field on no visible tab.
+    const batch = (def) => ({ hyperparams: { per_device_train_batch_size: { default: def, values: [8, 16, 32], strategy: 'choice' } } })
+    const twoTuners = { tuners_config: { lora: batch(2), alora: batch(1) } }
+
+    it('names every tuner when none is selected', () => {
+      assert.deepEqual(findOutOfRangeFields(twoTuners), [
+        'tuners_config.lora.hyperparams.per_device_train_batch_size',
+        'tuners_config.alora.hyperparams.per_device_train_batch_size',
+      ])
+    })
+
+    it('skips a tuner that is not selected', () => {
+      assert.deepEqual(findOutOfRangeFields(twoTuners, { tuner: 'lora' }), [
+        'tuners_config.lora.hyperparams.per_device_train_batch_size',
+      ])
+    })
+
+    it('still judges the selected tuner', () => {
+      assert.deepEqual(findOutOfRangeFields({ tuners_config: { lora: batch(16), alora: batch(1) } }, { tuner: 'lora' }), [])
+    })
+
+    it('treats the RL "none" sentinel and a blank selection as no selection', () => {
+      const rl = { tuners_rl_config: { dpo: batch(2), kto: batch(1) } }
+      assert.equal(findOutOfRangeFields(rl, { rlTuner: 'none' }).length, 2)
+      assert.equal(findOutOfRangeFields(rl, { rlTuner: null }).length, 2)
+      assert.deepEqual(findOutOfRangeFields(rl, { rlTuner: 'dpo' }), ['tuners_rl_config.dpo.hyperparams.per_device_train_batch_size'])
+    })
+
+    it('does not narrow the sections that are not tuners', () => {
+      const cfg = { training_config: { max_length: { default: 9999, min_val: 1, max_val: 100 } } }
+      assert.deepEqual(findOutOfRangeFields(cfg, { tuner: 'lora' }), ['training_config.max_length'])
     })
   })
 })

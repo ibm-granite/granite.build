@@ -1,0 +1,355 @@
+'use client'
+
+import {
+  Callout,
+  ComboBox,
+  FileUploaderItem,
+  InlineLoading,
+  InlineNotification,
+  Loading,
+  Select,
+  SelectItem,
+  Tag,
+  Toggle,
+  TextInput,
+} from '@carbon/react'
+import { toUpperCase } from '@granite-build/ui-core/lib/autotunex/wizardUtils'
+import { InfoTooltip } from './InfoTooltip'
+import { preselectValidationSplit, problemDetail } from './hfImport'
+import { NO_VALIDATION, type UseHfImportResult } from './useHfImport'
+import styles from './HfImportForm.module.scss'
+
+interface HfImportFormProps {
+  hf: UseHfImportResult
+  /**
+   * Every target to render a mapping select for, required first, as
+   * Step1DatasetUpload's own mapping block does. Optional targets get a "None"
+   * option; required ones gate Next via the hook.
+   */
+  mappableColumns: { name: string; desc: string; required: boolean }[]
+}
+
+export function HfImportForm({ hf, mappableColumns }: HfImportFormProps) {
+  // Only a split other than the one being trained on can serve as validation. With
+  // none left over there is nothing to choose, and with a single split there is
+  // nothing to choose for training either -- so the train select and the split
+  // toggle are both hidden rather than rendered with one inevitable option.
+  const validationCandidates = hf.splitNames.filter((split) => split !== hf.trainSplit)
+
+  return (
+    <div>
+      <div className={styles.field}>
+        {hf.repoId ? (
+          /* Labelled on the left like the Upload path's Train file row: on its own,
+             a bare repo id under the tab strip did not say what it was. */
+          <div className={styles.fileRow}>
+            <span className={styles.fileLabel}>
+              Dataset
+              <InfoTooltip label="The HuggingFace repository this dataset is imported from." />
+            </span>
+            <FileUploaderItem name={hf.repoId} status="edit" onDelete={() => hf.resetState()} />
+          </div>
+        ) : (
+          <>
+            <ComboBox
+              id="hf-dataset-search"
+              titleText="HuggingFace dataset"
+              placeholder="Search the Hub, e.g. ibm-research/watsonxDocsQA"
+              items={hf.suggestions}
+              itemToString={(item) => item ?? ''}
+              // Server-side search, so the local filter must be disabled or it would
+              // filter the results a second time against the same term.
+              shouldFilterItem={() => true}
+              onInputChange={hf.handleSearchInput}
+              // Inside the field rather than below it: the open results menu
+              // covers anything rendered under the ComboBox.
+              decorator={
+                hf.searching ? (
+                  <Loading small withOverlay={false} description="Searching Hugging Face datasets" />
+                ) : undefined
+              }
+              // Deliberately uncontrolled: this branch renders only while
+              // `hf.repoId` is falsy (a chosen repo is shown as the
+              // FileUploaderItem above), so there is no selection to feed back in
+              // and a cleared selection is not reachable here.
+              onChange={({ selectedItem }) => {
+                if (selectedItem) hf.setRepoId(selectedItem)
+              }}
+            />
+          </>
+        )}
+      </div>
+
+      {/* Directly under the selected repo: the name is the field the user is most
+          likely to edit, and it sat below the whole mapping before. Gated on
+          `splits` rather than on `repoId` so it appears already filled by the
+          preselect effect, instead of flashing empty while the repo resolves. */}
+      {hf.splits && (
+        <div className={styles.field}>
+          <TextInput
+            id="hf-dataset-name"
+            labelText="Dataset Name"
+            value={hf.name}
+            invalid={hf.name.length > 0 && !hf.nameValid}
+            invalidText={"Use up to 255 characters, without '/', '\\' or '..'."}
+            onChange={(event) => hf.setName(event.target.value)}
+          />
+        </div>
+      )}
+
+      {hf.splitsFetching && <InlineLoading description="Resolving configs and splits..." />}
+
+      {/* Only a 503 is worth retrying: a 422 means the dataset has no tabular data
+          at all, which waiting cannot change. `Callout` rather than
+          `ActionableNotification` because the latter defaults to role="alertdialog"
+          with `hasFocus`, which traps Tab inside the notification -- and
+          `InlineNotification` in @carbon/react 1.108 has no `actions` prop at all
+          (it would become a DOM attribute). */}
+      {!!hf.splitsError &&
+        (hf.splitsErrorStatus === 503 ? (
+          <Callout
+            kind="error"
+            title="Could not read this dataset"
+            subtitle={problemDetail(hf.splitsError, 'Could not read this dataset.')}
+            lowContrast
+            className={styles.section}
+            actionButtonLabel="Retry"
+            onActionButtonClick={() => hf.refetchSplits()}
+          />
+        ) : (
+          <InlineNotification
+            kind="error"
+            title="Could not read this dataset"
+            subtitle={problemDetail(hf.splitsError, 'Could not read this dataset.')}
+            lowContrast
+            hideCloseButton
+            className={styles.section}
+          />
+        ))}
+
+      {hf.splits && (
+        <>
+          {/* Hidden for a single config, on the same grounds as the split selects
+              below: most datasets declare none, and the Hub then reports one named
+              "default", so the control offered a choice of one.
+
+              A ComboBox rather than a Select for the datasets that do declare many:
+              allenai/c4 has 112 configs and HuggingFaceFW/finewiki has 325. The
+              local filter is left ON here (unlike the search box above) because
+              every config arrives in this one response and filtering is
+              client-side. */}
+          {hf.configNames.length > 1 && (
+            <div className={styles.field}>
+              <ComboBox
+                id="hf-config"
+                titleText="Config"
+                placeholder="Select a config"
+                items={hf.configNames}
+                itemToString={(item) => item ?? ''}
+                selectedItem={hf.config || null}
+                onChange={({ selectedItem }) => hf.handleConfigChange(selectedItem ?? '')}
+              />
+            </div>
+          )}
+          {/* One split means one possible answer, so the control asks a question the
+              user cannot answer differently. `trainSplit` is still set to it by the
+              preselect effect -- this hides the select, not the choice. */}
+          {hf.splitNames.length > 1 && (
+            <div className={styles.field}>
+              <Select
+                id="hf-train-split"
+                labelText="Train split"
+                value={hf.trainSplit}
+                onChange={(event) => hf.handleTrainSplitChange(event.target.value)}
+              >
+                {hf.splitNames.map((split) => (
+                  <SelectItem key={split} value={split} text={split} />
+                ))}
+              </Select>
+            </div>
+          )}
+          {/* The toggle owns the split-from-train state that used to be this
+              dropdown's first option, so the two controls cannot disagree: it is a
+              view over `validationSplit`, not state of its own. Same gate the
+              dropdown used, because a dataset with no split besides the train one
+              has nothing to offer either control. */}
+          {validationCandidates.length > 0 && (
+            <div className={styles.splitToggleRow}>
+              <div className={styles.toggleLabelRow}>
+                <span>Split dataset</span>
+                <InfoTooltip label="Automatically holds back part of the train split for validation. Disable this to use a separate split shipped with the dataset." />
+              </div>
+              <Toggle
+                id="hf-split-toggle"
+                aria-label="Split dataset"
+                labelText=""
+                hideLabel
+                toggled={hf.splitFromTrain}
+                onToggle={(checked) =>
+                  hf.setValidationSplit(
+                    checked ? NO_VALIDATION : preselectValidationSplit(validationCandidates),
+                  )
+                }
+                size="sm"
+              />
+            </div>
+          )}
+          {!hf.splitFromTrain && validationCandidates.length > 0 && (
+            <div className={styles.field}>
+              <Select
+                id="hf-validation-split"
+                labelText="Validation split"
+                value={hf.validationSplit}
+                onChange={(event) => hf.setValidationSplit(event.target.value)}
+              >
+                {/* Preselected only on an exact "validation" match, never on
+                    "test": validating against the held-out test split is a
+                    methodology error, and a wrong split is only discovered after a
+                    multi-hour tuning run. With no match this placeholder stands and
+                    `canImport` blocks, rather than picking for the user. */}
+                <SelectItem value="" text="Choose a split..." />
+                {validationCandidates.map((split) => (
+                  <SelectItem key={split} value={split} text={split} />
+                ))}
+              </Select>
+            </div>
+          )}
+        </>
+      )}
+
+      {hf.probeLoading && (
+        <InlineLoading description="Loading sample rows..." />
+      )}
+
+      {!!hf.previewError && (
+        <InlineNotification
+          kind="error"
+          title="Could not preview this dataset"
+          subtitle={hf.previewError}
+          lowContrast
+          hideCloseButton
+          className={styles.section}
+        />
+      )}
+
+      {hf.preview && (
+        <>
+          {/* Independent of the mapping and of survivalSummary: with zero raw rows
+              there are no columns, so the mapping below can never complete and
+              survivalSummary's own zero-sampled branch is unreachable. This is the
+              only thing that tells the user why, before they hit a disabled Import
+              button with no explanation. */}
+          {hf.preview.sampled === 0 && (
+            <InlineNotification
+              kind="info"
+              title="No rows in this split"
+              subtitle="This split returned no rows. Choose a different split."
+              lowContrast
+              hideCloseButton
+              className={styles.section}
+            />
+          )}
+
+          <div className={styles.mappingHeaderRow}>
+            <p className={styles.subheading} style={{ margin: 0 }}>
+              Column mapping
+            </p>
+            {hf.isAiSuggesting ? (
+              <InlineLoading description="AI analyzing..." />
+            ) : hf.aiSuggestion ? (
+              <button
+                type="button"
+                className={styles.aiTagButton}
+                onClick={() => hf.setShowAiReasoning(!hf.showAiReasoning)}
+              >
+                <Tag type="green" size="sm">
+                  {/* Guarded: the response adapter casts `confidence` without
+                      validating it, so a missing field would render "(NaN%)". */}
+                  AI Suggested
+                  {Number.isFinite(hf.aiSuggestion.confidence)
+                    ? ` (${Math.round(hf.aiSuggestion.confidence * 100)}%)`
+                    : ''}{' '}
+                  {hf.showAiReasoning ? '▴' : '▾'}
+                </Tag>
+              </button>
+            ) : null}
+          </div>
+
+          {hf.aiSuggestion?.reasoning && hf.showAiReasoning && (
+            <InlineNotification
+              kind="info"
+              title="AI Insight"
+              subtitle={hf.aiSuggestion.reasoning}
+              hideCloseButton
+              lowContrast
+              className={styles.section}
+            />
+          )}
+
+          {!hf.isAiSuggesting && (
+            <>
+              <div className={styles.mappingHeader}>
+                <span>Field</span>
+                <span>Source Column</span>
+              </div>
+              {mappableColumns.map((colInfo) => (
+                <div className={styles.mappingRow} key={colInfo.name}>
+                  <div className={styles.mappingLabel}>
+                    {toUpperCase(colInfo.name) ?? colInfo.name}
+                    {colInfo.desc && <InfoTooltip label={colInfo.desc} />}
+                  </div>
+                  <Select
+                    id={`hf-mapping-${colInfo.name}`}
+                    // The visual label is the div above and `labelText` stays empty
+                    // for the layout, but Carbon renders that as an empty <label for>,
+                    // which leaves the select with no accessible name.
+                    aria-label={colInfo.name}
+                    labelText=""
+                    size="sm"
+                    value={hf.mapping[colInfo.name] ?? ''}
+                    onChange={(event) =>
+                      hf.setMapping({ ...hf.mapping, [colInfo.name]: event.target.value })
+                    }
+                  >
+                    {/* An optional target is legitimately unmapped, so its empty
+                        option reads as a choice rather than as something missing.
+                        Selecting it writes a blank source, which the server's
+                        apply_mapping skips. */}
+                    <SelectItem
+                      value=""
+                      text={colInfo.required ? 'Choose a column...' : 'None'}
+                    />
+                    {hf.preview!.columns.map((column) => (
+                      <SelectItem key={column} value={column} text={column} />
+                    ))}
+                  </Select>
+                </div>
+              ))}
+            </>
+          )}
+
+          {hf.survival.kind !== 'hidden' && (
+            <InlineNotification
+              kind={
+                hf.survival.kind === 'blocked'
+                  ? 'error'
+                  : hf.survival.kind === 'warning'
+                    ? 'warning'
+                    : 'success'
+              }
+              title={hf.survival.kind === 'blocked' ? 'This mapping keeps no rows' : 'Mapped rows'}
+              subtitle={hf.survival.text}
+              lowContrast
+              hideCloseButton
+              className={styles.section}
+            />
+          )}
+
+          {/* No validation-percentage field: the split is a constant
+              (HF_VALIDATION_PERCENTAGE), because the Upload path offers no ratio
+              control either. */}
+        </>
+      )}
+    </div>
+  )
+}

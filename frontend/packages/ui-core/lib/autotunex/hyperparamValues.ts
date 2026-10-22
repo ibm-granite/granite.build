@@ -118,6 +118,18 @@ export function clampConcurrentTrials(prevDefault: number, maxGpus: number, gpus
 }
 
 /**
+ * Whether a `choice` hyperparameter's default is missing from its candidates.
+ * lds/blds look the default up with values.index(default), so one outside the
+ * list fails the job at start; the Default input writes any in-range number
+ * through. Shared by the submit gate above and the Default field's own error, so
+ * the field that is reported is the field that turns red.
+ */
+export function defaultOutsideChoice(param: { default?: unknown; values?: unknown; strategy?: unknown }): boolean {
+  const { default: value, values, strategy } = param
+  return strategy === 'choice' && Array.isArray(values) && values.length > 0 && value != null && !values.includes(value)
+}
+
+/**
  * Flattened paths of every `{default, min_val, max_val}` column whose default
  * falls outside its own bounds.
  *
@@ -131,14 +143,27 @@ export function clampConcurrentTrials(prevDefault: number, maxGpus: number, gpus
  * A null default is "unset" (an unset time budget means no limit) and NaN is what
  * Carbon reports for a cleared field -- neither is judged here; the field's own
  * invalid state covers those.
+ *
+ * `selected` names the tuner and RL tuner the form has chosen. Only those are
+ * read when the job runs and only their fields are on screen, so another tuner's
+ * entry (an aLoRA default edited before switching to LoRA) is skipped rather than
+ * reported as a field the user cannot see. Left out, every tuner is judged.
  */
-export function findOutOfRangeFields(configData: unknown): string[] {
+export function findOutOfRangeFields(
+  configData: unknown,
+  selected?: { tuner?: string | null; rlTuner?: string | null }
+): string[] {
   const offenders: string[] = []
 
   const walk = (node: unknown, path: string) => {
     if (node === null || typeof node !== 'object' || Array.isArray(node)) return
+    const [section, tunerKey, ...rest] = path.split('.')
+    if (rest.length === 0 && tunerKey !== undefined) {
+      const live = section === 'tuners_config' ? selected?.tuner : section === 'tuners_rl_config' ? selected?.rlTuner : undefined
+      if (live && live !== 'none' && tunerKey !== live) return
+    }
     const record = node as Record<string, unknown>
-    const { default: value, min_val: min, max_val: max, values, strategy } = record
+    const { default: value, min_val: min, max_val: max } = record
     if (
       typeof value === 'number' &&
       Number.isFinite(value) &&
@@ -149,10 +174,7 @@ export function findOutOfRangeFields(configData: unknown): string[] {
       offenders.push(path)
       return
     }
-    // A `choice` hyperparameter's default must be one of its candidates: lds/blds
-    // look it up with values.index(default), so one outside the list failed the job
-    // at start. The Default input writes any in-range number through.
-    if (strategy === 'choice' && Array.isArray(values) && values.length > 0 && value != null && !values.includes(value)) {
+    if (defaultOutsideChoice(record)) {
       offenders.push(path)
       return
     }

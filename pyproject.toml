@@ -30,7 +30,7 @@ classifiers = [
 dependencies = [
     # CLI and web framework
     "click",
-    "fastapi[standard]",
+    "fastapi[standard]==0.144.0",  # Temporary: 0.145 dropped FastAPI(**extra); SkyPilot's API server passes prefix= and fails to start
     "uvicorn",
     "python-multipart",
     # Data and serialization
@@ -126,7 +126,7 @@ mcp = [
 ]
 # gb-ui analytics service (gb_ui_backend) — routers included directly into gbserver
 analytics = [
-    "fastapi[standard]>=0.115",
+    "fastapi[standard]==0.144.0",  # Temporary: see the fastapi pin in dependencies
     "uvicorn[standard]>=0.30",
     "sqlalchemy[asyncio]>=2.0",
     "asyncpg>=0.29",
