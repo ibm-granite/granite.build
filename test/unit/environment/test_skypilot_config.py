@@ -598,7 +598,11 @@ class TestStepCert:
     def test_idempotent_rerender(self, tmp_path):
         future = "2099-01-01T00:00:00"
         ssh = ClusterSshConfigs(
-            lsf=[_host("bluevela", HostName="h", User="granitebuild", IdentityStepCert=True)]
+            lsf=[
+                _host(
+                    "bluevela", HostName="h", User="granitebuild", IdentityStepCert=True
+                )
+            ]
         )
         certs = [_cert_text(future, ["granitebuild"])]
         dest = self._materialize_multi(tmp_path, ssh, certs)
