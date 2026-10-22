@@ -59,11 +59,16 @@ config:
         # build (`scontrol show partitions -o` exit 255) despite the exact
         # same command succeeding when run manually with `ssh -F`. A real
         # on-disk private key is the only identity SlurmClient can use.
-        # Path is this machine's; adjust if running gbserver elsewhere.
-        IdentityFile: ~/.ssh/granitebuild
-        # Offer ONLY the key above. Without it ssh also offers every key in the agent, and
-        # login1 drops the connection with "Too many authentication failures" before this
-        # one is tried. (Not valid together with IdentityStepCert; this host uses a key.)
+        #
+        # The key is NOT a path in this file: `IdentityKey` names a secret holding the key
+        # contents, and gbserver writes it to a 0600 file and points IdentityFile at that
+        # file when it materializes ~/.slurm/config. That keeps this environment free of any
+        # machine-specific path. Define the secret (BV_SSH_PRIVATE_KEY) in the space that
+        # uses this environment; see docs/environments/skypilot-slurm.md.
+        IdentityKey: BV_SSH_PRIVATE_KEY
+        # Offer ONLY that key. Without it ssh also offers every key in the agent, and login1
+        # drops the connection with "Too many authentication failures" before the right one
+        # is tried. (Not valid together with IdentityStepCert; this host uses a key.)
         IdentitiesOnly: "yes"
 
   # Inline SLURM behavioral config. gbserver deep-merges this into the API

@@ -524,20 +524,20 @@ class TestStepCert:
         future = "2099-01-01T00:00:00"
         dest = self._materialize(
             tmp_path,
-            [_cert_text(future, ["herbertwoisetschlaeger"])],
+            [_cert_text(future, ["granitebuild"])],
             HostName="h",
-            User="hew",
+            User="granitebuild",
             IdentityStepCert=True,
         )
         text = _read(dest)
         assert "IdentityStepCert" not in text
         assert "IdentityFile" not in text
-        assert "Host bluevela" in text and "User hew" in text
+        assert "Host bluevela" in text and "User granitebuild" in text
 
     def test_no_certs_loaded_raises(self, tmp_path):
         with pytest.raises(StepCertExpiredError):
             self._materialize(
-                tmp_path, [], HostName="h", User="hew", IdentityStepCert=True
+                tmp_path, [], HostName="h", User="granitebuild", IdentityStepCert=True
             )
 
     def test_expired_cert_raises(self, tmp_path):
@@ -545,9 +545,9 @@ class TestStepCert:
         with pytest.raises(StepCertExpiredError):
             self._materialize(
                 tmp_path,
-                [_cert_text(past, ["hew"])],
+                [_cert_text(past, ["granitebuild"])],
                 HostName="h",
-                User="hew",
+                User="granitebuild",
                 IdentityStepCert=True,
             )
 
@@ -558,7 +558,7 @@ class TestStepCert:
             tmp_path,
             [_cert_text(past, ["x"]), _cert_text(future, ["y"])],
             HostName="h",
-            User="hew",
+            User="granitebuild",
             IdentityStepCert=True,
         )
         text = _read(dest)
@@ -569,7 +569,7 @@ class TestStepCert:
             self._materialize(
                 tmp_path,
                 [],
-                User="hew",
+                User="granitebuild",
                 IdentityKey="BV_KEY",
                 IdentityStepCert=True,
             )
@@ -579,7 +579,7 @@ class TestStepCert:
             self._materialize(
                 tmp_path,
                 [],
-                User="hew",
+                User="granitebuild",
                 IdentityFile="~/.ssh/k",
                 IdentityStepCert=True,
             )
@@ -590,7 +590,7 @@ class TestStepCert:
                 tmp_path,
                 [],
                 HostName="h",
-                User="hew",
+                User="granitebuild",
                 IdentityStepCert=True,
                 IdentitiesOnly="yes",
             )
@@ -598,9 +598,9 @@ class TestStepCert:
     def test_idempotent_rerender(self, tmp_path):
         future = "2099-01-01T00:00:00"
         ssh = ClusterSshConfigs(
-            lsf=[_host("bluevela", HostName="h", User="hew", IdentityStepCert=True)]
+            lsf=[_host("bluevela", HostName="h", User="granitebuild", IdentityStepCert=True)]
         )
-        certs = [_cert_text(future, ["hew"])]
+        certs = [_cert_text(future, ["granitebuild"])]
         dest = self._materialize_multi(tmp_path, ssh, certs)
         first = _read(dest)
         # Re-materializing (as a different env) with the same valid cert must not
@@ -611,7 +611,7 @@ class TestStepCert:
     def test_error_message_names_remediation(self, tmp_path):
         with pytest.raises(StepCertExpiredError) as exc:
             self._materialize(
-                tmp_path, [], HostName="h", User="hew", IdentityStepCert=True
+                tmp_path, [], HostName="h", User="granitebuild", IdentityStepCert=True
             )
         assert "step ssh login" in str(exc.value)
 
