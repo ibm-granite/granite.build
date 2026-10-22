@@ -1,0 +1,25 @@
+# YAML-driven spec for test_skypilot_slurm_nemo_rl_sft.py (located by the test/ <->
+# test-data/ helper, so this pairing holds in both test modes; see steps/README.md).
+#
+# ONE target on a real BlueVela GPU node: NeMo-RL SFT, short run. Reaching SUCCESS
+# means run_sft.py trained, convert_dcp_to_hf.py produced a non-empty HF dir, and
+# the `model` artifact was registered from the step's marker.
+targets:
+  - train
+target_expectations:
+  - target_name: train
+    # step_count is 2, where aws-sft has 1: skypilot/slurm does NOT set
+    # `inline: true` on its hf assetstore pull (skypilot/aws does), so the
+    # base-model download is its own hfpull step rather than folded into the
+    # nemo-rl step's setup. The env:// output moves no bytes, so it queues no push.
+    step_count: 2               # hfpull(base_model) + nemo-rl
+    input_artifact_count: 1     # base_model
+    output_artifact_count: 1    # model (env://, registered inline from the marker)
+space_uri: ../../space
+tests:
+  - runner
+simulate_step_failure: false
+# Two SLURM queue waits (cpu-partition hfpull, then a gpu-mid GPU job), an enroot
+# container start from the 19 GB .sqsh, a short SFT run and DCP->HF conversion.
+# Queueing is the dominant unknown; retune after a few green runs.
+timeout_minutes: 90

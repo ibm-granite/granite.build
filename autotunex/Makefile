@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install install-training audit dev dev-api-bridge docker-api-bridge test test-cov test-subprojects lint format typecheck check migration migrate migrations-check downgrade clean
+.PHONY: help install install-training audit dev dev-api-bridge docker-api-bridge test test-cov test-subprojects test-fm-tune lint format typecheck check migration migrate migrations-check downgrade clean
 
 PYTHON ?= python
 PORT ?= 8000
@@ -42,6 +42,9 @@ test-cov:  ## Run tests with a coverage report
 test-subprojects:  ## Install and run the standalone subproject test suites (api-bridge)
 	uv pip install -e "./src/api-bridge[dev]" || $(PYTHON) -m pip install -e "./src/api-bridge[dev]"
 	cd src/api-bridge && pytest
+
+test-fm-tune:  ## Run the vendored fm-tune suite (needs: pip install ./src/fm-tune[core]); skips slow/gpu/full tests
+	cd src/fm-tune && $(PYTHON) -m pytest -m "not slow and not gpu and not full"
 
 lint:  ## Check lint and formatting
 	ruff check .

@@ -1,0 +1,53 @@
+granite.build:
+  name: skypilot-aws-nemo-rl-sft
+  # NeMo-RL SFT on a real EC2 instance (SkyPilot/aws). ONE target, the smallest
+  # shipped SFT config, a short run. Reaching SUCCESS proves the full step path on
+  # aws: NGC release image pull, inline `hf download` of the base model,
+  # run_sft.py training, DCP->HF conversion, the converted model pushed to HF
+  # (hf_output_repo), and the `model` artifact registered from the step's marker.
+  # `dataset` is unbound, so sft.yaml's built-in dataset is used. ClearML is left
+  # in `auto` (no CLEARML_* creds in CI => disabled).
+  targets:
+
+    train:
+      environment_uri: space://environments/skypilot/aws
+      inputs:
+        base_model:
+          # Public, tiny model so the inline `hf download` runs anonymously (no
+          # HF_TOKEN). Overriding policy.model_name + tokenizer below keeps the
+          # whole run on this model rather than sft.yaml's gated Llama default.
+          uri: hf:///HuggingFaceTB/SmolLM2-135M
+      outputs:
+        model:
+          # Terminal env:// output, registered inline from the step's marker.
+          uri: "env:///model"
+          type: model
+      steps:
+        - step_uri: space://steps/train/nemo-rl
+          config:
+            poll_interval_seconds: 30
+            nemo_rl_config:
+              algorithm: sft
+              config_name: sft.yaml
+              output: model
+              # Readable release tag (the step default is the equivalent digest).
+              image_id: nvcr.io/nvidia/nemo-rl:v0.7.0
+              # Push the converted HF model to the granite-build-test write-token
+              # account. Requires HF_TOKEN=<write token> and
+              # GBTEST_SPS_ENABLE_ENV_VAR_OVERRIDE=true (else conftest clobbers it
+              # with the read-only SPS token and the upload 403s).
+              hf_output_repo: granite-build-test/nemo-rl-sft-smoke
+              overrides:
+                # Keep the run tiny: a handful of steps on a small model.
+                sft.max_num_steps: 3
+                sft.val_period: 3
+                checkpointing.save_period: 3
+                policy.tokenizer.name: HuggingFaceTB/SmolLM2-135M
+            compute_config:
+              # Single A10G is the cheapest bf16-capable GPU on aws (g5.xlarge,
+              # us-east-1). gpu_model is required: the step renders the SkyPilot
+              # accelerators request as "<gpu_model>:<num_gpus_per_node>" (here
+              # "A10G:1"), and also pins NeMo-RL's cluster.gpus_per_node to it.
+              num_nodes: 1
+              num_gpus_per_node: 1
+              gpu_model: A10G

@@ -11,10 +11,9 @@ def test_base_dependencies_are_slim():
     assert _PYPROJECT["project"]["dependencies"] == ["pyyaml>=6.0.2"]
 
 
-def test_full_carries_the_heavy_training_stack_and_core_is_gone():
+def test_core_carries_the_training_stack_and_full_adds_the_gpu_stack():
     extras = _PYPROJECT["project"]["optional-dependencies"]
-    assert "core" not in extras  # dropped 2026-08-22 (dmf-lib retired)
-    full = " ".join(extras["full"])
+    core = " ".join(extras["core"])
     for dep in (
         "torch==2.8.0",
         "transformers==4.57.6",
@@ -22,7 +21,6 @@ def test_full_carries_the_heavy_training_stack_and_core_is_gone():
         "trl==0.29.0",
         "bitsandbytes==0.49.0",
         "accelerate",
-        "deepspeed",
         "hyperopt",
         "tokenizers",
         "sentencepiece",
@@ -32,6 +30,9 @@ def test_full_carries_the_heavy_training_stack_and_core_is_gone():
         "datasets",
         "ray[tune,default]",
     ):
+        assert dep in core, dep
+    full = " ".join(extras["full"])
+    for dep in ("autotune[core]", "verl[vllm]", "flash-attn", "deepspeed"):
         assert dep in full, dep
 
 

@@ -1,0 +1,42 @@
+# Default parameters for the nemo-rl-sft sample. Override any of these at submit
+# time: gb build start -f build.yaml --param-file parameters.yaml --param KEY=VALUE
+
+# --- Environment -------------------------------------------------------------
+# Which SkyPilot endpoint to run on. The step's single environment_configs.Skypilot
+# block resolves on every endpoint that can provide the GPUs (aws first).
+ENVIRONMENT: "skypilot/aws"
+
+# --- Input model -------------------------------------------------------------
+# Base model to train, staged via an hf:// BINDING (assetstore). Llama-3.2-1B is
+# gated => the inline `hf download` needs HF_TOKEN in the step env. Swap for a
+# public model to run token-free.
+BASE_MODEL: "hf:///meta-llama/Llama-3.2-1B"
+
+# --- Output ------------------------------------------------------------------
+# Where the converted HF model is registered. This exemplar is a single terminal
+# target, so the env:// output is registered inline from the step's default
+# output_path (./hf_output, removed when the target ends). If another target
+# reads the model, see USAGE.md "When a downstream target reads the model": a
+# shared env:/// path plus a matching nemo_rl_config.output_path on slurm/lsf,
+# or s3://<bucket>/... on aws.
+MODEL_URI: "env:///model"
+
+# --- Training ----------------------------------------------------------------
+# Keep the sample short. Rendered as the Hydra override sft.max_num_steps=<N>.
+MAX_STEPS: 20
+
+# --- ClearML -----------------------------------------------------------------
+# Experiment-tracking project name. Only used when ClearML is enabled (auto:
+# on iff CLEARML_* server creds are present in the step env).
+CLEARML_PROJECT: "nemo-rl-sft"
+
+# --- Compute -----------------------------------------------------------------
+# Single-node, multi-GPU. The step requests "<GPU_MODEL>:<NUM_GPUS_PER_NODE>" as
+# the SkyPilot accelerators request and pins NeMo-RL's cluster.gpus_per_node to
+# NUM_GPUS_PER_NODE. GPU_MODEL is REQUIRED — set it to the accelerator type your
+# endpoint offers (e.g. A100, H100, A10G).
+NUM_GPUS_PER_NODE: 8
+GPU_MODEL: "A100"
+
+# How often to poll for job completion. The skypilot monitor default is 300s.
+POLL_INTERVAL_SECONDS: 30

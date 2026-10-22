@@ -63,6 +63,9 @@ EXPECTED = {
     f"{_SKY}/distill/corpus-sources": (set(), set()),  # variable-length sources list
     f"{_SKY}/distill/gen-smoke": (set(), set()),  # variable-length rungs list
     f"{_SKY}/distill/probe": (set(), set()),  # diagnostic, literal paths
+    # NeMo-RL training: new, so base_model is required outright; dataset is optional
+    # (omit it to use the NeMo-RL config's built-in dataset).
+    f"{_SKY}/train/nemo-rl": ({"base_model"}, {"dataset"}),
     # Shipped in v0.3.x: optional during the deprecation window, with the old config
     # key as a fallback.
     f"{_LSF}/sage-eval": (set(), {"model"}),

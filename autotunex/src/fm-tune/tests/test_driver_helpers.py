@@ -209,6 +209,7 @@ class TestExtractMetricsFromLogHistory:
 # ---------------- driver_multi_verl helpers ----------------
 
 
+@pytest.mark.full
 class TestResolveTensorParallelSize:
     def test_user_override_valid(self, tmp_path):
         from autotune.trainers.driver_multi_verl import _resolve_tensor_parallel_size
@@ -267,6 +268,7 @@ class TestResolveTensorParallelSize:
         assert _resolve_tensor_parallel_size(str(tmp_path), num_workers=4) == 1
 
 
+@pytest.mark.full
 class TestBuildResourcePoolManager:
     def test_grpo_no_critic(self):
         from autotune.trainers.driver_multi_verl import build_resource_pool_manager
