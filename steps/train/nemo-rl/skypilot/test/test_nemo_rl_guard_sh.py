@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for src/nemo_rl_guard.sh — the step's pre-flight contract check.
+"""Unit tests for src/nemo_rl_guard.sh — the step's binding-path check.
 
-Runs the REAL script with a clean env, both directions: it must refuse an
-invalid contract with a one-line `nemo-rl:` reason, and stay silent on a valid
-one. The guard is what stops a bad build before the expensive setup phase.
+Runs the REAL script with a clean env, both directions: it must refuse a bad
+staged binding with a one-line `nemo-rl:` reason, and stay silent on a valid one.
+Config-only checks (algorithm, config_name, output, num_nodes) are render-time
+`raise_error`s in the template, tested in test_nemo_rl_step_render.py.
 """
 
 import pathlib
@@ -29,10 +30,6 @@ _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
 _SCRIPT = _STEP_DIR / "src" / "nemo_rl_guard.sh"
 
 _OK = dict(
-    algorithm="sft",
-    config_name="sft.yaml",
-    output="model",
-    num_nodes="1",
     base_model="/staged/base",
     dataset="",
     dataset_key="",
@@ -44,14 +41,6 @@ def _run(**over) -> subprocess.CompletedProcess:
     argv = [
         "bash",
         str(_SCRIPT),
-        "--algorithm",
-        cfg["algorithm"],
-        "--config-name",
-        cfg["config_name"],
-        "--output",
-        cfg["output"],
-        "--num-nodes",
-        cfg["num_nodes"],
         "--base-model",
         cfg["base_model"],
         "--dataset",
@@ -83,21 +72,17 @@ class TestAcceptsValidContract:
 
 
 class TestRefusesBadContract:
-    @pytest.mark.parametrize("field", ["algorithm", "config_name", "output"])
-    def test_required_strings_may_not_be_empty(self, field):
-        proc = _run(**{field: ""})
+    def test_unknown_option_is_refused(self):
+        # The contract shrank to the binding paths; an old caller still passing
+        # e.g. --algorithm must fail loudly, not be silently ignored.
+        proc = subprocess.run(
+            ["bash", str(_SCRIPT), "--algorithm", "sft", "--base-model", "/b"],
+            capture_output=True,
+            text=True,
+            env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"},
+        )
         assert proc.returncode == 1
-        assert _reasons(proc)
-
-    def test_output_with_space_is_refused(self):
-        proc = _run(output="my model")
-        assert proc.returncode == 1
-        assert any("whitespace" in r or "double quote" in r for r in _reasons(proc))
-
-    def test_multi_node_is_refused(self):
-        proc = _run(num_nodes="2")
-        assert proc.returncode == 1
-        assert any("num_nodes" in r for r in _reasons(proc))
+        assert any("unknown option" in r for r in _reasons(proc))
 
     def test_empty_base_model_is_refused(self):
         proc = _run(base_model="")

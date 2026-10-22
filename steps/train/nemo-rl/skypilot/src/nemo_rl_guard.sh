@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# Required-config guard for the nemo-rl step, invoked from the TOP of both the
-# generated step.yaml's `setup:` and `run:` blocks and shipped to the node by
-# `file_mounts: {src: src}`.
+# Binding-path guard for the nemo-rl step, invoked from the generated step.yaml's
+# `setup:` and `run:` blocks and shipped to the node by `file_mounts: {src: src}`.
 #
-# WHY IT RUNS IN BOTH PHASES
-# `setup` is the expensive one: the launcher prepends `hf download` for every
-# hf:// input binding into it. Guarding only in `run` would pay for the download
-# before refusing a bad build. `run` guards too because it can be reached on a
-# warm cluster without a fresh setup.
+# WHAT IS CHECKED WHERE
+# Checks that depend only on config (algorithm, config_name, output, num_nodes)
+# are `raise_error`s in step-template.yaml: they fail the strict launcher-config
+# fill at step creation, before anything is provisioned. That matters because the
+# launcher PREPENDS the inline `hf download` to `setup:`, so this script runs only
+# after the node is up and the inputs are staged. What is left here is what is
+# only known on the node: the staged binding paths. It runs in `run` too because
+# that phase can be reached on a warm cluster without a fresh setup.
 #
 # CONTRACT
-#   nemo_rl_guard.sh --algorithm <a> --config-name <c> --output <name> \
-#                    --num-nodes <n> --base-model <path> \
-#                    --dataset <path> --dataset-key <key>
+#   nemo_rl_guard.sh --base-model <path> --dataset <path> --dataset-key <key>
 #
 #   Every option is REQUIRED on the command line but MAY be empty — that is what
 #   is being checked.
@@ -23,68 +23,20 @@ set -euo pipefail
 # ASCII-exact matching below; a UTF-8 locale would widen bracket classes.
 export LC_ALL=C
 
-algorithm=""
-config_name=""
-output=""
-num_nodes=""
 base_model=""
 dataset=""
 dataset_key=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --algorithm)   algorithm="$2";   shift 2 ;;
-    --config-name) config_name="$2"; shift 2 ;;
-    --output)      output="$2";      shift 2 ;;
-    --num-nodes)   num_nodes="$2";   shift 2 ;;
     --base-model)  base_model="$2";  shift 2 ;;
     --dataset)     dataset="$2";     shift 2 ;;
     --dataset-key) dataset_key="$2"; shift 2 ;;
-    --)            shift; break ;;
-    *)             break ;;
+    *)
+      echo "nemo-rl: ERROR nemo_rl_guard.sh: unknown option '$1'." >&2
+      exit 1 ;;
   esac
 done
-
-# --- algorithm / config_name ----------------------------------------------------
-if [ -z "$algorithm" ]; then
-  echo "nemo-rl: ERROR nemo_rl_config.algorithm is required." >&2
-  echo "nemo-rl: it selects examples/run_<algorithm>.py in the image, e.g. sft." >&2
-  exit 1
-fi
-if [ -z "$config_name" ]; then
-  echo "nemo-rl: ERROR nemo_rl_config.config_name is required." >&2
-  echo "nemo-rl: it names a YAML under examples/configs/, e.g. sft.yaml." >&2
-  exit 1
-fi
-
-# --- output (artifact id) -------------------------------------------------------
-# The marker is space-delimited and its path is interpolated into the monitor's
-# JSON, so whitespace or a double quote in the id would silently misbind. Only
-# emptiness and those two characters are checkable here (declared outputs are not
-# in the runtime render context). Checked pre-flight so a bad name never reaches
-# the end of a run.
-if [ -z "$output" ]; then
-  echo "nemo-rl: ERROR nemo_rl_config.output is required." >&2
-  echo "nemo-rl: it must name one of this target's declared model outputs, and" >&2
-  echo "nemo-rl: becomes the artifact id the step registers." >&2
-  exit 1
-fi
-case $output in
-  *[[:space:]]*|*'"'*)
-    echo "nemo-rl: ERROR artifact id contains whitespace or a double quote: '${output}'" >&2
-    echo "nemo-rl: the artifact marker is space-delimited; rename the declared output." >&2
-    exit 1 ;;
-esac
-
-# --- num_nodes ------------------------------------------------------------------
-# Iteration 1 is single-node only. Multi-node needs NeMo-RL's Ray ray.sub model,
-# which is an impedance mismatch with SkyPilot's per-node RANK/MASTER_ADDR launch
-# and is deferred to its own iteration.
-if [ "$num_nodes" != "1" ]; then
-  echo "nemo-rl: ERROR compute_config.num_nodes must be 1 (got '${num_nodes}')." >&2
-  echo "nemo-rl: this step is single-node, multi-GPU only in iteration 1." >&2
-  exit 1
-fi
 
 # --- base_model -----------------------------------------------------------------
 if [ -z "$base_model" ]; then

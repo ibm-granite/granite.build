@@ -83,8 +83,9 @@ case $hf_output_private in
     exit 1 ;;
 esac
 
-# MARKER-VALUE GUARD, pre-flight (the guard script checks this too, but this
-# script is the one that prints the marker, so it refuses here as well).
+# MARKER-VALUE GUARD. The template already rejects such an `output` at render
+# time; this script prints the marker, so it keeps its own contract as well (it
+# is also invoked directly, e.g. by its unit tests).
 case $artifact_id in
   *[[:space:]]*|*'"'*)
     echo "nemo-rl: ERROR artifact id contains whitespace or a double quote:" \
@@ -118,6 +119,12 @@ fi
 # into the step's own working directory (the image tree may be read-only).
 results_dir="$(pwd)/results/${algorithm}"
 logs_dir="$(pwd)/logs"
+# Start every run from an EMPTY checkpoint dir. The working dir survives across
+# runs on a warm cluster, and both NeMo-RL (auto-resume from the latest step_N in
+# checkpoint_dir) and the discovery below pick the highest step_N, so a previous
+# run's step_20 would be resumed from, or registered instead of this run's
+# step_3. Resuming an interrupted run is not a supported mode of this step.
+rm -rf "$results_dir"
 mkdir -p "$results_dir" "$logs_dir"
 # The HF model goes to output_path, which a build points at shared storage when a
 # downstream target reads it (the per-target workdir is removed at teardown).
@@ -175,32 +182,13 @@ overrides+=(
   "checkpointing.checkpoint_dir=${results_dir}"
   "logger.log_dir=${logs_dir}"
 )
-# The V2 DTensor worker (policy.dtensor_cfg._v2: true — the default in sft.yaml,
-# grpo_math_1B.yaml, ppo_math_1B.yaml) defaults model_save_format=safetensors,
-# which writes sharded HF safetensors under weights/model/ with NO DCP
-# .metadata. But we always run convert_dcp_to_hf.py, which requires a .metadata.
-# Force torch_save so the V2 worker uses the DCP writer that emits .metadata —
-# exactly what NeMo-RL's own converter CI does for a V2 checkpoint. The key is
-# absent from the resolved config, so it is force-added with Hydra's `++`.
+# The V2 DTensor worker's checkpoints need ++checkpointing.model_save_format=
+# torch_save for convert_dcp_to_hf.py, and a V1 worker rejects that override.
+# Which one applies depends on the RESOLVED config (`defaults:` inheritance plus
+# these overrides), so clearml_launch.py decides it in the driver's own process
+# (--v2-save-format, below) with NeMo-RL's loader, and appends the override
+# itself. See clearml_launch.py.
 #
-# Only for V2: a V1 worker (dpo/rm) raises "model_save_format must be None or
-# omitted if using DTensorPolicyWorker (_v2=False)", and already writes DCP. V2
-# vs V1 is decided on the config the DRIVER will see — `defaults:` inheritance
-# (recipes inherit _v2 from a parent) plus these overrides (a user may set _v2) —
-# by resolving it with NeMo-RL's own loader in the image env. That also rejects
-# a bad override here, before any GPU time, exactly as the driver would.
-probe_out="$(
-  cd "$nemo_rl_root"
-  uv run python "${script_dir}/nemo_rl_v2_probe.py" "$config" "${overrides[@]}"
-)"
-case "$(printf '%s\n' "$probe_out" | tail -n 1)" in
-  NEMO_RL_V2=true)  overrides+=("++checkpointing.model_save_format=torch_save") ;;
-  NEMO_RL_V2=false) ;;
-  *)
-    echo "nemo-rl: ERROR V2 probe gave no answer; output was:" >&2
-    printf '%s\n' "$probe_out" >&2
-    exit 1 ;;
-esac
 # Pin NeMo-RL's cluster view to the node's GPU count. The shipped configs
 # default cluster.gpus_per_node=1 (sft.yaml), so without this a multi-GPU node
 # would still train on one GPU. Forced (after "$@") so it stays locked to the
@@ -226,7 +214,7 @@ if [ "$clearml_active" = 1 ]; then
   uv_with=(--with clearml)
 fi
 
-cl_opts=(--clearml-mode "$clearml_mode")
+cl_opts=(--clearml-mode "$clearml_mode" --v2-save-format)
 if [ -n "$clearml_project" ]; then cl_opts+=(--clearml-project "$clearml_project"); fi
 if [ -n "$clearml_task" ]; then cl_opts+=(--clearml-task "$clearml_task"); fi
 

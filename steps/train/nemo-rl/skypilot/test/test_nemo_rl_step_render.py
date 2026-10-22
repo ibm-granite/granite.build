@@ -199,6 +199,37 @@ class TestImageSelection:
         assert sky.Resources(image_id=sqsh).extract_docker_image() is None
 
 
+class TestRenderTimeValidation:
+    """Config-only checks fail the strict launcher-config fill, i.e. at step
+    creation, before anything is provisioned. The launcher prepends the inline
+    `hf download` to `setup:`, so a check in a script there would only run after
+    the node is up and the base model is downloaded. Both blocks validate, since
+    the launcher fills them independently.
+    """
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
+        "over,compute,needle",
+        [
+            ({"algorithm": ""}, None, "algorithm is required"),
+            ({"config_name": ""}, None, "config_name is required"),
+            ({"output": ""}, None, "output is required"),
+            ({"output": "my model"}, None, "whitespace or a double quote"),
+            ({"output": 'my"model'}, None, "whitespace or a double quote"),
+            ({}, {"num_nodes": 2}, "num_nodes must be 1"),
+        ],
+    )
+    def test_bad_config_fails_the_render(
+        self, launcher, nrl_defaults, block, over, compute, needle
+    ):
+        with pytest.raises(ValueError, match=needle):
+            _render(launcher[block], _cfg(nrl_defaults, **over), compute=compute)
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_valid_config_renders(self, launcher, nrl_defaults, block):
+        assert _bash_ok(_render(launcher[block], _cfg(nrl_defaults)))
+
+
 class TestGuardArgv:
     def test_both_phases_pass_identical_guard_argv(self, launcher, nrl_defaults):
         cfg = _cfg(nrl_defaults)
@@ -206,21 +237,20 @@ class TestGuardArgv:
         run = _argv_from(_render(launcher["run"], cfg), "nemo_rl_guard.sh")
         assert setup == run
 
-    def test_guard_sees_contract_values(self, launcher, nrl_defaults):
-        cfg = _cfg(nrl_defaults, output="trained")
-        argv = _argv_from(_render(launcher["run"], cfg), "nemo_rl_guard.sh")
-        assert _opt(argv, "--algorithm") == "sft"
-        assert _opt(argv, "--config-name") == "sft.yaml"
-        assert _opt(argv, "--output") == "trained"
-        assert _opt(argv, "--num-nodes") == "1"
-        assert _opt(argv, "--base-model") == "/staged/base"
-
-    def test_guard_sees_num_nodes_from_compute_config(self, launcher, nrl_defaults):
+    def test_guard_sees_the_binding_paths(self, launcher, nrl_defaults):
+        cfg = _cfg(nrl_defaults, dataset_override_key="data.train.input_file")
+        bound = dict(_BASE_BINDING, dataset={"binding": {"path": "/staged/ds"}})
         argv = _argv_from(
-            _render(launcher["run"], _cfg(nrl_defaults), compute={"num_nodes": 2}),
-            "nemo_rl_guard.sh",
+            _render(launcher["run"], cfg, bindings=bound), "nemo_rl_guard.sh"
         )
-        assert _opt(argv, "--num-nodes") == "2"
+        assert argv == [
+            "--base-model",
+            "/staged/base",
+            "--dataset",
+            "/staged/ds",
+            "--dataset-key",
+            "data.train.input_file",
+        ]
 
 
 class TestAccelerators:
@@ -361,6 +391,31 @@ class TestClearmlMode:
         cfg = _cfg(nrl_defaults, clearml_enabled=value)
         argv = _argv_from(_render(launcher["run"], cfg), "nemo_rl_run.sh")
         assert _opt(argv, "--clearml-mode") == mode
+
+
+class TestNonScalarOverrides:
+    """`q(v)` renders `v | string`, a Python repr: {'a': 1} / [True, 1], which
+    Hydra's grammar rejects (quoted dict keys) or misreads (True). Verified
+    against hydra-core 1.3.2: even JSON {"a": 1} is rejected. So list/dict
+    values fail the render; a structured value is written as a Hydra-syntax
+    string instead (e.g. "{a: 1}" or "[1,2]")."""
+
+    @pytest.mark.parametrize("value", [{"a": 1}, [1, 2], [True], []])
+    def test_list_or_dict_value_fails_the_render(self, launcher, nrl_defaults, value):
+        cfg = _cfg(nrl_defaults, overrides={"policy.x": value})
+        with pytest.raises(ValueError, match="policy.x"):
+            _render(launcher["run"], cfg)
+
+    def test_hydra_syntax_string_passes_through(self, launcher, nrl_defaults):
+        cfg = _cfg(nrl_defaults, overrides={"policy.x": "{a: 1}", "data.y": "[1,2]"})
+        argv = _argv_from(_render(launcher["run"], cfg), "nemo_rl_run.sh")
+        assert _overrides(argv) == ["policy.x={a: 1}", "data.y=[1,2]"]
+
+    @pytest.mark.parametrize("value,want", [(3, "3"), (0.5, "0.5"), ("s", "s")])
+    def test_scalars_still_render(self, launcher, nrl_defaults, value, want):
+        cfg = _cfg(nrl_defaults, overrides={"k": value})
+        argv = _argv_from(_render(launcher["run"], cfg), "nemo_rl_run.sh")
+        assert _overrides(argv) == [f"k={want}"]
 
 
 class TestRenderedBlocksAreValidBash:

@@ -125,6 +125,37 @@ class TestDriverExecution:
             "close",
         ]
 
+    def test_driver_can_import_a_sibling_module(self, tmp_path, monkeypatch):
+        # `python examples/run_x.py` puts examples/ at sys.path[0]; runpy does
+        # not, so without the wrapper doing it a driver importing a sibling under
+        # examples/ would die with ModuleNotFoundError. Real driver, real runpy.
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        monkeypatch.setattr(sys, "argv", list(sys.argv))
+        examples = tmp_path / "examples"
+        examples.mkdir()
+        (examples / "nrl_sibling_helper.py").write_text("VALUE = 'sibling-ok'\n")
+        out = tmp_path / "out.txt"
+        (examples / "run_fake.py").write_text(
+            "import sys, nrl_sibling_helper\n"
+            f"open({str(out)!r}, 'w').write(nrl_sibling_helper.VALUE + ' ' + "
+            "' '.join(sys.argv[1:]))\n"
+        )
+        monkeypatch.delitem(sys.modules, "nrl_sibling_helper", raising=False)
+
+        clearml_launch.main(
+            [
+                "--clearml-mode",
+                "off",
+                "--driver",
+                str(examples / "run_fake.py"),
+                "--",
+                "--config",
+                "c.yaml",
+            ]
+        )
+
+        assert out.read_text() == "sibling-ok --config c.yaml"
+
     def test_task_closed_even_when_driver_raises(self, monkeypatch):
         events = []
 

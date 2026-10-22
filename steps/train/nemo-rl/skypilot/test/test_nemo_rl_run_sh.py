@@ -38,8 +38,8 @@ def _write_uv_stub(bin_dir: pathlib.Path, uvlog: pathlib.Path) -> None:
     convert_dcp_to_hf.py) it mirrors the real convert_dcp_to_hf.py: it REFUSES a
     --hf-ckpt-path that already exists (the real converter raises FileExistsError
     there), and otherwise creates the dir and drops a file into it so the step's
-    HF-dir non-empty check passes. For the V2 probe it prints log noise and then
-    the probe's answer line, NEMO_RL_V2=$FAKE_V2 (or fails on FAKE_PROBE_FAIL).
+    HF-dir non-empty check passes. The training run (clearml_launch.py) writes
+    the checkpoints named in $FAKE_CKPT_DIR, or fails on $FAKE_TRAIN_FAIL.
     """
     stub = bin_dir / "uv"
     stub.write_text(
@@ -53,13 +53,15 @@ def _write_uv_stub(bin_dir: pathlib.Path, uvlog: pathlib.Path) -> None:
         '  prev="$a"\n'
         "done\n"
         'case "$*" in\n'
-        "  *nemo_rl_v2_probe.py*)\n"
-        '    if [ -n "${FAKE_PROBE_FAIL:-}" ]; then\n'
+        "  *clearml_launch.py*)\n"
+        '    if [ -n "${FAKE_TRAIN_FAIL:-}" ]; then\n'
         '      echo "OverridesError: Failed to parse Hydra overrides" >&2\n'
         "      exit 1\n"
         "    fi\n"
-        '    echo "INFO:nemo_rl: import noise"\n'
-        '    echo "NEMO_RL_V2=${FAKE_V2:-false}" ;;\n'
+        "    for c in ${FAKE_CKPT_DIR:-}; do\n"
+        '      mkdir -p "$c/policy/weights"\n'
+        '      echo "policy: {}" > "$c/config.yaml"\n'
+        "    done ;;\n"
         "  *convert_dcp_to_hf.py*)\n"
         '    if [ -e "$hf" ]; then\n'
         '      echo "FileExistsError: HF checkpoint already exists at $hf" >&2\n'
@@ -97,6 +99,8 @@ def _run(
     env_extra=None,
     config_body="policy: {}\n",
     output_path="hf_output",
+    stale_ckpt=None,
+    ckpt_steps=(10,),
 ):
     root = _fake_root(tmp_path, algo, config_name, config_body)
     if not make_driver:
@@ -108,15 +112,15 @@ def _run(
     # The run script invokes <its own dir>/clearml_launch.py via uv; a stub file
     # is enough since uv is faked.
     (workdir / "src" / "clearml_launch.py").write_text("# stub\n")
-    (workdir / "src" / "nemo_rl_v2_probe.py").write_text("# stub\n")
     src_run = workdir / "src" / "nemo_rl_run.sh"
     src_run.write_text(_SCRIPT.read_text())
     src_run.chmod(src_run.stat().st_mode | stat.S_IEXEC)
 
-    if make_ckpt:
-        step = workdir / "results" / algo / "step_10"
-        (step / "policy" / "weights").mkdir(parents=True)
-        (step / "config.yaml").write_text("policy: {}\n")
+    if stale_ckpt is not None:
+        # A previous run's checkpoint, already on disk BEFORE this run starts.
+        old = workdir / "results" / algo / f"step_{stale_ckpt}"
+        (old / "policy" / "weights").mkdir(parents=True)
+        (old / "config.yaml").write_text("policy: {}\n")
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -128,6 +132,11 @@ def _run(
         "HOME": str(tmp_path),
         "UVLOG": str(uvlog),
     }
+    if make_ckpt:
+        # The fake driver run writes this run's checkpoints, as training would.
+        env["FAKE_CKPT_DIR"] = " ".join(
+            str(workdir / "results" / algo / f"step_{n}") for n in ckpt_steps
+        )
     if env_extra:
         env.update(env_extra)
     argv = [
@@ -263,74 +272,36 @@ class TestArgAssembly:
         assert cfg.endswith("examples/configs/sft.yaml")
 
 
-def _probe_argv(runs):
-    """What the V2 probe received after its script path."""
-    for words in runs:
-        for i, w in enumerate(words):
-            if w.endswith("nemo_rl_v2_probe.py"):
-                return words[i + 1 :]
-    raise AssertionError(f"no V2 probe run found in {runs}")
-
-
 class TestModelSaveFormat:
-    # NeMo-RL's V2 DTensor worker (policy.dtensor_cfg._v2: true, the default for
-    # sft/grpo_math_1B/ppo_math_1B) defaults model_save_format=safetensors, which
-    # writes sharded HF safetensors under weights/model/ with NO DCP .metadata.
-    # But the step always runs convert_dcp_to_hf.py, which REQUIRES a .metadata.
-    # So for a V2 run the step must force checkpointing.model_save_format=
-    # torch_save (the DCP writer that emits .metadata). For a V1 worker the same
-    # override is FORBIDDEN — lm_policy raises "model_save_format must be None or
-    # omitted if using DTensorPolicyWorker (_v2=False)". Whether a run is V2 is
-    # decided by nemo_rl_v2_probe.py on the config the driver will see (defaults:
-    # inheritance + the Hydra overrides). The key is absent from the resolved
-    # config, so it is force-added with Hydra's `++` prefix.
+    # The V2-only torch_save override is decided in clearml_launch.py, in the
+    # driver's process (see test_v2_save_format.py). The run script's part is to
+    # ask for it, and not to start a second interpreter just to probe the config.
 
-    def test_v2_forces_torch_save(self, tmp_path):
-        proc, runs, _ = _run(
-            tmp_path, ["--base-model", "/staged/base"], env_extra={"FAKE_V2": "true"}
-        )
+    def test_asks_the_launcher_for_the_v2_save_format(self, tmp_path):
+        proc, runs, _ = _run(tmp_path, ["--base-model", "/staged/base"])
         assert proc.returncode == 0, proc.stderr
-        ov = _hydra_overrides(_train_argv(runs))
-        assert "++checkpointing.model_save_format=torch_save" in ov
-        # Forced tail, so it lands after any user override.
-        assert ov.index("++checkpointing.model_save_format=torch_save") > ov.index(
-            "logger.wandb_enabled=false"
-        )
+        train = _train_argv(runs)
+        launcher_opts = train[: train.index("--driver")]
+        assert "--v2-save-format" in launcher_opts
 
-    def test_v1_omits_model_save_format(self, tmp_path):
-        proc, runs, _ = _run(
-            tmp_path, ["--base-model", "/staged/base"], env_extra={"FAKE_V2": "false"}
-        )
+    def test_runs_no_separate_config_probe(self, tmp_path):
+        proc, runs, _ = _run(tmp_path, ["--base-model", "/staged/base"])
         assert proc.returncode == 0, proc.stderr
-        ov = _hydra_overrides(_train_argv(runs))
-        assert not any("model_save_format" in o for o in ov)
+        uv_runs = [r for r in runs if r and r[0] == "run"]
+        # training, conversion — and nothing else when no Hub push is asked for
+        assert len(uv_runs) == 2, uv_runs
 
-    def test_probe_sees_the_config_and_the_driver_overrides(self, tmp_path):
-        # A user override of _v2 (or anything else) changes the worker, so the
-        # probe must resolve the same config + overrides the driver gets.
-        proc, runs, _ = _run(
-            tmp_path,
-            ["--base-model", "/staged/base", "--", "policy.dtensor_cfg._v2=false"],
-        )
-        assert proc.returncode == 0, proc.stderr
-        probe = _probe_argv(runs)
-        assert probe[0].endswith("examples/configs/sft.yaml")
-        assert "policy.dtensor_cfg._v2=false" in probe[1:]
-        assert "policy.model_name=/staged/base" in probe[1:]
-        # It is asked BEFORE the gated override exists.
-        assert not any("model_save_format" in w for w in probe)
-
-    def test_probe_failure_aborts_before_training(self, tmp_path):
-        # The probe applies the overrides exactly as the driver will, so a bad
-        # override fails here — before any GPU time — and never registers.
+    def test_launcher_failure_fails_the_step_with_its_output(self, tmp_path):
+        # A bad override now raises in the launcher (the driver's process); its
+        # own traceback is the diagnostic, and nothing is registered.
         proc, runs, _ = _run(
             tmp_path,
             ["--base-model", "/staged/base"],
-            env_extra={"FAKE_PROBE_FAIL": "1"},
+            env_extra={"FAKE_TRAIN_FAIL": "1"},
         )
         assert proc.returncode != 0
         assert "OverridesError" in proc.stderr
-        assert not any(w.endswith("clearml_launch.py") for r in runs for w in r)
+        assert not any("convert_dcp_to_hf.py" in w for r in runs for w in r)
         assert _marker(proc.stdout) is None
 
 
@@ -375,6 +346,15 @@ class TestConversionAndMarker:
         assert proc.returncode == 0, proc.stderr
         conv = next(r for r in runs if any("convert_dcp_to_hf.py" in w for w in r))
         assert any(w.endswith("step_10/config.yaml") for w in conv)
+        assert any(w.endswith("step_10/policy/weights") for w in conv)
+
+    def test_picks_the_numerically_highest_step(self, tmp_path):
+        # step_9 sorts after step_10 as text; the step number must win.
+        proc, runs, _ = _run(
+            tmp_path, ["--base-model", "/staged/base"], ckpt_steps=(9, 10)
+        )
+        assert proc.returncode == 0, proc.stderr
+        conv = next(r for r in runs if any("convert_dcp_to_hf.py" in w for w in r))
         assert any(w.endswith("step_10/policy/weights") for w in conv)
 
     def test_does_not_hand_converter_a_preexisting_hf_dir(self, tmp_path):
@@ -555,6 +535,32 @@ class TestConversionAndMarker:
     def test_no_push_without_hf_output_repo(self, tmp_path):
         _, runs, _ = _run(tmp_path, ["--base-model", "/staged/base"])
         assert not any("upload" in r for r in runs)
+
+    def test_rerun_does_not_register_a_previous_runs_checkpoint(self, tmp_path):
+        # A warm-cluster re-run reuses the workdir. A step_20 left by an earlier
+        # max_num_steps=20 run must neither be resumed from (NeMo-RL auto-resumes
+        # from the latest step_N in checkpoint_dir) nor out-rank this run's
+        # step_10 at discovery, so it has to be gone before training starts.
+        proc, runs, work = _run(
+            tmp_path, ["--base-model", "/staged/base"], stale_ckpt=20
+        )
+        assert proc.returncode == 0, proc.stderr
+        conv = next(r for r in runs if any("convert_dcp_to_hf.py" in w for w in r))
+        assert any(w.endswith("step_10/policy/weights") for w in conv)
+        assert not (work / "results" / "sft" / "step_20").exists()
+
+    def test_stale_checkpoint_alone_is_not_registered(self, tmp_path):
+        # Training that writes no checkpoint must fail, even if an earlier run's
+        # checkpoint is still on disk.
+        proc, runs, _ = _run(
+            tmp_path,
+            ["--base-model", "/staged/base"],
+            make_ckpt=False,
+            stale_ckpt=20,
+        )
+        assert proc.returncode != 0
+        assert "no checkpoint" in proc.stderr.lower()
+        assert _marker(proc.stdout) is None
 
     def test_errors_when_no_checkpoint(self, tmp_path):
         proc, runs, _ = _run(

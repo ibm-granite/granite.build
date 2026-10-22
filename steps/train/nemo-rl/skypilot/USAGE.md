@@ -36,7 +36,7 @@ All fields live under the step's `config.nemo_rl_config`.
 | `config_name` | string | **yes** | A named YAML under `examples/configs/`, e.g. `sft.yaml`. Decoupled from `algorithm` on purpose — `run_grpo.py` has several configs (`grpo_math_1B.yaml`, …), so the step cannot derive one from the other. |
 | `output` | string | **yes** | Name of a declared target `outputs:` entry (type `model`). Used as the registered artifact's ID. |
 | `output_path` | string | no | Where the converted HF model is written and registered from. Defaults to `./hf_output` in the step's working directory, which is removed when the target finishes. **Set it when another target reads the model** — on shared storage, matching the output's `uri`. See [When a downstream target reads the model](#when-a-downstream-target-reads-the-model). |
-| `overrides` | map | no | Hydra overrides, rendered after `--` as `key=value`, one argv word each. Values are shell-quoted and reach Hydra byte-for-byte; booleans render lowercased (`true`/`false`); `null` omits the key. Default `{}`. |
+| `overrides` | map | no | Hydra overrides, rendered after `--` as `key=value`, one argv word each. Values are shell-quoted and reach Hydra byte-for-byte; booleans render lowercased (`true`/`false`); `null` omits the key. Values must be **scalars**: a YAML list or dict fails the build at step creation, so write one as a Hydra-syntax string instead (`"[1,2]"`, `"{a: 1}"`). Default `{}`. |
 | `image_id` | string | no | NGC image to run in. Default is the pinned `nemo-rl` **release** image (bundles source + prefetched venvs). The step adds SkyPilot's `docker:` scheme marker. |
 | `nemo_rl_root` | string | no | Where the bundled NeMo-RL source lives in the image. Default `/opt/nemo-rl`. `uv` runs with its cwd here so it resolves the prefetched project environment. |
 | `dataset_override_key` | string | no | The Hydra key a **bound** `dataset`'s path is injected under (e.g. `data.train.input_file`). Required *if and only if* you bind a `dataset` — NeMo-RL data configs have no single universal path field, so you name it. Leave empty to use the config's built-in dataset. |
@@ -53,7 +53,7 @@ Inputs are **assetstore bindings** (portable across endpoints), not `file_mounts
 | Input | Required | Type | Purpose |
 |---|---|---|---|
 | `base_model` | **yes** | model | The model to train. Read as the binding's staged path and injected as `policy.model_name=<path>`. An `hf://…` URI or a prior-step model binding. |
-| `dataset` | no | dataset | Training data. Injected as `<dataset_override_key>=<path>`. **Omit to use the config's built-in dataset** (e.g. `sft.yaml`'s default). If you bind it, you must set `dataset_override_key`, or the step refuses before any GPU work. |
+| `dataset` | no | dataset | Training data. Injected as `<dataset_override_key>=<path>`. **Omit to use the config's built-in dataset** (e.g. `sft.yaml`'s default). If you bind it, you must set `dataset_override_key`, or the step refuses before training. |
 
 The step accepts extra inputs (`allow_unknown: true`), so a recipe can bind other
 inputs purely to order targets. A gated `hf://` model needs `HF_TOKEN` in the step
@@ -120,7 +120,7 @@ disable even when creds are present (no `clearml` import, no install).
 
 ```yaml
 compute_config:
-  num_nodes: 1              # iteration 1 is single-node only; the guard rejects != 1
+  num_nodes: 1              # iteration 1 is single-node only; any other value fails the build at step creation
   num_gpus_per_node: 2      # how many GPUs to request on the node
   gpu_model: A10G           # REQUIRED — the SkyPilot accelerator TYPE for your endpoint
 ```
@@ -219,8 +219,14 @@ To train on your own data, bind a `dataset` and name its Hydra key:
 
 ## Notes and limitations
 
-- **Single-node only (iteration 1).** `num_nodes` must be `1`; the guard rejects
-  anything else. Multi-node Ray launch is a separate iteration.
+- **Single-node only (iteration 1).** `num_nodes` must be `1`; any other value fails
+  the build when the step is created, before a node is provisioned. Multi-node Ray
+  launch is a separate iteration.
+- **Config errors fail before provisioning.** A missing `algorithm`, `config_name` or
+  `output`, or an `output` name with whitespace or a double quote, fails the build
+  at step creation. Checks on the staged inputs (an unrendered binding, a bound
+  `dataset` without `dataset_override_key`) run on the node after the inputs are
+  downloaded.
 - **The image bundles the source.** Use the `nemo-rl` **release** image (the default
   `image_id`), not the base `:latest` — the base image carries no `examples/` and the
   step's `setup` fails fast if `<nemo_rl_root>/examples` is missing.
