@@ -113,6 +113,29 @@ def is_sr(training_config: Optional[Dict[str, Any]]) -> bool:
     return (training_config or {}).get("tuning_algorithm") == SR_TUNING_ALGO
 
 
+def reject_sr_for_trl_driver(training_config: Optional[Dict[str, Any]]) -> None:
+    """Raise if this run is Shadow Residual; the TRL drivers cannot train it.
+
+    The TRL drivers train offline RL (DPO/KTO). SR is SFT-only, and the failure is
+    otherwise *silent*: PEFT's ``inject_adapter`` raises only when **nothing**
+    matched, so on a plain Granite base the ``cross_stream`` target is dropped
+    without a warning and the run trains as ordinary LoRA while being labelled and
+    reported as "sr".
+
+    Args:
+        training_config: The run's training config, or ``None``.
+
+    Raises:
+        ValueError: If the run's tuning algorithm is Shadow Residual.
+    """
+    if is_sr(training_config):
+        raise ValueError(
+            "[AutoTune] Shadow Residual supports SFT only and is not supported by "
+            "this driver, which trains offline RL (DPO/KTO) via TRL. Use "
+            "--rl_algo none (which routes to the HF SFT drivers instead)."
+        )
+
+
 def build_sr_lora_config(base_kwargs: Dict[str, Any]) -> Any:
     """Build the stock ``LoraConfig`` that drives a Shadow Residual model.
 

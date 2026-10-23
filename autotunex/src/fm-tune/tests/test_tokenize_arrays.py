@@ -188,9 +188,9 @@ def test_batch_to_dataframe_restores_nested_lists():
 
 
 def _real_chat_template(df, tokenizer, input_col, thinking):
-    from autotune.trainers.driver_multi_hf_fsdp import _apply_chat_template_to_df
+    from autotune.trainers.driver_multi_hf_fsdp import apply_chat_template_to_df
 
-    return _apply_chat_template_to_df(df, tokenizer, input_col, thinking)
+    return apply_chat_template_to_df(df, tokenizer, input_col, thinking)
 
 
 def _expanded_rows(ds, n):
@@ -215,7 +215,7 @@ def test_build_tokenized_datasets_matches_tokenize_batch(tmp_path, monkeypatch, 
     """End to end on a local Ray cluster: the same rows as the in-process path.
 
     ``chat`` runs a message-list jsonl through the driver's real
-    ``_apply_chat_template_to_df``: Ray reads that column back as numpy arrays,
+    ``apply_chat_template_to_df``: Ray reads that column back as numpy arrays,
     and before ``batch_to_dataframe`` the template was skipped silently.
     Rows are compared as multisets because the train split is shuffled.
     """

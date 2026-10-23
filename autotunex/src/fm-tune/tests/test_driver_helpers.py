@@ -148,29 +148,29 @@ class TestBuildDeepspeedConfig:
 
 class TestApplyChatTemplateToDf:
     def test_empty_df_passes_through(self):
-        from autotune.trainers.driver_multi_hf_ds import _apply_chat_template_to_df
+        from autotune.tools.chat_utils import apply_chat_template_to_df
 
         df = pd.DataFrame({"input": []})
-        out = _apply_chat_template_to_df(df, MagicMock(), "input")
+        out = apply_chat_template_to_df(df, MagicMock(), "input")
         assert len(out) == 0
 
     def test_no_message_lists_passes_through(self):
-        from autotune.trainers.driver_multi_hf_ds import _apply_chat_template_to_df
+        from autotune.tools.chat_utils import apply_chat_template_to_df
 
         df = pd.DataFrame({"input": ["plain1", "plain2"]})
         tok = MagicMock()
-        out = _apply_chat_template_to_df(df, tok, "input")
+        out = apply_chat_template_to_df(df, tok, "input")
         # First row is a string → no template applied, df returned as-is
         assert list(out["input"]) == ["plain1", "plain2"]
         tok.apply_chat_template.assert_not_called()
 
     def test_applies_to_message_lists(self):
-        from autotune.trainers.driver_multi_hf_ds import _apply_chat_template_to_df
+        from autotune.tools.chat_utils import apply_chat_template_to_df
 
         df = pd.DataFrame({"input": [[{"role": "user", "content": "hi"}], [{"role": "user", "content": "ho"}]]})
         tok = MagicMock()
         tok.apply_chat_template.side_effect = ["A", "B"]
-        out = _apply_chat_template_to_df(df, tok, "input")
+        out = apply_chat_template_to_df(df, tok, "input")
         assert list(out["input"]) == ["A", "B"]
 
 
@@ -346,32 +346,35 @@ class TestThinkingKwargs:
     """Granite 4.2 defaults thinking on; the drivers must turn it off."""
 
     def test_forwarded_when_template_supports_it(self):
-        from autotune.trainers.driver_single import _thinking_kwargs
+        from autotune.tools.chat_utils import thinking_kwargs
 
-        assert _thinking_kwargs(_thinking_tok(GRANITE42_TEMPLATE)) == {"enable_thinking": False}
+        assert thinking_kwargs(_thinking_tok(GRANITE42_TEMPLATE)) == {"enable_thinking": False}
 
     def test_absent_when_template_ignores_it(self):
-        from autotune.trainers.driver_single import _thinking_kwargs
+        from autotune.tools.chat_utils import thinking_kwargs
 
-        assert _thinking_kwargs(_thinking_tok(GRANITE41_TEMPLATE)) == {}
+        assert thinking_kwargs(_thinking_tok(GRANITE41_TEMPLATE)) == {}
 
     def test_absent_when_no_template(self):
-        from autotune.trainers.driver_single import _thinking_kwargs
+        from autotune.tools.chat_utils import thinking_kwargs
 
-        assert _thinking_kwargs(_thinking_tok(None)) == {}
+        assert thinking_kwargs(_thinking_tok(None)) == {}
 
     def test_override_enables_thinking(self):
-        from autotune.trainers.driver_single import _thinking_kwargs
+        from autotune.tools.chat_utils import thinking_kwargs
 
-        assert _thinking_kwargs(_thinking_tok(GRANITE42_TEMPLATE), thinking=True) == {"enable_thinking": True}
+        assert thinking_kwargs(_thinking_tok(GRANITE42_TEMPLATE), thinking=True) == {"enable_thinking": True}
 
     def test_all_three_drivers_share_the_helper(self):
-        from autotune.trainers.driver_multi_hf_ds import _thinking_kwargs as ds
-        from autotune.trainers.driver_multi_hf_fsdp import _thinking_kwargs as fsdp
-        from autotune.trainers.driver_single import _thinking_kwargs as single
+        from autotune.tools import chat_utils
+        from autotune.trainers import driver_multi_hf_ds, driver_multi_hf_fsdp, driver_single
+
+        assert driver_single.thinking_kwargs is chat_utils.thinking_kwargs
+        assert driver_multi_hf_ds.apply_chat_template_to_df is chat_utils.apply_chat_template_to_df
+        assert driver_multi_hf_fsdp.apply_chat_template_to_df is chat_utils.apply_chat_template_to_df
 
         tok = _thinking_tok(GRANITE42_TEMPLATE)
-        assert single(tok) == fsdp(tok) == ds(tok) == {"enable_thinking": False}
+        assert chat_utils.thinking_kwargs(tok) == {"enable_thinking": False}
 
 
 class TestChatTemplateThinking:
@@ -414,7 +417,7 @@ class TestChatTemplateThinking:
 
         mod = importlib.import_module(f"autotune.trainers.{driver}")
         tok = _thinking_tok(GRANITE42_TEMPLATE)
-        mod._apply_chat_template_to_df(pd.DataFrame([dict(self.ROW)]), tok, "input")
+        mod.apply_chat_template_to_df(pd.DataFrame([dict(self.ROW)]), tok, "input")
         assert tok.apply_chat_template.call_args.kwargs["enable_thinking"] is False
 
     @pytest.mark.parametrize("driver", ["driver_multi_hf_fsdp", "driver_multi_hf_ds"])
@@ -423,7 +426,7 @@ class TestChatTemplateThinking:
 
         mod = importlib.import_module(f"autotune.trainers.{driver}")
         tok = _thinking_tok(GRANITE42_TEMPLATE)
-        mod._apply_chat_template_to_df(pd.DataFrame([dict(self.ROW)]), tok, "input", thinking=True)
+        mod.apply_chat_template_to_df(pd.DataFrame([dict(self.ROW)]), tok, "input", thinking=True)
         assert tok.apply_chat_template.call_args.kwargs["enable_thinking"] is True
 
     @pytest.mark.parametrize("driver", ["driver_multi_hf_fsdp", "driver_multi_hf_ds"])
@@ -442,7 +445,7 @@ class TestChatTemplateThinking:
         if has_tools:
             row["tools"] = [{"type": "function"}]
 
-        mod._apply_chat_template_to_df(pd.DataFrame([row]), tok, "input")
+        mod.apply_chat_template_to_df(pd.DataFrame([row]), tok, "input")
         kwargs = tok.apply_chat_template.call_args.kwargs
         assert ("documents" in kwargs) is has_documents
         assert ("tools" in kwargs) is has_tools
@@ -454,6 +457,6 @@ class TestChatTemplateThinking:
 
         mod = importlib.import_module(f"autotune.trainers.{driver}")
         tok = _thinking_tok(GRANITE42_TEMPLATE)
-        df = mod._apply_chat_template_to_df(pd.DataFrame([{"input": "plain"}]), tok, "input")
+        df = mod.apply_chat_template_to_df(pd.DataFrame([{"input": "plain"}]), tok, "input")
         assert df["input"].iloc[0] == "plain"
         tok.apply_chat_template.assert_not_called()

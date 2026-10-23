@@ -41,17 +41,17 @@ from autotune.device import (
     resolve_precision,
 )
 from autotune.shadow_residual import (
-    SR_TUNING_ALGO,
     assert_no_vocab_resize,
     assert_sr_supported,
     build_sr_peft_model,
+    is_sr,
     patch_sr_adapter_config,
     require_sr,
     share_moe_routing_flag,
 )
 
 # Local
-from autotune.tools.chat_utils import template_supports_kwarg
+from autotune.tools.chat_utils import thinking_kwargs
 from autotune.trainers._alora_gc import (
     AloraGradCheckpointDrainCallback,
     install_alora_gc_safety_wrapper,
@@ -105,20 +105,6 @@ def _load_dataset_from_file(file_path: str):
     raise ValueError(f"Unsupported dataset extension: {ext} ({file_path})")
 
 
-def _thinking_kwargs(tokenizer, thinking: bool = False) -> Dict[str, Any]:
-    """``{"enable_thinking": thinking}`` when the chat template supports it, else ``{}``.
-
-    Granite 4.2 defaults to ``enable_thinking=True``, which ends the rendered
-    prompt inside an *open* ``<think>`` block — so an SFT target would be trained
-    as reasoning content rather than as the answer. Older templates ignore the
-    kwarg, and a non-Granite template might reject an unknown one, so the flag is
-    only forwarded when the template actually mentions it.
-    """
-    if template_supports_kwarg(getattr(tokenizer, "chat_template", None), "enable_thinking"):
-        return {"enable_thinking": thinking}
-    return {}
-
-
 def _make_chat_template_mapper(tokenizer, input_col: str, thinking: bool = False):
     """Return a row-level map function that applies the tokenizer's chat
     template to ``row[input_col]`` when it holds a list of messages.
@@ -128,16 +114,16 @@ def _make_chat_template_mapper(tokenizer, input_col: str, thinking: bool = False
     row unchanged when ``row[input_col]`` is not a message list, so a file
     mixing plain strings and message lists is handled correctly per-row.
 
-    ``thinking`` is off by default; see :func:`_thinking_kwargs`.
+    ``thinking`` is off by default; see :func:`autotune.tools.chat_utils.thinking_kwargs`.
     """
-    thinking_kwargs = _thinking_kwargs(tokenizer, thinking)
+    template_kwargs = thinking_kwargs(tokenizer, thinking)
 
     def _fn(example):
         value = example.get(input_col)
         if not isinstance(value, list):
             return example
 
-        kwargs = {"tokenize": False, "add_generation_prompt": True, **thinking_kwargs}
+        kwargs = {"tokenize": False, "add_generation_prompt": True, **template_kwargs}
         documents = example.get("documents")
         if isinstance(documents, list) and documents:
             kwargs["documents"] = documents
@@ -217,8 +203,8 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # Granite), then a stock LoRA on top -- structurally the same shape as the
     # qlora special-case above. Guard again here: this driver is reachable
     # directly via --resume_from_checkpoint, which bypasses the main.py guard.
-    is_sr = tuning_algorithm == SR_TUNING_ALGO
-    if is_sr:
+    sr_run = is_sr(training_config)
+    if sr_run:
         require_sr()
         assert_sr_supported(training_config, accel=accel, backend=training_config.get("backend", "hf"))
     model_name_or_path = training_config.get("model_name_or_path")
@@ -242,7 +228,7 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Create the appropriate pretrained model (causal). For QLoRA, load the
     # frozen base in 4-bit (NF4) via bitsandbytes; otherwise load in bf16.
-    if is_sr:
+    if sr_run:
         # SR builds its own model from the upstream checkpoint and returns it
         # already PEFT-wrapped, so there is nothing to load here -- and nothing
         # for get_peft_config's LORA/LOHA/LOKR/VERA/ALORA branches to inspect
@@ -290,7 +276,7 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # and for dataset tokenization later)
     tokenizer_kwargs = extract_tokenizer_kwargs(training_config)
     tokenizer, num_new_tokens = get_tokenizer(model_name_or_path, **tokenizer_kwargs)
-    if is_sr:
+    if sr_run:
         # SR's transfer_base_weights slices an upstream checkpoint at its
         # original vocab size, and the model does not exist yet here anyway.
         assert_no_vocab_resize(num_new_tokens)
@@ -306,7 +292,7 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         tokenizer=tokenizer,
     )
 
-    if is_sr:
+    if sr_run:
         # Build the dual-stream model and PEFT-wrap it in one step. `fsdp_active=False`
         # is explicit (not inherited from a possibly-stale ACCELERATE_USE_FSDP left
         # behind by an earlier TrainingArguments in this process): single-GPU means
@@ -400,7 +386,7 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     logging_dir = os.path.join(output_dir, "logs", f"{trial_id}")
 
     # Prepare the model for PEFT training
-    if peft_config is not None and is_sr:
+    if peft_config is not None and sr_run:
         # Already a PeftModel: SR's factory wrapped it. Calling get_peft_model
         # again would nest a second LoraModel over the first (and, because the
         # cross_stream sites would then be wrapped lora.Linear *inside* a
@@ -427,7 +413,7 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         device_kind=accel.kind,
         model_config=getattr(model, "config", None),
         peft_type=peft_type,
-        is_sr=is_sr,
+        is_sr=sr_run,
     )
     # Chunked: the whole mask at once would be an N x max_length int64 array.
     train_lengths = np.concatenate(
@@ -588,7 +574,7 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         trainer.save_model(output_model_id)
         tokenizer.save_pretrained(output_model_id)
 
-        if is_sr:
+        if sr_run:
             # The saved adapter_config.json says peft_type: LORA, which is true
             # but not sufficient: reloading it onto a plain Granite base would
             # silently produce the wrong architecture (PEFT drops the unmatched

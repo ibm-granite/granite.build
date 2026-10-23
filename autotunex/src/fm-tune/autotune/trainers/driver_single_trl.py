@@ -40,7 +40,7 @@ from trl import (
 
 from autotune.callbacks.training_metrics import TrainingMetricsCallback
 from autotune.device import disable_cudnn_sdpa
-from autotune.shadow_residual import SR_TUNING_ALGO
+from autotune.shadow_residual import reject_sr_for_trl_driver
 from autotune.trainers._alora_gc import (
     AloraGradCheckpointDrainCallback,
     install_alora_gc_safety_wrapper,
@@ -154,19 +154,7 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # Get the training config (discard unused sections — pop for side effect)
     training_config = local_config.pop("training_config")
 
-    # Shadow Residual is not supported by this driver. This is a hard rejection
-    # rather than a fallthrough because the failure would otherwise be SILENT:
-    # peft_type "SR" resolves to a plain LoraConfig whose target_modules include
-    # "cross_stream", and PEFT's inject_adapter raises only when *nothing*
-    # matched (peft/tuners/tuners_utils.py) -- so on a plain Granite base the
-    # cross_stream target is dropped without a warning and the run trains as
-    # ordinary LoRA while being labelled and reported as "sr".
-    if training_config.get("tuning_algorithm") == SR_TUNING_ALGO:
-        raise ValueError(
-            "[AutoTune] Shadow Residual supports SFT only and is not supported by "
-            "this driver, which trains offline RL (DPO/KTO) via TRL. Use "
-            "--rl_algo none (which routes to the HF SFT drivers instead)."
-        )
+    reject_sr_for_trl_driver(training_config)
     local_config.pop("training_rl_config")
     tuner_flags = local_config.pop("tuner_flags")
     local_config.pop("tune_config")

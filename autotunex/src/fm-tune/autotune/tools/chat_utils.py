@@ -317,6 +317,72 @@ def split_documents(
     return [], documents
 
 
+def thinking_kwargs(tokenizer: Any, thinking: bool = False) -> Dict[str, Any]:
+    """``{"enable_thinking": thinking}`` when the chat template supports it, else ``{}``.
+
+    Granite 4.2 defaults to ``enable_thinking=True``, which ends the rendered
+    prompt inside an *open* ``<think>`` block — so an SFT target would be trained
+    as reasoning content rather than as the answer. Older templates ignore the
+    kwarg, and a non-Granite template might reject an unknown one, so the flag is
+    only forwarded when the template actually mentions it.
+
+    Args:
+        tokenizer: A tokenizer whose ``chat_template`` is inspected.
+        thinking: The ``enable_thinking`` value to forward.
+
+    Returns:
+        Keyword arguments to spread into ``apply_chat_template``.
+    """
+    if template_supports_kwarg(getattr(tokenizer, "chat_template", None), "enable_thinking"):
+        return {"enable_thinking": thinking}
+    return {}
+
+
+def apply_chat_template_to_df(df: Any, tokenizer: Any, input_col: str, thinking: bool = False) -> Any:
+    """Convert message-list rows in ``df[input_col]`` to plain strings via the chat template.
+
+    Handles optional ``documents`` and ``tools`` columns for RAG / tool-use
+    prompts. Returns ``df`` unchanged if the column doesn't hold message lists
+    (detected by inspecting the first row) or if the DataFrame is empty.
+
+    ``thinking`` is off by default; see :func:`thinking_kwargs`.
+
+    Shared by the multi-GPU drivers and between the Arrow and Ray Data backends
+    to keep chat-template handling in a single place.
+
+    Args:
+        df: A pandas DataFrame of training rows.
+        tokenizer: The tokenizer whose chat template renders each row.
+        input_col: The column holding the message lists.
+        thinking: Forwarded as ``enable_thinking`` when the template supports it.
+
+    Returns:
+        ``df`` with ``input_col`` rendered to strings, or ``df`` unchanged.
+    """
+    if input_col not in df.columns or len(df) == 0:
+        return df
+
+    first_val = df[input_col].iloc[0]
+    if not isinstance(first_val, list):
+        return df
+
+    has_documents = "documents" in df.columns and isinstance(df["documents"].iloc[0], list)
+    has_tools = "tools" in df.columns and isinstance(df["tools"].iloc[0], list)
+
+    base_kwargs = {"tokenize": False, "add_generation_prompt": True, **thinking_kwargs(tokenizer, thinking)}
+
+    def _render(row: Any) -> Any:
+        kwargs = dict(base_kwargs)
+        if has_documents:
+            kwargs["documents"] = row["documents"]
+        if has_tools:
+            kwargs["tools"] = row["tools"]
+        return tokenizer.apply_chat_template(row[input_col], **kwargs)
+
+    df[input_col] = df.apply(_render, axis=1)
+    return df
+
+
 def render_chat_input(
     messages: List[Dict[str, str]],
     tokenizer: Any,
@@ -332,11 +398,9 @@ def render_chat_input(
     4.2), where it otherwise defaults to True and would leave the prompt inside
     an open ``<think>`` block — wrong for a structured SFT target.
     """
-    kwargs: Dict[str, Any] = {"tokenize": False, "add_generation_prompt": True}
+    kwargs: Dict[str, Any] = {"tokenize": False, "add_generation_prompt": True, **thinking_kwargs(tokenizer, thinking)}
     if documents:
         kwargs["documents"] = list(documents)
-    if template_supports_kwarg(getattr(tokenizer, "chat_template", None), "enable_thinking"):
-        kwargs["enable_thinking"] = thinking
     return cast(str, tokenizer.apply_chat_template(messages, **kwargs))
 
 

@@ -763,7 +763,7 @@ if __name__ == "__main__":
     try:
         if resume_saved:
             # Resume the final training round from the saved config + checkpoint.
-            # HPO is skipped entirely; the driver's _resolve_resume_checkpoint
+            # HPO is skipped entirely; the drivers' resolve_resume_checkpoint
             # picks up the last checkpoint in final_checkpoints/.
             logger.info("[AutoTune] Resuming final training from saved config; skipping HPO.")
             results = None

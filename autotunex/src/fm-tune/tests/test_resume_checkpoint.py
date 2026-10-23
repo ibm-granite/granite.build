@@ -1,7 +1,7 @@
 """Tests for the --resume_from_checkpoint feature.
 
 Covers three GPU-free units:
-  1. ``_resolve_resume_checkpoint`` — the pure filesystem logic that the
+  1. ``resolve_resume_checkpoint`` — the pure filesystem logic that the
      multi-GPU drivers use to pick the checkpoint to resume from.
   2. ``AutotuneOptimizer`` plumbing — the flag is stored.
   3. ``has_resumable_final_checkpoint`` / ``save_final_config`` /
@@ -29,7 +29,7 @@ def _make_checkpoint(tmp_path, step: int):
 
 
 class TestResolveResumeCheckpoint:
-    """Both FSDP drivers expose an identical _resolve_resume_checkpoint."""
+    """Every multi-GPU driver resolves resume through the one shared helper."""
 
     @pytest.fixture(
         params=[
@@ -43,7 +43,7 @@ class TestResolveResumeCheckpoint:
         import importlib
 
         mod = importlib.import_module(request.param)
-        return mod._resolve_resume_checkpoint
+        return mod.resolve_resume_checkpoint
 
     def test_flag_off_returns_false(self, resolver, tmp_path):
         _make_checkpoint(tmp_path, 10)

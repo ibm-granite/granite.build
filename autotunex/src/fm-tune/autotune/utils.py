@@ -1063,7 +1063,7 @@ def has_resumable_final_checkpoint(output_dir: str) -> bool:
 
     Requires both ``final_config.json`` and at least one ``checkpoint-<step>``
     subdirectory (numeric suffix, a real directory). The checkpoint-detection
-    rule mirrors the drivers' ``_resolve_resume_checkpoint`` so the head-node
+    rule mirrors the drivers' ``resolve_resume_checkpoint`` so the head-node
     decision (skip HPO?) never disagrees with the worker-side resume. Pure /
     filesystem-only — unit-testable without Ray or Torch.
     """
