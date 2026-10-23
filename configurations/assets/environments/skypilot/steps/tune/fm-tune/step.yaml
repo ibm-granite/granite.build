@@ -153,8 +153,9 @@ environment_configs:
             {%- else %}
             export FMTUNE_OUTPUT_DIR="$PWD/model"
             {%- endif %}
-            # Per user: GB_SHARED_WORKDIR is shared by every user's builds.
-            export FMTUNE_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache/$(id -u)"
+            # Per user, with no shared level: GB_SHARED_WORKDIR is shared by every
+            # user's builds, and a shared parent would be the first user's, at their umask.
+            export FMTUNE_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache-$(id -u)"
             bash ./src/fmtune_run.sh
     monitors:
       skypilot_monitor:

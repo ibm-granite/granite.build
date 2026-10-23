@@ -233,7 +233,21 @@ if [ "$FMTUNE_OUTPUT_DIR" -ef "$FMTUNE_DATASET_DIR" ]; then
 fi
 
 # ---- source ----------------------------------------------------------------
-mkdir -p "$FMTUNE_CACHE_DIR"
+# Builds run code from the cache (trees, venvs), so it must be the user's own and
+# not writable by anyone else. A new one (and any missing parent) is made 0700; an
+# existing one is checked, never chmod'ed. A symlink of the user's own (say, to a
+# bigger disk) is followed and its target checked; one owned by someone else is
+# refused, since in a shared sticky dir its owner can re-point it.
+(umask 077 && mkdir -p "$FMTUNE_CACHE_DIR") || die "cannot create cache dir $FMTUNE_CACHE_DIR"
+if [ -L "$FMTUNE_CACHE_DIR" ] && [ -z "$(find "$FMTUNE_CACHE_DIR" -maxdepth 0 -user "$(id -u)")" ]; then
+  die "cache dir $FMTUNE_CACHE_DIR is a symlink owned by $(ls -ld "$FMTUNE_CACHE_DIR" | awk '{print $3}'), not $(id -un 2>/dev/null || id -u); set FMTUNE_CACHE_DIR to a dir of your own"
+fi
+if [ ! -O "$FMTUNE_CACHE_DIR" ]; then
+  die "cache dir $FMTUNE_CACHE_DIR is owned by $(ls -ldL "$FMTUNE_CACHE_DIR" | awk '{print $3}'), not $(id -un 2>/dev/null || id -u); set FMTUNE_CACHE_DIR to a dir of your own"
+fi
+if [ -n "$(find -H "$FMTUNE_CACHE_DIR" -maxdepth 0 \( -perm -020 -o -perm -002 \))" ]; then
+  die "cache dir $FMTUNE_CACHE_DIR is writable by other users ($(ls -ldL "$FMTUNE_CACHE_DIR" | awk '{print $1}')); run chmod go-w $FMTUNE_CACHE_DIR"
+fi
 if [ -n "$FMTUNE_SOURCE_PATH" ]; then
   root="$FMTUNE_SOURCE_PATH"
 else

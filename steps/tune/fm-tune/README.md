@@ -54,7 +54,7 @@ Set by the launcher; defaults are applied by the script.
 |---|---|---|
 | `FMTUNE_DATASET_DIR` | required | Dataset input directory |
 | `FMTUNE_OUTPUT_DIR` | bash: `$LLMB_BASH_OUTPUT_DIR/model` | Where `main.py` writes the model; required elsewhere. Must be new, empty or a previous model output, and not an input dir (see USAGE) |
-| `FMTUNE_CACHE_DIR` | bash: `<GB_HOME>/.fm-tune-cache` (beside `workdir/`); the skypilot template sets `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache/$(id -u)` | Clone, tree and venv cache; required elsewhere |
+| `FMTUNE_CACHE_DIR` | bash: `<GB_HOME>/.fm-tune-cache` (beside `workdir/`); the skypilot template sets `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache-$(id -u)` (no shared parent: see USAGE) | Clone, tree and venv cache; required elsewhere. Created `0700`; the run fails if it is not the user's own or is group- or world-writable |
 | `FMTUNE_PYTHON` | `$LLMB_BASH_PYTHON_DIR/python3`, else `python3` | Interpreter that creates the venv (>= 3.10) |
 | `FMTUNE_SOURCE_PATH` / `FMTUNE_SOURCE_REPO` | empty | Exactly one must be set |
 | `FMTUNE_SOURCE_REF` | `main` | Branch or tag for the repo (`git clone --branch`; a bare SHA fails) |
@@ -118,7 +118,7 @@ needs the local podman Slurm VM: stop the VM when you are not testing slurm.
 - The slurm test needs a venv with the `thirdparty` extra (the SkyPilot fork); the repo's main
   `.venv` may not have it.
 - The node venv needs python3.10 (fm-tune needs >= 3.10). On the local Slurm cluster the cache
-  is `/shared/.fm-tune-cache/<uid>` and the model goes to `/shared/fm-tune-test/model`. The nodes are
+  is `/shared/.fm-tune-cache-<uid>` and the model goes to `/shared/fm-tune-test/model`. The nodes are
   CPU-only arm64, so bf16 is downgraded to fp32.
 - SkyPilot builds write no local `job.log`; read `~/sky_logs/<cluster>/1-<cluster>/run.log`.
 - `eval_loss` is `nan` in both fixtures (1 epoch, 4 steps, random weights); the tests check

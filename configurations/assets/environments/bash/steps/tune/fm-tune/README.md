@@ -228,18 +228,27 @@ runs race on the cache and the output directory.
 
 ## Caches and cleanup
 
-- The cache lives at `.fm-tune-cache`: beside `workdir/` under `~/.granite.build/` on bash,
-  and in `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache/<uid>` on SkyPilot (one per user, `id -u`):
+- The cache lives at `.fm-tune-cache` beside `workdir/` under `~/.granite.build/` on bash,
+  and at `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache-<uid>` on SkyPilot (one per user, `id -u`):
   shared across nodes only when `GB_SHARED_WORKDIR` is set (the local Slurm environment sets
-  `/shared`, giving `/shared/.fm-tune-cache/<uid>`).
+  `/shared`, giving `/shared/.fm-tune-cache-<uid>`). The uid is in the first level under the
+  shared root, so there is no shared parent: a shared `.fm-tune-cache` would be created by the
+  first user at their umask (usually `0755`), and every other user's `mkdir` under it fails.
+- The run creates a new cache dir `0700`. It fails, naming the dir, if the dir cannot be
+  created, is not owned by the user running the build, or is group- or world-writable (the
+  run executes code from it). An existing dir is never `chmod`ed; the message gives the fix,
+  for example `chmod go-w <dir>`. A symlink to a dir of your own (say, on a bigger disk) is
+  followed and the target checked. A symlink owned by another user is refused.
+- Migrating: an earlier version used `.fm-tune-cache/<uid>` on SkyPilot. Delete those dirs
+  once no build uses them; the next run rebuilds its cache at the new path.
 - A cached `source.repo` clone is refreshed on every run (`[fm-tune] updating ...`), so a
   warm-cache run still needs network access to the repo. If the fetch fails, the run stops.
 - Every commit trained gets its own immutable `tree-<sha>` and its own `venv-<key>`. The
   venv for `extra: core` is large (1.5 GB measured on the arm64 CPU Slurm nodes). Nothing
   prunes them. Pin `source.ref` to a tag so builds share one tree and one venv.
-- To clean up, delete `.fm-tune-cache/tree-*`, `.fm-tune-cache/venv-*`,
-  `.fm-tune-cache/src-*` (the clone mirrors) and any stale `*.lock` directories, only while
-  no fm-tune build is running. They are rebuilt on the next run.
+- To clean up, delete `tree-*`, `venv-*`, `src-*` (the clone mirrors) and any stale `*.lock`
+  directories in the cache dir, only while no fm-tune build is running. They are rebuilt on
+  the next run.
 - A lock in the cache serialises only the clone and tree extraction and the venv build, not
   training, so concurrent builds still train in parallel. Each lock records its owner as
   `<host>:<pid>`. A lock whose owner ran on the same host and died is taken over. A lock held

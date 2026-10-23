@@ -120,8 +120,9 @@ def test_defaults_reach_the_script(tmp_path):
     assert env["FMTUNE_TUNING_ALGO"] == "lora"
     assert env["FMTUNE_HPO_CONFIG_JSON"] == "{}"
     assert env["FMTUNE_OUTPUT_DIR"] == f"{tmp_path}/model"
-    # Per user: a shared GB_SHARED_WORKDIR is written by every user's builds.
-    assert env["FMTUNE_CACHE_DIR"] == f"{tmp_path}/.fm-tune-cache/{os.getuid()}"
+    # Per user, with no shared level: a shared GB_SHARED_WORKDIR is written by every
+    # user's builds, and a shared parent would be made by the first user, at their umask.
+    assert env["FMTUNE_CACHE_DIR"] == f"{tmp_path}/.fm-tune-cache-{os.getuid()}"
     assert env["FMTUNE_PYTHON"] == "python3"
 
 
@@ -347,7 +348,7 @@ def test_a_null_compute_or_launcher_config_is_unset(where):
 
 
 def test_cache_dir_is_per_user_under_the_shared_workdir():
-    assert 'FMTUNE_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache/$(id -u)"' in _render()
+    assert 'FMTUNE_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache-$(id -u)"' in _render()
 
 
 def test_output_path_overrides_the_workdir_default(tmp_path):

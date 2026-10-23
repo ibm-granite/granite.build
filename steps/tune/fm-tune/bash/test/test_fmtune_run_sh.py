@@ -663,6 +663,84 @@ def test_an_unwritable_cache_dir_dies_fast(env, tmp_path):
     assert not pathlib.Path(env["STUB_RECORD"]).exists()
 
 
+def test_a_new_cache_dir_and_its_missing_parents_are_private(env, tmp_path):
+    """Builds run code from the cache (trees, venvs): no other user may write there."""
+    env["FMTUNE_CACHE_DIR"] = str(tmp_path / "new" / "cache")
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    for d in (tmp_path / "new", tmp_path / "new" / "cache"):
+        assert d.stat().st_mode & 0o777 == 0o700, oct(d.stat().st_mode)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the read-only mode")
+def test_a_cache_dir_that_cannot_be_created_dies_naming_it(env, tmp_path):
+    """The old per-user SkyPilot cache sat under a shared .fm-tune-cache made by the
+    first user (mode 0755): a second user's mkdir -p failed with a bare error."""
+    shared = tmp_path / ".fm-tune-cache"
+    shared.mkdir()
+    shared.chmod(0o555)
+    env["FMTUNE_CACHE_DIR"] = str(shared / "1234")
+    try:
+        proc = _run(env)
+    finally:
+        shared.chmod(0o755)
+    assert proc.returncode == 2
+    assert f"fm-tune: cannot create cache dir {shared}/1234" in proc.stderr
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+
+
+@pytest.mark.parametrize("mode", [0o775, 0o757, 0o777])
+def test_a_cache_dir_others_can_write_is_refused_and_left_alone(env, tmp_path, mode):
+    cache = pathlib.Path(env["FMTUNE_CACHE_DIR"])
+    cache.mkdir()
+    cache.chmod(mode)
+    proc = _run(env)
+    assert proc.returncode == 2
+    assert f"fm-tune: cache dir {cache} is writable by other users" in proc.stderr
+    assert f"chmod go-w {cache}" in proc.stderr
+    assert cache.stat().st_mode & 0o777 == mode  # refused, not chmod'ed
+    assert not list(cache.iterdir())
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root owns the directory")
+def test_a_cache_dir_owned_by_another_user_is_refused(env):
+    env["FMTUNE_CACHE_DIR"] = "/usr"  # exists and is root's: nothing is ever written there
+    proc = _run(env)
+    assert proc.returncode == 2
+    assert "fm-tune: cache dir /usr is owned by root, not " in proc.stderr
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+
+
+def test_a_symlinked_cache_dir_of_ones_own_is_followed(env, tmp_path):
+    """Say, to move the cache to a bigger disk: the checks apply to the target."""
+    _git_repo(env, tmp_path)
+    (tmp_path / "big").mkdir()
+    link = pathlib.Path(env["FMTUNE_CACHE_DIR"])
+    link.symlink_to(tmp_path / "big")
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    assert link.is_symlink() and list((tmp_path / "big").glob("tree-*"))
+    (tmp_path / "big").chmod(0o777)
+    proc = _run(env)
+    assert proc.returncode == 2
+    assert f"fm-tune: cache dir {link} is writable by other users" in proc.stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root owns the link")
+def test_a_symlinked_cache_dir_owned_by_another_user_is_refused(env):
+    """Its owner could re-point it at their own dir while a build runs from it."""
+    link = next((p for p in ("/tmp", "/etc", "/var", "/bin", "/lib", "/sbin")
+                 if os.path.islink(p) and os.path.isdir(p) and os.lstat(p).st_uid == 0), None)
+    if link is None:
+        pytest.skip("no root-owned symlink to a directory here")
+    env["FMTUNE_CACHE_DIR"] = link
+    proc = _run(env)
+    assert proc.returncode == 2
+    assert f"fm-tune: cache dir {link} is a symlink owned by root, not " in proc.stderr
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+
+
 def test_an_annotated_tag_resolves_to_one_tree_and_its_commit(env, tmp_path):
     repo = _git_repo(env, tmp_path)
     _git("-c", "user.email=t@t", "-c", "user.name=t", "tag", "-a", "v1", "-m", "v1", cwd=repo)
