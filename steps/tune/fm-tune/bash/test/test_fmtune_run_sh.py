@@ -533,6 +533,98 @@ def test_an_old_pid_less_lock_is_taken_over(env, tmp_path):
     assert not lock.exists()
 
 
+def _stub(bin_dir: pathlib.Path, name: str, body: str) -> None:
+    bin_dir.mkdir(exist_ok=True)
+    (bin_dir / name).write_text("#!/bin/sh\n" + body)
+    (bin_dir / name).chmod(0o755)
+
+
+def _dead_owner() -> str:
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    return f"{os.uname().nodename}:{dead.pid}"
+
+
+def _stale_lock(env, kind: str) -> pathlib.Path:
+    """An old lock with no pid file, with an empty one (an older version's writer
+    killed mid-write), or one whose owner ran on this host and is dead."""
+    lock = _clone_lock(env)
+    lock.mkdir(parents=True)
+    if kind == "dead-pid":
+        (lock / "pid").write_text(_dead_owner() + "\n")
+    elif kind == "empty-pid":
+        (lock / "pid").write_text("")
+    old = lock.stat().st_mtime - 3600
+    os.utime(lock, (old, old))
+    return lock
+
+
+# Waiter B judges a stale lock; before B acts on it, another waiter takes it over and a
+# build on another host now holds a fresh one. B must leave that lock alone. A stub of
+# the command B judged with (find for the age, cat for the owner) does that takeover
+# right after B's look.
+_STALE = [("pid-less", "find"), ("empty-pid", "find"), ("dead-pid", "cat")]
+
+
+@pytest.mark.parametrize("kind, judge", _STALE)
+def test_a_lock_retaken_after_it_was_judged_stale_is_left_alone(env, tmp_path, kind, judge):
+    _git_repo(env, tmp_path)
+    lock = _stale_lock(env, kind)
+    flipped = tmp_path / "flipped"
+    target = lock if judge == "find" else lock / "pid"
+    _stub(tmp_path / "bin", judge,
+          f'out="$("{shutil.which(judge)}" "$@")"; rc=$?\n'
+          f'if [ "$1" = "{target}" ] && [ ! -e "{flipped}" ]; then\n'
+          f'  touch "{flipped}"; rm -rf "{lock}"; mkdir "{lock}"; echo otherhost:1 > "{lock}/pid"\n'
+          'fi\n'
+          '[ -z "$out" ] || printf "%s\\n" "$out"; exit $rc\n')
+    _stub(tmp_path / "bin", "sleep", f'exec "{shutil.which("sleep")}" 0.05\n')
+    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+    env["FMTUNE_LOCK_TIMEOUT"] = "0"  # another host's lock fails at once
+    proc = subprocess.run(["bash", str(_SCRIPT)], env=env, capture_output=True, text=True, timeout=30)
+    assert flipped.exists()
+    assert (lock / "pid").read_text() == "otherhost:1\n", proc.stdout
+    assert sorted(p.name for p in lock.iterdir()) == ["pid"]
+    assert "taking over stale" not in proc.stdout
+    assert proc.returncode != 0
+    assert f"fm-tune: lock {lock} is held by otherhost:1" in proc.stderr
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+
+
+@pytest.mark.parametrize("kind, judge", _STALE)
+def test_concurrent_takeovers_of_one_stale_lock_never_overlap(env, tmp_path, kind, judge):
+    """Several builds find one stale lock at once: at most one may be inside the
+    locked section at a time. A stub git logs enter/exit around each call (the clone
+    section runs only git); a stub sleep makes the 5 s poll fast, and a stub of the
+    judging command pauses after it so the waiters' takeovers interleave."""
+    _git_repo(env, tmp_path)
+    _stale_lock(env, kind)
+    events = tmp_path / "events"
+    real_sleep = shutil.which("sleep")
+    _stub(tmp_path / "bin", "git",
+          f'echo "$STUB_ID enter" >> "{events}"; "{real_sleep}" 0.1\n'
+          f'"{shutil.which("git")}" "$@"; rc=$?\n'
+          f'echo "$STUB_ID exit" >> "{events}"; exit $rc\n')
+    _stub(tmp_path / "bin", "sleep", f'exec "{real_sleep}" 0.05\n')
+    _stub(tmp_path / "bin", judge, f'"{shutil.which(judge)}" "$@"; rc=$?; "{real_sleep}" 0.3; exit $rc\n')
+    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+    env["FMTUNE_LOCK_TIMEOUT"] = "60"
+    procs = []
+    for i in range(5):
+        e = dict(env, STUB_ID=str(i), FMTUNE_OUTPUT_DIR=str(tmp_path / f"out{i}"),
+                 STUB_RECORD=str(tmp_path / f"record{i}.json"))
+        procs.append(subprocess.Popen(["bash", str(_SCRIPT)], env=e, text=True,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE))
+    outs = [p.communicate(timeout=60) for p in procs]
+    ids = [ln.split()[0] for ln in events.read_text().splitlines()]
+    # One build's git calls form one unbroken run; another build's call inside it overlaps.
+    runs = [x for k, x in enumerate(ids) if k == 0 or ids[k - 1] != x]
+    assert len(runs) == len(set(runs)) == 5, f"locked sections overlapped: {ids}"
+    assert any("taking over stale" in o for o, _ in outs)
+    assert [p.returncode for p in procs] == [0] * 5, [e for _, e in outs]
+    assert not list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("*.lock"))
+
+
 @pytest.mark.parametrize("timeout", ["0900", "08"])
 def test_a_lock_timeout_with_a_leading_zero_is_read_as_decimal(env, tmp_path, timeout):
     """$(( 08 )) and $(( 0900 )) are octal errors in bash, so the stale check never

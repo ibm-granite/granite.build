@@ -245,7 +245,8 @@ runs race on the cache and the output directory.
   `<host>:<pid>`. A lock whose owner ran on the same host and died is taken over. A lock held
   from another host is never taken over: the run waits up to `FMTUNE_LOCK_TIMEOUT` seconds
   (default 1800) and then fails, naming the lock directory. Remove it only if no fm-tune build
-  is running. A lock with no owner recorded is taken over once it is older than the timeout.
+  is running. A lock with no owner recorded is taken over once it is older than the timeout
+  (at least a minute). Two builds taking over one stale lock at once never both get it.
 
 ## Memory knob: `FMTUNE_OBJECT_STORE_BYTES`
 

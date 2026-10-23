@@ -72,7 +72,7 @@ Set by the launcher; defaults are applied by the script.
 | `FMTUNE_HPO_CONFIG_JSON` | empty (`{}` = empty) | Inline HPO config as JSON; the script converts it to `fm_tune_hpo.yaml` |
 | `FMTUNE_EXTRA_ARGS` | empty | Whitespace-split and appended to argv |
 | `FMTUNE_SERVER_URL` / `FMTUNE_JOB_ID` | empty | AutoTuneX bridge flags |
-| `FMTUNE_LOCK_TIMEOUT` | `1800` | Seconds to wait on another host's cache lock before failing; also the age at which a lock with no owner recorded is stale |
+| `FMTUNE_LOCK_TIMEOUT` | `1800` | Seconds to wait on another host's cache lock before failing; also the age (at least a minute) at which a lock with no owner recorded is stale |
 | `LOG_PATH` | the output dir's parent | Where fm-tune's AutoTuneX bridge writes `logs/`; kept if already set |
 | `FMTUNE_SKIP_INSTALL` | unset | `1` uses `FMTUNE_PYTHON` as is (unit tests only) |
 
