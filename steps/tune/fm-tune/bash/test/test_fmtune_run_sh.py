@@ -533,6 +533,27 @@ def test_an_old_pid_less_lock_is_taken_over(env, tmp_path):
     assert not lock.exists()
 
 
+@pytest.mark.parametrize("timeout", ["0900", "08"])
+def test_a_lock_timeout_with_a_leading_zero_is_read_as_decimal(env, tmp_path, timeout):
+    """$(( 08 )) and $(( 0900 )) are octal errors in bash, so the stale check never
+    fired and the wait on a pid-less lock was unbounded."""
+    _git_repo(env, tmp_path)
+    lock = _clone_lock(env)
+    lock.mkdir(parents=True)
+    old = lock.stat().st_mtime - 3600
+    os.utime(lock, (old, old))
+    env["FMTUNE_LOCK_TIMEOUT"] = timeout
+    try:
+        proc = subprocess.run(
+            ["bash", str(_SCRIPT)], env=env, capture_output=True, text=True, timeout=15
+        )
+    except subprocess.TimeoutExpired as e:
+        pytest.fail(f"still waiting on the old pid-less lock after 15s: {e.stdout!r} {e.stderr!r}")
+    assert proc.returncode == 0, proc.stderr
+    assert "taking over stale" in proc.stdout
+    assert not lock.exists()
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the read-only mode")
 def test_an_unwritable_cache_dir_dies_fast(env, tmp_path):
     _git_repo(env, tmp_path)

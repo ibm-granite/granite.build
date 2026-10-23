@@ -19,6 +19,7 @@ log() { echo "[fm-tune] $*"; }
 # killed between mkdir and the write) is stale once older than the timeout.
 : "${FMTUNE_LOCK_TIMEOUT:=1800}"
 case "$FMTUNE_LOCK_TIMEOUT" in ''|*[!0-9]*) die "FMTUNE_LOCK_TIMEOUT must be a whole number of seconds" ;; esac
+FMTUNE_LOCK_TIMEOUT=$((10#$FMTUNE_LOCK_TIMEOUT))  # a leading 0 would read as octal in $(( ))
 host="$(uname -n)"
 held_lock=""
 lock() {

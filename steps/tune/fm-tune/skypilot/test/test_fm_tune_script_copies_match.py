@@ -124,7 +124,7 @@ _GOOD = [{"train_file": n, "validation_file": n} for n in ("t.jsonl", "sub/dir/t
     {"tuning_algo": "none", "rl_algo": "ppo"},
     {"tuning_algo": "lora", "rl_algo": ""},
     {"tuning_algo": "lora", "rl_algo": "dpo"},
-    {"tuning_algo": "sft", "rl_algo": "KTO"},
+    {"tuning_algo": "sft", "rl_algo": "kto"},
 ]
 _LAUNCHERS = {"bash": ("Bash", "fm-tune"), "skypilot": ("Skypilot", "fm-tune")}
 
