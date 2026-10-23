@@ -108,10 +108,11 @@ case $FMTUNE_BASE_MODEL_DIR in ''|/*) ;; *) FMTUNE_BASE_MODEL_DIR="$PWD/$FMTUNE_
 [ "$FMTUNE_OUTPUT_DIR" = / ] || FMTUNE_OUTPUT_DIR="${FMTUNE_OUTPUT_DIR%/}"
 # The monitors read the marker path into a JSON string ('{ "path": "<path>" }'):
 # a '"' or a control character fails the parse, a '\' is read as an escape, and a
-# newline also cuts the marker line short.
+# newline also cuts the marker line short. The bash monitor rstrip()s each line, so
+# a trailing space would be lost too.
 case $FMTUNE_OUTPUT_DIR in
-  *[\"\\]*|*[[:cntrl:]]*)
-    die "output dir must not contain a '\"', a '\\' or a control character: $FMTUNE_OUTPUT_DIR" ;;
+  *[\"\\]*|*[[:cntrl:]]*|*' ')
+    die "output dir must not contain a '\"', a '\\' or a control character, or end in a space: $FMTUNE_OUTPUT_DIR" ;;
 esac
 if [ -n "$FMTUNE_BASE_MODEL_DIR" ]; then
   model="$FMTUNE_BASE_MODEL_DIR"
@@ -138,15 +139,30 @@ val="$FMTUNE_DATASET_DIR/$FMTUNE_VALIDATION_FILE"
 # On success --model_at_root deletes every other entry in the output dir, which is
 # only safe when it holds nothing or a previous model (a file fm-tune's save leaves
 # at the root). Refuse anything else now, not after training.
+if [ -L "$FMTUNE_OUTPUT_DIR" ] && [ ! -e "$FMTUNE_OUTPUT_DIR" ]; then
+  die "output dir $FMTUNE_OUTPUT_DIR is a dangling symlink"
+fi
 if [ -e "$FMTUNE_OUTPUT_DIR" ] && [ ! -d "$FMTUNE_OUTPUT_DIR" ]; then
   die "output dir $FMTUNE_OUTPUT_DIR exists and is not a directory"
 fi
-if [ -d "$FMTUNE_OUTPUT_DIR" ] && [ -n "$(ls -A "$FMTUNE_OUTPUT_DIR")" ] \
+entries=""
+if [ -d "$FMTUNE_OUTPUT_DIR" ]; then
+  entries="$(ls -A "$FMTUNE_OUTPUT_DIR")" || die "cannot list output dir $FMTUNE_OUTPUT_DIR"
+fi
+if [ -n "$entries" ] \
    && [ ! -f "$FMTUNE_OUTPUT_DIR/config.json" ] \
    && [ ! -f "$FMTUNE_OUTPUT_DIR/adapter_config.json" ] \
-   && [ ! -f "$FMTUNE_OUTPUT_DIR/model.safetensors" ]; then
+   && [ ! -f "$FMTUNE_OUTPUT_DIR/model.safetensors" ] \
+   && [ ! -f "$FMTUNE_OUTPUT_DIR/adapters.safetensors" ]; then
   die "output dir $FMTUNE_OUTPUT_DIR is not empty and is not a previous model output" \
-      "(no config.json, adapter_config.json or model.safetensors); point output_path at a new or empty directory"
+      "(no config.json, adapter_config.json, model.safetensors or adapters.safetensors); point output_path at a new or empty directory"
+fi
+# A bound base model has config.json at its root, so it passes the check above.
+if [ -n "$FMTUNE_BASE_MODEL_DIR" ] && [ "$FMTUNE_OUTPUT_DIR" -ef "$FMTUNE_BASE_MODEL_DIR" ]; then
+  die "output dir $FMTUNE_OUTPUT_DIR is the same directory as the base_model input"
+fi
+if [ "$FMTUNE_OUTPUT_DIR" -ef "$FMTUNE_DATASET_DIR" ]; then
+  die "output dir $FMTUNE_OUTPUT_DIR is the same directory as the dataset input"
 fi
 
 # ---- source ----------------------------------------------------------------

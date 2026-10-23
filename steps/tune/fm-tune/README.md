@@ -24,7 +24,7 @@ Set by the launcher; defaults are applied by the script.
 | Variable | Default | Meaning |
 |---|---|---|
 | `FMTUNE_DATASET_DIR` | required | Dataset input directory |
-| `FMTUNE_OUTPUT_DIR` | bash: `$LLMB_BASH_OUTPUT_DIR/model` | Where `main.py` writes the model; required elsewhere. Must be new, empty or a previous model output (see USAGE) |
+| `FMTUNE_OUTPUT_DIR` | bash: `$LLMB_BASH_OUTPUT_DIR/model` | Where `main.py` writes the model; required elsewhere. Must be new, empty or a previous model output, and not an input dir (see USAGE) |
 | `FMTUNE_CACHE_DIR` | bash: `<GB_HOME>/.fm-tune-cache` (beside `workdir/`); the skypilot template sets `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache/$(id -u)` | Clone, tree and venv cache; required elsewhere |
 | `FMTUNE_PYTHON` | `$LLMB_BASH_PYTHON_DIR/python3`, else `python3` | Interpreter that creates the venv (>= 3.10) |
 | `FMTUNE_SOURCE_PATH` / `FMTUNE_SOURCE_REPO` | empty | Exactly one must be set |
@@ -52,7 +52,8 @@ Before anything uses them, the script makes `FMTUNE_OUTPUT_DIR`, `FMTUNE_CACHE_D
 starting directory (it later runs `main.py` from the fm-tune root, and the marker is read
 off-node), and drops a trailing `/` from `FMTUNE_OUTPUT_DIR`. `FMTUNE_OUTPUT_DIR` must not
 contain `"`, `\` or a control character: the monitors build the binding as
-`{ "path": "<path>" }` and parse it as JSON.
+`{ "path": "<path>" }` and parse it as JSON. It must not end in a space either: the bash
+monitor's `LocalFileStream` strips trailing whitespace from each log line.
 
 Bash launcher env values reach the child unexpanded, so the bash template leaves
 `FMTUNE_OUTPUT_DIR` and `FMTUNE_CACHE_DIR` empty and the script derives them from the

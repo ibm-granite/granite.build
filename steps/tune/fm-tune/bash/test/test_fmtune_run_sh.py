@@ -578,8 +578,11 @@ def test_an_existing_empty_output_dir_is_accepted(env):
 
 # What a successful run leaves at the output dir's root after --model_at_root:
 # config.json (HF full fine-tune, verl), adapter_config.json (PEFT, MLX LoRA),
-# model.safetensors (MLX full fine-tune, which writes no config.json).
-@pytest.mark.parametrize("marker", ["config.json", "adapter_config.json", "model.safetensors"])
+# model.safetensors (MLX full fine-tune, which writes no config.json),
+# adapters.safetensors (MLX LoRA, whose adapter_config.json write is best-effort).
+@pytest.mark.parametrize(
+    "marker", ["config.json", "adapter_config.json", "model.safetensors", "adapters.safetensors"]
+)
 def test_a_previous_model_output_is_accepted(env, marker):
     out = pathlib.Path(env["FMTUNE_OUTPUT_DIR"])
     out.mkdir()
@@ -587,6 +590,54 @@ def test_a_previous_model_output_is_accepted(env, marker):
     (out / "tokenizer_config.json").write_text("{}")
     proc = _run(env)
     assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.parametrize("which", ["FMTUNE_BASE_MODEL_DIR", "FMTUNE_DATASET_DIR"])
+def test_an_output_dir_that_is_an_input_dies_before_any_clone(env, tmp_path, which):
+    """A base model has config.json at its root, so it passes the model-output check;
+    promoting into it would then delete the base weights (or the dataset)."""
+    _git_repo(env, tmp_path)
+    git_ran = _git_spy(env, tmp_path)
+    if which == "FMTUNE_BASE_MODEL_DIR":
+        (tmp_path / "bm").mkdir()
+        env[which] = str(tmp_path / "bm")
+    inp = pathlib.Path(env[which])
+    (inp / "config.json").write_text("{}")
+    (inp / "model.safetensors").write_text("w")
+    env["FMTUNE_OUTPUT_DIR"] = f"{inp}/./"  # another spelling of the same dir
+    proc = _run(env)
+    assert proc.returncode != 0
+    assert "fm-tune: output dir " in proc.stderr and "is the same directory as" in proc.stderr
+    assert not git_ran.exists()
+    assert not pathlib.Path(env["FMTUNE_CACHE_DIR"]).exists()
+    assert (inp / "model.safetensors").read_text() == "w"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the read-only mode")
+def test_an_output_dir_that_cannot_be_listed_dies(env, tmp_path):
+    out = pathlib.Path(env["FMTUNE_OUTPUT_DIR"])
+    out.mkdir()
+    (out / "precious.txt").write_text("keep me\n")
+    out.chmod(0o300)  # writable and searchable, not readable
+    try:
+        proc = _run(env)
+    finally:
+        out.chmod(0o755)
+    assert proc.returncode != 0
+    assert f"fm-tune: cannot list output dir {out}" in proc.stderr
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+
+
+def test_a_dangling_symlink_at_the_output_path_dies_before_any_clone(env, tmp_path):
+    _git_repo(env, tmp_path)
+    git_ran = _git_spy(env, tmp_path)
+    out = pathlib.Path(env["FMTUNE_OUTPUT_DIR"])
+    out.symlink_to(tmp_path / "missing")
+    proc = _run(env)
+    assert proc.returncode != 0
+    assert f"fm-tune: output dir {out} is a dangling symlink" in proc.stderr
+    assert not git_ran.exists()
+    assert not pathlib.Path(env["FMTUNE_CACHE_DIR"]).exists()
 
 
 def test_relative_paths_are_made_absolute_against_the_start_dir(env, tmp_path):
@@ -661,8 +712,9 @@ def test_a_root_output_dir_is_not_stripped_to_empty_and_is_refused(env, tmp_path
 
 # The monitors build the binding as '{ "path": "<marker path>" }' and json.loads it:
 # a '"' or a control character fails the parse, a '\' is read as a JSON escape, and
-# a newline ends the marker line early, registering a truncated path.
-@pytest.mark.parametrize("bad", ['a"b', "a\\b", "a\nb", "a\tb"])
+# a newline ends the marker line early, registering a truncated path. The bash
+# monitor's LocalFileStream rstrip()s each line, so a trailing space is lost too.
+@pytest.mark.parametrize("bad", ['a"b', "a\\b", "a\nb", "a\tb", "a "])
 def test_an_output_path_that_breaks_the_marker_json_dies_before_any_clone(env, tmp_path, bad):
     _git_repo(env, tmp_path)
     git_ran = _git_spy(env, tmp_path)

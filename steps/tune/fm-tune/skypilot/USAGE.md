@@ -28,8 +28,9 @@ What a run does:
 Extra inputs may be bound (`allow_unknown: true`) so a recipe can order targets.
 
 The output directory must be new, empty, or a previous model output (`config.json`,
-`adapter_config.json` or `model.safetensors` at its root). Anything else fails the run before
-any clone or install, because on success `--model_at_root` deletes every other entry in it. A
+`adapter_config.json`, `model.safetensors` or `adapters.safetensors` at its root), and must not
+be the `base_model` or `dataset` input directory. Anything else fails the run before any clone
+or install, because on success `--model_at_root` deletes every other entry in it. A
 failed run leaves its trial and checkpoint directories (`ray_results/`, `outputs/`,
 `final_checkpoints/`, ...) there with no model, so a retry into the same `output_path` is
 refused: delete that directory or use a new `output_path`. For the same reason fm-tune's
@@ -62,7 +63,7 @@ subtraction in Jinja.
 | `seed` | `""` | `--seed`, omitted when empty (fm-tune's default, 42) |
 | `config_preset` | `autotune.yaml` | Bundled `autotune/configs/<preset>`, used when `hpo_config` is empty |
 | `hpo_config` | `{}` | Inline HPO config (AutoTuneX's `config_data`), written to a file for `--config_file` |
-| `output_path` | `""` | SkyPilot only. `""` means `./model` in the run workdir. Must not contain `"`, `\` or a control character. Ignored on bash |
+| `output_path` | `""` | SkyPilot only. `""` means `./model` in the run workdir. Must not contain `"`, `\` or a control character, or end in a space. Ignored on bash |
 | `extra_args` | `""` | Appended to the `main.py` command line, split on whitespace and newlines (no quoting) |
 | `python` | `""` | Interpreter that creates the venv. Empty means the injected python (bash) or `python3` (SkyPilot). Must be 3.10 or newer |
 | `autotunex.server_url` | `""` | `--autotunex_server_url`, omitted when empty |
