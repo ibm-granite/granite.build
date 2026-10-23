@@ -19,28 +19,32 @@ log() { echo "[fm-tune] $*"; }
 # killed between mkdir and the write) is stale once older than the timeout (and
 # at least a minute).
 : "${FMTUNE_LOCK_TIMEOUT:=1800}"
-case "$FMTUNE_LOCK_TIMEOUT" in ''|*[!0-9]*) die "FMTUNE_LOCK_TIMEOUT must be a whole number of seconds" ;; esac
+# At most 9 digits: $(( )) would wrap a longer one (to a negative -mmin, say).
+case "$FMTUNE_LOCK_TIMEOUT" in ''|*[!0-9]*|??????????*)
+  die "FMTUNE_LOCK_TIMEOUT must be a whole number of seconds (at most 9 digits)" ;; esac
 FMTUNE_LOCK_TIMEOUT=$((10#$FMTUNE_LOCK_TIMEOUT))  # a leading 0 would read as octal in $(( ))
 host="$(uname -n)"
 held_lock=""
-# Taking a lock is mkdir, then claim(): link a fully written <host>:<pid> file
-# in as pid. link(2) succeeds only where no file is, atomically (NFS too), so of
-# several claimers of one dir exactly one wins, and a claimed pid file is never
-# empty. While a lock is held its pid file is there, so no claim can succeed,
-# and no waiter removes a lock dir, so mkdir never lets a second build in. A
-# waiter takes over a stale lock without removing anything:
-#  - no pid file and the dir is old: claim it in place.
-#  - an empty pid file (left by an older version) and the dir is old, or a pid
-#    file naming a dead owner on this host: steal() renames it aside (of several
-#    renamers one wins) and re-reads the moved file. If another waiter took the
-#    lock over after this one looked, the moved file is that waiter's live claim,
-#    not what was judged, so it is linked back. While it is aside no one else can
-#    claim the dir: there is no pid file to rename, and the rename has just
-#    changed the dir's mtime, so it is not old (hence the 1-minute floor). Only
-#    a third waiter reading a cached (NFS) mtime from before the takeover could
-#    misjudge it, inside that window of milliseconds.
-# unlock renames the dir away before removing it, so a waiter's rename or claim
-# can't land in a dir rm -rf is part-way through.
+# How a lock is taken; no waiter ever removes a lock dir, so mkdir lets one in:
+#  - mkdir the dir, then claim(): link a fully written <host>:<pid> file in as
+#    pid. A link is made only where no file is (atomic, NFS too), so one claimer
+#    wins, and a held lock always has a non-empty pid file.
+#  - pid names a dead owner on this host, or is empty (an older version's) in an
+#    old dir: steal() renames it aside (one renamer wins) and re-reads it. Unless
+#    it is still what was judged, it was a newer, live claim: link it back (if
+#    even that fails, the aside copy stays for the next pass to restore).
+#  - no pid but a pid.stale.* copy (a stealer died before putting it back): link
+#    the newest copy back as pid (never over one) and judge that owner as usual:
+#    if it is dead, the next pass takes it over. Pid files are written in the
+#    order their locks are held, so the newest copy is the last holder's. A
+#    pid.new.* claim temp never was a lock's pid file: ignored.
+#  - no pid and no copy, in an old dir: claim it in place.
+# While a pid file is aside, its rename has just touched the dir, so it is not old
+# (hence the 1-minute floor). A waiter on an NFS client that caches the dir's
+# attributes (acregmin/acdirmin: seconds) could still see the old mtime then and
+# claim it, as could a waiter stalled for a minute between its look and its claim:
+# both windows are accepted. unlock removes only a lock still ours, and
+# renames it away first, so nothing lands in a dir rm -rf is part-way through.
 claim() {
   local t="$1/pid.new.$host.$$" r=0
   if ! { echo "$host:$$" > "$t"; } 2>/dev/null; then
@@ -49,8 +53,10 @@ claim() {
   fi
   if ! ln "$t" "$1/pid" 2>/dev/null; then
     r=1
-    ln -f "$t" "$t.l" 2>/dev/null || [ ! -e "$t" ] \
-      || { rm -f "$t"; die "cannot create lock $1: $(dirname "$1") does not support hard links"; }
+    if ! ln -f "$t" "$t.l" 2>/dev/null && [ -e "$t" ]; then
+      rm -f "$t"; rmdir "$1" 2>/dev/null || true  # or every later run waits on it
+      die "cannot create lock $1: $(dirname "$1") does not support hard links"
+    fi
   fi
   rm -f "$t" "$t.l"
   return $r
@@ -58,16 +64,16 @@ claim() {
 steal() {  # $2: the owner judged stale ("" = an empty pid file)
   local s="$1/pid.stale.$host.$$" was
   mv "$1/pid" "$s" 2>/dev/null || return 1
-  was="$(cat "$s" 2>/dev/null || true)"
   # Still dead too: a new build given the dead one's pid would write the same text.
-  if [ "$was" = "$2" ] && { [ -z "$2" ] || ! kill -0 "${2##*:}" 2>/dev/null; }; then
+  if was="$(cat "$s" 2>/dev/null)" && [ "$was" = "$2" ] \
+     && { [ -z "$2" ] || ! kill -0 "${2##*:}" 2>/dev/null; }; then
     rm -f "$s"; return 0
   fi
-  ln "$s" "$1/pid" 2>/dev/null || true  # a live claim: put it back
-  rm -f "$s"; return 1
+  if ln "$s" "$1/pid" 2>/dev/null || [ "$s" -ef "$1/pid" ]; then rm -f "$s"; fi
+  return 1
 }
 lock() {
-  local owner pidfile start=$SECONDS
+  local owner pidfile aside start=$SECONDS
   while ! { mkdir "$1" 2>/dev/null && claim "$1"; }; do
     if [ ! -d "$1" ]; then
       mkdir "$1" 2>/dev/null && claim "$1" && break  # released between the two mkdirs
@@ -75,8 +81,12 @@ lock() {
     fi
     pidfile=""; [ ! -e "$1/pid" ] || pidfile=1
     owner="$(cat "$1/pid" 2>/dev/null || true)"
+    aside="$(ls -t "$1" 2>/dev/null | awk '/^pid\.stale\./ && !n++')" || true
     if [ "$owner" = "$host:$$" ]; then
       break  # our claim, though its link was reported as failed (NFS can)
+    elif [ -z "$pidfile" ] && [ -n "$aside" ]; then
+      log "restoring the owner of lock $1 from $aside"
+      ln "$1/$aside" "$1/pid" 2>/dev/null && rm -f "$1/$aside"
     elif [ -z "$owner" ]; then
       # find -mmin (whole minutes, rounded up) is the same on GNU and BSD; stat is not.
       if [ -n "$(find "$1" -maxdepth 0 -mmin +$(( FMTUNE_LOCK_TIMEOUT ? (FMTUNE_LOCK_TIMEOUT + 59) / 60 : 1 )) 2>/dev/null)" ] \
@@ -95,9 +105,12 @@ lock() {
   held_lock="$1"
   trap unlock EXIT
 }
-unlock() {
-  mv "$held_lock" "$held_lock.gone.$host.$$" 2>/dev/null || true
-  rm -rf "$held_lock.gone.$host.$$"; held_lock=""; trap - EXIT
+unlock() {  # forget the lock first: a failed or interrupted rm must not unlock twice
+  local l="$held_lock"
+  held_lock=""; trap - EXIT
+  [ "$(cat "$l/pid" 2>/dev/null)" = "$host:$$" ] || return 0
+  mv "$l" "$l.gone.$host.$$" 2>/dev/null || return 0
+  rm -rf "$l.gone.$host.$$" 2>/dev/null || true
 }
 
 : "${FMTUNE_PYTHON:=}"
@@ -153,6 +166,10 @@ fi
 # before anything uses it. No realpath/readlink -f (macOS bash 3.2). Empty stays empty.
 case $FMTUNE_OUTPUT_DIR in /*) ;; *) FMTUNE_OUTPUT_DIR="$PWD/$FMTUNE_OUTPUT_DIR" ;; esac
 case $FMTUNE_CACHE_DIR in /*) ;; *) FMTUNE_CACHE_DIR="$PWD/$FMTUNE_CACHE_DIR" ;; esac
+# Every trailing '/', but not a lone one: [ -L /tmp/ ] looks through the link.
+while [ "$FMTUNE_CACHE_DIR" != / ] && [ "${FMTUNE_CACHE_DIR%/}" != "$FMTUNE_CACHE_DIR" ]; do
+  FMTUNE_CACHE_DIR="${FMTUNE_CACHE_DIR%/}"
+done
 case $FMTUNE_DATASET_DIR in /*) ;; *) FMTUNE_DATASET_DIR="$PWD/$FMTUNE_DATASET_DIR" ;; esac
 case $FMTUNE_SOURCE_PATH in ''|/*) ;; *) FMTUNE_SOURCE_PATH="$PWD/$FMTUNE_SOURCE_PATH" ;; esac
 case $FMTUNE_BASE_MODEL_DIR in ''|/*) ;; *) FMTUNE_BASE_MODEL_DIR="$PWD/$FMTUNE_BASE_MODEL_DIR" ;; esac

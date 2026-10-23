@@ -238,7 +238,13 @@ runs race on the cache and the output directory.
   created, is not owned by the user running the build, or is group- or world-writable (the
   run executes code from it). An existing dir is never `chmod`ed; the message gives the fix,
   for example `chmod go-w <dir>`. A symlink to a dir of your own (say, on a bigger disk) is
-  followed and the target checked. A symlink owned by another user is refused.
+  followed and the target checked. A symlink owned by another user is refused. Trailing `/`s
+  are dropped first.
+- Only the cache dir itself is checked, not its parents: `GB_SHARED_WORKDIR` (or the bash
+  `GB_HOME`) is assumed to be sticky or admin-owned. fm-tune's own `autotune/tmpdir.py`, by
+  contrast, checks each level it creates. macOS ACLs on the dir are not checked either.
+- The cache's filesystem must support hard links: the locks are claimed with `ln`. A mount
+  without them (gcsfuse-style object-store mounts) fails at the first lock, naming it.
 - Migrating: an earlier version used `.fm-tune-cache/<uid>` on SkyPilot. Delete those dirs
   once no build uses them; the next run rebuilds its cache at the new path.
 - A cached `source.repo` clone is refreshed on every run (`[fm-tune] updating ...`), so a
@@ -246,16 +252,20 @@ runs race on the cache and the output directory.
 - Every commit trained gets its own immutable `tree-<sha>` and its own `venv-<key>`. The
   venv for `extra: core` is large (1.5 GB measured on the arm64 CPU Slurm nodes). Nothing
   prunes them. Pin `source.ref` to a tag so builds share one tree and one venv.
-- To clean up, delete `tree-*`, `venv-*`, `src-*` (the clone mirrors) and any stale `*.lock`
-  directories in the cache dir, only while no fm-tune build is running. They are rebuilt on
-  the next run.
+- To clean up, delete `tree-*`, `venv-*`, `src-*` (the clone mirrors), any stale `*.lock`
+  directories and any `*.lock.gone.*` left by a failed removal in the cache dir, only while no
+  fm-tune build is running. They are rebuilt on the next run. Inside a lock dir, stray
+  `pid.stale.*` and `pid.new.*` files are left by a run killed mid-takeover; they go with
+  the lock dir.
 - A lock in the cache serialises only the clone and tree extraction and the venv build, not
   training, so concurrent builds still train in parallel. Each lock records its owner as
   `<host>:<pid>`. A lock whose owner ran on the same host and died is taken over. A lock held
   from another host is never taken over: the run waits up to `FMTUNE_LOCK_TIMEOUT` seconds
   (default 1800) and then fails, naming the lock directory. Remove it only if no fm-tune build
   is running. A lock with no owner recorded is taken over once it is older than the timeout
-  (at least a minute). Two builds taking over one stale lock at once never both get it.
+  (at least a minute). Of several builds taking over one stale lock at once, only one gets
+  it, except on NFS: a client caching the lock dir's attributes (`acdirmin`, seconds) can
+  misjudge its age for that long, and in a race of three or more builds that is accepted.
 
 ## Memory knob: `FMTUNE_OBJECT_STORE_BYTES`
 

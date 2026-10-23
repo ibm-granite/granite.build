@@ -25,8 +25,10 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
+import time
 
 import pytest
 import yaml
@@ -625,6 +627,145 @@ def test_concurrent_takeovers_of_one_stale_lock_never_overlap(env, tmp_path, kin
     assert not list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("*.lock"))
 
 
+@pytest.mark.parametrize("put_back_fails_once", [False, True])
+def test_an_unreadable_moved_aside_pid_file_is_put_back(env, tmp_path, put_back_fails_once):
+    """A read error on the moved-aside file read as "": for a waiter that judged an
+    empty pid file, the same text, so it removed a live holder's claim. If even the
+    put-back fails, the moved-aside file is left, and the next pass restores it."""
+    _git_repo(env, tmp_path)
+    lock = _stale_lock(env, "empty-pid")
+    flipped = tmp_path / "flipped"
+    _stub(tmp_path / "bin", "find",
+          f'out="$("{shutil.which("find")}" "$@")"; rc=$?\n'
+          f'if [ "$1" = "{lock}" ] && [ ! -e "{flipped}" ]; then\n'
+          f'  touch "{flipped}"; rm -rf "{lock}"; mkdir "{lock}"; echo otherhost:1 > "{lock}/pid"\n'
+          'fi\n'
+          '[ -z "$out" ] || printf "%s\\n" "$out"; exit $rc\n')
+    _stub(tmp_path / "bin", "cat",
+          f'case "$*" in *pid.stale*) exit 1 ;; esac\nexec "{shutil.which("cat")}" "$@"\n')
+    if put_back_fails_once:
+        _stub(tmp_path / "bin", "ln",
+              f'case "$1" in *pid.stale*) [ -e "{tmp_path}/ln-failed" ] || '
+              f'{{ touch "{tmp_path}/ln-failed"; exit 1; }} ;; esac\n'
+              f'exec "{shutil.which("ln")}" "$@"\n')
+    _stub(tmp_path / "bin", "sleep", f'exec "{shutil.which("sleep")}" 0.05\n')
+    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+    env["FMTUNE_LOCK_TIMEOUT"] = "0"
+    proc = subprocess.run(["bash", str(_SCRIPT)], env=env, capture_output=True, text=True, timeout=30)
+    assert flipped.exists()
+    assert (lock / "pid").read_text() == "otherhost:1\n", proc.stdout
+    assert sorted(p.name for p in lock.iterdir()) == ["pid"]
+    assert "taking over stale" not in proc.stdout
+    assert f"fm-tune: lock {lock} is held by otherhost:1" in proc.stderr
+    assert (tmp_path / "ln-failed").exists() == put_back_fails_once
+
+
+@pytest.mark.parametrize("alive", [True, False])
+def test_a_moved_aside_owner_is_restored_not_claimed_over(env, tmp_path, alive):
+    """A waiter killed between moving a pid file aside and putting it back left a live
+    holder's lock with no pid file. Once old, it was claimed in place: two holders.
+    The moved-aside owner must be restored and judged; a claim temp never held it."""
+    _git_repo(env, tmp_path)
+    lock = _clone_lock(env)
+    lock.mkdir(parents=True)
+    owner = f"{os.uname().nodename}:{os.getpid()}" if alive else _dead_owner()
+    (lock / f"pid.stale.{os.uname().nodename}.1").write_text(owner + "\n")
+    (lock / f"pid.new.{os.uname().nodename}.2").write_text("otherhost:2\n")
+    old = lock.stat().st_mtime - 3600
+    os.utime(lock, (old, old))
+    _stub(tmp_path / "bin", "sleep", f'exec "{shutil.which("sleep")}" 0.05\n')
+    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+    env["FMTUNE_LOCK_TIMEOUT"] = "60"
+    proc = subprocess.Popen(["bash", str(_SCRIPT)], env=env, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        out, err = proc.communicate(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, err = proc.communicate()
+    if alive:
+        assert "taking over stale" not in out, out
+        assert (lock / "pid").read_text() == owner + "\n"
+        assert not list(lock.glob("pid.stale.*"))
+        assert not pathlib.Path(env["STUB_RECORD"]).exists()
+    else:
+        assert proc.returncode == 0, err
+        assert f"taking over stale lock {lock} from dead pid {owner}" in out
+        assert not lock.exists()
+
+
+def _gone_rm_stub(tmp_path, lock, body: str) -> None:
+    """A stub rm running ``body`` when unlock removes the renamed-away lock dir."""
+    _stub(tmp_path / "bin", "rm",
+          f'case "$*" in *{lock.name}.gone.*) {body} ;; esac\n'
+          f'exec "{shutil.which("rm")}" "$@"\n')
+
+
+def test_a_failed_unlock_never_removes_a_lock_taken_since(env, tmp_path):
+    """rm -rf of the renamed-away dir can fail (NFS .nfsXXXX, EIO): set -e exited
+    there, and the EXIT trap's second unlock moved and removed the lock another
+    build had taken at the freed path meanwhile."""
+    _git_repo(env, tmp_path)
+    lock = _clone_lock(env)
+    _gone_rm_stub(tmp_path, lock,
+                  f'[ -e "{tmp_path}/flipped" ] || {{ touch "{tmp_path}/flipped"; '
+                  f'mkdir "{lock}"; echo otherhost:1 > "{lock}/pid"; exit 1; }}')
+    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+    proc = _run(env)
+    assert (tmp_path / "flipped").exists()
+    assert (lock / "pid").read_text() == "otherhost:1\n", proc.stderr
+    assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT, signal.SIGHUP])
+def test_a_build_killed_while_unlocking_never_removes_a_lock_taken_since(env, tmp_path, sig):
+    """Killed while rm -rf runs: the EXIT trap ran unlock again on the freed path.
+    The signal goes to the process group, as Ctrl-C or a scheduler's kill does."""
+    _git_repo(env, tmp_path)
+    lock = _clone_lock(env)
+    marker = tmp_path / "removing"
+    _gone_rm_stub(tmp_path, lock, f'touch "{marker}"; "{shutil.which("sleep")}" 2')
+    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+    proc = subprocess.Popen(["bash", str(_SCRIPT)], env=env, text=True, start_new_session=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    deadline = time.monotonic() + 15
+    while not marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert marker.exists(), proc.communicate(timeout=15)
+    lock.mkdir()  # another build takes the freed lock
+    (lock / "pid").write_text("otherhost:1\n")
+    os.killpg(proc.pid, sig)
+    proc.communicate(timeout=15)
+    assert (lock / "pid").read_text() == "otherhost:1\n"
+
+
+def test_a_cache_without_hard_links_fails_fast_every_time(env, tmp_path):
+    """The failing claim left its lock dir, so the next run waited out the stale age."""
+    _git_repo(env, tmp_path)
+    _stub(tmp_path / "bin", "ln", "exit 1\n")
+    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+    env["FMTUNE_LOCK_TIMEOUT"] = "60"
+    for _ in range(2):
+        try:
+            proc = subprocess.run(["bash", str(_SCRIPT)], env=env, capture_output=True,
+                                  text=True, timeout=15)
+        except subprocess.TimeoutExpired as e:
+            pytest.fail(f"waited on the lock the failed claim left: {e.stdout!r}")
+        assert proc.returncode == 2
+        assert "does not support hard links" in proc.stderr
+    assert not _clone_lock(env).exists()
+
+
+@pytest.mark.parametrize("timeout", ["9223372036854775807", "1234567890"])
+def test_a_lock_timeout_too_big_for_shell_arithmetic_is_refused(env, timeout):
+    """$(( )) wraps: 2^63-1 + 59 goes negative, so every pid-less lock looked stale."""
+    env["FMTUNE_LOCK_TIMEOUT"] = timeout
+    proc = _run(env)
+    assert proc.returncode == 2
+    assert "fm-tune: FMTUNE_LOCK_TIMEOUT must be a whole number of seconds (at most 9 digits)" in proc.stderr
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+
+
 @pytest.mark.parametrize("timeout", ["0900", "08"])
 def test_a_lock_timeout_with_a_leading_zero_is_read_as_decimal(env, tmp_path, timeout):
     """$(( 08 )) and $(( 0900 )) are octal errors in bash, so the stale check never
@@ -739,6 +880,27 @@ def test_a_symlinked_cache_dir_owned_by_another_user_is_refused(env):
     assert proc.returncode == 2
     assert f"fm-tune: cache dir {link} is a symlink owned by root, not " in proc.stderr
     assert not pathlib.Path(env["STUB_RECORD"]).exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root owns the link")
+def test_a_trailing_slash_does_not_hide_a_symlinked_cache_dir(env):
+    """[ -L /tmp/ ] is false (the slash resolves the link): strip it first."""
+    link = next((p for p in ("/tmp", "/etc", "/var", "/bin", "/lib", "/sbin")
+                 if os.path.islink(p) and os.path.isdir(p) and os.lstat(p).st_uid == 0), None)
+    if link is None:
+        pytest.skip("no root-owned symlink to a directory here")
+    env["FMTUNE_CACHE_DIR"] = link + "//"
+    proc = _run(env)
+    assert proc.returncode == 2
+    assert f"fm-tune: cache dir {link} is a symlink owned by root, not " in proc.stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root owns /")
+def test_a_root_cache_dir_is_not_stripped_to_empty(env):
+    env["FMTUNE_CACHE_DIR"] = "/"
+    proc = _run(env)
+    assert proc.returncode == 2
+    assert "fm-tune: cache dir / is owned by root, not " in proc.stderr
 
 
 def test_an_annotated_tag_resolves_to_one_tree_and_its_commit(env, tmp_path):
