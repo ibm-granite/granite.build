@@ -75,14 +75,15 @@ def _raise_error(msg):
 
     The launcher-config fill uses the strict Jinja env, which exposes
     `raise_error` so a template can fail the build at render time. The step's
-    accelerators value calls it when no GPU type is given.
+    `validate` macro calls it for config-only errors (missing keys, bad
+    `output`, `num_nodes != 1`) and its overrides loop for non-scalar values.
     """
     raise ValueError(msg)
 
 
-# ComputeConfig always populates every field (model defaults), so a caller that
-# overrides one key still sees the rest — merge the override over this floor.
-_DEFAULT_COMPUTE = {"num_nodes": 1, "num_gpus_per_node": 8, "gpu_model": ""}
+# The step's compute_config keys the template reads; a test overrides one and
+# still sees the rest.
+_DEFAULT_COMPUTE = {"num_nodes": 1}
 
 
 def _render(source, nrl, compute=None, bindings=None) -> str:
@@ -254,29 +255,25 @@ class TestGuardArgv:
 
 
 class TestAccelerators:
-    """The step must translate compute_config into a SkyPilot `accelerators`
-    request. gbserver's launcher does NOT source GPUs from compute_config (they
-    flow via launcher_config.resources), so the step renders them here.
+    """GPUs are the build's `launcher_config.resources.accelerators`, which
+    SkyPilot turns into the node's GPUs and exports as SKYPILOT_NUM_GPUS_PER_NODE
+    for the run script (#536). The step itself requests none, so the build's
+    value is the only GPU count.
     """
 
-    def test_accelerators_renders_type_and_count(self, launcher):
-        value = _render(
-            launcher["resources"]["accelerators"],
-            {},
-            compute={"num_nodes": 1, "num_gpus_per_node": 4, "gpu_model": "A10G"},
-        )
-        assert value == "A10G:4"
+    def test_step_leaves_accelerators_to_the_build(self, launcher):
+        assert "accelerators" not in (launcher.get("resources") or {})
 
-    def test_accelerators_requires_gpu_model(self, launcher):
-        # Empty gpu_model would render accelerators="" which SkyPilot reads as
-        # {'': 1} — a request for a blank-named accelerator that silently
-        # provisions a CPU-only node. Fail at render time instead.
-        with pytest.raises(Exception):
-            _render(
-                launcher["resources"]["accelerators"],
-                {},
-                compute={"num_nodes": 1, "num_gpus_per_node": 2, "gpu_model": ""},
-            )
+    def test_step_does_not_default_a_gpu_count(self, compute_defaults):
+        # A default count here would make the launcher warn on every build and
+        # read as a GPU request that SkyPilot never receives.
+        assert "num_gpus_per_node" not in compute_defaults
+
+    def test_run_does_not_take_the_count_on_argv(self, launcher, nrl_defaults):
+        argv = _argv_from(
+            _render(launcher["run"], _cfg(nrl_defaults)), "nemo_rl_run.sh"
+        )
+        assert "--num-gpus-per-node" not in argv
 
 
 class TestRunArgv:
@@ -289,19 +286,6 @@ class TestRunArgv:
         assert _opt(argv, "--artifact-id") == "model"
         assert _opt(argv, "--base-model") == "/staged/base"
         assert _opt(argv, "--nemo-rl-root").endswith("nemo-rl")
-
-    def test_run_sees_num_gpus_per_node_from_compute_config(
-        self, launcher, nrl_defaults
-    ):
-        argv = _argv_from(
-            _render(
-                launcher["run"],
-                _cfg(nrl_defaults),
-                compute={"num_nodes": 1, "num_gpus_per_node": 4, "gpu_model": "A10G"},
-            ),
-            "nemo_rl_run.sh",
-        )
-        assert _opt(argv, "--num-gpus-per-node") == "4"
 
     def test_output_path_defaults_to_workdir_hf_output(self, launcher, nrl_defaults):
         argv = _argv_from(

@@ -544,9 +544,12 @@ Three keys are read:
 | `num_cpus_per_node` | A low-precedence `cpus` floor on `sky.Resources`. |
 | `total_memory_per_node` | A low-precedence `memory` floor (skipped on slurm/lsf). |
 
-`num_gpus_per_node` is **not** read. Set `resources.accelerators` in the step.yaml instead (you may
-template it off `{{ config.compute_config.* }}` for a single source of truth). Accelerators are **per
-node**, so `accelerators: "H100:8"` with `num_nodes: 2` requests 16 GPUs in total.
+`num_gpus_per_node` is **not** read. Request GPUs with `resources.accelerators` (in the step.yaml or
+the build.yaml), e.g. `accelerators: "H100:8"`. A step that needs the count at runtime can read
+`SKYPILOT_NUM_GPUS_PER_NODE`, which SkyPilot exports from that request, so the count is stated once.
+If `num_gpus_per_node > 0` is set with neither `resources.accelerators` nor `resources.instance_type`,
+gbserver logs a warning: the step would run on a node with no GPU. Accelerators are **per node**, so
+`accelerators: "H100:8"` with `num_nodes: 2` requests 16 GPUs in total.
 
 Do not put `num_nodes` under `resources`: it is a `sky.Task` field, not a `sky.Resources` one, so
 SkyPilot discards it silently. gbserver warns when it sees one, and the run proceeds single-node.

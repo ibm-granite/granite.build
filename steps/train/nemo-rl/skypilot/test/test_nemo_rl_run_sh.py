@@ -223,21 +223,27 @@ class TestArgAssembly:
             "logger.wandb_enabled=true"
         )
 
-    def test_injects_cluster_gpus_per_node_when_given(self, tmp_path):
+    def test_injects_cluster_gpus_per_node_from_skypilot(self, tmp_path):
         # sft.yaml defaults cluster.gpus_per_node=1, so without this the step
-        # would train on a single GPU even on a multi-GPU node. It is a FORCED
-        # override (after "$@"), so it wins over any user override, keeping the
-        # node's GPU count and NeMo-RL's cluster view in lockstep.
+        # would train on a single GPU even on a multi-GPU node. SkyPilot exports
+        # the node's GPU count (from the build's resources.accelerators) as
+        # SKYPILOT_NUM_GPUS_PER_NODE. It is a FORCED override (after "$@"), so it
+        # wins over any user override and stays in lockstep with the node.
         proc, runs, _ = _run(
             tmp_path,
-            ["--base-model", "/staged/base", "--num-gpus-per-node", "4"],
+            ["--base-model", "/staged/base", "--", "cluster.gpus_per_node=1"],
+            env_extra={"SKYPILOT_NUM_GPUS_PER_NODE": "4"},
         )
         assert proc.returncode == 0, proc.stderr
         ov = _hydra_overrides(_train_argv(runs))
-        assert "cluster.gpus_per_node=4" in ov
+        assert ov[-1] == "cluster.gpus_per_node=4"
 
-    def test_omits_cluster_gpus_per_node_when_absent(self, tmp_path):
-        proc, runs, _ = _run(tmp_path, ["--base-model", "/staged/base"])
+    @pytest.mark.parametrize("env_extra", [None, {"SKYPILOT_NUM_GPUS_PER_NODE": "0"}])
+    def test_omits_cluster_gpus_per_node_without_gpus(self, tmp_path, env_extra):
+        # Unset (outside SkyPilot) or 0 (a node with no GPU): nothing to pin.
+        proc, runs, _ = _run(
+            tmp_path, ["--base-model", "/staged/base"], env_extra=env_extra
+        )
         assert proc.returncode == 0, proc.stderr
         ov = _hydra_overrides(_train_argv(runs))
         assert not any(o.startswith("cluster.gpus_per_node=") for o in ov)
