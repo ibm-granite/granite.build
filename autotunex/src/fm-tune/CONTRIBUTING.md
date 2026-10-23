@@ -343,6 +343,7 @@ Defined in `pyproject.toml` under `[tool.pytest.ini_options]`:
 |--------|---------|
 | `slow` | Downloads or loads HF model weights (>50 MB). Skip in fast iterations. |
 | `gpu`  | Requires CUDA. Skipped on CPU-only machines. |
+| `full` | Imports the `[full]` online-RL stack (verl, hydra, omegaconf). Skipped in CI, which installs `[core]`. |
 
 Use markers when adding tests:
 

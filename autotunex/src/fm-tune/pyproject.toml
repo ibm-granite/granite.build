@@ -184,4 +184,5 @@ markers = [
     "slow: tests that download or load HF model weights (>50MB)",
     "gpu: tests that require CUDA",
     "mps: tests that require an Apple Silicon MPS device",
+    "full: tests that import the [full] online-RL stack (verl, hydra, omegaconf)",
 ]
