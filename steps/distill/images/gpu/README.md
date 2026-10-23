@@ -13,11 +13,10 @@ step — checked directly against the real `uv.lock` files in
 ## Building and publishing
 
 ```shell
-cd steps/distill   # build context is the PARENT of this directory --
-                    # the Dockerfile COPYs the shared src/gb_steps_post_training/
-                    # package from there, so `.` must be steps/distill/, not
-                    # steps/distill/gpu/ itself.
-podman build --platform linux/amd64 -f gpu/Dockerfile . -t <registry>/gb-step-distillation-gpu:<tag>
+cd steps/distill   # build context is steps/distill/ itself, not images/gpu/: the
+                    # Dockerfile COPYs the shared src/gb_steps_post_training/
+                    # package and each step's src/ from there.
+podman build --platform linux/amd64 -f images/gpu/Dockerfile . -t <registry>/gb-step-distillation-gpu:<tag>
 podman push <registry>/gb-step-distillation-gpu:<tag>
 ```
 

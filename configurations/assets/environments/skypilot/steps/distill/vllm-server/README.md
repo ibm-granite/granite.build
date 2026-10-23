@@ -46,7 +46,7 @@ see [Inputs](#inputs) below. For on-policy GOLD this is the **student**, not the
 
 No `code_config` field: the server code
 (`gb_steps_post_training.distillation.run_vllm_serve`) is baked into the shared GPU
-image this step runs in (`steps/distill/gpu/Dockerfile` COPYs `steps/distill/src/`,
+image this step runs in (`steps/distill/images/gpu/Dockerfile` COPYs `steps/distill/src/`,
 pinned `a5d59bc45524a8d75706e20d44ae1a254f273f23` — see `steps/distill/src/VENDORED.md`),
 the same as `distill-gold`. There is no per-run clone to configure.
 

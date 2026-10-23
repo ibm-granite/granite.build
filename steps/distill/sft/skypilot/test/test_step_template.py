@@ -400,7 +400,7 @@ class TestConfigDefaults:
 
     def test_tracking_is_entirely_off(self, step):
         """All five empty means off. The shared GPU image now carries both clearml and
-        wandb (steps/distill/gpu/pyproject.toml), so setting any of them works rather
+        wandb (steps/distill/images/gpu/pyproject.toml), so setting any of them works rather
         than failing at import; tracking.py still imports them lazily and only when a
         project is configured, so leaving all five empty stays the safe default."""
         assert set(step["config"]["tracking"].values()) == {""}

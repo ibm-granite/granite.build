@@ -14,7 +14,7 @@
 #
 # Shared CPU image for the distillation steps that do text/data processing
 # only, no GPU (corpus-pin-check, corpus-prep, corpus-sources,
-# tokenizer-align, hf-export). See steps/distill/gpu/Dockerfile for the GPU
+# tokenizer-align, hf-export). See steps/distill/images/gpu/Dockerfile for the GPU
 # sibling and the shared rationale (one image per resource class, not one
 # per step -- checked directly against each step's own pyproject.toml, not
 # assumed).
@@ -32,7 +32,7 @@ ARG UBUNTU_TAG=22.04
 FROM ubuntu:${UBUNTU_TAG}
 
 ARG DEBIAN_FRONTEND=noninteractive
-# 3.12, matching steps/distill/gpu/'s pin for consistency -- none of this
+# 3.12, matching steps/distill/images/gpu/'s pin for consistency -- none of this
 # image's three contributing steps pin an exact minor version (all declare
 # requires-python>=3.10), so there's no correctness requirement forcing a
 # specific one.
@@ -48,7 +48,7 @@ RUN uv python install ${UV_PYTHON} \
     && uv python pin ${UV_PYTHON} --no-workspace
 
 # Everything the CPU steps run lives under DISTILL_HOME, baked in at build time
-# (see steps/distill/gpu/Dockerfile for the layout); nothing is cloned or mounted
+# (see steps/distill/images/gpu/Dockerfile for the layout); nothing is cloned or mounted
 # at job launch.
 ENV DISTILL_HOME=/opt/distill
 COPY src/gb_steps_post_training ${DISTILL_HOME}/src/gb_steps_post_training
@@ -59,7 +59,7 @@ ENV PYTHONPATH=${DISTILL_HOME}/src
 # code_config.python/PATH convention (confirmed across corpus-pin-check,
 # corpus-prep, corpus-sources, tokenizer-align, hf-export: all hardcode
 # /stage/.venv/bin/python today against the opaque kd-sandbox-distill image).
-COPY cpu/pyproject.toml cpu/uv.lock /opt/distill-cpu-src/
+COPY images/cpu/pyproject.toml images/cpu/uv.lock /opt/distill-cpu-src/
 WORKDIR /opt/distill-cpu-src
 ENV UV_PROJECT_ENVIRONMENT=/stage/.venv
 ENV VIRTUAL_ENV=/stage/.venv

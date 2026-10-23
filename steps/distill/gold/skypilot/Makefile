@@ -2,7 +2,7 @@
 #
 # GOLD knowledge distillation. No Dockerfile here: common.mk auto-detects a
 # non-image step and the image / publish-image targets are no-ops. Runs in
-# the shared GPU image (steps/distill/gpu/, built and published separately --
+# the shared GPU image (steps/distill/images/gpu/, built and published separately --
 # see that directory's README), which carries both the trainer source
 # (steps/distill/src/, baked in -- no runtime clone) and its pinned venv at
 # /stage/.venv. One image serves both LSF and SLURM subtypes, since nothing

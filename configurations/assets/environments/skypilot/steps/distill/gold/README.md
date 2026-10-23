@@ -129,7 +129,7 @@ On the SLURM subtype, the vLLM-serving branch runs `ldconfig` before starting th
 SLURM's pyxis/enroot builds the container in a separate `srun` from the one that injects
 the NVIDIA driver, so the image's own `/etc/ld.so.cache` misses `libcuda.so` and Triton's
 driver discovery fails with "libcuda.so cannot found!" otherwise. Unconditional and
-harmless where the gap doesn't exist — see `steps/distill/gpu/README.md`.
+harmless where the gap doesn't exist — see `steps/distill/images/gpu/README.md`.
 
 | Field | Type | Purpose |
 |---|---|---|
@@ -167,7 +167,7 @@ harmless where the gap doesn't exist — see `steps/distill/gpu/README.md`.
 Unlike every other ported distillation step, this step has no `code_config` and clones
 nothing at job-launch time. The trainer (`gold.py`, `custom_gold_trainer.py`,
 `run_vllm_serve.py` and their shared helpers) is baked directly into the shared GPU
-image (`steps/distill/gpu/Dockerfile` COPYs `steps/distill/src/`, pinned to
+image (`steps/distill/images/gpu/Dockerfile` COPYs `steps/distill/src/`, pinned to
 `gb-steps-distillation` commit `a5d59bc45524a8d75706e20d44ae1a254f273f23`), including a
 locally-folded-in CE-anchor/entropy-guard patch — see
 [CE anchor and entropy guard](#ce-anchor-and-entropy-guard-1) and
@@ -179,7 +179,7 @@ config field.
 
 This step runs in the shared GPU image used by every GPU distillation step (`gold`, `sft`,
 `logit-precompute`, `eval`, `vllm-server`, `gen-smoke`, `probe`) — see
-`steps/distill/gpu/README.md`. The image bakes in CUDA, a uv-managed Python 3.12, the
+`steps/distill/images/gpu/README.md`. The image bakes in CUDA, a uv-managed Python 3.12, the
 trainer's own pinned deps (torch, transformers, trl, vllm, deepspeed, etc.) via
 `uv sync --locked` at build time, and the vendored trainer source itself, so nothing
 installs or clones at job-launch time. A dependency-pin bump means rebuilding and

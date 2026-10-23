@@ -77,7 +77,7 @@ ENV PYTHONPATH=${DISTILL_HOME}/src
 # exactly where every GPU step's code_config.python/PATH convention already
 # expects it (/stage/.venv), with no separate manual PATH bookkeeping needed
 # here beyond what `uv python install/pin` above already did.
-COPY gpu/pyproject.toml gpu/uv.lock /opt/gold-train-src/
+COPY images/gpu/pyproject.toml images/gpu/uv.lock /opt/gold-train-src/
 WORKDIR /opt/gold-train-src
 # VIRTUAL_ENV makes `uv python find` (what the step launchers use) resolve to this
 # venv's interpreter; UV_PROJECT_ENVIRONMENT makes `uv sync` build it here.
@@ -87,8 +87,8 @@ RUN uv sync --locked
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 # Kept at its historical relative path: recipes pass ds_config relative to DISTILL_HOME.
-COPY gpu/configs ${DISTILL_HOME}/steps/distill-gold-train/configs
-COPY gpu/shell ${DISTILL_HOME}/shell
+COPY images/gpu/configs ${DISTILL_HOME}/steps/distill-gold-train/configs
+COPY images/gpu/shell ${DISTILL_HOME}/shell
 COPY gold/skypilot/src ${DISTILL_HOME}/steps/gold
 COPY sft/skypilot/src ${DISTILL_HOME}/steps/sft
 COPY logit-precompute/skypilot/src ${DISTILL_HOME}/steps/logit-precompute

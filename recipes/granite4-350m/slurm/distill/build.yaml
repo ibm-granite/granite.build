@@ -5,7 +5,7 @@
 # This is recipes/granite4-350m/lsf/distill-smoke retargeted from LSF to SLURM,
 # as a REUSABLE recipe rather than a disposable smoke test: the scale knobs in
 # parameters.yaml (MAX_EXAMPLES, GOLD_MAX_STEPS, etc.) start small to validate
-# the shared GPU/CPU images (steps/distill/gpu/, steps/distill/cpu/) and every
+# the shared GPU/CPU images (steps/distill/images/gpu/, steps/distill/images/cpu/) and every
 # ported step's image_id default on SLURM's pyxis/enroot runtime, but the same
 # build.yaml is meant to scale up to a full experiment later via --param,
 # without forking a second file. Same pair, same pipeline shape as the LSF

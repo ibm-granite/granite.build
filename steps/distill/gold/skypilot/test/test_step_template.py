@@ -478,7 +478,7 @@ class TestExternalVllmServer:
 
 class TestDistillSourceDelivery:
     """No code_config here, unlike the other six ported steps: the trainer is baked
-    into the shared GPU image (steps/distill/gpu/Dockerfile COPYs
+    into the shared GPU image (steps/distill/images/gpu/Dockerfile COPYs
     steps/distill/src/), not cloned at job-launch time. distill-gold is the one
     ported step that runs multi-node, where a runtime clone needs its own
     rank-0-clones/others-wait guard against a real race (measured on build
@@ -495,7 +495,7 @@ class TestDistillSourceDelivery:
         assert "deliver_distill_source" not in step["config"]["gold_config"]
 
     def test_code_dir_and_pybin_are_static(self, run_script):
-        """Both paths are fixed by steps/distill/gpu/Dockerfile's own COPY/ENV
+        """Both paths are fixed by steps/distill/images/gpu/Dockerfile's own COPY/ENV
         lines, not resolved from a config field or a clone destination."""
         assert (
             'CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"' in run_script

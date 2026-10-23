@@ -30,7 +30,7 @@ version: 1.0.0
 type: SERVICE
 config:
   # No code_config: run_vllm_serve.py is baked into the shared GPU image
-  # (steps/distill/gpu/Dockerfile COPYs steps/distill/src/, pinned
+  # (steps/distill/images/gpu/Dockerfile COPYs steps/distill/src/, pinned
   # a5d59bc45524a8d75706e20d44ae1a254f273f23), same as distill-gold, rather than
   # cloned at job-launch time. This step is single-node (a SERVICE, not a
   # multi-node training job), so there was never a clone-guard race to avoid here
@@ -146,7 +146,7 @@ environment_configs:
             PYBIN="python"
 
             # Source: baked into the shared GPU image, no clone. Both paths are
-            # fixed by steps/distill/gpu/Dockerfile's own COPY/ENV lines.
+            # fixed by steps/distill/images/gpu/Dockerfile's own COPY/ENV lines.
             CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"
             # PYTHONPATH=/opt/gb-steps-distillation/src is already set by the image
             # itself; nothing to export here.

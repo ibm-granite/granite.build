@@ -15,9 +15,9 @@ later commit (if ever needed) is a deliberate, separate action, not
 something any build or CI step does automatically.
 
 This package is shared across both the GPU image
-(`steps/distill/gpu/Dockerfile`) and, for the step(s) whose trainer source
+(`steps/distill/images/gpu/Dockerfile`) and, for the step(s) whose trainer source
 is fully baked in rather than cloned at job-launch time, imported via
-`PYTHONPATH`. See `steps/distill/gpu/Dockerfile` for how it's consumed.
+`PYTHONPATH`. See `steps/distill/images/gpu/Dockerfile` for how it's consumed.
 
 ## Local patch folded in: CE anchor + entropy guard
 
