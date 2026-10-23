@@ -85,12 +85,18 @@ def _raise_error(msg):
 # still sees the rest.
 _DEFAULT_COMPUTE = {"num_nodes": 1}
 
+# A real build's GPU request, merged into config.launcher_config by gbserver.
+_DEFAULT_LAUNCHER = {"resources": {"accelerators": "A10G:1"}}
 
-def _render(source, nrl, compute=None, bindings=None) -> str:
+
+def _render(source, nrl, compute=None, bindings=None, launcher_config=None) -> str:
     return jinja2.Template(source, undefined=jinja2.StrictUndefined).render(
         config={
             "nemo_rl_config": nrl,
             "compute_config": {**_DEFAULT_COMPUTE, **(compute or {})},
+            "launcher_config": (
+                _DEFAULT_LAUNCHER if launcher_config is None else launcher_config
+            ),
         },
         bindings=_BASE_BINDING if bindings is None else bindings,
         raise_error=_raise_error,
@@ -269,11 +275,51 @@ class TestAccelerators:
         # read as a GPU request that SkyPilot never receives.
         assert "num_gpus_per_node" not in compute_defaults
 
-    def test_run_does_not_take_the_count_on_argv(self, launcher, nrl_defaults):
+    def test_run_omits_the_count_by_default(self, launcher, nrl_defaults):
+        # SkyPilot's SKYPILOT_NUM_GPUS_PER_NODE is the default; no second copy.
         argv = _argv_from(
             _render(launcher["run"], _cfg(nrl_defaults)), "nemo_rl_run.sh"
         )
-        assert "--num-gpus-per-node" not in argv
+        assert "--gpus-per-node" not in argv
+
+    def test_run_passes_an_explicit_count(self, launcher, nrl_defaults):
+        argv = _argv_from(
+            _render(launcher["run"], _cfg(nrl_defaults, gpus_per_node=4)),
+            "nemo_rl_run.sh",
+        )
+        assert _opt(argv, "--gpus-per-node") == "4"
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
+        "launcher_config",
+        [
+            {},
+            {"resources": {}},
+            {"resources": None},
+            {"resources": {"accelerators": ""}},
+        ],
+    )
+    def test_no_gpu_request_fails_the_render(
+        self, launcher, nrl_defaults, block, launcher_config
+    ):
+        # Without a GPU request the node has no GPU: NeMo-RL fails only after the
+        # image pull and staging, and SLURM GPU partitions reject the job. Fail at
+        # step creation instead (#536 review).
+        with pytest.raises(ValueError, match="accelerators"):
+            _render(
+                launcher[block], _cfg(nrl_defaults), launcher_config=launcher_config
+            )
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_instance_type_counts_as_a_gpu_request(self, launcher, nrl_defaults, block):
+        # An instance type fixes the node's GPUs (g6e.12xlarge is 4x L40S).
+        assert _bash_ok(
+            _render(
+                launcher[block],
+                _cfg(nrl_defaults),
+                launcher_config={"resources": {"instance_type": "g6e.12xlarge"}},
+            )
+        )
 
 
 class TestRunArgv:

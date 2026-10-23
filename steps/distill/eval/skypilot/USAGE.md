@@ -77,7 +77,7 @@ here.
 
 | Field | Type | Purpose |
 |---|---|---|
-| `compute_config` | mapping | Node and GPU counts, e.g. `{num_nodes: 1, num_gpus_per_node: 1}`. The step pins no accelerators itself. |
+| `compute_config` | mapping | Node count, e.g. `{num_nodes: 1}`. The SkyPilot launcher does not read `num_gpus_per_node`; request GPUs with `launcher_config.resources.accelerators` (the step pins none itself). |
 | `launcher_config` | mapping | SkyPilot launcher overrides, notably `resources` (`accelerators`, `cluster`, `zone`, `memory`) and `image_id`. |
 | `poll_interval_seconds` | integer | Monitor status-poll interval. Default: `300`. |
 | `log_retrieval_mode` | string | Monitor log retrieval. Default: `periodic` (the shared monitor's default is `on_completion`). |

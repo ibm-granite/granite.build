@@ -43,7 +43,7 @@ All fields in the first two tables live under the step's `config.gen_smoke_confi
 
 | Field | Type | Purpose |
 |---|---|---|
-| `compute_config` | mapping | Node and GPU counts; the step needs one GPU, e.g. `{num_nodes: 1, num_gpus_per_node: 1}`. |
+| `compute_config` | mapping | Node count, e.g. `{num_nodes: 1}`. The step needs one GPU: request it with `launcher_config.resources.accelerators` (e.g. `"H100:1"`), since the SkyPilot launcher does not read `num_gpus_per_node`. |
 | `launcher_config` | mapping | SkyPilot launcher overrides, notably `resources` (`accelerators`, `cluster`, `zone`, `memory`) and `image_id`. |
 | `poll_interval_seconds` | integer | Read by the shared `space://monitors/skypilot` monitor. Default: `300`. |
 | `log_retrieval_mode` | string | Read by the shared monitor. Default: `on_completion`. |

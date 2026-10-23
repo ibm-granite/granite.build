@@ -872,11 +872,16 @@ class TestWarnUnrequestedGpus:
         assert "num_gpus_per_node=4" in caplog.text
         assert "resources.accelerators" in caplog.text
 
-    @pytest.mark.parametrize("value", ["8", 2.0])
-    def test_numeric_strings_and_whole_floats_count(self, caplog, value):
+    @pytest.mark.parametrize(
+        "value, shown", [("8", "8"), (2.0, "2"), ("4.0", "4"), (3, "3")]
+    )
+    def test_suggested_fix_is_a_valid_neutral_request(self, caplog, value, shown):
+        # The suggestion must be copyable: an integer count (not "2.0") and no
+        # hardcoded GPU type, which would not schedule on every endpoint.
         with caplog.at_level(logging.WARNING):
             self._warn({"num_gpus_per_node": value})
-        assert "num_gpus_per_node=" in caplog.text
+        assert f'accelerators: "<type>:{shown}"' in caplog.text
+        assert "H100" not in caplog.text
 
     @pytest.mark.parametrize(
         "override_res",

@@ -1955,14 +1955,17 @@ def _warn_unrequested_gpus(compute_config: Dict, override_res: Dict) -> None:
     except (TypeError, ValueError):
         return
     if count > 0:
+        # Show the count as SkyPilot writes it ("2", not "2.0"), and leave the GPU
+        # type to the user: no one type schedules on every endpoint.
+        shown = int(count) if count.is_integer() else count
         logger.warning(
             "compute_config.num_gpus_per_node=%s is not a SkyPilot GPU request, "
             "and neither launcher_config.resources.accelerators nor "
             "launcher_config.resources.instance_type is set, so this step will "
             "run without a GPU. Request GPUs with resources.accelerators, e.g. "
-            'accelerators: "H100:%s".',
+            'accelerators: "<type>:%s" with a GPU type your endpoint offers.',
             value,
-            value,
+            shown,
         )
 
 

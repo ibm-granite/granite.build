@@ -48,6 +48,10 @@ config:
     # Create a MISSING hf_output_repo private (true, default) or public (false).
     # The Hub ignores it for a repo that already exists.
     hf_output_private: true
+    # GPUs per node NeMo-RL trains on (cluster.gpus_per_node). Empty = the count
+    # SkyPilot allocated (SKYPILOT_NUM_GPUS_PER_NODE). Set it only when that is
+    # wrong for the run, e.g. to train on fewer GPUs than the node has.
+    gpus_per_node: ""
   compute_config:
     # Iteration 1 is single-node, multi-GPU only; the guard rejects num_nodes != 1.
     # GPUs are not set here: the build requests them with
@@ -109,8 +113,10 @@ environment_configs:
             {%- if not nrl.output %}{{ raise_error("nemo-rl: nemo_rl_config.output is required; it must name one of this target's declared model outputs.") }}{% endif -%}
             {%- if ((nrl.output | string).split() | join("")) != (nrl.output | string) or '"' in (nrl.output | string) %}{{ raise_error("nemo-rl: nemo_rl_config.output contains whitespace or a double quote: '" ~ nrl.output ~ "'. The artifact marker is space-delimited; rename the declared output.") }}{% endif -%}
             {%- if (cc.num_nodes | string) != "1" %}{{ raise_error("nemo-rl: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node, multi-GPU only.") }}{% endif -%}
+            {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("nemo-rl: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type). compute_config.num_gpus_per_node is not a SkyPilot GPU request.") }}{% endif -%}
             {%- endmacro %}
             {%- set nrl = config.nemo_rl_config %}
+            {%- set res = ((config.get("launcher_config") or {}).get("resources") or {}) %}
             {{- validate(nrl, config.compute_config) }}
             {%- set base_model = bindings.base_model.binding.path if (bindings is defined and "base_model" in bindings) else "" %}
             {%- set dataset_bound = bindings is defined and "dataset" in bindings %}
@@ -135,8 +141,10 @@ environment_configs:
             {%- if not nrl.output %}{{ raise_error("nemo-rl: nemo_rl_config.output is required; it must name one of this target's declared model outputs.") }}{% endif -%}
             {%- if ((nrl.output | string).split() | join("")) != (nrl.output | string) or '"' in (nrl.output | string) %}{{ raise_error("nemo-rl: nemo_rl_config.output contains whitespace or a double quote: '" ~ nrl.output ~ "'. The artifact marker is space-delimited; rename the declared output.") }}{% endif -%}
             {%- if (cc.num_nodes | string) != "1" %}{{ raise_error("nemo-rl: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node, multi-GPU only.") }}{% endif -%}
+            {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("nemo-rl: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type). compute_config.num_gpus_per_node is not a SkyPilot GPU request.") }}{% endif -%}
             {%- endmacro %}
             {%- set nrl = config.nemo_rl_config %}
+            {%- set res = ((config.get("launcher_config") or {}).get("resources") or {}) %}
             {{- validate(nrl, config.compute_config) }}
             {%- set base_model = bindings.base_model.binding.path if (bindings is defined and "base_model" in bindings) else "" %}
             {%- set dataset_bound = bindings is defined and "dataset" in bindings %}
@@ -155,6 +163,9 @@ environment_configs:
               {%- if dataset_bound %}
               --dataset '{{ q(dataset) }}' \
               --dataset-key '{{ q(nrl.dataset_override_key) }}' \
+              {%- endif %}
+              {%- if nrl.gpus_per_node | string %}
+              --gpus-per-node '{{ q(nrl.gpus_per_node) }}' \
               {%- endif %}
               --artifact-id '{{ q(nrl.output) }}' \
               --output-path '{{ q(nrl.output_path if nrl.output_path else "./hf_output") }}' \
