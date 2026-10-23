@@ -46,6 +46,7 @@ conflict is metadata-only.
 import json
 import logging
 import os
+from typing import Any, Dict, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -107,12 +108,12 @@ def require_sr() -> None:
         raise ImportError(f"{_SR_INSTALL_HINT} Original import error: {e}") from e
 
 
-def is_sr(training_config) -> bool:
+def is_sr(training_config: Optional[Dict[str, Any]]) -> bool:
     """True when this run's tuning algorithm is Shadow Residual."""
     return (training_config or {}).get("tuning_algorithm") == SR_TUNING_ALGO
 
 
-def build_sr_lora_config(base_kwargs):
+def build_sr_lora_config(base_kwargs: Dict[str, Any]) -> Any:
     """Build the stock ``LoraConfig`` that drives a Shadow Residual model.
 
     Reproduces shadow_residual.config.adapters.to_peft_config: SR carries both
@@ -189,13 +190,13 @@ def build_sr_lora_config(base_kwargs):
 
 def build_sr_peft_model(
     model_name_or_path: str,
-    lora_config,
+    lora_config: Any,
     *,
-    torch_dtype=None,
-    attn_implementation=None,
+    torch_dtype: Any = None,
+    attn_implementation: Optional[str] = None,
     share_moe_routing: bool = True,
-    fsdp_active=None,
-):
+    fsdp_active: Optional[bool] = None,
+) -> Any:
     """Build an already-PEFT-wrapped, training-ready Shadow Residual model.
 
     Thin wrapper over ``shadow_residual.training.factory.get_shadow_residual_peft_model``,
@@ -296,7 +297,7 @@ def build_sr_peft_model(
     return model
 
 
-def share_moe_routing_flag(training_config) -> bool:
+def share_moe_routing_flag(training_config: Optional[Dict[str, Any]]) -> bool:
     """Read the ``sr_share_moe_routing`` factory kwarg from the training config.
 
     Lives in ``training_config`` rather than the tuner ``hyperparams`` block
@@ -374,13 +375,13 @@ def resolve_fsdp_strategy(strategy: str) -> str:
 
 
 def assert_sr_supported(
-    training_config,
+    training_config: Dict[str, Any],
     *,
-    accel=None,
+    accel: Any = None,
     backend: str = "hf",
-    train_implementation=None,
-    model_name_or_path=None,
-    rl_algo=None,
+    train_implementation: Optional[str] = None,
+    model_name_or_path: Optional[str] = None,
+    rl_algo: Optional[str] = None,
 ) -> None:
     """Reject Shadow Residual combinations that cannot work.
 
@@ -437,7 +438,7 @@ def assert_sr_supported(
     assert_sr_base_model(model_name_or_path or training_config.get("model_name_or_path"))
 
 
-def assert_sr_base_model(model_name_or_path) -> None:
+def assert_sr_base_model(model_name_or_path: Optional[str]) -> None:
     """Reject base models whose architecture SR cannot adapt.
 
     All three checks exist because the failure mode is otherwise *silent* rather
@@ -527,7 +528,7 @@ def assert_no_vocab_resize(num_new_tokens: int) -> None:
         )
 
 
-def patch_sr_adapter_config(save_dir, *, share_moe_routing: bool = True) -> None:
+def patch_sr_adapter_config(save_dir: Union[str, "os.PathLike[str]"], *, share_moe_routing: bool = True) -> None:
     """Mark a saved SR adapter as Shadow Residual so it is self-describing.
 
     ``trainer.save_model()`` writes a stock ``adapter_config.json``
