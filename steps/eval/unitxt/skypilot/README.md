@@ -47,6 +47,29 @@ provides everything. It is generated from the sources here by the shared Makefil
 
   `make publish-step` copies it to `test/steps/eval/unitxt/skypilot/slurm-cpu/`,
   where the nightly extended suite runs it against the published step.
+- `test/slurm-bluevela/` + `test-data/slurm-bluevela/`: the GPU build test, on an
+  internal GPU SLURM cluster through the in-repo environment
+  `space://environments/skypilot/slurm/ibm-bluevela`. It evaluates
+  `ibm-granite/granite-4.2-3b` on one H200 (`device=cuda`, PyPI's default CUDA torch)
+  on 10 instances, and pushes `results` the same way as `slurm-cpu`. It is marked
+  `ibm` and skipped in SPS CI/CD: the environment logs in with a key file,
+  `~/.ssh/ibm-bluevela.key`, so it needs no secret manager, but CI has no key. Run it
+  by hand from the IBM venv (`make ibm-venv`), with an `HF_TOKEN` that has write
+  access through the `gbspace-public-staging` resource group (a read-only token fails
+  the push with `Could not resolve resource group id`):
+
+  ```sh
+  make -C steps/eval/unitxt/skypilot space
+  cd steps/eval/unitxt/skypilot
+  GB_ENVIRONMENT=STANDALONE GBTEST_MODE=live GBTEST_STANDALONE_ENVIRONMENT=STAGING \
+    PYTHONPATH=src ../../../../.venv/bin/python -m pytest -s -v test/slurm-bluevela
+  ```
+
+  The step job goes to the environment's default GPU partition. When your group's
+  quota there is full (`squeue` shows the pending reason `QOSGrpGRES`), point a local
+  copy of the build at a partition and QOS that have room, with `zone:` and
+  `launcher_config.sbatch_options.qos:`. Don't commit those: they are specific to
+  one group.
 
 ## Building, testing and publishing
 
@@ -60,11 +83,11 @@ make -C steps/eval/unitxt/skypilot check-published  # diff the published trees a
 ## Status
 
 First cut for granite.build issue #235. Published to
-`configurations/assets/environments/skypilot/steps/eval/unitxt/`. The only
-per-cluster build test is the CPU `slurm-cpu` one, which passes on the local Docker
-SLURM cluster. Planned follow-ups:
+`configurations/assets/environments/skypilot/steps/eval/unitxt/`. Two build tests:
+the CPU `slurm-cpu` one, which passes on the local Docker SLURM cluster, and the GPU
+`slurm-bluevela` one, which passes on the internal GPU SLURM cluster (one H200, 13
+minutes end to end). Planned follow-ups:
 
-- A GPU build test on an internal GPU SLURM cluster, under `test/integration/ibm/`.
-  Then Kubernetes, LSF and AWS.
+- Kubernetes, LSF and AWS build tests.
 - Remote models (`--model cross_provider`), probably as a separate value input.
 - Handling for reasoning models such as granite-4.2 (`--chat_template_kwargs`).
