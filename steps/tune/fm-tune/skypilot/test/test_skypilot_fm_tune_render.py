@@ -275,6 +275,45 @@ def test_cpu_only_renders_without_accelerators(compute):
     assert filled["resources"] == {}
 
 
+@pytest.mark.parametrize("compute, launcher", [
+    ({"num_nodes": 1}, {"num_nodes": 2}),   # launcher_config wins in _num_nodes_from_configs
+    (None, {"num_nodes": 2}),
+    ({}, {"num_nodes": "3"}),
+])
+def test_a_launcher_config_num_nodes_other_than_1_fails_the_fill(compute, launcher):
+    """skypilot.py _num_nodes_from_configs reads compute_config, then the build's
+    config.launcher_config.num_nodes (last wins), so both are checked."""
+    msg = _render_error(compute=compute, launcher=launcher)
+    assert msg.startswith("fm-tune: launcher_config.num_nodes must be 1"), msg
+
+
+@pytest.mark.parametrize("compute, launcher", [
+    ({"num_nodes": 1}, {"num_nodes": 1}), ({"num_nodes": 1.0}, None), ({}, {"num_nodes": "1"}),
+    ({"num_nodes": ""}, {"num_nodes": None}),
+])
+def test_one_node_from_every_source_renders(compute, launcher):
+    assert "bash ./src/fmtune_run.sh" in _fill(compute=compute, launcher=launcher)["run"]
+
+
+@pytest.mark.parametrize("bad", ["abc", "1.5", 1.5, -1, " ", True, [1]])
+def test_a_non_numeric_gpu_count_fails_the_fill(bad):
+    msg = _render_error(compute={"num_gpus_per_node": bad})
+    assert msg.startswith("fm-tune: compute_config.num_gpus_per_node must be a whole number >= 0"), msg
+
+
+@pytest.mark.parametrize("bad", ["abc", "1.5", 1.5, True, [1]])
+@pytest.mark.parametrize("where", ["compute_config", "launcher_config"])
+def test_a_non_numeric_node_count_fails_the_fill(bad, where):
+    kw = {"compute": {"num_nodes": bad}} if where == "compute_config" else {"launcher": {"num_nodes": bad}}
+    msg = _render_error(**kw)
+    assert msg.startswith(f"fm-tune: {where}.num_nodes must be a whole number"), msg
+
+
+@pytest.mark.parametrize("gpus", ["", None, 0, "0", 0.0])
+def test_an_empty_or_zero_gpu_count_is_cpu_only(gpus):
+    assert _fill(compute={"num_gpus_per_node": gpus})["resources"] == {}
+
+
 def test_cache_dir_is_per_user_under_the_shared_workdir():
     assert 'FMTUNE_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache/$(id -u)"' in _render()
 
