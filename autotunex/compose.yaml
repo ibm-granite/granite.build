@@ -63,9 +63,10 @@ services:
       context: .
       args:
         DEVICE: cuda
-      # CUDA_BASE overrides the CUDA version; keep an Ubuntu whose system python
-      # is 3.12, because the pinned flash-attn wheel is cp312-only.
-      #   CUDA_BASE: nvidia/cuda:12.8.0-devel-ubuntu24.04
+      # CUDA_BASE overrides the base image; it must be a CUDA 13 `-devel` tag on an
+      # Ubuntu whose system python is 3.12 (torch 2.11 is built for CUDA 13, and
+      # flash-attn is compiled against its nvcc).
+      #   CUDA_BASE: nvidia/cuda:13.0.3-devel-ubuntu24.04
     image: autotunex:cuda
     ports:
       - "8000:8000"

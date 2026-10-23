@@ -12,7 +12,7 @@
 # fm-tune's own runtime override, FMTUNE_DEVICE=cuda|mps|cpu, on purpose.
 # ---------------------------------------------------------------------------
 ARG DEVICE=cpu
-ARG CUDA_BASE=nvidia/cuda:12.8.0-devel-ubuntu24.04
+ARG CUDA_BASE=nvidia/cuda:13.0.3-devel-ubuntu24.04
 
 # ---------------------------------------------------------------------------
 # Stage 1 — build the SvelteKit SPA
@@ -42,8 +42,7 @@ RUN echo "PUBLIC_AUTOTUNEX_API_URL=$PUBLIC_AUTOTUNEX_API_URL" >> .env \
 # are inherited by the stage that does `FROM cpu`.
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS cpu
-ENV FM_TUNE_EXTRAS=core \
-    FLASH_ATTN_WHEEL=
+ENV FM_TUNE_EXTRAS=core
 
 # ---------------------------------------------------------------------------
 # Stage 2b — base: CUDA, for GPU training with the `local` job backend.
@@ -53,11 +52,15 @@ ENV FM_TUNE_EXTRAS=core \
 # them, so re-declaring would only invite drift.
 # ---------------------------------------------------------------------------
 FROM ${CUDA_BASE} AS cuda
-ENV FM_TUNE_EXTRAS=full \
-    FLASH_ATTN_WHEEL=https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl
+ENV FM_TUNE_EXTRAS=full
 
-# python3.12 specifically: the flash-attn wheel above is cp312-only. Ubuntu
-# 24.04's system python already IS 3.12, so no third-party PPA is needed.
+# The base must be CUDA 13: torch 2.11's PyPI wheels are built for CUDA 13.0, and
+# flash-attn, mamba-ssm and causal-conv1d are compiled from source at install
+# time (no prebuilt flash-attn wheel exists for torch 2.11 + CUDA 13), which needs
+# a matching nvcc. That is why this must be a `-devel` tag.
+#
+# python3.12 specifically, to match the CPU stage. Ubuntu 24.04's system python
+# already IS 3.12, so no third-party PPA is needed.
 #
 # build-essential is named explicitly even though the default `-devel` base
 # already ships gcc (verified: apt reports it "already the newest version").
@@ -121,31 +124,31 @@ RUN pip install --no-cache-dir .
 #
 # The three-step order is load-bearing:
 #
-#   1. `[core]` first, so torch==2.8.0 is already pinned before anything else can
-#      express an opinion about it. NOTE: on linux/amd64 torch==2.8.0 resolves to
-#      the default cu128 CUDA wheel — multi-GB, and it simply runs on CPU when
-#      there is no GPU; pulling CPU torch from download.pytorch.org/whl/cpu to
-#      slim the amd64 CPU image is a known, still-deferred optimization. On
-#      linux/arm64 PyPI serves a CPU-only build (2.8.0+cpu) instead, so that
-#      image is smaller already and the CUDA base does not apply there at all.
-#   2. The prebuilt flash-attn wheel, because pip does NOT read
-#      `[tool.uv.sources]`, where src/fm-tune/pyproject.toml pins its URL — so an
-#      unguarded `[full]` install would source-build flash-attn against nvcc
-#      instead (an hour-plus build). It runs AFTER step 1 so the wheel's own
-#      unpinned `torch` requirement is already satisfied; first, it would drag in
-#      a newer torch that step 3 then downgrades again.
-#   3. `[$FM_TUNE_EXTRAS]`. PEP 440 `==2.8.1` matches the wheel's
-#      `2.8.1+cu12torch2.8cxx11abiFALSE` local version, so `[full]` treats
-#      flash-attn as satisfied and adds only verl/vLLM and deepspeed.
+#   1. `[core]` first with pip, so torch==2.11.0 is installed before anything else
+#      can express an opinion about it. NOTE: on linux/amd64 torch==2.11.0
+#      resolves to the default CUDA wheel — multi-GB, and it simply runs on CPU
+#      when there is no GPU; pulling CPU torch from download.pytorch.org/whl/cpu
+#      to slim the amd64 CPU image is a known, still-deferred optimization. On
+#      linux/arm64 PyPI serves a CPU-only build instead, so that image is smaller
+#      already and the CUDA base does not apply there at all.
+#   2. `[$FM_TUNE_EXTRAS]` when it is not `core`, installed with uv from inside
+#      src/fm-tune. flash-attn, mamba-ssm and causal-conv1d are compiled from
+#      source, and their build recipe (torch matched to the runtime env, ninja,
+#      MAX_JOBS, ...) lives in src/fm-tune/pyproject.toml under
+#      `[tool.uv.extra-build-dependencies]` / `[tool.uv.extra-build-variables]`.
+#      pip does NOT read those tables: an isolated pip build has no torch, so
+#      flash-attn's setup.py would fail to import it. uv reads them only from the
+#      project directory, hence the `cd`. The compile takes ~15 minutes on 32
+#      cores; lower MAX_JOBS (a build env var) on a small builder.
 #
-# On the CPU base both guards are false and this collapses to exactly
+# On the CPU base the guard is false and this collapses to exactly
 # `pip install "./src/fm-tune[core]"` — the same install this image has today.
 RUN pip install --no-cache-dir "./src/fm-tune[core]" \
-    && if [ -n "$FLASH_ATTN_WHEEL" ]; then \
-         pip install --no-cache-dir "$FLASH_ATTN_WHEEL"; \
-       fi \
     && if [ "$FM_TUNE_EXTRAS" != "core" ]; then \
-         pip install --no-cache-dir "./src/fm-tune[$FM_TUNE_EXTRAS]"; \
+         pip install --no-cache-dir uv \
+         && cd src/fm-tune \
+         && uv pip install --no-cache --python "$(command -v python)" ".[$FM_TUNE_EXTRAS]" \
+         && pip uninstall -y uv; \
        fi
 
 # The prebuilt SPA from stage 1.
