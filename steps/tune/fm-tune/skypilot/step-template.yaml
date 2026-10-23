@@ -90,6 +90,7 @@ environment_configs:
             {%- if (c[key] | string).startswith("/") or ".." in (c[key] | string).split("/") %}{{ raise_error("fm-tune: fm_tune_config." ~ key ~ " must be a relative path inside the dataset input (no leading '/', no '..' component), got '" ~ c[key] ~ "'.") }}{% endif -%}
             {%- endfor -%}
             {%- if (c.source.path and c.source.repo) or not (c.source.path or c.source.repo) %}{{ raise_error("fm-tune: set exactly one of fm_tune_config.source.path and fm_tune_config.source.repo.") }}{% endif -%}
+            {%- if ([c.tuning_algo] | reject("none") | join | lower) in ["", "none"] and ([c.rl_algo] | reject("none") | join | lower) in ["", "none"] %}{{ raise_error("fm-tune: tuning_algo and rl_algo cannot both be empty or none; set tuning_algo (e.g. lora) or an online rl_algo (ppo, grpo, dapo).") }}{% endif -%}
             {%- if not (c.model or base_model_bound) %}{{ raise_error("fm-tune: set fm_tune_config.model or bind the base_model input.") }}{% endif -%}
             {%- if not c.run_name or (c.run_name | string | list | reject("in", ok) | list) %}{{ raise_error("fm-tune: fm_tune_config.run_name must match ^[A-Za-z0-9._-]+$, got '" ~ (c.run_name if c.run_name is not none else "") ~ "'.") }}{% endif -%}
             {%- for key in ["repo", "ref"] -%}

@@ -144,7 +144,9 @@ _SCALAR_KEYS = [
 @pytest.mark.parametrize("key", ["seed", "rl_algo", "tuning_algo", "backend", "extra_args"])
 def test_a_null_value_renders_empty(key):
     """AutoTuneX's LaunchContext can emit null; it must not reach the script as 'None'."""
-    assert _env({key: None})[_VAR[key]] == ""
+    # tuning_algo alone null would trip the "both empty or none" check.
+    over = {key: None, "rl_algo": "grpo"} if key == "tuning_algo" else {key: None}
+    assert _env(over)[_VAR[key]] == ""
 
 
 def test_null_hpo_config_and_autotune_render_empty():

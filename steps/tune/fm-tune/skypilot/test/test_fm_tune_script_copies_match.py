@@ -97,6 +97,11 @@ _BAD = [
     ({"run_name": "\u00e9t\u00e9"}, "run_name must match ^[A-Za-z0-9._-]+$"),
     ({"source": dict(_SRC, repo="-x")}, "source.repo must not start with '-'"),
     ({"source": dict(_SRC, path="/a", ref="-x")}, "source.ref must not start with '-'"),
+    # fm-tune's pipeline.py raises once training starts, after clone and venv.
+    ({"tuning_algo": "", "rl_algo": ""}, "tuning_algo and rl_algo cannot both be empty or none"),
+    ({"tuning_algo": "none", "rl_algo": ""}, "tuning_algo and rl_algo cannot both be empty or none"),
+    ({"tuning_algo": "None", "rl_algo": "NONE"}, "tuning_algo and rl_algo cannot both be empty or none"),
+    ({"tuning_algo": "", "rl_algo": "none"}, "tuning_algo and rl_algo cannot both be empty or none"),
 ]
 # Rules only the render can check (the script gets flat strings): both templates.
 _RENDER_ONLY = [
@@ -107,8 +112,13 @@ _RENDER_ONLY = [
     ({"source": None}, "fm_tune_config.source must be a mapping"),
     ({"autotunex": "x"}, "fm_tune_config.autotunex must be a mapping"),
     ({"hpo_config": ["a"]}, "fm_tune_config.hpo_config must be a mapping or null"),
+    ({"tuning_algo": None, "rl_algo": None}, "tuning_algo and rl_algo cannot both be empty or none"),
 ]
-_GOOD = [{"train_file": n, "validation_file": n} for n in ("t.jsonl", "sub/dir/t.jsonl", "a..b.jsonl")]
+_GOOD = [{"train_file": n, "validation_file": n} for n in ("t.jsonl", "sub/dir/t.jsonl", "a..b.jsonl")] + [
+    {"tuning_algo": "", "rl_algo": "grpo"},     # online RL needs no tuning algorithm
+    {"tuning_algo": "none", "rl_algo": "ppo"},
+    {"tuning_algo": "lora", "rl_algo": ""},
+]
 _LAUNCHERS = {"bash": ("Bash", "fm-tune"), "skypilot": ("Skypilot", "fm-tune")}
 
 

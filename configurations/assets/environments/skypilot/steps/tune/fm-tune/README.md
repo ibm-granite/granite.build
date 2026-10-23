@@ -57,7 +57,7 @@ subtraction in Jinja.
 | `model` | `""` | `--model_name_or_path` when `base_model` is not bound |
 | `train_file` | `""` | `--train_file`, relative to the `dataset` input (required). No leading `/` and no `..` component (`sub/train.jsonl` and `a..b.jsonl` are fine) |
 | `validation_file` | `""` | `--validation_file`, relative to the `dataset` input (required). Same rules as `train_file` |
-| `tuning_algo` | `lora` | `--tuning_algo` |
+| `tuning_algo` | `lora` | `--tuning_algo`, omitted when empty (fm-tune's default is `none`). It and `rl_algo` cannot both be empty or `none` |
 | `rl_algo` | `""` | `--rl_algo`, omitted when empty |
 | `run_name` | `fm-tune` | `--run_name` and `--output_model_name`. Letters, digits, `.`, `_` and `-` only |
 | `autotune` | `true` | `false` adds `--no_autotune` |
@@ -74,7 +74,7 @@ subtraction in Jinja.
 ### Config checks
 
 These fail the build when the step is created, with an `fm-tune: ...` message naming the
-key. `fmtune_run.sh` repeats the first five for a direct run (it defaults an empty
+key. `fmtune_run.sh` repeats the first six for a direct run (it defaults an empty
 `run_name` to `fm-tune` instead of failing):
 
 - `train_file` or `validation_file` empty, absolute, or with a `..` component;
@@ -82,12 +82,16 @@ key. `fmtune_run.sh` repeats the first five for a direct run (it defaults an emp
 - neither `model` set nor `base_model` bound;
 - `run_name` empty or outside `[A-Za-z0-9._-]`;
 - `source.repo` or `source.ref` starting with `-`;
+- `tuning_algo` and `rl_algo` both empty or `none` (fm-tune's pipeline refuses that, but only
+  after the clone and venv build); an online `rl_algo` (`ppo`, `grpo`, `dapo`) needs no
+  `tuning_algo`;
 - a list or mapping for any key except `hpo_config` (write it as a string);
 - SkyPilot only: `compute_config.num_nodes` other than 1, and `num_gpus_per_node` > 0
   without `launcher_config.resources.accelerators` (see "Compute").
 
 A `null` value renders as empty, not as the string `None`. That is not the template
-default: `tuning_algo: null` passes no `--tuning_algo`, so fm-tune's own default applies.
+default: `tuning_algo: null` passes no `--tuning_algo`, so fm-tune's own default, `none`,
+applies, which fails the check above unless `rl_algo` is an online RL algorithm.
 
 ### `hpo_config`
 
@@ -261,7 +265,8 @@ this step's build shape:
 
 - A `LaunchContext` field that is `None` (`seed`, `rl_tuner_type`, `tuning_type`) may be
   written as `null`: the step treats a null like an empty value, so the flag is left out
-  (`tuning_algo: null` therefore means fm-tune's own default, not the template's `lora`).
+  (`tuning_algo: null` therefore means fm-tune's default, `none`, not the template's `lora`;
+  with no `rl_algo` either, the step refuses it, see "Config checks").
   A list or mapping for any key other than `hpo_config` fails the build when it is created;
   write it as a string.
 - `LOG_PATH` is set by the step (to the output directory's parent, unless already set), so

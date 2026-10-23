@@ -140,6 +140,12 @@ esac
 case "/$FMTUNE_VALIDATION_FILE/" in //*|*/../*)
   die "validation_file must be a relative path inside the dataset (no leading '/', no '..' component): $FMTUNE_VALIDATION_FILE" ;;
 esac
+# fm-tune's AutotunePipeline raises when both are none (case-insensitively), but only
+# once training starts; an empty one means fm-tune's default, which is none too.
+case "$(printf '%s:%s' "$FMTUNE_TUNING_ALGO" "$FMTUNE_RL_ALGO" | tr '[:upper:]' '[:lower:]')" in
+  :|none:|:none|none:none)
+    die "tuning_algo and rl_algo cannot both be empty or none; set tuning_algo (e.g. lora) or an online rl_algo (ppo, grpo, dapo)" ;;
+esac
 train="$FMTUNE_DATASET_DIR/$FMTUNE_TRAIN_FILE"
 val="$FMTUNE_DATASET_DIR/$FMTUNE_VALIDATION_FILE"
 [ -e "$train" ] || die "train_file not found: $train"

@@ -204,6 +204,8 @@ def test_failed_training_exits_non_zero_without_a_marker(env):
         ({"FMTUNE_TRAIN_FILE": "/etc/passwd"}, "train_file must be a relative path inside the dataset"),
         ({"FMTUNE_VALIDATION_FILE": "../x"}, "validation_file must be a relative path inside the dataset"),
         ({"FMTUNE_VALIDATION_FILE": "/abs/v.jsonl"}, "validation_file must be a relative path inside the dataset"),
+        ({"FMTUNE_TUNING_ALGO": ""}, "tuning_algo and rl_algo cannot both be empty or none"),
+        ({"FMTUNE_TUNING_ALGO": "none", "FMTUNE_RL_ALGO": "None"}, "tuning_algo and rl_algo cannot both be empty or none"),
     ],
 )
 def test_invalid_input_fails_before_training(env, over, message):
@@ -234,6 +236,23 @@ def test_a_split_file_outside_the_dataset_dies_before_any_clone(env, tmp_path):
     proc = _run(env)
     assert proc.returncode != 0
     assert "fm-tune: validation_file must be a relative path inside the dataset" in proc.stderr
+    assert not git_ran.exists()
+
+
+def test_online_rl_needs_no_tuning_algo(env):
+    env.update(FMTUNE_TUNING_ALGO="", FMTUNE_RL_ALGO="grpo")
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    assert "--tuning_algo" not in _record(env)["argv"]
+
+
+def test_no_algorithm_dies_before_any_clone(env, tmp_path):
+    _git_repo(env, tmp_path)
+    git_ran = _git_spy(env, tmp_path)
+    env.update(FMTUNE_TUNING_ALGO="none", FMTUNE_RL_ALGO="")
+    proc = _run(env)
+    assert proc.returncode != 0
+    assert "tuning_algo and rl_algo cannot both be empty or none" in proc.stderr
     assert not git_ran.exists()
 
 
