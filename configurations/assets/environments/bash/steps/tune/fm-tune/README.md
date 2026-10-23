@@ -212,9 +212,11 @@ this step's build shape:
 | `job_id` | `autotunex.job_id` |
 | callback URL | `autotunex.server_url` |
 
-- A `LaunchContext` field that is `None` (`seed`, `rl_tuner_type`, `tuning_type`) must be
-  left out of `fm_tune_config`, not written as `null`. A null renders as the string `None`,
-  which fm-tune's argparse rejects (`--seed None`), or passes on as an algorithm called `None`.
+- A `LaunchContext` field that is `None` (`seed`, `rl_tuner_type`, `tuning_type`) may be
+  written as `null`: the step treats a null like an empty value, so the flag is left out
+  (`tuning_algo: null` therefore means fm-tune's own default, not the template's `lora`).
+  A list or mapping for any key other than `hpo_config` fails the build when it is created;
+  write it as a string.
 - `LOG_PATH` is set by the step (to the output directory's parent, unless already set), so
   AutoTuneX need not export it.
 - AutoTuneX's `CUDA_HOME` export goes in the launcher env: `bash.env` on bash,

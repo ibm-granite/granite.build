@@ -132,6 +132,60 @@ def test_the_check_key_renders_to_nothing():
     assert _fill()["config"]["validate"] == ""
 
 
+_VAR = {"seed": "FMTUNE_SEED", "rl_algo": "FMTUNE_RL_ALGO", "tuning_algo": "FMTUNE_TUNING_ALGO",
+        "backend": "FMTUNE_BACKEND", "extra_args": "FMTUNE_EXTRA_ARGS"}
+_SCALAR_KEYS = [
+    "extra", "model", "train_file", "validation_file", "tuning_algo", "rl_algo",
+    "run_name", "autotune", "backend", "seed", "config_preset", "output_path",
+    "extra_args", "python",
+]
+
+
+@pytest.mark.parametrize("key", ["seed", "rl_algo", "tuning_algo", "backend", "extra_args"])
+def test_a_null_value_renders_empty(key):
+    """AutoTuneX's LaunchContext can emit null; it must not reach the script as 'None'."""
+    assert _env({key: None})[_VAR[key]] == ""
+
+
+def test_null_hpo_config_and_autotune_render_empty():
+    env = _env({"hpo_config": None, "autotune": None})
+    # Empty: the script then uses the preset and its default autotune=true.
+    assert env["FMTUNE_HPO_CONFIG_JSON"] == env["FMTUNE_AUTOTUNE"] == ""
+
+
+def test_zero_and_false_are_not_treated_as_null():
+    env = _env({"seed": 0, "autotune": False})
+    assert (env["FMTUNE_SEED"], env["FMTUNE_AUTOTUNE"]) == ("0", "false")
+
+
+@pytest.mark.parametrize("key", _SCALAR_KEYS)
+@pytest.mark.parametrize("bad", [[1, 2], {"a": 1}])
+def test_a_list_or_mapping_for_a_scalar_key_fails_the_fill(key, bad):
+    msg = _render_error({key: bad})
+    assert msg == (
+        f"fm-tune: fm_tune_config.{key} must be a scalar (string/number/bool), "
+        "got a list/mapping; write it as a string"
+    )
+
+
+@pytest.mark.parametrize("key", ["path", "repo", "ref", "subdir"])
+def test_a_list_for_a_source_key_fails_the_fill(key):
+    src = dict(_VALID["source"], **{key: ["x"]})
+    assert f"fm_tune_config.source.{key} must be a scalar" in _render_error({"source": src})
+
+
+@pytest.mark.parametrize("key", ["server_url", "job_id"])
+def test_a_mapping_for_an_autotunex_key_fails_the_fill(key):
+    ax = {"server_url": "", "job_id": "", key: {"a": 1}}
+    assert f"fm_tune_config.autotunex.{key} must be a scalar" in _render_error({"autotunex": ax})
+
+
+def test_null_python_and_model_with_a_bound_base_model_render_empty():
+    b = dict(_DATASET, base_model={"binding": {"path": "/staged/bm"}})
+    env = _env({"python": None, "model": None}, bindings=b)
+    assert env["FMTUNE_PYTHON"] == env["FMTUNE_MODEL"] == ""
+
+
 def test_bound_base_model_renders_its_path():
     b = dict(_DATASET, base_model={"binding": {"path": "/staged/bm"}})
     assert _env(bindings=b)["FMTUNE_BASE_MODEL_DIR"] == "/staged/bm"

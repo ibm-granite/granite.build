@@ -70,46 +70,56 @@ environment_configs:
           validate: |-
             {%- macro validate(c, base_model_bound) -%}
             {%- set ok = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-" -%}
+            {#- First, so a list never reaches the checks below; hpo_config is the one mapping. #}
+            {%- for group, keys in [("", ["extra", "model", "train_file", "validation_file", "tuning_algo", "rl_algo", "run_name", "autotune", "backend", "seed", "config_preset", "output_path", "extra_args", "python"]), ("source.", ["path", "repo", "ref", "subdir"]), ("autotunex.", ["server_url", "job_id"])] -%}
+            {%- for key in keys -%}
+            {%- set v = c[key] if not group else c[group[:-1]][key] -%}
+            {%- if v is mapping or (v is iterable and v is not string) %}{{ raise_error("fm-tune: fm_tune_config." ~ group ~ key ~ " must be a scalar (string/number/bool), got a list/mapping; write it as a string") }}{% endif -%}
+            {%- endfor -%}
+            {%- endfor -%}
             {%- for key in ["train_file", "validation_file"] -%}
             {%- if not c[key] %}{{ raise_error("fm-tune: fm_tune_config." ~ key ~ " is required; set it to the file's path inside the dataset input.") }}{% endif -%}
             {%- if (c[key] | string).startswith("/") or ".." in (c[key] | string).split("/") %}{{ raise_error("fm-tune: fm_tune_config." ~ key ~ " must be a relative path inside the dataset input (no leading '/', no '..' component), got '" ~ c[key] ~ "'.") }}{% endif -%}
             {%- endfor -%}
             {%- if (c.source.path and c.source.repo) or not (c.source.path or c.source.repo) %}{{ raise_error("fm-tune: set exactly one of fm_tune_config.source.path and fm_tune_config.source.repo.") }}{% endif -%}
             {%- if not (c.model or base_model_bound) %}{{ raise_error("fm-tune: set fm_tune_config.model or bind the base_model input.") }}{% endif -%}
-            {%- if not c.run_name or (c.run_name | string | list | reject("in", ok) | list) %}{{ raise_error("fm-tune: fm_tune_config.run_name must match ^[A-Za-z0-9._-]+$, got '" ~ c.run_name ~ "'.") }}{% endif -%}
+            {%- if not c.run_name or (c.run_name | string | list | reject("in", ok) | list) %}{{ raise_error("fm-tune: fm_tune_config.run_name must match ^[A-Za-z0-9._-]+$, got '" ~ (c.run_name if c.run_name is not none else "") ~ "'.") }}{% endif -%}
             {%- for key in ["repo", "ref"] -%}
             {%- if (c.source[key] | string).startswith("-") %}{{ raise_error("fm-tune: fm_tune_config.source." ~ key ~ " must not start with '-' (git would read it as an option).") }}{% endif -%}
             {%- endfor -%}
             {%- endmacro -%}
             {{- validate(config.fm_tune_config, bindings.base_model is defined) -}}
+          # `[v] | reject('none') | join` renders a YAML null as "" (like an unset
+          # key) and any other scalar as its string; the validate key rejects a
+          # list or mapping before these are used.
           env:
             FMTUNE_DATASET_DIR: "{{ bindings.dataset.binding.path }}"
             FMTUNE_BASE_MODEL_DIR: "{{ bindings.base_model.binding.path if bindings.base_model is defined else '' }}"
-            FMTUNE_MODEL: "{{ config.fm_tune_config.model }}"
-            FMTUNE_SOURCE_PATH: "{{ config.fm_tune_config.source.path }}"
-            FMTUNE_SOURCE_REPO: "{{ config.fm_tune_config.source.repo }}"
-            FMTUNE_SOURCE_REF: "{{ config.fm_tune_config.source.ref }}"
-            FMTUNE_SOURCE_SUBDIR: "{{ config.fm_tune_config.source.subdir }}"
-            FMTUNE_EXTRA: "{{ config.fm_tune_config.extra }}"
-            FMTUNE_TRAIN_FILE: "{{ config.fm_tune_config.train_file }}"
-            FMTUNE_VALIDATION_FILE: "{{ config.fm_tune_config.validation_file }}"
-            FMTUNE_TUNING_ALGO: "{{ config.fm_tune_config.tuning_algo }}"
-            FMTUNE_RL_ALGO: "{{ config.fm_tune_config.rl_algo }}"
-            FMTUNE_RUN_NAME: "{{ config.fm_tune_config.run_name }}"
-            FMTUNE_AUTOTUNE: "{{ config.fm_tune_config.autotune | string | lower }}"
-            FMTUNE_BACKEND: "{{ config.fm_tune_config.backend }}"
-            FMTUNE_SEED: "{{ config.fm_tune_config.seed }}"
-            FMTUNE_CONFIG_PRESET: "{{ config.fm_tune_config.config_preset }}"
-            FMTUNE_HPO_CONFIG_JSON: "{{ config.fm_tune_config.hpo_config | json_dumps }}"
+            FMTUNE_MODEL: "{{ [config.fm_tune_config.model] | reject('none') | join }}"
+            FMTUNE_SOURCE_PATH: "{{ [config.fm_tune_config.source.path] | reject('none') | join }}"
+            FMTUNE_SOURCE_REPO: "{{ [config.fm_tune_config.source.repo] | reject('none') | join }}"
+            FMTUNE_SOURCE_REF: "{{ [config.fm_tune_config.source.ref] | reject('none') | join }}"
+            FMTUNE_SOURCE_SUBDIR: "{{ [config.fm_tune_config.source.subdir] | reject('none') | join }}"
+            FMTUNE_EXTRA: "{{ [config.fm_tune_config.extra] | reject('none') | join }}"
+            FMTUNE_TRAIN_FILE: "{{ [config.fm_tune_config.train_file] | reject('none') | join }}"
+            FMTUNE_VALIDATION_FILE: "{{ [config.fm_tune_config.validation_file] | reject('none') | join }}"
+            FMTUNE_TUNING_ALGO: "{{ [config.fm_tune_config.tuning_algo] | reject('none') | join }}"
+            FMTUNE_RL_ALGO: "{{ [config.fm_tune_config.rl_algo] | reject('none') | join }}"
+            FMTUNE_RUN_NAME: "{{ [config.fm_tune_config.run_name] | reject('none') | join }}"
+            FMTUNE_AUTOTUNE: "{{ [config.fm_tune_config.autotune] | reject('none') | join | lower }}"
+            FMTUNE_BACKEND: "{{ [config.fm_tune_config.backend] | reject('none') | join }}"
+            FMTUNE_SEED: "{{ [config.fm_tune_config.seed] | reject('none') | join }}"
+            FMTUNE_CONFIG_PRESET: "{{ [config.fm_tune_config.config_preset] | reject('none') | join }}"
+            FMTUNE_HPO_CONFIG_JSON: "{{ '' if config.fm_tune_config.hpo_config is none else config.fm_tune_config.hpo_config | json_dumps }}"
             # Launcher env is passed to the script unexpanded, so these can't
             # name ${LLMB_BASH_OUTPUT_DIR}; fmtune_run.sh defaults them from the
             # LLMB_BASH_* builtins (output -> $LLMB_BASH_OUTPUT_DIR/model).
             FMTUNE_OUTPUT_DIR: ""
             FMTUNE_CACHE_DIR: ""
-            FMTUNE_PYTHON: "{{ config.fm_tune_config.python }}"
-            FMTUNE_EXTRA_ARGS: "{{ config.fm_tune_config.extra_args }}"
-            FMTUNE_SERVER_URL: "{{ config.fm_tune_config.autotunex.server_url }}"
-            FMTUNE_JOB_ID: "{{ config.fm_tune_config.autotunex.job_id }}"
+            FMTUNE_PYTHON: "{{ [config.fm_tune_config.python] | reject('none') | join }}"
+            FMTUNE_EXTRA_ARGS: "{{ [config.fm_tune_config.extra_args] | reject('none') | join }}"
+            FMTUNE_SERVER_URL: "{{ [config.fm_tune_config.autotunex.server_url] | reject('none') | join }}"
+            FMTUNE_JOB_ID: "{{ [config.fm_tune_config.autotunex.job_id] | reject('none') | join }}"
     monitors:
       log_monitor:
         ref: space://monitors/bash
