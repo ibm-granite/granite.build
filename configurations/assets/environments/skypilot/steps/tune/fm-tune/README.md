@@ -255,14 +255,16 @@ runs race on the cache and the output directory.
   fm-tune build is running. They are rebuilt on the next run.
 - A lock in the cache serialises only the clone and tree extraction and the venv build, not
   training, so concurrent builds still train in parallel. Each lock is a `*.lock` directory
-  whose `pid` file records its owner as `<host>:<pid>`. A lock is never taken over
-  automatically. A run that finds one held waits up to `FMTUNE_LOCK_TIMEOUT` seconds
-  (default 1800), then fails. If the owner ran on the same host and is no longer running,
-  it fails at once instead of waiting. Either message names the lock directory and gives the
-  exact `rm -rf '<dir>'` to clear it.
-- A stale lock is left only by a build killed hard (`kill -9`, the OOM killer, a lost node)
-  during the clone or the pip install; any other exit releases it. To clear it, remove that
-  one `*.lock` directory, and only once no fm-tune build that might hold it is running.
+  whose `pid` file records its owner as `<host>:<pid>`. The host is `uname -n`, which
+  containers can share while each has its own pids, so a live owner can look gone. A lock is
+  never taken over automatically. A run that finds one held waits up to
+  `FMTUNE_LOCK_TIMEOUT` seconds (default 1800), then fails. If the owner ran on the same
+  host and is no longer running, it fails at once instead of waiting. Either message names
+  the lock directory and gives the exact `rm -rf '<dir>'` to clear it.
+- A stale lock is left by a build killed hard (`kill -9`, the OOM killer, a lost node) during
+  the clone, the tree extraction or the venv build, or interrupted while taking the lock. To
+  clear it, remove that one `*.lock` directory, and only once no fm-tune build that might hold
+  it is running.
 
 ## Memory knob: `FMTUNE_OBJECT_STORE_BYTES`
 

@@ -43,7 +43,7 @@ lock() {
     # Re-read: an owner that released the lock and then exited is not stale.
     if [ "${owner%:*}" = "$host" ] && gone "${owner##*:}" \
        && [ "$(cat "$1/pid" 2>/dev/null)" = "$owner" ]; then
-      die "lock $1 is held by $owner, which is no longer running; remove it with: rm -rf $(sq "$1")"
+      die "lock $1 is held by $owner, which is no longer running; remove it with: rm -rf $(sq "$1") if no fm-tune build is running"
     fi
     if [ $((SECONDS - start)) -ge "$FMTUNE_LOCK_TIMEOUT" ]; then
       die "lock $1 is still held after ${FMTUNE_LOCK_TIMEOUT}s (owner: ${owner:-none recorded}); remove it with: rm -rf $(sq "$1") if no fm-tune build is running"
@@ -58,11 +58,12 @@ lock() {
   trap unlock EXIT
 }
 unlock() {  # forget the lock first: a failed or interrupted rm must not unlock twice
-  local l="$held_lock"
+  local l="$held_lock" g
   held_lock=""; trap - EXIT
   [ "$(cat "$l/pid" 2>/dev/null)" = "$host:$$" ] || return 0
-  mv "$l" "$l.gone.$host.$$" 2>/dev/null || return 0
-  rm -rf "$l.gone.$host.$$" 2>/dev/null || true
+  # Rename first so no new mkdir lands in a dir being removed; if a dir can't be renamed, remove it in place.
+  g="$l.gone.$host.$$"; mv "$l" "$g" 2>/dev/null || g="$l"
+  rm -rf "$g" 2>/dev/null || true
 }
 
 : "${FMTUNE_PYTHON:=}"

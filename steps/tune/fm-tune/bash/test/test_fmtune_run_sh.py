@@ -463,6 +463,8 @@ def test_failed_update_of_a_cached_clone_dies(env, tmp_path):
     assert "fm-tune: " in proc.stderr and "update" in proc.stderr
     assert not pathlib.Path(env["STUB_RECORD"]).exists()  # main.py never ran
     assert "GB_ARTIFACT_ID:" not in proc.stdout
+    # It died holding the clone lock: the EXIT trap must release it.
+    assert not list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("*.lock*"))
 
 
 def _clone_lock(env) -> pathlib.Path:
@@ -523,7 +525,7 @@ def test_a_lock_whose_owner_died_on_this_host_dies_at_once_with_the_rm_hint(env,
     assert took < 10, took
     assert proc.returncode == 2
     assert (f"fm-tune: lock {lock} is held by {owner}, which is no longer running; "
-            f"remove it with: rm -rf {_sq(lock)}") in proc.stderr
+            f"remove it with: rm -rf {_sq(lock)} if no fm-tune build is running") in proc.stderr
     assert (lock / "pid").read_text() == owner + "\n"
     assert sorted(p.name for p in lock.iterdir()) == ["pid"]
     assert not pathlib.Path(env["STUB_RECORD"]).exists()
@@ -563,8 +565,13 @@ def _assert_timed_out(env, proc, took, lock, owner_text, contents):
 @pytest.mark.parametrize("pid", ["own", "1"])
 def test_a_lock_held_by_a_live_owner_on_this_host_is_waited_on_then_reported(env, tmp_path, pid):
     """pid 1 is another user's live process: kill -0 fails (EPERM), but it is not dead."""
-    if pid == "1" and os.geteuid() == 0:
-        pytest.skip("root may signal pid 1")
+    if pid == "1":
+        try:
+            os.kill(1, 0)
+        except PermissionError:
+            pass
+        else:  # root, or a container whose pid 1 is ours: it would test the alive path
+            pytest.skip("this user may signal pid 1")
     _git_repo(env, tmp_path)
     owner = f"{os.uname().nodename}:{os.getpid() if pid == 'own' else 1}"
     lock = _held_lock(env, owner + "\n")
@@ -744,9 +751,39 @@ def test_a_failed_owner_write_fails_fast_every_time(env, tmp_path):
     assert not _clone_lock(env).exists()
 
 
+def test_a_lock_dir_that_cannot_be_renamed_is_still_released(env, tmp_path):
+    """Some FUSE mounts cannot rename a dir, and a leftover .gone dir of the same name
+    blocks the rename too: the lock leaked, and with no takeover every later run died."""
+    _git_repo(env, tmp_path)
+    _stub(tmp_path / "bin", "mv",
+          f'case "$*" in *.lock.gone.*) exit 1 ;; esac\nexec "{shutil.which("mv")}" "$@"\n')
+    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+    env["FMTUNE_LOCK_TIMEOUT"] = "2"
+    cache = pathlib.Path(env["FMTUNE_CACHE_DIR"])
+    first = _run(env)
+    assert first.returncode == 0, first.stderr
+    assert not list(cache.glob("*.lock*"))
+    second = _run(env)
+    assert second.returncode == 0, second.stderr
+
+
+def test_unlock_leaves_a_lock_that_is_no_longer_ours(env, tmp_path):
+    """Someone removed our lock mid-section and another build took it: our unlock
+    must not remove theirs. A stub git swaps the pid file for another owner's."""
+    _git_repo(env, tmp_path)
+    lock = _clone_lock(env)
+    _stub(tmp_path / "bin", "git",
+          f'[ -d "{lock}" ] && echo otherhost:1 > "{lock}/pid"\n'
+          f'exec "{shutil.which("git")}" "$@"\n')
+    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    assert (lock / "pid").read_text() == "otherhost:1\n"
+
+
 @pytest.mark.parametrize("timeout", ["9223372036854775807", "1234567890"])
 def test_a_lock_timeout_too_big_for_shell_arithmetic_is_refused(env, timeout):
-    """$(( )) wraps: 2^63-1 + 59 goes negative, so every pid-less lock looked stale."""
+    """A value this long would wrap in $(( ))."""
     env["FMTUNE_LOCK_TIMEOUT"] = timeout
     proc = _run(env)
     assert proc.returncode == 2
