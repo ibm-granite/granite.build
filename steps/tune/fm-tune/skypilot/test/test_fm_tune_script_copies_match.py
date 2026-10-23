@@ -74,35 +74,52 @@ def test_both_templates_carry_the_same_validate_macro():
     assert _validate_macro("bash") == _validate_macro("skypilot")
 
 
-# One row per rule, as an fm_tune_config override and the key both layers must name.
+# One row per rule: an fm_tune_config override and that rule's own message fragment,
+# which both layers' messages must contain. A bare key is not enough: with a rule
+# removed from the script, a later die naming the same key ("train_file not found")
+# would still pass the row.
 # Not here: an empty run_name, which the script defaults to fm-tune (an unset env
 # var) but the template rejects, since a build that sets it empty made a mistake.
 _SRC = {"path": "", "repo": "", "ref": "main", "subdir": "sub"}
 _BAD = [
-    ({"train_file": ""}, "train_file"),
-    ({"validation_file": ""}, "validation_file"),
-    ({"train_file": "../x"}, "train_file"),
-    ({"train_file": ".."}, "train_file"),
-    ({"train_file": "a/../../x"}, "train_file"),
-    ({"validation_file": "/abs/v.jsonl"}, "validation_file"),
-    ({"source": dict(_SRC, path="/a", repo="https://g/r.git")}, "source.path and"),
-    ({"source": _SRC}, "source.path and"),
-    ({"model": ""}, "bind the base_model input"),
-    ({"run_name": "a b"}, "run_name must match"),
-    ({"run_name": "\u00e9t\u00e9"}, "run_name must match"),
+    ({"train_file": ""}, "train_file is required"),
+    ({"validation_file": ""}, "validation_file is required"),
+    ({"train_file": "../x"}, "train_file must be a relative path inside the dataset"),
+    ({"train_file": ".."}, "train_file must be a relative path inside the dataset"),
+    ({"train_file": "a/../../x"}, "train_file must be a relative path inside the dataset"),
+    ({"train_file": "/abs/t.jsonl"}, "train_file must be a relative path inside the dataset"),
+    ({"validation_file": "../v"}, "validation_file must be a relative path inside the dataset"),
+    ({"validation_file": "/abs/v.jsonl"}, "validation_file must be a relative path inside the dataset"),
+    ({"source": dict(_SRC, path="/a", repo="https://g/r.git")}, "set exactly one of"),
+    ({"source": _SRC}, "set exactly one of"),
+    ({"model": ""}, "set fm_tune_config.model or bind the base_model input"),
+    ({"run_name": "a b"}, "run_name must match ^[A-Za-z0-9._-]+$"),
+    ({"run_name": "\u00e9t\u00e9"}, "run_name must match ^[A-Za-z0-9._-]+$"),
     ({"source": dict(_SRC, repo="-x")}, "source.repo must not start with '-'"),
     ({"source": dict(_SRC, path="/a", ref="-x")}, "source.ref must not start with '-'"),
 ]
+# Rules only the render can check (the script gets flat strings): both templates.
+_RENDER_ONLY = [
+    ({"run_name": ""}, "run_name must match ^[A-Za-z0-9._-]+$"),
+    ({"seed": [1]}, "fm_tune_config.seed must be a scalar"),
+    ({"source": dict(_SRC, path="/a", subdir={"a": 1})}, "fm_tune_config.source.subdir must be a scalar"),
+    ({"autotunex": {"server_url": ["u"], "job_id": ""}}, "fm_tune_config.autotunex.server_url must be a scalar"),
+]
 _GOOD = [{"train_file": n, "validation_file": n} for n in ("t.jsonl", "sub/dir/t.jsonl", "a..b.jsonl")]
+_LAUNCHERS = {"bash": ("Bash", "fm-tune"), "skypilot": ("Skypilot", "fm-tune")}
+
+
+def _template(env):
+    tpl = yaml.safe_load((_STEPS / env / "step-template.yaml").read_text())
+    key, name = _LAUNCHERS[env]
+    return tpl, tpl["environment_configs"][key]["launchers"][name]["config"]
 
 
 @pytest.fixture
 def layers(tmp_path):
-    """Render the bash launcher config, and run the script on the env it maps."""
+    """Render both templates' launcher configs, and run the script on the bash env map."""
     if shutil.which("bash") is None:  # pragma: no cover
         pytest.skip("bash not available")
-    tpl = yaml.safe_load((_STEPS / "bash" / "step-template.yaml").read_text())
-    launcher = tpl["environment_configs"]["Bash"]["launchers"]["fm-tune"]["config"]
     src = tmp_path / "fm-tune"
     (src / "autotune" / "configs").mkdir(parents=True)
     (src / "autotune" / "configs" / "autotune.yaml").write_text("{}\n")
@@ -112,7 +129,7 @@ def layers(tmp_path):
         (data / n).parent.mkdir(parents=True, exist_ok=True)
         (data / n).write_text("{}\n")
 
-    def cfg(over):
+    def cfg(tpl, over):
         c = json.loads(json.dumps(tpl["config"]))
         c["fm_tune_config"].update(
             model="org/tiny", train_file="t.jsonl", validation_file="t.jsonl",
@@ -121,11 +138,21 @@ def layers(tmp_path):
         c["fm_tune_config"].update(over)
         return {"config": c, "bindings": {"dataset": {"binding": {"path": str(data)}}}}
 
-    def render(over):
-        fill_objtemplate(launcher, cfg(over), strict=True)
+    def render_error(env, over):
+        """The raise_error message the strict fill of one template fails with."""
+        tpl, launcher = _template(env)
+        with pytest.raises(RuntimeError) as exc:
+            fill_objtemplate(launcher, cfg(tpl, over), strict=True)
+        assert isinstance(exc.value.__cause__, ValueError), repr(exc.value.__cause__)
+        return str(exc.value.__cause__)
+
+    def render(env, over):
+        tpl, launcher = _template(env)
+        fill_objtemplate(launcher, cfg(tpl, over), strict=True)
 
     def script(over):
-        ctx = cfg(over)
+        tpl, launcher = _template("bash")
+        ctx = cfg(tpl, over)
         env = {k: fill_template(v, ctx, strict=True) for k, v in launcher["env"].items()}
         env.update(
             PATH=os.environ["PATH"], FMTUNE_SKIP_INSTALL="1", FMTUNE_PYTHON=sys.executable,
@@ -136,23 +163,37 @@ def layers(tmp_path):
             env=env, capture_output=True, text=True, check=False,
         )
 
-    return render, script
+    return render_error, render, script
 
 
-@pytest.mark.parametrize("over, key", _BAD)
-def test_both_layers_reject_the_same_bad_values(layers, over, key):
-    render, script = layers
-    with pytest.raises(RuntimeError) as exc:
-        render(over)
-    assert key in str(exc.value.__cause__)
+@pytest.mark.parametrize("env", ["bash", "skypilot"])
+@pytest.mark.parametrize("over, rule", _BAD)
+def test_both_renders_reject_a_bad_value_with_the_rules_message(layers, env, over, rule):
+    render_error, _, _ = layers
+    msg = render_error(env, over)
+    assert msg.startswith("fm-tune: ") and rule in msg, msg
+
+
+@pytest.mark.parametrize("over, rule", _BAD)
+def test_the_script_rejects_a_bad_value_with_the_rules_message(layers, over, rule):
+    *_, script = layers
     proc = script(over)
     assert proc.returncode == 2, proc.stderr
-    assert "fm-tune: " in proc.stderr and key in proc.stderr, proc.stderr
+    assert f"fm-tune: " in proc.stderr and rule in proc.stderr, proc.stderr
+
+
+@pytest.mark.parametrize("env", ["bash", "skypilot"])
+@pytest.mark.parametrize("over, rule", _RENDER_ONLY)
+def test_both_renders_reject_a_render_only_bad_value(layers, env, over, rule):
+    render_error, _, _ = layers
+    msg = render_error(env, over)
+    assert msg.startswith("fm-tune: ") and rule in msg, msg
 
 
 @pytest.mark.parametrize("over", _GOOD)
 def test_both_layers_accept_the_same_good_values(layers, over):
-    render, script = layers
-    render(over)
+    _, render, script = layers
+    render("bash", over)
+    render("skypilot", over)
     proc = script(over)
     assert proc.returncode == 0, proc.stderr

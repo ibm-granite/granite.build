@@ -130,8 +130,8 @@ esac
 # Both go to git as positional args; a leading '-' would be read as an option.
 case "$FMTUNE_SOURCE_REPO" in -*) die "source.repo must not start with '-'" ;; esac
 case "$FMTUNE_SOURCE_REF" in -*) die "source.ref must not start with '-'" ;; esac
-[ -n "${FMTUNE_TRAIN_FILE:-}" ] || die "train_file is empty"
-[ -n "${FMTUNE_VALIDATION_FILE:-}" ] || die "validation_file is empty"
+[ -n "${FMTUNE_TRAIN_FILE:-}" ] || die "train_file is required"
+[ -n "${FMTUNE_VALIDATION_FILE:-}" ] || die "validation_file is required"
 # Both are joined onto the dataset dir: an absolute path or a '..' component
 # (matched per component, so a name like a..b.jsonl is fine) would leave it.
 case "/$FMTUNE_TRAIN_FILE/" in //*|*/../*)

@@ -193,7 +193,7 @@ def test_failed_training_exits_non_zero_without_a_marker(env):
         ({"FMTUNE_MODEL": ""}, "set fm_tune_config.model or bind the base_model input"),
         ({"FMTUNE_SOURCE_PATH": ""}, "set exactly one of source.path and source.repo"),
         ({"FMTUNE_SOURCE_REPO": "https://x/y.git"}, "set exactly one of source.path and source.repo"),
-        ({"FMTUNE_TRAIN_FILE": ""}, "train_file is empty"),
+        ({"FMTUNE_TRAIN_FILE": ""}, "train_file is required"),
         ({"FMTUNE_TRAIN_FILE": "nope.jsonl"}, "train_file not found"),
         ({"FMTUNE_VALIDATION_FILE": "nope.jsonl"}, "validation_file not found"),
         ({"FMTUNE_CONFIG_PRESET": "missing.yaml"}, "config_preset not found"),
