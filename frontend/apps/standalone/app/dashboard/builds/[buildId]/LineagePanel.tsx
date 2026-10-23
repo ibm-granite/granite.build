@@ -23,8 +23,8 @@ import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@granite
 import { getSubgraph, getHuggingFaceUrl } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
 import { artifactTypeToNodeType, depthForNextLevel, type IndexElkNode, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import { useLineageExpansion, type ExpandDirection } from '@granite-build/ui-core/components/LineageGraph/useLineageExpansion'
-import StepDrawer from './StepDrawer'
-import JobDrawer from './JobDrawer'
+import StepDrawer from '@granite-build/ui-core/components/StepDrawer/StepDrawer'
+import JobDrawer from '@granite-build/ui-core/components/StepDrawer/JobDrawer'
 
 const ACTIVE_STATUSES = new Set(['running', 'submitted', 'pending', 'cancel_requested'])
 

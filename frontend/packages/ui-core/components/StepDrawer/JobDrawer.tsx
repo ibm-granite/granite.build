@@ -4,14 +4,14 @@ import * as React from 'react'
 import { Button, IconButton, InlineLoading, InlineNotification } from '@carbon/react'
 import { Close } from '@carbon/icons-react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { adaptStatus, getLineageJobDetail, getLineageJobs, type LineageJobDetail, type LineageJobEntry } from '@granite-build/ui-core/api/gbserver'
-import type { BuildTargetRun } from '@granite-build/ui-core/types'
-import type { IndexElkNode } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
+import { adaptStatus, getLineageJobDetail, getLineageJobs, type LineageJobDetail, type LineageJobEntry } from '../../api/gbserver'
+import type { BuildTargetRun } from '../../types'
+import type { IndexElkNode } from '../LineageGraph/indexGraph'
 import StepDrawer from './StepDrawer'
 import StepDetailsPanel, { ExecutionSummary, Field, Section, hasValue, humanizeKey } from './StepDetailsPanel'
 import { stepDrawerSummary, toIsoTimestamp } from './stepDrawerSummary'
-import { BuildStatusBadge } from '@granite-build/ui-core/components/BuildStatusBadge'
-import styles from './LineagePanel.module.scss'
+import { BuildStatusBadge } from '../BuildStatusBadge'
+import styles from './StepDrawer.module.scss'
 
 interface Props {
   node: IndexElkNode
@@ -72,6 +72,7 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef, soleOfGroup
       onClose={onClose}
       drawerRef={drawerRef}
       closeButtonRef={closeButtonRef}
+      showSteps={!fromIndex}
       // Carbon's inline notification: persistent, in context, and not something
       // to act on, so info, low contrast and no close button.
       notice={fromIndex && job && (
@@ -81,7 +82,7 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef, soleOfGroup
           hideCloseButton
           title="From the lineage index"
           // A plain-string subtitle, so it takes the notification's own compact type.
-          subtitle={[job.detail_error ?? 'Not a granite.build run.', 'Showing what the lineage index recorded'].join('. ') + '.'}
+          subtitle={`${(job.detail_error ?? 'Not a granite.build run').replace(/\.$/, '')}. Showing what the lineage index recorded.`}
         />
       )}
     >
