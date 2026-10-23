@@ -144,9 +144,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sets `num_gpus_per_node > 0` with neither used to launch on a node with no GPU, silently. It
   still launches, but gbserver now warns. The `nemo-rl` step no longer renders `accelerators` or
   defaults `num_gpus_per_node: 8`: a build sets `launcher_config.resources.accelerators` (e.g.
-  `"A10G:1"`), and the step pins NeMo-RL's `cluster.gpus_per_node` from
-  `SKYPILOT_NUM_GPUS_PER_NODE`. **Breaking change for `nemo-rl` builds:** `compute_config`
-  `gpu_model` / `num_gpus_per_node` are no longer read; move the GPU request to `accelerators`.
+  `"A10G:1"`) or a GPU `instance_type`, and the step pins NeMo-RL's `cluster.gpus_per_node` from
+  `SKYPILOT_NUM_GPUS_PER_NODE` (override with the new `nemo_rl_config.gpus_per_node`). A `nemo-rl`
+  build with neither fails at step creation, before anything is provisioned. **Breaking change
+  for `nemo-rl` builds:** `compute_config` `gpu_model` / `num_gpus_per_node` are no longer read;
+  move the GPU request to `accelerators`.
 - **SkyPilot — the post-build workdir-cleanup VM is right-sized to 1 CPU.** `teardown_skypilot`
   launches a throwaway VM that mounts the shared filesystem and `rm -rf`s the run's per-run
   workdir after the build has finished. It now requests a single vCPU (the smallest

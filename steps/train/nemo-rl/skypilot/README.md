@@ -150,10 +150,14 @@ change that undoes one fails fast instead of on a GPU node.
   extract the id and path from the script's real output. A prefix the monitor does
   not match registers zero artifacts while the build still reports SUCCESS.
 - **GPUs come from the build, once.** The build sets
-  `launcher_config.resources.accelerators` (e.g. `"A10G:1"`); the template sets none
-  and no `num_gpus_per_node` default (#536). `nemo_rl_run.sh` pins NeMo-RL's
-  `cluster.gpus_per_node` from `SKYPILOT_NUM_GPUS_PER_NODE`, which SkyPilot exports
-  from that request, so the count is never repeated where it could drift.
+  `launcher_config.resources.accelerators` (e.g. `"A10G:1"`) or a GPU `instance_type`;
+  the template sets none and no `num_gpus_per_node` default (#536). With neither, the
+  `validate` macro fails the build at step creation: the node would have no GPU, and
+  NeMo-RL would fail only after the image pull and staging. `nemo_rl_run.sh` pins
+  NeMo-RL's `cluster.gpus_per_node` from `SKYPILOT_NUM_GPUS_PER_NODE`, which SkyPilot
+  sets from the GPUs it allocated (including an `instance_type`'s), so the count is not
+  repeated where it could drift. `nemo_rl_config.gpus_per_node` overrides it, and a
+  count that is not a whole number is logged rather than dropped silently.
 - **SLURM needs a prebuilt image.** Pulling the NGC image onto a cold BlueVela node
   took 73 minutes, longer than a gpu-mid job's 2-hour preemption protection can
   safely absorb on top of training. `slurm-sft` therefore points `image_id` at a

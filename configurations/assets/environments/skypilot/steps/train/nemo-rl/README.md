@@ -44,6 +44,7 @@ All fields live under the step's `config.nemo_rl_config`.
 | `clearml_project` / `clearml_task_name` | string | no | ClearML grouping. Only used when ClearML is enabled. |
 | `hf_output_repo` | string | no | Optional push target — the converted HF model is also uploaded here via `hf upload`. Needs a write-capable `HF_TOKEN` in the step env. |
 | `hf_output_private` | bool | no | Create a **missing** `hf_output_repo` private (`true`, default) or public (`false`). The Hub ignores it for a repo that already exists, so an existing public repo stays public. |
+| `gpus_per_node` | integer | no | GPUs NeMo-RL trains on (`cluster.gpus_per_node`). Empty (default) = the count SkyPilot allocated. Set it only to train on fewer GPUs than the node has. |
 
 ## Inputs
 
@@ -127,11 +128,14 @@ launcher_config:
 ```
 
 `accelerators` is SkyPilot's own GPU request, so set it to a type your endpoint
-offers (`A10G`, `A100`, `H100`, …). Without it the node has no GPU, and gbserver
-logs a warning if `compute_config.num_gpus_per_node` is set instead, which the
-SkyPilot launcher does not read. The step pins NeMo-RL's `cluster.gpus_per_node`
-to the count SkyPilot allocated, so a multi-GPU node is actually used (the
-shipped configs default it to 1).
+offers (`A10G`, `A100`, `H100`, …). A GPU `instance_type` (e.g. `g6e.12xlarge`)
+works too. With neither, the build fails at step creation, before anything is
+provisioned: the node would have no GPU. `compute_config.num_gpus_per_node` is
+not read by the SkyPilot launcher, so it is no substitute.
+
+The step pins NeMo-RL's `cluster.gpus_per_node` to the count SkyPilot allocated,
+so a multi-GPU node is actually used (the shipped configs default it to 1). Set
+`nemo_rl_config.gpus_per_node` to override it.
 
 ## Running on SLURM
 

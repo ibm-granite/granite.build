@@ -248,6 +248,48 @@ class TestArgAssembly:
         ov = _hydra_overrides(_train_argv(runs))
         assert not any(o.startswith("cluster.gpus_per_node=") for o in ov)
 
+    def test_explicit_gpus_per_node_wins_over_skypilot(self, tmp_path):
+        # nemo_rl_config.gpus_per_node lets a build state the count itself, e.g.
+        # to train on fewer GPUs than the node has.
+        proc, runs, _ = _run(
+            tmp_path,
+            ["--base-model", "/staged/base", "--gpus-per-node", "2"],
+            env_extra={"SKYPILOT_NUM_GPUS_PER_NODE": "8"},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert _hydra_overrides(_train_argv(runs))[-1] == "cluster.gpus_per_node=2"
+
+    def test_whole_float_count_is_accepted(self, tmp_path):
+        # The LSF executor exports the count with str(), which can give "4.0".
+        proc, runs, _ = _run(
+            tmp_path,
+            ["--base-model", "/staged/base"],
+            env_extra={"SKYPILOT_NUM_GPUS_PER_NODE": "4.0"},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert _hydra_overrides(_train_argv(runs))[-1] == "cluster.gpus_per_node=4"
+
+    @pytest.mark.parametrize(
+        "argv_extra,env_extra",
+        [
+            ([], {"SKYPILOT_NUM_GPUS_PER_NODE": "two"}),
+            ([], {"SKYPILOT_NUM_GPUS_PER_NODE": "2.5"}),
+            (["--gpus-per-node", "four"], {}),
+        ],
+    )
+    def test_invalid_count_is_logged_not_hidden(self, tmp_path, argv_extra, env_extra):
+        # A bad count must not silently fall back to sft.yaml's 1 GPU.
+        proc, runs, _ = _run(
+            tmp_path,
+            ["--base-model", "/staged/base"] + argv_extra,
+            env_extra=env_extra,
+        )
+        assert "not a whole number" in proc.stderr
+        assert not any(
+            o.startswith("cluster.gpus_per_node=")
+            for o in _hydra_overrides(_train_argv(runs))
+        )
+
     def test_injects_dataset_under_configured_key(self, tmp_path):
         proc, runs, _ = _run(
             tmp_path,
