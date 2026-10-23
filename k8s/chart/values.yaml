@@ -126,7 +126,9 @@ deployments:
     replicas: 1
     # The indexer indexes nothing until its checkpoint is seeded, always by hand:
     #   gbserver lineage-index-init --base-timestamp from-latest|all|<ISO-8601>
-    # An existing checkpoint is only replaced with --force.
+    # On a fresh install with no jobs yet, add --empty-from-beginning to
+    # from-latest. An existing checkpoint is only replaced with --force.
+    # (seedOnStart was removed; setting it fails the render.)
     resources:
       limits:
         cpu: "1"

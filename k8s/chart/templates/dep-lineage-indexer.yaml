@@ -33,6 +33,9 @@ spec:
       - name: lineage-indexer
         image: '{{ .Values.deployments.image }}'
         imagePullPolicy: Always
+        {{- if hasKey .Values.deployments.lineageIndexer "seedOnStart" }}
+        {{- fail "deployments.lineageIndexer.seedOnStart was removed: delete it and seed the checkpoint by hand with gbserver lineage-index-init" }}
+        {{- end }}
         command:
         - bash
         - -c

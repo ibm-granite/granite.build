@@ -35,7 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GBSERVER_LINEAGE_PROVIDER` is. **Upgrading a W&B deployment:** outside standalone the
   indexer indexes nothing until a checkpoint exists, and the Helm chart never seeds
   one: seed it by hand with `gbserver lineage-index-init --base-timestamp
-  from-latest|all|<ISO-8601>` (`--force` to replace an existing one). URI
+  from-latest|all|<ISO-8601>` (`--force` to replace an existing one; on a fresh install
+  with no jobs yet, add `--empty-from-beginning` to `from-latest`, which otherwise fails
+  with "No job found in the source"). The chart value
+  `deployments.lineageIndexer.seedOnStart` is removed: delete it from your overrides, as
+  setting it now fails the render while the indexer is enabled. URI
   normalization also changed (bucket paths, LH revisions and hosts, git refs and
   subdirectories, trailing slashes), so an existing index must be rebuilt once, with
   the indexer stopped, by `gbserver lineage-index-init --rebuild` (deletes the index rows,
