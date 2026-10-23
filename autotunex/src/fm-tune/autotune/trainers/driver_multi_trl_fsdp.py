@@ -48,11 +48,12 @@ from autotune.callbacks.training_metrics import TrainingMetricsCallback
 
 # Local
 from autotune.device import disable_cudnn_sdpa
-from autotune.shadow_residual import SR_TUNING_ALGO
+from autotune.shadow_residual import reject_sr_for_trl_driver
 from autotune.trainers._alora_gc import (
     AloraGradCheckpointDrainCallback,
     install_alora_gc_safety_wrapper,
 )
+from autotune.trainers._checkpointing import resolve_resume_checkpoint
 from autotune.trainers._moe import router_aux_loss_coef as moe_router_aux_loss_coef
 from autotune.trainers._peft_fsdp import peft_adapter_toggle_keeps_requires_grad
 from autotune.trainers._resume import peft_adapter_load_on_cpu
@@ -75,40 +76,6 @@ logger.setLevel(logging.INFO)
 # Suppress benign "Failed to query Ray Train Controller actor state" warnings
 # from the PlacementGroupCleaner.
 logging.getLogger("ray.train.v2._internal.execution.controller.placement_group_cleaner").setLevel(logging.ERROR)
-
-
-# --- Resume helper (mirrors driver_multi_hf_fsdp._resolve_resume_checkpoint) ---
-
-
-def _resolve_resume_checkpoint(training_output_dir: str, resume_flag: bool):
-    """Resolve the ``resume_from_checkpoint`` argument for ``Trainer.train()``.
-
-    Returns the path of the latest ``checkpoint-<step>`` directory under
-    ``training_output_dir`` when ``resume_flag`` is set and one exists, or
-    ``False`` otherwise (HF Trainer treats ``False`` as "train from scratch").
-
-    Pure / side-effect-free (only stats the filesystem) so it is unit-testable
-    without Ray or Torch. Kept in sync with the copy in
-    ``driver_multi_hf_fsdp``.
-    """
-    if not resume_flag:
-        return False
-    if not os.path.isdir(training_output_dir):
-        return False
-    candidates = []
-    for name in os.listdir(training_output_dir):
-        if not name.startswith("checkpoint-"):
-            continue
-        path = os.path.join(training_output_dir, name)
-        if not os.path.isdir(path):
-            continue
-        step_str = name[len("checkpoint-") :]
-        if step_str.isdigit():
-            candidates.append((int(step_str), path))
-    if not candidates:
-        return False
-    # Highest step number is the most recent checkpoint.
-    return max(candidates, key=lambda c: c[0])[1]
 
 
 # --- FSDP config builder (from driver_multi_hf_fsdp.py) ---
@@ -604,7 +571,7 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     # Train. Resume from the last checkpoint only during final training
     # (never during HPO trials) and only when --resume_from_checkpoint is set.
     resume_flag = (not hpo_search) and training_config.get("resume_from_checkpoint", False)
-    resume_arg = _resolve_resume_checkpoint(training_output_dir, resume_flag)
+    resume_arg = resolve_resume_checkpoint(training_output_dir, resume_flag)
     if resume_flag:
         if resume_arg:
             logger.info(f"[AutoTune] Resuming final training from checkpoint: {resume_arg}")
@@ -725,19 +692,7 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # Unpack config sections (discard unused ones — pop for side effect)
     training_config = local_config.pop("training_config")
 
-    # Shadow Residual is not supported by this driver. This is a hard rejection
-    # rather than a fallthrough because the failure would otherwise be SILENT:
-    # peft_type "SR" resolves to a plain LoraConfig whose target_modules include
-    # "cross_stream", and PEFT's inject_adapter raises only when *nothing*
-    # matched (peft/tuners/tuners_utils.py) -- so on a plain Granite base the
-    # cross_stream target is dropped without a warning and the run trains as
-    # ordinary LoRA while being labelled and reported as "sr".
-    if training_config.get("tuning_algorithm") == SR_TUNING_ALGO:
-        raise ValueError(
-            "[AutoTune] Shadow Residual supports SFT only and is not supported by "
-            "this driver, which trains offline RL (DPO/KTO) via TRL. Use "
-            "--rl_algo none (which routes to the HF SFT drivers instead)."
-        )
+    reject_sr_for_trl_driver(training_config)
     local_config.pop("training_rl_config")
     tuner_flags = local_config.pop("tuner_flags")
     local_config.pop("tune_config")

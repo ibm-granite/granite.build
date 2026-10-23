@@ -45,8 +45,9 @@ gotcha in CLAUDE.md.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 # The metric that selects the best checkpoint, and its direction. Eval loss is
 # lower-is-better, so ``greater_is_better`` is False.
@@ -158,3 +159,42 @@ def resolve_checkpoint_strategy(
         save_steps=cadence,
         eval_steps=cadence,
     )
+
+
+def resolve_resume_checkpoint(training_output_dir: str, resume_flag: bool) -> Union[str, bool]:
+    """Resolve the ``resume_from_checkpoint`` argument for ``Trainer.train()``.
+
+    Returns the path of the latest ``checkpoint-<step>`` directory under
+    ``training_output_dir`` when ``resume_flag`` is set and one exists, or
+    ``False`` otherwise (HF Trainer treats ``False`` as "train from scratch").
+
+    Pure / side-effect-free (only stats the filesystem) so it is unit-testable
+    without Ray or Torch. Shared by the multi-GPU drivers (FSDP and DeepSpeed, HF
+    and TRL); the single-GPU drivers do not wire up resume. ``utils.py``'s
+    ``has_resumable_final_checkpoint`` mirrors this rule on the head node.
+
+    Args:
+        training_output_dir: The directory the Trainer writes checkpoints to.
+        resume_flag: Whether this run was asked to resume.
+
+    Returns:
+        The latest checkpoint directory, or ``False`` to train from scratch.
+    """
+    if not resume_flag:
+        return False
+    if not os.path.isdir(training_output_dir):
+        return False
+    candidates = []
+    for name in os.listdir(training_output_dir):
+        if not name.startswith("checkpoint-"):
+            continue
+        path = os.path.join(training_output_dir, name)
+        if not os.path.isdir(path):
+            continue
+        step_str = name[len("checkpoint-") :]
+        if step_str.isdigit():
+            candidates.append((int(step_str), path))
+    if not candidates:
+        return False
+    # Highest step number is the most recent checkpoint.
+    return max(candidates, key=lambda c: c[0])[1]

@@ -426,18 +426,25 @@ class TestDriverRejections:
     # inject_adapter raises only when *nothing* matched, so on a plain Granite
     # base the cross_stream target is dropped without a warning and the run
     # trains as ordinary LoRA while being reported as "sr".
-    DRIVERS = [
-        "autotune/trainers/driver_multi_hf_ds.py",
+    TRL_DRIVERS = [
         "autotune/trainers/driver_single_trl.py",
         "autotune/trainers/driver_multi_trl_ds.py",
         "autotune/trainers/driver_multi_trl_fsdp.py",
     ]
 
-    @pytest.mark.parametrize("path", DRIVERS)
-    def test_driver_guards_on_the_sr_sentinel(self, path):
+    @pytest.mark.parametrize("path", TRL_DRIVERS)
+    def test_trl_drivers_call_the_shared_sr_rejection(self, path):
         source = (REPO_ROOT / path).read_text()
-        assert "SR_TUNING_ALGO" in source, f"{path} does not import the SR sentinel"
-        assert "Shadow Residual" in source, f"{path} has no SR rejection message"
+        assert "reject_sr_for_trl_driver(training_config)" in source, f"{path} does not reject SR"
+
+    def test_the_trl_rejection_raises_for_sr_only(self):
+        from autotune.shadow_residual import reject_sr_for_trl_driver
+
+        with pytest.raises(ValueError, match="Shadow Residual"):
+            reject_sr_for_trl_driver({"tuning_algorithm": SR_TUNING_ALGO})
+        reject_sr_for_trl_driver({"tuning_algorithm": "lora"})
+        reject_sr_for_trl_driver({})
+        reject_sr_for_trl_driver(None)
 
     SR_DRIVERS = [
         "autotune/trainers/driver_single.py",

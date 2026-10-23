@@ -95,7 +95,7 @@ def batch_to_dataframe(batch: Dict[str, Any]) -> pd.DataFrame:
 
     ``batch_format="numpy"`` hands a list-valued column (chat ``messages``,
     ``documents``, ``tools``) over as an object array whose cells are
-    ``np.ndarray`` of dicts, not ``list``. ``_apply_chat_template_to_df``
+    ``np.ndarray`` of dicts, not ``list``. ``apply_chat_template_to_df``
     detects chat rows with ``isinstance(first, list)``, so without this every
     chat-format row skipped the template and ``str(ndarray)`` was tokenized
     as the prompt, silently. Flat columns pass through untouched.
@@ -230,8 +230,8 @@ class TokenizeBatch:
 
     A class so Ray Data runs it on an actor pool: each actor loads the
     tokenizer once in ``__init__`` instead of once per task.
-    ``apply_chat_template`` is the driver's own ``_apply_chat_template_to_df``,
-    passed in so the driver keeps owning chat-template handling.
+    ``apply_chat_template`` is :func:`autotune.tools.chat_utils.apply_chat_template_to_df`,
+    passed in so this module stays free of the chat-template handling.
     """
 
     def __init__(

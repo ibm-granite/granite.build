@@ -45,15 +45,15 @@ from autotune.callbacks.training_metrics import TrainingMetricsCallback
 
 # Local
 from autotune.device import disable_cudnn_sdpa
-from autotune.shadow_residual import SR_TUNING_ALGO
+from autotune.shadow_residual import is_sr
 
 # Local
-from autotune.tools.chat_utils import template_supports_kwarg
+from autotune.tools.chat_utils import apply_chat_template_to_df
 from autotune.trainers._alora_gc import (
     AloraGradCheckpointDrainCallback,
     install_alora_gc_safety_wrapper,
 )
-from autotune.trainers._checkpointing import resolve_checkpoint_strategy
+from autotune.trainers._checkpointing import resolve_checkpoint_strategy, resolve_resume_checkpoint
 from autotune.trainers._collate import (
     LengthGroupedTrainer,
     build_collator,
@@ -84,37 +84,6 @@ logger = logging.getLogger(__name__)
 # from the PlacementGroupCleaner. These occur when the Ray State API is
 # temporarily slow under load from Ray Tune + TorchTrainer.
 logging.getLogger("ray.train.v2._internal.execution.controller.placement_group_cleaner").setLevel(logging.ERROR)
-
-
-def _resolve_resume_checkpoint(training_output_dir: str, resume_flag: bool):
-    """Resolve the ``resume_from_checkpoint`` argument for ``Trainer.train()``.
-
-    Returns the path of the latest ``checkpoint-<step>`` directory under
-    ``training_output_dir`` when ``resume_flag`` is set and one exists, or
-    ``False`` otherwise (HF Trainer treats ``False`` as "train from scratch").
-
-    Pure / side-effect-free (only stats the filesystem) so it is unit-testable
-    without Ray or Torch. Kept in sync with the copy in
-    ``driver_multi_hf_fsdp``.
-    """
-    if not resume_flag:
-        return False
-    if not os.path.isdir(training_output_dir):
-        return False
-    candidates = []
-    for name in os.listdir(training_output_dir):
-        if not name.startswith("checkpoint-"):
-            continue
-        path = os.path.join(training_output_dir, name)
-        if not os.path.isdir(path):
-            continue
-        step_str = name[len("checkpoint-") :]
-        if step_str.isdigit():
-            candidates.append((int(step_str), path))
-    if not candidates:
-        return False
-    # Highest step number is the most recent checkpoint.
-    return max(candidates, key=lambda c: c[0])[1]
 
 
 # --- DeepSpeed config builder ---
@@ -243,56 +212,6 @@ def _build_deepspeed_config(strategy: str) -> dict:
 # --- Dataset handling ---
 
 
-def _thinking_kwargs(tokenizer, thinking: bool = False):
-    """``{"enable_thinking": thinking}`` when the chat template supports it, else ``{}``.
-
-    Granite 4.2 defaults to ``enable_thinking=True``, which ends the rendered
-    prompt inside an *open* ``<think>`` block — so an SFT target would be trained
-    as reasoning content rather than as the answer. Older templates ignore the
-    kwarg, and a non-Granite template might reject an unknown one, so the flag is
-    only forwarded when the template actually mentions it.
-    """
-    if template_supports_kwarg(getattr(tokenizer, "chat_template", None), "enable_thinking"):
-        return {"enable_thinking": thinking}
-    return {}
-
-
-def _apply_chat_template_to_df(df, tokenizer, input_col: str, thinking: bool = False):
-    """Convert message-list rows in ``df[input_col]`` to plain strings via the
-    tokenizer's chat template. Handles optional ``documents`` and ``tools``
-    columns for RAG / tool-use prompts. Returns ``df`` unchanged if the column
-    doesn't hold message lists (detected by inspecting the first row) or if
-    the DataFrame is empty.
-
-    ``thinking`` is off by default; see :func:`_thinking_kwargs`.
-
-    Shared between the Arrow and Ray Data backends to keep chat-template
-    handling in a single place.
-    """
-    if input_col not in df.columns or len(df) == 0:
-        return df
-
-    first_val = df[input_col].iloc[0]
-    if not isinstance(first_val, list):
-        return df
-
-    has_documents = "documents" in df.columns and isinstance(df["documents"].iloc[0], list)
-    has_tools = "tools" in df.columns and isinstance(df["tools"].iloc[0], list)
-
-    base_kwargs = {"tokenize": False, "add_generation_prompt": True, **_thinking_kwargs(tokenizer, thinking)}
-
-    def _render(row):
-        kwargs = dict(base_kwargs)
-        if has_documents:
-            kwargs["documents"] = row["documents"]
-        if has_tools:
-            kwargs["tools"] = row["tools"]
-        return tokenizer.apply_chat_template(row[input_col], **kwargs)
-
-    df[input_col] = df.apply(_render, axis=1)
-    return df
-
-
 class _TokenizedArrowDataset(torch.utils.data.Dataset):
     """PyTorch Dataset backed by an Arrow file on shared storage.
 
@@ -362,7 +281,7 @@ def _load_tokenize_and_save(
         df = df.head(n)
         logger.info(f"[AutoTune] Subsampled to {len(df)} rows ({percentage * 100:.0f}%)")
 
-    df = _apply_chat_template_to_df(df, tokenizer, input_col, thinking)
+    df = apply_chat_template_to_df(df, tokenizer, input_col, thinking)
 
     logger.info("[AutoTune] First instance (after formatting):")
     logger.info(f"  {input_col}: {df[input_col].iloc[0]}")
@@ -665,7 +584,7 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
         device_kind="cuda" if torch.cuda.is_available() else "cpu",
         model_config=getattr(model, "config", None),
         peft_type=peft_type,
-        is_sr=training_config.get("tuning_algorithm") == SR_TUNING_ALGO,
+        is_sr=is_sr(training_config),
     )
     group_by_length = group_by_length_enabled(training_config, padding_mode)
     if rank == 0:
@@ -764,7 +683,7 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     # Train. Resume from the last checkpoint only during final training
     # (never during HPO trials) and only when --resume_from_checkpoint is set.
     resume_flag = (not hpo_search) and training_config.get("resume_from_checkpoint", False)
-    resume_arg = _resolve_resume_checkpoint(training_output_dir, resume_flag)
+    resume_arg = resolve_resume_checkpoint(training_output_dir, resume_flag)
     if resume_flag:
         if resume_arg:
             logger.info(f"[AutoTune] Resuming final training from checkpoint: {resume_arg}")
@@ -905,7 +824,7 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # matched (peft/tuners/tuners_utils.py) -- so on a plain Granite base the
     # cross_stream target is dropped without a warning and the run trains as
     # ordinary LoRA while being labelled and reported as "sr".
-    if training_config.get("tuning_algorithm") == SR_TUNING_ALGO:
+    if is_sr(training_config):
         raise ValueError(
             "[AutoTune] Shadow Residual requires FSDP and is not supported by the "
             "DeepSpeed driver. ZeRO's sharded init has no equivalent of the rank-0 "
@@ -1053,7 +972,7 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
             output_col=output_col,
             max_length=max_length,
             thinking=thinking,
-            apply_chat_template=_apply_chat_template_to_df,
+            apply_chat_template=apply_chat_template_to_df,
             concurrency_override=training_config.get("ray_data_concurrency"),
             num_cpus_override=training_config.get("ray_data_num_cpus"),
         )
