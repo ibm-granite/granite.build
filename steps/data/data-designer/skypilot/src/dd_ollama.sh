@@ -27,7 +27,8 @@
 # DECOMPRESSING
 # `zstd` is used when the node has it. The local Docker SLURM nodes do not, so it falls
 # back to Python's `zstandard` module: $PYTHON (the step's venv, which dd_setup.sh
-# installs `zstandard` into when local_model is set), else python3.
+# makes Python 3.12 and installs `zstandard` into when local_model is set), else
+# python3. 3.12+ because extraction uses tarfile's `filter="tar"`.
 #
 # VERIFYING THE DOWNLOAD
 # The archive is checked against a known sha256 before anything from it is installed,

@@ -139,11 +139,15 @@ environment_configs:
           envs:
             # Data Designer sends usage telemetry to NVIDIA unless this is false.
             NEMO_TELEMETRY_ENABLED: "false"
-            # The generation config and the providers travel as base64 JSON: it reaches
-            # dd_run.py byte-for-byte, with no YAML or shell quoting in between, and the
-            # Data Designer prompts inside it are data here, never re-rendered. Carries
-            # no secret — providers name environment variables, not values.
-            GB_DD_SPEC_B64: '{{ {"config": config.data_designer_config.config, "model_providers": config.data_designer_config.model_providers, "run_config": config.data_designer_config.run_config, "local_model": config.data_designer_config.local_model} | json_dumps | b64encode }}'
+            # The generation config and the providers travel as base64 YAML: it reaches
+            # dd_run.py byte-for-byte, with no shell quoting in between, and the Data
+            # Designer prompts inside it are data here, never re-rendered. YAML, not
+            # json_dumps, because an unquoted date in the build.yaml (`start:
+            # 2024-01-01`) is a date object, which json_dumps can't encode: the target
+            # failed to render with a Jinja traceback (review of #543). dd_run.py turns
+            # dates back into ISO strings. Carries no secret — providers name
+            # environment variables, not values.
+            GB_DD_SPEC_B64: '{{ {"config": config.data_designer_config.config, "model_providers": config.data_designer_config.model_providers, "run_config": config.data_designer_config.run_config, "local_model": config.data_designer_config.local_model} | to_yaml | b64encode }}'
           # setup runs ONCE at cluster bring-up. It guards first, so an invalid build is
           # refused before the install.
           setup: |

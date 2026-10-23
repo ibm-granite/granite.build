@@ -19,8 +19,9 @@ CONTRACT
             [--export-format <fmt>] [--min-records <n>] [--seed-path <dir>]
             [--seed-glob <glob>]
 
-  Everything else arrives in $GB_DD_SPEC_B64: base64 of the JSON object
-  {"config": {...}, "model_providers": [...], "run_config": {...}, "local_model": {...}}.
+  Everything else arrives in $GB_DD_SPEC_B64: base64 of the YAML mapping
+  {"config": {...}, "model_providers": [...], "run_config": {...}, "local_model": {...}}
+  (the template's to_yaml filter; dates in it are read back as ISO strings).
 
 ORDER, and why it matters
   1. Everything that cannot depend on the work is checked first (marker-safe id and
@@ -31,8 +32,9 @@ ORDER, and why it matters
      run in output_path is checked the way Data Designer would check it (config,
      buffer_size, preserve_dropped_columns). A run that matches is resumed. A mismatch
      is refused by resume=if_possible (the default) and resume=always, with nothing
-     removed; only resume=restart clears it and starts fresh in place. A num_records
-     below the previous target is refused in every mode and nothing is cleared.
+     removed; only resume=restart clears it and starts fresh in place. So are row
+     groups left with no metadata.json. A num_records below the previous target is
+     refused in every mode and nothing is cleared.
   3. create() — which health-checks each referenced model first.
   4. The row count is checked against --min-records, then the optional export.
   5. Only then is the artifact marker printed, so a failed or short run registers
@@ -44,11 +46,14 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import contextlib
 import copy
+import datetime
 import json
 import os
 import re
 import sys
+import traceback
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -65,15 +70,34 @@ class StepError(Exception):
     """A configuration problem reported as one ERROR line, without a traceback."""
 
 
+def _isoformat_dates(value: Any) -> Any:
+    """``value`` with every date/datetime turned into its ISO string, recursively.
+
+    YAML reads an unquoted ``2024-01-01`` as a date. Data Designer wants strings
+    (e.g. the datetime sampler's ``start``/``end``), and its config must stay JSON-able
+    for the fingerprint and builder_config.json.
+    """
+    if isinstance(value, (datetime.date, datetime.datetime)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _isoformat_dates(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_isoformat_dates(v) for v in value]
+    return value
+
+
 def load_spec(env: Mapping[str, str]) -> dict[str, Any]:
     """Decode and shape-check the config + providers the template passed in."""
     raw = env.get(SPEC_ENV, "")
     if not raw:
         raise StepError(f"${SPEC_ENV} is empty; the step template did not pass a spec.")
+    import yaml  # a data-designer dependency, so in the step's venv
+
     try:
-        spec = json.loads(base64.b64decode(raw, validate=True))
-    except (binascii.Error, ValueError) as e:
-        raise StepError(f"${SPEC_ENV} is not base64-encoded JSON: {e}") from None
+        spec = yaml.safe_load(base64.b64decode(raw, validate=True))
+    except (binascii.Error, ValueError, yaml.YAMLError) as e:
+        raise StepError(f"${SPEC_ENV} is not base64-encoded YAML: {e}") from None
+    spec = _isoformat_dates(spec)
     if not isinstance(spec, dict):
         raise StepError(
             f"${SPEC_ENV} must decode to an object, got {type(spec).__name__}."
@@ -200,6 +224,53 @@ def build_providers(
     return resolved
 
 
+def provider_secrets(
+    providers: list[Mapping[str, Any]], env: Mapping[str, str]
+) -> list[str]:
+    """Every credential value in the resolved providers, longest first.
+
+    The api_key and extra_headers values; also the environment value a plain api_key
+    names, since Data Designer reads a plain api_key as a variable name first.
+    """
+    secrets = set()
+    for p in providers:
+        key = p.get("api_key")
+        if isinstance(key, str):
+            secrets.update({key, env.get(key, "")})
+        headers = p.get("extra_headers")
+        if isinstance(headers, dict):
+            secrets.update(v for v in headers.values() if isinstance(v, str))
+    return sorted((x for x in secrets if x), key=len, reverse=True)
+
+
+def redact(text: str, secrets: list[str]) -> str:
+    for secret in secrets:
+        text = text.replace(secret, "<redacted>")
+    return text
+
+
+@contextlib.contextmanager
+def redacted_errors(secrets: list[str], passthrough: tuple[type, ...] = ()):
+    """Turn any Data Designer error into a StepError with every credential removed.
+
+    validate() and create() raise Data Designer's own errors as tracebacks, and its
+    ModelProvider prints api_key and extra_headers in clear (its repr shows them), so
+    an error that includes a provider would put the key in the job log (review of
+    #543). The traceback is still printed, for debugging, with each secret replaced.
+    ``passthrough`` exceptions are re-raised untouched, for a caller that reports them
+    itself without their values.
+    """
+    try:
+        yield
+    except (StepError, *passthrough):
+        raise
+    except Exception as e:
+        print(redact("".join(traceback.format_exception(e)), secrets), file=sys.stderr)
+        raise StepError(
+            redact(f"Data Designer failed: {type(e).__name__}: {e}", secrets)
+        ) from None
+
+
 def apply_seed_path(
     config: dict[str, Any], seed_path: str, seed_glob: str
 ) -> dict[str, Any]:
@@ -261,12 +332,12 @@ _DD_ARTIFACTS = (
 _DD_METADATA_KEYS = ("config_hash", "config_hash_version", "target_num_records")
 
 
-def foreign_contents(output_path: Path) -> str | None:
-    """Why output_path holds a ``metadata.json`` that is NOT a Data Designer run's.
+def read_metadata(output_path: Path) -> dict[str, Any] | None | str:
+    """Read output_path's ``metadata.json`` ONCE for every previous-run check.
 
-    Returns None when there is no metadata.json, or it is Data Designer's. Anything
-    else must never be cleared: the third review reproduced a user's ``metadata.json``
-    being taken for a previous run, and ``images/`` plus a csv beside it deleted.
+    Returns None when there is none, the parsed object when it is valid JSON, or a
+    string saying why it can't be used. The checks used to each read it on their own
+    and disagreed on bad JSON (one raised, the others ignored it; review of #543).
     """
     metadata_path = output_path / "metadata.json"
     if not metadata_path.is_file():
@@ -275,17 +346,47 @@ def foreign_contents(output_path: Path) -> str | None:
         metadata = json.loads(metadata_path.read_text())
     except (OSError, ValueError):
         return "its metadata.json is not valid JSON"
-    if not isinstance(metadata, dict) or not all(
-        k in metadata for k in _DD_METADATA_KEYS
-    ):
+    return (
+        metadata if isinstance(metadata, dict) else "its metadata.json is not an object"
+    )
+
+
+def foreign_contents(
+    output_path: Path, metadata: dict[str, Any] | None | str
+) -> str | None:
+    """Why output_path can't be treated as a Data Designer run's directory, or None.
+
+    ``metadata`` is ``read_metadata(output_path)``. A ``metadata.json`` that is not
+    Data Designer's must never be cleared: the third review reproduced a user's
+    ``metadata.json`` being taken for a previous run, and ``images/`` plus a csv beside
+    it deleted.
+    """
+    if metadata is None:
+        return None
+    if isinstance(metadata, str):
+        return metadata
+    if not all(k in metadata for k in _DD_METADATA_KEYS):
         return "its metadata.json is not one Data Designer wrote"
     if not (output_path / "builder_config.json").is_file():
         return "it has a metadata.json but no builder_config.json"
     return None
 
 
+def orphaned_row_groups(output_path: Path, metadata: Any) -> bool:
+    """Whether ``parquet-files/`` holds row groups with no metadata.json beside them.
+
+    Data Designer then neither resumes nor clears them: it generates the new rows beside
+    them, so the dataset silently mixed two runs (measured: "generated 4 of 2
+    requested", with rows from two configs; found while checking the review of #543).
+    Only ``tmp-partial-parquet-files/`` is left without a metadata.json by an ordinary
+    interruption before the first row group, and Data Designer clears that itself, so
+    it is not counted here.
+    """
+    return metadata is None and any((output_path / "parquet-files").glob("*.parquet"))
+
+
 def resume_mismatch(
-    output_path: Path,
+    metadata: Mapping[str, Any],
     fingerprint: Mapping[str, Any],
     run_config: Mapping[str, Any],
 ) -> str | None:
@@ -299,16 +400,10 @@ def resume_mismatch(
       - a changed buffer_size failed the run: "Cannot resume: buffer_size=4 does not match";
       - a changed preserve_dropped_columns made Data Designer regenerate everything into
         a timestamped sibling dir, which the step then refused to register.
-    Also returns None when there is no previous run (no metadata.json) — nothing to
-    resume or to clear. ``run_config`` is the build's RunConfig fields; omitted ones take
-    Data Designer's defaults. Call only after foreign_contents() found nothing foreign,
-    so a metadata.json here is Data Designer's.
+    ``metadata`` is the previous run's metadata.json, which foreign_contents() has
+    confirmed is Data Designer's. ``run_config`` is the build's RunConfig fields; omitted
+    ones take Data Designer's defaults.
     """
-    metadata_path = output_path / "metadata.json"
-    if not metadata_path.is_file():
-        return None
-    metadata = json.loads(metadata_path.read_text())
-
     from data_designer.config.run_config import RunConfig
 
     current = RunConfig.model_validate(dict(run_config))
@@ -329,7 +424,7 @@ def resume_mismatch(
     return None
 
 
-def post_processed_refusal(output_path: Path, num_records: int) -> str | None:
+def post_processed_refusal(metadata: Mapping[str, Any], num_records: int) -> str | None:
     """Why a previous run's after-generation processing rules out this resume, or None.
 
     Mirrors ``_post_generation_processed_resume_result`` (Data Designer 0.9.5): once
@@ -338,12 +433,6 @@ def post_processed_refusal(output_path: Path, num_records: int) -> str | None:
     create(), after the step has printed "resuming" (third review); checked up front
     here. The same num_records with a finished, processed dataset is fine — nothing to do.
     """
-    try:
-        metadata = json.loads((output_path / "metadata.json").read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(metadata, dict):
-        return None
     state = metadata.get("post_generation_state")
     if state == "started":
         return (
@@ -360,19 +449,16 @@ def post_processed_refusal(output_path: Path, num_records: int) -> str | None:
     return None
 
 
-def num_records_below_target(output_path: Path, num_records: int) -> int | None:
+def num_records_below_target(
+    metadata: Mapping[str, Any], num_records: int
+) -> int | None:
     """The previous run's target when num_records is below it, else None.
 
     Not a resume mismatch: the previous run is the same dataset, and clearing it to honour
     a smaller num_records would destroy rows for no reason. Data Designer refuses this
     too; the step refuses it up front, in every resume mode, and never clears.
     """
-    try:
-        target = json.loads((output_path / "metadata.json").read_text()).get(
-            "target_num_records"
-        )
-    except (OSError, ValueError, AttributeError):
-        return None
+    target = metadata.get("target_num_records")
     return target if isinstance(target, int) and num_records < target else None
 
 
@@ -405,10 +491,10 @@ def clear_previous_run(output_path: Path) -> None:
 
     Only the entries in ``_DD_ARTIFACTS`` and Data Designer's export file
     (``<name>.<format>``) are removed, so other files a user keeps in output_path
-    survive. Called only after foreign_contents() confirmed output_path is a Data
-    Designer artifact dir (its metadata.json keys plus builder_config.json), so it is
-    never ``/``, a parent of one, or a directory that only happens to hold a
-    metadata.json.
+    survive. Called only once output_path is confirmed as a Data Designer artifact dir:
+    by foreign_contents() (its metadata.json keys plus builder_config.json), or, for
+    row groups left without a metadata.json, by its builder_config.json. So it is never
+    ``/``, a parent of one, or a directory that only happens to hold a metadata.json.
     """
     import shutil
 
@@ -422,21 +508,19 @@ def clear_previous_run(output_path: Path) -> None:
             entry.unlink()
 
 
-def count_resumable_records(output_path: Path, resume: str) -> int:
+def count_resumable_records(output_path: Path, has_metadata: bool) -> int:
     """Rows already checkpointed in output_path that this run will keep, not regenerate.
 
     Data Designer resumes from the completed batch files under ``parquet-files/``
     (measured: it reported "2 of 4 row group(s) already complete" from 2 files while
-    metadata.json still said 1), so this counts the same files. Called after
-    clear_previous_run, so a run that can't be resumed has already been cleared and
-    counts 0.
-    Recorded as step metadata, which makes a resume visible in build lineage.
+    metadata.json still said 1), so this counts the same files. A run that can't be
+    resumed has been refused or cleared by now. Recorded as step metadata, which makes
+    a resume visible in build lineage.
 
-    Counts only when a metadata.json is present too: without one Data Designer does not
-    resume, so batch files alone would over-report (a review suspicion, kept out by
-    construction).
+    Counts only when the previous run's metadata.json is kept (``has_metadata``):
+    without one Data Designer does not resume, so batch files alone would over-report.
     """
-    if resume == "never" or not (output_path / "metadata.json").is_file():
+    if not has_metadata:
         return 0
     batches = sorted((output_path / "parquet-files").glob("*.parquet"))
     if not batches:
@@ -553,16 +637,19 @@ def run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     from data_designer.interface import DataDesigner
 
     provider_objects = validate_providers(providers, ModelProvider)
+    # From here on Data Designer raises its own errors; none may show a credential.
+    secrets = provider_secrets(providers, env)
     # artifact_path/dataset_name are output_path's parent/basename, so Data Designer
     # writes the dataset exactly at output_path — the path the marker registers.
     output_path.parent.mkdir(parents=True, exist_ok=True)
     from pydantic import ValidationError
 
     try:
-        designer = DataDesigner(
-            artifact_path=str(output_path.parent),
-            model_providers=provider_objects,
-        )
+        with redacted_errors(secrets, passthrough=(ValidationError,)):
+            designer = DataDesigner(
+                artifact_path=str(output_path.parent),
+                model_providers=provider_objects,
+            )
     except ValidationError as e:
         # Its input_value is the provider list with credentials resolved; report the
         # failing locations only.
@@ -573,110 +660,143 @@ def run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
                 for err in e.errors(include_input=False, include_url=False)
             )
         ) from None
-    # The builder must come AFTER DataDesigner(): constructing DataDesigner seeds
-    # Data Designer's default model configs into DATA_DESIGNER_HOME, and a config that
-    # names no model_configs picks those defaults up when the builder is created. Built
-    # before, the first run fingerprinted an empty model list and every later run (same
-    # workdir, home now seeded) the defaults, so an unchanged config looked changed
-    # (measured: sha256:d8e0… then a3e9…).
-    builder = DataDesignerConfigBuilder.from_config(config)
-    if spec["run_config"]:
-        designer.set_run_config(RunConfig.model_validate(spec["run_config"]))
-    designer.validate(builder)
+    with redacted_errors(secrets):
+        # The builder must come AFTER DataDesigner(): constructing DataDesigner seeds
+        # Data Designer's default model configs into DATA_DESIGNER_HOME, and a config
+        # that names no model_configs picks those defaults up when the builder is
+        # created. Built before, the first run fingerprinted an empty model list and
+        # every later run (same workdir, home now seeded) the defaults, so an unchanged
+        # config looked changed (measured: sha256:d8e0… then a3e9…).
+        builder = DataDesignerConfigBuilder.from_config(config)
+        if spec["run_config"]:
+            designer.set_run_config(RunConfig.model_validate(spec["run_config"]))
+        designer.validate(builder)
 
-    # Settle what happens to a previous run in output_path BEFORE generating, so a
-    # mismatch costs nothing: Data Designer only discovers it inside create(). First make
-    # sure there IS a Data Designer run there; never clear anything else.
-    foreign = None if args.resume == "never" else foreign_contents(output_path)
-    if foreign:
-        raise StepError(
-            f"output_path {str(output_path)!r} can't be resumed or reused: {foreign}. "
-            f"Nothing was removed. Use an output_path of its own for this step."
+        # Settle what happens to a previous run in output_path BEFORE generating, so a
+        # mismatch costs nothing: Data Designer only discovers it inside create(). First
+        # make sure there IS a Data Designer run there; never clear anything else.
+        # resume=never skips all of it: check_output_dir() already refused a non-empty
+        # output_path.
+        metadata = None if args.resume == "never" else read_metadata(output_path)
+        foreign = (
+            None if args.resume == "never" else foreign_contents(output_path, metadata)
         )
-    mismatch = resume_mismatch(
-        output_path,
-        compiled_fingerprint(designer, builder),
-        spec["run_config"],
-    )
-    target = (
-        None if mismatch else num_records_below_target(output_path, args.num_records)
-    )
-    if target is not None and args.resume != "never":
-        raise StepError(
-            f"num_records ({args.num_records}) is below the {target} the run in "
-            f"{str(output_path)!r} was started with. Resume keeps or extends a dataset, "
-            f"never shrinks it: use num_records >= {target}, or a new output_path. "
-            f"Nothing was removed."
+        if foreign:
+            raise StepError(
+                f"output_path {str(output_path)!r} can't be resumed or reused: {foreign}. "
+                f"Nothing was removed. Use an output_path of its own for this step."
+            )
+        if args.resume != "never" and orphaned_row_groups(output_path, metadata):
+            problem = (
+                f"output_path {str(output_path)!r} has row groups in parquet-files/ but no "
+                f"metadata.json, so they can't be resumed, and Data Designer would add the "
+                f"new rows beside them. Nothing was removed."
+            )
+            if args.resume != "restart":
+                raise StepError(
+                    f"{problem} Set resume: restart to discard them, or use a new "
+                    f"output_path."
+                )
+            # Data Designer writes builder_config.json when a run starts, so it is what
+            # still marks the directory as Data Designer's once metadata.json is gone.
+            # Without it, clearing is refused even under restart, as for foreign
+            # contents.
+            if not (output_path / "builder_config.json").is_file():
+                raise StepError(
+                    f"{problem} There is no builder_config.json either, so this does not "
+                    f"look like a Data Designer run and resume: restart won't clear it. Use "
+                    f"an output_path of its own for this step."
+                )
+            print(
+                f"data-designer: {str(output_path)!r} has row groups but no metadata.json; "
+                f"resume: restart, so clearing them and starting fresh in place"
+            )
+            clear_previous_run(output_path)
+        if metadata:
+            # Fingerprinted only when there is a previous run to compare with: it uses a
+            # private Data Designer API, which a fresh run then never touches (review of
+            # #543).
+            mismatch = resume_mismatch(
+                metadata, compiled_fingerprint(designer, builder), spec["run_config"]
+            )
+            if not mismatch:
+                target = num_records_below_target(metadata, args.num_records)
+                if target is not None:
+                    raise StepError(
+                        f"num_records ({args.num_records}) is below the {target} the run "
+                        f"in {str(output_path)!r} was started with. Resume keeps or extends "
+                        f"a dataset, never shrinks it: use num_records >= {target}, or a "
+                        f"new output_path. Nothing was removed."
+                    )
+                processed = post_processed_refusal(metadata, args.num_records)
+                if processed:
+                    raise StepError(
+                        f"cannot resume the run in {str(output_path)!r}: {processed}. Use a "
+                        f"new output_path. Nothing was removed."
+                    )
+            # Deleting a previous run is opt-in: only resume: restart does it. The
+            # default (if_possible) and always both refuse a run they can't continue, so
+            # changing a config never silently costs the previous dataset.
+            elif args.resume in ("always", "if_possible"):
+                raise StepError(
+                    f"cannot resume the run in {str(output_path)!r}: {mismatch}. Nothing was "
+                    f"removed. To discard that run and start fresh there, set resume: "
+                    f"restart; to keep it, use a new output_path."
+                )
+            else:
+                print(
+                    f"data-designer: not resuming the run in {str(output_path)!r} because "
+                    f"{mismatch}; resume: restart, so clearing it and starting fresh in place"
+                )
+                clear_previous_run(output_path)
+                metadata = None
+        # `always` with no checkpoint yet (a first run, or one interrupted before its
+        # first row group finished) starts fresh, as Data Designer documents for ALWAYS.
+        # Data Designer itself raises instead when output_path doesn't exist at all
+        # (measured), so it is asked for if_possible in that one case, which starts
+        # fresh in place either way.
+        dd_resume = "if_possible" if args.resume == "restart" else args.resume
+        if args.resume == "always" and not metadata:
+            print(
+                f"data-designer: resume: always, but {str(output_path)!r} has no checkpoint "
+                f"yet; starting fresh"
+            )
+            dd_resume = "if_possible"
+        resumed = count_resumable_records(output_path, bool(metadata))
+        if resumed:
+            print(
+                f"data-designer: resuming — {resumed} record(s) already checkpointed in {str(output_path)!r}"
+            )
+        results = designer.create(
+            builder,
+            num_records=args.num_records,
+            dataset_name=output_path.name,
+            resume=ResumeMode(dd_resume),
         )
-    processed = (
-        None
-        if mismatch or args.resume == "never"
-        else post_processed_refusal(output_path, args.num_records)
-    )
-    if processed:
-        raise StepError(
-            f"cannot resume the run in {str(output_path)!r}: {processed}. Use a new "
-            f"output_path. Nothing was removed."
-        )
-    # Deleting a previous run is opt-in: only resume: restart does it. The default
-    # (if_possible) and always both refuse a run they can't continue, so changing a
-    # config never silently costs the previous dataset.
-    if mismatch and args.resume in ("always", "if_possible"):
-        raise StepError(
-            f"cannot resume the run in {str(output_path)!r}: {mismatch}. Nothing was "
-            f"removed. To discard that run and start fresh there, set resume: restart; "
-            f"to keep it, use a new output_path."
-        )
-    if mismatch and args.resume == "restart":
+
+        written = Path(results.artifact_storage.base_dataset_path).resolve()
+        if written != output_path.resolve():
+            raise StepError(
+                f"Data Designer wrote to {str(written)!r}, not output_path {str(output_path)!r}; "
+                f"refusing to register a path that does not hold this run's data."
+            )
+
+        count = results.count_records()
         print(
-            f"data-designer: not resuming the run in {str(output_path)!r} because "
-            f"{mismatch}; resume: restart, so clearing it and starting fresh in place"
+            f"data-designer: generated {count} of {args.num_records} requested record(s)"
         )
-        clear_previous_run(output_path)
-    # `always` with no checkpoint yet (a first run, or one interrupted before its first
-    # row group finished) starts fresh, as Data Designer documents for ALWAYS. Data
-    # Designer itself raises instead when output_path doesn't exist at all (measured), so
-    # it is asked for if_possible in that one case, which starts fresh in place either way.
-    dd_resume = "if_possible" if args.resume == "restart" else args.resume
-    if args.resume == "always" and not (output_path / "metadata.json").is_file():
-        print(
-            f"data-designer: resume: always, but {str(output_path)!r} has no checkpoint "
-            f"yet; starting fresh"
-        )
-        dd_resume = "if_possible"
-    resumed = count_resumable_records(output_path, args.resume)
-    if resumed:
-        print(
-            f"data-designer: resuming — {resumed} record(s) already checkpointed in {str(output_path)!r}"
-        )
-    results = designer.create(
-        builder,
-        num_records=args.num_records,
-        dataset_name=output_path.name,
-        resume=ResumeMode(dd_resume),
-    )
+        if count < min_records:
+            raise StepError(
+                f"only {count} record(s) were generated, below min_records={min_records}; "
+                f"rows whose cells failed are dropped — see the log above for the failures."
+            )
 
-    written = Path(results.artifact_storage.base_dataset_path).resolve()
-    if written != output_path.resolve():
-        raise StepError(
-            f"Data Designer wrote to {str(written)!r}, not output_path {str(output_path)!r}; "
-            f"refusing to register a path that does not hold this run's data."
-        )
-
-    count = results.count_records()
-    print(f"data-designer: generated {count} of {args.num_records} requested record(s)")
-    if count < min_records:
-        raise StepError(
-            f"only {count} record(s) were generated, below min_records={min_records}; "
-            f"rows whose cells failed are dropped — see the log above for the failures."
-        )
-
-    if args.export_format:
-        exported = results.export(
-            output_path / f"{output_path.name}.{args.export_format}",
-            format=args.export_format,
-        )
-        print(f"data-designer: exported {exported}")
+        if args.export_format:
+            exported = results.export(
+                output_path / f"{output_path.name}.{args.export_format}",
+                format=args.export_format,
+            )
+            print(f"data-designer: exported {exported}")
 
     # Lineage, then the marker. Both must start at the beginning of a line for the
     # monitor's regex, and the marker must be last: nothing after it can fail the run.

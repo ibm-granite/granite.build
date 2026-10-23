@@ -28,12 +28,18 @@ in process, resolving `api_key_env` / `extra_headers_from_env` from the environm
 key never reaches disk or the persisted config. Each provider is validated with its
 credentials replaced by placeholders first, so a malformed entry is reported by field
 name without the key reaching the log (a pydantic error prints the whole entry; found in
-review).
+review). Every later Data Designer call (the builder, `validate()`, `create()`, the
+export) runs under `redacted_errors`, which reports any error as one line with each
+resolved credential replaced by `<redacted>`, since Data Designer's `ModelProvider`
+prints `api_key` and `extra_headers` in clear (review of #543).
 
 **How the config reaches the node.** The `config`, `model_providers`, `run_config` and
-`local_model` travel together as base64 JSON in `$GB_DD_SPEC_B64`, which the launcher's `envs` render with the server's
-`json_dumps | b64encode` filters. This avoids YAML and shell quoting, and the Data
-Designer prompts inside are data at that point, never re-rendered. They *are* rendered
+`local_model` travel together as base64 YAML in `$GB_DD_SPEC_B64`, which the launcher's
+`envs` render with the server's `to_yaml | b64encode` filters. This avoids shell quoting,
+and the Data Designer prompts inside are data at that point, never re-rendered. It was
+`json_dumps` until the review of #543 showed that an unquoted date in a build.yaml (a
+`date` object after YAML parsing) failed the whole target render; `dd_run.py` turns
+dates back into ISO strings. They *are* rendered
 once before that, as part of the step config, which is why USAGE.md asks for
 `{% raw %}` around prompts.
 
@@ -78,7 +84,7 @@ PYTHONPATH=src <venv>/bin/python -m pytest -c /dev/null --noconftest \
   test/test_dd_step_render.py test/test_dd_guard_sh.py test/test_dd_run.py test/test_dd_ollama_sh.py
 ```
 
-There are 146 tests in all:
+There are 158 tests in all:
 
 - `test_dd_step_render.py` pins what the template computes:
   - the rendered blocks parse under `bash -n`;
@@ -87,7 +93,8 @@ There are 146 tests in all:
   - `dd_image` switches between installing and the `docker:` image;
   - `local_model` on and off;
   - `$GB_DD_SPEC_B64` decodes back to the config, with prompts verbatim, and carries
-    `run_config` and `local_model`.
+    `run_config` and `local_model`; an unquoted date renders, and arrives as an ISO
+    string.
 - `test_dd_guard_sh.py` runs the guard on every refusal and on the passing cases,
   including `min_records` > `num_records`, an out-of-range port, and `local_model` with
   `dd_image`.
@@ -123,6 +130,12 @@ There are 146 tests in all:
   - `scheduler_events.jsonl` is cleared on a restart (checked by run count; content
     merely differing would pass without the clear, since Data Designer appends);
   - user files survive a `restart`;
+  - row groups left in `parquet-files/` without a `metadata.json` are refused by
+    `if_possible` and `always` with nothing removed, and cleared by `restart` only when
+    `builder_config.json` marks the dir as Data Designer's (review of #543; before,
+    the new rows were silently added beside them);
+  - an unregistered provider or an unknown model alias fails with one line that
+    contains no credential;
   - a malformed provider, or a credential of the wrong type, is reported without its
     key.
 - `test_dd_ollama_sh.py` runs the real `src/dd_ollama.sh` with `curl` and the Ollama

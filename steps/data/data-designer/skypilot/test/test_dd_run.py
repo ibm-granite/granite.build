@@ -93,7 +93,7 @@ class TestLoadSpec:
         "raw,needle",
         [
             ("", "is empty"),
-            ("not base64!!", "not base64-encoded JSON"),
+            ("not base64!!", "not base64-encoded YAML"),
             (_b64([1, 2]), "must decode to an object"),
             (
                 _b64({"config": {}, "model_providers": _PROVIDERS}),
@@ -292,13 +292,10 @@ class TestPreWorkChecks:
                 pa.table({"q": ["x"] * n}), batches / f"batch_{i:05d}.parquet"
             )
         out = tmp_path / "out"
-        (out / "metadata.json").write_text("{}")
-        assert dd_run.count_resumable_records(out, "if_possible") == 5
-        assert dd_run.count_resumable_records(out, "always") == 5
-        assert dd_run.count_resumable_records(out, "never") == 0
-        assert dd_run.count_resumable_records(tmp_path / "absent", "if_possible") == 0
-        (out / "metadata.json").unlink()  # batches without metadata: no resume, count 0
-        assert dd_run.count_resumable_records(out, "if_possible") == 0
+        assert dd_run.count_resumable_records(out, True) == 5
+        assert dd_run.count_resumable_records(tmp_path / "absent", True) == 0
+        # batches without a kept metadata.json: no resume, count 0
+        assert dd_run.count_resumable_records(out, False) == 0
 
     @pytest.mark.parametrize("bad", ["", "a b", 'a"b'])
     def test_marker_id(self, bad, tmp_path):
@@ -379,9 +376,13 @@ class TestForeignContents:
         (out / "builder_config.json").write_text("{}")
         return out
 
+    @staticmethod
+    def _foreign(out):
+        return dd_run.foreign_contents(out, dd_run.read_metadata(out))
+
     def test_data_designer_dir_is_not_foreign(self, tmp_path):
-        assert dd_run.foreign_contents(self._dd_dir(tmp_path)) is None
-        assert dd_run.foreign_contents(tmp_path / "absent") is None
+        assert self._foreign(self._dd_dir(tmp_path)) is None
+        assert self._foreign(tmp_path / "absent") is None
 
     @pytest.mark.parametrize(
         "setup,needle",
@@ -391,24 +392,66 @@ class TestForeignContents:
                 "not one Data Designer wrote",
             ),
             (lambda o: (o / "metadata.json").write_text("not json"), "not valid JSON"),
+            (lambda o: (o / "metadata.json").write_text("[1]"), "not an object"),
             (lambda o: (o / "builder_config.json").unlink(), "no builder_config.json"),
         ],
-        ids=["someone-elses-metadata", "corrupt", "no-builder-config"],
+        ids=["someone-elses-metadata", "corrupt", "not-an-object", "no-builder-config"],
     )
     def test_foreign_dirs_are_recognised(self, tmp_path, setup, needle):
         out = self._dd_dir(tmp_path)
         setup(out)
-        assert needle in dd_run.foreign_contents(out)
+        assert needle in self._foreign(out)
+
+
+class TestOrphanedRowGroups:
+    def test_only_batches_without_metadata_count(self, tmp_path):
+        out = tmp_path / "out"
+        (out / "tmp-partial-parquet-files").mkdir(parents=True)
+        (out / "tmp-partial-parquet-files" / "b.parquet").write_text("x")
+        # an interruption before the first row group: Data Designer clears it itself
+        assert not dd_run.orphaned_row_groups(out, None)
+        (out / "parquet-files").mkdir()
+        (out / "parquet-files" / "batch_00000.parquet").write_text("x")
+        assert dd_run.orphaned_row_groups(out, None)
+        assert not dd_run.orphaned_row_groups(out, {"config_hash": "h"})
+        assert not dd_run.orphaned_row_groups(tmp_path / "absent", None)
+
+
+class TestRedaction:
+    def test_secrets_collected_longest_first(self):
+        providers = [
+            {"name": "a", "api_key": "KEYVAR", "extra_headers": {"X": "hdr-1"}},
+            {"name": "b", "api_key": "sk-literal"},
+            {"name": "c"},
+        ]
+        secrets = dd_run.provider_secrets(providers, {"KEYVAR": "from-env-value"})
+        assert set(secrets) == {"KEYVAR", "from-env-value", "hdr-1", "sk-literal"}
+        assert [len(x) for x in secrets] == sorted(map(len, secrets), reverse=True)
+
+    def test_errors_and_tracebacks_lose_every_secret(self, capsys):
+        secrets = ["sk-SECRET-1", "hdr-SECRET-2"]
+        with pytest.raises(StepError) as e:
+            with dd_run.redacted_errors(secrets):
+                raise RuntimeError(
+                    "provider gw: api_key='sk-SECRET-1' X='hdr-SECRET-2'"
+                )
+        assert "SECRET" not in str(e.value) and "<redacted>" in str(e.value)
+        assert e.value.__cause__ is None and e.value.__suppress_context__
+        err = capsys.readouterr().err
+        assert "Traceback" in err and "SECRET" not in err
+
+    def test_step_errors_and_passthrough_are_untouched(self):
+        with pytest.raises(StepError, match="^as is$"):
+            with dd_run.redacted_errors(["x"]):
+                raise StepError("as is")
+        with pytest.raises(KeyError):
+            with dd_run.redacted_errors(["x"], passthrough=(KeyError,)):
+                raise KeyError("k")
 
 
 class TestPostProcessedRefusal:
     def _meta(self, tmp_path, **meta):
-        out = tmp_path / "out"
-        out.mkdir()
-        (out / "metadata.json").write_text(
-            json.dumps({"target_num_records": 4, **meta})
-        )
-        return out
+        return {"target_num_records": 4, **meta}
 
     def test_extending_a_processed_dataset_is_refused(self, tmp_path):
         out = self._meta(tmp_path, post_generation_processed=True)
@@ -789,3 +832,104 @@ class TestRunEndToEnd:
         captured = run_dd.last
         assert "sk-FAKE-SECRET" not in captured.out + captured.err
         assert "Traceback" not in captured.err and "endpoint" in captured.err
+
+    @staticmethod
+    def _orphan_batches(run_dd, tmp_path):
+        """A finished run of ANOTHER config whose metadata.json is gone: batches remain."""
+        other = {"columns": [{**_SAMPLER_CONFIG["columns"][0], "name": "zz"}]}
+        assert run_dd(4, config=other, run_config={"buffer_size": 2}) == 0
+        out = tmp_path / "out"
+        (out / "metadata.json").unlink()
+        return out
+
+    @pytest.mark.parametrize("resume", ["if_possible", "always"])
+    def test_row_groups_without_metadata_are_refused(self, run_dd, tmp_path, resume):
+        """Found while checking the review of #543: Data Designer added the new rows
+        beside the old ones ("generated 4 of 2 requested", rows from two configs)."""
+        out = self._orphan_batches(run_dd, tmp_path)
+        before = {
+            p.relative_to(out): p.read_bytes() for p in out.rglob("*") if p.is_file()
+        }
+        assert run_dd(2, resume=resume, run_config={"buffer_size": 2}) == 1
+        err = run_dd.last.err
+        assert "no metadata.json" in err and "Nothing was removed" in err
+        after = {
+            p.relative_to(out): p.read_bytes() for p in out.rglob("*") if p.is_file()
+        }
+        assert after == before
+
+    def test_restart_clears_row_groups_without_metadata(self, run_dd, tmp_path):
+        out = self._orphan_batches(run_dd, tmp_path)
+        assert (
+            run_dd(
+                2,
+                resume="restart",
+                run_config={"buffer_size": 2},
+                extra=("--export-format", "jsonl"),
+            )
+            == 0
+        ), run_dd.last.err
+        assert "generated 2 of 2" in run_dd.last.out
+        rows = [json.loads(x) for x in (out / "out.jsonl").read_text().splitlines()]
+        assert len(rows) == 2 and all(set(r) == {"t"} for r in rows)
+
+    def test_restart_wont_clear_row_groups_without_builder_config(
+        self, run_dd, tmp_path
+    ):
+        out = self._orphan_batches(run_dd, tmp_path)
+        (out / "builder_config.json").unlink()
+        assert run_dd(2, resume="restart", run_config={"buffer_size": 2}) == 1
+        assert "won't clear it" in run_dd.last.err
+        assert any((out / "parquet-files").iterdir())
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            # A provider name that isn't registered: raised by Data Designer inside
+            # create(), not by the step's own provider checks.
+            {
+                "model_configs": [{"alias": "a", "model": "m", "provider": "gw-typo"}],
+                "columns": [
+                    {
+                        "name": "q",
+                        "column_type": "llm-text",
+                        "model_alias": "a",
+                        "prompt": "hi",
+                    }
+                ],
+            },
+            # An unknown model alias.
+            {
+                "model_configs": [{"alias": "a", "model": "m", "provider": "gw"}],
+                "columns": [
+                    {
+                        "name": "q",
+                        "column_type": "llm-text",
+                        "model_alias": "nope",
+                        "prompt": "hi",
+                    }
+                ],
+            },
+        ],
+        ids=["unknown-provider", "unknown-alias"],
+    )
+    def test_data_designer_errors_are_one_line_without_secrets(self, run_dd, config):
+        """Review of #543: validate()/create() errors were raw tracebacks, and Data
+        Designer's ModelProvider prints api_key and extra_headers in clear."""
+        providers = [
+            {
+                "name": "gw",
+                "endpoint": "http://127.0.0.1:9/v1",
+                "api_key_env": "K",
+                "extra_headers_from_env": {"X-Key": "H"},
+            }
+        ]
+        env = {"K": "sk-FAKE-KEY-123", "H": "hdr-FAKE-456"}
+        assert run_dd(1, config=config, providers=providers, env=env) == 1
+        both = run_dd.last.out + run_dd.last.err
+        assert "sk-FAKE-KEY-123" not in both and "hdr-FAKE-456" not in both
+        assert (
+            run_dd.last.err.rstrip()
+            .splitlines()[-1]
+            .startswith("data-designer: ERROR Data Designer failed:")
+        )

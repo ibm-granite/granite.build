@@ -9,6 +9,8 @@ Data Designer only makes HTTP calls to an OpenAI-compatible (or Anthropic) endpo
 never loads a model, so the step is **CPU-only**. The GPU belongs to whatever serves the
 model: a hosted API, a model gateway, or a local server. It runs on the bare launcher node by default, so
 it needs no container runtime and works on clusters without the Pyxis SPANK plugin.
+The install uses Python 3.12. If the node has none, `uv` downloads it once, into the
+shared cache.
 
 > **Developing or testing this step?** See `steps/data/data-designer/skypilot/README.md`
 > in the granite.build repository for how the step is generated, tested, and published.
@@ -174,9 +176,9 @@ build variable (`config`, `bindings`, `run_metadata`) would be evaluated by the 
 silently changed. Build-time values you *do* want substituted, such as `$${PARAM}` build
 parameters, go outside the raw block.
 
-**Quote dates.** YAML reads an unquoted `2024-01-01` as a date, which the step can't pass
-on, and the build then fails to render with an unhelpful "not JSON serializable" error.
-Write `"2024-01-01"`, for example in a `datetime` sampler's `start`/`end`.
+**Dates.** YAML reads an unquoted `2024-01-01` as a date. The step passes it to
+Data Designer as the string `"2024-01-01"`, which is what a `datetime` sampler's
+`start`/`end` expect, so quoting is optional.
 
 ## Resume
 
@@ -215,6 +217,14 @@ refused up front too.
 `metadata.json` that Data Designer didn't write (one without its fields, or without the
 `builder_config.json` beside it), the run is refused and nothing is removed. Give the step
 an `output_path` of its own.
+
+**Row groups without a `metadata.json` are never mixed in.** When `parquet-files/` holds
+finished row groups but `metadata.json` is gone, they can't be resumed, and Data
+Designer would write the new rows beside them, so the dataset would combine two runs.
+The step refuses that before generating and removes nothing. `resume: restart` clears
+them, but only when the `builder_config.json` Data Designer writes is there too. A run
+interrupted before its first row group leaves only `tmp-partial-parquet-files/`, which
+Data Designer discards by itself, so a plain retry still works.
 
 The fingerprint ignores `max_parallel_requests`, `timeout`, `skip_health_check` and
 profilers, so you can retune concurrency and still resume. **Changing `buffer_size`

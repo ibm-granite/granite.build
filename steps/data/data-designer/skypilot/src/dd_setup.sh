@@ -45,7 +45,14 @@ fi
 
 export UV_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.uv-cache"
 
-uv venv "$venv"
+# Python 3.12, pinned: the step supports nothing older, and dd_ollama.sh's Python
+# extraction fallback runs in this venv and relies on tarfile's `filter=` (3.12+;
+# review of #543). uv uses a node interpreter of that version, else downloads a managed
+# CPython once into the shared cache (measured: the SkyPilot kube image's runtime Python
+# is 3.10). Not `>=3.12`: with no node interpreter, uv then picks the NEWEST release,
+# and on 3.15 data-designer's pyarrow has no wheel and fails to build (measured, kube).
+export UV_PYTHON_INSTALL_DIR="${GB_SHARED_WORKDIR:-$PWD}/.uv-python"
+uv venv --python 3.12 "$venv"
 # shellcheck source=/dev/null
 . "$venv/bin/activate"
 

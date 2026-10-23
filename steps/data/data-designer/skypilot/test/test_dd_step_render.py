@@ -29,6 +29,7 @@ import pathlib
 import shutil
 import subprocess
 
+import dd_run
 import pytest
 import yaml
 
@@ -61,9 +62,11 @@ def launcher(template) -> dict:
 
 
 def _env() -> jinja2.Environment:
-    """A Jinja env with the two gbserver filters the template uses."""
+    """A Jinja env with the gbserver filters the template uses, as gbserver defines them
+    (``src/gbserver/utils/template.py``: ``to_yaml`` is ``yaml.dump``)."""
     env = jinja2.Environment(undefined=jinja2.StrictUndefined)
     env.filters["json_dumps"] = json.dumps
+    env.filters["to_yaml"] = lambda v: yaml.dump(v, default_flow_style=False)
     env.filters["b64encode"] = lambda s: base64.b64encode(
         s if isinstance(s, bytes) else s.encode()
     ).decode()
@@ -244,7 +247,7 @@ class TestLocalModel:
         ) == ("ollama", "granite4:350m", "11434")
 
     def test_spec_carries_local_model(self, launcher, defaults):
-        spec = json.loads(
+        spec = yaml.safe_load(
             base64.b64decode(
                 _render(launcher["envs"]["GB_DD_SPEC_B64"], self._on(defaults))
             )
@@ -287,17 +290,44 @@ class TestSpecEnv:
         # The value as it already stands in the step config (the build rendered it
         # once, earlier); this render must carry it byte-for-byte.
         rendered = _render(launcher["envs"]["GB_DD_SPEC_B64"], cfg)
-        spec = json.loads(base64.b64decode(rendered))
+        spec = yaml.safe_load(base64.b64decode(rendered))
         assert spec["config"]["columns"][0]["prompt"] == prompt
         assert spec["model_providers"] == cfg["model_providers"]
         assert spec["run_config"] == {}
 
     def test_run_config_travels_in_spec(self, launcher, defaults):
         cfg = _cfg(defaults, run_config={"buffer_size": 2})
-        spec = json.loads(
+        spec = yaml.safe_load(
             base64.b64decode(_render(launcher["envs"]["GB_DD_SPEC_B64"], cfg))
         )
         assert spec["run_config"] == {"buffer_size": 2}
+
+    def test_unquoted_dates_render(self, launcher, defaults):
+        """``start: 2024-01-01`` unquoted in a build.yaml is a date object. json_dumps
+        failed the whole target render on it (review of #543); the YAML spec carries it,
+        and dd_run.py turns it back into an ISO string."""
+        params = yaml.safe_load("{start: 2024-01-01, end: 2024-12-31 10:00:00}")
+        cfg = _cfg(
+            defaults,
+            config={
+                "columns": [
+                    {
+                        "name": "d",
+                        "column_type": "sampler",
+                        "sampler_type": "datetime",
+                        "params": params,
+                    }
+                ]
+            },
+        )
+        with pytest.raises(TypeError, match="not JSON serializable"):
+            json.dumps(cfg["config"])  # what the old encoding hit
+        rendered = _render(launcher["envs"]["GB_DD_SPEC_B64"], cfg)
+        spec = dd_run.load_spec({dd_run.SPEC_ENV: rendered})
+        assert spec["config"]["columns"][0]["params"] == {
+            "start": "2024-01-01",
+            "end": "2024-12-31T10:00:00",
+        }
 
     def test_telemetry_is_off(self, launcher):
         assert launcher["envs"]["NEMO_TELEMETRY_ENABLED"] == "false"
