@@ -35,6 +35,10 @@ failed run leaves its trial and checkpoint directories (`ray_results/`, `outputs
 refused: delete that directory or use a new `output_path`. For the same reason fm-tune's
 `--resume_from_checkpoint` cannot be used through `extra_args`.
 
+Relative `output_path` and `source.path` values (and relative input paths) are resolved
+against the directory the step starts in (the run workdir on SkyPilot) before `main.py` runs,
+and the `model` output is registered with the absolute path. A trailing `/` is dropped.
+
 ## Config: `fm_tune_config`
 
 Every key has a default. The block is named `fm_tune_config` because a hyphen parses as
@@ -58,7 +62,7 @@ subtraction in Jinja.
 | `seed` | `""` | `--seed`, omitted when empty (fm-tune's default, 42) |
 | `config_preset` | `autotune.yaml` | Bundled `autotune/configs/<preset>`, used when `hpo_config` is empty |
 | `hpo_config` | `{}` | Inline HPO config (AutoTuneX's `config_data`), written to a file for `--config_file` |
-| `output_path` | `""` | SkyPilot only. `""` means `./model` in the run workdir. Ignored on bash |
+| `output_path` | `""` | SkyPilot only. `""` means `./model` in the run workdir. Must not contain `"`, `\` or a control character. Ignored on bash |
 | `extra_args` | `""` | Appended to the `main.py` command line, split on whitespace and newlines (no quoting) |
 | `python` | `""` | Interpreter that creates the venv. Empty means the injected python (bash) or `python3` (SkyPilot). Must be 3.10 or newer |
 | `autotunex.server_url` | `""` | `--autotunex_server_url`, omitted when empty |

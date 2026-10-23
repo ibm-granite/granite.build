@@ -81,9 +81,9 @@ def env(tmp_path):
     }
 
 
-def _run(env: dict) -> subprocess.CompletedProcess:
+def _run(env: dict, cwd=None) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["bash", str(_SCRIPT)], env=env, capture_output=True, text=True, check=False
+        ["bash", str(_SCRIPT)], env=env, capture_output=True, text=True, check=False, cwd=cwd
     )
 
 
@@ -587,6 +587,92 @@ def test_a_previous_model_output_is_accepted(env, marker):
     (out / "tokenizer_config.json").write_text("{}")
     proc = _run(env)
     assert proc.returncode == 0, proc.stderr
+
+
+def test_relative_paths_are_made_absolute_against_the_start_dir(env, tmp_path):
+    """main.py runs after `cd <fm-tune root>`, and the marker is read off-node."""
+    (tmp_path / "bm").mkdir()
+    env.update(
+        FMTUNE_OUTPUT_DIR="out",
+        FMTUNE_DATASET_DIR="data dir",
+        FMTUNE_SOURCE_PATH="fm-tune",
+        FMTUNE_BASE_MODEL_DIR="bm",
+    )
+    proc = _run(env, cwd=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    rec = _record(env)
+    argv = rec["argv"]
+    assert _flag(argv, "--output_dir") == f"{tmp_path}/out"
+    assert _flag(argv, "--train_file") == f"{tmp_path}/data dir/d_train.jsonl"
+    assert _flag(argv, "--validation_file") == f"{tmp_path}/data dir/d_validation.jsonl"
+    assert _flag(argv, "--model_name_or_path") == f"{tmp_path}/bm"
+    assert _flag(argv, "--config_file") == f"{tmp_path}/fm-tune/autotune/configs/autotune.yaml"
+    assert rec["cwd"] == f"{tmp_path}/fm-tune"
+    assert f"GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:{tmp_path}/out" in proc.stdout.splitlines()
+
+
+def test_a_model_id_is_not_made_absolute(env, tmp_path):
+    proc = _run(env, cwd=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert _flag(_record(env)["argv"], "--model_name_or_path") == "org/tiny"
+
+
+def test_a_relative_cache_dir_still_finds_the_venv_python_after_the_cd(env, tmp_path):
+    """The venv python is under the cache dir and runs main.py from the fm-tune root.
+    A stub interpreter fakes `-m venv` and `-m pip` so no real venv is built."""
+    real = sys.executable
+    stub = tmp_path / "bin" / "python3"
+    stub.parent.mkdir()
+    stub.write_text(
+        "#!/bin/sh\n"
+        'case "$1 $2" in\n'
+        '  "-m venv") mkdir -p "$3/bin" && cp "$0" "$3/bin/python"; exit $? ;;\n'
+        '  "-m pip") exit 0 ;;\n'
+        "esac\n"
+        f'exec "{real}" "$@"\n'
+    )
+    stub.chmod(0o755)
+    env.pop("FMTUNE_SKIP_INSTALL")
+    env.update(FMTUNE_PYTHON=str(stub), FMTUNE_CACHE_DIR="cache")
+    proc = _run(env, cwd=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    venv_bin = _record(env)["path"].split(":")[0]
+    assert venv_bin.startswith(f"{tmp_path}/cache/venv-") and venv_bin.endswith("/bin")
+
+
+def test_a_trailing_slash_on_the_output_dir_is_stripped(env):
+    out = env["FMTUNE_OUTPUT_DIR"]
+    env["FMTUNE_OUTPUT_DIR"] = out + "/"
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    assert _flag(_record(env)["argv"], "--output_dir") == out
+    assert f"GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:{out}" in proc.stdout.splitlines()
+
+
+def test_a_root_output_dir_is_not_stripped_to_empty_and_is_refused(env, tmp_path):
+    _git_repo(env, tmp_path)
+    git_ran = _git_spy(env, tmp_path)
+    env["FMTUNE_OUTPUT_DIR"] = "/"
+    proc = _run(env)
+    assert proc.returncode != 0
+    assert "fm-tune: output dir / is not empty and is not a previous model output" in proc.stderr
+    assert not git_ran.exists()
+
+
+# The monitors build the binding as '{ "path": "<marker path>" }' and json.loads it:
+# a '"' or a control character fails the parse, a '\' is read as a JSON escape, and
+# a newline ends the marker line early, registering a truncated path.
+@pytest.mark.parametrize("bad", ['a"b', "a\\b", "a\nb", "a\tb"])
+def test_an_output_path_that_breaks_the_marker_json_dies_before_any_clone(env, tmp_path, bad):
+    _git_repo(env, tmp_path)
+    git_ran = _git_spy(env, tmp_path)
+    env["FMTUNE_OUTPUT_DIR"] = str(tmp_path / bad)
+    proc = _run(env)
+    assert proc.returncode != 0
+    assert "fm-tune: output dir must not contain" in proc.stderr
+    assert not git_ran.exists()
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+    assert "GB_ARTIFACT_ID:" not in proc.stdout
 
 
 @pytest.mark.slow

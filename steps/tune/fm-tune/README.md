@@ -47,6 +47,13 @@ Set by the launcher; defaults are applied by the script.
 | `LOG_PATH` | the output dir's parent | Where fm-tune's AutoTuneX bridge writes `logs/`; kept if already set |
 | `FMTUNE_SKIP_INSTALL` | unset | `1` uses `FMTUNE_PYTHON` as is (unit tests only) |
 
+Before anything uses them, the script makes `FMTUNE_OUTPUT_DIR`, `FMTUNE_CACHE_DIR`,
+`FMTUNE_DATASET_DIR`, `FMTUNE_SOURCE_PATH` and `FMTUNE_BASE_MODEL_DIR` absolute against its
+starting directory (it later runs `main.py` from the fm-tune root, and the marker is read
+off-node), and drops a trailing `/` from `FMTUNE_OUTPUT_DIR`. `FMTUNE_OUTPUT_DIR` must not
+contain `"`, `\` or a control character: the monitors build the binding as
+`{ "path": "<path>" }` and parse it as JSON.
+
 Bash launcher env values reach the child unexpanded, so the bash template leaves
 `FMTUNE_OUTPUT_DIR` and `FMTUNE_CACHE_DIR` empty and the script derives them from the
 `LLMB_BASH_*` builtins.

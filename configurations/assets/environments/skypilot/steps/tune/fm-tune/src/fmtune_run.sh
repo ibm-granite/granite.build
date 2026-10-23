@@ -97,6 +97,22 @@ if { [ -n "$FMTUNE_SOURCE_PATH" ] && [ -n "$FMTUNE_SOURCE_REPO" ]; } \
    || { [ -z "$FMTUNE_SOURCE_PATH" ] && [ -z "$FMTUNE_SOURCE_REPO" ]; }; then
   die "set exactly one of source.path and source.repo"
 fi
+# main.py runs after `cd "$root"` (so does the venv python, under the cache dir),
+# and the marker is read off-node: make every path absolute against the start dir
+# before anything uses it. No realpath/readlink -f (macOS bash 3.2). Empty stays empty.
+case $FMTUNE_OUTPUT_DIR in /*) ;; *) FMTUNE_OUTPUT_DIR="$PWD/$FMTUNE_OUTPUT_DIR" ;; esac
+case $FMTUNE_CACHE_DIR in /*) ;; *) FMTUNE_CACHE_DIR="$PWD/$FMTUNE_CACHE_DIR" ;; esac
+case $FMTUNE_DATASET_DIR in /*) ;; *) FMTUNE_DATASET_DIR="$PWD/$FMTUNE_DATASET_DIR" ;; esac
+case $FMTUNE_SOURCE_PATH in ''|/*) ;; *) FMTUNE_SOURCE_PATH="$PWD/$FMTUNE_SOURCE_PATH" ;; esac
+case $FMTUNE_BASE_MODEL_DIR in ''|/*) ;; *) FMTUNE_BASE_MODEL_DIR="$PWD/$FMTUNE_BASE_MODEL_DIR" ;; esac
+[ "$FMTUNE_OUTPUT_DIR" = / ] || FMTUNE_OUTPUT_DIR="${FMTUNE_OUTPUT_DIR%/}"
+# The monitors read the marker path into a JSON string ('{ "path": "<path>" }'):
+# a '"' or a control character fails the parse, a '\' is read as an escape, and a
+# newline also cuts the marker line short.
+case $FMTUNE_OUTPUT_DIR in
+  *[\"\\]*|*[[:cntrl:]]*)
+    die "output dir must not contain a '\"', a '\\' or a control character: $FMTUNE_OUTPUT_DIR" ;;
+esac
 if [ -n "$FMTUNE_BASE_MODEL_DIR" ]; then
   model="$FMTUNE_BASE_MODEL_DIR"
 elif [ -n "$FMTUNE_MODEL" ]; then
