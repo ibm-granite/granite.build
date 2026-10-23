@@ -102,6 +102,10 @@ _BAD = [
     ({"tuning_algo": "none", "rl_algo": ""}, "tuning_algo and rl_algo cannot both be empty or none"),
     ({"tuning_algo": "None", "rl_algo": "NONE"}, "tuning_algo and rl_algo cannot both be empty or none"),
     ({"tuning_algo": "", "rl_algo": "none"}, "tuning_algo and rl_algo cannot both be empty or none"),
+    # pipeline.py: offline RL (AUTOTUNE_OFFLINE_RL = dpo, kto) with tuning_algo none.
+    ({"tuning_algo": "", "rl_algo": "dpo"}, "an offline rl_algo (dpo, kto) needs a tuning_algo"),
+    ({"tuning_algo": "none", "rl_algo": "dpo"}, "an offline rl_algo (dpo, kto) needs a tuning_algo"),
+    ({"tuning_algo": "NONE", "rl_algo": "KTO"}, "an offline rl_algo (dpo, kto) needs a tuning_algo"),
 ]
 # Rules only the render can check (the script gets flat strings): both templates.
 _RENDER_ONLY = [
@@ -113,11 +117,14 @@ _RENDER_ONLY = [
     ({"autotunex": "x"}, "fm_tune_config.autotunex must be a mapping"),
     ({"hpo_config": ["a"]}, "fm_tune_config.hpo_config must be a mapping or null"),
     ({"tuning_algo": None, "rl_algo": None}, "tuning_algo and rl_algo cannot both be empty or none"),
+    ({"tuning_algo": None, "rl_algo": "dpo"}, "an offline rl_algo (dpo, kto) needs a tuning_algo"),
 ]
 _GOOD = [{"train_file": n, "validation_file": n} for n in ("t.jsonl", "sub/dir/t.jsonl", "a..b.jsonl")] + [
     {"tuning_algo": "", "rl_algo": "grpo"},     # online RL needs no tuning algorithm
     {"tuning_algo": "none", "rl_algo": "ppo"},
     {"tuning_algo": "lora", "rl_algo": ""},
+    {"tuning_algo": "lora", "rl_algo": "dpo"},
+    {"tuning_algo": "sft", "rl_algo": "KTO"},
 ]
 _LAUNCHERS = {"bash": ("Bash", "fm-tune"), "skypilot": ("Skypilot", "fm-tune")}
 

@@ -206,6 +206,8 @@ def test_failed_training_exits_non_zero_without_a_marker(env):
         ({"FMTUNE_VALIDATION_FILE": "/abs/v.jsonl"}, "validation_file must be a relative path inside the dataset"),
         ({"FMTUNE_TUNING_ALGO": ""}, "tuning_algo and rl_algo cannot both be empty or none"),
         ({"FMTUNE_TUNING_ALGO": "none", "FMTUNE_RL_ALGO": "None"}, "tuning_algo and rl_algo cannot both be empty or none"),
+        ({"FMTUNE_TUNING_ALGO": "", "FMTUNE_RL_ALGO": "dpo"}, "an offline rl_algo (dpo, kto) needs a tuning_algo"),
+        ({"FMTUNE_TUNING_ALGO": "None", "FMTUNE_RL_ALGO": "Kto"}, "an offline rl_algo (dpo, kto) needs a tuning_algo"),
     ],
 )
 def test_invalid_input_fails_before_training(env, over, message):

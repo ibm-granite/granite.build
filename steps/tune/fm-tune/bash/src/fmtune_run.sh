@@ -145,6 +145,8 @@ esac
 case "$(printf '%s:%s' "$FMTUNE_TUNING_ALGO" "$FMTUNE_RL_ALGO" | tr '[:upper:]' '[:lower:]')" in
   :|none:|:none|none:none)
     die "tuning_algo and rl_algo cannot both be empty or none; set tuning_algo (e.g. lora) or an online rl_algo (ppo, grpo, dapo)" ;;
+  :dpo|:kto|none:dpo|none:kto)  # AUTOTUNE_OFFLINE_RL
+    die "an offline rl_algo (dpo, kto) needs a tuning_algo (e.g. lora or sft)" ;;
 esac
 train="$FMTUNE_DATASET_DIR/$FMTUNE_TRAIN_FILE"
 val="$FMTUNE_DATASET_DIR/$FMTUNE_VALIDATION_FILE"

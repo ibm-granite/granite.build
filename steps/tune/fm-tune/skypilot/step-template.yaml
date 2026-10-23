@@ -91,6 +91,7 @@ environment_configs:
             {%- endfor -%}
             {%- if (c.source.path and c.source.repo) or not (c.source.path or c.source.repo) %}{{ raise_error("fm-tune: set exactly one of fm_tune_config.source.path and fm_tune_config.source.repo.") }}{% endif -%}
             {%- if ([c.tuning_algo] | reject("none") | join | lower) in ["", "none"] and ([c.rl_algo] | reject("none") | join | lower) in ["", "none"] %}{{ raise_error("fm-tune: tuning_algo and rl_algo cannot both be empty or none; set tuning_algo (e.g. lora) or an online rl_algo (ppo, grpo, dapo).") }}{% endif -%}
+            {%- if ([c.tuning_algo] | reject("none") | join | lower) in ["", "none"] and ([c.rl_algo] | reject("none") | join | lower) in ["dpo", "kto"] %}{{ raise_error("fm-tune: an offline rl_algo (dpo, kto) needs a tuning_algo (e.g. lora or sft).") }}{% endif -%}
             {%- if not (c.model or base_model_bound) %}{{ raise_error("fm-tune: set fm_tune_config.model or bind the base_model input.") }}{% endif -%}
             {%- if not c.run_name or (c.run_name | string | list | reject("in", ok) | list) %}{{ raise_error("fm-tune: fm_tune_config.run_name must match ^[A-Za-z0-9._-]+$, got '" ~ (c.run_name if c.run_name is not none else "") ~ "'.") }}{% endif -%}
             {%- for key in ["repo", "ref"] -%}
@@ -100,8 +101,10 @@ environment_configs:
             {%- set c = config.fm_tune_config %}
             {{- validate(c, bindings.base_model is defined) }}
             {#- Counts: a whole number >= 0, as an int, a whole float (YAML 2.0) or a
-                string of digits; null or "" means unset. #}
-            {%- macro bad_count(v) -%}{{ "" if (v is none or v == "" or (v is number and v is not boolean and v >= 0 and v == (v | int)) or (v is string and not (v | list | reject("in", "0123456789") | list))) else "bad" }}{%- endmacro %}
+                string of digits; null means unset. "" is unset only where gbserver never
+                reads the value (num_gpus_per_node): its num_nodes int("") raises. #}
+            {%- macro bad_count(v) -%}{{ "" if (v is none or (v is number and v is not boolean and v >= 0 and v == (v | int)) or (v is string and v and not (v | list | reject("in", "0123456789") | list))) else "bad" }}{%- endmacro %}
+            {%- for key in ["compute_config", "launcher_config"] if config[key] is defined and config[key] is not none and config[key] is not mapping %}{{ raise_error("fm-tune: config." ~ key ~ " must be a mapping, got '" ~ config[key] ~ "'.") }}{% endfor %}
             {%- set cc = config.compute_config if (config.compute_config is defined and config.compute_config) else {} %}
             {%- set lc = config.launcher_config if (config.launcher_config is defined and config.launcher_config) else {} %}
             {#- Single node: with more, SkyPilot runs run: on every node and the runs
@@ -111,7 +114,7 @@ environment_configs:
             {%- for where, src in [("compute_config", cc), ("launcher_config", lc)] %}
             {%- set n = src.get("num_nodes") %}
             {%- if bad_count(n) %}{{ raise_error("fm-tune: " ~ where ~ ".num_nodes must be a whole number (got '" ~ n ~ "'); this step needs 1.") }}{% endif %}
-            {%- if n is not none and n != "" and (n | int) != 1 %}{{ raise_error("fm-tune: " ~ where ~ ".num_nodes must be 1 (got '" ~ n ~ "'); this step is single-node.") }}{% endif %}
+            {%- if n is not none and (n | int) != 1 %}{{ raise_error("fm-tune: " ~ where ~ ".num_nodes must be 1 (got '" ~ n ~ "'); this step is single-node.") }}{% endif %}
             {%- endfor %}
             {#- GPUs: gbserver does not request them from compute_config (they flow only
                 via launcher_config.resources; issue #536). The step can't render the
@@ -120,7 +123,7 @@ environment_configs:
                 accelerator. So a GPU count without an explicit request fails here
                 instead of silently provisioning a CPU-only node. #}
             {%- set gpus = cc.get("num_gpus_per_node") %}
-            {%- if bad_count(gpus) %}{{ raise_error("fm-tune: compute_config.num_gpus_per_node must be a whole number >= 0 (got '" ~ gpus ~ "').") }}{% endif %}
+            {%- if gpus != "" and bad_count(gpus) %}{{ raise_error("fm-tune: compute_config.num_gpus_per_node must be a whole number >= 0 (got '" ~ gpus ~ "').") }}{% endif %}
             {%- set lres = lc.get("resources") or {} %}
             {%- if gpus is not none and gpus != "" and (gpus | int) > 0 and not lres.get("accelerators") %}{{ raise_error("fm-tune: compute_config.num_gpus_per_node is " ~ gpus ~ ", but gbserver does not request GPUs from compute_config (issue #536). Also set config.launcher_config.resources.accelerators, e.g. \"" ~ (cc.gpu_model if (cc.gpu_model is defined and cc.gpu_model) else "<gpu_model>") ~ ":" ~ (gpus | int) ~ "\"; without it the job gets a CPU-only node.") }}{% endif %}
             export FMTUNE_DATASET_DIR={{ q(bindings.dataset.binding.path) }}

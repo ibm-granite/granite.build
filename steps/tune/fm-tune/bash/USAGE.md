@@ -76,7 +76,7 @@ subtraction in Jinja.
 These fail the step before it is launched or provisioned, with an `fm-tune: ...` message
 naming the key. gbserver runs them when it sets the step up to run, once the step's inputs
 are bound, so in a multi-target build an fm-tune target fails after the targets it depends
-on have run, not at submit. `fmtune_run.sh` repeats the first six for a direct run (it
+on have run, not at submit. `fmtune_run.sh` repeats the first seven for a direct run (it
 defaults an empty `run_name` to `fm-tune` instead of failing):
 
 - `train_file` or `validation_file` empty, absolute, or with a `..` component;
@@ -87,11 +87,14 @@ defaults an empty `run_name` to `fm-tune` instead of failing):
 - `tuning_algo` and `rl_algo` both empty or `none` (fm-tune's pipeline refuses that, but only
   after the clone and venv build); an online `rl_algo` (`ppo`, `grpo`, `dapo`) needs no
   `tuning_algo`;
+- an offline `rl_algo` (`dpo`, `kto`) with `tuning_algo` empty or `none` (fm-tune refuses
+  that late too);
 - a list or mapping for any key except `hpo_config` (write it as a string);
 - `source` or `autotunex` not a mapping, or `hpo_config` not a mapping or null;
-- SkyPilot only: a `num_nodes` other than 1 in `compute_config` or `launcher_config`; a
-  `num_nodes` or `num_gpus_per_node` that is not a whole number >= 0; and
-  `num_gpus_per_node` > 0 without `launcher_config.resources.accelerators` (see "Compute").
+- SkyPilot only: `compute_config` or `launcher_config` set but not a mapping; a `num_nodes`
+  other than 1 in either; a `num_nodes` that is not a whole number (`""` included: gbserver
+  cannot read it) or a `num_gpus_per_node` that is not a whole number >= 0 (`""` is unset);
+  and `num_gpus_per_node` > 0 without `launcher_config.resources.accelerators` (see "Compute").
 
 A `null` value renders as empty, not as the string `None`. That is not the template
 default: `tuning_algo: null` passes no `--tuning_algo`, so fm-tune's own default, `none`,

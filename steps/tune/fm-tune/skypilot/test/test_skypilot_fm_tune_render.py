@@ -291,7 +291,7 @@ def test_a_launcher_config_num_nodes_other_than_1_fails_the_fill(compute, launch
 
 @pytest.mark.parametrize("compute, launcher", [
     ({"num_nodes": 1}, {"num_nodes": 1}), ({"num_nodes": 1.0}, None), ({}, {"num_nodes": "1"}),
-    ({"num_nodes": ""}, {"num_nodes": None}),
+    ({"num_nodes": None}, {"num_nodes": None}),
 ])
 def test_one_node_from_every_source_renders(compute, launcher):
     assert "bash ./src/fmtune_run.sh" in _fill(compute=compute, launcher=launcher)["run"]
@@ -303,7 +303,7 @@ def test_a_non_numeric_gpu_count_fails_the_fill(bad):
     assert msg.startswith("fm-tune: compute_config.num_gpus_per_node must be a whole number >= 0"), msg
 
 
-@pytest.mark.parametrize("bad", ["abc", "1.5", 1.5, True, [1]])
+@pytest.mark.parametrize("bad", ["abc", "1.5", 1.5, True, [1], ""])  # "": gbserver int("") raises
 @pytest.mark.parametrize("where", ["compute_config", "launcher_config"])
 def test_a_non_numeric_node_count_fails_the_fill(bad, where):
     kw = {"compute": {"num_nodes": bad}} if where == "compute_config" else {"launcher": {"num_nodes": bad}}
@@ -328,6 +328,22 @@ def test_a_source_or_autotunex_that_is_not_a_mapping_fails_with_a_named_error(ke
 def test_an_hpo_config_that_is_not_a_mapping_or_null_fails_the_fill(bad):
     msg = _render_error({"hpo_config": bad})
     assert msg.startswith("fm-tune: fm_tune_config.hpo_config must be a mapping or null"), msg
+
+
+@pytest.mark.parametrize("where", ["compute_config", "launcher_config"])
+@pytest.mark.parametrize("bad", ["x", ["a"], 3])
+def test_a_compute_or_launcher_config_that_is_not_a_mapping_fails_with_a_named_error(where, bad):
+    kw = {"compute": bad} if where == "compute_config" else {"launcher": bad}
+    msg = _render_error(**kw)
+    assert msg.startswith(f"fm-tune: config.{where} must be a mapping"), msg
+
+
+@pytest.mark.parametrize("where", ["compute_config", "launcher_config"])
+def test_a_null_compute_or_launcher_config_is_unset(where):
+    cfg = _cfg()
+    cfg[where] = None
+    filled = fill_objtemplate(_LAUNCHER, {"config": cfg, "bindings": _DATASET}, strict=True)
+    assert "bash ./src/fmtune_run.sh" in filled["run"]
 
 
 def test_cache_dir_is_per_user_under_the_shared_workdir():

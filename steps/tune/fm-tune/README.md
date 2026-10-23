@@ -20,17 +20,26 @@ to `FMTUNE_*` variables. Edit one copy and copy it to the other.
 ## Render-time checks
 
 Config-only checks are `raise_error`s in a `validate` macro, so they fail gbserver's strict
-launcher-config fill when the step is created, before a SkyPilot node is provisioned. On
-skypilot the macro is in `run:` (each launcher-config string is filled on its own, and
-`run:` is also what a warm re-run renders), followed by the `num_nodes` and GPU checks. On
+launcher-config fill (`TargetStepRun.__init__`, once the step's inputs are bound): the step
+fails before it is launched or provisioned, though in a multi-target build only after its
+upstream targets have run. On skypilot the macro is in `run:` (each launcher-config string
+is filled on its own, and `run:` is also what a warm re-run renders), followed by the
+skypilot-only checks: `config.compute_config` and `config.launcher_config` must be mappings
+(null or absent is unset); `num_nodes` must be 1 in both, the two sources gbserver's
+`_num_nodes_from_configs` reads from the build, and a whole number (`""` fails: gbserver's
+`int("")` would raise at launch); and the GPU check below. On
 bash the env values are separate strings, so the macro has a launcher-config key of its own,
 `validate:`, which renders to `""` and is read by nothing. The macro text is the same in both
 templates, and `skypilot/test/test_fm_tune_script_copies_match.py` checks that, and that one
 table of bad values is rejected by both the render and `fmtune_run.sh`. Change a rule in the
 macro (both templates) and in the script together.
 
-Both templates render a YAML `null` as `""`; the macro rejects a list or mapping for every
-key except `hpo_config`.
+The macro checks, in order: `source` and `autotunex` are mappings and `hpo_config` a mapping
+or null (first, so no later check reads an attribute of a non-mapping); no list or mapping
+for any other key; then the rules USAGE lists, including the two from fm-tune's
+`autotune/pipeline.py` that otherwise fail after the clone and venv build: `tuning_algo` and
+`rl_algo` not both empty or `none`, and an offline `rl_algo` (`AUTOTUNE_OFFLINE_RL`: `dpo`,
+`kto`) only with a `tuning_algo`. Both templates render a YAML `null` as `""`.
 
 GPUs: the template cannot render `resources.accelerators` conditionally (only string values
 are filled, so the key is always emitted, and `""` reads as a blank-named accelerator). It
