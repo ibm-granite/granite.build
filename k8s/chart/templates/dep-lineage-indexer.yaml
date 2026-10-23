@@ -36,18 +36,9 @@ spec:
         command:
         - bash
         - -c
-        {{- if .Values.deployments.lineageIndexer.seedOnStart }}
-        # Seeds only when there is no checkpoint. A source with no job yet (a fresh
-        # install) seeds from the beginning, so its first jobs are not skipped. Any
-        # other seed failure (e.g. the DB is unreachable) fails the pod, which
-        # restarts and retries, instead of starting an indexer that indexes nothing.
-        - >-
-          gbserver lineage-index-init --empty-from-beginning --base-timestamp
-          {{ .Values.deployments.lineageIndexer.seedOnStart | quote }}
-          && exec gbserver lineage-indexer
-        {{- else }}
+        # Never seeds: the indexer indexes nothing until the checkpoint is seeded
+        # by hand with gbserver lineage-index-init --base-timestamp.
         - gbserver lineage-indexer
-        {{- end }}
         env:
         {{- range $key, $value := .Values.deployments.lineageIndexer.env }}
         - name: {{ $key | quote }}

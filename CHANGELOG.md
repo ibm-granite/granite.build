@@ -33,11 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Lineage: artifact lineage now reads the local lineage index (#470).** The artifact
   page and `GET /lineage/graph` read `gb_lineage_index`, whatever
   `GBSERVER_LINEAGE_PROVIDER` is. **Upgrading a W&B deployment:** outside standalone the
-  indexer starts only once a checkpoint exists. The Helm chart seeds one on start from
-  `lineageIndexer.seedOnStart` (default `from-latest`: new runs only, no history); set
-  it to `all` before the first start to back-fill. It seeds only when no checkpoint
-  exists, so changing it later has no effect: run
-  `gbserver lineage-index-init --base-timestamp all --force` instead. URI
+  indexer indexes nothing until a checkpoint exists, and the Helm chart never seeds
+  one: seed it by hand with `gbserver lineage-index-init --base-timestamp
+  from-latest|all|<ISO-8601>` (`--force` to replace an existing one). URI
   normalization also changed (bucket paths, LH revisions and hosts, git refs and
   subdirectories, trailing slashes), so an existing index must be rebuilt once, with
   the indexer stopped, by `gbserver lineage-index-init --rebuild` (deletes the index rows,
@@ -65,11 +63,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the index cannot be read. `GET /lineage/jobs` caps `job_ids` at 1000, as the graph does.
 - **Lineage index init (#470).** `gbserver lineage-index-init --rebuild` with provider
   `wandb` re-seeds at `all`, so the indexer back-fills the whole shared W&B project, not
-  just this deployment's runs. A new `--empty-from-beginning` flag, used by the Helm chart,
-  makes a fresh install with no history index its first jobs instead of skipping them.
-  The chart's indexer pod now fails (and restarts) when seeding fails, e.g. an unreachable
-  database or a bad `seedOnStart`; before, the failure was ignored and the indexer started
-  with no checkpoint.
+  just this deployment's runs. A new `--empty-from-beginning` flag makes a fresh install
+  with no history index its first jobs instead of skipping them.
 - **`gb_targets` indexes (#470).** Schema adjust adds a `(status, finished_at)` index
   and, on SQLite 3.20+, an expression index on the JSON `finished_at`, so the standalone
   lineage indexer pages successful targets by keyset instead of scanning the table. On

@@ -124,14 +124,9 @@ deployments:
     # Keep at 1: the indexer is the single writer of its checkpoint. The
     # deployment uses the Recreate strategy so a rollout never runs two at once.
     replicas: 1
-    # The indexer indexes nothing until its checkpoint is seeded. On start the pod
-    # runs gbserver lineage-index-init --base-timestamp <seedOnStart>, which only
-    # writes when there is no checkpoint yet (an existing one is never touched).
-    # from-latest indexes from the newest job onward (from the beginning when the
-    # source has no job yet, i.e. a fresh install); set to "all" to back-fill
-    # history once, or "" to seed by hand (from-latest|all|<ISO-8601>). Changing it
-    # after the first start does nothing; use lineage-index-init --force.
-    seedOnStart: from-latest
+    # The indexer indexes nothing until its checkpoint is seeded, always by hand:
+    #   gbserver lineage-index-init --base-timestamp from-latest|all|<ISO-8601>
+    # An existing checkpoint is only replaced with --force.
     resources:
       limits:
         cpu: "1"
