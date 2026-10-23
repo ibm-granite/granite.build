@@ -1,0 +1,31 @@
+# YAML-driven spec for test/integration/ibm/buildrunner/skypilot/slurm_local/test_data_designer_rits_keep.py.
+#
+# ONE target: 6 rows with min_records: 6 into a fixed /shared path that survives
+# teardown. The test itself then reads the dataset back from the node.
+targets:
+  - generate
+target_expectations:
+  - target_name: generate
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 1    # questions (env:///shared/..., registered from the marker)
+    expected_steps:
+      - step_uri: space://steps/data/data-designer
+        # Lineage the step records: all 6 rows generated, none reused (a fresh run
+        # into an emptied output_path).
+        metadata:
+          data_designer_version: "0.9.5"
+          records_generated: "6"
+          resumed_records: "0"
+        config:
+          data_designer_config:
+            output: questions
+            output_path: /shared/data-designer-test/slurm-rits-keep
+# The step is not published yet, so resolve it from its locally rendered Space
+# (make -C steps/data/data-designer/skypilot space). Switch to the shared
+# configurations/spaces/local Space once the step is published.
+space_uri: ../../../../../../../steps/data/data-designer/skypilot/space
+tests:
+  - runner
+simulate_step_failure: false
+timeout_minutes: 30
