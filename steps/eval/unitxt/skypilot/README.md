@@ -54,9 +54,9 @@ provides everything. It is generated from the sources here by the shared Makefil
   on 10 instances, and pushes `results` the same way as `slurm-cpu`. It is marked
   `ibm` and skipped in SPS CI/CD: the environment logs in with a key file,
   `~/.ssh/ibm-bluevela.key`, so it needs no secret manager, but CI has no key. Run it
-  by hand from the IBM venv (`make ibm-venv`), with an `HF_TOKEN` that has write
-  access through the `gbspace-public-staging` resource group (a read-only token fails
-  the push with `Could not resolve resource group id`):
+  by hand from the IBM venv (`make ibm-venv`), with an `HF_TOKEN` that can write to
+  `GBTEST_HF_PUSH_ORG` (a read-only token fails the push with `Could not resolve
+  resource group id`):
 
   ```sh
   make -C steps/eval/unitxt/skypilot space
