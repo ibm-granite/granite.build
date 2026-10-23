@@ -170,7 +170,22 @@ make staticcheck   # pylint + mypy on src/gbserver/
 make lint          # full check-mode lint across src/gbserver, src/gbcli, src/gbcommon
 ```
 
-`make xformat` / `make xcheck` limit formatting/typecheck to files changed against the `dev` branch.
+`make xformat` / `make xcheck` limit formatting/typecheck to files changed against the `main` branch.
+
+`make xcheck` runs pylint + mypy on just the changed python files anywhere in the repo, except `autotunex/` (it has
+its own ruff config and CI). It is not a full static check: unchanged files are not linted, so their existing errors
+don't fail or bury the report, and each file is checked the next time it changes. Files are grouped by how their imports
+resolve, with the repo `src/` and `test/` always on the import path:
+
+- `steps/` files are checked from each step's root (the directory holding `step-template.yaml`), with the step's
+  `src/` also on the path. Module names like `conftest.py` repeat across steps, so they can't be checked in one run.
+- `configurations/` and `test-data/` files are loose scripts (often `bash_scripts/*/run.py`), checked one directory
+  at a time for the same reason.
+- Everything else (`src/`, `test/`, `scripts/`, ...) is checked together from the repo root.
+
+Imports of runtime-only dependencies (torch, transformers, ...) that aren't installed in the dev venv are not reported,
+and errors in imported but unchanged files are left out. pylint's `redefined-outer-name` is disabled for files under a
+`test/` directory (every pytest fixture argument triggers it).
 
 ## Test layout
 

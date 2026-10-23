@@ -67,11 +67,11 @@ The frontend lives at `frontend/`, a yarn workspace: `frontend/packages/ui-core`
 
 The project uses **black** for formatting and **isort** for import sorting, with **pylint** and **mypy** for linting.
 
-Format and lint only files changed relative to `dev` (recommended before PRs):
+Format and lint only files changed relative to `main` (recommended before PRs):
 
 ```bash
 make xformat    # isort + black on changed files
-make xcheck     # pylint + mypy on changed files
+make xcheck     # pylint + mypy on changed python files (all but autotunex/)
 ```
 
 Format or check the entire codebase:
