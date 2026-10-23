@@ -58,8 +58,8 @@ SEED: 42
 INCLUDE_SFT: false
 
 # ─── Image and trainer code ───────────────────────────────────────────
-# Every GPU step defaults to the shared GPU image (steps/distill/gpu/) and every
-# CPU step to the shared CPU image (steps/distill/cpu/) -- no per-recipe override
+# Every GPU step defaults to the shared GPU image (steps/distill/images/gpu/) and every
+# CPU step to the shared CPU image (steps/distill/images/cpu/) -- no per-recipe override
 # needed. The GOLD trainer (gb_steps_post_training.distillation.gold and friends)
 # is baked into the GPU image from steps/distill/src/ (see
 # steps/distill/src/VENDORED.md), so a source bump is one edit there, not one per

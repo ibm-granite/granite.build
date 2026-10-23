@@ -4,7 +4,7 @@
 # Same pipeline shape and pair as recipes/granite4-350m/lsf/distill-smoke, as a
 # REUSABLE recipe: the values below start at plumbing scale (64 rows, 2
 # optimizer steps) to validate the shared distillation GPU/CPU images
-# (steps/distill/gpu/, steps/distill/cpu/) and every ported step's image_id
+# (steps/distill/images/gpu/, steps/distill/images/cpu/) and every ported step's image_id
 # default against SLURM's pyxis/enroot container runtime, not just LSF's
 # enroot, and the same build.yaml is meant to scale up to a full experiment
 # later via --param rather than forking a second file. It is the gate for the
@@ -12,7 +12,7 @@
 # the teacher's own tokenizer pin, the student's granitemoehybrid
 # architecture) PLUS whatever is genuinely different about SLURM as a
 # provisioner (partition naming, H200 rather than H100 hardware, the pyxis
-# ldconfig gap documented in steps/distill/gpu/README.md).
+# ldconfig gap documented in steps/distill/images/gpu/README.md).
 #
 # At the scale below, this recipe's subject is the PLUMBING of the chain —
 # align -> corpus -> [train-sft] -> train-gold -> export -> eval-transfer x2 —
@@ -42,8 +42,8 @@ SEED: 42
 INCLUDE_SFT: false
 
 # ─── Image and trainer code ───────────────────────────────────────────
-# Every GPU step defaults to the shared GPU image (steps/distill/gpu/) and every
-# CPU step to the shared CPU image (steps/distill/cpu/) -- no per-recipe override
+# Every GPU step defaults to the shared GPU image (steps/distill/images/gpu/) and every
+# CPU step to the shared CPU image (steps/distill/images/cpu/) -- no per-recipe override
 # needed, and nothing SLURM-specific about that default: the same image works
 # on both provisioners' pyxis/enroot runtimes. The GOLD trainer
 # (gb_steps_post_training.distillation.gold and friends) is baked into the GPU

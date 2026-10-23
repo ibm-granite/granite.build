@@ -16,7 +16,7 @@
 #                            clearml>=2.1.12, wandb>=0.28.2
 #
 # All three agree on requires-python>=3.10; pinned here to 3.12 for
-# consistency with steps/distill/gpu/'s image, not because any step needs
+# consistency with steps/distill/images/gpu/'s image, not because any step needs
 # exactly 3.12 (none of these three pin an exact minor version the way
 # distill-gold-train/distill-logit-precompute do).
 #

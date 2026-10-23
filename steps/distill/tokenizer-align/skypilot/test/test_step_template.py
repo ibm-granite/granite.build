@@ -94,7 +94,7 @@ class TestRunScriptIsValidShell:
 
 class TestSourceIsBakedIntoTheImage:
     """Nothing is cloned or mounted at launch: the trainer package, this step's scripts
-    and the venv are all in the shared CPU image (steps/distill/cpu/Dockerfile)."""
+    and the venv are all in the shared CPU image (steps/distill/images/cpu/Dockerfile)."""
 
     def test_there_is_no_code_config(self, step):
         assert "code_config" not in step["config"]
