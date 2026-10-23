@@ -151,6 +151,13 @@ esac
 # Both go to git as positional args; a leading '-' would be read as an option.
 case "$FMTUNE_SOURCE_REPO" in -*) die "source.repo must not start with '-'" ;; esac
 case "$FMTUNE_SOURCE_REF" in -*) die "source.ref must not start with '-'" ;; esac
+# Exactly 40 hex characters is a commit SHA, lowercased before any use (spelled
+# out, not a range: in a UTF-8 locale bash 3.2's [a-f] also matches 'B').
+ref_sha=""
+lc_ref="$(printf '%s' "$FMTUNE_SOURCE_REF" | tr ABCDEF abcdef)"
+if [ "${#lc_ref}" -eq 40 ]; then
+  case "$lc_ref" in *[!0123456789abcdef]*) ;; *) FMTUNE_SOURCE_REF="$lc_ref"; ref_sha=1 ;; esac
+fi
 [ -n "${FMTUNE_TRAIN_FILE:-}" ] || die "train_file is required"
 [ -n "${FMTUNE_VALIDATION_FILE:-}" ] || die "validation_file is required"
 # Both are joined onto the dataset dir: an absolute path or a '..' component
@@ -220,6 +227,10 @@ if [ -n "$(find -H "$FMTUNE_CACHE_DIR" -maxdepth 0 \( -perm -020 -o -perm -002 \
 fi
 if [ -n "$FMTUNE_SOURCE_PATH" ]; then
   root="$FMTUNE_SOURCE_PATH"
+elif [ -n "$ref_sha" ] && [ -d "$FMTUNE_CACHE_DIR/tree-$FMTUNE_SOURCE_REF" ]; then
+  # A commit never moves and its tree is moved into place whole: no lock, no git.
+  log "using $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF = $FMTUNE_SOURCE_REF"
+  root="$FMTUNE_CACHE_DIR/tree-$FMTUNE_SOURCE_REF/$FMTUNE_SOURCE_SUBDIR"
 else
   key="$(printf '%s@%s' "$FMTUNE_SOURCE_REPO" "$FMTUNE_SOURCE_REF" | cksum | cut -d' ' -f1)"
   # src-<key> (keyed on repo@ref) is only a fetch mirror; nothing runs from it.
@@ -227,14 +238,27 @@ else
   # commit, so a build refreshing the mirror never changes a running build's tree.
   clone="$FMTUNE_CACHE_DIR/src-$key"
   lock "$clone.lock"
-  if [ ! -d "$clone/.git" ]; then
+  if [ ! -d "$clone/.git" ] && [ -z "$ref_sha" ]; then
     log "cloning $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF"
     rm -rf "$clone.tmp"
-    git clone --quiet --depth 1 --branch "$FMTUNE_SOURCE_REF" -- "$FMTUNE_SOURCE_REPO" "$clone.tmp"
+    git clone --quiet --depth 1 --branch "$FMTUNE_SOURCE_REF" -- "$FMTUNE_SOURCE_REPO" "$clone.tmp" \
+      || die "could not clone $FMTUNE_SOURCE_REPO at $FMTUNE_SOURCE_REF (source.ref must be a branch, a tag, or a full 40-character commit SHA)"
     mv "$clone.tmp" "$clone"
     # ^{commit}: an annotated tag's FETCH_HEAD is the tag object, so peel both
     # sides or one commit gets two trees (and two venvs).
     sha="$(git -C "$clone" rev-parse 'HEAD^{commit}')"
+  elif [ ! -d "$clone/.git" ]; then
+    # A SHA: fetch that one commit by id, not a branch.
+    log "fetching $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF"
+    rm -rf "$clone.tmp"
+    git init -q "$clone.tmp"
+    git -C "$clone.tmp" remote add -- origin "$FMTUNE_SOURCE_REPO"
+    git -C "$clone.tmp" fetch --quiet --depth 1 -- origin "$FMTUNE_SOURCE_REF" \
+      || die "could not fetch commit $FMTUNE_SOURCE_REF from $FMTUNE_SOURCE_REPO (a commit SHA must be the full 40 characters of a commit in that repo)"
+    # A tag object's id peels to another commit; a tree's does not peel at all.
+    sha="$(git -C "$clone.tmp" rev-parse --verify --quiet 'FETCH_HEAD^{commit}')" && [ "$sha" = "$FMTUNE_SOURCE_REF" ] \
+      || die "source.ref $FMTUNE_SOURCE_REF is not a commit in $FMTUNE_SOURCE_REPO (it names a tag object or a tree)"
+    mv "$clone.tmp" "$clone"
   else
     # The cache outlives builds: resolve the ref's current commit, not the first one.
     log "updating $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF"

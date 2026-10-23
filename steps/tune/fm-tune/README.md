@@ -57,7 +57,7 @@ Set by the launcher; defaults are applied by the script.
 | `FMTUNE_CACHE_DIR` | bash: `<GB_HOME>/.fm-tune-cache` (beside `workdir/`); the skypilot template sets `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache-$(id -u)` (no shared parent: see USAGE) | Clone, tree and venv cache; required elsewhere. Created `0700`; the run fails if it is not the user's own or is group- or world-writable |
 | `FMTUNE_PYTHON` | `$LLMB_BASH_PYTHON_DIR/python3`, else `python3` | Interpreter that creates the venv (>= 3.10) |
 | `FMTUNE_SOURCE_PATH` / `FMTUNE_SOURCE_REPO` | empty | Exactly one must be set |
-| `FMTUNE_SOURCE_REF` | `main` | Branch or tag for the repo (`git clone --branch`; a bare SHA fails) |
+| `FMTUNE_SOURCE_REF` | `main` | Branch, tag (`git clone --branch`), or full 40-character commit SHA (fetched by id) |
 | `FMTUNE_SOURCE_SUBDIR` | `autotunex/src/fm-tune` | fm-tune dir inside the repo |
 | `FMTUNE_EXTRA` | `core` | pip extra |
 | `FMTUNE_BASE_MODEL_DIR` | empty | Bound `base_model`; wins over `FMTUNE_MODEL` |
@@ -125,8 +125,8 @@ needs the local podman Slurm VM: stop the VM when you are not testing slurm.
   plumbing, `train_loss` is finite.
 - `hpo_config` is written as YAML because fm-tune's `yaml.safe_load` (YAML 1.1) reads JSON's
   `5e-06` as a string (found in build c9d46858).
-- A cached clone is fetched on every run, and each trained commit adds a `tree-<sha>` and a
-  `venv-<key>` that nothing prunes; see `USAGE.md`, "Caches and cleanup".
+- A cached clone of a branch or tag is fetched on every run, and each trained commit adds a
+  `tree-<sha>` and a `venv-<key>` that nothing prunes; see `USAGE.md`, "Caches and cleanup".
 
 ## Verified
 

@@ -25,7 +25,8 @@ granite.build:
             fm_tune_config:
               source:
                 repo: https://github.com/ibm-granite/granite.build.git
-                ref: main
+                # upstream main at #470: its autotunex/src/fm-tune is the tree the step was proven on
+                ref: "b6aea3cac22eb178e816312e4553095671f26de9"
               train_file: data/train-00000-of-00001.parquet
               validation_file: data/train-00000-of-00001.parquet
               tuning_algo: lora

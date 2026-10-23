@@ -386,6 +386,7 @@ def _git_repo(env, tmp_path):
     _git("init", "-q", "-b", "rel", cwd=repo)
     _git("add", ".", cwd=repo)
     _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x", cwd=repo)
+    _git("config", "uploadpack.allowAnySHA1InWant", "true", cwd=repo)  # as GitHub serves any SHA
     env.update(
         FMTUNE_SOURCE_PATH="",
         FMTUNE_SOURCE_REPO=f"file://{repo}",
@@ -933,6 +934,108 @@ def test_an_annotated_tag_resolves_to_one_tree_and_its_commit(env, tmp_path):
         assert f"@v1 = {commit}" in proc.stdout
     trees = list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("tree-*"))
     assert [t.name for t in trees] == [f"tree-{commit}"]
+
+
+def test_a_commit_sha_ref_is_fetched_and_runs_from_its_tree(env, tmp_path):
+    repo = _git_repo(env, tmp_path)
+    sha = _head(repo)
+    (repo / "sub" / "fm-tune" / "LATER").write_text("1\n")
+    _commit(repo, "later")  # sha is no longer the branch tip
+    env["FMTUNE_SOURCE_REF"] = sha
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    cache = pathlib.Path(env["FMTUNE_CACHE_DIR"])
+    assert _record(env)["cwd"] == str(cache / f"tree-{sha}" / "sub" / "fm-tune")
+    assert f"@{sha} = {sha}" in proc.stdout
+    assert "[fm-tune] cloning" not in proc.stdout
+    # Fetched by id, not cloned: the branch tip never reached the mirror.
+    (mirror,) = cache.glob("src-*[0-9]")
+    tip = subprocess.run(["git", "-C", str(mirror), "cat-file", "-e", f"{_head(repo)}^{{commit}}"],
+                         capture_output=True, check=False)
+    assert tip.returncode != 0
+
+
+def test_a_warm_sha_run_needs_no_git_and_no_remote(env, tmp_path):
+    repo = _git_repo(env, tmp_path)
+    env["FMTUNE_SOURCE_REF"] = sha = _head(repo)
+    assert _run(env).returncode == 0
+    pathlib.Path(env["STUB_RECORD"]).unlink()
+    shutil.rmtree(repo)  # the remote is gone
+    spy = _git_spy(env, tmp_path)
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    assert not spy.exists()  # git was never called
+    tree = pathlib.Path(env["FMTUNE_CACHE_DIR"]) / f"tree-{sha}"
+    assert _record(env)["cwd"] == str(tree / "sub" / "fm-tune")
+    assert not list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("*.lock*"))
+
+
+def test_one_commit_by_branch_and_by_sha_shares_one_tree(env, tmp_path):
+    repo = _git_repo(env, tmp_path)
+    sha = _head(repo)
+    for ref in ("rel", sha):
+        env["FMTUNE_SOURCE_REF"] = ref
+        proc = _run(env)
+        assert proc.returncode == 0, proc.stderr
+        assert f"@{ref} = {sha}" in proc.stdout
+    trees = list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("tree-*"))
+    assert [t.name for t in trees] == [f"tree-{sha}"]
+
+
+def test_an_uppercase_sha_is_lowercased_to_the_same_tree_and_cache_key(env, tmp_path):
+    repo = _git_repo(env, tmp_path)
+    sha = _head(repo)
+    env["FMTUNE_SOURCE_REF"] = sha.upper()
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    assert f"@{sha} = {sha}" in proc.stdout
+    cache = pathlib.Path(env["FMTUNE_CACHE_DIR"])
+    assert [t.name for t in cache.glob("tree-*")] == [f"tree-{sha}"]
+    env["FMTUNE_SOURCE_REF"] = sha
+    assert [m.name for m in cache.glob("src-*")] == [_clone_lock(env).name[: -len(".lock")]]
+    assert _run(env).returncode == 0
+    assert [t.name for t in cache.glob("tree-*")] == [f"tree-{sha}"]
+
+
+def test_a_missing_full_sha_dies_before_any_venv(env, tmp_path):
+    _git_repo(env, tmp_path)
+    env["FMTUNE_SOURCE_REF"] = "0123456789abcdef" * 2 + "01234567"
+    env.pop("FMTUNE_SKIP_INSTALL")
+    proc = _run(env)
+    assert proc.returncode == 2, proc.stderr
+    assert "fm-tune: could not fetch commit 0123456789abcdef" in proc.stderr
+    cache = pathlib.Path(env["FMTUNE_CACHE_DIR"])
+    assert not list(cache.glob("tree-*")) and not list(cache.glob("venv-*"))
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+    assert "GB_ARTIFACT_ID:" not in proc.stdout
+    assert not list(cache.glob("*.lock*"))
+
+
+@pytest.mark.parametrize("ref", [lambda sha: sha[:7], lambda sha: "no-such-branch"],
+                         ids=["short-hex", "missing-branch"])
+def test_a_failed_branch_clone_dies_naming_the_full_sha_option(env, tmp_path, ref):
+    """A short hex value is not a SHA: it goes to clone --branch like any branch name."""
+    repo = _git_repo(env, tmp_path)
+    env["FMTUNE_SOURCE_REF"] = ref(_head(repo))
+    proc = _run(env)
+    assert proc.returncode == 2, proc.stderr
+    assert f"fm-tune: could not clone {env['FMTUNE_SOURCE_REPO']} at {env['FMTUNE_SOURCE_REF']}" in proc.stderr
+    assert "full 40-character commit SHA" in proc.stderr
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+
+
+@pytest.mark.parametrize("obj", ["v1", "HEAD^{tree}"], ids=["tag-object", "tree"])
+def test_a_sha_that_is_not_a_commit_dies(env, tmp_path, obj):
+    repo = _git_repo(env, tmp_path)
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "tag", "-a", "v1", "-m", "v1", cwd=repo)
+    env["FMTUNE_SOURCE_REF"] = subprocess.run(
+        ["git", "rev-parse", obj], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    proc = _run(env)
+    assert proc.returncode == 2, proc.stderr
+    assert "is not a commit" in proc.stderr
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+    assert not list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("tree-*"))
 
 
 @pytest.mark.parametrize("over", [{"FMTUNE_SOURCE_REF": "-uoops"},

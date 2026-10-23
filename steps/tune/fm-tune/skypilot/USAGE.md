@@ -51,7 +51,7 @@ subtraction in Jinja.
 |---|---|---|
 | `source.path` | `""` | Local fm-tune checkout. Exactly one of `path` and `repo` must be set |
 | `source.repo` | `""` | Git URL to clone (must not start with `-`) |
-| `source.ref` | `main` | Branch or tag for `repo` (a bare commit SHA is not supported) |
+| `source.ref` | `main` | Branch, tag, or full 40-character commit SHA for `repo` (quote a SHA in YAML) |
 | `source.subdir` | `autotunex/src/fm-tune` | fm-tune's location inside `repo` |
 | `extra` | `core` | pip extra installed: `core`, `full` or `mlx` |
 | `model` | `""` | `--model_name_or_path` when `base_model` is not bound |
@@ -245,8 +245,9 @@ runs race on the cache and the output directory.
   contrast, checks each level it creates. macOS ACLs on the dir are not checked either.
 - Migrating: an earlier version used `.fm-tune-cache/<uid>` on SkyPilot. Delete those dirs
   once no build uses them; the next run rebuilds its cache at the new path.
-- A cached `source.repo` clone is refreshed on every run (`[fm-tune] updating ...`), so a
-  warm-cache run still needs network access to the repo. If the fetch fails, the run stops.
+- A cached `source.repo` clone of a branch or tag is refreshed on every run
+  (`[fm-tune] updating ...`), so a warm-cache run still needs network access to the repo.
+  If the fetch fails, the run stops.
 - Every commit trained gets its own immutable `tree-<sha>` and its own `venv-<key>`. The
   venv for `extra: core` is large (1.5 GB measured on the arm64 CPU Slurm nodes). Nothing
   prunes them. Pin `source.ref` to a tag so builds share one tree and one venv.
@@ -306,8 +307,8 @@ this step's build shape:
 
 ## Known limits
 
-- `source.ref` must be a branch or tag: the clone uses `git clone --branch`, which rejects a
-  bare commit SHA.
+- `source.ref` takes a branch, a tag, or a full 40-character commit SHA, written in quotes in
+  YAML. A SHA is the reproducible choice: it never moves, and needs no network on a warm cache.
 - Verified only by the 1-epoch fixtures (macOS/MPS on bash, CPU-only arm64 Slurm); see
   "Verified" in the step's developer README.
 - SkyPilot: `slurm` subtype only. LSF, Kubernetes, AWS and Docker are not supported.
