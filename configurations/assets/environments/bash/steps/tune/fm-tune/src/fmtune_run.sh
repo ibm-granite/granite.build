@@ -270,10 +270,11 @@ else
   if [ ! -d "$tree" ]; then
     # git archive, not git worktree add: a plain directory with no .git link back
     # to the mirror, so pruning or re-cloning the mirror can never affect it.
-    rm -rf "$tree.tmp"; mkdir -p "$tree.tmp"
-    git -C "$clone" archive "$sha" | tar -x -C "$tree.tmp" \
+    # A per-run temp dir: a branch and its SHA hold different locks but share tree-<sha>.
+    t="$tree.tmp.$host.$$"; rm -rf "$t"; mkdir -p "$t"
+    git -C "$clone" archive "$sha" | tar -x -C "$t" \
       || die "could not extract $sha from $clone"
-    mv "$tree.tmp" "$tree"
+    if [ -d "$tree" ]; then rm -rf "$t"; else mv "$t" "$tree" 2>/dev/null || rm -rf "$t"; fi
   fi
   unlock
   log "using $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF = $sha"

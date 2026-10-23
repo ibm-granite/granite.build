@@ -982,6 +982,39 @@ def test_one_commit_by_branch_and_by_sha_shares_one_tree(env, tmp_path):
     assert [t.name for t in trees] == [f"tree-{sha}"]
 
 
+def test_two_refs_extracting_one_commit_at_once_never_leave_an_empty_tree(env, tmp_path):
+    """A branch and its SHA hold different locks but write the same tree-<sha>."""
+    repo = _git_repo(env, tmp_path)
+    sha = _head(repo)
+    real_tar, gate = shutil.which("tar"), tmp_path / "gate"
+    gate.mkdir()
+    # The first extractor waits until the second has started, then both finish.
+    _stub(tmp_path / "bin", "tar", f"""\
+if mkdir "{gate}/first" 2>/dev/null; then
+  i=0; while [ ! -e "{gate}/second" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done
+else
+  : > "{gate}/second"
+fi
+exec "{real_tar}" "$@"
+""")
+    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+    procs = []
+    for ref in ("rel", sha):
+        run_env = dict(env, FMTUNE_SOURCE_REF=ref, STUB_RECORD=str(tmp_path / f"rec-{ref}"))
+        procs.append(subprocess.Popen(
+            ["bash", str(_SCRIPT)], env=run_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True,
+        ))
+    for proc in procs:
+        _, err = proc.communicate(timeout=60)
+        assert proc.returncode == 0, err
+    cache = pathlib.Path(env["FMTUNE_CACHE_DIR"])
+    assert (cache / f"tree-{sha}" / "sub" / "fm-tune" / "main.py").is_file()
+    # The loser's copy is dropped, not nested inside the winner's tree or left beside it.
+    assert sorted(p.name for p in (cache / f"tree-{sha}").iterdir()) == ["sub"]
+    assert [t.name for t in cache.glob("tree-*")] == [f"tree-{sha}"]
+
+
 def test_an_uppercase_sha_is_lowercased_to_the_same_tree_and_cache_key(env, tmp_path):
     repo = _git_repo(env, tmp_path)
     sha = _head(repo)
