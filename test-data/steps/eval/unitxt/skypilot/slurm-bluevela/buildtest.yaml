@@ -1,0 +1,39 @@
+# YAML-driven spec for test_skypilot_slurm_bluevela_eval_unitxt.py (located by the
+# test/ <-> test-data/ helper, so this pairing holds in both test modes; see
+# steps/README.md).
+#
+# ONE target on an internal GPU SLURM cluster: unitxt-evaluate in hf mode on one
+# H200, against a bound hf:// model. See the sibling build.yaml for what SUCCESS
+# proves.
+targets:
+  - evaluate
+target_expectations:
+  # step_count is 3, as in ../slurm-cpu: the env runs the hf assetstore pull and
+  # push as their own steps (on the cpu partition), not inline.
+  - target_name: evaluate
+    step_count: 3              # hfpull(model) + eval/unitxt + hfpush(results)
+    input_artifact_count: 1    # model
+    output_artifact_count: 1   # results (hf://, pushed by the queued hfpush)
+    # Only keys the build.yaml supplied appear in the persisted step config
+    # (step-template.yaml defaults are not merged in), so assert on those.
+    expected_steps:
+      - step_uri: space://steps/eval/unitxt
+        config:
+          unitxt_config:
+            image: ""
+            tasks: "card=cards.mmlu_pro.engineering"
+            model_args: "torch_dtype=bfloat16,device=cuda"
+# The local Space rendered by `make space`; `make publish-step` rewrites this line to
+# configurations/spaces/local in the published copy. The environment comes from
+# configurations/assets through that space's base_uris.
+space_uri: ../../../../../../configurations/spaces/local
+# Happy-path run only: the workload is short, with no stable RUNNING window to
+# cancel in.
+tests:
+  - runner
+# `set -euo pipefail` fails the target if the install or the CLI fails.
+simulate_step_failure: false
+# Three SLURM jobs plus queue time on a shared GPU partition: the model pull (~7 GB);
+# the step (a runtime install of the CUDA torch wheel, several GB, the dataset
+# download, then a 10-instance GPU evaluation); and the results push.
+timeout_minutes: 45

@@ -1,0 +1,63 @@
+granite.build:
+  name: skypilot-slurm-bluevela-unitxt-gpu-test
+  # eval/unitxt on an internal GPU SLURM cluster (via SkyPilot), on one H200.
+  #
+  # The GPU counterpart of ../slurm-cpu: the same card, but a real granite model
+  # (granite-4.2-3b, ~7 GB of safetensors, no ONNX copies) that unitxt's hf mode
+  # loads onto the GPU (device=cuda) with PyPI's default CUDA torch wheel. What
+  # reaching SUCCESS proves:
+  #   1. The required `model` input is pulled to the cluster's shared filesystem
+  #      (a separate hfpull job on the cpu partition) and its path reaches the CLI
+  #      as `--model_args pretrained=<path>`.
+  #   2. Setup installs the CUDA torch build and unitxt + hf_packages on the bare
+  #      GPU node.
+  #   3. `unitxt-evaluate --model hf` runs the model on the GPU: with device=cuda,
+  #      torch fails if the job got no usable GPU.
+  #   4. The output directory is registered as `results`, and the queued hfpush
+  #      uploads it to a Hugging Face dataset.
+  #
+  # A PLUMBING test, not an evaluation: 10 instances, and the step passes no
+  # chat-template switches, so granite-4.2's thinking stays at its template default.
+  #
+  # HF_TOKEN: the model pull needs none (it's public), but the results push needs
+  # write access to GBTEST_HF_PUSH_ORG (default ibm-research).
+  targets:
+
+    evaluate:
+      # The in-repo env: SSH as the shared functional ID with the key file at
+      # ~/.ssh/ibm-bluevela.key, so the test needs no secret manager.
+      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      inputs:
+        model:
+          # Public (Apache-2.0, not gated), so the pull needs no token.
+          uri: hf:///models/ibm-granite/granite-4.2-3b
+      outputs:
+        results:
+          # HfPushCleanupMixin (libgbtest.hfpush) fills in the __GBTEST_HF_PUSH_*__
+          # tokens per run, checks the push landed, and deletes the dataset. The
+          # `test_` prefix lets scripts/rm_hf_repos.py clean up after aborted runs.
+          uri: hf://huggingface.co/datasets/__GBTEST_HF_PUSH_ORG__/test_unitxt-gpu-results___GBTEST_HF_PUSH_RUN__
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/unitxt
+          config:
+            poll_interval_seconds: 15
+            # The env's default partition (gpu-mid) and h200 constraint apply: the
+            # step requests one H200 below.
+            launcher_config:
+              resources:
+                # A typed GPU: the env pins jobs to H200 nodes.
+                accelerators: "H200:1"
+                # Memory must be explicit on slurm (compute_config's is dropped).
+                cpus: 8
+                memory: 64
+              sbatch_options:
+                time: "00:45:00"
+            unitxt_config:
+              # Bare node, no container: this tests the step and the cluster, not
+              # Pyxis. A containerized variant can follow.
+              image: ""
+              tasks: "card=cards.mmlu_pro.engineering"
+              model_args: "torch_dtype=bfloat16,device=cuda"
+              limit: 10
+              # torch_index_url left empty: PyPI's default Linux wheel bundles CUDA.
