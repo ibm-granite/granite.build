@@ -15,7 +15,6 @@
 # CONTRACT
 #   nemo_rl_run.sh --algorithm <a> --config-name <c> --nemo-rl-root <root> \
 #                  --base-model <path> [--dataset <path> --dataset-key <key>] \
-#                  [--num-gpus-per-node <n>] \
 #                  --artifact-id <id> --output-path <dir> \
 #                  --clearml-mode <auto|on|off> \
 #                  [--clearml-project <p>] [--clearml-task <t>] \
@@ -30,6 +29,9 @@
 #                 re-run, so it must be absent, empty, or a previous HF model.
 #   --            everything after it is a Hydra override passed to the driver
 #                 verbatim, one argv word each.
+#
+#   SKYPILOT_NUM_GPUS_PER_NODE (env, set by SkyPilot from the build's
+#                 resources.accelerators) pins NeMo-RL's cluster.gpus_per_node.
 set -euo pipefail
 
 algorithm=""
@@ -38,7 +40,6 @@ nemo_rl_root=""
 base_model=""
 dataset=""
 dataset_key=""
-num_gpus_per_node=""
 artifact_id=""
 output_path=""
 clearml_mode=""
@@ -55,7 +56,6 @@ while [ "$#" -gt 0 ]; do
     --base-model)      base_model="$2";      shift 2 ;;
     --dataset)         dataset="$2";         shift 2 ;;
     --dataset-key)     dataset_key="$2";     shift 2 ;;
-    --num-gpus-per-node) num_gpus_per_node="$2"; shift 2 ;;
     --artifact-id)     artifact_id="$2";     shift 2 ;;
     --output-path)     output_path="$2";     shift 2 ;;
     --clearml-mode)    clearml_mode="$2";    shift 2 ;;
@@ -191,9 +191,11 @@ overrides+=(
 #
 # Pin NeMo-RL's cluster view to the node's GPU count. The shipped configs
 # default cluster.gpus_per_node=1 (sft.yaml), so without this a multi-GPU node
-# would still train on one GPU. Forced (after "$@") so it stays locked to the
-# same num_gpus_per_node that sized the SkyPilot accelerators request.
-if [ -n "$num_gpus_per_node" ]; then
+# would still train on one GPU. SkyPilot exports the count it allocated from the
+# build's resources.accelerators, so the build states it only once. Forced
+# (after "$@") so it stays locked to the node.
+num_gpus_per_node="${SKYPILOT_NUM_GPUS_PER_NODE:-0}"
+if [ "$num_gpus_per_node" -gt 0 ] 2>/dev/null; then
   overrides+=("cluster.gpus_per_node=${num_gpus_per_node}")
 fi
 

@@ -75,13 +75,29 @@ def test_base_model_input_present(build):
     assert "base_model" in target["inputs"]
 
 
+def _accelerators(build):
+    config = _step(_target(_load(build)))["config"]
+    return ((config.get("launcher_config") or {}).get("resources") or {}).get(
+        "accelerators"
+    )
+
+
 @pytest.mark.parametrize("build", ["aws-sft/build.yaml", "slurm-sft/build.yaml"])
 def test_cluster_fixture_requests_a_typed_gpu(build):
-    # The step renders accelerators as "<gpu_model>:<num_gpus_per_node>"; a fixture
-    # without a GPU type would provision a node NeMo-RL cannot train on.
+    # GPUs come only from launcher_config.resources.accelerators: without it the
+    # node has no GPU, and NeMo-RL cannot train.
+    gpu_type, _, count = str(_accelerators(build) or "").partition(":")
+    assert gpu_type.strip(), "accelerators must name a GPU type, e.g. A10G:1"
+    assert int(count) >= 1
+
+
+@pytest.mark.parametrize("build", BUILDS)
+def test_gpus_are_not_requested_through_compute_config(build):
+    # SkyPilot ignores compute_config GPUs; a count there would be a second,
+    # unused copy that the launcher warns about.
     compute = _step(_target(_load(build)))["config"]["compute_config"]
-    assert str(compute.get("gpu_model", "")).strip(), "gpu_model must be set"
-    assert compute["num_gpus_per_node"] >= 1
+    assert "num_gpus_per_node" not in compute
+    assert "gpu_model" not in compute
 
 
 def test_slurm_fixture_matches_the_bluevela_environment_constraints():
@@ -100,8 +116,8 @@ def test_slurm_fixture_matches_the_bluevela_environment_constraints():
         target["environment_uri"] == "space://environments/skypilot/slurm/ibm-bluevela"
     )
     constraint = env["config"]["sbatch_options"]["constraint"]
-    compute = _step(target)["config"]["compute_config"]
-    assert compute["gpu_model"].lower() == constraint
+    gpu_type = str(_accelerators("slurm-sft/build.yaml")).partition(":")[0]
+    assert gpu_type.lower() == constraint
 
 
 def test_every_referenced_param_is_defined():

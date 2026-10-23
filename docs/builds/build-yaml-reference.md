@@ -225,7 +225,8 @@ For **skypilot** the launch path consumes `num_cpus_per_node` and
 floor (values under `launcher_config.resources` override them), plus `num_nodes`,
 which becomes `sky.Task(num_nodes=...)`. GPU/accelerator selection is supplied via
 `launcher_config.resources` on the step (e.g. `accelerators: "A100:8"`), not via
-`num_gpus_per_node` — and note that accelerators are **per node**, so
+`num_gpus_per_node`; gbserver warns when `num_gpus_per_node > 0` is set without
+`accelerators` or `instance_type`. Note that accelerators are **per node**, so
 `accelerators: "H100:8"` with `num_nodes: 2` requests 16 GPUs in total.
 
 `num_nodes` may also be overridden by `launcher_config.num_nodes` (in the step or
