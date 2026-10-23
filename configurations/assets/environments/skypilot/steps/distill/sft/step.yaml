@@ -135,9 +135,9 @@ config:
   # backend fails on an incomplete config — they log to their own defaults — which is how a
   # multi-day run ends up somewhere nobody looks.
   #
-  # The shared GPU image (steps/distill/gpu/, replacing the opaque
+  # The shared GPU image (steps/distill/images/gpu/, replacing the opaque
   # kd-sandbox-distill:0.1.0-uv) DOES carry clearml==2.1.12 and wandb==0.28.2 (both in
-  # steps/distill/gpu/pyproject.toml), so setting any of these five now works rather
+  # steps/distill/images/gpu/pyproject.toml), so setting any of these five now works rather
   # than failing at import. tracking.py still imports them lazily and only when a
   # project is configured, so leaving all five empty (tracking off) stays safe either way.
   tracking:

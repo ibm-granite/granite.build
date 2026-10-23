@@ -44,7 +44,7 @@ config:
   # NO code_config HERE, unlike every other ported distillation step: this step's
   # trainer source (gb_steps_post_training, including the locally-folded-in
   # ce_anchor_and_entropy_guard patch -- see steps/distill/src/VENDORED.md) is baked
-  # directly into the shared GPU image (steps/distill/gpu/Dockerfile COPYs
+  # directly into the shared GPU image (steps/distill/images/gpu/Dockerfile COPYs
   # steps/distill/src/) rather than cloned at job-launch time. gold is the one
   # ported step that runs multi-node, where a runtime clone needs its own
   # rank-0-clones/others-wait guard against a real race (measured on build
@@ -417,7 +417,7 @@ environment_configs:
 
             # --- distill source: baked into the shared GPU image, no clone ---
             # Unlike every other ported distillation step, this step's trainer source
-            # and venv are both baked into steps/distill/gpu/Dockerfile at build time,
+            # and venv are both baked into steps/distill/images/gpu/Dockerfile at build time,
             # not cloned/synced at job-launch time -- see the "Source delivery" comment
             # above config: for why. Both paths are fixed by that Dockerfile's own
             # COPY/ENV lines; nothing here resolves them dynamically.
@@ -425,7 +425,7 @@ environment_configs:
             export PATH="$VIRTUAL_ENV/bin:$PATH"
             CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"
             # PYTHONPATH=/opt/gb-steps-distillation/src is already set by the image
-            # itself (ENV PYTHONPATH in steps/distill/gpu/Dockerfile); nothing to export
+            # itself (ENV PYTHONPATH in steps/distill/images/gpu/Dockerfile); nothing to export
             # here.
             #
             # The commit is a fixed fact of the image, not something to discover via
@@ -858,7 +858,7 @@ environment_configs:
                 # LD_LIBRARY_PATH) fails with "libcuda.so cannot found!".
                 # Unconditional and harmless where the gap doesn't exist (LSF,
                 # or a cache that's already current) — see
-                # steps/distill/gpu/README.md.
+                # steps/distill/images/gpu/README.md.
                 ldconfig 2>/dev/null || true
                 exec "$PYBIN" -m gb_steps_post_training.distillation.run_vllm_serve \
                   --port "${KD_VLLM_API_PORT:-8001}" \

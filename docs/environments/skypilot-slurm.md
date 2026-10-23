@@ -390,8 +390,8 @@ launch fails with `NotSupportedError`; the `run:` command then executes directly
 > runtime (`torch.compile`/Inductor, raw Triton kernels, FlashInfer's JIT sampler) fails with
 > `libcuda.so cannot found!` or `Could not find nvcc`. Build your step's image `FROM` an NGC CUDA
 > **devel** tag directly (e.g.
-> [`steps/distill/gpu/Dockerfile`](../../steps/distill/gpu/Dockerfile)/
-> [`README.md`](../../steps/distill/gpu/README.md), the distillation steps' shared GPU image). That
+> [`steps/distill/images/gpu/Dockerfile`](../../steps/distill/images/gpu/Dockerfile)/
+> [`README.md`](../../steps/distill/images/gpu/README.md), the distillation steps' shared GPU image). That
 > image's own README covers two residual gaps it does NOT solve, split across two different layers:
 > the generated Pyxis GPU sbatch directives (opt-in via
 > `slurm_gpu_sbatch_directives: true` — see
