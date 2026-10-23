@@ -14,7 +14,10 @@
 
 """Render test for the skypilot fm-tune step's run block.
 
-Renders ``run:`` with gbserver's strict renderer, then runs it with a stub
+Renders ``run:`` with gbserver's strict renderer,
+``gbserver.utils.template.fill_template(..., strict=True)`` (the launcher-config
+fill in ``targetsteprun.py``: StrictUndefined and the ``raise_error`` global),
+then runs it with a stub
 src/fmtune_run.sh that dumps its FMTUNE_* environment, so the test checks what the
 script actually receives after bash unquotes it. Mode 1 only.
 """
@@ -28,7 +31,7 @@ import subprocess
 import pytest
 import yaml
 
-from gbcommon.utils.template import fill_template
+from gbserver.utils.template import fill_template
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
 _TEMPLATE = yaml.safe_load((_STEP_DIR / "step-template.yaml").read_text())
@@ -69,6 +72,14 @@ def _received(tmp_path, over=None, bindings=None) -> dict:
 
 def test_run_is_valid_bash():
     assert subprocess.run(["bash", "-n"], input=_render(), text=True).returncode == 0
+
+
+def test_an_undefined_value_fails_the_render():
+    """The strict fill raises on an undefined variable instead of rendering ''."""
+    cfg = _cfg()
+    del cfg["fm_tune_config"]["model"]
+    with pytest.raises(RuntimeError):
+        fill_template(_LAUNCHER["run"], {"config": cfg, "bindings": _DATASET}, strict=True)
 
 
 def test_defaults_reach_the_script(tmp_path):

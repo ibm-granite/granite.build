@@ -14,17 +14,20 @@
 
 """Render test for the bash fm-tune step's launcher env mapping.
 
-Renders the launcher ``env:`` with gbserver's strict renderer (as
-``targetsteprun.py`` does) and checks every value lands in the right FMTUNE_* var.
-Mode 1 only.
+Renders the launcher ``env:`` with gbserver's strict renderer,
+``gbserver.utils.template.fill_template(..., strict=True)``: the fill
+``targetsteprun.py`` applies to the launcher config at step creation, with
+StrictUndefined and the ``raise_error`` global. Checks every value lands in the
+right FMTUNE_* var. Mode 1 only.
 """
 
 import json
 import pathlib
 
+import pytest
 import yaml
 
-from gbcommon.utils.template import fill_template
+from gbserver.utils.template import fill_template
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
 _REPO = _STEP_DIR.parents[3]
@@ -52,6 +55,14 @@ def test_defaults_render_strictly():
     assert env["FMTUNE_HPO_CONFIG_JSON"] == "{}"
     # Left empty: fmtune_run.sh defaults them from LLMB_BASH_* (env is unexpanded).
     assert env["FMTUNE_OUTPUT_DIR"] == env["FMTUNE_CACHE_DIR"] == env["FMTUNE_PYTHON"] == ""
+
+
+def test_an_undefined_value_fails_the_render():
+    """The strict fill raises on an undefined variable instead of rendering ''."""
+    cfg = json.loads(json.dumps(_TEMPLATE["config"]))
+    del cfg["fm_tune_config"]["model"]
+    with pytest.raises(RuntimeError):
+        fill_template(_LAUNCHER["config"]["env"]["FMTUNE_MODEL"], {"config": cfg}, strict=True)
 
 
 def test_bound_base_model_renders_its_path():
