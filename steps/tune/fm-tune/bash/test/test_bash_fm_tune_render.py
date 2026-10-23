@@ -27,23 +27,44 @@ import pathlib
 import pytest
 import yaml
 
-from gbserver.utils.template import fill_template
+from gbserver.utils.template import fill_objtemplate, fill_template
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
 _REPO = _STEP_DIR.parents[3]
 _TEMPLATE = yaml.safe_load((_STEP_DIR / "step-template.yaml").read_text())
 _LAUNCHER = _TEMPLATE["environment_configs"]["Bash"]["launchers"]["fm-tune"]
 _DATASET = {"dataset": {"binding": {"path": "/staged/data it's"}}}
+# The template defaults leave these empty, which the render-time checks reject.
+_VALID = {
+    "model": "org/tiny",
+    "train_file": "d_train.jsonl",
+    "validation_file": "d_validation.jsonl",
+    "source": {"path": "/fm-tune", "repo": "", "ref": "main", "subdir": "autotunex/src/fm-tune"},
+}
+
+
+def _fill(cfg_over: dict | None = None, bindings: dict | None = None) -> dict:
+    """Fill the whole launcher config, as targetsteprun.py does at step creation."""
+    cfg = json.loads(json.dumps(_TEMPLATE["config"]))
+    cfg["fm_tune_config"].update(_VALID)
+    cfg["fm_tune_config"].update(cfg_over or {})
+    ctx = {"config": cfg, "bindings": _DATASET if bindings is None else bindings}
+    return fill_objtemplate(_LAUNCHER, ctx, strict=True)
 
 
 def _env(cfg_over: dict | None = None, bindings: dict | None = None) -> dict:
-    cfg = json.loads(json.dumps(_TEMPLATE["config"]))
-    cfg["fm_tune_config"].update(cfg_over or {})
-    ctx = {"config": cfg, "bindings": _DATASET if bindings is None else bindings}
-    return {
-        k: fill_template(v, ctx, strict=True)
-        for k, v in _LAUNCHER["config"]["env"].items()
-    }
+    return _fill(cfg_over, bindings)["config"]["env"]
+
+
+def _render_error(cfg_over: dict, bindings: dict | None = None) -> str:
+    """The raise_error message a failing fill carries (fill_template wraps it)."""
+    with pytest.raises(RuntimeError) as exc:
+        _fill(cfg_over, bindings)
+    err = exc.value
+    while err.__cause__ is not None:
+        err = err.__cause__
+    assert isinstance(err, ValueError), repr(err)
+    return str(err)
 
 
 def test_defaults_render_strictly():
@@ -63,6 +84,52 @@ def test_an_undefined_value_fails_the_render():
     del cfg["fm_tune_config"]["model"]
     with pytest.raises(RuntimeError):
         fill_template(_LAUNCHER["config"]["env"]["FMTUNE_MODEL"], {"config": cfg}, strict=True)
+
+
+_SRC = {"path": "", "repo": "", "ref": "main", "subdir": "autotunex/src/fm-tune"}
+
+
+@pytest.mark.parametrize(
+    "over, needle",
+    [
+        ({"train_file": ""}, "fm_tune_config.train_file is required"),
+        ({"validation_file": ""}, "fm_tune_config.validation_file is required"),
+        ({"train_file": "../x"}, "fm_tune_config.train_file must be a relative path"),
+        ({"train_file": ".."}, "fm_tune_config.train_file must be a relative path"),
+        ({"train_file": "a/../../x"}, "fm_tune_config.train_file must be a relative path"),
+        ({"train_file": "/abs/t.jsonl"}, "fm_tune_config.train_file must be a relative path"),
+        ({"validation_file": "../v"}, "fm_tune_config.validation_file must be a relative path"),
+        ({"validation_file": "/v"}, "fm_tune_config.validation_file must be a relative path"),
+        ({"source": dict(_SRC, path="/a", repo="https://g/r.git")}, "exactly one of fm_tune_config.source.path"),
+        ({"source": _SRC}, "exactly one of fm_tune_config.source.path"),
+        ({"model": ""}, "set fm_tune_config.model or bind the base_model input"),
+        ({"run_name": ""}, "fm_tune_config.run_name must match"),
+        ({"run_name": "a b"}, "fm_tune_config.run_name must match"),
+        ({"run_name": "a/b"}, "fm_tune_config.run_name must match"),
+        ({"run_name": "\u00e9t\u00e9"}, "fm_tune_config.run_name must match"),
+        ({"source": dict(_SRC, repo="--upload-pack=x")}, "fm_tune_config.source.repo must not start with '-'"),
+        ({"source": dict(_SRC, path="/a", ref="-u")}, "fm_tune_config.source.ref must not start with '-'"),
+    ],
+)
+def test_a_config_error_fails_the_strict_launcher_fill(over, needle):
+    msg = _render_error(over)
+    assert msg.startswith("fm-tune: ") and needle in msg, msg
+
+
+@pytest.mark.parametrize("name", ["train.jsonl", "sub/dir/train.jsonl", "a..b.jsonl", "./t.jsonl"])
+def test_a_split_file_inside_the_dataset_renders(name):
+    env = _env({"train_file": name, "validation_file": name})
+    assert env["FMTUNE_TRAIN_FILE"] == env["FMTUNE_VALIDATION_FILE"] == name
+
+
+def test_a_bound_base_model_satisfies_the_model_check():
+    b = dict(_DATASET, base_model={"binding": {"path": "/staged/bm"}})
+    assert _env({"model": ""}, bindings=b)["FMTUNE_BASE_MODEL_DIR"] == "/staged/bm"
+
+
+def test_the_check_key_renders_to_nothing():
+    """The checks live in a launcher-config key of their own; nothing reads it."""
+    assert _fill()["config"]["validate"] == ""
 
 
 def test_bound_base_model_renders_its_path():

@@ -60,9 +60,34 @@ environment_configs:
           resources: {}
           file_mounts:
             src: src
+          # Config-only checks are raise_errors in the validate macro: gbserver
+          # fills this launcher config with the strict renderer when it creates
+          # the step, so they fail before anything is provisioned. Each block is
+          # filled on its own (no shared Jinja scope across YAML keys), so the
+          # macro lives in run:, the block a warm re-run renders too. The macro is
+          # the same text in the bash template (test_fm_tune_script_copies_match.py),
+          # and fmtune_run.sh keeps the same checks for a direct run.
           run: |
             {%- macro q(v) -%}'{{ v | string | replace("'", "'\"'\"'") }}'{%- endmacro %}
+            {%- macro validate(c, base_model_bound) -%}
+            {%- set ok = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-" -%}
+            {%- for key in ["train_file", "validation_file"] -%}
+            {%- if not c[key] %}{{ raise_error("fm-tune: fm_tune_config." ~ key ~ " is required; set it to the file's path inside the dataset input.") }}{% endif -%}
+            {%- if (c[key] | string).startswith("/") or ".." in (c[key] | string).split("/") %}{{ raise_error("fm-tune: fm_tune_config." ~ key ~ " must be a relative path inside the dataset input (no leading '/', no '..' component), got '" ~ c[key] ~ "'.") }}{% endif -%}
+            {%- endfor -%}
+            {%- if (c.source.path and c.source.repo) or not (c.source.path or c.source.repo) %}{{ raise_error("fm-tune: set exactly one of fm_tune_config.source.path and fm_tune_config.source.repo.") }}{% endif -%}
+            {%- if not (c.model or base_model_bound) %}{{ raise_error("fm-tune: set fm_tune_config.model or bind the base_model input.") }}{% endif -%}
+            {%- if not c.run_name or (c.run_name | string | list | reject("in", ok) | list) %}{{ raise_error("fm-tune: fm_tune_config.run_name must match ^[A-Za-z0-9._-]+$, got '" ~ c.run_name ~ "'.") }}{% endif -%}
+            {%- for key in ["repo", "ref"] -%}
+            {%- if (c.source[key] | string).startswith("-") %}{{ raise_error("fm-tune: fm_tune_config.source." ~ key ~ " must not start with '-' (git would read it as an option).") }}{% endif -%}
+            {%- endfor -%}
+            {%- endmacro -%}
             {%- set c = config.fm_tune_config %}
+            {{- validate(c, bindings.base_model is defined) }}
+            {#- Single node: with more, SkyPilot runs run: on every node and the runs
+                race on the cache and the output. compute_config may be absent. #}
+            {%- set cc = config.compute_config if (config.compute_config is defined and config.compute_config) else {} %}
+            {%- if cc.num_nodes is defined and cc.num_nodes is not none and (cc.num_nodes | string) != "1" %}{{ raise_error("fm-tune: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif %}
             export FMTUNE_DATASET_DIR={{ q(bindings.dataset.binding.path) }}
             export FMTUNE_BASE_MODEL_DIR={{ q(bindings.base_model.binding.path if bindings.base_model is defined else "") }}
             export FMTUNE_MODEL={{ q(c.model) }}

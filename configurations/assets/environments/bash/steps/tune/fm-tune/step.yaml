@@ -60,6 +60,28 @@ environment_configs:
           # Resolves under ${LLMB_BASH_ASSET_DIR}/bash_scripts/fm-tune/, so ../../
           # lands on the shipped src/ (llmb_bash_jobsub.sh:20-22).
           script_path: ../../src/fmtune_run.sh
+          # Config-only checks. gbserver fills every string in this launcher
+          # config with the strict renderer when it creates the step, so a
+          # raise_error here fails the step before anything is launched. Each
+          # string is filled on its own, so the checks get a key of their own;
+          # it renders to "" and nothing reads it. The validate macro is the same
+          # text in the skypilot template (test_fm_tune_script_copies_match.py),
+          # and fmtune_run.sh keeps the same checks for a direct run.
+          validate: |-
+            {%- macro validate(c, base_model_bound) -%}
+            {%- set ok = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-" -%}
+            {%- for key in ["train_file", "validation_file"] -%}
+            {%- if not c[key] %}{{ raise_error("fm-tune: fm_tune_config." ~ key ~ " is required; set it to the file's path inside the dataset input.") }}{% endif -%}
+            {%- if (c[key] | string).startswith("/") or ".." in (c[key] | string).split("/") %}{{ raise_error("fm-tune: fm_tune_config." ~ key ~ " must be a relative path inside the dataset input (no leading '/', no '..' component), got '" ~ c[key] ~ "'.") }}{% endif -%}
+            {%- endfor -%}
+            {%- if (c.source.path and c.source.repo) or not (c.source.path or c.source.repo) %}{{ raise_error("fm-tune: set exactly one of fm_tune_config.source.path and fm_tune_config.source.repo.") }}{% endif -%}
+            {%- if not (c.model or base_model_bound) %}{{ raise_error("fm-tune: set fm_tune_config.model or bind the base_model input.") }}{% endif -%}
+            {%- if not c.run_name or (c.run_name | string | list | reject("in", ok) | list) %}{{ raise_error("fm-tune: fm_tune_config.run_name must match ^[A-Za-z0-9._-]+$, got '" ~ c.run_name ~ "'.") }}{% endif -%}
+            {%- for key in ["repo", "ref"] -%}
+            {%- if (c.source[key] | string).startswith("-") %}{{ raise_error("fm-tune: fm_tune_config.source." ~ key ~ " must not start with '-' (git would read it as an option).") }}{% endif -%}
+            {%- endfor -%}
+            {%- endmacro -%}
+            {{- validate(config.fm_tune_config, bindings.base_model is defined) -}}
           env:
             FMTUNE_DATASET_DIR: "{{ bindings.dataset.binding.path }}"
             FMTUNE_BASE_MODEL_DIR: "{{ bindings.base_model.binding.path if bindings.base_model is defined else '' }}"

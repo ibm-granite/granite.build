@@ -132,6 +132,14 @@ case "$FMTUNE_SOURCE_REPO" in -*) die "source.repo must not start with '-'" ;; e
 case "$FMTUNE_SOURCE_REF" in -*) die "source.ref must not start with '-'" ;; esac
 [ -n "${FMTUNE_TRAIN_FILE:-}" ] || die "train_file is empty"
 [ -n "${FMTUNE_VALIDATION_FILE:-}" ] || die "validation_file is empty"
+# Both are joined onto the dataset dir: an absolute path or a '..' component
+# (matched per component, so a name like a..b.jsonl is fine) would leave it.
+case "/$FMTUNE_TRAIN_FILE/" in //*|*/../*)
+  die "train_file must be a relative path inside the dataset (no leading '/', no '..' component): $FMTUNE_TRAIN_FILE" ;;
+esac
+case "/$FMTUNE_VALIDATION_FILE/" in //*|*/../*)
+  die "validation_file must be a relative path inside the dataset (no leading '/', no '..' component): $FMTUNE_VALIDATION_FILE" ;;
+esac
 train="$FMTUNE_DATASET_DIR/$FMTUNE_TRAIN_FILE"
 val="$FMTUNE_DATASET_DIR/$FMTUNE_VALIDATION_FILE"
 [ -e "$train" ] || die "train_file not found: $train"

@@ -198,6 +198,12 @@ def test_failed_training_exits_non_zero_without_a_marker(env):
         ({"FMTUNE_VALIDATION_FILE": "nope.jsonl"}, "validation_file not found"),
         ({"FMTUNE_CONFIG_PRESET": "missing.yaml"}, "config_preset not found"),
         ({"FMTUNE_DATASET_DIR": ""}, "FMTUNE_DATASET_DIR is empty"),
+        ({"FMTUNE_TRAIN_FILE": "../x"}, "train_file must be a relative path inside the dataset"),
+        ({"FMTUNE_TRAIN_FILE": ".."}, "train_file must be a relative path inside the dataset"),
+        ({"FMTUNE_TRAIN_FILE": "a/../../x"}, "train_file must be a relative path inside the dataset"),
+        ({"FMTUNE_TRAIN_FILE": "/etc/passwd"}, "train_file must be a relative path inside the dataset"),
+        ({"FMTUNE_VALIDATION_FILE": "../x"}, "validation_file must be a relative path inside the dataset"),
+        ({"FMTUNE_VALIDATION_FILE": "/abs/v.jsonl"}, "validation_file must be a relative path inside the dataset"),
     ],
 )
 def test_invalid_input_fails_before_training(env, over, message):
@@ -207,6 +213,28 @@ def test_invalid_input_fails_before_training(env, over, message):
     assert f"fm-tune: {message}" in proc.stderr
     assert not pathlib.Path(env["STUB_RECORD"]).exists()
     assert "GB_ARTIFACT_ID:" not in proc.stdout
+
+
+@pytest.mark.parametrize("name", ["sub/dir/train.jsonl", "a..b.jsonl", "./train.jsonl"])
+def test_a_split_file_in_a_subdir_or_with_dots_in_its_name_is_accepted(env, name):
+    """The '..' rule matches a whole path component, not a substring."""
+    target = pathlib.Path(env["FMTUNE_DATASET_DIR"]) / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("{}\n")
+    env["FMTUNE_TRAIN_FILE"] = name
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    assert _flag(_record(env)["argv"], "--train_file") == f"{env['FMTUNE_DATASET_DIR']}/{name}"
+
+
+def test_a_split_file_outside_the_dataset_dies_before_any_clone(env, tmp_path):
+    _git_repo(env, tmp_path)
+    git_ran = _git_spy(env, tmp_path)
+    env["FMTUNE_VALIDATION_FILE"] = "../../outside.jsonl"
+    proc = _run(env)
+    assert proc.returncode != 0
+    assert "fm-tune: validation_file must be a relative path inside the dataset" in proc.stderr
+    assert not git_ran.exists()
 
 
 def test_bash_builtins_default_output_cache_and_python(env, tmp_path):
