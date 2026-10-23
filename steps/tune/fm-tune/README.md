@@ -17,6 +17,26 @@ there; the two `step-template.yaml` files only map `fm_tune_config` and the inpu
 to `FMTUNE_*` variables. Edit one copy and copy it to the other.
 `skypilot/test/test_fm_tune_script_copies_match.py` fails if they differ.
 
+## Render-time checks
+
+Config-only checks are `raise_error`s in a `validate` macro, so they fail gbserver's strict
+launcher-config fill when the step is created, before a SkyPilot node is provisioned. On
+skypilot the macro is in `run:` (each launcher-config string is filled on its own, and
+`run:` is also what a warm re-run renders), followed by the `num_nodes` and GPU checks. On
+bash the env values are separate strings, so the macro has a launcher-config key of its own,
+`validate:`, which renders to `""` and is read by nothing. The macro text is the same in both
+templates, and `skypilot/test/test_fm_tune_script_copies_match.py` checks that, and that one
+table of bad values is rejected by both the render and `fmtune_run.sh`. Change a rule in the
+macro (both templates) and in the script together.
+
+Both templates render a YAML `null` as `""`; the macro rejects a list or mapping for every
+key except `hpo_config`.
+
+GPUs: the template cannot render `resources.accelerators` conditionally (only string values
+are filled, so the key is always emitted, and `""` reads as a blank-named accelerator). It
+keeps `resources: {}` and fails a `num_gpus_per_node` > 0 that has no
+`launcher_config.resources.accelerators` (issue #536).
+
 ## `FMTUNE_*` contract
 
 Set by the launcher; defaults are applied by the script.
@@ -33,7 +53,7 @@ Set by the launcher; defaults are applied by the script.
 | `FMTUNE_EXTRA` | `core` | pip extra |
 | `FMTUNE_BASE_MODEL_DIR` | empty | Bound `base_model`; wins over `FMTUNE_MODEL` |
 | `FMTUNE_MODEL` | empty | `--model_name_or_path` fallback |
-| `FMTUNE_TRAIN_FILE` / `FMTUNE_VALIDATION_FILE` | required | Relative to the dataset dir |
+| `FMTUNE_TRAIN_FILE` / `FMTUNE_VALIDATION_FILE` | required | Relative to the dataset dir; no leading `/`, no `..` component |
 | `FMTUNE_TUNING_ALGO` | empty | `--tuning_algo` (templates default to `lora`) |
 | `FMTUNE_RL_ALGO` | empty | `--rl_algo`, omitted when empty |
 | `FMTUNE_RUN_NAME` | `fm-tune` | `--run_name`, `--output_model_name`; must match `^[A-Za-z0-9._-]+$` |
@@ -105,5 +125,5 @@ needs the local podman Slurm VM: stop the VM when you are not testing slurm.
 - slurm: build 22aab68c succeeded on the local podman Slurm cluster (CPU-only arm64, node venv
   on python3.10) with the 1-epoch fixture.
 - Build c9d46858 found the YAML-float bug (see above).
-- Not verified: GPU training, a commit SHA as `source.ref`, outputs other than `env://`,
+- Not verified: GPU training (including the `accelerators` request on a GPU cluster), a commit SHA as `source.ref`, outputs other than `env://`,
   `autotune: true`, RL algorithms.

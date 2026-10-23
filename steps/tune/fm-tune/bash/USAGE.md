@@ -8,7 +8,9 @@ registered as the `model` output.
 
 What a run does:
 
-1. Validates the config before any clone or install (model, source, split files).
+1. Validates the config. Config-only errors fail the build when the step is created,
+   before anything is launched or provisioned (see "Config checks"); the script checks
+   again, plus the files themselves, before any clone or install.
 2. Resolves the fm-tune source: a local checkout (`source.path`) or a git clone
    (`source.repo` at `source.ref`).
 3. Builds, or reuses, a cached Python venv (`pip install -e <fm-tune>[<extra>]`).
@@ -53,8 +55,8 @@ subtraction in Jinja.
 | `source.subdir` | `autotunex/src/fm-tune` | fm-tune's location inside `repo` |
 | `extra` | `core` | pip extra installed: `core`, `full` or `mlx` |
 | `model` | `""` | `--model_name_or_path` when `base_model` is not bound |
-| `train_file` | `""` | `--train_file`, relative to the `dataset` input (required) |
-| `validation_file` | `""` | `--validation_file`, relative to the `dataset` input (required) |
+| `train_file` | `""` | `--train_file`, relative to the `dataset` input (required). No leading `/` and no `..` component (`sub/train.jsonl` and `a..b.jsonl` are fine) |
+| `validation_file` | `""` | `--validation_file`, relative to the `dataset` input (required). Same rules as `train_file` |
 | `tuning_algo` | `lora` | `--tuning_algo` |
 | `rl_algo` | `""` | `--rl_algo`, omitted when empty |
 | `run_name` | `fm-tune` | `--run_name` and `--output_model_name`. Letters, digits, `.`, `_` and `-` only |
@@ -68,6 +70,24 @@ subtraction in Jinja.
 | `python` | `""` | Interpreter that creates the venv. Empty means the injected python (bash) or `python3` (SkyPilot). Must be 3.10 or newer |
 | `autotunex.server_url` | `""` | `--autotunex_server_url`, omitted when empty |
 | `autotunex.job_id` | `""` | `--job_id`, omitted when empty |
+
+### Config checks
+
+These fail the build when the step is created, with an `fm-tune: ...` message naming the
+key. `fmtune_run.sh` repeats the first five for a direct run (it defaults an empty
+`run_name` to `fm-tune` instead of failing):
+
+- `train_file` or `validation_file` empty, absolute, or with a `..` component;
+- not exactly one of `source.path` and `source.repo`;
+- neither `model` set nor `base_model` bound;
+- `run_name` empty or outside `[A-Za-z0-9._-]`;
+- `source.repo` or `source.ref` starting with `-`;
+- a list or mapping for any key except `hpo_config` (write it as a string);
+- SkyPilot only: `compute_config.num_nodes` other than 1, and `num_gpus_per_node` > 0
+  without `launcher_config.resources.accelerators` (see "Compute").
+
+A `null` value renders as empty, not as the string `None`. That is not the template
+default: `tuning_algo: null` passes no `--tuning_algo`, so fm-tune's own default applies.
 
 ### `hpo_config`
 
@@ -158,12 +178,39 @@ granite.build:
             launcher_config:
               envs:
                 FMTUNE_OBJECT_STORE_BYTES: "268435456"   # optional, small machines
+              resources:
+                accelerators: "H100:1"   # the GPU request; see "Compute"
             compute_config:
               num_cpus_per_node: 8
               num_gpus_per_node: 1
 ```
 
-The SkyPilot step supports the `slurm` subtype only. Size the job with `compute_config`.
+The SkyPilot step supports the `slurm` subtype only.
+
+### Compute
+
+```yaml
+compute_config:
+  num_nodes: 1               # optional; any other value fails the build when it is created
+  num_cpus_per_node: 8       # requested from Slurm as cpus
+  num_gpus_per_node: 1       # > 0 requires launcher_config.resources.accelerators
+launcher_config:
+  resources:
+    accelerators: "H100:1"   # <type>:<count>, what Slurm is actually asked for
+```
+
+gbserver's SkyPilot launcher requests CPUs (and, off Slurm/LSF, memory) from
+`compute_config`, but not GPUs ([issue #536](https://github.com/ibm-granite/granite.build/issues/536)):
+`num_gpus_per_node` alone requests nothing and the job would get a CPU-only node. So the
+step asks for the GPUs to be named explicitly: with `num_gpus_per_node` > 0 and no
+`launcher_config.resources.accelerators`, the build fails when it is created. Set
+`accelerators` to `<type>:<count>` for your cluster (quote it). The step template does not
+write `accelerators` itself and leaves `resources: {}`, so with no GPUs (`num_gpus_per_node: 0`
+or unset) it requests a CPU-only node, as the Slurm build test does. GPU runs are not
+verified (see "Known limits").
+
+`num_nodes` must be 1 (or unset): with more nodes SkyPilot runs the job on every node and the
+runs race on the cache and the output directory.
 
 ## Caches and cleanup
 
