@@ -32,6 +32,17 @@ import time
 # Must be set before torch is imported, so do it at module load (harmless off-Mac).
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
+# This is a single-GPU trainer by design (see README "Compute — single-GPU by
+# design"). If the host exposes >1 CUDA GPU and the run isn't scoped to one, HF
+# Trainer auto-wraps the model in nn.DataParallel, which is broken for PEFT/LoRA
+# on tied-word-embedding models (e.g. granite-4.0-h-*): it crashes mid-step with
+# a "tensors on cuda:1 vs cuda:0" device mismatch. Pin to one GPU unless the
+# caller set CUDA_VISIBLE_DEVICES explicitly. Must run before torch initializes
+# CUDA, so do it at import time; harmless on CPU/MPS hosts (no CUDA to gate).
+_PINNED_SINGLE_GPU = "CUDA_VISIBLE_DEVICES" not in os.environ
+if _PINNED_SINGLE_GPU:
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 # Must match the output name declared in build.yaml (outputs.adapter).
 ARTIFACT_ID = "adapter"
 
@@ -177,6 +188,15 @@ def main():
 
     device = pick_device(torch)
     print(f"Using device: {device}")
+    if device == "cuda" and _PINNED_SINGLE_GPU:
+        # See the CUDA_VISIBLE_DEVICES guard at module load: this step is single-GPU
+        # by design. Make the pin visible so it isn't mistaken for the host having
+        # one GPU. Set CUDA_VISIBLE_DEVICES yourself to target a different GPU.
+        print(
+            "Note: pinned to a single GPU (CUDA_VISIBLE_DEVICES=0) — this step is a "
+            "single-GPU trainer by design. Set CUDA_VISIBLE_DEVICES to pick another "
+            "GPU. See the README (Compute — single-GPU by design)."
+        )
 
     print(f"Loading base model: {model_path}")
     tokenizer = AutoTokenizer.from_pretrained(model_path)
