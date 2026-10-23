@@ -474,17 +474,185 @@ def _clone_lock(env) -> pathlib.Path:
     return pathlib.Path(env["FMTUNE_CACHE_DIR"]) / f"src-{key}.lock"
 
 
-def test_stale_clone_lock_from_a_dead_pid_is_taken_over(env, tmp_path):
-    _git_repo(env, tmp_path)
+def _stub(bin_dir: pathlib.Path, name: str, body: str) -> None:
+    bin_dir.mkdir(exist_ok=True)
+    (bin_dir / name).write_text("#!/bin/sh\n" + body)
+    (bin_dir / name).chmod(0o755)
+
+
+def _dead_owner() -> str:
     dead = subprocess.Popen(["true"])
     dead.wait()
+    return f"{os.uname().nodename}:{dead.pid}"
+
+
+def _held_lock(env, owner) -> pathlib.Path:
+    """A lock dir as another build left it: owner None = no pid file at all."""
     lock = _clone_lock(env)
     lock.mkdir(parents=True)
-    (lock / "pid").write_text(f"{os.uname().nodename}:{dead.pid}\n")
-    proc = _run(env)
+    if owner is not None:
+        (lock / "pid").write_text(owner)
+    return lock
+
+
+def _sq(path) -> str:
+    return "'" + str(path).replace("'", "'\\''") + "'"
+
+
+def _run_waiting(env, tmp_path, limit=20):
+    """Run with the 5 s poll stubbed to 0.05 s; returns (proc, seconds taken)."""
+    _stub(tmp_path / "bin", "sleep", f'exec "{shutil.which("sleep")}" 0.05\n')
+    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+    t0 = time.monotonic()
+    try:
+        proc = subprocess.run(["bash", str(_SCRIPT)], env=env, capture_output=True, check=False,
+                              text=True, timeout=limit)
+    except subprocess.TimeoutExpired as e:
+        pytest.fail(f"still waiting on the lock after {limit}s: {e.stdout!r} {e.stderr!r}")
+    return proc, time.monotonic() - t0
+
+
+def test_a_lock_whose_owner_died_on_this_host_dies_at_once_with_the_rm_hint(env, tmp_path):
+    """Never taken over: the run stops at once and says how to clear it."""
+    _git_repo(env, tmp_path)
+    env["FMTUNE_CACHE_DIR"] = str(tmp_path / "it's cache")  # the hint shell-quotes the path
+    owner = _dead_owner()
+    lock = _held_lock(env, owner + "\n")
+    env["FMTUNE_LOCK_TIMEOUT"] = "60"
+    proc, took = _run_waiting(env, tmp_path)
+    assert took < 10, took
+    assert proc.returncode == 2
+    assert (f"fm-tune: lock {lock} is held by {owner}, which is no longer running; "
+            f"remove it with: rm -rf {_sq(lock)}") in proc.stderr
+    assert (lock / "pid").read_text() == owner + "\n"
+    assert sorted(p.name for p in lock.iterdir()) == ["pid"]
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+
+
+def test_an_owner_that_released_the_lock_and_then_exited_is_not_reported(env, tmp_path):
+    """The waiter read the owner, then the owner released the lock and exited before
+    kill -0 ran: that lock is gone, not stale. A stub cat releases it right after
+    the waiter's first read of the pid file."""
+    _git_repo(env, tmp_path)
+    owner = _dead_owner()
+    lock = _held_lock(env, owner + "\n")
+    flipped = tmp_path / "flipped"
+    _stub(tmp_path / "bin", "cat",
+          f'"{shutil.which("cat")}" "$@"; rc=$?\n'
+          f'if [ "$1" = "{lock}/pid" ] && [ ! -e "{flipped}" ]; then\n'
+          f'  touch "{flipped}"; rm -rf "{lock}"\n'
+          'fi\nexit $rc\n')
+    env["FMTUNE_LOCK_TIMEOUT"] = "60"
+    proc, _ = _run_waiting(env, tmp_path)
+    assert flipped.exists()
     assert proc.returncode == 0, proc.stderr
-    assert "taking over stale" in proc.stdout
-    assert not list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("*.lock"))
+    assert pathlib.Path(env["STUB_RECORD"]).exists()
+    assert not lock.exists()
+
+
+def _assert_timed_out(env, proc, took, lock, owner_text, contents):
+    assert 1 <= took < 15, took
+    assert proc.returncode == 2
+    assert f"fm-tune: lock {lock} is still held after " in proc.stderr
+    assert (f"(owner: {owner_text}); remove it with: rm -rf {_sq(lock)} "
+            "if no fm-tune build is running") in proc.stderr
+    assert sorted(p.name for p in lock.iterdir()) == contents
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+
+
+@pytest.mark.parametrize("pid", ["own", "1"])
+def test_a_lock_held_by_a_live_owner_on_this_host_is_waited_on_then_reported(env, tmp_path, pid):
+    """pid 1 is another user's live process: kill -0 fails (EPERM), but it is not dead."""
+    if pid == "1" and os.geteuid() == 0:
+        pytest.skip("root may signal pid 1")
+    _git_repo(env, tmp_path)
+    owner = f"{os.uname().nodename}:{os.getpid() if pid == 'own' else 1}"
+    lock = _held_lock(env, owner + "\n")
+    env["FMTUNE_LOCK_TIMEOUT"] = "2"
+    proc, took = _run_waiting(env, tmp_path)
+    _assert_timed_out(env, proc, took, lock, owner, ["pid"])
+    assert (lock / "pid").read_text() == owner + "\n"
+
+
+@pytest.mark.parametrize("pid_file", [None, ""], ids=["pid-less", "empty-pid"])
+def test_a_lock_with_no_owner_recorded_is_waited_on_then_reported(env, tmp_path, pid_file):
+    _git_repo(env, tmp_path)
+    lock = _held_lock(env, pid_file)
+    env["FMTUNE_LOCK_TIMEOUT"] = "2"
+    proc, took = _run_waiting(env, tmp_path)
+    _assert_timed_out(env, proc, took, lock, "none recorded", [] if pid_file is None else ["pid"])
+    if pid_file is not None:
+        assert (lock / "pid").read_text() == ""
+
+
+def test_a_lock_released_while_waiting_is_then_taken(env, tmp_path):
+    _git_repo(env, tmp_path)
+    lock = _held_lock(env, f"{os.uname().nodename}:{os.getpid()}\n")
+    waited = tmp_path / "waited"
+    _stub(tmp_path / "bin", "sleep", f'touch "{waited}"; exec "{shutil.which("sleep")}" 0.05\n')
+    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+    env["FMTUNE_LOCK_TIMEOUT"] = "60"
+    proc = subprocess.Popen(["bash", str(_SCRIPT)], env=env, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    deadline = time.monotonic() + 15
+    while not waited.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert waited.exists(), proc.communicate(timeout=15)
+    shutil.rmtree(lock)  # the holder finishes
+    out, err = proc.communicate(timeout=15)
+    assert proc.returncode == 0, err
+    assert f"[fm-tune] waiting for lock {lock}" in out
+    assert pathlib.Path(env["STUB_RECORD"]).exists()
+    assert not lock.exists()
+
+
+def test_a_lock_released_between_the_mkdir_and_the_look_is_then_taken(env, tmp_path):
+    """mkdir fails on a held lock, which is released before the waiter looks at it:
+    no dir there is not an unwritable cache. A stub mkdir releases it after the
+    first failed attempt."""
+    _git_repo(env, tmp_path)
+    lock = _held_lock(env, "otherhost:1\n")
+    flipped = tmp_path / "flipped"
+    _stub(tmp_path / "bin", "mkdir",
+          f'"{shutil.which("mkdir")}" "$@"; rc=$?\n'
+          f'if [ "$1" = "{lock}" ] && [ ! -e "{flipped}" ]; then\n'
+          f'  touch "{flipped}"; rm -rf "{lock}"\n'
+          'fi\nexit $rc\n')
+    env["FMTUNE_LOCK_TIMEOUT"] = "60"
+    proc, _ = _run_waiting(env, tmp_path)
+    assert flipped.exists()
+    assert proc.returncode == 0, proc.stderr
+    assert not lock.exists()
+
+
+def test_concurrent_builds_hold_the_lock_one_at_a_time(env, tmp_path):
+    """At most one build may be inside the locked section at a time. A stub git logs
+    enter/exit around each call (the clone section runs only git); a stub sleep makes
+    the 5 s poll fast."""
+    _git_repo(env, tmp_path)
+    events = tmp_path / "events"
+    real_sleep = shutil.which("sleep")
+    _stub(tmp_path / "bin", "git",
+          f'echo "$STUB_ID enter" >> "{events}"; "{real_sleep}" 0.1\n'
+          f'"{shutil.which("git")}" "$@"; rc=$?\n'
+          f'echo "$STUB_ID exit" >> "{events}"; exit $rc\n')
+    _stub(tmp_path / "bin", "sleep", f'exec "{real_sleep}" 0.05\n')
+    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+    env["FMTUNE_LOCK_TIMEOUT"] = "60"
+    procs = []
+    for i in range(5):
+        e = dict(env, STUB_ID=str(i), FMTUNE_OUTPUT_DIR=str(tmp_path / f"out{i}"),
+                 STUB_RECORD=str(tmp_path / f"record{i}.json"))
+        procs.append(subprocess.Popen(["bash", str(_SCRIPT)], env=e, text=True,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE))
+    outs = [p.communicate(timeout=60) for p in procs]
+    ids = [ln.split()[0] for ln in events.read_text().splitlines()]
+    # One build's git calls form one unbroken run; another build's call inside it overlaps.
+    runs = [x for k, x in enumerate(ids) if k == 0 or ids[k - 1] != x]
+    assert len(runs) == len(set(runs)) == 5, f"locked sections overlapped: {ids}"
+    assert [p.returncode for p in procs] == [0] * 5, [e for _, e in outs]
+    assert sorted(p.name for p in pathlib.Path(env["FMTUNE_CACHE_DIR"]).iterdir()
+                  if ".lock" in p.name) == []
 
 
 def test_the_lock_records_host_and_pid(env, tmp_path):
@@ -509,189 +677,11 @@ def test_the_lock_records_host_and_pid(env, tmp_path):
 
 def test_a_lock_held_by_another_host_is_never_taken_over(env, tmp_path):
     _git_repo(env, tmp_path)
-    lock = _clone_lock(env)
-    lock.mkdir(parents=True)
-    (lock / "pid").write_text("otherhost:1\n")  # pid 1 is alive here, dead there: unknowable
+    lock = _held_lock(env, "otherhost:1\n")  # pid 1 is alive here, dead there: unknowable
     env["FMTUNE_LOCK_TIMEOUT"] = "2"
-    proc = _run(env)
-    assert proc.returncode != 0
-    assert f"fm-tune: lock {lock}" in proc.stderr
-    assert "remove it if no fm-tune build is running" in proc.stderr
+    proc, took = _run_waiting(env, tmp_path)
+    _assert_timed_out(env, proc, took, lock, "otherhost:1", ["pid"])
     assert (lock / "pid").read_text() == "otherhost:1\n"
-    assert not pathlib.Path(env["STUB_RECORD"]).exists()
-
-
-def test_an_old_pid_less_lock_is_taken_over(env, tmp_path):
-    """Killed between mkdir and the pid write: stale once older than the timeout."""
-    _git_repo(env, tmp_path)
-    lock = _clone_lock(env)
-    lock.mkdir(parents=True)
-    old = lock.stat().st_mtime - 3600
-    os.utime(lock, (old, old))
-    env["FMTUNE_LOCK_TIMEOUT"] = "60"
-    proc = _run(env)
-    assert proc.returncode == 0, proc.stderr
-    assert "taking over stale" in proc.stdout
-    assert not lock.exists()
-
-
-def _stub(bin_dir: pathlib.Path, name: str, body: str) -> None:
-    bin_dir.mkdir(exist_ok=True)
-    (bin_dir / name).write_text("#!/bin/sh\n" + body)
-    (bin_dir / name).chmod(0o755)
-
-
-def _dead_owner() -> str:
-    dead = subprocess.Popen(["true"])
-    dead.wait()
-    return f"{os.uname().nodename}:{dead.pid}"
-
-
-def _stale_lock(env, kind: str) -> pathlib.Path:
-    """An old lock with no pid file, with an empty one (an older version's writer
-    killed mid-write), or one whose owner ran on this host and is dead."""
-    lock = _clone_lock(env)
-    lock.mkdir(parents=True)
-    if kind == "dead-pid":
-        (lock / "pid").write_text(_dead_owner() + "\n")
-    elif kind == "empty-pid":
-        (lock / "pid").write_text("")
-    old = lock.stat().st_mtime - 3600
-    os.utime(lock, (old, old))
-    return lock
-
-
-# Waiter B judges a stale lock; before B acts on it, another waiter takes it over and a
-# build on another host now holds a fresh one. B must leave that lock alone. A stub of
-# the command B judged with (find for the age, cat for the owner) does that takeover
-# right after B's look.
-_STALE = [("pid-less", "find"), ("empty-pid", "find"), ("dead-pid", "cat")]
-
-
-@pytest.mark.parametrize("kind, judge", _STALE)
-def test_a_lock_retaken_after_it_was_judged_stale_is_left_alone(env, tmp_path, kind, judge):
-    _git_repo(env, tmp_path)
-    lock = _stale_lock(env, kind)
-    flipped = tmp_path / "flipped"
-    target = lock if judge == "find" else lock / "pid"
-    _stub(tmp_path / "bin", judge,
-          f'out="$("{shutil.which(judge)}" "$@")"; rc=$?\n'
-          f'if [ "$1" = "{target}" ] && [ ! -e "{flipped}" ]; then\n'
-          f'  touch "{flipped}"; rm -rf "{lock}"; mkdir "{lock}"; echo otherhost:1 > "{lock}/pid"\n'
-          'fi\n'
-          '[ -z "$out" ] || printf "%s\\n" "$out"; exit $rc\n')
-    _stub(tmp_path / "bin", "sleep", f'exec "{shutil.which("sleep")}" 0.05\n')
-    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
-    env["FMTUNE_LOCK_TIMEOUT"] = "0"  # another host's lock fails at once
-    proc = subprocess.run(["bash", str(_SCRIPT)], env=env, capture_output=True, text=True, timeout=30)
-    assert flipped.exists()
-    assert (lock / "pid").read_text() == "otherhost:1\n", proc.stdout
-    assert sorted(p.name for p in lock.iterdir()) == ["pid"]
-    assert "taking over stale" not in proc.stdout
-    assert proc.returncode != 0
-    assert f"fm-tune: lock {lock} is held by otherhost:1" in proc.stderr
-    assert not pathlib.Path(env["STUB_RECORD"]).exists()
-
-
-@pytest.mark.parametrize("kind, judge", _STALE)
-def test_concurrent_takeovers_of_one_stale_lock_never_overlap(env, tmp_path, kind, judge):
-    """Several builds find one stale lock at once: at most one may be inside the
-    locked section at a time. A stub git logs enter/exit around each call (the clone
-    section runs only git); a stub sleep makes the 5 s poll fast, and a stub of the
-    judging command pauses after it so the waiters' takeovers interleave."""
-    _git_repo(env, tmp_path)
-    _stale_lock(env, kind)
-    events = tmp_path / "events"
-    real_sleep = shutil.which("sleep")
-    _stub(tmp_path / "bin", "git",
-          f'echo "$STUB_ID enter" >> "{events}"; "{real_sleep}" 0.1\n'
-          f'"{shutil.which("git")}" "$@"; rc=$?\n'
-          f'echo "$STUB_ID exit" >> "{events}"; exit $rc\n')
-    _stub(tmp_path / "bin", "sleep", f'exec "{real_sleep}" 0.05\n')
-    _stub(tmp_path / "bin", judge, f'"{shutil.which(judge)}" "$@"; rc=$?; "{real_sleep}" 0.3; exit $rc\n')
-    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
-    env["FMTUNE_LOCK_TIMEOUT"] = "60"
-    procs = []
-    for i in range(5):
-        e = dict(env, STUB_ID=str(i), FMTUNE_OUTPUT_DIR=str(tmp_path / f"out{i}"),
-                 STUB_RECORD=str(tmp_path / f"record{i}.json"))
-        procs.append(subprocess.Popen(["bash", str(_SCRIPT)], env=e, text=True,
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE))
-    outs = [p.communicate(timeout=60) for p in procs]
-    ids = [ln.split()[0] for ln in events.read_text().splitlines()]
-    # One build's git calls form one unbroken run; another build's call inside it overlaps.
-    runs = [x for k, x in enumerate(ids) if k == 0 or ids[k - 1] != x]
-    assert len(runs) == len(set(runs)) == 5, f"locked sections overlapped: {ids}"
-    assert any("taking over stale" in o for o, _ in outs)
-    assert [p.returncode for p in procs] == [0] * 5, [e for _, e in outs]
-    assert not list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("*.lock"))
-
-
-@pytest.mark.parametrize("put_back_fails_once", [False, True])
-def test_an_unreadable_moved_aside_pid_file_is_put_back(env, tmp_path, put_back_fails_once):
-    """A read error on the moved-aside file read as "": for a waiter that judged an
-    empty pid file, the same text, so it removed a live holder's claim. If even the
-    put-back fails, the moved-aside file is left, and the next pass restores it."""
-    _git_repo(env, tmp_path)
-    lock = _stale_lock(env, "empty-pid")
-    flipped = tmp_path / "flipped"
-    _stub(tmp_path / "bin", "find",
-          f'out="$("{shutil.which("find")}" "$@")"; rc=$?\n'
-          f'if [ "$1" = "{lock}" ] && [ ! -e "{flipped}" ]; then\n'
-          f'  touch "{flipped}"; rm -rf "{lock}"; mkdir "{lock}"; echo otherhost:1 > "{lock}/pid"\n'
-          'fi\n'
-          '[ -z "$out" ] || printf "%s\\n" "$out"; exit $rc\n')
-    _stub(tmp_path / "bin", "cat",
-          f'case "$*" in *pid.stale*) exit 1 ;; esac\nexec "{shutil.which("cat")}" "$@"\n')
-    if put_back_fails_once:
-        _stub(tmp_path / "bin", "ln",
-              f'case "$1" in *pid.stale*) [ -e "{tmp_path}/ln-failed" ] || '
-              f'{{ touch "{tmp_path}/ln-failed"; exit 1; }} ;; esac\n'
-              f'exec "{shutil.which("ln")}" "$@"\n')
-    _stub(tmp_path / "bin", "sleep", f'exec "{shutil.which("sleep")}" 0.05\n')
-    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
-    env["FMTUNE_LOCK_TIMEOUT"] = "0"
-    proc = subprocess.run(["bash", str(_SCRIPT)], env=env, capture_output=True, text=True, timeout=30)
-    assert flipped.exists()
-    assert (lock / "pid").read_text() == "otherhost:1\n", proc.stdout
-    assert sorted(p.name for p in lock.iterdir()) == ["pid"]
-    assert "taking over stale" not in proc.stdout
-    assert f"fm-tune: lock {lock} is held by otherhost:1" in proc.stderr
-    assert (tmp_path / "ln-failed").exists() == put_back_fails_once
-
-
-@pytest.mark.parametrize("alive", [True, False])
-def test_a_moved_aside_owner_is_restored_not_claimed_over(env, tmp_path, alive):
-    """A waiter killed between moving a pid file aside and putting it back left a live
-    holder's lock with no pid file. Once old, it was claimed in place: two holders.
-    The moved-aside owner must be restored and judged; a claim temp never held it."""
-    _git_repo(env, tmp_path)
-    lock = _clone_lock(env)
-    lock.mkdir(parents=True)
-    owner = f"{os.uname().nodename}:{os.getpid()}" if alive else _dead_owner()
-    (lock / f"pid.stale.{os.uname().nodename}.1").write_text(owner + "\n")
-    (lock / f"pid.new.{os.uname().nodename}.2").write_text("otherhost:2\n")
-    old = lock.stat().st_mtime - 3600
-    os.utime(lock, (old, old))
-    _stub(tmp_path / "bin", "sleep", f'exec "{shutil.which("sleep")}" 0.05\n')
-    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
-    env["FMTUNE_LOCK_TIMEOUT"] = "60"
-    proc = subprocess.Popen(["bash", str(_SCRIPT)], env=env, text=True,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    try:
-        out, err = proc.communicate(timeout=3)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        out, err = proc.communicate()
-    if alive:
-        assert "taking over stale" not in out, out
-        assert (lock / "pid").read_text() == owner + "\n"
-        assert not list(lock.glob("pid.stale.*"))
-        assert not pathlib.Path(env["STUB_RECORD"]).exists()
-    else:
-        assert proc.returncode == 0, err
-        assert f"taking over stale lock {lock} from dead pid {owner}" in out
-        assert not lock.exists()
 
 
 def _gone_rm_stub(tmp_path, lock, body: str) -> None:
@@ -739,20 +729,18 @@ def test_a_build_killed_while_unlocking_never_removes_a_lock_taken_since(env, tm
     assert (lock / "pid").read_text() == "otherhost:1\n"
 
 
-def test_a_cache_without_hard_links_fails_fast_every_time(env, tmp_path):
-    """The failing claim left its lock dir, so the next run waited out the stale age."""
+def test_a_failed_owner_write_fails_fast_every_time(env, tmp_path):
+    """A claim that cannot record its owner must not leave its lock dir: every later
+    run would wait on it for the whole timeout."""
     _git_repo(env, tmp_path)
-    _stub(tmp_path / "bin", "ln", "exit 1\n")
-    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+    _stub(tmp_path / "bin", "mv",
+          f'case "$*" in *.lock/pid.new*) exit 1 ;; esac\nexec "{shutil.which("mv")}" "$@"\n')
     env["FMTUNE_LOCK_TIMEOUT"] = "60"
     for _ in range(2):
-        try:
-            proc = subprocess.run(["bash", str(_SCRIPT)], env=env, capture_output=True,
-                                  text=True, timeout=15)
-        except subprocess.TimeoutExpired as e:
-            pytest.fail(f"waited on the lock the failed claim left: {e.stdout!r}")
+        proc, took = _run_waiting(env, tmp_path, limit=15)
+        assert took < 10, took
         assert proc.returncode == 2
-        assert "does not support hard links" in proc.stderr
+        assert f"fm-tune: cannot write the owner of lock {_clone_lock(env)}" in proc.stderr
     assert not _clone_lock(env).exists()
 
 
@@ -766,25 +754,17 @@ def test_a_lock_timeout_too_big_for_shell_arithmetic_is_refused(env, timeout):
     assert not pathlib.Path(env["STUB_RECORD"]).exists()
 
 
-@pytest.mark.parametrize("timeout", ["0900", "08"])
+@pytest.mark.parametrize("timeout", ["02", "08"])
 def test_a_lock_timeout_with_a_leading_zero_is_read_as_decimal(env, tmp_path, timeout):
-    """$(( 08 )) and $(( 0900 )) are octal errors in bash, so the stale check never
-    fired and the wait on a pid-less lock was unbounded."""
+    """$(( 08 )) is an octal error in bash, so the wait on a held lock never ended."""
     _git_repo(env, tmp_path)
-    lock = _clone_lock(env)
-    lock.mkdir(parents=True)
-    old = lock.stat().st_mtime - 3600
-    os.utime(lock, (old, old))
+    lock = _held_lock(env, "otherhost:1\n")
     env["FMTUNE_LOCK_TIMEOUT"] = timeout
-    try:
-        proc = subprocess.run(
-            ["bash", str(_SCRIPT)], env=env, capture_output=True, text=True, timeout=15
-        )
-    except subprocess.TimeoutExpired as e:
-        pytest.fail(f"still waiting on the old pid-less lock after 15s: {e.stdout!r} {e.stderr!r}")
-    assert proc.returncode == 0, proc.stderr
-    assert "taking over stale" in proc.stdout
-    assert not lock.exists()
+    proc, took = _run_waiting(env, tmp_path, limit=30)
+    assert int(timeout) - 1 <= took < int(timeout) + 10, took  # $SECONDS is whole seconds
+    assert proc.returncode == 2
+    assert f"fm-tune: lock {lock} is still held after {int(timeout)}s " in proc.stderr
+    assert (lock / "pid").read_text() == "otherhost:1\n"
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the read-only mode")

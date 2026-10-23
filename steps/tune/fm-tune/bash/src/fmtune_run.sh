@@ -11,97 +11,49 @@ set -euo pipefail
 
 die() { echo "fm-tune: $*" >&2; exit 2; }
 log() { echo "[fm-tune] $*"; }
-# One cache lock at a time: a mkdir lock dir holding the owner's <host>:<pid>.
-# Builds share the cache, so the clone and the venv are both built under one. A
-# lock is stale only if its owner ran on this host and is dead; another host's pid
-# can't be checked from here, so such a lock is waited on for FMTUNE_LOCK_TIMEOUT
-# seconds and then reported, never taken over. A lock with no pid file (owner
-# killed between mkdir and the write) is stale once older than the timeout (and
-# at least a minute).
+# One cache lock at a time: a mkdir lock dir whose pid file names the owner as
+# <host>:<pid>. Builds share the cache, so the clone and tree extraction and the
+# venv build each run under one; it is released before training. A lock is never
+# taken over automatically: every takeover scheme left a window for two holders,
+# and a stale lock needs a hard kill (-9, OOM, a lost node) within those minutes.
+# A waiter polls every 5 s. If the owner ran on this host and is gone, it stops at
+# once; otherwise (alive, another host, no owner recorded) it gives up after
+# FMTUNE_LOCK_TIMEOUT seconds. Either way it names the lock: rm -rf it to clear it.
 : "${FMTUNE_LOCK_TIMEOUT:=1800}"
-# At most 9 digits: $(( )) would wrap a longer one (to a negative -mmin, say).
+# At most 9 digits: $(( )) would wrap a longer one.
 case "$FMTUNE_LOCK_TIMEOUT" in ''|*[!0-9]*|??????????*)
   die "FMTUNE_LOCK_TIMEOUT must be a whole number of seconds (at most 9 digits)" ;; esac
 FMTUNE_LOCK_TIMEOUT=$((10#$FMTUNE_LOCK_TIMEOUT))  # a leading 0 would read as octal in $(( ))
 host="$(uname -n)"
 held_lock=""
-# How a lock is taken; no waiter ever removes a lock dir, so mkdir lets one in:
-#  - mkdir the dir, then claim(): link a fully written <host>:<pid> file in as
-#    pid. A link is made only where no file is (atomic, NFS too), so one claimer
-#    wins, and a held lock always has a non-empty pid file.
-#  - pid names a dead owner on this host, or is empty (an older version's) in an
-#    old dir: steal() renames it aside (one renamer wins) and re-reads it. Unless
-#    it is still what was judged, it was a newer, live claim: link it back (if
-#    even that fails, the aside copy stays for the next pass to restore).
-#  - no pid but a pid.stale.* copy (a stealer died before putting it back): link
-#    the newest copy back as pid (never over one) and judge that owner as usual:
-#    if it is dead, the next pass takes it over. Pid files are written in the
-#    order their locks are held, so the newest copy is the last holder's. A
-#    pid.new.* claim temp never was a lock's pid file: ignored.
-#  - no pid and no copy, in an old dir: claim it in place.
-# While a pid file is aside, its rename has just touched the dir, so it is not old
-# (hence the 1-minute floor). A waiter on an NFS client that caches the dir's
-# attributes (acregmin/acdirmin: seconds) could still see the old mtime then and
-# claim it, as could a waiter stalled for a minute between its look and its claim:
-# both windows are accepted. unlock removes only a lock still ours, and
-# renames it away first, so nothing lands in a dir rm -rf is part-way through.
-claim() {
-  local t="$1/pid.new.$host.$$" r=0
-  if ! { echo "$host:$$" > "$t"; } 2>/dev/null; then
-    [ ! -d "$1" ] || die "cannot write $t"
-    return 1  # the lock was released and removed meanwhile
-  fi
-  if ! ln "$t" "$1/pid" 2>/dev/null; then
-    r=1
-    if ! ln -f "$t" "$t.l" 2>/dev/null && [ -e "$t" ]; then
-      rm -f "$t"; rmdir "$1" 2>/dev/null || true  # or every later run waits on it
-      die "cannot create lock $1: $(dirname "$1") does not support hard links"
-    fi
-  fi
-  rm -f "$t" "$t.l"
-  return $r
-}
-steal() {  # $2: the owner judged stale ("" = an empty pid file)
-  local s="$1/pid.stale.$host.$$" was
-  mv "$1/pid" "$s" 2>/dev/null || return 1
-  # Still dead too: a new build given the dead one's pid would write the same text.
-  if was="$(cat "$s" 2>/dev/null)" && [ "$was" = "$2" ] \
-     && { [ -z "$2" ] || ! kill -0 "${2##*:}" 2>/dev/null; }; then
-    rm -f "$s"; return 0
-  fi
-  if ln "$s" "$1/pid" 2>/dev/null || [ "$s" -ef "$1/pid" ]; then rm -f "$s"; fi
+sq() { local q="'"; printf "'%s'" "${1//$q/$q\\$q$q}"; }  # shell-quote for the rm hint
+gone() {  # kill -0 fails for a dead pid and for another user's live one: only ESRCH's text differs
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  case "$(LC_ALL=C; kill -0 "$1" 2>&1)" in *"No such process"*) return 0 ;; esac
   return 1
 }
 lock() {
-  local owner pidfile aside start=$SECONDS
-  while ! { mkdir "$1" 2>/dev/null && claim "$1"; }; do
+  local owner start=$SECONDS
+  until mkdir "$1" 2>/dev/null; do
     if [ ! -d "$1" ]; then
-      mkdir "$1" 2>/dev/null && claim "$1" && break  # released between the two mkdirs
+      mkdir "$1" 2>/dev/null && break  # released between the mkdir and this look
       [ -d "$1" ] || die "cannot create lock $1 (is $(dirname "$1") writable?)"
     fi
-    pidfile=""; [ ! -e "$1/pid" ] || pidfile=1
     owner="$(cat "$1/pid" 2>/dev/null || true)"
-    aside="$(ls -t "$1" 2>/dev/null | awk '/^pid\.stale\./ && !n++')" || true
-    if [ "$owner" = "$host:$$" ]; then
-      break  # our claim, though its link was reported as failed (NFS can)
-    elif [ -z "$pidfile" ] && [ -n "$aside" ]; then
-      log "restoring the owner of lock $1 from $aside"
-      ln "$1/$aside" "$1/pid" 2>/dev/null && rm -f "$1/$aside"
-    elif [ -z "$owner" ]; then
-      # find -mmin (whole minutes, rounded up) is the same on GNU and BSD; stat is not.
-      if [ -n "$(find "$1" -maxdepth 0 -mmin +$(( FMTUNE_LOCK_TIMEOUT ? (FMTUNE_LOCK_TIMEOUT + 59) / 60 : 1 )) 2>/dev/null)" ] \
-         && { [ -z "$pidfile" ] || steal "$1" ""; } && claim "$1"; then
-        log "taking over stale lock $1 (no owner recorded)"; break
-      fi
-    elif [ "${owner%:*}" = "$host" ]; then
-      if ! kill -0 "${owner##*:}" 2>/dev/null && steal "$1" "$owner" && claim "$1"; then
-        log "taking over stale lock $1 from dead pid $owner"; break
-      fi
-    elif [ $((SECONDS - start)) -ge "$FMTUNE_LOCK_TIMEOUT" ]; then
-      die "lock $1 is held by $owner (another host) after ${FMTUNE_LOCK_TIMEOUT}s; remove it if no fm-tune build is running"
+    # Re-read: an owner that released the lock and then exited is not stale.
+    if [ "${owner%:*}" = "$host" ] && gone "${owner##*:}" \
+       && [ "$(cat "$1/pid" 2>/dev/null)" = "$owner" ]; then
+      die "lock $1 is held by $owner, which is no longer running; remove it with: rm -rf $(sq "$1")"
+    fi
+    if [ $((SECONDS - start)) -ge "$FMTUNE_LOCK_TIMEOUT" ]; then
+      die "lock $1 is still held after ${FMTUNE_LOCK_TIMEOUT}s (owner: ${owner:-none recorded}); remove it with: rm -rf $(sq "$1") if no fm-tune build is running"
     fi
     log "waiting for lock $1"; sleep 5
   done
+  # Only the holder writes pid, so a rename within the dir is atomic enough: no
+  # waiter ever reads it half-written.
+  { echo "$host:$$" > "$1/pid.new" && mv -f "$1/pid.new" "$1/pid"; } 2>/dev/null \
+    || { rm -rf "$1" 2>/dev/null || true; die "cannot write the owner of lock $1"; }  # ours: else every run waits on it
   held_lock="$1"
   trap unlock EXIT
 }

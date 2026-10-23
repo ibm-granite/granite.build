@@ -243,8 +243,6 @@ runs race on the cache and the output directory.
 - Only the cache dir itself is checked, not its parents: `GB_SHARED_WORKDIR` (or the bash
   `GB_HOME`) is assumed to be sticky or admin-owned. fm-tune's own `autotune/tmpdir.py`, by
   contrast, checks each level it creates. macOS ACLs on the dir are not checked either.
-- The cache's filesystem must support hard links: the locks are claimed with `ln`. A mount
-  without them (gcsfuse-style object-store mounts) fails at the first lock, naming it.
 - Migrating: an earlier version used `.fm-tune-cache/<uid>` on SkyPilot. Delete those dirs
   once no build uses them; the next run rebuilds its cache at the new path.
 - A cached `source.repo` clone is refreshed on every run (`[fm-tune] updating ...`), so a
@@ -254,18 +252,17 @@ runs race on the cache and the output directory.
   prunes them. Pin `source.ref` to a tag so builds share one tree and one venv.
 - To clean up, delete `tree-*`, `venv-*`, `src-*` (the clone mirrors), any stale `*.lock`
   directories and any `*.lock.gone.*` left by a failed removal in the cache dir, only while no
-  fm-tune build is running. They are rebuilt on the next run. Inside a lock dir, stray
-  `pid.stale.*` and `pid.new.*` files are left by a run killed mid-takeover; they go with
-  the lock dir.
+  fm-tune build is running. They are rebuilt on the next run.
 - A lock in the cache serialises only the clone and tree extraction and the venv build, not
-  training, so concurrent builds still train in parallel. Each lock records its owner as
-  `<host>:<pid>`. A lock whose owner ran on the same host and died is taken over. A lock held
-  from another host is never taken over: the run waits up to `FMTUNE_LOCK_TIMEOUT` seconds
-  (default 1800) and then fails, naming the lock directory. Remove it only if no fm-tune build
-  is running. A lock with no owner recorded is taken over once it is older than the timeout
-  (at least a minute). Of several builds taking over one stale lock at once, only one gets
-  it, except on NFS: a client caching the lock dir's attributes (`acdirmin`, seconds) can
-  misjudge its age for that long, and in a race of three or more builds that is accepted.
+  training, so concurrent builds still train in parallel. Each lock is a `*.lock` directory
+  whose `pid` file records its owner as `<host>:<pid>`. A lock is never taken over
+  automatically. A run that finds one held waits up to `FMTUNE_LOCK_TIMEOUT` seconds
+  (default 1800), then fails. If the owner ran on the same host and is no longer running,
+  it fails at once instead of waiting. Either message names the lock directory and gives the
+  exact `rm -rf '<dir>'` to clear it.
+- A stale lock is left only by a build killed hard (`kill -9`, the OOM killer, a lost node)
+  during the clone or the pip install; any other exit releases it. To clear it, remove that
+  one `*.lock` directory, and only once no fm-tune build that might hold it is running.
 
 ## Memory knob: `FMTUNE_OBJECT_STORE_BYTES`
 
