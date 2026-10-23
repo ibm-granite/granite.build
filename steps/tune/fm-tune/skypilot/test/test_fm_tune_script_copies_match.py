@@ -104,6 +104,9 @@ _RENDER_ONLY = [
     ({"seed": [1]}, "fm_tune_config.seed must be a scalar"),
     ({"source": dict(_SRC, path="/a", subdir={"a": 1})}, "fm_tune_config.source.subdir must be a scalar"),
     ({"autotunex": {"server_url": ["u"], "job_id": ""}}, "fm_tune_config.autotunex.server_url must be a scalar"),
+    ({"source": None}, "fm_tune_config.source must be a mapping"),
+    ({"autotunex": "x"}, "fm_tune_config.autotunex must be a mapping"),
+    ({"hpo_config": ["a"]}, "fm_tune_config.hpo_config must be a mapping or null"),
 ]
 _GOOD = [{"train_file": n, "validation_file": n} for n in ("t.jsonl", "sub/dir/t.jsonl", "a..b.jsonl")]
 _LAUNCHERS = {"bash": ("Bash", "fm-tune"), "skypilot": ("Skypilot", "fm-tune")}

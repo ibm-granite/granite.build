@@ -314,6 +314,20 @@ def test_an_empty_or_zero_gpu_count_is_cpu_only(gpus):
     assert _fill(compute={"num_gpus_per_node": gpus})["resources"] == {}
 
 
+@pytest.mark.parametrize("key", ["source", "autotunex"])
+@pytest.mark.parametrize("bad", [None, "x", ["a"], 3])
+def test_a_source_or_autotunex_that_is_not_a_mapping_fails_with_a_named_error(key, bad):
+    """Checked before anything reads source.* / autotunex.*, so it is not a bare UndefinedError."""
+    msg = _render_error({key: bad})
+    assert msg.startswith(f"fm-tune: fm_tune_config.{key} must be a mapping"), msg
+
+
+@pytest.mark.parametrize("bad", [["a"], "x", 3, True])
+def test_an_hpo_config_that_is_not_a_mapping_or_null_fails_the_fill(bad):
+    msg = _render_error({"hpo_config": bad})
+    assert msg.startswith("fm-tune: fm_tune_config.hpo_config must be a mapping or null"), msg
+
+
 def test_cache_dir_is_per_user_under_the_shared_workdir():
     assert 'FMTUNE_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache/$(id -u)"' in _render()
 

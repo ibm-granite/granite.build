@@ -186,6 +186,20 @@ def test_null_python_and_model_with_a_bound_base_model_render_empty():
     assert env["FMTUNE_PYTHON"] == env["FMTUNE_MODEL"] == ""
 
 
+@pytest.mark.parametrize("key", ["source", "autotunex"])
+@pytest.mark.parametrize("bad", [None, "x", ["a"], 3])
+def test_a_source_or_autotunex_that_is_not_a_mapping_fails_with_a_named_error(key, bad):
+    """Checked before anything reads source.* / autotunex.*, so it is not a bare UndefinedError."""
+    msg = _render_error({key: bad})
+    assert msg.startswith(f"fm-tune: fm_tune_config.{key} must be a mapping"), msg
+
+
+@pytest.mark.parametrize("bad", [["a"], "x", 3, True])
+def test_an_hpo_config_that_is_not_a_mapping_or_null_fails_the_fill(bad):
+    msg = _render_error({"hpo_config": bad})
+    assert msg.startswith("fm-tune: fm_tune_config.hpo_config must be a mapping or null"), msg
+
+
 def test_bound_base_model_renders_its_path():
     b = dict(_DATASET, base_model={"binding": {"path": "/staged/bm"}})
     assert _env(bindings=b)["FMTUNE_BASE_MODEL_DIR"] == "/staged/bm"

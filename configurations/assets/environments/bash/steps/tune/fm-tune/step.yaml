@@ -70,7 +70,13 @@ environment_configs:
           validate: |-
             {%- macro validate(c, base_model_bound) -%}
             {%- set ok = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-" -%}
-            {#- First, so a list never reaches the checks below; hpo_config is the one mapping. #}
+            {#- First, so no check below reads an attribute of a non-mapping. A null source or
+                autotunex is rejected, not taken as defaults: the template ships both mappings. #}
+            {%- for key in ["source", "autotunex"] -%}
+            {%- if c[key] is not mapping %}{{ raise_error("fm-tune: fm_tune_config." ~ key ~ " must be a mapping, got '" ~ c[key] ~ "'.") }}{% endif -%}
+            {%- endfor -%}
+            {%- if c.hpo_config is not none and c.hpo_config is not mapping %}{{ raise_error("fm-tune: fm_tune_config.hpo_config must be a mapping or null, got '" ~ c.hpo_config ~ "'.") }}{% endif -%}
+            {#- Then, so a list never reaches the checks below; hpo_config is the one mapping. #}
             {%- for group, keys in [("", ["extra", "model", "train_file", "validation_file", "tuning_algo", "rl_algo", "run_name", "autotune", "backend", "seed", "config_preset", "output_path", "extra_args", "python"]), ("source.", ["path", "repo", "ref", "subdir"]), ("autotunex.", ["server_url", "job_id"])] -%}
             {%- for key in keys -%}
             {%- set v = c[key] if not group else c[group[:-1]][key] -%}
