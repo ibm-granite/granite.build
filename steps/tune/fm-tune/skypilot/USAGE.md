@@ -8,9 +8,9 @@ registered as the `model` output.
 
 What a run does:
 
-1. Validates the config. Config-only errors fail the build when the step is created,
-   before anything is launched or provisioned (see "Config checks"); the script checks
-   again, plus the files themselves, before any clone or install.
+1. Validates the config. Config-only errors fail the step before it is launched or
+   provisioned (see "Config checks"); the script checks again, plus the files themselves,
+   before any clone or install.
 2. Resolves the fm-tune source: a local checkout (`source.path`) or a git clone
    (`source.repo` at `source.ref`).
 3. Builds, or reuses, a cached Python venv (`pip install -e <fm-tune>[<extra>]`).
@@ -73,9 +73,11 @@ subtraction in Jinja.
 
 ### Config checks
 
-These fail the build when the step is created, with an `fm-tune: ...` message naming the
-key. `fmtune_run.sh` repeats the first six for a direct run (it defaults an empty
-`run_name` to `fm-tune` instead of failing):
+These fail the step before it is launched or provisioned, with an `fm-tune: ...` message
+naming the key. gbserver runs them when it sets the step up to run, once the step's inputs
+are bound, so in a multi-target build an fm-tune target fails after the targets it depends
+on have run, not at submit. `fmtune_run.sh` repeats the first six for a direct run (it
+defaults an empty `run_name` to `fm-tune` instead of failing):
 
 - `train_file` or `validation_file` empty, absolute, or with a `..` component;
 - not exactly one of `source.path` and `source.repo`;
@@ -86,8 +88,10 @@ key. `fmtune_run.sh` repeats the first six for a direct run (it defaults an empt
   after the clone and venv build); an online `rl_algo` (`ppo`, `grpo`, `dapo`) needs no
   `tuning_algo`;
 - a list or mapping for any key except `hpo_config` (write it as a string);
-- SkyPilot only: `compute_config.num_nodes` other than 1, and `num_gpus_per_node` > 0
-  without `launcher_config.resources.accelerators` (see "Compute").
+- `source` or `autotunex` not a mapping, or `hpo_config` not a mapping or null;
+- SkyPilot only: a `num_nodes` other than 1 in `compute_config` or `launcher_config`; a
+  `num_nodes` or `num_gpus_per_node` that is not a whole number >= 0; and
+  `num_gpus_per_node` > 0 without `launcher_config.resources.accelerators` (see "Compute").
 
 A `null` value renders as empty, not as the string `None`. That is not the template
 default: `tuning_algo: null` passes no `--tuning_algo`, so fm-tune's own default, `none`,
@@ -195,7 +199,7 @@ The SkyPilot step supports the `slurm` subtype only.
 
 ```yaml
 compute_config:
-  num_nodes: 1               # optional; any other value fails the build when it is created
+  num_nodes: 1               # optional; any other value fails the step before it is launched
   num_cpus_per_node: 8       # requested from Slurm as cpus
   num_gpus_per_node: 1       # > 0 requires launcher_config.resources.accelerators
 launcher_config:
@@ -207,13 +211,16 @@ gbserver's SkyPilot launcher requests CPUs (and, off Slurm/LSF, memory) from
 `compute_config`, but not GPUs ([issue #536](https://github.com/ibm-granite/granite.build/issues/536)):
 `num_gpus_per_node` alone requests nothing and the job would get a CPU-only node. So the
 step asks for the GPUs to be named explicitly: with `num_gpus_per_node` > 0 and no
-`launcher_config.resources.accelerators`, the build fails when it is created. Set
-`accelerators` to `<type>:<count>` for your cluster (quote it). The step template does not
+`launcher_config.resources.accelerators`, the step fails before it is launched or
+provisioned. Set `accelerators` to `<type>:<count>` for your cluster (quote it). If you do
+not know the cluster's GPU type, Slurm also takes the untyped form `":<count>"` (e.g. `":2"`,
+`--gres=gpu:2`; see `docs/environments/skypilot-slurm.md`). The step template does not
 write `accelerators` itself and leaves `resources: {}`, so with no GPUs (`num_gpus_per_node: 0`
 or unset) it requests a CPU-only node, as the Slurm build test does. GPU runs are not
 verified (see "Known limits").
 
-`num_nodes` must be 1 (or unset): with more nodes SkyPilot runs the job on every node and the
+`num_nodes` must be 1 (or unset) both in `compute_config` and in `launcher_config`, which
+gbserver reads too and which wins: with more nodes SkyPilot runs the job on every node and the
 runs race on the cache and the output directory.
 
 ## Caches and cleanup
@@ -267,8 +274,8 @@ this step's build shape:
   written as `null`: the step treats a null like an empty value, so the flag is left out
   (`tuning_algo: null` therefore means fm-tune's default, `none`, not the template's `lora`;
   with no `rl_algo` either, the step refuses it, see "Config checks").
-  A list or mapping for any key other than `hpo_config` fails the build when it is created;
-  write it as a string.
+  A list or mapping for any key other than `hpo_config` fails the step before it is
+  launched; write it as a string.
 - `LOG_PATH` is set by the step (to the output directory's parent, unless already set), so
   AutoTuneX need not export it.
 - AutoTuneX's `CUDA_HOME` export goes in the launcher env: `bash.env` on bash,
