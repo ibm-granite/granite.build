@@ -27,6 +27,14 @@ What a run does:
 
 Extra inputs may be bound (`allow_unknown: true`) so a recipe can order targets.
 
+The output directory must be new, empty, or a previous model output (`config.json`,
+`adapter_config.json` or `model.safetensors` at its root). Anything else fails the run before
+any clone or install, because on success `--model_at_root` deletes every other entry in it. A
+failed run leaves its trial and checkpoint directories (`ray_results/`, `outputs/`,
+`final_checkpoints/`, ...) there with no model, so a retry into the same `output_path` is
+refused: delete that directory or use a new `output_path`. For the same reason fm-tune's
+`--resume_from_checkpoint` cannot be used through `extra_args`.
+
 ## Config: `fm_tune_config`
 
 Every key has a default. The block is named `fm_tune_config` because a hyphen parses as

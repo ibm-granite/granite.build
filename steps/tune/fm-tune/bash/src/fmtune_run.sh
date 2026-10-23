@@ -119,6 +119,19 @@ train="$FMTUNE_DATASET_DIR/$FMTUNE_TRAIN_FILE"
 val="$FMTUNE_DATASET_DIR/$FMTUNE_VALIDATION_FILE"
 [ -e "$train" ] || die "train_file not found: $train"
 [ -e "$val" ] || die "validation_file not found: $val"
+# On success --model_at_root deletes every other entry in the output dir, which is
+# only safe when it holds nothing or a previous model (a file fm-tune's save leaves
+# at the root). Refuse anything else now, not after training.
+if [ -e "$FMTUNE_OUTPUT_DIR" ] && [ ! -d "$FMTUNE_OUTPUT_DIR" ]; then
+  die "output dir $FMTUNE_OUTPUT_DIR exists and is not a directory"
+fi
+if [ -d "$FMTUNE_OUTPUT_DIR" ] && [ -n "$(ls -A "$FMTUNE_OUTPUT_DIR")" ] \
+   && [ ! -f "$FMTUNE_OUTPUT_DIR/config.json" ] \
+   && [ ! -f "$FMTUNE_OUTPUT_DIR/adapter_config.json" ] \
+   && [ ! -f "$FMTUNE_OUTPUT_DIR/model.safetensors" ]; then
+  die "output dir $FMTUNE_OUTPUT_DIR is not empty and is not a previous model output" \
+      "(no config.json, adapter_config.json or model.safetensors); point output_path at a new or empty directory"
+fi
 
 # ---- source ----------------------------------------------------------------
 mkdir -p "$FMTUNE_CACHE_DIR"

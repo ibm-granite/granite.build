@@ -15,8 +15,8 @@
 """Unit tests for src/fmtune_run.sh, run against a stub fm-tune tree.
 
 The stub ``main.py`` records its argv and cwd as JSON, then fakes a saved model at
-``<output_dir>/<output_model_name>/``, so each test asserts the exact command
-line fm-tune would get. ``FMTUNE_SKIP_INSTALL=1`` skips the venv, so most tests run
+the root of ``<output_dir>`` (where ``--model_at_root`` leaves it), so each test
+asserts the exact command line fm-tune would get. ``FMTUNE_SKIP_INSTALL=1`` skips the venv, so most tests run
 in well under a second. The exception is the ``slow`` venv test, which builds a real
 venv and needs network access for pip. Mode 1 only.
 """
@@ -45,9 +45,8 @@ json.dump(rec, open(os.environ["STUB_RECORD"], "w"))
 if os.environ.get("STUB_EXIT"):
     sys.exit(int(os.environ["STUB_EXIT"]))
 out = args[args.index("--output_dir") + 1]
-name = args[args.index("--output_model_name") + 1]
-os.makedirs(os.path.join(out, name), exist_ok=True)
-open(os.path.join(out, name, "adapter_config.json"), "w").write("{}")
+os.makedirs(out, exist_ok=True)
+open(os.path.join(out, "adapter_config.json"), "w").write("{}")
 """
 
 
@@ -531,6 +530,63 @@ def test_a_source_value_that_looks_like_an_option_dies_before_git(env, tmp_path,
     assert proc.returncode != 0
     assert "fm-tune: source." in proc.stderr and "must not start with '-'" in proc.stderr
     assert not (tmp_path / "git-ran").exists()
+
+
+def _git_spy(env, tmp_path):
+    """Put a git first on PATH that records each call and fails."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "git").write_text(f"#!/bin/sh\ntouch {tmp_path}/git-ran\nexit 1\n")
+    (bin_dir / "git").chmod(0o755)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    return tmp_path / "git-ran"
+
+
+def test_an_unrelated_non_empty_output_dir_dies_before_any_clone(env, tmp_path):
+    """--model_at_root deletes every other entry in output_dir on success, so a
+    mistyped output_path (say /shared) would lose its contents."""
+    _git_repo(env, tmp_path)
+    git_ran = _git_spy(env, tmp_path)
+    out = pathlib.Path(env["FMTUNE_OUTPUT_DIR"])
+    out.mkdir()
+    (out / "precious.txt").write_text("keep me\n")
+    proc = _run(env)
+    assert proc.returncode != 0
+    assert f"fm-tune: output dir {out} is not empty and is not a previous model output" in proc.stderr
+    assert "new or empty directory" in proc.stderr
+    assert not git_ran.exists()
+    assert not pathlib.Path(env["FMTUNE_CACHE_DIR"]).exists()  # no clone, tree or venv
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+    assert (out / "precious.txt").read_text() == "keep me\n"
+    assert "GB_ARTIFACT_ID:" not in proc.stdout
+
+
+def test_a_file_at_the_output_path_dies(env):
+    out = pathlib.Path(env["FMTUNE_OUTPUT_DIR"])
+    out.write_text("x\n")
+    proc = _run(env)
+    assert proc.returncode != 0
+    assert f"fm-tune: output dir {out} exists and is not a directory" in proc.stderr
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+
+
+def test_an_existing_empty_output_dir_is_accepted(env):
+    pathlib.Path(env["FMTUNE_OUTPUT_DIR"]).mkdir()
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+
+
+# What a successful run leaves at the output dir's root after --model_at_root:
+# config.json (HF full fine-tune, verl), adapter_config.json (PEFT, MLX LoRA),
+# model.safetensors (MLX full fine-tune, which writes no config.json).
+@pytest.mark.parametrize("marker", ["config.json", "adapter_config.json", "model.safetensors"])
+def test_a_previous_model_output_is_accepted(env, marker):
+    out = pathlib.Path(env["FMTUNE_OUTPUT_DIR"])
+    out.mkdir()
+    (out / marker).write_text("{}")
+    (out / "tokenizer_config.json").write_text("{}")
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
 
 
 @pytest.mark.slow
