@@ -96,6 +96,14 @@ environment_configs:
                 race on the cache and the output. compute_config may be absent. #}
             {%- set cc = config.compute_config if (config.compute_config is defined and config.compute_config) else {} %}
             {%- if cc.num_nodes is defined and cc.num_nodes is not none and (cc.num_nodes | string) != "1" %}{{ raise_error("fm-tune: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif %}
+            {#- GPUs: gbserver does not request them from compute_config (they flow only
+                via launcher_config.resources; issue #536). The step can't render the
+                request itself: only string values are filled, so resources.accelerators
+                would always be emitted, and "" for CPU-only is read as a blank-named
+                accelerator. So a GPU count without an explicit request fails here
+                instead of silently provisioning a CPU-only node. #}
+            {%- set lres = ((config.launcher_config if (config.launcher_config is defined and config.launcher_config) else {}).get("resources")) or {} %}
+            {%- if cc.num_gpus_per_node is defined and cc.num_gpus_per_node is not none and (cc.num_gpus_per_node | int) > 0 and not lres.get("accelerators") %}{{ raise_error("fm-tune: compute_config.num_gpus_per_node is " ~ cc.num_gpus_per_node ~ ", but gbserver does not request GPUs from compute_config (issue #536). Also set config.launcher_config.resources.accelerators, e.g. \"" ~ (cc.gpu_model if (cc.gpu_model is defined and cc.gpu_model) else "<gpu_model>") ~ ":" ~ cc.num_gpus_per_node ~ "\"; without it the job gets a CPU-only node.") }}{% endif %}
             export FMTUNE_DATASET_DIR={{ q(bindings.dataset.binding.path) }}
             export FMTUNE_BASE_MODEL_DIR={{ q(bindings.base_model.binding.path if bindings.base_model is defined else "") }}
             export FMTUNE_MODEL={{ q(c.model) }}

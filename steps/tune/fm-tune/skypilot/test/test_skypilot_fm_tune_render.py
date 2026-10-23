@@ -54,12 +54,14 @@ _VALID = {
 }
 
 
-def _cfg(over: dict | None = None, compute: dict | None = None) -> dict:
+def _cfg(over: dict | None = None, compute: dict | None = None, launcher: dict | None = None) -> dict:
     cfg = json.loads(json.dumps(_TEMPLATE["config"]))
     cfg["fm_tune_config"].update(_VALID)
     cfg["fm_tune_config"].update(over or {})
     if compute is not None:
         cfg["compute_config"] = compute
+    if launcher is not None:  # the build's config.launcher_config
+        cfg["launcher_config"] = launcher
     return cfg
 
 
@@ -68,16 +70,16 @@ def _render(over: dict | None = None, bindings: dict | None = None) -> str:
     return fill_template(_LAUNCHER["run"], ctx, strict=True)
 
 
-def _fill(over=None, bindings=None, compute=None) -> dict:
+def _fill(over=None, bindings=None, compute=None, launcher=None) -> dict:
     """Fill the whole launcher config, as targetsteprun.py does at step creation."""
-    ctx = {"config": _cfg(over, compute), "bindings": _DATASET if bindings is None else bindings}
+    ctx = {"config": _cfg(over, compute, launcher), "bindings": _DATASET if bindings is None else bindings}
     return fill_objtemplate(_LAUNCHER, ctx, strict=True)
 
 
-def _render_error(over=None, bindings=None, compute=None) -> str:
+def _render_error(over=None, bindings=None, compute=None, launcher=None) -> str:
     """The raise_error message a failing fill carries (fill_template wraps it)."""
     with pytest.raises(RuntimeError) as exc:
-        _fill(over, bindings, compute)
+        _fill(over, bindings, compute, launcher)
     err = exc.value
     while err.__cause__ is not None:
         err = err.__cause__
@@ -238,6 +240,39 @@ def test_null_python_and_output_path_fall_back_to_their_defaults(tmp_path):
     env = _received(tmp_path, {"python": None, "output_path": None})
     assert env["FMTUNE_PYTHON"] == "python3"
     assert env["FMTUNE_OUTPUT_DIR"] == f"{tmp_path}/model"
+
+
+@pytest.mark.parametrize("gpus", [1, 8, "2"])
+@pytest.mark.parametrize("launcher", [None, {}, {"envs": {"A": "1"}}, {"resources": {}},
+                                      {"resources": {"accelerators": ""}}])
+def test_gpus_without_an_accelerators_request_fail_the_fill(gpus, launcher):
+    """gbserver does not request GPUs from compute_config (#536); a GPU count
+    alone would provision a CPU-only node, so the build fails instead."""
+    msg = _render_error(compute={"num_gpus_per_node": gpus, "gpu_model": "H100"}, launcher=launcher)
+    assert msg.startswith(f"fm-tune: compute_config.num_gpus_per_node is {gpus}"), msg
+    assert 'config.launcher_config.resources.accelerators, e.g. "H100:' in msg, msg
+
+
+def test_the_gpu_error_without_a_gpu_model_names_a_placeholder():
+    msg = _render_error(compute={"num_gpus_per_node": 2})
+    assert 'e.g. "<gpu_model>:2"' in msg, msg
+
+
+@pytest.mark.parametrize("acc", ["H100:1", ":2"])
+def test_an_explicit_accelerators_request_satisfies_the_gpu_check(acc):
+    filled = _fill(compute={"num_gpus_per_node": 1}, launcher={"resources": {"accelerators": acc}})
+    # The template never writes accelerators itself: gbserver merges the build's
+    # config.launcher_config.resources over this {} (skypilot.py, override_res).
+    assert filled["resources"] == {}
+    assert "bash ./src/fmtune_run.sh" in filled["run"]
+
+
+@pytest.mark.parametrize("compute", [None, {}, {"num_gpus_per_node": 0}, {"num_gpus_per_node": None},
+                                     {"num_cpus_per_node": 2, "num_gpus_per_node": 0}])
+def test_cpu_only_renders_without_accelerators(compute):
+    """The slurm fixture's shape (cpus=2, gpus=0) and no compute_config at all."""
+    filled = _fill(compute=compute)
+    assert filled["resources"] == {}
 
 
 def test_cache_dir_is_per_user_under_the_shared_workdir():
