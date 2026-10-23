@@ -1934,6 +1934,41 @@ def _num_nodes_from_configs(
     return num_nodes
 
 
+def _warn_unrequested_gpus(compute_config: Dict, override_res: Dict) -> None:
+    """Warn when ``compute_config`` asks for GPUs that SkyPilot will not get.
+
+    This launcher does not turn ``compute_config.num_gpus_per_node`` into a
+    GPU request: GPUs come only from ``resources.accelerators``, or from an
+    ``instance_type`` that has them. A GPU count with neither runs on a node
+    without a GPU, and the step may still succeed, so say so.
+
+    :param compute_config: The step's raw ``compute_config`` dict.
+    :param override_res: The merged explicit ``resources`` (launcher + build).
+    """
+    if override_res.get("accelerators") or override_res.get("instance_type"):
+        return
+    value = compute_config.get("num_gpus_per_node")
+    if value is None:
+        return
+    try:
+        count = float(value)
+    except (TypeError, ValueError):
+        return
+    if count > 0:
+        # Show the count as SkyPilot writes it ("2", not "2.0"), and leave the GPU
+        # type to the user: no one type schedules on every endpoint.
+        shown = int(count) if count.is_integer() else count
+        logger.warning(
+            "compute_config.num_gpus_per_node=%s is not a SkyPilot GPU request, "
+            "and neither launcher_config.resources.accelerators nor "
+            "launcher_config.resources.instance_type is set, so this step will "
+            "run without a GPU. Request GPUs with resources.accelerators, e.g. "
+            'accelerators: "<type>:%s" with a GPU type your endpoint offers.',
+            value,
+            shown,
+        )
+
+
 def _check_multinode_supported(cloud: str, num_nodes: int) -> None:
     """Fail fast when the installed SkyPilot cannot run multi-node on LSF.
 
@@ -3197,6 +3232,7 @@ class Skypilot(Environment):
                 **(launcher_config.get("resources") or {}),
                 **((config.get("launcher_config") or {}).get("resources") or {}),
             }
+            _warn_unrequested_gpus(compute_config, override_res)
 
             # Build infra string: supports 'cloud/cluster/partition' format
             # (e.g., 'slurm/mycluster/gpu', 'lsf/bluevela/normal').

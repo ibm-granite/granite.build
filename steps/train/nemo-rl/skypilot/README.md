@@ -67,10 +67,10 @@ only entrypoint into the image) so they can pin the exact argv the step emits:
 
 | Test | Pins |
 |---|---|
-| `test_nemo_rl_run_sh.py` | Hydra override order, a fresh checkpoint dir per run, `output_path` and the staged, re-run-safe conversion, converter argv, `hf upload` argv (private by default), and the artifact marker against the shipped monitor's regexes |
+| `test_nemo_rl_run_sh.py` | Hydra override order, `cluster.gpus_per_node` from `SKYPILOT_NUM_GPUS_PER_NODE`, a fresh checkpoint dir per run, `output_path` and the staged, re-run-safe conversion, converter argv, `hf upload` argv (private by default), and the artifact marker against the shipped monitor's regexes |
 | `test_v2_save_format.py` | the V2-only `torch_save` override, resolved in the driver's process through NeMo-RL's own loader (config + overrides) |
 | `test_nemo_rl_guard_sh.py` | binding-path rejections on the node (empty or unrendered `base_model`/`dataset`, a dataset without its key) |
-| `test_nemo_rl_step_render.py` | the rendered template: render-time config validation (missing keys, bad `output`, `num_nodes != 1`), accelerators, image ref (including `.sqsh`), guard/run argv |
+| `test_nemo_rl_step_render.py` | the rendered template: render-time config validation (missing keys, bad `output`, `num_nodes != 1`), GPUs left to the build, image ref (including `.sqsh`), guard/run argv |
 | `test_exemplar_build.py` | every shipped build.yaml (exemplar and both cluster fixtures) against the step contract |
 | `test_clearml_launch.py` | ClearML enablement (`auto`/`on`/`off`), and that the driver runs as `python examples/run_x.py` would (argv, `sys.path[0]`) |
 | `test_clearml_rule_parity.py` | the bash install rule (`uv --with clearml`) and the Python import rule agree on every mode × credential combination |
@@ -149,9 +149,15 @@ change that undoes one fails fast instead of on a GPU node.
   `src/gbserver/builtins/monitors/skypilot/monitor.yaml` and checks its regexes
   extract the id and path from the script's real output. A prefix the monitor does
   not match registers zero artifacts while the build still reports SUCCESS.
-- **GPUs come from the step.** gbserver's SkyPilot launcher does not source GPUs from
-  `compute_config`, so the template renders `accelerators: <gpu_model>:<count>` and
-  pins NeMo-RL's `cluster.gpus_per_node` to the same count.
+- **GPUs come from the build, once.** The build sets
+  `launcher_config.resources.accelerators` (e.g. `"A10G:1"`) or a GPU `instance_type`;
+  the template sets none and no `num_gpus_per_node` default (#536). With neither, the
+  `validate` macro fails the build at step creation: the node would have no GPU, and
+  NeMo-RL would fail only after the image pull and staging. `nemo_rl_run.sh` pins
+  NeMo-RL's `cluster.gpus_per_node` from `SKYPILOT_NUM_GPUS_PER_NODE`, which SkyPilot
+  sets from the GPUs it allocated (including an `instance_type`'s), so the count is not
+  repeated where it could drift. `nemo_rl_config.gpus_per_node` overrides it, and a
+  count that is not a whole number is logged rather than dropped silently.
 - **SLURM needs a prebuilt image.** Pulling the NGC image onto a cold BlueVela node
   took 73 minutes, longer than a gpu-mid job's 2-hour preemption protection can
   safely absorb on top of training. `slurm-sft` therefore points `image_id` at a

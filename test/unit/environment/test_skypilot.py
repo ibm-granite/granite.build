@@ -837,6 +837,80 @@ class TestLaunchSkypilot:
         )
         assert kwargs.get("memory") is None
 
+    @pytest.mark.asyncio
+    async def test_gpu_count_without_accelerators_warns_at_launch(
+        self, skypilot_env, caplog
+    ):
+        """compute_config GPUs are not a SkyPilot request; the launch must say so
+        and still launch without accelerators (#536)."""
+        with caplog.at_level(logging.WARNING):
+            kwargs = await self._launch_and_capture_resources(
+                skypilot_env,
+                launcher_config={"run": "echo hi", "resources": {}},
+                config={"compute_config": {"num_gpus_per_node": 2}},
+            )
+        assert kwargs.get("accelerators") is None
+        assert "num_gpus_per_node=2" in caplog.text
+
+
+class TestWarnUnrequestedGpus:
+    """``compute_config.num_gpus_per_node`` is not turned into a SkyPilot GPU
+    request; GPUs come only from ``resources.accelerators`` (or an
+    ``instance_type`` that has them). A count with neither would silently run
+    without a GPU, so it warns (#536).
+    """
+
+    @staticmethod
+    def _warn(compute_config, override_res=None):
+        from gbserver.environment.skypilot import _warn_unrequested_gpus
+
+        _warn_unrequested_gpus(compute_config, override_res or {})
+
+    def test_gpu_count_without_a_request_warns(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            self._warn({"num_gpus_per_node": 4})
+        assert "num_gpus_per_node=4" in caplog.text
+        assert "resources.accelerators" in caplog.text
+
+    @pytest.mark.parametrize(
+        "value, shown", [("8", "8"), (2.0, "2"), ("4.0", "4"), (3, "3")]
+    )
+    def test_suggested_fix_is_a_valid_neutral_request(self, caplog, value, shown):
+        # The suggestion must be copyable: an integer count (not "2.0") and no
+        # hardcoded GPU type, which would not schedule on every endpoint.
+        with caplog.at_level(logging.WARNING):
+            self._warn({"num_gpus_per_node": value})
+        assert f'accelerators: "<type>:{shown}"' in caplog.text
+        assert "H100" not in caplog.text
+
+    @pytest.mark.parametrize(
+        "override_res",
+        [
+            {"accelerators": "H100:8"},
+            # An instance type already fixes the GPUs (g6e.12xlarge is 4x L40S).
+            {"instance_type": "g6e.12xlarge"},
+        ],
+    )
+    def test_explicit_gpu_resources_do_not_warn(self, caplog, override_res):
+        with caplog.at_level(logging.WARNING):
+            self._warn({"num_gpus_per_node": 4}, override_res)
+        assert "num_gpus_per_node" not in caplog.text
+
+    @pytest.mark.parametrize(
+        "compute_config",
+        [
+            {},
+            {"num_gpus_per_node": 0},
+            {"num_gpus_per_node": "0"},
+            # Not a number (e.g. an unsubstituted parameter): not this check's job.
+            {"num_gpus_per_node": "{{ gpus }}"},
+        ],
+    )
+    def test_no_gpu_count_does_not_warn(self, caplog, compute_config):
+        with caplog.at_level(logging.WARNING):
+            self._warn(compute_config)
+        assert "num_gpus_per_node" not in caplog.text
+
 
 class TestSkypilotComputeConfigResources:
     """Unit tests for the pure compute_config -> sky.Resources helpers."""

@@ -49,9 +49,10 @@ granite.build:
                 policy.tokenizer.name: HuggingFaceTB/SmolLM2-135M
             compute_config:
               num_nodes: 1
-              num_gpus_per_node: 1
-              # SLURM-SPECIFIC: H200, not H100. The ibm-bluevela environment pins
-              # every job to H200 nodes (gpu-mid rejects jobs when no H100 is free),
-              # so an H100 request would never schedule. Renders as
-              # accelerators "H200:1" -> #SBATCH --gres=gpu:h200:1.
-              gpu_model: H200
+            launcher_config:
+              resources:
+                # SLURM-SPECIFIC: H200, not H100. The ibm-bluevela environment pins
+                # every job to H200 nodes (sbatch constraint h200), so an H100
+                # request would never schedule. gpu-mid also rejects a job that
+                # requests no GPUs. -> #SBATCH --gres=gpu:H200:1.
+                accelerators: "H200:1"
