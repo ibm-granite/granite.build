@@ -63,6 +63,7 @@ from filelock import FileLock
 from gbserver.types.environmentconfig import (
     AwsCredentialProfile,
     ClusterSshConfigs,
+    KubeConfigEntry,
 )
 from gbserver.types.errors import SkypilotConfigCollisionError
 from gbserver.utils.logger import get_logger
@@ -596,12 +597,21 @@ def _lock_for(home_path: Path, name: str) -> FileLock:
 
 
 def _write_atomic(path: Path, text: str, mode: Optional[int] = None) -> None:
-    """Atomically write ``text`` to ``path`` (``*.gbtmp`` + ``os.replace``)."""
+    """Atomically write ``text`` to ``path`` (``*.gbtmp`` + ``os.replace``).
+
+    With ``mode``, the temporary file is *created* with it, so content such as
+    credentials is never readable by others, not even before a ``chmod``.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".gbtmp")
-    tmp.write_text(text, encoding="utf-8")
-    if mode is not None:
-        os.chmod(tmp, mode)
+    if mode is None:
+        tmp.write_text(text, encoding="utf-8")
+    else:
+        tmp.unlink(missing_ok=True)  # O_CREAT's mode applies only to a new file
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.chmod(tmp, mode)  # O_CREAT's mode is masked by the umask
     os.replace(tmp, path)
 
 
@@ -810,6 +820,407 @@ def release_cloud_config(home: Optional[Path] = None) -> bool:
     :returns: Whether ``~/.sky/config.yaml`` changed.
     """
     return merge_cloud_config(None, "(released)", home=home)
+
+
+#: The gbserver-managed kubeconfig (under ``~/.sky``) that ``kube_configs``
+#: contexts are merged into, added last on ``KUBECONFIG`` by
+#: :func:`activate_kubeconfig`. The user's own kubeconfig is never written.
+GBSERVER_KUBECONFIG = "gbserver-kubeconfig"
+
+#: Default kubeconfig when ``KUBECONFIG`` is unset (as kubectl and SkyPilot use).
+_DEFAULT_KUBECONFIG = "~/.kube/config"
+
+#: Key in the managed kubeconfig recording which environment wrote each context.
+_KUBE_OWNERS_KEY = "x-gbserver-owners"
+
+
+def kubeconfig_path(home: Optional[Path] = None) -> Path:
+    """Path of the gbserver-managed kubeconfig."""
+    return _home(home) / ".sky" / GBSERVER_KUBECONFIG
+
+
+#: A placeholder context gbserver's kubeconfig always carries and names as its
+#: ``current-context``. The kubernetes client rejects a merged ``KUBECONFIG``
+#: with no current-context (and SkyPilot then sees no contexts at all), but a
+#: real managed context there would become the process-wide *default* when the
+#: user's own kubeconfig sets none, so anything relying on the default would
+#: silently use an environment's secret credentials. The placeholder points at
+#: an unroutable address with no credentials, so such a request fails loudly, as
+#: it would without kube_configs. A user's own current-context still wins.
+_KUBE_PLACEHOLDER = "gbserver-no-default-context"
+_KUBE_PLACEHOLDER_ENTRIES = {
+    "contexts": {
+        "name": _KUBE_PLACEHOLDER,
+        "context": {"cluster": _KUBE_PLACEHOLDER, "user": _KUBE_PLACEHOLDER},
+    },
+    # 192.0.2.0/24 is TEST-NET-1 (RFC 5737): never routed.
+    "clusters": {
+        "name": _KUBE_PLACEHOLDER,
+        "cluster": {"server": "https://192.0.2.1:1"},
+    },
+    "users": {"name": _KUBE_PLACEHOLDER, "user": {}},
+}
+
+
+def _named(entries: Any, name: Any) -> Optional[Dict]:
+    """The entry called ``name`` in a kubeconfig list (``contexts``, ...), or None."""
+    for entry in entries or []:
+        if isinstance(entry, dict) and entry.get("name") == name:
+            return entry
+    return None
+
+
+#: Prefix for the cluster and user names gbserver gives each managed context
+#: (``gbserver/<context>``), so they never collide with a same-named cluster or
+#: user in the user's kubeconfig, another environment's, or another context's.
+_KUBE_NAME_PREFIX = "gbserver/"
+
+
+def _extract_kube_context(kubeconfig_text: str, context: str) -> Dict[str, Dict]:
+    """Pull one context, with the cluster and user it refers to, out of a kubeconfig.
+
+    The cluster and user are renamed ``gbserver/<context>`` and the context is
+    pointed at the renamed pair. The kubernetes client keeps the first
+    definition of each cluster/user *name* across ``KUBECONFIG``, so keeping a
+    secret's own (often generic, e.g. ``default``) names could silently swap the
+    server or credentials of an unrelated context.
+
+    :param kubeconfig_text: A kubeconfig document (YAML), e.g. a secret's value.
+    :param context: The context to extract.
+    :returns: ``{"context": ..., "cluster": ..., "user": ...}``, each a named
+        kubeconfig list entry.
+    :raises ValueError: If the text is not a kubeconfig or lacks the context, or
+        the cluster/user it names. The message never includes the text.
+    """
+    try:
+        doc = yaml.safe_load(kubeconfig_text) or {}
+    except yaml.YAMLError:
+        # `from None`: PyYAML's error echoes the offending line, which may hold
+        # a token or key.
+        raise ValueError(
+            f"kubeconfig for context '{context}' is not valid YAML"
+        ) from None
+    if not isinstance(doc, dict):
+        raise ValueError(f"kubeconfig for context '{context}' is not a mapping")
+    ctx = _named(doc.get("contexts"), context)
+    if ctx is None:
+        raise ValueError(f"kubeconfig does not define context '{context}'")
+    refs = ctx.get("context") or {}
+    if not isinstance(refs, dict):
+        raise ValueError(f"kubeconfig context '{context}' is malformed")
+    cluster = _named(doc.get("clusters"), refs.get("cluster"))
+    user = _named(doc.get("users"), refs.get("user"))
+    if cluster is None or user is None:
+        raise ValueError(
+            f"kubeconfig context '{context}' names a cluster or user it does not define"
+        )
+    managed_name = _KUBE_NAME_PREFIX + context
+    return {
+        "context": {
+            "name": context,
+            "context": {**refs, "cluster": managed_name, "user": managed_name},
+        },
+        "cluster": {**cluster, "name": managed_name},
+        "user": {**user, "name": managed_name},
+    }
+
+
+def _kubeconfig_paths(raw: Optional[str] = None) -> List[str]:
+    """``KUBECONFIG`` (or ``~/.kube/config``) as absolute, ``~``-expanded paths.
+
+    kubectl does not expand ``~`` in ``KUBECONFIG`` (the Python client does), so
+    a literal ``~/.kube/config`` there would hide the user's file from the
+    kubectl calls SkyPilot makes.
+    """
+    raw = raw if raw is not None else os.environ.get("KUBECONFIG")
+    raw = raw or _DEFAULT_KUBECONFIG
+    return [
+        os.path.abspath(os.path.expanduser(part))
+        for part in raw.split(os.pathsep)
+        if part
+    ]
+
+
+class _UserKubeconfig:
+    """What the user's own kubeconfig files (all but the managed one) define."""
+
+    def __init__(self: "_UserKubeconfig") -> None:
+        self.contexts: Set[str] = set()
+        self.clusters: Set[str] = set()
+        self.users: Set[str] = set()
+        # The first and the last non-empty current-context across the files:
+        # kubectl uses the first, the kubernetes Python client the last.
+        self.first_current: Optional[str] = None
+        self.last_current: Optional[str] = None
+
+    @property
+    def has_default(self: "_UserKubeconfig") -> bool:
+        """Whether both tools' default is one of the user's own contexts.
+
+        If either the first or the last current-context set is missing or names
+        a context only the managed file defines, the tool following that rule
+        would otherwise default to an environment's secret context.
+        """
+        return all(
+            c is not None and c in self.contexts
+            for c in (self.first_current, self.last_current)
+        )
+
+
+def _user_kubeconfig(managed: Path) -> _UserKubeconfig:
+    """Read the user's kubeconfig files: :func:`_kubeconfig_paths` minus ``managed``.
+
+    Unreadable files are skipped, as kubectl does.
+    """
+    found = _UserKubeconfig()
+    for part in _kubeconfig_paths():
+        path = Path(part)
+        if path == managed or not path.is_file():
+            continue
+        try:
+            doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(doc, dict):
+            continue
+        for section, names in (
+            ("contexts", found.contexts),
+            ("clusters", found.clusters),
+            ("users", found.users),
+        ):
+            for entry in doc.get(section) or []:
+                if isinstance(entry, dict) and entry.get("name"):
+                    names.add(str(entry["name"]))
+        if doc.get("current-context"):
+            current = str(doc["current-context"])
+            if found.first_current is None:
+                found.first_current = current
+            found.last_current = current
+    return found
+
+
+def _without(doc: Dict, section: str, name: str) -> None:
+    doc[section] = [e for e in doc.get(section) or [] if e.get("name") != name]
+
+
+def _set_current_context(doc: Dict, user_has_default: bool) -> None:
+    """Give the merged ``KUBECONFIG`` a safe ``current-context``.
+
+    The kubernetes client SkyPilot uses rejects a merged ``KUBECONFIG`` with no
+    current-context (SkyPilot then sees no contexts at all), but a real managed
+    context there would become the process-wide *default* and silently serve an
+    environment's secret credentials to anything relying on the default. So:
+
+    * the user's kubeconfig files set a usable current-context for both tools
+      (the first one set, which kubectl uses, and the last, which the Python
+      client uses, each name a user context): this file sets none, and both
+      use the user's;
+    * it does not: this file carries the unreachable, credential-less
+      :data:`_KUBE_PLACEHOLDER` as its current-context, so such a request fails
+      loudly, as it would without ``kube_configs``.
+
+    Re-evaluated on each write; without managed contexts, nothing is added.
+
+    :param doc: The managed kubeconfig (mutated in place).
+    :param user_has_default: Whether the user's kubeconfig sets a usable one.
+    """
+    for section in _KUBE_PLACEHOLDER_ENTRIES:
+        _without(doc, section, _KUBE_PLACEHOLDER)
+    doc.pop("current-context", None)
+    if doc.get("contexts") and not user_has_default:
+        for section, entry in _KUBE_PLACEHOLDER_ENTRIES.items():
+            doc.setdefault(section, []).append(copy.deepcopy(entry))
+        doc["current-context"] = _KUBE_PLACEHOLDER
+
+
+def _read_managed(dest: Path) -> Dict[str, Any]:
+    """The managed kubeconfig, or ``{}``.
+
+    :raises ValueError: If it is not a YAML mapping. PyYAML's own error, which
+        echoes the offending line (possibly a token), is not chained.
+    """
+    if not dest.exists():
+        return {}
+    try:
+        doc = yaml.safe_load(dest.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        raise ValueError(f"{dest} is not valid YAML; remove it to reset") from None
+    if not isinstance(doc, dict):
+        raise ValueError(f"{dest} is not a kubeconfig mapping; remove it to reset")
+    return doc
+
+
+def merge_kube_configs(
+    entries: List[KubeConfigEntry],
+    secrets: Dict[str, str],
+    env_name: str,
+    home: Optional[Path] = None,
+) -> bool:
+    """Merge an environment's ``kube_configs`` contexts into gbserver's kubeconfig.
+
+    Owner-aware per context, like the SSH blocks: each context is recorded with
+    the environment that wrote it, together with its own ``gbserver/<context>``
+    cluster and user. An identical entry is a no-op; the same environment's
+    differing entry replaces it (a rotated token); a context another environment
+    owns, or a context of the same name in the user's own kubeconfig, raises.
+    Nothing is removed, so every environment's contexts stay usable for status
+    checks and teardown while others build. Written 0600 under a cross-process
+    lock.
+
+    :param entries: The environment's ``kube_configs`` entries.
+    :param secrets: Secret name -> value; each entry's ``kubeconfig`` must name one.
+    :param env_name: The contributing environment (recorded as owner).
+    :param home: Home dir override (tests).
+    :returns: Whether the managed kubeconfig changed.
+    :raises ValueError: If a named secret is missing or lacks its context, or one
+        environment lists a context twice.
+    :raises SkypilotConfigCollisionError: On a context owned elsewhere.
+    """
+    if not entries:
+        return False
+    dest = kubeconfig_path(home)
+    incoming = []
+    seen: Set[str] = set()
+    for entry in entries:
+        if entry.context == _KUBE_PLACEHOLDER:
+            raise ValueError(f"kube_configs context name '{entry.context}' is reserved")
+        if entry.context in seen:
+            raise ValueError(
+                f"environment '{env_name}': kube_configs lists context "
+                f"'{entry.context}' more than once"
+            )
+        seen.add(entry.context)
+        if entry.kubeconfig not in secrets:
+            # The value is not echoed: one pasted in place of a secret *name*
+            # would be the kubeconfig itself.
+            raise ValueError(
+                f"environment '{env_name}': kube_configs context '{entry.context}' "
+                "names a secret (its 'kubeconfig' value) that is not in the "
+                "space's secrets; set it to the secret's name"
+            )
+        incoming.append(_extract_kube_context(secrets[entry.kubeconfig], entry.context))
+    with _THREAD_LOCK, _lock_for(_home(home), "gbserver-kubeconfig.lock"):
+        doc = _read_managed(dest)
+        before = copy.deepcopy(doc)
+        doc.setdefault("apiVersion", "v1")
+        doc.setdefault("kind", "Config")
+        owners: Dict[str, str] = doc.setdefault(_KUBE_OWNERS_KEY, {})
+        user = _user_kubeconfig(dest)
+        for parts in incoming:
+            name = parts["context"]["name"]
+            # A clash on any of the three names would let the user's entry (it
+            # comes first) or ours shadow the other in one of the tools. Checked
+            # first: a user context of the same name is reported as such, even
+            # when the user has also selected it.
+            for kind, item, theirs in (
+                ("kube context", parts["context"], user.contexts),
+                ("kube cluster", parts["cluster"], user.clusters),
+                ("kube user", parts["user"], user.users),
+            ):
+                if item["name"] in theirs:
+                    _raise_collision(
+                        kind, item["name"], env_name, "your own kubeconfig", str(dest)
+                    )
+            # The user's own default must never resolve to a secret context.
+            # kubectl takes the first current-context set and nothing later on
+            # KUBECONFIG (our placeholder included) overrides it, so a user
+            # current-context naming one of our contexts is refused outright,
+            # including one set by `kubectl config use-context <name>`.
+            if name in (user.first_current, user.last_current):
+                raise SkypilotConfigCollisionError(
+                    f"kube context '{name}' from environment '{env_name}' is the "
+                    "current-context of your own kubeconfig, so it would become "
+                    "the default for every tool. Set your current-context to one "
+                    "of your own contexts (and use --context to reach this one), "
+                    "or rename the context in the environment's kubeconfig secret."
+                )
+            owner = owners.get(name)
+            if owner is not None and owner != env_name:
+                existing = [
+                    _named(doc.get(s), n)
+                    for s, n in (
+                        ("contexts", name),
+                        ("clusters", parts["cluster"]["name"]),
+                        ("users", parts["user"]["name"]),
+                    )
+                ]
+                if existing != [parts["context"], parts["cluster"], parts["user"]]:
+                    _raise_collision(
+                        "kube context",
+                        name,
+                        env_name,
+                        f"environment '{owner}'",
+                        str(dest),
+                    )
+                continue  # identical to another env's: share it, keep its owner
+            for section, key in (
+                ("contexts", "context"),
+                ("clusters", "cluster"),
+                ("users", "user"),
+            ):
+                _without(doc, section, parts[key]["name"])
+                doc.setdefault(section, []).append(parts[key])
+            owners[name] = env_name
+        _set_current_context(doc, user.has_default)
+        changed = doc != before
+        if changed:
+            logger.info(
+                "Writing kube contexts %s from environment '%s' into %s",
+                [p["context"]["name"] for p in incoming],
+                env_name,
+                dest,
+            )
+            _write_atomic(
+                dest, yaml.safe_dump(doc, default_flow_style=False), mode=0o600
+            )
+        return changed
+
+
+def release_kube_configs(env_name: str, home: Optional[Path] = None) -> bool:
+    """Remove the contexts ``env_name`` owns, with their clusters and users.
+
+    :param env_name: The environment whose entries to remove.
+    :param home: Home dir override (tests).
+    :returns: Whether the managed kubeconfig changed.
+    """
+    dest = kubeconfig_path(home)
+    with _THREAD_LOCK, _lock_for(_home(home), "gbserver-kubeconfig.lock"):
+        doc = _read_managed(dest)
+        if not doc:
+            return False
+        owners = doc.get(_KUBE_OWNERS_KEY) or {}
+        mine = [name for name, owner in owners.items() if owner == env_name]
+        if not mine:
+            return False
+        for name in mine:
+            _without(doc, "contexts", name)
+            _without(doc, "clusters", _KUBE_NAME_PREFIX + name)
+            _without(doc, "users", _KUBE_NAME_PREFIX + name)
+            del owners[name]
+        _set_current_context(doc, _user_kubeconfig(dest).has_default)
+        _write_atomic(dest, yaml.safe_dump(doc, default_flow_style=False), mode=0o600)
+        return True
+
+
+def activate_kubeconfig(home: Optional[Path] = None) -> None:
+    """Add gbserver's kubeconfig *last* on this process's ``KUBECONFIG``.
+
+    Keeps whatever kubeconfig was in effect (``KUBECONFIG``, else
+    ``~/.kube/config``) ahead of it, with every path made absolute and
+    ``~``-expanded (kubectl does not expand ``~``). Last, so the user's own
+    entries win any name clash in both kubectl and the Python client, and their
+    ``current-context`` is the default when set (see
+    :func:`_set_current_context`). Idempotent. SkyPilot re-reads ``KUBECONFIG``
+    on every load, and a local API server receives the client's value with every
+    request.
+
+    :param home: Home dir override (tests).
+    """
+    managed = os.path.abspath(str(kubeconfig_path(home)))
+    parts = [p for p in _kubeconfig_paths() if p != managed]
+    value = os.pathsep.join(parts + [managed])
+    if os.environ.get("KUBECONFIG") != value:
+        os.environ["KUBECONFIG"] = value
 
 
 def render_aws_profile(
