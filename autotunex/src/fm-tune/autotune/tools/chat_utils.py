@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 
 # =============================================================================
 # Chat-template plumbing
@@ -94,10 +94,10 @@ def is_chatml_template(chat_template: Optional[str]) -> bool:
     Granite 4.2 moved to ChatML and dropped ``documents=``; there the RAG context
     goes in as a ``tool`` message instead (see :func:`tool_documents_message`).
     """
-    return bool(chat_template) and CHATML_MARKER in chat_template
+    return bool(chat_template and CHATML_MARKER in chat_template)
 
 
-def tokenizer_is_chatml(tokenizer) -> bool:
+def tokenizer_is_chatml(tokenizer: Any) -> bool:
     """True for a ChatML tokenizer: template probe first, then vocab membership.
 
     The template probe keeps this unit-testable with a template stand-in and no
@@ -147,10 +147,10 @@ def detect_document_style(chat_template: Optional[str]) -> str:
 
 def template_supports_kwarg(chat_template: Optional[str], name: str) -> bool:
     """True when ``name`` appears in the template, i.e. passing it does something."""
-    return bool(chat_template) and name in chat_template
+    return bool(chat_template and name in chat_template)
 
 
-def tokenizer_document_style(tokenizer) -> str:
+def tokenizer_document_style(tokenizer: Any) -> str:
     """Detect the document style from a tokenizer.
 
     Goes through :func:`tokenizer_is_chatml` first so a real Granite 4.2 tokenizer
@@ -319,7 +319,7 @@ def split_documents(
 
 def render_chat_input(
     messages: List[Dict[str, str]],
-    tokenizer,
+    tokenizer: Any,
     documents: Optional[Sequence[Dict[str, str]]] = None,
     *,
     thinking: bool = False,
@@ -337,7 +337,7 @@ def render_chat_input(
         kwargs["documents"] = list(documents)
     if template_supports_kwarg(getattr(tokenizer, "chat_template", None), "enable_thinking"):
         kwargs["enable_thinking"] = thinking
-    return tokenizer.apply_chat_template(messages, **kwargs)
+    return cast(str, tokenizer.apply_chat_template(messages, **kwargs))
 
 
 def summarize(name: str, lengths: Sequence[int]) -> Dict[str, Any]:
@@ -379,7 +379,7 @@ def print_token_stats(stats: List[Dict[str, Any]], tag: str) -> None:
         print(f"  {'  '.join(cells)}")
 
 
-def num_tokens(tokenizer, text: str) -> int:
+def num_tokens(tokenizer: Any, text: str) -> int:
     """Token count for a string, without adding special tokens."""
     return len(tokenizer(text, add_special_tokens=False)["input_ids"])
 
@@ -389,10 +389,10 @@ class IdentityTokenizer:
 
     chat_template = None
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("chat-format conversion should not tokenize")
 
-    def apply_chat_template(self, *args, **kwargs):
+    def apply_chat_template(self, *args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("chat-format conversion should not render a template")
 
 
@@ -415,7 +415,7 @@ def output_name_for(input_path: str, fmt: str, *parts: str) -> str:
     return f"{stem}{middle}_{fmt}.jsonl"
 
 
-def load_tokenizer(model: Optional[str], needs_tokenizer: bool, reason: str):
+def load_tokenizer(model: Optional[str], needs_tokenizer: bool, reason: str) -> Any:
     """Load a real tokenizer when needed, else a null-object stand-in."""
     if not needs_tokenizer:
         return IdentityTokenizer()
@@ -583,7 +583,7 @@ GUARDIAN_NLI_JSON_HINT = (
 # maps a variant name to its (schema, json hint) pair; single-variant tasks use
 # the lone ``None`` key. ``always_hint`` marks tasks whose target *is* the JSON
 # dict (NLI), so the hint is not gated on ``for_prompt``.
-_GUARDIAN_SPECS = {
+_GUARDIAN_SPECS: Dict[str, Dict[str, Any]] = {
     "factuality": {
         "system_prompt": GUARDIAN_SYSTEM_PROMPT,
         "variants": {
@@ -615,7 +615,7 @@ _GUARDIAN_SPECS = {
 }
 
 
-def _guardian_spec(criteria_id: str, variant: Optional[str], *, json_schema: bool = False):
+def _guardian_spec(criteria_id: str, variant: Optional[str], *, json_schema: bool = False) -> Tuple[Any, Any, Any, Any]:
     """Resolve ``(system_prompt, schema, json_hint, always_hint)`` for a task.
 
     ``json_schema`` selects the task's JSON-dict schema where it has one (factuality
@@ -717,7 +717,7 @@ ATOMIZER_TEXT = guardian_text(ATOMIZER_CRITERIA_ID, tag="atomizer")
 NLI_TEXT = guardian_text(NLI_CRITERIA_ID, tag="nli")
 
 
-def _guardian_messages(query, response, unique_contexts, text):
+def _guardian_messages(query: str, response: str, unique_contexts: Sequence[str], text: str) -> List[Dict[str, str]]:
     """Chat messages for detection/correction (contexts folded into the user turn).
 
     For local generation the contexts ride in the chat template's ``documents``
@@ -733,7 +733,15 @@ def _guardian_messages(query, response, unique_contexts, text):
     ]
 
 
-def _guardian_prompt(query, response, unique_contexts, tokenizer, text, *, thinking=False):
+def _guardian_prompt(
+    query: str,
+    response: str,
+    unique_contexts: Sequence[str],
+    tokenizer: Any,
+    text: str,
+    *,
+    thinking: bool = False,
+) -> str:
     """Chat-templated guardian prompt, adapted to what the template supports.
 
     The document shape is not portable across Granite generations: 3.x indexes
@@ -757,17 +765,19 @@ def _guardian_prompt(query, response, unique_contexts, tokenizer, text, *, think
     return render_chat_input(messages, tokenizer, template_docs, thinking=thinking)
 
 
-def get_detection_messages(query, response, unique_contexts):
+def get_detection_messages(query: str, response: str, unique_contexts: Sequence[str]) -> List[Dict[str, str]]:
     """Chat messages for factuality detection."""
     return _guardian_messages(query, response, unique_contexts, FACT_DETECTION_GUARDIAN_TEXT)
 
 
-def get_correction_messages(query, response, unique_contexts):
+def get_correction_messages(query: str, response: str, unique_contexts: Sequence[str]) -> List[Dict[str, str]]:
     """Chat messages for factuality correction."""
     return _guardian_messages(query, response, unique_contexts, FACT_CORRECTION_GUARDIAN_TEXT)
 
 
-def get_detection_prompt(query, response, unique_contexts, tokenizer, *, thinking=False):
+def get_detection_prompt(
+    query: str, response: str, unique_contexts: Sequence[str], tokenizer: Any, *, thinking: bool = False
+) -> str:
     """Create the factuality detection prompt (chat-templated string).
 
     The schema flavor follows the tokenizer's own template (JSON-dict on Granite
@@ -777,7 +787,9 @@ def get_detection_prompt(query, response, unique_contexts, tokenizer, *, thinkin
     return _guardian_prompt(query, response, unique_contexts, tokenizer, text, thinking=thinking)
 
 
-def get_correction_prompt(query, response, unique_contexts, tokenizer, *, thinking=False):
+def get_correction_prompt(
+    query: str, response: str, unique_contexts: Sequence[str], tokenizer: Any, *, thinking: bool = False
+) -> str:
     """Create the factuality correction prompt (chat-templated string).
 
     The schema flavor follows the tokenizer's own template (JSON-dict on Granite
@@ -793,7 +805,7 @@ def get_correction_prompt(query, response, unique_contexts, tokenizer, *, thinki
 # ``CRITERIA["atomicity"]`` — see :func:`atomizer_text` / :data:`ATOMIZER_TEXT`.
 
 
-def extract_assistant_text(input_value):
+def extract_assistant_text(input_value: Union[str, Sequence[Any]]) -> str:
     """The response to atomize, from an atomizer dataset's ``input``.
 
     The atomizer ``input`` is canonically a chat-message list whose **assistant**
@@ -806,14 +818,14 @@ def extract_assistant_text(input_value):
     if isinstance(input_value, list):
         for msg in input_value:
             if isinstance(msg, dict) and msg.get("role") == "assistant":
-                return msg.get("content", "")
+                return cast(str, msg.get("content", ""))
         # No explicit assistant turn — fall back to the first message's content.
         if input_value and isinstance(input_value[0], dict):
-            return input_value[0].get("content", "")
+            return cast(str, input_value[0].get("content", ""))
     raise ValueError("Atomizer input must be a chat-message list or a string.")
 
 
-def get_atomizer_messages(response, query=None):
+def get_atomizer_messages(response: str, query: Optional[str] = None) -> List[Dict[str, str]]:
     """Training-format atomizer messages: the text to decompose is the assistant turn.
 
     Used for the *local* chat-templated path (mirrors the intrinsic's training
@@ -833,7 +845,7 @@ def get_atomizer_messages(response, query=None):
     return messages
 
 
-def get_atomizer_prompt(response, tokenizer, query=None, *, thinking=False):
+def get_atomizer_prompt(response: str, tokenizer: Any, query: Optional[str] = None, *, thinking: bool = False) -> str:
     """Create the atomizer prompt (chat-templated string) for the local backend."""
     return render_chat_input(get_atomizer_messages(response, query), tokenizer, thinking=thinking)
 
@@ -844,12 +856,12 @@ def get_atomizer_prompt(response, tokenizer, query=None, *, thinking=False):
 # ``CRITERIA["entailment"]`` — see :func:`nli_text` / :data:`NLI_TEXT`.
 
 
-def get_nli_messages(premise, hypothesis):
+def get_nli_messages(premise: str, hypothesis: str) -> List[Dict[str, str]]:
     """Chat messages for NLI: premise (text A) vs hypothesis (text B) -> label."""
     user_turn = f"Text A (premise): {premise}\n\nText B (hypothesis): {hypothesis}\n\n{NLI_TEXT}"
     return [{"role": "user", "content": user_turn}]
 
 
-def get_nli_prompt(premise, hypothesis, tokenizer, *, thinking=False):
+def get_nli_prompt(premise: str, hypothesis: str, tokenizer: Any, *, thinking: bool = False) -> str:
     """Create the NLI prompt (chat-templated string)."""
     return render_chat_input(get_nli_messages(premise, hypothesis), tokenizer, thinking=thinking)
