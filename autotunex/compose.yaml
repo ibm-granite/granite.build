@@ -66,7 +66,7 @@ services:
       # CUDA_BASE overrides the base image; it must be a CUDA 13 `-devel` tag on an
       # Ubuntu whose system python is 3.12 (torch 2.11 is built for CUDA 13, and
       # the prebuilt kernel wheels in docker/cuda-kernel-wheels.txt target it).
-      #   CUDA_BASE: nvidia/cuda:13.0.3-devel-ubuntu24.04
+      #   CUDA_BASE: nvidia/cuda:13.0.0-devel-ubuntu24.04
     image: autotunex:cuda
     ports:
       - "8000:8000"

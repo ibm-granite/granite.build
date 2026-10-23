@@ -12,7 +12,10 @@
 # fm-tune's own runtime override, FMTUNE_DEVICE=cuda|mps|cpu, on purpose.
 # ---------------------------------------------------------------------------
 ARG DEVICE=cpu
-ARG CUDA_BASE=nvidia/cuda:13.0.3-devel-ubuntu24.04
+# 13.0.0 on purpose: it is the toolchain the prebuilt kernel wheels in
+# docker/cuda-kernel-wheels.txt were built with (nvcc 13.0.48, see BUILD_INFO.txt in
+# their release). A later 13.0.x should work too, but this keeps the build identical.
+ARG CUDA_BASE=nvidia/cuda:13.0.0-devel-ubuntu24.04
 
 # ---------------------------------------------------------------------------
 # Stage 1 — build the SvelteKit SPA

@@ -148,7 +148,7 @@ base-image pull (`toomanyrequests`) — NVIDIA's own registry serves the same ta
 
 ```bash
 docker build -t autotunex:cuda --build-arg DEVICE=cuda \
-  --build-arg CUDA_BASE=nvcr.io/nvidia/cuda:13.0.3-devel-ubuntu24.04 .
+  --build-arg CUDA_BASE=nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu24.04 .
 ```
 
 > **Expect a large image and a long build** — a `-devel` CUDA base (needed for
