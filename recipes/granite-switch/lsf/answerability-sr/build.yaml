@@ -1,0 +1,244 @@
+######
+# answerability-sr — train and evaluate a Shadow Residual (SR) answerability
+# adapter on BlueVela (SkyPilot / LSF).
+#
+# Two targets, wired by one artifact:
+#
+#   train ──(adapter)──> eval
+#
+# `train` clones the public shadow-residual repo, generates an SR training
+# config from the parameters beside this file, and runs `sr-train`. `eval`
+# binds the adapter that produced and scores it with the same repo's
+# answerability evaluator, which rebuilds the SR base and attaches the adapter
+# through stock PEFT. Both targets run the same base model; they must, or the
+# adapter is attached to a different graph than it was trained on.
+#
+# Nothing is installed from a private source: the step clones over
+# unauthenticated git, so the repo is the github.com one, and the base model
+# comes from the public Hub. The training and eval data come from one private
+# Hugging Face dataset repo, which granite.build downloads to the cluster
+# before either step runs.
+#
+# Values come from parameters.yaml beside this file; the comments explaining WHY
+# each value is what it is live there.
+#
+# Run (parameters.yaml is picked up automatically because it sits next to this
+# file):
+#   gb build start -f recipes/granite-switch/lsf/answerability-sr/build.yaml \
+#     --space <your-space>
+######
+granite.build:
+  name: answerability-sr
+  targets:
+
+    ##########################################################################
+    # train — SR adapter on the answerability task
+    ##########################################################################
+    train:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # DATA_URI names the dataset REPO, not the directory inside it. The
+        # pull materializes the whole repo on the cluster and hands this step a
+        # local path to its ROOT, so the command appends TRAIN_DATA_SUBDIR
+        # itself. Declaring it as an input rather than hardcoding a path is
+        # what puts the dataset in `gb build status` and in the lineage record,
+        # so the trainer's arguments and the lineage cannot disagree.
+        train_data:
+          uri: "$${DATA_URI}"
+          type: dataset
+        # The base weights, bound rather than downloaded by the trainer. Both
+        # targets bind this same artifact, which is what makes "eval scored the
+        # adapter on the base it was trained on" a recorded fact instead of a
+        # convention two parameters happen to agree on.
+        base_model:
+          uri: "$${BASE_MODEL_URI}"
+          type: model
+      outputs:
+        # The adapter directory, registered by the command's
+        # GB_ARTIFACT_ID:adapter marker. `uri` is templated against that
+        # event's payload, so {{ binding.path }} resolves to the run-specific
+        # directory the step actually wrote rather than a parent.
+        adapter:
+          uri: "env://{{ binding.path }}"
+          type: model
+      steps:
+        - step_uri: space://steps/byoc
+          config:
+            compute_config:
+              num_nodes: $${NUM_NODES}
+              num_gpus_per_node: $${NUM_GPUS_PER_NODE}
+            launcher_config:
+              resources:
+                # accelerators is PER NODE; memory is host memory per node.
+                accelerators: "$${ACCELERATORS}"
+                memory: $${MEMORY}
+                cluster: "$${CLUSTER}"
+                # For the LSF cloud, SkyPilot's zone is the queue name.
+                zone: "$${QUEUE}"
+            byoc_config:
+              image: "$${IMAGE}"
+              repo: "$${SR_REPO}"
+              ref: "$${SR_REF}"
+              workdir: "code"
+              # Not editable, and not `-e`: the clone is per-run and throwaway,
+              # so an editable install would only pin the env to a path that
+              # stops existing. tensorboard is not a shadow-residual dependency
+              # but REPORT_TO defaults to it, so it is installed here rather
+              # than discovered missing after the model has loaded.
+              setup_command: "cd code && pip install --no-cache-dir '.[train]' tensorboard"
+              # One folded line on purpose. The step injects this verbatim into
+              # its own `run:` block, so a multi-line value would break that
+              # block's indentation.
+              command: >-
+                set -e;
+                WORKROOT="$(pwd)";
+                OUT="$WORKROOT/adapter";
+                CFG="$WORKROOT/sr_answerability.yaml";
+                TRAIN_DIR="{{ bindings.train_data.binding.path }}/$${TRAIN_DATA_SUBDIR}";
+                BASE="{{ bindings.base_model.binding.path }}";
+                export PYTHONUNBUFFERED=1;
+                export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True;
+                echo "=== inputs ===";
+                id -un; nvidia-smi -L || true;
+                ls -la "$TRAIN_DIR" || true;
+                test -f "$BASE/config.json" || { echo "ERROR: no config.json under $BASE — the base-model pull did not land here"; exit 1; };
+                for f in "$TRAIN_DIR/train.jsonl" "$TRAIN_DIR/test.jsonl"; do
+                test -f "$f" || { echo "ERROR: missing $f — export the messages-JSONL first; see this recipe's README, 'Before the first run'"; exit 1; };
+                done;
+                mkdir -p "$OUT";
+                printf '%s\n'
+                'model:'
+                "  base: $BASE"
+                'data:'
+                "  train_path: $TRAIN_DIR/train.jsonl"
+                "  val_path: $TRAIN_DIR/test.jsonl"
+                '  max_length: $${MAX_LENGTH}'
+                '  assistant_marker: "$${ASSISTANT_MARKER}"'
+                'adapter:'
+                '  target_modules:'
+                '    q_proj: $${LORA_RANK}'
+                '    o_proj: $${LORA_RANK}'
+                '    gate_proj: $${LORA_RANK}'
+                '    up_proj: $${LORA_RANK}'
+                '    down_proj: $${LORA_RANK}'
+                '    cross_stream: $${CROSS_STREAM_RANK}'
+                '  alpha: $${LORA_ALPHA}'
+                '  dropout: $${LORA_DROPOUT}'
+                '  last_context_token: "$${LAST_CONTEXT_TOKEN}"'
+                '  last_token: "$${LAST_TOKEN}"'
+                'optimizer:'
+                '  name: adamw_torch'
+                '  learning_rate: $${LEARNING_RATE}'
+                '  weight_decay: $${WEIGHT_DECAY}'
+                'scheduler:'
+                '  type: $${LR_SCHEDULER}'
+                '  warmup_ratio: $${WARMUP_RATIO}'
+                'batch:'
+                '  per_device_train: $${PER_DEVICE_TRAIN}'
+                '  gradient_accumulation: $${GRADIENT_ACCUMULATION}'
+                '  per_device_eval: $${PER_DEVICE_EVAL}'
+                '  gradient_checkpointing: $${GRADIENT_CHECKPOINTING}'
+                'validation:'
+                '  strategy: epoch'
+                '  load_best_model_at_end: true'
+                '  metric_for_best_model: eval_loss'
+                '  greater_is_better: false'
+                '  early_stopping_patience: 3'
+                '  stop_on_nan: true'
+                'save:'
+                '  strategy: epoch'
+                '  total_limit: $${SAVE_TOTAL_LIMIT}'
+                "  output_dir: $OUT"
+                'runtime:'
+                '  num_train_epochs: $${NUM_EPOCHS}'
+                '  seed: $${SEED}'
+                '  logging_steps: $${LOGGING_STEPS}'
+                '  dataloader_num_workers: $${DATALOADER_NUM_WORKERS}'
+                '  report_to: $${REPORT_TO}'
+                > "$CFG";
+                echo "=== generated SR training config ==="; cat "$CFG";
+                EXTRA="";
+                if [ "$${MAX_STEPS}" -gt 0 ]; then EXTRA="--max-steps $${MAX_STEPS}"; fi;
+                cd code;
+                echo "=== training ===";
+                sr-train --config "$CFG" --skip-post-train-generate $EXTRA;
+                test -f "$OUT/adapter_config.json" || { echo "ERROR: training wrote no adapter_config.json to $OUT"; exit 1; };
+                python -c "import json; p='$OUT/adapter_config.json'; d=json.load(open(p)); d['base_model_name_or_path']='$${BASE_MODEL_ID}'; json.dump(d, open(p,'w'), indent=2)";
+                echo "=== adapter base recorded as ==="; grep base_model_name_or_path "$OUT/adapter_config.json";
+                ls -la "$OUT";
+                echo "GB_ARTIFACT_ID:adapter GB_ARTIFACT_PATH:$OUT"
+
+    ##########################################################################
+    # eval — score that adapter on the answerability eval set
+    ##########################################################################
+    eval:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # The adapter train produced. Binding it rather than naming a path is
+        # what sequences the two targets and records the lineage edge.
+        adapter:
+          binding: train.adapter
+        # The same repo train pulled. The destination is keyed by repo and
+        # revision, not by target, so this second pull finds the cache warm and
+        # re-downloads nothing; EVAL_DATA_SUBDIR picks the directory inside it.
+        eval_data:
+          uri: "$${DATA_URI}"
+          type: dataset
+        # The same model artifact train bound, so the pull is already warm and
+        # the two targets cannot drift onto different weights.
+        base_model:
+          uri: "$${BASE_MODEL_URI}"
+          type: model
+      outputs:
+        # result_df.csv (per-row predictions) + eval_summary.{jsonl,md,csv}.
+        report:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/byoc
+          config:
+            compute_config:
+              num_nodes: $${NUM_NODES}
+              num_gpus_per_node: $${EVAL_NUM_GPUS_PER_NODE}
+            launcher_config:
+              resources:
+                accelerators: "$${EVAL_ACCELERATORS}"
+                memory: $${EVAL_MEMORY}
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+            byoc_config:
+              image: "$${IMAGE}"
+              repo: "$${SR_REPO}"
+              ref: "$${SR_REF}"
+              workdir: "code"
+              setup_command: "cd code && pip install --no-cache-dir '.[train]' tensorboard"
+              command: >-
+                set -e;
+                WORKROOT="$(pwd)";
+                OUT="$WORKROOT/report";
+                ADAPTER="{{ bindings.adapter.binding.path }}";
+                EVAL_DIR="{{ bindings.eval_data.binding.path }}/$${EVAL_DATA_SUBDIR}";
+                BASE="{{ bindings.base_model.binding.path }}";
+                export PYTHONUNBUFFERED=1;
+                echo "=== inputs ===";
+                id -un; nvidia-smi -L || true;
+                ls -la "$ADAPTER" || true;
+                ls -la "$EVAL_DIR" || true;
+                test -f "$ADAPTER/adapter_config.json" || { echo "ERROR: no adapter_config.json under $ADAPTER"; exit 1; };
+                mkdir -p "$OUT";
+                cd code;
+                echo "=== evaluating ===";
+                python -m shadow_residual.eval.answerability_eval
+                --mode peft
+                --base-model "$BASE"
+                --adapter-path "$ADAPTER"
+                --adapter-sub-path .
+                --dataset-path "$EVAL_DIR"
+                --dataset-size $${EVAL_DATASET_SIZE}
+                --output-path "$OUT"
+                --device cuda
+                --batch-size $${EVAL_BATCH_SIZE}
+                --max-new-tokens $${EVAL_MAX_NEW_TOKENS};
+                test -f "$OUT/eval_summary.md" || { echo "ERROR: eval wrote no eval_summary.md to $OUT"; exit 1; };
+                echo "=== eval summary ==="; cat "$OUT/eval_summary.md";
+                echo "GB_ARTIFACT_ID:report GB_ARTIFACT_PATH:$OUT"
