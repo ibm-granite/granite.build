@@ -1,0 +1,45 @@
+# Custom test space for test_skypilot_slurm_bluevela_byoc.py (see "Custom test
+# spaces" in steps/README.md). Its buildtest.yaml sets `space_uri: .`, so this
+# fixture dir IS the space; the build.yaml/buildtest.yaml beside this file are
+# copied along with it but ignored by the space loader.
+#
+# Mirrors configurations/spaces/ibm/space.yaml (the IBM space), except that the
+# file:// base is the step's generated Space (../../space, from `make space`)
+# instead of configurations/assets. Keep the two in sync.
+#
+# Using this space requires:
+#   IBM_CLOUD_API_KEY
+#   passwordless ssh access to github.ibm.com
+# Shortcut: set GBTEST_SPS_IBMCLOUD_API_KEY instead. steps/conftest.py loads the
+# repo's test/conftest.py, which uses it to load IBM_CLOUD_API_KEY (and the other
+# required env vars) from SPS. Needs `make ibm-venv`.
+#
+# The step under test comes from your LOCAL source: the generated ../../space is
+# a base below, and `make space` also links ./steps to ../../space/steps
+# (git-ignored) so the space root's own steps/ outranks a copy of the step in
+# any other base. Because of the relative base, `make publish-step` does not
+# publish this test or its fixtures (Mode-1 only).
+#
+# Named `public` (not `ibm`) on purpose: hf:// pushes into HF Enterprise orgs such
+# as ibm-research attach the resource group derived from the space name,
+# `gbspace-<name>` (plus `-staging`/`-dev` outside PROD); gbspace-ibm[-staging]
+# does not exist.
+name: public
+secret_manager:
+  type: ibmcloud
+  # A non-secret endpoint; mirrors gb-test's own space.yaml. The API key comes
+  # from IBM_CLOUD_API_KEY. Required so BV_SSH_PRIVATE_KEY resolves for the env's
+  # SSH IdentityKey.
+  config:
+    service_url: https://3a634e1e-2591-4a19-baa8-34cf8f12defb.us-east.secrets-manager.appdomain.cloud
+base_uris:
+  # Searched in order; the first base that has a matching asset wins.
+  # Base URIs do NOT chain, so every repo this space needs is listed here.
+  #
+  # IBM environments (skypilot/slurm/bluevela) + assetstores, from gb-test.
+  - git+ssh://github.ibm.com/granite-dot-build/gb-test.git@gbspace-config
+  # IBM step catalog (e.g. steps/custom_code_skypilot).
+  - git+ssh://github.ibm.com/granite-dot-build/assets.git@gbspace-config-dev
+  # The step's generated Space (`make space`), relative to this file. Its own
+  # base (configurations/assets) is NOT followed.
+  - file://../../space

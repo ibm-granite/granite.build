@@ -30,7 +30,7 @@
 #                 before `make test`; it is deliberately NOT a prerequisite of
 #                 `test`. common.mk supplies a no-op default; a step overrides it
 #                 (see HAS_TEST_SETUP below)
-#   clean         remove the generated Space directory
+#   clean         remove the generated Space directory (and custom test spaces' steps links)
 #   help          list the targets and point at the shared steps/README.md
 #
 # Variables an includer MUST/MAY set BEFORE the include:
@@ -167,6 +167,15 @@ PYTHON   ?= python3
 # Override empty (`make test PYTEST_CAPTURE=`) to let pytest capture output when
 # debugging a test that does not launch SkyPilot.
 PYTEST_CAPTURE ?= -s
+
+# Which tests `make test` runs. TESTS is a space-separated list of pytest paths or
+# node ids, relative to the step env dir (default: all of $(TEST_DIR)); PYTEST_ARGS
+# is passed to pytest as is (e.g. -k, -m, -x). For example:
+#   make test TESTS=test/slurm-bluevela                 # one cluster's build tests
+#   make test TESTS=test/slurm/test_skypilot_byoc.py    # one file
+#   make test PYTEST_ARGS='-k "not cancellation"'
+TESTS       ?= $(TEST_DIR)
+PYTEST_ARGS ?=
 
 # Repo-root virtualenv that `make test` activates before running pytest. The step
 # tests import gbserver/libgbtest (and their deps), which live in the repo's
@@ -307,6 +316,7 @@ help:
 	@echo "  publish-image  push the image to the registry                 (no-op when no Dockerfile is present)"
 	@echo "  all            $(if $(filter true,$(STEP_USES_IMAGE)),image + publish-image + space,space (this step builds no image))"
 	@echo "  test           render the Space + build the image locally, then run the step's tests in $(TEST_DIR)/ (no-op when absent)"
+	@echo "                 narrow with TESTS=<paths|node ids> (e.g. TESTS=test/slurm) and/or PYTEST_ARGS='-k ...'"
 	@echo "  test-setup     stand up infra the step's tests need (run once before 'make test'; no-op unless the step defines it)"
 	@echo "  clean          remove the generated Space $(SPACE_DIR)/"
 	@echo "  help           show this message"
@@ -468,6 +478,29 @@ space:
 		printf 'variables:\n  DEFAULT_ENVIRONMENT: %s\n' "$(DEFAULT_ENVIRONMENT)" >> $(SPACE_DIR)/space.yaml; \
 	fi
 	@echo "[$(STEP_NAME)] wrote Space $(SPACE_DIR)/ (step space://steps/$(STEP_PATH); base_uri $(SPACE_BASE_URI); image_ref='$(IMAGE_REF)')"
+	$(call link-custom-space-steps)
+
+# link-custom-space-steps — give each custom test space (a test-data/<cluster>/
+# holding its own space.yaml; see "Custom test spaces" in steps/README.md) a
+# `steps` symlink to the generated $(SPACE_DIR)/steps. The fixture dir is that
+# space's root (base_uris[0]), and only the space root's own steps/ outrank
+# every base_uri when space://steps/$(STEP_PATH) resolves. Without the link, a
+# published copy of this step in a base (e.g. configurations/assets) could win
+# over the local source under test. The link is generated, hence git-ignored
+# (steps/.gitignore). A real (non-link) steps/ there is refused rather than
+# overwritten.
+define link-custom-space-steps
+	@for f in test-data/*/space.yaml; do \
+		[ -f "$$f" ] || continue; \
+		link="$$(dirname "$$f")/steps"; \
+		if [ -e "$$link" ] && [ ! -L "$$link" ]; then \
+			echo "[$(STEP_NAME)] ERROR: $$link exists and is not a symlink; remove it so it can link to $(SPACE_DIR)/steps." >&2; \
+			exit 1; \
+		fi; \
+		ln -sfn "../../$(SPACE_DIR)/steps" "$$link"; \
+		echo "[$(STEP_NAME)] linked custom test space $$link -> ../../$(SPACE_DIR)/steps"; \
+	done
+endef
 
 # ---- Publish ---------------------------------------------------------------
 
@@ -527,6 +560,7 @@ publish-step:
 	@mkdir -p "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)"
 	@copied=0; for d in $(TEST_DIR)/*/; do \
 		[ -d "$$d" ] || continue; \
+		$(call skip-if-custom-space,$$d); \
 		cp -R "$${d%/}" "$(PUBLISH_TEST_DIR)/"; copied=1; \
 	done; \
 	if [ "$$copied" = 0 ]; then \
@@ -535,6 +569,7 @@ publish-step:
 	@if [ -d test-data ]; then \
 		for d in test-data/*/; do \
 			[ -d "$$d" ] || continue; \
+			$(call skip-if-custom-space,$$d,quiet); \
 			cp -R "$${d%/}" "$(PUBLISH_TESTDATA_DIR)/"; \
 		done; \
 	fi
@@ -548,6 +583,23 @@ publish-step:
 	@echo "[$(STEP_NAME)] published step -> $(PUBLISH_STEP_DIR)"
 	@echo "[$(STEP_NAME)] copied build tests -> $(PUBLISH_TEST_DIR)"
 	@echo "[$(STEP_NAME)] copied fixtures   -> $(PUBLISH_TESTDATA_DIR) (space_uri -> $(MODE2_SPACE_URI))"
+
+# skip-if-custom-space — a SHELL FRAGMENT for publish-step's copy loops: `continue`
+# past a per-cluster dir whose fixture dir test-data/<cluster>/ holds its own
+# space.yaml (a custom test space; see "Custom test spaces" in steps/README.md).
+# Such a test is Mode-1 only: its space chains to the locally generated
+# $(SPACE_DIR)/ by a relative base_uri, and publish-step's space_uri rewrite would
+# drop the space's custom secret_manager/base_uris, so neither the test nor its
+# fixtures are copied. $(1) is the loop's dir (test/<cluster>/ or
+# test-data/<cluster>/); a non-empty $(2) suppresses the message, so each skipped
+# cluster is reported once (by the test/ loop).
+define skip-if-custom-space
+	c=$$(basename "$(1)"); \
+	if [ -f "test-data/$$c/space.yaml" ]; then \
+		$(if $(2),:,echo "[$(STEP_NAME)] skipped $$c: test-data/$$c/space.yaml is a custom test space (Mode-1 only, not published)"); \
+		continue; \
+	fi
+endef
 
 # ---- Drift check -----------------------------------------------------------
 
@@ -680,13 +732,15 @@ endef
 # if that venv is absent, then activates it (sourced in the same shell as pytest,
 # since each recipe line is its own shell) before running the tests.
 #
-# pytest does not load the repo's test/conftest.py for tests under steps/, so two
-# variables the repo suites get from there (or from their Makefile targets) are
-# defaulted here, each only when the caller hasn't set it:
+# The step tests get the repo's test/conftest.py (SPS secret loading from
+# GBTEST_SPS_IBMCLOUD_API_KEY, env restore, mock fixtures) via steps/conftest.py.
+# Two variables the repo suites get from their Makefile targets are defaulted here,
+# each only when the caller hasn't set it:
 #   * GB_ENVIRONMENT=STANDALONE: unset, gbserver defaults to PROD and the build-test
 #     base refuses to run ("Refusing to run storage tests with GB_ENVIRONMENT=PROD").
 #   * GBTEST_STANDALONE_ENVIRONMENT=STAGING: sends a STANDALONE hf:// push to the
-#     staging resource group, as test/conftest.py does, not the production one.
+#     staging resource group, not the production one (test/conftest.py also
+#     defaults it).
 # GBTEST_MODE is left alone: libgbtest already defaults it to live.
 test: space image
 	@if [ ! -d "$(TEST_DIR)" ] || [ -z "$$(ls -A $(TEST_DIR) 2>/dev/null)" ]; then \
@@ -703,7 +757,7 @@ test: space image
 	export GB_ENVIRONMENT="$${GB_ENVIRONMENT:-STANDALONE}"; \
 	export GBTEST_STANDALONE_ENVIRONMENT="$${GBTEST_STANDALONE_ENVIRONMENT:-STAGING}"; \
 	echo "[$(STEP_NAME)] GB_ENVIRONMENT=$$GB_ENVIRONMENT GBTEST_STANDALONE_ENVIRONMENT=$$GBTEST_STANDALONE_ENVIRONMENT"; \
-	PYTHONPATH="$(SRC_DIR)$${PYTHONPATH:+:$$PYTHONPATH}" $(PYTHON) -m pytest $(PYTEST_CAPTURE) $(TEST_DIR)
+	PYTHONPATH="$(SRC_DIR)$${PYTHONPATH:+:$$PYTHONPATH}" $(PYTHON) -m pytest $(PYTEST_CAPTURE) $(PYTEST_ARGS) $(TESTS)
 
 # ---- Optional pre-test setup hook ------------------------------------------
 # `test-setup` is where a step brings up the infrastructure its tests need (a
@@ -725,3 +779,4 @@ endif
 
 clean:
 	rm -rf $(SPACE_DIR)
+	@for l in test-data/*/steps; do [ -L "$$l" ] && rm -f "$$l"; done; true

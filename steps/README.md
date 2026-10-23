@@ -352,17 +352,32 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   (`$(VENV_DIR)`, default `.venv` at the repo root): `make test` activates it
   automatically and fails fast with a pointer to `make venv` if it is missing.
   Override `VENV_DIR` if your virtualenv lives elsewhere.
+  Runs every test in `test/` by default. To run only some, set `TESTS` to pytest paths
+  or node ids (relative to the step env dir) and/or pass pytest options in
+  `PYTEST_ARGS`:
+
+  ```sh
+  make test TESTS=test/slurm-bluevela                  # one cluster's build tests
+  make test TESTS="test/slurm test/aws"                # several
+  make test TESTS=test/slurm/test_skypilot_byoc.py::TestSkypilotSlurmByoc::test_runner
+  make test PYTEST_ARGS='-k "not cancellation" -x'
+  ```
+
   Runs pytest with `$(PYTEST_CAPTURE)`, default `-s`, matching the repo-root
   Makefile. **Do not drop `-s` for a SkyPilot build test.** Under pytest's capture the
   SkyPilot SDK's `click.secho(cluster_name)` flushes a stdout fd that has been replaced,
   and a *second* `sky launch` in the same pytest process then fails during provisioning
   with `OSError: [Errno 9] Bad file descriptor`. A single-launch test survives by luck, so
   the failure appears only in multi-target fixtures and looks intermittent.
-  pytest doesn't load the repo's `test/conftest.py` for tests under `steps/`, so
-  `make test` sets two variables the repo suites get from there, each only if you
-  haven't set it: `GB_ENVIRONMENT=STANDALONE` (unset, gbserver defaults to PROD and the
-  build-test base refuses to run) and `GBTEST_STANDALONE_ENVIRONMENT=STAGING` (sends an
-  `hf://` push to the staging resource group). Set either yourself to override it.
+  Step tests get the repo's [`test/conftest.py`](../test/conftest.py) through
+  [`steps/conftest.py`](conftest.py), which registers it as a plugin. So
+  `GBTEST_SPS_IBMCLOUD_API_KEY` loads `IBM_CLOUD_API_KEY`, `HF_TOKEN` and the other test
+  secrets from SPS, exactly as for the repo suites (needs `make ibm-venv`), and the same
+  env-restore and mock fixtures apply. `make test` also defaults
+  `GB_ENVIRONMENT=STANDALONE` (unset, gbserver defaults to PROD and the build-test base
+  refuses to run), only if you haven't set it. A `GB_ENVIRONMENT=STAGING` left in your
+  shell sends the test to the hosted staging database instead, so unset it for step
+  tests.
 * **`test-setup`** — optional per-step hook that stands up the infrastructure a
   step's tests need (e.g. a local Docker SLURM cluster). It is a **separate
   target, deliberately not a prerequisite of `test`**, so the (often slow) infra
@@ -603,7 +618,45 @@ test `pytestmark = pytest.mark.ibm`. `publish-step` copies a **remote** `space_u
 only local ones: a bare path or a `file://` URI. In both modes, a remote-space test resolves
 `space://steps/<name>` from the remote space, so it exercises the step that space
 has, **not** your local source: publish the step to that space's assets before relying
-on it.
+on it. To test your local source on such a cluster instead, use a custom test space
+(below).
+
+### Custom test spaces
+
+The generated `space/` always uses `secret_manager: type: local` and chains only to
+`configurations/assets`. When one cluster needs a different space — e.g. BlueVela SLURM,
+whose environment lives only in gb-test and needs the `ibmcloud` secret manager for its
+`IdentityKey: BV_SSH_PRIVATE_KEY` — put a `space.yaml` **in the fixture dir, beside
+`buildtest.yaml`**, and set `space_uri: .`. The fixture dir then *is* the space (the
+loader reads its one `space.yaml` and ignores `build.yaml`/`buildtest.yaml`). Example:
+[`misc/byoc/skypilot/test-data/slurm-bluevela/`](misc/byoc/skypilot/test-data/slurm-bluevela/).
+
+```
+test-data/<cluster>/
+  build.yaml
+  buildtest.yaml   # space_uri: .
+  space.yaml       # checked in; your secret_manager + base_uris
+  steps -> ../../space/steps   # symlink made by `make space` (git-ignored)
+```
+
+* **The step still comes from your local source.** `make space` (so `make test`) links
+  the fixture's `steps` to the generated `space/steps`. The space root's own `steps/`
+  outranks every `base_uri`, so a copy of the step in gb-test or `configurations/assets`
+  can't shadow it. `make clean` removes the link.
+* **`base_uris` are not inherited** from the generated space; list every base the test
+  needs (e.g. the gb-test git URI, and `file://../../space` for the generated space).
+  The generated space's own base (`configurations/assets`) is not followed.
+* **BlueVela spaces mirror the IBM space**, `configurations/spaces/ibm/space.yaml`
+  (same secret manager and git bases), with its `file://` base replaced by the
+  generated space, `file://../../space`. Keep them in sync.
+* **Never put secrets in it.** The `ibmcloud` API key comes from `IBM_CLOUD_API_KEY`,
+  which `GBTEST_SPS_IBMCLOUD_API_KEY` loads from SPS (see `test` above). Skip the test
+  when it's unset.
+* **Mode-1 only.** `make publish-step` skips any cluster whose fixture dir has a
+  `space.yaml` (the test and its fixtures), because the rewritten `space_uri` would
+  drop the custom space.
+* Keep the fixture dir free of any other `space.yaml` or `store.yaml`; the loader
+  reads them from the whole space dir.
 
 > **Image steps: keep the published image tag and your local build in sync.** For a
 > custom-image step, `make publish-step` freezes a concrete image reference into the

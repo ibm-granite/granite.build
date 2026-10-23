@@ -442,7 +442,7 @@ target_expectations:
     output_artifact_count: 1   # number of outputs (hf://, pushed by the hfpush step)
     # Later: expected_steps[].config (keys the build.yaml set) and .metadata
     # (GB_STEP_METADATA values run.sh prints), once the step has them.
-space_uri: ../../space         # IBM: git+ssh://github.ibm.com/granite-dot-build/gb-test.git@gbspace-config
+space_uri: ../../space         # custom test space (e.g. slurm-bluevela): `.`, with a sibling space.yaml
 tests: [runner]                # add runner_cancellation only if the workload runs long enough
 simulate_step_failure: false
 timeout_minutes: 20

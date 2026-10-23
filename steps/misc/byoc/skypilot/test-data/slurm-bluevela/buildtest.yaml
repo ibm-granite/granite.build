@@ -1,0 +1,28 @@
+# YAML-driven spec for test_skypilot_slurm_bluevela_byoc.py (located by the
+# test/ <-> test-data/ helper; see steps/README.md). Same byoc workload as the
+# local slurm test, on the BlueVela SLURM cluster.
+targets:
+  - byoc-run
+target_expectations:
+  - target_name: byoc-run
+    # Just the one workload runs: the env:// input/output are no-ops on the
+    # shared FS (no extra pull/push step).
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    expected_steps:
+      - metadata_matches:
+          commit_hash: "^[0-9a-f]{40}$"
+        config:
+          byoc_config:
+            repo: "https://github.com/octocat/Hello-World.git"
+# This fixture dir is a custom test space (the space.yaml beside this file):
+# ibmcloud secrets + the gb-test bluevela environment, with the step resolved
+# from the local source through ./steps (linked by `make space`). Mode-1 only:
+# `make publish-step` skips this cluster.
+space_uri: .
+tests:
+  - runner
+simulate_step_failure: false
+# Shared-partition queueing on BlueVela can take a while.
+timeout_minutes: 30

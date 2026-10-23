@@ -122,7 +122,10 @@ like `items` or `keys`, suggest another name, or read it as
   `test_<env>_<cluster>[_<variant>]_<category>_<name>.py`, with every hyphen
   turned into an underscore (`test_skypilot_slurm_bluevela_text_norm.py`).
 - Every build test gets `@extended_testing_only` and a skip gate for its infrastructure.
-- Mode-1 fixtures use `space_uri: ../../space`; `publish-step` rewrites it.
+- Mode-1 fixtures use `space_uri: ../../space`; `publish-step` rewrites it. A cluster that
+  needs a different secret manager or bases (e.g. `slurm-bluevela`) gets a custom test
+  space instead: `test-data/<cluster>/space.yaml` + `space_uri: .` (see clusters.md).
+  Those tests are Mode-1 only; `publish-step` skips them.
 - **A fixture whose `space_uri` points at `github.ibm.com` gets
   `pytestmark = pytest.mark.ibm`.** So does a test on an IBM-only cluster (BlueVela) that uses the
   local space. A remote `space_uri` is copied through publish unchanged, and it resolves
@@ -189,7 +192,11 @@ End with this report. Build the placeholder lines from `grep -rn FIXME steps/<pa
       make -C steps/<path>/<env> test-setup-kube        # once, if kube was selected
       make -C steps/<path>/<env> image publish-image    # custom image only (needs REGISTRY + login)
       make -C steps/<path>/<env> test                   # render test + build tests (custom image: builds it first)
+      make -C steps/<path>/<env> test TESTS=test/<cluster>   # just one cluster's build tests
       ```
+
+      `TESTS` takes pytest paths or node ids relative to the step env dir, and
+      `PYTEST_ARGS` takes extra pytest options (e.g. `-k`, `-x`).
 
       `make test` sets `GB_ENVIRONMENT=STANDALONE` and
       `GBTEST_STANDALONE_ENVIRONMENT=STAGING` unless you set them, so `hf://` pushes go

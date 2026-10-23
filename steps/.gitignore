@@ -3,3 +3,7 @@
 # of truth is step-template.yaml + src/; the Space is derived. The dir name is a
 # fixed literal, so ignore any `space/` at any depth under steps/.
 **/space/
+# The `steps` symlink `make space` adds to a custom test space (a
+# test-data/<cluster>/ holding its own space.yaml), pointing at the generated
+# ../../space/steps. See "Custom test spaces" in steps/README.md.
+**/test-data/*/steps
