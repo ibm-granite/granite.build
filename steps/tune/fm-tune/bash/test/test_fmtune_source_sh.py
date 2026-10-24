@@ -300,6 +300,17 @@ def test_a_failed_branch_clone_dies_naming_the_full_sha_option(env, tmp_path, re
     assert not pathlib.Path(env["STUB_RECORD"]).exists()
 
 
+def test_a_token_in_the_repo_url_never_reaches_the_log(env, tmp_path):
+    repo = _git_repo(env, tmp_path)
+    env["FMTUNE_SOURCE_REPO"] = (
+        f"https://x-access-token:s3cr3t@127.0.0.1:9/{repo.name}.git"
+    )
+    proc = _run(env)
+    assert proc.returncode == 2
+    assert "could not clone https://***@127.0.0.1:9/repo.git at rel" in proc.stderr
+    assert "s3cr3t" not in proc.stdout + proc.stderr
+
+
 @pytest.mark.parametrize("obj", ["v1", "HEAD^{tree}"], ids=["tag-object", "tree"])
 def test_a_sha_that_is_not_a_commit_dies(env, tmp_path, obj):
     repo = _git_repo(env, tmp_path)

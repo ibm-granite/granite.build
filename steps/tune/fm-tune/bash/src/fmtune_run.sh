@@ -167,6 +167,9 @@ esac
 # Both go to git as positional args; a leading '-' would be read as an option.
 case "$FMTUNE_SOURCE_REPO" in -*) die "source.repo must not start with '-'" ;; esac
 case "$FMTUNE_SOURCE_REF" in -*) die "source.ref must not start with '-'" ;; esac
+# Messages name the repo without its URL userinfo: a token in
+# https://user:<token>@host/... would otherwise land in job.log.
+repo_shown="$(printf '%s' "$FMTUNE_SOURCE_REPO" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]*@#\1***@#')"
 # Exactly 40 hex characters is a commit SHA, lowercased before any use (spelled
 # out, not a range: in a UTF-8 locale bash 3.2's [a-f] also matches 'B').
 ref_sha=""
@@ -245,7 +248,7 @@ if [ -n "$FMTUNE_SOURCE_PATH" ]; then
   root="$FMTUNE_SOURCE_PATH"
 elif [ -n "$ref_sha" ] && [ -d "$FMTUNE_CACHE_DIR/tree-$FMTUNE_SOURCE_REF" ]; then
   # A commit never moves and its tree is moved into place whole: no lock, no git.
-  log "using $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF = $FMTUNE_SOURCE_REF"
+  log "using $repo_shown@$FMTUNE_SOURCE_REF = $FMTUNE_SOURCE_REF"
   root="$FMTUNE_CACHE_DIR/tree-$FMTUNE_SOURCE_REF/$FMTUNE_SOURCE_SUBDIR"
 else
   key="$(printf '%s@%s' "$FMTUNE_SOURCE_REPO" "$FMTUNE_SOURCE_REF" | cksum | cut -d' ' -f1)"
@@ -255,35 +258,35 @@ else
   clone="$FMTUNE_CACHE_DIR/src-$key"
   lock "$clone.lock"
   if [ ! -d "$clone/.git" ] && [ -z "$ref_sha" ]; then
-    log "cloning $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF"
+    log "cloning $repo_shown@$FMTUNE_SOURCE_REF"
     rm -rf "$clone.tmp"
     git clone --quiet --depth 1 --branch "$FMTUNE_SOURCE_REF" -- "$FMTUNE_SOURCE_REPO" "$clone.tmp" \
-      || die "could not clone $FMTUNE_SOURCE_REPO at $FMTUNE_SOURCE_REF (source.ref must be a branch, a tag, or a full 40-character commit SHA)"
+      || die "could not clone $repo_shown at $FMTUNE_SOURCE_REF (source.ref must be a branch, a tag, or a full 40-character commit SHA)"
     mv "$clone.tmp" "$clone"
     # ^{commit}: an annotated tag's FETCH_HEAD is the tag object, so peel both
     # sides or one commit gets two trees (and two venvs).
     sha="$(git -C "$clone" rev-parse 'HEAD^{commit}')"
   elif [ ! -d "$clone/.git" ]; then
     # A SHA: fetch that one commit by id, not a branch.
-    log "fetching $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF"
+    log "fetching $repo_shown@$FMTUNE_SOURCE_REF"
     rm -rf "$clone.tmp"
     git init -q "$clone.tmp"
     git -C "$clone.tmp" remote add -- origin "$FMTUNE_SOURCE_REPO"
     git -C "$clone.tmp" fetch --quiet --depth 1 -- origin "$FMTUNE_SOURCE_REF" \
-      || die "could not fetch commit $FMTUNE_SOURCE_REF from $FMTUNE_SOURCE_REPO (a commit SHA must be the full 40 characters of a commit in that repo)"
+      || die "could not fetch commit $FMTUNE_SOURCE_REF from $repo_shown (a commit SHA must be the full 40 characters of a commit in that repo)"
     # A tag object's id peels to another commit; a tree's does not peel at all.
     sha="$(git -C "$clone.tmp" rev-parse --verify --quiet 'FETCH_HEAD^{commit}')" && [ "$sha" = "$FMTUNE_SOURCE_REF" ] \
-      || die "source.ref $FMTUNE_SOURCE_REF is not a commit in $FMTUNE_SOURCE_REPO (it names a tag object or a tree)"
+      || die "source.ref $FMTUNE_SOURCE_REF is not a commit in $repo_shown (it names a tag object or a tree)"
     mv "$clone.tmp" "$clone"
   else
     # The cache outlives builds: resolve the ref's current commit, not the first one.
-    log "updating $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF"
+    log "updating $repo_shown@$FMTUNE_SOURCE_REF"
     git -C "$clone" fetch --quiet --depth 1 -- origin "$FMTUNE_SOURCE_REF" \
       || die "could not update the cached clone $clone to $FMTUNE_SOURCE_REF"
     sha="$(git -C "$clone" rev-parse 'FETCH_HEAD^{commit}')"
     # A SHA's mirror outlives its tree-<sha> (deleted to free space): same check as above.
     if [ -n "$ref_sha" ] && [ "$sha" != "$FMTUNE_SOURCE_REF" ]; then
-      die "source.ref $FMTUNE_SOURCE_REF is not a commit in $FMTUNE_SOURCE_REPO (it names a tag object or a tree)"
+      die "source.ref $FMTUNE_SOURCE_REF is not a commit in $repo_shown (it names a tag object or a tree)"
     fi
   fi
   tree="$FMTUNE_CACHE_DIR/tree-$sha"
@@ -297,7 +300,7 @@ else
     if [ -d "$tree" ]; then rm -rf "$t"; else mv "$t" "$tree" 2>/dev/null || rm -rf "$t"; fi
   fi
   unlock
-  log "using $FMTUNE_SOURCE_REPO@$FMTUNE_SOURCE_REF = $sha"
+  log "using $repo_shown@$FMTUNE_SOURCE_REF = $sha"
   root="$tree/$FMTUNE_SOURCE_SUBDIR"
 fi
 [ -f "$root/main.py" ] || die "no main.py under fm-tune source $root"

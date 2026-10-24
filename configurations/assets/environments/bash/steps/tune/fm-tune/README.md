@@ -50,7 +50,7 @@ subtraction in Jinja.
 | Key | Default | Maps to |
 |---|---|---|
 | `source.path` | `""` | Local fm-tune checkout. Exactly one of `path` and `repo` must be set |
-| `source.repo` | `""` | Git URL to clone (must not start with `-`) |
+| `source.repo` | `""` | Git URL to clone (must not start with `-`). Log lines show it with any `user:token@` replaced by `***@` |
 | `source.ref` | `main` | Branch, tag, or full 40-character commit SHA for `repo` (quote a SHA in YAML; an uppercase SHA is lowercased, so it shares the lowercase one's cache) |
 | `source.subdir` | `autotunex/src/fm-tune` | fm-tune's location inside `repo` |
 | `extra` | `core` | pip extra installed: `core`, `full` or `mlx` |
