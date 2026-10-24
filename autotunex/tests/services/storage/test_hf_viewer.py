@@ -186,6 +186,13 @@ async def test_discover_config_raises_unavailable(response: httpx.Response) -> N
             await hf_viewer.discover_config(client, base_url=BASE, repo_id="o/r", token="t")
 
 
+@pytest.mark.parametrize("status", [401, 403, 404])
+async def test_discover_config_raises_inaccessible_on_a_refused_repo(status: int) -> None:
+    async with _client(lambda request: httpx.Response(status)) as client:
+        with pytest.raises(hf_viewer.HFViewerInaccessible):
+            await hf_viewer.discover_config(client, base_url=BASE, repo_id="o/r", token=None)
+
+
 async def test_discover_config_wraps_transport_errors() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("down")

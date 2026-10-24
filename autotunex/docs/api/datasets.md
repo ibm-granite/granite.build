@@ -163,8 +163,9 @@ still precomputing, so empty `train`/`validation` there mean "not ready yet" rat
 
 A dataset whose `artifact_url` is an `hf://` repo the app did not push (for example a public
 dataset a training run registered through the api-bridge) is previewed **anonymously**: the
-server's HF token is sent only to the app's own `..._<dataset id[:8]>` repos, so a private or
-gated foreign repo has no preview.
+server's HF token is sent only to the app's own `..._<dataset id[:8]>` repos (inside
+`AUTOTUNEX_HF_NAMESPACE` when that is set), so a private, gated or missing foreign repo has no
+preview: empty `train`/`validation` with `viewer_ready: true`.
 
 ```json
 {

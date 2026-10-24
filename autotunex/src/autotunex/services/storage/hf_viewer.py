@@ -38,6 +38,17 @@ class HFViewerUnavailable(Exception):  # noqa: N818 (name is a fixed cross-task 
     """
 
 
+class HFViewerInaccessible(HFViewerUnavailable):
+    """The viewer refused the repo: HTTP 401, 403 or 404 on ``/splits``.
+
+    The repo is private, gated, or missing for the credentials sent, so (unlike
+    "still precomputing") retrying with the same credentials will not help.
+    """
+
+
+_INACCESSIBLE_STATUSES = frozenset({401, 403, 404})
+
+
 def repo_id_from_artifact_url(artifact_url: str | None) -> str | None:
     """Derive an ``owner/repo`` HuggingFace dataset id from a stored locator.
 
@@ -76,7 +87,8 @@ async def discover_config(
     but reading it back means a repo whose push produced a differently-named
     subset still previews instead of failing permanently on ``/rows``.
 
-    Raises :class:`HFViewerUnavailable` on a transport error, a non-200 status, a
+    Raises :class:`HFViewerInaccessible` on HTTP 401/403/404, and
+    :class:`HFViewerUnavailable` on a transport error, any other non-200 status, a
     malformed body, or an empty/absent ``splits`` list — the last of which is the
     viewer's "still precomputing / not ready yet" signal, and the caller degrades
     it to a not-ready preview rather than fetching rows that cannot exist yet.
@@ -90,6 +102,8 @@ async def discover_config(
     except httpx.HTTPError as exc:
         raise HFViewerUnavailable(f"{repo_id}#splits: transport error: {exc}") from exc
 
+    if response.status_code in _INACCESSIBLE_STATUSES:
+        raise HFViewerInaccessible(f"{repo_id}#splits: HTTP {response.status_code}")
     if response.status_code != 200:
         raise HFViewerUnavailable(f"{repo_id}#splits: HTTP {response.status_code}")
     try:
