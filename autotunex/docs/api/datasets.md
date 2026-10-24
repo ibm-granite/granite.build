@@ -161,6 +161,11 @@ and `validation` are each a list of raw JSON rows bounded by `preview_rows`. `vi
 still precomputing, so empty `train`/`validation` there mean "not ready yet" rather than
 "genuinely empty".
 
+A dataset whose `artifact_url` is an `hf://` repo the app did not push (for example a public
+dataset a training run registered through the api-bridge) is previewed **anonymously**: the
+server's HF token is sent only to the app's own `..._<dataset id[:8]>` repos, so a private or
+gated foreign repo has no preview.
+
 ```json
 {
   "id": "9f30...",

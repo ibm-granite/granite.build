@@ -533,20 +533,57 @@ async def test_preview_empty_when_artifact_url_absent(monkeypatch: pytest.Monkey
     assert preview == DatasetPreview(train=[], validation=[])
 
 
-async def test_preview_empty_when_repo_belongs_to_other_dataset(
+async def test_preview_reads_a_foreign_repo_without_the_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A repo this app did not push (e.g. a public dataset a build trained on) is
+    read anonymously: the token is never sent to a repo the app does not own."""
     monkeypatch.setenv(HF_ENV, "hf_tok")
+    seen: list[httpx.Request] = []
 
-    preview = await _backend().preview(
-        dataset_id=DATASET_ID,
-        name="finance",
-        data_format="jsonl",
-        artifact_url="hf://huggingface.co/datasets/example-org/finance_deadbeef",
-        rows=10,
-    )
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/splits":
+            return httpx.Response(200, json={"splits": [{"config": "default", "split": "train"}]})
+        if request.url.params["split"] == "validation":
+            return httpx.Response(404)
+        return httpx.Response(200, json={"rows": [{"row": {"instruction": "hi"}}]})
 
-    assert preview == DatasetPreview(train=[], validation=[])
+    async with _viewer_client(handler) as client:
+        preview = await _backend(http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url="hf:///datasets/axolotl-ai-co/alpaca_100_test",
+            rows=10,
+        )
+
+    assert preview.train == [{"instruction": "hi"}]
+    assert preview.validation == []
+    assert seen and all("authorization" not in r.headers for r in seen)
+    assert all(r.url.params["dataset"] == "axolotl-ai-co/alpaca_100_test" for r in seen)
+
+
+async def test_preview_reads_a_foreign_repo_with_no_token_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(HF_ENV, raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/splits":
+            return httpx.Response(200, json={"splits": [{"config": "default", "split": "train"}]})
+        return httpx.Response(200, json={"rows": [{"row": {"a": 1}}]})
+
+    async with _viewer_client(handler) as client:
+        preview = await _backend(http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url="hf://huggingface.co/datasets/example-org/finance_deadbeef",
+            rows=10,
+        )
+
+    assert preview.train == [{"a": 1}]
 
 
 async def test_preview_empty_when_token_missing(monkeypatch: pytest.MonkeyPatch) -> None:
