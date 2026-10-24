@@ -48,6 +48,7 @@ from autotune.trainers._alora_gc import (
 
 # Local
 from autotune.trainers._moe import router_aux_loss_coef as moe_router_aux_loss_coef
+from autotune.trainers._steps import resolve_epoch_steps
 from autotune.utils import (
     extract_tokenizer_kwargs,
     get_peft_config,
@@ -356,7 +357,16 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     effective_epochs = num_hpo_epochs if hpo_search else num_train_epochs
     batch_size = train_kwargs.get("per_device_train_batch_size", 1)
     train_ds_size = len(train_ds)
-    steps_per_epoch = max(1, train_ds_size // batch_size)
+    # Optimizer steps, not micro-batches: HF counts logging_steps and the
+    # single-epoch save/eval cadence below in optimizer steps, so a micro-batch
+    # count is grad_accum times too coarse and collapses the five best-model
+    # candidates of a 1-epoch run. Same derivation as driver_single.py.
+    epoch_steps = resolve_epoch_steps(
+        train_ds_size=train_ds_size,
+        per_device_batch_size=batch_size,
+        gradient_accumulation_steps=train_kwargs.get("gradient_accumulation_steps", 1),
+    )
+    steps_per_epoch = epoch_steps.optimizer_steps
     logging_steps = max(1, min(10, steps_per_epoch // 10))
 
     if hpo_search:

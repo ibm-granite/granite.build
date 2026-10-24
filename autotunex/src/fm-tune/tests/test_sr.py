@@ -361,9 +361,11 @@ class TestResolveFsdpStrategy:
 
 class TestAssertSrSupported:
     CUDA = SimpleNamespace(kind="cuda")
+    # What every shipped config resolves to (config.py fills the schema default).
+    FSDP = {"train_implementation": "FSDP"}
 
     def test_accepts_cuda_hf_sft(self):
-        assert_sr_supported({}, accel=self.CUDA, backend="hf", rl_algo="none")
+        assert_sr_supported(self.FSDP, accel=self.CUDA, backend="hf", rl_algo="none")
 
     def test_rejects_mlx_backend(self):
         with pytest.raises(ValueError, match="MLX"):
@@ -385,18 +387,24 @@ class TestAssertSrSupported:
     @pytest.mark.parametrize("rl_algo", ["dpo", "kto", "ppo", "grpo"])
     def test_rejects_rl(self, rl_algo):
         with pytest.raises(ValueError, match="SFT only"):
-            assert_sr_supported({}, accel=self.CUDA, rl_algo=rl_algo)
+            assert_sr_supported(self.FSDP, accel=self.CUDA, rl_algo=rl_algo)
 
     def test_reads_train_implementation_off_the_config(self):
         with pytest.raises(ValueError, match="requires FSDP"):
             assert_sr_supported({"train_implementation": "DeepSpeed"}, accel=self.CUDA)
+
+    def test_rejects_missing_train_implementation(self):
+        # The optimizer defaults an absent key to "huggingface_ds", i.e. the
+        # DeepSpeed driver, which rejects SR -- so the guard must not let it by.
+        with pytest.raises(ValueError, match="requires FSDP"):
+            assert_sr_supported({}, accel=self.CUDA)
 
     def test_explicit_kwargs_win_over_the_config(self):
         # main.py passes these explicitly: at its guard site the CLI values have
         # not been folded into training_config yet (the optimizer does that at
         # trial-launch time), so reading them off the dict alone would no-op.
         with pytest.raises(ValueError, match="SFT only"):
-            assert_sr_supported({}, accel=self.CUDA, rl_algo="dpo")
+            assert_sr_supported(self.FSDP, accel=self.CUDA, rl_algo="dpo")
 
 
 class TestAssertNoVocabResize:

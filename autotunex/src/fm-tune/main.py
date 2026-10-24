@@ -70,6 +70,12 @@ from autotune.validation import validate_config_for_pipeline
 setup_logging()
 logger = logging.getLogger(__name__)
 
+# Exit code when the multi-node Ray cluster never came up. Non-zero so a caller
+# (a Granite.build step, an sbatch/bsub wrapper) does not record a run with no
+# HPO and no model as a success; distinct from a training failure's 1 so it can
+# be told apart and retried.
+EXIT_BRINGUP_TIMEOUT = 3
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -204,7 +210,9 @@ if __name__ == "__main__":
         help=(
             "Hard deadline (seconds) for the multi-node Ray cluster bring-up "
             "(head start + blaunch'd workers + driver ray.init + worker-attach wait). "
-            "If exceeded, partial teardown runs and main.py exits 0 with a warning. "
+            f"If exceeded, partial teardown runs and main.py exits {EXIT_BRINGUP_TIMEOUT} "
+            "without HPO (non-zero, so a caller never mistakes it for a finished run, "
+            "and distinct from a training failure's 1, so it can be retried). "
             "Default 1200 (20 minutes). Only applies on the multi-node LSF/Slurm paths."
         ),
     )
@@ -638,12 +646,12 @@ if __name__ == "__main__":
                 log_dir=log_dir,
             )
         except RayUpTimeoutError as e:
-            logger.warning(
+            logger.error(
                 f"[AutoTune] Ray cluster bring-up did not complete within "
-                f"{args.bringup_deadline_s}s. Aborting run gracefully without HPO. "
-                f"Details: {e}"
+                f"{args.bringup_deadline_s}s. Aborting without HPO "
+                f"(exit {EXIT_BRINGUP_TIMEOUT}). Details: {e}"
             )
-            sys.exit(0)
+            sys.exit(EXIT_BRINGUP_TIMEOUT)
         logger.info(
             f"[AutoTune] Multi-node Ray cluster ready (srun): "
             f"head + {args.num_nodes} worker(s), "
@@ -672,12 +680,12 @@ if __name__ == "__main__":
                 log_dir=log_dir,
             )
         except RayUpTimeoutError as e:
-            logger.warning(
+            logger.error(
                 f"[AutoTune] Ray cluster bring-up did not complete within "
-                f"{args.bringup_deadline_s}s. Aborting run gracefully without HPO. "
-                f"Details: {e}"
+                f"{args.bringup_deadline_s}s. Aborting without HPO "
+                f"(exit {EXIT_BRINGUP_TIMEOUT}). Details: {e}"
             )
-            sys.exit(0)
+            sys.exit(EXIT_BRINGUP_TIMEOUT)
         logger.info(
             f"[AutoTune] Multi-node Ray cluster ready (blaunch): "
             f"head + {args.num_nodes} worker(s), "

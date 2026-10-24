@@ -242,8 +242,9 @@ default) or Slurm (`--scheduler slurm`). Both launchers work the same way:
    which checks that the host really exposes `G` GPUs before attaching.
 3. The launcher waits until Ray sees all `N × G` GPUs and `N` worker nodes,
    failing fast if any worker exits during bring-up. `--bringup_deadline_s`
-   (default 1200) caps the whole bring-up; past it the run exits 0 with a
-   warning, without HPO.
+   (default 1200) caps the whole bring-up; past it the run exits 3 without
+   HPO (1 is reserved for a training failure, so a scheduler wrapper can retry
+   only the bring-up case).
 4. HPO and final training run as usual; trials land on the GPU workers.
 5. On exit (success or failure) the cluster is torn down (see the per-scheduler
    notes below).
@@ -888,7 +889,7 @@ Cluster:
                              triggers the LSF multi-node launch. Ignored with
                              --scheduler slurm
   --bringup_deadline_s S     Cap on the whole cluster bring-up (default: 1200);
-                             past it the run exits 0 without HPO
+                             past it the run exits 3 without HPO
   --fleet {ccc-a100,bv-h100,bv-h200}
                              Default NCCL_IB_HCA rail set (default: ccc-a100)
   --ib_hca LIST              Override NCCL_IB_HCA (e.g. mlx5_0,mlx5_1)

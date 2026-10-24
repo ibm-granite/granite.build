@@ -24,6 +24,7 @@ from autotune.trainers._steps import EpochSteps, resolve_epoch_steps
 
 DRIVERS = [
     "driver_single.py",
+    "driver_single_trl.py",
     "driver_multi_hf_fsdp.py",
     "driver_multi_hf_ds.py",
     "driver_multi_trl_ds.py",
@@ -172,9 +173,24 @@ class TestNoDriverComputesStepsItself:
         )
         assert "resolve_epoch_steps" in src, f"{name} does not import the shared helper"
 
-    @pytest.mark.parametrize("name", [d for d in DRIVERS if d != "driver_single.py"])
+    # The single-GPU drivers set no max_steps; num_train_epochs bounds them.
+    @pytest.mark.parametrize("name", [d for d in DRIVERS if not d.startswith("driver_single")])
     def test_max_steps_built_from_optimizer_steps(self, name):
         """The four drivers that set max_steps must feed it optimizer steps."""
         src = (pathlib.Path("autotune/trainers") / name).read_text()
         assert "max_steps=steps_per_epoch * num_train_epochs" in src
         assert "steps_per_epoch = epoch_steps.optimizer_steps" in src
+
+
+class TestWorkerGetsTheResolvedAccum:
+    """The worker must scale by the same accum the driver divided by.
+
+    With ``gradient_accumulation_steps`` marked ``for_tuner: true`` it is left
+    out of ``train_kwargs``, so the worker's ``train_loop_config`` had no key
+    and ``max(1, None)`` in the Ray Data sample budget raised ``TypeError``.
+    """
+
+    @pytest.mark.parametrize("name", ["driver_multi_hf_fsdp.py", "driver_multi_hf_ds.py"])
+    def test_train_loop_config_carries_resolved_accum(self, name):
+        src = (pathlib.Path("autotune/trainers") / name).read_text()
+        assert '"gradient_accumulation_steps": epoch_steps.gradient_accumulation_steps,' in src

@@ -445,7 +445,10 @@ def assert_sr_supported(
             "bf16 dual-stream forward are only validated on NVIDIA GPUs."
         )
 
-    impl = str(train_implementation or training_config.get("train_implementation") or "")
+    # An absent train_implementation is not FSDP: the optimizer then falls back to
+    # "huggingface_ds" and routes to the DeepSpeed driver, which rejects SR -- so
+    # judge the guard on that same default rather than waving the config through.
+    impl = str(train_implementation or training_config.get("train_implementation") or "huggingface_ds")
     if "ds" in impl.lower() or "deepspeed" in impl.lower():
         raise ValueError(
             f"[AutoTune] Shadow Residual requires FSDP, got train_implementation="

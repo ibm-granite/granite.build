@@ -435,10 +435,13 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     # metrics flow back to Result.metrics. Final training keeps the best
     # checkpoint by eval_loss, so the persisted model is the best epoch rather
     # than the last step. See _checkpointing.py for the HF preconditions.
+    # The Ray Data train shard is an unsized iterable, so HF sees no epoch
+    # boundaries in it; see has_length in _checkpointing.py.
     ckpt_strategy = resolve_checkpoint_strategy(
         hpo_search=hpo_search,
         num_train_epochs=num_train_epochs,
         steps_per_epoch=steps_per_epoch,
+        has_length=train_loop_config.get("data_backend", "arrow") != "ray_data",
     )
 
     # Build TrainingArguments
@@ -1027,6 +1030,10 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
             "peft_config": peft_kwargs,
             "deepspeed_config": deepspeed_config,
             "steps_per_epoch": steps_per_epoch,
+            # The value steps_per_epoch was divided by. **train_kwargs carries it
+            # only when it is not for_tuner, and the worker scales the Ray Data
+            # sample budget and TrainingArguments by it, so pass it explicitly.
+            "gradient_accumulation_steps": epoch_steps.gradient_accumulation_steps,
             "trial_id": trial_id,
             **worker_data_kwargs,
         },
