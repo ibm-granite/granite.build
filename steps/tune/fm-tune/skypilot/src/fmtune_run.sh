@@ -296,8 +296,10 @@ if [ "$FMTUNE_HPO_CONFIG_JSON" = "{}" ] || [ -z "$FMTUNE_HPO_CONFIG_JSON" ]; the
   [ -f "$preset" ] || die "config_preset not found: $preset"
   config_file="$preset"
 else
-  mkdir -p "$FMTUNE_OUTPUT_DIR"
-  config_file="$(cd "$FMTUNE_OUTPUT_DIR/.." && pwd)/$FMTUNE_CONFIG_NAME.yaml"
+  # Private to this run: builds whose output dirs share a parent would overwrite
+  # each other's file. Named <config_name>.yaml, its name in AutoTuneX.
+  hpo_dir="$(mktemp -d)" || die "cannot create a temp dir for hpo_config"
+  config_file="$hpo_dir/$FMTUNE_CONFIG_NAME.yaml"
   write_hpo_yaml=1  # converted after $py is known (below)
 fi
 
@@ -367,6 +369,7 @@ log "running main.py (run_name=$FMTUNE_RUN_NAME)"
 cd "$root"
 status=0
 "$py" main.py "${args[@]}" || status=$?
+if [ -n "${hpo_dir:-}" ]; then rm -rf "$hpo_dir"; fi
 if [ "$status" -ne 0 ]; then
   echo "[fm-tune] main.py failed with exit code $status" >&2
   exit "$status"

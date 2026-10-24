@@ -121,9 +121,9 @@ hpo_config:
     max_length: { default: 1024, type: int, required: true }
 ```
 
-The step writes it to `fm_tune_hpo.yaml` (YAML, not JSON) next to the output directory, or
-to `<config_name>.yaml` when `config_name` is set. fm-tune registers the config with
-AutoTuneX under that file name. The same name with the same content reuses one config;
+The step writes it to `fm_tune_hpo.yaml` (YAML, not JSON) in a temp directory private to
+the run, or to `<config_name>.yaml` when `config_name` is set. fm-tune registers the config
+with AutoTuneX under that file name. The same name with the same content reuses one config;
 the same name with different content is stored as `<name>-1`, `<name>-2`, and so on. For a
 name per build, template it: `config_name: "lora-sweep-{{ run_metadata.build_id[:8] }}"`.
 fm-tune reads it with `yaml.safe_load` (YAML 1.1), which loads JSON's `5e-06` as a string, so

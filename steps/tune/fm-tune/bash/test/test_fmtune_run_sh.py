@@ -211,6 +211,15 @@ def test_inline_hpo_config_is_written_and_passed(env):
     assert not _flag(rec["argv"], "--config_file").startswith(env["FMTUNE_SOURCE_PATH"])
 
 
+def test_inline_hpo_config_is_private_to_the_run_and_removed(env, tmp_path):
+    """Builds whose output dirs share a parent must not share the config file."""
+    env["FMTUNE_HPO_CONFIG_JSON"] = json.dumps({"tune_config": {}})
+    assert _run(env).returncode == 0
+    cfg = pathlib.Path(_flag(_record(env)["argv"], "--config_file"))
+    assert cfg.parent != tmp_path
+    assert not cfg.parent.exists()
+
+
 def test_inline_hpo_config_file_defaults_to_fm_tune_hpo(env):
     env["FMTUNE_HPO_CONFIG_JSON"] = json.dumps({"tune_config": {}})
     assert _run(env).returncode == 0
