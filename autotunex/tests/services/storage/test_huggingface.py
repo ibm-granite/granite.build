@@ -536,8 +536,11 @@ async def test_preview_empty_when_artifact_url_absent(monkeypatch: pytest.Monkey
 async def test_preview_reads_a_foreign_repo_without_the_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A repo this app did not push (e.g. a public dataset a build trained on) is
-    read anonymously: the token is never sent to a repo the app does not own."""
+    """A repo this app did not push is read anonymously.
+
+    E.g. a public dataset a build trained on: the token is never sent to a repo
+    the app does not own.
+    """
     monkeypatch.setenv(HF_ENV, "hf_tok")
     seen: list[httpx.Request] = []
 
