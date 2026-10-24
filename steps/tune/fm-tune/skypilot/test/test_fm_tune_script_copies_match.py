@@ -40,7 +40,9 @@ _STEPS = pathlib.Path(__file__).resolve().parents[2]
 def test_run_script_copies_are_identical():
     bash = (_STEPS / "bash" / "src" / "fmtune_run.sh").read_bytes()
     sky = (_STEPS / "skypilot" / "src" / "fmtune_run.sh").read_bytes()
-    assert bash == sky, "copy steps/tune/fm-tune/bash/src/fmtune_run.sh over the skypilot copy"
+    assert (
+        bash == sky
+    ), "copy steps/tune/fm-tune/bash/src/fmtune_run.sh over the skypilot copy"
 
 
 def test_both_copies_are_executable():
@@ -55,8 +57,14 @@ def test_both_templates_share_config_and_io():
     also sets config.bash.skip_finding_output_artifacts, an env-specific knob for
     the bash wrapper that has no meaning on skypilot.
     """
-    t = {e: yaml.safe_load((_STEPS / e / "step-template.yaml").read_text()) for e in ("bash", "skypilot")}
-    assert t["bash"]["config"]["fm_tune_config"] == t["skypilot"]["config"]["fm_tune_config"]
+    t = {
+        e: yaml.safe_load((_STEPS / e / "step-template.yaml").read_text())
+        for e in ("bash", "skypilot")
+    }
+    assert (
+        t["bash"]["config"]["fm_tune_config"]
+        == t["skypilot"]["config"]["fm_tune_config"]
+    )
     for key in ("inputs", "outputs", "name", "version"):
         assert t["bash"][key] == t["skypilot"][key], key
 
@@ -67,7 +75,7 @@ _MACRO = re.compile(r"^( *)\{%- macro validate\(.*?\{%- endmacro -%\}$", re.M | 
 def _validate_macro(env: str) -> str:
     text = (_STEPS / env / "step-template.yaml").read_text()
     (m,) = list(_MACRO.finditer(text))
-    return "\n".join(line[len(m.group(1)):] for line in m.group(0).splitlines())
+    return "\n".join(line[len(m.group(1)) :] for line in m.group(0).splitlines())
 
 
 def test_both_templates_carry_the_same_validate_macro():
@@ -86,10 +94,22 @@ _BAD = [
     ({"validation_file": ""}, "validation_file is required"),
     ({"train_file": "../x"}, "train_file must be a relative path inside the dataset"),
     ({"train_file": ".."}, "train_file must be a relative path inside the dataset"),
-    ({"train_file": "a/../../x"}, "train_file must be a relative path inside the dataset"),
-    ({"train_file": "/abs/t.jsonl"}, "train_file must be a relative path inside the dataset"),
-    ({"validation_file": "../v"}, "validation_file must be a relative path inside the dataset"),
-    ({"validation_file": "/abs/v.jsonl"}, "validation_file must be a relative path inside the dataset"),
+    (
+        {"train_file": "a/../../x"},
+        "train_file must be a relative path inside the dataset",
+    ),
+    (
+        {"train_file": "/abs/t.jsonl"},
+        "train_file must be a relative path inside the dataset",
+    ),
+    (
+        {"validation_file": "../v"},
+        "validation_file must be a relative path inside the dataset",
+    ),
+    (
+        {"validation_file": "/abs/v.jsonl"},
+        "validation_file must be a relative path inside the dataset",
+    ),
     ({"source": dict(_SRC, path="/a", repo="https://g/r.git")}, "set exactly one of"),
     ({"source": _SRC}, "set exactly one of"),
     ({"model": ""}, "set fm_tune_config.model or bind the base_model input"),
@@ -99,29 +119,65 @@ _BAD = [
     ({"source": dict(_SRC, repo="-x")}, "source.repo must not start with '-'"),
     ({"source": dict(_SRC, path="/a", ref="-x")}, "source.ref must not start with '-'"),
     # fm-tune's pipeline.py raises once training starts, after clone and venv.
-    ({"tuning_algo": "", "rl_algo": ""}, "tuning_algo and rl_algo cannot both be empty or none"),
-    ({"tuning_algo": "none", "rl_algo": ""}, "tuning_algo and rl_algo cannot both be empty or none"),
-    ({"tuning_algo": "None", "rl_algo": "NONE"}, "tuning_algo and rl_algo cannot both be empty or none"),
-    ({"tuning_algo": "", "rl_algo": "none"}, "tuning_algo and rl_algo cannot both be empty or none"),
+    (
+        {"tuning_algo": "", "rl_algo": ""},
+        "tuning_algo and rl_algo cannot both be empty or none",
+    ),
+    (
+        {"tuning_algo": "none", "rl_algo": ""},
+        "tuning_algo and rl_algo cannot both be empty or none",
+    ),
+    (
+        {"tuning_algo": "None", "rl_algo": "NONE"},
+        "tuning_algo and rl_algo cannot both be empty or none",
+    ),
+    (
+        {"tuning_algo": "", "rl_algo": "none"},
+        "tuning_algo and rl_algo cannot both be empty or none",
+    ),
     # pipeline.py: offline RL (AUTOTUNE_OFFLINE_RL = dpo, kto) with tuning_algo none.
-    ({"tuning_algo": "", "rl_algo": "dpo"}, "an offline rl_algo (dpo, kto) needs a tuning_algo"),
-    ({"tuning_algo": "none", "rl_algo": "dpo"}, "an offline rl_algo (dpo, kto) needs a tuning_algo"),
-    ({"tuning_algo": "NONE", "rl_algo": "KTO"}, "an offline rl_algo (dpo, kto) needs a tuning_algo"),
+    (
+        {"tuning_algo": "", "rl_algo": "dpo"},
+        "an offline rl_algo (dpo, kto) needs a tuning_algo",
+    ),
+    (
+        {"tuning_algo": "none", "rl_algo": "dpo"},
+        "an offline rl_algo (dpo, kto) needs a tuning_algo",
+    ),
+    (
+        {"tuning_algo": "NONE", "rl_algo": "KTO"},
+        "an offline rl_algo (dpo, kto) needs a tuning_algo",
+    ),
 ]
 # Rules only the render can check (the script gets flat strings): both templates.
 _RENDER_ONLY = [
     ({"run_name": ""}, "run_name must match ^[A-Za-z0-9._-]+$"),
     ({"seed": [1]}, "fm_tune_config.seed must be a scalar"),
-    ({"source": dict(_SRC, path="/a", subdir={"a": 1})}, "fm_tune_config.source.subdir must be a scalar"),
-    ({"autotunex": {"server_url": ["u"], "job_id": ""}}, "fm_tune_config.autotunex.server_url must be a scalar"),
+    (
+        {"source": dict(_SRC, path="/a", subdir={"a": 1})},
+        "fm_tune_config.source.subdir must be a scalar",
+    ),
+    (
+        {"autotunex": {"server_url": ["u"], "job_id": ""}},
+        "fm_tune_config.autotunex.server_url must be a scalar",
+    ),
     ({"source": None}, "fm_tune_config.source must be a mapping"),
     ({"autotunex": "x"}, "fm_tune_config.autotunex must be a mapping"),
     ({"hpo_config": ["a"]}, "fm_tune_config.hpo_config must be a mapping or null"),
-    ({"tuning_algo": None, "rl_algo": None}, "tuning_algo and rl_algo cannot both be empty or none"),
-    ({"tuning_algo": None, "rl_algo": "dpo"}, "an offline rl_algo (dpo, kto) needs a tuning_algo"),
+    (
+        {"tuning_algo": None, "rl_algo": None},
+        "tuning_algo and rl_algo cannot both be empty or none",
+    ),
+    (
+        {"tuning_algo": None, "rl_algo": "dpo"},
+        "an offline rl_algo (dpo, kto) needs a tuning_algo",
+    ),
 ]
-_GOOD = [{"train_file": n, "validation_file": n} for n in ("t.jsonl", "sub/dir/t.jsonl", "a..b.jsonl")] + [
-    {"tuning_algo": "", "rl_algo": "grpo"},     # online RL needs no tuning algorithm
+_GOOD = [
+    {"train_file": n, "validation_file": n}
+    for n in ("t.jsonl", "sub/dir/t.jsonl", "a..b.jsonl")
+] + [
+    {"tuning_algo": "", "rl_algo": "grpo"},  # online RL needs no tuning algorithm
     {"tuning_algo": "none", "rl_algo": "ppo"},
     {"tuning_algo": "lora", "rl_algo": ""},
     {"tuning_algo": "lora", "rl_algo": "dpo"},
@@ -153,7 +209,9 @@ def layers(tmp_path):
     def cfg(tpl, over):
         c = json.loads(json.dumps(tpl["config"]))
         c["fm_tune_config"].update(
-            model="org/tiny", train_file="t.jsonl", validation_file="t.jsonl",
+            model="org/tiny",
+            train_file="t.jsonl",
+            validation_file="t.jsonl",
             source=dict(_SRC, path=str(src)),
         )
         c["fm_tune_config"].update(over)
@@ -174,14 +232,22 @@ def layers(tmp_path):
     def script(over):
         tpl, launcher = _template("bash")
         ctx = cfg(tpl, over)
-        env = {k: fill_template(v, ctx, strict=True) for k, v in launcher["env"].items()}
+        env = {
+            k: fill_template(v, ctx, strict=True) for k, v in launcher["env"].items()
+        }
         env.update(
-            PATH=os.environ["PATH"], FMTUNE_SKIP_INSTALL="1", FMTUNE_PYTHON=sys.executable,
-            FMTUNE_OUTPUT_DIR=str(tmp_path / "out"), FMTUNE_CACHE_DIR=str(tmp_path / "cache"),
+            PATH=os.environ["PATH"],
+            FMTUNE_SKIP_INSTALL="1",
+            FMTUNE_PYTHON=sys.executable,
+            FMTUNE_OUTPUT_DIR=str(tmp_path / "out"),
+            FMTUNE_CACHE_DIR=str(tmp_path / "cache"),
         )
         return subprocess.run(
             ["bash", str(_STEPS / "bash" / "src" / "fmtune_run.sh")],
-            env=env, capture_output=True, text=True, check=False,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
         )
 
     return render_error, render, script
@@ -189,7 +255,9 @@ def layers(tmp_path):
 
 @pytest.mark.parametrize("env", ["bash", "skypilot"])
 @pytest.mark.parametrize("over, rule", _BAD)
-def test_both_renders_reject_a_bad_value_with_the_rules_message(layers, env, over, rule):
+def test_both_renders_reject_a_bad_value_with_the_rules_message(
+    layers, env, over, rule
+):
     render_error, _, _ = layers
     msg = render_error(env, over)
     assert msg.startswith("fm-tune: ") and rule in msg, msg

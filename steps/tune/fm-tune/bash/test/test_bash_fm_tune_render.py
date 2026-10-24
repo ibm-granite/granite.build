@@ -39,7 +39,12 @@ _VALID = {
     "model": "org/tiny",
     "train_file": "d_train.jsonl",
     "validation_file": "d_validation.jsonl",
-    "source": {"path": "/fm-tune", "repo": "", "ref": "main", "subdir": "autotunex/src/fm-tune"},
+    "source": {
+        "path": "/fm-tune",
+        "repo": "",
+        "ref": "main",
+        "subdir": "autotunex/src/fm-tune",
+    },
 }
 
 
@@ -76,7 +81,12 @@ def test_defaults_render_strictly():
     assert env["FMTUNE_HPO_CONFIG_JSON"] == "{}"
     assert env["FMTUNE_CONFIG_NAME"] == ""
     # Left empty: fmtune_run.sh defaults them from LLMB_BASH_* (env is unexpanded).
-    assert env["FMTUNE_OUTPUT_DIR"] == env["FMTUNE_CACHE_DIR"] == env["FMTUNE_PYTHON"] == ""
+    assert (
+        env["FMTUNE_OUTPUT_DIR"]
+        == env["FMTUNE_CACHE_DIR"]
+        == env["FMTUNE_PYTHON"]
+        == ""
+    )
 
 
 def test_an_undefined_value_fails_the_render():
@@ -84,7 +94,9 @@ def test_an_undefined_value_fails_the_render():
     cfg = json.loads(json.dumps(_TEMPLATE["config"]))
     del cfg["fm_tune_config"]["model"]
     with pytest.raises(RuntimeError):
-        fill_template(_LAUNCHER["config"]["env"]["FMTUNE_MODEL"], {"config": cfg}, strict=True)
+        fill_template(
+            _LAUNCHER["config"]["env"]["FMTUNE_MODEL"], {"config": cfg}, strict=True
+        )
 
 
 _SRC = {"path": "", "repo": "", "ref": "main", "subdir": "autotunex/src/fm-tune"}
@@ -97,11 +109,26 @@ _SRC = {"path": "", "repo": "", "ref": "main", "subdir": "autotunex/src/fm-tune"
         ({"validation_file": ""}, "fm_tune_config.validation_file is required"),
         ({"train_file": "../x"}, "fm_tune_config.train_file must be a relative path"),
         ({"train_file": ".."}, "fm_tune_config.train_file must be a relative path"),
-        ({"train_file": "a/../../x"}, "fm_tune_config.train_file must be a relative path"),
-        ({"train_file": "/abs/t.jsonl"}, "fm_tune_config.train_file must be a relative path"),
-        ({"validation_file": "../v"}, "fm_tune_config.validation_file must be a relative path"),
-        ({"validation_file": "/v"}, "fm_tune_config.validation_file must be a relative path"),
-        ({"source": dict(_SRC, path="/a", repo="https://g/r.git")}, "exactly one of fm_tune_config.source.path"),
+        (
+            {"train_file": "a/../../x"},
+            "fm_tune_config.train_file must be a relative path",
+        ),
+        (
+            {"train_file": "/abs/t.jsonl"},
+            "fm_tune_config.train_file must be a relative path",
+        ),
+        (
+            {"validation_file": "../v"},
+            "fm_tune_config.validation_file must be a relative path",
+        ),
+        (
+            {"validation_file": "/v"},
+            "fm_tune_config.validation_file must be a relative path",
+        ),
+        (
+            {"source": dict(_SRC, path="/a", repo="https://g/r.git")},
+            "exactly one of fm_tune_config.source.path",
+        ),
         ({"source": _SRC}, "exactly one of fm_tune_config.source.path"),
         ({"model": ""}, "set fm_tune_config.model or bind the base_model input"),
         ({"run_name": ""}, "fm_tune_config.run_name must match"),
@@ -110,8 +137,14 @@ _SRC = {"path": "", "repo": "", "ref": "main", "subdir": "autotunex/src/fm-tune"
         ({"config_name": "a/b"}, "fm_tune_config.config_name must match"),
         ({"config_name": "a b"}, "fm_tune_config.config_name must match"),
         ({"run_name": "\u00e9t\u00e9"}, "fm_tune_config.run_name must match"),
-        ({"source": dict(_SRC, repo="--upload-pack=x")}, "fm_tune_config.source.repo must not start with '-'"),
-        ({"source": dict(_SRC, path="/a", ref="-u")}, "fm_tune_config.source.ref must not start with '-'"),
+        (
+            {"source": dict(_SRC, repo="--upload-pack=x")},
+            "fm_tune_config.source.repo must not start with '-'",
+        ),
+        (
+            {"source": dict(_SRC, path="/a", ref="-u")},
+            "fm_tune_config.source.ref must not start with '-'",
+        ),
     ],
 )
 def test_a_config_error_fails_the_strict_launcher_fill(over, needle):
@@ -119,7 +152,9 @@ def test_a_config_error_fails_the_strict_launcher_fill(over, needle):
     assert msg.startswith("fm-tune: ") and needle in msg, msg
 
 
-@pytest.mark.parametrize("name", ["train.jsonl", "sub/dir/train.jsonl", "a..b.jsonl", "./t.jsonl"])
+@pytest.mark.parametrize(
+    "name", ["train.jsonl", "sub/dir/train.jsonl", "a..b.jsonl", "./t.jsonl"]
+)
 def test_a_split_file_inside_the_dataset_renders(name):
     env = _env({"train_file": name, "validation_file": name})
     assert env["FMTUNE_TRAIN_FILE"] == env["FMTUNE_VALIDATION_FILE"] == name
@@ -135,16 +170,35 @@ def test_the_check_key_renders_to_nothing():
     assert _fill()["config"]["validate"] == ""
 
 
-_VAR = {"seed": "FMTUNE_SEED", "rl_algo": "FMTUNE_RL_ALGO", "tuning_algo": "FMTUNE_TUNING_ALGO",
-        "backend": "FMTUNE_BACKEND", "extra_args": "FMTUNE_EXTRA_ARGS"}
+_VAR = {
+    "seed": "FMTUNE_SEED",
+    "rl_algo": "FMTUNE_RL_ALGO",
+    "tuning_algo": "FMTUNE_TUNING_ALGO",
+    "backend": "FMTUNE_BACKEND",
+    "extra_args": "FMTUNE_EXTRA_ARGS",
+}
 _SCALAR_KEYS = [
-    "extra", "model", "train_file", "validation_file", "tuning_algo", "rl_algo",
-    "run_name", "autotune", "backend", "seed", "config_preset", "config_name", "output_path",
-    "extra_args", "python",
+    "extra",
+    "model",
+    "train_file",
+    "validation_file",
+    "tuning_algo",
+    "rl_algo",
+    "run_name",
+    "autotune",
+    "backend",
+    "seed",
+    "config_preset",
+    "config_name",
+    "output_path",
+    "extra_args",
+    "python",
 ]
 
 
-@pytest.mark.parametrize("key", ["seed", "rl_algo", "tuning_algo", "backend", "extra_args"])
+@pytest.mark.parametrize(
+    "key", ["seed", "rl_algo", "tuning_algo", "backend", "extra_args"]
+)
 def test_a_null_value_renders_empty(key):
     """AutoTuneX's LaunchContext can emit null; it must not reach the script as 'None'."""
     # tuning_algo alone null would trip the "both empty or none" check.
@@ -176,13 +230,17 @@ def test_a_list_or_mapping_for_a_scalar_key_fails_the_fill(key, bad):
 @pytest.mark.parametrize("key", ["path", "repo", "ref", "subdir"])
 def test_a_list_for_a_source_key_fails_the_fill(key):
     src = dict(_VALID["source"], **{key: ["x"]})
-    assert f"fm_tune_config.source.{key} must be a scalar" in _render_error({"source": src})
+    assert f"fm_tune_config.source.{key} must be a scalar" in _render_error(
+        {"source": src}
+    )
 
 
 @pytest.mark.parametrize("key", ["server_url", "job_id"])
 def test_a_mapping_for_an_autotunex_key_fails_the_fill(key):
     ax = {"server_url": "", "job_id": "", key: {"a": 1}}
-    assert f"fm_tune_config.autotunex.{key} must be a scalar" in _render_error({"autotunex": ax})
+    assert f"fm_tune_config.autotunex.{key} must be a scalar" in _render_error(
+        {"autotunex": ax}
+    )
 
 
 def test_null_python_and_model_with_a_bound_base_model_render_empty():
@@ -202,7 +260,9 @@ def test_a_source_or_autotunex_that_is_not_a_mapping_fails_with_a_named_error(ke
 @pytest.mark.parametrize("bad", [["a"], "x", 3, True])
 def test_an_hpo_config_that_is_not_a_mapping_or_null_fails_the_fill(bad):
     msg = _render_error({"hpo_config": bad})
-    assert msg.startswith("fm-tune: fm_tune_config.hpo_config must be a mapping or null"), msg
+    assert msg.startswith(
+        "fm-tune: fm_tune_config.hpo_config must be a mapping or null"
+    ), msg
 
 
 def test_bound_base_model_renders_its_path():
@@ -222,25 +282,50 @@ def test_autotune_false_renders_lowercase():
 def test_nested_source_and_bridge_keys_map():
     env = _env(
         {
-            "source": {"path": "", "repo": "https://g/r.git", "ref": "v1", "subdir": "a/b"},
+            "source": {
+                "path": "",
+                "repo": "https://g/r.git",
+                "ref": "v1",
+                "subdir": "a/b",
+            },
             "autotunex": {"server_url": "http://h:1", "job_id": "j"},
         }
     )
-    assert (env["FMTUNE_SOURCE_REPO"], env["FMTUNE_SOURCE_REF"]) == ("https://g/r.git", "v1")
+    assert (env["FMTUNE_SOURCE_REPO"], env["FMTUNE_SOURCE_REF"]) == (
+        "https://g/r.git",
+        "v1",
+    )
     assert env["FMTUNE_SOURCE_SUBDIR"] == "a/b"
     assert (env["FMTUNE_SERVER_URL"], env["FMTUNE_JOB_ID"]) == ("http://h:1", "j")
 
 
 def test_every_contract_var_is_mapped():
     expected = {
-        "FMTUNE_DATASET_DIR", "FMTUNE_BASE_MODEL_DIR", "FMTUNE_MODEL",
-        "FMTUNE_SOURCE_PATH", "FMTUNE_SOURCE_REPO", "FMTUNE_SOURCE_REF",
-        "FMTUNE_SOURCE_SUBDIR", "FMTUNE_EXTRA", "FMTUNE_TRAIN_FILE",
-        "FMTUNE_VALIDATION_FILE", "FMTUNE_TUNING_ALGO", "FMTUNE_RL_ALGO",
-        "FMTUNE_RUN_NAME", "FMTUNE_AUTOTUNE", "FMTUNE_BACKEND", "FMTUNE_SEED",
-        "FMTUNE_CONFIG_PRESET", "FMTUNE_CONFIG_NAME", "FMTUNE_HPO_CONFIG_JSON", "FMTUNE_OUTPUT_DIR",
-        "FMTUNE_CACHE_DIR", "FMTUNE_PYTHON", "FMTUNE_EXTRA_ARGS",
-        "FMTUNE_SERVER_URL", "FMTUNE_JOB_ID",
+        "FMTUNE_DATASET_DIR",
+        "FMTUNE_BASE_MODEL_DIR",
+        "FMTUNE_MODEL",
+        "FMTUNE_SOURCE_PATH",
+        "FMTUNE_SOURCE_REPO",
+        "FMTUNE_SOURCE_REF",
+        "FMTUNE_SOURCE_SUBDIR",
+        "FMTUNE_EXTRA",
+        "FMTUNE_TRAIN_FILE",
+        "FMTUNE_VALIDATION_FILE",
+        "FMTUNE_TUNING_ALGO",
+        "FMTUNE_RL_ALGO",
+        "FMTUNE_RUN_NAME",
+        "FMTUNE_AUTOTUNE",
+        "FMTUNE_BACKEND",
+        "FMTUNE_SEED",
+        "FMTUNE_CONFIG_PRESET",
+        "FMTUNE_CONFIG_NAME",
+        "FMTUNE_HPO_CONFIG_JSON",
+        "FMTUNE_OUTPUT_DIR",
+        "FMTUNE_CACHE_DIR",
+        "FMTUNE_PYTHON",
+        "FMTUNE_EXTRA_ARGS",
+        "FMTUNE_SERVER_URL",
+        "FMTUNE_JOB_ID",
     }
     assert set(_LAUNCHER["config"]["env"]) == expected
 
@@ -270,9 +355,15 @@ def test_rendered_wrapper_emits_no_marker_of_its_own():
     from gbserver.utils.template import fill_template as fill_file_template
 
     wrapper = next(
-        (_REPO / "src" / "gbserver" / "builtins" / "steps" / "gbstep" / "bash_scripts").glob(
-            "*/llmb_bash_wrapper.sh"
-        )
+        (
+            _REPO
+            / "src"
+            / "gbserver"
+            / "builtins"
+            / "steps"
+            / "gbstep"
+            / "bash_scripts"
+        ).glob("*/llmb_bash_wrapper.sh")
     )
     cfg = json.loads(json.dumps(_TEMPLATE["config"]))
     out = fill_file_template(wrapper.read_text(), {"config": cfg}, strict=True)

@@ -41,7 +41,7 @@ _DATASET = {"dataset": {"binding": {"path": "/staged/data it's"}}}
 _STUB = (
     "#!/usr/bin/env bash\n"
     "python3 -c 'import json,os; print(json.dumps({k:v for k,v in os.environ.items() "
-    "if k.startswith(\"FMTUNE_\")}))'\n"
+    'if k.startswith("FMTUNE_")}))\'\n'
 )
 
 
@@ -50,11 +50,18 @@ _VALID = {
     "model": "org/tiny",
     "train_file": "d_train.jsonl",
     "validation_file": "d_validation.jsonl",
-    "source": {"path": "", "repo": "https://g/r.git", "ref": "main", "subdir": "autotunex/src/fm-tune"},
+    "source": {
+        "path": "",
+        "repo": "https://g/r.git",
+        "ref": "main",
+        "subdir": "autotunex/src/fm-tune",
+    },
 }
 
 
-def _cfg(over: dict | None = None, compute: dict | None = None, launcher: dict | None = None) -> dict:
+def _cfg(
+    over: dict | None = None, compute: dict | None = None, launcher: dict | None = None
+) -> dict:
     cfg = json.loads(json.dumps(_TEMPLATE["config"]))
     cfg["fm_tune_config"].update(_VALID)
     cfg["fm_tune_config"].update(over or {})
@@ -72,7 +79,10 @@ def _render(over: dict | None = None, bindings: dict | None = None) -> str:
 
 def _fill(over=None, bindings=None, compute=None, launcher=None) -> dict:
     """Fill the whole launcher config, as targetsteprun.py does at step creation."""
-    ctx = {"config": _cfg(over, compute, launcher), "bindings": _DATASET if bindings is None else bindings}
+    ctx = {
+        "config": _cfg(over, compute, launcher),
+        "bindings": _DATASET if bindings is None else bindings,
+    }
     return fill_objtemplate(_LAUNCHER, ctx, strict=True)
 
 
@@ -94,7 +104,10 @@ def _received(tmp_path, over=None, bindings=None) -> dict:
     (tmp_path / "src" / "fmtune_run.sh").write_text(_STUB)
     proc = subprocess.run(
         ["bash", "-c", "set -eu\n" + _render(over, bindings)],
-        cwd=tmp_path, capture_output=True, text=True, check=False,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
         env={"PATH": "/usr/bin:/bin:/usr/local/bin"},
     )
     assert proc.returncode == 0, proc.stderr
@@ -110,7 +123,9 @@ def test_an_undefined_value_fails_the_render():
     cfg = _cfg()
     del cfg["fm_tune_config"]["model"]
     with pytest.raises(RuntimeError):
-        fill_template(_LAUNCHER["run"], {"config": cfg, "bindings": _DATASET}, strict=True)
+        fill_template(
+            _LAUNCHER["run"], {"config": cfg, "bindings": _DATASET}, strict=True
+        )
 
 
 def test_defaults_reach_the_script(tmp_path):
@@ -128,9 +143,11 @@ def test_defaults_reach_the_script(tmp_path):
 
 
 def test_quotes_and_json_survive(tmp_path):
-    hpo = {"a": "it's \"q\" $HOME `x`"}
+    hpo = {"a": 'it\'s "q" $HOME `x`'}
     # model, not run_name: run_name's charset check now rejects a quote at render time.
-    env = _received(tmp_path, {"hpo_config": hpo, "model": "a b'c", "extra_args": "--x 'y z'"})
+    env = _received(
+        tmp_path, {"hpo_config": hpo, "model": "a b'c", "extra_args": "--x 'y z'"}
+    )
     assert json.loads(env["FMTUNE_HPO_CONFIG_JSON"]) == hpo
     assert env["FMTUNE_MODEL"] == "a b'c"
     assert env["FMTUNE_EXTRA_ARGS"] == "--x 'y z'"
@@ -146,11 +163,26 @@ _SRC = {"path": "", "repo": "", "ref": "main", "subdir": "autotunex/src/fm-tune"
         ({"validation_file": ""}, "fm_tune_config.validation_file is required"),
         ({"train_file": "../x"}, "fm_tune_config.train_file must be a relative path"),
         ({"train_file": ".."}, "fm_tune_config.train_file must be a relative path"),
-        ({"train_file": "a/../../x"}, "fm_tune_config.train_file must be a relative path"),
-        ({"train_file": "/abs/t.jsonl"}, "fm_tune_config.train_file must be a relative path"),
-        ({"validation_file": "../v"}, "fm_tune_config.validation_file must be a relative path"),
-        ({"validation_file": "/v"}, "fm_tune_config.validation_file must be a relative path"),
-        ({"source": dict(_SRC, path="/a", repo="https://g/r.git")}, "exactly one of fm_tune_config.source.path"),
+        (
+            {"train_file": "a/../../x"},
+            "fm_tune_config.train_file must be a relative path",
+        ),
+        (
+            {"train_file": "/abs/t.jsonl"},
+            "fm_tune_config.train_file must be a relative path",
+        ),
+        (
+            {"validation_file": "../v"},
+            "fm_tune_config.validation_file must be a relative path",
+        ),
+        (
+            {"validation_file": "/v"},
+            "fm_tune_config.validation_file must be a relative path",
+        ),
+        (
+            {"source": dict(_SRC, path="/a", repo="https://g/r.git")},
+            "exactly one of fm_tune_config.source.path",
+        ),
         ({"source": _SRC}, "exactly one of fm_tune_config.source.path"),
         ({"model": ""}, "set fm_tune_config.model or bind the base_model input"),
         ({"run_name": ""}, "fm_tune_config.run_name must match"),
@@ -159,8 +191,14 @@ _SRC = {"path": "", "repo": "", "ref": "main", "subdir": "autotunex/src/fm-tune"
         ({"config_name": "a/b"}, "fm_tune_config.config_name must match"),
         ({"config_name": "a b"}, "fm_tune_config.config_name must match"),
         ({"run_name": "\u00e9t\u00e9"}, "fm_tune_config.run_name must match"),
-        ({"source": dict(_SRC, repo="--upload-pack=x")}, "fm_tune_config.source.repo must not start with '-'"),
-        ({"source": dict(_SRC, path="/a", ref="-u")}, "fm_tune_config.source.ref must not start with '-'"),
+        (
+            {"source": dict(_SRC, repo="--upload-pack=x")},
+            "fm_tune_config.source.repo must not start with '-'",
+        ),
+        (
+            {"source": dict(_SRC, path="/a", ref="-u")},
+            "fm_tune_config.source.ref must not start with '-'",
+        ),
     ],
 )
 def test_a_config_error_fails_the_strict_launcher_fill(over, needle):
@@ -168,7 +206,9 @@ def test_a_config_error_fails_the_strict_launcher_fill(over, needle):
     assert msg.startswith("fm-tune: ") and needle in msg, msg
 
 
-@pytest.mark.parametrize("name", ["train.jsonl", "sub/dir/train.jsonl", "a..b.jsonl", "./t.jsonl"])
+@pytest.mark.parametrize(
+    "name", ["train.jsonl", "sub/dir/train.jsonl", "a..b.jsonl", "./t.jsonl"]
+)
 def test_a_split_file_inside_the_dataset_renders(tmp_path, name):
     env = _received(tmp_path, {"train_file": name, "validation_file": name})
     assert env["FMTUNE_TRAIN_FILE"] == env["FMTUNE_VALIDATION_FILE"] == name
@@ -176,7 +216,10 @@ def test_a_split_file_inside_the_dataset_renders(tmp_path, name):
 
 def test_a_bound_base_model_satisfies_the_model_check(tmp_path):
     b = dict(_DATASET, base_model={"binding": {"path": "/staged/bm"}})
-    assert _received(tmp_path, {"model": ""}, bindings=b)["FMTUNE_BASE_MODEL_DIR"] == "/staged/bm"
+    assert (
+        _received(tmp_path, {"model": ""}, bindings=b)["FMTUNE_BASE_MODEL_DIR"]
+        == "/staged/bm"
+    )
 
 
 @pytest.mark.parametrize("nodes", [2, "2", 0])
@@ -185,23 +228,51 @@ def test_more_than_one_node_fails_the_fill(nodes):
     assert msg.startswith("fm-tune: compute_config.num_nodes must be 1"), msg
 
 
-@pytest.mark.parametrize("compute", [None, {}, {"num_cpus_per_node": 2}, {"num_nodes": 1},
-                                     {"num_nodes": "1"}, {"num_nodes": None}])
+@pytest.mark.parametrize(
+    "compute",
+    [
+        None,
+        {},
+        {"num_cpus_per_node": 2},
+        {"num_nodes": 1},
+        {"num_nodes": "1"},
+        {"num_nodes": None},
+    ],
+)
 def test_one_node_or_no_num_nodes_renders(compute):
     """The template config has no compute_config; a build may set none at all."""
     assert "bash ./src/fmtune_run.sh" in _fill(compute=compute)["run"]
 
 
-_VAR = {"seed": "FMTUNE_SEED", "rl_algo": "FMTUNE_RL_ALGO", "tuning_algo": "FMTUNE_TUNING_ALGO",
-        "backend": "FMTUNE_BACKEND", "extra_args": "FMTUNE_EXTRA_ARGS"}
+_VAR = {
+    "seed": "FMTUNE_SEED",
+    "rl_algo": "FMTUNE_RL_ALGO",
+    "tuning_algo": "FMTUNE_TUNING_ALGO",
+    "backend": "FMTUNE_BACKEND",
+    "extra_args": "FMTUNE_EXTRA_ARGS",
+}
 _SCALAR_KEYS = [
-    "extra", "model", "train_file", "validation_file", "tuning_algo", "rl_algo",
-    "run_name", "autotune", "backend", "seed", "config_preset", "config_name", "output_path",
-    "extra_args", "python",
+    "extra",
+    "model",
+    "train_file",
+    "validation_file",
+    "tuning_algo",
+    "rl_algo",
+    "run_name",
+    "autotune",
+    "backend",
+    "seed",
+    "config_preset",
+    "config_name",
+    "output_path",
+    "extra_args",
+    "python",
 ]
 
 
-@pytest.mark.parametrize("key", ["seed", "rl_algo", "tuning_algo", "backend", "extra_args"])
+@pytest.mark.parametrize(
+    "key", ["seed", "rl_algo", "tuning_algo", "backend", "extra_args"]
+)
 def test_a_null_value_renders_empty(key, tmp_path):
     """AutoTuneX's LaunchContext can emit null; it must not reach the script as 'None'."""
     # tuning_algo alone null would trip the "both empty or none" check.
@@ -233,13 +304,17 @@ def test_a_list_or_mapping_for_a_scalar_key_fails_the_fill(key, bad):
 @pytest.mark.parametrize("key", ["path", "repo", "ref", "subdir"])
 def test_a_list_for_a_source_key_fails_the_fill(key):
     src = dict(_VALID["source"], **{key: ["x"]})
-    assert f"fm_tune_config.source.{key} must be a scalar" in _render_error({"source": src})
+    assert f"fm_tune_config.source.{key} must be a scalar" in _render_error(
+        {"source": src}
+    )
 
 
 @pytest.mark.parametrize("key", ["server_url", "job_id"])
 def test_a_mapping_for_an_autotunex_key_fails_the_fill(key):
     ax = {"server_url": "", "job_id": "", key: {"a": 1}}
-    assert f"fm_tune_config.autotunex.{key} must be a scalar" in _render_error({"autotunex": ax})
+    assert f"fm_tune_config.autotunex.{key} must be a scalar" in _render_error(
+        {"autotunex": ax}
+    )
 
 
 def test_null_python_and_output_path_fall_back_to_their_defaults(tmp_path):
@@ -249,12 +324,22 @@ def test_null_python_and_output_path_fall_back_to_their_defaults(tmp_path):
 
 
 @pytest.mark.parametrize("gpus", [1, 8, "2"])
-@pytest.mark.parametrize("launcher", [None, {}, {"envs": {"A": "1"}}, {"resources": {}},
-                                      {"resources": {"accelerators": ""}}])
+@pytest.mark.parametrize(
+    "launcher",
+    [
+        None,
+        {},
+        {"envs": {"A": "1"}},
+        {"resources": {}},
+        {"resources": {"accelerators": ""}},
+    ],
+)
 def test_gpus_without_an_accelerators_request_fail_the_fill(gpus, launcher):
     """gbserver does not request GPUs from compute_config (#536); a GPU count
     alone would provision a CPU-only node, so the build fails instead."""
-    msg = _render_error(compute={"num_gpus_per_node": gpus, "gpu_model": "H100"}, launcher=launcher)
+    msg = _render_error(
+        compute={"num_gpus_per_node": gpus, "gpu_model": "H100"}, launcher=launcher
+    )
     assert msg.startswith(f"fm-tune: compute_config.num_gpus_per_node is {gpus}"), msg
     assert 'config.launcher_config.resources.accelerators, e.g. "H100:' in msg, msg
 
@@ -266,26 +351,42 @@ def test_the_gpu_error_without_a_gpu_model_names_a_placeholder():
 
 @pytest.mark.parametrize("acc", ["H100:1", ":2"])
 def test_an_explicit_accelerators_request_satisfies_the_gpu_check(acc):
-    filled = _fill(compute={"num_gpus_per_node": 1}, launcher={"resources": {"accelerators": acc}})
+    filled = _fill(
+        compute={"num_gpus_per_node": 1}, launcher={"resources": {"accelerators": acc}}
+    )
     # The template never writes accelerators itself: gbserver merges the build's
     # config.launcher_config.resources over this {} (skypilot.py, override_res).
     assert filled["resources"] == {}
     assert "bash ./src/fmtune_run.sh" in filled["run"]
 
 
-@pytest.mark.parametrize("compute", [None, {}, {"num_gpus_per_node": 0}, {"num_gpus_per_node": None},
-                                     {"num_cpus_per_node": 2, "num_gpus_per_node": 0}])
+@pytest.mark.parametrize(
+    "compute",
+    [
+        None,
+        {},
+        {"num_gpus_per_node": 0},
+        {"num_gpus_per_node": None},
+        {"num_cpus_per_node": 2, "num_gpus_per_node": 0},
+    ],
+)
 def test_cpu_only_renders_without_accelerators(compute):
     """The slurm fixture's shape (cpus=2, gpus=0) and no compute_config at all."""
     filled = _fill(compute=compute)
     assert filled["resources"] == {}
 
 
-@pytest.mark.parametrize("compute, launcher", [
-    ({"num_nodes": 1}, {"num_nodes": 2}),   # launcher_config wins in _num_nodes_from_configs
-    (None, {"num_nodes": 2}),
-    ({}, {"num_nodes": "3"}),
-])
+@pytest.mark.parametrize(
+    "compute, launcher",
+    [
+        (
+            {"num_nodes": 1},
+            {"num_nodes": 2},
+        ),  # launcher_config wins in _num_nodes_from_configs
+        (None, {"num_nodes": 2}),
+        ({}, {"num_nodes": "3"}),
+    ],
+)
 def test_a_launcher_config_num_nodes_other_than_1_fails_the_fill(compute, launcher):
     """skypilot.py _num_nodes_from_configs reads compute_config, then the build's
     config.launcher_config.num_nodes (last wins), so both are checked."""
@@ -293,24 +394,39 @@ def test_a_launcher_config_num_nodes_other_than_1_fails_the_fill(compute, launch
     assert msg.startswith("fm-tune: launcher_config.num_nodes must be 1"), msg
 
 
-@pytest.mark.parametrize("compute, launcher", [
-    ({"num_nodes": 1}, {"num_nodes": 1}), ({"num_nodes": 1.0}, None), ({}, {"num_nodes": "1"}),
-    ({"num_nodes": None}, {"num_nodes": None}),
-])
+@pytest.mark.parametrize(
+    "compute, launcher",
+    [
+        ({"num_nodes": 1}, {"num_nodes": 1}),
+        ({"num_nodes": 1.0}, None),
+        ({}, {"num_nodes": "1"}),
+        ({"num_nodes": None}, {"num_nodes": None}),
+    ],
+)
 def test_one_node_from_every_source_renders(compute, launcher):
-    assert "bash ./src/fmtune_run.sh" in _fill(compute=compute, launcher=launcher)["run"]
+    assert (
+        "bash ./src/fmtune_run.sh" in _fill(compute=compute, launcher=launcher)["run"]
+    )
 
 
 @pytest.mark.parametrize("bad", ["abc", "1.5", 1.5, -1, " ", True, [1]])
 def test_a_non_numeric_gpu_count_fails_the_fill(bad):
     msg = _render_error(compute={"num_gpus_per_node": bad})
-    assert msg.startswith("fm-tune: compute_config.num_gpus_per_node must be a whole number >= 0"), msg
+    assert msg.startswith(
+        "fm-tune: compute_config.num_gpus_per_node must be a whole number >= 0"
+    ), msg
 
 
-@pytest.mark.parametrize("bad", ["abc", "1.5", 1.5, True, [1], ""])  # "": gbserver int("") raises
+@pytest.mark.parametrize(
+    "bad", ["abc", "1.5", 1.5, True, [1], ""]
+)  # "": gbserver int("") raises
 @pytest.mark.parametrize("where", ["compute_config", "launcher_config"])
 def test_a_non_numeric_node_count_fails_the_fill(bad, where):
-    kw = {"compute": {"num_nodes": bad}} if where == "compute_config" else {"launcher": {"num_nodes": bad}}
+    kw = (
+        {"compute": {"num_nodes": bad}}
+        if where == "compute_config"
+        else {"launcher": {"num_nodes": bad}}
+    )
     msg = _render_error(**kw)
     assert msg.startswith(f"fm-tune: {where}.num_nodes must be a whole number"), msg
 
@@ -331,12 +447,16 @@ def test_a_source_or_autotunex_that_is_not_a_mapping_fails_with_a_named_error(ke
 @pytest.mark.parametrize("bad", [["a"], "x", 3, True])
 def test_an_hpo_config_that_is_not_a_mapping_or_null_fails_the_fill(bad):
     msg = _render_error({"hpo_config": bad})
-    assert msg.startswith("fm-tune: fm_tune_config.hpo_config must be a mapping or null"), msg
+    assert msg.startswith(
+        "fm-tune: fm_tune_config.hpo_config must be a mapping or null"
+    ), msg
 
 
 @pytest.mark.parametrize("where", ["compute_config", "launcher_config"])
 @pytest.mark.parametrize("bad", ["x", ["a"], 3])
-def test_a_compute_or_launcher_config_that_is_not_a_mapping_fails_with_a_named_error(where, bad):
+def test_a_compute_or_launcher_config_that_is_not_a_mapping_fails_with_a_named_error(
+    where, bad
+):
     kw = {"compute": bad} if where == "compute_config" else {"launcher": bad}
     msg = _render_error(**kw)
     assert msg.startswith(f"fm-tune: config.{where} must be a mapping"), msg
@@ -346,16 +466,24 @@ def test_a_compute_or_launcher_config_that_is_not_a_mapping_fails_with_a_named_e
 def test_a_null_compute_or_launcher_config_is_unset(where):
     cfg = _cfg()
     cfg[where] = None
-    filled = fill_objtemplate(_LAUNCHER, {"config": cfg, "bindings": _DATASET}, strict=True)
+    filled = fill_objtemplate(
+        _LAUNCHER, {"config": cfg, "bindings": _DATASET}, strict=True
+    )
     assert "bash ./src/fmtune_run.sh" in filled["run"]
 
 
 def test_cache_dir_is_per_user_under_the_shared_workdir():
-    assert 'FMTUNE_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache-$(id -u)"' in _render()
+    assert (
+        'FMTUNE_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache-$(id -u)"'
+        in _render()
+    )
 
 
 def test_output_path_overrides_the_workdir_default(tmp_path):
-    assert _received(tmp_path, {"output_path": "/shared/out"})["FMTUNE_OUTPUT_DIR"] == "/shared/out"
+    assert (
+        _received(tmp_path, {"output_path": "/shared/out"})["FMTUNE_OUTPUT_DIR"]
+        == "/shared/out"
+    )
 
 
 def test_bound_base_model_reaches_the_script(tmp_path):

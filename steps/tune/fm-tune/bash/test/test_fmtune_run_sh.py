@@ -85,7 +85,12 @@ def env(tmp_path):
 
 def _run(env: dict, cwd=None) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["bash", str(_SCRIPT)], env=env, capture_output=True, text=True, check=False, cwd=cwd
+        ["bash", str(_SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=cwd,
     )
 
 
@@ -113,8 +118,12 @@ def test_success_passes_the_core_flags_and_prints_one_marker(env):
         assert f in argv
     for absent in ("--no_autotune", "--rl_algo", "--autotunex_server_url", "--job_id"):
         assert absent not in argv
-    markers = [ln for ln in proc.stdout.splitlines() if ln.startswith("GB_ARTIFACT_ID:")]
-    assert markers == [f"GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:{env['FMTUNE_OUTPUT_DIR']}"]
+    markers = [
+        ln for ln in proc.stdout.splitlines() if ln.startswith("GB_ARTIFACT_ID:")
+    ]
+    assert markers == [
+        f"GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:{env['FMTUNE_OUTPUT_DIR']}"
+    ]
 
 
 def test_main_py_runs_from_the_fm_tune_root(env):
@@ -136,9 +145,14 @@ def test_bound_base_model_wins_over_model_id(env, tmp_path):
         ({"FMTUNE_RL_ALGO": "dpo"}, ["--rl_algo", "dpo"]),
         ({"FMTUNE_BACKEND": "mlx"}, ["--backend", "mlx"]),
         ({"FMTUNE_SEED": "7"}, ["--seed", "7"]),
-        ({"FMTUNE_SERVER_URL": "http://h:1", "FMTUNE_JOB_ID": "j1"},
-         ["--autotunex_server_url", "http://h:1", "--job_id", "j1"]),
-        ({"FMTUNE_EXTRA_ARGS": "--data_backend ray_data"}, ["--data_backend", "ray_data"]),
+        (
+            {"FMTUNE_SERVER_URL": "http://h:1", "FMTUNE_JOB_ID": "j1"},
+            ["--autotunex_server_url", "http://h:1", "--job_id", "j1"],
+        ),
+        (
+            {"FMTUNE_EXTRA_ARGS": "--data_backend ray_data"},
+            ["--data_backend", "ray_data"],
+        ),
     ],
 )
 def test_optional_settings_add_their_flags(env, over, flags):
@@ -156,7 +170,13 @@ def test_job_id_defaults_to_the_build_id_when_the_bridge_is_on(env):
 
 
 def test_an_explicit_job_id_wins_over_the_build_id(env):
-    env.update({"FMTUNE_SERVER_URL": "http://h:1", "FMTUNE_JOB_ID": "j1", "GB_BUILD_ID": "b-123"})
+    env.update(
+        {
+            "FMTUNE_SERVER_URL": "http://h:1",
+            "FMTUNE_JOB_ID": "j1",
+            "GB_BUILD_ID": "b-123",
+        }
+    )
     assert _run(env).returncode == 0
     assert _flag(_record(env)["argv"], "--job_id") == "j1"
 
@@ -201,7 +221,9 @@ def test_config_name_names_the_inline_hpo_config_file(env):
     env["FMTUNE_HPO_CONFIG_JSON"] = json.dumps({"tune_config": {}})
     env["FMTUNE_CONFIG_NAME"] = "lora-sweep_ab12cd34"
     assert _run(env).returncode == 0
-    assert _flag(_record(env)["argv"], "--config_file").endswith("/lora-sweep_ab12cd34.yaml")
+    assert _flag(_record(env)["argv"], "--config_file").endswith(
+        "/lora-sweep_ab12cd34.yaml"
+    )
 
 
 def test_config_name_does_not_rename_a_preset(env):
@@ -242,22 +264,55 @@ def test_failed_training_exits_non_zero_without_a_marker(env):
     [
         ({"FMTUNE_MODEL": ""}, "set fm_tune_config.model or bind the base_model input"),
         ({"FMTUNE_SOURCE_PATH": ""}, "set exactly one of source.path and source.repo"),
-        ({"FMTUNE_SOURCE_REPO": "https://x/y.git"}, "set exactly one of source.path and source.repo"),
+        (
+            {"FMTUNE_SOURCE_REPO": "https://x/y.git"},
+            "set exactly one of source.path and source.repo",
+        ),
         ({"FMTUNE_TRAIN_FILE": ""}, "train_file is required"),
         ({"FMTUNE_TRAIN_FILE": "nope.jsonl"}, "train_file not found"),
         ({"FMTUNE_VALIDATION_FILE": "nope.jsonl"}, "validation_file not found"),
         ({"FMTUNE_CONFIG_PRESET": "missing.yaml"}, "config_preset not found"),
         ({"FMTUNE_DATASET_DIR": ""}, "FMTUNE_DATASET_DIR is empty"),
-        ({"FMTUNE_TRAIN_FILE": "../x"}, "train_file must be a relative path inside the dataset"),
-        ({"FMTUNE_TRAIN_FILE": ".."}, "train_file must be a relative path inside the dataset"),
-        ({"FMTUNE_TRAIN_FILE": "a/../../x"}, "train_file must be a relative path inside the dataset"),
-        ({"FMTUNE_TRAIN_FILE": "/etc/passwd"}, "train_file must be a relative path inside the dataset"),
-        ({"FMTUNE_VALIDATION_FILE": "../x"}, "validation_file must be a relative path inside the dataset"),
-        ({"FMTUNE_VALIDATION_FILE": "/abs/v.jsonl"}, "validation_file must be a relative path inside the dataset"),
-        ({"FMTUNE_TUNING_ALGO": ""}, "tuning_algo and rl_algo cannot both be empty or none"),
-        ({"FMTUNE_TUNING_ALGO": "none", "FMTUNE_RL_ALGO": "None"}, "tuning_algo and rl_algo cannot both be empty or none"),
-        ({"FMTUNE_TUNING_ALGO": "", "FMTUNE_RL_ALGO": "dpo"}, "an offline rl_algo (dpo, kto) needs a tuning_algo"),
-        ({"FMTUNE_TUNING_ALGO": "None", "FMTUNE_RL_ALGO": "Kto"}, "an offline rl_algo (dpo, kto) needs a tuning_algo"),
+        (
+            {"FMTUNE_TRAIN_FILE": "../x"},
+            "train_file must be a relative path inside the dataset",
+        ),
+        (
+            {"FMTUNE_TRAIN_FILE": ".."},
+            "train_file must be a relative path inside the dataset",
+        ),
+        (
+            {"FMTUNE_TRAIN_FILE": "a/../../x"},
+            "train_file must be a relative path inside the dataset",
+        ),
+        (
+            {"FMTUNE_TRAIN_FILE": "/etc/passwd"},
+            "train_file must be a relative path inside the dataset",
+        ),
+        (
+            {"FMTUNE_VALIDATION_FILE": "../x"},
+            "validation_file must be a relative path inside the dataset",
+        ),
+        (
+            {"FMTUNE_VALIDATION_FILE": "/abs/v.jsonl"},
+            "validation_file must be a relative path inside the dataset",
+        ),
+        (
+            {"FMTUNE_TUNING_ALGO": ""},
+            "tuning_algo and rl_algo cannot both be empty or none",
+        ),
+        (
+            {"FMTUNE_TUNING_ALGO": "none", "FMTUNE_RL_ALGO": "None"},
+            "tuning_algo and rl_algo cannot both be empty or none",
+        ),
+        (
+            {"FMTUNE_TUNING_ALGO": "", "FMTUNE_RL_ALGO": "dpo"},
+            "an offline rl_algo (dpo, kto) needs a tuning_algo",
+        ),
+        (
+            {"FMTUNE_TUNING_ALGO": "None", "FMTUNE_RL_ALGO": "Kto"},
+            "an offline rl_algo (dpo, kto) needs a tuning_algo",
+        ),
     ],
 )
 def test_invalid_input_fails_before_training(env, over, message):
@@ -278,7 +333,10 @@ def test_a_split_file_in_a_subdir_or_with_dots_in_its_name_is_accepted(env, name
     env["FMTUNE_TRAIN_FILE"] = name
     proc = _run(env)
     assert proc.returncode == 0, proc.stderr
-    assert _flag(_record(env)["argv"], "--train_file") == f"{env['FMTUNE_DATASET_DIR']}/{name}"
+    assert (
+        _flag(_record(env)["argv"], "--train_file")
+        == f"{env['FMTUNE_DATASET_DIR']}/{name}"
+    )
 
 
 def test_a_split_file_outside_the_dataset_dies_before_any_clone(env, tmp_path):
@@ -287,7 +345,10 @@ def test_a_split_file_outside_the_dataset_dies_before_any_clone(env, tmp_path):
     env["FMTUNE_VALIDATION_FILE"] = "../../outside.jsonl"
     proc = _run(env)
     assert proc.returncode != 0
-    assert "fm-tune: validation_file must be a relative path inside the dataset" in proc.stderr
+    assert (
+        "fm-tune: validation_file must be a relative path inside the dataset"
+        in proc.stderr
+    )
     assert not git_ran.exists()
 
 
@@ -321,7 +382,10 @@ def test_bash_builtins_default_output_cache_and_python(env, tmp_path):
     env["LLMB_BASH_PYTHON_DIR"] = os.path.dirname(sys.executable)
     proc = _run(env)
     assert proc.returncode == 0, proc.stderr
-    assert _flag(_record(env)["argv"], "--output_dir") == f"{env['LLMB_BASH_OUTPUT_DIR']}/model"
+    assert (
+        _flag(_record(env)["argv"], "--output_dir")
+        == f"{env['LLMB_BASH_OUTPUT_DIR']}/model"
+    )
     assert (tmp_path / "gbhome" / ".fm-tune-cache").is_dir()
     assert not (out.parents[1] / ".fm-tune-cache").exists()
 
@@ -434,7 +498,9 @@ def _git_repo(env, tmp_path):
     _git("init", "-q", "-b", "rel", cwd=repo)
     _git("add", ".", cwd=repo)
     _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x", cwd=repo)
-    _git("config", "uploadpack.allowAnySHA1InWant", "true", cwd=repo)  # as GitHub serves any SHA
+    _git(
+        "config", "uploadpack.allowAnySHA1InWant", "true", cwd=repo
+    )  # as GitHub serves any SHA
     env.update(
         FMTUNE_SOURCE_PATH="",
         FMTUNE_SOURCE_REPO=f"file://{repo}",
@@ -446,7 +512,11 @@ def _git_repo(env, tmp_path):
 
 def _head(path) -> str:
     return subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=path, check=True, capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
 
 
@@ -489,7 +559,11 @@ def test_a_later_commit_never_touches_an_earlier_runs_tree(env, tmp_path):
     _commit(repo, "add GONE")
     assert _run(env).returncode == 0
     tree1 = pathlib.Path(_record(env)["cwd"])
-    snap = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in tree1.rglob("*") if p.is_file()}
+    snap = {
+        p: (p.read_bytes(), p.stat().st_mtime_ns)
+        for p in tree1.rglob("*")
+        if p.is_file()
+    }
     (repo / "sub" / "fm-tune" / "GONE").unlink()
     _commit(repo, "drop GONE")
     second = _run(env)
@@ -498,7 +572,11 @@ def test_a_later_commit_never_touches_an_earlier_runs_tree(env, tmp_path):
     assert tree2 != tree1 and tree2.parents[1].name == f"tree-{_head(repo)}"
     assert not (tree2 / "GONE").exists()
     assert (tree1 / "GONE").is_file()
-    assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in tree1.rglob("*") if p.is_file()} == snap
+    assert {
+        p: (p.read_bytes(), p.stat().st_mtime_ns)
+        for p in tree1.rglob("*")
+        if p.is_file()
+    } == snap
 
 
 def test_failed_update_of_a_cached_clone_dies(env, tmp_path):
@@ -518,9 +596,16 @@ def test_failed_update_of_a_cached_clone_dies(env, tmp_path):
 
 def _clone_lock(env) -> pathlib.Path:
     key = subprocess.run(
-        ["bash", "-c", 'printf "%s@%s" "$0" "$1" | cksum | cut -d" " -f1',
-         env["FMTUNE_SOURCE_REPO"], env["FMTUNE_SOURCE_REF"]],
-        check=True, capture_output=True, text=True,
+        [
+            "bash",
+            "-c",
+            'printf "%s@%s" "$0" "$1" | cksum | cut -d" " -f1',
+            env["FMTUNE_SOURCE_REPO"],
+            env["FMTUNE_SOURCE_REF"],
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     return pathlib.Path(env["FMTUNE_CACHE_DIR"]) / f"src-{key}.lock"
 
@@ -556,25 +641,39 @@ def _run_waiting(env, tmp_path, limit=20):
     env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
     t0 = time.monotonic()
     try:
-        proc = subprocess.run(["bash", str(_SCRIPT)], env=env, capture_output=True, check=False,
-                              text=True, timeout=limit)
+        proc = subprocess.run(
+            ["bash", str(_SCRIPT)],
+            env=env,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=limit,
+        )
     except subprocess.TimeoutExpired as e:
-        pytest.fail(f"still waiting on the lock after {limit}s: {e.stdout!r} {e.stderr!r}")
+        pytest.fail(
+            f"still waiting on the lock after {limit}s: {e.stdout!r} {e.stderr!r}"
+        )
     return proc, time.monotonic() - t0
 
 
-def test_a_lock_whose_owner_died_on_this_host_dies_at_once_with_the_rm_hint(env, tmp_path):
+def test_a_lock_whose_owner_died_on_this_host_dies_at_once_with_the_rm_hint(
+    env, tmp_path
+):
     """Never taken over: the run stops at once and says how to clear it."""
     _git_repo(env, tmp_path)
-    env["FMTUNE_CACHE_DIR"] = str(tmp_path / "it's cache")  # the hint shell-quotes the path
+    env["FMTUNE_CACHE_DIR"] = str(
+        tmp_path / "it's cache"
+    )  # the hint shell-quotes the path
     owner = _dead_owner()
     lock = _held_lock(env, owner + "\n")
     env["FMTUNE_LOCK_TIMEOUT"] = "60"
     proc, took = _run_waiting(env, tmp_path)
     assert took < 10, took
     assert proc.returncode == 2
-    assert (f"fm-tune: lock {lock} is held by {owner}, which is no longer running; "
-            f"remove it with: rm -rf {_sq(lock)} if no fm-tune build is running") in proc.stderr
+    assert (
+        f"fm-tune: lock {lock} is held by {owner}, which is no longer running; "
+        f"remove it with: rm -rf {_sq(lock)} if no fm-tune build is running"
+    ) in proc.stderr
     assert (lock / "pid").read_text() == owner + "\n"
     assert sorted(p.name for p in lock.iterdir()) == ["pid"]
     assert not pathlib.Path(env["STUB_RECORD"]).exists()
@@ -588,11 +687,14 @@ def test_an_owner_that_released_the_lock_and_then_exited_is_not_reported(env, tm
     owner = _dead_owner()
     lock = _held_lock(env, owner + "\n")
     flipped = tmp_path / "flipped"
-    _stub(tmp_path / "bin", "cat",
-          f'"{shutil.which("cat")}" "$@"; rc=$?\n'
-          f'if [ "$1" = "{lock}/pid" ] && [ ! -e "{flipped}" ]; then\n'
-          f'  touch "{flipped}"; rm -rf "{lock}"\n'
-          'fi\nexit $rc\n')
+    _stub(
+        tmp_path / "bin",
+        "cat",
+        f'"{shutil.which("cat")}" "$@"; rc=$?\n'
+        f'if [ "$1" = "{lock}/pid" ] && [ ! -e "{flipped}" ]; then\n'
+        f'  touch "{flipped}"; rm -rf "{lock}"\n'
+        "fi\nexit $rc\n",
+    )
     env["FMTUNE_LOCK_TIMEOUT"] = "60"
     proc, _ = _run_waiting(env, tmp_path)
     assert flipped.exists()
@@ -605,14 +707,18 @@ def _assert_timed_out(env, proc, took, lock, owner_text, contents):
     assert 1 <= took < 15, took
     assert proc.returncode == 2
     assert f"fm-tune: lock {lock} is still held after " in proc.stderr
-    assert (f"(owner: {owner_text}); remove it with: rm -rf {_sq(lock)} "
-            "if no fm-tune build is running") in proc.stderr
+    assert (
+        f"(owner: {owner_text}); remove it with: rm -rf {_sq(lock)} "
+        "if no fm-tune build is running"
+    ) in proc.stderr
     assert sorted(p.name for p in lock.iterdir()) == contents
     assert not pathlib.Path(env["STUB_RECORD"]).exists()
 
 
 @pytest.mark.parametrize("pid", ["own", "1"])
-def test_a_lock_held_by_a_live_owner_on_this_host_is_waited_on_then_reported(env, tmp_path, pid):
+def test_a_lock_held_by_a_live_owner_on_this_host_is_waited_on_then_reported(
+    env, tmp_path, pid
+):
     """pid 1 is another user's live process: kill -0 fails (EPERM), but it is not dead."""
     if pid == "1":
         try:
@@ -631,12 +737,16 @@ def test_a_lock_held_by_a_live_owner_on_this_host_is_waited_on_then_reported(env
 
 
 @pytest.mark.parametrize("pid_file", [None, ""], ids=["pid-less", "empty-pid"])
-def test_a_lock_with_no_owner_recorded_is_waited_on_then_reported(env, tmp_path, pid_file):
+def test_a_lock_with_no_owner_recorded_is_waited_on_then_reported(
+    env, tmp_path, pid_file
+):
     _git_repo(env, tmp_path)
     lock = _held_lock(env, pid_file)
     env["FMTUNE_LOCK_TIMEOUT"] = "2"
     proc, took = _run_waiting(env, tmp_path)
-    _assert_timed_out(env, proc, took, lock, "none recorded", [] if pid_file is None else ["pid"])
+    _assert_timed_out(
+        env, proc, took, lock, "none recorded", [] if pid_file is None else ["pid"]
+    )
     if pid_file is not None:
         assert (lock / "pid").read_text() == ""
 
@@ -645,11 +755,20 @@ def test_a_lock_released_while_waiting_is_then_taken(env, tmp_path):
     _git_repo(env, tmp_path)
     lock = _held_lock(env, f"{os.uname().nodename}:{os.getpid()}\n")
     waited = tmp_path / "waited"
-    _stub(tmp_path / "bin", "sleep", f'touch "{waited}"; exec "{shutil.which("sleep")}" 0.05\n')
+    _stub(
+        tmp_path / "bin",
+        "sleep",
+        f'touch "{waited}"; exec "{shutil.which("sleep")}" 0.05\n',
+    )
     env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
     env["FMTUNE_LOCK_TIMEOUT"] = "60"
-    proc = subprocess.Popen(["bash", str(_SCRIPT)], env=env, text=True,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(
+        ["bash", str(_SCRIPT)],
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
     deadline = time.monotonic() + 15
     while not waited.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
@@ -669,11 +788,14 @@ def test_a_lock_released_between_the_mkdir_and_the_look_is_then_taken(env, tmp_p
     _git_repo(env, tmp_path)
     lock = _held_lock(env, "otherhost:1\n")
     flipped = tmp_path / "flipped"
-    _stub(tmp_path / "bin", "mkdir",
-          f'"{shutil.which("mkdir")}" "$@"; rc=$?\n'
-          f'if [ "$1" = "{lock}" ] && [ ! -e "{flipped}" ]; then\n'
-          f'  touch "{flipped}"; rm -rf "{lock}"\n'
-          'fi\nexit $rc\n')
+    _stub(
+        tmp_path / "bin",
+        "mkdir",
+        f'"{shutil.which("mkdir")}" "$@"; rc=$?\n'
+        f'if [ "$1" = "{lock}" ] && [ ! -e "{flipped}" ]; then\n'
+        f'  touch "{flipped}"; rm -rf "{lock}"\n'
+        "fi\nexit $rc\n",
+    )
     env["FMTUNE_LOCK_TIMEOUT"] = "60"
     proc, _ = _run_waiting(env, tmp_path)
     assert flipped.exists()
@@ -688,27 +810,47 @@ def test_concurrent_builds_hold_the_lock_one_at_a_time(env, tmp_path):
     _git_repo(env, tmp_path)
     events = tmp_path / "events"
     real_sleep = shutil.which("sleep")
-    _stub(tmp_path / "bin", "git",
-          f'echo "$STUB_ID enter" >> "{events}"; "{real_sleep}" 0.1\n'
-          f'"{shutil.which("git")}" "$@"; rc=$?\n'
-          f'echo "$STUB_ID exit" >> "{events}"; exit $rc\n')
+    _stub(
+        tmp_path / "bin",
+        "git",
+        f'echo "$STUB_ID enter" >> "{events}"; "{real_sleep}" 0.1\n'
+        f'"{shutil.which("git")}" "$@"; rc=$?\n'
+        f'echo "$STUB_ID exit" >> "{events}"; exit $rc\n',
+    )
     _stub(tmp_path / "bin", "sleep", f'exec "{real_sleep}" 0.05\n')
     env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
     env["FMTUNE_LOCK_TIMEOUT"] = "60"
     procs = []
     for i in range(5):
-        e = dict(env, STUB_ID=str(i), FMTUNE_OUTPUT_DIR=str(tmp_path / f"out{i}"),
-                 STUB_RECORD=str(tmp_path / f"record{i}.json"))
-        procs.append(subprocess.Popen(["bash", str(_SCRIPT)], env=e, text=True,
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE))
+        e = dict(
+            env,
+            STUB_ID=str(i),
+            FMTUNE_OUTPUT_DIR=str(tmp_path / f"out{i}"),
+            STUB_RECORD=str(tmp_path / f"record{i}.json"),
+        )
+        procs.append(
+            subprocess.Popen(
+                ["bash", str(_SCRIPT)],
+                env=e,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        )
     outs = [p.communicate(timeout=60) for p in procs]
     ids = [ln.split()[0] for ln in events.read_text().splitlines()]
     # One build's git calls form one unbroken run; another build's call inside it overlaps.
     runs = [x for k, x in enumerate(ids) if k == 0 or ids[k - 1] != x]
     assert len(runs) == len(set(runs)) == 5, f"locked sections overlapped: {ids}"
     assert [p.returncode for p in procs] == [0] * 5, [e for _, e in outs]
-    assert sorted(p.name for p in pathlib.Path(env["FMTUNE_CACHE_DIR"]).iterdir()
-                  if ".lock" in p.name) == []
+    assert (
+        sorted(
+            p.name
+            for p in pathlib.Path(env["FMTUNE_CACHE_DIR"]).iterdir()
+            if ".lock" in p.name
+        )
+        == []
+    )
 
 
 def test_the_lock_records_host_and_pid(env, tmp_path):
@@ -719,7 +861,7 @@ def test_the_lock_records_host_and_pid(env, tmp_path):
     bin_dir.mkdir()
     real_git = shutil.which("git")
     (bin_dir / "git").write_text(
-        "#!/bin/sh\ncat \"$STUB_LOCKS\"/*.lock/pid >> \"$STUB_LOCKS/../owners\" 2>/dev/null\n"
+        '#!/bin/sh\ncat "$STUB_LOCKS"/*.lock/pid >> "$STUB_LOCKS/../owners" 2>/dev/null\n'
         f'exec "{real_git}" "$@"\n'
     )
     (bin_dir / "git").chmod(0o755)
@@ -733,7 +875,9 @@ def test_the_lock_records_host_and_pid(env, tmp_path):
 
 def test_a_lock_held_by_another_host_is_never_taken_over(env, tmp_path):
     _git_repo(env, tmp_path)
-    lock = _held_lock(env, "otherhost:1\n")  # pid 1 is alive here, dead there: unknowable
+    lock = _held_lock(
+        env, "otherhost:1\n"
+    )  # pid 1 is alive here, dead there: unknowable
     env["FMTUNE_LOCK_TIMEOUT"] = "2"
     proc, took = _run_waiting(env, tmp_path)
     _assert_timed_out(env, proc, took, lock, "otherhost:1", ["pid"])
@@ -742,9 +886,12 @@ def test_a_lock_held_by_another_host_is_never_taken_over(env, tmp_path):
 
 def _gone_rm_stub(tmp_path, lock, body: str) -> None:
     """A stub rm running ``body`` when unlock removes the renamed-away lock dir."""
-    _stub(tmp_path / "bin", "rm",
-          f'case "$*" in *{lock.name}.gone.*) {body} ;; esac\n'
-          f'exec "{shutil.which("rm")}" "$@"\n')
+    _stub(
+        tmp_path / "bin",
+        "rm",
+        f'case "$*" in *{lock.name}.gone.*) {body} ;; esac\n'
+        f'exec "{shutil.which("rm")}" "$@"\n',
+    )
 
 
 def test_a_failed_unlock_never_removes_a_lock_taken_since(env, tmp_path):
@@ -753,9 +900,12 @@ def test_a_failed_unlock_never_removes_a_lock_taken_since(env, tmp_path):
     build had taken at the freed path meanwhile."""
     _git_repo(env, tmp_path)
     lock = _clone_lock(env)
-    _gone_rm_stub(tmp_path, lock,
-                  f'[ -e "{tmp_path}/flipped" ] || {{ touch "{tmp_path}/flipped"; '
-                  f'mkdir "{lock}"; echo otherhost:1 > "{lock}/pid"; exit 1; }}')
+    _gone_rm_stub(
+        tmp_path,
+        lock,
+        f'[ -e "{tmp_path}/flipped" ] || {{ touch "{tmp_path}/flipped"; '
+        f'mkdir "{lock}"; echo otherhost:1 > "{lock}/pid"; exit 1; }}',
+    )
     env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
     proc = _run(env)
     assert (tmp_path / "flipped").exists()
@@ -764,7 +914,9 @@ def test_a_failed_unlock_never_removes_a_lock_taken_since(env, tmp_path):
 
 
 @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT, signal.SIGHUP])
-def test_a_build_killed_while_unlocking_never_removes_a_lock_taken_since(env, tmp_path, sig):
+def test_a_build_killed_while_unlocking_never_removes_a_lock_taken_since(
+    env, tmp_path, sig
+):
     """Killed while rm -rf runs: the EXIT trap ran unlock again on the freed path.
     The signal goes to the process group, as Ctrl-C or a scheduler's kill does."""
     _git_repo(env, tmp_path)
@@ -772,8 +924,14 @@ def test_a_build_killed_while_unlocking_never_removes_a_lock_taken_since(env, tm
     marker = tmp_path / "removing"
     _gone_rm_stub(tmp_path, lock, f'touch "{marker}"; "{shutil.which("sleep")}" 2')
     env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
-    proc = subprocess.Popen(["bash", str(_SCRIPT)], env=env, text=True, start_new_session=True,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(
+        ["bash", str(_SCRIPT)],
+        env=env,
+        text=True,
+        start_new_session=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
     deadline = time.monotonic() + 15
     while not marker.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
@@ -789,23 +947,32 @@ def test_a_failed_owner_write_fails_fast_every_time(env, tmp_path):
     """A claim that cannot record its owner must not leave its lock dir: every later
     run would wait on it for the whole timeout."""
     _git_repo(env, tmp_path)
-    _stub(tmp_path / "bin", "mv",
-          f'case "$*" in *.lock/pid.new*) exit 1 ;; esac\nexec "{shutil.which("mv")}" "$@"\n')
+    _stub(
+        tmp_path / "bin",
+        "mv",
+        f'case "$*" in *.lock/pid.new*) exit 1 ;; esac\nexec "{shutil.which("mv")}" "$@"\n',
+    )
     env["FMTUNE_LOCK_TIMEOUT"] = "60"
     for _ in range(2):
         proc, took = _run_waiting(env, tmp_path, limit=15)
         assert took < 10, took
         assert proc.returncode == 2
-        assert f"fm-tune: cannot write the owner of lock {_clone_lock(env)}" in proc.stderr
+        assert (
+            f"fm-tune: cannot write the owner of lock {_clone_lock(env)}" in proc.stderr
+        )
     assert not _clone_lock(env).exists()
 
 
 def test_a_lock_dir_that_cannot_be_renamed_is_still_released(env, tmp_path):
     """Some FUSE mounts cannot rename a dir, and a leftover .gone dir of the same name
-    blocks the rename too: the lock leaked, and with no takeover every later run died."""
+    blocks the rename too: the lock leaked, and with no takeover every later run died.
+    """
     _git_repo(env, tmp_path)
-    _stub(tmp_path / "bin", "mv",
-          f'case "$*" in *.lock.gone.*) exit 1 ;; esac\nexec "{shutil.which("mv")}" "$@"\n')
+    _stub(
+        tmp_path / "bin",
+        "mv",
+        f'case "$*" in *.lock.gone.*) exit 1 ;; esac\nexec "{shutil.which("mv")}" "$@"\n',
+    )
     env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
     env["FMTUNE_LOCK_TIMEOUT"] = "2"
     cache = pathlib.Path(env["FMTUNE_CACHE_DIR"])
@@ -821,9 +988,12 @@ def test_unlock_leaves_a_lock_that_is_no_longer_ours(env, tmp_path):
     must not remove theirs. A stub git swaps the pid file for another owner's."""
     _git_repo(env, tmp_path)
     lock = _clone_lock(env)
-    _stub(tmp_path / "bin", "git",
-          f'[ -d "{lock}" ] && echo otherhost:1 > "{lock}/pid"\n'
-          f'exec "{shutil.which("git")}" "$@"\n')
+    _stub(
+        tmp_path / "bin",
+        "git",
+        f'[ -d "{lock}" ] && echo otherhost:1 > "{lock}/pid"\n'
+        f'exec "{shutil.which("git")}" "$@"\n',
+    )
     env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
     proc = _run(env)
     assert proc.returncode == 0, proc.stderr
@@ -836,7 +1006,10 @@ def test_a_lock_timeout_too_big_for_shell_arithmetic_is_refused(env, timeout):
     env["FMTUNE_LOCK_TIMEOUT"] = timeout
     proc = _run(env)
     assert proc.returncode == 2
-    assert "fm-tune: FMTUNE_LOCK_TIMEOUT must be a whole number of seconds (at most 9 digits)" in proc.stderr
+    assert (
+        "fm-tune: FMTUNE_LOCK_TIMEOUT must be a whole number of seconds (at most 9 digits)"
+        in proc.stderr
+    )
     assert not pathlib.Path(env["STUB_RECORD"]).exists()
 
 
@@ -847,7 +1020,9 @@ def test_a_lock_timeout_with_a_leading_zero_is_read_as_decimal(env, tmp_path, ti
     lock = _held_lock(env, "otherhost:1\n")
     env["FMTUNE_LOCK_TIMEOUT"] = timeout
     proc, took = _run_waiting(env, tmp_path, limit=30)
-    assert int(timeout) - 1 <= took < int(timeout) + 10, took  # $SECONDS is whole seconds
+    assert (
+        int(timeout) - 1 <= took < int(timeout) + 10
+    ), took  # $SECONDS is whole seconds
     assert proc.returncode == 2
     assert f"fm-tune: lock {lock} is still held after {int(timeout)}s " in proc.stderr
     assert (lock / "pid").read_text() == "otherhost:1\n"
@@ -912,7 +1087,9 @@ def test_a_cache_dir_others_can_write_is_refused_and_left_alone(env, tmp_path, m
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root owns the directory")
 def test_a_cache_dir_owned_by_another_user_is_refused(env):
-    env["FMTUNE_CACHE_DIR"] = "/usr"  # exists and is root's: nothing is ever written there
+    env["FMTUNE_CACHE_DIR"] = (
+        "/usr"  # exists and is root's: nothing is ever written there
+    )
     proc = _run(env)
     assert proc.returncode == 2
     assert "fm-tune: cache dir /usr is owned by root, not " in proc.stderr
@@ -937,8 +1114,14 @@ def test_a_symlinked_cache_dir_of_ones_own_is_followed(env, tmp_path):
 @pytest.mark.skipif(os.geteuid() == 0, reason="root owns the link")
 def test_a_symlinked_cache_dir_owned_by_another_user_is_refused(env):
     """Its owner could re-point it at their own dir while a build runs from it."""
-    link = next((p for p in ("/tmp", "/etc", "/var", "/bin", "/lib", "/sbin")
-                 if os.path.islink(p) and os.path.isdir(p) and os.lstat(p).st_uid == 0), None)
+    link = next(
+        (
+            p
+            for p in ("/tmp", "/etc", "/var", "/bin", "/lib", "/sbin")
+            if os.path.islink(p) and os.path.isdir(p) and os.lstat(p).st_uid == 0
+        ),
+        None,
+    )
     if link is None:
         pytest.skip("no root-owned symlink to a directory here")
     env["FMTUNE_CACHE_DIR"] = link
@@ -951,8 +1134,14 @@ def test_a_symlinked_cache_dir_owned_by_another_user_is_refused(env):
 @pytest.mark.skipif(os.geteuid() == 0, reason="root owns the link")
 def test_a_trailing_slash_does_not_hide_a_symlinked_cache_dir(env):
     """[ -L /tmp/ ] is false (the slash resolves the link): strip it first."""
-    link = next((p for p in ("/tmp", "/etc", "/var", "/bin", "/lib", "/sbin")
-                 if os.path.islink(p) and os.path.isdir(p) and os.lstat(p).st_uid == 0), None)
+    link = next(
+        (
+            p
+            for p in ("/tmp", "/etc", "/var", "/bin", "/lib", "/sbin")
+            if os.path.islink(p) and os.path.isdir(p) and os.lstat(p).st_uid == 0
+        ),
+        None,
+    )
     if link is None:
         pytest.skip("no root-owned symlink to a directory here")
     env["FMTUNE_CACHE_DIR"] = link + "//"
@@ -971,10 +1160,25 @@ def test_a_root_cache_dir_is_not_stripped_to_empty(env):
 
 def test_an_annotated_tag_resolves_to_one_tree_and_its_commit(env, tmp_path):
     repo = _git_repo(env, tmp_path)
-    _git("-c", "user.email=t@t", "-c", "user.name=t", "tag", "-a", "v1", "-m", "v1", cwd=repo)
+    _git(
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "tag",
+        "-a",
+        "v1",
+        "-m",
+        "v1",
+        cwd=repo,
+    )
     env["FMTUNE_SOURCE_REF"] = "v1"
     commit = subprocess.run(
-        ["git", "rev-parse", "v1^{commit}"], cwd=repo, check=True, capture_output=True, text=True
+        ["git", "rev-parse", "v1^{commit}"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     for _ in range(2):
         proc = _run(env)
@@ -998,8 +1202,11 @@ def test_a_commit_sha_ref_is_fetched_and_runs_from_its_tree(env, tmp_path):
     assert "[fm-tune] cloning" not in proc.stdout
     # Fetched by id, not cloned: the branch tip never reached the mirror.
     (mirror,) = cache.glob("src-*[0-9]")
-    tip = subprocess.run(["git", "-C", str(mirror), "cat-file", "-e", f"{_head(repo)}^{{commit}}"],
-                         capture_output=True, check=False)
+    tip = subprocess.run(
+        ["git", "-C", str(mirror), "cat-file", "-e", f"{_head(repo)}^{{commit}}"],
+        capture_output=True,
+        check=False,
+    )
     assert tip.returncode != 0
 
 
@@ -1030,29 +1237,42 @@ def test_one_commit_by_branch_and_by_sha_shares_one_tree(env, tmp_path):
     assert [t.name for t in trees] == [f"tree-{sha}"]
 
 
-def test_two_refs_extracting_one_commit_at_once_never_leave_an_empty_tree(env, tmp_path):
+def test_two_refs_extracting_one_commit_at_once_never_leave_an_empty_tree(
+    env, tmp_path
+):
     """A branch and its SHA hold different locks but write the same tree-<sha>."""
     repo = _git_repo(env, tmp_path)
     sha = _head(repo)
     real_tar, gate = shutil.which("tar"), tmp_path / "gate"
     gate.mkdir()
     # The first extractor waits until the second has started, then both finish.
-    _stub(tmp_path / "bin", "tar", f"""\
+    _stub(
+        tmp_path / "bin",
+        "tar",
+        f"""\
 if mkdir "{gate}/first" 2>/dev/null; then
   i=0; while [ ! -e "{gate}/second" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done
 else
   : > "{gate}/second"
 fi
 exec "{real_tar}" "$@"
-""")
+""",
+    )
     env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
     procs = []
     for ref in ("rel", sha):
-        run_env = dict(env, FMTUNE_SOURCE_REF=ref, STUB_RECORD=str(tmp_path / f"rec-{ref}"))
-        procs.append(subprocess.Popen(
-            ["bash", str(_SCRIPT)], env=run_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True,
-        ))
+        run_env = dict(
+            env, FMTUNE_SOURCE_REF=ref, STUB_RECORD=str(tmp_path / f"rec-{ref}")
+        )
+        procs.append(
+            subprocess.Popen(
+                ["bash", str(_SCRIPT)],
+                env=run_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        )
     for proc in procs:
         _, err = proc.communicate(timeout=60)
         assert proc.returncode == 0, err
@@ -1073,7 +1293,9 @@ def test_an_uppercase_sha_is_lowercased_to_the_same_tree_and_cache_key(env, tmp_
     cache = pathlib.Path(env["FMTUNE_CACHE_DIR"])
     assert [t.name for t in cache.glob("tree-*")] == [f"tree-{sha}"]
     env["FMTUNE_SOURCE_REF"] = sha
-    assert [m.name for m in cache.glob("src-*")] == [_clone_lock(env).name[: -len(".lock")]]
+    assert [m.name for m in cache.glob("src-*")] == [
+        _clone_lock(env).name[: -len(".lock")]
+    ]
     assert _run(env).returncode == 0
     assert [t.name for t in cache.glob("tree-*")] == [f"tree-{sha}"]
 
@@ -1092,15 +1314,21 @@ def test_a_missing_full_sha_dies_before_any_venv(env, tmp_path):
     assert not list(cache.glob("*.lock*"))
 
 
-@pytest.mark.parametrize("ref", [lambda sha: sha[:7], lambda sha: "no-such-branch"],
-                         ids=["short-hex", "missing-branch"])
+@pytest.mark.parametrize(
+    "ref",
+    [lambda sha: sha[:7], lambda sha: "no-such-branch"],
+    ids=["short-hex", "missing-branch"],
+)
 def test_a_failed_branch_clone_dies_naming_the_full_sha_option(env, tmp_path, ref):
     """A short hex value is not a SHA: it goes to clone --branch like any branch name."""
     repo = _git_repo(env, tmp_path)
     env["FMTUNE_SOURCE_REF"] = ref(_head(repo))
     proc = _run(env)
     assert proc.returncode == 2, proc.stderr
-    assert f"fm-tune: could not clone {env['FMTUNE_SOURCE_REPO']} at {env['FMTUNE_SOURCE_REF']}" in proc.stderr
+    assert (
+        f"fm-tune: could not clone {env['FMTUNE_SOURCE_REPO']} at {env['FMTUNE_SOURCE_REF']}"
+        in proc.stderr
+    )
     assert "full 40-character commit SHA" in proc.stderr
     assert not pathlib.Path(env["STUB_RECORD"]).exists()
 
@@ -1108,7 +1336,18 @@ def test_a_failed_branch_clone_dies_naming_the_full_sha_option(env, tmp_path, re
 @pytest.mark.parametrize("obj", ["v1", "HEAD^{tree}"], ids=["tag-object", "tree"])
 def test_a_sha_that_is_not_a_commit_dies(env, tmp_path, obj):
     repo = _git_repo(env, tmp_path)
-    _git("-c", "user.email=t@t", "-c", "user.name=t", "tag", "-a", "v1", "-m", "v1", cwd=repo)
+    _git(
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "tag",
+        "-a",
+        "v1",
+        "-m",
+        "v1",
+        cwd=repo,
+    )
     env["FMTUNE_SOURCE_REF"] = subprocess.run(
         ["git", "rev-parse", obj], cwd=repo, check=True, capture_output=True, text=True
     ).stdout.strip()
@@ -1119,8 +1358,13 @@ def test_a_sha_that_is_not_a_commit_dies(env, tmp_path, obj):
     assert not list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("tree-*"))
 
 
-@pytest.mark.parametrize("over", [{"FMTUNE_SOURCE_REF": "-uoops"},
-                                  {"FMTUNE_SOURCE_REPO": "--upload-pack=touch /tmp/x"}])
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"FMTUNE_SOURCE_REF": "-uoops"},
+        {"FMTUNE_SOURCE_REPO": "--upload-pack=touch /tmp/x"},
+    ],
+)
 def test_a_source_value_that_looks_like_an_option_dies_before_git(env, tmp_path, over):
     _git_repo(env, tmp_path)
     env.update(over)
@@ -1131,7 +1375,9 @@ def test_a_source_value_that_looks_like_an_option_dies_before_git(env, tmp_path,
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     proc = _run(env)
     assert proc.returncode != 0
-    assert "fm-tune: source." in proc.stderr and "must not start with '-'" in proc.stderr
+    assert (
+        "fm-tune: source." in proc.stderr and "must not start with '-'" in proc.stderr
+    )
     assert not (tmp_path / "git-ran").exists()
 
 
@@ -1155,7 +1401,10 @@ def test_an_unrelated_non_empty_output_dir_dies_before_any_clone(env, tmp_path):
     (out / "precious.txt").write_text("keep me\n")
     proc = _run(env)
     assert proc.returncode != 0
-    assert f"fm-tune: output dir {out} is not empty and is not a previous model output" in proc.stderr
+    assert (
+        f"fm-tune: output dir {out} is not empty and is not a previous model output"
+        in proc.stderr
+    )
     assert "new or empty directory" in proc.stderr
     assert not git_ran.exists()
     assert not pathlib.Path(env["FMTUNE_CACHE_DIR"]).exists()  # no clone, tree or venv
@@ -1184,7 +1433,8 @@ def test_an_existing_empty_output_dir_is_accepted(env):
 # model.safetensors (MLX full fine-tune, which writes no config.json),
 # adapters.safetensors (MLX LoRA, whose adapter_config.json write is best-effort).
 @pytest.mark.parametrize(
-    "marker", ["config.json", "adapter_config.json", "model.safetensors", "adapters.safetensors"]
+    "marker",
+    ["config.json", "adapter_config.json", "model.safetensors", "adapters.safetensors"],
 )
 def test_a_previous_model_output_is_accepted(env, marker):
     out = pathlib.Path(env["FMTUNE_OUTPUT_DIR"])
@@ -1210,7 +1460,10 @@ def test_an_output_dir_that_is_an_input_dies_before_any_clone(env, tmp_path, whi
     env["FMTUNE_OUTPUT_DIR"] = f"{inp}/./"  # another spelling of the same dir
     proc = _run(env)
     assert proc.returncode != 0
-    assert "fm-tune: output dir " in proc.stderr and "is the same directory as" in proc.stderr
+    assert (
+        "fm-tune: output dir " in proc.stderr
+        and "is the same directory as" in proc.stderr
+    )
     assert not git_ran.exists()
     assert not pathlib.Path(env["FMTUNE_CACHE_DIR"]).exists()
     assert (inp / "model.safetensors").read_text() == "w"
@@ -1260,9 +1513,15 @@ def test_relative_paths_are_made_absolute_against_the_start_dir(env, tmp_path):
     assert _flag(argv, "--train_file") == f"{tmp_path}/data dir/d_train.jsonl"
     assert _flag(argv, "--validation_file") == f"{tmp_path}/data dir/d_validation.jsonl"
     assert _flag(argv, "--model_name_or_path") == f"{tmp_path}/bm"
-    assert _flag(argv, "--config_file") == f"{tmp_path}/fm-tune/autotune/configs/autotune.yaml"
+    assert (
+        _flag(argv, "--config_file")
+        == f"{tmp_path}/fm-tune/autotune/configs/autotune.yaml"
+    )
     assert rec["cwd"] == f"{tmp_path}/fm-tune"
-    assert f"GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:{tmp_path}/out" in proc.stdout.splitlines()
+    assert (
+        f"GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:{tmp_path}/out"
+        in proc.stdout.splitlines()
+    )
 
 
 def test_a_model_id_is_not_made_absolute(env, tmp_path):
@@ -1309,7 +1568,10 @@ def test_a_root_output_dir_is_not_stripped_to_empty_and_is_refused(env, tmp_path
     env["FMTUNE_OUTPUT_DIR"] = "/"
     proc = _run(env)
     assert proc.returncode != 0
-    assert "fm-tune: output dir / is not empty and is not a previous model output" in proc.stderr
+    assert (
+        "fm-tune: output dir / is not empty and is not a previous model output"
+        in proc.stderr
+    )
     assert not git_ran.exists()
 
 
@@ -1318,7 +1580,9 @@ def test_a_root_output_dir_is_not_stripped_to_empty_and_is_refused(env, tmp_path
 # a newline ends the marker line early, registering a truncated path. The bash
 # monitor's LocalFileStream rstrip()s each line, so a trailing space is lost too.
 @pytest.mark.parametrize("bad", ['a"b', "a\\b", "a\nb", "a\tb", "a "])
-def test_an_output_path_that_breaks_the_marker_json_dies_before_any_clone(env, tmp_path, bad):
+def test_an_output_path_that_breaks_the_marker_json_dies_before_any_clone(
+    env, tmp_path, bad
+):
     _git_repo(env, tmp_path)
     git_ran = _git_spy(env, tmp_path)
     env["FMTUNE_OUTPUT_DIR"] = str(tmp_path / bad)
