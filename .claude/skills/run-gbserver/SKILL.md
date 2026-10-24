@@ -30,7 +30,7 @@ If `gbserver_status` / `gbserver_start` reports the port is held by another (non
 
 `gbserver_start` launches the `gbserver` that ships alongside gbmcp, so gbmcp must already be installed — one of:
 - **pip:** `pip install 'granite.build[standalone]'` (Python ≥3.11; the default 3.9 fails on `sqlite_database`).
-- **Repo checkout:** `make standalone-venv PYTHON=python3.13` — builds gbserver + gbmcp from the current source.
+- **Repo checkout:** `make venv PYTHON=python3.13` — builds gbserver + gbmcp from the current source.
 
 If `gbserver_start` returns an error that no gbserver executable was found, this install hasn't happened — tell the user to run one of the above. (`GBSERVER_BIN` overrides the binary; `GBSERVER_PORT` the port.)
 

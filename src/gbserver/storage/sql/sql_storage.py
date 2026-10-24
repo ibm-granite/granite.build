@@ -23,10 +23,19 @@ from sqlalchemy import (
     select,
     text,
 )
-from sqlalchemy.exc import IntegrityError, NoSuchTableError, SQLAlchemyError
+from sqlalchemy.exc import (
+    DataError,
+    DisconnectionError,
+    IntegrityError,
+    InterfaceError,
+    NoSuchTableError,
+    OperationalError,
+    SQLAlchemyError,
+)
 from sqlalchemy.orm import declarative_base, scoped_session, sessionmaker
 from tenacity import (
     retry,
+    retry_if_exception,
     retry_if_not_exception_type,
     stop_after_attempt,
     wait_random_exponential,
@@ -43,6 +52,7 @@ from gbserver.storage.storage import (
     QueryControl,
     SortOrder,
 )
+from gbserver.storage.stored_lineage_row import MAX_LINEAGE_URI_LENGTH
 from gbserver.types.constants import (
     GBSERVER_SQL_DBNAME,
     GBSERVER_SQL_HOST,
@@ -55,6 +65,30 @@ from gbserver.types.constants import (
 from gbserver.utils.atomic import AtomicInteger
 from gbserver.utils.utils import get_utc_time
 
+# Messages of OperationalErrors that retrying cannot fix (schema or query bugs).
+_DETERMINISTIC_READ_ERRORS = ("no such table", "no such column", "syntax error")
+
+
+def _is_retryable_read_error(exc: BaseException) -> bool:
+    if isinstance(exc, (InterfaceError, DisconnectionError)):
+        return True
+    if isinstance(exc, OperationalError):
+        message = str(exc).lower()
+        return not any(m in message for m in _DETERMINISTIC_READ_ERRORS)
+    return isinstance(exc, (ConnectionError, TimeoutError))
+
+
+# The retry policy for a subclass's own read SQL (grouped walks, tag search), so a
+# ``database is locked`` or a dropped connection mid-read is retried instead of
+# reaching the API. Only those: a deterministic error (a bad query, a missing
+# column, a bad argument) fails at once rather than after minutes of backoff.
+retry_read = retry(
+    wait=wait_random_exponential(multiplier=1, min=1, max=30),
+    stop=stop_after_attempt(10),
+    retry=retry_if_exception(_is_retryable_read_error),
+    reraise=True,
+)
+
 # SQLAlchemy Base
 Base = declarative_base()
 
@@ -62,6 +96,14 @@ _CLASS_NAME_INDEX = AtomicInteger()
 
 # Regex pattern for valid SQL identifiers (alphanumeric + underscore, cannot start with digit)
 _VALID_SQL_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+# Promoted string columns that hold a normalized lineage URI rather than a name or
+# a label. The width is the lineage row's limit, imported rather than restated so
+# the DB column and the guard that keeps a URI inside it cannot drift. It is
+# narrower than the 1024 the other URI columns get, because these two are indexed
+# AND both sit in the ``(job_id, input, output)`` unique index -- see
+# MAX_LINEAGE_URI_LENGTH for why that matters.
+_WIDE_STRING_COLUMNS = frozenset({"input", "output"})
 
 
 def _validate_sql_identifier(name: str, identifier_type: str = "identifier") -> str:
@@ -123,6 +165,15 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
 
     indexed_columns: list[str] = []
     """ A list of columns names (returned in _get_column_values()) that should be indexed."""
+
+    composite_indexes: list[tuple[str, ...]] = []
+    """Non-unique multi-column indexes, e.g. ``[("input", "output")]``. Created with the
+    table and, idempotently, on every schema adjust, so an existing table gains them too."""
+
+    text_columns: list[str] = []
+    """Columns stored as unbounded ``Text`` instead of the inferred ``String(256)``.
+    Per table, unlike ``_WIDE_STRING_COLUMNS``; for unindexed values with no natural
+    width, e.g. a comma-joined tag list."""
 
     exact_liked_list_columns: dict[str, str] = {}
     """Enables exact matching of a list of strings against a named column during get_by_where(dict) calls.
@@ -288,6 +339,18 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             ):
                 # This one needs to be longer than 256, sometimes.
                 column = Column(String(1024), nullable=True, index=indexed)
+            elif key in self.text_columns:
+                column = Column(Text, nullable=True)
+            elif lower_key in _WIDE_STRING_COLUMNS:
+                # Normalized lineage URIs. Exact-match, not a substring test, so
+                # only the two columns the graph traversal joins on are widened.
+                # Kept in lockstep with
+                # ``gbserver.storage.stored_lineage_row.MAX_LINEAGE_URI_LENGTH``,
+                # which drops an over-long URI before it reaches the DB -- a
+                # truncated URI would merge two distinct artifacts.
+                column = Column(
+                    String(MAX_LINEAGE_URI_LENGTH), nullable=True, index=indexed
+                )
             elif isinstance(value, str):
                 column = Column(String(256), nullable=True, index=indexed)
             elif isinstance(value, bool):
@@ -338,6 +401,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                     f"Table '{self._sql_alchemy_model.__tablename__}' created successfully."
                 )
                 self.__create_unique_indexes()
+                self.__create_composite_indexes()
             except SQLAlchemyError as e:
                 self.logger.error(f"Error creating table: {e}")
                 raise e
@@ -357,6 +421,131 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                 connection.commit()
         except Exception as e:
             self.logger.warning(f"Error creating unique indexes: {e}")
+
+    def __create_composite_indexes(self):
+        """Create the ``composite_indexes`` that do not exist yet.
+
+        Idempotent: existing indexes are read from the inspector first, so this is safe
+        to run on every schema adjust. Like the unique indexes, a failure only warns.
+
+        On Postgres the index is built ``CONCURRENTLY`` (outside a transaction, so
+        on an autocommit connection): it is added on schema adjust to tables that
+        already hold data -- ``gb_targets`` -- and a plain ``CREATE INDEX`` would
+        block their writes for the whole build. A concurrent build that was
+        interrupted (pod killed during startup, deadlock) leaves an ``INVALID``
+        index under the name, which ``IF NOT EXISTS`` would skip forever and the
+        planner never uses; such an index is dropped and built again.
+        """
+        if not self.composite_indexes:
+            return
+        try:
+            self._inspector.clear_cache()
+            existing = {
+                index["name"]
+                for index in self._inspector.get_indexes(
+                    self.table_name, schema=self._db_schema or None
+                )
+            }
+            concurrent = self._engine.dialect.name == "postgresql"
+            engine = (
+                self._engine.execution_options(isolation_level="AUTOCOMMIT")
+                if concurrent
+                else self._engine
+            )
+            create = (
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS"
+                if concurrent
+                else "CREATE INDEX"
+            )
+            with engine.connect() as connection:
+                if concurrent and not self.__try_index_build_lock(connection):
+                    # Another process (a replica starting alongside) is checking or
+                    # building this table's indexes. Its in-progress build reads
+                    # as INVALID, so going on would drop it and build it twice.
+                    self.logger.info(
+                        f"Composite indexes on {self.table_name} are being built by "
+                        "another process; skipped here."
+                    )
+                    return
+                try:
+                    invalid = (
+                        self.__invalid_postgres_indexes(connection)
+                        if concurrent
+                        else set()
+                    )
+                    for columns in self.composite_indexes:
+                        for col in columns:
+                            _validate_sql_identifier(col, "column name")
+                        col_suffix = "_".join(columns)
+                        full_name = f"ix_{self.table_name}_{col_suffix}"
+                        if len(full_name) > 63:
+                            name_hash = hashlib.sha1(full_name.encode()).hexdigest()[:7]
+                            full_name = f"ix_{name_hash}_{col_suffix}"[:63]
+                        if full_name in invalid:
+                            self.logger.warning(
+                                f"Index {full_name} on {self.table_name} is invalid (an "
+                                "interrupted concurrent build); dropping and rebuilding it."
+                            )
+                            index_ref = (
+                                f"{self._db_schema}.{full_name}"
+                                if self._db_schema
+                                else full_name
+                            )
+                            connection.execute(
+                                text(f"DROP INDEX CONCURRENTLY IF EXISTS {index_ref};")
+                            )
+                        elif full_name in existing:
+                            continue
+                        connection.execute(
+                            text(
+                                f"{create} {full_name} ON "
+                                f"{self.__get_sql_table_name_reference()} ({', '.join(columns)});"
+                            )
+                        )
+                    connection.commit()
+                finally:
+                    # A session-level lock outlives the transaction and stays with
+                    # the pooled connection, so release it on every exit.
+                    if concurrent:
+                        connection.execute(
+                            text("SELECT pg_advisory_unlock(hashtext(:key))"),
+                            {"key": self.__index_build_lock_key()},
+                        )
+        except Exception as e:
+            self.logger.warning(f"Error creating composite indexes: {e}")
+
+    def __index_build_lock_key(self) -> str:
+        return f"gb_composite_indexes:{self._db_schema or ''}.{self.table_name}"
+
+    def __try_index_build_lock(self, connection: Any) -> bool:
+        """Take this table's index-build advisory lock (session level), or ``False``
+        when another session holds it. Never waits: a concurrent build itself
+        waits on other sessions' snapshots, so waiting here could deadlock."""
+        return bool(
+            connection.execute(
+                text("SELECT pg_try_advisory_lock(hashtext(:key))"),
+                {"key": self.__index_build_lock_key()},
+            ).scalar()
+        )
+
+    def __invalid_postgres_indexes(self, connection: Any) -> set[str]:
+        """Names of this table's indexes Postgres marks ``INVALID``.
+
+        Read under the index-build lock, so no other process's build is in
+        progress: an invalid index here is a leftover of an interrupted one.
+        """
+        rows = connection.execute(
+            text(
+                "SELECT ic.relname FROM pg_index i "
+                "JOIN pg_class ic ON ic.oid = i.indexrelid "
+                "JOIN pg_class t ON t.oid = i.indrelid "
+                "JOIN pg_namespace n ON n.oid = t.relnamespace "
+                "WHERE NOT i.indisvalid AND t.relname = :table "
+                "AND n.nspname = COALESCE(:schema, current_schema())"
+            ),
+            {"table": self.table_name, "schema": self._db_schema or None},
+        )
+        return {row[0] for row in rows}
 
     def __get_unique_index_statement(
         self, column_key: Union[str, tuple[str, ...]], exception_value: Optional[Any]
@@ -489,6 +678,49 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                     col_name, col_type, is_indexed, is_unique, uniqueness_exception
                 )
 
+        if len(existing_columns) > 0:
+            # An existing table only gets new indexes here; creation covers new tables.
+            self.__create_composite_indexes()
+            self.__widen_text_columns()
+
+    def __widen_text_columns(self):
+        """Turn a ``text_columns`` column an older schema made VARCHAR into TEXT.
+
+        Creation gives these columns ``Text``, but a table created before a column
+        was listed keeps its ``VARCHAR(n)``, and adding the name to the list alone
+        never reaches it -- so Postgres keeps rejecting long values there. On
+        Postgres ``VARCHAR -> TEXT`` is a catalog change, no table rewrite. SQLite
+        ignores VARCHAR lengths, so there is nothing to do there. A failure only
+        warns, like the index helpers.
+        """
+        if not self.text_columns or self._engine.dialect.name != "postgresql":
+            return
+        try:
+            self._inspector.clear_cache()
+            narrow = [
+                column["name"]
+                for column in self._inspector.get_columns(
+                    self.table_name, schema=self._db_schema or None
+                )
+                if column["name"] in self.text_columns
+                and getattr(column["type"], "length", None)
+            ]
+            if not narrow:
+                return
+            with self._engine.connect() as connection:
+                for col_name in narrow:
+                    _validate_sql_identifier(col_name, "column name")
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE {self.__get_sql_table_name_reference()} "
+                            f"ALTER COLUMN {col_name} TYPE TEXT;"
+                        )
+                    )
+                    self.logger.info(f"Widened column {col_name} to TEXT")
+                connection.commit()
+        except Exception as e:
+            self.logger.warning(f"Error widening text columns: {e}")
+
     def __get_sql_table_name_reference(self) -> str:
         """Get the name of the schema, if any, concatenated with the table name for using in SQL statements.
         Note: table_name and schema are validated at __init__ time to prevent SQL injection.
@@ -535,7 +767,9 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
     @retry(
         wait=wait_random_exponential(multiplier=1, min=1, max=30),
         stop=stop_after_attempt(10),
-        retry=retry_if_not_exception_type(IntegrityError),
+        # DataError (value too long, bad type) is deterministic: retrying it only
+        # stalls the caller for ~47s before the same failure.
+        retry=retry_if_not_exception_type((IntegrityError, DataError)),
         reraise=True,
     )
     def _add_item_dicts(self, items: list[dict[str, Any]]):
@@ -775,6 +1009,30 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         )  # returns [] if tables is not present
         return len(columns) > 0
 
+    @retry_read
+    def _ensure_table(self) -> bool:
+        """Initialize the model if needed; whether the table exists to query.
+
+        For a subclass running its own SQL. ``__initialize_storage`` is name-mangled
+        private, so this does the same through the protected API: like any first
+        read, it may create or adjust the table to match the item's columns. Retried
+        like a read, since the DDL can hit ``database is locked`` just the same.
+        """
+        return self._ensure_table_without_retry()
+
+    def _ensure_table_without_retry(self) -> bool:
+        """:meth:`_ensure_table` for a caller that is itself ``@retry_read``.
+
+        Nesting the retrying variant would multiply the attempts and, on SQLite,
+        sleep its backoff while the caller holds the file lock.
+        """
+        if self._sql_alchemy_model is None:
+            sample = self._convert_item_to_row_dict(self._get_sample_item())
+            self._create_or_adjust_schema_item_dict(sample)
+        # Not _does_table_exist(): that retries on its own, and nesting it inside
+        # this retry would multiply the attempts.
+        return len(self.__get_column_names_with_exceptions(raise_exception=False)) > 0
+
     def __get_db_item_by_uuid(
         self, session: Any, uuid: str
     ) -> Optional[BASE_ITEM_TYPE]:
@@ -991,10 +1249,15 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         finally:
             session.close()
 
+    def _on_update_row(self, db_item: Any) -> None:
+        """Hook for a subclass to set columns on a row ``update_fields`` writes,
+        inside the same (retried) transaction. No-op by default."""
+
     @retry(
         wait=wait_random_exponential(multiplier=1, min=1, max=30),
         stop=stop_after_attempt(10),
-        retry=retry_if_not_exception_type((ValueError, IntegrityError)),
+        # DataError is deterministic, as in _add_item_dicts.
+        retry=retry_if_not_exception_type((ValueError, IntegrityError, DataError)),
         reraise=True,
     )
     def update_fields(
@@ -1072,6 +1335,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             updated_item_dict = self._convert_item_to_row_dict(item)
             for column_name, column_value in updated_item_dict.items():
                 setattr(db_item, column_name, column_value)
+            self._on_update_row(db_item)
 
             # Commit the transaction and apply the changes to db_item - this releases the row lock
             session.commit()

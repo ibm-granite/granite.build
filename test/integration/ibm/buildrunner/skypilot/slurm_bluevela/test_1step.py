@@ -11,8 +11,8 @@
 Runs a single `command` step against the BlueVela SLURM environment
 (space://environments/skypilot/slurm/bluevela, provided by the remote gb-test
 space — see the naming note in docs/environments/skypilot-slurm.md), which reaches
-BlueVela's SLURM login node (login1) over SSH and submits to the `gpu-mid`
-partition (set via the environment's `zone`). The command runs INSIDE a container
+BlueVela's SLURM login node (login1) over SSH and submits to the `cpu`
+partition (the step's `zone: cpu`, overriding the environment's `gpu-mid`). The command runs INSIDE a container
 image (`command_config.image` is set, so image_id resolves to docker:<image>),
 which on SLURM requires the Pyxis SPANK plugin — BlueVela provides it (unlike the
 bare-host local Docker fixture under test/integration/standalone/.../skypilot_slurm).
@@ -64,7 +64,7 @@ pytestmark = pytest.mark.ibm
     reason="Skip in SPS CI/CD until we have environments/skypilot/slurm/bluevela/environment.yaml with key reference in gb-test and other space repos",
 )
 class TestSkypilotBlueVelaSlurm1Step(AbstractYamlBuildRunnerTest):
-    """Single containerized command step on BlueVela SLURM (gpu-mid partition), real hf:// I/O."""
+    """Single containerized command step on BlueVela SLURM (cpu partition), real hf:// I/O."""
 
     def _get_yaml_spec_dir(self) -> Path:
         """Return the fixture dir holding this test's build.yaml and buildtest.yaml."""

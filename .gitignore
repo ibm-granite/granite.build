@@ -236,3 +236,11 @@ src/gbserver/static/ui/
 
 # autotunex SvelteKit source lives under autotunex/src/ux/src/lib; re-include it.
 !autotunex/**/lib/
+
+# Lakehouse lineage dumps, and anything else written under them. A full dump of
+# dmf.lineage is ~912 MB / 377k rows: a one-off migration input, not source. Committing
+# it would bloat the repo permanently (git history cannot easily forget a file that
+# size) and it carries production job metadata. Keep such a dump outside the repo, or
+# here but untracked.
+data/jobs/
+scripts/lineage_backup/

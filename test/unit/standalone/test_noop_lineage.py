@@ -163,10 +163,3 @@ class TestNoopLineageServiceFactory:
 
         service = LineageServiceFactory.create("none")
         assert service.count_runs_by_tags(["tag=value"]) == 0
-
-    def test_noop_service_artifact_graph(self):
-        from gbserver.lineage.openlineage_service import LineageServiceFactory
-
-        service = LineageServiceFactory.create("none")
-        result = service.get_artifact_graph(artifact_name="test")
-        assert result is None

@@ -143,6 +143,34 @@ def reset_lineage_store() -> None:
     __JOBSTATS_STORAGE = None
 
 
+# The lineage providers, and the single place the set is defined. Both sides of
+# the system resolve through here: the write side to pick a sink
+# (get_lineage_store) and the read side to pick a graph service
+# (LineageServiceFactory.create). Keeping one list is what stops the two from
+# disagreeing about which values are legal.
+LINEAGE_PROVIDER_NONE = "none"
+LINEAGE_PROVIDER_WANDB = "wandb"
+LINEAGE_PROVIDER_DB = "db"
+
+VALID_LINEAGE_PROVIDERS = (
+    LINEAGE_PROVIDER_NONE,
+    LINEAGE_PROVIDER_WANDB,
+    LINEAGE_PROVIDER_DB,
+)
+
+
+class UnknownLineageProvider(ValueError):
+    """The configured lineage provider is not a known one.
+
+    Raised rather than falling back to a default. A typo used to degrade in
+    opposite directions on the two sides -- the write path built the W&B sink for
+    *any* unrecognized value while the read path raised -- so a misconfigured
+    deployment recorded lineage to W&B while reporting that lineage was
+    unavailable. Failing on both sides makes that a startup error instead of a
+    silent split.
+    """
+
+
 def _resolve_lineage_provider() -> str:
     """Resolve the lineage provider at call time.
 
@@ -151,24 +179,62 @@ def _resolve_lineage_provider() -> str:
     dynamically — rather than read from a cached constant or written to os.environ
     at import — so standalone mode established at runtime is honored and the
     standalone default never leaks into the process environment.
+
+    Exactly one provider, so a value names one sink and one graph service. There
+    is deliberately no composite form ("wandb,db"): the fan-out that would give a
+    second sink meaning does not exist yet, and accepting the syntax before then
+    would silently record to only one of the two.
+
+    The standalone default is still ``"none"``, NOT ``"db"``, and that is a
+    deliberate hold rather than an oversight. ``"db"`` is fully wired -- it builds
+    the index sink and the index-backed graph service -- so a deployment opts in
+    explicitly with ``GBSERVER_LINEAGE_PROVIDER=db``. Flipping the default is a
+    one-line change here when the rollout is wanted.
+
+    Returns:
+        One of :data:`VALID_LINEAGE_PROVIDERS`.
+
+    Raises:
+        UnknownLineageProvider: if the configured value is not a known provider.
     """
     import os
 
     from gbcommon.types.gbenvconfig import is_standalone
     from gbserver.types.constants import ENV_VAR_PREFIX
 
-    default = "none" if is_standalone() else "wandb"
-    return os.getenv(ENV_VAR_PREFIX + "_LINEAGE_PROVIDER", default)
+    default = LINEAGE_PROVIDER_NONE if is_standalone() else LINEAGE_PROVIDER_WANDB
+    provider = os.getenv(ENV_VAR_PREFIX + "_LINEAGE_PROVIDER", default).strip()
+
+    if provider not in VALID_LINEAGE_PROVIDERS:
+        raise UnknownLineageProvider(
+            f"{ENV_VAR_PREFIX}_LINEAGE_PROVIDER is {provider!r}; expected one of "
+            f"{', '.join(VALID_LINEAGE_PROVIDERS)}"
+        )
+    return provider
 
 
 def get_lineage_store() -> ILineageStore:
-    """Get a singleton instance of the lineage storage backend."""
+    """Get a singleton instance of the lineage storage backend.
+
+    Raises:
+        UnknownLineageProvider: if the configured provider is not a known one.
+            Deliberately not caught: an unknown value used to build the W&B sink
+            here, which sent lineage somewhere the operator did not ask for.
+    """
     global __JOBSTATS_STORAGE
     if __JOBSTATS_STORAGE is None:
-        if _resolve_lineage_provider() == "none":
+        provider = _resolve_lineage_provider()
+        if provider == LINEAGE_PROVIDER_NONE:
             from gbserver.lineage.noop_jobstats import NoopLineageStore
 
             __JOBSTATS_STORAGE = NoopLineageStore()
+        elif provider == LINEAGE_PROVIDER_DB:
+            from gbserver.lineage.db_jobstats import DBLineageStore
+
+            # Records into gb_lineage_job only -- its one source. The lineage
+            # indexer, which owns gb_lineage_index, derives the rows from those
+            # records asynchronously.
+            __JOBSTATS_STORAGE = DBLineageStore()
         else:
             from gbserver.lineage.wandb_jobstats import WandBLineageStore
 

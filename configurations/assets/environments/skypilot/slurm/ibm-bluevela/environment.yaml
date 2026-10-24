@@ -15,8 +15,8 @@ config:
   idle_minutes_to_autostop: 0
   # infra=slurm/<cluster>/<zone>: the SSH `Host` alias below must match `cluster`,
   # and `zone` is the SLURM partition. gpu-mid holds 8-GPU H100 and H200 nodes
-  # (7-day limit). Override per build with `zone:` in the step config; see
-  # docs/environments/skypilot-slurm.md#cluster--zone.
+  # (7-day limit) and only accepts GPU jobs. Override per build with `zone:` in
+  # the step config; see docs/environments/skypilot-slurm.md#cluster--zone.
   cluster: bluevela
   zone: gpu-mid
   # The auto-queued HF I/O steps need no GPU, so send them to the cpu partition
@@ -30,12 +30,11 @@ config:
     hfpush:
       zone: cpu
       launcher_config: { sbatch_options: { constraint: null } }
-  # Pin every job to H200 nodes (#SBATCH --constraint=h200, billed at 1.4x H100).
-  # gpu-mid's submit filter rejects ANY job — even a CPU-only one with 0 GPUs —
-  # when no H100 node is free. A step requesting GPUs must therefore ask for H200
-  # (gpu_model: H200), or clear this per build with
-  # config.launcher_config.sbatch_options.constraint: null. See
-  # docs/environments/skypilot-slurm.md#sbatch_options--slurm-sbatch-directives.
+  # Pin every job to H200 nodes (#SBATCH --constraint=h200, billed at 1.4x H100);
+  # GPU steps must request H200 (e.g. accelerators: "H200:1").
+  # gpu-mid rejects jobs that request no GPUs, so CPU-only steps (other than
+  # hfpull/hfpush above) must set `zone: cpu` and `sbatch_options.constraint: null`
+  # in the build. See docs/environments/skypilot-slurm.md#override-the-partition-zone-per-build.
   sbatch_options:
     constraint: h200
   # Shared-FS root for per-run build workdirs (GB_BUILD_WORKDIR). It must be on

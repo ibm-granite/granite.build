@@ -2,7 +2,7 @@
 # End-to-end demo: TRL fine-tuning + unitxt evaluation via gbcli standalone
 #
 # Quick start:
-#   1. make demo-venv PYTHON=python3.13
+#   1. make venv PYTHON=python3.13
 #   2. source .venv/bin/activate
 #   3. bash scripts/demo-standalone.sh
 #

@@ -40,6 +40,8 @@ export interface BuildStepRun {
 }
 
 export interface BuildTargetRun {
+  // The target run's id; the lineage index records the same value as the job_id.
+  uuid?: string
   target_name: string
   status: BuildStatus
   started_at?: string
@@ -109,6 +111,9 @@ export interface Artifact {
   space_name: string
   username: string
   uri: string
+  // The URI as the lineage index keys it (gbserver's normalize_uri); absent when
+  // the server could not normalize it. Match graph node ids against this.
+  lineage_uri?: string
   build_id?: string
   created_time: string
   updated_time: string

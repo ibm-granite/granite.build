@@ -83,7 +83,7 @@ EXPECTED = {
     "environments/bash/steps/tune/fm-tune": ({"dataset"}, {"base_model"}),
     f"{_SKY}/tune/fm-tune": ({"dataset"}, {"base_model"}),
     # Exceptions: no named inputs, by design.
-    f"{_SKY}/byoc": (set(), set()),  # free-form command, any number of inputs
+    f"{_SKY}/misc/byoc": (set(), set()),  # free-form command, any number of inputs
     f"{_LSF}/skypilot-teardown": (set(), set()),  # variable-length cluster list
     f"{_LSF}/rm-server": (set(), set()),
     f"{_LSF}/code-server": (set(), set()),

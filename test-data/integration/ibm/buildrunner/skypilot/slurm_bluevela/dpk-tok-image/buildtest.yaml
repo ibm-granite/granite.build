@@ -54,7 +54,7 @@ tests:
 # self-consistent and complete.
 simulate_step_failure: false
 # 45 minutes. Generous because this is the FIRST image-mode dpk run on any cluster:
-# the initial enroot pull of a private ICR image onto a gpu-mid node is unmeasured and
+# the initial enroot pull of a private ICR image onto a cpu-partition node is unmeasured and
 # is the dominant unknown, on top of real SLURM queueing. Unlike the bare fixtures
 # there is no pip install to pay for, so once the image is warm on a node this should
 # be much faster — retune after a few green runs.

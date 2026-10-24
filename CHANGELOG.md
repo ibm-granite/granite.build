@@ -30,6 +30,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guarantees which copy of the step it gets (for example, it does not prefer a space's own
   copy over the published one).
 
+- **Lineage: artifact lineage now reads the local lineage index (#470).** The artifact
+  page and `GET /lineage/graph` read `gb_lineage_index`, whatever
+  `GBSERVER_LINEAGE_PROVIDER` is. **Upgrading a W&B deployment:** outside standalone the
+  indexer indexes nothing until a checkpoint exists, and the Helm chart never seeds
+  one: seed it by hand with `gbserver lineage-index-init --base-timestamp
+  from-latest|all|<ISO-8601>` (`--force` to replace an existing one; on a fresh install
+  with no jobs yet, add `--empty-from-beginning` to `from-latest`, which otherwise fails
+  with "No job found in the source"). The chart value
+  `deployments.lineageIndexer.seedOnStart` is removed: delete it from your overrides, as
+  setting it now fails the render while the indexer is enabled. URI
+  normalization also changed (bucket paths, LH revisions and hosts, git refs and
+  subdirectories, trailing slashes), so an existing index must be rebuilt once, with
+  the indexer stopped, by `gbserver lineage-index-init --rebuild` (deletes the index rows,
+  keeping the table, and re-seeds at `all`; `--force` alone would keep the old-form rows
+  beside the new). A running gbserver keeps working on the emptied table; a scan already
+  in progress when the rows are deleted may write a few old-form rows back.
+- **Lineage API (#470).** `POST /lineage/artifact` is removed; use `GET /lineage/graph`.
+  `POST /lineage/search` is deprecated (flagged in the OpenAPI schema): it stays for
+  existing external callers and will be removed once they move to
+  `GET /lineage/jobs` / `GET /lineage/graph?job_ids=...`.
+  `GET /lineage/graph` accepts repeated `job_ids`, answers 422 for a bad `direction`,
+  and limits callers who are not super admins to `depth <= 20` and the default
+  per-level node ceiling. Nodes carry only cross-space fields; build and target-run
+  ids appear on a run node only for callers who can read that job's space.
+  `GET /lineage/jobs` answers 422 for `limit` outside 1–1000 or a negative `offset`, and
+  503 when the index cannot be read. `GET /artifacts/?uri=...&match_lineage_uri=true`
+  also matches an artifact by its normalized lineage URI (opt-in; without it `uri` is
+  matched exactly), and each artifact, including `GET /artifacts/{id}`, carries a derived
+  `lineage_uri`. `GET /lineage/jobs/{id}` adds `detail_denied`, true when the detail was
+  withheld for lack of access rather than a store failure. `POST /lineage/graph` takes the
+  same query as a body, for a `job_ids` list too long for a URL; the UI uses it to expand
+  a grouped node in one walk.
+  `GET /lineage/graph` answers 422 (was 400) for out-of-range input, and both
+  `GET /lineage/graph` and `GET /lineage/jobs` answer 503 rather than an empty 200 when
+  the index cannot be read. `GET /lineage/jobs` caps `job_ids` at 1000, as the graph does.
+- **Lineage index init (#470).** `gbserver lineage-index-init --rebuild` with provider
+  `wandb` re-seeds at `all`, so the indexer back-fills the whole shared W&B project, not
+  just this deployment's runs. A new `--empty-from-beginning` flag makes a fresh install
+  with no history index its first jobs instead of skipping them.
+- **`gb_targets` indexes (#470).** Schema adjust adds a `(status, finished_at)` index
+  and, on SQLite 3.20+, an expression index on the JSON `finished_at`, so the standalone
+  lineage indexer pages successful targets by keyset instead of scanning the table. On
+  Postgres the index is built `CONCURRENTLY`, one process at a time. Index-only: no row
+  is rewritten.
+- **W&B lineage indexer (#470).** A W&B lineage run still `running` no longer stops
+  indexing: the checkpoint waits behind it (up to 6 h, then it is indexed as it is),
+  while later runs are indexed at once and recorded as `done_ahead` in the checkpoint
+  (at most 5000; past that the scan waits as before). The W&B source has no settle
+  grace: `createdAt` is set by the W&B server and nothing commits behind it, so a
+  finished run is indexed on the next scan instead of ~6 minutes later
+  (`GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S` applies to `gb_targets` only).
+  With `provider=none` the index is fed from `gb_targets`, so artifact lineage appears
+  about 6 minutes after a target finishes (it was ~30 s); see `docs/builds/lineage.md`.
+  `gb_lineage_job.recorded_at` is stamped by the database inside the INSERT/UPDATE,
+  so a retried write carries the time of the attempt that commits; it lives only in
+  its column (not the JSON blob), and the `db` source's grace is 5 s instead of 360 s.
+- **Lineage job owner and namespace (#470).** A job's owner and namespace are taken only
+  when every index row of the job agrees; a job with conflicting (e.g. forged) rows has
+  neither, and its detail fails closed.
+- **Step drawer timestamps (#470).** `parseTimestamp` reads a zoneless ISO timestamp as
+  UTC, so displayed times shift for users outside UTC.
+
 - **Published steps declare named inputs and read them from bindings (#453).** Every
   `step.yaml` under `configurations/assets/` now has an `inputs:` block. A target that
   doesn't bind a required input now fails build validation before anything is queued.

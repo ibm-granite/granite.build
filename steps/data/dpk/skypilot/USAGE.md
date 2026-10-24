@@ -350,7 +350,7 @@ being decided invisibly on a node. `gb build start --dry-run` prints the fully r
 build.yaml if you want to check what a run will actually use.
 
 If you need genuine shell logic — a computed path, a conditional, a pipeline — that is not
-this step's job. Use the `byoc` (`steps/byoc/skypilot/USAGE.md`) step or the built-in
+this step's job. Use the `byoc` (`steps/misc/byoc/skypilot/USAGE.md`) step or the built-in
 `command` step, either of which runs an arbitrary command alongside your DPK targets.
 
 ## Example build.yaml
@@ -460,4 +460,4 @@ handoff: the consumer may run on a different node or pod and read an absent dire
   but not `args` keys — see [Transform flags](#transform-flags).
 - **One transform per step.** To chain transforms, declare one target per transform and bind
   each output to the next target's input. For work that is not a DPK transform, use
-  `byoc` (`steps/byoc/skypilot/USAGE.md`) or the built-in `command` step.
+  `byoc` (`steps/misc/byoc/skypilot/USAGE.md`) or the built-in `command` step.

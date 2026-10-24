@@ -11,7 +11,7 @@ invokes the baked entrypoint ([`src/eval.sh`](src/eval.sh)) with parameters from
 `config.eval_config`, then registers the single results file as the step's output.
 
 This is a custom-image counterpart to the public-image
-[byoc](../../../byoc/skypilot/README.md) step. It is *generated* from the sources in
+[byoc](../../../misc/byoc/skypilot/README.md) step. It is *generated* from the sources in
 this directory by the shared Makefile conventions — see the framework overview:
 [steps/README.md](../../../README.md).
 
@@ -65,7 +65,7 @@ Eval-specific notes:
 `make -C steps/eval/eval-example/skypilot test` runs the whole `test/` tree, including
 `test/aws/test_skypilot_aws_eval.py`, which runs the eval-example step on a real EC2
 node via SkyPilot. Like the [byoc AWS
-test](../../../byoc/skypilot/README.md#environment-variables-for-the-aws-test) it is
+test](../../../misc/byoc/skypilot/README.md#environment-variables-for-the-aws-test) it is
 **extended-suite only** (`@extended_testing_only` + the `skypilot_integration`
 marker) and **self-skips** unless AWS credentials are in the environment, so it
 never provisions an instance by accident.

@@ -64,6 +64,37 @@ URLSEGMENT_BUCKETS = "buckets"
 
 DEFAULT_REVISION = "main"
 
+# The marker the canonical web URL puts before a revision, and every marker a web
+# URL may use there: ``tree`` for a directory, ``blob`` for a file page, ``resolve``
+# for a raw download. All three name the same revision and path.
+HF_WEB_TREE = "tree"
+HF_WEB_REVISION_MARKERS = frozenset({"tree", "blob", "resolve"})
+
+# First path segments on huggingface.co that are site pages, not repo owners.
+# ``/papers/<id>`` or ``/docs/<lib>`` has the owner/repo shape and would
+# otherwise be read as a model.
+HF_WEB_RESERVED_OWNERS = frozenset(
+    {
+        "api",
+        "blog",
+        "chat",
+        "collections",
+        "docs",
+        "enterprise",
+        "join",
+        "learn",
+        "login",
+        "new",
+        "organizations",
+        "papers",
+        "posts",
+        "pricing",
+        "search",
+        "settings",
+        "tasks",
+    }
+)
+
 # hfpull download serialization + self-healing (issue #320).
 #
 # huggingface_hub wraps each file's ``.incomplete`` write in its own
@@ -482,6 +513,9 @@ _HF_TYPE_TO_SEGMENT: dict[HfType, str] = {
     HfType.BUCKET: URLSEGMENT_BUCKETS,
 }
 _HF_SEGMENT_TO_TYPE: dict[str, HfType] = {v: k for k, v in _HF_TYPE_TO_SEGMENT.items()}
+# Public name for the type -> path segment map, for code that spells HF URIs
+# itself (lineage URI normalization) instead of restating the segments.
+HF_TYPE_TO_SEGMENT = _HF_TYPE_TO_SEGMENT
 
 # Maps HfType to the repo_type string expected by huggingface_hub APIs.
 # HfType.BUCKET has no huggingface_hub equivalent, so it is absent (callers default to "model").

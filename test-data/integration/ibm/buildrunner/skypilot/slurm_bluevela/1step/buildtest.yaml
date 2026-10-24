@@ -3,7 +3,7 @@
 # build_yaml defaults to ./build.yaml (sibling) when omitted.
 #
 # Single containerized command-step target on BlueVela SLURM (Skypilot): the
-# command runs inside an image (command_config.image set) on the gpu-mid
+# command runs inside an image (command_config.image set) on the cpu
 # partition, needing the Pyxis plugin BlueVela provides, with real hf:// I/O.
 targets:
   - slurm-run

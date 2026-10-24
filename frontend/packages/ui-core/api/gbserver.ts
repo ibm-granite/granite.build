@@ -178,6 +178,7 @@ function adaptTargetRun(raw: Record<string, unknown>): BuildTargetRun {
   const inputArtifacts = (raw.input_artifacts as Record<string, string>) ?? {}
   const outputArtifacts = (raw.output_artifacts as Record<string, unknown[]>) ?? {}
   return {
+    uuid: raw.uuid as string | undefined,
     target_name: (raw.name as string) || (raw.uuid as string),
     status: adaptStatus(raw.status as string),
     started_at: raw.started_at as string | undefined,
@@ -270,6 +271,7 @@ function adaptArtifact(raw: Record<string, unknown>): Artifact {
     space_name: raw.space_name as string,
     username: raw.username as string,
     uri,
+    lineage_uri: (raw.lineage_uri as string | undefined) || undefined,
     build_id: raw.created_by_build_id as string | undefined,
     created_time: ((raw.created_at ?? raw.created_time) as string),
     updated_time: ((raw.updated_at ?? raw.updated_time ?? raw.created_at) as string),
@@ -539,9 +541,12 @@ export async function cancelBuild(buildId: string): Promise<void> {
 // ── Artifacts ─────────────────────────────────────────────────────────────────
 
 export interface ListArtifactsParams {
+  uri?: string
   space_name?: string
   tags?: string[]
   username?: string
+  // Fall back to matching by lineage identity (normalized URI) on no exact match.
+  match_lineage_uri?: boolean
 }
 
 export interface ArtifactListResult {
@@ -553,8 +558,10 @@ export interface ArtifactListResult {
 
 export async function listArtifacts(params: ListArtifactsParams): Promise<ArtifactListResult> {
   const qp = new URLSearchParams()
+  if (params.uri)        qp.set('uri', params.uri)
   if (params.space_name) qp.set('space_name', params.space_name)
   if (params.username)   qp.set('username', params.username)
+  if (params.match_lineage_uri) qp.set('match_lineage_uri', 'true')
   for (const tag of params.tags ?? []) qp.append('tag', tag)
 
   const { data } = await client.get<{ artifacts: Record<string, unknown>[] }>(
@@ -592,38 +599,145 @@ export async function getArtifactModelCard(artifactId: string): Promise<string> 
   return data.content ?? ''
 }
 
-// ── Artifact lineage ──────────────────────────────────────────────────────────
+// ── Full lineage graph (GET /lineage/graph) ─────────────────────────────────────
 
-export interface ArtifactLineageNodeRef {
+export interface LineageGraphNode {
+  id: string
   node_type: string
-  name: string
-  uri?: string
-  url?: string
-}
-
-export interface ArtifactRunEntry {
-  job_name: string
-  run_id: string
-  status: string
-  inputs: ArtifactLineageNodeRef[]
-  outputs: ArtifactLineageNodeRef[]
-}
-
-export interface ArtifactLineageResult {
-  root_id: string
-  runs: ArtifactRunEntry[]
-  truncated: boolean
-}
-
-export interface GetArtifactLineageParams {
-  artifact_name?: string
-  artifact_url?: string
+  name?: string
   artifact_type?: string
-  max_depth?: number
-  direction?: string
+  is_root?: boolean
+  depth?: number | null
+  metadata?: Record<string, unknown>
 }
 
-export async function getArtifactLineage(params: GetArtifactLineageParams): Promise<ArtifactLineageResult> {
-  const { data } = await client.post<ArtifactLineageResult>('/lineage/artifact', params, { timeout: 45_000 })
+export interface LineageGraphEdge {
+  source: string
+  target: string
+}
+
+export interface LineageGraphResult {
+  root_id: string
+  nodes: LineageGraphNode[]
+  edges: LineageGraphEdge[]
+  truncated: boolean
+  // How many frontier nodes the walk stopped short of expanding. Turns
+  // `truncated` from a bare flag into a magnitude, so the UI can report
+  // "N not expanded" instead of implying a few more clicks would finish.
+  unexpanded?: number
+}
+
+// ── Lineage job listing (GET /lineage/jobs) ────────────────────────────────────
+
+// One job execution as the lineage index recorded it, with what it read and wrote.
+// Always present but space-gated: the listing (GET /lineage/jobs) carries only the
+// cross-space fields, so `job_namespace`, `space_name`, `owner`, `tags` and `origin`
+// arrive empty there, and on GET /lineage/jobs/{id} for a caller who cannot read the
+// job's space. Read them from the detail, and treat empty as "not visible", not as
+// "the job has none".
+export interface LineageJobEntry {
+  job_id: string
+  job_namespace: string
+  space_name: string
+  owner: string
+  source_system: string
+  status: string
+  started_at: string
+  tags: string[]
+  inputs: string[]
+  outputs: string[]
+  job: Record<string, unknown>
+  origin: Record<string, unknown>
+}
+
+export interface LineageJobsResult {
+  jobs: LineageJobEntry[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export async function getLineageJobs(params: {
+  uri?: string
+  job_id?: string
+  // With `uri`: only the jobs that read `uri` and wrote `output` -- the runs behind
+  // a grouped node of GET /lineage/graph (metadata.jobs_query).
+  output?: string
+  // With `uri`: the side of its row that is empty -- 'input' lists the jobs that wrote
+  // `uri` from nothing recorded, 'output' those that read it and recorded no output.
+  terminal?: 'input' | 'output'
+  // Exactly these jobs -- the runs behind a node grouping jobs with the same inputs
+  // and outputs (metadata.jobs_query). Sent repeated (`job_ids=a&job_ids=b`), the
+  // form FastAPI reads; keep a request to a page-sized slice so the URL stays short.
+  job_ids?: string[]
+  limit?: number
+  offset?: number
+}): Promise<LineageJobsResult> {
+  const { data } = await client.get<LineageJobsResult>('/lineage/jobs', {
+    params,
+    paramsSerializer: { indexes: null },
+  })
+  return data
+}
+
+// ── One lineage job with its full content (GET /lineage/jobs/{job_id}) ─────────
+
+// A job from the listing plus what its own store holds: the lineage job table,
+// this server's build and target run, or W&B (`job_store`). `build` and `target`
+// are raw, in the shape GET /builds/{id}/status uses; `detail` holds the large
+// payloads (step configs redacted). When the store could not answer,
+// `detail_available` is false and `detail_error` says why.
+export interface LineageJobDetail extends LineageJobEntry {
+  job_store: 'lineage_job' | 'targets' | 'wandb' | 'other' | string
+  detail: Record<string, unknown>
+  build_id: string | null
+  build: Build | null
+  target: BuildTargetRun | null
+  origin_url: string
+  detail_available: boolean
+  detail_error: string | null
+  // True when the detail was withheld because the caller may not read the job or
+  // its build, as opposed to the store failing to answer.
+  detail_denied?: boolean
+}
+
+export async function getLineageJobDetail(jobId: string): Promise<LineageJobDetail> {
+  const { data } = await client.get<Record<string, unknown>>(`/lineage/jobs/${encodeURIComponent(jobId)}`)
+  const raw = data as unknown as LineageJobDetail & { build: Record<string, unknown> | null; target: Record<string, unknown> | null }
+  return {
+    ...raw,
+    build: raw.build ? adaptBuild(raw.build) : null,
+    target: raw.target ? adaptTargetRun(raw.target) : null,
+  }
+}
+
+export async function getLineageGraph(params: {
+  uri?: string
+  job_id?: string
+  // Seed from exactly these jobs -- the runs behind a grouped node
+  // (metadata.jobs_query.job_ids). Sent in a POST body: in a query string a few
+  // hundred ids overrun proxy URL limits (414), and splitting them across requests
+  // would group the runs per request instead of across the whole set.
+  job_ids?: string[]
+  direction?: string
+  depth?: number
+  // Fold jobs with the same input and output into one node (server default true);
+  // false returns one node per job.
+  group_runs?: boolean
+}): Promise<LineageGraphResult> {
+  if (params.job_ids?.length) {
+    const { depth, ...rest } = params
+    const { data } = await client.post<LineageGraphResult>(
+      '/lineage/graph',
+      { ...rest, max_depth: depth },
+      { timeout: 45_000 },
+    )
+    return data
+  }
+  const { data } = await client.get<LineageGraphResult>('/lineage/graph', {
+    params,
+    paramsSerializer: { indexes: null },
+    timeout: 45_000,
+  })
   return data
 }

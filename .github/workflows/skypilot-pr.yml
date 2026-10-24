@@ -16,7 +16,9 @@ jobs:
           python-version: '3.11'
 
       - name: Install standalone dependencies
-        run: pip install -e ".[standalone,dev]"
+        run: |
+          make venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Run skypilot tests
         run: make cicd-skypilot-pr

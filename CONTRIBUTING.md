@@ -20,10 +20,10 @@ Thank you for your interest in contributing to Granite.Build! This guide covers 
 2. Create the virtual environment:
 
    ```bash
-   make standalone-venv
+   make venv
    ```
 
-   This installs the project in editable mode with standalone and development dependencies. No external package registry access is needed.
+   This installs the project in editable mode with the standalone, third-party (SkyPilot, Kubernetes, Docker) and development dependencies. IBM developers who need the IBM-only dependencies use `make ibm-venv` instead (requires `ARTIFACTORY_USER` / `ARTIFACTORY_API_KEY`). `make venv` needs no IBM Artifactory access, but it does download from PyPI and builds the SkyPilot fork from GitHub.
 
 3. Activate the virtual environment:
 

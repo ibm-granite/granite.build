@@ -3,9 +3,9 @@ granite.build:
   # Single command-step target on BlueVela SLURM (via Skypilot) that runs the
   # command INSIDE a container (command_config.image is set, so image_id resolves
   # to docker:<image>) — the SLURM containerized path, which needs the Pyxis SPANK
-  # plugin that BlueVela provides. The command is submitted to the `gpu-mid`
-  # partition, which comes from the environment's `zone: gpu-mid` (composed by
-  # gbserver into infra=slurm/bluevela/gpu-mid) — no partition is set here.
+  # plugin that BlueVela provides. The command is CPU-only, so the step sets
+  # `zone: cpu` (composed by gbserver into infra=slurm/bluevela/cpu), overriding
+  # the environment's default `zone: gpu-mid`, which rejects GPU-less jobs.
   #
   # This target uses hf:// URIs for its main input and output, so buildrunner
   # auto-queues REAL HuggingFace pull/push steps around the command: the input
@@ -50,6 +50,16 @@ granite.build:
           config:
             # Fast completion detection for the test (base skypilot default 300s).
             poll_interval_seconds: 5
+            # This command needs no GPU, and bluevela rejects GPU-less jobs on
+            # gpu-mid ("This job requests no GPUs, so it cannot run in gpu-mid").
+            # Only the build knows whether a command needs a GPU, so pick the
+            # partition here: override the env's zone (gpu-mid) with the `cpu`
+            # partition and drop the env-wide `constraint: h200`, exactly as the
+            # environment does for its own hfpull/hfpush steps.
+            zone: cpu
+            launcher_config:
+              sbatch_options:
+                constraint: null
             command_config:
               image: quay.io/itsme/debian:slim
               # Writes a REAL file so the hf push has something to upload (an
@@ -65,13 +75,12 @@ granite.build:
                 pwd=$(pwd);
                 test -e "{{ bindings.hf_input.binding.path }}";
                 mkdir -p out out2;
-                echo "slurm-run target on bluevela gpu-mid partition";
+                echo "slurm-run target on bluevela cpu partition";
                 echo "hf input path: {{ bindings.hf_input.binding.path }}";
                 echo "env fs input path: {{ bindings.env_input.binding.path }}";
                 echo '{"artifact": "hf_output", "produced_by": "slurm-run"}' > out/result.json;
                 echo '{"artifact": "env_output", "produced_by": "slurm-run"}' > out2/result.json;
                 echo "GB_ARTIFACT_ID:hf_output GB_ARTIFACT_PATH:$pwd/out";
                 echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:$pwd/out2"
-            # No launcher_config.resources.cluster or zone: the environment's
-            # cluster (bluevela) and zone (gpu-mid) resolve the infra. Set
-            # `zone` here (or in the environment) to target a different partition.
+            # The environment's cluster (bluevela) resolves the infra; the
+            # `zone: cpu` above picks the partition.

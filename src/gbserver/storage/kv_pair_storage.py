@@ -49,6 +49,19 @@ class IKeyValuePairStorage(IItemStorage[StoredKeyValuePair]):
         """Set (upsert) the JSON value stored under ``key``."""
         raise NotImplementedError
 
+    def compare_and_set(
+        self, key: str, expected: Optional[Dict[str, Any]], value: Dict[str, Any]
+    ) -> bool:
+        """Set ``value`` only if ``key`` still holds ``expected`` (``None``: unset).
+
+        Returns whether it was written. This default reads then writes; a backend
+        that can makes the check and the write one statement.
+        """
+        if self.get_value(key) != expected:
+            return False
+        self.set_value(key, value)
+        return True
+
 
 class BaseKeyValuePairStorage(
     BaseItemStorage[StoredKeyValuePair], IKeyValuePairStorage

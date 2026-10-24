@@ -64,7 +64,7 @@ def test_masks_common_secret_key_names():
 @pytest.mark.standalone
 def test_non_secret_keys_pass_through():
     """Operational keys (e.g. commit_hash) are returned unchanged."""
-    data = {"commit_hash": "deadbeef", "uri": "space://steps/byoc", "count": 3}
+    data = {"commit_hash": "deadbeef", "uri": "space://steps/misc/byoc", "count": 3}
     assert redact_sensitive(data) == data
 
 
@@ -130,7 +130,7 @@ def test_scrub_url_credentials_leaves_clean_urls_untouched():
     """
     for clean in (
         "https://github.com/org/repo.git",
-        "space://steps/byoc",
+        "space://steps/misc/byoc",
         "https://github.com/org/repo/path@ref",  # @ after a path segment, not userinfo
         "git+ssh://git@github.com/org/repo.git",  # bare username, no password
         "https://ghp_TOKEN@github.com/org/repo",  # token-as-username, no ':' (see caveat)

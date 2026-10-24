@@ -16,27 +16,24 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
-from urllib.parse import urlparse
+from typing import Annotated, Any, Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict
+from fastapi import FastAPI, HTTPException, Query, Request, status
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from gbserver.api.build_files_paths import authorize_build_read_access
-from gbserver.api.utils import has_space_member_access
-from gbserver.lineage.openlineage_models import (
-    ArtifactGraphRequest,
-    ArtifactGraphResponse,
-    ArtifactRunEntry,
-)
+from gbserver.api.utils import has_space_member_access, is_super_admin
 from gbserver.lineage.openlineage_models import LineageEvent as OpenLineageEvent
 from gbserver.lineage.openlineage_models import (
-    LineageNodeRef,
+    LineageGraphResponse,
+    LineageJobDetail,
+    LineageJobsResponse,
+    LineageQueryRequest,
     PaginatedResponse,
     TagSearchRequest,
 )
 from gbserver.lineage.openlineage_service import LineageService, LineageServiceFactory
-from gbserver.lineage.openlineage_utils import parse_hf_url
+from gbserver.lineage.walk import DEFAULT_MAX_NODES_PER_LEVEL
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
@@ -51,34 +48,23 @@ logger = get_logger(__name__)
 # accessible fraction is a tiny sliver of a huge global result set.
 _SEARCH_SCAN_BACKEND_PAGE_SIZE = 100
 _SEARCH_SCAN_MAX_BACKEND_ITEMS = 2000
-
-
-def _uri_from_url(url: Optional[str]) -> Optional[str]:
-    """Derive an hf:// URI from a huggingface.co URL."""
-    if not url:
-        return None
-    try:
-        parsed = urlparse(url)
-        host = parsed.hostname or "huggingface.co"
-        org, name, artifact_type = parse_hf_url(url)
-        type_part = f"{artifact_type}s/" if artifact_type != "model" else ""
-        return f"hf://{host}/{type_part}{org}/{name}"
-    except Exception:
-        return url
+# The deepest walk a caller who is not a super admin may ask for on /graph.
+_USER_MAX_DEPTH = 20
+# The same cap LineageQueryRequest.job_ids applies to the graph.
+_MAX_JOB_IDS = 1000
 
 
 def get_redacted_job_input_params(source: dict) -> dict:
     """Read ``job_input_params`` from a run mapping, redacted for the read path.
 
-    Both member-readable lineage read endpoints (``search_lineage_events`` and
-    ``get_artifact_graph``) must mask this facet unconditionally: the write-side
-    builder (``wandb_jobstats._build_events_for_target``) already masks secret-named
-    keys, but going through this single accessor guarantees the two paths stay
-    consistent and also protects any row persisted before that write-side masking
-    landed. Non-secret step data (e.g. a ``commit_hash``) surfaces intact;
+    The member-readable ``search_lineage_events`` endpoint must mask this facet
+    unconditionally: the write-side builder
+    (``wandb_jobstats._build_events_for_target``) already masks secret-named keys,
+    but going through this single accessor also protects any row persisted before
+    that write-side masking landed. Non-secret step data (e.g. a ``commit_hash``) surfaces intact;
     ``redact_sensitive`` is idempotent, so re-masking an already-masked row is safe.
 
-    :param source: a run's facets (search path) or metadata (graph path) mapping.
+    :param source: a run's facets mapping.
     :returns: the ``job_input_params`` mapping with secret-named values redacted,
         or an empty dict when the key is absent/empty.
     """
@@ -117,7 +103,7 @@ class BuildJobStatsResponse(BaseModel):
     target_ids: list[str]
 
 
-@lineage_api.get("/build/{build_id}")
+@lineage_api.get("/build/{build_id}", tags=["gb admin"])
 def get_build_jobstats(request: Request, build_id: str) -> BuildJobStatsResponse:
     """Get JobStats for all targets in a build.
 
@@ -172,7 +158,7 @@ def get_build_jobstats(request: Request, build_id: str) -> BuildJobStatsResponse
     )
 
 
-@lineage_api.get("/target/{target_id}")
+@lineage_api.get("/target/{target_id}", tags=["gb admin"])
 def get_target_jobstats(request: Request, target_id: str) -> TargetJobStatsResponse:
     """Get JobStats for a target run, grouped by output artifact name.
 
@@ -226,16 +212,54 @@ def _get_openlineage_service() -> LineageService:
     return _openlineage_service
 
 
-@lineage_api.post("/")
+_index_service = None
+
+
+def _get_index_service():
+    """The reader of ``gb_lineage_index``, whatever the configured provider.
+
+    The ``lineage-index`` routes read the index directly: the lineage-indexer
+    fills it from ``gb_targets`` or the lineage store, so it has data even when
+    the provider is ``wandb`` or ``none``.
+    """
+    global _index_service
+    if _index_service is None:
+        # Deferred: importing the DB service at module scope would pull the storage
+        # layer into every environment that never serves these routes.
+        # pylint: disable=import-outside-toplevel
+        from gbserver.lineage.db_service import DBLineageService
+
+        _index_service = DBLineageService()
+    return _index_service
+
+
+@lineage_api.post("/", tags=["lineage store"])
 def ingest_lineage_event(event: OpenLineageEvent):
+    """Write one OpenLineage event to the configured lineage store.
+
+    **Known risk: no authorization.** Any caller who reaches the API can write an
+    event, and nothing ties its namespace, owner or tags to the caller. Under the
+    ``wandb`` provider the event becomes a W&B run, and the W&B lineage indexer
+    reads every run of the project, so an injected event shows up in the global
+    ``GET /lineage/graph`` trace (which is not filtered per space by design). It
+    cannot reach space-gated detail: ``GET /lineage/jobs/{id}`` checks the
+    caller's access before returning owner, namespace or tags.
+    """
     service = _get_openlineage_service()
     service.emit_event(event.model_dump())
     return {"status": "accepted"}
 
 
-@lineage_api.post("/search")
+@lineage_api.post("/search", tags=["lineage store"], deprecated=True)
 def search_lineage_events(request: Request, body: TagSearchRequest):
     """Search lineage runs by tag.
+
+    **Deprecated.** Kept only for existing external callers (dmg-ng); nothing in
+    granite.build (frontend, gbcli, gbmcp) calls it. New callers should resolve
+    lineage through the index routes: ``GET /lineage/jobs`` to list jobs (by
+    ``tag`` for what this route answered) and ``GET /lineage/graph?job_ids=...``
+    for their lineage. It will be removed once
+    those callers have migrated.
 
     An empty tag list matches every run in the shared lineage backend across
     all spaces, so results are access-filtered below. search_lineage_by_tags
@@ -268,9 +292,18 @@ def search_lineage_events(request: Request, body: TagSearchRequest):
                 body.tags,
             )
             break
-        backend_total, page_results = service.search_lineage_by_tags(
-            body.tags, _SEARCH_SCAN_BACKEND_PAGE_SIZE, backend_offset
-        )
+        try:
+            backend_total, page_results = service.search_lineage_by_tags(
+                body.tags, _SEARCH_SCAN_BACKEND_PAGE_SIZE, backend_offset
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Lineage tag search failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Lineage search is unavailable",
+            ) from exc
         if not page_results:
             break
         for result in page_results:
@@ -283,8 +316,7 @@ def search_lineage_events(request: Request, body: TagSearchRequest):
             if not has_access:
                 continue
             # Redact on the read path via the shared accessor (see
-            # get_redacted_job_input_params) so this and the artifact-graph path
-            # stay consistent.
+            # get_redacted_job_input_params).
             run_facets["job_input_params"] = get_redacted_job_input_params(run_facets)
             accessible.append(result)
         backend_offset += len(page_results)
@@ -299,154 +331,317 @@ def search_lineage_events(request: Request, body: TagSearchRequest):
     )
 
 
-@lineage_api.post("/artifact")
-def get_artifact_graph(request: Request, body: ArtifactGraphRequest):
-    """Get the lineage DAG for an artifact, traversing downstream or upstream.
+# A GET with filters is what a UI wants for a shareable, bookmarkable lineage view,
+# and every filter here maps to an indexed text column, so there is no shape a
+# caller can ask for that forces a scan. The POST form below exists only for
+# ``job_ids``: a grouped node of a few hundred runs overruns proxy URL limits in a
+# query string.
+@lineage_api.get("/graph", tags=["lineage-index"])
+def query_lineage_graph_get(
+    request: Request,
+    uri: Optional[str] = None,
+    job_id: Optional[str] = None,
+    job_ids: Annotated[Optional[list[str]], Query()] = None,
+    direction: str = "both",
+    depth: int = 10,
+    max_nodes_per_level: Optional[int] = None,
+    group_runs: bool = True,
+) -> LineageGraphResponse:
+    """Query the lineage graph by URI, by job(s), or both; one of them is required.
 
-    Runs are looked up by artifact name/url in the external lineage backend,
-    which is not itself space-scoped, so results can span multiple spaces —
-    each run is filtered below to the caller's own runs or spaces they belong
-    to, rather than gating the whole request on a single space.
+    The HTTP surface for :func:`query_lineage_graph`; see it for the semantics.
+    ``job_ids`` is repeated (``?job_ids=a&job_ids=b``).
     """
-    if body.direction not in ("downstream", "upstream", "both"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="direction must be 'downstream', 'upstream', or 'both'",
-        )
-
-    if not body.artifact_name and not body.artifact_url:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Either artifact_name or artifact_url must be provided",
-        )
-
-    service = _get_openlineage_service()
     try:
-        result = service.get_artifact_graph(
-            artifact_name=body.artifact_name,
-            artifact_url=body.artifact_url,
-            artifact_type=body.artifact_type,
-            max_depth=body.max_depth,
+        body = LineageQueryRequest(
+            uri=uri,
+            job_id=job_id,
+            job_ids=job_ids,
+            direction=direction,
+            max_depth=depth,
+            max_nodes_per_level=max_nodes_per_level,
+            group_runs=group_runs,
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=exc.errors(include_url=False, include_context=False),
+        ) from exc
+    return query_lineage_graph(request, body)
+
+
+@lineage_api.post("/graph", tags=["lineage-index"])
+def query_lineage_graph_post(
+    request: Request, body: LineageQueryRequest
+) -> LineageGraphResponse:
+    """The GET form with the query in a body, for a ``job_ids`` list too long for
+    a URL. One walk over every id, so the runs are grouped across the whole set and
+    the per-level cap and ``job_ids`` limit apply to the expansion as a whole.
+    """
+    return query_lineage_graph(request, body)
+
+
+def query_lineage_graph(
+    request: Request, body: LineageQueryRequest
+) -> LineageGraphResponse:
+    """Query the lineage graph seeded by an artifact, a job, or both.
+
+    One entry point so a caller asks however it holds the artifact rather than the
+    index dictating a lookup shape:
+
+    - ``uri`` -- that artifact's lineage, up and down. Any spelling: a browser URL
+      and the runtime's own URI normalize to one artifact.
+    - ``job_id`` -- seeded from every endpoint of that execution.
+    - both -- the union of their seeds.
+
+    - ``job_ids`` -- each of several executions: the jobs behind a grouped node.
+
+    One of them is required -- a 422 otherwise: a graph needs somewhere to start. A
+    bad ``direction`` or an out-of-range limit is a 422 too.
+
+    This returns the node/edge graph directly, with a ``depth`` per node. It also
+    never 404s: an empty graph means "nothing recorded", which is a real answer, and a
+    caller must not render it as an error. A storage failure is a 503, never an
+    empty graph.
+
+    There is no ``build_id`` filter. The index has no such column -- a build is a
+    granite.build process concept, absent from every imported row -- and a
+    build-scoped view goes through ``GET /lineage/build/{id}``, which resolves the
+    build outside the index and seeds this same walk.
+
+    Reads the lineage index directly, whatever the configured provider.
+
+    **The graph is cross-space and is NOT filtered per space.** That is deliberate,
+    and it is the one design decision here worth stating twice.
+
+    A lineage graph carries no access to anything. What any caller sees:
+
+    - artifact nodes: ``id`` (the normalized URI), ``name``, ``artifact_type``,
+      ``depth``, ``is_root`` and ``metadata.uri``;
+    - run nodes: ``id``, ``name`` and, in ``metadata``, ``job_id``, ``job_name``,
+      ``job_type``, ``job_status``, ``job_started_at``, ``job_completed_at``,
+      ``category`` and ``source_system``; grouped nodes add ``run_count`` and
+      ``jobs_query``, ``representative_job_id``, ``source_uri`` and ``target_uri``
+      (the first input and output, the terminal marker for an empty side); a node grouping
+      jobs with the same inputs and outputs also adds ``source_uris`` and
+      ``target_uris``;
+    - the edges.
+
+    Owner, namespace and tags are never on the graph. ``job_id`` is a global
+    identifier: the graph needs one to name a run, and for a granite.build job it
+    is the target-run uuid, so neither is treated as secret. A single run node gets
+    ``metadata.gb_build_id`` only when the caller passes the space check
+    ``GET /lineage/jobs/{id}`` applies to that job (:func:`_can_read_job`) -- an id
+    the caller could read there anyway; ``metadata.gb_target_run_uuid`` rides along
+    with it for the dashboard's build drawer, not as a gated field. Reading a
+    model, pulling a dataset or fetching a step config each needs its own
+    authorized call, none of which route through here.
+
+    The walk is bounded: a caller who is not a super admin is held to
+    ``depth <= 20`` and the default per-level ceiling
+    (:data:`~gbserver.lineage.walk.DEFAULT_MAX_NODES_PER_LEVEL`); a super admin
+    may raise ``max_nodes_per_level`` up to the absolute ceiling.
+
+    Filtering it would break the question lineage exists to answer. A chain almost
+    always crosses spaces -- a shared curated dataset, a platform-team base model --
+    so pruning nodes from spaces the caller cannot read makes "what was my model
+    trained on?" silently unanswerable: the graph would look complete while stopping
+    at the space boundary. A truthful partial answer is not available here, only a
+    misleading one.
+
+    The accepted cost: artifact URIs, job names and statuses are visible across
+    spaces. That is
+    broader than ``GET /artifacts/``, which narrows to the caller's spaces via
+    ``scope_space_name_filter``. Provenance is judged worth that asymmetry -- so if
+    an artifact URI or a job name is ever itself a secret, this route is the wrong
+    place to keep it.
+    """
+    if not body.uri and not body.job_id and not body.job_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="One of uri, job_id or job_ids must be provided",
+        )
+    if not is_super_admin(request):
+        if body.max_depth > _USER_MAX_DEPTH:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"depth must be at most {_USER_MAX_DEPTH}",
+            )
+        if (body.max_nodes_per_level or 0) > DEFAULT_MAX_NODES_PER_LEVEL:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"max_nodes_per_level must be at most {DEFAULT_MAX_NODES_PER_LEVEL}"
+                ),
+            )
+    service = _get_index_service()
+
+    try:
+        result = service.query_graph(
+            uri=body.uri,
+            job_id=body.job_id,
+            job_ids=body.job_ids,
             direction=body.direction,
+            max_depth=body.max_depth,
+            max_nodes_per_level=body.max_nodes_per_level,
+            group_runs=body.group_runs,
+            authorize_job=lambda entry: _can_read_job(request, entry),
         )
     except ValueError as e:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(e),
-        )
+        ) from e
+    except HTTPException:
+        # Raised on purpose (e.g. from the authorization callback): not a storage
+        # failure, so it keeps its own status.
+        raise
+    except Exception as e:
+        logger.exception("Lineage graph query failed")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The lineage index could not be read",
+        ) from e
 
-    if result is None:
-        identifier = body.artifact_name or body.artifact_url
+    return LineageGraphResponse(
+        root_id=result.get("root_id", ""),
+        nodes=result.get("nodes", []),
+        edges=result.get("edges", []),
+        truncated=result.get("truncated", False),
+        unexpanded=result.get("unexpanded", 0),
+    )
+
+
+@lineage_api.get("/jobs", tags=["lineage-index"])
+def list_lineage_jobs(
+    request: Request,
+    uri: Optional[str] = None,
+    job_id: Optional[str] = None,
+    self_loop: bool = False,
+    output: Optional[str] = None,
+    terminal: Optional[Literal["input", "output"]] = None,
+    job_ids: Annotated[Optional[list[str]], Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> LineageJobsResponse:
+    """List the job executions matching every given filter, paged.
+
+    Filters AND together. ``uri``, ``job_id`` or ``job_ids`` is required -- the route answers
+    422 otherwise: an unfiltered listing would aggregate the whole index.
+
+    - ``uri`` -- jobs that consumed or produced the artifact. The drill-down for a
+      graph node's ``run_count``: the graph collapses an artifact's in-place
+      rewrites into one node, and this lists them.
+    - ``job_id`` -- one execution.
+    - ``job_ids`` (repeated) -- those executions: the runs behind a graph node
+      grouping jobs with the same inputs and outputs, as its ``jobs_query`` lists
+      them. A client pages a long list itself, a slice per request.
+    - ``self_loop`` (with ``uri``) -- only the jobs that rewrote the artifact in
+      place (same source and target): the runs behind its looped graph node.
+    - ``output`` (with ``uri``) -- only the jobs that read ``uri`` and wrote
+      ``output``: the runs behind a graph node grouping same-signature jobs.
+    - ``terminal`` (with ``uri``) -- ``input``: only the jobs that wrote ``uri`` with
+      no recorded input; ``output``: only those that read it with no recorded
+      output. The runs behind a grouped node with one empty side.
+
+    Each entry carries only the global fields (``job_id``, ``source_system``,
+    ``status``, ``started_at``, ``inputs``, ``outputs`` and the trimmed ``job``
+    group; see ``db_responses.GLOBAL_JOB_FIELDS``): owner, namespace, tags and origin
+    ids are returned by ``GET /lineage/jobs/{id}`` behind the space check. A tag
+    search is ``POST /lineage/search``.
+
+    ``limit`` is ``1..1000``, ``offset`` ``>= 0`` and ``job_ids`` at most 1000 ids
+    -- the cap ``LineageQueryRequest`` applies to the graph (422 otherwise). A storage
+    failure is a 503, never an empty page that would read as "no jobs".
+
+    A GET because every filter is a scalar or a flat list; there is nothing a body
+    would carry that a query string cannot, and a GET stays linkable and cacheable.
+
+    Paged rather than capped, unlike the graph: a flat list has no shape to
+    preserve. ``total`` is the unpaged count of distinct jobs.
+
+    Reads the lineage index directly, whatever the configured provider. Cross-space
+    by the same decision as the graph -- see :func:`query_lineage_graph` for why a
+    lineage answer is not filtered per space, and what that costs.
+    """
+    if not uri and not job_id and not job_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="One of 'uri', 'job_id' or 'job_ids' is required",
+        )
+    if job_ids and len(job_ids) > _MAX_JOB_IDS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"job_ids must list at most {_MAX_JOB_IDS} ids",
+        )
+    service = _get_index_service()
+
+    try:
+        result = service.list_jobs(
+            job_ids=job_ids,
+            uri=uri,
+            job_id=job_id,
+            limit=limit,
+            offset=offset,
+            self_loop=self_loop,
+            output=output,
+            terminal=terminal,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)
+        ) from e
+    except HTTPException:
+        # Raised on purpose (e.g. from the authorization callback): not a storage
+        # failure, so it keeps its own status.
+        raise
+    except Exception as e:
+        logger.exception("Lineage job listing failed")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The lineage index could not be read",
+        ) from e
+    return LineageJobsResponse(**result)
+
+
+@lineage_api.get("/jobs/{job_id:path}", tags=["lineage-index"])
+def get_lineage_job_detail(request: Request, job_id: str) -> LineageJobDetail:
+    """One job execution with its full content, from wherever it is stored.
+
+    The listing (``GET /jobs``) carries only what the index rows hold. This follows
+    the rows' ``job_store`` to the job's own store -- the lineage job table, this
+    server's builds and target runs, or W&B -- and returns one shape for all of them.
+
+    404 only when the index has no such job. A store that cannot answer (build not
+    on this server, run deleted, no read access to the build) still returns 200,
+    with ``detail_available`` false and ``detail_error`` saying why. A build's step
+    configs and target run are returned only to callers who may read that build.
+    """
+    detail = _get_index_service().get_job_detail(
+        job_id,
+        authorize_build=lambda build: authorize_build_read_access(request, build),
+        authorize_entry=lambda entry: _can_read_job(request, entry),
+    )
+    if detail is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Artifact not found: {identifier}",
+            detail=f"Job {job_id} not found in the lineage index",
         )
+    return LineageJobDetail(**detail)
 
-    nodes = result.get("nodes", [])
-    edges = result.get("edges", [])
 
-    nodes_by_id = {node["id"]: node for node in nodes}
-    run_nodes = [n for n in nodes if n.get("node_type") == "run"]
+def _can_read_job(request: Request, entry: dict) -> bool:
+    """Whether the caller may read a job's space-gated fields, given its entry.
 
-    runs: list[ArtifactRunEntry] = []
-    for run in run_nodes:
-        node_id = run["id"]
-        metadata = run.get("metadata") or {}
-        tags = run.get("tags") or []
-
-        inputs: list[LineageNodeRef] = []
-        outputs: list[LineageNodeRef] = []
-        for edge in edges:
-            if edge["target"] == node_id:
-                source_node = nodes_by_id.get(edge["source"], {})
-                node_type = source_node.get("node_type", "")
-                if node_type == "artifact":
-                    source_meta = source_node.get("metadata") or {}
-                    uri = source_meta.get("uri") or _uri_from_url(
-                        source_meta.get("url")
-                    )
-                    inputs.append(
-                        LineageNodeRef(
-                            node_type="artifact",
-                            name=source_node.get("name", edge["source"]),
-                            uri=uri,
-                            url=source_meta.get("url"),
-                        )
-                    )
-                elif node_type == "run":
-                    source_meta = source_node.get("metadata") or {}
-                    inputs.append(
-                        LineageNodeRef(
-                            node_type="run",
-                            name=source_node.get("name", ""),
-                            run_id=source_meta.get("run_id"),
-                            job_name=source_meta.get("job_name"),
-                        )
-                    )
-            elif edge["source"] == node_id:
-                target_node = nodes_by_id.get(edge["target"], {})
-                node_type = target_node.get("node_type", "")
-                if node_type == "artifact":
-                    target_meta = target_node.get("metadata") or {}
-                    uri = target_meta.get("uri") or _uri_from_url(
-                        target_meta.get("url")
-                    )
-                    outputs.append(
-                        LineageNodeRef(
-                            node_type="artifact",
-                            name=target_node.get("name", edge["target"]),
-                            uri=uri,
-                            url=target_meta.get("url"),
-                        )
-                    )
-                elif node_type == "run":
-                    target_meta = target_node.get("metadata") or {}
-                    outputs.append(
-                        LineageNodeRef(
-                            node_type="run",
-                            name=target_node.get("name", ""),
-                            run_id=target_meta.get("run_id"),
-                            job_name=target_meta.get("job_name"),
-                        )
-                    )
-
-        entry = ArtifactRunEntry(
-            job_name=metadata.get("job_name") or run.get("name", ""),
-            job_namespace=metadata.get("job_namespace") or "",
-            job_type=metadata.get("job_type") or "",
-            run_id=metadata.get("run_id") or "",
-            created_at=metadata.get("created_at") or "",
-            status=metadata.get("state") or "",
-            tags=tags,
-            inputs=inputs,
-            outputs=outputs,
-            job_id=metadata.get("job_id") or "",
-            job_status=metadata.get("job_status") or "",
-            job_started_at=metadata.get("job_started_at") or "",
-            job_completed_at=metadata.get("job_completed_at") or "",
-            release_id=metadata.get("release_id") or "",
-            category=metadata.get("category") or "",
-            owner=metadata.get("owner") or "",
-            source_code_details=metadata.get("source_code_details") or {},
-            # Redact on the read path via the shared accessor, matching
-            # search_lineage_events above (both endpoints are member-readable).
-            job_input_params=get_redacted_job_input_params(metadata),
-            execution_stats=metadata.get("execution_stats") or {},
-            job_output_stats=metadata.get("job_output_stats") or {},
-        )
-        # job_namespace is written as f"{space_name}/{build_name}" (see
-        # wandb_jobstats._build_events_for_target); split on the first "/"
-        # to recover the space and drop runs from spaces the caller can't
-        # access. Runs missing both an owner and a namespace fail closed.
-        run_space_name = entry.job_namespace.split("/", 1)[0]
-        has_access, _ = has_space_member_access(
-            request, username_on_target=entry.owner, space_name=run_space_name
-        )
-        if has_access:
-            runs.append(entry)
-
-    return ArtifactGraphResponse(
-        root_id=result["root_id"],
-        runs=runs,
-        truncated=result["truncated"],
-    )
+    The one access rule for a granite.build job beyond the global trace: space
+    membership off the job's owner and ``space_name`` (the namespace's first
+    segment). ``GET /lineage/jobs/{id}`` gates its detail on it and
+    ``GET /lineage/graph`` gates the build and target-run ids of a run node on it,
+    through this one function so the two cannot drift. A job with no namespace (an
+    import) fails closed.
+    """
+    return has_space_member_access(
+        request,
+        username_on_target=entry.get("owner", ""),
+        space_name=entry.get("space_name", ""),
+    )[0]
