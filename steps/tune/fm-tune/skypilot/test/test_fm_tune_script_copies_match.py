@@ -110,14 +110,25 @@ _BAD = [
         {"validation_file": "/abs/v.jsonl"},
         "validation_file must be a relative path inside the dataset",
     ),
+    (
+        {"validation_file": "/v"},
+        "validation_file must be a relative path inside the dataset",
+    ),
     ({"source": dict(_SRC, path="/a", repo="https://g/r.git")}, "set exactly one of"),
     ({"source": _SRC}, "set exactly one of"),
     ({"model": ""}, "set fm_tune_config.model or bind the base_model input"),
     ({"run_name": "a b"}, "run_name must match ^[A-Za-z0-9._-]+$"),
     ({"run_name": "\u00e9t\u00e9"}, "run_name must match ^[A-Za-z0-9._-]+$"),
+    ({"run_name": "a/b"}, "run_name must match ^[A-Za-z0-9._-]+$"),
     ({"config_name": "a/b"}, "config_name must match ^[A-Za-z0-9._-]+$"),
+    ({"config_name": "a b"}, "config_name must match ^[A-Za-z0-9._-]+$"),
     ({"source": dict(_SRC, repo="-x")}, "source.repo must not start with '-'"),
+    (
+        {"source": dict(_SRC, repo="--upload-pack=x")},
+        "source.repo must not start with '-'",
+    ),
     ({"source": dict(_SRC, path="/a", ref="-x")}, "source.ref must not start with '-'"),
+    ({"source": dict(_SRC, path="/a", ref="-u")}, "source.ref must not start with '-'"),
     # fm-tune's pipeline.py raises once training starts, after clone and venv.
     (
         {"tuning_algo": "", "rl_algo": ""},
@@ -286,3 +297,76 @@ def test_both_layers_accept_the_same_good_values(layers, over):
     render("skypilot", over)
     proc = script(over)
     assert proc.returncode == 0, proc.stderr
+
+
+# The validate macro's type checks, which only the render can make (the script gets
+# flat strings). One copy here, over both templates: the macro text is shared.
+_SCALAR_KEYS = [
+    "extra",
+    "model",
+    "train_file",
+    "validation_file",
+    "tuning_algo",
+    "rl_algo",
+    "run_name",
+    "autotune",
+    "backend",
+    "seed",
+    "config_preset",
+    "config_name",
+    "output_path",
+    "extra_args",
+    "python",
+]
+
+
+@pytest.mark.parametrize("env", ["bash", "skypilot"])
+@pytest.mark.parametrize("key", _SCALAR_KEYS)
+@pytest.mark.parametrize("bad", [[1, 2], {"a": 1}])
+def test_a_list_or_mapping_for_a_scalar_key_fails_the_fill(layers, env, key, bad):
+    render_error, _, _ = layers
+    assert render_error(env, {key: bad}) == (
+        f"fm-tune: fm_tune_config.{key} must be a scalar (string/number/bool), "
+        "got a list/mapping; write it as a string"
+    )
+
+
+@pytest.mark.parametrize("env", ["bash", "skypilot"])
+@pytest.mark.parametrize("key", ["path", "repo", "ref", "subdir"])
+def test_a_list_for_a_source_key_fails_the_fill(layers, env, key):
+    render_error, _, _ = layers
+    src = dict(_SRC, path="/a")
+    src[key] = ["x"]
+    msg = render_error(env, {"source": src})
+    assert f"fm_tune_config.source.{key} must be a scalar" in msg, msg
+
+
+@pytest.mark.parametrize("env", ["bash", "skypilot"])
+@pytest.mark.parametrize("key", ["server_url", "job_id"])
+def test_a_mapping_for_an_autotunex_key_fails_the_fill(layers, env, key):
+    render_error, _, _ = layers
+    ax = {"server_url": "", "job_id": "", key: {"a": 1}}
+    msg = render_error(env, {"autotunex": ax})
+    assert f"fm_tune_config.autotunex.{key} must be a scalar" in msg, msg
+
+
+@pytest.mark.parametrize("env", ["bash", "skypilot"])
+@pytest.mark.parametrize("key", ["source", "autotunex"])
+@pytest.mark.parametrize("bad", [None, "x", ["a"], 3])
+def test_a_source_or_autotunex_that_is_not_a_mapping_fails_with_a_named_error(
+    layers, env, key, bad
+):
+    """Checked before anything reads source.* / autotunex.*: no bare UndefinedError."""
+    render_error, _, _ = layers
+    msg = render_error(env, {key: bad})
+    assert msg.startswith(f"fm-tune: fm_tune_config.{key} must be a mapping"), msg
+
+
+@pytest.mark.parametrize("env", ["bash", "skypilot"])
+@pytest.mark.parametrize("bad", [["a"], "x", 3, True])
+def test_an_hpo_config_that_is_not_a_mapping_or_null_fails_the_fill(layers, env, bad):
+    render_error, _, _ = layers
+    msg = render_error(env, {"hpo_config": bad})
+    assert msg.startswith(
+        "fm-tune: fm_tune_config.hpo_config must be a mapping or null"
+    ), msg

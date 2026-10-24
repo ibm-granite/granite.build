@@ -70,7 +70,7 @@ environment_configs:
           # and fmtune_run.sh keeps the same checks for a direct run.
           validate: |-
             {%- macro validate(c, base_model_bound) -%}
-            {%- set ok = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-" -%}
+            {%- set name_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-" -%}
             {#- First, so no check below reads an attribute of a non-mapping. A null source or
                 autotunex is rejected, not taken as defaults: the template ships both mappings. #}
             {%- for key in ["source", "autotunex"] -%}
@@ -92,8 +92,8 @@ environment_configs:
             {%- if ([c.tuning_algo] | reject("none") | join | lower) in ["", "none"] and ([c.rl_algo] | reject("none") | join | lower) in ["", "none"] %}{{ raise_error("fm-tune: tuning_algo and rl_algo cannot both be empty or none; set tuning_algo (e.g. lora) or an online rl_algo (ppo, grpo, dapo).") }}{% endif -%}
             {%- if ([c.tuning_algo] | reject("none") | join | lower) in ["", "none"] and ([c.rl_algo] | reject("none") | join | lower) in ["dpo", "kto"] %}{{ raise_error("fm-tune: an offline rl_algo (dpo, kto) needs a tuning_algo (e.g. lora or sft).") }}{% endif -%}
             {%- if not (c.model or base_model_bound) %}{{ raise_error("fm-tune: set fm_tune_config.model or bind the base_model input.") }}{% endif -%}
-            {%- if not c.run_name or (c.run_name | string | list | reject("in", ok) | list) %}{{ raise_error("fm-tune: fm_tune_config.run_name must match ^[A-Za-z0-9._-]+$, got '" ~ (c.run_name if c.run_name is not none else "") ~ "'.") }}{% endif -%}
-            {%- if c.config_name and (c.config_name | string | list | reject("in", ok) | list) %}{{ raise_error("fm-tune: fm_tune_config.config_name must match ^[A-Za-z0-9._-]+$, got '" ~ c.config_name ~ "'.") }}{% endif -%}
+            {%- if not c.run_name or (c.run_name | string | list | reject("in", name_chars) | list) %}{{ raise_error("fm-tune: fm_tune_config.run_name must match ^[A-Za-z0-9._-]+$, got '" ~ (c.run_name if c.run_name is not none else "") ~ "'.") }}{% endif -%}
+            {%- if c.config_name and (c.config_name | string | list | reject("in", name_chars) | list) %}{{ raise_error("fm-tune: fm_tune_config.config_name must match ^[A-Za-z0-9._-]+$, got '" ~ c.config_name ~ "'.") }}{% endif -%}
             {%- for key in ["repo", "ref"] -%}
             {%- if (c.source[key] | string).startswith("-") %}{{ raise_error("fm-tune: fm_tune_config.source." ~ key ~ " must not start with '-' (git would read it as an option).") }}{% endif -%}
             {%- endfor -%}

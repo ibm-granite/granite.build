@@ -1,4 +1,4 @@
-# Spec for test_skypilot_slurm_fm_tune.py (see steps/README.md "Two test modes").
+# Spec for test_skypilot_slurm_tune_fm_tune.py (see steps/README.md "Two test modes").
 targets:
   - tune
 target_expectations:

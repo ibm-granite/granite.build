@@ -99,59 +99,6 @@ def test_an_undefined_value_fails_the_render():
         )
 
 
-_SRC = {"path": "", "repo": "", "ref": "main", "subdir": "autotunex/src/fm-tune"}
-
-
-@pytest.mark.parametrize(
-    "over, needle",
-    [
-        ({"train_file": ""}, "fm_tune_config.train_file is required"),
-        ({"validation_file": ""}, "fm_tune_config.validation_file is required"),
-        ({"train_file": "../x"}, "fm_tune_config.train_file must be a relative path"),
-        ({"train_file": ".."}, "fm_tune_config.train_file must be a relative path"),
-        (
-            {"train_file": "a/../../x"},
-            "fm_tune_config.train_file must be a relative path",
-        ),
-        (
-            {"train_file": "/abs/t.jsonl"},
-            "fm_tune_config.train_file must be a relative path",
-        ),
-        (
-            {"validation_file": "../v"},
-            "fm_tune_config.validation_file must be a relative path",
-        ),
-        (
-            {"validation_file": "/v"},
-            "fm_tune_config.validation_file must be a relative path",
-        ),
-        (
-            {"source": dict(_SRC, path="/a", repo="https://g/r.git")},
-            "exactly one of fm_tune_config.source.path",
-        ),
-        ({"source": _SRC}, "exactly one of fm_tune_config.source.path"),
-        ({"model": ""}, "set fm_tune_config.model or bind the base_model input"),
-        ({"run_name": ""}, "fm_tune_config.run_name must match"),
-        ({"run_name": "a b"}, "fm_tune_config.run_name must match"),
-        ({"run_name": "a/b"}, "fm_tune_config.run_name must match"),
-        ({"config_name": "a/b"}, "fm_tune_config.config_name must match"),
-        ({"config_name": "a b"}, "fm_tune_config.config_name must match"),
-        ({"run_name": "\u00e9t\u00e9"}, "fm_tune_config.run_name must match"),
-        (
-            {"source": dict(_SRC, repo="--upload-pack=x")},
-            "fm_tune_config.source.repo must not start with '-'",
-        ),
-        (
-            {"source": dict(_SRC, path="/a", ref="-u")},
-            "fm_tune_config.source.ref must not start with '-'",
-        ),
-    ],
-)
-def test_a_config_error_fails_the_strict_launcher_fill(over, needle):
-    msg = _render_error(over)
-    assert msg.startswith("fm-tune: ") and needle in msg, msg
-
-
 @pytest.mark.parametrize(
     "name", ["train.jsonl", "sub/dir/train.jsonl", "a..b.jsonl", "./t.jsonl"]
 )
@@ -177,23 +124,6 @@ _VAR = {
     "backend": "FMTUNE_BACKEND",
     "extra_args": "FMTUNE_EXTRA_ARGS",
 }
-_SCALAR_KEYS = [
-    "extra",
-    "model",
-    "train_file",
-    "validation_file",
-    "tuning_algo",
-    "rl_algo",
-    "run_name",
-    "autotune",
-    "backend",
-    "seed",
-    "config_preset",
-    "config_name",
-    "output_path",
-    "extra_args",
-    "python",
-]
 
 
 @pytest.mark.parametrize(
@@ -217,52 +147,10 @@ def test_zero_and_false_are_not_treated_as_null():
     assert (env["FMTUNE_SEED"], env["FMTUNE_AUTOTUNE"]) == ("0", "false")
 
 
-@pytest.mark.parametrize("key", _SCALAR_KEYS)
-@pytest.mark.parametrize("bad", [[1, 2], {"a": 1}])
-def test_a_list_or_mapping_for_a_scalar_key_fails_the_fill(key, bad):
-    msg = _render_error({key: bad})
-    assert msg == (
-        f"fm-tune: fm_tune_config.{key} must be a scalar (string/number/bool), "
-        "got a list/mapping; write it as a string"
-    )
-
-
-@pytest.mark.parametrize("key", ["path", "repo", "ref", "subdir"])
-def test_a_list_for_a_source_key_fails_the_fill(key):
-    src = dict(_VALID["source"], **{key: ["x"]})
-    assert f"fm_tune_config.source.{key} must be a scalar" in _render_error(
-        {"source": src}
-    )
-
-
-@pytest.mark.parametrize("key", ["server_url", "job_id"])
-def test_a_mapping_for_an_autotunex_key_fails_the_fill(key):
-    ax = {"server_url": "", "job_id": "", key: {"a": 1}}
-    assert f"fm_tune_config.autotunex.{key} must be a scalar" in _render_error(
-        {"autotunex": ax}
-    )
-
-
 def test_null_python_and_model_with_a_bound_base_model_render_empty():
     b = dict(_DATASET, base_model={"binding": {"path": "/staged/bm"}})
     env = _env({"python": None, "model": None}, bindings=b)
     assert env["FMTUNE_PYTHON"] == env["FMTUNE_MODEL"] == ""
-
-
-@pytest.mark.parametrize("key", ["source", "autotunex"])
-@pytest.mark.parametrize("bad", [None, "x", ["a"], 3])
-def test_a_source_or_autotunex_that_is_not_a_mapping_fails_with_a_named_error(key, bad):
-    """Checked before anything reads source.* / autotunex.*, so it is not a bare UndefinedError."""
-    msg = _render_error({key: bad})
-    assert msg.startswith(f"fm-tune: fm_tune_config.{key} must be a mapping"), msg
-
-
-@pytest.mark.parametrize("bad", [["a"], "x", 3, True])
-def test_an_hpo_config_that_is_not_a_mapping_or_null_fails_the_fill(bad):
-    msg = _render_error({"hpo_config": bad})
-    assert msg.startswith(
-        "fm-tune: fm_tune_config.hpo_config must be a mapping or null"
-    ), msg
 
 
 def test_bound_base_model_renders_its_path():

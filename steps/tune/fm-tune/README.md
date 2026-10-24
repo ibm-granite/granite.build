@@ -99,9 +99,18 @@ the exit code).
 
 ## Tests
 
-- Mode 1 (no cluster, fast): `bash/test/test_fmtune_run_sh.py` (stub `main.py`),
-  `bash/test/test_bash_fm_tune_render.py`, `skypilot/test/test_skypilot_fm_tune_render.py` and
-  `skypilot/test/test_fm_tune_script_copies_match.py`.
+- Mode 1 (no cluster, fast):
+  - `fmtune_run.sh`, against a stub `main.py`, in `bash/test/`: `test_fmtune_run_sh.py`
+    (argv, HPO config, validation), `test_fmtune_source_sh.py` (git source and cache),
+    `test_fmtune_lock_sh.py` (the cache lock) and `test_fmtune_paths_sh.py` (cache and output
+    dirs, the venv). Their shared helpers are `_fmtune_helpers.py` and the `env` fixture in
+    `conftest.py`.
+  - Each template's own mapping: `bash/test/test_bash_tune_fm_tune_render.py` and
+    `skypilot/test/test_skypilot_tune_fm_tune_render.py`.
+  - `skypilot/test/test_fm_tune_script_copies_match.py`: the shared parts, once for both
+    templates. The script copies match, the `validate` macro is the same text, and every
+    `validate` rule is checked against both renders (and the script, where it can check it).
+    Add a `validate` rule's tests here, not in a render test.
 - Build tests (Mode 2): `bash/test/bash/` and `skypilot/test/slurm/`. Run with
   `make -C steps/tune/fm-tune/<env> test`, which renders the Space first.
 
