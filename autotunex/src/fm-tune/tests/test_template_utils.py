@@ -73,8 +73,10 @@ def test_local_gbserver_hf_cache_path_resolves_to_hf_uri(path, uri, name):
     "path, name",
     [
         # bash: gbserver's local cache, <owner>/<repo>/<revision>
-        ("/Users/u/.cache/gbserver/hf/hf-internal-testing/tiny-random-LlamaForCausalLM/main",
-         "hf-internal-testing/tiny-random-LlamaForCausalLM"),
+        (
+            "/Users/u/.cache/gbserver/hf/hf-internal-testing/tiny-random-LlamaForCausalLM/main",
+            "hf-internal-testing/tiny-random-LlamaForCausalLM",
+        ),
         # SkyPilot/Slurm: the default <shared_workdir>/hf_cache, with a trailing '/'
         ("/shared/hf_cache/ibm-granite/granite-4.0-h-350m/main/", "ibm-granite/granite-4.0-h-350m"),
         # a plain HF id, a non-cache dir, and a dataset-style path deeper than the revision
