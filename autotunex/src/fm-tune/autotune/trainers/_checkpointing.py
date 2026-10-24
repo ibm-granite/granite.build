@@ -115,6 +115,7 @@ def resolve_checkpoint_strategy(
     num_train_epochs: int,
     steps_per_epoch: int,
     hpo_save_strategy: str = "epoch",
+    has_length: bool = True,
 ) -> CheckpointStrategy:
     """Pick the save/eval strategy for an SFT run.
 
@@ -131,6 +132,15 @@ def resolve_checkpoint_strategy(
     ``hpo_save_strategy`` lets a driver that needs no HPO checkpoint at all pass
     ``"no"`` (the single-GPU driver, which reads metrics from
     ``trainer.state.log_history`` instead of a checkpoint-attached report).
+
+    ``has_length=False`` is for a train dataset with no ``__len__`` (the Ray Data
+    backend's ``RayShardIterableDataset``). HF cannot see epoch boundaries in an
+    unsized iterator: with ``max_steps`` set it runs the whole schedule as one
+    epoch (``num_train_epochs = sys.maxsize`` in ``Trainer.set_initial_training_values``),
+    so ``on_epoch_end`` fires once, after the last step, and an ``"epoch"``
+    strategy evaluates and saves exactly once. Multi-epoch final training then
+    takes a steps cadence of ``steps_per_epoch`` instead -- one eval/save per
+    epoch, which is what the epoch strategy would have done with a sized dataset.
     """
     if hpo_search:
         saves = hpo_save_strategy != "no"
@@ -139,6 +149,17 @@ def resolve_checkpoint_strategy(
             eval_strategy="epoch",
             save_total_limit=HPO_SAVE_TOTAL_LIMIT if saves else None,
             load_best_model_at_end=False,
+        )
+
+    if num_train_epochs > 1 and not has_length:
+        cadence = max(1, steps_per_epoch)
+        return CheckpointStrategy(
+            save_strategy="steps",
+            eval_strategy="steps",
+            save_total_limit=FINAL_SAVE_TOTAL_LIMIT,
+            load_best_model_at_end=True,
+            save_steps=cadence,
+            eval_steps=cadence,
         )
 
     if num_train_epochs > 1:

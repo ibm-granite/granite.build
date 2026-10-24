@@ -74,6 +74,51 @@ class TestCpusPerNode:
         assert _cpus_per_node(["a"]) == {"a": 8}
 
 
+class TestCpusFollowNodelistOrder:
+    """The head is rotated to the front of the worker list; CPU counts are not.
+
+    SLURM_JOB_CPUS_PER_NODE is in SLURM_JOB_NODELIST order. Mapping it onto the
+    rotated list gave each host another host's count, so on a mixed-size
+    allocation srun asked a 48-CPU node for 96.
+    """
+
+    def _spawned_cpus(self, monkeypatch, tmp_path, *, nodelist, head, cpus_per_node):
+        monkeypatch.setenv("SLURM_JOB_CPUS_PER_NODE", cpus_per_node)
+        monkeypatch.setattr(ray_up_srun, "_read_slurm_nodelist", lambda: list(nodelist))
+        monkeypatch.setattr(ray_up_srun.socket, "gethostname", lambda: head)
+        monkeypatch.setattr(ray_up_srun, "dump_env_fingerprint", lambda: None)
+        monkeypatch.setattr(ray_up_srun, "resolve_ray_temp_dir", lambda suffix: str(tmp_path / suffix))
+        monkeypatch.setattr(ray_up_srun, "_start_head", lambda d: ("10.0.0.1", 6379, 8265))
+        monkeypatch.setattr(ray_up_srun, "_ray_init_with_timeout", lambda **kw: True)
+        monkeypatch.setattr(ray_up_srun, "_wait_for_workers_blaunch", lambda **kw: None)
+        monkeypatch.setattr(ray_up_srun, "summarize_ray_nodes", lambda: None)
+        monkeypatch.setattr(ray_up_srun.ray, "cluster_resources", lambda: {"GPU": 8 * len(nodelist)})
+
+        spawned = {}
+
+        def fake_popen(argv, log_path, env):
+            # The head's worker runs locally (no srun, so no --nodelist).
+            host = next((a.split("=", 1)[1] for a in argv if a.startswith("--nodelist=")), head.split(".")[0])
+            spawned[host] = int(argv[argv.index("--num_cpus") + 1])
+            return subprocess.Popen(["true"])
+
+        monkeypatch.setattr(ray_up_srun, "_popen_worker", fake_popen)
+        start_multinode_ray_cluster_srun(num_workers=len(nodelist), gpus_per_worker=8, log_dir=str(tmp_path))
+        return spawned
+
+    def test_rotated_head_keeps_each_hosts_own_count(self, monkeypatch, tmp_path):
+        spawned = self._spawned_cpus(
+            monkeypatch, tmp_path, nodelist=["h1", "h2", "h3"], head="h3", cpus_per_node="96(x2),48"
+        )
+        assert spawned == {"h1": 96, "h2": 96, "h3": 48}
+
+    def test_fqdn_head_still_finds_its_count(self, monkeypatch, tmp_path):
+        spawned = self._spawned_cpus(
+            monkeypatch, tmp_path, nodelist=["h1", "h2"], head="h2.cluster.example", cpus_per_node="96,48"
+        )
+        assert spawned == {"h1": 96, "h2": 48}
+
+
 class TestBuildSrunCmd:
     def _argv(self):
         return _build_srun_cmd(host="h2", head_address="10.0.0.1:6379", gpus_per_worker=8, cpus=96)
@@ -154,6 +199,15 @@ class TestTeardown:
 
 
 class TestMainWiring:
+    def test_bringup_timeout_exits_non_zero(self):
+        # A cluster that never came up ran no HPO and saved no model, so exiting
+        # 0 let a Granite.build step record it as a success. Both scheduler
+        # paths must exit with the dedicated, non-zero bring-up code.
+        src = open("main.py").read()
+        assert "EXIT_BRINGUP_TIMEOUT = 3" in src
+        assert src.count("sys.exit(EXIT_BRINGUP_TIMEOUT)") == 2
+        assert "sys.exit(0)" not in src
+
     def test_scheduler_flag_and_dispatch(self):
         src = open("main.py").read()
         assert 'choices=["lsf", "slurm"]' in src

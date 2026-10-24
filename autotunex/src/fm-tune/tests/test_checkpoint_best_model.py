@@ -82,6 +82,86 @@ class TestFinalTrainingTracksBestModel:
         assert s.save_total_limit == FINAL_SAVE_TOTAL_LIMIT
 
 
+class TestUnsizedTrainDataset:
+    """Ray Data's train shard has no __len__, so HF cannot see epoch boundaries.
+
+    With max_steps set, HF runs an unsized iterator as one epoch of max_steps
+    steps, so an "epoch" strategy evaluates and saves exactly once -- at the
+    end -- and the final step's weights ship as the "best" epoch.
+    """
+
+    def test_multi_epoch_switches_to_one_save_per_epoch(self):
+        s = resolve_checkpoint_strategy(hpo_search=False, num_train_epochs=3, steps_per_epoch=40, has_length=False)
+        assert s.save_strategy == s.eval_strategy == "steps"
+        assert s.save_steps == s.eval_steps == 40
+        assert s.load_best_model_at_end is True
+
+    def test_single_epoch_is_unchanged(self):
+        # The single-epoch path is already step-based, so length does not matter.
+        sized = resolve_checkpoint_strategy(hpo_search=False, num_train_epochs=1, steps_per_epoch=100)
+        unsized = resolve_checkpoint_strategy(
+            hpo_search=False, num_train_epochs=1, steps_per_epoch=100, has_length=False
+        )
+        assert unsized == sized
+
+    def test_sized_multi_epoch_keeps_epoch_boundaries(self):
+        s = resolve_checkpoint_strategy(hpo_search=False, num_train_epochs=3, steps_per_epoch=40, has_length=True)
+        assert s.save_strategy == "epoch"
+
+    @pytest.mark.parametrize("name", ["driver_multi_hf_fsdp.py", "driver_multi_hf_ds.py"])
+    def test_ray_data_drivers_pass_has_length(self, name):
+        src = open(f"autotune/trainers/{name}").read()
+        assert 'has_length=train_loop_config.get("data_backend", "arrow") != "ray_data"' in src
+
+    def test_hf_saves_once_per_epoch_on_an_unsized_dataset(self, tmp_path):
+        """End to end on a real HF Trainer: count the checkpoints it writes."""
+        torch = pytest.importorskip("torch")
+        transformers = pytest.importorskip("transformers")
+
+        class Unsized(torch.utils.data.IterableDataset):
+            def __iter__(self):
+                while True:
+                    yield {"x": torch.ones(2), "labels": torch.zeros(1)}
+
+        class Tiny(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.lin = torch.nn.Linear(2, 1)
+
+            def forward(self, x, labels=None):
+                out = self.lin(x)
+                return {"loss": torch.nn.functional.mse_loss(out, labels), "logits": out}
+
+        class Finite(torch.utils.data.Dataset):
+            def __len__(self):
+                return 4
+
+            def __getitem__(self, i):
+                return {"x": torch.ones(2), "labels": torch.zeros(1)}
+
+        epochs, steps = 3, 4
+        strategy = resolve_checkpoint_strategy(
+            hpo_search=False, num_train_epochs=epochs, steps_per_epoch=steps, has_length=False
+        )
+        args = transformers.TrainingArguments(
+            output_dir=str(tmp_path),
+            max_steps=steps * epochs,
+            num_train_epochs=epochs,
+            per_device_train_batch_size=2,
+            report_to="none",
+            use_cpu=True,
+            save_only_model=True,
+            disable_tqdm=True,
+            **{**strategy.as_training_arguments(), "save_total_limit": None},
+        )
+        trainer = transformers.Trainer(model=Tiny(), args=args, train_dataset=Unsized(), eval_dataset=Finite())
+        trainer.train()
+        evals = [e for e in trainer.state.log_history if "eval_loss" in e]
+        saved = sorted(int(p.name.split("-")[1]) for p in tmp_path.glob("checkpoint-*"))
+        assert len(evals) == epochs
+        assert saved == [steps * (i + 1) for i in range(epochs)]
+
+
 class TestHpoDoesNotTrackBestModel:
     """HPO trials report metrics and persist no model, so best-tracking is off."""
 

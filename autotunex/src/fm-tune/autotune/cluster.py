@@ -16,6 +16,7 @@
 import logging
 import math
 import os
+import re
 import socket
 import subprocess
 from typing import Dict, List, Optional, Tuple
@@ -93,6 +94,10 @@ def compute_ray_data_sizing(
 
     ``concurrency_override`` / ``num_cpus_override`` (from config or CLI) take
     precedence when set. The result is always clamped to at least 1.
+
+    ``num_cpus_override=0`` asks Ray to reserve no CPU per actor; Ray accepts
+    that, but there is no per-actor share to divide the free CPUs by, so the
+    pool falls back to one actor per free CPU.
     """
     num_cpus = float(num_cpus_override) if num_cpus_override is not None else 1.0
 
@@ -103,7 +108,7 @@ def compute_ray_data_sizing(
         available_cpus = ray.available_resources().get("CPU", 0)
     except Exception:
         available_cpus = 0
-    return max(1, int(math.floor(available_cpus / num_cpus))), num_cpus
+    return max(1, int(math.floor(available_cpus / (num_cpus or 1.0)))), num_cpus
 
 
 def ray_data_block_target(concurrency: int, row_count: int) -> int:
@@ -177,13 +182,17 @@ def stop_ray_cluster(temp_dir: str) -> None:
         )
         return
 
+    # Match the temp dir as a whole path component. A bare substring test lets
+    # job_4521 match job_45210, so one run's teardown would kill a sibling's Ray.
+    temp_dir_re = re.compile(re.escape(temp_dir.rstrip(os.sep)) + r"(?=$|[\s/=,'\"])")
+
     matched = []
     for proc in psutil.process_iter(["pid", "cmdline"]):
         try:
             cmdline = proc.info.get("cmdline") or []
             cmdline_str = " ".join(cmdline)
             # Match any Ray process that was started with our temp dir.
-            if temp_dir in cmdline_str and (
+            if temp_dir_re.search(cmdline_str) and (
                 "ray" in cmdline_str or "raylet" in cmdline_str or "gcs_server" in cmdline_str
             ):
                 matched.append(proc)

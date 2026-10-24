@@ -75,6 +75,7 @@ from autotune.lsf.ray_up_blaunch import (
     _partition_hosts,
     _ray_init_with_timeout,
     _rdma_env,
+    _short_hostname,
     _start_head,
     _wait_for_workers_blaunch,
 )
@@ -322,7 +323,11 @@ def start_multinode_ray_cluster_srun(
     head_host, all_worker_hosts, remote_worker_hosts = _partition_hosts(
         host_list, socket.gethostname(), num_workers=num_workers
     )
-    cpus_by_host = _cpus_per_node(all_worker_hosts)
+    # SLURM_JOB_CPUS_PER_NODE is in SLURM_JOB_NODELIST order, so map it onto
+    # host_list *before* _partition_hosts rotates the head to the front --
+    # mapping it onto the rotated list hands each host another host's count on
+    # a mixed-size allocation. Keyed by short name, like all_worker_hosts.
+    cpus_by_host = {_short_hostname(h): n for h, n in _cpus_per_node(host_list).items()}
     logger.info(
         f"[ray_up_srun] head_host={head_host!r} all_workers={all_worker_hosts} "
         f"remote_workers={remote_worker_hosts} cpus_per_host={cpus_by_host}"
