@@ -69,7 +69,8 @@ Set by the launcher; defaults are applied by the script.
 | `FMTUNE_AUTOTUNE` | `true` | `false` adds `--no_autotune` |
 | `FMTUNE_BACKEND` / `FMTUNE_SEED` | empty | Flags omitted when empty |
 | `FMTUNE_CONFIG_PRESET` | `autotune.yaml` | Bundled preset used when the HPO config is empty |
-| `FMTUNE_HPO_CONFIG_JSON` | empty (`{}` = empty) | Inline HPO config as JSON; the script converts it to `fm_tune_hpo.yaml` |
+| `FMTUNE_HPO_CONFIG_JSON` | empty (`{}` = empty) | Inline HPO config as JSON; the script converts it to `<FMTUNE_CONFIG_NAME>.yaml` |
+| `FMTUNE_CONFIG_NAME` | `fm_tune_hpo` | File name (and AutoTuneX config name) for the inline HPO config; must match `^[A-Za-z0-9._-]+$` |
 | `FMTUNE_EXTRA_ARGS` | empty | Whitespace-split and appended to argv |
 | `FMTUNE_SERVER_URL` / `FMTUNE_JOB_ID` | empty | AutoTuneX bridge flags |
 | `FMTUNE_LOCK_TIMEOUT` | `1800` | At most 9 digits. Seconds to wait on any cache lock held by another build before failing; a lock is never taken over (see USAGE) |

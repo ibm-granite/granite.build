@@ -65,6 +65,7 @@ subtraction in Jinja.
 | `seed` | `""` | `--seed`, omitted when empty (fm-tune's default, 42) |
 | `config_preset` | `autotune.yaml` | Bundled `autotune/configs/<preset>`, used when `hpo_config` is empty |
 | `hpo_config` | `{}` | Inline HPO config (AutoTuneX's `config_data`), written to a file for `--config_file` |
+| `config_name` | empty | Names the inline `hpo_config` file (`<config_name>.yaml`), which is the config's name in AutoTuneX; empty = `fm_tune_hpo`. Ignored with a preset, which keeps its file name. Letters, digits, `.`, `_` and `-` only |
 | `output_path` | `""` | SkyPilot only. `""` means `./model` in the run workdir. Must not contain `"`, `\` or a control character, or end in a space. Ignored on bash |
 | `extra_args` | `""` | Appended to the `main.py` command line, split on whitespace and newlines (no quoting) |
 | `python` | `""` | Interpreter that creates the venv. Empty means the injected python (bash) or `python3` (SkyPilot). Must be 3.10 or newer |
@@ -83,6 +84,7 @@ defaults an empty `run_name` to `fm-tune` instead of failing):
 - not exactly one of `source.path` and `source.repo`;
 - neither `model` set nor `base_model` bound;
 - `run_name` empty or outside `[A-Za-z0-9._-]`;
+- `config_name` outside `[A-Za-z0-9._-]`;
 - `source.repo` or `source.ref` starting with `-`;
 - `tuning_algo` and `rl_algo` both empty or `none` (fm-tune's pipeline refuses that, but only
   after the clone and venv build); an online `rl_algo` (`ppo`, `grpo`, `dapo`) needs no
@@ -119,7 +121,11 @@ hpo_config:
     max_length: { default: 1024, type: int, required: true }
 ```
 
-The step writes it to `fm_tune_hpo.yaml` (YAML, not JSON) next to the output directory.
+The step writes it to `fm_tune_hpo.yaml` (YAML, not JSON) next to the output directory, or
+to `<config_name>.yaml` when `config_name` is set. fm-tune registers the config with
+AutoTuneX under that file name. The same name with the same content reuses one config;
+the same name with different content is stored as `<name>-1`, `<name>-2`, and so on. For a
+name per build, template it: `config_name: "lora-sweep-{{ run_metadata.build_id[:8] }}"`.
 fm-tune reads it with `yaml.safe_load` (YAML 1.1), which loads JSON's `5e-06` as a string, so
 the step re-emits it as YAML (`5.0e-06`) to keep exponent floats as floats.
 
@@ -288,7 +294,7 @@ this step's build shape:
 | `autotune` | `autotune` |
 | `seed` | `seed` |
 | `config_data` | `hpo_config` |
-| `config_name` | not carried: the step always writes `fm_tune_hpo.yaml` |
+| `config_name` | `config_name` |
 | `dataset_name` + `data_format` | `train_file` / `validation_file` as `<dataset_name>_train.<fmt>` and `<dataset_name>_validation.<fmt>` |
 | `job_id` | `autotunex.job_id` |
 | callback URL | `autotunex.server_url` |

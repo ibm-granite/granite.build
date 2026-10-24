@@ -119,6 +119,7 @@ def test_defaults_reach_the_script(tmp_path):
     assert env["FMTUNE_BASE_MODEL_DIR"] == ""
     assert env["FMTUNE_TUNING_ALGO"] == "lora"
     assert env["FMTUNE_HPO_CONFIG_JSON"] == "{}"
+    assert env["FMTUNE_CONFIG_NAME"] == ""
     assert env["FMTUNE_OUTPUT_DIR"] == f"{tmp_path}/model"
     # Per user, with no shared level: a shared GB_SHARED_WORKDIR is written by every
     # user's builds, and a shared parent would be made by the first user, at their umask.
@@ -155,6 +156,8 @@ _SRC = {"path": "", "repo": "", "ref": "main", "subdir": "autotunex/src/fm-tune"
         ({"run_name": ""}, "fm_tune_config.run_name must match"),
         ({"run_name": "a b"}, "fm_tune_config.run_name must match"),
         ({"run_name": "a/b"}, "fm_tune_config.run_name must match"),
+        ({"config_name": "a/b"}, "fm_tune_config.config_name must match"),
+        ({"config_name": "a b"}, "fm_tune_config.config_name must match"),
         ({"run_name": "\u00e9t\u00e9"}, "fm_tune_config.run_name must match"),
         ({"source": dict(_SRC, repo="--upload-pack=x")}, "fm_tune_config.source.repo must not start with '-'"),
         ({"source": dict(_SRC, path="/a", ref="-u")}, "fm_tune_config.source.ref must not start with '-'"),
@@ -193,7 +196,7 @@ _VAR = {"seed": "FMTUNE_SEED", "rl_algo": "FMTUNE_RL_ALGO", "tuning_algo": "FMTU
         "backend": "FMTUNE_BACKEND", "extra_args": "FMTUNE_EXTRA_ARGS"}
 _SCALAR_KEYS = [
     "extra", "model", "train_file", "validation_file", "tuning_algo", "rl_algo",
-    "run_name", "autotune", "backend", "seed", "config_preset", "output_path",
+    "run_name", "autotune", "backend", "seed", "config_preset", "config_name", "output_path",
     "extra_args", "python",
 ]
 

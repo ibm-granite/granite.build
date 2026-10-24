@@ -74,6 +74,7 @@ def test_defaults_render_strictly():
     assert env["FMTUNE_TUNING_ALGO"] == "lora"
     assert env["FMTUNE_AUTOTUNE"] == "true"
     assert env["FMTUNE_HPO_CONFIG_JSON"] == "{}"
+    assert env["FMTUNE_CONFIG_NAME"] == ""
     # Left empty: fmtune_run.sh defaults them from LLMB_BASH_* (env is unexpanded).
     assert env["FMTUNE_OUTPUT_DIR"] == env["FMTUNE_CACHE_DIR"] == env["FMTUNE_PYTHON"] == ""
 
@@ -106,6 +107,8 @@ _SRC = {"path": "", "repo": "", "ref": "main", "subdir": "autotunex/src/fm-tune"
         ({"run_name": ""}, "fm_tune_config.run_name must match"),
         ({"run_name": "a b"}, "fm_tune_config.run_name must match"),
         ({"run_name": "a/b"}, "fm_tune_config.run_name must match"),
+        ({"config_name": "a/b"}, "fm_tune_config.config_name must match"),
+        ({"config_name": "a b"}, "fm_tune_config.config_name must match"),
         ({"run_name": "\u00e9t\u00e9"}, "fm_tune_config.run_name must match"),
         ({"source": dict(_SRC, repo="--upload-pack=x")}, "fm_tune_config.source.repo must not start with '-'"),
         ({"source": dict(_SRC, path="/a", ref="-u")}, "fm_tune_config.source.ref must not start with '-'"),
@@ -136,7 +139,7 @@ _VAR = {"seed": "FMTUNE_SEED", "rl_algo": "FMTUNE_RL_ALGO", "tuning_algo": "FMTU
         "backend": "FMTUNE_BACKEND", "extra_args": "FMTUNE_EXTRA_ARGS"}
 _SCALAR_KEYS = [
     "extra", "model", "train_file", "validation_file", "tuning_algo", "rl_algo",
-    "run_name", "autotune", "backend", "seed", "config_preset", "output_path",
+    "run_name", "autotune", "backend", "seed", "config_preset", "config_name", "output_path",
     "extra_args", "python",
 ]
 
@@ -235,7 +238,7 @@ def test_every_contract_var_is_mapped():
         "FMTUNE_SOURCE_SUBDIR", "FMTUNE_EXTRA", "FMTUNE_TRAIN_FILE",
         "FMTUNE_VALIDATION_FILE", "FMTUNE_TUNING_ALGO", "FMTUNE_RL_ALGO",
         "FMTUNE_RUN_NAME", "FMTUNE_AUTOTUNE", "FMTUNE_BACKEND", "FMTUNE_SEED",
-        "FMTUNE_CONFIG_PRESET", "FMTUNE_HPO_CONFIG_JSON", "FMTUNE_OUTPUT_DIR",
+        "FMTUNE_CONFIG_PRESET", "FMTUNE_CONFIG_NAME", "FMTUNE_HPO_CONFIG_JSON", "FMTUNE_OUTPUT_DIR",
         "FMTUNE_CACHE_DIR", "FMTUNE_PYTHON", "FMTUNE_EXTRA_ARGS",
         "FMTUNE_SERVER_URL", "FMTUNE_JOB_ID",
     }

@@ -97,6 +97,7 @@ fi
 : "${FMTUNE_BACKEND:=}"
 : "${FMTUNE_SEED:=}"
 : "${FMTUNE_CONFIG_PRESET:=autotune.yaml}"
+: "${FMTUNE_CONFIG_NAME:=fm_tune_hpo}"
 : "${FMTUNE_HPO_CONFIG_JSON:=}"
 : "${FMTUNE_EXTRA_ARGS:=}"
 : "${FMTUNE_SERVER_URL:=}"
@@ -150,6 +151,11 @@ fi
 case "$FMTUNE_RUN_NAME" in
   *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*)
     die "run_name must match ^[A-Za-z0-9._-]+$" ;;
+esac
+# config_name is a filename (<name>.yaml) and the config's name in AutoTuneX.
+case "$FMTUNE_CONFIG_NAME" in
+  *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*)
+    die "config_name must match ^[A-Za-z0-9._-]+$" ;;
 esac
 # Both go to git as positional args; a leading '-' would be read as an option.
 case "$FMTUNE_SOURCE_REPO" in -*) die "source.repo must not start with '-'" ;; esac
@@ -291,7 +297,7 @@ if [ "$FMTUNE_HPO_CONFIG_JSON" = "{}" ] || [ -z "$FMTUNE_HPO_CONFIG_JSON" ]; the
   config_file="$preset"
 else
   mkdir -p "$FMTUNE_OUTPUT_DIR"
-  config_file="$(cd "$FMTUNE_OUTPUT_DIR/.." && pwd)/fm_tune_hpo.yaml"
+  config_file="$(cd "$FMTUNE_OUTPUT_DIR/.." && pwd)/$FMTUNE_CONFIG_NAME.yaml"
   write_hpo_yaml=1  # converted after $py is known (below)
 fi
 

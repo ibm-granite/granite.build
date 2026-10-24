@@ -95,6 +95,7 @@ _BAD = [
     ({"model": ""}, "set fm_tune_config.model or bind the base_model input"),
     ({"run_name": "a b"}, "run_name must match ^[A-Za-z0-9._-]+$"),
     ({"run_name": "\u00e9t\u00e9"}, "run_name must match ^[A-Za-z0-9._-]+$"),
+    ({"config_name": "a/b"}, "config_name must match ^[A-Za-z0-9._-]+$"),
     ({"source": dict(_SRC, repo="-x")}, "source.repo must not start with '-'"),
     ({"source": dict(_SRC, path="/a", ref="-x")}, "source.ref must not start with '-'"),
     # fm-tune's pipeline.py raises once training starts, after clone and venv.

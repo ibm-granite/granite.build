@@ -24,6 +24,7 @@ config:
     seed: ""                      # empty = fm-tune's default (42)
     config_preset: autotune.yaml  # bundled autotune/configs/<preset> when hpo_config is empty
     hpo_config: {}                # inline HPO config (AutoTuneX config_data)
+    config_name: ""               # names the inline hpo_config in AutoTuneX; empty = fm_tune_hpo
     output_path: ""               # skypilot only; unused on bash
     extra_args: ""                # appended verbatim to main.py argv
     python: ""                    # interpreter that creates the venv; empty = injected python
@@ -79,7 +80,7 @@ environment_configs:
             {%- endfor -%}
             {%- if c.hpo_config is not none and c.hpo_config is not mapping %}{{ raise_error("fm-tune: fm_tune_config.hpo_config must be a mapping or null, got '" ~ c.hpo_config ~ "'.") }}{% endif -%}
             {#- Then, so a list never reaches the checks below; hpo_config is the one mapping. #}
-            {%- for group, keys in [("", ["extra", "model", "train_file", "validation_file", "tuning_algo", "rl_algo", "run_name", "autotune", "backend", "seed", "config_preset", "output_path", "extra_args", "python"]), ("source.", ["path", "repo", "ref", "subdir"]), ("autotunex.", ["server_url", "job_id"])] -%}
+            {%- for group, keys in [("", ["extra", "model", "train_file", "validation_file", "tuning_algo", "rl_algo", "run_name", "autotune", "backend", "seed", "config_preset", "config_name", "output_path", "extra_args", "python"]), ("source.", ["path", "repo", "ref", "subdir"]), ("autotunex.", ["server_url", "job_id"])] -%}
             {%- for key in keys -%}
             {%- set v = c[key] if not group else c[group[:-1]][key] -%}
             {%- if v is mapping or (v is iterable and v is not string) %}{{ raise_error("fm-tune: fm_tune_config." ~ group ~ key ~ " must be a scalar (string/number/bool), got a list/mapping; write it as a string") }}{% endif -%}
@@ -94,6 +95,7 @@ environment_configs:
             {%- if ([c.tuning_algo] | reject("none") | join | lower) in ["", "none"] and ([c.rl_algo] | reject("none") | join | lower) in ["dpo", "kto"] %}{{ raise_error("fm-tune: an offline rl_algo (dpo, kto) needs a tuning_algo (e.g. lora or sft).") }}{% endif -%}
             {%- if not (c.model or base_model_bound) %}{{ raise_error("fm-tune: set fm_tune_config.model or bind the base_model input.") }}{% endif -%}
             {%- if not c.run_name or (c.run_name | string | list | reject("in", ok) | list) %}{{ raise_error("fm-tune: fm_tune_config.run_name must match ^[A-Za-z0-9._-]+$, got '" ~ (c.run_name if c.run_name is not none else "") ~ "'.") }}{% endif -%}
+            {%- if c.config_name and (c.config_name | string | list | reject("in", ok) | list) %}{{ raise_error("fm-tune: fm_tune_config.config_name must match ^[A-Za-z0-9._-]+$, got '" ~ c.config_name ~ "'.") }}{% endif -%}
             {%- for key in ["repo", "ref"] -%}
             {%- if (c.source[key] | string).startswith("-") %}{{ raise_error("fm-tune: fm_tune_config.source." ~ key ~ " must not start with '-' (git would read it as an option).") }}{% endif -%}
             {%- endfor -%}
@@ -143,6 +145,7 @@ environment_configs:
             export FMTUNE_BACKEND={{ q(c.backend) }}
             export FMTUNE_SEED={{ q(c.seed) }}
             export FMTUNE_CONFIG_PRESET={{ q(c.config_preset) }}
+            export FMTUNE_CONFIG_NAME={{ q(c.config_name) }}
             export FMTUNE_HPO_CONFIG_JSON={{ q(c.hpo_config | json_dumps if c.hpo_config is not none else "") }}
             export FMTUNE_EXTRA_ARGS={{ q(c.extra_args) }}
             export FMTUNE_SERVER_URL={{ q(c.autotunex.server_url) }}

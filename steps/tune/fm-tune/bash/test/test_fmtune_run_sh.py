@@ -191,6 +191,36 @@ def test_inline_hpo_config_is_written_and_passed(env):
     assert not _flag(rec["argv"], "--config_file").startswith(env["FMTUNE_SOURCE_PATH"])
 
 
+def test_inline_hpo_config_file_defaults_to_fm_tune_hpo(env):
+    env["FMTUNE_HPO_CONFIG_JSON"] = json.dumps({"tune_config": {}})
+    assert _run(env).returncode == 0
+    assert _flag(_record(env)["argv"], "--config_file").endswith("/fm_tune_hpo.yaml")
+
+
+def test_config_name_names_the_inline_hpo_config_file(env):
+    env["FMTUNE_HPO_CONFIG_JSON"] = json.dumps({"tune_config": {}})
+    env["FMTUNE_CONFIG_NAME"] = "lora-sweep_ab12cd34"
+    assert _run(env).returncode == 0
+    assert _flag(_record(env)["argv"], "--config_file").endswith("/lora-sweep_ab12cd34.yaml")
+
+
+def test_config_name_does_not_rename_a_preset(env):
+    env["FMTUNE_HPO_CONFIG_JSON"] = "{}"
+    env["FMTUNE_CONFIG_NAME"] = "lora-sweep"
+    assert _run(env).returncode == 0
+    cfg = _flag(_record(env)["argv"], "--config_file")
+    assert cfg == f"{env['FMTUNE_SOURCE_PATH']}/autotune/configs/autotune.yaml"
+
+
+@pytest.mark.parametrize("name", ["a/b", "a b", "../x"])
+def test_config_name_outside_the_safe_set_is_rejected(env, name):
+    env["FMTUNE_CONFIG_NAME"] = name
+    proc = _run(env)
+    assert proc.returncode != 0
+    assert "fm-tune: config_name must match" in proc.stderr
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+
+
 def test_invalid_hpo_config_json_fails_before_training(env):
     env["FMTUNE_HPO_CONFIG_JSON"] = "{not json"
     proc = _run(env)
