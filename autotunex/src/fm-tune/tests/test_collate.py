@@ -282,6 +282,45 @@ class TestRayShardGroupByLength:
         assert spread(grouped) < spread(plain) / 4
 
 
+class TestRayShardNotResharded:
+    """A Ray Data shard is already per-rank; Accelerate must not split it again.
+
+    With ``dispatch_batches=False`` Accelerate wraps a torch ``IterableDataset``
+    in ``IterableDatasetShard`` (every ``world_size``-th batch), so each rank
+    trained on 1/W of its own shard. Simulated here with a 2-process
+    ``prepare_data_loader`` standing in for the Trainer's one-process
+    ``accelerator.prepare``.
+    """
+
+    @staticmethod
+    def _two_rank_prepare(dataloader):
+        from accelerate.data_loader import prepare_data_loader
+
+        return prepare_data_loader(dataloader, num_processes=2, process_index=0, dispatch_batches=False)
+
+    def _yielded(self, trainer, dataset):
+        trainer.accelerator.prepare = self._two_rank_prepare
+        loader = trainer._get_dataloader(dataset, "Training", batch_size=4, is_training=True)
+        return sum(len(b["input_ids"]) for b in loader)
+
+    def _rows(self, n=40):
+        return [_row([5] * (i % 10 + 1), [6, 7], 16) for i in range(n)]
+
+    def test_shard_yields_every_sample(self, tmp_path):
+        trainer = _trainer(tmp_path, [1, 2, 3])
+        trainer.data_collator = build_collator(PADDING_DYNAMIC)
+        ds = RayShardIterableDataset(_FakeShard(self._rows()), batch_size=4, total_samples=40)
+        assert self._yielded(trainer, ds) == 40
+
+    def test_other_iterables_still_sharded(self, tmp_path):
+        """Opt-in only: an iterable without the marker keeps Accelerate's split."""
+        trainer = _trainer(tmp_path, [1, 2, 3])
+        trainer.data_collator = build_collator(PADDING_DYNAMIC)
+        ds = RayShardIterableDataset(_FakeShard(self._rows()), batch_size=4, total_samples=40)
+        ds.is_rank_sharded = False
+        assert self._yielded(trainer, ds) == 20
+
+
 class TestDriversUseCollator:
     @pytest.mark.parametrize("name", SFT_DRIVERS)
     def test_no_max_length_stacking(self, name):

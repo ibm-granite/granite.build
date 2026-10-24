@@ -53,10 +53,11 @@ always present: the flattened batch has no ``attention_mask``, so HF's
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
 import torch
+from torch.utils.data import DataLoader
 from transformers import DataCollatorWithFlattening, Trainer
 from transformers.trainer_pt_utils import LengthGroupedSampler
 
@@ -246,4 +247,34 @@ class LengthGroupedTrainer(Trainer):
             self.args.train_batch_size * self.args.gradient_accumulation_steps,
             lengths=self._train_lengths,
             generator=self._length_generator,
+        )
+
+    def _get_dataloader(
+        self,
+        dataset: Any,
+        description: str,
+        batch_size: int,
+        sampler_fn: Optional[Callable[[Any], Any]] = None,
+        is_training: bool = False,
+        dataloader_key: Optional[str] = None,
+    ) -> DataLoader[Any]:
+        """Skip Accelerate's re-sharding for a dataset that is already per-rank.
+
+        ``accelerator.prepare`` wraps a torch ``IterableDataset`` in
+        ``IterableDatasetShard`` whenever ``dispatch_batches`` is off (which the
+        Ray Data backend needs), and that keeps only every ``world_size``-th
+        batch. A Ray Data shard is already this rank's slice, so each rank would
+        train on 1/W of it and exhaust the ``total_samples`` cap W times early.
+        Ray's own ``prepare_trainer`` returns a plain ``DataLoader`` for its
+        iterables for the same reason; HF moves the batch to the device in
+        ``_prepare_inputs``. Datasets opt in with ``is_rank_sharded = True``.
+        """
+        if not getattr(dataset, "is_rank_sharded", False):
+            return super()._get_dataloader(dataset, description, batch_size, sampler_fn, is_training, dataloader_key)
+        return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            collate_fn=self._get_collator_with_removed_columns(self.data_collator, description=description),
+            num_workers=self.args.dataloader_num_workers,
+            pin_memory=self.args.dataloader_pin_memory,
         )
