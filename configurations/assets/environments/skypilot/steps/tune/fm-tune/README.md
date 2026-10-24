@@ -40,7 +40,7 @@ refused: delete that directory or use a new `output_path`. For the same reason f
 
 Relative `output_path` and `source.path` values (and relative input paths) are resolved
 against the directory the step starts in (the run workdir on SkyPilot) before `main.py` runs,
-and the `model` output is registered with the absolute path. A trailing `/` is dropped.
+and the `model` output is registered with the absolute path. Trailing `/`s are dropped.
 
 ## Config: `fm_tune_config`
 
@@ -51,7 +51,7 @@ subtraction in Jinja.
 |---|---|---|
 | `source.path` | `""` | Local fm-tune checkout. Exactly one of `path` and `repo` must be set |
 | `source.repo` | `""` | Git URL to clone (must not start with `-`) |
-| `source.ref` | `main` | Branch, tag, or full 40-character commit SHA for `repo` (quote a SHA in YAML) |
+| `source.ref` | `main` | Branch, tag, or full 40-character commit SHA for `repo` (quote a SHA in YAML; an uppercase SHA is lowercased, so it shares the lowercase one's cache) |
 | `source.subdir` | `autotunex/src/fm-tune` | fm-tune's location inside `repo` |
 | `extra` | `core` | pip extra installed: `core`, `full` or `mlx` |
 | `model` | `""` | `--model_name_or_path` when `base_model` is not bound |
@@ -122,7 +122,7 @@ hpo_config:
 ```
 
 The step writes it to `fm_tune_hpo.yaml` (YAML, not JSON) in a temp directory private to
-the run, or to `<config_name>.yaml` when `config_name` is set. fm-tune registers the config
+the run (`$TMPDIR/fm-tune-hpo.*`, or `/tmp`; removed on every exit), or to `<config_name>.yaml` when `config_name` is set. fm-tune registers the config
 with AutoTuneX under that file name. The same name with the same content reuses one config;
 the same name with different content is stored as `<name>-1`, `<name>-2`, and so on. For a
 name per build, template it: `config_name: "lora-sweep-{{ run_metadata.build_id[:8] }}"`.
@@ -234,8 +234,10 @@ runs race on the cache and the output directory.
 
 ## Caches and cleanup
 
-- The cache lives at `.fm-tune-cache` beside `workdir/` under `~/.granite.build/` on bash,
-  and at `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache-<uid>` on SkyPilot (one per user, `id -u`):
+- The cache lives at `<GB_HOME>/.fm-tune-cache` (beside `workdir/`; `GB_HOME` defaults to
+  `~/.granite.build`) on bash. If the bash output dir has no `/workdir/` in its path, the cache
+  goes two levels above it instead (`<output dir>/../../.fm-tune-cache`). On SkyPilot it is
+  `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache-<uid>` (one per user, `id -u`):
   shared across nodes only when `GB_SHARED_WORKDIR` is set (the local Slurm environment sets
   `/shared`, giving `/shared/.fm-tune-cache-<uid>`). The uid is in the first level under the
   shared root, so there is no shared parent: a shared `.fm-tune-cache` would be created by the
@@ -305,7 +307,9 @@ this step's build shape:
   with no `rl_algo` either, the step refuses it, see "Config checks").
   A list or mapping for any key other than `hpo_config` fails the step before it is
   launched; write it as a string.
-- `LOG_PATH` is set by the step (to the output directory's parent, unless already set), so
+- `LOG_PATH` is set by the step, unless already set, to `<output dir>.logs`: a sibling of the
+  output directory, so `--model_at_root` (which clears the output directory on success)
+  keeps the logs, and builds whose output directories share a parent keep theirs apart.
   AutoTuneX need not export it.
 - AutoTuneX's `CUDA_HOME` export goes in the launcher env: `bash.env` on bash,
   `launcher_config.envs` on SkyPilot.
@@ -359,6 +363,9 @@ Submit the build with `environment_uri: space://environments/skypilot/slurm`.
 - The cache is `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache-$(id -u)`, one per user with no
   shared parent dir (see "Caches and cleanup"): a user's nodes share one venv only when
   `GB_SHARED_WORKDIR` is set (the local Slurm environment sets `/shared`).
+- `config.poll_interval_seconds` (beside `fm_tune_config`, default `300`) is how often the
+  SkyPilot monitor polls the job's status, so a finished run can wait up to that long
+  before the build sees it. Lower it for short runs.
 - SkyPilot builds write no local `job.log`. The step's output is in
   `~/sky_logs/<cluster>/1-<cluster>/run.log` on the machine running gbserver.
 - Launcher env goes through `launcher_config.envs`, for example

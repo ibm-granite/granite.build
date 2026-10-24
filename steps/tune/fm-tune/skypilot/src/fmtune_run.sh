@@ -26,6 +26,11 @@ case "$FMTUNE_LOCK_TIMEOUT" in ''|*[!0-9]*|??????????*)
 FMTUNE_LOCK_TIMEOUT=$((10#$FMTUNE_LOCK_TIMEOUT))  # a leading 0 would read as octal in $(( ))
 host="$(uname -n)"
 held_lock=""
+hpo_dir=""
+# The one EXIT trap: release a held lock, remove the run's private hpo_config dir.
+# unlock clears held_lock itself, so the trap never unlocks twice.
+on_exit() { [ -z "$held_lock" ] || unlock; [ -z "$hpo_dir" ] || rm -rf "$hpo_dir"; }
+trap on_exit EXIT
 sq() { local q="'"; printf "'%s'" "${1//$q/$q\\$q$q}"; }  # shell-quote for the rm hint
 gone() {  # kill -0 fails for a dead pid and for another user's live one: only ESRCH's text differs
   case "$1" in ''|*[!0-9]*) return 1 ;; esac
@@ -55,11 +60,10 @@ lock() {
   { echo "$host:$$" > "$1/pid.new" && mv -f "$1/pid.new" "$1/pid"; } 2>/dev/null \
     || { rm -rf "$1" 2>/dev/null || true; die "cannot write the owner of lock $1"; }  # ours: else every run waits on it
   held_lock="$1"
-  trap unlock EXIT
 }
 unlock() {  # forget the lock first: a failed or interrupted rm must not unlock twice
   local l="$held_lock" g
-  held_lock=""; trap - EXIT
+  held_lock=""
   [ "$(cat "$l/pid" 2>/dev/null)" = "$host:$$" ] || return 0
   # Rename first so no new mkdir lands in a dir being removed; if a dir can't be renamed, remove it in place.
   g="$l.gone.$host.$$"; mv "$l" "$g" 2>/dev/null || g="$l"
@@ -123,14 +127,17 @@ fi
 # before anything uses it. No realpath/readlink -f (macOS bash 3.2). Empty stays empty.
 case $FMTUNE_OUTPUT_DIR in /*) ;; *) FMTUNE_OUTPUT_DIR="$PWD/$FMTUNE_OUTPUT_DIR" ;; esac
 case $FMTUNE_CACHE_DIR in /*) ;; *) FMTUNE_CACHE_DIR="$PWD/$FMTUNE_CACHE_DIR" ;; esac
-# Every trailing '/', but not a lone one: [ -L /tmp/ ] looks through the link.
+# Every trailing '/', but not a lone one: [ -L /tmp/ ] looks through the link, and the
+# output dir names the registered model and its <dir>.logs sibling.
 while [ "$FMTUNE_CACHE_DIR" != / ] && [ "${FMTUNE_CACHE_DIR%/}" != "$FMTUNE_CACHE_DIR" ]; do
   FMTUNE_CACHE_DIR="${FMTUNE_CACHE_DIR%/}"
+done
+while [ "$FMTUNE_OUTPUT_DIR" != / ] && [ "${FMTUNE_OUTPUT_DIR%/}" != "$FMTUNE_OUTPUT_DIR" ]; do
+  FMTUNE_OUTPUT_DIR="${FMTUNE_OUTPUT_DIR%/}"
 done
 case $FMTUNE_DATASET_DIR in /*) ;; *) FMTUNE_DATASET_DIR="$PWD/$FMTUNE_DATASET_DIR" ;; esac
 case $FMTUNE_SOURCE_PATH in ''|/*) ;; *) FMTUNE_SOURCE_PATH="$PWD/$FMTUNE_SOURCE_PATH" ;; esac
 case $FMTUNE_BASE_MODEL_DIR in ''|/*) ;; *) FMTUNE_BASE_MODEL_DIR="$PWD/$FMTUNE_BASE_MODEL_DIR" ;; esac
-[ "$FMTUNE_OUTPUT_DIR" = / ] || FMTUNE_OUTPUT_DIR="${FMTUNE_OUTPUT_DIR%/}"
 # The monitors read the marker path into a JSON string ('{ "path": "<path>" }'):
 # a '"' or a control character fails the parse, a '\' is read as an escape, and a
 # newline also cuts the marker line short. The bash monitor rstrip()s each line, so
@@ -274,6 +281,10 @@ else
     git -C "$clone" fetch --quiet --depth 1 -- origin "$FMTUNE_SOURCE_REF" \
       || die "could not update the cached clone $clone to $FMTUNE_SOURCE_REF"
     sha="$(git -C "$clone" rev-parse 'FETCH_HEAD^{commit}')"
+    # A SHA's mirror outlives its tree-<sha> (deleted to free space): same check as above.
+    if [ -n "$ref_sha" ] && [ "$sha" != "$FMTUNE_SOURCE_REF" ]; then
+      die "source.ref $FMTUNE_SOURCE_REF is not a commit in $FMTUNE_SOURCE_REPO (it names a tag object or a tree)"
+    fi
   fi
   tree="$FMTUNE_CACHE_DIR/tree-$sha"
   if [ ! -d "$tree" ]; then
@@ -297,8 +308,11 @@ if [ "$FMTUNE_HPO_CONFIG_JSON" = "{}" ] || [ -z "$FMTUNE_HPO_CONFIG_JSON" ]; the
   config_file="$preset"
 else
   # Private to this run: builds whose output dirs share a parent would overwrite
-  # each other's file. Named <config_name>.yaml, its name in AutoTuneX.
-  hpo_dir="$(mktemp -d)" || die "cannot create a temp dir for hpo_config"
+  # each other's file. Named <config_name>.yaml, its name in AutoTuneX. The EXIT
+  # trap removes it on every exit, a failed venv build or conversion included.
+  # An explicit template: macOS mktemp -d ignores $TMPDIR, GNU's honours it.
+  hpo_dir="$(mktemp -d "${TMPDIR:-/tmp}/fm-tune-hpo.XXXXXX")" \
+    || die "cannot create a temp dir for hpo_config"
   config_file="$hpo_dir/$FMTUNE_CONFIG_NAME.yaml"
   write_hpo_yaml=1  # converted after $py is known (below)
 fi
@@ -361,15 +375,16 @@ if [ -n "$FMTUNE_EXTRA_ARGS" ]; then
 fi
 
 mkdir -p "$FMTUNE_OUTPUT_DIR"
-# fm-tune's AutoTuneX bridge logs under $LOG_PATH (default ./logs, the source tree).
-export LOG_PATH="${LOG_PATH:-$(cd "$FMTUNE_OUTPUT_DIR/.." && pwd)}"
+# fm-tune's AutoTuneX bridge logs under $LOG_PATH/logs (default ./logs, the source
+# tree). Not inside the output dir, which --model_at_root clears on success, and not
+# its parent, which builds with sibling output dirs share: <output dir>.logs.
+export LOG_PATH="${LOG_PATH:-$FMTUNE_OUTPUT_DIR.logs}"
 # The venv's console scripts (ray, ...) must win over any others on PATH.
 case "$py" in */*) export PATH="$(dirname "$py"):${PATH:-/usr/local/bin:/usr/bin:/bin}" ;; esac
 log "running main.py (run_name=$FMTUNE_RUN_NAME)"
 cd "$root"
 status=0
 "$py" main.py "${args[@]}" || status=$?
-if [ -n "${hpo_dir:-}" ]; then rm -rf "$hpo_dir"; fi
 if [ "$status" -ne 0 ]; then
   echo "[fm-tune] main.py failed with exit code $status" >&2
   exit "$status"

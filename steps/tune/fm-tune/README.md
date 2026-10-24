@@ -54,7 +54,7 @@ Set by the launcher; defaults are applied by the script.
 |---|---|---|
 | `FMTUNE_DATASET_DIR` | required | Dataset input directory |
 | `FMTUNE_OUTPUT_DIR` | bash: `$LLMB_BASH_OUTPUT_DIR/model` | Where `main.py` writes the model; required elsewhere. Must be new, empty or a previous model output, and not an input dir (see USAGE) |
-| `FMTUNE_CACHE_DIR` | bash: `<GB_HOME>/.fm-tune-cache` (beside `workdir/`); the skypilot template sets `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache-$(id -u)` (no shared parent: see USAGE) | Clone, tree and venv cache; required elsewhere. Created `0700`; the run fails if it is not the user's own or is group- or world-writable |
+| `FMTUNE_CACHE_DIR` | bash: `<GB_HOME>/.fm-tune-cache` (beside `workdir/`; `<LLMB_BASH_OUTPUT_DIR>/../../.fm-tune-cache` when that path has no `/workdir/`); the skypilot template sets `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache-$(id -u)` (no shared parent: see USAGE) | Clone, tree and venv cache; required elsewhere. Created `0700`; the run fails if it is not the user's own or is group- or world-writable |
 | `FMTUNE_PYTHON` | `$LLMB_BASH_PYTHON_DIR/python3`, else `python3` | Interpreter that creates the venv (>= 3.10) |
 | `FMTUNE_SOURCE_PATH` / `FMTUNE_SOURCE_REPO` | empty | Exactly one must be set |
 | `FMTUNE_SOURCE_REF` | `main` | Branch, tag (`git clone --branch`), or full 40-character commit SHA (fetched by id) |
@@ -74,13 +74,13 @@ Set by the launcher; defaults are applied by the script.
 | `FMTUNE_EXTRA_ARGS` | empty | Whitespace-split and appended to argv |
 | `FMTUNE_SERVER_URL` / `FMTUNE_JOB_ID` | empty | AutoTuneX bridge flags; with `FMTUNE_SERVER_URL` set, an empty `FMTUNE_JOB_ID` defaults to `GB_BUILD_ID` |
 | `FMTUNE_LOCK_TIMEOUT` | `1800` | At most 9 digits. Seconds to wait on any cache lock held by another build before failing; a lock is never taken over (see USAGE) |
-| `LOG_PATH` | the output dir's parent | Where fm-tune's AutoTuneX bridge writes `logs/`; kept if already set |
+| `LOG_PATH` | `<FMTUNE_OUTPUT_DIR>.logs` | Where fm-tune's AutoTuneX bridge writes `logs/`; kept if already set. A sibling, not the output dir (`--model_at_root` clears it) or its parent (shared by builds with sibling output dirs) |
 | `FMTUNE_SKIP_INSTALL` | unset | `1` uses `FMTUNE_PYTHON` as is (unit tests only) |
 
 Before anything uses them, the script makes `FMTUNE_OUTPUT_DIR`, `FMTUNE_CACHE_DIR`,
 `FMTUNE_DATASET_DIR`, `FMTUNE_SOURCE_PATH` and `FMTUNE_BASE_MODEL_DIR` absolute against its
 starting directory (it later runs `main.py` from the fm-tune root, and the marker is read
-off-node), and drops a trailing `/` from `FMTUNE_OUTPUT_DIR`. `FMTUNE_OUTPUT_DIR` must not
+off-node), and drops every trailing `/` from `FMTUNE_OUTPUT_DIR` and `FMTUNE_CACHE_DIR`. `FMTUNE_OUTPUT_DIR` must not
 contain `"`, `\` or a control character: the monitors build the binding as
 `{ "path": "<path>" }` and parse it as JSON. It must not end in a space either: the bash
 monitor's `LocalFileStream` strips trailing whitespace from each log line.

@@ -35,6 +35,7 @@ import yaml
 
 _SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "src" / "fmtune_run.sh"
 
+
 _STUB_MAIN = r"""
 import json, os, sys
 args = sys.argv[1:]
@@ -218,6 +219,26 @@ def test_inline_hpo_config_is_private_to_the_run_and_removed(env, tmp_path):
     cfg = pathlib.Path(_flag(_record(env)["argv"], "--config_file"))
     assert cfg.parent != tmp_path
     assert not cfg.parent.exists()
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"FMTUNE_HPO_CONFIG_JSON": "{not json"},  # the YAML conversion fails
+        {"STUB_EXIT": "3"},  # main.py fails
+        {"FMTUNE_SKIP_INSTALL": "", "FMTUNE_PYTHON": "/nonexistent/python3"},  # venv
+    ],
+    ids=["bad-json", "failed-training", "no-python"],
+)
+def test_a_failed_run_still_removes_its_hpo_config_dir(env, tmp_path, over):
+    """The temp dir goes on every exit, not only after main.py: set -e and die exit
+    between its mktemp and the run."""
+    tmp = tmp_path / "tmp"
+    tmp.mkdir()
+    env.update(TMPDIR=str(tmp), FMTUNE_HPO_CONFIG_JSON=json.dumps({"tune_config": {}}))
+    env.update(over)
+    assert _run(env).returncode != 0
+    assert not list(tmp.iterdir())
 
 
 def test_inline_hpo_config_file_defaults_to_fm_tune_hpo(env):
@@ -442,10 +463,21 @@ def test_run_name_outside_the_safe_set_is_rejected(env, name):
     assert not pathlib.Path(env["STUB_RECORD"]).exists()
 
 
-def test_log_path_defaults_to_the_output_dirs_parent(env, tmp_path):
-    """fm-tune's bridge logs to $LOG_PATH/logs; unset, that is cwd (the source tree)."""
+def test_log_path_defaults_to_a_sibling_of_the_output_dir(env):
+    """fm-tune's bridge logs to $LOG_PATH/logs; unset, that is cwd (the source tree).
+    Not the output dir (--model_at_root clears it) nor its parent, which builds with
+    sibling output dirs share."""
     assert _run(env).returncode == 0
-    assert _record(env)["log_path"] == str(tmp_path)
+    assert _record(env)["log_path"] == env["FMTUNE_OUTPUT_DIR"] + ".logs"
+
+
+def test_builds_with_sibling_output_dirs_get_their_own_log_paths(env, tmp_path):
+    paths = []
+    for name in ("a", "b"):
+        env["FMTUNE_OUTPUT_DIR"] = str(tmp_path / "shared" / name)
+        assert _run(env).returncode == 0
+        paths.append(_record(env)["log_path"])
+    assert paths == [str(tmp_path / "shared" / n) + ".logs" for n in ("a", "b")]
 
 
 def test_a_preset_log_path_is_kept(env, tmp_path):
@@ -1367,6 +1399,42 @@ def test_a_sha_that_is_not_a_commit_dies(env, tmp_path, obj):
     assert not list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("tree-*"))
 
 
+def test_a_sha_whose_tree_was_deleted_is_checked_on_the_warm_mirror(env, tmp_path):
+    """tree-<sha> deleted (to free space) but src-* kept: the refetch from the warm
+    mirror must apply the same is-a-commit check as the cold fetch."""
+    repo = _git_repo(env, tmp_path)
+    _git(
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "tag",
+        "-a",
+        "v1",
+        "-m",
+        "v1",
+        cwd=repo,
+    )
+    tag = subprocess.run(
+        ["git", "rev-parse", "v1"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    env["FMTUNE_SOURCE_REF"] = _head(repo)
+    assert _run(env).returncode == 0  # warms src-<key> for this ref
+    cache = pathlib.Path(env["FMTUNE_CACHE_DIR"])
+    (mirror,) = cache.glob("src-*[0-9]")
+    for tree in cache.glob("tree-*"):
+        shutil.rmtree(tree)
+    # Point the same cache key at the tag object: its key dir is the warm mirror.
+    env["FMTUNE_SOURCE_REF"] = tag
+    mirror.rename(_clone_lock(env).with_suffix(""))
+    pathlib.Path(env["STUB_RECORD"]).unlink()
+    proc = _run(env)
+    assert proc.returncode == 2, proc.stderr
+    assert "is not a commit" in proc.stderr
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
+    assert not list(cache.glob("tree-*"))
+
+
 @pytest.mark.parametrize(
     "over",
     [
@@ -1562,9 +1630,10 @@ def test_a_relative_cache_dir_still_finds_the_venv_python_after_the_cd(env, tmp_
     assert venv_bin.startswith(f"{tmp_path}/cache/venv-") and venv_bin.endswith("/bin")
 
 
-def test_a_trailing_slash_on_the_output_dir_is_stripped(env):
+@pytest.mark.parametrize("slashes", ["/", "//", "///"])
+def test_every_trailing_slash_on_the_output_dir_is_stripped(env, slashes):
     out = env["FMTUNE_OUTPUT_DIR"]
-    env["FMTUNE_OUTPUT_DIR"] = out + "/"
+    env["FMTUNE_OUTPUT_DIR"] = out + slashes
     proc = _run(env)
     assert proc.returncode == 0, proc.stderr
     assert _flag(_record(env)["argv"], "--output_dir") == out
