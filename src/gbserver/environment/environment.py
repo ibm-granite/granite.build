@@ -999,10 +999,10 @@ class Environment(ABC):
         """Declared secret->env-var mappings for this launch (composer hook).
 
         The lowest layer of :meth:`get_launch_env_vars`. Environments that
-        inject secret *values* (LSF, SkyPilot) override this to parse their own
-        ``config.<env>.secrets`` allow-list; the base returns none, so
-        value-less environments (K8s emits ``secretKeyRef`` names; Bash/Docker/
-        RunPod inject no declared secrets) inherit it unchanged.
+        inject secret *values* (LSF, SkyPilot, Docker) override this to parse
+        their own ``config.<env>.secrets`` allow-list; the base returns none, so
+        value-less environments (K8s emits ``secretKeyRef`` names; Bash/RunPod
+        inject no declared secrets) inherit it unchanged.
 
         :param kwargs: the launch context (``run_metadata`` plus whatever the
             caller passed, e.g. ``config``); each override plucks what it needs.

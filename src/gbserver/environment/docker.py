@@ -10,9 +10,11 @@ Set DOCKER_HOST to point to Podman's socket:
 """
 
 import asyncio
+import copy
 import functools
 import queue
 import threading
+from asyncio import Queue, Task, TaskGroup
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Self, Tuple
 
@@ -33,15 +35,24 @@ from gbserver.environment.local_assets import (
     pull_asset_hfstore,
     push_asset_hfstore,
 )
+from gbserver.types.buildconfig import (
+    BuildTargetOutputConfig,
+    BuildTargetStepConfig,
+)
 from gbserver.types.buildevent import (
     BuildEvent,
     BuildEventMessagePayload,
     BuildEventType,
+    EntityRunMetadata,
 )
 from gbserver.types.constants import (
     DOCKER_PULL_MAX_ATTEMPTS,
     DOCKER_PULL_RETRY_BASE_DELAY,
     DOCKER_PULL_RETRY_MAX_DELAY,
+)
+from gbserver.types.environment.environment import (
+    EnvironmentVariableConfig,
+    StepSecretsConfig,
 )
 from gbserver.types.environmentconfig import EnvironmentConfig
 from gbserver.types.errors import LogMonitoringFailedException
@@ -49,6 +60,9 @@ from gbserver.utils.filesystem import sync_or_copy
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Container path the targetsteprun workspace is bind-mounted at.
+_WORKSPACE_MOUNT = "/gb-workspace"
 
 # Pull errors no retry fixes: bad reference, missing image or platform, bad
 # credentials, full disk.
@@ -190,6 +204,10 @@ class Docker(Environment):
         self._launched_workspaces: Dict[str, str] = (
             {}
         )  # launch_id -> host workspace dir
+        # targetsteprun_id -> host workspace dir. Unlike _launched_workspaces it
+        # is never popped by cleanup_docker, so an output push that races the
+        # container teardown still finds its producer's workspace.
+        self._workspaces_by_targetsteprun: Dict[str, str] = {}
         self._extra_volumes: Dict[str, Dict] = {}
         self._docker_module = None  # cached docker module
         self._docker_client = None  # cached Docker client
@@ -268,6 +286,36 @@ class Docker(Environment):
                     suffix = container_path[len(mount) :]
                     result = host + suffix
         return result
+
+    def _host_path(self: Self, container_path: str, run_metadata: Optional[Any]) -> str:
+        """Translate a container path from a pushed output to its host path.
+
+        A path under ``/gb-workspace`` maps into the host workspace of the
+        launch that produced the output, looked up by
+        ``run_metadata.targetsteprun_id``: each launch mounts its own workspace
+        there, so no shared volume map can answer. Any other path is resolved
+        through the shared read-only mounts by :meth:`_resolve_host_path`.
+
+        :raises LookupError: the path is under ``/gb-workspace`` but no
+            workspace is recorded for the producing targetsteprun (guessing
+            another launch's workspace would push the wrong files).
+        """
+        if not (
+            container_path == _WORKSPACE_MOUNT
+            or container_path.startswith(_WORKSPACE_MOUNT + "/")
+        ):
+            return self._resolve_host_path(container_path)
+        if isinstance(run_metadata, dict):
+            tsr_id = run_metadata.get("targetsteprun_id")
+        else:
+            tsr_id = getattr(run_metadata, "targetsteprun_id", None)
+        workspace = self._workspaces_by_targetsteprun.get(tsr_id or "")
+        if workspace is None:
+            raise LookupError(
+                f"no Docker workspace recorded for targetsteprun_id={tsr_id!r}; "
+                f"cannot resolve container path {container_path}"
+            )
+        return workspace + container_path[len(_WORKSPACE_MOUNT) :]
 
     def _pull_image(
         self: Self,
@@ -424,6 +472,97 @@ class Docker(Environment):
         binding_config = {BINDING_KEY: {"path": container_path}}
         return binding_config, None
 
+    # ------------------------------------------------------------------
+    # pullasset
+    # ------------------------------------------------------------------
+
+    def pullasset(
+        self: Self, task_group: TaskGroup, uri: URI, binding: Optional[Any] = None
+    ) -> Task[Tuple[Dict, Optional[BuildTargetStepConfig]]]:
+        """Pull an asset, always mounting an ``env://`` input into the container.
+
+        The base returns a cached ``asset_bindings`` entry before dispatching to
+        a store. The base ``pushasset`` caches every output it registers, so an
+        ``env://`` output of an earlier Docker target on this instance would be
+        handed to the consumer as a bare host path with no mount. For a cached
+        ``env://`` URI only, the pull goes through :meth:`pullasset_envstore`
+        instead, which mounts the URI's host path (or reuses its mount).
+        Everything else is the base behaviour.
+        """
+        uristr = URI.get_uristr(uri)
+        if not (uristr.startswith("env://") and uristr in self.asset_bindings):
+            return super().pullasset(task_group, uri, binding)
+
+        async def mount() -> Tuple[Dict, Optional[BuildTargetStepConfig]]:
+            return await self.pullasset_envstore(uri=uri, binding=binding)
+
+        asyncio_runner = task_group if task_group is not None else asyncio
+        return asyncio_runner.create_task(mount())
+
+    # ------------------------------------------------------------------
+    # pullasset_envstore
+    # ------------------------------------------------------------------
+
+    async def pullasset_envstore(
+        self: Self,
+        uri: Optional[Any] = None,
+        binding: Optional[Any] = None,
+        storeload_config=None,
+        **kwargs,
+    ) -> Tuple[Dict, None]:
+        """Bind-mount an ``env://`` host path into the container, read-only.
+
+        The base pull is a no-op that returns the host path, which a container
+        cannot see. Mount the path (a file's parent directory, or the
+        directory itself) under ``/gb-env-inputs/<n>`` and return the
+        container-side path as the binding. The mount source is always the
+        input's host path, including one an earlier Docker target wrote in its
+        own workspace (its env:// output is registered at that host path). A
+        directory already in ``_extra_volumes`` (e.g. mounted for another input)
+        is reused, not mounted twice.
+
+        A file's whole parent directory is mounted so that steps can read its
+        siblings. To keep that scope bounded, an input whose mount source is
+        ``/`` or the gbserver user's home directory (both resolved) is refused:
+        it would expose e.g. ``~/.ssh`` to a container that may hold secrets.
+
+        :raises FileNotFoundError: the host path does not exist.
+        :raises ValueError: the mount source is ``/`` or the home directory.
+        """
+        from gbserver.environment.environment import BINDING_KEY
+
+        binding_config, _ = await super().pullasset_envstore(
+            uri=uri, binding=binding, storeload_config=storeload_config, **kwargs
+        )
+        host = Path(binding_config[BINDING_KEY]["path"])
+        if not host.exists():
+            raise FileNotFoundError(f"env:// input {uri} not found at {host}")
+        is_dir = host.is_dir()
+        mount_src = host if is_dir else host.parent
+        resolved = mount_src.resolve()
+        if resolved == Path("/") or resolved == Path.home().resolve():
+            raise ValueError(
+                f"env:// input {uri} would mount {resolved} into the container; "
+                "put the input in its own directory"
+            )
+        volume = self._extra_volumes.get(str(mount_src))
+        if volume is None:
+            n = sum(
+                1
+                for v in self._extra_volumes.values()
+                if v["bind"].startswith("/gb-env-inputs/")
+            )
+            volume = {"bind": f"/gb-env-inputs/{n}", "mode": "ro"}
+            self._extra_volumes[str(mount_src)] = volume
+        container = volume["bind"] if is_dir else f"{volume['bind']}/{host.name}"
+        logger.info(
+            "pullasset_envstore: mounted %s at %s (container path %s)",
+            mount_src,
+            volume["bind"],
+            container,
+        )
+        return {BINDING_KEY: {"path": container}}, None
+
     @staticmethod
     def _get_hf_cache_dir(storeload_config) -> str:
         """Resolve HF model cache directory from config or default."""
@@ -447,8 +586,9 @@ class Docker(Environment):
         """Upload a local file or directory to a HuggingFace repo.
 
         Translates any container-side path in ``binding`` to the corresponding
-        host path using the volume map built by ``pullasset_hfstore`` and
-        ``launch_docker``, then delegates to
+        host path (see :meth:`_host_path`: a ``/gb-workspace`` path maps into the
+        producing launch's workspace, others through the read-only input
+        mounts), then delegates to
         :func:`~gbserver.environment.local_assets.push_asset_hfstore`.
 
         Args:
@@ -458,7 +598,9 @@ class Docker(Environment):
             binding_id: Output binding name, included in the commit message.
             uri: Target HfURI string or object.
             assetstore: Hfstore instance whose secrets supply the HF token.
-            run_metadata: EntityRunMetadata with build_id and target_name.
+            run_metadata: EntityRunMetadata with build_id and target_name; its
+                ``targetsteprun_id`` selects the workspace of a
+                ``/gb-workspace`` path.
             storepush_config: Environment-level push config. Its ``hf`` block is
                 forwarded so the resource group settings apply here as they do on
                 the step-based environments.
@@ -471,12 +613,14 @@ class Docker(Environment):
 
         Raises:
             ValueError: If ``uri`` is absent or ``binding`` has no ``"path"``.
+            LookupError: A ``/gb-workspace`` path whose producing launch is
+                unknown.
             RuntimeError: If the push itself fails.
         """
         self._warn_non_default_mode(storepush_config, uri)
         if not isinstance(binding, dict) or "path" not in binding:
             raise ValueError(f"binding must be a dict with 'path', got: {binding}")
-        host_path = self._resolve_host_path(binding["path"])
+        host_path = self._host_path(binding["path"], run_metadata)
         return push_asset_hfstore(
             src=host_path,
             binding_id=binding_id,
@@ -512,10 +656,9 @@ class Docker(Environment):
     def _launch_env_layers(self: Self, **kwargs: Any) -> List[Dict[str, str]]:
         """Docker env layers for the shared launch-env composer.
 
-        Overrides :meth:`Environment._launch_env_layers` (Docker injects no
-        declared space secrets, so it leaves :meth:`_declared_secret_mappings`
-        at its empty default). Ordered lowest->highest above the empty secret
-        layer and below the standard set: environment.yaml defaults ``env`` <
+        Overrides :meth:`Environment._launch_env_layers` (declared space secrets
+        come from :meth:`_declared_secret_mappings`). Ordered lowest->highest
+        above the declared-secret layer and below the standard set: environment.yaml defaults ``env`` <
         ``config.docker.env`` < launcher ``env`` < the built-in
         ``LLMB_DOCKER_*`` vars.
 
@@ -549,6 +692,24 @@ class Docker(Environment):
             launcher_env if isinstance(launcher_env, dict) else {},
             builtins,
         ]
+
+    def _declared_secret_mappings(
+        self: Self, **kwargs: Any
+    ) -> List[EnvironmentVariableConfig]:
+        """Declared Docker secret mappings for the shared launch-env composer.
+
+        Overrides :meth:`Environment._declared_secret_mappings` so only secrets
+        the step declares in ``config.docker.secrets.secret_names_to_use_as_env_variable``
+        are injected into the container (least-privilege, matching
+        LSF/SkyPilot). ``secret_name`` defaults to ``env_name`` verbatim.
+
+        :param kwargs: the launch context; only ``config`` is read.
+        :returns: the declared ``EnvironmentVariableConfig`` mappings.
+        """
+        docker_config = (kwargs.get("config") or {}).get("docker") or {}
+        return StepSecretsConfig.model_validate(
+            docker_config.get("secrets") or {}
+        ).secret_names_to_use_as_env_variable
 
     async def launch_docker(
         self: Self,
@@ -602,20 +763,24 @@ class Docker(Environment):
             # standard vars like GB_BUILD_ID; see Docker.get_launch_env_vars).
             env_vars = self.get_launch_env_vars(
                 run_metadata=run_metadata,
+                config=config,
                 launcher_config=launcher_config,
                 docker_config=docker_config,
                 launch_id=launch_id,
                 container_name=container_name,
             )
 
-            # Build bind mount volumes
-            volumes = {}
+            # Build bind mount volumes: the shared read-only mounts plus this
+            # launch's own workspace. The workspace is never added to
+            # _extra_volumes, which every later launch on this instance reads;
+            # two host dirs bound to /gb-workspace make dockerd refuse the
+            # container ("Duplicate mount point").
+            volumes = dict(self._extra_volumes)
             if targetsteprun_asset_dir:
-                self._extra_volumes[str(targetsteprun_asset_dir)] = {
-                    "bind": "/gb-workspace",
+                volumes[str(targetsteprun_asset_dir)] = {
+                    "bind": _WORKSPACE_MOUNT,
                     "mode": "rw",
                 }
-            volumes = dict(self._extra_volumes)
 
             # Build resource kwargs
             resource_kwargs: Dict = {}
@@ -665,6 +830,11 @@ class Docker(Environment):
             self._launched_containers[launch_id] = container.id
             if targetsteprun_asset_dir:
                 self._launched_workspaces[launch_id] = str(targetsteprun_asset_dir)
+                tsr_id = run_metadata.get("targetsteprun_id")
+                if tsr_id:
+                    self._workspaces_by_targetsteprun[tsr_id] = str(
+                        targetsteprun_asset_dir
+                    )
             logger.info(
                 "Created Docker container: id=%s launch_id=%s",
                 container.id,
@@ -877,6 +1047,67 @@ class Docker(Environment):
             self._launched_workspaces.pop(launch_id, None)
 
     # ------------------------------------------------------------------
+    # pushasset
+    # ------------------------------------------------------------------
+
+    def pushasset(
+        self: Self,
+        task_group: TaskGroup,
+        binding: Any,
+        uristr: str,
+        binding_id: Optional[str] = None,
+        additional_targetsteps_queue: Optional[Queue] = None,
+        run_metadata: Optional[EntityRunMetadata] = None,
+        output_config: Optional[BuildTargetOutputConfig] = None,
+        unique_hash: Optional[str] = None,
+    ) -> Task[URI]:
+        """Push an asset, registering env:// workspace outputs at their host path.
+
+        An env:// output is a no-transfer reference, so the base renders its URI
+        straight from the producer binding — which holds the in-container path
+        (``/gb-workspace/...``) that no consumer can reach. For env:// outputs
+        under ``/gb-workspace`` only, the binding path is rewritten to the
+        producing launch's host workspace (looked up by
+        ``run_metadata.targetsteprun_id``) before the base renders and registers
+        it. Every other store and path is passed through unchanged.
+        """
+        if URI.get_uristr(uristr).startswith("env://"):
+            binding = self._env_output_host_binding(binding, run_metadata)
+        return super().pushasset(
+            task_group=task_group,
+            binding=binding,
+            uristr=uristr,
+            binding_id=binding_id,
+            additional_targetsteps_queue=additional_targetsteps_queue,
+            run_metadata=run_metadata,
+            output_config=output_config,
+            unique_hash=unique_hash,
+        )
+
+    def _env_output_host_binding(
+        self: Self, binding: Any, run_metadata: Optional[EntityRunMetadata]
+    ) -> Any:
+        """Return a copy of *binding* with a /gb-workspace path mapped to the host.
+
+        Returns *binding* itself when its path is not under ``/gb-workspace`` or
+        when no workspace is recorded for the producing targetsteprun (logged:
+        guessing another launch's workspace would register a wrong path).
+        """
+        path = binding.get("path") if isinstance(binding, dict) else None
+        if not isinstance(path, str) or not (
+            path == _WORKSPACE_MOUNT or path.startswith(_WORKSPACE_MOUNT + "/")
+        ):
+            return binding
+        try:
+            host = self._host_path(path, run_metadata)
+        except LookupError as e:
+            logger.warning("%s; registering env:// output at container path", e)
+            return binding
+        host_binding = copy.deepcopy(binding)
+        host_binding["path"] = host
+        return host_binding
+
+    # ------------------------------------------------------------------
     # pushasset_filestore
     # ------------------------------------------------------------------
 
@@ -885,14 +1116,18 @@ class Docker(Environment):
         binding: Any,
         uri: Optional[Any] = None,
         storepush_config=None,
+        run_metadata: Optional[EntityRunMetadata] = None,
         **kwargs,
     ) -> Any:
         """Push an artifact from a Docker container workspace to a file URI.
 
-        The artifact was written inside the container at /gb-workspace/...
-        which is bind-mounted to the host workspace directory. This method
-        translates the container path to the host path and copies to the
-        output URI location.
+        The artifact was written inside the container at /gb-workspace/...,
+        which is bind-mounted to the producing launch's host workspace. The
+        container path is translated to that host path (see :meth:`_host_path`)
+        and copied to the output URI location. A host path is copied as is.
+
+        :raises LookupError: a ``/gb-workspace`` path whose producing launch
+            (``run_metadata.targetsteprun_id``) is unknown.
         """
         self._warn_non_default_mode(storepush_config, uri)
         if uri is None:
@@ -904,20 +1139,7 @@ class Docker(Environment):
         else:
             source_path = str(binding)
 
-        # Translate container path (/gb-workspace/...) to host path
-        if source_path.startswith("/gb-workspace"):
-            workspace_dir = None
-            for _lid, wdir in self._launched_workspaces.items():
-                workspace_dir = wdir
-            if workspace_dir is None:
-                logger.warning(
-                    "No workspace mapping found for Docker pushasset, path=%s",
-                    source_path,
-                )
-                return uri
-            host_path = source_path.replace("/gb-workspace", workspace_dir, 1)
-        else:
-            host_path = source_path
+        host_path = self._host_path(source_path, run_metadata)
 
         uriobj = uri
         if isinstance(uri, str):
