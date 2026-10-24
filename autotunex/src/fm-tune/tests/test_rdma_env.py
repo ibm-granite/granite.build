@@ -97,3 +97,18 @@ class TestGpuModelForFleet:
 
     def test_default_fleet_is_in_table(self):
         assert DEFAULT_FLEET in _GPU_MODEL_BY_FLEET
+
+
+class TestDeprecatedFleetAliases:
+    """Pre-rename fleet names keep their rails instead of the one-rail fallback."""
+
+    @pytest.mark.parametrize("old,new", [("a100", "ccc-a100"), ("h100", "bv-h100")])
+    def test_alias_resolves_to_current_fleet(self, old, new):
+        assert _default_ib_hca(old) == _default_ib_hca(new)
+        assert _gpu_model_for_fleet(old) == _gpu_model_for_fleet(new)
+
+    def test_alias_logs_deprecation(self, caplog):
+        caplog.set_level("WARNING")
+        _default_ib_hca("h100")
+        assert any("deprecated" in r.message and "bv-h100" in r.message for r in caplog.records)
+        assert not any("unknown fleet" in r.message for r in caplog.records)

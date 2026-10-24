@@ -401,7 +401,8 @@ RDMA where the topology allows.
 | `bv-h200` | `mlx5_0,mlx5_1,...,mlx5_7` | H200 nodes (Slurm) with the same 8-rail layout. |
 
 The presets match the clusters they were tuned on; on other hardware, pass
-`--ib_hca` with your node's compute HCAs.
+`--ib_hca` with your node's compute HCAs. The pre-rename names `a100` and
+`h100` are still accepted as deprecated aliases of `ccc-a100` and `bv-h100`.
 
 Override per run with `--ib_hca "mlx5_0,mlx5_1"`, and the NCCL bootstrap
 interface with `--ib_ifname` (unset by default so NCCL picks the routable

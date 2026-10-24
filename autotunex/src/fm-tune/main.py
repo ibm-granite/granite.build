@@ -215,13 +215,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "--fleet",
         type=str,
-        choices=["ccc-a100", "bv-h100", "bv-h200"],
+        # a100/h100 are the pre-rename names, kept so existing scripts still parse.
+        choices=["ccc-a100", "bv-h100", "bv-h200", "a100", "h100"],
         default="ccc-a100",
         help=(
             "Deployment fleet. Selects the GPU model and the per-fleet default "
             "for NCCL_IB_HCA. 'ccc-a100' (default): A100, single rail (mlx5_0). "
             "'bv-h100' (BlueVela H100): H100, 8 compute rails (mlx5_0..mlx5_7). "
             "'bv-h200' (BlueVela H200, Slurm): H200, same 8 compute rails. "
+            "'a100' and 'h100' are deprecated aliases of 'ccc-a100' and 'bv-h100'. "
             "Override the rails with --ib_hca for ad-hoc benchmarking."
         ),
     )

@@ -154,12 +154,32 @@ _GPU_MODEL_BY_FLEET: Dict[str, str] = {
 }
 
 
+# Fleet names before the per-site rename. Still accepted (with a warning) so
+# existing bsub scripts and programmatic callers keep their rails: without this
+# an old "h100" would hit the unknown-fleet fallback and run on one rail.
+_DEPRECATED_FLEET_ALIASES: Dict[str, str] = {
+    "a100": "ccc-a100",
+    "h100": "bv-h100",
+}
+
+
+def resolve_fleet(fleet: str) -> str:
+    """Map a deprecated fleet name to its current one; other names pass through."""
+    if fleet in _DEPRECATED_FLEET_ALIASES:
+        current = _DEPRECATED_FLEET_ALIASES[fleet]
+        logger.warning(f"[rdma] fleet={fleet!r} is deprecated; use {current!r}")
+        return current
+    return fleet
+
+
 def _default_ib_hca(fleet: str) -> str:
     """Return the per-fleet default for ``NCCL_IB_HCA``.
 
-    Unknown fleet names fall back to ``DEFAULT_FLEET`` (CCC, single rail) and
-    log a warning so the operator notices a typo before blaming NCCL.
+    Deprecated names resolve through :func:`resolve_fleet`. Unknown fleet names
+    fall back to ``DEFAULT_FLEET`` (CCC, single rail) and log a warning so the
+    operator notices a typo before blaming NCCL.
     """
+    fleet = resolve_fleet(fleet)
     if fleet not in _DEFAULT_IB_HCA_BY_FLEET:
         logger.warning(
             f"[rdma] unknown fleet={fleet!r}; falling back to {DEFAULT_FLEET!r} "
@@ -176,6 +196,7 @@ def _gpu_model_for_fleet(fleet: str) -> str:
     Unknown fleet names fall back to ``DEFAULT_FLEET``'s model and log a warning,
     mirroring :func:`_default_ib_hca`.
     """
+    fleet = resolve_fleet(fleet)
     if fleet not in _GPU_MODEL_BY_FLEET:
         logger.warning(
             f"[rdma] unknown fleet={fleet!r}; using {DEFAULT_FLEET!r} GPU model "
