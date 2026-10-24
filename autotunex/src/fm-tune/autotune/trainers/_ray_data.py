@@ -141,7 +141,8 @@ class RayShardIterableDataset(IterableDataset):
     """Wraps a Ray Data shard so HF Trainer can consume it as an IterableDataset.
 
     Ray Train splits the parent Dataset across workers, so each worker only
-    iterates over its own rank-specific slice — no DistributedSampler needed.
+    iterates over its own rank-specific slice — no DistributedSampler needed,
+    and no Accelerate re-sharding either (see ``is_rank_sharded``).
     Batches arrive in the :func:`compact_rows` layout and are expanded to
     ``input_ids`` / ``attention_mask`` / ``labels`` here.
 
@@ -164,6 +165,10 @@ class RayShardIterableDataset(IterableDataset):
     """
 
     GROUP_BUCKET_BATCHES = 64
+
+    # Ray Train already split this shard per rank; LengthGroupedTrainer reads
+    # this to keep Accelerate from splitting it again.
+    is_rank_sharded = True
 
     def __init__(
         self,
