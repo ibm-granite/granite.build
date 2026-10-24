@@ -45,3 +45,25 @@ def test_resolve_dataset_uri_hf_cache_still_resolves():
     uri, name = resolve_dataset_uri(path)
     assert uri == "hf:///datasets/ibm-research/finance-test"
     assert name == "finance-test"
+
+
+@pytest.mark.parametrize(
+    "path, uri, name",
+    [
+        # hash-suffixed dataset dir, file at the revision root
+        (
+            "/Users/u/.cache/gbserver/hf/ibm-research/finance-classification_9bb5cc58/main/"
+            "finance-classification_validation.jsonl",
+            "hf:///datasets/ibm-research/finance-classification",
+            "finance-classification",
+        ),
+        # gbserver's own <owner>/<repo>/<revision> layout, file in a subdir
+        (
+            "/Users/u/.cache/gbserver/hf/axolotl-ai-co/alpaca_100_test/main/data/train-00000-of-00001.parquet",
+            "hf:///datasets/axolotl-ai-co/alpaca_100_test",
+            "alpaca_100_test",
+        ),
+    ],
+)
+def test_local_gbserver_hf_cache_path_resolves_to_hf_uri(path, uri, name):
+    assert lakehouse_path_to_uri(path) == (uri, name)
