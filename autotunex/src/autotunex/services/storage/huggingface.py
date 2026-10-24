@@ -321,11 +321,15 @@ class HuggingFaceStorageBackend:
         """Best-effort bounded preview from the HuggingFace dataset viewer.
 
         Reads at most ``rows`` rows per split from ``datasets-server.huggingface.co``
-        using the dataset's stored ``hf://`` ``artifact_url``. Every failure mode —
-        disabled, an underivable or foreign locator, a missing token, or a viewer
-        that is unavailable or still precomputing — degrades to an empty (or
-        partial) preview. This method never raises: a preview must never fail a
-        metadata read.
+        using the dataset's stored ``hf://`` ``artifact_url``. A repo this app pushed
+        (named ``..._<dataset id[:8]>``) is private, so it is read with the HF token;
+        any other repo — e.g. a public dataset a training run registered through the
+        bridge — is read anonymously, so the token never goes to a repo the app does
+        not own (a private or gated foreign repo then simply has no preview). Every
+        failure mode — disabled, an underivable locator, a missing token for an own
+        repo, or a viewer that is unavailable or still precomputing — degrades to an
+        empty (or partial) preview. This method never raises: a preview must never
+        fail a metadata read.
         """
         empty = DatasetPreview(train=[], validation=[])
         try:
@@ -338,12 +342,12 @@ class HuggingFaceStorageBackend:
                 return empty
             expected_suffix = f"_{str(dataset_id)[:8]}"
             if not repo_id.rsplit("/", 1)[-1].endswith(expected_suffix):
-                logger.warning(
-                    "HF locator %s does not belong to dataset %s; returning empty preview.",
+                logger.debug(
+                    "HF locator %s was not pushed for dataset %s; previewing it anonymously.",
                     repo_id,
                     dataset_id,
                 )
-                return empty
+                return await self._preview_from_viewer(repo_id, None, rows)
             token = os.environ.get(self._hf_token_env)
             if not token:
                 logger.warning(
@@ -357,7 +361,9 @@ class HuggingFaceStorageBackend:
             logger.exception("Unexpected HF preview failure for %s; returning empty.", dataset_id)
             return empty
 
-    async def _preview_from_viewer(self, repo_id: str, token: str, rows: int) -> DatasetPreview:
+    async def _preview_from_viewer(
+        self, repo_id: str, token: str | None, rows: int
+    ) -> DatasetPreview:
         """Discover the config via ``/splits``, then fetch ``train``/``validation`` rows.
 
         ``/splits`` is queried first: it yields the repo's real config (subset)
