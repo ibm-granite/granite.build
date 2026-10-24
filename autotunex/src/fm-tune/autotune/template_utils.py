@@ -17,9 +17,10 @@ import os
 import re
 
 _HF_CACHE_RE = re.compile(r"^/gb-read-write/hfcache/([^/]+)/([^/]+)/[^/]+/[^/]+$")
-# Local gb server cache, e.g. ~/.cache/gbserver/hf/{org}/{dataset}_{hash}/{revision}/{filename} —
-# the dataset segment bakes a hex hash suffix into the name.
-_LOCAL_GBSERVER_HF_CACHE_RE = re.compile(r"^.*/\.cache/gbserver/hf/([^/]+)/([^/]+)_[0-9a-f]{6,}/[^/]+/[^/]+$")
+# Local gb server cache, e.g. ~/.cache/gbserver/hf/{org}/{dataset}[_{hash}]/{revision}/{filename} —
+# the dataset segment may bake a hex hash suffix into the name, and the file may sit in a
+# subdirectory of the revision (gbserver pulls the whole repo, e.g. data/train-*.parquet).
+_LOCAL_GBSERVER_HF_CACHE_RE = re.compile(r"^.*/\.cache/gbserver/hf/([^/]+)/([^/]+?)(?:_[0-9a-f]{6,})?/[^/]+/.+$")
 
 
 def lakehouse_path_to_uri(path: str, strip_last_n: int = 1) -> tuple[str, str]:
