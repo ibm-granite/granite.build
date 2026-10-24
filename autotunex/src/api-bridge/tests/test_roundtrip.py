@@ -386,3 +386,21 @@ def test_find_or_create_stores_a_known_data_format(db, data_format, stored):
     )
 
     assert db.get_dataset(dataset_id=new_id, user_id=user_id)["data_format"] == stored
+
+
+@pytest.mark.parametrize(
+    "data_format, stored", [("parquet", "parquet"), (None, "jsonl"), ("txt", "jsonl")]
+)
+def test_find_or_create_corrects_a_reused_dataset_format(db, data_format, stored):
+    # A row registered before fm-tune sent its format kept the jsonl default.
+    from api_bridge.services.dataset_service import Dataset
+
+    user_id = seed_user(db)
+    service = Dataset(db)
+    kwargs = {"name": "alpaca", "artifact_uri": "hf:///datasets/o/alpaca", "user_id": user_id}
+    first_id = service.find_or_create(**kwargs)
+
+    reused_id = service.find_or_create(**kwargs, data_format=data_format)
+
+    assert reused_id == first_id
+    assert db.get_dataset(dataset_id=reused_id, user_id=user_id)["data_format"] == stored

@@ -46,15 +46,19 @@ class Dataset:
         Mirrors the prior client behavior: match on name AND artifact_url; if no
         match, register the dataset and attach the artifact metadata. A
         ``data_format`` outside :data:`DATA_FORMATS` is dropped (the column default,
-        jsonl, applies), so the main service never reads a format it rejects.
+        jsonl, applies), so the main service never reads a format it rejects. A
+        known format also corrects a reused row, e.g. one registered before the
+        format was sent, which kept the jsonl default.
         """
+        fmt = data_format if data_format in DATA_FORMATS else None
         for ds in self.db.get_datasets(user_id):
             if ds.get("name") == name and ds.get("artifact_url") == artifact_uri:
                 logger.info("Dataset reused: %s (id=%s)", name, ds["id"])
+                if fmt and ds.get("data_format") != fmt:
+                    self.db.update_dataset_format(id=str(ds["id"]), data_format=fmt)
                 return str(ds["id"])
 
         info = models.DatasetInfo(user_id=user_id, name=name, description="")
-        fmt = data_format if data_format in DATA_FORMATS else None
         created = self.db.insert_dataset(dataset=info, data_format=fmt)
         new_id = str(created.id)
         if artifact_uri:

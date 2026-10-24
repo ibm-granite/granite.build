@@ -50,12 +50,19 @@ def test_resolve_dataset_uri_hf_cache_still_resolves():
 @pytest.mark.parametrize(
     "path, uri, name",
     [
-        # hash-suffixed dataset dir, file at the revision root
+        # an app-pushed <name>_<id8> repo, file at the revision root: the suffix is
+        # part of the repo name, so it stays in the URI
         (
             "/Users/u/.cache/gbserver/hf/ibm-research/finance-classification_9bb5cc58/main/"
             "finance-classification_validation.jsonl",
-            "hf:///datasets/ibm-research/finance-classification",
-            "finance-classification",
+            "hf:///datasets/ibm-research/finance-classification_9bb5cc58",
+            "finance-classification_9bb5cc58",
+        ),
+        # a repo name ending in hex-like digits is not truncated
+        (
+            "/Users/u/.cache/gbserver/hf/acme/news_20240101/main/data/train.parquet",
+            "hf:///datasets/acme/news_20240101",
+            "news_20240101",
         ),
         # gbserver's own <owner>/<repo>/<revision> layout, file in a subdir
         (
