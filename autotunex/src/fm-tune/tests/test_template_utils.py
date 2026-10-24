@@ -45,3 +45,69 @@ def test_resolve_dataset_uri_hf_cache_still_resolves():
     uri, name = resolve_dataset_uri(path)
     assert uri == "hf:///datasets/ibm-research/finance-test"
     assert name == "finance-test"
+
+
+@pytest.mark.parametrize(
+    "path, uri, name",
+    [
+        # an app-pushed <name>_<id8> repo, file at the revision root: the suffix is
+        # part of the repo name, so it stays in the URI
+        (
+            "/Users/u/.cache/gbserver/hf/ibm-research/finance-classification_9bb5cc58/main/"
+            "finance-classification_validation.jsonl",
+            "hf:///datasets/ibm-research/finance-classification_9bb5cc58",
+            "finance-classification_9bb5cc58",
+        ),
+        # a repo name ending in hex-like digits is not truncated
+        (
+            "/Users/u/.cache/gbserver/hf/acme/news_20240101/main/data/train.parquet",
+            "hf:///datasets/acme/news_20240101",
+            "news_20240101",
+        ),
+        # gbserver's own <owner>/<repo>/<revision> layout, file in a subdir
+        (
+            "/Users/u/.cache/gbserver/hf/axolotl-ai-co/alpaca_100_test/main/data/train-00000-of-00001.parquet",
+            "hf:///datasets/axolotl-ai-co/alpaca_100_test",
+            "alpaca_100_test",
+        ),
+    ],
+)
+def test_local_gbserver_hf_cache_path_resolves_to_hf_uri(path, uri, name):
+    assert lakehouse_path_to_uri(path) == (uri, name)
+
+
+@pytest.mark.parametrize(
+    "path, name",
+    [
+        # bash: gbserver's local cache, <owner>/<repo>/<revision>
+        (
+            "/Users/u/.cache/gbserver/hf/hf-internal-testing/tiny-random-LlamaForCausalLM/main",
+            "hf-internal-testing/tiny-random-LlamaForCausalLM",
+        ),
+        # SkyPilot/Slurm: the default <shared_workdir>/hf_cache, with a trailing '/'
+        ("/shared/hf_cache/ibm-granite/granite-4.0-h-350m/main/", "ibm-granite/granite-4.0-h-350m"),
+        # a plain HF id, a non-cache dir, and a dataset-style path deeper than the revision
+        ("ibm-granite/granite-4.0-h-350m", "ibm-granite/granite-4.0-h-350m"),
+        ("/models/my-model", "/models/my-model"),
+        ("/shared/hf_cache/o/r/main/sub", "/shared/hf_cache/o/r/main/sub"),
+    ],
+)
+def test_model_display_name(path, name):
+    from autotune.template_utils import model_display_name
+
+    assert model_display_name(path) == name
+
+
+@pytest.mark.parametrize(
+    "path, fmt",
+    [
+        ("/c/data/train-00000-of-00001.parquet", "parquet"),
+        ("finance_train.JSONL", "jsonl"),
+        ("/c/train.csv", "csv"),
+        ("/c/train", None),
+    ],
+)
+def test_data_format_from_path(path, fmt):
+    from autotune.template_utils import data_format_from_path
+
+    assert data_format_from_path(path) == fmt

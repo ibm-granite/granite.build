@@ -49,6 +49,7 @@ from autotunex.core.exceptions import DatasetPushFailedError, DatasetPushTimeout
 from autotunex.core.logging import get_logger
 from autotunex.models.dataset import DatasetPreview
 from autotunex.services.storage.hf_viewer import (
+    HFViewerInaccessible,
     HFViewerUnavailable,
     discover_config,
     fetch_rows,
@@ -118,6 +119,19 @@ class HuggingFaceStorageBackend:
         """Derive the artifact name ``[<namespace>/]<name>_<id[:8]>`` (2025 shape)."""
         base = f"{name}_{str(dataset_id)[:8]}"
         return f"{self._hf_namespace}/{base}" if self._hf_namespace else base
+
+    def _is_own_repo(self, repo_id: str, dataset_id: UUID) -> bool:
+        """Whether ``repo_id`` is the repo this app pushed for ``dataset_id``.
+
+        Its name ends ``_<dataset id[:8]>`` (see :meth:`_artifact_name`) and, when
+        a namespace is configured, it lives in that namespace. Only such a repo is
+        sent the HF token, so a stored locator naming another org's repo cannot
+        borrow it.
+        """
+        owner, _, repo = repo_id.rpartition("/")
+        if not repo.endswith(f"_{str(dataset_id)[:8]}"):
+            return False
+        return not self._hf_namespace or owner == self._hf_namespace
 
     async def persist(
         self,
@@ -321,11 +335,16 @@ class HuggingFaceStorageBackend:
         """Best-effort bounded preview from the HuggingFace dataset viewer.
 
         Reads at most ``rows`` rows per split from ``datasets-server.huggingface.co``
-        using the dataset's stored ``hf://`` ``artifact_url``. Every failure mode —
-        disabled, an underivable or foreign locator, a missing token, or a viewer
-        that is unavailable or still precomputing — degrades to an empty (or
-        partial) preview. This method never raises: a preview must never fail a
-        metadata read.
+        using the dataset's stored ``hf://`` ``artifact_url``. A repo this app pushed
+        (see :meth:`_is_own_repo`) is private, so it is read with the HF token; any
+        other repo — e.g. a public dataset a training run registered through the
+        bridge — is read anonymously, so the token never goes to a repo the app does
+        not own (a private, gated or missing foreign repo then simply has no preview,
+        reported ``viewer_ready=True`` since waiting will not change that). Every
+        failure mode — disabled, an underivable locator, a missing token for an own
+        repo, or a viewer that is unavailable or still precomputing — degrades to an
+        empty (or partial) preview. This method never raises: a preview must never
+        fail a metadata read.
         """
         empty = DatasetPreview(train=[], validation=[])
         try:
@@ -336,14 +355,13 @@ class HuggingFaceStorageBackend:
             if repo_id is None:
                 logger.debug("No hf:// locator for %s; returning empty preview.", dataset_id)
                 return empty
-            expected_suffix = f"_{str(dataset_id)[:8]}"
-            if not repo_id.rsplit("/", 1)[-1].endswith(expected_suffix):
-                logger.warning(
-                    "HF locator %s does not belong to dataset %s; returning empty preview.",
+            if not self._is_own_repo(repo_id, dataset_id):
+                logger.debug(
+                    "HF locator %s was not pushed for dataset %s; previewing it anonymously.",
                     repo_id,
                     dataset_id,
                 )
-                return empty
+                return await self._preview_from_viewer(repo_id, None, rows)
             token = os.environ.get(self._hf_token_env)
             if not token:
                 logger.warning(
@@ -357,7 +375,9 @@ class HuggingFaceStorageBackend:
             logger.exception("Unexpected HF preview failure for %s; returning empty.", dataset_id)
             return empty
 
-    async def _preview_from_viewer(self, repo_id: str, token: str, rows: int) -> DatasetPreview:
+    async def _preview_from_viewer(
+        self, repo_id: str, token: str | None, rows: int
+    ) -> DatasetPreview:
         """Discover the config via ``/splits``, then fetch ``train``/``validation`` rows.
 
         ``/splits`` is queried first: it yields the repo's real config (subset)
@@ -383,6 +403,11 @@ class HuggingFaceStorageBackend:
                     client, base_url=self._hf_viewer_base_url, repo_id=repo_id, token=token
                 )
             except HFViewerUnavailable as exc:
+                if token is None and isinstance(exc, HFViewerInaccessible):
+                    # An anonymous read of a foreign repo was refused: it is
+                    # private, gated or gone, so there is no preview to wait for.
+                    logger.debug("HF repo %s not readable anonymously: %s", repo_id, exc)
+                    return DatasetPreview(train=[], validation=[])
                 logger.warning(
                     "HF dataset viewer not ready for %s (config discovery): %s", repo_id, exc
                 )

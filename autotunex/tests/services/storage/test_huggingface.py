@@ -32,6 +32,7 @@ PUSH_STDOUT = (
 
 def _backend(
     *,
+    hf_namespace: str | None = None,
     hf_preview_enabled: bool = True,
     tags: str = "autotunex",
     http_client: httpx.AsyncClient | None = None,
@@ -41,7 +42,7 @@ def _backend(
         llmb_command="llmb",
         hf_token_env=HF_ENV,
         gb_token_env=GB_ENV,
-        hf_namespace=None,
+        hf_namespace=hf_namespace,
         hf_preview_enabled=hf_preview_enabled,
         hf_viewer_base_url="https://viewer.test",
         hf_viewer_timeout_seconds=2.5,
@@ -533,20 +534,129 @@ async def test_preview_empty_when_artifact_url_absent(monkeypatch: pytest.Monkey
     assert preview == DatasetPreview(train=[], validation=[])
 
 
-async def test_preview_empty_when_repo_belongs_to_other_dataset(
+async def test_preview_reads_a_foreign_repo_without_the_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A repo this app did not push is read anonymously.
+
+    E.g. a public dataset a build trained on: the token is never sent to a repo
+    the app does not own.
+    """
+    monkeypatch.setenv(HF_ENV, "hf_tok")
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/splits":
+            return httpx.Response(200, json={"splits": [{"config": "default", "split": "train"}]})
+        if request.url.params["split"] == "validation":
+            return httpx.Response(404)
+        return httpx.Response(200, json={"rows": [{"row": {"instruction": "hi"}}]})
+
+    async with _viewer_client(handler) as client:
+        preview = await _backend(http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url="hf:///datasets/axolotl-ai-co/alpaca_100_test",
+            rows=10,
+        )
+
+    assert preview.train == [{"instruction": "hi"}]
+    assert preview.validation == []
+    assert seen and all("authorization" not in r.headers for r in seen)
+    assert all(r.url.params["dataset"] == "axolotl-ai-co/alpaca_100_test" for r in seen)
+
+
+async def test_preview_reads_a_foreign_repo_with_no_token_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(HF_ENV, raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/splits":
+            return httpx.Response(200, json={"splits": [{"config": "default", "split": "train"}]})
+        return httpx.Response(200, json={"rows": [{"row": {"a": 1}}]})
+
+    async with _viewer_client(handler) as client:
+        preview = await _backend(http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url="hf://huggingface.co/datasets/example-org/finance_deadbeef",
+            rows=10,
+        )
+
+    assert preview.train == [{"a": 1}]
+
+
+@pytest.mark.parametrize("status", [401, 403, 404])
+async def test_preview_of_a_refused_foreign_repo_is_empty_not_pending(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    """A private, gated or deleted foreign repo has no preview; it is not 'not ready'."""
     monkeypatch.setenv(HF_ENV, "hf_tok")
 
-    preview = await _backend().preview(
-        dataset_id=DATASET_ID,
-        name="finance",
-        data_format="jsonl",
-        artifact_url="hf://huggingface.co/datasets/example-org/finance_deadbeef",
-        rows=10,
-    )
+    async with _viewer_client(lambda request: httpx.Response(status)) as client:
+        preview = await _backend(http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url="hf:///datasets/some-org/private_ds",
+            rows=10,
+        )
 
-    assert preview == DatasetPreview(train=[], validation=[])
+    assert preview == DatasetPreview(train=[], validation=[], viewer_ready=True)
+
+
+async def test_preview_own_repo_refused_is_still_reported_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the token, a 404 on the app's own repo can be a push the viewer has not seen yet."""
+    monkeypatch.setenv(HF_ENV, "hf_tok")
+
+    async with _viewer_client(lambda request: httpx.Response(404)) as client:
+        preview = await _backend(http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url=VALID_URL,
+            rows=10,
+        )
+
+    assert preview.viewer_ready is False
+
+
+@pytest.mark.parametrize(
+    ("artifact_url", "sends_token"),
+    [
+        ("hf://huggingface.co/datasets/example-org/finance_0f55c1a6", True),
+        ("hf://huggingface.co/datasets/other-org/finance_0f55c1a6", False),
+    ],
+)
+async def test_preview_sends_the_token_only_inside_the_configured_namespace(
+    monkeypatch: pytest.MonkeyPatch, artifact_url: str, sends_token: bool
+) -> None:
+    monkeypatch.setenv(HF_ENV, "hf_tok")
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/splits":
+            return httpx.Response(200, json={"splits": [{"config": "default", "split": "train"}]})
+        return httpx.Response(200, json={"rows": [{"row": {"a": 1}}]})
+
+    async with _viewer_client(handler) as client:
+        await _backend(hf_namespace="example-org", http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url=artifact_url,
+            rows=10,
+        )
+
+    assert seen
+    assert all(("authorization" in r.headers) is sends_token for r in seen)
 
 
 async def test_preview_empty_when_token_missing(monkeypatch: pytest.MonkeyPatch) -> None:

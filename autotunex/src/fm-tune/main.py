@@ -47,7 +47,12 @@ from autotune.lsf import (
 # Local
 from autotune.optimizer import AutotuneOptimizer
 from autotune.pipeline import AutotunePipeline
-from autotune.template_utils import resolve_dataset_uri, stem_from_path
+from autotune.template_utils import (
+    data_format_from_path,
+    model_display_name,
+    resolve_dataset_uri,
+    stem_from_path,
+)
 from autotune.utils import (
     cleanup,
     generate_unique_id,
@@ -474,9 +479,13 @@ if __name__ == "__main__":
                         "rl_tuner_type": rl_algo,
                         "config_data": config.config,
                     },
-                    "dataset": {"name": dataset_name, "artifact_uri": artifact_uri},
+                    "dataset": {
+                        "name": dataset_name,
+                        "artifact_uri": artifact_uri,
+                        "data_format": data_format_from_path(args.train_file),
+                    },
                     "job": {
-                        "model": args.model_name_or_path,
+                        "model": model_display_name(args.model_name_or_path),
                         "experiment_name": args.run_name,
                         "tuning_type": tuning_algo,
                         "seed": args.seed,

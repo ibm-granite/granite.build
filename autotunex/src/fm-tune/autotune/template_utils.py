@@ -17,9 +17,11 @@ import os
 import re
 
 _HF_CACHE_RE = re.compile(r"^/gb-read-write/hfcache/([^/]+)/([^/]+)/[^/]+/[^/]+$")
-# Local gb server cache, e.g. ~/.cache/gbserver/hf/{org}/{dataset}_{hash}/{revision}/{filename} —
-# the dataset segment bakes a hex hash suffix into the name.
-_LOCAL_GBSERVER_HF_CACHE_RE = re.compile(r"^.*/\.cache/gbserver/hf/([^/]+)/([^/]+)_[0-9a-f]{6,}/[^/]+/[^/]+$")
+# Local gb server cache, e.g. ~/.cache/gbserver/hf/{org}/{dataset}/{revision}/{filename} —
+# gbserver names the dir after the repo verbatim (a trailing _<hex>, as on the app's own
+# <name>_<id8> repos, is part of the repo name, so it is kept), and the file may sit in a
+# subdirectory of the revision (gbserver pulls the whole repo, e.g. data/train-*.parquet).
+_LOCAL_GBSERVER_HF_CACHE_RE = re.compile(r"^.*/\.cache/gbserver/hf/([^/]+)/([^/]+)/[^/]+/.+$")
 
 
 def lakehouse_path_to_uri(path: str, strip_last_n: int = 1) -> tuple[str, str]:
@@ -73,6 +75,26 @@ def lakehouse_path_to_uri(path: str, strip_last_n: int = 1) -> tuple[str, str]:
         return f"hf:///datasets/{org}/{dataset}", dataset
 
     raise ValueError(f"Path does not match expected lakehouse or HF cache format: {path}")
+
+
+# A model snapshot gbserver pulled from HF: <cache_dir>/{owner}/{repo}/{revision}, with
+# cache_dir ~/.cache/gbserver/hf on bash and <shared_workdir>/hf_cache by default on SkyPilot.
+_GBSERVER_HF_MODEL_RE = re.compile(r"^.*/(?:\.cache/gbserver/hf|hf_cache)/([^/]+)/([^/]+)/[^/]+$")
+
+
+def model_display_name(model_name_or_path: str) -> str:
+    """Return ``owner/repo`` for a gbserver HF model cache path, else the input unchanged.
+
+    The step binds ``base_model`` as its local snapshot dir, so ``--model_name_or_path``
+    is a path; this keeps the path out of the AutoTuneX job's ``model`` field.
+    """
+    match = _GBSERVER_HF_MODEL_RE.match(model_name_or_path.strip().rstrip("/"))
+    return f"{match.group(1)}/{match.group(2)}" if match else model_name_or_path
+
+
+def data_format_from_path(path: str) -> str | None:
+    """Return the lowercased file extension (``parquet``, ``jsonl``, ...), or None if there is none."""
+    return os.path.splitext(path)[1].lstrip(".").lower() or None
 
 
 def stem_from_path(path: str) -> str:

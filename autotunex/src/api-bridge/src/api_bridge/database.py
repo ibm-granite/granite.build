@@ -560,6 +560,8 @@ class Database:
                     id=task_id,
                     job_id=str(job_id),
                     build_id=build_id,
+                    # Explicit: the service-created schema has no DDL default for status.
+                    status="PENDING",
                     type=task_type,
                     started_at=now,
                     updated_at=now,
@@ -587,7 +589,7 @@ class Database:
             result["updated_at"] = get_utc_timestamp(result.get("updated_at"))
         return result
 
-    def insert_dataset(self, dataset):
+    def insert_dataset(self, dataset, data_format: str | None = None):
         try:
             dataset_id = uuid.uuid4()
             # created_at/updated_at are DATETIME NOT NULL with no default (see
@@ -602,6 +604,8 @@ class Database:
                         description=dataset.description,
                         created_at=now,
                         updated_at=now,
+                        # Omitted, not None: the column's default is jsonl.
+                        **({"data_format": data_format} if data_format else {}),
                     )
                 )
             dataset.id = dataset_id
@@ -622,6 +626,17 @@ class Database:
             return dataset
         except IntegrityError:
             raise HTTPException(status_code=400, detail="Dataset name must be unique")
+        except SQLAlchemyError as e:
+            raise HTTPException(status_code=500, detail=f"Internal Server error: \n{e}")
+
+    def update_dataset_format(self, id: str, data_format: str):
+        try:
+            with self._engine.begin() as connection:
+                connection.execute(
+                    update(tables.datasets)
+                    .where(tables.datasets.c.id == id)
+                    .values(data_format=data_format)
+                )
         except SQLAlchemyError as e:
             raise HTTPException(status_code=500, detail=f"Internal Server error: \n{e}")
 

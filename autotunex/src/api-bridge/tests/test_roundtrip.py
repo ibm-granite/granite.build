@@ -249,6 +249,37 @@ def test_insert_gb_task_roundtrip(db):
     assert task_id is not None
 
 
+def test_insert_gb_task_without_a_status_server_default(db):
+    # The live schema comes from the AutoTuneX service's create_all, whose
+    # gb_tasks.status has only a Python-side default (no DDL DEFAULT), unlike
+    # this bridge metadata. The insert must not rely on the server default.
+    from sqlalchemy import text
+
+    user_id = seed_user(db)
+    config_id = str(db.insert_configuration(_config(user_id)))
+    dataset_id = str(db.insert_dataset(_dataset(user_id)).id)
+    job_id = seed_job(db, user_id, config_id, dataset_id)
+    with db._engine.begin() as conn:
+        conn.execute(text("DROP TABLE gb_tasks"))
+        conn.execute(
+            text(
+                "CREATE TABLE gb_tasks (id VARCHAR(36) NOT NULL PRIMARY KEY,"
+                " job_id VARCHAR(36) NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,"
+                " build_id VARCHAR(36), status VARCHAR(10) NOT NULL, type VARCHAR(8) NOT NULL,"
+                " pr_url TEXT, artifact_id VARCHAR(36), artifact_uri TEXT, build_status JSON,"
+                " started_at VARCHAR(255), updated_at VARCHAR(255), rits_url TEXT)"
+            )
+        )
+
+    task_id = db.insert_gb_task(job_id=job_id, build_id="44444444-4444-4444-4444-444444444444")
+
+    with db._engine.connect() as conn:
+        status = conn.execute(
+            text("SELECT status FROM gb_tasks WHERE id = :id"), {"id": task_id}
+        ).scalar_one()
+    assert status == "PENDING"
+
+
 def test_insert_trial_and_result_roundtrip(db):
     from sqlalchemy import select as sa_select
 
@@ -338,3 +369,38 @@ def test_structure_check_raises_when_table_missing():
     with pytest.raises(HTTPException) as exc:
         empty_db.test_db_connection_and_structure()
     assert exc.value.status_code == 500
+
+
+@pytest.mark.parametrize(
+    "data_format, stored", [("parquet", "parquet"), (None, "jsonl"), ("txt", "jsonl")]
+)
+def test_find_or_create_stores_a_known_data_format(db, data_format, stored):
+    from api_bridge.services.dataset_service import Dataset
+
+    user_id = seed_user(db)
+    new_id = Dataset(db).find_or_create(
+        name="alpaca",
+        artifact_uri="hf:///datasets/o/alpaca",
+        user_id=user_id,
+        data_format=data_format,
+    )
+
+    assert db.get_dataset(dataset_id=new_id, user_id=user_id)["data_format"] == stored
+
+
+@pytest.mark.parametrize(
+    "data_format, stored", [("parquet", "parquet"), (None, "jsonl"), ("txt", "jsonl")]
+)
+def test_find_or_create_corrects_a_reused_dataset_format(db, data_format, stored):
+    # A row registered before fm-tune sent its format kept the jsonl default.
+    from api_bridge.services.dataset_service import Dataset
+
+    user_id = seed_user(db)
+    service = Dataset(db)
+    kwargs = {"name": "alpaca", "artifact_uri": "hf:///datasets/o/alpaca", "user_id": user_id}
+    first_id = service.find_or_create(**kwargs)
+
+    reused_id = service.find_or_create(**kwargs, data_format=data_format)
+
+    assert reused_id == first_id
+    assert db.get_dataset(dataset_id=reused_id, user_id=user_id)["data_format"] == stored
