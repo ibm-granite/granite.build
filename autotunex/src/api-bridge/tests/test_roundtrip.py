@@ -369,3 +369,15 @@ def test_structure_check_raises_when_table_missing():
     with pytest.raises(HTTPException) as exc:
         empty_db.test_db_connection_and_structure()
     assert exc.value.status_code == 500
+
+
+@pytest.mark.parametrize("data_format, stored", [("parquet", "parquet"), (None, "jsonl"), ("txt", "jsonl")])
+def test_find_or_create_stores_a_known_data_format(db, data_format, stored):
+    from api_bridge.services.dataset_service import Dataset
+
+    user_id = seed_user(db)
+    new_id = Dataset(db).find_or_create(
+        name="alpaca", artifact_uri="hf:///datasets/o/alpaca", user_id=user_id, data_format=data_format
+    )
+
+    assert db.get_dataset(dataset_id=new_id, user_id=user_id)["data_format"] == stored
