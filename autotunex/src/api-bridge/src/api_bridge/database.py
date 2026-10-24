@@ -560,6 +560,8 @@ class Database:
                     id=task_id,
                     job_id=str(job_id),
                     build_id=build_id,
+                    # Explicit: the service-created schema has no DDL default for status.
+                    status="PENDING",
                     type=task_type,
                     started_at=now,
                     updated_at=now,
