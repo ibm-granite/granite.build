@@ -32,11 +32,12 @@ Extra inputs may be bound (`allow_unknown: true`) so a recipe can order targets.
 The output directory must be new, empty, or a previous model output (`config.json`,
 `adapter_config.json`, `model.safetensors` or `adapters.safetensors` at its root), and must not
 be the `base_model` or `dataset` input directory. Anything else fails the run before any clone
-or install, because on success `--model_at_root` deletes every other entry in it. A
-failed run leaves its trial and checkpoint directories (`ray_results/`, `outputs/`,
-`final_checkpoints/`, ...) there with no model, so a retry into the same `output_path` is
-refused: delete that directory or use a new `output_path`. For the same reason fm-tune's
-`--resume_from_checkpoint` cannot be used through `extra_args`.
+or install, because on success `--model_at_root` deletes every other entry in it. A run
+marks the directory with `.fm-tune-incomplete` before training and removes the mark on
+success, so the next run into a marked directory (a SkyPilot retry, or a rerun after a
+failed or killed run) clears it first: its trial and checkpoint directories, and any
+previous model in it. For the same reason fm-tune's `--resume_from_checkpoint` cannot be
+used through `extra_args`.
 
 Relative `output_path` and `source.path` values (and relative input paths) are resolved
 against the directory the step starts in (the run workdir on SkyPilot) before `main.py` runs,

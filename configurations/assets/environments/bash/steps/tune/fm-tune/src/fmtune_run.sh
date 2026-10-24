@@ -212,6 +212,16 @@ entries=""
 if [ -d "$FMTUNE_OUTPUT_DIR" ]; then
   entries="$(ls -A "$FMTUNE_OUTPUT_DIR")" || die "cannot list output dir $FMTUNE_OUTPUT_DIR"
 fi
+# A run marks the dir as its own before training and unmarks it on success, so a
+# marked dir holds a failed or killed earlier run's output (trials, checkpoints, no
+# model). Clear it: SkyPilot retries a failed run into the same dir.
+incomplete="$FMTUNE_OUTPUT_DIR/.fm-tune-incomplete"
+if [ -n "$entries" ] && [ -f "$incomplete" ]; then
+  log "clearing a failed earlier run's output in $FMTUNE_OUTPUT_DIR"
+  find -H "$FMTUNE_OUTPUT_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + \
+    || die "cannot clear a failed earlier run's output in $FMTUNE_OUTPUT_DIR"
+  entries=""
+fi
 if [ -n "$entries" ] \
    && [ ! -f "$FMTUNE_OUTPUT_DIR/config.json" ] \
    && [ ! -f "$FMTUNE_OUTPUT_DIR/adapter_config.json" ] \
@@ -378,6 +388,7 @@ if [ -n "$FMTUNE_EXTRA_ARGS" ]; then
 fi
 
 mkdir -p "$FMTUNE_OUTPUT_DIR"
+: > "$incomplete" || die "cannot write to output dir $FMTUNE_OUTPUT_DIR"
 # fm-tune's AutoTuneX bridge logs under $LOG_PATH/logs (default ./logs, the source
 # tree). Not inside the output dir, which --model_at_root clears on success, and not
 # its parent, which builds with sibling output dirs share: <output dir>.logs.
@@ -392,4 +403,5 @@ if [ "$status" -ne 0 ]; then
   echo "[fm-tune] main.py failed with exit code $status" >&2
   exit "$status"
 fi
+rm -f "$incomplete"
 echo "GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:$FMTUNE_OUTPUT_DIR"

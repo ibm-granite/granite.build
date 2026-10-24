@@ -282,6 +282,33 @@ def test_a_previous_model_output_is_accepted(env, marker):
     assert proc.returncode == 0, proc.stderr
 
 
+def test_a_failed_runs_output_is_cleared_so_a_retry_succeeds(env):
+    """SkyPilot retries a failed run into the same dir; its debris holds no model."""
+    out = pathlib.Path(env["FMTUNE_OUTPUT_DIR"])
+    env["STUB_EXIT"] = "1"
+    assert _run(env).returncode == 1
+    assert (out / ".fm-tune-incomplete").is_file()
+    (out / "ray_results").mkdir()  # what a failed fm-tune leaves behind
+    del env["STUB_EXIT"]
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    assert "clearing a failed earlier run's output" in proc.stdout
+    assert sorted(p.name for p in out.iterdir()) == ["adapter_config.json"]
+
+
+def test_an_unmarked_non_empty_output_dir_is_still_refused(env):
+    """Only a dir this step marked is cleared: the mark is removed on success."""
+    out = pathlib.Path(env["FMTUNE_OUTPUT_DIR"])
+    assert _run(env).returncode == 0
+    assert not (out / ".fm-tune-incomplete").exists()
+    (out / "adapter_config.json").unlink()
+    (out / "precious.txt").write_text("keep me\n")
+    proc = _run(env)
+    assert proc.returncode == 2
+    assert "is not empty and is not a previous model output" in proc.stderr
+    assert (out / "precious.txt").read_text() == "keep me\n"
+
+
 @pytest.mark.parametrize("which", ["FMTUNE_BASE_MODEL_DIR", "FMTUNE_DATASET_DIR"])
 def test_an_output_dir_that_is_an_input_dies_before_any_clone(env, tmp_path, which):
     """A base model has config.json at its root, so it passes the model-output check;
