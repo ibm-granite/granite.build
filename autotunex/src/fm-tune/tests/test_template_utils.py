@@ -67,3 +67,23 @@ def test_resolve_dataset_uri_hf_cache_still_resolves():
 )
 def test_local_gbserver_hf_cache_path_resolves_to_hf_uri(path, uri, name):
     assert lakehouse_path_to_uri(path) == (uri, name)
+
+
+@pytest.mark.parametrize(
+    "path, name",
+    [
+        # bash: gbserver's local cache, <owner>/<repo>/<revision>
+        ("/Users/u/.cache/gbserver/hf/hf-internal-testing/tiny-random-LlamaForCausalLM/main",
+         "hf-internal-testing/tiny-random-LlamaForCausalLM"),
+        # SkyPilot/Slurm: the default <shared_workdir>/hf_cache, with a trailing '/'
+        ("/shared/hf_cache/ibm-granite/granite-4.0-h-350m/main/", "ibm-granite/granite-4.0-h-350m"),
+        # a plain HF id, a non-cache dir, and a dataset-style path deeper than the revision
+        ("ibm-granite/granite-4.0-h-350m", "ibm-granite/granite-4.0-h-350m"),
+        ("/models/my-model", "/models/my-model"),
+        ("/shared/hf_cache/o/r/main/sub", "/shared/hf_cache/o/r/main/sub"),
+    ],
+)
+def test_model_display_name(path, name):
+    from autotune.template_utils import model_display_name
+
+    assert model_display_name(path) == name

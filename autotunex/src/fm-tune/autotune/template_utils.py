@@ -76,6 +76,21 @@ def lakehouse_path_to_uri(path: str, strip_last_n: int = 1) -> tuple[str, str]:
     raise ValueError(f"Path does not match expected lakehouse or HF cache format: {path}")
 
 
+# A model snapshot gbserver pulled from HF: <cache_dir>/{owner}/{repo}/{revision}, with
+# cache_dir ~/.cache/gbserver/hf on bash and <shared_workdir>/hf_cache by default on SkyPilot.
+_GBSERVER_HF_MODEL_RE = re.compile(r"^.*/(?:\.cache/gbserver/hf|hf_cache)/([^/]+)/([^/]+)/[^/]+$")
+
+
+def model_display_name(model_name_or_path: str) -> str:
+    """Return ``owner/repo`` for a gbserver HF model cache path, else the input unchanged.
+
+    The step binds ``base_model`` as its local snapshot dir, so ``--model_name_or_path``
+    is a path; this keeps the path out of the AutoTuneX job's ``model`` field.
+    """
+    match = _GBSERVER_HF_MODEL_RE.match(model_name_or_path.strip().rstrip("/"))
+    return f"{match.group(1)}/{match.group(2)}" if match else model_name_or_path
+
+
 def stem_from_path(path: str) -> str:
     """Return the filename without extension from a path."""
     return os.path.splitext(os.path.basename(path))[0]
