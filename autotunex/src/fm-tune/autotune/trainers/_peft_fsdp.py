@@ -39,6 +39,12 @@ forward, so the fix is to make the toggle flag-only there: while
 called with grad *disabled* only sets ``_disable_adapters``. Calls with grad
 enabled (PEFT setup, a deliberate adapter switch) behave exactly as before.
 
+``ModulesToSaveWrapper`` (``LoraConfig(modules_to_save=...)``, e.g. a trained
+``lm_head``) is not a ``BaseTunerLayer`` and has its own ``enable_adapters``
+that flips the copied module's ``requires_grad`` the same way, so it is patched
+too. ``TrainableTokensWrapper`` delegates to a ``BaseTunerLayer`` and needs
+nothing extra.
+
 Precomputing the reference log-probs (``precompute_ref_log_probs=True``) would
 also avoid the mid-step toggle, but TRL does it in ``__init__``, before the FSDP
 wrap, when ``fsdp_cpu_ram_efficient_loading`` leaves ranks > 0 on meta weights.
@@ -46,6 +52,7 @@ wrap, when ``fsdp_cpu_ram_efficient_loading`` leaves ranks > 0 on meta weights.
 
 import contextlib
 import logging
+from typing import Any, Callable
 
 import torch
 
@@ -60,20 +67,27 @@ def peft_adapter_toggle_keeps_requires_grad():
     """
     try:
         from peft.tuners.tuners_utils import BaseTunerLayer
+        from peft.utils.other import ModulesToSaveWrapper
     except ImportError:
         yield
         return
 
-    original = BaseTunerLayer.enable_adapters
+    def flag_only_under_no_grad(original: Callable[[Any, bool], None]) -> Callable[[Any, bool], None]:
+        def enable_adapters(self: Any, enabled: bool) -> None:
+            if torch.is_grad_enabled():
+                original(self, enabled)
+                return
+            self._disable_adapters = not enabled
 
-    def enable_adapters(self, enabled: bool) -> None:
-        if torch.is_grad_enabled():
-            return original(self, enabled)
-        self._disable_adapters = not enabled
+        return enable_adapters
 
-    BaseTunerLayer.enable_adapters = enable_adapters
+    patched: tuple[type, ...] = (BaseTunerLayer, ModulesToSaveWrapper)
+    originals = {cls: getattr(cls, "enable_adapters") for cls in patched}
+    for cls in patched:
+        setattr(cls, "enable_adapters", flag_only_under_no_grad(originals[cls]))
     logger.info("[AutoTune] PEFT adapter toggle under no_grad keeps requires_grad (FSDP reference pass).")
     try:
         yield
     finally:
-        BaseTunerLayer.enable_adapters = original
+        for cls, original in originals.items():
+            setattr(cls, "enable_adapters", original)

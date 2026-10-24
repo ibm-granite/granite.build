@@ -62,11 +62,49 @@ def test_grad_enabled_toggle_unchanged():
 
 def test_original_method_restored():
     from peft.tuners.tuners_utils import BaseTunerLayer
+    from peft.utils.other import ModulesToSaveWrapper
 
-    original = BaseTunerLayer.enable_adapters
+    originals = [BaseTunerLayer.enable_adapters, ModulesToSaveWrapper.enable_adapters]
     with peft_adapter_toggle_keeps_requires_grad():
-        assert BaseTunerLayer.enable_adapters is not original
-    assert BaseTunerLayer.enable_adapters is original
+        assert BaseTunerLayer.enable_adapters is not originals[0]
+        assert ModulesToSaveWrapper.enable_adapters is not originals[1]
+    assert [BaseTunerLayer.enable_adapters, ModulesToSaveWrapper.enable_adapters] == originals
+
+
+class _ToyWithHead(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lin = torch.nn.Linear(8, 8)
+        self.head = torch.nn.Linear(8, 4)
+
+    def forward(self, x):
+        return self.head(self.lin(x))
+
+
+def _modules_to_save_flags(model):
+    return [p.requires_grad for n, p in model.named_parameters() if "modules_to_save" in n]
+
+
+def test_modules_to_save_keeps_requires_grad_under_no_grad():
+    """ModulesToSaveWrapper has its own enable_adapters; it must not flip requires_grad either."""
+    torch.manual_seed(0)
+    model = peft.get_peft_model(_ToyWithHead(), peft.LoraConfig(r=4, target_modules=["lin"], modules_to_save=["head"]))
+    assert _modules_to_save_flags(model) and all(_modules_to_save_flags(model))
+    with torch.no_grad(), model.disable_adapter():
+        assert not any(_modules_to_save_flags(model))  # stock PEFT flips it
+    # Make the trained copy differ from the original head so the forward shows which one ran.
+    wrapper = model.base_model.model.head
+    with torch.no_grad():
+        wrapper.modules_to_save["default"].weight.add_(1.0)
+        x = torch.randn(2, 8)
+        base_out = wrapper.original_module(model.base_model.model.lin.base_layer(x))
+    with peft_adapter_toggle_keeps_requires_grad():
+        with torch.no_grad(), model.disable_adapter():
+            assert all(_modules_to_save_flags(model))
+            assert torch.allclose(model(x), base_out)  # reference pass uses the original head
+        assert all(_modules_to_save_flags(model))
+        with torch.no_grad():
+            assert not torch.allclose(model(x), base_out)
 
 
 def test_driver_wraps_train_in_the_patch():
