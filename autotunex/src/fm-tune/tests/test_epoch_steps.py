@@ -182,6 +182,20 @@ class TestNoDriverComputesStepsItself:
         assert "steps_per_epoch = epoch_steps.optimizer_steps" in src
 
 
+class TestRayDataBudgetUsesHelper:
+    """The two HF drivers draw the Ray Data cap from EpochSteps, not inline math.
+
+    The tests above pin ``samples_per_rank``; this pins that the code that
+    actually runs calls it, so the two cannot drift.
+    """
+
+    @pytest.mark.parametrize("name", ["driver_multi_hf_fsdp.py", "driver_multi_hf_ds.py"])
+    def test_budget_from_samples_per_rank(self, name):
+        src = (pathlib.Path("autotune/trainers") / name).read_text()
+        assert ".samples_per_rank(num_train_epochs, batch_size)" in src
+        assert "* batch_size * num_train_epochs" not in src
+
+
 class TestWorkerGetsTheResolvedAccum:
     """The worker must scale by the same accum the driver divided by.
 

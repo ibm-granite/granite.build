@@ -62,6 +62,7 @@ from autotune.trainers._alora_gc import (
     AloraGradCheckpointDrainCallback,
     install_alora_gc_safety_wrapper,
 )
+from autotune.trainers._arrow_data import TokenizedArrowDataset, load_tokenize_and_save
 from autotune.trainers._checkpointing import resolve_checkpoint_strategy, resolve_resume_checkpoint
 from autotune.trainers._collate import (
     LengthGroupedTrainer,
@@ -72,7 +73,7 @@ from autotune.trainers._collate import (
 )
 from autotune.trainers._ray_data import RayShardIterableDataset, build_tokenized_datasets
 from autotune.trainers._resume import peft_adapter_load_on_cpu
-from autotune.trainers._steps import resolve_epoch_steps
+from autotune.trainers._steps import EpochSteps, resolve_epoch_steps
 from autotune.utils import (
     assert_dp_sharding,
     estimate_fsdp_strategy,
@@ -84,7 +85,6 @@ from autotune.utils import (
     resize_model_embeddings,
     resolve_trust_remote_code,
     set_seed,
-    tokenize_batch,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,124 +93,6 @@ logger = logging.getLogger(__name__)
 # from the PlacementGroupCleaner. These occur when the Ray State API is
 # temporarily slow under load from Ray Tune + TorchTrainer.
 logging.getLogger("ray.train.v2._internal.execution.controller.placement_group_cleaner").setLevel(logging.ERROR)
-
-
-class _TokenizedArrowDataset(torch.utils.data.Dataset):
-    """Map-style Dataset backed by a memory-mapped Arrow IPC file.
-
-    Each worker mmaps the same file (no serialization through the Ray
-    object store) and indexes into it. HF Trainer's default distributed
-    sampler shards rows across ranks.
-    """
-
-    def __init__(self, arrow_path: str):
-        import pyarrow as pa
-
-        self.table = pa.ipc.open_file(pa.memory_map(arrow_path, "r")).read_all()
-        self._len = len(self.table)
-        # Real (unpadded) token count per row, written by _load_tokenize_and_save;
-        # the length-grouped sampler reads it once instead of scanning every row.
-        self.lengths = self.table.column("length").to_numpy() if "length" in self.table.column_names else None
-
-    def __len__(self):
-        return self._len
-
-    def __getitem__(self, idx):
-        row = self.table.slice(idx, 1)
-        return {
-            "input_ids": torch.tensor(row.column("input_ids")[0].as_py(), dtype=torch.long),
-            "attention_mask": torch.tensor(row.column("attention_mask")[0].as_py(), dtype=torch.long),
-            "labels": torch.tensor(row.column("labels")[0].as_py(), dtype=torch.long),
-        }
-
-
-def _load_tokenize_and_save(
-    file_path: str,
-    tokenizer,
-    input_col: str,
-    output_col: str,
-    max_length: int,
-    output_arrow_path: str,
-    percentage: float = 1.0,
-    chunk_size: int = 50000,
-    thinking: bool = False,
-) -> int:
-    """Load a dataset file, tokenize it in chunks on the driver, and write
-    the result as an Arrow IPC file for workers to memory-map. Returns the
-    number of tokenized samples.
-    """
-    import pandas as pd
-    import pyarrow as pa
-    from tqdm import tqdm
-
-    ext = os.path.splitext(file_path)[1].lower()
-    if ext == ".parquet":
-        df = pd.read_parquet(file_path)
-    elif ext == ".csv":
-        df = pd.read_csv(file_path)
-    elif ext == ".json":
-        df = pd.read_json(file_path, lines=False)
-    else:  # .jsonl (and anything else line-delimited)
-        df = pd.read_json(file_path, lines=ext == ".jsonl")
-
-    logger.info(f"[AutoTune] Loaded {len(df)} rows from {file_path}")
-
-    if percentage < 1.0:
-        n = max(1, int(len(df) * percentage))
-        df = df.head(n)
-        logger.info(f"[AutoTune] Subsampled to {len(df)} rows ({percentage * 100:.0f}%)")
-
-    df = apply_chat_template_to_df(df, tokenizer, input_col, thinking)
-
-    logger.info("[AutoTune] First instance (after formatting):")
-    logger.info(f"  {input_col}: {df[input_col].iloc[0]}")
-    logger.info(f"  {output_col}: {df[output_col].iloc[0]}")
-
-    all_input_ids = []
-    all_attention_mask = []
-    all_labels = []
-    all_lengths = []
-    total_rows = len(df)
-    dataset_name = os.path.basename(file_path)
-
-    logger.info(f"[AutoTune] Tokenizing dataset with max_length={max_length}...")
-    with tqdm(total=total_rows, desc=f"Tokenizing {dataset_name}", unit="rows") as pbar:
-        for start in range(0, total_rows, chunk_size):
-            end = min(start + chunk_size, total_rows)
-            chunk_df = df.iloc[start:end]
-            tokenized = tokenize_batch(
-                batch=chunk_df,
-                tokenizer=tokenizer,
-                input_col=input_col,
-                output_col=output_col,
-                max_length=max_length,
-            )
-            all_input_ids.extend(tokenized["input_ids"])
-            all_attention_mask.extend(tokenized["attention_mask"])
-            all_labels.extend(tokenized["labels"])
-            all_lengths.extend(sum(mask) for mask in tokenized["attention_mask"])
-            pbar.update(end - start)
-
-    table = pa.table(
-        {
-            "input_ids": all_input_ids,
-            "attention_mask": all_attention_mask,
-            "labels": all_labels,
-            "length": pa.array(all_lengths, type=pa.int32()),
-        }
-    )
-
-    os.makedirs(os.path.dirname(output_arrow_path), exist_ok=True)
-    writer = pa.ipc.new_file(output_arrow_path, table.schema)
-    batch_rows = 100000
-    for i in range(0, len(table), batch_rows):
-        writer.write(table.slice(i, min(batch_rows, len(table) - i)))
-    writer.close()
-
-    num_samples = len(table)
-    size_mb = os.path.getsize(output_arrow_path) / (1024 * 1024)
-    logger.info(f"[AutoTune] Saved {num_samples} samples to {output_arrow_path} ({size_mb:.1f} MB)")
-    return num_samples
 
 
 def _build_fsdp_config(strategy: str, num_workers: int = 1) -> tuple[str, dict]:
@@ -658,8 +540,8 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     if data_backend == "arrow":
         train_arrow_path = train_loop_config["train_arrow_path"]
         eval_arrow_path = train_loop_config["eval_arrow_path"]
-        train_dataset = _TokenizedArrowDataset(train_arrow_path)
-        eval_dataset = _TokenizedArrowDataset(eval_arrow_path)
+        train_dataset = TokenizedArrowDataset(train_arrow_path)
+        eval_dataset = TokenizedArrowDataset(eval_arrow_path)
         if rank == 0 and train_dataset.lengths is not None:
             log_padding_efficiency(train_dataset.lengths, training_config.get("max_length"))
         if group_by_length:
@@ -675,10 +557,13 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
         # when Ray Data block-level splits yield unequal shard row counts.
         train_shard = train.get_dataset_shard("train")
         eval_shard = train.get_dataset_shard("eval")
-        # steps_per_epoch is in optimizer steps, so the sample budget has to be
-        # scaled back up by gradient_accumulation_steps -- otherwise the cap
-        # starves the dataloader well before max_steps is reached.
-        samples_per_rank = steps_per_epoch * max(1, gradient_accumulation_steps) * batch_size * num_train_epochs
+        # The budget must cover every optimizer step max_steps asks for;
+        # EpochSteps.samples_per_rank owns that math (see _steps.py).
+        samples_per_rank = EpochSteps(
+            micro_batches=steps_per_epoch * max(1, gradient_accumulation_steps),
+            optimizer_steps=steps_per_epoch,
+            gradient_accumulation_steps=max(1, gradient_accumulation_steps),
+        ).samples_per_rank(num_train_epochs, batch_size)
         train_dataset = RayShardIterableDataset(
             train_shard,
             batch_size=batch_size,
@@ -973,7 +858,7 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         train_arrow_path = os.path.join(data_cache_dir, "train.arrow")
         eval_arrow_path = os.path.join(data_cache_dir, "eval.arrow")
 
-        train_ds_size = _load_tokenize_and_save(
+        train_ds_size = load_tokenize_and_save(
             file_path=train_file,
             tokenizer=tokenizer,
             input_col=input_col,
@@ -983,7 +868,7 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
             percentage=percentage,
             thinking=thinking,
         )
-        _load_tokenize_and_save(
+        load_tokenize_and_save(
             file_path=eval_file,
             tokenizer=tokenizer,
             input_col=input_col,
