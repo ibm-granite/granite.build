@@ -149,6 +149,24 @@ def test_optional_settings_add_their_flags(env, over, flags):
     assert argv[i : i + len(flags)] == flags
 
 
+def test_job_id_defaults_to_the_build_id_when_the_bridge_is_on(env):
+    env.update({"FMTUNE_SERVER_URL": "http://h:1", "GB_BUILD_ID": "b-123"})
+    assert _run(env).returncode == 0
+    assert _flag(_record(env)["argv"], "--job_id") == "b-123"
+
+
+def test_an_explicit_job_id_wins_over_the_build_id(env):
+    env.update({"FMTUNE_SERVER_URL": "http://h:1", "FMTUNE_JOB_ID": "j1", "GB_BUILD_ID": "b-123"})
+    assert _run(env).returncode == 0
+    assert _flag(_record(env)["argv"], "--job_id") == "j1"
+
+
+def test_no_job_id_without_the_bridge(env):
+    env["GB_BUILD_ID"] = "b-123"
+    assert _run(env).returncode == 0
+    assert "--job_id" not in _record(env)["argv"]
+
+
 def test_preset_is_used_when_hpo_config_is_empty(env):
     env["FMTUNE_HPO_CONFIG_JSON"] = "{}"
     assert _run(env).returncode == 0

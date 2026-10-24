@@ -101,6 +101,9 @@ fi
 : "${FMTUNE_EXTRA_ARGS:=}"
 : "${FMTUNE_SERVER_URL:=}"
 : "${FMTUNE_JOB_ID:=}"
+# With the bridge on and no job_id, register the run under its build id (gbserver sets
+# GB_BUILD_ID in every env); the bridge's template path expects build_id == job_id.
+[ -n "$FMTUNE_SERVER_URL" ] && [ -z "$FMTUNE_JOB_ID" ] && FMTUNE_JOB_ID="${GB_BUILD_ID:-}"
 : "${FMTUNE_MODEL:=}"
 : "${FMTUNE_BASE_MODEL_DIR:=}"
 : "${FMTUNE_SOURCE_PATH:=}"
