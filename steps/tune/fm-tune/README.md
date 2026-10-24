@@ -72,7 +72,7 @@ Set by the launcher; defaults are applied by the script.
 | `FMTUNE_HPO_CONFIG_JSON` | empty (`{}` = empty) | Inline HPO config as JSON; the script converts it to `<FMTUNE_CONFIG_NAME>.yaml` |
 | `FMTUNE_CONFIG_NAME` | `fm_tune_hpo` | File name (and AutoTuneX config name) for the inline HPO config; must match `^[A-Za-z0-9._-]+$` |
 | `FMTUNE_EXTRA_ARGS` | empty | Whitespace-split and appended to argv |
-| `FMTUNE_SERVER_URL` / `FMTUNE_JOB_ID` | empty | AutoTuneX bridge flags |
+| `FMTUNE_SERVER_URL` / `FMTUNE_JOB_ID` | empty | AutoTuneX bridge flags; with `FMTUNE_SERVER_URL` set, an empty `FMTUNE_JOB_ID` defaults to `GB_BUILD_ID` |
 | `FMTUNE_LOCK_TIMEOUT` | `1800` | At most 9 digits. Seconds to wait on any cache lock held by another build before failing; a lock is never taken over (see USAGE) |
 | `LOG_PATH` | the output dir's parent | Where fm-tune's AutoTuneX bridge writes `logs/`; kept if already set |
 | `FMTUNE_SKIP_INSTALL` | unset | `1` uses `FMTUNE_PYTHON` as is (unit tests only) |

@@ -70,7 +70,7 @@ subtraction in Jinja.
 | `extra_args` | `""` | Appended to the `main.py` command line, split on whitespace and newlines (no quoting) |
 | `python` | `""` | Interpreter that creates the venv. Empty means the injected python (bash) or `python3` (SkyPilot). Must be 3.10 or newer |
 | `autotunex.server_url` | `""` | `--autotunex_server_url`, omitted when empty |
-| `autotunex.job_id` | `""` | `--job_id`, omitted when empty |
+| `autotunex.job_id` | `""` | `--job_id`. Empty means the build id (`GB_BUILD_ID`) when `autotunex.server_url` is set, else omitted. Set it only to the UUID of a job AutoTuneX already created (its UI launch does this): fm-tune also sends it as the build id, so any other value leaves the run unregistered or under the default owner |
 
 ### Config checks
 
@@ -309,7 +309,11 @@ this step's build shape:
   AutoTuneX need not export it.
 - AutoTuneX's `CUDA_HOME` export goes in the launcher env: `bash.env` on bash,
   `launcher_config.envs` on SkyPilot.
-- Follow-up: `config_name` (AutoTuneX names the config file after it) is not carried.
+- One bridge-enabled fm-tune target per build. Every target in a build gets the same
+  `GB_BUILD_ID`, so with `autotunex.server_url` set and no `job_id`, a second target
+  registers under the first target's job: AutoTuneX shows one job, with the first
+  target's config and dataset and both targets' trials and logs. Nothing fails. Put
+  each bridge-enabled fm-tune run in its own build.
 
 ## Known limits
 
@@ -327,6 +331,8 @@ this step's build shape:
   (only `full` does; on MPS and CPU fm-tune falls back to eager itself). On CUDA use
   `extra: full`, or an `hpo_config` with `use_flash_attention` set to `eager`. Unverified,
   like all GPU use.
+- One AutoTuneX-reporting (`autotunex.server_url`) fm-tune target per build; see
+  "Integrating with AutoTuneX".
 - Online-RL reward functions are not supported yet: AutoTuneX's `inject_reward_function`
   needs an additional-file mechanism this step does not have.
 - In the step's tests `eval_loss` is `nan`: a 1-epoch, 4-step run on a random-weight
