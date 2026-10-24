@@ -87,3 +87,18 @@ def test_model_display_name(path, name):
     from autotune.template_utils import model_display_name
 
     assert model_display_name(path) == name
+
+
+@pytest.mark.parametrize(
+    "path, fmt",
+    [
+        ("/c/data/train-00000-of-00001.parquet", "parquet"),
+        ("finance_train.JSONL", "jsonl"),
+        ("/c/train.csv", "csv"),
+        ("/c/train", None),
+    ],
+)
+def test_data_format_from_path(path, fmt):
+    from autotune.template_utils import data_format_from_path
+
+    assert data_format_from_path(path) == fmt

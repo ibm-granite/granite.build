@@ -11,6 +11,9 @@ from api_bridge import database, models
 
 logger = logging.getLogger(__name__)
 
+# The formats the main service accepts (DatasetCreate.data_format).
+DATA_FORMATS = {"jsonl", "csv", "parquet"}
+
 
 class Dataset:
     def __init__(self, db: database.Database):
@@ -35,11 +38,15 @@ class Dataset:
         """Get all datasets for a user."""
         return self.db.get_datasets(user_id)
 
-    def find_or_create(self, name: str, artifact_uri: str, user_id: str) -> str:
+    def find_or_create(
+        self, name: str, artifact_uri: str, user_id: str, data_format: str | None = None
+    ) -> str:
         """Return a dataset id, reusing a (name, artifact_url) match or creating one.
 
         Mirrors the prior client behavior: match on name AND artifact_url; if no
-        match, register the dataset and attach the artifact metadata.
+        match, register the dataset and attach the artifact metadata. A
+        ``data_format`` outside :data:`DATA_FORMATS` is dropped (the column default,
+        jsonl, applies), so the main service never reads a format it rejects.
         """
         for ds in self.db.get_datasets(user_id):
             if ds.get("name") == name and ds.get("artifact_url") == artifact_uri:
@@ -47,7 +54,8 @@ class Dataset:
                 return str(ds["id"])
 
         info = models.DatasetInfo(user_id=user_id, name=name, description="")
-        created = self.db.insert_dataset(dataset=info)
+        fmt = data_format if data_format in DATA_FORMATS else None
+        created = self.db.insert_dataset(dataset=info, data_format=fmt)
         new_id = str(created.id)
         if artifact_uri:
             self.db.update_dataset_metadata(

@@ -589,7 +589,7 @@ class Database:
             result["updated_at"] = get_utc_timestamp(result.get("updated_at"))
         return result
 
-    def insert_dataset(self, dataset):
+    def insert_dataset(self, dataset, data_format: str | None = None):
         try:
             dataset_id = uuid.uuid4()
             # created_at/updated_at are DATETIME NOT NULL with no default (see
@@ -604,6 +604,8 @@ class Database:
                         description=dataset.description,
                         created_at=now,
                         updated_at=now,
+                        # Omitted, not None: the column's default is jsonl.
+                        **({"data_format": data_format} if data_format else {}),
                     )
                 )
             dataset.id = dataset_id

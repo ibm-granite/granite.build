@@ -91,6 +91,11 @@ def model_display_name(model_name_or_path: str) -> str:
     return f"{match.group(1)}/{match.group(2)}" if match else model_name_or_path
 
 
+def data_format_from_path(path: str) -> str | None:
+    """Return the lowercased file extension (``parquet``, ``jsonl``, ...), or None if there is none."""
+    return os.path.splitext(path)[1].lstrip(".").lower() or None
+
+
 def stem_from_path(path: str) -> str:
     """Return the filename without extension from a path."""
     return os.path.splitext(os.path.basename(path))[0]
