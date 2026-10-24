@@ -5,7 +5,6 @@ import pytest
 from autotune.rewards.gsm8k_reward import (
     CORRECT_REWARD,
     FORMAT_BONUS,
-    MAX_LENGTH_PENALTY,
     WRONG_REWARD,
     _normalize_number_str,
     _score_one,
@@ -75,36 +74,30 @@ class TestExtractFinalAnswer:
 class TestScoreOne:
     def test_correct_with_hash_format(self):
         score = _score_one("The answer is #### 42", "42")
-        # Correct answer + format bonus minus tiny length penalty
-        assert score > CORRECT_REWARD  # bonus pushed it above base reward
-        assert score <= CORRECT_REWARD + FORMAT_BONUS
+        assert score == pytest.approx(CORRECT_REWARD + FORMAT_BONUS)
 
     def test_correct_without_hash_format(self):
         score = _score_one("The answer is 42", "42")
-        # No format bonus
-        assert score <= CORRECT_REWARD
-        assert score > 0  # still positive overall (correct dominates short response)
+        assert score == pytest.approx(CORRECT_REWARD)  # no format bonus
 
     def test_wrong_answer(self):
         score = _score_one("The answer is 7", "42")
-        assert score <= WRONG_REWARD + FORMAT_BONUS
-        assert score < 0
+        assert score == pytest.approx(WRONG_REWARD)
 
     def test_no_prediction_extractable(self):
         score = _score_one("hello world", "42")
-        # No prediction → wrong, no bonus, small length penalty
-        assert score < 0
-        assert score <= WRONG_REWARD
+        assert score == pytest.approx(WRONG_REWARD)  # no prediction, no bonus
 
     def test_none_response(self):
         score = _score_one(None, "42")
-        assert score == WRONG_REWARD  # no bonus, no length penalty
+        assert score == WRONG_REWARD  # no bonus
 
-    def test_length_penalty_capped(self):
-        long_response = "x" * 100_000  # very long, no #### or numbers
-        score = _score_one(long_response, "42")
-        # The penalty is capped at MAX_LENGTH_PENALTY
-        assert score >= WRONG_REWARD - MAX_LENGTH_PENALTY - 1e-9
+    @pytest.mark.parametrize("gt, answer", [("42", "42"), ("42", "41")])
+    def test_length_does_not_change_the_reward(self, gt, answer):
+        """A length penalty plus GRPO's std-normalized advantages collapsed responses to 2 tokens."""
+        short = _score_one(f"#### {answer}", gt)
+        long = _score_one("reasoning " * 2000 + f"#### {answer}", gt)
+        assert short == long
 
 
 class TestComputeScore:

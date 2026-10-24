@@ -9,6 +9,7 @@ from autotune.tools.build_factuality_dataset import (
     DOC_STYLE_GRANITE3,
     DOC_STYLE_GRANITE4,
     DOC_STYLE_INLINE,
+    DOC_STYLE_TOOL,
     _build_documents,
     _build_messages,
     _extract_contexts,
@@ -217,9 +218,9 @@ class TestDetectDocumentStyle:
     def test_granite4_template_uses_tojson(self):
         assert detect_document_style(GRANITE4_TEMPLATE) == DOC_STYLE_GRANITE4
 
-    def test_granite42_dropped_documents(self):
-        # Granite 4.2 has zero occurrences of "document" -> must inline.
-        assert detect_document_style(GRANITE42_TEMPLATE) == DOC_STYLE_INLINE
+    def test_granite42_uses_tool_message(self):
+        # Granite 4.2 is ChatML and dropped documents= -> documents ride in a tool msg.
+        assert detect_document_style(GRANITE42_TEMPLATE) == DOC_STYLE_TOOL
 
     def test_plain_template_ignores_documents(self):
         assert detect_document_style(PLAIN_TEMPLATE) == DOC_STYLE_INLINE
@@ -254,8 +255,14 @@ class TestBuildDocuments:
     def test_one_document_per_passage(self):
         assert len(_build_documents(["a", "b", "c"], DOC_STYLE_GRANITE4)) == 3
 
+    def test_tool_style_merges_into_one_document(self):
+        # 4.2's <tool_response> is one JSON array; merging keeps it shaped like
+        # 4.1's single <documents> block.
+        assert _build_documents(["a", "b", "c"], DOC_STYLE_TOOL) == [{"text": "a\n\nb\n\nc"}]
+
     def test_empty(self):
         assert _build_documents([], DOC_STYLE_GRANITE4) == []
+        assert _build_documents([], DOC_STYLE_TOOL) == []
 
 
 class TestExtractContextsOrdering:
@@ -330,6 +337,77 @@ class TestInlineStyle:
         assert "PASSAGE-ONE" in out["input"][0]["content"]
 
 
+class TestToolStyle:
+    """Granite 4.2: contexts go in as a tool message, not a documents column."""
+
+    def _dp(self):
+        return {
+            "query": "Q",
+            "response": {"text": "R", "label": "Yes"},
+            "c_a1": {"text": "PASSAGE-ONE"},
+            "c_a2": {"text": "PASSAGE-TWO"},
+        }
+
+    def test_chat_embeds_tool_message_and_omits_documents_column(self):
+        out = _record_detection(self._dp(), tokenizer=None, fmt="chat", for_prompt=False, doc_style=DOC_STYLE_TOOL)
+        # A documents column plus a 4.2 model is the silent context-loss trap.
+        assert "documents" not in out
+        # The docs ground the response being judged, so they precede it.
+        assert [m["role"] for m in out["input"]] == ["user", "tool", "assistant", "user"]
+        payload = json.loads(out["input"][1]["content"])
+        # All passages merge into ONE document, so the <tool_response> array mirrors
+        # 4.1's single <documents> block instead of fragmenting into N entries.
+        assert [d["content"] for d in payload] == ["PASSAGE-ONE\n\nPASSAGE-TWO"]
+
+    def test_tool_message_precedes_guardian_instruction(self):
+        out = _record_detection(self._dp(), tokenizer=None, fmt="chat", for_prompt=False, doc_style=DOC_STYLE_TOOL)
+        roles = [m["role"] for m in out["input"]]
+        assert roles.index("tool") < roles.index("assistant")
+        assert "guardian" in out["input"][-1]["content"]
+
+    def test_formatted_does_not_pass_documents_kwarg(self):
+        tok = MagicMock()
+        tok.chat_template = GRANITE42_TEMPLATE
+        tok.apply_chat_template.return_value = "RENDERED"
+        _record_detection(self._dp(), tokenizer=tok, fmt="formatted", for_prompt=False, doc_style=DOC_STYLE_TOOL)
+        kwargs = tok.apply_chat_template.call_args.kwargs
+        assert "documents" not in kwargs
+        # thinking off, or the JSON verdict trains inside an open <think> block.
+        assert kwargs["enable_thinking"] is False
+        messages = tok.apply_chat_template.call_args.args[0]
+        assert [m["role"] for m in messages] == ["user", "tool", "assistant", "user"]
+
+    def test_correction_tool_style(self):
+        tok = MagicMock()
+        tok.return_value = {"input_ids": [1, 2, 3]}
+        dp = dict(self._dp(), correction={"text": "C"})
+        out = _record_correction(
+            dp,
+            tokenizer=tok,
+            fmt="chat",
+            for_prompt=False,
+            max_length=100,
+            include_meta=False,
+            doc_style=DOC_STYLE_TOOL,
+        )
+        assert "documents" not in out
+        assert [m["role"] for m in out["input"]] == ["user", "tool", "assistant", "user"]
+        payload = json.loads(out["input"][1]["content"])
+        assert [d["content"] for d in payload] == ["PASSAGE-ONE\n\nPASSAGE-TWO"]
+
+    def test_native_and_inline_styles_unaffected(self):
+        # Regression: the other styles keep their existing shapes exactly.
+        native = _record_detection(
+            self._dp(), tokenizer=None, fmt="chat", for_prompt=False, doc_style=DOC_STYLE_GRANITE4
+        )
+        assert native["documents"] == [{"text": "PASSAGE-ONE"}, {"text": "PASSAGE-TWO"}]
+        assert [m["role"] for m in native["input"]] == ["user", "assistant", "user"]
+
+        inline = _record_detection(self._dp(), tokenizer=None, fmt="chat", for_prompt=False, doc_style=DOC_STYLE_INLINE)
+        assert "documents" not in inline
+        assert inline["input"][0]["role"] == "system"
+
+
 class TestResolveDocumentStyle:
     def _tok(self, template):
         tok = MagicMock()
@@ -351,14 +429,26 @@ class TestResolveDocumentStyle:
     def test_hard_guard_when_inlining_disabled(self):
         # Refuse rather than emit records whose context never reaches the prompt.
         with pytest.raises(SystemExit) as exc:
-            resolve_document_style("auto", self._tok(GRANITE42_TEMPLATE), inline_documents=False, renders_template=True)
+            resolve_document_style("auto", self._tok(PLAIN_TEMPLATE), inline_documents=False, renders_template=True)
         assert "silently dropped" in str(exc.value)
 
     def test_inline_allowed_by_default(self):
+        style = resolve_document_style("auto", self._tok(PLAIN_TEMPLATE), inline_documents=True, renders_template=True)
+        assert style == DOC_STYLE_INLINE
+
+    def test_chatml_resolves_to_tool(self):
         style = resolve_document_style(
             "auto", self._tok(GRANITE42_TEMPLATE), inline_documents=True, renders_template=True
         )
-        assert style == DOC_STYLE_INLINE
+        assert style == DOC_STYLE_TOOL
+
+    def test_no_inline_documents_does_not_block_tool(self):
+        # A tool response is 4.2's native RAG representation, not an inline fallback,
+        # so --no-inline-documents must not make 4.2 runs fail.
+        style = resolve_document_style(
+            "auto", self._tok(GRANITE42_TEMPLATE), inline_documents=False, renders_template=True
+        )
+        assert style == DOC_STYLE_TOOL
 
     def test_no_template_but_formatted_requested(self):
         with pytest.raises(SystemExit) as exc:
@@ -483,7 +573,7 @@ class TestMainWritesBothFiles:
         assert rc == 1
         assert "not found" in capsys.readouterr().err
 
-    def test_include_meta_off_by_default(self, tmp_path, monkeypatch):
+    def test_include_meta_on_by_default(self, tmp_path, monkeypatch):
         raw = [dict(self.RAW[0], correction={"text": "C"})]
         in_path = tmp_path / "eli5.json"
         in_path.write_text(json.dumps(raw), encoding="utf-8")
@@ -501,13 +591,46 @@ class TestMainWritesBothFiles:
             "--model",
             "dummy",
         ]
+        # Default: a correction file carries the originals so eval can score it.
         assert main(args) == 0
         rec = json.loads((out_dir / "eli5_correction_chat.jsonl").read_text(encoding="utf-8").strip())
-        assert "query" not in rec
+        assert rec["query"] == "Q1" and rec["response"] == "R1" and rec["label"] == "Yes"
 
+        # --no-include-meta strips them back to a minimal input/output file.
+        assert main(args + ["--no-include-meta"]) == 0
+        rec = json.loads((out_dir / "eli5_correction_chat.jsonl").read_text(encoding="utf-8").strip())
+        assert "query" not in rec and "response" not in rec and "label" not in rec
+
+        # --include-meta is now the default but still accepted.
         assert main(args + ["--include-meta"]) == 0
         rec = json.loads((out_dir / "eli5_correction_chat.jsonl").read_text(encoding="utf-8").strip())
         assert rec["query"] == "Q1" and rec["response"] == "R1"
+
+    def test_detection_never_carries_meta(self, tmp_path, monkeypatch):
+        # The label *is* the detection target, so echoing it would duplicate it.
+        in_path = tmp_path / "eli5.json"
+        in_path.write_text(json.dumps(self.RAW), encoding="utf-8")
+        out_dir = tmp_path / "out"
+        monkeypatch.setattr("autotune.tools.build_factuality_dataset._load_tokenizer", lambda *a, **k: self._tok())
+        assert (
+            main(
+                [
+                    "--input",
+                    str(in_path),
+                    "--output-dir",
+                    str(out_dir),
+                    "--task",
+                    "detection",
+                    "--format",
+                    "chat",
+                    "--model",
+                    "dummy",
+                ]
+            )
+            == 0
+        )
+        rec = json.loads((out_dir / "eli5_detection_chat.jsonl").read_text(encoding="utf-8").splitlines()[0])
+        assert "query" not in rec and "label" not in rec
 
     def test_default_format_is_both(self):
         parser_default = _resolve_formats("both")
@@ -615,3 +738,71 @@ class TestNoContextFiltering:
         assert "skipped 1 without context" in capsys.readouterr().out
         # Both surviving records carry a documents column.
         assert all("documents" in json.loads(x) for x in lines)
+
+
+class TestJsonSchemaOnToolStyle:
+    """Granite 4.2 (tool style) gets the JSON-dict guardian schema; 4.1 does not."""
+
+    def _schema(self, doc_style, is_detection, for_prompt=False):
+        msgs = _build_messages("Q", "R", is_detection, for_prompt, [], doc_style)
+        return msgs[-1]["content"]
+
+    def test_tool_style_uses_json_schema(self):
+        for det, key in ((True, '{"score"'), (False, '{"correction"')):
+            text = self._schema(DOC_STYLE_TOOL, det)
+            assert "JSON dict" in text
+            assert key in text
+
+    def test_native_styles_keep_plain_schema(self):
+        for style in (DOC_STYLE_GRANITE3, DOC_STYLE_GRANITE4, DOC_STYLE_INLINE):
+            assert "JSON dict" not in self._schema(style, True)
+            assert "return 'yes'" in self._schema(style, True)
+            assert "corrected version" in self._schema(style, False)
+
+    def test_json_format_stated_once_with_for_prompt(self):
+        # for_prompt must not append a second copy of the format spec on 4.2.
+        for det, key in ((True, '{"score"'), (False, '{"correction"')):
+            assert self._schema(DOC_STYLE_TOOL, det).count(key) == 1
+            assert self._schema(DOC_STYLE_TOOL, det, for_prompt=True).count(key) == 1
+
+    def test_records_carry_the_json_schema(self):
+        dp = {
+            "query": "Q",
+            "response": {"text": "R", "label": "Yes"},
+            "correction": {"text": "C"},
+            "c_a1": {"text": "ctx"},
+        }
+        tok = MagicMock()
+        tok.return_value = {"input_ids": [1, 2, 3]}
+        det = _record_detection(dp, tokenizer=None, fmt="chat", for_prompt=False, doc_style=DOC_STYLE_TOOL)
+        assert '{"score"' in det["input"][-1]["content"]
+        cor = _record_correction(
+            dp,
+            tokenizer=tok,
+            fmt="chat",
+            for_prompt=False,
+            max_length=100,
+            include_meta=False,
+            doc_style=DOC_STYLE_TOOL,
+        )
+        assert '{"correction"' in cor["input"][-1]["content"]
+
+    def test_builder_and_eval_prompts_agree(self):
+        """The builder's schema must equal the eval-side one for the same template."""
+        from autotune.tools import chat_utils as C
+
+        captured = {}
+        for template, style in (
+            ("{%- if enable_thinking %}<|im_start|>assistant<think>{%- endif %}", DOC_STYLE_TOOL),
+            (GRANITE4_TEMPLATE, DOC_STYLE_GRANITE4),
+        ):
+            tok = MagicMock()
+            tok.chat_template = template
+            tok.apply_chat_template.side_effect = lambda msgs, **kw: captured.update(m=msgs) or "R"
+            tok.get_vocab.return_value = {}
+            tok.added_tokens_encoder = {}
+            for fn, det in ((C.get_detection_prompt, True), (C.get_correction_prompt, False)):
+                fn("Q", "R", ["CTX"], tok)
+                docs = [{"text": "CTX"}] if style == DOC_STYLE_TOOL else []
+                built = _build_messages("Q", "R", det, False, docs, style)
+                assert captured["m"][-1]["content"] == built[-1]["content"]

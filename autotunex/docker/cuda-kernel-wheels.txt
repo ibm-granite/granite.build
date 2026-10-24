@@ -1,0 +1,12 @@
+# Prebuilt CUDA 13.0 / torch 2.11 / cp312 / linux x86_64 wheels for the DEVICE=cuda image.
+# Installed by the Dockerfile with `pip install --no-deps --require-hashes -r`, so pip
+# refuses any file whose SHA-256 differs from the one pinned here.
+#
+# Versions must equal the flash-attn / mamba-ssm / causal-conv1d pins in the [full] extra of
+# src/fm-tune/pyproject.toml (tests/test_dockerfile_variants.py checks this). The wheels were
+# built against torch 2.11.0+cu130; see BUILD_INFO.txt in the release.
+#
+# Source: https://github.com/priyanshu891/gpu-kernel-wheels/releases/tag/cu130-torch2.11-cp312
+flash-attn @ https://github.com/priyanshu891/gpu-kernel-wheels/releases/download/cu130-torch2.11-cp312/flash_attn-2.8.3-cp312-cp312-linux_x86_64.whl --hash=sha256:46fd4b7c669d6a166517d079b0a159f97007f6d5ed0d5a642f9e24cc0faa2a5a
+mamba-ssm @ https://github.com/priyanshu891/gpu-kernel-wheels/releases/download/cu130-torch2.11-cp312/mamba_ssm-2.3.1-cp312-cp312-linux_x86_64.whl --hash=sha256:f902fbc636f0ec7319d18b92cb2289e694b969eb439a5f93e1fb48836d5fec00
+causal-conv1d @ https://github.com/priyanshu891/gpu-kernel-wheels/releases/download/cu130-torch2.11-cp312/causal_conv1d-1.7.0-cp312-cp312-linux_x86_64.whl --hash=sha256:36f7db2e64337abee463fa3af7d18a7f2dcb461ca4382d39440d9a97ee85a3a5

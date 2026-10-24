@@ -54,6 +54,7 @@ from autotune.lsf.log_utils import (
     phase_timer,
     summarize_ray_nodes,
 )
+from autotune.tmpdir import resolve_job_id, resolve_ray_temp_dir
 
 logger = logging.getLogger(__name__)
 
@@ -118,9 +119,9 @@ def _rdma_env(ib_hca: str = "mlx5_0", ib_ifname: Optional[str] = None) -> Dict[s
     """Return the NCCL/RDMA env-var set required for inter-node GDR over IB.
 
     Notes:
-        * ``NCCL_IB_HCA`` defaults to ``mlx5_0`` only. Some A100 fleet nodes
-          have ``mlx5_1`` Down — listing it forces NCCL to attempt the dark
-          NIC. Pass a different value if both NICs are healthy on your fleet.
+        * ``NCCL_IB_HCA`` defaults to ``mlx5_0`` only. Some CCC nodes have
+          ``mlx5_1`` Down — listing it forces NCCL to attempt the dark NIC.
+          Pass a different value if both NICs are healthy on your fleet.
         * ``NCCL_SOCKET_IFNAME`` is **not** set by default. NCCL's bootstrap
           (the rendezvous before any RDMA) must run over a healthy TCP
           interface on every rank. A CPU-only head usually does not have
@@ -446,9 +447,9 @@ def start_multinode_ray_cluster(
         user_group: LSF user group passed via ``-U`` (default ``infusion``).
         gpu_model: ``-gpu gmodel=...`` value (default A100 80GB).
         ib_hca: NCCL InfiniBand HCA list (``NCCL_IB_HCA``). Default is
-            ``mlx5_0`` because ``mlx5_1`` is Down on the A100 fleet nodes we
-            have evidence for; widen to ``mlx5_0,mlx5_1`` if both are Active
-            in your fleet (verify via ``ibstat`` in the worker pre-flight log).
+            ``mlx5_0`` because ``mlx5_1`` is Down on the CCC nodes we have
+            evidence for; widen to ``mlx5_0,mlx5_1`` if both are Active in
+            your fleet (verify via ``ibstat`` in the worker pre-flight log).
         ib_ifname: Optional override for ``NCCL_SOCKET_IFNAME`` (the TCP
             interface NCCL uses for **bootstrap**, before RDMA kicks in).
             Default is ``None`` — NCCL auto-picks the routable Ethernet
@@ -546,9 +547,10 @@ def start_multinode_ray_cluster(
     for k, v in rdma_env.items():
         os.environ.setdefault(k, v)
 
-    job_id = os.environ.get("LSB_JOBID", "0")
-    temp_dir = f"/tmp/ray/job_{job_id}"
-    os.makedirs(temp_dir, exist_ok=True)
+    # Per-uid, scheduler-aware temp dir; see autotune.tmpdir for why a shared
+    # /tmp parent breaks on nodes where another user created it first.
+    job_id = resolve_job_id()
+    temp_dir = resolve_ray_temp_dir(f"job_{job_id}")
 
     # Partial cluster info — populated as we go so a timeout at any point
     # can hand a usable handle to teardown (and onwards to the caller).
