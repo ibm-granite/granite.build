@@ -90,7 +90,11 @@ def compute_ray_data_sizing(
     GPU workers are scheduled. By default it therefore takes every CPU free *at
     call time*, ``floor(available_cpus / num_cpus)``. Sizing from available
     rather than total CPUs is what accounts for sibling HPO trials — CPUs held
-    by another trial's workers or tokenizer pool are not counted.
+    by another trial's workers or tokenizer pool are not counted. Trials that
+    start tokenizing at the same moment can still both claim the same free CPUs
+    (not a deadlock: the pools fill as CPUs free up), so for wide sweeps set
+    ``ray_data_concurrency`` explicitly, e.g. ``total_cpus /
+    max_concurrent_trials``; see ``docs/RESOURCES.md``.
 
     ``concurrency_override`` / ``num_cpus_override`` (from config or CLI) take
     precedence when set. The result is always clamped to at least 1.
