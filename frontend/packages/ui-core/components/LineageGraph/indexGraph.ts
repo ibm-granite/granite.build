@@ -159,6 +159,28 @@ export function mergeElkGraphs(a: ElkGraph, b: ElkGraph): ElkGraph {
   }
 }
 
+// `graph` with every node id passed through `rename`, so two ids for one artifact
+// (a planned target's YAML URI and the registry UUID a finished target recorded)
+// draw as one node. The first node under an id wins -- the caller lists the one it
+// renders properly first -- and links that now coincide are kept once.
+export function renameElkGraph(graph: ElkGraph, rename: (id: string) => string): ElkGraph {
+  const nodes = new Map<string, ElkNodeEx>()
+  for (const n of graph.nodes) {
+    const id = rename(n.id)
+    if (!nodes.has(id)) nodes.set(id, id === n.id ? n : { ...n, id })
+  }
+  const links = new Map<string, ElkExtendedEdge>()
+  for (const l of graph.links) {
+    const source = rename(l.sources[0].replace(/-output$/, ''))
+    const target = rename(l.targets[0].replace(/-input$/, ''))
+    const key = `${source}|${target}`
+    if (!links.has(key)) {
+      links.set(key, { ...l, id: `${source}-to-${target}`, sources: [`${source}-output`], targets: [`${target}-input`] })
+    }
+  }
+  return { nodes: [...nodes.values()], links: [...links.values()] }
+}
+
 // Whether an expansion's response added nothing to the graph that was on screen
 // when it was asked (`known`, its node ids). Both sides go through `rename`, so the
 // answer follows a rename that lands after the response: a node that read as new

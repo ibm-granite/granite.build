@@ -157,3 +157,40 @@ describe('addsNothing', () => {
     assert.equal(addsNothing(result(['hf://o/m']), ['hf://o/m'], rename), true)
   })
 })
+
+describe('renameElkGraph', () => {
+  let renameElkGraph
+  before(async () => {
+    ;({ renameElkGraph } = await import(path.join(ROOT, '../../packages/ui-core/components/LineageGraph/indexGraph.ts')))
+  })
+  const node = (id, type, extra = {}) => ({ id, type, title: id, ...extra })
+
+  it('folds a planned target URI onto the UUID a finished target recorded', () => {
+    // target-a produced the model (UUID); planned target-b consumes it by URI.
+    const graph = {
+      nodes: [node('target-a', 'Build'), node('uuid-1', 'Model'), node('target-b', 'Build', { planned: true }),
+        node('hf://o/m', 'Fileset', { planned: true })],
+      links: [link('target-a', 'uuid-1'), link('hf://o/m', 'target-b')],
+    }
+    const out = renameElkGraph(graph, (id) => (id === 'hf://o/m' ? 'uuid-1' : id))
+    assert.deepEqual(out.nodes.map((n) => [n.id, n.type]), [['target-a', 'Build'], ['uuid-1', 'Model'], ['target-b', 'Build']])
+    assert.deepEqual(out.links.map((l) => [l.sources[0], l.targets[0]]), [
+      ['target-a-output', 'uuid-1-input'],
+      ['uuid-1-output', 'target-b-input'],
+    ])
+  })
+
+  it('keeps a link once when two spellings of it coincide', () => {
+    const graph = { nodes: [node('a', 'Model'), node('b', 'Model'), node('t', 'Build')], links: [link('a', 't'), link('b', 't')] }
+    const out = renameElkGraph(graph, (id) => (id === 'b' ? 'a' : id))
+    assert.equal(out.nodes.length, 2)
+    assert.equal(out.links.length, 1)
+  })
+
+  it('leaves a graph with nothing to rename as it was', () => {
+    const graph = { nodes: [node('a', 'Model'), node('t', 'Build')], links: [link('a', 't')] }
+    const out = renameElkGraph(graph, (id) => id)
+    assert.deepEqual(out.nodes, graph.nodes)
+    assert.deepEqual(out.links.map((l) => [l.sources[0], l.targets[0]]), [['a-output', 't-input']])
+  })
+})

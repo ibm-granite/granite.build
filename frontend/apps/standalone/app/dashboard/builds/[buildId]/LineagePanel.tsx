@@ -21,7 +21,7 @@ import { getArtifact } from '@granite-build/ui-core/api/gbserver'
 import { getBuildArchiveFiles } from '@granite-build/ui-core/api/gbserver'
 import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@granite-build/ui-core/components/LineageGraph/Graph'
 import { getSubgraph, getHuggingFaceUrl } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
-import { artifactTypeToNodeType, depthForNextLevel, type IndexElkNode, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
+import { artifactTypeToNodeType, depthForNextLevel, type IndexElkNode, mergeElkGraphs, renameElkGraph, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import { useLineageExpansion, type ExpandDirection } from '@granite-build/ui-core/components/LineageGraph/useLineageExpansion'
 import StepDrawer from '@granite-build/ui-core/components/StepDrawer/StepDrawer'
 import JobDrawer from '@granite-build/ui-core/components/StepDrawer/JobDrawer'
@@ -317,7 +317,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     drawerReturnFocusRef.current = null
   }, [openDrawerKey])
 
-  const { nodes: buildNodes, links: buildLinks, artifactIds } = React.useMemo(
+  const { nodes: rawBuildNodes, links: rawBuildLinks, artifactIds } = React.useMemo(
     () => buildGraphData(buildStatus, plannedTargets, isActive),
     [buildStatus, plannedTargets, isActive]
   )
@@ -332,6 +332,23 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       staleTime: 5 * 60 * 1000,
     })),
   })
+
+  // Finished targets record their artifacts by registry UUID, but a planned target
+  // names them by the URI in build.yaml. Without folding, an artifact one target
+  // produced and a planned one consumes draws twice: the typed UUID node, and a
+  // 'Fileset' beside it holding the planned edge.
+  const plannedUriToUuid = React.useMemo(() => {
+    const map = new Map<string, string>()
+    uuidArtifactIds.forEach((id, i) => {
+      const data = artifactQueries[i]?.data
+      for (const uri of [data?.uri, data?.lineage_uri]) if (uri) map.set(uri, id)
+    })
+    return map
+  }, [artifactQueries, uuidArtifactIds])
+  const { nodes: buildNodes, links: buildLinks } = React.useMemo(
+    () => renameElkGraph({ nodes: rawBuildNodes, links: rawBuildLinks }, (id) => plannedUriToUuid.get(id) ?? id),
+    [rawBuildNodes, rawBuildLinks, plannedUriToUuid]
+  )
 
   // Enrich nodes with resolved artifact names and types
   const enrichedBuildNodes = React.useMemo<ElkNodeEx[]>(() => {
