@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+# bash /opt/openinstruct-sft/openinstruct_sft_run.sh --base-model <p> --output-id <id> --output-path <p> --mixed-precision <mp> --deepspeed-config <file-or-empty> --clearml-mode <auto|on|off> --clearml-project <p-or-empty> --clearml-task <t-or-empty> -- <finetune.py args…> (tail: --dataset_mixer_list <name> <value> [<name> <value>…] --dataset_mixer_list_splits <split…>, then the user args)
