@@ -307,3 +307,74 @@ def test_an_authorized_detail_returns_the_full_entry():
     assert result["detail_available"] is True
     assert result["job_namespace"] == "space/build"
     assert result["space_name"] == "space"
+
+
+def lineage_job(job_id="j1"):
+    return StoredLineageJob(
+        job_id=job_id, attributes={"payload": {"execution_stats": {"rows": 3}}}
+    )
+
+
+def test_a_lineage_event_is_read_only_from_the_job_table():
+    # Its rows name a target this server has, but it is not followed.
+    result = detail(
+        [index_row("j1", JobStore.LINEAGE_JOB, **TARGETS)],
+        jobs={"j1": lineage_job()},
+        **targets_storage(),
+    )
+    assert result["detail_available"] is True
+    assert result["detail"]["execution_stats"] == {"rows": 3}
+    assert "target" not in result
+    assert result["build_id"] == "b1" and result["target_run_uuid"] == "t1"
+
+
+def test_a_lineage_event_missing_from_the_table_shows_the_error():
+    result = detail(
+        [index_row("j1", JobStore.LINEAGE_JOB, **TARGETS)], **targets_storage()
+    )
+    assert result["detail_available"] is False
+    assert result["detail_error"] == "Job j1 is not in the lineage job table"
+    assert "target" not in result
+    assert result["build_id"] == "b1" and result["target_run_uuid"] == "t1"
+
+
+def test_a_wandb_job_is_read_only_from_wandb():
+    run = SimpleNamespace(config={}, url="https://wandb/run")
+    result = detail(
+        [index_row("j1", JobStore.WANDB, **TARGETS)],
+        wandb_runs=lambda job_id: [run],
+        **targets_storage(),
+    )
+    assert result["origin_url"] == "https://wandb/run"
+    assert "target" not in result
+    assert result["build_id"] == "b1" and result["target_run_uuid"] == "t1"
+
+
+def test_a_deleted_wandb_run_shows_the_error_not_the_target():
+    result = detail([index_row("j1", JobStore.WANDB, **TARGETS)], **targets_storage())
+    assert result["detail_available"] is False
+    assert "No W&B run found" in result["detail_error"]
+    assert "target" not in result
+
+
+def test_an_outsider_gets_no_target_ids():
+    result = detail(
+        [index_row("j1", JobStore.LINEAGE_JOB, **TARGETS)],
+        jobs={"j1": lineage_job()},
+        authorize_entry=lambda entry: False,
+    )
+    assert result["target_run_uuid"] is None
+
+
+def test_an_unconfigured_wandb_shows_only_the_index(monkeypatch):
+    monkeypatch.setattr("gbserver.types.constants.GBSERVER_WANDB_API_KEY", "")
+    # No lister injected: the server's own W&B, which has no key.
+    result = DBLineageService(
+        storage=Rows([index_row("j1", JobStore.WANDB, **TARGETS)])
+    ).get_job_detail(
+        "j1", authorize_build=allow, admin_storage=admin(**targets_storage())
+    )
+    assert result["detail_available"] is False
+    assert result["detail_error"] == "W&B is not configured on this server"
+    assert "target" not in result
+    assert result["build_id"] == "b1" and result["target_run_uuid"] == "t1"

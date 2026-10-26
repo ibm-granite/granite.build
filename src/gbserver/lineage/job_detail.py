@@ -132,31 +132,22 @@ def _fetch_target(job_id: str, retrieve: Dict[str, Any], ctx: "_Context"):
 
 
 def _fetch_wandb(job_id: str, retrieve: Dict[str, Any], ctx: "_Context"):
-    """The W&B runs recorded for the job, merged; a local build's target if present.
+    """The W&B runs recorded for the job, merged.
 
     The W&B sink writes one run per output artifact, all carrying the same
     ``job_id`` and payloads, so the first run that has a payload speaks for all.
     """
-    result: Dict[str, Any] = {}
-    if retrieve.get("build_id") or retrieve.get("target_run_uuid"):
-        try:
-            result.update(_fetch_target(job_id, retrieve, ctx))
-        except JobDetailUnavailable:
-            pass
-
+    if not ctx.wandb_configured:
+        raise JobDetailUnavailable("W&B is not configured on this server")
     runs = list(ctx.wandb_runs(job_id))
     if not runs:
-        if result:
-            return result
         raise JobDetailUnavailable("No W&B run found; it may have been deleted")
     payload: Dict[str, Any] = {}
     for run in runs:
         payload = _payload(dict(run.config or {}))
         if payload:
             break
-    result["detail"] = payload
-    result["origin_url"] = str(getattr(runs[0], "url", "") or "")
-    return result
+    return {"detail": payload, "origin_url": str(getattr(runs[0], "url", "") or "")}
 
 
 def _fetch_other(job_id: str, retrieve: Dict[str, Any], ctx: "_Context"):
@@ -210,10 +201,12 @@ class _Context:
         admin_storage: Any,
         authorize_build: AuthorizeBuild,
         wandb_runs: Callable[[str], List[Any]],
+        wandb_configured: bool = True,
     ) -> None:
         self.admin_storage = admin_storage
         self.authorize_build = authorize_build
         self.wandb_runs = wandb_runs
+        self.wandb_configured = wandb_configured
 
 
 def fetch_job_detail(
@@ -241,7 +234,16 @@ def fetch_job_detail(
     except ValueError:
         job_store = JobStore.OTHER
     retrieve = dict((first.attributes or {}).get(RETRIEVE) or {})
-    ctx = _Context(admin_storage, authorize_build, wandb_runs or _default_wandb_runs)
+    # pylint: disable=import-outside-toplevel
+    from gbserver.types.constants import GBSERVER_WANDB_API_KEY
+
+    ctx = _Context(
+        admin_storage,
+        authorize_build,
+        wandb_runs or _default_wandb_runs,
+        # An injected lister brings its own access; the default needs a key.
+        wandb_configured=wandb_runs is not None or bool(GBSERVER_WANDB_API_KEY),
+    )
 
     # Fail closed: the global fields only, unless the caller passes the space
     # check. The full entry (owner, namespace, tags, origin ids) describes a job
@@ -254,6 +256,7 @@ def fetch_job_detail(
         "detail_available": True,
         "detail_error": None,
         "detail_denied": False,
+        "target_run_uuid": None,
     }
     if job_store in _ENTRY_GATED_STORES and not entry_readable:
         detail.update(
@@ -284,6 +287,13 @@ def fetch_job_detail(
     if fetched or entry_readable:
         # A fetch that returned passed its store's own check (a TARGETS build).
         detail.update(entry)
+        if job_store in _ENTRY_GATED_STORES:
+            # The target these rows name, as the index recorded it. It is not
+            # followed: the job is read only from the store its rows name.
+            detail.update(
+                build_id=retrieve.get("build_id") or None,
+                target_run_uuid=retrieve.get("target_run_uuid") or None,
+            )
     else:
         # Withheld, not missing: say so, or the client shows a bare N/A.
         detail["detail_denied"] = True

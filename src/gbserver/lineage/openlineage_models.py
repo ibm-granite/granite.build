@@ -232,7 +232,9 @@ class LineageJobDetail(LineageJobEntry):
     not answer, ``detail_available`` is false and ``detail_error`` says why -- the
     index fields above are still there. ``detail_denied`` is true when the caller
     may not read the job's space-gated content, so a client can tell "denied" from
-    "unavailable".
+    "unavailable". The job is read only from the store its rows name; for a lineage
+    event or W&B job, ``build_id`` and ``target_run_uuid`` are the target ids the
+    index recorded, not followed into this server's targets.
     """
 
     job_store: str = ""
@@ -244,6 +246,7 @@ class LineageJobDetail(LineageJobEntry):
     detail_available: bool = False
     detail_error: Optional[str] = None
     detail_denied: bool = False
+    target_run_uuid: Optional[str] = None
 
 
 class LineageJobsResponse(BaseModel):

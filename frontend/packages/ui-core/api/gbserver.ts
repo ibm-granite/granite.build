@@ -699,6 +699,8 @@ export interface LineageJobDetail extends LineageJobEntry {
   // True when the detail was withheld because the caller may not read the job or
   // its build, as opposed to the store failing to answer.
   detail_denied?: boolean
+  // The target run the index recorded for a lineage event or W&B job; not followed.
+  target_run_uuid?: string | null
 }
 
 export async function getLineageJobDetail(jobId: string): Promise<LineageJobDetail> {

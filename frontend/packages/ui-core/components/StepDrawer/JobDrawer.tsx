@@ -80,9 +80,9 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef, soleOfGroup
           kind="info"
           lowContrast
           hideCloseButton
-          title="From the lineage index"
+          title="No build steps for this job"
           // A plain-string subtitle, so it takes the notification's own compact type.
-          subtitle={`${(job.detail_error ?? 'Not a granite.build run').replace(/\.$/, '')}. Showing what the lineage index recorded.`}
+          subtitle={indexNotice(job)}
         />
       )}
     >
@@ -402,6 +402,25 @@ function GroupedJobsDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) 
       </div>
     </div>
   )
+}
+
+// Why the drawer shows no steps, and where what it does show came from. The job is
+// read only from the store its index rows name, so the notice names that store and,
+// when it did not answer, why -- instead of guessing at the job's origin.
+const SOURCE_LABELS: Record<string, string> = {
+  wandb: 'W&B',
+  gb_lineage_job: 'a lineage event',
+  gb_targets: 'a granite.build target run',
+}
+
+function indexNotice(job: LineageJobDetail): string {
+  const source = SOURCE_LABELS[job.job_store] ?? 'an external system'
+  if (job.detail_error) {
+    const reason = job.detail_error.replace(/\.$/, '')
+    // An external store's reason already names the source.
+    return job.job_store === 'other' ? `${reason}.` : `Recorded by ${source}. ${reason}.`
+  }
+  return `Recorded by ${source}, which holds no build steps.`
 }
 
 function buildIdOf(job: LineageJobEntry): string | undefined {
