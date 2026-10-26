@@ -144,7 +144,13 @@ environment_configs:
             fi
             # Caches stay inside the build's own workdir (setup starts in it).
             export UV_CACHE_DIR="$PWD/.uv-cache"
-            uv venv ./venv
+            # A Python that uv downloads itself, into the workdir, rather than
+            # whichever python3 the node or account puts first on PATH: a
+            # conda-style Python can ship its own C++ runtime, which clashes
+            # with the one torch loads first (vLLM's `import sqlite3` then
+            # fails with `GLIBCXX_... not found`).
+            export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
+            uv venv --managed-python --python 3.12 ./venv
             . ./venv/bin/activate
             uv pip install --index-url '{{ q(config.lcb_generate_config.pip_index_url) }}' \
               '{{ q(config.lcb_generate_config.vllm_package) }}' \

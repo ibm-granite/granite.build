@@ -255,12 +255,20 @@ class TestRun:
             in proc.stdout.splitlines()
         )
 
-    def test_refuses_to_run_with_an_hf_token(self, defaults, launcher, tmp_path):
+    @pytest.mark.parametrize("var", ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"])
+    def test_drops_an_inherited_hf_token(self, defaults, launcher, tmp_path, var):
+        """A token from the job environment is unset, with a warning, before the scorer runs."""
+        rendered = _render(launcher["run"], _cfg(defaults))
+        # The stub scorer reports whether the variable reached it.
+        probe = f'echo "ENV:{var}=${{{var}:-}}"\n'
         proc = _run(
-            _render(launcher["run"], _cfg(defaults)), tmp_path, {"HF_TOKEN": "hf_x"}
+            rendered.replace("python ", probe + "python ", 1), tmp_path, {var: "hf_x"}
         )
-        assert proc.returncode == 1 and "HF_TOKEN is set" in proc.stderr
-        assert "ARG:" not in proc.stdout
+        assert proc.returncode == 0, proc.stderr
+        assert f"WARNING {var} was set" in proc.stderr
+        assert f"ENV:{var}=" in proc.stdout.splitlines()
+        assert "hf_x" not in proc.stdout
+        assert any(line.startswith("ARG:") for line in proc.stdout.splitlines())
 
     def test_refuses_an_empty_release(self, defaults, launcher, tmp_path):
         proc = _run(

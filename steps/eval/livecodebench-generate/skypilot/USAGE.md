@@ -66,7 +66,7 @@ generated; the whole release is still downloaded.
 | `trust_remote_code` | bool | optional (default `false`) | For models that ship custom code. |
 | `output_path` | string | optional (default `output`) | Where the completions are written. |
 | `image` | string | optional (default `python:3.12-slim`) | Public container image, rendered as SkyPilot `docker:<image>`. Debian/Ubuntu-based, run as root, with `python3` (3.11 or newer) and `pip`; setup installs `git` with `apt-get` if missing. `""` runs on the bare launcher node: use that on a SLURM cluster without the Pyxis plugin. The image needs no CUDA: vLLM's torch wheel carries the runtime, and the host provides the driver. |
-| `install` | bool | optional (default `true`) | Install vLLM and LiveCodeBench into a venv at setup. Set `false` only when `image` already provides them and a checkout at `lcb_checkout`. |
+| `install` | bool | optional (default `true`) | Install vLLM and LiveCodeBench into a venv at setup, on a Python 3.12 that uv downloads into the workdir (not the node's own `python3`, which only runs pip to install uv). Set `false` only when `image` already provides them and a checkout at `lcb_checkout`. |
 | `vllm_package` | string | optional (default `vllm==0.32.0`) | vLLM release; it brings torch and transformers. Pick one whose torch build matches your GPU driver. |
 | `lcb_commit`, `lcb_repo`, `lcb_checkout` | string | optional | LiveCodeBench commit, source and checkout directory. Keep `lcb_commit` equal to the score step's. |
 | `pip_index_url` | string | optional | Package index for the install. |

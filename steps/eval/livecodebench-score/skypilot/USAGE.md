@@ -20,8 +20,10 @@ says that guard is not a security sandbox.**
 This step adds three things:
 
 - **It runs separately** from the model, in its own job, with no GPU.
-- **It has no credentials.** It declares no secrets and sets no `envs`, and `run`
-  refuses to start if `HF_TOKEN` is in its environment. Its inputs arrive through
+- **It has no credentials.** It declares no secrets and sets no `envs`. If the job
+  environment still carries `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` (a cluster
+  account's login profile can export one into every job), `run` unsets it, with
+  a warning in the log, before any generated code runs. Its inputs arrive through
   separate download steps (hfpull) before it starts.
 - **It runs offline.** `HF_HUB_OFFLINE` and `HF_DATASETS_OFFLINE` are set.
 
@@ -71,7 +73,7 @@ and the generation settings recorded by the generate step.
 | `num_process_evaluate` | int | optional (default `0`) | Scorer processes. `0` keeps LiveCodeBench's default; set it to the CPUs the build requests. |
 | `output_path` | string | optional (default `output`) | Where the result files are written. Relative paths resolve in the step's working directory. |
 | `image` | string | optional (default `python:3.12-slim`) | Public container image, rendered as SkyPilot `docker:<image>`. Debian/Ubuntu-based, run as root, with `python3` and `pip` (setup installs `git` with `apt-get` if missing). `""` runs on the bare launcher node: use that on a SLURM cluster without the Pyxis plugin. |
-| `install` | bool | optional (default `true`) | Install LiveCodeBench and its packages into a venv at setup. Set `false` only when `image` already provides them and a checkout at `lcb_checkout`. |
+| `install` | bool | optional (default `true`) | Install LiveCodeBench and its packages into a venv at setup, on a Python 3.12 that uv downloads into the workdir (not the node's own `python3`, which only runs pip to install uv). Set `false` only when `image` already provides them and a checkout at `lcb_checkout`. |
 | `lcb_commit` | string | optional | LiveCodeBench commit to install (it isn't on PyPI). Its packages are pinned in the step's bundled `src/requirements-score.txt` to that commit's lock; a different commit needs that file regenerated. |
 | `lcb_repo` | string | optional | Where to fetch LiveCodeBench from. |
 | `lcb_checkout` | string | optional (default `LiveCodeBench`) | Where the checkout goes. LiveCodeBench reads files by relative path, so the scorer runs from inside it. |

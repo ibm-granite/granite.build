@@ -15,7 +15,7 @@ shared Makefile conventions; see [steps/README.md](../../../README.md).
 
 ## Layout
 
-- `step-template.yaml`: the step. `run` refuses to start with `HF_TOKEN` set, then
+- `step-template.yaml`: the step. `run` unsets any inherited `HF_TOKEN`, then
   runs `src/lcb_score.py` from inside the LiveCodeBench checkout, offline, and
   registers `output_path` as the `results` artifact.
 - `src/lcb_score.py`: checks the completions against `generation_meta.json` and the

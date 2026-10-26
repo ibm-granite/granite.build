@@ -12,7 +12,8 @@ version: 1.0.0
 # subprocess with time and memory limits and some os/shutil/subprocess functions
 # disabled, but its own documentation says that guard is not a security sandbox.
 # What this step adds: it runs on its own (no model, no GPU), with no credentials
-# (run refuses to start when HF_TOKEN is set), and offline (its inputs arrive
+# (run removes HF_TOKEN from its environment, with a warning, before any
+# generated code runs), and offline (its inputs arrive
 # through separate hfpull steps). Generated code can still use the network and
 # whatever the job user can write. See USAGE.md before scoring untrusted models.
 #
@@ -134,7 +135,13 @@ environment_configs:
             fi
             # Caches stay inside the build's own workdir (setup starts in it).
             export UV_CACHE_DIR="$PWD/.uv-cache"
-            uv venv ./venv
+            # A Python that uv downloads itself, into the workdir, rather than
+            # whichever python3 the node or account puts first on PATH: a
+            # conda-style Python can ship its own C++ runtime, which clashes
+            # with the one torch loads first (vLLM's `import sqlite3` then
+            # fails with `GLIBCXX_... not found`).
+            export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
+            uv venv --managed-python --python 3.12 ./venv
             . ./venv/bin/activate
             uv pip install --index-url '{{ q(config.lcb_score_config.torch_index_url or config.lcb_score_config.pip_index_url) }}' \
               '{{ q(config.lcb_score_config.torch_package) }}'
@@ -150,12 +157,16 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            # Generated code runs here: refuse to do it with a Hugging Face token in
-            # the environment (see the comment at the top of this file).
-            if [ -n "${HF_TOKEN:-}" ]; then
-              echo "eval/livecodebench-score: ERROR HF_TOKEN is set; this step executes model-generated code and must run without credentials. Remove HF_TOKEN from the step's envs/secrets (its inputs are pulled by separate hfpull steps)." >&2
-              exit 1
-            fi
+            # Generated code runs here: never with a Hugging Face token in the
+            # environment (see the comment at the top of this file). The step
+            # declares none, but a cluster account's login profile can export one
+            # into every job, so drop it and say so rather than fail the build.
+            for v in HF_TOKEN HUGGING_FACE_HUB_TOKEN; do
+              if [ -n "${!v:-}" ]; then
+                echo "eval/livecodebench-score: WARNING $v was set in the job environment (not by this step; check the cluster account's login profile); unsetting it before running model-generated code." >&2
+              fi
+              unset "$v"
+            done
             RELEASE='{{ q(config.lcb_score_config.release_version) }}'
             if [ -z "$RELEASE" ]; then
               echo "eval/livecodebench-score: ERROR lcb_score_config.release_version is required (e.g. release_v6)." >&2; exit 1
