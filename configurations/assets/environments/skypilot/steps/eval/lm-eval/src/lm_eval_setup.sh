@@ -43,7 +43,12 @@ fi
 # Inside the step's workdir, not $GB_SHARED_WORKDIR (team guidance).
 export UV_CACHE_DIR="$PWD/.uv-cache"
 
-uv venv "$venv"
+# A Python that uv downloads itself, into the workdir, rather than whichever
+# python3 the node or account puts first on PATH: a conda-style Python can ship
+# its own C++ runtime, which clashes with the one torch loads first (a later
+# import then fails with `GLIBCXX_... not found`).
+export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
+uv venv --managed-python --python 3.12 "$venv"
 # shellcheck source=/dev/null
 . "$venv/bin/activate"
 
