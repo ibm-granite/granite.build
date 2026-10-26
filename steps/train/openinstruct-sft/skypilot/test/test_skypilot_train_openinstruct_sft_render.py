@@ -113,9 +113,12 @@ class TestContract:
     def test_requests_no_gpus_itself(self):
         assert _LAUNCHER["resources"] == {}
 
-    def test_validate_macros_are_identical(self):
-        macro = re.compile(r"\{%- macro validate.*?\{%- endmacro %\}", re.S)
-        assert macro.findall(_LAUNCHER["setup"]) == macro.findall(_LAUNCHER["run"])
+    @pytest.mark.parametrize("name", ["validate", "q"])
+    def test_macro_copies_are_identical(self, name):
+        macro = re.compile(r"\{%- macro " + name + r"\(.*?\{%- endmacro %\}", re.S)
+        setup = macro.findall(_LAUNCHER["setup"])
+        assert len(setup) == 1
+        assert setup == macro.findall(_LAUNCHER["run"])
 
     def test_template_carries_the_image_ref_token(self):
         assert _DEFAULTS["image_id"] == "docker:${IMAGE_REF}"
@@ -156,6 +159,12 @@ class TestValidation:
 
     def test_mixer_must_be_mapping(self):
         assert "must map" in _render_error("run", _ctx(dataset_mixer_list=["a", "1.0"]))
+
+    @pytest.mark.parametrize("bad", ["train", []])
+    def test_splits_must_be_a_non_empty_list(self, bad):
+        assert "dataset_mixer_list_splits must be a non-empty list" in _render_error(
+            "run", _ctx(dataset_mixer_list_splits=bad)
+        )
 
     @pytest.mark.parametrize("bad", ["", "my model", 'a"b'])
     def test_bad_output(self, bad):
@@ -236,6 +245,16 @@ class TestRunArgv:
             "run", _ctx(bindings=b, dataset_mixer_list={}), "openinstruct_sft_run.sh"
         )
         assert _tail(argv)[:3] == ["--dataset_mixer_list", "/staged/ds", "1.0"]
+
+    def test_multiple_splits(self):
+        argv = _argv(
+            "run",
+            _ctx(dataset_mixer_list_splits=["train", "test"]),
+            "openinstruct_sft_run.sh",
+        )
+        tail = _tail(argv)
+        i = tail.index("--dataset_mixer_list_splits")
+        assert tail[i : i + 3] == ["--dataset_mixer_list_splits", "train", "test"]
 
     def test_args_rendering(self):
         args = {
