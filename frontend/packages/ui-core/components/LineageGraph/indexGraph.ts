@@ -153,9 +153,26 @@ export function mergeElkGraphs(a: ElkGraph, b: ElkGraph): ElkGraph {
     } as IndexElkNode
   })
   const nodeIds = new Set(a.nodes.map((n) => n.id))
-  return {
+  return dropGroupedRuns({
     nodes: [...nodes, ...b.nodes.filter((n) => !nodeIds.has(n.id))],
     links: [...a.links, ...b.links.filter((l) => !linkKeys.has(`${l.sources[0]}|${l.targets[0]}`))],
+  })
+}
+
+// The server groups jobs per response, so one job can arrive as `run:<id>` from a
+// walk that reached it alone (cut by a limit, or before a sibling was indexed) and
+// inside a `runs:` group from another. The group lists its jobs and has the same
+// endpoints, so the lone run node and its links are dropped in its favour.
+function dropGroupedRuns(graph: ElkGraph): ElkGraph {
+  const grouped = new Set<string>()
+  for (const n of graph.nodes as IndexElkNode[]) {
+    if (n.id.startsWith('runs:')) for (const id of groupJobIds(n.indexNode?.metadata)) grouped.add(`run:${id}`)
+  }
+  if (!grouped.size) return graph
+  const endpoint = (port: string | undefined) => port?.replace(/-(input|output)$/, '') ?? ''
+  return {
+    nodes: graph.nodes.filter((n) => !grouped.has(n.id)),
+    links: graph.links.filter((l) => !grouped.has(endpoint(l.sources[0])) && !grouped.has(endpoint(l.targets[0]))),
   }
 }
 

@@ -194,3 +194,35 @@ describe('renameElkGraph', () => {
     assert.deepEqual(out.links.map((l) => [l.sources[0], l.targets[0]]), [['a-output', 't-input']])
   })
 })
+
+describe('mergeElkGraphs across grouped and ungrouped responses', () => {
+  const art = (id) => ({ id, node_type: 'artifact', name: id })
+  const lone = {
+    nodes: [art('a'), { id: 'run:J1', node_type: 'run', name: 'J1' }, art('b')],
+    edges: [{ source: 'a', target: 'run:J1' }, { source: 'run:J1', target: 'b' }],
+  }
+  const group = {
+    nodes: [art('a'), { id: 'runs:a → b', node_type: 'run', name: 'g', metadata: { run_count: 2, jobs_query: { job_ids: ['J1', 'J2'] } } }, art('b')],
+    edges: [{ source: 'a', target: 'runs:a → b' }, { source: 'runs:a → b', target: 'b' }],
+  }
+  const runIds = (g) => g.nodes.filter((n) => n.id.startsWith('run')).map((n) => n.id)
+
+  it('drops a lone run that a later group lists', () => {
+    const out = mergeElkGraphs(indexGraphToElk(lone), indexGraphToElk(group))
+    assert.deepEqual(runIds(out), ['runs:a → b'])
+    assert.ok(out.links.every((l) => !l.sources[0].startsWith('run:J1') && !l.targets[0].startsWith('run:J1')))
+    assert.equal(out.links.length, 2)
+  })
+
+  it('drops it the other way round too', () => {
+    const out = mergeElkGraphs(indexGraphToElk(group), indexGraphToElk(lone))
+    assert.deepEqual(runIds(out), ['runs:a → b'])
+    assert.equal(out.links.length, 2)
+  })
+
+  it('keeps a run no group lists', () => {
+    const other = { nodes: [art('a'), { id: 'run:J9', node_type: 'run', name: 'J9' }, art('c')], edges: [{ source: 'a', target: 'run:J9' }, { source: 'run:J9', target: 'c' }] }
+    const out = mergeElkGraphs(indexGraphToElk(group), indexGraphToElk(other))
+    assert.deepEqual(runIds(out).sort(), ['run:J9', 'runs:a → b'])
+  })
+})
