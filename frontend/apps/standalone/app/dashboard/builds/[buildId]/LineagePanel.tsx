@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { Button, ComposedModal, InlineLoading, Modal, ModalBody, ModalFooter, ModalHeader, OverflowMenu, OverflowMenuItem } from '@carbon/react'
+import { Button, InlineLoading, Link, Modal, OverflowMenu, OverflowMenuItem } from '@carbon/react'
 import {
   ArrowLeft,
   ArrowRight,
@@ -16,7 +16,7 @@ import styles from './LineagePanel.module.scss'
 import type { ElkExtendedEdge } from 'elkjs'
 import { parse as parseYaml } from 'yaml'
 import { useQuery, useQueries } from '@tanstack/react-query'
-import type { Build, BuildStatusDetail } from '@granite-build/ui-core/types'
+import type { Artifact, Build, BuildStatusDetail } from '@granite-build/ui-core/types'
 import { getArtifact } from '@granite-build/ui-core/api/gbserver'
 import { getBuildArchiveFiles } from '@granite-build/ui-core/api/gbserver'
 import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@granite-build/ui-core/components/LineageGraph/Graph'
@@ -406,14 +406,6 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     [enrichedBuildNodes, buildLinks, expansion.extra]
   )
 
-  const artifactNavModalHeader = (artifactNavNode: { node: ElkNodeEx; hfUrl: string | null } | null) => {
-    if (artifactNavNode) {
-      return <h4>Would you like to view <code>{artifactNavNode.node?.title || artifactNavNode.node?.id}</code> on HuggingFace or proceed to the artifact page?</h4>
-    } else {
-      return <h4>Would you like to view this artifact on HuggingFace or proceed to the artifact page?</h4>
-    }
-  }
-
   // Navigation state
   // Held as clicked and resolved through `renameIndexId` on read: a node selected
   // under its raw index id (its registry lookup still pending) keeps its selection
@@ -423,7 +415,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   const [upstreamLevels, setUpstreamLevels] = React.useState(Infinity)
   const [downstreamLevels, setDownstreamLevels] = React.useState(Infinity)
   const [partial, setPartial] = React.useState(false)
-  const [artifactNavNode, setArtifactNavNode] = React.useState<{ node: ElkNodeEx; hfUrl: string | null } | null>(null)
+  const [artifactNavNode, setArtifactNavNode] = React.useState<{ node: ElkNodeEx; artifact?: Artifact; hfUrl: string | null } | null>(null)
   const router = useRouter()
   const [rendered, setRendered] = React.useState(false)
   const [showBuildInfo, setShowBuildInfo] = React.useState(true)
@@ -519,7 +511,8 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     const node = focusNodeId ? enrichedNodes.find((n) => n.id === focusNodeId) : undefined
     if (!node || node.type === 'Build' || !isUUID(node.id)) return
     const uri = artifactUriMap.get(node.id)
-    setArtifactNavNode({ node, hfUrl: uri ? getHuggingFaceUrl(uri) : null })
+    const artifact = artifactQueries[uuidArtifactIds.indexOf(node.id)]?.data
+    setArtifactNavNode({ node, artifact, hfUrl: uri ? getHuggingFaceUrl(uri) : null })
   }
 
   // Back to the page's own artifact, now that clicks can select other nodes.
@@ -846,70 +839,24 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       )}
       </div>
 
-      {artifactNavNode?.hfUrl ? (
-        <ComposedModal
-          open={artifactNavNode !== null}
-          onClose={() => setArtifactNavNode(null)}
-          size="sm"
-        >
-          <ModalHeader>{artifactNavModalHeader(artifactNavNode)}</ModalHeader>
-          <ModalBody />
-          <ModalFooter className={styles.navModalActions}>
-            <Button
-              kind="secondary"
-              onClick={() => {
-                setArtifactNavNode(null);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              kind="secondary"
-              onClick={() => {
-                if (artifactNavNode)
-                  router.push(`/dashboard/artifacts/_/?id=${artifactNavNode.node.id}`);
-                setArtifactNavNode(null);
-              }}
-            >
-              View artifact page
-            </Button>
-
-            <Button
-              kind="secondary"
-              renderIcon={Launch}
-              href={artifactNavNode.hfUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={() => setArtifactNavNode(null)}
-            >
-              Open on HuggingFace
-            </Button>
-          </ModalFooter>
-        </ComposedModal>
-      ) : (
-        <Modal
-          open={artifactNavNode !== null}
-          onRequestClose={() => setArtifactNavNode(null)}
-          modalHeading="Navigate to artifact"
-          primaryButtonText="Proceed"
-          secondaryButtonText="Cancel"
-          onRequestSubmit={() => {
-            if (artifactNavNode)
-              router.push(`/dashboard/artifacts/_/?id=${artifactNavNode.node.id}`);
-            setArtifactNavNode(null);
-          }}
-          onSecondarySubmit={() => setArtifactNavNode(null)}
-          size="sm"
-        >
-          <p>
-            Go to the artifact page for{" "}
-            <strong>
-              {artifactNavNode?.node.title || artifactNavNode?.node.id}
-            </strong>
-            ?
-          </p>
-        </Modal>
-      )}
+      {/* Two footer buttons only: Carbon sizes a three-button footer just through its
+          secondaryButtons prop, so the HuggingFace link sits in the body instead. */}
+      <Modal
+        open={artifactNavNode !== null}
+        onRequestClose={() => setArtifactNavNode(null)}
+        modalHeading="Navigate to artifact"
+        primaryButtonText="View artifact page"
+        secondaryButtonText="Cancel"
+        onRequestSubmit={() => {
+          if (artifactNavNode)
+            router.push(`/dashboard/artifacts/_/?id=${artifactNavNode.node.id}`);
+          setArtifactNavNode(null);
+        }}
+        onSecondarySubmit={() => setArtifactNavNode(null)}
+        size="sm"
+      >
+        {artifactNavNode && <ArtifactSummary {...artifactNavNode} />}
+      </Modal>
     </div>
   );
 })
@@ -918,3 +865,34 @@ export default LineagePanelInner
 
 // Re-export GraphHandle for use in parent
 export type { GraphHandle }
+
+// What the navigation modal is about to open, so a mis-click is recognisable.
+function ArtifactSummary({ node, artifact, hfUrl }: { node: ElkNodeEx; artifact?: Artifact; hfUrl: string | null }) {
+  const uri = artifact?.uri
+  return (
+    <dl className={styles.navSummary}>
+      <dt>Name</dt>
+      <dd>{artifact?.name || node.title || node.id}</dd>
+      <dt>ID</dt>
+      <dd><code>{node.id}</code></dd>
+      {artifact?.artifact_type && (
+        <>
+          <dt>Type</dt>
+          <dd>{artifact.artifact_type.toLowerCase()}</dd>
+        </>
+      )}
+      {uri && (
+        <>
+          <dt>URI</dt>
+          <dd>
+            {hfUrl ? (
+              <Link href={hfUrl} target="_blank" rel="noopener noreferrer" renderIcon={Launch}>{uri}</Link>
+            ) : (
+              <code>{uri}</code>
+            )}
+          </dd>
+        </>
+      )}
+    </dl>
+  )
+}

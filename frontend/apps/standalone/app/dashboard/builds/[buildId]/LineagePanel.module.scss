@@ -117,15 +117,19 @@
   z-index: 10;
 }
 
-/* Three buttons share the footer; let each take an equal share of the full
-   width so labels ("View artifact page", "Open on HuggingFace") sit on one line
-   instead of wrapping in a cramped column. */
-.navModalActions {
-  button {
-    flex: 1 1 0;
-    max-width: none;
-    align-items: flex-start;
-    white-space: nowrap;
+/* Artifact summary in the navigation modal: label column, value column. */
+.navSummary {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.5rem 1rem;
+
+  dt {
+    color: var(--cds-text-secondary);
+  }
+
+  dd {
+    margin: 0;
+    overflow-wrap: anywhere;
   }
 }
 
