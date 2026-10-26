@@ -33,6 +33,21 @@ _FIXTURES = ["aws/build.yaml", "slurm-bluevela/build.yaml"]
 BUILDS = ["build.yaml", *_FIXTURES]
 
 
+def _parse_step_owned():
+    """Return the finetune.py flags the template owns, from its Jinja `owned` list.
+
+    The list appears twice (setup and run copies, pinned identical by another
+    test); the first match is used.
+    """
+    text = (_HERE.parent / "step-template.yaml").read_text()
+    matches = re.findall(r"\{%-?\s*set owned = \[(.*?)\]\s*-?%\}", text)
+    assert matches, "no `{%- set owned = [...] -%}` line in step-template.yaml"
+    return frozenset(re.findall(r'"([a-z_]+)"', matches[0]))
+
+
+_STEP_OWNED = _parse_step_owned()
+
+
 def _load(name):
     return yaml.safe_load((_DATA / name).read_text())
 
@@ -85,19 +100,17 @@ def test_gpus_requested_by_the_build(build):
     assert str(res["accelerators"]).strip()
 
 
+def test_step_owned_list_is_parsed():
+    assert len(_STEP_OWNED) == 14, sorted(_STEP_OWNED)
+    assert {"model_name_or_path", "resume_from_checkpoint"} <= _STEP_OWNED
+
+
 @pytest.mark.parametrize("build", BUILDS)
 def test_no_step_owned_args(build):
-    owned = {
-        "model_name_or_path",
-        "output_dir",
-        "report_to",
-        "with_tracking",
-        "push_to_hub",
-    }
     args = _step(_target(_load(build)))["config"]["openinstruct_sft_config"].get(
         "args", {}
     )
-    assert not owned & set(args)
+    assert not _STEP_OWNED & set(args)
 
 
 @pytest.mark.parametrize("build", BUILDS)
