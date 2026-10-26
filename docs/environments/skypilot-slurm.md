@@ -244,14 +244,15 @@ Values use SLURM's own formats — e.g. `time` accepts bare minutes (`240`),
 > | `cpus-per-task` | `compute_config.num_cpus_per_node`, or `resources.cpus` |
 > | `mem` | `resources.memory` (the `compute_config.total_memory_per_node` floor is intentionally skipped on slurm/lsf, so set an explicit `resources.memory`) |
 > | `partition` | the `infra` string / `zone` (`"slurm/<cluster>/<partition>"`) — see [`cluster` / `zone`](#cluster--zone) |
-> | `nodes` | *(not plumbed through the SkyPilot launcher — see below)* |
+> | `nodes` | `compute_config.num_nodes` — plumbed to `sky.Task.num_nodes`, from which the provisioner generates `--nodes` (see [Multi-node jobs and NCCL](#multi-node-jobs-and-nccl)) |
 >
 > `nodes`, `job-name`, `output`, and `error` are likewise SkyPilot-managed.
-> Multi-node is **not** driven from the step config on this launcher: SkyPilot's
-> `--nodes` comes from its own provisioner node count, and the SkyPilot launcher
-> does not read `compute_config.num_nodes` (that field is honored only by the
-> native k8s/LSF gbstep paths). Confirmed to pass through unchanged: `time`,
-> `qos`, `account`, `constraint`, `nodelist`.
+> Multi-node is driven by `compute_config.num_nodes` (or a step/build
+> `launcher_config.num_nodes`): the launcher resolves it to `sky.Task.num_nodes`
+> and the provisioner derives `--nodes` from it, so a `nodes` key inside
+> `sbatch_options` is still dropped. A `num_nodes` placed under `resources` is
+> ignored with a warning — it is a task field, not a resources one. Confirmed to
+> pass through unchanged: `time`, `qos`, `account`, `constraint`, `nodelist`.
 
 It resolves per step, merged **per key** (highest precedence last), so a step can
 override one directive while inheriting the rest:
@@ -431,6 +432,61 @@ Constraints and notes:
 - This mirrors LSF's `cloud_config.lsf.cluster_configs.<cluster>.workdir`, but LSF does **not** require
   the ancestor relationship because its backend identity-mounts all of `/proj` (see
   [skypilot-lsf.md](skypilot-lsf.md#file_mounts-inside-enroot-containers)).
+
+### `container_mounts` (extra container bind mounts)
+
+`workdir` covers the per-run build tree, but a containerized step that reads or writes anywhere
+**else** on the shared filesystem needs that path mounted too: the SLURM backend's
+`--container-mounts` starts from only `home:home`, `ccache:ccache`, and `workdir:workdir`. The
+`container_mounts` key (a `slurm.cluster_configs.<cluster>` sibling of `workdir`, deep-merged into
+`~/.sky/config.yaml` at launch) adds host paths, mapped container path → host path with an optional
+`mode`:
+
+```yaml
+config:
+  cloud_config:
+    slurm:
+      cluster_configs:
+        bluevela:                              # must match config.cluster
+          container_mounts:
+            /proj:
+              host_path: /proj
+              mode: rw
+```
+
+The `ibm-bluevela` environment mounts the whole `/proj` GPFS tree identity — the same mount the LSF
+backend applies unconditionally — so inputs and outputs staged anywhere under `/proj` are visible
+in-container regardless of which group tree holds them, and every node of a multi-node job sees an
+identical layout. That supersedes an earlier, narrower `/proj/granite-build`-only mount and matches
+the mount set BlueVela ops validated for multi-node NCCL training (`container_mounts=/proj:/proj`
+in their reference sbatch script). Nested overlap with `workdir` is fine: bind mounts of the same
+underlying filesystem coexist.
+
+### Multi-node jobs and NCCL
+
+Multi-node is requested per step with `compute_config.num_nodes` (a step/build
+`launcher_config.num_nodes` also works; a `num_nodes` under `resources` is ignored with a warning).
+The launcher maps it to `sky.Task.num_nodes`, from which the provisioner derives `--nodes`, and the
+fork's SLURM executor (`sky/skylet/executor/slurm.py`) runs one task per node
+(`--ntasks-per-node=1`, `--kill-on-bad-exit`) while re-asserting `SKYPILOT_NODE_RANK` and
+`SKYPILOT_NODE_IPS` on each node at run time — the rank/rendezvous inputs torchrun-based steps
+(e.g. the distill `gold` step) consume for `--node_rank`/`--nnodes`. No PMIx or hostfile plumbing is
+needed; `MASTER_ADDR`/`MASTER_PORT` come from the step's own launcher script.
+
+No device mounts are needed for NCCL on this cluster: enroot's own device hook carries `/dev` into
+the container (with `/dev/shm` explicitly mounted even under `ENROOT_RESTRICT_DEV`), and BlueVela
+ops' multi-node all-reduce reference runs on exactly the `home + ccache + workdir + /proj` mount set
+this environment produces. If a future step needs an additional shared path, add it via
+[`container_mounts`](#container_mounts-extra-container-bind-mounts), not device nodes.
+
+NCCL diagnostics and tuning (`NCCL_DEBUG`, `NCCL_DEBUG_SUBSYS`, `NCCL_DEBUG_FILE`, ...) belong to
+the **recipe/build layer** — a step-level `sbatch_options.export` or the recipe's NCCL parameters —
+never to the environment-wide default and never to step images: they are run-scoped knobs, not
+cluster identity. An explicit `export` is merged with the generated Pyxis `NVIDIA_*` items item by
+item (`_merge_sbatch_export_items` in `src/gbserver/environment/skypilot.py`), so setting
+`export: NCCL_DEBUG=INFO` on a step cannot accidentally drop the generated CUDA-visibility
+directives. `--exclusive` (useful for clean multi-node performance comparisons) is likewise per
+step, via `sbatch_options.exclusive: true`.
 
 ## Example `environment.yaml` (bare-host SLURM)
 

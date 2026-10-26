@@ -57,12 +57,14 @@ config:
   #
   # MULTIPLE LOGIN NODES: `HostName` lists interchangeable candidate login hostnames
   # under one `Host` block: gbserver picks one at random per launch and fails over to
-  # the next on a transient SSH control-plane error. login1-login3 are all confirmed
-  # reachable for SLURM.
+  # the next on a transient SSH control-plane error. login0-login3 are all confirmed
+  # reachable for SLURM (login0 verified interactively: sinfo/scontrol answer there
+  # under the same granitebuild identity).
   cluster_ssh_configs:
     slurm:
       - Host: bluevela
         HostName:
+          - login0.bluevela.rmf.ibm.com
           - login1.bluevela.rmf.ibm.com
           - login2.bluevela.rmf.ibm.com
           - login3.bluevela.rmf.ibm.com
@@ -109,11 +111,18 @@ config:
           tmpdir: /opt/nvme/$USER/skypilot-tmp
           # The SLURM backend bind-mounts only $HOME, ccache and `workdir` into the
           # container, so anything else a step reads or writes on the shared filesystem
-          # is invisible inside it. Mount the group tree that holds the models, corpora
-          # and run outputs (container path -> host path).
+          # is invisible inside it. Mount the whole /proj GPFS tree identity (container
+          # path == host path), not one group subtree: it is a strict superset of the
+          # earlier /proj/granite-build-only mount, matches what the LSF backend
+          # identity-mounts for the same cluster, and is the layout BlueVela ops
+          # validated for multi-node NCCL training jobs (container_mounts=/proj:/proj
+          # in their reference sbatch script). Overlap with `workdir` above is
+          # harmless — nested bind mounts of the same underlying filesystem coexist,
+          # and inputs staged anywhere under /proj (not just one group tree) become
+          # visible in-container.
           container_mounts:
-            /proj/granite-build:
-              host_path: /proj/granite-build
+            /proj:
+              host_path: /proj
               mode: rw
           # BlueVela's CPU-only lane. Its submission filter refuses a job with no GPUs on
           # any gpu-* partition, and `cpu` only accepts qos=cpu, so CPU-only targets set

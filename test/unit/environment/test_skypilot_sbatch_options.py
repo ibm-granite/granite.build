@@ -329,10 +329,12 @@ class TestPyxisGpuSbatchDirectives:
         assert overrides is None
 
     @pytest.mark.asyncio
-    async def test_explicit_export_overrides_generated_one_per_key(self):
-        # An explicit sbatch_options.export set by the step/build still wins,
-        # same per-key precedence as every other sbatch_options layer; `gpus`
-        # (not touched by the override) still comes from the generated value.
+    async def test_explicit_export_merges_with_generated_per_item(self):
+        # An explicit sbatch_options.export set by the step/build is merged
+        # with the generated Pyxis export item by item (explicit wins per key)
+        # rather than replacing it wholesale: dropping the generated NVIDIA_*
+        # items would cost the container its CUDA visibility. `gpus` (not
+        # touched by the override) still comes from the generated value.
         env = _make_env({"default_cloud": "slurm"})
         overrides = await _overrides_for(
             env,
@@ -346,9 +348,77 @@ class TestPyxisGpuSbatchDirectives:
             config={},
         )
         assert overrides["slurm"]["sbatch_options"] == {
-            "export": "ALL,CUSTOM=1",
+            "export": f"{_PYXIS_EXPORT},CUSTOM=1",
             "gpus": "h200:1",
         }
+
+    @pytest.mark.asyncio
+    async def test_env_level_nccl_export_merges_with_generated(self):
+        # The NCCL case this merge exists for: an env/recipe-level
+        # sbatch_options.export carrying NCCL_DEBUG=INFO (NCCL diagnostics
+        # belong in the recipe/build layer, never in step images) must not
+        # drop the generated Pyxis NVIDIA_* items.
+        env = _make_env(
+            {
+                "default_cloud": "slurm",
+                "sbatch_options": {"export": "NCCL_DEBUG=INFO"},
+            }
+        )
+        overrides = await _overrides_for(
+            env,
+            "sb-gpu-nccl",
+            launcher_config={
+                "run": "hostname",
+                "resources": {"accelerators": "H200:1"},
+                "image_id": "docker:my-image:tag",
+            },
+            config={},
+        )
+        assert overrides["slurm"]["sbatch_options"]["export"] == (
+            f"{_PYXIS_EXPORT},NCCL_DEBUG=INFO"
+        )
+
+    @pytest.mark.asyncio
+    async def test_explicit_same_key_item_replaces_only_that_item(self):
+        # A same-key explicit item (here LD_LIBRARY_PATH, e.g. pointing at a
+        # custom driver path) replaces exactly that item; the neighboring
+        # generated NVIDIA_* items survive.
+        env = _make_env({"default_cloud": "slurm"})
+        overrides = await _overrides_for(
+            env,
+            "sb-gpu-ldlib",
+            launcher_config={
+                "run": "hostname",
+                "resources": {"accelerators": "H200:1"},
+                "image_id": "docker:my-image:tag",
+                "sbatch_options": {"export": "LD_LIBRARY_PATH=/opt/driver/lib"},
+            },
+            config={},
+        )
+        assert overrides["slurm"]["sbatch_options"]["export"] == (
+            "ALL,NVIDIA_VISIBLE_DEVICES=all,NVIDIA_DRIVER_CAPABILITIES=all,"
+            "LD_LIBRARY_PATH=/opt/driver/lib,"
+            "TRITON_LIBCUDA_PATH=/usr/lib/x86_64-linux-gnu"
+        )
+
+    @pytest.mark.asyncio
+    async def test_explicit_none_export_is_passed_through(self):
+        # NONE (empty submission environment) cannot be combined with the
+        # ALL-prefixed generated list, so an explicit NONE wins verbatim —
+        # the author asked for a from-scratch environment.
+        env = _make_env({"default_cloud": "slurm"})
+        overrides = await _overrides_for(
+            env,
+            "sb-gpu-none",
+            launcher_config={
+                "run": "hostname",
+                "resources": {"accelerators": "H200:1"},
+                "image_id": "docker:my-image:tag",
+                "sbatch_options": {"export": "NONE,FOO=1"},
+            },
+            config={},
+        )
+        assert overrides["slurm"]["sbatch_options"]["export"] == "NONE,FOO=1"
 
     @pytest.mark.asyncio
     async def test_opt_out_flag_suppresses_generation(self):

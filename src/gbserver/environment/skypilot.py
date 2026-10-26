@@ -2073,6 +2073,54 @@ def _check_multinode_supported(cloud: str, num_nodes: int) -> None:
     )
 
 
+def _merge_sbatch_export_items(
+    generated: Optional[str], explicit: Optional[str]
+) -> Optional[str]:
+    """Merge two ``sbatch_options.export`` strings item by item.
+
+    SLURM's ``--export`` is a comma-joined list of ``KEY[=VALUE]`` items plus
+    the ``ALL``/``NONE`` flags, so layering two export strings via a plain
+    dict spread is all-or-nothing: an env/step/build that sets only
+    ``NCCL_DEBUG=INFO`` would replace the Pyxis-generated
+    ``NVIDIA_VISIBLE_DEVICES``/``NVIDIA_DRIVER_CAPABILITIES``/... string, and
+    the job would come up without CUDA inside the container — the exact
+    failure mode those generated directives exist to prevent (issue #510).
+    Instead every distinct key is kept exactly once, with ``explicit``
+    winning per key.
+
+    ``NONE`` (start from an empty submission environment) cannot be combined
+    with the ``ALL``-prefixed generated list, and non-string values (a list,
+    a dict) are not the comma grammar this understands — both fall back to
+    plain explicit-wins semantics.
+
+    :param generated: the lower-precedence export string (Pyxis directives).
+    :param explicit: the higher-precedence export string (env/step/build).
+    :returns: the merged comma-joined export string, or ``explicit``
+        unchanged when merging does not apply.
+    """
+    if not isinstance(generated, str) or not isinstance(explicit, str):
+        return explicit
+    generated_items = [item.strip() for item in generated.split(",") if item.strip()]
+    explicit_items = [item.strip() for item in explicit.split(",") if item.strip()]
+
+    def _export_key(item: str) -> str:
+        return item.split("=", 1)[0].strip()
+
+    if "NONE" in {_export_key(item) for item in generated_items + explicit_items}:
+        return explicit
+    # Keep the generated item order (srun output readability), replacing a
+    # same-key item in place and appending genuinely new keys at the end.
+    merged = list(generated_items)
+    for item in explicit_items:
+        for idx, existing in enumerate(merged):
+            if _export_key(existing) == _export_key(item):
+                merged[idx] = item
+                break
+        else:
+            merged.append(item)
+    return ",".join(merged)
+
+
 # Sentinel distinguishing "shared_filesystem providers not yet computed" from a
 # computed empty list (no providers). See Skypilot._shared_fs_providers.
 _PROVIDER_UNSET = object()
@@ -3523,15 +3571,26 @@ class Skypilot(Environment):
             # sbatch_options override; on any other cloud it is a documented
             # no-op (warn and drop). Deep-merge under `slurm` so a sibling
             # slurm.* override is never clobbered. The Pyxis GPU directives are
-            # folded in as the lowest-precedence layer (merged first, below)
-            # so an explicit env/step/build sbatch_options.export or .gpus
-            # still wins per-key.
+            # folded in as the lowest-precedence layer (merged first, below):
+            # `gpus` loses to an explicit env/step/build value per key like any
+            # scalar, while `export` — a comma-joined KEY=VALUE grammar, not a
+            # scalar — is merged item by item below so an explicit
+            # NCCL_DEBUG=INFO can never drop the generated NVIDIA_* CUDA
+            # visibility items (see _merge_sbatch_export_items).
+            pyxis_directives = self._pyxis_gpu_sbatch_directives(
+                res_config.get("accelerators"), image_id
+            )
             sbatch_options = {
-                **self._pyxis_gpu_sbatch_directives(
-                    res_config.get("accelerators"), image_id
-                ),
+                **pyxis_directives,
                 **self._resolve_sbatch_options(launcher_config, config),
             }
+            if (
+                "export" in pyxis_directives
+                and sbatch_options.get("export") != pyxis_directives["export"]
+            ):
+                sbatch_options["export"] = _merge_sbatch_export_items(
+                    pyxis_directives["export"], sbatch_options["export"]
+                )
             if sbatch_options:
                 if cloud_group == "slurm":
                     slurm_over = cluster_config_overrides.get("slurm", {})
