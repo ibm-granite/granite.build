@@ -1,0 +1,74 @@
+granite.build:
+  name: skypilot-slurm-bluevela-lm-eval-gpu-test
+  # eval/lm-eval on an internal GPU SLURM cluster (via SkyPilot), on one H200.
+  #
+  # The GPU counterpart of ../slurm-cpu: the same example benchmark, aime25, with a
+  # real granite model (granite-4.2-3b, ~7 GB of safetensors, no other formats) that
+  # lm-eval's hf backend runs on the GPU with PyPI's default CUDA torch. What reaching
+  # SUCCESS proves:
+  #   1. The required `model` input is pulled to the cluster's shared filesystem (a
+  #      separate hfpull job on the cpu partition) and its path reaches lm_eval's
+  #      `--model_args pretrained=<path>`.
+  #   2. Setup installs CUDA torch and lm-eval[hf] on the bare GPU node.
+  #   3. `lm_eval run` generates on the GPU and writes its results file.
+  #   4. The results directory is registered as `results` and pushed to a Hugging
+  #      Face dataset.
+  #
+  # A PLUMBING test, not an evaluation: 3 of aime25's 30 problems, so the score is
+  # noisy and isn't asserted. Each problem generates up to max_gen_toks tokens (about
+  # 48 tok/s at batch 1), which is why the budget, the host memory and the time cap
+  # are large.
+  #
+  # HF_TOKEN: the model pull needs none (it's public), but the results push needs
+  # write access to GBTEST_HF_PUSH_ORG (default ibm-research).
+  targets:
+    aime25:
+      # The in-repo env: SSH as the shared functional ID with the key file at
+      # ~/.ssh/ibm-bluevela.key, so the test needs no secret manager.
+      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      inputs:
+        model:
+          # Public (Apache-2.0, not gated), so the pull needs no token.
+          uri: hf:///models/ibm-granite/granite-4.2-3b
+      outputs:
+        # HfPushCleanupMixin (libgbtest.hfpush) fills in the __GBTEST_HF_PUSH_*__
+        # tokens per run, checks the push landed, and deletes the dataset. The test_
+        # prefix lets scripts/rm_hf_repos.py clean up after an aborted run.
+        results:
+          uri: hf://huggingface.co/datasets/__GBTEST_HF_PUSH_ORG__/test_lm-eval-gpu-results___GBTEST_HF_PUSH_RUN__
+      steps:
+        - step_uri: space://steps/eval/lm-eval
+          config:
+            poll_interval_seconds: 15
+            # The env's default partition and GPU constraint apply: the step
+            # requests one H200 below.
+            launcher_config:
+              resources:
+                # A typed GPU (the env pins jobs to H200 nodes), with the host
+                # size next to it. Long generations were OOM-killed twice on the
+                # default 16 GB host, about 11 minutes in; 128 GB passed.
+                accelerators: "H200:1"
+                cpus: 16
+                memory: 128
+              sbatch_options:
+                time: "01:00:00"
+            lm_eval_config:
+              # Bare node, no container: this tests the step and the cluster, not
+              # Pyxis.
+              image: ""
+              tasks: ["aime25"]
+              # PyPI's default torch (CUDA runtime wheels); the step's default is
+              # the CPU index.
+              torch_index_url: ""
+              model_args:
+                dtype: bfloat16
+              device: cuda
+              # A fixed batch: "auto" probed for about 9 minutes.
+              batch_size: 1
+              apply_chat_template: true
+              limit: 3
+              gen_kwargs:
+                # 2048 cut off every answer before it was scorable (a green build
+                # with a score of 0); 16384 lets most finish.
+                max_gen_toks: 16384
+              log_samples: true

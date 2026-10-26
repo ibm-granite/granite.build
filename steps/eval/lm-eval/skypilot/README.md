@@ -23,10 +23,11 @@ bare launcher node), installing `lm-eval` at setup time. There's no `Dockerfile`
 |---|---|
 | `step-template.yaml` | The step. `setup` and `run` compute values in Jinja and call the scripts below. |
 | `src/lm_eval_guard.sh` | Config refusals, run at the top of both `setup` and `run`, so a bad config fails before the install. |
-| `src/lm_eval_setup.sh` | uv bootstrap, `./venv`, then two install phases: torch from `torch_index_url`, then `lm-eval[extras]` from `pip_index_url`. |
+| `src/lm_eval_setup.sh` | uv bootstrap, `./venv` on a Python 3.12 that uv downloads (not the node's `python3`, whose libraries can clash with torch's), then two install phases: torch from `torch_index_url`, then `lm-eval[extras]` from `pip_index_url`. |
 | `src/lm_eval_run.sh` | Runs `lm_eval run`, checks a results file exists, then emits the metadata and artifact markers. |
 | `test/test_skypilot_eval_lm_eval_render.py` | Render tests (Mode 1 only, no cluster, no network). |
 | `test/slurm-cpu/`, `test-data/slurm-cpu/` | CPU build test on the local Docker SLURM cluster. |
+| `test/slurm-bluevela/`, `test-data/slurm-bluevela/` | GPU build test on an internal GPU SLURM cluster, marked `ibm`. |
 
 ## Running the tests
 
@@ -58,7 +59,7 @@ settings that Mode 2 gets for free:
   (`gbspace-<space>`), and `make space` names the space after `STEP_NAME` by default,
   giving a group that doesn't exist.
 - **`GBTEST_STANDALONE_ENVIRONMENT=STAGING`,** which points a standalone push at the
-  test group (`gbspace-public-staging`). `test/conftest.py` sets it, but pytest only
+  staging resource group. `test/conftest.py` sets it, but pytest only
   loads that conftest for tests under the repo's `test/`, not for this directory.
 
 `make test` doesn't set `GB_ENVIRONMENT` either, so run it like this:
@@ -77,6 +78,30 @@ It expects 3 steps (hfpull, lm-eval, hfpush), one input and one output artifact,
 the `lm_eval_version` metadata, and checks that the results dataset exists on the Hub. The step's own log (score table, marker) is in
 `~/sky_logs/<sky-cluster>/.../tasks/run.log` on the host running gbserver.
 
+**GPU build test (`slurm-bluevela`).** The same benchmark on one H200 on an internal GPU
+SLURM cluster, through the in-repo environment
+`space://environments/skypilot/slurm/ibm-bluevela`: `ibm-granite/granite-4.2-3b`,
+PyPI's CUDA torch, `device: cuda`, batch 1, the chat template, 3 of aime25's 30
+problems at `max_gen_toks: 16384`. The host asks for `cpus: 16, memory: 128`: long
+generations were OOM-killed on the default 16 GB. The results go to an `hf://` dataset
+as above. The score isn't asserted (3 problems is noisy). It is marked `ibm` and
+skipped in SPS CI/CD: the environment logs in with a key file,
+`~/.ssh/ibm-bluevela.key`, so it needs no secret manager, but CI has no key. Run it
+by hand from the IBM venv (`make ibm-venv`):
+
+```sh
+make -C steps/eval/lm-eval/skypilot space
+cd steps/eval/lm-eval/skypilot
+GB_ENVIRONMENT=STANDALONE GBTEST_MODE=live GBTEST_STANDALONE_ENVIRONMENT=STAGING \
+  PYTHONPATH=src ../../../../.venv/bin/python -m pytest -v -s test/slurm-bluevela
+```
+
+It passed in 37 minutes, about 24 of them generating. The step job goes to the
+environment's default GPU partition. When your group's quota there is full (`squeue`
+shows the pending reason `QOSGrpGRES`), point a local copy of the build at a partition
+and QOS that have room, with `zone:` and `launcher_config.sbatch_options.qos:`. Don't
+commit those: they are specific to one group.
+
 ## Publishing
 
 ```sh
@@ -90,11 +115,10 @@ inventory) and `make quick-tests`. Commit the generated trees with the source.
 
 ## Known gaps
 
-- **No committed GPU fixture.** The step was proven on one H200 on an internal SkyPilot
-  SLURM cluster with a plain build, not a build test: aime25 at `limit: 5`,
-  exact_match 0.6. The build is the example in USAGE.md. It needed host memory in
-  `launcher_config.resources`: the default 16 GB was OOM-killed on long generations,
-  and the run that passed asked for 128 GB and peaked at about 28 GB (`sacct` MaxRSS).
+- **The GPU build test runs only by hand** (`slurm-bluevela`, above): CI has no access to
+  the cluster. Its host memory follows the earlier plain-build proof (aime25 at
+  `limit: 5`, exact_match 0.6, the example in USAGE.md), which asked for 128 GB and
+  peaked at about 28 GB (`sacct` MaxRSS).
 - **No image-mode cluster run.** The local SLURM cluster has no Pyxis, and the GPU proof
   ran on the bare node, so the default `python:3.12-slim` path is covered only by the
   render tests.
