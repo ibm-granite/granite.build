@@ -17,7 +17,7 @@ import type { ElkExtendedEdge } from 'elkjs'
 import { parse as parseYaml } from 'yaml'
 import { useQuery, useQueries } from '@tanstack/react-query'
 import type { Artifact, Build, BuildStatusDetail } from '@granite-build/ui-core/types'
-import { getArtifact } from '@granite-build/ui-core/api/gbserver'
+import { getArtifact, inferArtifactTypeFromUri, normalizeLineageUris } from '@granite-build/ui-core/api/gbserver'
 import { getBuildArchiveFiles } from '@granite-build/ui-core/api/gbserver'
 import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@granite-build/ui-core/components/LineageGraph/Graph'
 import { getSubgraph, getHuggingFaceUrl } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
@@ -175,7 +175,7 @@ function buildGraphData(
         // If the input artifact already exists in actual lineage, just add the edge
         if (!seenArtifacts.has(artifactId)) {
           seenArtifacts.add(artifactId)
-          nodes.push({ id: artifactId, title: paramName, type: 'Fileset', planned: true, width: 224, height: 64, labels: [{ text: paramName }] })
+          nodes.push({ id: artifactId, title: paramName, type: plannedNodeType(artifactId), planned: true, width: 224, height: 64, labels: [{ text: paramName }] })
         }
         const edgeId = `${artifactId}-to-${targetId}`
         if (!seenEdges.has(edgeId)) {
@@ -188,7 +188,7 @@ function buildGraphData(
         if (!artifactId) continue
         if (!seenArtifacts.has(artifactId)) {
           seenArtifacts.add(artifactId)
-          nodes.push({ id: artifactId, title: paramName, type: 'Fileset', planned: true, width: 224, height: 64, labels: [{ text: paramName }] })
+          nodes.push({ id: artifactId, title: paramName, type: plannedNodeType(artifactId), planned: true, width: 224, height: 64, labels: [{ text: paramName }] })
         }
         const edgeId = `${targetId}-to-${artifactId}`
         if (!seenEdges.has(edgeId)) {
@@ -200,6 +200,12 @@ function buildGraphData(
   }
 
   return { nodes, links, artifactIds: Array.from(seenArtifacts) }
+}
+
+// A planned artifact is named by its build.yaml URI and not registered yet, so its
+// type is read off the URI; anything the URI does not say stays a Fileset.
+function plannedNodeType(uri: string): NodeType {
+  return artifactTypeToNodeType(inferArtifactTypeFromUri(uri))
 }
 
 function isUUID(s: string) {
@@ -337,14 +343,31 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // names them by the URI in build.yaml. Without folding, an artifact one target
   // produced and a planned one consumes draws twice: the typed UUID node, and a
   // 'Fileset' beside it holding the planned edge.
+  // The match is on the normalized form (the server's normalize_uri, which also
+  // gives lineage_uri), since a build.yaml may spell a URI differently from the
+  // registry: hf:// vs a browser URL, with or without `models/`. One request for
+  // the build's planned URIs, only while planned targets are shown.
+  const plannedUris = React.useMemo(() => artifactIds.filter((id) => !isUUID(id)).sort(), [artifactIds])
+  const { data: normalizedPlanned } = useQuery({
+    queryKey: ['lineage-normalize', plannedUris],
+    queryFn: () => normalizeLineageUris(plannedUris),
+    enabled: plannedUris.length > 0,
+    staleTime: Infinity,
+    retry: false,
+  })
   const plannedUriToUuid = React.useMemo(() => {
-    const map = new Map<string, string>()
+    const byLineageUri = new Map<string, string>()
     uuidArtifactIds.forEach((id, i) => {
       const data = artifactQueries[i]?.data
-      for (const uri of [data?.uri, data?.lineage_uri]) if (uri) map.set(uri, id)
+      for (const uri of [data?.lineage_uri, data?.uri]) if (uri && !byLineageUri.has(uri)) byLineageUri.set(uri, id)
     })
+    const map = new Map<string, string>()
+    for (const uri of plannedUris) {
+      const uuid = byLineageUri.get(normalizedPlanned?.[uri] || uri) ?? byLineageUri.get(uri)
+      if (uuid) map.set(uri, uuid)
+    }
     return map
-  }, [artifactQueries, uuidArtifactIds])
+  }, [artifactQueries, uuidArtifactIds, plannedUris, normalizedPlanned])
   const { nodes: buildNodes, links: buildLinks } = React.useMemo(
     () => renameElkGraph({ nodes: rawBuildNodes, links: rawBuildLinks }, (id) => plannedUriToUuid.get(id) ?? id),
     [rawBuildNodes, rawBuildLinks, plannedUriToUuid]

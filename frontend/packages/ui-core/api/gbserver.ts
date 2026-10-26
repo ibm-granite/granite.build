@@ -202,7 +202,7 @@ function adaptTargetRun(raw: Record<string, unknown>): BuildTargetRun {
 // backend's own rules here: `datasets/` → DATASET, `buckets/` → BUCKET,
 // `spaces/` → FILESET (no dedicated Space type), everything else on HF
 // (including a bare org/name) → MODEL.
-function inferArtifactTypeFromUri(uri: string): import('../types').ArtifactType | null {
+export function inferArtifactTypeFromUri(uri: string): import('../types').ArtifactType | null {
   if (!uri) return null
   // Only HF URIs carry this convention (mirroring the backend's parse_hf_uri,
   // which requires an hf:// prefix). Without the scope guard a plain
@@ -711,6 +711,15 @@ export async function getLineageJobDetail(jobId: string): Promise<LineageJobDeta
     build: raw.build ? adaptBuild(raw.build) : null,
     target: raw.target ? adaptTargetRun(raw.target) : null,
   }
+}
+
+// POST /lineage/normalize: each URI to the identity lineage_uri and the index key
+// on ("" when it cannot be normalized), so URIs spelled as a build.yaml spells them
+// match registry artifacts without the UI copying the backend's rule.
+export async function normalizeLineageUris(uris: string[]): Promise<Record<string, string>> {
+  if (!uris.length) return {}
+  const { data } = await client.post<{ uris: Record<string, string> }>('/lineage/normalize', { uris })
+  return data.uris ?? {}
 }
 
 export async function getLineageGraph(params: {

@@ -903,3 +903,28 @@ def test_query_graph_keeps_an_http_error_raised_inside_the_walk():
             _fake_request("member", "member@example.com"), uri="s3://b/x"
         )
     assert caught.value.status_code == 403
+
+
+def test_normalize_uris_maps_every_spelling_to_one_identity():
+    body = lineage_mod.NormalizeUrisRequest(
+        uris=[
+            "hf:///models/ibm-granite/granite-4.2-30b",
+            "hf://huggingface.co/ibm-granite/granite-4.2-30b",
+            "https://huggingface.co/ibm-granite/granite-4.2-30b",
+        ]
+    )
+    result = lineage_mod.normalize_uris(body).uris
+    assert len(set(result.values())) == 1
+    assert set(result) == set(body.uris)
+
+
+def test_normalize_uris_returns_empty_for_an_unknown_scheme():
+    body = lineage_mod.NormalizeUrisRequest(uris=["not a uri"])
+    assert lineage_mod.normalize_uris(body).uris == {"not a uri": ""}
+
+
+def test_normalize_uris_rejects_too_many():
+    body = lineage_mod.NormalizeUrisRequest(uris=["s3://b/k"] * 1001)
+    with pytest.raises(HTTPException) as exc:
+        lineage_mod.normalize_uris(body)
+    assert exc.value.status_code == 422
