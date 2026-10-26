@@ -58,7 +58,7 @@ so a typo fails at once rather than being ignored.
 | Field | Type | Default | Purpose |
 |---|---|---|---|
 | `image` | string | `python:3.12-slim` | Public image the step runs in, as SkyPilot `docker:<image>`. `""` runs on the bare launcher node, which clusters without the Pyxis plugin need. The image must be Debian/Ubuntu based, run as root, and have `python3` and `pip`. GPUs need no CUDA in the image. |
-| `install` | bool | `true` | Install `lm-eval` and torch into `./venv` at setup. `false` only for an image that already has `lm_eval` on `PATH`. Setting `image` doesn't skip the install. |
+| `install` | bool | `true` | Install `lm-eval` and torch into `./venv` at setup, on a Python 3.12 that uv downloads into the workdir (the node's own `python3` only installs uv). `false` only for an image that already has `lm_eval` on `PATH`. Setting `image` doesn't skip the install. |
 | `lm_eval_version` | string | `0.4.13` | The `lm-eval` release installed from PyPI. Required when `install` is true. |
 | `extras` | list | `["hf"]` | `lm-eval` pip extras: `lm-eval[<extras>]==<version>`. Use `["vllm"]` for `backend: vllm`; add task extras such as `math` or `ifeval` as a task needs them. |
 | `extra_packages` | list | `[]` | Further pip requirements, installed with `lm-eval`. |

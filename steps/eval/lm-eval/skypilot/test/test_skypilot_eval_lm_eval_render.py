@@ -60,11 +60,13 @@ echo '{"results": {}}' > "$out/model/results_2026-01-01T00-00-00.json"
 exit "${STUB_RC:-0}"
 """
 
-# pip and uv: record each call; `uv venv <dir>` makes an activatable venv.
+# pip and uv: record each call; `uv venv [options] <dir>` makes an activatable
+# venv at its last argument.
 _RECORDER_STUB = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$STUB_LOG/$(basename "$0").calls"
 if [ "$(basename "$0")" = uv ] && [ "$1" = venv ]; then
-  mkdir -p "$2/bin" && : > "$2/bin/activate"
+  dir="${@: -1}"
+  mkdir -p "$dir/bin" && : > "$dir/bin/activate"
 fi
 """
 
@@ -371,7 +373,8 @@ class TestSetup:
         proc = node.run(_render(launcher["setup"], defaults))
         assert proc.returncode == 0, proc.stderr
         uv = node.calls("uv")
-        assert uv[0] == "venv ./venv"
+        # On uv's own Python, not the node's (see lm_eval_setup.sh).
+        assert uv[0] == "venv --managed-python --python 3.12 ./venv"
         # torch first, alone, from the torch index; then lm-eval from PyPI, with no
         # --extra-index-url anywhere (uv would prefer it).
         assert (
@@ -389,6 +392,7 @@ class TestSetup:
         setup = (_SRC / "lm_eval_setup.sh").read_text()
         run = (_SRC / "lm_eval_run.sh").read_text()
         assert 'export UV_CACHE_DIR="$PWD/.uv-cache"' in setup
+        assert 'export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"' in setup
         assert 'export HF_HOME="$PWD/.hf-cache"' in run
         assert "${GB_SHARED_WORKDIR" not in setup + run
 
