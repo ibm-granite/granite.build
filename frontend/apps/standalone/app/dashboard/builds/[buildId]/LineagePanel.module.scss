@@ -36,15 +36,6 @@
   text-overflow: ellipsis;
 }
 
-.partialMessage {
-  font-size: 12px;
-  line-height: 16px;
-  letter-spacing: 0.32px;
-  padding: 0.5rem 1rem;
-  color: var(--cds-text-secondary);
-  flex-shrink: 0;
-}
-
 /* Graph + drawer live side by side; opening the drawer shrinks .graphArea,
    which fires the graph's ResizeObserver so the view refits rather than letting
    a right-edge node hide behind the drawer. */

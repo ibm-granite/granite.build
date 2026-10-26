@@ -3,8 +3,6 @@
 import * as React from 'react'
 import { Button, InlineLoading, Link, Modal, OverflowMenu, OverflowMenuItem } from '@carbon/react'
 import {
-  ArrowLeft,
-  ArrowRight,
   CenterSquare,
   Launch,
   ZoomFit,
@@ -20,11 +18,9 @@ import type { Artifact, Build, BuildStatusDetail } from '@granite-build/ui-core/
 import { getArtifact, inferArtifactTypeFromUri, normalizeLineageUris } from '@granite-build/ui-core/api/gbserver'
 import { getBuildArchiveFiles } from '@granite-build/ui-core/api/gbserver'
 import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@granite-build/ui-core/components/LineageGraph/Graph'
-import { getSubgraph, getHuggingFaceUrl } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
-import { artifactTypeToNodeType, depthForNextLevel, type IndexElkNode, mergeElkGraphs, renameElkGraph, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
-import { useLineageExpansion, type ExpandDirection } from '@granite-build/ui-core/components/LineageGraph/useLineageExpansion'
+import { getHuggingFaceUrl } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
+import { artifactTypeToNodeType, renameElkGraph } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import StepDrawer from '@granite-build/ui-core/components/StepDrawer/StepDrawer'
-import JobDrawer from '@granite-build/ui-core/components/StepDrawer/JobDrawer'
 
 const ACTIVE_STATUSES = new Set(['running', 'submitted', 'pending', 'cancel_requested'])
 
@@ -249,11 +245,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // one opens the step details. The step data already rides along on
   // getBuildStatus, so this costs no extra request.
   const [stepDetailTarget, setStepDetailTarget] = React.useState<string | null>(null)
-  // A job an expansion brought in that is not one of this build's targets: it has
-  // no target in buildStatus, so its drawer is read from the lineage index.
-  const [jobNodeId, setJobNodeId] = React.useState<string | null>(null)
-  // Whichever drawer is open: Escape and focus handling cover both.
-  const openDrawerKey = stepDetailTarget ?? jobNodeId
+  const openDrawerKey = stepDetailTarget
 
   // Where focus was before the drawer opened, so we can hand it back on close —
   // otherwise a keyboard user is dropped at the top of the document.
@@ -272,7 +264,6 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       // a user mid-interaction with the graph would have the drawer yanked shut.
       if (drawerRef.current?.contains(document.activeElement)) {
         setStepDetailTarget(null)
-        setJobNodeId(null)
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -406,55 +397,13 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     return map
   }, [artifactQueries, uuidArtifactIds])
 
-  // The build graph keys artifacts by UUID, the lineage index by normalized URI
-  // (hf -> https, cos -> s3, LH defaults dropped). The registry returns that form as
-  // lineage_uri, so index nodes fold back onto the build's UUIDs and an expansion
-  // joins the graph instead of drawing a second node beside it.
-  const lineageUriMap = React.useMemo(() => {
-    const map = new Map<string, string>()
-    uuidArtifactIds.forEach((id, i) => {
-      const data = artifactQueries[i]?.data
-      const uri = data?.lineage_uri || data?.uri
-      if (uri) map.set(id, uri)
-    })
-    return map
-  }, [artifactQueries, uuidArtifactIds])
-  const uriToUuid = React.useMemo(
-    () => new Map(Array.from(lineageUriMap, ([id, uri]) => [uri, id])),
-    [lineageUriMap]
-  )
-  // Same for runs: the index names a target run `run:<job_id>`, and its job_id is
-  // the target run's uuid, so it folds onto the build's `target-<name>` node.
-  const runToTarget = React.useMemo(
-    () => new Map(
-      Object.entries(buildStatus?.targets ?? {})
-        .filter(([, run]) => run.uuid)
-        .map(([name, run]) => [`run:${run.uuid}`, `target-${name}`])
-    ),
-    [buildStatus]
-  )
-  const renameIndexId = React.useCallback(
-    (id: string) => uriToUuid.get(id) ?? runToTarget.get(id) ?? id,
-    [uriToUuid, runToTarget]
-  )
-  // The build graph draws one node per target run, so expansions must too: a
-  // grouped node would stand beside the very runs it groups.
-  const expansion = useLineageExpansion(renameIndexId, false)
-
-  const { nodes: enrichedNodes, links: allLinks } = React.useMemo(
-    () => mergeElkGraphs({ nodes: enrichedBuildNodes, links: buildLinks }, expansion.extra),
-    [enrichedBuildNodes, buildLinks, expansion.extra]
-  )
+  // The graph shows what this build did, whole; lineage beyond it is on the
+  // artifact page, which a click on an artifact offers to open.
+  const enrichedNodes = enrichedBuildNodes
+  const allLinks = buildLinks
 
   // Navigation state
-  // Held as clicked and resolved through `renameIndexId` on read: a node selected
-  // under its raw index id (its registry lookup still pending) keeps its selection
-  // when it folds onto the build's node.
-  const [rawFocusNodeId, setFocusNodeId] = React.useState<string | null>(initialFocusNodeId ?? null)
-  const focusNodeId = rawFocusNodeId ? renameIndexId(rawFocusNodeId) : null
-  const [upstreamLevels, setUpstreamLevels] = React.useState(Infinity)
-  const [downstreamLevels, setDownstreamLevels] = React.useState(Infinity)
-  const [partial, setPartial] = React.useState(false)
+  const [focusNodeId, setFocusNodeId] = React.useState<string | null>(initialFocusNodeId ?? null)
   const [artifactNavNode, setArtifactNavNode] = React.useState<{ node: ElkNodeEx; artifact?: Artifact; hfUrl: string | null } | null>(null)
   const router = useRouter()
   const [rendered, setRendered] = React.useState(false)
@@ -487,30 +436,6 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     [stepDetailTarget]
   )
 
-  // Resolved like the focus: an index job's drawer follows its node when it is renamed.
-  const resolvedJobNodeId = jobNodeId ? renameIndexId(jobNodeId) : null
-  const jobNode = React.useMemo(
-    () => (resolvedJobNodeId
-      ? (enrichedNodes.find((n) => n.id === resolvedJobNodeId) as IndexElkNode | undefined)
-      : undefined),
-    [enrichedNodes, resolvedJobNodeId]
-  )
-  // A `run:<uuid>` job that turns out to be one of this build's targets is drawn as
-  // that target, so its drawer becomes the target's step drawer.
-  React.useEffect(() => {
-    if (resolvedJobNodeId?.startsWith(TARGET_NODE_PREFIX)) {
-      setJobNodeId(null)
-      setStepDetailTarget(resolvedJobNodeId.slice(TARGET_NODE_PREFIX.length))
-    }
-  }, [resolvedJobNodeId])
-
-  const { filteredNodes, filteredLinks } = React.useMemo(() => {
-    if (!focusNodeId || (upstreamLevels === Infinity && downstreamLevels === Infinity)) {
-      return { filteredNodes: enrichedNodes, filteredLinks: allLinks }
-    }
-    const sub = getSubgraph(focusNodeId, downstreamLevels, upstreamLevels, enrichedNodes, allLinks)
-    return { filteredNodes: sub.nodes, filteredLinks: sub.links }
-  }, [focusNodeId, upstreamLevels, downstreamLevels, enrichedNodes, allLinks])
 
   // If the open target disappears from a later relayout (renamed, or dropped from
   // the build), close the drawer rather than leave it pointing at a target that no
@@ -533,9 +458,8 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     setStepDetailTarget(null)
   }, [stepDetailTarget, enrichedNodes])
 
-  // A click selects the node Upstream/Downstream expand from, and a target
-  // (run) node also opens its step details. Navigating to an artifact is the
-  // toolbar's "Open artifact", so the two never compete.
+  // A click selects a node. A target (run) node also opens its step details; a registered artifact asks whether to open
+  // its page, where its lineage beyond this build is.
   const handleNodeClick = (node: ElkNodeEx) => {
     // Skeleton stubs are placeholders for hidden branches, not real nodes: their
     // id still starts with TARGET_NODE_PREFIX when they hang off a target, and
@@ -544,12 +468,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     setFocusNodeId(node.id)
     const isTarget = node.type === 'Build' && node.id.startsWith(TARGET_NODE_PREFIX)
     setStepDetailTarget(isTarget ? node.id.slice(TARGET_NODE_PREFIX.length) : null)
-    setJobNodeId(node.type === 'Build' && !isTarget && (node as IndexElkNode).indexNode ? node.id : null)
-  }
-
-  const handleOpenArtifact = () => {
-    const node = focusNodeId ? enrichedNodes.find((n) => n.id === focusNodeId) : undefined
-    if (!node || node.type === 'Build' || !isUUID(node.id)) return
+    if (node.type === 'Build' || !isUUID(node.id)) return
     const uri = artifactUriMap.get(node.id)
     const artifact = artifactQueries[uuidArtifactIds.indexOf(node.id)]?.data
     setArtifactNavNode({ node, artifact, hfUrl: uri ? getHuggingFaceUrl(uri) : null })
@@ -560,99 +479,10 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     const target = initialFocusNodeId ?? focusNodeId
     if (!target) return
     setFocusNodeId(target)
-    setUpstreamLevels(Infinity)
-    setDownstreamLevels(Infinity)
-    setPartial(false)
     graphRef.current?.centerOnNode?.(target)
   }
 
-  // The id to seed GET /lineage/graph from: a build artifact's URI, a target's
-  // `run:<uuid>`, or the id of a node an earlier expansion brought in (already an
-  // index id). Nodes the index has no id for fall back to walking the loaded graph.
-  const indexSeedFor = (nodeId: string): string | null => {
-    if (lineageUriMap.has(nodeId)) return lineageUriMap.get(nodeId)!
-    for (const [runId, targetId] of runToTarget) if (targetId === nodeId) return runId
-    if (expansion.extra.nodes.some((n) => n.id === nodeId)) return nodeId
-    return null
-  }
-
-  const expandFromIndex = (direction: ExpandDirection): boolean => {
-    if (!focusNodeId) return false
-    const seed = indexSeedFor(focusNodeId)
-    if (!seed) return false
-    // Show everything: the remote expansion is the new frontier.
-    setUpstreamLevels(Infinity)
-    setDownstreamLevels(Infinity)
-    setPartial(false)
-    // One level past what is on screen for this node, however it got there.
-    const metadata = (enrichedNodes.find((n) => n.id === focusNodeId) as IndexElkNode | undefined)?.indexNode?.metadata
-    const depth = depthForNextLevel(seed, visibleLevels(focusNodeId, allLinks, direction), metadata)
-    void expansion.expand(seed, direction, depth, { nodes: enrichedNodes, links: allLinks }, metadata)
-    return true
-  }
-
-  const levelText = (n: number, exhausted: boolean) => {
-    const text = `${n} ${n === 1 ? 'level' : 'levels'}`
-    if (exhausted) return n ? `${text} (all)` : 'none'
-    return text
-  }
-
-  // What each button will do for the selected node, so the toolbar can say it: a
-  // node the index knows loads more lineage beyond the build; any other node only
-  // narrows or widens the build graph already on screen.
   const focusNode = focusNodeId ? enrichedNodes.find((n) => n.id === focusNodeId) : undefined
-  const focusName = focusNode?.title || focusNodeId || ''
-  const focusSeed = focusNodeId ? indexSeedFor(focusNodeId) : null
-  // Only artifacts with a gbserver record have a page to open.
-  const canOpenArtifact = Boolean(focusNode && focusNode.type !== 'Build' && isUUID(focusNode.id))
-  const directionState = (direction: ExpandDirection, localLevels: number) => {
-    if (!focusNodeId) {
-      return { disabled: true, text: '', title: 'Select a node to expand its lineage' }
-    }
-    // Measured on the graph on screen, so it holds whichever node was expanded.
-    const shown = visibleLevels(focusNodeId, filteredLinks, direction)
-    if (focusSeed) {
-      const exhausted = expansion.isExhausted(focusSeed, direction)
-      return {
-        disabled: expansion.loading !== null || exhausted,
-        text: levelText(shown, exhausted),
-        title: exhausted
-          ? `Nothing more ${direction} of ${focusName}`
-          : `Load level ${shown + 1} ${direction} of ${focusName} from the lineage index`,
-      }
-    }
-    // Local-only nodes (targets): with every level shown there is nothing to add.
-    const all = localLevels === Infinity
-    return {
-      disabled: all,
-      text: levelText(shown, all),
-      title: all
-        ? `The whole build graph is already shown; ${focusName} has no lineage beyond the build`
-        : `Show one more ${direction} level of the build graph`,
-    }
-  }
-  const upState = directionState('upstream', upstreamLevels)
-  const downState = directionState('downstream', downstreamLevels)
-
-  const handleUpstream = () => {
-    if (!focusNodeId) return
-    graphRef.current?.centerOnNodeAfterLayout(focusNodeId)
-    if (expandFromIndex('upstream')) return
-    const newUp = upstreamLevels === Infinity ? 2 : upstreamLevels + 1
-    const sub = getSubgraph(focusNodeId, downstreamLevels, newUp, enrichedNodes, allLinks)
-    setUpstreamLevels(sub.hasMoreUpstream ? newUp : Infinity)
-    setPartial(sub.hasMoreUpstream || sub.hasMoreDownstream)
-  }
-
-  const handleDownstream = () => {
-    if (!focusNodeId) return
-    graphRef.current?.centerOnNodeAfterLayout(focusNodeId)
-    if (expandFromIndex('downstream')) return
-    const newDown = downstreamLevels === Infinity ? 2 : downstreamLevels + 1
-    const sub = getSubgraph(focusNodeId, newDown, upstreamLevels, enrichedNodes, allLinks)
-    setDownstreamLevels(sub.hasMoreDownstream ? newDown : Infinity)
-    setPartial(sub.hasMoreUpstream || sub.hasMoreDownstream)
-  }
 
   const noLineage = !loading && !statusError && enrichedNodes.length === 0
 
@@ -664,22 +494,10 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       <div
         className={styles.toolbar}
         onClickCapture={(e) => {
-          if (!(e.target as HTMLElement).closest('button')) return
-          setStepDetailTarget(null)
-          setJobNodeId(null)
+          if ((e.target as HTMLElement).closest('button')) setStepDetailTarget(null)
         }}
       >
         <div className={styles.toolbarLeft}>
-          <Button
-            size="sm"
-            kind="ghost"
-            renderIcon={ArrowLeft}
-            disabled={upState.disabled}
-            title={upState.title}
-            onClick={handleUpstream}
-          >
-            Upstream
-          </Button>
           {showFocusNode && (
             <Button
               size="sm"
@@ -691,24 +509,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
               Focus Node
             </Button>
           )}
-          <Button
-            size="sm"
-            kind="ghost"
-            renderIcon={ArrowRight}
-            disabled={downState.disabled}
-            title={downState.title}
-            onClick={handleDownstream}
-          >
-            Downstream
-          </Button>
-          <span className={styles.levelIndicator}>
-            {focusNodeId
-              ? <>From <strong>{focusName}</strong> · ← {upState.text} · {downState.text} →</>
-              : 'Click a node to expand its lineage'}
-          </span>
-
-          <div className={styles.toolbarDivider} />
-
+          {showFocusNode && <div className={styles.toolbarDivider} />}
           <Button
             size="sm"
             kind="ghost"
@@ -744,17 +545,9 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
               className="overflow-item"
               itemText="Reset view"
               onClick={() => {
-                // Clear every filter, then fit. `resetView` fits against the
-                // current layout immediately and clears the user-adjusted flag,
-                // so a relayout triggered by the expanded node set simply
-                // auto-fits again over this one with nothing fighting it —
-                // whether or not the graph was actually filtered.
+                // Clear the selection, then fit. `resetView` fits against the
+                // current layout immediately and clears the user-adjusted flag.
                 setFocusNodeId(null);
-                setUpstreamLevels(Infinity);
-                setDownstreamLevels(Infinity);
-                setPartial(false);
-                expansion.reset();
-                setJobNodeId(null);
                 graphRef.current?.resetView();
               }}
             />
@@ -764,29 +557,8 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
               onClick={() => setShowBuildInfo((v) => !v)}
             />
           </OverflowMenu>
-
-          <div className={styles.toolbarDivider} />
-
-          <Button
-            size="sm"
-            kind="ghost"
-            renderIcon={Launch}
-            disabled={!canOpenArtifact}
-            title={canOpenArtifact ? `Open ${focusName}` : 'Select an artifact to open it'}
-            onClick={handleOpenArtifact}
-          >
-            Open artifact
-          </Button>
         </div>
       </div>
-
-      {/* Status messages */}
-      {partial && (
-        <div className={styles.partialMessage}>
-          The lineage graph is partially displayed. Click Upstream or Downstream
-          to show more nodes.
-        </div>
-      )}
 
       {/* Graph and drawer are flex siblings in a row so opening the drawer
           physically shrinks the graph's width. ELK lays out RIGHT (downstream
@@ -798,17 +570,6 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       {/* Graph area. tabIndex=-1 so it can receive programmatic focus as the
           fallback when a closed drawer's trigger node is no longer in the DOM. */}
       <div className={styles.graphArea} ref={graphContainerRef} tabIndex={-1}>
-        {/* Overlaid, not in the flow: a banner above the graph would push it down
-            on every expansion. */}
-        {(expansion.loading || Boolean(expansion.error) || expansion.unexpanded > 0) && (
-          <div className={styles.expansionStatus}>
-            {expansion.loading && <InlineLoading description={`Loading ${expansion.loading} lineage…`} />}
-            {Boolean(expansion.error) && (
-              <span className={styles.expansionError}>Failed to expand lineage: {String(expansion.error)}</span>
-            )}
-            {!expansion.loading && expansion.unexpanded > 0 && <span>{expansion.unexpanded} nodes not expanded.</span>}
-          </div>
-        )}
         {loading && (
           <div className={styles.centeredContent}>
             <InlineLoading description="Loading lineage…" />
@@ -839,8 +600,8 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
             <Graph
               ref={graphRef}
               graphKey={build?.uuid}
-              nodes={filteredNodes}
-              links={filteredLinks}
+              nodes={enrichedNodes}
+              links={allLinks}
               allLinks={allLinks}
               selectedNode={focusNode ?? currentArtifactNode ?? openDrawerNode}
               showBuildInfo={showBuildInfo}
@@ -851,9 +612,8 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
         )}
       </div>
 
-      {(stepDetailTarget || jobNode) && (
-      <div className={styles.drawerSlot}>
       {stepDetailTarget && (
+      <div className={styles.drawerSlot}>
         <StepDrawer
           targetName={stepDetailTarget}
           // Own-property lookup: a bare-object index would return
@@ -866,15 +626,6 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
           drawerRef={drawerRef}
           closeButtonRef={drawerCloseButtonRef}
         />
-      )}
-      {!stepDetailTarget && jobNode && (
-        <JobDrawer
-          node={jobNode}
-          onClose={() => setJobNodeId(null)}
-          drawerRef={drawerRef}
-          closeButtonRef={drawerCloseButtonRef}
-        />
-      )}
       </div>
       )}
       </div>
