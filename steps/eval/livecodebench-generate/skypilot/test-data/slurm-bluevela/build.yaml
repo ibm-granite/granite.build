@@ -1,0 +1,106 @@
+granite.build:
+  name: skypilot-slurm-bluevela-livecodebench-gpu-test
+  # eval/livecodebench-generate then eval/livecodebench-score on an internal GPU
+  # SLURM cluster (via SkyPilot): granite-4.2-3b on one H200, scored on CPU.
+  #
+  # TWO targets, joined by binding:
+  #   generate: the model and the dataset are pulled to the cluster's shared
+  #             filesystem; vLLM generates on the GPU; `completions` is pushed.
+  #   score:    `completions` (by binding) and the dataset; LiveCodeBench's scorer
+  #             runs the generated code on the cpu partition, offline and without
+  #             credentials; `results` is pushed.
+  # What reaching SUCCESS proves:
+  #   1. Setup installs vLLM (with its CUDA torch) and LiveCodeBench on the bare GPU
+  #      node, and the model generates on the GPU.
+  #   2. The generate step's `completions` reach the score step through the binding.
+  #   3. The score step installs on a CPU node and scores the completions.
+  #   4. Both outputs are pushed to Hugging Face datasets.
+  #
+  # A PLUMBING test, not an evaluation: one contest day of release_v6 (2025-04-05,
+  # 6 problems), one sample each, thinking off. pass@1 varies between runs, so the
+  # test checks the pushes, not the score; the exact-score check is the score
+  # step's own slurm-cpu test.
+  #
+  # HF_TOKEN: the pulls need none (both repos are public), but the pushes need
+  # write access to GBTEST_HF_PUSH_ORG (default ibm-research).
+  targets:
+
+    generate:
+      # The in-repo env: SSH as the shared functional ID with the key file at
+      # ~/.ssh/ibm-bluevela.key, so the test needs no secret manager.
+      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      inputs:
+        model:
+          # Public (Apache-2.0, not gated), ~7 GB of safetensors, no other formats.
+          uri: hf:///models/ibm-granite/granite-4.2-3b
+        dataset:
+          # 4.2 GB for release_v6; the date window only narrows what is generated.
+          uri: hf:///datasets/livecodebench/code_generation_lite
+      outputs:
+        completions:
+          # HfPushCleanupMixin (libgbtest.hfpush) fills in the __GBTEST_HF_PUSH_*__
+          # tokens per run, checks each push landed, and deletes the datasets. The
+          # `test_` prefix lets scripts/rm_hf_repos.py clean up after aborted runs.
+          uri: hf://huggingface.co/datasets/__GBTEST_HF_PUSH_ORG__/test_lcb-completions___GBTEST_HF_PUSH_RUN__
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/livecodebench-generate
+          config:
+            poll_interval_seconds: 15
+            # The env's default partition and GPU constraint apply: the step
+            # requests one H200 below.
+            launcher_config:
+              resources:
+                # A typed GPU (the env pins jobs to H200 nodes), with the host
+                # size next to it: the default host for one GPU is small.
+                accelerators: "H200:1"
+                cpus: 16
+                memory: 128
+              sbatch_options:
+                time: "01:00:00"
+            lcb_generate_config:
+              # Bare node, no container: this tests the step and the cluster, not
+              # Pyxis.
+              image: ""
+              release_version: release_v6
+              start_date: "2025-04-05"
+              end_date: "2025-04-05"
+              n: 1
+              # Thinking off keeps the answers short; the budget is generous anyway,
+              # so a cut-off sample doesn't masquerade as a wrong answer.
+              enable_thinking: "false"
+              max_tokens: 8192
+              max_model_len: 16384
+
+    score:
+      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      inputs:
+        completions:
+          binding: generate.completions
+        dataset:
+          uri: hf:///datasets/livecodebench/code_generation_lite
+      outputs:
+        results:
+          uri: hf://huggingface.co/datasets/__GBTEST_HF_PUSH_ORG__/test_lcb-results___GBTEST_HF_PUSH_RUN__
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/livecodebench-score
+          config:
+            poll_interval_seconds: 15
+            # CPU only: the env's default partition accepts only GPU jobs, so run
+            # on the cpu partition, where the env also sends hfpull and hfpush, and
+            # clear the env's GPU constraint (`null` removes the directive).
+            zone: cpu
+            launcher_config:
+              resources:
+                cpus: 8
+                memory: 32
+              sbatch_options:
+                time: "00:30:00"
+                constraint: null
+            lcb_score_config:
+              image: ""
+              release_version: release_v6
+              start_date: "2025-04-05"
+              end_date: "2025-04-05"
+              num_process_evaluate: 8
