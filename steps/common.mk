@@ -59,7 +59,7 @@
 #   DOCKER      container tool          (default: podman)
 #   DOCKERFILE  Dockerfile to detect/build (default: Dockerfile)
 #   PLATFORM    target build platform   (default: linux/amd64)
-#   IMAGE_NAME  image repository name   (default: gb-step-$(STEP_NAME))
+#   IMAGE_NAME  image repository name   (default: steps/$(STEP_PATH)/$(STEP_ENV))
 #   IMAGE_TAG   image tag               (default: git short SHA, else "latest")
 #   STEP_ENV    step's environment segment      (default: this Makefile's dir name)
 #   PUBLISH_STEP_DIR  where `publish-step` renders the step (default: the env-nested
@@ -109,7 +109,13 @@ $(error REGISTRY is not set. Define it in the including Makefile (e.g. 'REGISTRY
 endif
 endif
 
-IMAGE_NAME ?= gb-step-$(STEP_NAME)
+# The image repository mirrors the step's directory under steps/ (David, #229):
+# steps/train/openinstruct-sft/skypilot builds
+# $(REGISTRY)/steps/train/openinstruct-sft/skypilot:<tag>, so the registry reads
+# like the source tree. OCI repository names may contain `/`. A step that needs a
+# flat name sets IMAGE_NAME in its own Makefile. `?=` makes it recursive, so the
+# STEP_PATH and STEP_ENV assigned further down this file are seen when it expands.
+IMAGE_NAME ?= steps/$(STEP_PATH)/$(STEP_ENV)
 # Defaults to the git short SHA (else "latest") so iterative builds get a unique,
 # traceable tag without ceremony. Override per release, e.g. IMAGE_TAG=0.1.0.
 IMAGE_TAG  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
@@ -126,9 +132,9 @@ REGISTRY_HOST := $(firstword $(subst /, ,$(REGISTRY)))
 # runtime Jinja instead. Both the image/publish-image recipes and the render use
 # this same value, so there is one source of truth.
 ifeq ($(STEP_USES_IMAGE),true)
-IMAGE_REF := $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
+IMAGE_REF = $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
 else
-IMAGE_REF :=
+IMAGE_REF =
 endif
 
 # Name of the generated Space directory, created as ./$(SPACE_DIR) next to the

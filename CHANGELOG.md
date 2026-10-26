@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Custom step images are named after the step's directory (#229).** `steps/common.mk`
+  now defaults `IMAGE_NAME` to `steps/<path>/<env>`, so `steps/train/openinstruct-sft/skypilot`
+  pushes `$(REGISTRY)/steps/train/openinstruct-sft/skypilot:<tag>` instead of
+  `$(REGISTRY)/gb-step-openinstruct-sft:<tag>`. A step that wants the old flat name sets
+  `IMAGE_NAME` in its Makefile. No published step changes.
 - **The `dpk` step moved into the `data` category: `space://steps/data/dpk` (#512).** This is
   the first step to move into a category directory under `steps/` (here `steps/data`).
   **Breaking change:** `space://steps/dpk` is no longer supported, so update builds to the

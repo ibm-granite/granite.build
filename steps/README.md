@@ -252,7 +252,7 @@ To author a nested step, the only thing that changes is the Makefile's `include`
 depth — it must point at `steps/common.mk` from wherever the step dir lives:
 
 ```make
-STEP_NAME := foo                 # slash-free leaf (feeds IMAGE_NAME)
+STEP_NAME := foo                 # slash-free leaf
 include ../../../common.mk       # one ../ deeper than a flat step's ../../common.mk
 ```
 
@@ -381,12 +381,12 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 
 | Variable          | Default                                   | Meaning                          |
 |-------------------|-------------------------------------------|----------------------------------|
-| `STEP_NAME`       | *(set by each step's Makefile)*           | logical step name; the **slash-free leaf** (feeds `IMAGE_NAME`, which can't contain `/`) |
+| `STEP_NAME`       | *(set by each step's Makefile)*           | logical step name; the **slash-free leaf** (used in messages and the publish guard) |
 | `STEP_PATH`       | *(auto-derived)* the step's dir relative to the enclosing `steps/`, minus the `<env>` segment | the step's **identity path**; drives the publish/test/space locations and the `space://steps/<path>` URI. For a flat step (`steps/<name>/<env>`) it equals `STEP_NAME`; for a nested step (`steps/<a>/<b>/<env>`) it is `<a>/<b>`. Structural (from `CURDIR` + include depth) — authors never set it |
 | `DOCKER`          | `podman`                                  | container tool                   |
 | `DOCKERFILE`      | `Dockerfile`                              | its presence enables image build/push |
 | `REGISTRY`        | *(required for image steps; set by the step's Makefile)* | image registry + namespace |
-| `IMAGE_NAME`      | `gb-step-$(STEP_NAME)`                     | image repository name            |
+| `IMAGE_NAME`      | `steps/$(STEP_PATH)/$(STEP_ENV)`         | image repository name; mirrors the step's directory, e.g. `steps/train/openinstruct-sft/skypilot`. Set it in the step's Makefile for a flat name |
 | `IMAGE_TAG`       | git short SHA, else `latest`              | image tag                        |
 | `IMAGE_REF`       | `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)`   | full image reference (derived)   |
 | `SPACE_DIR`       | `space`                                   | generated Space directory name   |
