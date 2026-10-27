@@ -40,8 +40,12 @@ class TrialTable(Base):
     job_id: Mapped[UUID] = mapped_column(
         Uuid36, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
     )
+    # server_default backs the api-bridge's Core inserts (Alembic 5e1d2c7a9b40).
     status: Mapped[RunStatus] = mapped_column(
-        Enum(RunStatus, name="run_status"), nullable=False, default=RunStatus.PENDING
+        Enum(RunStatus, name="run_status"),
+        nullable=False,
+        default=RunStatus.PENDING,
+        server_default=RunStatus.PENDING.name,
     )
     config: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow)

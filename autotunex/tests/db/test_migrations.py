@@ -292,3 +292,62 @@ def test_the_hf_provenance_revision_adds_columns_and_downgrade_drops_them(
             row[1] for row in connection.execute(text("PRAGMA table_info(datasets)"))
         }
     assert not (hf_columns & after_downgrade)
+
+
+_BRIDGE_DEFAULTS_REVISION = "5e1d2c7a9b40"
+_REVISION_BEFORE_BRIDGE_DEFAULTS = "dd4511a46fc5"
+# (table, column) -> the DDL default resources/autotunex_schema.sql declares.
+_BRIDGE_DEFAULTS = {
+    ("gb_tasks", "status"): "'PENDING'",
+    ("jobs", "status"): "'PENDING'",
+    ("jobs", "seed"): "42",
+    ("trials", "status"): "'PENDING'",
+    ("users", "role"): "'user'",
+}
+
+
+def _column_defaults(database: Path) -> dict[tuple[str, str], str | None]:
+    engine = create_engine(f"sqlite:///{database}")
+    with engine.connect() as connection:
+        return {
+            (table, row[1]): row[4]
+            for table in {table for table, _ in _BRIDGE_DEFAULTS}
+            for row in connection.execute(text(f"PRAGMA table_info({table})"))
+        }
+
+
+def test_the_bridge_defaults_revision_adds_the_schema_file_defaults(tmp_path: Path) -> None:
+    """The api-bridge's Core inserts omit these columns and rely on a DDL default.
+
+    The baseline gave them none, so its bootstrap failed ``NOT NULL`` on
+    ``gb_tasks.status``. ``status`` holds the enum member *name*: the ORM's
+    ``Enum(RunStatus)`` stores ``PENDING``, not the ``pending`` value.
+    """
+    database = tmp_path / "bridge_defaults.db"
+    _alembic(database, "upgrade", _REVISION_BEFORE_BRIDGE_DEFAULTS)
+    before = _column_defaults(database)
+    assert all(before[key] is None for key in _BRIDGE_DEFAULTS)
+
+    _alembic(database, "upgrade", _BRIDGE_DEFAULTS_REVISION)
+    after = _column_defaults(database)
+    assert {key: after[key] for key in _BRIDGE_DEFAULTS} == _BRIDGE_DEFAULTS
+
+    _alembic(database, "downgrade", _REVISION_BEFORE_BRIDGE_DEFAULTS)
+    assert _column_defaults(database) == before
+
+
+def test_a_gb_task_inserted_without_a_status_is_pending(tmp_path: Path) -> None:
+    """The bootstrap-shaped insert: every NOT NULL column but ``status``."""
+    database = tmp_path / "gb_task_insert.db"
+    _alembic(database, "upgrade", _BRIDGE_DEFAULTS_REVISION)
+    engine = create_engine(f"sqlite:///{database}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO gb_tasks (id, job_id, type) VALUES "
+                "('33333333-3333-3333-3333-333333333333', "
+                "'44444444-4444-4444-4444-444444444444', 'TUNING')"
+            )
+        )
+        status = connection.execute(text("SELECT status FROM gb_tasks")).scalar_one()
+    assert status == "PENDING"
