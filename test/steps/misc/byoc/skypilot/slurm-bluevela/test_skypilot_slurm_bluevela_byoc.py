@@ -53,7 +53,8 @@ _BLUEVELA_KEY = Path("~/.ssh/ibm-bluevela.key").expanduser()
 
 
 @extended_testing_only
-@pytest.mark.xdist_group(name="buildtest_bv")
+# No xdist_group: skypilot_integration already puts it in the serialized
+# "skypilot" group, and under --dist=loadgroup any other group is a UsageError.
 @pytest.mark.skipif(
     not _BLUEVELA_KEY.is_file(),
     reason=f"BlueVela granitebuild SSH key not found at {_BLUEVELA_KEY}",
