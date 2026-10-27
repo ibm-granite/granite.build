@@ -168,6 +168,15 @@ PYTHON   ?= python3
 # debugging a test that does not launch SkyPilot.
 PYTEST_CAPTURE ?= -s
 
+# Which tests `make test` runs. TESTS is a space-separated list of pytest paths or
+# node ids, relative to the step env dir (default: all of $(TEST_DIR)); PYTEST_ARGS
+# is passed to pytest as is (e.g. -k, -m, -x). For example:
+#   make test TESTS=test/slurm                          # one cluster's build tests
+#   make test TESTS=test/slurm/test_skypilot_byoc.py    # one file
+#   make test PYTEST_ARGS='-k "not cancellation"'
+TESTS       ?= $(TEST_DIR)
+PYTEST_ARGS ?=
+
 # Repo-root virtualenv that `make test` activates before running pytest. The step
 # tests import gbserver/libgbtest (and their deps), which live in the repo's
 # shared .venv created by `make venv` at the repo root — not in a per-step env.
@@ -307,6 +316,7 @@ help:
 	@echo "  publish-image  push the image to the registry                 (no-op when no Dockerfile is present)"
 	@echo "  all            $(if $(filter true,$(STEP_USES_IMAGE)),image + publish-image + space,space (this step builds no image))"
 	@echo "  test           render the Space + build the image locally, then run the step's tests in $(TEST_DIR)/ (no-op when absent)"
+	@echo "                 narrow with TESTS=<paths|node ids> (e.g. TESTS=test/slurm) and/or PYTEST_ARGS='-k ...'"
 	@echo "  test-setup     stand up infra the step's tests need (run once before 'make test'; no-op unless the step defines it)"
 	@echo "  clean          remove the generated Space $(SPACE_DIR)/"
 	@echo "  help           show this message"
@@ -680,13 +690,15 @@ endef
 # if that venv is absent, then activates it (sourced in the same shell as pytest,
 # since each recipe line is its own shell) before running the tests.
 #
-# pytest does not load the repo's test/conftest.py for tests under steps/, so two
-# variables the repo suites get from there (or from their Makefile targets) are
-# defaulted here, each only when the caller hasn't set it:
+# The step tests get the repo's test/conftest.py (SPS secret loading from
+# GBTEST_SPS_IBMCLOUD_API_KEY, env restore, mock fixtures) via steps/conftest.py.
+# Two variables the repo suites get from their Makefile targets are defaulted here,
+# each only when the caller hasn't set it:
 #   * GB_ENVIRONMENT=STANDALONE: unset, gbserver defaults to PROD and the build-test
 #     base refuses to run ("Refusing to run storage tests with GB_ENVIRONMENT=PROD").
 #   * GBTEST_STANDALONE_ENVIRONMENT=STAGING: sends a STANDALONE hf:// push to the
-#     staging resource group, as test/conftest.py does, not the production one.
+#     staging resource group, not the production one (test/conftest.py also
+#     defaults it).
 # GBTEST_MODE is left alone: libgbtest already defaults it to live.
 test: space image
 	@if [ ! -d "$(TEST_DIR)" ] || [ -z "$$(ls -A $(TEST_DIR) 2>/dev/null)" ]; then \
@@ -703,7 +715,7 @@ test: space image
 	export GB_ENVIRONMENT="$${GB_ENVIRONMENT:-STANDALONE}"; \
 	export GBTEST_STANDALONE_ENVIRONMENT="$${GBTEST_STANDALONE_ENVIRONMENT:-STAGING}"; \
 	echo "[$(STEP_NAME)] GB_ENVIRONMENT=$$GB_ENVIRONMENT GBTEST_STANDALONE_ENVIRONMENT=$$GBTEST_STANDALONE_ENVIRONMENT"; \
-	PYTHONPATH="$(SRC_DIR)$${PYTHONPATH:+:$$PYTHONPATH}" $(PYTHON) -m pytest $(PYTEST_CAPTURE) $(TEST_DIR)
+	PYTHONPATH="$(SRC_DIR)$${PYTHONPATH:+:$$PYTHONPATH}" $(PYTHON) -m pytest $(PYTEST_CAPTURE) $(PYTEST_ARGS) $(TESTS)
 
 # ---- Optional pre-test setup hook ------------------------------------------
 # `test-setup` is where a step brings up the infrastructure its tests need (a

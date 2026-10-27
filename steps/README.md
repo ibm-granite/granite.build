@@ -352,17 +352,34 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   (`$(VENV_DIR)`, default `.venv` at the repo root): `make test` activates it
   automatically and fails fast with a pointer to `make venv` if it is missing.
   Override `VENV_DIR` if your virtualenv lives elsewhere.
+  Runs every test in `test/` by default. To run only some, set `TESTS` to pytest paths
+  or node ids (relative to the step env dir) and/or pass pytest options in
+  `PYTEST_ARGS`:
+
+  ```sh
+  make test TESTS=test/slurm                           # one cluster's build tests
+  make test TESTS="test/slurm test/aws"                # several
+  make test TESTS=test/slurm/test_skypilot_byoc.py::TestSkypilotSlurmByoc::test_runner
+  make test PYTEST_ARGS='-k "not cancellation" -x'
+  ```
+
   Runs pytest with `$(PYTEST_CAPTURE)`, default `-s`, matching the repo-root
   Makefile. **Do not drop `-s` for a SkyPilot build test.** Under pytest's capture the
   SkyPilot SDK's `click.secho(cluster_name)` flushes a stdout fd that has been replaced,
   and a *second* `sky launch` in the same pytest process then fails during provisioning
   with `OSError: [Errno 9] Bad file descriptor`. A single-launch test survives by luck, so
   the failure appears only in multi-target fixtures and looks intermittent.
-  pytest doesn't load the repo's `test/conftest.py` for tests under `steps/`, so
-  `make test` sets two variables the repo suites get from there, each only if you
-  haven't set it: `GB_ENVIRONMENT=STANDALONE` (unset, gbserver defaults to PROD and the
-  build-test base refuses to run) and `GBTEST_STANDALONE_ENVIRONMENT=STAGING` (sends an
-  `hf://` push to the staging resource group). Set either yourself to override it.
+  Step tests get the repo's [`test/conftest.py`](../test/conftest.py) through
+  [`steps/conftest.py`](conftest.py), which registers it as a plugin. So
+  `GBTEST_SPS_IBMCLOUD_API_KEY` loads `IBM_CLOUD_API_KEY`, `HF_TOKEN` and the other test
+  secrets from SPS, exactly as for the repo suites (needs `make ibm-venv`), and the same
+  env-restore and mock fixtures apply. Unlike the repo suites, `ibm`-marked step tests
+  are not required to have IBM credentials: a test that needs one checks for it itself.
+  `make test` also defaults `GB_ENVIRONMENT=STANDALONE` (unset, gbserver defaults to
+  PROD and the build-test base refuses to run) and `GBTEST_STANDALONE_ENVIRONMENT=STAGING`
+  (sends an `hf://` push to the staging resource group), each only if you haven't set
+  it. A `GB_ENVIRONMENT=STAGING` left in your shell sends the test to the hosted staging
+  database instead, so unset it for step tests.
 * **`test-setup`** — optional per-step hook that stands up the infrastructure a
   step's tests need (e.g. a local Docker SLURM cluster). It is a **separate
   target, deliberately not a prerequisite of `test`**, so the (often slow) infra
