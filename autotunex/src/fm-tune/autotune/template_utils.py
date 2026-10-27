@@ -92,9 +92,20 @@ def model_display_name(model_name_or_path: str) -> str:
     return f"{match.group(1)}/{match.group(2)}" if match else model_name_or_path
 
 
+# Mirrors AutoTuneX's datasets_io._EXTENSION_TO_FORMAT, so a bridge-registered
+# dataset records the same format the main service's upload path would.
+_EXTENSION_TO_FORMAT = {
+    ".jsonl": "jsonl",
+    ".json": "jsonl",
+    ".csv": "csv",
+    ".parquet": "parquet",
+    ".pq": "parquet",
+}
+
+
 def data_format_from_path(path: str) -> str | None:
-    """Return the lowercased file extension (``parquet``, ``jsonl``, ...), or None if there is none."""
-    return os.path.splitext(path)[1].lstrip(".").lower() or None
+    """Return the AutoTuneX data format (``jsonl``/``csv``/``parquet``) for a file, or None if unknown."""
+    return _EXTENSION_TO_FORMAT.get(os.path.splitext(path)[1].lower())
 
 
 def stem_from_path(path: str) -> str:
