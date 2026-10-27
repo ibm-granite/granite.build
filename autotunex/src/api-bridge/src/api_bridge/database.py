@@ -629,17 +629,6 @@ class Database:
         except SQLAlchemyError as e:
             raise HTTPException(status_code=500, detail=f"Internal Server error: \n{e}")
 
-    def update_dataset_format(self, id: str, data_format: str):
-        try:
-            with self._engine.begin() as connection:
-                connection.execute(
-                    update(tables.datasets)
-                    .where(tables.datasets.c.id == id)
-                    .values(data_format=data_format)
-                )
-        except SQLAlchemyError as e:
-            raise HTTPException(status_code=500, detail=f"Internal Server error: \n{e}")
-
     def update_dataset_metadata(self, id: str, user_id: str, metadata: dict[str, Any]):
         try:
             with self._engine.begin() as connection:
