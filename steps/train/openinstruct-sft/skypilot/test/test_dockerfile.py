@@ -102,3 +102,16 @@ def test_patches_run_after_the_frozen_sync():
     sync = _DOCKERFILE.index("uv sync --frozen")
     assert sync < _DOCKERFILE.index("uv pip uninstall --python .venv/bin/python vllm")
     assert sync < _DOCKERFILE.index('"pillow==13.0.0"')
+
+
+def test_finetune_patch_applied_before_install():
+    assert (
+        "COPY patches/finetune_local_model.py /tmp/finetune_local_model.py"
+        in _DOCKERFILE
+    )
+    assert (
+        "python /tmp/finetune_local_model.py open_instruct/finetune.py" in _DOCKERFILE
+    )
+    assert _DOCKERFILE.index(
+        "finetune_local_model.py open_instruct/finetune.py"
+    ) < _DOCKERFILE.index("uv sync --frozen")

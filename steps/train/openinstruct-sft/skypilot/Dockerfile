@@ -54,14 +54,6 @@ ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_OPEN_INSTRUCT=0.3.0
 
 WORKDIR /opt/open-instruct
-# Security patches on top of the frozen lock (trivy CRITICAL, fix available; see
-# README.md "Scanning"). vllm is REMOVED, not upgraded: the fixed vllm needs
-# torch 2.11, which would replace the locked torch 2.10 + flash-attn training
-# stack, and nothing finetune.py imports needs vllm (it serves RL/generation).
-# The rest are upgraded to the first fixed release. litellm leaves upstream's
-# <1.75.2 pin; finetune.py imports it only through optional helpers.
-# wandb is upgraded past upstream's ==0.23.1 pin for its bundled wandb-core Go
-# binary; the step runs it with WANDB_MODE=disabled (see README.md).
 # Fetch exactly the pinned commit, then install the LOCKED environment. The
 # default groups are kept: open_instruct.utils imports `beaker` unconditionally
 # and beaker-py lives in the `dev` group at this release.
@@ -70,8 +62,26 @@ RUN git init -q . \
  && git fetch -q --depth 1 origin "${OPEN_INSTRUCT_COMMIT}" \
  && git checkout -q FETCH_HEAD \
  && test "$(git rev-parse HEAD)" = "${OPEN_INSTRUCT_COMMIT}" \
- && rm -rf .git \
- && uv sync --frozen \
+ && rm -rf .git
+
+# Upstream finetune.py calls snapshot_download(model_name_or_path) on rank 0 to
+# pre-fetch Hub files, and snapshot_download() rejects a local directory
+# (HFValidationError: "Repo id must be in the form ..."). The step always passes
+# the staged base_model directory, so skip the pre-fetch for a local path. The
+# patch fails the build if the upstream line ever changes.
+COPY patches/finetune_local_model.py /tmp/finetune_local_model.py
+RUN uv run --no-project --python 3.12 python /tmp/finetune_local_model.py open_instruct/finetune.py \
+ && rm /tmp/finetune_local_model.py
+
+# Security patches on top of the frozen lock (trivy CRITICAL, fix available; see
+# README.md "Scanning"). vllm is REMOVED, not upgraded: the fixed vllm needs
+# torch 2.11, which would replace the locked torch 2.10 + flash-attn training
+# stack, and nothing finetune.py imports needs vllm (it serves RL/generation).
+# The rest are upgraded to the first fixed release. litellm leaves upstream's
+# <1.75.2 pin; finetune.py imports it only through optional helpers.
+# wandb is upgraded past upstream's ==0.23.1 pin for its bundled wandb-core Go
+# binary; the step runs it with WANDB_MODE=disabled (see README.md).
+RUN uv sync --frozen \
  && uv pip install --python .venv/bin/python "clearml==2.1.12" \
  && uv pip uninstall --python .venv/bin/python vllm \
  && uv pip install --python .venv/bin/python \

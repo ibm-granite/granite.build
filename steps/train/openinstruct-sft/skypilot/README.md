@@ -24,9 +24,11 @@ src/                        baked into the image at /opt/openinstruct-sft/
   openinstruct_sft_guard.sh   on-node checks of the staged base_model/dataset paths
   openinstruct_sft_setup.sh   image sanity check: finetune.py present, training stack imports
   openinstruct_sft_run.sh     GPU count, ClearML on/off, accelerate launch, swap, markers
+patches/finetune_local_model.py   build-time patch applied to upstream finetune.py
 test/                       unit tests at the root; one dir per cluster build test
   test_dockerfile.py
   test_exemplar_build.py
+  test_finetune_local_model_patch.py
   test_openinstruct_sft_guard_sh.py
   test_openinstruct_sft_run_sh.py
   test_openinstruct_sft_setup_sh.py
@@ -65,7 +67,7 @@ unrendered-binding detector). `**/*.md` is listed so the docs can show `{{ ... }
 
 ## Image
 
-`quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-3`. It holds:
+`quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-4`. It holds:
 
 | Part | Pin |
 |---|---|
@@ -95,6 +97,7 @@ Choices in the Dockerfile that look odd, and why:
   venv's interpreter is a symlink into it) and the scripts are readable by any uid.
 - **The venv is first on `PATH`.** That also provides the `hf` CLI the aws
   environment's inline `hf download` uses.
+- **finetune.py is patched at build time** (`patches/finetune_local_model.py`): upstream pre-fetches `--model_name_or_path` with `snapshot_download()`, which rejects a local directory, so the pre-fetch is skipped when the path is a local dir (the step always passes the staged `base_model`). The build fails if the upstream line changes.
 
 **Security trade-off.** The base is Ubuntu, not UBI or a minimal image. SkyPilot
 bootstraps itself by running `apt-get` inside the container, so a UBI/RPM base fails
@@ -133,7 +136,7 @@ fixable (57 Python packages, 8 jar, 1 Go binary), tracked as a follow-up.
 
 ### Bumping IMAGE_VERSION
 
-The Makefile's `IMAGE_VERSION` is a stable version (`oi-v0.3.0-3`), not the
+The Makefile's `IMAGE_VERSION` is a stable version (`oi-v0.3.0-4`), not the
 per-commit git SHA. The image is large, and BlueVela runs it from a `.sqsh` built
 from this exact tag, so it must not churn on unrelated commits.
 
@@ -158,7 +161,7 @@ tag into it, so no per-step quay setup is needed:
 ```bash
 podman login -u 'granitebuild+gbpush' --password-stdin quay.io/granitebuild   # robot token on stdin
 make -C steps/train/openinstruct-sft/skypilot image publish-image
-skopeo inspect --raw docker://quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-3
+skopeo inspect --raw docker://quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-4
 ```
 
 Run the `skopeo inspect` with no credentials, to check the image pulls
@@ -177,8 +180,8 @@ On SLURM the step runs from a prebuilt squashfs, not a registry pull. Build it o
 BlueVela login node as `granitebuild`:
 
 ```bash
-enroot import -o /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-3.sqsh \
-  "docker://quay.io#granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-3"
+enroot import -o /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-4.sqsh \
+  "docker://quay.io#granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-4"
 ```
 
 Rebuild it for each `IMAGE_VERSION`, with the version in the file name. The BlueVela
@@ -225,7 +228,7 @@ The unit tests at `test/`'s root need no cluster or image. They stub `accelerate
 | `test_openinstruct_sft_guard_sh.py` | staged-path checks: empty or unrendered `base_model`, missing dir, no `config.json`, missing dataset, unknown option; valid paths pass silently |
 | `test_openinstruct_sft_setup_sh.py` | the image check: passes on a good image, fails without `finetune.py` or when the training stack does not import |
 | `test_openinstruct_sft_run_sh.py` | the `accelerate launch` argv and cwd, step-owned flags before build args, no-DeepSpeed, GPU count (SkyPilot, `nvidia-smi` fallback, none), ClearML off/on/auto and default names with `WANDB_MODE=disabled`, the staging swap and re-run, refusing a non-model `output_path`, no marker without a model, and the markers last and absolute |
-| `test_exemplar_build.py` | every shipped build.yaml (exemplar and both fixtures) against the contract: step URI, `output` names a model output, exactly one data source, `base_model` bound, GPUs requested, no step-owned `args` (parsed from the template's `owned` list, 14 names), single node, the BlueVela GPU matching the environment's constraint, every exemplar parameter defined |
+| `test_exemplar_build.py` | every shipped build.yaml (exemplar and both fixtures) against the contract: step URI, `output` names a model output, exactly one data source, `base_model` bound, GPUs requested, no step-owned `args` (parsed from the template's `owned` list, 15 names), single node, the BlueVela GPU matching the environment's constraint, every exemplar parameter defined |
 
 Run the unit tests only with `-m "not extended"`, and with AWS credentials unset.
 `make test` and a plain `pytest test` do not deselect `extended`, so with AWS

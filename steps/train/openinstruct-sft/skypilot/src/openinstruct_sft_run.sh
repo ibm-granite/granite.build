@@ -79,6 +79,10 @@ output_path="${output_path%/}"
 mkdir -p "$(dirname "$output_path")"
 out_dir="$(cd "$(dirname "$output_path")" && pwd)/$(basename "$output_path")"
 stage="${out_dir}.partial"
+# finetune.py caches the tokenized dataset under --dataset_local_cache_dir, default
+# ./local_dataset_cache relative to its cwd (/opt/open-instruct, read-only for the
+# job user under Pyxis). Keep it next to the output, in the step's working dir.
+cache_dir="$(pwd)/local_dataset_cache"
 case $out_dir in *'"'*) fail "output path contains a double quote: '${out_dir}'." ;; esac
 # Replacing output_path deletes it: refuse anything but nothing / an empty dir /
 # a previous model, before any GPU time.
@@ -127,6 +131,7 @@ ft=(
   --push_to_hub false
   --try_launch_beaker_eval_jobs false
   --try_auto_save_to_beaker false
+  --dataset_local_cache_dir "$cache_dir"
 )
 echo "openinstruct-sft: training on ${num_gpus} GPU(s) into ${stage}"
 (

@@ -92,7 +92,7 @@ The step sets these flags itself, so they are refused in `args`:
 model_name_or_path, output_dir, dataset_name, dataset_mixer, dataset_mixer_list,
 dataset_mixer_list_splits, with_tracking, report_to, wandb_entity, push_to_hub,
 try_launch_beaker_eval_jobs, try_auto_save_to_beaker, do_not_randomize_output_dir,
-resume_from_checkpoint
+resume_from_checkpoint, dataset_local_cache_dir
 ```
 
 Use the `base_model`/`dataset` inputs, `output_path`, `dataset_mixer_list(_splits)`
@@ -208,15 +208,15 @@ endpoint:
   squashfs on shared storage:
 
   ```bash
-  enroot import -o /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-3.sqsh \
-    "docker://quay.io#granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-3"
+  enroot import -o /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-4.sqsh \
+    "docker://quay.io#granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-4"
   ```
 
   Then set `image_id` to that path:
 
   ```yaml
   openinstruct_sft_config:
-    image_id: /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-3.sqsh
+    image_id: /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-4.sqsh
   ```
 
   Keep it a plain path. The step adds SkyPilot's `docker:` marker, and SkyPilot's

@@ -186,7 +186,14 @@ class TestValidation:
         assert "clearml_enabled" in _render_error("run", _ctx(clearml_enabled="maybe"))
 
     @pytest.mark.parametrize(
-        "key", ["output_dir", "model_name_or_path", "report_to", "push_to_hub"]
+        "key",
+        [
+            "output_dir",
+            "model_name_or_path",
+            "report_to",
+            "push_to_hub",
+            "dataset_local_cache_dir",
+        ],
     )
     def test_step_owned_args_refused(self, key):
         assert f"args.{key} is set by the step" in _render_error(

@@ -84,7 +84,7 @@ environment_configs:
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
             {%- macro validate(c, cc, bound) -%}
-            {%- set owned = ["model_name_or_path", "output_dir", "dataset_name", "dataset_mixer", "dataset_mixer_list", "dataset_mixer_list_splits", "with_tracking", "report_to", "wandb_entity", "push_to_hub", "try_launch_beaker_eval_jobs", "try_auto_save_to_beaker", "do_not_randomize_output_dir", "resume_from_checkpoint"] -%}
+            {%- set owned = ["model_name_or_path", "output_dir", "dataset_name", "dataset_mixer", "dataset_mixer_list", "dataset_mixer_list_splits", "with_tracking", "report_to", "wandb_entity", "push_to_hub", "try_launch_beaker_eval_jobs", "try_auto_save_to_beaker", "do_not_randomize_output_dir", "resume_from_checkpoint", "dataset_local_cache_dir"] -%}
             {%- if c.dataset_mixer_list is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list must map an HF dataset id to a fraction or count, e.g. {allenai/tulu-3-sft-personas-algebra: 1.0}.") }}{% endif -%}
             {%- if c.dataset_mixer_list_splits is string or c.dataset_mixer_list_splits is not iterable or not c.dataset_mixer_list_splits %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list_splits must be a non-empty list of split names, e.g. [train].") }}{% endif -%}
             {%- if bound and c.dataset_mixer_list %}{{ raise_error("openinstruct-sft: both the `dataset` input and openinstruct_sft_config.dataset_mixer_list are set; use one.") }}{% endif -%}
@@ -116,7 +116,7 @@ environment_configs:
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
             {%- macro validate(c, cc, bound) -%}
-            {%- set owned = ["model_name_or_path", "output_dir", "dataset_name", "dataset_mixer", "dataset_mixer_list", "dataset_mixer_list_splits", "with_tracking", "report_to", "wandb_entity", "push_to_hub", "try_launch_beaker_eval_jobs", "try_auto_save_to_beaker", "do_not_randomize_output_dir", "resume_from_checkpoint"] -%}
+            {%- set owned = ["model_name_or_path", "output_dir", "dataset_name", "dataset_mixer", "dataset_mixer_list", "dataset_mixer_list_splits", "with_tracking", "report_to", "wandb_entity", "push_to_hub", "try_launch_beaker_eval_jobs", "try_auto_save_to_beaker", "do_not_randomize_output_dir", "resume_from_checkpoint", "dataset_local_cache_dir"] -%}
             {%- if c.dataset_mixer_list is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list must map an HF dataset id to a fraction or count, e.g. {allenai/tulu-3-sft-personas-algebra: 1.0}.") }}{% endif -%}
             {%- if c.dataset_mixer_list_splits is string or c.dataset_mixer_list_splits is not iterable or not c.dataset_mixer_list_splits %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list_splits must be a non-empty list of split names, e.g. [train].") }}{% endif -%}
             {%- if bound and c.dataset_mixer_list %}{{ raise_error("openinstruct-sft: both the `dataset` input and openinstruct_sft_config.dataset_mixer_list are set; use one.") }}{% endif -%}
