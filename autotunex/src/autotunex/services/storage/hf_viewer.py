@@ -25,6 +25,7 @@ logger = get_logger(__name__)
 
 _HF_SCHEME = "hf://"
 _HF_HOST = "huggingface.co"
+_HF_TYPE_SEGMENTS = frozenset({"models", "datasets", "spaces", "buckets"})  # gbcommon HfType
 _VIEWER_ROW_CAP = 100  # the viewer rejects length > 100 with a 422
 
 
@@ -52,10 +53,13 @@ _INACCESSIBLE_STATUSES = frozenset({401, 403, 404})
 def repo_id_from_artifact_url(artifact_url: str | None) -> str | None:
     """Derive an ``owner/repo`` HuggingFace dataset id from a stored locator.
 
-    Only ``hf://`` locators are accepted. A leading ``huggingface.co`` host and an
-    intervening ``datasets`` segment are tolerated; the last two path segments are
-    taken as ``owner/repo``. Returns ``None`` for a missing value, a non-``hf://``
-    scheme, or fewer than two segments — the caller then skips the viewer.
+    Only ``hf://`` locators are accepted. A leading ``huggingface.co`` host and a
+    repo-type segment (``datasets``, ``models``, ...) are skipped, then the next two
+    segments are ``owner/repo``; any revision or path in the repo after them is
+    ignored. That is gbcommon's ``HfURI`` layout, parsed here rather than imported
+    because granite.build is only an optional extra. Returns ``None`` for a missing
+    value, a non-``hf://`` scheme, or fewer than two segments — the caller then
+    skips the viewer.
     """
     if not artifact_url:
         return None
@@ -65,9 +69,11 @@ def repo_id_from_artifact_url(artifact_url: str | None) -> str | None:
     segments = [s for s in url[len(_HF_SCHEME) :].split("/") if s]
     if segments and segments[0] == _HF_HOST:
         segments = segments[1:]
+    if segments and segments[0] in _HF_TYPE_SEGMENTS:
+        segments = segments[1:]
     if len(segments) < 2:
         return None
-    return "/".join(segments[-2:])
+    return "/".join(segments[:2])
 
 
 async def discover_config(
