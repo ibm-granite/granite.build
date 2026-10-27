@@ -24,6 +24,7 @@ is what splits and unquotes these words on the node.
 """
 
 import base64
+import decimal
 import json
 import pathlib
 import shutil
@@ -67,6 +68,11 @@ def _env() -> jinja2.Environment:
     env = jinja2.Environment(undefined=jinja2.StrictUndefined)
     env.filters["json_dumps"] = json.dumps
     env.filters["to_yaml"] = lambda v: yaml.dump(v, default_flow_style=False)
+
+    def raise_error(msg):
+        raise ValueError(msg)
+
+    env.globals["raise_error"] = raise_error
     env.filters["b64encode"] = lambda s: base64.b64encode(
         s if isinstance(s, bytes) else s.encode()
     ).decode()
@@ -328,6 +334,27 @@ class TestSpecEnv:
             "start": "2024-01-01",
             "end": "2024-12-31T10:00:00",
         }
+
+    @pytest.mark.parametrize(
+        "bad", [decimal.Decimal("1.5"), (1, 2)], ids=["decimal", "tuple"]
+    )
+    def test_a_value_yaml_cant_hold_plainly_fails_the_render(
+        self, launcher, defaults, bad
+    ):
+        """Re-review of #543: to_yaml wrote these as !!python/ tags, which safe_load
+        on the node rejected after cluster setup; now the render itself refuses."""
+        cfg = _cfg(defaults, run_config={"x": bad})
+        with pytest.raises(ValueError, match="could not encode it plainly"):
+            _render(launcher["envs"]["GB_DD_SPEC_B64"], cfg)
+
+    def test_a_to_yaml_error_string_fails_the_render(self, launcher, defaults):
+        """gbserver's to_yaml returns "Error: ..." instead of raising."""
+        env = _env()
+        env.filters["to_yaml"] = lambda v: "Error: YAML conversion failed: boom"
+        with pytest.raises(ValueError, match="boom"):
+            env.from_string(launcher["envs"]["GB_DD_SPEC_B64"]).render(
+                config={"data_designer_config": _cfg(defaults)}, bindings={}
+            )
 
     def test_telemetry_is_off(self, launcher):
         assert launcher["envs"]["NEMO_TELEMETRY_ENABLED"] == "false"

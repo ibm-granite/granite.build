@@ -31,7 +31,10 @@ name without the key reaching the log (a pydantic error prints the whole entry; 
 review). Every later Data Designer call (the builder, `validate()`, `create()`, the
 export) runs under `redacted_errors`, which reports any error as one line with each
 resolved credential replaced by `<redacted>`, since Data Designer's `ModelProvider`
-prints `api_key` and `extra_headers` in clear (review of #543).
+prints `api_key` and `extra_headers` in clear (review of #543). What counts as a
+credential is the value, not the variable a plain `api_key` names; the local model's
+placeholder key and anything under 8 characters are left alone, since redacting them
+garbled every error (`dd_ollama.sh` became `dd_<redacted>.sh`; re-review of #543).
 
 **How the config reaches the node.** The `config`, `model_providers`, `run_config` and
 `local_model` travel together as base64 YAML in `$GB_DD_SPEC_B64`, which the launcher's
@@ -84,7 +87,7 @@ PYTHONPATH=src <venv>/bin/python -m pytest -c /dev/null --noconftest \
   test/test_dd_step_render.py test/test_dd_guard_sh.py test/test_dd_run.py test/test_dd_ollama_sh.py
 ```
 
-There are 158 tests in all:
+There are 176 tests in all:
 
 - `test_dd_step_render.py` pins what the template computes:
   - the rendered blocks parse under `bash -n`;
@@ -94,7 +97,8 @@ There are 158 tests in all:
   - `local_model` on and off;
   - `$GB_DD_SPEC_B64` decodes back to the config, with prompts verbatim, and carries
     `run_config` and `local_model`; an unquoted date renders, and arrives as an ISO
-    string.
+    string; a value `to_yaml` can only write with a `!!python/` tag, or a `to_yaml`
+    error string, fails the render instead of reaching the node.
 - `test_dd_guard_sh.py` runs the guard on every refusal and on the passing cases,
   including `min_records` > `num_records`, an out-of-range port, and `local_model` with
   `dd_image`.
@@ -130,10 +134,11 @@ There are 158 tests in all:
   - `scheduler_events.jsonl` is cleared on a restart (checked by run count; content
     merely differing would pass without the clear, since Data Designer appends);
   - user files survive a `restart`;
-  - row groups left in `parquet-files/` without a `metadata.json` are refused by
-    `if_possible` and `always` with nothing removed, and cleared by `restart` only when
-    `builder_config.json` marks the dir as Data Designer's (review of #543; before,
-    the new rows were silently added beside them);
+  - Data Designer output left without a `metadata.json` (row groups, dropped
+    columns, processor outputs, images) is refused by `if_possible` and `always` with
+    nothing removed, and cleared by `restart` only when `builder_config.json` marks the
+    dir as Data Designer's (reviews of #543; before, it was silently kept beside the new
+    run). A retry after an interruption before the first row group still runs;
   - an unregistered provider or an unknown model alias fails with one line that
     contains no credential;
   - a malformed provider, or a credential of the wrong type, is reported without its

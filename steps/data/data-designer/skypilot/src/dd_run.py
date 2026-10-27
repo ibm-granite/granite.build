@@ -32,8 +32,8 @@ ORDER, and why it matters
      run in output_path is checked the way Data Designer would check it (config,
      buffer_size, preserve_dropped_columns). A run that matches is resumed. A mismatch
      is refused by resume=if_possible (the default) and resume=always, with nothing
-     removed; only resume=restart clears it and starts fresh in place. So are row
-     groups left with no metadata.json. A num_records below the previous target is
+     removed; only resume=restart clears it and starts fresh in place. So is Data
+     Designer output left with no metadata.json. A num_records below the previous target is
      refused in every mode and nothing is cleared.
   3. create() — which health-checks each referenced model first.
   4. The row count is checked against --min-records, then the optional export.
@@ -64,6 +64,11 @@ EXPORT_FORMATS = ("jsonl", "csv", "parquet")
 # the ones a staged input can stand in for. `hf` names a Hub dataset and is left as is.
 PATH_SEED_TYPES = ("local", "directory", "file_contents", "agent_rollout")
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# The key local_model_provider() sends. Ollama ignores it; it is not a secret.
+LOCAL_API_KEY = "ollama"
+# Shorter values are never redacted: no real credential is this short, and replacing a
+# short word (``none``, ``x``) everywhere made errors unreadable (re-review of #543).
+MIN_SECRET_LEN = 8
 
 
 class StepError(Exception):
@@ -154,7 +159,7 @@ def local_model_provider(
     return {
         "name": name,
         "endpoint": f"http://127.0.0.1:{int(local_model.get('port') or 11434)}/v1",
-        "api_key": "ollama",
+        "api_key": LOCAL_API_KEY,
     }
 
 
@@ -229,18 +234,25 @@ def provider_secrets(
 ) -> list[str]:
     """Every credential value in the resolved providers, longest first.
 
-    The api_key and extra_headers values; also the environment value a plain api_key
-    names, since Data Designer reads a plain api_key as a variable name first.
+    The api_key and extra_headers values. A plain api_key that names a variable set on
+    the node is a NAME — Data Designer reads it as one first — so the variable's value
+    is the secret, and the name stays readable in errors. Left out: the local model's
+    placeholder key, and anything shorter than MIN_SECRET_LEN. Both were redacted
+    before, which turned ``dd_ollama.sh`` into ``dd_<redacted>.sh`` and
+    ``OPENAI_API_KEY`` into ``<redacted>`` in error messages (re-review of #543).
     """
     secrets = set()
     for p in providers:
         key = p.get("api_key")
         if isinstance(key, str):
-            secrets.update({key, env.get(key, "")})
+            secrets.add(env.get(key) or key)
         headers = p.get("extra_headers")
         if isinstance(headers, dict):
             secrets.update(v for v in headers.values() if isinstance(v, str))
-    return sorted((x for x in secrets if x), key=len, reverse=True)
+    secrets.discard(LOCAL_API_KEY)
+    return sorted(
+        (x for x in secrets if len(x) >= MIN_SECRET_LEN), key=len, reverse=True
+    )
 
 
 def redact(text: str, secrets: list[str]) -> str:
@@ -372,17 +384,41 @@ def foreign_contents(
     return None
 
 
-def orphaned_row_groups(output_path: Path, metadata: Any) -> bool:
-    """Whether ``parquet-files/`` holds row groups with no metadata.json beside them.
+# What a run interrupted before its first row group leaves (no metadata.json yet): Data
+# Designer clears the partials and rewrites builder_config.json on every start, so
+# neither can mix into the next run.
+_RESTARTABLE_LEFTOVERS = ("tmp-partial-parquet-files", "builder_config.json")
 
-    Data Designer then neither resumes nor clears them: it generates the new rows beside
-    them, so the dataset silently mixed two runs (measured: "generated 4 of 2
-    requested", with rows from two configs; found while checking the review of #543).
-    Only ``tmp-partial-parquet-files/`` is left without a metadata.json by an ordinary
-    interruption before the first row group, and Data Designer clears that itself, so
-    it is not counted here.
+
+def orphaned_outputs(output_path: Path, metadata: Any) -> list[str]:
+    """Data Designer outputs left in output_path without a metadata.json beside them.
+
+    Data Designer neither resumes nor clears them: it writes the new run beside them,
+    so they become part of the registered dataset. Row groups in ``parquet-files/``
+    mixed two runs' rows (measured: "generated 4 of 2 requested", rows from two
+    configs; review of #543); dropped columns, processor outputs and images were kept
+    the same way (re-review of #543). Only what an ordinary early interruption leaves
+    (``_RESTARTABLE_LEFTOVERS``) is not counted, so that retry still works. Returns
+    the names found, empty when there is a metadata.json.
     """
-    return metadata is None and any((output_path / "parquet-files").glob("*.parquet"))
+    if metadata is not None:
+        return []
+    found = []
+    for name in _DD_ARTIFACTS:
+        entry = output_path / name
+        if name in _RESTARTABLE_LEFTOVERS or name == "metadata.json":
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            if any(entry.iterdir()):
+                found.append(f"{name}/")
+        elif entry.exists() or entry.is_symlink():
+            found.append(name)
+    found += [
+        f"{output_path.name}.{f}"
+        for f in EXPORT_FORMATS
+        if (output_path / f"{output_path.name}.{f}").exists()
+    ]
+    return found
 
 
 def resume_mismatch(
@@ -686,15 +722,18 @@ def run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
                 f"output_path {str(output_path)!r} can't be resumed or reused: {foreign}. "
                 f"Nothing was removed. Use an output_path of its own for this step."
             )
-        if args.resume != "never" and orphaned_row_groups(output_path, metadata):
+        orphaned = (
+            [] if args.resume == "never" else orphaned_outputs(output_path, metadata)
+        )
+        if orphaned:
             problem = (
-                f"output_path {str(output_path)!r} has row groups in parquet-files/ but no "
-                f"metadata.json, so they can't be resumed, and Data Designer would add the "
-                f"new rows beside them. Nothing was removed."
+                f"output_path {str(output_path)!r} holds Data Designer output "
+                f"({', '.join(orphaned)}) but no metadata.json, so it can't be resumed, "
+                f"and Data Designer would add the new run beside it. Nothing was removed."
             )
             if args.resume != "restart":
                 raise StepError(
-                    f"{problem} Set resume: restart to discard them, or use a new "
+                    f"{problem} Set resume: restart to discard it, or use a new "
                     f"output_path."
                 )
             # Data Designer writes builder_config.json when a run starts, so it is what
@@ -708,8 +747,9 @@ def run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
                     f"an output_path of its own for this step."
                 )
             print(
-                f"data-designer: {str(output_path)!r} has row groups but no metadata.json; "
-                f"resume: restart, so clearing them and starting fresh in place"
+                f"data-designer: {str(output_path)!r} holds Data Designer output but no "
+                f"metadata.json; resume: restart, so clearing it and starting fresh in "
+                f"place"
             )
             clear_previous_run(output_path)
         if metadata:

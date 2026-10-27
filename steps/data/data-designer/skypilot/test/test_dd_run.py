@@ -403,30 +403,92 @@ class TestForeignContents:
         assert needle in self._foreign(out)
 
 
-class TestOrphanedRowGroups:
-    def test_only_batches_without_metadata_count(self, tmp_path):
+class TestOrphanedOutputs:
+    def test_an_early_interruption_is_not_orphaned(self, tmp_path):
+        """What a run stopped before its first row group leaves: Data Designer clears
+        the partials and rewrites builder_config.json, so a plain retry must work."""
         out = tmp_path / "out"
         (out / "tmp-partial-parquet-files").mkdir(parents=True)
         (out / "tmp-partial-parquet-files" / "b.parquet").write_text("x")
-        # an interruption before the first row group: Data Designer clears it itself
-        assert not dd_run.orphaned_row_groups(out, None)
-        (out / "parquet-files").mkdir()
-        (out / "parquet-files" / "batch_00000.parquet").write_text("x")
-        assert dd_run.orphaned_row_groups(out, None)
-        assert not dd_run.orphaned_row_groups(out, {"config_hash": "h"})
-        assert not dd_run.orphaned_row_groups(tmp_path / "absent", None)
+        (out / "builder_config.json").write_text("{}")
+        (out / "images").mkdir()  # empty: nothing to mix in
+        assert dd_run.orphaned_outputs(out, None) == []
+        assert dd_run.orphaned_outputs(tmp_path / "absent", None) == []
+
+    @pytest.mark.parametrize(
+        "make,name",
+        [
+            (
+                lambda o: _touch(o / "parquet-files" / "batch_00000.parquet"),
+                "parquet-files/",
+            ),
+            (
+                lambda o: _touch(o / "dropped-columns-parquet-files" / "b.parquet"),
+                "dropped-columns-parquet-files/",
+            ),
+            (
+                lambda o: _touch(o / "processors-files" / "p" / "b.parquet"),
+                "processors-files/",
+            ),
+            (lambda o: _touch(o / "images" / "old.png"), "images/"),
+            (lambda o: _touch(o / "scheduler_events.jsonl"), "scheduler_events.jsonl"),
+            (lambda o: _touch(o / "out.jsonl"), "out.jsonl"),
+        ],
+        ids=[
+            "row-groups",
+            "dropped-columns",
+            "processors",
+            "images",
+            "events",
+            "export",
+        ],
+    )
+    def test_every_other_output_counts(self, tmp_path, make, name):
+        """Re-review of #543: only parquet-files/ was checked, so the others mixed in."""
+        out = tmp_path / "out"
+        out.mkdir()
+        make(out)
+        assert dd_run.orphaned_outputs(out, None) == [name]
+        assert dd_run.orphaned_outputs(out, {"config_hash": "h"}) == []
+
+
+def _touch(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x")
 
 
 class TestRedaction:
     def test_secrets_collected_longest_first(self):
         providers = [
-            {"name": "a", "api_key": "KEYVAR", "extra_headers": {"X": "hdr-1"}},
+            {"name": "a", "api_key": "KEYVAR", "extra_headers": {"X": "hdr-value-1"}},
             {"name": "b", "api_key": "sk-literal"},
             {"name": "c"},
         ]
         secrets = dd_run.provider_secrets(providers, {"KEYVAR": "from-env-value"})
-        assert set(secrets) == {"KEYVAR", "from-env-value", "hdr-1", "sk-literal"}
+        # A plain api_key naming a set variable: its VALUE is the secret, the name is not.
+        assert set(secrets) == {"from-env-value", "hdr-value-1", "sk-literal"}
         assert [len(x) for x in secrets] == sorted(map(len, secrets), reverse=True)
+
+    def test_errors_stay_readable(self):
+        """Re-review of #543: the local placeholder key and short values were redacted
+        everywhere, so ``dd_ollama.sh`` became ``dd_<redacted>.sh``."""
+        local = dd_run.local_model_provider({"runtime": "ollama", "model": "m"}, [])
+        providers = [
+            local,
+            {"name": "gw", "api_key": "OPENAI_API_KEY"},
+            {"name": "short", "api_key": "none", "extra_headers": {"X": "x"}},
+        ]
+        secrets = dd_run.provider_secrets(
+            providers, {"OPENAI_API_KEY": "sk-real-12345"}
+        )
+        assert secrets == ["sk-real-12345"]
+        text = (
+            "dd_ollama.sh: ollama/granite4:350m failed; set OPENAI_API_KEY "
+            "(sk-real-12345); api_key none, header x"
+        )
+        assert dd_run.redact(text, secrets) == text.replace(
+            "sk-real-12345", "<redacted>"
+        )
 
     def test_errors_and_tracebacks_lose_every_secret(self, capsys):
         secrets = ["sk-SECRET-1", "hdr-SECRET-2"]
@@ -852,7 +914,7 @@ class TestRunEndToEnd:
         }
         assert run_dd(2, resume=resume, run_config={"buffer_size": 2}) == 1
         err = run_dd.last.err
-        assert "no metadata.json" in err and "Nothing was removed" in err
+        assert "but no metadata.json" in err and "Nothing was removed" in err
         after = {
             p.relative_to(out): p.read_bytes() for p in out.rglob("*") if p.is_file()
         }
@@ -933,3 +995,38 @@ class TestRunEndToEnd:
             .splitlines()[-1]
             .startswith("data-designer: ERROR Data Designer failed:")
         )
+
+    @pytest.mark.parametrize(
+        "folder", ["dropped-columns-parquet-files", "processors-files", "images"]
+    )
+    @pytest.mark.parametrize("resume", ["if_possible", "always"])
+    def test_other_outputs_without_metadata_are_refused(
+        self, run_dd, tmp_path, folder, resume
+    ):
+        """Re-review of #543: with no metadata.json, a previous run's dropped columns,
+        processor outputs and images survived the next run and were registered with
+        it (measured). Only parquet-files/ used to be checked."""
+        out = tmp_path / "out"
+        _touch(out / "builder_config.json")
+        _touch(out / folder / "old" / "leftover.parquet")
+        assert run_dd(2, resume=resume, run_config={"buffer_size": 2}) == 1
+        err = run_dd.last.err
+        assert f"{folder}/" in err and "Nothing was removed" in err
+        assert (out / folder / "old" / "leftover.parquet").exists()
+
+    def test_restart_clears_other_outputs_without_metadata(self, run_dd, tmp_path):
+        out = tmp_path / "out"
+        _touch(out / "builder_config.json")
+        _touch(out / "dropped-columns-parquet-files" / "leftover.parquet")
+        _touch(out / "notes.txt")
+        assert (
+            run_dd(2, resume="restart", run_config={"buffer_size": 2}) == 0
+        ), run_dd.last.err
+        assert not (out / "dropped-columns-parquet-files" / "leftover.parquet").exists()
+        assert (out / "notes.txt").exists(), "a user file was removed"
+
+    def test_a_retry_after_an_early_interruption_still_works(self, run_dd, tmp_path):
+        out = tmp_path / "out"
+        _touch(out / "builder_config.json")
+        _touch(out / "tmp-partial-parquet-files" / "batch.parquet")
+        assert run_dd(2, run_config={"buffer_size": 2}) == 0, run_dd.last.err

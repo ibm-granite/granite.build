@@ -147,7 +147,17 @@ environment_configs:
             # failed to render with a Jinja traceback (review of #543). dd_run.py turns
             # dates back into ISO strings. Carries no secret — providers name
             # environment variables, not values.
-            GB_DD_SPEC_B64: '{{ {"config": config.data_designer_config.config, "model_providers": config.data_designer_config.model_providers, "run_config": config.data_designer_config.run_config, "local_model": config.data_designer_config.local_model} | to_yaml | b64encode }}'
+            #
+            # gbserver's to_yaml RETURNS "Error: ..." instead of raising, and writes a
+            # value plain YAML can't hold with a !!python/ tag that yaml.safe_load on
+            # the node rejects. Either would only fail after cluster setup, with the
+            # cause lost (re-review of #543), so both fail the render here instead.
+            GB_DD_SPEC_B64: >-
+              {%- set dd_spec = {"config": config.data_designer_config.config, "model_providers": config.data_designer_config.model_providers, "run_config": config.data_designer_config.run_config, "local_model": config.data_designer_config.local_model} | to_yaml -%}
+              {%- if dd_spec.startswith("Error:") or "!!python/" in dd_spec -%}
+              {{ raise_error("data-designer: data_designer_config (config, model_providers, run_config, local_model) must hold only strings, numbers, booleans, dates, lists and mappings; to_yaml could not encode it plainly: " ~ dd_spec[:300]) }}
+              {%- endif -%}
+              {{ dd_spec | b64encode }}
           # setup runs ONCE at cluster bring-up. It guards first, so an invalid build is
           # refused before the install.
           setup: |

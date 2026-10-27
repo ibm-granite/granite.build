@@ -218,13 +218,20 @@ refused up front too.
 `builder_config.json` beside it), the run is refused and nothing is removed. Give the step
 an `output_path` of its own.
 
-**Row groups without a `metadata.json` are never mixed in.** When `parquet-files/` holds
-finished row groups but `metadata.json` is gone, they can't be resumed, and Data
-Designer would write the new rows beside them, so the dataset would combine two runs.
-The step refuses that before generating and removes nothing. `resume: restart` clears
-them, but only when the `builder_config.json` Data Designer writes is there too. A run
-interrupted before its first row group leaves only `tmp-partial-parquet-files/`, which
-Data Designer discards by itself, so a plain retry still works.
+**Output without a `metadata.json` is never mixed in.** When `output_path` holds Data
+Designer output (row groups in `parquet-files/`, dropped columns, processor outputs,
+images, scheduler events or an export file) but `metadata.json` is gone, it can't be
+resumed, and Data Designer would write the new run beside it, so the dataset would
+combine two runs. The step refuses that before generating and removes nothing.
+`resume: restart` clears it, but only when the `builder_config.json` Data Designer writes
+is there too. A run interrupted before its first row group leaves only
+`tmp-partial-parquet-files/` and `builder_config.json`, which Data Designer discards or
+rewrites by itself, so a plain retry still works.
+
+**A config the build can't encode plainly fails the render.** The step passes its config
+to the node as YAML. A value YAML can only write with a Python-specific tag (a tuple, a
+`Decimal`, a custom object) fails the target as it renders, naming the field, rather than
+later on the node.
 
 The fingerprint ignores `max_parallel_requests`, `timeout`, `skip_health_check` and
 profilers, so you can retune concurrency and still resume. **Changing `buffer_size`
