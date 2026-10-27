@@ -27,11 +27,13 @@ import pathlib
 import pytest
 import yaml
 from _fmtune_helpers import (
+    _clear_output,
     _flag,
     _git_repo,
     _git_spy,
     _record,
     _run,
+    _staged_as,
 )
 
 
@@ -46,7 +48,7 @@ def test_success_passes_the_core_flags_and_prints_one_marker(env):
     assert _flag(argv, "--tuning_algo") == "lora"
     assert _flag(argv, "--run_name") == "run1"
     assert _flag(argv, "--output_model_name") == "run1"
-    assert _flag(argv, "--output_dir") == env["FMTUNE_OUTPUT_DIR"]
+    assert _staged_as(argv, env["FMTUNE_OUTPUT_DIR"])
     for f in ("--model_at_root", "--cleanup", "--save_history"):
         assert f in argv
     for absent in ("--no_autotune", "--rl_algo", "--autotunex_server_url", "--job_id"):
@@ -367,9 +369,15 @@ def test_multi_line_extra_args_keep_every_word(env):
 
 
 def test_whitespace_only_extra_args_add_nothing(env):
+    def argv_without_staging():  # the staging dir's name is random per run
+        argv = _record(env)["argv"]
+        del argv[argv.index("--output_dir") + 1]
+        return argv
+
     assert _run(env).returncode == 0
-    plain = _record(env)["argv"]
+    plain = argv_without_staging()
     env["FMTUNE_EXTRA_ARGS"] = "  \n "
+    _clear_output(env)
     proc = _run(env)
     assert proc.returncode == 0, proc.stderr
-    assert _record(env)["argv"] == plain
+    assert argv_without_staging() == plain

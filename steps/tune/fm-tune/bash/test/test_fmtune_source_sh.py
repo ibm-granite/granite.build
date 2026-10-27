@@ -25,6 +25,7 @@ import subprocess
 import pytest
 from _fmtune_helpers import (
     _SCRIPT,
+    _clear_output,
     _clone_lock,
     _commit,
     _git,
@@ -49,6 +50,7 @@ def test_git_source_is_cloned_and_cached(env, tmp_path):
     assert len(clones) == 1
     trees = list(cache.glob("tree-*"))
     assert len(trees) == 1
+    _clear_output(env)
     second = _run(env)  # second run reuses the clone, and the tree: same commit
     assert second.returncode == 0, second.stderr
     assert second.stdout.count("[fm-tune] cloning") == 0
@@ -63,6 +65,7 @@ def test_cached_clone_is_updated_to_the_current_ref(env, tmp_path):
     (repo / "sub" / "fm-tune" / "NEW").write_text("2\n")
     _git("add", ".", cwd=repo)
     _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "y", cwd=repo)
+    _clear_output(env)
     second = _run(env)
     assert second.returncode == 0, second.stderr
     assert "[fm-tune] updating" in second.stdout
@@ -97,6 +100,7 @@ def test_a_later_commit_never_touches_an_earlier_runs_tree(env, tmp_path):
     }
     (repo / "sub" / "fm-tune" / "GONE").unlink()
     _commit(repo, "drop GONE")
+    _clear_output(env)
     second = _run(env)
     assert second.returncode == 0, second.stderr
     tree2 = pathlib.Path(_record(env)["cwd"])
@@ -148,6 +152,7 @@ def test_an_annotated_tag_resolves_to_one_tree_and_its_commit(env, tmp_path):
         text=True,
     ).stdout.strip()
     for _ in range(2):
+        _clear_output(env)
         proc = _run(env)
         assert proc.returncode == 0, proc.stderr
         assert f"@v1 = {commit}" in proc.stdout
@@ -184,6 +189,7 @@ def test_a_warm_sha_run_needs_no_git_and_no_remote(env, tmp_path):
     pathlib.Path(env["STUB_RECORD"]).unlink()
     shutil.rmtree(repo)  # the remote is gone
     spy = _git_spy(env, tmp_path)
+    _clear_output(env)
     proc = _run(env)
     assert proc.returncode == 0, proc.stderr
     assert not spy.exists()  # git was never called
@@ -197,6 +203,7 @@ def test_one_commit_by_branch_and_by_sha_shares_one_tree(env, tmp_path):
     sha = _head(repo)
     for ref in ("rel", sha):
         env["FMTUNE_SOURCE_REF"] = ref
+        _clear_output(env)
         proc = _run(env)
         assert proc.returncode == 0, proc.stderr
         assert f"@{ref} = {sha}" in proc.stdout
@@ -229,7 +236,10 @@ exec "{real_tar}" "$@"
     procs = []
     for ref in ("rel", sha):
         run_env = dict(
-            env, FMTUNE_SOURCE_REF=ref, STUB_RECORD=str(tmp_path / f"rec-{ref}")
+            env,
+            FMTUNE_SOURCE_REF=ref,
+            STUB_RECORD=str(tmp_path / f"rec-{ref}"),
+            FMTUNE_OUTPUT_DIR=str(tmp_path / f"out-{ref}"),  # one model each
         )
         procs.append(
             subprocess.Popen(
@@ -263,6 +273,7 @@ def test_an_uppercase_sha_is_lowercased_to_the_same_tree_and_cache_key(env, tmp_
     assert [m.name for m in cache.glob("src-*")] == [
         _clone_lock(env).name[: -len(".lock")]
     ]
+    _clear_output(env)
     assert _run(env).returncode == 0
     assert [t.name for t in cache.glob("tree-*")] == [f"tree-{sha}"]
 
@@ -365,6 +376,7 @@ def test_a_sha_whose_tree_was_deleted_is_checked_on_the_warm_mirror(env, tmp_pat
     env["FMTUNE_SOURCE_REF"] = tag
     mirror.rename(_clone_lock(env).with_suffix(""))
     pathlib.Path(env["STUB_RECORD"]).unlink()
+    _clear_output(env)
     proc = _run(env)
     assert proc.returncode == 2, proc.stderr
     assert "is not a commit" in proc.stderr

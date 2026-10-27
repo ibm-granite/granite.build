@@ -6,6 +6,16 @@ The step supports SFT, LoRA-family tuning and RL algorithms (DPO, KTO, PPO, GRPO
 with or without fm-tune's hyperparameter autotuning. The tuned model (or adapter) is
 registered as the `model` output.
 
+The step works on its own: with no `autotunex.server_url` it passes no AutoTuneX flags, and
+with `autotune: false` it is a plain single tuning run (see "Example: bash"). Reporting to
+AutoTuneX is optional (see "Integrating with AutoTuneX").
+
+The step runs fm-tune and nothing else. It needs fm-tune's source layout: `main.py` and
+its command line, `autotune/configs/<preset>`, and the `core`, `full` and `mlx` extras in
+`pyproject.toml`. A fork of fm-tune works: `source.repo` (with `source.subdir` naming
+fm-tune's directory in it) or `source.path` (fm-tune's directory itself; `source.subdir` is
+not applied). A different trainer does not.
+
 What a run does:
 
 1. Validates the config. Config-only errors fail the step before it is launched or
@@ -29,19 +39,24 @@ What a run does:
 
 Extra inputs may be bound (`allow_unknown: true`) so a recipe can order targets.
 
-The output directory must be new, empty, or a previous model output (`config.json`,
-`adapter_config.json`, `model.safetensors` or `adapters.safetensors` at its root), and must not
-be the `base_model` or `dataset` input directory. Anything else fails the run before any clone
-or install, because on success `--model_at_root` deletes every other entry in it. A run
-marks the directory with `.fm-tune-incomplete` before training and removes the mark on
-success, so the next run into a marked directory (a SkyPilot retry, or a rerun after a
-failed or killed run) clears it first: its trial and checkpoint directories, and any
-previous model in it. For the same reason fm-tune's `--resume_from_checkpoint` cannot be
-used through `extra_args`.
+The output directory must be new or empty, and must not be the `base_model` or `dataset`
+input directory; anything else fails the run before any clone or install. The step never
+deletes anything in it: fm-tune trains in a staging directory beside it,
+`<output dir>.partial.<random>` (its `--model_at_root` cleanup runs there), and on success
+the step renames that onto the output directory. The rename is atomic and succeeds only
+while the output directory is missing or empty, so if another build wrote it meanwhile the
+run fails and keeps its model in the staging directory, named in the error. A failed run
+leaves the output directory as it was and keeps its staging directory (trials,
+checkpoints, logs) for debugging, so a SkyPilot retry into the same output directory just
+starts again. Nothing removes old `*.partial.*` directories: delete them once no build is
+using them. Write each run to a new directory: one that already holds a model, an earlier
+output of this step included, is refused. fm-tune's `--resume_from_checkpoint` cannot be
+used through `extra_args`, since each run trains in a new staging directory.
 
 Relative `output_path` and `source.path` values (and relative input paths) are resolved
 against the directory the step starts in (the run workdir on SkyPilot) before `main.py` runs,
-and the `model` output is registered with the absolute path. Trailing `/`s are dropped.
+and the `model` output is registered with the absolute path. Trailing `/`s and `.`
+components are dropped from the output path; a `..` component in it is refused.
 
 ## Config: `fm_tune_config`
 
@@ -61,13 +76,13 @@ subtraction in Jinja.
 | `tuning_algo` | `lora` | `--tuning_algo`, omitted when empty (fm-tune's default is `none`). It and `rl_algo` cannot both be empty or `none` |
 | `rl_algo` | `""` | `--rl_algo`, omitted when empty |
 | `run_name` | `fm-tune` | `--run_name` and `--output_model_name`. Letters, digits, `.`, `_` and `-` only |
-| `autotune` | `true` | `false` adds `--no_autotune` |
+| `autotune` | `true` | `true` or `false` (any case); `false` adds `--no_autotune`. Anything else fails the step |
 | `backend` | `""` | `--backend`, omitted when empty (fm-tune's default, `torch`) |
 | `seed` | `""` | `--seed`, omitted when empty (fm-tune's default, 42) |
 | `config_preset` | `autotune.yaml` | Bundled `autotune/configs/<preset>`, used when `hpo_config` is empty |
-| `hpo_config` | `{}` | Inline HPO config (AutoTuneX's `config_data`), written to a file for `--config_file` |
-| `config_name` | empty | Names the inline `hpo_config` file (`<config_name>.yaml`), which is the config's name in AutoTuneX; empty = `fm_tune_hpo`. Ignored with a preset, which keeps its file name. Letters, digits, `.`, `_` and `-` only |
-| `output_path` | `""` | SkyPilot only. `""` means `./model` in the run workdir. Must not contain `"`, `\` or a control character, or end in a space. Ignored on bash |
+| `hpo_config` | `{}` | Inline HPO config: fm-tune's search space and training settings, written to a YAML file and passed as `--config_file`. Empty uses `config_preset`. (AutoTuneX calls it `config_data`.) |
+| `config_name` | empty | File name of the inline `hpo_config` (`<config_name>.yaml`); empty = `fm_tune_hpo`. Ignored with a preset, which keeps its file name. Letters, digits, `.`, `_` and `-` only. When reporting to AutoTuneX, it is also the config's name there |
+| `output_path` | `""` | SkyPilot only. `""` means `./model` in the run workdir. Must not contain `"`, `\` or a control character, end in a space, or have a `..` component. Ignored on bash |
 | `extra_args` | `""` | Appended to the `main.py` command line, split on whitespace and newlines (no quoting) |
 | `python` | `""` | Interpreter that creates the venv. Empty means the injected python (bash) or `python3` (SkyPilot). Must be 3.10 or newer |
 | `autotunex.server_url` | `""` | `--autotunex_server_url`, omitted when empty |
@@ -78,7 +93,7 @@ subtraction in Jinja.
 These fail the step before it is launched or provisioned, with an `fm-tune: ...` message
 naming the key. gbserver runs them when it sets the step up to run, once the step's inputs
 are bound, so in a multi-target build an fm-tune target fails after the targets it depends
-on have run, not at submit. `fmtune_run.sh` repeats the first seven for a direct run (it
+on have run, not at submit. `fmtune_run.sh` repeats the first nine for a direct run (it
 defaults an empty `run_name` to `fm-tune` instead of failing):
 
 - `train_file` or `validation_file` empty, absolute, or with a `..` component;
@@ -87,6 +102,7 @@ defaults an empty `run_name` to `fm-tune` instead of failing):
 - `run_name` empty or outside `[A-Za-z0-9._-]`;
 - `config_name` outside `[A-Za-z0-9._-]`;
 - `source.repo` or `source.ref` starting with `-`;
+- `autotune` other than `true` or `false` (any case; empty or null means `true`);
 - `tuning_algo` and `rl_algo` both empty or `none` (fm-tune's pipeline refuses that, but only
   after the clone and venv build); an online `rl_algo` (`ppo`, `grpo`, `dapo`) needs no
   `tuning_algo`;
@@ -258,6 +274,9 @@ runs race on the cache and the output directory.
   (`[fm-tune] updating ...`), so a warm-cache run still needs network access to the repo.
   If the fetch fails, the run stops.
 - Every commit trained gets its own immutable `tree-<sha>` and its own `venv-<key>`. The
+  venv key also covers the interpreter (its real path, the machine type and the OS), so a
+  Python upgrade or a node of another type builds a new venv instead of reusing one whose
+  base interpreter is gone or wrong. The
   venv for `extra: core` is large (1.5 GB measured on the arm64 CPU Slurm nodes). Nothing
   prunes them. Pin `source.ref` to a tag so builds share one tree and one venv.
 - To clean up, delete `tree-*`, `venv-*`, `src-*` (the clone mirrors), any stale `*.lock`
@@ -269,8 +288,10 @@ runs race on the cache and the output directory.
   containers can share while each has its own pids, so a live owner can look gone. A lock is
   never taken over automatically. A run that finds one held waits up to
   `FMTUNE_LOCK_TIMEOUT` seconds (default 1800), then fails. If the owner ran on the same
-  host and is no longer running, it fails at once instead of waiting. Either message names
-  the lock directory and gives the exact `rm -rf '<dir>'` to clear it.
+  host and is no longer running, it fails at once instead of waiting. A timeout does not mean
+  the owner is gone: a venv build (`extra: full` on a slow shared filesystem) can outlast it,
+  so raise `FMTUNE_LOCK_TIMEOUT` and re-run first. Either message names the lock directory
+  and gives the exact `rm -rf '<dir>'` to clear it once no fm-tune build is running.
 - A stale lock is left by a build killed hard (`kill -9`, the OOM killer, a lost node) during
   the clone, the tree extraction or the venv build, or interrupted while taking the lock. To
   clear it, remove that one `*.lock` directory, and only once no fm-tune build that might hold
@@ -285,7 +306,7 @@ do this and also use a 1-epoch config.
 
 ## Integrating with AutoTuneX
 
-AutoTuneX's `LaunchContext` maps onto `fm_tune_config` like this, so AutoTuneX can emit
+Optional: skip this section for a plain tuning run. AutoTuneX's `LaunchContext` maps onto `fm_tune_config` like this, so AutoTuneX can emit
 this step's build shape:
 
 | `LaunchContext` field | `fm_tune_config` key |
@@ -309,7 +330,7 @@ this step's build shape:
   A list or mapping for any key other than `hpo_config` fails the step before it is
   launched; write it as a string.
 - `LOG_PATH` is set by the step, unless already set, to `<output dir>.logs`: a sibling of the
-  output directory, so `--model_at_root` (which clears the output directory on success)
+  output directory, so `--model_at_root` (which clears the staging directory on success)
   keeps the logs, and builds whose output directories share a parent keep theirs apart.
   AutoTuneX need not export it.
 - AutoTuneX's `CUDA_HOME` export goes in the launcher env: `bash.env` on bash,

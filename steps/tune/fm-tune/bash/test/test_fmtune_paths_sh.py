@@ -20,17 +20,20 @@ needs network access for pip. Mode 1 only.
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 
 import pytest
 from _fmtune_helpers import (
     _SCRIPT,
+    _clear_output,
     _flag,
     _git_repo,
     _git_spy,
     _record,
     _run,
+    _staged_as,
 )
 
 
@@ -47,10 +50,7 @@ def test_bash_builtins_default_output_cache_and_python(env, tmp_path):
     env["LLMB_BASH_PYTHON_DIR"] = os.path.dirname(sys.executable)
     proc = _run(env)
     assert proc.returncode == 0, proc.stderr
-    assert (
-        _flag(_record(env)["argv"], "--output_dir")
-        == f"{env['LLMB_BASH_OUTPUT_DIR']}/model"
-    )
+    assert _staged_as(_record(env)["argv"], f"{env['LLMB_BASH_OUTPUT_DIR']}/model")
     assert (tmp_path / "gbhome" / ".fm-tune-cache").is_dir()
     assert not (out.parents[1] / ".fm-tune-cache").exists()
 
@@ -176,6 +176,7 @@ def test_a_symlinked_cache_dir_of_ones_own_is_followed(env, tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert link.is_symlink() and list((tmp_path / "big").glob("tree-*"))
     (tmp_path / "big").chmod(0o777)
+    _clear_output(env)
     proc = _run(env)
     assert proc.returncode == 2
     assert f"fm-tune: cache dir {link} is writable by other users" in proc.stderr
@@ -238,10 +239,7 @@ def test_an_unrelated_non_empty_output_dir_dies_before_any_clone(env, tmp_path):
     (out / "precious.txt").write_text("keep me\n")
     proc = _run(env)
     assert proc.returncode != 0
-    assert (
-        f"fm-tune: output dir {out} is not empty and is not a previous model output"
-        in proc.stderr
-    )
+    assert f"fm-tune: output dir {out} is not empty;" in proc.stderr
     assert "new or empty directory" in proc.stderr
     assert not git_ran.exists()
     assert not pathlib.Path(env["FMTUNE_CACHE_DIR"]).exists()  # no clone, tree or venv
@@ -265,54 +263,131 @@ def test_an_existing_empty_output_dir_is_accepted(env):
     assert proc.returncode == 0, proc.stderr
 
 
-# What a successful run leaves at the output dir's root after --model_at_root:
-# config.json (HF full fine-tune, verl), adapter_config.json (PEFT, MLX LoRA),
-# model.safetensors (MLX full fine-tune, which writes no config.json),
-# adapters.safetensors (MLX LoRA, whose adapter_config.json write is best-effort).
+# What a successful run leaves at the output dir's root after --model_at_root.
+# Any model dir has one of these (a downloaded HF model has config.json), so none
+# proves the dir is this step's to clear.
 @pytest.mark.parametrize(
     "marker",
     ["config.json", "adapter_config.json", "model.safetensors", "adapters.safetensors"],
 )
-def test_a_previous_model_output_is_accepted(env, marker):
+def test_a_dir_holding_a_model_is_refused_and_kept(env, marker):
     out = pathlib.Path(env["FMTUNE_OUTPUT_DIR"])
     out.mkdir()
     (out / marker).write_text("{}")
     (out / "tokenizer_config.json").write_text("{}")
     proc = _run(env)
-    assert proc.returncode == 0, proc.stderr
+    assert proc.returncode == 2
+    assert f"fm-tune: output dir {out} is not empty;" in proc.stderr
+    assert sorted(p.name for p in out.iterdir()) == [marker, "tokenizer_config.json"]
+    assert not pathlib.Path(env["STUB_RECORD"]).exists()
 
 
-def test_a_failed_runs_output_is_cleared_so_a_retry_succeeds(env):
-    """SkyPilot retries a failed run into the same dir; its debris holds no model."""
+def test_a_failed_run_leaves_the_output_dir_empty_so_a_retry_succeeds(env):
+    """SkyPilot retries a failed run into the same output dir. The failed attempt
+    trained in its own staging dir, which is kept (named in the error) for debugging."""
     out = pathlib.Path(env["FMTUNE_OUTPUT_DIR"])
     env["STUB_EXIT"] = "1"
-    assert _run(env).returncode == 1
-    assert (out / ".fm-tune-incomplete").is_file()
-    (out / "ray_results").mkdir()  # what a failed fm-tune leaves behind
+    failed = _run(env)
+    assert failed.returncode == 1
+    stage = _flag(_record(env)["argv"], "--output_dir")
+    assert f"its files are kept in {stage}" in failed.stderr
+    assert pathlib.Path(stage).is_dir() and not out.exists()
     del env["STUB_EXIT"]
     proc = _run(env)
     assert proc.returncode == 0, proc.stderr
-    assert "clearing a failed earlier run's output" in proc.stdout
+    assert sorted(p.name for p in out.iterdir()) == ["adapter_config.json"]
+    assert pathlib.Path(stage).is_dir()  # the failed attempt's files, untouched
+
+
+def test_a_live_run_sharing_the_output_dir_loses_nothing(env, tmp_path):
+    """Two targets of one build share GB_BUILD_ID. While the first trains, a second
+    run into the same output dir must not delete the first's checkpoints."""
+    out = pathlib.Path(env["FMTUNE_OUTPUT_DIR"])
+    env["GB_BUILD_ID"] = "b-1"
+    second = dict(env, STUB_RECORD=str(tmp_path / "rec2.json"))
+    hook = tmp_path / "hook.py"  # what happens while the first run "trains"
+    hook.write_text(
+        "import json, os, pathlib, subprocess, sys\n"
+        "stage = pathlib.Path(sys.argv[1])\n"
+        "(stage / 'checkpoint-1').mkdir()\n"
+        f"env = json.loads({json.dumps(json.dumps(second))})\n"
+        f"subprocess.run(['bash', {str(_SCRIPT)!r}], env=env, check=True)\n"
+    )
+    env["STUB_HOOK"] = f'"{sys.executable}" "{hook}" "$STUB_STAGE"'
+    env["STUB_EXIT"] = "1"  # then the first run fails
+    proc = _run(env)
+    assert proc.returncode == 1, proc.stderr
+    stage = pathlib.Path(_flag(_record(env)["argv"], "--output_dir"))
+    assert (stage / "checkpoint-1").is_dir()  # survived the second run
     assert sorted(p.name for p in out.iterdir()) == ["adapter_config.json"]
 
 
-def test_an_unmarked_non_empty_output_dir_is_still_refused(env):
-    """Only a dir this step marked is cleared: the mark is removed on success."""
+def test_a_model_published_while_a_run_trains_is_kept(env):
+    """A passes the empty check, then B publishes its model before A finishes:
+    A's publish must fail without touching B's model, and keep A's own."""
+    out = pathlib.Path(env["FMTUNE_OUTPUT_DIR"])
+    env["STUB_HOOK"] = f"mkdir -p '{out}' && echo B > '{out}/config.json'"
+    proc = _run(env)
+    assert proc.returncode == 2
+    stage = _flag(_record(env)["argv"], "--output_dir")
+    assert f"cannot move the model into output dir {out}" in proc.stderr
+    assert f"the model is kept in {stage}" in proc.stderr
+    assert (out / "config.json").read_text() == "B\n"
+    assert sorted(p.name for p in out.iterdir()) == ["config.json"]
+    assert (pathlib.Path(stage) / "adapter_config.json").is_file()
+    assert "GB_ARTIFACT_ID:" not in proc.stdout
+
+
+@pytest.mark.parametrize("which", ["FMTUNE_BASE_MODEL_DIR", "FMTUNE_DATASET_DIR"])
+def test_an_input_inside_the_output_dir_is_never_deleted(env, tmp_path, which):
+    """Nothing in the output dir is ever cleared, so an input nested in it is safe,
+    even beside a retry mark naming this build (which an earlier version cleared)."""
+    out = pathlib.Path(env["FMTUNE_OUTPUT_DIR"])
+    env["GB_BUILD_ID"] = "b-1"
+    out.mkdir()
+    (out / ".fm-tune-incomplete").write_text("b-1\n")
+    inp = out / "bound-input"
+    if which == "FMTUNE_DATASET_DIR":
+        shutil.copytree(env["FMTUNE_DATASET_DIR"], inp)
+    else:
+        inp.mkdir(parents=True)
+        (inp / "config.json").write_text("{}")
+    env[which] = str(inp)
+    before = sorted(p.name for p in inp.iterdir())
+    proc = _run(env)
+    assert proc.returncode == 2
+    assert f"fm-tune: output dir {out} is not empty;" in proc.stderr
+    assert sorted(p.name for p in inp.iterdir()) == before
+
+
+def test_a_symlinked_output_dir_is_published_through_its_target(env, tmp_path):
+    out = pathlib.Path(env["FMTUNE_OUTPUT_DIR"])
+    real = tmp_path / "real-out"
+    real.mkdir()
+    out.symlink_to(real)
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    assert out.is_symlink()
+    assert sorted(p.name for p in real.iterdir()) == ["adapter_config.json"]
+    assert f"GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:{out}" in proc.stdout.splitlines()
+
+
+def test_a_non_empty_output_dir_is_refused_after_a_success(env):
+    """A finished model is never overwritten by the next run into the same dir."""
     out = pathlib.Path(env["FMTUNE_OUTPUT_DIR"])
     assert _run(env).returncode == 0
-    assert not (out / ".fm-tune-incomplete").exists()
-    (out / "adapter_config.json").unlink()
     (out / "precious.txt").write_text("keep me\n")
     proc = _run(env)
     assert proc.returncode == 2
-    assert "is not empty and is not a previous model output" in proc.stderr
+    assert "is not empty;" in proc.stderr
     assert (out / "precious.txt").read_text() == "keep me\n"
+    assert (out / "adapter_config.json").is_file()
 
 
 @pytest.mark.parametrize("which", ["FMTUNE_BASE_MODEL_DIR", "FMTUNE_DATASET_DIR"])
 def test_an_output_dir_that_is_an_input_dies_before_any_clone(env, tmp_path, which):
-    """A base model has config.json at its root, so it passes the model-output check;
-    promoting into it would then delete the base weights (or the dataset)."""
+    """Publishing onto an input would put the model in the base weights' (or the
+    dataset's) dir; refuse it before any clone or install."""
     _git_repo(env, tmp_path)
     git_ran = _git_spy(env, tmp_path)
     if which == "FMTUNE_BASE_MODEL_DIR":
@@ -373,7 +448,7 @@ def test_relative_paths_are_made_absolute_against_the_start_dir(env, tmp_path):
     assert proc.returncode == 0, proc.stderr
     rec = _record(env)
     argv = rec["argv"]
-    assert _flag(argv, "--output_dir") == f"{tmp_path}/out"
+    assert _staged_as(argv, f"{tmp_path}/out")
     assert _flag(argv, "--train_file") == f"{tmp_path}/data dir/d_train.jsonl"
     assert _flag(argv, "--validation_file") == f"{tmp_path}/data dir/d_validation.jsonl"
     assert _flag(argv, "--model_name_or_path") == f"{tmp_path}/bm"
@@ -423,7 +498,7 @@ def test_every_trailing_slash_on_the_output_dir_is_stripped(env, slashes):
     env["FMTUNE_OUTPUT_DIR"] = out + slashes
     proc = _run(env)
     assert proc.returncode == 0, proc.stderr
-    assert _flag(_record(env)["argv"], "--output_dir") == out
+    assert _staged_as(_record(env)["argv"], out)
     assert f"GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:{out}" in proc.stdout.splitlines()
 
 
@@ -433,10 +508,7 @@ def test_a_root_output_dir_is_not_stripped_to_empty_and_is_refused(env, tmp_path
     env["FMTUNE_OUTPUT_DIR"] = "/"
     proc = _run(env)
     assert proc.returncode != 0
-    assert (
-        "fm-tune: output dir / is not empty and is not a previous model output"
-        in proc.stderr
-    )
+    assert "fm-tune: output dir / is not empty;" in proc.stderr
     assert not git_ran.exists()
 
 
@@ -473,6 +545,81 @@ def test_venv_is_built_once_and_reused(env):
     venvs = list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("venv-*/.installed"))
     assert len(venvs) == 1
     stamp = venvs[0].stat().st_mtime_ns
+    _clear_output(env)
     assert _run(env).returncode == 0, "second run"
     assert venvs[0].stat().st_mtime_ns == stamp
     assert not list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("*.lock"))
+
+
+@pytest.mark.slow
+def test_a_venv_from_another_interpreter_is_not_reused(env, tmp_path):
+    """A venv links to its base python: one built by another interpreter (a patch
+    upgrade at a new path, another node type) would run a deleted or wrong python."""
+    root = pathlib.Path(env["FMTUNE_SOURCE_PATH"])
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='autotune'\nversion='0'\n[project.optional-dependencies]\ncore=[]\n"
+        "[build-system]\nrequires=['setuptools']\nbuild-backend='setuptools.build_meta'\n"
+        "[tool.setuptools]\npy-modules=[]\n"
+    )
+    env.pop("FMTUNE_SKIP_INSTALL")
+    assert _run(env).returncode == 0, "first run"
+    # The same python version under another real path, as after an upgrade.
+    # A copied binary still finds its stdlib through its compiled-in prefix.
+    real = pathlib.Path(os.path.realpath(sys.executable))
+    other = tmp_path / "other-python" / real.name
+    other.parent.mkdir()
+    shutil.copy2(real, other)
+    env["FMTUNE_PYTHON"] = str(other)
+    _clear_output(env)
+    assert _run(env).returncode == 0, "second run"
+    venvs = list(pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("venv-*/.installed"))
+    assert len(venvs) == 2
+
+
+@pytest.mark.slow
+def test_a_cached_venv_whose_python_no_longer_runs_is_rebuilt(env):
+    """Same interpreter path, changed in place: the key matches, the venv is dead."""
+    root = pathlib.Path(env["FMTUNE_SOURCE_PATH"])
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='autotune'\nversion='0'\n[project.optional-dependencies]\ncore=[]\n"
+        "[build-system]\nrequires=['setuptools']\nbuild-backend='setuptools.build_meta'\n"
+        "[tool.setuptools]\npy-modules=[]\n"
+    )
+    env.pop("FMTUNE_SKIP_INSTALL")
+    assert _run(env).returncode == 0, "first run"
+    (venv,) = pathlib.Path(env["FMTUNE_CACHE_DIR"]).glob("venv-*")
+    py = venv / "bin" / "python"
+    py.unlink()
+    py.write_text("#!/bin/sh\nexit 127\n")  # a venv python whose base is gone
+    py.chmod(0o755)
+    _clear_output(env)
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    assert "building venv" in proc.stdout
+
+
+@pytest.mark.parametrize("spelling", ["{out}/.", "{out}/./", "{out}/./.", "{d}/./out"])
+def test_dot_components_in_the_output_dir_are_dropped(env, tmp_path, spelling):
+    """Staging is <output dir>.partial.*: for '<out>/.' that was inside <out>, and
+    the publish rename then failed after training."""
+    out = env["FMTUNE_OUTPUT_DIR"]
+    env["FMTUNE_OUTPUT_DIR"] = spelling.format(out=out, d=tmp_path)
+    proc = _run(env)
+    assert proc.returncode == 0, proc.stderr
+    assert _staged_as(_record(env)["argv"], out)
+    assert f"GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:{out}" in proc.stdout.splitlines()
+    assert sorted(p.name for p in pathlib.Path(out).iterdir()) == [
+        "adapter_config.json"
+    ]
+
+
+@pytest.mark.parametrize("spelling", ["{out}/..", "{d}/x/../out"])
+def test_a_dot_dot_in_the_output_dir_dies_before_any_clone(env, tmp_path, spelling):
+    """Not resolved: through a symlinked parent, a/link/../out is not a/out."""
+    _git_repo(env, tmp_path)
+    git_ran = _git_spy(env, tmp_path)
+    env["FMTUNE_OUTPUT_DIR"] = spelling.format(out=env["FMTUNE_OUTPUT_DIR"], d=tmp_path)
+    proc = _run(env)
+    assert proc.returncode == 2
+    assert "fm-tune: output dir must not contain a '..' component" in proc.stderr
+    assert not git_ran.exists()

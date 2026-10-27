@@ -28,6 +28,7 @@ import time
 import pytest
 from _fmtune_helpers import (
     _SCRIPT,
+    _clear_output,
     _clone_lock,
     _git_repo,
     _run,
@@ -127,8 +128,9 @@ def _assert_timed_out(env, proc, took, lock, owner_text, contents):
     assert proc.returncode == 2
     assert f"fm-tune: lock {lock} is still held after " in proc.stderr
     assert (
-        f"(owner: {owner_text}); remove it with: rm -rf {_sq(lock)} "
-        "if no fm-tune build is running"
+        f"(owner: {owner_text}); the owner may still be working (a venv build can "
+        "take longer): raise FMTUNE_LOCK_TIMEOUT and re-run. Only if no fm-tune build "
+        f"is running, remove it with: rm -rf {_sq(lock)}"
     ) in proc.stderr
     assert sorted(p.name for p in lock.iterdir()) == contents
     assert not pathlib.Path(env["STUB_RECORD"]).exists()
@@ -398,6 +400,7 @@ def test_a_lock_dir_that_cannot_be_renamed_is_still_released(env, tmp_path):
     first = _run(env)
     assert first.returncode == 0, first.stderr
     assert not list(cache.glob("*.lock*"))
+    _clear_output(env)
     second = _run(env)
     assert second.returncode == 0, second.stderr
 

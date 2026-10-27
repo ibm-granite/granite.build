@@ -51,7 +51,7 @@ lock() {
       die "lock $1 is held by $owner, which is no longer running; remove it with: rm -rf $(sq "$1") if no fm-tune build is running"
     fi
     if [ $((SECONDS - start)) -ge "$FMTUNE_LOCK_TIMEOUT" ]; then
-      die "lock $1 is still held after ${FMTUNE_LOCK_TIMEOUT}s (owner: ${owner:-none recorded}); remove it with: rm -rf $(sq "$1") if no fm-tune build is running"
+      die "lock $1 is still held after ${FMTUNE_LOCK_TIMEOUT}s (owner: ${owner:-none recorded}); the owner may still be working (a venv build can take longer): raise FMTUNE_LOCK_TIMEOUT and re-run. Only if no fm-tune build is running, remove it with: rm -rf $(sq "$1")"
     fi
     log "waiting for lock $1"; sleep 5
   done
@@ -75,7 +75,7 @@ unlock() {  # forget the lock first: a failed or interrupted rm must not unlock 
 # passes them to create_subprocess_exec), so the bash template leaves these three
 # empty and they default here from the LLMB_BASH_* builtins. SkyPilot sets them.
 if [ -z "${FMTUNE_OUTPUT_DIR:-}" ] && [ -n "${LLMB_BASH_OUTPUT_DIR:-}" ]; then
-  FMTUNE_OUTPUT_DIR="$LLMB_BASH_OUTPUT_DIR/model"   # a subdir: --model_at_root clears its output_dir, and job.log lives in LLMB_BASH_OUTPUT_DIR
+  FMTUNE_OUTPUT_DIR="$LLMB_BASH_OUTPUT_DIR/model"   # a subdir: it must be empty to publish into, and job.log lives in LLMB_BASH_OUTPUT_DIR
 fi
 if [ -z "${FMTUNE_CACHE_DIR:-}" ] && [ -n "${LLMB_BASH_OUTPUT_DIR:-}" ]; then
   # The bash output dir is <GB_HOME>/workdir/llm-build-<id>/.../launch-<id>/outputs
@@ -132,9 +132,17 @@ case $FMTUNE_CACHE_DIR in /*) ;; *) FMTUNE_CACHE_DIR="$PWD/$FMTUNE_CACHE_DIR" ;;
 while [ "$FMTUNE_CACHE_DIR" != / ] && [ "${FMTUNE_CACHE_DIR%/}" != "$FMTUNE_CACHE_DIR" ]; do
   FMTUNE_CACHE_DIR="${FMTUNE_CACHE_DIR%/}"
 done
-while [ "$FMTUNE_OUTPUT_DIR" != / ] && [ "${FMTUNE_OUTPUT_DIR%/}" != "$FMTUNE_OUTPUT_DIR" ]; do
-  FMTUNE_OUTPUT_DIR="${FMTUNE_OUTPUT_DIR%/}"
+# Staging is <output dir>.partial.*, which for a path ending in '/.' would land
+# inside the output dir: drop every '.' and empty component (trailing '/'s too).
+# A '..' is refused, not resolved: through a symlinked parent it names another dir.
+case "/$FMTUNE_OUTPUT_DIR/" in */../*)
+  die "output dir must not contain a '..' component: $FMTUNE_OUTPUT_DIR" ;; esac
+rest="${FMTUNE_OUTPUT_DIR#/}/"; norm=""
+while [ -n "$rest" ]; do
+  part="${rest%%/*}"; rest="${rest#*/}"
+  case $part in ''|.) ;; *) norm="$norm/$part" ;; esac
 done
+FMTUNE_OUTPUT_DIR="${norm:-/}"
 case $FMTUNE_DATASET_DIR in /*) ;; *) FMTUNE_DATASET_DIR="$PWD/$FMTUNE_DATASET_DIR" ;; esac
 case $FMTUNE_SOURCE_PATH in ''|/*) ;; *) FMTUNE_SOURCE_PATH="$PWD/$FMTUNE_SOURCE_PATH" ;; esac
 case $FMTUNE_BASE_MODEL_DIR in ''|/*) ;; *) FMTUNE_BASE_MODEL_DIR="$PWD/$FMTUNE_BASE_MODEL_DIR" ;; esac
@@ -164,6 +172,9 @@ case "$FMTUNE_CONFIG_NAME" in
   *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*)
     die "config_name must match ^[A-Za-z0-9._-]+$" ;;
 esac
+# Only these two: --no_autotune is passed for false alone, so a typo would run a sweep.
+case "$FMTUNE_AUTOTUNE" in true|false) ;; *)
+  die "autotune must be true or false, got '$FMTUNE_AUTOTUNE'" ;; esac
 # Both go to git as positional args; a leading '-' would be read as an option.
 case "$FMTUNE_SOURCE_REPO" in -*) die "source.repo must not start with '-'" ;; esac
 case "$FMTUNE_SOURCE_REF" in -*) die "source.ref must not start with '-'" ;; esac
@@ -199,43 +210,28 @@ train="$FMTUNE_DATASET_DIR/$FMTUNE_TRAIN_FILE"
 val="$FMTUNE_DATASET_DIR/$FMTUNE_VALIDATION_FILE"
 [ -e "$train" ] || die "train_file not found: $train"
 [ -e "$val" ] || die "validation_file not found: $val"
-# On success --model_at_root deletes every other entry in the output dir, which is
-# only safe when it holds nothing or a previous model (a file fm-tune's save leaves
-# at the root). Refuse anything else now, not after training.
+# main.py trains in a private staging dir beside the output dir (--model_at_root
+# clears only that), and the model is renamed onto the output dir at the end, which
+# succeeds only while it is missing or empty: nothing in it is ever deleted. These
+# checks fail early, before any clone or install; the rename is the guarantee.
 if [ -L "$FMTUNE_OUTPUT_DIR" ] && [ ! -e "$FMTUNE_OUTPUT_DIR" ]; then
   die "output dir $FMTUNE_OUTPUT_DIR is a dangling symlink"
 fi
 if [ -e "$FMTUNE_OUTPUT_DIR" ] && [ ! -d "$FMTUNE_OUTPUT_DIR" ]; then
   die "output dir $FMTUNE_OUTPUT_DIR exists and is not a directory"
 fi
-entries=""
-if [ -d "$FMTUNE_OUTPUT_DIR" ]; then
-  entries="$(ls -A "$FMTUNE_OUTPUT_DIR")" || die "cannot list output dir $FMTUNE_OUTPUT_DIR"
-fi
-# A run marks the dir as its own before training and unmarks it on success, so a
-# marked dir holds a failed or killed earlier run's output (trials, checkpoints, no
-# model). Clear it: SkyPilot retries a failed run into the same dir.
-incomplete="$FMTUNE_OUTPUT_DIR/.fm-tune-incomplete"
-if [ -n "$entries" ] && [ -f "$incomplete" ]; then
-  log "clearing a failed earlier run's output in $FMTUNE_OUTPUT_DIR"
-  find -H "$FMTUNE_OUTPUT_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + \
-    || die "cannot clear a failed earlier run's output in $FMTUNE_OUTPUT_DIR"
-  entries=""
-fi
-if [ -n "$entries" ] \
-   && [ ! -f "$FMTUNE_OUTPUT_DIR/config.json" ] \
-   && [ ! -f "$FMTUNE_OUTPUT_DIR/adapter_config.json" ] \
-   && [ ! -f "$FMTUNE_OUTPUT_DIR/model.safetensors" ] \
-   && [ ! -f "$FMTUNE_OUTPUT_DIR/adapters.safetensors" ]; then
-  die "output dir $FMTUNE_OUTPUT_DIR is not empty and is not a previous model output" \
-      "(no config.json, adapter_config.json, model.safetensors or adapters.safetensors); point output_path at a new or empty directory"
-fi
-# A bound base model has config.json at its root, so it passes the check above.
 if [ -n "$FMTUNE_BASE_MODEL_DIR" ] && [ "$FMTUNE_OUTPUT_DIR" -ef "$FMTUNE_BASE_MODEL_DIR" ]; then
   die "output dir $FMTUNE_OUTPUT_DIR is the same directory as the base_model input"
 fi
 if [ "$FMTUNE_OUTPUT_DIR" -ef "$FMTUNE_DATASET_DIR" ]; then
   die "output dir $FMTUNE_OUTPUT_DIR is the same directory as the dataset input"
+fi
+entries=""
+if [ -d "$FMTUNE_OUTPUT_DIR" ]; then
+  entries="$(ls -A "$FMTUNE_OUTPUT_DIR")" || die "cannot list output dir $FMTUNE_OUTPUT_DIR"
+fi
+if [ -n "$entries" ]; then
+  die "output dir $FMTUNE_OUTPUT_DIR is not empty; point output_path at a new or empty directory"
 fi
 
 # ---- source ----------------------------------------------------------------
@@ -337,10 +333,15 @@ else
   pyver="$("$FMTUNE_PYTHON" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
   "$FMTUNE_PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 10))' \
     || die "fm-tune needs Python >= 3.10, $FMTUNE_PYTHON is $pyver"
-  vkey="$( { printf '%s\n%s\n%s\n' "$root" "$FMTUNE_EXTRA" "$pyver"; cat "$root/pyproject.toml"; } | cksum | cut -d' ' -f1)"
+  # The interpreter's real path, arch and OS: a venv links to its base python, so
+  # one built from another python (an upgrade, another node type) must not be reused.
+  pyid="$("$FMTUNE_PYTHON" -c 'import os, platform, sys; print(os.path.realpath(sys.executable), platform.machine(), sys.platform)')"
+  vkey="$( { printf '%s\n%s\n%s\n%s\n' "$root" "$FMTUNE_EXTRA" "$pyver" "$pyid"; cat "$root/pyproject.toml"; } | cksum | cut -d' ' -f1)"
   venv="$FMTUNE_CACHE_DIR/venv-$vkey"
   lock "$venv.lock"
-  if [ ! -f "$venv/.installed" ]; then
+  # A cached venv whose python no longer runs (its base interpreter changed in
+  # place) is rebuilt: nothing can be using it.
+  if [ ! -f "$venv/.installed" ] || ! "$venv/bin/python" -c '' 2>/dev/null; then
     log "building venv $venv (extra: $FMTUNE_EXTRA)"
     rm -rf "$venv"
     "$FMTUNE_PYTHON" -m venv "$venv"
@@ -363,13 +364,21 @@ sys.stdout.write(yaml.safe_dump(json.load(sys.stdin), sort_keys=False))
 fi
 
 # ---- run -------------------------------------------------------------------
+# The rename target: a symlinked output dir is published through its real dir (a
+# rename onto the link itself fails), and staging sits beside it, on the same
+# filesystem. mktemp makes it unique to this run and 0700; open it up to the umask.
+target="$FMTUNE_OUTPUT_DIR"
+[ -L "$target" ] && target="$(cd "$target" && pwd -P)"
+mkdir -p "$(dirname "$target")" || die "cannot create the parent of output dir $target"
+stage="$(mktemp -d "$target.partial.XXXXXX")" && chmod "$(umask -S)" "$stage" \
+  || die "cannot create a staging dir beside output dir $target"
 args=(
   --config_file "$config_file"
   --train_file "$train"
   --validation_file "$val"
   --model_name_or_path "$model"
   --run_name "$FMTUNE_RUN_NAME"
-  --output_dir "$FMTUNE_OUTPUT_DIR"
+  --output_dir "$stage"
   --output_model_name "$FMTUNE_RUN_NAME"
   --model_at_root --cleanup --save_history
 )
@@ -387,11 +396,9 @@ if [ -n "$FMTUNE_EXTRA_ARGS" ]; then
   args+=(${extra[@]+"${extra[@]}"})
 fi
 
-mkdir -p "$FMTUNE_OUTPUT_DIR"
-: > "$incomplete" || die "cannot write to output dir $FMTUNE_OUTPUT_DIR"
 # fm-tune's AutoTuneX bridge logs under $LOG_PATH/logs (default ./logs, the source
-# tree). Not inside the output dir, which --model_at_root clears on success, and not
-# its parent, which builds with sibling output dirs share: <output dir>.logs.
+# tree). Not inside staging, which --model_at_root clears on success, and not the
+# output dir's parent, which builds with sibling output dirs share: <output dir>.logs.
 export LOG_PATH="${LOG_PATH:-$FMTUNE_OUTPUT_DIR.logs}"
 # The venv's console scripts (ray, ...) must win over any others on PATH.
 case "$py" in */*) export PATH="$(dirname "$py"):${PATH:-/usr/local/bin:/usr/bin:/bin}" ;; esac
@@ -400,8 +407,11 @@ cd "$root"
 status=0
 "$py" main.py "${args[@]}" || status=$?
 if [ "$status" -ne 0 ]; then
-  echo "[fm-tune] main.py failed with exit code $status" >&2
+  echo "[fm-tune] main.py failed with exit code $status; its files are kept in $stage" >&2
   exit "$status"
 fi
-rm -f "$incomplete"
+# rename(2), not mv (which would move staging into an existing dir): atomic, and it
+# fails on a non-empty target, such as another build's model published meanwhile.
+"$py" -c 'import os, sys; os.rename(sys.argv[1], sys.argv[2])' "$stage" "$target" 2>/dev/null \
+  || die "cannot move the model into output dir $target (another build may have written it meanwhile); the model is kept in $stage"
 echo "GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:$FMTUNE_OUTPUT_DIR"

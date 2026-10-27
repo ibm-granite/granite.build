@@ -122,6 +122,9 @@ _BAD = [
     ({"run_name": "a/b"}, "run_name must match ^[A-Za-z0-9._-]+$"),
     ({"config_name": "a/b"}, "config_name must match ^[A-Za-z0-9._-]+$"),
     ({"config_name": "a b"}, "config_name must match ^[A-Za-z0-9._-]+$"),
+    # --no_autotune is passed for false alone, so anything else would run a sweep.
+    ({"autotune": "no"}, "autotune must be true or false"),
+    ({"autotune": 0}, "autotune must be true or false"),
     ({"source": dict(_SRC, repo="-x")}, "source.repo must not start with '-'"),
     (
         {"source": dict(_SRC, repo="--upload-pack=x")},
@@ -193,6 +196,9 @@ _GOOD = [
     {"tuning_algo": "lora", "rl_algo": ""},
     {"tuning_algo": "lora", "rl_algo": "dpo"},
     {"tuning_algo": "sft", "rl_algo": "kto"},
+    {"autotune": False},
+    {"autotune": "True"},
+    {"autotune": ""},  # unset: the script's default (true)
 ]
 _LAUNCHERS = {"bash": ("Bash", "fm-tune"), "skypilot": ("Skypilot", "fm-tune")}
 

@@ -53,7 +53,7 @@ Set by the launcher; defaults are applied by the script.
 | Variable | Default | Meaning |
 |---|---|---|
 | `FMTUNE_DATASET_DIR` | required | Dataset input directory |
-| `FMTUNE_OUTPUT_DIR` | bash: `$LLMB_BASH_OUTPUT_DIR/model` | Where `main.py` writes the model; required elsewhere. Must be new, empty or a previous model output, and not an input dir (see USAGE) |
+| `FMTUNE_OUTPUT_DIR` | bash: `$LLMB_BASH_OUTPUT_DIR/model` | Where `main.py` writes the model; required elsewhere. Must be new or empty, and not an input dir. main.py trains in `<FMTUNE_OUTPUT_DIR>.partial.<random>`, renamed onto it on success (see USAGE) |
 | `FMTUNE_CACHE_DIR` | bash: `<GB_HOME>/.fm-tune-cache` (beside `workdir/`; `<LLMB_BASH_OUTPUT_DIR>/../../.fm-tune-cache` when that path has no `/workdir/`); the skypilot template sets `${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache-$(id -u)` (no shared parent: see USAGE) | Clone, tree and venv cache; required elsewhere. Created `0700`; the run fails if it is not the user's own or is group- or world-writable |
 | `FMTUNE_PYTHON` | `$LLMB_BASH_PYTHON_DIR/python3`, else `python3` | Interpreter that creates the venv (>= 3.10) |
 | `FMTUNE_SOURCE_PATH` / `FMTUNE_SOURCE_REPO` | empty | Exactly one must be set |
@@ -66,15 +66,15 @@ Set by the launcher; defaults are applied by the script.
 | `FMTUNE_TUNING_ALGO` | empty | `--tuning_algo` (templates default to `lora`) |
 | `FMTUNE_RL_ALGO` | empty | `--rl_algo`, omitted when empty |
 | `FMTUNE_RUN_NAME` | `fm-tune` | `--run_name`, `--output_model_name`; must match `^[A-Za-z0-9._-]+$` |
-| `FMTUNE_AUTOTUNE` | `true` | `false` adds `--no_autotune` |
+| `FMTUNE_AUTOTUNE` | `true` | `true` or `false`; `false` adds `--no_autotune` |
 | `FMTUNE_BACKEND` / `FMTUNE_SEED` | empty | Flags omitted when empty |
 | `FMTUNE_CONFIG_PRESET` | `autotune.yaml` | Bundled preset used when the HPO config is empty |
 | `FMTUNE_HPO_CONFIG_JSON` | empty (`{}` = empty) | Inline HPO config as JSON; the script converts it to `<FMTUNE_CONFIG_NAME>.yaml` |
-| `FMTUNE_CONFIG_NAME` | `fm_tune_hpo` | File name (and AutoTuneX config name) for the inline HPO config; must match `^[A-Za-z0-9._-]+$` |
+| `FMTUNE_CONFIG_NAME` | `fm_tune_hpo` | File name for the inline HPO config (also its name in AutoTuneX, when reporting); must match `^[A-Za-z0-9._-]+$` |
 | `FMTUNE_EXTRA_ARGS` | empty | Whitespace-split and appended to argv |
 | `FMTUNE_SERVER_URL` / `FMTUNE_JOB_ID` | empty | AutoTuneX bridge flags; with `FMTUNE_SERVER_URL` set, an empty `FMTUNE_JOB_ID` defaults to `GB_BUILD_ID` |
 | `FMTUNE_LOCK_TIMEOUT` | `1800` | At most 9 digits. Seconds to wait on any cache lock held by another build before failing; a lock is never taken over (see USAGE) |
-| `LOG_PATH` | `<FMTUNE_OUTPUT_DIR>.logs` | Where fm-tune's AutoTuneX bridge writes `logs/`; kept if already set. A sibling, not the output dir (`--model_at_root` clears it) or its parent (shared by builds with sibling output dirs) |
+| `LOG_PATH` | `<FMTUNE_OUTPUT_DIR>.logs` | Where fm-tune's AutoTuneX bridge writes `logs/`; kept if already set. A sibling, not the staging dir (`--model_at_root` clears it) or the output dir's parent (shared by builds with sibling output dirs) |
 | `FMTUNE_SKIP_INSTALL` | unset | `1` uses `FMTUNE_PYTHON` as is (unit tests only) |
 
 Before anything uses them, the script makes `FMTUNE_OUTPUT_DIR`, `FMTUNE_CACHE_DIR`,

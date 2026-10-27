@@ -24,12 +24,12 @@ config:
     tuning_algo: lora             # sft | lora | qlora | alora | loha | lokr | vera | none
     rl_algo: ""                   # dpo | kto | ppo | grpo | dapo; empty = none
     run_name: fm-tune             # --run_name and --output_model_name
-    autotune: true                # false adds --no_autotune
+    autotune: true                # true | false; false adds --no_autotune
     backend: ""                   # torch | mlx; empty = fm-tune's default
     seed: ""                      # empty = fm-tune's default (42)
     config_preset: autotune.yaml  # bundled autotune/configs/<preset> when hpo_config is empty
-    hpo_config: {}                # inline HPO config (AutoTuneX config_data)
-    config_name: ""               # names the inline hpo_config in AutoTuneX; empty = fm_tune_hpo
+    hpo_config: {}                # inline HPO config for --config_file; {} = config_preset
+    config_name: ""               # file name of the inline hpo_config; empty = fm_tune_hpo
     output_path: ""               # skypilot only; unused on bash
     extra_args: ""                # appended verbatim to main.py argv
     python: ""                    # interpreter that creates the venv; empty = injected python
@@ -94,6 +94,7 @@ environment_configs:
             {%- if not (c.model or base_model_bound) %}{{ raise_error("fm-tune: set fm_tune_config.model or bind the base_model input.") }}{% endif -%}
             {%- if not c.run_name or (c.run_name | string | list | reject("in", name_chars) | list) %}{{ raise_error("fm-tune: fm_tune_config.run_name must match ^[A-Za-z0-9._-]+$, got '" ~ (c.run_name if c.run_name is not none else "") ~ "'.") }}{% endif -%}
             {%- if c.config_name and (c.config_name | string | list | reject("in", name_chars) | list) %}{{ raise_error("fm-tune: fm_tune_config.config_name must match ^[A-Za-z0-9._-]+$, got '" ~ c.config_name ~ "'.") }}{% endif -%}
+            {%- if c.autotune is not none and c.autotune != "" and (c.autotune | string | lower) not in ["true", "false"] %}{{ raise_error("fm-tune: fm_tune_config.autotune must be true or false, got '" ~ c.autotune ~ "'.") }}{% endif -%}
             {%- for key in ["repo", "ref"] -%}
             {%- if (c.source[key] | string).startswith("-") %}{{ raise_error("fm-tune: fm_tune_config.source." ~ key ~ " must not start with '-' (git would read it as an option).") }}{% endif -%}
             {%- endfor -%}
