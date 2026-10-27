@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from 'react'
 import { InlineNotification, SkeletonText } from '@carbon/react'
 import { useQuery } from '@tanstack/react-query'
-import { getArtifact } from '@granite-build/ui-core/api/gbserver'
+import { getArtifact, listArtifacts } from '@granite-build/ui-core/api/gbserver'
 import { PageHeader } from '@granite-build/ui-core/components/PageHeader'
 import { ARTIFACT_TYPE_CONFIG, artifactTypeKey } from '@granite-build/ui-core/config/artifactTypes'
 import { ArtifactDetails } from './ArtifactDetails'
@@ -42,13 +42,24 @@ function ArtifactDetailFallback() {
   )
 }
 
+function isUUID(s: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
+}
+
+// A lineage click may open the page by URI, in any spelling; null when nothing
+// is registered under it.
+async function artifactByUri(uri: string) {
+  return (await listArtifacts({ uri, match_lineage_uri: true })).items[0] ?? null
+}
+
 function ArtifactDetailContent() {
   const artifactId = useRouteId('/dashboard/artifacts')
 
   const { data: artifact, isLoading, error } = useQuery({
     queryKey: ['artifact', artifactId],
-    queryFn: () => getArtifact(artifactId!),
+    queryFn: () => (isUUID(artifactId) ? getArtifact(artifactId) : artifactByUri(artifactId)),
     enabled: Boolean(artifactId),
+    retry: false,
   })
 
   // The static export renders with no ?id (so not loading), while the client's
@@ -58,6 +69,14 @@ function ArtifactDetailContent() {
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
   if (!mounted) return <ArtifactDetailFallback />
+
+  if (!isLoading && !error && artifact === null) {
+    return (
+      <div style={{ padding: '1rem 1.5rem' }}>
+        <InlineNotification kind="warning" title="Artifact not found" subtitle={`Nothing in the artifact registry is registered under ${artifactId}.`} hideCloseButton />
+      </div>
+    )
+  }
 
   if (error) {
     return (
@@ -93,7 +112,7 @@ function ArtifactDetailContent() {
         </div>
       </div>
 
-      <ArtifactDetails artifact={artifact} loading={isLoading} artifactId={artifactId!} />
+      <ArtifactDetails artifact={artifact ?? undefined} loading={isLoading} artifactId={artifact?.uuid ?? artifactId} />
     </div>
   )
 }

@@ -122,6 +122,22 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
   const openArtifact = async () => {
     const raw = (activeNode as IndexElkNode | undefined)?.indexNode?.metadata?.uri
     const uri = typeof raw === 'string' ? raw : activeId
+    // An http(s):// or hf:// URI opens without a registry lookup here (that one
+    // scans the registry): a web URI opens as is (an hf:// one on HuggingFace),
+    // and the artifact page resolves the URI itself, saying so if none is registered.
+    if (/^(https?|hf):\/\//.test(uri)) {
+      // The index URI is normalized, as lineage_uri is, so another spelling of
+      // this page's own URI is caught without the lookup.
+      if (uri === artifact.lineage_uri || uri === artifact.uri) {
+        setOpenError(`${activeName} is the artifact already open.`)
+        return
+      }
+      setOpenError(null)
+      const hfUrl = getHuggingFaceUrl(uri)
+      const webUrl = hfUrl || uri.startsWith('hf://') ? null : uri
+      setOpenTarget({ name: activeName, uri, pageUri: uri, hfUrl, webUrl })
+      return
+    }
     setOpening(true)
     setOpenError(null)
     try {
