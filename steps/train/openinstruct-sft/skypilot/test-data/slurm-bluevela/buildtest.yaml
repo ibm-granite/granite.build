@@ -19,5 +19,7 @@ space_uri: ../../space
 tests:
   - runner
 simulate_step_failure: false
-# Shared gpu-mid queueing + two hfpull jobs + a short run.
-timeout_minutes: 90
+# A cold image cache imports the ~25 GB image in a CPU job first (the 20 GB
+# NeMo-RL image took 72 minutes), then gpu-mid queueing, two hfpull jobs and a
+# short run. A warm cache starts the container in seconds.
+timeout_minutes: 240

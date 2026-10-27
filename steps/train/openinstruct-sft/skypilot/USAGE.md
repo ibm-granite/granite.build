@@ -61,7 +61,7 @@ All fields live under the step's `config.openinstruct_sft_config`.
 | `deepspeed_config` | string | `stage3_no_offloading_accelerate.conf` | A file under the image's `/opt/open-instruct/configs/ds_configs/`. Empty means plain accelerate (no DeepSpeed). A value containing `/` is refused. |
 | `mixed_precision` | string | `bf16` | Passed to `accelerate launch --mixed_precision`. |
 | `args` | map | `{}` | Any other `finetune.py` flag, rendered as `--<key> <value>`. See [Passing finetune.py flags (args)](#passing-finetunepy-flags-args). |
-| `image_id` | string | the step's published image | The step's image, filled in when the step is generated. Override it with another image or, on SLURM, a prebuilt `.sqsh` path. `docker:` is added when missing. |
+| `image_id` | string | the step's published image | The step's image, filled in when the step is generated. Override it with another image or, on SLURM, optionally a `.sqsh` path (SLURM environments with a `slurm_image_cache` cache the registry image themselves). `docker:` is added when missing. |
 | `clearml_enabled` | string | `auto` | `auto` (on iff `CLEARML_API_HOST`, `CLEARML_API_ACCESS_KEY` and `CLEARML_API_SECRET_KEY` are all set in the step env), `true`, or `false`. |
 | `clearml_project` | string | `""` | ClearML project. Empty means `openinstruct-sft`. Used only when ClearML is on. |
 | `clearml_task_name` | string | `""` | ClearML task name. Empty means `finetune`. Used only when ClearML is on. |
@@ -203,25 +203,13 @@ The same step runs on a SkyPilot SLURM endpoint (for example
 `space://environments/skypilot/slurm/ibm-bluevela`). What differs from a cloud
 endpoint:
 
-- **Use a prebuilt image.** On SLURM the image runs under Pyxis/enroot, and a cold
-  pull of this large image may not fit a job's time limit. Import it once to a
-  squashfs on shared storage:
-
-  ```bash
-  enroot import -o /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-4.sqsh \
-    "docker://quay.io#granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-4"
-  ```
-
-  Then set `image_id` to that path:
-
-  ```yaml
-  openinstruct_sft_config:
-    image_id: /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-4.sqsh
-  ```
-
-  Keep it a plain path. The step adds SkyPilot's `docker:` marker, and SkyPilot's
-  SLURM provisioner hands a `.sqsh` path to Pyxis as is. Re-import it whenever the
-  image tag changes.
+- **The image is cached automatically.** SLURM environments with a `slurm_image_cache`
+  block (`ibm-bluevela` has one) import the step's registry image once into a shared
+  `.sqsh` and launch every later run from it. The first run on a cold cache imports
+  it in a CPU job before the GPU job starts (about an hour for this image); later
+  runs start the container in seconds. No manual `enroot` import and no `image_id`
+  override are needed. To pin a `.sqsh` you built yourself, set `image_id` to its
+  path; the step adds `docker:`, and Pyxis gets the path as is.
 - **Request memory.** gbserver drops `compute_config` memory on SLURM, and a
   partition default can be as small as 2G. Request memory in
   `launcher_config.resources` as bare GiB, as a string:

@@ -137,15 +137,15 @@ fixable (57 Python packages, 8 jar, 1 Go binary), tracked as a follow-up.
 ### Bumping IMAGE_VERSION
 
 The Makefile's `IMAGE_VERSION` is a stable version (`oi-v0.3.0-4`), not the
-per-commit git SHA. The image is large, and BlueVela runs it from a `.sqsh` built
-from this exact tag, so it must not churn on unrelated commits.
+per-commit git SHA. The image is large, and BlueVela caches a `.sqsh` per tag
+(a cold import takes about an hour), so it must not churn on unrelated commits.
 
 - Bump the suffix (`-1` to `-2`) when the Dockerfile or `src/` changes.
 - Bump the prefix with the Open-Instruct pin (for example `oi-v0.4.0-1`).
 
-After a bump, publish the image, rebuild the BlueVela `.sqsh`, update the `.sqsh`
-path in `test-data/slurm-bluevela/build.yaml` and in `USAGE.md`, then re-run
-`make publish-step`.
+After a bump, publish the image, then re-run `make publish-step`. BlueVela
+re-imports the new tag automatically on its next run (see
+[BlueVela image cache](#bluevela-image-cache)).
 
 ## Publishing the image
 
@@ -174,19 +174,15 @@ build needs well over 60 GB free in the podman machine.
 registry, so publish the image first. Run `make check-published` after any change
 to the template, `src/`, `USAGE.md` or a build test.
 
-## BlueVela image
+## BlueVela image cache
 
-On SLURM the step runs from a prebuilt squashfs, not a registry pull. Build it on a
-BlueVela login node as `granitebuild`:
-
-```bash
-enroot import -o /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-4.sqsh \
-  "docker://quay.io#granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-4"
-```
-
-Rebuild it for each `IMAGE_VERSION`, with the version in the file name. The BlueVela
-fixture sets `openinstruct_sft_config.image_id` to that path. The step adds
-`docker:`, and SkyPilot's SLURM provisioner hands a `.sqsh` to Pyxis as is.
+The `ibm-bluevela` SLURM environment's `slurm_image_cache` block (#560) caches the
+step's registry image as `/proj/granite-build/g4os/enroot/<image>.sqsh`. A cold cache
+is filled by a CPU import job before the first GPU job (gbserver waits up to 5 h,
+queueing included); later launches start the container from the `.sqsh` in seconds.
+Bumping `IMAGE_VERSION` therefore needs nothing on BlueVela: the next run imports
+the new tag. To force a re-import of an unchanged tag, delete its `.sqsh` there.
+See `docs/environments/skypilot-slurm.md`, "slurm_image_cache".
 
 ## How ClearML is wired
 
@@ -246,7 +242,7 @@ need the image published first.
 | | aws | slurm-bluevela |
 |---|---|---|
 | environment | `skypilot/aws` | `skypilot/slurm/ibm-bluevela` |
-| image | quay.io ref, pulled at launch | prebuilt `.sqsh` on `/proj` |
+| image | quay.io ref, pulled at launch | registry ref, cached as a shared `.sqsh` (`slurm_image_cache`) |
 | GPU | `A10G:1` | `H200:1` (the environment pins `h200`), `memory: "64"` |
 | data | `dataset_mixer_list` (HF id) | bound `dataset` input |
 | DeepSpeed | ZeRO-3 (default) | none (`deepspeed_config: ""`) |
@@ -270,8 +266,8 @@ GB_ENVIRONMENT=STANDALONE make -C steps/train/openinstruct-sft/skypilot test TES
 ### slurm-bluevela
 
 Marked `ibm`. Skips unless the BlueVela key for the `granitebuild` functional ID is
-at `~/.ssh/ibm-bluevela.key`, and skips in SPS CI. The `.sqsh` must exist first (see
-[BlueVela image](#bluevela-image)).
+at `~/.ssh/ibm-bluevela.key`, and skips in SPS CI. A cold image cache adds about an hour before the GPU
+job (see [BlueVela image cache](#bluevela-image-cache)).
 
 ```bash
 make -C steps/train/openinstruct-sft/skypilot space

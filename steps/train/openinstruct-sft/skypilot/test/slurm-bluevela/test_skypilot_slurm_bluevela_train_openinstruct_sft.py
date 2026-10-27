@@ -15,13 +15,14 @@
 """openinstruct-sft end to end on IBM BlueVela SLURM (gpu-mid, one H200).
 
 SUCCESS proves the SLURM path: hfpull steps stage the base model and the bound
-dataset onto shared /proj, the image runs under Pyxis from a prebuilt .sqsh,
-finetune.py trains with ClearML on (offline mode) and plain accelerate, and the
-`model` artifact plus the open_instruct_commit metadata are recorded.
+dataset onto shared /proj, the image runs under Pyxis from the shared .sqsh
+cache, finetune.py trains with ClearML on (offline mode) and plain accelerate,
+and the `model` artifact plus the open_instruct_commit metadata are recorded.
 
 IBM infrastructure through the local space, so marked `ibm`. Skips without the
-BlueVela granitebuild SSH key, and in SPS CI/CD. The .sqsh named in the fixture
-must exist first (README.md, "BlueVela image").
+BlueVela granitebuild SSH key, and in SPS CI/CD. The image comes from the
+environment's shared .sqsh cache (slurm_image_cache, #560): a cold cache imports
+it once in a CPU job before the GPU job starts.
 """
 
 import os
@@ -57,7 +58,7 @@ class TestSkypilotSlurmBluevelaTrainOpeninstructSft(AbstractYamlBuildRunnerTest)
         """Return the fixture dir holding this test's build.yaml and buildtest.yaml."""
         return get_test_data_dir_for(__file__)
 
-    @pytest.mark.timeout(5700)  # above buildtest.yaml's timeout_minutes (90)
+    @pytest.mark.timeout(14700)  # above buildtest.yaml's timeout_minutes (240)
     def test_runner(self):
         """Run the happy-path build with room for the buildtest timeout."""
         super().test_runner()
