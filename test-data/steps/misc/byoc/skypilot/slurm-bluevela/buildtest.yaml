@@ -1,7 +1,8 @@
 # YAML-driven spec for test_skypilot_slurm_bluevela_byoc.py (located by the
 # test/ <-> test-data/ helper; see steps/README.md). Same byoc workload as the
-# local slurm test, on the BlueVela SLURM cluster, using the custom
-# environment.yaml beside this file.
+# local slurm test, on the BlueVela SLURM cluster, using the shared BlueVela
+# SLURM environment. The environment.yaml beside this file is an example of a
+# custom one (switch build.yaml to `environment_uri: file:.` to use it).
 targets:
   - byoc-run
 target_expectations:

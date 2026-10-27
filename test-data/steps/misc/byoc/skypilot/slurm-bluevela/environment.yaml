@@ -1,15 +1,16 @@
 name: sky-slurm-bluevela
 type: Skypilot
 subtype: slurm
-# Custom build-test environment for test_skypilot_slurm_bluevela_byoc.py: IBM
-# BlueVela over SLURM. The build.yaml beside this file references it as
-# `environment_uri: file:.` (the build's own directory; see "Custom test
-# environments" in steps/README.md).
+# EXAMPLE custom build-test environment: IBM BlueVela over SLURM. Not used by
+# default: the build.yaml beside this file runs on the shared
+# space://environments/skypilot/slurm/ibm-bluevela. To test local environment
+# changes, edit this copy and switch build.yaml to `environment_uri: file:.`
+# (the build's own directory; see "Custom test environments" in
+# steps/README.md).
 #
 # Starting point: a copy of the shared
 # configurations/assets/environments/skypilot/slurm/ibm-bluevela/environment.yaml.
-# Edit this copy to fit the test (partition, constraints, SSH settings); the
-# shared environment is not affected.
+# Editing this copy doesn't affect the shared environment.
 config:
   default_cloud: slurm
   # SLURM does not support cluster autostop (gbserver forces autostop=None); a

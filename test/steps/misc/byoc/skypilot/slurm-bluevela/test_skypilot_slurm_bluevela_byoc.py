@@ -16,13 +16,16 @@
 
 """Integration test: the byoc step runs end to end on BlueVela SLURM (Skypilot).
 
-The exemplar for a step build test with a **custom environment**: the fixture dir
-``test-data/slurm-bluevela/`` ships its own ``environment.yaml`` next to its
-``build.yaml`` (a copy of the shared BlueVela SLURM environment), and the build uses
-``environment_uri: file:.``, which always means the build's own directory, so the
-fixture's environment is found wherever the test is run from. The step itself still
+Runs on the shared ``space://environments/skypilot/slurm/ibm-bluevela``. The step
 comes from the Space ``make space`` renders (``space_uri: ../../space``), i.e. from
-your local source. See "Custom test environments" in steps/README.md.
+your local source.
+
+The fixture dir ``test-data/slurm-bluevela/`` also ships an example custom
+``environment.yaml`` next to its ``build.yaml`` (a copy of the shared environment).
+To test environment changes, edit that copy and switch the build to
+``environment_uri: file:.``, which always means the build's own directory. See
+"Custom test environments" in steps/README.md. ``file:.`` itself is covered offline
+by ``test/unit/build/test_relative_file_uris.py``.
 
 Run it with::
 

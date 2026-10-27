@@ -29,9 +29,11 @@ from typing import Optional
 
 import pytest
 
-from gbserver.build.build import _anchor_relative_file_uris, _relative_file_path
+from gbserver.build.build import Build, _anchor_relative_file_uris, _relative_file_path
+from gbserver.build.space import Space
 from gbserver.types.buildconfig import BuildConfig
 from gbserver.types.constants import CODE_GBSERVER_BUILTINS_STEPS_GBSTEP_URI
+from gbserver.utils.archive import create_archive_bytes, extract_archive
 
 
 def _write_env(env_dir: Path, name: str) -> None:
@@ -240,3 +242,67 @@ class TestAnchorRelativeStepUris:
             empty.targets["t"].steps[0].step_uri
             == CODE_GBSERVER_BUILTINS_STEPS_GBSTEP_URI
         )
+
+
+# The repo root (this file is test/unit/build/<file>).
+_REPO = Path(__file__).resolve().parents[3]
+
+
+def _archive_and_extract(fixture: Path, dest: Path) -> Path:
+    """Round-trip ``fixture`` through a build archive, as a stored build does.
+
+    A stored build zips its build.yaml's directory and the runner extracts it
+    elsewhere, so sibling files reach the build only via that copy.
+
+    Args:
+        fixture: The folder holding build.yaml and its sibling files.
+        dest: Where to extract.
+
+    Returns:
+        The extracted build directory.
+    """
+    data = create_archive_bytes(dir=fixture, format="zip")
+    dest.mkdir(parents=True)
+    assert extract_archive(data, dest)
+    return dest
+
+
+class TestBuildWithEnvBesideBuildYaml:
+    def test_file_dot_loads_the_env_shipped_with_the_build(
+        self, tmp_path, in_dir, monkeypatch
+    ):
+        """A real Build whose environment.yaml sits next to its build.yaml.
+
+        Exercises ``environment_uri: file:.`` end to end: archive, extract,
+        Build creation, validation and environment loading, run from an
+        unrelated directory, so a regression in the build-dir lookup fails here
+        rather than only on a live cluster.
+        """
+        monkeypatch.setenv("GB_ENVIRONMENT", "STANDALONE")
+        fixture = tmp_path / "fixture"
+        fixture.mkdir()
+        (fixture / "environment.yaml").write_text(
+            "name: shipped-with-the-build\ntype: Bash\nconfig: {}\n"
+        )
+        (fixture / "build.yaml").write_text(
+            "granite.build:\n"
+            "  name: env-beside-build-yaml\n"
+            "  targets:\n"
+            "    t:\n"
+            "      environment_uri: file:.\n"
+            "      steps:\n"
+            "        - step_uri: space://steps/command\n"
+            "          config:\n"
+            "            command_config:\n"
+            "              command: echo hi\n"
+        )
+        build_dir = _archive_and_extract(fixture, tmp_path / "extracted" / "b1")
+        in_dir(tmp_path)  # neither the fixture nor the extracted build
+        space = Space(f"file://{_REPO / 'configurations' / 'spaces' / 'local'}")
+
+        build = Build(build_dir=build_dir, space=space)
+
+        target = build.config.targets["t"]
+        assert target.environment_uri.startswith("file://")
+        assert not build.validate().errors
+        assert build.targets["t"].environment.config.name == "shipped-with-the-build"

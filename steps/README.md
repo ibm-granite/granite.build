@@ -641,8 +641,10 @@ both test modes: `make publish-step` copies the whole `test-data/<cluster>/` fol
 environment included. The step still comes from the generated space, so the test
 exercises your local source.
 
-The exemplar is [`misc/byoc/skypilot/test-data/slurm-bluevela/`](misc/byoc/skypilot/test-data/slurm-bluevela/),
-which uses a copy of the shared BlueVela SLURM environment. Notes:
+The example is [`misc/byoc/skypilot/test-data/slurm-bluevela/`](misc/byoc/skypilot/test-data/slurm-bluevela/).
+Its `build.yaml` runs on the shared BlueVela SLURM environment by default; the
+`environment.yaml` beside it is a ready-made copy to edit when testing environment
+changes, by switching to `environment_uri: file:.`. Notes:
 
 * The fixture folder is what's loaded as the environment, so it must hold exactly one
   `environment.yaml`. To ship several, give each its own folder (`environments/<name>/`)
