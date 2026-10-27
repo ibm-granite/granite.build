@@ -24,6 +24,7 @@ import traceback
 from copy import deepcopy
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Self, Tuple
+from urllib.parse import urlparse
 
 import yaml
 
@@ -33,6 +34,7 @@ from gbserver.build.buildentity import BuildEntity
 from gbserver.build.space import Space
 from gbserver.build.target import Target
 from gbserver.types.buildconfig import BUILD_FILENAME, BuildConfig, BuildFailure
+from gbserver.types.constants import FILE_SCHEME
 from gbserver.types.stepconfig import (
     StepConfig,
     StepEnvironmentTypeConfig,
@@ -105,6 +107,107 @@ def _step_monitor_ref_errors(
         except ValueError as e:
             errors.append(f"monitor `{name}`: {e}")
     return errors, warnings
+
+
+def _relative_file_path(uri: Optional[str]) -> Optional[str]:
+    """Return the path of a relative ``file:`` (or bare-path) URI, else ``None``.
+
+    Only plain relative paths qualify: absolute paths, ``file://host/...``
+    forms, other schemes (``space://``, ``git+ssh://``, ...) and URIs with Jinja
+    (whose real value is only known once rendered) are left alone.
+
+    Args:
+        uri: A build.yaml ``environment_uri`` value.
+
+    Returns:
+        The relative path, or ``None`` when ``uri`` is not a plain relative path.
+    """
+    if not uri or any(tag in uri for tag in ("{{", "{%", "{#")):
+        return None
+    parsed = urlparse(uri, FILE_SCHEME)
+    if parsed.scheme != FILE_SCHEME or parsed.netloc:
+        return None
+    path = parsed.path
+    if not path or Path(path).is_absolute():
+        return None
+    return path
+
+
+def _anchor_relative_file_uri(uri: Optional[str], build_dir: Path) -> Optional[str]:
+    """Return ``uri`` resolved against ``build_dir`` when that's where it exists.
+
+    A relative ``file:`` (or bare-path) URI is looked up from the current
+    directory first, exactly as before, so every build that already resolves
+    keeps its meaning.  Only when it doesn't exist there is it looked up in
+    ``build_dir`` (the build's copy of the build.yaml's directory).  ``..``
+    segments are rejected by the build config's own validation, and a candidate
+    that resolves outside ``build_dir`` (e.g. through a symlink) is ignored.
+
+    The one exception is ``file:.`` (or ``.`` / ``./``), which always means
+    ``build_dir`` itself: "." always exists from the current directory, so the
+    current-directory-first rule would otherwise make it name wherever the
+    process happened to start, never the build.  This lets a build keep its
+    ``environment.yaml`` right next to its build.yaml and reference it as
+    ``environment_uri: file:.``.
+
+    Args:
+        uri: A build.yaml ``environment_uri`` or ``step_uri`` value.
+        build_dir: The build's working copy of the build.yaml's directory.
+
+    Returns:
+        The absolute ``file://`` URI of the copy in ``build_dir``, or ``None``
+        when ``uri`` isn't a relative path, exists from the current directory,
+        or isn't found in ``build_dir`` either.
+    """
+    path = _relative_file_path(uri)
+    if path is None:
+        return None
+    if Path(path) == Path("."):
+        return f"{FILE_SCHEME}://{build_dir.resolve()}"
+    if Path(path).exists():
+        return None
+    candidate = (build_dir / path).resolve()
+    if build_dir.resolve() not in (candidate, *candidate.parents):
+        return None
+    return f"{FILE_SCHEME}://{candidate}" if candidate.exists() else None
+
+
+def _anchor_relative_file_uris(config: BuildConfig, build_dir: Path) -> None:
+    """Resolve the build's relative ``file:`` env and step URIs, in place.
+
+    Each target's ``environment_uri`` and each step's ``step_uri`` that is a
+    relative path found only in the build's own directory is rewritten to that
+    absolute ``file://`` path (see :func:`_anchor_relative_file_uri`).  This lets
+    a build ship its own environment or step next to its build.yaml (e.g. a step
+    build test) and reference it as ``file:environments/<name>`` or
+    ``file:steps/<name>``.  Anything else is left unchanged, so a path found
+    nowhere still fails the existing "doesn't exist" validation.
+
+    Args:
+        config: The loaded build config; its URIs may be rewritten.
+        build_dir: The build's working copy of the build.yaml's directory.
+    """
+    for target_name, target in config.targets.items():
+        anchored = _anchor_relative_file_uri(target.environment_uri, build_dir)
+        if anchored is not None:
+            logger.info(
+                "target %s: environment_uri %s found relative to the build.yaml: %s",
+                target_name,
+                target.environment_uri,
+                anchored,
+            )
+            target.environment_uri = anchored
+        for i, step in enumerate(target.steps):
+            anchored = _anchor_relative_file_uri(step.step_uri, build_dir)
+            if anchored is not None:
+                logger.info(
+                    "target %s step %d: step_uri %s found relative to the build.yaml: %s",
+                    target_name,
+                    i,
+                    step.step_uri,
+                    anchored,
+                )
+                step.step_uri = anchored
 
 
 class Build(BuildEntity):
@@ -185,6 +288,7 @@ class Build(BuildEntity):
                 build_yaml_path,
                 context=self.context,
             )
+            _anchor_relative_file_uris(config, new_build_dir)
             config = self.prune_build(config, targets)
             logger.info("Running with targets : %s", list(config.targets.keys()))
             super().__init__(

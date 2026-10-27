@@ -11,7 +11,7 @@ For a variant on the same cluster, suffix the dir: `slurm-pii`, `aws-tok`.
 | `aws` | `space://environments/skypilot/aws` | `../../space` | `pytest.mark.skypilot_integration` | `aws_credentials_present()` from `gbserver.environment.skypilot` | export AWS creds | Real EC2 (costs money). `hf://` pull is **inline** (no extra step). Custom-image steps OK (image must be in a pullable registry). |
 | `kube` | `space://environments/skypilot/kubernetes/local` | `../../space` | `pytest.mark.skypilot_integration` | `kind_cluster_reachable()`, reason `kind_skip_reason()`, plus `@KUBE_XDIST_GROUP` (all from `libgbtest.kube`) | `test-setup-kube` → `$(MAKE) -C $(REPO_ROOT) kube-setup` | Local kind cluster. Shared volume at `/shared`. hfpull is separate. |
 | `lsf-bluevela` | `space://environments/skypilot/lsf/ibm-bluevela` | `../../space` | `pytest.mark.ibm` | `RUNNING_IN_CICD` skip (see below) + `@pytest.mark.xdist_group(name="buildtest_bv")` | `~/.ssh/ibm-bluevela.key` locally | IBM infra through the local space, so still `ibm`. Enroot for images. |
-| `slurm-bluevela` | `space://environments/skypilot/slurm/bluevela` | `git+ssh://github.ibm.com/granite-dot-build/gb-test.git@gbspace-config` | `pytest.mark.ibm` | same as `lsf-bluevela` | `GBTEST_SPS_IBMCLOUD_API_KEY` set | **IBM space only**: the env exists only in gb-test. The step resolves from gb-test's assets, **not your source**: it must be published there first. Shared partition queueing, so use a long `timeout_minutes` and the timeout override. hfpull is separate. |
+| `slurm-bluevela` | `file:.` (custom test environment, see below) | `../../space` | `pytest.mark.ibm` | same as `lsf-bluevela` | `~/.ssh/ibm-bluevela.key` locally | Ships a copy of the shared BlueVela SLURM environment in the fixture. The step resolves from **your source**. CPU-only steps need `zone: cpu` + `launcher_config.sbatch_options.constraint: null` (gpu-mid rejects GPU-less jobs). Shared partition queueing, so use a long `timeout_minutes` and the timeout override. hfpull is separate. |
 
 **`hf://` outputs, on every cluster.** Each one is pushed by its own hfpush step, so the
 run needs an `HF_TOKEN` that can write `GBTEST_HF_PUSH_ORG` (default `ibm-research`;
@@ -52,6 +52,18 @@ The BlueVela CI skip used by existing tests:
 | Cluster dir | `environment_uri` | `space_uri` | `pytestmark` | Skip gate |
 |---|---|---|---|---|
 | `bash` | `space://environments/bash` | `../../space` | none needed | none (runs locally) |
+
+## Custom test environment (`slurm-bluevela`, or any cluster that needs one)
+
+Copy the environment into the fixture as `test-data/<cluster>/environment.yaml`, right
+next to `build.yaml`, and set the target's `environment_uri: file:.`. `file:.` always
+means the build's own directory, so it resolves in both test modes. Keep
+`space_uri: ../../space`.
+
+For BlueVela SLURM, copy
+`configurations/assets/environments/skypilot/slurm/ibm-bluevela/environment.yaml`, as
+`steps/misc/byoc/skypilot/test-data/slurm-bluevela/` does, and replace its header
+comment with one saying it's a build-test copy and where it came from.
 
 ## Any other IBM space
 

@@ -66,6 +66,18 @@ environment definitions (`space://environments/<name>`); see
 the [environments overview](../environments/README.md)
 for what those definitions can contain.
 
+A **relative `file:`** `environment_uri` or `step_uri` (e.g.
+`file:environments/my-env`, `file:steps/my-step`, or a bare path) is looked up from
+the current directory first, as it always was. If it isn't found there, it's looked
+up in the build's own directory, the copy of the folder holding `build.yaml`, so a
+build can ship its own environment or step next to its `build.yaml`. Found in
+neither, it fails validation as "doesn't exist". `file:.` (or `.`) always means the
+build's own directory, so an `environment.yaml` right next to `build.yaml` is
+`environment_uri: file:.`. Write a relative path as
+`file:<path>`, not `file://<path>`: with two slashes the first segment is read as a
+host name. Absolute `file:///…` paths and other schemes are used as written. `file:`
+URIs are accepted only on a standalone server (see [Validation](#validation)).
+
 ## Inputs
 
 An input names an artifact the target depends on. Each input is either

@@ -622,6 +622,43 @@ only local ones: a bare path or a `file://` URI. In both modes, a remote-space t
 has, **not** your local source: publish the step to that space's assets before relying
 on it.
 
+### Custom test environments
+
+To run a build test against an environment that isn't in the space, for example a
+cluster-specific variant, put the `environment.yaml` right next to the fixture's
+`build.yaml` and point the build at it with `environment_uri: file:.`:
+
+```
+test-data/<cluster>/
+  build.yaml          # environment_uri: file:.
+  buildtest.yaml      # space_uri: ../../space   (as for any cluster)
+  environment.yaml
+```
+
+`file:.` always means the build's own directory (the copy of the folder holding
+`build.yaml`), so the fixture's environment is found wherever the test runs from, in
+both test modes: `make publish-step` copies the whole `test-data/<cluster>/` folder,
+environment included. The step still comes from the generated space, so the test
+exercises your local source.
+
+The exemplar is [`misc/byoc/skypilot/test-data/slurm-bluevela/`](misc/byoc/skypilot/test-data/slurm-bluevela/),
+which uses a copy of the shared BlueVela SLURM environment. Notes:
+
+* The fixture folder is what's loaded as the environment, so it must hold exactly one
+  `environment.yaml`. To ship several, give each its own folder (`environments/<name>/`)
+  and reference it with a relative path, `file:environments/<name>`: a relative path is
+  looked up from the current directory first, then in the build's own directory.
+* Start from the shared environment (`configurations/assets/environments/...`) and
+  edit the copy; the shared one is unaffected. Say in its header comment where it came
+  from.
+* `file:` environment URIs work only on a standalone server, which `make test` uses.
+* The same rule applies to a relative `file:` `step_uri`, so a fixture can also ship a
+  small helper step (`file:steps/<name>`). Don't use it for the step under test: that
+  should come from the generated space (`space://steps/<path>`), so the test exercises
+  your rendered source.
+* Write relative paths as `file:<path>`, not `file://<path>`: with two slashes the
+  first segment is read as a host name.
+
 > **Image steps: keep the published image tag and your local build in sync.** For a
 > custom-image step, `make publish-step` freezes a concrete image reference into the
 > committed `step.yaml` — with the default `IMAGE_TAG` (git short SHA) that tag is
