@@ -51,6 +51,12 @@ ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_OPEN_INSTRUCT=0.3.0
 
 WORKDIR /opt/open-instruct
+# Security patches on top of the frozen lock (trivy CRITICAL, fix available; see
+# README.md "Scanning"). vllm is REMOVED, not upgraded: the fixed vllm needs
+# torch 2.11, which would replace the locked torch 2.10 + flash-attn training
+# stack, and nothing finetune.py imports needs vllm (it serves RL/generation).
+# The rest are upgraded to the first fixed release. litellm leaves upstream's
+# <1.75.2 pin; finetune.py imports it only through optional helpers.
 # Fetch exactly the pinned commit, then install the LOCKED environment. The
 # default groups are kept: open_instruct.utils imports `beaker` unconditionally
 # and beaker-py lives in the `dev` group at this release.
@@ -62,6 +68,11 @@ RUN git init -q . \
  && rm -rf .git \
  && uv sync --frozen \
  && uv pip install --python .venv/bin/python "clearml==2.1.12" \
+ && uv pip uninstall --python .venv/bin/python vllm \
+ && uv pip install --python .venv/bin/python \
+      "pillow==13.0.0" "nltk==3.10.3" "litellm==1.84.0" "PyJWT==2.14.0" \
+      "Authlib==1.6.9" "fastmcp==3.2.0" "anyio==4.14.2" "GitPython==3.1.59" \
+      "certifi==2026.10.18" \
  && chmod -R a+rX /opt/open-instruct /opt/uv-python
 
 # The step's scripts. step.yaml's setup:/run: call them at /opt/openinstruct-sft/.

@@ -65,7 +65,7 @@ unrendered-binding detector). `**/*.md` is listed so the docs can show `{{ ... }
 
 ## Image
 
-`quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-1`. It holds:
+`quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-2`. It holds:
 
 | Part | Pin |
 |---|---|
@@ -118,7 +118,7 @@ Scan every image before `make publish-image`:
 
 ### Bumping IMAGE_TAG
 
-`IMAGE_TAG` is a stable tag in the Makefile (`oi-v0.3.0-1`), not the per-commit git
+`IMAGE_TAG` is a stable tag in the Makefile (`oi-v0.3.0-2`), not the per-commit git
 SHA. The image is large, and BlueVela runs it from a `.sqsh` built from this exact
 tag, so it must not churn on unrelated commits.
 
@@ -147,7 +147,7 @@ Then:
 ```bash
 podman login -u 'granitebuild+gbpush' --password-stdin quay.io/granitebuild   # robot token on stdin
 make -C steps/train/openinstruct-sft/skypilot image publish-image
-skopeo inspect --raw docker://quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-1
+skopeo inspect --raw docker://quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-2
 ```
 
 Run the `skopeo inspect` with no credentials, to check the image pulls
@@ -169,8 +169,8 @@ On SLURM the step runs from a prebuilt squashfs, not a registry pull. Build it o
 BlueVela login node as `granitebuild`:
 
 ```bash
-enroot import -o /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-1.sqsh \
-  "docker://quay.io#granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-1"
+enroot import -o /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-2.sqsh \
+  "docker://quay.io#granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-2"
 ```
 
 Rebuild it for each `IMAGE_TAG`, with the tag in the file name. The BlueVela

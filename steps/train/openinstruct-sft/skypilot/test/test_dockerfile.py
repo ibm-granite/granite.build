@@ -62,3 +62,32 @@ def test_scripts_land_where_step_yaml_calls_them():
     assert "COPY src/ /opt/openinstruct-sft/" in _DOCKERFILE
     for script in re.findall(r"/opt/openinstruct-sft/(\w+\.sh)", _TEMPLATE):
         assert (_STEP_DIR / "src" / script).is_file(), script
+
+
+_PATCHED = {
+    "pillow": "13.0.0",
+    "nltk": "3.10.3",
+    "litellm": "1.84.0",
+    "PyJWT": "2.14.0",
+    "Authlib": "1.6.9",
+    "fastmcp": "3.2.0",
+    "anyio": "4.14.2",
+    "GitPython": "3.1.59",
+    "certifi": "2026.10.18",
+}
+
+
+def test_security_patches_pinned():
+    for pkg, version in _PATCHED.items():
+        assert f'"{pkg}=={version}"' in _DOCKERFILE, pkg
+
+
+def test_vllm_removed_not_upgraded():
+    assert "uv pip uninstall --python .venv/bin/python vllm" in _DOCKERFILE
+    assert not re.search(r'"vllm==', _DOCKERFILE)
+
+
+def test_patches_run_after_the_frozen_sync():
+    sync = _DOCKERFILE.index("uv sync --frozen")
+    assert sync < _DOCKERFILE.index("uv pip uninstall --python .venv/bin/python vllm")
+    assert sync < _DOCKERFILE.index('"pillow==13.0.0"')

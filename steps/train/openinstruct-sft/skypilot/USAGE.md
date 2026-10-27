@@ -208,15 +208,15 @@ endpoint:
   squashfs on shared storage:
 
   ```bash
-  enroot import -o /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-1.sqsh \
-    "docker://quay.io#granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-1"
+  enroot import -o /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-2.sqsh \
+    "docker://quay.io#granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-2"
   ```
 
   Then set `image_id` to that path:
 
   ```yaml
   openinstruct_sft_config:
-    image_id: /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-1.sqsh
+    image_id: /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-2.sqsh
   ```
 
   Keep it a plain path. The step adds SkyPilot's `docker:` marker, and SkyPilot's
