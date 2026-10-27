@@ -210,6 +210,36 @@ def _anchor_relative_file_uris(config: BuildConfig, build_dir: Path) -> None:
                 step.step_uri = anchored
 
 
+def unanchor_file_uri(uri: Optional[str], build_dir: Optional[Path]) -> Optional[str]:
+    """Undo :func:`_anchor_relative_file_uri`: return ``uri`` as the build.yaml wrote it.
+
+    An absolute ``file://`` URI inside ``build_dir`` is turned back into the
+    build-relative ``file:<path>`` (``file:.`` for ``build_dir`` itself).  The
+    anchored form names the build's per-run copy, whose path changes with every
+    build, so anything compared across builds (e.g. the target definition hash
+    used to skip targets that already ran) must use this form instead.
+
+    Args:
+        uri: An ``environment_uri`` or ``step_uri``, possibly anchored.
+        build_dir: The build's working copy of the build.yaml's directory, or
+            ``None`` when the build has none.
+
+    Returns:
+        The build-relative URI, or ``uri`` unchanged when it isn't inside
+        ``build_dir``.
+    """
+    if not uri or build_dir is None:
+        return uri
+    prefix = f"{FILE_SCHEME}://"
+    if not uri.startswith(prefix):
+        return uri
+    path = Path(uri[len(prefix) :])
+    root = build_dir.resolve()
+    if path != root and root not in path.parents:
+        return uri
+    return f"{FILE_SCHEME}:{path.relative_to(root)}"
+
+
 class Build(BuildEntity):
     """Represents a single build."""
 

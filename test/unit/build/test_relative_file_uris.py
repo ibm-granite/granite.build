@@ -29,7 +29,13 @@ from typing import Optional
 
 import pytest
 
-from gbserver.build.build import Build, _anchor_relative_file_uris, _relative_file_path
+from gbserver.build.build import (
+    Build,
+    _anchor_relative_file_uris,
+    _relative_file_path,
+    unanchor_file_uri,
+)
+from gbserver.build.buildrun import BuildRun
 from gbserver.build.space import Space
 from gbserver.types.buildconfig import BuildConfig
 from gbserver.types.constants import CODE_GBSERVER_BUILTINS_STEPS_GBSTEP_URI
@@ -267,7 +273,83 @@ def _archive_and_extract(fixture: Path, dest: Path) -> Path:
     return dest
 
 
+class TestUnanchorFileUri:
+    @pytest.mark.parametrize(
+        "rel, expected",
+        [(".", "file:."), ("environments/e", "file:environments/e")],
+    )
+    def test_inside_the_build_dir_is_made_relative(self, tmp_path, rel, expected):
+        anchored = f"file://{(tmp_path / rel).resolve()}"
+        assert unanchor_file_uri(anchored, tmp_path) == expected
+
+    @pytest.mark.parametrize(
+        "uri",
+        ["file:///elsewhere/env", "space://environments/e", "file:env", None, ""],
+    )
+    def test_others_are_unchanged(self, tmp_path, uri):
+        assert unanchor_file_uri(uri, tmp_path) == uri
+
+    def test_no_build_dir_is_unchanged(self, tmp_path):
+        uri = f"file://{tmp_path}"
+        assert unanchor_file_uri(uri, None) == uri
+
+    def test_round_trips_an_anchored_step(self, tmp_path, in_dir):
+        build_dir = tmp_path / "build"
+        _write_step(build_dir / "steps" / "s", "s")
+        config = _config(build_dir, "space://environments/e", "file:steps/s")
+        in_dir(tmp_path)
+        _anchor_relative_file_uris(config, build_dir)
+        step_uri = config.targets["t"].steps[0].step_uri
+        assert unanchor_file_uri(step_uri, build_dir) == "file:steps/s"
+
+
+def _write_env_beside_build_yaml(fixture: Path) -> None:
+    """Write a build.yaml using ``environment_uri: file:.`` and its environment.yaml.
+
+    Args:
+        fixture: The folder to write both files into.
+    """
+    fixture.mkdir()
+    (fixture / "environment.yaml").write_text(
+        "name: shipped-with-the-build\ntype: Bash\nconfig: {}\n"
+    )
+    (fixture / "build.yaml").write_text(
+        "granite.build:\n"
+        "  name: env-beside-build-yaml\n"
+        "  targets:\n"
+        "    t:\n"
+        "      environment_uri: file:.\n"
+        "      steps:\n"
+        "        - step_uri: space://steps/command\n"
+        "          config:\n"
+        "            command_config:\n"
+        "              command: echo hi\n"
+    )
+
+
 class TestBuildWithEnvBesideBuildYaml:
+    def test_target_hash_is_the_same_across_builds(self, tmp_path, in_dir, monkeypatch):
+        """Each build has its own workspace, so the anchored env path differs.
+
+        The target definition hash decides whether a target already ran, so it
+        must not change with that path, or the target re-runs every time.
+        """
+        monkeypatch.setenv("GB_ENVIRONMENT", "STANDALONE")
+        fixture = tmp_path / "fixture"
+        _write_env_beside_build_yaml(fixture)
+        in_dir(tmp_path)
+        space = Space(f"file://{_REPO / 'configurations' / 'spaces' / 'local'}")
+
+        hashes, env_uris = [], []
+        for name in ("w1", "w2"):
+            build = Build(build_dir=fixture, space=space, workspace_dir=tmp_path / name)
+            env_uris.append(build.config.targets["t"].environment_uri)
+            run = BuildRun(build)
+            hashes.append(run._BuildRun__compute_target_def_hash(build.targets["t"]))
+
+        assert env_uris[0] != env_uris[1]
+        assert hashes[0] == hashes[1]
+
     def test_file_dot_loads_the_env_shipped_with_the_build(
         self, tmp_path, in_dir, monkeypatch
     ):
@@ -280,22 +362,7 @@ class TestBuildWithEnvBesideBuildYaml:
         """
         monkeypatch.setenv("GB_ENVIRONMENT", "STANDALONE")
         fixture = tmp_path / "fixture"
-        fixture.mkdir()
-        (fixture / "environment.yaml").write_text(
-            "name: shipped-with-the-build\ntype: Bash\nconfig: {}\n"
-        )
-        (fixture / "build.yaml").write_text(
-            "granite.build:\n"
-            "  name: env-beside-build-yaml\n"
-            "  targets:\n"
-            "    t:\n"
-            "      environment_uri: file:.\n"
-            "      steps:\n"
-            "        - step_uri: space://steps/command\n"
-            "          config:\n"
-            "            command_config:\n"
-            "              command: echo hi\n"
-        )
+        _write_env_beside_build_yaml(fixture)
         build_dir = _archive_and_extract(fixture, tmp_path / "extracted" / "b1")
         in_dir(tmp_path)  # neither the fixture nor the extracted build
         space = Space(f"file://{_REPO / 'configurations' / 'spaces' / 'local'}")
