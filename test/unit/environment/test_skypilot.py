@@ -2513,15 +2513,16 @@ class TestInlineConfigMaterialization:
 
         cfg = tmp_path / "config.yaml"
 
-        def write(select):
+        def write(partition):
             cfg.write_text(
-                "lsf:\n  cluster_configs:\n    bluevela:\n      bsub_options:\n"
-                f'        R: "{select}"\n'
+                "slurm:\n  cluster_configs:\n    bluevela:\n      sbatch_options:\n"
+                f'        partition: "{partition}"\n'
             )
 
         def sent():
             return skypilot_config.to_dict().get_nested(
-                ("lsf", "cluster_configs", "bluevela", "bsub_options", "R"), None
+                ("slurm", "cluster_configs", "bluevela", "sbatch_options", "partition"),
+                None,
             )
 
         with pytest.MonkeyPatch.context() as mp:
@@ -2530,15 +2531,15 @@ class TestInlineConfigMaterialization:
             mp.delenv("IS_SKYPILOT_SERVER", raising=False)
             mp.chdir(tmp_path)  # no stray project-level .sky.yaml
             try:
-                write("select[hname!='old-host']")
+                write("gpu-mid")
                 _reload_skypilot_client_config()
-                assert sent() == "select[hname!='old-host']"
+                assert sent() == "gpu-mid"
 
-                write("select[hname!='old-host'&&hname!='new-host']")
-                assert sent() == "select[hname!='old-host']", "the stale copy"
+                write("gpu-long")
+                assert sent() == "gpu-mid", "the stale copy"
 
                 _reload_skypilot_client_config()
-                assert sent() == "select[hname!='old-host'&&hname!='new-host']"
+                assert sent() == "gpu-long"
             finally:
                 mp.undo()
                 skypilot_config.reload_config()
@@ -2554,12 +2555,12 @@ class TestInlineConfigMaterialization:
         from gbserver.environment.skypilot import _reload_skypilot_client_config
 
         cfg = tmp_path / "config.yaml"
-        key = ("lsf", "cluster_configs", "bluevela", "bsub_options", "R")
+        key = ("slurm", "cluster_configs", "bluevela", "sbatch_options", "partition")
 
-        def write(select):
+        def write(partition):
             cfg.write_text(
-                "lsf:\n  cluster_configs:\n    bluevela:\n      bsub_options:\n"
-                f'        R: "{select}"\n'
+                "slurm:\n  cluster_configs:\n    bluevela:\n      sbatch_options:\n"
+                f'        partition: "{partition}"\n'
             )
 
         seen_mid_reload = []
@@ -2575,13 +2576,13 @@ class TestInlineConfigMaterialization:
             mp.delenv("IS_SKYPILOT_SERVER", raising=False)
             mp.chdir(tmp_path)
             try:
-                write("old")
+                write("gpu-mid")
                 _reload_skypilot_client_config()
-                write("new")
+                write("gpu-long")
                 mp.setattr(skypilot_config, "_get_config_from_path", spying_get)
                 _reload_skypilot_client_config()
-                assert seen_mid_reload and set(seen_mid_reload) == {"old"}
-                assert skypilot_config.to_dict().get_nested(key, None) == "new"
+                assert seen_mid_reload and set(seen_mid_reload) == {"gpu-mid"}
+                assert skypilot_config.to_dict().get_nested(key, None) == "gpu-long"
             finally:
                 mp.undo()
                 skypilot_config.reload_config()
@@ -2597,14 +2598,14 @@ class TestInlineConfigMaterialization:
 
         user = tmp_path / "config.yaml"
         user.write_text(
-            "lsf:\n  cluster_configs:\n    bluevela:\n      bsub_options:\n"
-            '        R: "user"\n        q: "normal"\n'
+            "slurm:\n  cluster_configs:\n    bluevela:\n      sbatch_options:\n"
+            '        partition: "user"\n        exclusive: "true"\n'
             "jobs:\n  controller:\n    resources:\n      cpus: 2\n"
         )
         # The project file overrides one nested key and adds another.
         (tmp_path / ".sky.yaml").write_text(
-            "lsf:\n  cluster_configs:\n    bluevela:\n      bsub_options:\n"
-            '        R: "project"\n'
+            "slurm:\n  cluster_configs:\n    bluevela:\n      sbatch_options:\n"
+            '        partition: "project"\n'
             "kubernetes:\n  pod_config:\n    metadata:\n      labels:\n"
             "        team: gb\n"
         )
@@ -2631,7 +2632,8 @@ class TestInlineConfigMaterialization:
         assert ours == theirs
         assert (
             theirs[0].get_nested(
-                ("lsf", "cluster_configs", "bluevela", "bsub_options", "R"), None
+                ("slurm", "cluster_configs", "bluevela", "sbatch_options", "partition"),
+                None,
             )
             == "project"
         ), "the project layer did not load; the test proves nothing"

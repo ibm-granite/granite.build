@@ -490,45 +490,14 @@ class TestLsfProbe:
         probe.assert_not_called()
 
 
-class TestLsfJobAlive:
-    """The probe itself, against a fake LsfClient."""
+class TestLsfJobName:
+    """The tracker's LSF job-name bookkeeping.
 
-    def _run(self, states=None, error=None, func=None):
-        client = MagicMock()
-        if error is not None:
-            client.get_jobs_state_by_name.side_effect = error
-            client.cancel_jobs_by_name.side_effect = error
-        else:
-            client.get_jobs_state_by_name.return_value = states
-        ssh_cfg = MagicMock()
-        ssh_cfg.lookup.return_value = {"hostname": "login4", "user": "u"}
-        with (
-            patch("sky.adaptors.lsf.LsfClient", return_value=client),
-            patch("sky.provision.lsf.utils.get_lsf_ssh_config", return_value=ssh_cfg),
-        ):
-            result = (func or skypilot_mod._lsf_job_alive)("bluevela", JOB)
-        return result, client
-
-    def test_running_job_is_alive(self):
-        result, client = self._run(["RUN"])
-        assert result is True
-        client.get_jobs_state_by_name.assert_called_once_with(JOB)
-
-    def test_unrecorded_job_name_falls_back_to_skypilots_rewriting(self):
-        """Only when a launch recorded no name: bjobs must then look up the
-        name SkyPilot's LSF provisioner passes to ``bsub -J``, its
-        cluster_name_on_cloud, built from a display name that exercises the
-        rewriting (case, ``_``, ``.``)."""
-        pytest.importorskip("sky")
-        from sky.utils import common_utils
-
-        display = "gb-My_Build.v2-train-3168aa02-123"
-        tracker = skypilot_mod._PollFailureTracker(
-            display, grace=0, ceiling=0, ssh_hpc=True, lsf_cluster="bluevela"
-        )
-        assert tracker.lsf_job_name == (
-            f"gb-my-build-v2-train-3168aa02-123-{common_utils.get_user_hash()}"
-        )
+    The bjobs/bkill client-level tests against a fake LsfClient were dropped
+    with the gb-sky/v0.14 pin: that fork line carries no LSF cloud, and LSF
+    support is going away upstream. SLURM launches have no probe by design --
+    the grace period alone ends them (TestGracePeriod's slurm tests).
+    """
 
     def test_recorded_job_name_wins(self):
         tracker = skypilot_mod._PollFailureTracker(
@@ -540,34 +509,6 @@ class TestLsfJobAlive:
             lsf_job_name=JOB,
         )
         assert tracker.lsf_job_name == JOB
-
-    def test_bkill_targets_the_same_job(self):
-        result, client = self._run(func=skypilot_mod._lsf_cancel_job)
-        assert result is True
-        client.cancel_jobs_by_name.assert_called_once_with(JOB)
-
-    def test_bkill_ssh_failure_is_false(self):
-        result, _ = self._run(
-            error=RuntimeError("return code 255"), func=skypilot_mod._lsf_cancel_job
-        )
-        assert result is False
-
-    def test_unknown_host_state_is_alive(self):
-        """UNKWN is LSF losing contact with the execution host -- the network
-        trouble the grace rides out -- not the job ending."""
-        assert self._run(["UNKWN"])[0] is True
-
-    def test_provisioning_job_is_alive(self):
-        assert self._run(["PROV"])[0] is True
-
-    def test_no_job_is_gone(self):
-        assert self._run([])[0] is False
-
-    def test_finished_job_is_gone(self):
-        assert self._run(["EXIT"])[0] is False
-
-    def test_ssh_failure_is_unknown(self):
-        assert self._run(error=RuntimeError("return code 255"))[0] is None
 
 
 @pytest.mark.asyncio
