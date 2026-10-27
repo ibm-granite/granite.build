@@ -161,10 +161,10 @@ and `validation` are each a list of raw JSON rows bounded by `preview_rows`. `vi
 still precomputing, so empty `train`/`validation` there mean "not ready yet" rather than
 "genuinely empty".
 
-A dataset whose `artifact_url` is an `hf://` repo the app did not push (for example a public
-dataset a training run registered through the api-bridge) is previewed **anonymously**: the
-server's HF token is sent only to the app's own `..._<dataset id[:8]>` repos (inside
-`AUTOTUNEX_HF_NAMESPACE` when that is set), so a private, gated or missing foreign repo has no
+The server's HF token is sent only to a repo whose owner is `AUTOTUNEX_HF_NAMESPACE` (the org the
+app pushes to) or is listed in `AUTOTUNEX_HF_IMPORT_NAMESPACES`. A dataset whose `artifact_url`
+names any other owner (for example a public dataset a training run registered through the
+api-bridge) is previewed **anonymously**, so a private, gated or missing foreign repo has no
 preview: empty `train`/`validation` with `viewer_ready: true`.
 
 ```json

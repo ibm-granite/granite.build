@@ -25,6 +25,7 @@ def _huggingface(settings: Settings) -> HuggingFaceStorageBackend:
         hf_token_env=settings.hf_token_env,
         gb_token_env=settings.gb_token_env,
         hf_namespace=settings.hf_namespace,
+        hf_import_namespaces=settings.hf_import_namespaces,
         hf_preview_enabled=settings.hf_preview_enabled,
         hf_viewer_base_url=settings.hf_viewer_base_url,
         hf_viewer_timeout_seconds=settings.hf_viewer_timeout_seconds,
