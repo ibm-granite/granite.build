@@ -689,18 +689,48 @@ async def test_preview_sends_the_token_only_to_a_configured_owner(
     assert all(("authorization" in r.headers) is sends_token for r in seen)
 
 
-async def test_preview_empty_when_token_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_preview_of_a_configured_owner_reads_anonymously_when_token_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no token there is nothing to protect, so a public repo still previews."""
+    monkeypatch.delenv(HF_ENV, raising=False)
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/splits":
+            return httpx.Response(200, json={"splits": [{"config": "default", "split": "train"}]})
+        return httpx.Response(200, json={"rows": [{"row": {"a": 1}}]})
+
+    async with _viewer_client(handler) as client:
+        preview = await _backend(http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url=VALID_URL,
+            rows=10,
+        )
+
+    assert preview.train == [{"a": 1}]
+    assert seen and all("authorization" not in r.headers for r in seen)
+
+
+async def test_preview_of_a_configured_owner_refused_without_a_token_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A private own repo with no token set has no preview; waiting will not change that."""
     monkeypatch.delenv(HF_ENV, raising=False)
 
-    preview = await _backend().preview(
-        dataset_id=DATASET_ID,
-        name="finance",
-        data_format="jsonl",
-        artifact_url=VALID_URL,
-        rows=10,
-    )
+    async with _viewer_client(lambda request: httpx.Response(401)) as client:
+        preview = await _backend(http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url=VALID_URL,
+            rows=10,
+        )
 
-    assert preview == DatasetPreview(train=[], validation=[])
+    assert preview == DatasetPreview(train=[], validation=[], viewer_ready=True)
 
 
 async def test_preview_never_raises_on_unexpected_error(
