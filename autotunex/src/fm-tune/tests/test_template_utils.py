@@ -104,6 +104,10 @@ def test_model_display_name(path, name):
         ("/c/data/train-00000-of-00001.parquet", "parquet"),
         ("finance_train.JSONL", "jsonl"),
         ("/c/train.csv", "csv"),
+        # aliases mapped the way the main service's upload path maps them
+        ("/c/train.pq", "parquet"),
+        ("/c/train.json", "jsonl"),
+        ("/c/train.txt", None),
         ("/c/train", None),
     ],
 )
