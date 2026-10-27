@@ -594,7 +594,25 @@ async def test_preview_reads_a_foreign_repo_with_no_token_set(
     assert preview.train == [{"a": 1}]
 
 
-@pytest.mark.parametrize("status", [401, 403, 404])
+async def test_preview_of_an_unindexed_foreign_repo_is_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 404 on an anonymous read can be a new public repo the viewer has not indexed."""
+    monkeypatch.setenv(HF_ENV, "hf_tok")
+
+    async with _viewer_client(lambda request: httpx.Response(404)) as client:
+        preview = await _backend(http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url="hf:///datasets/some-org/new_public_ds",
+            rows=10,
+        )
+
+    assert preview.viewer_ready is False
+
+
+@pytest.mark.parametrize("status", [401, 403])
 async def test_preview_of_a_refused_foreign_repo_is_empty_not_pending(
     monkeypatch: pytest.MonkeyPatch, status: int
 ) -> None:
