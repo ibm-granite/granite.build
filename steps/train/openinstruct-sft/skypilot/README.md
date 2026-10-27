@@ -74,6 +74,7 @@ unrendered-binding detector). `**/*.md` is listed so the docs can show `{{ ... }
 | Open-Instruct | allenai/open-instruct tag v0.3.0, commit `26de99604002d6a7b25a2c5f2ee880e388a21dca` (Apache-2.0), at `/opt/open-instruct`. The build fetches exactly that commit and fails if `HEAD` differs. |
 | Training stack | `uv sync --frozen` from Open-Instruct's own `uv.lock` into `/opt/open-instruct/.venv`. |
 | clearml | `clearml==2.1.12`, installed into the same venv. |
+| Security patches | On top of the frozen lock, in the same install RUN: `vllm` uninstalled (the fixed release needs torch 2.11; SFT does not use it); `pillow`, `nltk`, `litellm`, `PyJWT`, `Authlib`, `fastmcp`, `anyio`, `GitPython`, `certifi`, `wandb` upgraded to their first fixed releases (versions pinned in the Dockerfile and `test/test_dockerfile.py`). `litellm` and `wandb` therefore leave upstream's pins. The NVIDIA Nsight Compute profiler is purged from the CUDA base. |
 | Step scripts | `src/` at `/opt/openinstruct-sft/`. |
 
 Why `finetune.py`: it is deprecated upstream in favour of `olmo_core_finetune.py`,
@@ -113,8 +114,17 @@ Scan every image before `make publish-image`:
 1. Run the team's container scanner on the built image.
 2. As a stop-gap, run `trivy image --severity CRITICAL,HIGH <ref>`.
 3. Do not publish with a fixable CRITICAL in a package the Dockerfile controls (the
-   apt layer, clearml, the step scripts).
+   apt layer, clearml, the security-patched venv packages listed under Image, the
+   step scripts).
 4. Record the CRITICAL and HIGH counts in the PR.
+
+A fixable CRITICAL in a package that comes from upstream's lock is fixed by
+upgrading that package on top of `uv sync --frozen` in the install RUN (or removing
+it when SFT does not use it and the fix would move the training stack), then
+rebuilding and rescanning. Result for `oi-v0.3.0-2` (trivy, CRITICAL+HIGH): 0
+fixable CRITICAL; 18 CRITICAL without a fix, all in Ubuntu's `linux-libc-dev`
+(kernel UAPI headers, needed by DeepSpeed's JIT build); 585 HIGH, 66 of them
+fixable (57 Python packages, 8 jar, 1 Go binary), tracked as a follow-up.
 
 ### Bumping IMAGE_TAG
 
@@ -156,7 +166,7 @@ anonymously.
 Nested-repo support under a quay user namespace is not yet confirmed. If quay
 refuses the nested name, set `IMAGE_NAME := <flat-name>` in this step's Makefile.
 
-The image is large (CUDA, torch, vllm, DeepSpeed and flash-attn wheels). A local
+The image is large (CUDA, torch, DeepSpeed and flash-attn wheels). A local
 build needs well over 60 GB free in the podman machine.
 
 `make publish-step` refuses a custom-image step until its `IMAGE_REF` exists on the
