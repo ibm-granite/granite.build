@@ -713,15 +713,6 @@ export async function getLineageJobDetail(jobId: string): Promise<LineageJobDeta
   }
 }
 
-// POST /lineage/normalize: each URI to the identity lineage_uri and the index key
-// on ("" when it cannot be normalized), so URIs spelled as a build.yaml spells them
-// match registry artifacts without the UI copying the backend's rule.
-export async function normalizeLineageUris(uris: string[]): Promise<Record<string, string>> {
-  if (!uris.length) return {}
-  const { data } = await client.post<{ uris: Record<string, string> }>('/lineage/normalize', { uris })
-  return data.uris ?? {}
-}
-
 export async function getLineageGraph(params: {
   uri?: string
   job_id?: string

@@ -18,6 +18,10 @@
 
 from types import SimpleNamespace
 
+import pytest
+
+from gbserver.lineage import job_detail as job_detail_mod
+
 from gbserver.lineage.db_service import DBLineageService
 from gbserver.storage.stored_lineage_job import StoredLineageJob
 from gbserver.storage.stored_lineage_row import JobStore, StoredLineageRow
@@ -364,10 +368,13 @@ def test_an_outsider_gets_no_target_ids():
         authorize_entry=lambda entry: False,
     )
     assert result["target_run_uuid"] is None
+    assert not result.get("build_id")
 
 
-def test_an_unconfigured_wandb_shows_only_the_index(monkeypatch):
+def test_an_unconfigured_wandb_shows_only_the_index(monkeypatch, tmp_path):
     monkeypatch.setattr("gbserver.types.constants.GBSERVER_WANDB_API_KEY", "")
+    monkeypatch.delenv("WANDB_API_KEY", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
     # No lister injected: the server's own W&B, which has no key.
     result = DBLineageService(
         storage=Rows([index_row("j1", JobStore.WANDB, **TARGETS)])
@@ -378,3 +385,21 @@ def test_an_unconfigured_wandb_shows_only_the_index(monkeypatch):
     assert result["detail_error"] == "W&B is not configured on this server"
     assert "target" not in result
     assert result["build_id"] == "b1" and result["target_run_uuid"] == "t1"
+
+
+@pytest.mark.parametrize("source", ["env", "netrc"])
+def test_wandb_credentials_outside_the_gbserver_key_count(monkeypatch, tmp_path, source):
+    # wandb.login(key="") falls back to WANDB_API_KEY, then the host's ~/.netrc.
+    monkeypatch.setattr("gbserver.types.constants.GBSERVER_WANDB_API_KEY", "")
+    monkeypatch.setattr(
+        "gbserver.types.constants.GBSERVER_WANDB_BASE_URL", "https://wandb.example.com"
+    )
+    monkeypatch.delenv("WANDB_API_KEY", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    if source == "env":
+        monkeypatch.setenv("WANDB_API_KEY", "k")
+    else:
+        netrc_file = tmp_path / ".netrc"
+        netrc_file.write_text("machine wandb.example.com login user password k\n")
+        netrc_file.chmod(0o600)
+    assert job_detail_mod._wandb_has_credentials() is True

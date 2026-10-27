@@ -61,7 +61,9 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef, soleOfGroup
   // The build's own target run when this server has it; otherwise one rebuilt from
   // what the lineage index captured, so both render through the same drawer.
   const target = job?.target ?? (job ? targetFromJob(job, title) : undefined)
-  const fromIndex = !job?.target && !isLoading
+  // Only once the detail is in: while it loads, neither the steps nor the index
+  // notice is known to apply.
+  const fromIndex = Boolean(job) && !job?.target
 
   return (
     <StepDrawer
@@ -72,7 +74,7 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef, soleOfGroup
       onClose={onClose}
       drawerRef={drawerRef}
       closeButtonRef={closeButtonRef}
-      showSteps={!fromIndex}
+      showSteps={Boolean(job?.target)}
       // Carbon's inline notification: persistent, in context, and not something
       // to act on, so info, low contrast and no close button.
       notice={fromIndex && job && (
@@ -244,7 +246,7 @@ function JobIndexSections({ job, target, jobId, buildId, noAccess }: {
       )}
       <Section title="Lineage">
         <CodeField label="Build ID" value={buildId} fallback={hidden} />
-        <CodeField label="Target run" value={job ? tagValue(job, 'target_run_uuid') : undefined} fallback={hidden} />
+        <CodeField label="Target run" value={targetRunOf(job)} fallback={hidden} />
         <CodeField label="Job ID" value={job?.job_id ?? jobId} />
         {/* Owner and namespace come only from the access-checked detail; the graph
             node and the listing entry do not carry them. */}
@@ -425,6 +427,13 @@ function indexNotice(job: LineageJobDetail): string {
 
 function buildIdOf(job: LineageJobEntry): string | undefined {
   return tagValue(job, 'build_id')
+}
+
+// The detail carries the target run as its own field; a bare listing entry only
+// in its tags.
+function targetRunOf(job: LineageJobEntry | LineageJobDetail | undefined): string | undefined {
+  if (!job) return undefined
+  return ('target_run_uuid' in job && job.target_run_uuid) || tagValue(job, 'target_run_uuid')
 }
 
 function tagValue(job: LineageJobEntry, key: string): string | undefined {

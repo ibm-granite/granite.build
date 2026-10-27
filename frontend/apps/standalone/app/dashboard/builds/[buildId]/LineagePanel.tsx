@@ -15,7 +15,7 @@ import type { ElkExtendedEdge } from 'elkjs'
 import { parse as parseYaml } from 'yaml'
 import { useQuery, useQueries } from '@tanstack/react-query'
 import type { Artifact, Build, BuildStatusDetail } from '@granite-build/ui-core/types'
-import { getArtifact, inferArtifactTypeFromUri, normalizeLineageUris } from '@granite-build/ui-core/api/gbserver'
+import { getArtifact, inferArtifactTypeFromUri } from '@granite-build/ui-core/api/gbserver'
 import { getBuildArchiveFiles } from '@granite-build/ui-core/api/gbserver'
 import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@granite-build/ui-core/components/LineageGraph/Graph'
 import { getHuggingFaceUrl } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
@@ -245,7 +245,6 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // one opens the step details. The step data already rides along on
   // getBuildStatus, so this costs no extra request.
   const [stepDetailTarget, setStepDetailTarget] = React.useState<string | null>(null)
-  const openDrawerKey = stepDetailTarget
 
   // Where focus was before the drawer opened, so we can hand it back on close —
   // otherwise a keyboard user is dropped at the top of the document.
@@ -256,7 +255,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   const graphContainerRef = React.useRef<HTMLDivElement | null>(null)
 
   React.useEffect(() => {
-    if (!openDrawerKey) return
+    if (!stepDetailTarget) return
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       // This is a non-modal drawer — the graph behind it stays interactive — so
@@ -268,7 +267,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [openDrawerKey])
+  }, [stepDetailTarget])
 
   // Focus management for the drawer (role="dialog"): on open, remember the
   // trigger and move focus to the close button; on close, restore focus. This is
@@ -283,9 +282,9 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   const drawerWasOpenRef = React.useRef(false)
   React.useEffect(() => {
     const wasOpen = drawerWasOpenRef.current
-    drawerWasOpenRef.current = Boolean(openDrawerKey)
+    drawerWasOpenRef.current = Boolean(stepDetailTarget)
 
-    if (openDrawerKey) {
+    if (stepDetailTarget) {
       // Opening from closed — record where focus was so we can hand it back.
       // A→B switches (wasOpen already true) keep the original return element.
       if (!wasOpen) {
@@ -312,7 +311,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       graphContainerRef.current?.focus?.({ preventScroll: true })
     }
     drawerReturnFocusRef.current = null
-  }, [openDrawerKey])
+  }, [stepDetailTarget])
 
   const { nodes: rawBuildNodes, links: rawBuildLinks, artifactIds } = React.useMemo(
     () => buildGraphData(buildStatus, plannedTargets, isActive),
@@ -334,31 +333,22 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // names them by the URI in build.yaml. Without folding, an artifact one target
   // produced and a planned one consumes draws twice: the typed UUID node, and a
   // 'Fileset' beside it holding the planned edge.
-  // The match is on the normalized form (the server's normalize_uri, which also
-  // gives lineage_uri), since a build.yaml may spell a URI differently from the
-  // registry: hf:// vs a browser URL, with or without `models/`. One request for
-  // the build's planned URIs, only while planned targets are shown.
-  const plannedUris = React.useMemo(() => artifactIds.filter((id) => !isUUID(id)).sort(), [artifactIds])
-  const { data: normalizedPlanned } = useQuery({
-    queryKey: ['lineage-normalize', plannedUris],
-    queryFn: () => normalizeLineageUris(plannedUris),
-    enabled: plannedUris.length > 0,
-    staleTime: Infinity,
-    retry: false,
-  })
+  // The planned URI is matched as the build.yaml spells it, against both the
+  // registry's recorded uri and its lineage_uri. One build.yaml usually spells one
+  // artifact one way; a miss only leaves a second node, never a wrong merge.
   const plannedUriToUuid = React.useMemo(() => {
-    const byLineageUri = new Map<string, string>()
+    const byUri = new Map<string, string>()
     uuidArtifactIds.forEach((id, i) => {
       const data = artifactQueries[i]?.data
-      for (const uri of [data?.lineage_uri, data?.uri]) if (uri && !byLineageUri.has(uri)) byLineageUri.set(uri, id)
+      for (const uri of [data?.uri, data?.lineage_uri]) if (uri && !byUri.has(uri)) byUri.set(uri, id)
     })
     const map = new Map<string, string>()
-    for (const uri of plannedUris) {
-      const uuid = byLineageUri.get(normalizedPlanned?.[uri] || uri) ?? byLineageUri.get(uri)
-      if (uuid) map.set(uri, uuid)
+    for (const id of artifactIds) {
+      const uuid = isUUID(id) ? undefined : byUri.get(id)
+      if (uuid) map.set(id, uuid)
     }
     return map
-  }, [artifactQueries, uuidArtifactIds, plannedUris, normalizedPlanned])
+  }, [artifactQueries, uuidArtifactIds, artifactIds])
   const { nodes: buildNodes, links: buildLinks } = React.useMemo(
     () => renameElkGraph({ nodes: rawBuildNodes, links: rawBuildLinks }, (id) => plannedUriToUuid.get(id) ?? id),
     [rawBuildNodes, rawBuildLinks, plannedUriToUuid]
@@ -399,8 +389,6 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
 
   // The graph shows what this build did, whole; lineage beyond it is on the
   // artifact page, which a click on an artifact offers to open.
-  const enrichedNodes = enrichedBuildNodes
-  const allLinks = buildLinks
 
   // Navigation state
   const [focusNodeId, setFocusNodeId] = React.useState<string | null>(initialFocusNodeId ?? null)
@@ -413,9 +401,9 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // (showFocusNode is only true there) — this is not click-driven.
   const currentArtifactNode = React.useMemo(
     () => (showFocusNode && initialFocusNodeId
-      ? enrichedNodes.find((n) => n.id === initialFocusNodeId)
+      ? enrichedBuildNodes.find((n) => n.id === initialFocusNodeId)
       : undefined),
-    [showFocusNode, initialFocusNodeId, enrichedNodes]
+    [showFocusNode, initialFocusNodeId, enrichedBuildNodes]
   )
 
   // The node whose step drawer is open. Opening that drawer is what shrinks the
@@ -423,9 +411,9 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // and, unlike currentArtifactNode, it is set on build pages (where the drawer
   // exists) rather than only on artifact pages.
   //
-  // Memoized on `stepDetailTarget` alone, not on `enrichedNodes`: both consumers
+  // Memoized on `stepDetailTarget` alone, not on `enrichedBuildNodes`: both consumers
   // of `selectedNode` read only `.id` (GraphNode's isSelected check, and the
-  // resize compensation's position lookup), and `enrichedNodes` is a fresh array
+  // resize compensation's position lookup), and `enrichedBuildNodes` is a fresh array
   // on every status poll. Depending on it would hand Graph a new object each
   // poll, defeating its React.memo and re-running the nodeElements effect on
   // every tick of a live build with the drawer open.
@@ -452,11 +440,11 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // Guarded on the node set being non-empty so a transient empty layout (first
   // render, or a poll that briefly returns no targets) does not close it either.
   React.useEffect(() => {
-    if (!stepDetailTarget || enrichedNodes.length === 0) return
+    if (!stepDetailTarget || enrichedBuildNodes.length === 0) return
     const nodeId = `${TARGET_NODE_PREFIX}${stepDetailTarget}`
-    if (enrichedNodes.some((n) => n.id === nodeId)) return
+    if (enrichedBuildNodes.some((n) => n.id === nodeId)) return
     setStepDetailTarget(null)
-  }, [stepDetailTarget, enrichedNodes])
+  }, [stepDetailTarget, enrichedBuildNodes])
 
   // A click selects a node. A target (run) node also opens its step details; a registered artifact asks whether to open
   // its page, where its lineage beyond this build is.
@@ -468,7 +456,8 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     setFocusNodeId(node.id)
     const isTarget = node.type === 'Build' && node.id.startsWith(TARGET_NODE_PREFIX)
     setStepDetailTarget(isTarget ? node.id.slice(TARGET_NODE_PREFIX.length) : null)
-    if (node.type === 'Build' || !isUUID(node.id)) return
+    // The page's own artifact is already open.
+    if (node.type === 'Build' || !isUUID(node.id) || node.id === initialFocusNodeId) return
     const uri = artifactUriMap.get(node.id)
     const artifact = artifactQueries[uuidArtifactIds.indexOf(node.id)]?.data
     setArtifactNavNode({ node, artifact, hfUrl: uri ? getHuggingFaceUrl(uri) : null })
@@ -482,9 +471,9 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     graphRef.current?.centerOnNode?.(target)
   }
 
-  const focusNode = focusNodeId ? enrichedNodes.find((n) => n.id === focusNodeId) : undefined
+  const focusNode = focusNodeId ? enrichedBuildNodes.find((n) => n.id === focusNodeId) : undefined
 
-  const noLineage = !loading && !statusError && enrichedNodes.length === 0
+  const noLineage = !loading && !statusError && enrichedBuildNodes.length === 0
 
   return (
     <div className={styles.container}>
@@ -600,9 +589,8 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
             <Graph
               ref={graphRef}
               graphKey={build?.uuid}
-              nodes={enrichedNodes}
-              links={allLinks}
-              allLinks={allLinks}
+              nodes={enrichedBuildNodes}
+              links={buildLinks}
               selectedNode={focusNode ?? currentArtifactNode ?? openDrawerNode}
               showBuildInfo={showBuildInfo}
               onClick={handleNodeClick}

@@ -29,7 +29,10 @@ reason, and the caller still gets everything the index itself recorded.
 from __future__ import annotations
 
 import logging
+import netrc
+import os
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 from gbserver.lineage.attributes import (
     PAYLOAD_EXECUTION_STATS,
@@ -195,6 +198,27 @@ def _default_wandb_runs(job_id: str) -> List[Any]:
     )
 
 
+def _wandb_has_credentials() -> bool:
+    """Whether the default W&B login has a credential to use.
+
+    ``wandb.login(key="")`` falls back to ``WANDB_API_KEY`` and then to the
+    host's ``~/.netrc`` entry, so a server set up either way is configured too.
+    """
+    # pylint: disable=import-outside-toplevel
+    from gbserver.types.constants import (
+        GBSERVER_WANDB_API_KEY,
+        GBSERVER_WANDB_BASE_URL,
+    )
+
+    if GBSERVER_WANDB_API_KEY or os.getenv("WANDB_API_KEY"):
+        return True
+    host = urlparse(GBSERVER_WANDB_BASE_URL).hostname or ""
+    try:
+        return bool(host and netrc.netrc().authenticators(host))
+    except (OSError, netrc.NetrcParseError):
+        return False
+
+
 class _Context:
     def __init__(
         self,
@@ -234,15 +258,12 @@ def fetch_job_detail(
     except ValueError:
         job_store = JobStore.OTHER
     retrieve = dict((first.attributes or {}).get(RETRIEVE) or {})
-    # pylint: disable=import-outside-toplevel
-    from gbserver.types.constants import GBSERVER_WANDB_API_KEY
-
     ctx = _Context(
         admin_storage,
         authorize_build,
         wandb_runs or _default_wandb_runs,
-        # An injected lister brings its own access; the default needs a key.
-        wandb_configured=wandb_runs is not None or bool(GBSERVER_WANDB_API_KEY),
+        # An injected lister brings its own access; the default needs credentials.
+        wandb_configured=wandb_runs is not None or _wandb_has_credentials(),
     )
 
     # Fail closed: the global fields only, unless the caller passes the space

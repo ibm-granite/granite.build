@@ -11,7 +11,7 @@ import BuildLineagePanel from '../../builds/[buildId]/LineagePanel'
 import styles from '../../builds/[buildId]/LineagePanel.module.scss'
 import JobDrawer from '@granite-build/ui-core/components/StepDrawer/JobDrawer'
 import Graph, { type GraphHandle } from '@granite-build/ui-core/components/LineageGraph/Graph'
-import { depthForNextLevel, indexGraphToElk, type IndexElkNode, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
+import { depthForNextLevel, groupListingRun, indexGraphToElk, type IndexElkNode, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import { useLineageExpansion } from '@granite-build/ui-core/components/LineageGraph/useLineageExpansion'
 
 // ── URI-based artifact lineage panel (lineage index) ──────────────────────────
@@ -29,6 +29,8 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
   const graphRef = React.useRef<GraphHandle>(null)
   const [rendered, setRendered] = React.useState(false)
   const [focusNodeId, setFocusNodeId] = React.useState<string | null>(null)
+  // A job (run) node opens its details (see JobDrawer).
+  const [jobNodeId, setJobNodeId] = React.useState<string | null>(null)
   const [showBuildInfo, setShowBuildInfo] = React.useState(true)
 
   // The server normalizes any spelling of the URI; lineage_uri is the id it keys on.
@@ -54,6 +56,17 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
   )
   const links = merged.links
   const activeId = focusNodeId ?? rootId
+
+  // A lone run the merge drops in favour of a group listing it hands its
+  // selection, and its open drawer, to that group.
+  React.useEffect(() => {
+    const regroup = (id: string | null) => {
+      if (!id || nodes.some((n) => n.id === id)) return id
+      return groupListingRun(nodes, id) ?? id
+    }
+    setFocusNodeId(regroup)
+    setJobNodeId(regroup)
+  }, [nodes])
 
   // The node the buttons expand from is the one highlighted: the artifact itself
   // until another node is clicked.
@@ -83,8 +96,6 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
   const noLineage = !isLoading && !error && nodes.length <= 1
   const busy = expansion.loading !== null
 
-  // A job (run) node opens its details (see JobDrawer).
-  const [jobNodeId, setJobNodeId] = React.useState<string | null>(null)
   const jobNode = React.useMemo(
     () => (jobNodeId ? (nodes.find((n) => n.id === jobNodeId) as IndexElkNode | undefined) : undefined),
     [nodes, jobNodeId]
@@ -233,7 +244,6 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
               centerNodeId={rootId}
               nodes={nodes}
               links={links}
-              allLinks={links}
               selectedNode={activeNode}
               onClick={(node) => {
                 setFocusNodeId(node.id)

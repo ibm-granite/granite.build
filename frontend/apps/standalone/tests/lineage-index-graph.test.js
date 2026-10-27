@@ -156,6 +156,27 @@ describe('addsNothing', () => {
     const rename = (id) => (id === 'hf://o/m' ? 'uuid-1' : id)
     assert.equal(addsNothing(result(['hf://o/m']), ['hf://o/m'], rename), true)
   })
+
+  it('does not count a lone run that a group on screen already lists', () => {
+    const group = { id: 'runs:g', type: 'Build', indexNode: { metadata: { jobs_query: { job_ids: ['J1', 'J2'] } } } }
+    const res = { root_id: 'run:J1', nodes: [{ id: 'run:J1', node_type: 'run', name: 'J1', metadata: {} }], edges: [], truncated: false }
+    assert.equal(addsNothing(res, [group]), true)
+    assert.equal(addsNothing(res, ['runs:g']), false)
+  })
+})
+
+describe('groupListingRun', () => {
+  let groupListingRun
+  before(async () => {
+    ;({ groupListingRun } = await import(path.join(ROOT, '../../packages/ui-core/components/LineageGraph/indexGraph.ts')))
+  })
+  const group = { id: 'runs:g', indexNode: { metadata: { jobs_query: { job_ids: ['J1'] } } } }
+
+  it('finds the group a dropped run moves its selection to', () => {
+    assert.equal(groupListingRun([group], 'run:J1'), 'runs:g')
+    assert.equal(groupListingRun([group], 'run:J9'), undefined)
+    assert.equal(groupListingRun([group], 's3://b/k'), undefined)
+  })
 })
 
 describe('renameElkGraph', () => {

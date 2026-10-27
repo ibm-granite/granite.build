@@ -33,7 +33,6 @@ from gbserver.lineage.openlineage_models import (
     TagSearchRequest,
 )
 from gbserver.lineage.openlineage_service import LineageService, LineageServiceFactory
-from gbserver.lineage.uri_normalize import normalize_uri
 from gbserver.lineage.walk import DEFAULT_MAX_NODES_PER_LEVEL
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_build import StoredBuild
@@ -330,38 +329,6 @@ def search_lineage_events(request: Request, body: TagSearchRequest):
         offset=body.offset,
         runs=page,
     )
-
-
-# The most URIs one /normalize call accepts: a build's planned inputs and outputs.
-_MAX_NORMALIZE_URIS = 1000
-
-
-class NormalizeUrisRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    uris: list[str]
-
-
-class NormalizeUrisResponse(BaseModel):
-    # Each requested URI to its lineage identity; "" when it cannot be normalized.
-    uris: dict[str, str]
-
-
-@lineage_api.post("/normalize", tags=["lineage-index"])
-def normalize_uris(body: NormalizeUrisRequest) -> NormalizeUrisResponse:
-    """Map URIs to the identity the lineage index and ``lineage_uri`` key on.
-
-    A client holding URIs as a build.yaml spells them (``hf://`` vs a browser URL,
-    with or without ``models/``) matches them against registry artifacts by this
-    form rather than by string, so the rule lives only in :func:`normalize_uri`.
-    Pure string work -- nothing is read -- so there is nothing to authorize.
-    """
-    if len(body.uris) > _MAX_NORMALIZE_URIS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"At most {_MAX_NORMALIZE_URIS} URIs per request",
-        )
-    return NormalizeUrisResponse(uris={u: normalize_uri(u) for u in body.uris})
 
 
 # A GET with filters is what a UI wants for a shareable, bookmarkable lineage view,

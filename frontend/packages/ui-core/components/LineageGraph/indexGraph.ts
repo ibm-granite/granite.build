@@ -164,16 +164,22 @@ export function mergeElkGraphs(a: ElkGraph, b: ElkGraph): ElkGraph {
 // inside a `runs:` group from another. The group lists its jobs and has the same
 // endpoints, so the lone run node and its links are dropped in its favour.
 function dropGroupedRuns(graph: ElkGraph): ElkGraph {
-  const grouped = new Set<string>()
-  for (const n of graph.nodes as IndexElkNode[]) {
-    if (n.id.startsWith('runs:')) for (const id of groupJobIds(n.indexNode?.metadata)) grouped.add(`run:${id}`)
-  }
+  const grouped = groupedRunIds(graph.nodes)
   if (!grouped.size) return graph
   const endpoint = (port: string | undefined) => port?.replace(/-(input|output)$/, '') ?? ''
   return {
     nodes: graph.nodes.filter((n) => !grouped.has(n.id)),
     links: graph.links.filter((l) => !grouped.has(endpoint(l.sources[0])) && !grouped.has(endpoint(l.targets[0]))),
   }
+}
+
+// The `run:<id>` ids every `runs:` group in `nodes` lists.
+function groupedRunIds(nodes: ElkNodeEx[]): Set<string> {
+  const grouped = new Set<string>()
+  for (const n of nodes as IndexElkNode[]) {
+    if (n.id.startsWith('runs:')) for (const id of groupJobIds(n.indexNode?.metadata)) grouped.add(`run:${id}`)
+  }
+  return grouped
 }
 
 // `graph` with every node id passed through `rename`, so two ids for one artifact
@@ -199,15 +205,30 @@ export function renameElkGraph(graph: ElkGraph, rename: (id: string) => string):
 }
 
 // Whether an expansion's response added nothing to the graph that was on screen
-// when it was asked (`known`, its node ids). Both sides go through `rename`, so the
-// answer follows a rename that lands after the response: a node that read as new
-// under its raw id stops counting once it folds onto one already shown.
+// when it was asked (`known`, its nodes or their ids). Both sides go through
+// `rename`, so the answer follows a rename that lands after the response: a node
+// that read as new under its raw id stops counting once it folds onto one already
+// shown. A lone run that a group lists is not new either: the merge drops it (see
+// dropGroupedRuns), so it never reaches the screen.
 export function addsNothing(
   result: LineageGraphResult,
-  known: Iterable<string>,
+  known: Iterable<string | ElkNodeEx>,
   rename: (id: string) => string = (id) => id,
 ): boolean {
   if (result.truncated) return false
-  const onScreen = new Set(Array.from(known, rename))
-  return indexGraphToElk(result, rename).nodes.every((n) => onScreen.has(n.id))
+  const knownNodes = Array.from(known, (k) => (typeof k === 'string' ? ({ id: k } as ElkNodeEx) : k))
+  const onScreen = new Set(knownNodes.map((n) => rename(n.id)))
+  const incoming = indexGraphToElk(result, rename).nodes
+  const grouped = groupedRunIds([...knownNodes, ...incoming])
+  return incoming.every((n) => onScreen.has(n.id) || grouped.has(n.id))
+}
+
+// The `runs:` group that lists the lone run `id`, when one in `nodes` does: the
+// node a selection on that run moves to once the merge drops it.
+export function groupListingRun(nodes: ElkNodeEx[], id: string): string | undefined {
+  if (!id.startsWith('run:')) return undefined
+  const jobId = id.slice('run:'.length)
+  return (nodes as IndexElkNode[]).find(
+    (n) => n.id.startsWith('runs:') && groupJobIds(n.indexNode?.metadata).includes(jobId),
+  )?.id
 }

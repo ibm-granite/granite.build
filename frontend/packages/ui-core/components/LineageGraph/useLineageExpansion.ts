@@ -1,16 +1,17 @@
 import * as React from 'react'
 import { getLineageGraph, type LineageGraphResult } from '../../api/gbserver'
 import { addsNothing, expansionSeed, indexGraphToElk, mergeElkGraphs, type ElkGraph } from './indexGraph'
+import type { ElkNodeEx } from './Graph'
 
 export type ExpandDirection = 'upstream' | 'downstream'
 
 const EMPTY: ElkGraph = { nodes: [], links: [] }
 
-// The last response for one `direction|seed`, with the ids on screen when it was
+// The last response for one `direction|seed`, with the nodes on screen when it was
 // asked for, so whether it added anything can be re-judged under a later rename.
 interface Expansion {
   result: LineageGraphResult
-  known: string[]
+  known: ElkNodeEx[]
 }
 
 // Grows a lineage graph through GET /lineage/graph, seeded from the selected node.
@@ -77,7 +78,7 @@ export function useLineageExpansion(rename?: (id: string) => string, groupRuns =
       const result = await getLineageGraph({ ...expansionSeed(seedId, metadata), direction, depth, group_runs: groupRuns })
       if (!current()) return
       setUnexpanded(result.truncated ? result.unexpanded ?? 0 : 0)
-      const entry: Expansion = { result, known: known.nodes.map((n) => n.id) }
+      const entry: Expansion = { result, known: known.nodes }
       setExpansions((prev) => {
         const next = new Map(prev)
         if (result.truncated) {
