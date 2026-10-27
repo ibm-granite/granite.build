@@ -67,7 +67,8 @@ class UserTable(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid36, primary_key=True, default=uuid4)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
-    role: Mapped[str | None] = mapped_column(String(50), default="user")
+    # server_default: the api-bridge's insert_user omits role (Alembic 5e1d2c7a9b40).
+    role: Mapped[str | None] = mapped_column(String(50), default="user", server_default="user")
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow, onupdate=utcnow)
     last_login_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True, default=None)
