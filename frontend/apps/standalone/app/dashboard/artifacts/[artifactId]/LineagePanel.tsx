@@ -92,7 +92,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
   const unexpanded = expansion.extra.nodes.length
     ? expansion.unexpanded
     : (data?.truncated ? data.unexpanded ?? 0 : 0)
-  // GET /lineage/graph never 404s: an empty graph means nothing was recorded.
+  // POST /lineage/graph never 404s: an empty graph means nothing was recorded.
   const noLineage = !isLoading && !error && nodes.length <= 1
   const busy = expansion.loading !== null
 

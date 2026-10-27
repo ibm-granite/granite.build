@@ -16,7 +16,7 @@
 
 """Serve artifact lineage out of the local index instead of W&B.
 
-``GET /lineage/graph`` delegates to :meth:`DBLineageService.query_graph`, which
+``POST /lineage/graph`` delegates to :meth:`DBLineageService.query_graph`, which
 answers from the lineage table, so a deployment with no W&B still has lineage.
 
 Only the graph is implemented here. The event-emission and tag-search methods of

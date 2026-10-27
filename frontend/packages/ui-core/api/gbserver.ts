@@ -599,7 +599,7 @@ export async function getArtifactModelCard(artifactId: string): Promise<string> 
   return data.content ?? ''
 }
 
-// ── Full lineage graph (GET /lineage/graph) ─────────────────────────────────────
+// ── Full lineage graph (POST /lineage/graph) ────────────────────────────────────
 
 export interface LineageGraphNode {
   id: string
@@ -661,7 +661,7 @@ export async function getLineageJobs(params: {
   uri?: string
   job_id?: string
   // With `uri`: only the jobs that read `uri` and wrote `output` -- the runs behind
-  // a grouped node of GET /lineage/graph (metadata.jobs_query).
+  // a grouped node of POST /lineage/graph (metadata.jobs_query).
   output?: string
   // With `uri`: the side of its row that is empty -- 'input' lists the jobs that wrote
   // `uri` from nothing recorded, 'output' those that read it and recorded no output.
@@ -717,9 +717,8 @@ export async function getLineageGraph(params: {
   uri?: string
   job_id?: string
   // Seed from exactly these jobs -- the runs behind a grouped node
-  // (metadata.jobs_query.job_ids). Sent in a POST body: in a query string a few
-  // hundred ids overrun proxy URL limits (414), and splitting them across requests
-  // would group the runs per request instead of across the whole set.
+  // (metadata.jobs_query.job_ids). All in one request: splitting them would group
+  // the runs per request instead of across the whole set.
   job_ids?: string[]
   direction?: string
   depth?: number
@@ -727,19 +726,11 @@ export async function getLineageGraph(params: {
   // false returns one node per job.
   group_runs?: boolean
 }): Promise<LineageGraphResult> {
-  if (params.job_ids?.length) {
-    const { depth, ...rest } = params
-    const { data } = await client.post<LineageGraphResult>(
-      '/lineage/graph',
-      { ...rest, max_depth: depth },
-      { timeout: 45_000 },
-    )
-    return data
-  }
-  const { data } = await client.get<LineageGraphResult>('/lineage/graph', {
-    params,
-    paramsSerializer: { indexes: null },
-    timeout: 45_000,
-  })
+  const { depth, ...rest } = params
+  const { data } = await client.post<LineageGraphResult>(
+    '/lineage/graph',
+    { ...rest, max_depth: depth },
+    { timeout: 45_000 },
+  )
   return data
 }

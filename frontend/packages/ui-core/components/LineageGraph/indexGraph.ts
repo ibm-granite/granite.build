@@ -8,7 +8,7 @@ export interface ElkGraph {
 }
 
 // An ElkNodeEx that came from the lineage index, keeping the wire node so a later
-// click can seed another GET /lineage/graph from it.
+// click can seed another POST /lineage/graph from it.
 export interface IndexElkNode extends ElkNodeEx {
   indexNode?: LineageGraphNode
 }
@@ -23,7 +23,7 @@ export function artifactTypeToNodeType(artifactType: string | null | undefined):
   }
 }
 
-// Seed for expanding a node through GET /lineage/graph. Run nodes are `run:<job_id>`;
+// Seed for expanding a node through POST /lineage/graph. Run nodes are `run:<job_id>`;
 // grouped jobs are `runs:<inputs> → <outputs>` (several endpoints on a side joined by
 // ` + `, an empty side as `∅`; `runs:<uri>` for in-place rewrites). A group that
 // lists its jobs (`metadata.jobs_query.job_ids`) is seeded from all of them, so every
@@ -53,7 +53,7 @@ function groupJobIds(metadata?: Record<string, unknown>): string[] {
   return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string' && id !== '') : []
 }
 
-// The `depth` to ask GET /lineage/graph for so it returns exactly one level past
+// The `depth` to ask POST /lineage/graph for so it returns exactly one level past
 // the `shown` ones. The API counts depth from its seeds, and a job is seeded from
 // every endpoint of that execution -- already one hop out -- so depth d from a run
 // (or a group seeded by its jobs) reaches d + 1 levels, but d from an artifact

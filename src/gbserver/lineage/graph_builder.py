@@ -17,7 +17,7 @@
 """Turn walked lineage rows into the graph dict the API already speaks.
 
 The wire shape is ``{root_id, nodes, edges, truncated, unexpanded}`` with artifact
-and run nodes and directed edges between them, which ``GET /lineage/graph`` returns
+and run nodes and directed edges between them, which ``POST /lineage/graph`` returns
 as a ``LineageGraphResponse`` for the frontend to render.
 
 The shape conversion is the real work here, because the storage model and the wire

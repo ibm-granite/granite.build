@@ -16,7 +16,7 @@ interface Expansion {
   known: Array<string | ElkNodeEx>
 }
 
-// Grows a lineage graph through GET /lineage/graph, seeded from the selected node.
+// Grows a lineage graph through POST /lineage/graph, seeded from the selected node.
 // The caller says how deep to ask -- one level past what is already on screen for
 // that node (see visibleLevels) -- so the count follows the graph, not the clicks.
 // `groupRuns: false` asks for one node per job, matching an ungrouped base graph.
