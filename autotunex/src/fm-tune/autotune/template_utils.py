@@ -16,12 +16,15 @@
 import os
 import re
 
-_HF_CACHE_RE = re.compile(r"^/gb-read-write/hfcache/([^/]+)/([^/]+)/[^/]+/[^/]+$")
-# Local gb server cache, e.g. ~/.cache/gbserver/hf/{org}/{dataset}/{revision}/{filename} —
+# The cluster cache: /gb-read-write/hfcache/{org}/{dataset}/{hash}/{file}, the file
+# possibly in a subdirectory (gbserver pulls the whole repo, e.g. data/train-*.parquet).
+_HF_CACHE_RE = re.compile(r"^/gb-read-write/hfcache/([^/]+)/([^/]+)/[^/]+/.+$")
+# gbserver's pull cache, <cache_dir>/{org}/{dataset}/{revision}/{file}, with cache_dir
+# ~/.cache/gbserver/hf on bash and <shared_workdir>/hf_cache by default on SkyPilot.
 # gbserver names the dir after the repo verbatim (a trailing _<hex>, as on the app's own
 # <name>_<id8> repos, is part of the repo name, so it is kept), and the file may sit in a
-# subdirectory of the revision (gbserver pulls the whole repo, e.g. data/train-*.parquet).
-_LOCAL_GBSERVER_HF_CACHE_RE = re.compile(r"^.*/\.cache/gbserver/hf/([^/]+)/([^/]+)/[^/]+/.+$")
+# subdirectory of the revision. A cache_path set in the environment is not recognised.
+_LOCAL_GBSERVER_HF_CACHE_RE = re.compile(r"^.*/(?:\.cache/gbserver/hf|hf_cache)/([^/]+)/([^/]+)/[^/]+/.+$")
 
 
 def lakehouse_path_to_uri(path: str, strip_last_n: int = 1) -> tuple[str, str]:
@@ -79,17 +82,25 @@ def lakehouse_path_to_uri(path: str, strip_last_n: int = 1) -> tuple[str, str]:
 
 # A model snapshot gbserver pulled from HF: <cache_dir>/{owner}/{repo}/{revision}, with
 # cache_dir ~/.cache/gbserver/hf on bash and <shared_workdir>/hf_cache by default on SkyPilot.
-_GBSERVER_HF_MODEL_RE = re.compile(r"^.*/(?:\.cache/gbserver/hf|hf_cache)/([^/]+)/([^/]+)/[^/]+$")
+_GBSERVER_HF_MODEL_RE = re.compile(r"^.*/(?:\.cache/gbserver/hf|hf_cache)/([^/]+)/([^/]+)/([^/]+)$")
 
 
 def model_display_name(model_name_or_path: str) -> str:
     """Return ``owner/repo`` for a gbserver HF model cache path, else the input unchanged.
 
     The step binds ``base_model`` as its local snapshot dir, so ``--model_name_or_path``
-    is a path; this keeps the path out of the AutoTuneX job's ``model`` field.
+    is a path; this keeps the path out of the AutoTuneX job's ``model`` field. A
+    revision other than ``main`` is kept as ``owner/repo@revision``, so the job does
+    not read as the model at ``main``. A path is only taken for a snapshot when the
+    dir holds the ``.cache/huggingface`` folder an HF download writes, so a local
+    checkpoint that happens to sit under an ``hf_cache`` dir stays a path.
     """
-    match = _GBSERVER_HF_MODEL_RE.match(model_name_or_path.strip().rstrip("/"))
-    return f"{match.group(1)}/{match.group(2)}" if match else model_name_or_path
+    path = model_name_or_path.strip().rstrip("/")
+    match = _GBSERVER_HF_MODEL_RE.match(path)
+    if not match or not os.path.isdir(os.path.join(path, ".cache", "huggingface")):
+        return model_name_or_path
+    owner, repo, revision = match.groups()
+    return f"{owner}/{repo}" if revision == "main" else f"{owner}/{repo}@{revision}"
 
 
 # Mirrors AutoTuneX's datasets_io._EXTENSION_TO_FORMAT, so a bridge-registered
