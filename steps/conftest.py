@@ -124,11 +124,15 @@ def _check_test_env() -> Iterator[None]:
 
     Keeps its refusal to run with ``GB_ENVIRONMENT=PROD`` but drops its
     ``check_cloud_config()`` for ``ibm``-marked tests, which asserts that
-    ``IBM_CLOUD_API_KEY`` and a GitHub token are set. ``ibm`` step tests use the
-    local space and an SSH key file (e.g. the lsf distill-* and nemo-rl slurm-sft
-    tests), so they don't need those. A test that does need a credential gates on
-    it itself (e.g. the byoc slurm-bluevela test's ``IBM_CLOUD_API_KEY`` skip). As
-    the fixture closest to ``steps/``, this one is used instead of the plugin's.
+    ``IBM_CLOUD_API_KEY`` and a GitHub token are set. ``ibm`` step tests don't
+    use those: they run on the space ``make space`` renders (``type: local``
+    secret manager) and reach the cluster with an SSH key file, which each one
+    gates on with its own ``skipif`` (e.g. the lsf distill-* tests and the
+    slurm-bluevela tests of byoc and nemo-rl). A step test that does need the
+    IBM Cloud credentials (e.g. one whose space uses the ``ibmcloud`` secret
+    manager) should call ``libgbtest.utils.check_cloud_config()`` itself, so it
+    fails up front with a clear message. As the fixture closest to ``steps/``,
+    this one is used instead of the plugin's.
     """
     from gbserver.types.constants import GB_ENVIRONMENT
 
