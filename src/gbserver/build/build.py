@@ -33,7 +33,13 @@ from gbcommon.uri.uri import URI
 from gbserver.build.buildentity import BuildEntity
 from gbserver.build.space import Space
 from gbserver.build.target import Target
-from gbserver.types.buildconfig import BUILD_FILENAME, BuildConfig, BuildFailure
+from gbserver.types.buildconfig import (
+    BUILD_FILENAME,
+    BuildConfig,
+    BuildFailure,
+    has_jinja_syntax,
+    may_be_file_uri,
+)
 from gbserver.types.constants import FILE_SCHEME
 from gbserver.types.stepconfig import (
     StepConfig,
@@ -117,15 +123,15 @@ def _relative_file_path(uri: Optional[str]) -> Optional[str]:
     (whose real value is only known once rendered) are left alone.
 
     Args:
-        uri: A build.yaml ``environment_uri`` value.
+        uri: A build.yaml ``environment_uri`` or ``step_uri`` value.
 
     Returns:
         The relative path, or ``None`` when ``uri`` is not a plain relative path.
     """
-    if not uri or any(tag in uri for tag in ("{{", "{%", "{#")):
+    if not uri or has_jinja_syntax(uri) or not may_be_file_uri(uri, FILE_SCHEME):
         return None
     parsed = urlparse(uri, FILE_SCHEME)
-    if parsed.scheme != FILE_SCHEME or parsed.netloc:
+    if parsed.netloc:
         return None
     path = parsed.path
     if not path or Path(path).is_absolute():
@@ -188,26 +194,34 @@ def _anchor_relative_file_uris(config: BuildConfig, build_dir: Path) -> None:
         build_dir: The build's working copy of the build.yaml's directory.
     """
     for target_name, target in config.targets.items():
-        anchored = _anchor_relative_file_uri(target.environment_uri, build_dir)
-        if anchored is not None:
-            logger.info(
-                "target %s: environment_uri %s found relative to the build.yaml: %s",
-                target_name,
-                target.environment_uri,
-                anchored,
-            )
-            target.environment_uri = anchored
+        target.environment_uri = _anchor(
+            f"target {target_name}: environment_uri", target.environment_uri, build_dir
+        )
         for i, step in enumerate(target.steps):
-            anchored = _anchor_relative_file_uri(step.step_uri, build_dir)
-            if anchored is not None:
-                logger.info(
-                    "target %s step %d: step_uri %s found relative to the build.yaml: %s",
-                    target_name,
-                    i,
-                    step.step_uri,
-                    anchored,
-                )
-                step.step_uri = anchored
+            if step.step_uri is None:
+                continue
+            step.step_uri = _anchor(
+                f"target {target_name} step {i}: step_uri", step.step_uri, build_dir
+            )
+
+
+def _anchor(label: str, uri: str, build_dir: Path) -> str:
+    """Return ``uri`` anchored to ``build_dir`` if it should be, logging the change.
+
+    Args:
+        label: Names the URI in the log message (target, step, field).
+        uri: The ``environment_uri`` or ``step_uri`` as loaded.
+        build_dir: The build's working copy of the build.yaml's directory.
+
+    Returns:
+        The anchored ``file://`` URI (see :func:`_anchor_relative_file_uri`), or
+        ``uri`` unchanged.
+    """
+    anchored = _anchor_relative_file_uri(uri, build_dir)
+    if anchored is None:
+        return uri
+    logger.info("%s %s found relative to the build.yaml: %s", label, uri, anchored)
+    return anchored
 
 
 def unanchor_file_uri(uri: Optional[str], build_dir: Optional[Path]) -> Optional[str]:
