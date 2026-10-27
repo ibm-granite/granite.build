@@ -142,9 +142,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not read `compute_config.num_gpus_per_node`; GPUs come only from
   `launcher_config.resources.accelerators` (or an `instance_type` that has them). A step that
   sets `num_gpus_per_node > 0` with neither used to launch on a node with no GPU, silently. It
-  still launches, but gbserver now warns, once per step. `Skypilot_managed` now also merges the
-  build's `launcher_config.resources` over the step launcher's (it used to ignore them, so a
-  managed build's `accelerators` was dropped) and logs the same warning. The `nemo-rl` step no longer renders `accelerators` or
+  still launches, but gbserver now warns, once per step. `Skypilot_managed` now layers resources
+  like the unmanaged launcher, through the same helpers: the build's `launcher_config.resources`
+  wins over the step launcher's, and `cloud`/`infra`/`zone`, `instance_type` and `use_spot` are
+  honored (it used to drop the build's resources and those keys, so a managed GPU request could
+  silently land on a default CPU node). It logs the same warning. The `nemo-rl` step no longer renders `accelerators` or
   defaults `num_gpus_per_node: 8`: a build sets `launcher_config.resources.accelerators` (e.g.
   `"A10G:1"`) or a GPU `instance_type`, and the step pins NeMo-RL's `cluster.gpus_per_node` from
   `SKYPILOT_NUM_GPUS_PER_NODE` (override with the new `nemo_rl_config.gpus_per_node`). A `nemo-rl`

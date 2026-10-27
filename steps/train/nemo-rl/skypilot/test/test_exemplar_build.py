@@ -76,6 +76,12 @@ def test_base_model_input_present(build):
 
 
 def _accelerators(build):
+    """Return the GPU request a shipped build makes.
+
+    :param build: Path of the build under test-data/, e.g. ``"aws-sft/build.yaml"``.
+    :returns: Its step's ``launcher_config.resources.accelerators`` value, or
+        None when the build sets none (a missing or null layer counts as unset).
+    """
     config = _step(_target(_load(build)))["config"]
     return ((config.get("launcher_config") or {}).get("resources") or {}).get(
         "accelerators"
@@ -85,13 +91,21 @@ def _accelerators(build):
 def _sky_accelerators(spec):
     """Parse an accelerators spec the way the launcher does: with SkyPilot.
 
-    Returns SkyPilot's ``{type: count}`` dict, or None if it rejects the spec,
-    so the fixture check accepts exactly what SkyPilot accepts (#542 review).
+    SkyPilot is imported, not skipped on: without it this check would report
+    SKIPPED and a fixture with no GPU request would pass unseen (#542 review).
+    The fixtures name GPU types in SkyPilot's bundled catalog (A10G, H200), so
+    parsing them needs no network or kube context.
+
+    :param spec: An accelerators value (e.g. ``"A10G:1"``, ``{"A100": 8}``).
+    :returns: SkyPilot's ``{type: count}`` dict, or None when SkyPilot rejects
+        the spec for any reason, so a bad spec fails the contract assertion
+        instead of crashing the test.
     """
-    sky = pytest.importorskip("sky", reason="skypilot parses the accelerators spec")
+    import sky  # pylint: disable=import-outside-toplevel
+
     try:
         return sky.Resources(accelerators=spec).accelerators
-    except ValueError:
+    except Exception:  # pylint: disable=broad-except
         return None
 
 

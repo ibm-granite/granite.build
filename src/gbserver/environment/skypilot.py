@@ -1934,6 +1934,74 @@ def _num_nodes_from_configs(
     return num_nodes
 
 
+def _resolve_infra_and_zone(
+    cloud: str, override_res: dict, config: dict, env_cfg: dict
+) -> tuple[str, str | None]:
+    """Module-level body of :meth:`Skypilot._resolve_infra_and_zone`, shared
+    with the managed launcher. See that method for the full contract.
+
+    :param cloud: resolved target cloud (e.g. ``"slurm"``, ``"lsf"``).
+    :param override_res: merged step/build launcher ``resources`` dict.
+    :param config: the step/build ``config`` dict.
+    :param env_cfg: the environment.yaml ``config`` dict (``{}`` if none).
+    :returns: an ``(infra, zone)`` tuple.
+    :raises ValueError: when an HPC ``zone``/partition resolves without a
+        ``cluster``.
+    """
+    # An explicit infra string wins outright. A separate ``zone`` (e.g. a
+    # SLURM partition alongside a ``cloud/cluster`` infra) is still passed
+    # through to sky.Resources — folding or dropping it would silently
+    # discard the partition. The caller must not combine a 3-segment infra
+    # (cloud/cluster/zone) with a separate ``zone``; sky.Resources rejects
+    # that. No config/env zone-fallback here: an explicit infra opts out of
+    # the SLURM fallback below, matching the pre-refactor behavior.
+    if override_res.get("infra"):
+        return override_res["infra"], override_res.get("zone")
+
+    cluster = override_res.get("cluster")
+    zone = override_res.get("zone")
+    if cloud in _SSH_HPC_CLOUDS:
+        cluster = cluster or config.get("cluster") or env_cfg.get("cluster")
+        zone = zone or config.get("zone") or env_cfg.get("zone")
+
+    if cluster:
+        infra = f"{cloud}/{cluster}"
+        return (f"{infra}/{zone}", None) if zone else (infra, None)
+    if zone:
+        if cloud in _SSH_HPC_CLOUDS:
+            # SkyPilot cannot express a partition/queue without a cluster
+            # (see :raises: above), so a bare zone here is a misconfig that
+            # would otherwise mislabel the partition as the cluster.
+            raise ValueError(
+                f"{cloud!r} zone/partition {zone!r} requires a cluster: set "
+                "`resources.cluster` (or `cluster` in the step/build/"
+                "environment config). SkyPilot cannot target a partition "
+                "without a cluster."
+            )
+        # Non-HPC: fold into infra to avoid the "cannot specify both infra
+        # and zone" error in sky.Resources (region/zone share one axis here).
+        return (f"{cloud}/{zone}" if cloud else zone, None)
+    return cloud, None
+
+
+def _merged_override_resources(launcher_config: Dict, config: Dict) -> Dict:
+    """Merge the explicit ``resources`` layers sent to ``sky.Resources``.
+
+    The step launcher's ``resources``, then build.yaml's
+    ``config.launcher_config.resources`` (last wins). Shared by the unmanaged
+    and managed launchers so they layer resources the same way.
+
+    :param launcher_config: The resolved step launcher config.
+    :param config: The step config (its ``launcher_config`` is build.yaml's).
+    :returns: The merged resources dict; ``{}`` when neither layer sets any. A
+        present-but-null layer counts as empty.
+    """
+    return {
+        **((launcher_config or {}).get("resources") or {}),
+        **(((config or {}).get("launcher_config") or {}).get("resources") or {}),
+    }
+
+
 def _warn_unrequested_gpus(compute_config: Dict, override_res: Dict) -> None:
     """Warn when ``compute_config`` asks for GPUs that SkyPilot will not get.
 
@@ -2406,41 +2474,8 @@ class Skypilot(Environment):
             silently land the partition in the cluster slot and provision the
             wrong target — we fail loud instead.
         """
-        # An explicit infra string wins outright. A separate ``zone`` (e.g. a
-        # SLURM partition alongside a ``cloud/cluster`` infra) is still passed
-        # through to sky.Resources — folding or dropping it would silently
-        # discard the partition. The caller must not combine a 3-segment infra
-        # (cloud/cluster/zone) with a separate ``zone``; sky.Resources rejects
-        # that. No config/env zone-fallback here: an explicit infra opts out of
-        # the SLURM fallback below, matching the pre-refactor behavior.
-        if override_res.get("infra"):
-            return override_res["infra"], override_res.get("zone")
-
-        cluster = override_res.get("cluster")
-        zone = override_res.get("zone")
-        if cloud in _SSH_HPC_CLOUDS:
-            env_cfg = self.config.config if self.config else {}
-            cluster = cluster or config.get("cluster") or env_cfg.get("cluster")
-            zone = zone or config.get("zone") or env_cfg.get("zone")
-
-        if cluster:
-            infra = f"{cloud}/{cluster}"
-            return (f"{infra}/{zone}", None) if zone else (infra, None)
-        if zone:
-            if cloud in _SSH_HPC_CLOUDS:
-                # SkyPilot cannot express a partition/queue without a cluster
-                # (see :raises: above), so a bare zone here is a misconfig that
-                # would otherwise mislabel the partition as the cluster.
-                raise ValueError(
-                    f"{cloud!r} zone/partition {zone!r} requires a cluster: set "
-                    "`resources.cluster` (or `cluster` in the step/build/"
-                    "environment config). SkyPilot cannot target a partition "
-                    "without a cluster."
-                )
-            # Non-HPC: fold into infra to avoid the "cannot specify both infra
-            # and zone" error in sky.Resources (region/zone share one axis here).
-            return (f"{cloud}/{zone}" if cloud else zone, None)
-        return cloud, None
+        env_cfg = self.config.config if self.config else {}
+        return _resolve_infra_and_zone(cloud, override_res, config, env_cfg)
 
     # k8s RFC1123 label ceiling for pod names derived from the cluster name.
     _MAX_CLUSTER_NAME_LEN = 63
@@ -3304,23 +3339,16 @@ class Skypilot(Environment):
                 build_id=run_metadata.get("build_id", "") or "",
                 build_config_name=run_metadata.get("build_config_name", "") or "",
             )
-            # `or {}` on every layer: a present-but-null `resources:` or
-            # `launcher_config:` key returns None from .get(), not the default.
-            cloud = (launcher_config.get("resources") or {}).get(
-                "cloud"
-            ) or self._get_cloud()
+            # Higher-precedence resource layers that override the compute_config
+            # floor. cloud/infra/cluster/zone come only from these (never the
+            # floor), so the target cloud can be resolved before the floor is
+            # layered in. build.yaml's resources.cloud wins like its other keys.
+            compute_config = config.get("compute_config", {}) or {}
+            override_res = _merged_override_resources(launcher_config, config)
+            cloud = override_res.get("cloud") or self._get_cloud()
             idle_minutes = launcher_config.get(
                 "idle_minutes_to_autostop", self._get_idle_minutes()
             )
-
-            # Higher-precedence resource layers that override the compute_config
-            # floor. infra/cluster/zone come only from these (never the floor), so
-            # the target cloud can be resolved before the floor is layered in.
-            compute_config = config.get("compute_config", {}) or {}
-            override_res = {
-                **(launcher_config.get("resources") or {}),
-                **((config.get("launcher_config") or {}).get("resources") or {}),
-            }
             # Config-only, so once per step: retry_workload replays this launch
             # with a higher attempt and the same config.
             if attempt == 0:

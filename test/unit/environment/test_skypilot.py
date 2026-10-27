@@ -838,6 +838,17 @@ class TestLaunchSkypilot:
         assert kwargs.get("memory") is None
 
     @pytest.mark.asyncio
+    async def test_build_yaml_cloud_sets_the_infra(self, skypilot_env):
+        """build.yaml's resources.cloud routes the request, as its other
+        resources keys do, not just the step launcher's (#542 review)."""
+        kwargs = await self._launch_and_capture_resources(
+            skypilot_env,  # fixture default_cloud is k8s
+            launcher_config={"run": "echo hi", "resources": {}},
+            config={"launcher_config": {"resources": {"cloud": "aws"}}},
+        )
+        assert kwargs.get("infra") == "aws"
+
+    @pytest.mark.asyncio
     async def test_gpu_count_without_accelerators_warns_at_launch(
         self, skypilot_env, caplog
     ):
@@ -1316,6 +1327,14 @@ class TestLaunchSkypilotManaged:
     async def _launch_and_capture_resources(
         self, managed_env, *, launcher_config, config
     ):
+        """Run launch_skypilot_managed with sky mocked; return what it passed to
+        sky.Resources.
+
+        :param managed_env: The Skypilot_managed fixture (default_cloud k8s).
+        :param launcher_config: The step launcher config (its own resources).
+        :param config: The step config; its launcher_config is build.yaml's.
+        :returns: The keyword arguments of the single sky.Resources call.
+        """
         mock_sky = MagicMock()
         mock_sky.Resources = MagicMock(return_value=MagicMock())
         mock_sky.Task = MagicMock(return_value=MagicMock())
@@ -1365,6 +1384,73 @@ class TestLaunchSkypilotManaged:
             )
         assert kwargs.get("accelerators") is None
         assert "num_gpus_per_node=2" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_instance_type_and_use_spot_reach_sky_resources(self, managed_env):
+        """An instance type is a GPU request too; dropping it ran a managed build
+        on a default CPU node with no warning (#542 review)."""
+        kwargs = await self._launch_and_capture_resources(
+            managed_env,
+            launcher_config={"run": "echo hi", "resources": {}},
+            config={
+                "compute_config": {"num_gpus_per_node": 4},
+                "launcher_config": {
+                    "resources": {"instance_type": "g6e.12xlarge", "use_spot": True}
+                },
+            },
+        )
+        assert kwargs.get("instance_type") == "g6e.12xlarge"
+        assert kwargs.get("use_spot") is True
+
+    @pytest.mark.asyncio
+    async def test_build_yaml_cloud_sets_the_infra(self, managed_env):
+        """The build's cloud must route the request, not the env default (k8s
+        in this fixture) (#542 review)."""
+        kwargs = await self._launch_and_capture_resources(
+            managed_env,
+            launcher_config={"run": "echo hi", "resources": {}},
+            config={
+                "launcher_config": {
+                    "resources": {"cloud": "aws", "accelerators": "A10G:1"}
+                }
+            },
+        )
+        assert kwargs.get("infra") == "aws"
+        assert kwargs.get("accelerators") == "A10G:1"
+
+    @pytest.mark.asyncio
+    async def test_build_yaml_infra_and_zone_are_resolved(self, managed_env):
+        kwargs = await self._launch_and_capture_resources(
+            managed_env,
+            launcher_config={"run": "echo hi", "resources": {}},
+            config={
+                "launcher_config": {
+                    "resources": {"infra": "aws/us-east-1", "accelerators": "A10G:1"}
+                }
+            },
+        )
+        assert kwargs.get("infra") == "aws/us-east-1"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "launcher_config, config",
+        [
+            ({"run": "echo hi", "resources": None}, {}),
+            ({"run": "echo hi"}, {}),
+            ({"run": "echo hi", "docker": None}, {}),
+            ({"run": "echo hi"}, {"launcher_config": None}),
+            ({"run": "echo hi"}, {"launcher_config": {"docker": None}}),
+        ],
+    )
+    async def test_null_or_missing_layers_do_not_crash(
+        self, managed_env, launcher_config, config
+    ):
+        # A present-but-null `resources:` / `docker:` / `launcher_config:` YAML
+        # key used to raise on .get() or the ** merge (#542 review).
+        kwargs = await self._launch_and_capture_resources(
+            managed_env, launcher_config=launcher_config, config=config
+        )
+        assert kwargs.get("infra") == "k8s"
 
     @pytest.mark.asyncio
     async def test_launch_sets_readiness_on_error(self, managed_env):
@@ -2681,6 +2767,36 @@ class TestInlineConfigMaterialization:
             with pytest.raises(RuntimeError):
                 await env._launch_skypilot_inner(launch_id="L1", launcher_config={})
         assert calls[:2] == ["materialize", "api"]
+
+
+class TestMergedOverrideResources:
+    """The explicit ``resources`` layers both SkyPilot launchers send to
+    ``sky.Resources``: the step launcher's, then build.yaml's (last wins). One
+    helper keeps the two launchers from drifting apart (#542 review)."""
+
+    @staticmethod
+    def _merge(launcher_config, config):
+        from gbserver.environment.skypilot import _merged_override_resources
+
+        return _merged_override_resources(launcher_config, config)
+
+    def test_build_yaml_wins_and_both_layers_are_kept(self):
+        assert self._merge(
+            {"resources": {"cpus": "4+", "accelerators": "T4:1"}},
+            {"launcher_config": {"resources": {"accelerators": "H100:8"}}},
+        ) == {"cpus": "4+", "accelerators": "H100:8"}
+
+    @pytest.mark.parametrize(
+        "launcher_config, config",
+        [
+            ({}, {}),
+            ({"resources": None}, {}),
+            ({}, {"launcher_config": None}),
+            ({}, {"launcher_config": {"resources": None}}),
+        ],
+    )
+    def test_missing_or_null_layers_are_empty(self, launcher_config, config):
+        assert self._merge(launcher_config, config) == {}
 
 
 class TestNumNodesResolution:

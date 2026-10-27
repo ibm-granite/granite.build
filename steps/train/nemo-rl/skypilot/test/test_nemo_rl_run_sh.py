@@ -284,6 +284,19 @@ class TestArgAssembly:
         assert "not a whole number" in proc.stderr
         assert _hydra_overrides(_train_argv(runs))[-1] == "cluster.gpus_per_node=8"
 
+    @pytest.mark.parametrize("zero", ["0", "0.0", "00"])
+    def test_explicit_zero_falls_back_to_skypilot(self, tmp_path, zero):
+        # NeMo-RL cannot train on 0 GPUs, and pinning nothing left sft.yaml's
+        # 1 GPU on a multi-GPU node with no message (#542 review).
+        proc, runs, _ = _run(
+            tmp_path,
+            ["--base-model", "/staged/base", "--gpus-per-node", zero],
+            env_extra={"SKYPILOT_NUM_GPUS_PER_NODE": "8"},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "is 0" in proc.stderr
+        assert _hydra_overrides(_train_argv(runs))[-1] == "cluster.gpus_per_node=8"
+
     @pytest.mark.parametrize(
         "argv_extra,env_extra",
         [

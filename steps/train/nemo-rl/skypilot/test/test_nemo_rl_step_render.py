@@ -318,14 +318,35 @@ class TestAccelerators:
             )
 
     @staticmethod
-    def _call_validate(block_source, nrl, res):
-        """Render ONLY the block's `validate` macro, called with `res`, with no
-        `res` variable defined around it."""
+    def _validate_macro(block_source):
+        """Return the block's `validate` macro source, from its `macro` tag to
+        its `endmacro` tag inclusive."""
         start = block_source.index("{%- macro validate")
         end = block_source.index("{%- endmacro %}", start) + len("{%- endmacro %}")
-        source = block_source[start:end] + "{{ validate(nrl, cc, res_arg) }}"
+        return block_source[start:end]
+
+    @classmethod
+    def _call_validate(cls, block_source, nrl, res):
+        """Render ONLY the block's `validate` macro, called with `res`, with no
+        `res` variable defined around it.
+
+        :param block_source: The launcher's `setup` or `run` template text.
+        :param nrl: The `nemo_rl_config` mapping to validate.
+        :param res: The resources mapping passed as the macro's `res` argument.
+        :returns: The rendered output (empty when the config is valid).
+        :raises ValueError: From the macro's `raise_error` on an invalid config.
+        """
+        source = cls._validate_macro(block_source) + "{{ validate(nrl, cc, res_arg) }}"
         return jinja2.Template(source, undefined=jinja2.StrictUndefined).render(
             nrl=nrl, cc=_DEFAULT_COMPUTE, res_arg=res, raise_error=_raise_error
+        )
+
+    def test_setup_and_run_validate_identically(self, launcher):
+        # gbserver fills each launcher block on its own (no shared Jinja scope),
+        # so `validate` has to be defined in both. Editing one copy and not the
+        # other would let setup and run disagree on what is valid (#542 review).
+        assert self._validate_macro(launcher["setup"]) == self._validate_macro(
+            launcher["run"]
         )
 
     @pytest.mark.parametrize("block", ["setup", "run"])

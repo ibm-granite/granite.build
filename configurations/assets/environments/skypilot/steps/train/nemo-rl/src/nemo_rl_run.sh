@@ -199,7 +199,8 @@ overrides+=(
 # it, else what SkyPilot allocated (from resources.accelerators or the instance
 # type). Forced (after "$@") so it stays locked to the node. A value that is not
 # a whole number is reported, not silently dropped: dropping it would train on
-# sft.yaml's single GPU. An invalid explicit count falls back to SkyPilot's.
+# sft.yaml's single GPU. An invalid or zero explicit count falls back to
+# SkyPilot's: NeMo-RL cannot train on 0 GPUs.
 #
 # whole_count VALUE: print VALUE as a plain integer if it is a whole number
 # ("4", "04", "4.0", "4.000"); otherwise print nothing and return 1.
@@ -217,6 +218,10 @@ gpu_count=""
 if [ -n "$gpus_per_node" ]; then
   gpu_count="$(whole_count "$gpus_per_node")" \
     || echo "nemo-rl: --gpus-per-node '${gpus_per_node}' is not a whole number; using SkyPilot's GPU count instead" >&2
+  if [ "$gpu_count" = "0" ]; then
+    echo "nemo-rl: --gpus-per-node is 0; using SkyPilot's GPU count instead" >&2
+    gpu_count=""
+  fi
 fi
 if [ -z "$gpu_count" ] && [ -n "${SKYPILOT_NUM_GPUS_PER_NODE:-}" ]; then
   gpu_count="$(whole_count "$SKYPILOT_NUM_GPUS_PER_NODE")" \
