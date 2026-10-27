@@ -14,6 +14,6 @@ REGISTRY ?= quay.io/granitebuild
 # BlueVela runs it from a .sqsh built from this exact tag, so it must not churn
 # on unrelated commits. Bump the suffix when the Dockerfile or src/ changes; the
 # prefix with the Open-Instruct pin.
-IMAGE_VERSION ?= oi-v0.3.0-2
+IMAGE_VERSION ?= oi-v0.3.0-3
 
 include ../../../common.mk

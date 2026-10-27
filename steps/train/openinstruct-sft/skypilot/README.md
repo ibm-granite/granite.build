@@ -65,7 +65,7 @@ unrendered-binding detector). `**/*.md` is listed so the docs can show `{{ ... }
 
 ## Image
 
-`quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-2`. It holds:
+`quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-3`. It holds:
 
 | Part | Pin |
 |---|---|
@@ -90,8 +90,8 @@ Choices in the Dockerfile that look odd, and why:
   calls the GitHub search API when `GIT_COMMIT` is set. The step reads
   `OPEN_INSTRUCT_COMMIT` to print it at setup and to emit the
   `open_instruct_commit` metadata.
-- **`chmod -R a+rX`.** Pyxis on SLURM runs the container as the job user, not uid
-  1001. The venv, uv's managed Python (`/opt/uv-python`, not root's home, since the
+- **`chmod -R a+rX`.** Pyxis on SLURM runs the container as the job user, not
+  root. The venv, uv's managed Python (`/opt/uv-python`, not root's home, since the
   venv's interpreter is a symlink into it) and the scripts are readable by any uid.
 - **The venv is first on `PATH`.** That also provides the `hf` CLI the aws
   environment's inline `hf download` uses.
@@ -102,8 +102,13 @@ provisioning. The mitigations:
 
 - every base is pinned by digest (`test_dockerfile.py` checks this);
 - `apt-get upgrade` runs at build time;
-- the runtime user is non-root (uid 1001), and its only privilege is the passwordless
-  sudo SkyPilot's in-container setup needs;
+- the container runs as **root**, like the repo's other step images. A non-root
+  default `USER` does not work under SkyPilot's docker runtime: SkyPilot sets the
+  container up as root and saves root's environment (`HOME=/root`) to
+  `/etc/profile.d`, so the non-root user logs in with `HOME=/root` and provisioning
+  fails. The VM exists for one job and is torn down after; Pyxis on SLURM still runs
+  the container as the job user. Restoring a non-root user needs a SkyPilot fix
+  (follow-up);
 - files under `/opt` are readable by any uid but writable only by root;
 - the image is scanned for vulnerabilities before `make publish-image` (below).
 
@@ -121,14 +126,14 @@ Scan every image before `make publish-image`:
 A fixable CRITICAL in a package that comes from upstream's lock is fixed by
 upgrading that package on top of `uv sync --frozen` in the install RUN (or removing
 it when SFT does not use it and the fix would move the training stack), then
-rebuilding and rescanning. Result for `oi-v0.3.0-2` (trivy, CRITICAL+HIGH): 0
+rebuilding and rescanning. Result for `oi-v0.3.0-2` (trivy, CRITICAL+HIGH; `oi-v0.3.0-3` differs only by dropping the non-root user): 0
 fixable CRITICAL; 18 CRITICAL without a fix, all in Ubuntu's `linux-libc-dev`
 (kernel UAPI headers, needed by DeepSpeed's JIT build); 585 HIGH, 66 of them
 fixable (57 Python packages, 8 jar, 1 Go binary), tracked as a follow-up.
 
 ### Bumping IMAGE_VERSION
 
-The Makefile's `IMAGE_VERSION` is a stable version (`oi-v0.3.0-2`), not the
+The Makefile's `IMAGE_VERSION` is a stable version (`oi-v0.3.0-3`), not the
 per-commit git SHA. The image is large, and BlueVela runs it from a `.sqsh` built
 from this exact tag, so it must not churn on unrelated commits.
 
@@ -153,7 +158,7 @@ tag into it, so no per-step quay setup is needed:
 ```bash
 podman login -u 'granitebuild+gbpush' --password-stdin quay.io/granitebuild   # robot token on stdin
 make -C steps/train/openinstruct-sft/skypilot image publish-image
-skopeo inspect --raw docker://quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-2
+skopeo inspect --raw docker://quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-3
 ```
 
 Run the `skopeo inspect` with no credentials, to check the image pulls
@@ -172,8 +177,8 @@ On SLURM the step runs from a prebuilt squashfs, not a registry pull. Build it o
 BlueVela login node as `granitebuild`:
 
 ```bash
-enroot import -o /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-2.sqsh \
-  "docker://quay.io#granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-2"
+enroot import -o /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-3.sqsh \
+  "docker://quay.io#granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-3"
 ```
 
 Rebuild it for each `IMAGE_VERSION`, with the version in the file name. The BlueVela
@@ -215,7 +220,7 @@ The unit tests at `test/`'s root need no cluster or image. They stub `accelerate
 
 | Test | Pins |
 |---|---|
-| `test_dockerfile.py` | every `FROM` digest-pinned; Open-Instruct pinned to a full commit and checked after fetch; `uv sync --frozen` and an exact `clearml==` pin; final `USER 1001`; `OPEN_INSTRUCT_COMMIT` set and no `GIT_COMMIT`; every script the template calls exists in `src/` |
+| `test_dockerfile.py` | every `FROM` digest-pinned; Open-Instruct pinned to a full commit and checked after fetch; `uv sync --frozen` and an exact `clearml==` pin; no `USER` and no `useradd` (runs as root); `OPEN_INSTRUCT_COMMIT` set and no `GIT_COMMIT`; every script the template calls exists in `src/` |
 | `test_skypilot_train_openinstruct_sft_render.py` | the template rendered with gbserver's strict renderer: identity and I/O schema, the shared monitor, no GPU request, identical macro copies, the `docker:` prefix (including `.sqsh`), valid bash, every `raise_error` (data source, mixer and splits shape, `output`, `num_nodes`, `deepspeed_config`, `clearml_enabled`, step-owned and map `args`), and the guard and run argv (defaults, bound dataset, splits, `args` rendering, ClearML mode, output path) |
 | `test_openinstruct_sft_guard_sh.py` | staged-path checks: empty or unrendered `base_model`, missing dir, no `config.json`, missing dataset, unknown option; valid paths pass silently |
 | `test_openinstruct_sft_setup_sh.py` | the image check: passes on a good image, fails without `finetune.py` or when the training stack does not import |

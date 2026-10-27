@@ -19,10 +19,10 @@
 # SkyPilot bootstraps itself by running apt-get INSIDE the container, so a UBI/RPM
 # base fails provisioning. The base is therefore NVIDIA's official CUDA devel image
 # on Ubuntu (devel: DeepSpeed JIT-compiles its ops), from nvcr.io (no Docker Hub
-# rate limits), pinned by digest. Mitigations: digest pins for every base, a
-# non-root runtime user (uid 1001) whose only privilege is the passwordless sudo
-# SkyPilot's in-container setup needs, and a vulnerability scan before
-# `make publish-image` (see README.md).
+# rate limits), pinned by digest. Mitigations: digest pins for every base and a
+# vulnerability scan before `make publish-image`. The container runs as root,
+# like the other step images, because SkyPilot's docker runtime requires it (see
+# the end of this file and README.md).
 FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
 
 FROM nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu22.04@sha256:a99a1860ba8e2916e5c3e73b72ec4c4301653a84586e05bfc9a2aa2d58027e97
@@ -46,7 +46,7 @@ COPY --from=uv /uv /uvx /usr/local/bin/
 
 # Managed Python (open-instruct pins python-preference = only-managed) goes under
 # /opt, not root's home: the venv's interpreter is a symlink into it, and the job
-# runs as uid 1001 (SkyPilot docker) or as the submitting user (Pyxis on SLURM).
+# runs as root (SkyPilot docker) or as the submitting user (Pyxis on SLURM).
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python \
     UV_NO_CACHE=1 \
     UV_LINK_MODE=copy \
@@ -95,11 +95,9 @@ ENV OPEN_INSTRUCT_HOME=/opt/open-instruct \
     OPEN_INSTRUCT_COMMIT=${OPEN_INSTRUCT_COMMIT} \
     PATH=/opt/open-instruct/.venv/bin:${PATH}
 
-# Non-root runtime user. SkyPilot requires passwordless sudo for its in-container
-# setup (docs/environments/skypilot-lsf.md); that is the only privilege granted.
-RUN useradd -m -u 1001 appuser \
- && echo 'appuser ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/appuser \
- && chmod 0440 /etc/sudoers.d/appuser
-
-WORKDIR /home/appuser
-USER 1001
+# Runs as root, like the repo's other step images. SkyPilot's docker runtime sets
+# the container up as root and saves root's environment (HOME=/root) to
+# /etc/profile.d, so a non-root default USER gets HOME=/root on login and
+# provisioning fails ("mkdir: cannot create directory '/root'"). See README.md,
+# "Security trade-off". Pyxis on SLURM still runs the container as the job user.
+WORKDIR /root

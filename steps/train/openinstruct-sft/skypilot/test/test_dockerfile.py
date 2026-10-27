@@ -16,7 +16,8 @@
 
 The image is too large to build in a unit test, so this pins what review would
 otherwise have to catch: every base is digest-pinned, Open-Instruct is pinned to
-a full commit, the runtime user is non-root, and the paths step.yaml calls exist.
+a full commit, the image sets no non-root USER (SkyPilot needs root), and the
+paths step.yaml calls exist.
 """
 
 import pathlib
@@ -48,9 +49,11 @@ def test_locked_install():
     assert re.search(r"clearml==\d+\.\d+\.\d+", _DOCKERFILE)
 
 
-def test_runs_as_non_root():
-    users = _instructions("USER")
-    assert users and users[-1].strip() == "1001"
+def test_runs_as_root_for_skypilot():
+    # SkyPilot's docker runtime saves root's HOME to /etc/profile.d during setup, so a
+    # non-root default USER logs in with HOME=/root and provisioning fails.
+    assert not _instructions("USER")
+    assert not re.search(r"^RUN useradd", _DOCKERFILE, re.M)
 
 
 def test_records_commit_without_git_commit_env():
