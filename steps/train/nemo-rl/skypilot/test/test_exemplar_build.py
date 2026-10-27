@@ -82,34 +82,17 @@ def _accelerators(build):
     )
 
 
-def _parse_accelerators(spec):
-    """Split a SkyPilot accelerators string into (type, count).
+def _sky_accelerators(spec):
+    """Parse an accelerators spec the way the launcher does: with SkyPilot.
 
-    A bare type ("A10G") means 1; a count may be fractional ("A10G:0.5").
-    Returns (type, None) when the count is not a number.
+    Returns SkyPilot's ``{type: count}`` dict, or None if it rejects the spec,
+    so the fixture check accepts exactly what SkyPilot accepts (#542 review).
     """
-    gpu_type, sep, count = str(spec or "").partition(":")
-    if not sep:
-        return gpu_type.strip(), 1.0
+    sky = pytest.importorskip("sky", reason="skypilot parses the accelerators spec")
     try:
-        return gpu_type.strip(), float(count)
+        return sky.Resources(accelerators=spec).accelerators
     except ValueError:
-        return gpu_type.strip(), None
-
-
-@pytest.mark.parametrize(
-    "spec, expected",
-    [
-        ("A10G:1", ("A10G", 1.0)),
-        ("H200:8", ("H200", 8.0)),
-        ("A10G", ("A10G", 1.0)),
-        ("A10G:0.5", ("A10G", 0.5)),
-        ("A10G:x", ("A10G", None)),
-        ("", ("", 1.0)),
-    ],
-)
-def test_parse_accelerators(spec, expected):
-    assert _parse_accelerators(spec) == expected
+        return None
 
 
 @pytest.mark.parametrize("build", ["aws-sft/build.yaml", "slurm-sft/build.yaml"])
@@ -117,11 +100,13 @@ def test_cluster_fixture_requests_a_typed_gpu(build):
     # GPUs come only from launcher_config.resources.accelerators: without it the
     # node has no GPU, and NeMo-RL cannot train.
     spec = _accelerators(build)
-    gpu_type, count = _parse_accelerators(spec)
-    assert gpu_type, f"accelerators must name a GPU type, e.g. A10G:1 (got {spec!r})"
+    parsed = _sky_accelerators(spec)
     assert (
-        count is not None and count >= 1
-    ), f"accelerators must request at least one whole GPU (got {spec!r})"
+        parsed
+    ), f"accelerators must be a SkyPilot GPU request, e.g. A10G:1 (got {spec!r})"
+    ((gpu_type, count),) = parsed.items()
+    assert gpu_type.strip(), f"accelerators must name a GPU type (got {spec!r})"
+    assert count >= 1, f"accelerators must request at least one GPU (got {spec!r})"
 
 
 @pytest.mark.parametrize("build", BUILDS)
@@ -149,7 +134,9 @@ def test_slurm_fixture_matches_the_bluevela_environment_constraints():
         target["environment_uri"] == "space://environments/skypilot/slurm/ibm-bluevela"
     )
     constraint = env["config"]["sbatch_options"]["constraint"]
-    gpu_type, _ = _parse_accelerators(_accelerators("slurm-sft/build.yaml"))
+    parsed = _sky_accelerators(_accelerators("slurm-sft/build.yaml"))
+    assert parsed, "slurm-sft must request GPUs with accelerators"
+    ((gpu_type, _),) = parsed.items()
     assert gpu_type.lower() == constraint
 
 

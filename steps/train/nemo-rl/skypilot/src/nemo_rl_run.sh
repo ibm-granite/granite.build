@@ -199,20 +199,32 @@ overrides+=(
 # it, else what SkyPilot allocated (from resources.accelerators or the instance
 # type). Forced (after "$@") so it stays locked to the node. A value that is not
 # a whole number is reported, not silently dropped: dropping it would train on
-# sft.yaml's single GPU.
-gpu_count="${gpus_per_node:-${SKYPILOT_NUM_GPUS_PER_NODE:-}}"
-case "$gpu_count" in
-  "") ;;
-  *[!0-9.]* | *.*.* | .* | *.)
-    echo "nemo-rl: GPU count '${gpu_count}' is not a whole number; not setting cluster.gpus_per_node" >&2 ;;
-  *)
-    whole="${gpu_count%.0}"
-    if [ "${whole#*.}" != "$whole" ]; then
-      echo "nemo-rl: GPU count '${gpu_count}' is not a whole number; not setting cluster.gpus_per_node" >&2
-    elif [ "$whole" -gt 0 ]; then
-      overrides+=("cluster.gpus_per_node=$((10#$whole))")
-    fi ;;
-esac
+# sft.yaml's single GPU. An invalid explicit count falls back to SkyPilot's.
+#
+# whole_count VALUE: print VALUE as a plain integer if it is a whole number
+# ("4", "04", "4.0", "4.000"); otherwise print nothing and return 1.
+whole_count() {
+  case "$1" in
+    "" | *[!0-9.]* | *.*.* | .*) return 1 ;;
+  esac
+  local int="${1%%.*}" frac=""
+  [ "$int" != "$1" ] && frac="${1#*.}"
+  case "$frac" in *[!0]*) return 1 ;; esac
+  printf '%s\n' "$((10#$int))"
+}
+
+gpu_count=""
+if [ -n "$gpus_per_node" ]; then
+  gpu_count="$(whole_count "$gpus_per_node")" \
+    || echo "nemo-rl: --gpus-per-node '${gpus_per_node}' is not a whole number; using SkyPilot's GPU count instead" >&2
+fi
+if [ -z "$gpu_count" ] && [ -n "${SKYPILOT_NUM_GPUS_PER_NODE:-}" ]; then
+  gpu_count="$(whole_count "$SKYPILOT_NUM_GPUS_PER_NODE")" \
+    || echo "nemo-rl: SKYPILOT_NUM_GPUS_PER_NODE '${SKYPILOT_NUM_GPUS_PER_NODE}' is not a whole number; not setting cluster.gpus_per_node" >&2
+fi
+if [ -n "$gpu_count" ] && [ "$gpu_count" -gt 0 ]; then
+  overrides+=("cluster.gpus_per_node=${gpu_count}")
+fi
 
 # --- ClearML enablement, mirrored from clearml_launch.clearml_enabled -----------
 clearml_active=0

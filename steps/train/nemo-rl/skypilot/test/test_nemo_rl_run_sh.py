@@ -259,15 +259,30 @@ class TestArgAssembly:
         assert proc.returncode == 0, proc.stderr
         assert _hydra_overrides(_train_argv(runs))[-1] == "cluster.gpus_per_node=2"
 
-    def test_whole_float_count_is_accepted(self, tmp_path):
-        # The LSF executor exports the count with str(), which can give "4.0".
+    @pytest.mark.parametrize("count", ["4.0", "4.00", "4.000", "04"])
+    def test_whole_float_count_is_accepted(self, tmp_path, count):
+        # The LSF executor exports the count with str(), which can give "4.0";
+        # any all-zero fraction is still a whole number (#542 review).
         proc, runs, _ = _run(
             tmp_path,
             ["--base-model", "/staged/base"],
-            env_extra={"SKYPILOT_NUM_GPUS_PER_NODE": "4.0"},
+            env_extra={"SKYPILOT_NUM_GPUS_PER_NODE": count},
         )
         assert proc.returncode == 0, proc.stderr
         assert _hydra_overrides(_train_argv(runs))[-1] == "cluster.gpus_per_node=4"
+
+    @pytest.mark.parametrize("explicit", ["four", "None", "2.5"])
+    def test_invalid_explicit_count_falls_back_to_skypilot(self, tmp_path, explicit):
+        # A bad explicit count must not throw away the count SkyPilot allocated
+        # and leave NeMo-RL on sft.yaml's 1 GPU (#542 review).
+        proc, runs, _ = _run(
+            tmp_path,
+            ["--base-model", "/staged/base", "--gpus-per-node", explicit],
+            env_extra={"SKYPILOT_NUM_GPUS_PER_NODE": "8"},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "not a whole number" in proc.stderr
+        assert _hydra_overrides(_train_argv(runs))[-1] == "cluster.gpus_per_node=8"
 
     @pytest.mark.parametrize(
         "argv_extra,env_extra",

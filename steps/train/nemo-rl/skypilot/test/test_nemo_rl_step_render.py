@@ -267,18 +267,25 @@ class TestAccelerators:
     value is the only GPU count.
     """
 
-    def test_step_leaves_accelerators_to_the_build(self, launcher):
-        assert "accelerators" not in (launcher.get("resources") or {})
+    def test_step_leaves_resources_to_the_build(self, launcher):
+        # validate() checks only the build's launcher_config.resources, which is
+        # complete only while the step launcher sets no resources of its own.
+        assert not launcher.get("resources")
 
     def test_step_does_not_default_a_gpu_count(self, compute_defaults):
         # A default count here would make the launcher warn on every build and
         # read as a GPU request that SkyPilot never receives.
         assert "num_gpus_per_node" not in compute_defaults
 
-    def test_run_omits_the_count_by_default(self, launcher, nrl_defaults):
+    @pytest.mark.parametrize("unset", ["", None])
+    def test_run_omits_the_count_when_unset(self, launcher, nrl_defaults, unset):
         # SkyPilot's SKYPILOT_NUM_GPUS_PER_NODE is the default; no second copy.
+        # A null (`gpus_per_node:` / `~`, or a param that resolves to null) must
+        # not become the string "None", which the run script would treat as an
+        # explicit, invalid count (#542 review).
         argv = _argv_from(
-            _render(launcher["run"], _cfg(nrl_defaults)), "nemo_rl_run.sh"
+            _render(launcher["run"], _cfg(nrl_defaults, gpus_per_node=unset)),
+            "nemo_rl_run.sh",
         )
         assert "--gpus-per-node" not in argv
 
@@ -309,6 +316,30 @@ class TestAccelerators:
             _render(
                 launcher[block], _cfg(nrl_defaults), launcher_config=launcher_config
             )
+
+    @staticmethod
+    def _call_validate(block_source, nrl, res):
+        """Render ONLY the block's `validate` macro, called with `res`, with no
+        `res` variable defined around it."""
+        start = block_source.index("{%- macro validate")
+        end = block_source.index("{%- endmacro %}", start) + len("{%- endmacro %}")
+        source = block_source[start:end] + "{{ validate(nrl, cc, res_arg) }}"
+        return jinja2.Template(source, undefined=jinja2.StrictUndefined).render(
+            nrl=nrl, cc=_DEFAULT_COMPUTE, res_arg=res, raise_error=_raise_error
+        )
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_validate_reads_resources_from_its_argument(
+        self, launcher, nrl_defaults, block
+    ):
+        # The macro must not depend on a `res` set elsewhere in the block: under
+        # StrictUndefined a reordered `set` would break the render (#542 review).
+        nrl = _cfg(nrl_defaults)
+        assert (
+            self._call_validate(launcher[block], nrl, {"accelerators": "A10G:1"}) == ""
+        )
+        with pytest.raises(ValueError, match="no GPU request"):
+            self._call_validate(launcher[block], nrl, {})
 
     @pytest.mark.parametrize("block", ["setup", "run"])
     def test_instance_type_counts_as_a_gpu_request(self, launcher, nrl_defaults, block):

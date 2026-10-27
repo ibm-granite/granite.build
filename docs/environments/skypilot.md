@@ -548,8 +548,10 @@ Three keys are read:
 the build.yaml), e.g. `accelerators: "H100:8"`. A step that needs the count at runtime can read
 `SKYPILOT_NUM_GPUS_PER_NODE`, which SkyPilot exports from that request, so the count is stated once.
 If `num_gpus_per_node > 0` is set with neither `resources.accelerators` nor `resources.instance_type`,
-gbserver logs a warning: the step would run on a node with no GPU. Accelerators are **per node**, so
-`accelerators: "H100:8"` with `num_nodes: 2` requests 16 GPUs in total.
+gbserver logs a warning (once per step, not on each retry): the step would run on a node with no GPU.
+On SLURM, `sbatch_options` cannot request GPUs either: SkyPilot drops `gres` there as a protected
+option. Accelerators are **per node**, so `accelerators: "H100:8"` with `num_nodes: 2` requests 16
+GPUs in total. `Skypilot_managed` layers `resources` the same way and logs the same warning.
 
 Do not put `num_nodes` under `resources`: it is a `sky.Task` field, not a `sky.Resources` one, so
 SkyPilot discards it silently. gbserver warns when it sees one, and the run proceeds single-node.

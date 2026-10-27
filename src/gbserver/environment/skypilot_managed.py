@@ -71,6 +71,7 @@ from gbserver.environment.skypilot import (
     _num_nodes_from_configs,
     _run_sky_verb_off_loop,
     _sky_submit_to_thread,
+    _warn_unrequested_gpus,
 )
 
 
@@ -172,8 +173,15 @@ class Skypilot_managed(Environment):
                 launcher_config.get("resources", {}).get("cloud") or self._get_cloud()
             )
 
-            # Build sky.Resources
-            res_config = launcher_config.get("resources", {})
+            # Build sky.Resources. Same layering as the unmanaged launcher: the
+            # step launcher's resources, then build.yaml's
+            # config.launcher_config.resources (last wins), so the documented
+            # GPU request (launcher_config.resources.accelerators) reaches the job.
+            res_config = {
+                **(launcher_config.get("resources") or {}),
+                **((config.get("launcher_config") or {}).get("resources") or {}),
+            }
+            _warn_unrequested_gpus(config.get("compute_config") or {}, res_config)
 
             # Build cluster config overrides (docker run_options, etc.)
             cluster_config_overrides = {}

@@ -3321,7 +3321,10 @@ class Skypilot(Environment):
                 **(launcher_config.get("resources") or {}),
                 **((config.get("launcher_config") or {}).get("resources") or {}),
             }
-            _warn_unrequested_gpus(compute_config, override_res)
+            # Config-only, so once per step: retry_workload replays this launch
+            # with a higher attempt and the same config.
+            if attempt == 0:
+                _warn_unrequested_gpus(compute_config, override_res)
 
             # Build infra string: supports 'cloud/cluster/partition' format
             # (e.g., 'slurm/mycluster/gpu', 'lsf/bluevela/normal').

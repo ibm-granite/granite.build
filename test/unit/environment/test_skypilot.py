@@ -852,6 +852,20 @@ class TestLaunchSkypilot:
         assert kwargs.get("accelerators") is None
         assert "num_gpus_per_node=2" in caplog.text
 
+    @pytest.mark.asyncio
+    async def test_gpu_warning_is_not_repeated_on_relaunch(self, skypilot_env, caplog):
+        """The warning depends only on config, so a retry (same launch_id, next
+        attempt) must not log it again (#542 review)."""
+        launch_id = "test-launch-res"  # the id _launch_and_capture_resources uses
+        skypilot_env._relaunch_attempts[launch_id] = 1
+        with caplog.at_level(logging.WARNING):
+            await self._launch_and_capture_resources(
+                skypilot_env,
+                launcher_config={"run": "echo hi", "resources": {}},
+                config={"compute_config": {"num_gpus_per_node": 2}},
+            )
+        assert "num_gpus_per_node=2" not in caplog.text
+
 
 class TestWarnUnrequestedGpus:
     """``compute_config.num_gpus_per_node`` is not turned into a SkyPilot GPU
@@ -1298,6 +1312,59 @@ class TestLaunchSkypilotManaged:
         assert managed_env._job_names[launch_id] == "gb-managed-laun"
         assert managed_env._get_launch_ready_event(launch_id).is_set()
         mock_sky.jobs.launch.assert_called_once()
+
+    async def _launch_and_capture_resources(
+        self, managed_env, *, launcher_config, config
+    ):
+        mock_sky = MagicMock()
+        mock_sky.Resources = MagicMock(return_value=MagicMock())
+        mock_sky.Task = MagicMock(return_value=MagicMock())
+        mock_sky.jobs.launch = MagicMock(return_value="req-managed-res")
+        mock_sky.stream_and_get = MagicMock(return_value=(102, MagicMock()))
+        with (
+            patch("gbserver.environment.skypilot_managed.sky", mock_sky),
+            patch("gbserver.environment.skypilot_managed.HAS_SKYPILOT", True),
+        ):
+            launch_id = "managed-launch-res"
+            managed_env._get_launch_ready_event(launch_id)
+            await managed_env.launch_skypilot_managed(
+                launch_id=launch_id, launcher_config=launcher_config, config=config
+            )
+        return mock_sky.Resources.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_build_yaml_accelerators_reach_sky_resources(self, managed_env):
+        """The documented GPU request (build.yaml launcher_config.resources) must
+        reach the managed job too, not only the step launcher's own resources
+        (#542 review)."""
+        kwargs = await self._launch_and_capture_resources(
+            managed_env,
+            launcher_config={"run": "echo hi", "resources": {"cpus": "4+"}},
+            config={"launcher_config": {"resources": {"accelerators": "A10G:1"}}},
+        )
+        assert kwargs.get("accelerators") == "A10G:1"
+        # The step launcher's own resources still apply where the build is silent.
+        assert kwargs.get("cpus") == "4+"
+
+    @pytest.mark.asyncio
+    async def test_build_yaml_resources_win_over_step_launcher(self, managed_env):
+        kwargs = await self._launch_and_capture_resources(
+            managed_env,
+            launcher_config={"run": "echo hi", "resources": {"accelerators": "T4:1"}},
+            config={"launcher_config": {"resources": {"accelerators": "H100:8"}}},
+        )
+        assert kwargs.get("accelerators") == "H100:8"
+
+    @pytest.mark.asyncio
+    async def test_unrequested_gpus_warn_on_managed_launch(self, managed_env, caplog):
+        with caplog.at_level(logging.WARNING):
+            kwargs = await self._launch_and_capture_resources(
+                managed_env,
+                launcher_config={"run": "echo hi", "resources": {}},
+                config={"compute_config": {"num_gpus_per_node": 2}},
+            )
+        assert kwargs.get("accelerators") is None
+        assert "num_gpus_per_node=2" in caplog.text
 
     @pytest.mark.asyncio
     async def test_launch_sets_readiness_on_error(self, managed_env):

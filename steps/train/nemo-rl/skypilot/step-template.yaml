@@ -89,10 +89,11 @@ environment_configs:
           # The one value deliberately NOT shell-escaped: it never enters a shell.
           # skypilot.py passes it to sky.Resources(image_id=...) as a python value.
           image_id: '{{ "docker:" ~ config.nemo_rl_config.image_id }}'
-          # No `resources.accelerators`: the build sets it (e.g. "A10G:1"), so the
-          # GPU type and count live in one place. SkyPilot exports the count as
-          # SKYPILOT_NUM_GPUS_PER_NODE, which nemo_rl_run.sh pins as
-          # cluster.gpus_per_node.
+          # No `resources` block: the build sets launcher_config.resources.accelerators
+          # (e.g. "A10G:1") or a GPU instance_type, so the GPU type and count live in
+          # one place, and that build layer is the only one `validate` has to check.
+          # SkyPilot exports the count as SKYPILOT_NUM_GPUS_PER_NODE, which
+          # nemo_rl_run.sh pins as cluster.gpus_per_node.
           # Bundled scripts land at ./src, relative to the step's working dir.
           file_mounts:
             src: src
@@ -107,7 +108,7 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            {%- macro validate(nrl, cc) -%}
+            {%- macro validate(nrl, cc, res) -%}
             {%- if not nrl.algorithm %}{{ raise_error("nemo-rl: nemo_rl_config.algorithm is required; it selects examples/run_<algorithm>.py in the image, e.g. sft.") }}{% endif -%}
             {%- if not nrl.config_name %}{{ raise_error("nemo-rl: nemo_rl_config.config_name is required; it names a YAML under examples/configs/, e.g. sft.yaml.") }}{% endif -%}
             {%- if not nrl.output %}{{ raise_error("nemo-rl: nemo_rl_config.output is required; it must name one of this target's declared model outputs.") }}{% endif -%}
@@ -116,8 +117,7 @@ environment_configs:
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("nemo-rl: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type). compute_config.num_gpus_per_node is not a SkyPilot GPU request.") }}{% endif -%}
             {%- endmacro %}
             {%- set nrl = config.nemo_rl_config %}
-            {%- set res = ((config.get("launcher_config") or {}).get("resources") or {}) %}
-            {{- validate(nrl, config.compute_config) }}
+            {{- validate(nrl, config.compute_config, (config.get("launcher_config") or {}).get("resources") or {}) }}
             {%- set base_model = bindings.base_model.binding.path if (bindings is defined and "base_model" in bindings) else "" %}
             {%- set dataset_bound = bindings is defined and "dataset" in bindings %}
             {%- set dataset = bindings.dataset.binding.path if dataset_bound else "" %}
@@ -135,7 +135,7 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            {%- macro validate(nrl, cc) -%}
+            {%- macro validate(nrl, cc, res) -%}
             {%- if not nrl.algorithm %}{{ raise_error("nemo-rl: nemo_rl_config.algorithm is required; it selects examples/run_<algorithm>.py in the image, e.g. sft.") }}{% endif -%}
             {%- if not nrl.config_name %}{{ raise_error("nemo-rl: nemo_rl_config.config_name is required; it names a YAML under examples/configs/, e.g. sft.yaml.") }}{% endif -%}
             {%- if not nrl.output %}{{ raise_error("nemo-rl: nemo_rl_config.output is required; it must name one of this target's declared model outputs.") }}{% endif -%}
@@ -144,8 +144,7 @@ environment_configs:
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("nemo-rl: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type). compute_config.num_gpus_per_node is not a SkyPilot GPU request.") }}{% endif -%}
             {%- endmacro %}
             {%- set nrl = config.nemo_rl_config %}
-            {%- set res = ((config.get("launcher_config") or {}).get("resources") or {}) %}
-            {{- validate(nrl, config.compute_config) }}
+            {{- validate(nrl, config.compute_config, (config.get("launcher_config") or {}).get("resources") or {}) }}
             {%- set base_model = bindings.base_model.binding.path if (bindings is defined and "base_model" in bindings) else "" %}
             {%- set dataset_bound = bindings is defined and "dataset" in bindings %}
             {%- set dataset = bindings.dataset.binding.path if dataset_bound else "" %}
@@ -164,7 +163,7 @@ environment_configs:
               --dataset '{{ q(dataset) }}' \
               --dataset-key '{{ q(nrl.dataset_override_key) }}' \
               {%- endif %}
-              {%- if nrl.gpus_per_node | string %}
+              {%- if nrl.gpus_per_node is not none and nrl.gpus_per_node | string %}
               --gpus-per-node '{{ q(nrl.gpus_per_node) }}' \
               {%- endif %}
               --artifact-id '{{ q(nrl.output) }}' \
