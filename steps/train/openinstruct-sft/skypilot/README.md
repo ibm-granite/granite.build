@@ -17,7 +17,7 @@ AWS and IBM BlueVela SLURM. The framework it follows is described in
 
 ```
 step-template.yaml          the step: config defaults, render-time validation, launcher blocks
-Makefile                    STEP_NAME, REGISTRY, IMAGE_TAG; includes steps/common.mk
+Makefile                    STEP_NAME, REGISTRY, IMAGE_VERSION; includes steps/common.mk
 Dockerfile                  the image: CUDA base, pinned Open-Instruct, clearml, src/
 .gbignore                   files gbserver ships without Jinja-rendering (docs, src/)
 src/                        baked into the image at /opt/openinstruct-sft/
@@ -65,7 +65,7 @@ unrendered-binding detector). `**/*.md` is listed so the docs can show `{{ ... }
 
 ## Image
 
-`quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-2`. It holds:
+`quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-2`. It holds:
 
 | Part | Pin |
 |---|---|
@@ -126,11 +126,11 @@ fixable CRITICAL; 18 CRITICAL without a fix, all in Ubuntu's `linux-libc-dev`
 (kernel UAPI headers, needed by DeepSpeed's JIT build); 585 HIGH, 66 of them
 fixable (57 Python packages, 8 jar, 1 Go binary), tracked as a follow-up.
 
-### Bumping IMAGE_TAG
+### Bumping IMAGE_VERSION
 
-`IMAGE_TAG` is a stable tag in the Makefile (`oi-v0.3.0-2`), not the per-commit git
-SHA. The image is large, and BlueVela runs it from a `.sqsh` built from this exact
-tag, so it must not churn on unrelated commits.
+The Makefile's `IMAGE_VERSION` is a stable version (`oi-v0.3.0-2`), not the
+per-commit git SHA. The image is large, and BlueVela runs it from a `.sqsh` built
+from this exact tag, so it must not churn on unrelated commits.
 
 - Bump the suffix (`-1` to `-2`) when the Dockerfile or `src/` changes.
 - Bump the prefix with the Open-Instruct pin (for example `oi-v0.4.0-1`).
@@ -141,30 +141,23 @@ path in `test-data/slurm-bluevela/build.yaml` and in `USAGE.md`, then re-run
 
 ## Publishing the image
 
-The image name mirrors the step directory: `steps/common.mk` defaults
-`IMAGE_NAME = steps/$(STEP_PATH)/$(STEP_ENV)`, so this step's image is
-`$(REGISTRY)/steps/train/openinstruct-sft/skypilot`.
+The image is `$(REGISTRY)/gb-steps:train-openinstruct-sft-skypilot-<IMAGE_VERSION>`:
+every custom step pushes to one shared repository, `gb-steps`, and `steps/common.mk`
+derives the tag from the step directory (`/` becomes `-`).
 
-The granitebuild quay account is a user namespace. Before the first push:
-
-1. Pre-create the repo `steps/train/openinstruct-sft/skypilot` under
-   `quay.io/granitebuild`.
-2. Set it Public.
-3. Grant the robot `granitebuild+gbpush` Write on it.
-
-Then:
+The granitebuild quay account is a user namespace, whose push robot cannot create
+repositories. So `gb-steps` was pre-created once under `quay.io/granitebuild`, set
+Public, and grants the robot `granitebuild+gbpush` Write. Every step pushes a new
+tag into it, so no per-step quay setup is needed:
 
 ```bash
 podman login -u 'granitebuild+gbpush' --password-stdin quay.io/granitebuild   # robot token on stdin
 make -C steps/train/openinstruct-sft/skypilot image publish-image
-skopeo inspect --raw docker://quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-2
+skopeo inspect --raw docker://quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-2
 ```
 
 Run the `skopeo inspect` with no credentials, to check the image pulls
 anonymously.
-
-Nested-repo support under a quay user namespace is not yet confirmed. If quay
-refuses the nested name, set `IMAGE_NAME := <flat-name>` in this step's Makefile.
 
 The image is large (CUDA, torch, DeepSpeed and flash-attn wheels). A local
 build needs well over 60 GB free in the podman machine.
@@ -180,10 +173,10 @@ BlueVela login node as `granitebuild`:
 
 ```bash
 enroot import -o /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-2.sqsh \
-  "docker://quay.io#granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-2"
+  "docker://quay.io#granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-2"
 ```
 
-Rebuild it for each `IMAGE_TAG`, with the tag in the file name. The BlueVela
+Rebuild it for each `IMAGE_VERSION`, with the version in the file name. The BlueVela
 fixture sets `openinstruct_sft_config.image_id` to that path. The step adds
 `docker:`, and SkyPilot's SLURM provisioner hands a `.sqsh` to Pyxis as is.
 

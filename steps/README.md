@@ -331,7 +331,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   `publish-step` into a temp dir and `diff`s it against the three committed trees,
   exiting non-zero on drift. It re-renders image steps with the **already-committed**
   image reference (extracted from the published `step.yaml`), so it is immune to the
-  per-commit `IMAGE_TAG` churn and flags only genuine content drift. Succeeds when in
+  per-commit `IMAGE_VERSION` churn and flags only genuine content drift. Succeeds when in
   sync, or when none of the three published locations exists. Otherwise it fails, and
   its message says why: `DRIFT` (re-run `make publish-step`); `STALE` (a step that is
   not publishable, `STEP_PUBLISHABLE` not `true`, still has a committed copy in any of
@@ -386,8 +386,9 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `DOCKER`          | `podman`                                  | container tool                   |
 | `DOCKERFILE`      | `Dockerfile`                              | its presence enables image build/push |
 | `REGISTRY`        | *(required for image steps; set by the step's Makefile)* | image registry + namespace |
-| `IMAGE_NAME`      | `steps/$(STEP_PATH)/$(STEP_ENV)`         | image repository name; mirrors the step's directory, e.g. `steps/train/openinstruct-sft/skypilot`. Set it in the step's Makefile for a flat name |
-| `IMAGE_TAG`       | git short SHA, else `latest`              | image tag                        |
+| `IMAGE_NAME`      | `gb-steps`                                | image repository, shared by every custom step |
+| `IMAGE_VERSION`   | git short SHA, else `latest`              | version part of the tag; pin a release in the step's Makefile |
+| `IMAGE_TAG`       | `<STEP_PATH with / → ->-<STEP_ENV>-<IMAGE_VERSION>` | image tag; carries the step's directory, e.g. `train-openinstruct-sft-skypilot-oi-v0.3.0-2` |
 | `IMAGE_REF`       | `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)`   | full image reference (derived)   |
 | `SPACE_DIR`       | `space`                                   | generated Space directory name   |
 | `SPACE_NAME`      | `public`                                  | `name:` in the generated `space.yaml`. Matches the shared `configurations/spaces/local`, because an `hf://` push derives its HF resource group from the space name (`gbspace-<space>`); a step-named space would look for a group that doesn't exist |
@@ -404,7 +405,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `PUBLISH_TESTDATA_DIR` | `test-data/steps/$(STEP_PATH)/$(STEP_ENV)` | where `publish-step` copies the tests' fixtures |
 | `MODE2_SPACE_URI` | relative `file://`-less path to `configurations/spaces/local`, **depth-derived from `STEP_PATH`** (`N+4` levels up for an `N`-segment path — 5×`../` for a flat step, 6× for a one-level-nested one) | `space_uri` written into copied `buildtest.yaml`s |
 
-Example: `make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0`.
+Example: `make all REGISTRY=quay.io/myorg IMAGE_VERSION=0.1.0`.
 
 ### Registry credentials
 
@@ -422,7 +423,7 @@ Example: `make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0`.
   ```sh
   export REGISTRY_USER='my-org+ci'
   export REGISTRY_PASSWORD="$QUAY_TOKEN"   # from your CI secret store
-  make publish-image REGISTRY=quay.io/my-org IMAGE_TAG=0.1.0
+  make publish-image REGISTRY=quay.io/my-org IMAGE_VERSION=0.1.0
   ```
 
 ## Rendering: how the image reference is inserted
@@ -607,7 +608,7 @@ on it.
 
 > **Image steps: keep the published image tag and your local build in sync.** For a
 > custom-image step, `make publish-step` freezes a concrete image reference into the
-> committed `step.yaml` — with the default `IMAGE_TAG` (git short SHA) that tag is
+> committed `step.yaml` — with the default `IMAGE_VERSION` (git short SHA) that tag is
 > the commit `publish-step` ran at, and it goes stale on the next commit. A Mode-2 test
 > whose environment uses `pull_policy: if-not-present` (i.e. a local Docker
 > environment test) then resolves **only** when a local image at that exact tag
@@ -615,7 +616,7 @@ on it.
 > launcher tries to pull the (often placeholder) registry and fails. Before running
 > such a committed Mode-2 test, rebuild **and** re-publish at the current commit
 > (`make -C steps/<step>/<env> image publish-step`) so both sides agree — or pin a stable
-> `IMAGE_TAG` (e.g. `IMAGE_TAG=local`) on both the build and the publish-step so the
+> `IMAGE_VERSION` (e.g. `IMAGE_VERSION=local`) on both the build and the publish-step so the
 > committed assets don't drift. Mode 1 (`make test`) is immune: it builds and renders
 > at HEAD together. Public-image steps (e.g. byoc) have no such coupling.
 
@@ -638,7 +639,7 @@ leaves the committed copies stale.
 Run **`make check-published`** to catch that drift: it re-renders `publish-step` into a
 temp dir and diffs it against the three committed trees, exiting non-zero if they
 differ. It re-renders image steps with the image reference **already committed** in
-`step.yaml`, so a routine `IMAGE_TAG` (git-SHA) bump alone is *not* flagged — only a
+`step.yaml`, so a routine `IMAGE_VERSION` (git-SHA) bump alone is *not* flagged — only a
 genuine template/`src/`/test change that was never re-published (contrast the
 image-tag coupling note above). It is not wired into CI; run it locally after editing a
 step's source, or add it to a pre-commit / CI check if you want the guarantee enforced.

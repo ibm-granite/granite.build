@@ -209,7 +209,7 @@ endpoint:
 
   ```bash
   enroot import -o /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-2.sqsh \
-    "docker://quay.io#granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-2"
+    "docker://quay.io#granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-2"
   ```
 
   Then set `image_id` to that path:

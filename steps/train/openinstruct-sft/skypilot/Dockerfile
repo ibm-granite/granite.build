@@ -29,7 +29,7 @@ FROM nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu22.04@sha256:a99a1860ba8e2916e5c3e73
 
 # v0.3.0. finetune.py is deprecated upstream (in favour of olmo_core_finetune.py,
 # which has no Granite support) but still maintained; the pin makes the
-# deprecation an explicit decision. Bump with the Makefile's IMAGE_TAG prefix.
+# deprecation an explicit decision. Bump with the Makefile's IMAGE_VERSION prefix.
 ARG OPEN_INSTRUCT_REPO=https://github.com/allenai/open-instruct.git
 ARG OPEN_INSTRUCT_COMMIT=26de99604002d6a7b25a2c5f2ee880e388a21dca
 

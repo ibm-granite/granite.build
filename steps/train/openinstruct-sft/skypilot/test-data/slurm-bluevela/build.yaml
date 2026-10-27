@@ -38,7 +38,7 @@ granite.build:
             openinstruct_sft_config:
               # SLURM-SPECIFIC: a prebuilt squashfs of the step image on shared
               # /proj (a cold Pyxis pull of a large image does not fit a gpu-mid
-              # job). Rebuild per IMAGE_TAG, see README.md.
+              # job). Rebuild per IMAGE_VERSION, see README.md.
               image_id: /proj/data-eng/llmb-read-write/images/openinstruct-sft-oi-v0.3.0-2.sqsh
               deepspeed_config: ""
               clearml_enabled: true

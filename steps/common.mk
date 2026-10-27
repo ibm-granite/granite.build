@@ -59,8 +59,9 @@
 #   DOCKER      container tool          (default: podman)
 #   DOCKERFILE  Dockerfile to detect/build (default: Dockerfile)
 #   PLATFORM    target build platform   (default: linux/amd64)
-#   IMAGE_NAME  image repository name   (default: steps/$(STEP_PATH)/$(STEP_ENV))
-#   IMAGE_TAG   image tag               (default: git short SHA, else "latest")
+#   IMAGE_NAME     image repository          (default: gb-steps, shared by every step)
+#   IMAGE_VERSION  version part of the tag   (default: git short SHA, else "latest")
+#   IMAGE_TAG      image tag                 (default: <step path, / → ->-<env>-<IMAGE_VERSION>)
 #   STEP_ENV    step's environment segment      (default: this Makefile's dir name)
 #   PUBLISH_STEP_DIR  where `publish-step` renders the step (default: the env-nested
 #                     assets path configurations/assets/environments/<env>/steps/<path>)
@@ -109,16 +110,21 @@ $(error REGISTRY is not set. Define it in the including Makefile (e.g. 'REGISTRY
 endif
 endif
 
-# The image repository mirrors the step's directory under steps/ (David, #229):
-# steps/train/openinstruct-sft/skypilot builds
-# $(REGISTRY)/steps/train/openinstruct-sft/skypilot:<tag>, so the registry reads
-# like the source tree. OCI repository names may contain `/`. A step that needs a
-# flat name sets IMAGE_NAME in its own Makefile. `?=` makes it recursive, so the
-# STEP_PATH and STEP_ENV assigned further down this file are seen when it expands.
-IMAGE_NAME ?= steps/$(STEP_PATH)/$(STEP_ENV)
-# Defaults to the git short SHA (else "latest") so iterative builds get a unique,
-# traceable tag without ceremony. Override per release, e.g. IMAGE_TAG=0.1.0.
-IMAGE_TAG  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
+# Every custom step image goes into ONE shared repository, and the step's
+# directory goes into the TAG (#229): steps/train/openinstruct-sft/skypilot
+# builds $(REGISTRY)/gb-steps:train-openinstruct-sft-skypilot-<IMAGE_VERSION>.
+# A shared repo means one pre-created, public registry repository for every
+# step (a quay user namespace's push robot cannot create repositories, and
+# push-created repos are private). A tag cannot contain `/`, so the step path's
+# `/` become `-`. Override IMAGE_NAME for another repository, or IMAGE_TAG to
+# set the whole tag yourself. `?=` keeps them recursive: STEP_PATH and STEP_ENV
+# are assigned further down this file.
+IMAGE_NAME    ?= gb-steps
+# The version part of the tag. Defaults to the git short SHA (else "latest") so
+# iterative builds get a unique, traceable tag; a step pins a release in its
+# Makefile, e.g. IMAGE_VERSION ?= 0.1.0.
+IMAGE_VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
+IMAGE_TAG     ?= $(subst /,-,$(STEP_PATH))-$(STEP_ENV)-$(IMAGE_VERSION)
 
 # Registry host (e.g. quay.io) parsed from REGISTRY (quay.io/my-org) — this is
 # what `docker/podman login` authenticates against. Used only by publish-image's
@@ -317,13 +323,14 @@ help:
 	@echo "  clean          remove the generated Space $(SPACE_DIR)/"
 	@echo "  help           show this message"
 	@echo
-	@echo "Common overrides: make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0"
+	@echo "Common overrides: make all REGISTRY=quay.io/myorg IMAGE_VERSION=0.1.0"
 	@echo "Full documentation: $(README)"
 
 # ---- Image build / publish (custom image steps only) ------------------------------
 
 image:
 ifeq ($(STEP_USES_IMAGE),true)
+	$(call require-image-tag)
 	$(DOCKER) build --platform $(PLATFORM) -f $(DOCKERFILE) . -t $(IMAGE_REF)
 else
 	@echo "[$(STEP_NAME)] no $(DOCKERFILE) found; no custom image to build."
@@ -337,6 +344,7 @@ endif
 # --password-stdin so it never appears in `ps`, make's echo, or shell history.
 publish-image:
 ifeq ($(STEP_USES_IMAGE),true)
+	$(call require-image-tag)
 	@if [ -n "$${REGISTRY_USER:-}" ] && [ -n "$${REGISTRY_PASSWORD:-}" ]; then \
 		echo "[$(STEP_NAME)] logging in to $(REGISTRY_HOST) as $$REGISTRY_USER"; \
 		printf '%s' "$$REGISTRY_PASSWORD" | $(DOCKER) login "$(REGISTRY_HOST)" -u "$$REGISTRY_USER" --password-stdin; \
@@ -388,6 +396,17 @@ define require-gbignore
 		echo "[$(STEP_NAME)]   src/**" >&2; \
 		echo "[$(STEP_NAME)] (see steps/README.md, .gbignore)." >&2; \
 		exit 1; }
+endef
+
+# require-image-tag — fail before building/pushing when the derived tag is not a
+# valid OCI tag (at most 128 chars of [A-Za-z0-9_.-], not starting with . or -).
+define require-image-tag
+	@tag='$(IMAGE_TAG)'; \
+	if [ "$${#tag}" -gt 128 ] || ! printf '%s' "$$tag" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]*$$'; then \
+		echo "[$(STEP_NAME)] ERROR: image tag '$$tag' is not a valid OCI tag (max 128 chars of [A-Za-z0-9_.-])." >&2; \
+		echo "[$(STEP_NAME)] Shorten IMAGE_VERSION, or set IMAGE_TAG in this step's Makefile." >&2; \
+		exit 1; \
+	fi
 endef
 
 # guard-publish-paths — fail fast before `publish-step` runs any rm -rf. The publish

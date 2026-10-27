@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""A custom-image step's image repository mirrors its directory under steps/.
+"""Every custom-image step pushes to one shared repository; its tag carries the step dir.
 
-steps/<path>/<env>/ builds $(REGISTRY)/steps/<path>/<env>:<tag>, so the registry
-layout reads like the source tree (a nested step keeps its category). Runs the
-real steps/common.mk against throwaway steps in a temp tree.
+steps/<path>/<env>/ builds $(REGISTRY)/gb-steps:<path with / -> ->-<env>-<IMAGE_VERSION>,
+so one pre-created public repository serves every step and the tag still tells which
+step built it. Runs the real steps/common.mk against throwaway steps in a temp tree.
 """
 
 import os
@@ -59,15 +59,19 @@ def _make_step(root: pathlib.Path, rel: str, extra: str = "") -> pathlib.Path:
     return step
 
 
-def _var(step: pathlib.Path, name: str, *overrides: str) -> str:
-    """Return a make variable's value as the step's Makefile sees it."""
+def _env() -> dict:
+    """Return the environment with make's own variables scrubbed (skip if no make)."""
     if shutil.which("make") is None:
         pytest.skip("make not installed")
-    env = {k: v for k, v in os.environ.items() if k not in _MAKE_VARS}
+    return {k: v for k, v in os.environ.items() if k not in _MAKE_VARS}
+
+
+def _var(step: pathlib.Path, name: str, *overrides: str) -> str:
+    """Return a make variable's value as the step's Makefile sees it."""
     proc = subprocess.run(
-        ["make", "-s", f"print-{name}", "IMAGE_TAG=t1", *overrides],
+        ["make", "-s", f"print-{name}", "IMAGE_VERSION=v1", *overrides],
         cwd=step,
-        env=env,
+        env=_env(),
         capture_output=True,
         text=True,
         timeout=60,
@@ -76,21 +80,56 @@ def _var(step: pathlib.Path, name: str, *overrides: str) -> str:
     return proc.stdout.strip()
 
 
-def test_nested_step_image_mirrors_its_directory(tmp_path):
+def _make(step: pathlib.Path, *args: str) -> subprocess.CompletedProcess:
+    """Run make in the step with IMAGE_VERSION=v1 (an explicit one in ``args`` wins)."""
+    return subprocess.run(
+        ["make", "-s", "IMAGE_VERSION=v1", *args],
+        cwd=step,
+        env=_env(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def test_nested_step_tag_carries_its_directory(tmp_path):
     step = _make_step(tmp_path, "train/foo/skypilot")
-    assert _var(step, "IMAGE_REF") == "quay.io/org/steps/train/foo/skypilot:t1"
+    assert _var(step, "IMAGE_REF") == "quay.io/org/gb-steps:train-foo-skypilot-v1"
 
 
-def test_flat_step_image_mirrors_its_directory(tmp_path):
+def test_flat_step_tag_carries_its_directory(tmp_path):
     step = _make_step(tmp_path, "foo/docker")
-    assert _var(step, "IMAGE_REF") == "quay.io/org/steps/foo/docker:t1"
+    assert _var(step, "IMAGE_REF") == "quay.io/org/gb-steps:foo-docker-v1"
 
 
-def test_a_step_can_still_choose_its_image_name(tmp_path):
+def test_a_step_can_choose_its_repository(tmp_path):
     step = _make_step(tmp_path, "train/foo/skypilot", extra="IMAGE_NAME := flat-foo\n")
-    assert _var(step, "IMAGE_REF") == "quay.io/org/flat-foo:t1"
+    assert _var(step, "IMAGE_REF") == "quay.io/org/flat-foo:train-foo-skypilot-v1"
+
+
+def test_a_step_can_set_the_whole_tag(tmp_path):
+    step = _make_step(tmp_path, "train/foo/skypilot", extra="IMAGE_TAG := mytag\n")
+    assert _var(step, "IMAGE_REF") == "quay.io/org/gb-steps:mytag"
 
 
 def test_command_line_override_wins(tmp_path):
     step = _make_step(tmp_path, "train/foo/skypilot")
-    assert _var(step, "IMAGE_REF", "IMAGE_NAME=x/y") == "quay.io/org/x/y:t1"
+    assert (
+        _var(step, "IMAGE_REF", "IMAGE_NAME=x/y")
+        == "quay.io/org/x/y:train-foo-skypilot-v1"
+    )
+
+
+def test_too_long_tag_is_refused(tmp_path):
+    step = _make_step(tmp_path, "train/foo/skypilot")
+    proc = _make(step, "image", f"IMAGE_VERSION={'x' * 120}")
+    assert proc.returncode != 0
+    assert "not a valid OCI tag" in proc.stderr
+
+
+def test_valid_tag_passes_the_guard(tmp_path):
+    step = _make_step(tmp_path, "train/foo/skypilot")
+    proc = _make(step, "-n", "image")
+    assert proc.returncode == 0, proc.stderr
+    assert "gb-steps:train-foo-skypilot-v1" in proc.stdout
