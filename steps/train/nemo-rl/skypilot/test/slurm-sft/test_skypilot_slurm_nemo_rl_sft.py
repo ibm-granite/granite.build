@@ -18,8 +18,8 @@ The SLURM counterpart of ``test/aws-sft``: the same short SFT run on a tiny base
 model, on BlueVela's gpu-mid partition via
 ``space://environments/skypilot/slurm/ibm-bluevela``. Reaching SUCCESS proves the
 step's SLURM path: the base model is staged by a separate hfpull step onto the
-shared /proj filesystem, the NeMo-RL image runs as a Pyxis/enroot container from a
-prebuilt ``.sqsh``, ``examples/run_sft.py`` trains, ``convert_dcp_to_hf.py``
+shared /proj filesystem, the NeMo-RL image runs as a Pyxis/enroot container from
+the environment's shared ``.sqsh`` image cache (#560), ``examples/run_sft.py`` trains, ``convert_dcp_to_hf.py``
 produces a non-empty HF dir, and the ``model`` artifact is registered from the
 step's marker.
 

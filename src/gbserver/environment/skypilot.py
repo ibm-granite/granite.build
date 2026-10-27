@@ -3237,13 +3237,8 @@ class Skypilot(Environment):
         segment (lowercased) and the second (the ``~/.<cloud>/config`` Host
         alias, ``None`` when the infra names no cluster).
         """
-        cloud = (launcher_config.get("resources") or {}).get(
-            "cloud"
-        ) or self._get_cloud()
-        override_res = {
-            **(launcher_config.get("resources") or {}),
-            **((config.get("launcher_config") or {}).get("resources") or {}),
-        }
+        override_res = _merged_override_resources(launcher_config, config)
+        cloud = override_res.get("cloud") or self._get_cloud()
         infra, _ = self._resolve_infra_and_zone(cloud, override_res, config)
         parts = str(infra).split("/")
         return (parts[0] or "").lower(), (parts[1] if len(parts) >= 2 else None)

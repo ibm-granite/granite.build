@@ -717,6 +717,18 @@ class TestLaunchWiring:
         assert kwargs["image_id"] is None
 
     @pytest.mark.asyncio
+    async def test_build_layer_cloud_decides_whether_to_cache(self):
+        # The cache lookup must resolve the cloud the way the launch does
+        # (#542): build.yaml's resources.cloud wins over the env default, so a
+        # build moving a SLURM-default env's step to k8s skips the SLURM cache.
+        launch = {
+            "launcher_config": {"image_id": f"docker:{REF}"},
+            "config": {"launcher_config": {"resources": {"cloud": "k8s"}}},
+        }
+        _, resolver = await self._launch(_SLURM_ENV, **launch)
+        assert resolver.await_count == 0
+
+    @pytest.mark.asyncio
     async def test_cloud_resolution_error_skips_the_cache_without_failing(self):
         # A malformed block can no longer reach launch (EnvironmentConfig
         # rejects it). An error resolving the launch itself still only skips

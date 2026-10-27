@@ -132,6 +132,24 @@ def test_gpus_are_not_requested_through_compute_config(build):
     assert "gpu_model" not in compute
 
 
+def test_slurm_fixture_uses_the_environment_image_cache():
+    # ibm-bluevela's slurm_image_cache imports a registry image once into a
+    # shared .sqsh and launches from it (#560). That only applies to a registry
+    # ref: a hardcoded .sqsh path in the fixture is used as is, bypassing the
+    # cache. Leave image_id unset so the step's pinned default is cached.
+    repo = _HERE.parents[4]  # steps/train/nemo-rl/skypilot/test -> repo root
+    env = yaml.safe_load(
+        (
+            repo
+            / "configurations/assets/environments/skypilot/slurm/ibm-bluevela"
+            / "environment.yaml"
+        ).read_text()
+    )
+    assert env["config"].get("slurm_image_cache"), "ibm-bluevela lost its image cache"
+    nrl = _step(_target(_load("slurm-sft/build.yaml")))["config"]["nemo_rl_config"]
+    assert "image_id" not in nrl, "slurm-sft must use the step's registry image"
+
+
 def test_slurm_fixture_matches_the_bluevela_environment_constraints():
     # ibm-bluevela pins every job to H200 (sbatch constraint), so the fixture must
     # ask for H200, and must target that environment.
