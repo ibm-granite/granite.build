@@ -74,12 +74,20 @@ _PATCHED = {
     "anyio": "4.14.2",
     "GitPython": "3.1.59",
     "certifi": "2026.10.18",
+    "wandb": "0.31.0",
 }
 
 
 def test_security_patches_pinned():
     for pkg, version in _PATCHED.items():
         assert f'"{pkg}=={version}"' in _DOCKERFILE, pkg
+
+
+def test_nsight_profiler_purged():
+    assert (
+        "apt-get purge -y cuda-nsight-compute-12-8 nsight-compute-2025.1.1"
+        in _DOCKERFILE
+    )
 
 
 def test_vllm_removed_not_upgraded():

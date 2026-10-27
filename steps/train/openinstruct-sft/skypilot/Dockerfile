@@ -34,9 +34,12 @@ ARG OPEN_INSTRUCT_REPO=https://github.com/allenai/open-instruct.git
 ARG OPEN_INSTRUCT_COMMIT=26de99604002d6a7b25a2c5f2ee880e388a21dca
 
 ARG DEBIAN_FRONTEND=noninteractive
+# The Nsight Compute profiler (from the CUDA devel base) is not used at runtime and
+# bundles a Go binary with CRITICAL CVEs, so it is purged.
 RUN apt-get update \
  && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends git ca-certificates curl sudo \
+ && apt-get purge -y cuda-nsight-compute-12-8 nsight-compute-2025.1.1 \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=uv /uv /uvx /usr/local/bin/
@@ -57,6 +60,8 @@ WORKDIR /opt/open-instruct
 # stack, and nothing finetune.py imports needs vllm (it serves RL/generation).
 # The rest are upgraded to the first fixed release. litellm leaves upstream's
 # <1.75.2 pin; finetune.py imports it only through optional helpers.
+# wandb is upgraded past upstream's ==0.23.1 pin for its bundled wandb-core Go
+# binary; the step runs it with WANDB_MODE=disabled (see README.md).
 # Fetch exactly the pinned commit, then install the LOCKED environment. The
 # default groups are kept: open_instruct.utils imports `beaker` unconditionally
 # and beaker-py lives in the `dev` group at this release.
@@ -72,7 +77,7 @@ RUN git init -q . \
  && uv pip install --python .venv/bin/python \
       "pillow==13.0.0" "nltk==3.10.3" "litellm==1.84.0" "PyJWT==2.14.0" \
       "Authlib==1.6.9" "fastmcp==3.2.0" "anyio==4.14.2" "GitPython==3.1.59" \
-      "certifi==2026.10.18" \
+      "certifi==2026.10.18" "wandb==0.31.0" \
  && chmod -R a+rX /opt/open-instruct /opt/uv-python
 
 # The step's scripts. step.yaml's setup:/run: call them at /opt/openinstruct-sft/.
