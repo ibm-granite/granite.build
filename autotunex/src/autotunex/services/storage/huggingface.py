@@ -339,10 +339,11 @@ class HuggingFaceStorageBackend:
         registered through the bridge — is read anonymously, so the token never goes
         to an owner the operator did not configure (a private, gated or missing
         foreign repo then simply has no preview, reported ``viewer_ready=True`` since
-        waiting will not change that). Every failure mode — disabled, an underivable
-        locator, a missing token for a configured owner, or a viewer that is
-        unavailable or still precomputing — degrades to an empty (or partial)
-        preview. This method never raises: a preview must never fail a metadata read.
+        waiting will not change that). With no token set, a configured owner's repo
+        is read anonymously too, so a public one still previews. Every failure mode —
+        disabled, an underivable locator, or a viewer that is unavailable or still
+        precomputing — degrades to an empty (or partial) preview. This method never
+        raises: a preview must never fail a metadata read.
         """
         empty = DatasetPreview(train=[], validation=[])
         try:
@@ -360,14 +361,14 @@ class HuggingFaceStorageBackend:
                     dataset_id,
                 )
                 return await self._preview_from_viewer(repo_id, None, rows)
-            token = os.environ.get(self._hf_token_env)
-            if not token:
+            token = os.environ.get(self._hf_token_env) or None
+            if token is None:
+                # Still worth an anonymous read: the repo may be public.
                 logger.warning(
-                    "%s not set; cannot read HF preview for %s.",
+                    "%s not set; reading the HF preview for %s anonymously.",
                     self._hf_token_env,
                     dataset_id,
                 )
-                return empty
             return await self._preview_from_viewer(repo_id, token, rows)
         except Exception:
             logger.exception("Unexpected HF preview failure for %s; returning empty.", dataset_id)
@@ -402,8 +403,8 @@ class HuggingFaceStorageBackend:
                 )
             except HFViewerUnavailable as exc:
                 if token is None and isinstance(exc, HFViewerInaccessible):
-                    # An anonymous read of a foreign repo was refused: it is
-                    # private, gated or gone, so there is no preview to wait for.
+                    # An anonymous read was refused: the repo is private, gated or
+                    # gone, so there is no preview to wait for.
                     logger.debug("HF repo %s not readable anonymously: %s", repo_id, exc)
                     return DatasetPreview(train=[], validation=[])
                 logger.warning(
