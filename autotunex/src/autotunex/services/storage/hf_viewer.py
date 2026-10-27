@@ -40,14 +40,17 @@ class HFViewerUnavailable(Exception):  # noqa: N818 (name is a fixed cross-task 
 
 
 class HFViewerInaccessible(HFViewerUnavailable):
-    """The viewer refused the repo: HTTP 401, 403 or 404 on ``/splits``.
+    """The viewer refused the repo: HTTP 401 or 403 on ``/splits``.
 
     The repo is private, gated, or missing for the credentials sent, so (unlike
-    "still precomputing") retrying with the same credentials will not help.
+    "still precomputing") retrying with the same credentials will not help. An
+    anonymous read of such a repo gets 401 (``ExternalUnauthenticatedError``). A 404
+    is not included: the viewer also answers 404 (``ResponseNotFound``) for a new
+    repo it has not indexed yet, so a 404 stays "not ready".
     """
 
 
-_INACCESSIBLE_STATUSES = frozenset({401, 403, 404})
+_INACCESSIBLE_STATUSES = frozenset({401, 403})
 
 
 def repo_id_from_artifact_url(artifact_url: str | None) -> str | None:
@@ -93,7 +96,7 @@ async def discover_config(
     but reading it back means a repo whose push produced a differently-named
     subset still previews instead of failing permanently on ``/rows``.
 
-    Raises :class:`HFViewerInaccessible` on HTTP 401/403/404, and
+    Raises :class:`HFViewerInaccessible` on HTTP 401/403, and
     :class:`HFViewerUnavailable` on a transport error, any other non-200 status, a
     malformed body, or an empty/absent ``splits`` list — the last of which is the
     viewer's "still precomputing / not ready yet" signal, and the caller degrades
