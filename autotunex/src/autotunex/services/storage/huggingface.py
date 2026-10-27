@@ -48,6 +48,7 @@ import httpx
 from autotunex.core.exceptions import DatasetPushFailedError, DatasetPushTimeoutError
 from autotunex.core.logging import get_logger
 from autotunex.models.dataset import DatasetPreview
+from autotunex.services.storage.hf_hub import is_allowlisted
 from autotunex.services.storage.hf_viewer import (
     HFViewerInaccessible,
     HFViewerUnavailable,
@@ -94,7 +95,8 @@ class HuggingFaceStorageBackend:
         llmb_command: str,
         hf_token_env: str,
         gb_token_env: str,
-        hf_namespace: str | None,
+        hf_namespace: str,
+        hf_import_namespaces: list[str],
         hf_preview_enabled: bool,
         hf_viewer_base_url: str,
         hf_viewer_timeout_seconds: float,
@@ -106,6 +108,9 @@ class HuggingFaceStorageBackend:
         self._hf_token_env = hf_token_env
         self._gb_token_env = gb_token_env
         self._hf_namespace = hf_namespace
+        # Owners whose repos are read with the HF token: the org this backend
+        # pushes to, plus the import allowlist (``hf_hub.token_for``'s rule).
+        self._token_namespaces = [hf_namespace, *hf_import_namespaces]
         self._hf_preview_enabled = hf_preview_enabled
         self._hf_viewer_base_url = hf_viewer_base_url
         self._hf_viewer_timeout_seconds = hf_viewer_timeout_seconds
@@ -116,22 +121,12 @@ class HuggingFaceStorageBackend:
         self._http_client = http_client
 
     def _artifact_name(self, dataset_id: UUID, name: str) -> str:
-        """Derive the artifact name ``[<namespace>/]<name>_<id[:8]>`` (2025 shape)."""
-        base = f"{name}_{str(dataset_id)[:8]}"
-        return f"{self._hf_namespace}/{base}" if self._hf_namespace else base
+        """Derive the artifact name ``<name>_<id[:8]>`` (2025 shape).
 
-    def _is_own_repo(self, repo_id: str, dataset_id: UUID) -> bool:
-        """Whether ``repo_id`` is the repo this app pushed for ``dataset_id``.
-
-        Its name ends ``_<dataset id[:8]>`` (see :meth:`_artifact_name`) and, when
-        a namespace is configured, it lives in that namespace. Only such a repo is
-        sent the HF token, so a stored locator naming another org's repo cannot
-        borrow it.
+        The org is passed separately (``--hf-organization``): llmb rejects a ``/``
+        in an artifact name.
         """
-        owner, _, repo = repo_id.rpartition("/")
-        if not repo.endswith(f"_{str(dataset_id)[:8]}"):
-            return False
-        return not self._hf_namespace or owner == self._hf_namespace
+        return f"{name}_{str(dataset_id)[:8]}"
 
     async def persist(
         self,
@@ -208,6 +203,8 @@ class HuggingFaceStorageBackend:
                 str(push_dir),
                 "--artifact-name",
                 artifact_name,
+                "--hf-organization",
+                self._hf_namespace,
                 "--type",
                 "dataset",
                 "--store",
@@ -335,16 +332,17 @@ class HuggingFaceStorageBackend:
         """Best-effort bounded preview from the HuggingFace dataset viewer.
 
         Reads at most ``rows`` rows per split from ``datasets-server.huggingface.co``
-        using the dataset's stored ``hf://`` ``artifact_url``. A repo this app pushed
-        (see :meth:`_is_own_repo`) is private, so it is read with the HF token; any
-        other repo — e.g. a public dataset a training run registered through the
-        bridge — is read anonymously, so the token never goes to a repo the app does
-        not own (a private, gated or missing foreign repo then simply has no preview,
-        reported ``viewer_ready=True`` since waiting will not change that). Every
-        failure mode — disabled, an underivable locator, a missing token for an own
-        repo, or a viewer that is unavailable or still precomputing — degrades to an
-        empty (or partial) preview. This method never raises: a preview must never
-        fail a metadata read.
+        using the dataset's stored ``hf://`` ``artifact_url``. A repo whose owner is
+        the push org (``hf_namespace``) or in ``hf_import_namespaces`` is read with
+        the HF token — the app's own pushes are private — whichever row or locator
+        spelling names it. Any other repo — e.g. a public dataset a training run
+        registered through the bridge — is read anonymously, so the token never goes
+        to an owner the operator did not configure (a private, gated or missing
+        foreign repo then simply has no preview, reported ``viewer_ready=True`` since
+        waiting will not change that). Every failure mode — disabled, an underivable
+        locator, a missing token for a configured owner, or a viewer that is
+        unavailable or still precomputing — degrades to an empty (or partial)
+        preview. This method never raises: a preview must never fail a metadata read.
         """
         empty = DatasetPreview(train=[], validation=[])
         try:
@@ -355,9 +353,9 @@ class HuggingFaceStorageBackend:
             if repo_id is None:
                 logger.debug("No hf:// locator for %s; returning empty preview.", dataset_id)
                 return empty
-            if not self._is_own_repo(repo_id, dataset_id):
+            if not is_allowlisted(repo_id, self._token_namespaces):
                 logger.debug(
-                    "HF locator %s was not pushed for dataset %s; previewing it anonymously.",
+                    "HF locator %s of dataset %s has an unlisted owner; reading it anonymously.",
                     repo_id,
                     dataset_id,
                 )

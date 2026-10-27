@@ -32,7 +32,8 @@ PUSH_STDOUT = (
 
 def _backend(
     *,
-    hf_namespace: str | None = None,
+    hf_namespace: str = "example-org",
+    hf_import_namespaces: list[str] | None = None,
     hf_preview_enabled: bool = True,
     tags: str = "autotunex",
     http_client: httpx.AsyncClient | None = None,
@@ -43,6 +44,7 @@ def _backend(
         hf_token_env=HF_ENV,
         gb_token_env=GB_ENV,
         hf_namespace=hf_namespace,
+        hf_import_namespaces=hf_import_namespaces or [],
         hf_preview_enabled=hf_preview_enabled,
         hf_viewer_base_url="https://viewer.test",
         hf_viewer_timeout_seconds=2.5,
@@ -98,6 +100,8 @@ async def test_persist_authenticates_then_pushes_and_parses_refs(
     assert push[push.index("--store") + 1] == "hf"
     assert push[push.index("--tag") + 1] == "autotunex"
     assert "--certify-no-restrictions" in push
+    # the org goes in its own flag: llmb rejects a '/' in --artifact-name
+    assert push[push.index("--hf-organization") + 1] == "example-org"
     assert push[push.index("--artifact-name") + 1] == "finance_0f55c1a6"
     # only the two canonical files are staged for the push — not the leftover.
     assert pushed_names == ["finance_train.jsonl", "finance_validation.jsonl"]
@@ -583,7 +587,7 @@ async def test_preview_reads_a_foreign_repo_with_no_token_set(
             dataset_id=DATASET_ID,
             name="finance",
             data_format="jsonl",
-            artifact_url="hf://huggingface.co/datasets/example-org/finance_deadbeef",
+            artifact_url="hf://huggingface.co/datasets/other-org/finance_deadbeef",
             rows=10,
         )
 
@@ -630,11 +634,19 @@ async def test_preview_own_repo_refused_is_still_reported_not_ready(
 @pytest.mark.parametrize(
     ("artifact_url", "sends_token"),
     [
+        # the push org, under either locator spelling and whatever the name suffix:
+        # a bridge row for an app-pushed repo has a different id than the pushing row
         ("hf://huggingface.co/datasets/example-org/finance_0f55c1a6", True),
+        ("hf:///datasets/example-org/finance_9bb5cc58", True),
+        ("hf:///datasets/example-org/not-pushed-by-the-app", True),
+        # an import-allowlisted org
+        ("hf:///datasets/allowed-org/private_ds", True),
+        # any other owner, even one copying this row's id8 suffix
         ("hf://huggingface.co/datasets/other-org/finance_0f55c1a6", False),
+        ("hf:///datasets/Example-Org/finance_0f55c1a6", False),
     ],
 )
-async def test_preview_sends_the_token_only_inside_the_configured_namespace(
+async def test_preview_sends_the_token_only_to_a_configured_owner(
     monkeypatch: pytest.MonkeyPatch, artifact_url: str, sends_token: bool
 ) -> None:
     monkeypatch.setenv(HF_ENV, "hf_tok")
@@ -647,7 +659,7 @@ async def test_preview_sends_the_token_only_inside_the_configured_namespace(
         return httpx.Response(200, json={"rows": [{"row": {"a": 1}}]})
 
     async with _viewer_client(handler) as client:
-        await _backend(hf_namespace="example-org", http_client=client).preview(
+        await _backend(hf_import_namespaces=["allowed-org"], http_client=client).preview(
             dataset_id=DATASET_ID,
             name="finance",
             data_format="jsonl",

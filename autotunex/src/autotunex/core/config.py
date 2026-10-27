@@ -328,8 +328,13 @@ class Settings(BaseSettings):
     subprocess environment untouched.
     """
 
-    hf_namespace: str | None = None
-    """Optional HF org/namespace prefix for the derived repo name."""
+    hf_namespace: str = Field(default="ibm-research", min_length=1)
+    """HF org the HuggingFace backend pushes dataset repos to (``--hf-organization``).
+
+    The default is gbcli's own ``hf_organization`` default, which is where a push
+    without the flag lands anyway. Repos owned by this org are also read with the HF
+    token for preview, alongside ``hf_import_namespaces``: the app's pushes are
+    private, and the owner (not the repo name) decides who may borrow the token."""
 
     hf_preview_enabled: bool = True
     """Enable dataset preview via the HuggingFace dataset viewer.
