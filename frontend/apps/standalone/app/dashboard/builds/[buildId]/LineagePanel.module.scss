@@ -5,54 +5,6 @@
   position: relative;
 }
 
-.toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 2rem;
-  background: var(--cds-layer-01);
-  border-bottom: 1px solid var(--cds-border-subtle-01);
-  flex-shrink: 0;
-}
-
-.toolbarLeft {
-  display: inline-flex;
-  height: 2rem;
-  align-items: center;
-}
-
-.toolbarDivider {
-  height: 100%;
-  border-right: 1px solid var(--cds-border-subtle-01);
-}
-
-.levelIndicator {
-  font-size: 12px;
-  color: var(--cds-text-secondary);
-  margin: 0 0.5rem;
-  max-width: 24rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Graph + drawer live side by side; opening the drawer shrinks .graphArea,
-   which fires the graph's ResizeObserver so the view refits rather than letting
-   a right-edge node hide behind the drawer. */
-.graphRow {
-  flex: 1;
-  display: flex;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.graphArea {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  position: relative;
-}
-
 .centeredContent {
   display: flex;
   align-items: center;
@@ -80,25 +32,6 @@
   font-size: 0.875rem;
 }
 
-.expansionStatus {
-  position: absolute;
-  top: 0.5rem;
-  left: 1rem;
-  z-index: 10;
-  display: flex;
-  gap: 0.5rem;
-  align-items: center;
-  width: fit-content;
-  padding: 0 0.5rem;
-  font-size: 12px;
-  color: var(--cds-text-secondary);
-  background: var(--cds-layer-01);
-}
-
-.expansionError {
-  color: var(--cds-support-error);
-}
-
 .renderingIndicator {
   position: absolute;
   top: 2rem;
@@ -108,46 +41,15 @@
   z-index: 10;
 }
 
-/* Artifact summary in the navigation modal: label column, value column. */
-.navSummary {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.5rem 1rem;
-
-  dt {
-    color: var(--cds-text-secondary);
-  }
-
-  dd {
-    margin: 0;
-    overflow-wrap: anywhere;
-  }
-}
-
-/* ── Step details side panel ─────────────────────────────────────────────── */
-
-.drawerSlot {
-  /* A flex sibling of .graphArea (not an overlay) so it shrinks the graph when
-     it opens. 33rem ≈ 528px, inside the 480–560px target.
-     One slot holds whichever drawer is open, so switching the selected job
-     re-points the content without re-running the open animation (a remount would
-     collapse and regrow the pane, resizing the graph on every switch). */
-  flex: 0 0 33rem;
-  max-width: 90%;
-  min-height: 0;
-  display: flex;
-  overflow: hidden;
-  box-shadow: -4px 0 12px rgba(0, 0, 0, 0.15);
-  /* Grows its width rather than only sliding in, so the graph pane narrows
-     smoothly instead of snapping while the drawer is still off-screen. */
-  animation: drawerSlotOpen 280ms cubic-bezier(0.2, 0, 0.38, 0.9);
-
-  @media (prefers-reduced-motion: reduce) {
-    animation: none;
-  }
-}
-
-@keyframes drawerSlotOpen {
-  from { flex-basis: 0; box-shadow: none; }
-  to { flex-basis: 33rem; }
+// Same place and look as the artifact panel's expansion status line.
+.openError {
+  position: absolute;
+  top: 0.5rem;
+  left: 1rem;
+  z-index: 10;
+  width: fit-content;
+  padding: 0 0.5rem;
+  font-size: 12px;
+  color: var(--cds-support-error);
+  background: var(--cds-layer-01);
 }

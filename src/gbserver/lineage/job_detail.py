@@ -28,6 +28,7 @@ reason, and the caller still gets everything the index itself recorded.
 
 from __future__ import annotations
 
+import functools
 import logging
 import netrc
 import os
@@ -198,11 +199,32 @@ def _default_wandb_runs(job_id: str) -> List[Any]:
     )
 
 
+def _netrc_path() -> str:
+    """The netrc file W&B reads: ``$NETRC``, else ``~/.netrc``, else ``~/_netrc``."""
+    if os.getenv("NETRC"):
+        return os.path.expanduser(os.environ["NETRC"])
+    default = os.path.expanduser("~/.netrc")
+    windows = os.path.expanduser("~/_netrc")
+    return (
+        windows if not os.path.exists(default) and os.path.exists(windows) else default
+    )
+
+
+@functools.lru_cache(maxsize=None)
+def _netrc_has_host(path: str, host: str) -> bool:
+    # Cached per file and host: the credentials do not change while the server
+    # runs, and a grouped drawer asks once per row.
+    try:
+        return bool(host and netrc.netrc(path).authenticators(host))
+    except (OSError, netrc.NetrcParseError):
+        return False
+
+
 def _wandb_has_credentials() -> bool:
     """Whether the default W&B login has a credential to use.
 
     ``wandb.login(key="")`` falls back to ``WANDB_API_KEY`` and then to the
-    host's ``~/.netrc`` entry, so a server set up either way is configured too.
+    host's netrc entry, so a server set up either way is configured too.
     """
     # pylint: disable=import-outside-toplevel
     from gbserver.types.constants import (
@@ -213,10 +235,7 @@ def _wandb_has_credentials() -> bool:
     if GBSERVER_WANDB_API_KEY or os.getenv("WANDB_API_KEY"):
         return True
     host = urlparse(GBSERVER_WANDB_BASE_URL).hostname or ""
-    try:
-        return bool(host and netrc.netrc().authenticators(host))
-    except (OSError, netrc.NetrcParseError):
-        return False
+    return _netrc_has_host(_netrc_path(), host)
 
 
 class _Context:

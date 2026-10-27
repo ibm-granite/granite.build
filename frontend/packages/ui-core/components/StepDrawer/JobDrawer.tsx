@@ -62,8 +62,9 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef, soleOfGroup
   // what the lineage index captured, so both render through the same drawer.
   const target = job?.target ?? (job ? targetFromJob(job, title) : undefined)
   // Only once the detail is in: while it loads, neither the steps nor the index
-  // notice is known to apply.
+  // notice is known to apply. A failed fetch still shows what the node recorded.
   const fromIndex = Boolean(job) && !job?.target
+  const showIndex = fromIndex || Boolean(error)
 
   return (
     <StepDrawer
@@ -95,7 +96,7 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef, soleOfGroup
           <Field label="Shape">In-place rewrite (reads and writes the same artifact)</Field>
         </Section>
       )}
-      {fromIndex && <JobIndexSections job={job} target={target} jobId={jobId} buildId={buildId} noAccess={isAccessDenied(job)} />}
+      {showIndex && <JobIndexSections job={job} target={target} jobId={jobId} buildId={buildId} noAccess={isAccessDenied(job)} />}
       {job && <JobPayloadSections job={job} />}
     </StepDrawer>
   )

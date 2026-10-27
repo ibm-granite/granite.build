@@ -1,0 +1,30 @@
+// Toolbar, graph row and drawer slot come from ui-core's LineagePanelLayout.
+
+.levelIndicator {
+  font-size: 12px;
+  color: var(--cds-text-secondary);
+  margin: 0 0.5rem;
+  max-width: 24rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.expansionStatus {
+  position: absolute;
+  top: 0.5rem;
+  left: 1rem;
+  z-index: 10;
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  width: fit-content;
+  padding: 0 0.5rem;
+  font-size: 12px;
+  color: var(--cds-text-secondary);
+  background: var(--cds-layer-01);
+}
+
+.expansionError {
+  color: var(--cds-support-error);
+}

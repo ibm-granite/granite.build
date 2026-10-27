@@ -3,12 +3,14 @@
 import * as React from 'react'
 import { Button, InlineLoading, Loading, OverflowMenu, OverflowMenuItem } from '@carbon/react'
 import { ArrowLeft, ArrowRight, Launch, ZoomIn, ZoomFit, ZoomOut } from '@carbon/icons-react'
-import { useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import type { Artifact } from '@granite-build/ui-core/types'
+import { getHuggingFaceUrl } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
+import OpenArtifactModal, { canOpenArtifact, type OpenArtifactTarget } from '@granite-build/ui-core/components/LineageGraph/OpenArtifactModal'
 import { getBuild, getBuildStatus, getLineageGraph, listArtifacts } from '@granite-build/ui-core/api/gbserver'
 import BuildLineagePanel from '../../builds/[buildId]/LineagePanel'
-import styles from '../../builds/[buildId]/LineagePanel.module.scss'
+import layout from '@granite-build/ui-core/components/LineageGraph/LineagePanelLayout.module.scss'
+import own from './LineagePanel.module.scss'
 import JobDrawer from '@granite-build/ui-core/components/StepDrawer/JobDrawer'
 import Graph, { type GraphHandle } from '@granite-build/ui-core/components/LineageGraph/Graph'
 import { depthForNextLevel, groupListingRun, indexGraphToElk, type IndexElkNode, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
@@ -55,18 +57,16 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
     [merged.nodes, rootId],
   )
   const links = merged.links
-  const activeId = focusNodeId ?? rootId
-
   // A lone run the merge drops in favour of a group listing it hands its
-  // selection, and its open drawer, to that group.
-  React.useEffect(() => {
-    const regroup = (id: string | null) => {
-      if (!id || nodes.some((n) => n.id === id)) return id
-      return groupListingRun(nodes, id) ?? id
-    }
-    setFocusNodeId(regroup)
-    setJobNodeId(regroup)
-  }, [nodes])
+  // selection, and its open drawer, to that group. Derived in render, so the
+  // drawer never sees a frame without its node.
+  const regroup = React.useCallback(
+    (id: string | null) => (!id || nodes.some((n) => n.id === id) ? id : groupListingRun(nodes, id) ?? id),
+    [nodes]
+  )
+  const focusId = React.useMemo(() => regroup(focusNodeId), [regroup, focusNodeId])
+  const jobId = React.useMemo(() => regroup(jobNodeId), [regroup, jobNodeId])
+  const activeId = focusId ?? rootId
 
   // The node the buttons expand from is the one highlighted: the artifact itself
   // until another node is clicked.
@@ -97,8 +97,8 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
   const busy = expansion.loading !== null
 
   const jobNode = React.useMemo(
-    () => (jobNodeId ? (nodes.find((n) => n.id === jobNodeId) as IndexElkNode | undefined) : undefined),
-    [nodes, jobNodeId]
+    () => (jobId ? (nodes.find((n) => n.id === jobId) as IndexElkNode | undefined) : undefined),
+    [nodes, jobId]
   )
   const drawerRef = React.useRef<HTMLDivElement | null>(null)
   React.useEffect(() => {
@@ -114,10 +114,11 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
   // normalized URI, and GET /artifacts/?uri= matches on the normalized form too, so
   // one lookup finds the registry artifact whatever spelling it was registered
   // under. The artifact itself is already open.
-  const router = useRouter()
   const [opening, setOpening] = React.useState(false)
   const [openError, setOpenError] = React.useState<string | null>(null)
-  const canOpenArtifact = Boolean(activeNode && activeNode.type !== 'Build' && activeId !== rootId)
+  // The page's own artifact is already open, so there is nothing to open from it.
+  const canOpen = Boolean(activeNode && activeNode.type !== 'Build' && activeId !== rootId)
+  const [openTarget, setOpenTarget] = React.useState<OpenArtifactTarget | null>(null)
   const openArtifact = async () => {
     const raw = (activeNode as IndexElkNode | undefined)?.indexNode?.metadata?.uri
     const uri = typeof raw === 'string' ? raw : activeId
@@ -125,7 +126,21 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
     setOpenError(null)
     try {
       const match = (await listArtifacts({ uri, match_lineage_uri: true })).items[0]
-      if (match) router.push(`/dashboard/artifacts/_/?id=${match.uuid}`)
+      // Another spelling of this page's own URI resolves back to it.
+      if (match?.uuid === artifact.uuid) {
+        setOpenError(`${activeName} is the artifact already open.`)
+        return
+      }
+      // The registry may record the HuggingFace spelling the index URI lacks.
+      const hfUrl = getHuggingFaceUrl(match?.uri ?? '') ?? getHuggingFaceUrl(uri)
+      const target: OpenArtifactTarget = {
+        name: match?.name || activeName,
+        uri: match?.uri ?? uri,
+        uuid: match?.uuid,
+        artifactType: match?.artifact_type,
+        hfUrl,
+      }
+      if (canOpenArtifact(target)) setOpenTarget(target)
       else setOpenError(`${activeName} is not in the artifact registry.`)
     } catch (e) {
       setOpenError(`Failed to open ${activeName}: ${String(e)}`)
@@ -140,12 +155,12 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
       {/* Any toolbar button closes the open drawer. Capture runs before the
           button's own handler, which still sees this render's selection. */}
       <div
-        className={styles.toolbar}
+        className={layout.toolbar}
         onClickCapture={(e) => {
           if ((e.target as HTMLElement).closest('button')) setJobNodeId(null)
         }}
       >
-        <div className={styles.toolbarLeft}>
+        <div className={layout.toolbarLeft}>
           <Button size="sm" kind="ghost" renderIcon={ArrowLeft}
             disabled={busy || noLineage || up.exhausted}
             title={up.exhausted ? `Nothing more upstream of ${activeName}` : `Load level ${up.depth + 1} upstream of ${activeName}`}
@@ -159,12 +174,12 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
             Downstream
           </Button>
           {!noLineage && !isLoading && (
-            <span className={styles.levelIndicator}>
+            <span className={own.levelIndicator}>
               From <strong>{activeName}</strong> · ← {levelText(up)} · {levelText(down)} →
             </span>
           )}
 
-          <div className={styles.toolbarDivider} />
+          <div className={layout.toolbarDivider} />
 
           <Button size="sm" kind="ghost" hasIconOnly tooltipPosition="right"
             iconDescription="Zoom In (+10%)" renderIcon={ZoomIn}
@@ -176,7 +191,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
             iconDescription="Zoom Out (-10%)" renderIcon={ZoomOut}
             onClick={() => graphRef.current?.zoomOut()} />
 
-          <div className={styles.toolbarDivider} />
+          <div className={layout.toolbarDivider} />
 
           <OverflowMenu size="sm" selectorPrimaryFocus=".overflow-item" aria-label="More options">
             <OverflowMenuItem
@@ -191,11 +206,11 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
             />
           </OverflowMenu>
 
-          <div className={styles.toolbarDivider} />
+          <div className={layout.toolbarDivider} />
 
           <Button size="sm" kind="ghost" renderIcon={Launch}
-            disabled={!canOpenArtifact || opening}
-            title={canOpenArtifact ? `Open ${activeName}` : 'Select another artifact to open it'}
+            disabled={!canOpen || opening}
+            title={canOpen ? `Open ${activeName}` : 'Select another artifact to open it'}
             onClick={openArtifact}>
             Open artifact
           </Button>
@@ -203,18 +218,23 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
       </div>
 
       {(busy || Boolean(expansion.error) || unexpanded > 0 || Boolean(openError)) && (
-        <div className={styles.expansionStatus}>
+        <div className={own.expansionStatus}>
           {busy && <InlineLoading description={`Loading ${expansion.loading} lineage…`} />}
           {Boolean(expansion.error) && (
-            <span className={styles.expansionError}>Failed to expand lineage: {String(expansion.error)}</span>
+            <span className={own.expansionError}>Failed to expand lineage: {String(expansion.error)}</span>
           )}
-          {openError && <span className={styles.expansionError}>{openError}</span>}
+          {openError && <span className={own.expansionError}>{openError}</span>}
           {!busy && unexpanded > 0 && <span>{unexpanded} nodes not expanded.</span>}
         </div>
       )}
 
-      <div className={styles.graphRow}>
-      <div className={styles.graphArea}>
+      <OpenArtifactModal
+        target={openTarget}
+        onClose={() => setOpenTarget(null)}
+      />
+
+      <div className={layout.graphRow}>
+      <div className={layout.graphArea}>
         {isLoading && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10 }}>
             <Loading withOverlay={false} description="Loading lineage…" />
@@ -257,7 +277,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
       </div>
 
       {jobNode && (
-        <div className={styles.drawerSlot}>
+        <div className={layout.drawerSlot}>
           <JobDrawer node={jobNode} onClose={() => setJobNodeId(null)} drawerRef={drawerRef} />
         </div>
       )}

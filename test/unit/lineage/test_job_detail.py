@@ -21,7 +21,6 @@ from types import SimpleNamespace
 import pytest
 
 from gbserver.lineage import job_detail as job_detail_mod
-
 from gbserver.lineage.db_service import DBLineageService
 from gbserver.storage.stored_lineage_job import StoredLineageJob
 from gbserver.storage.stored_lineage_row import JobStore, StoredLineageRow
@@ -374,6 +373,7 @@ def test_an_outsider_gets_no_target_ids():
 def test_an_unconfigured_wandb_shows_only_the_index(monkeypatch, tmp_path):
     monkeypatch.setattr("gbserver.types.constants.GBSERVER_WANDB_API_KEY", "")
     monkeypatch.delenv("WANDB_API_KEY", raising=False)
+    monkeypatch.delenv("NETRC", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     # No lister injected: the server's own W&B, which has no key.
     result = DBLineageService(
@@ -387,8 +387,10 @@ def test_an_unconfigured_wandb_shows_only_the_index(monkeypatch, tmp_path):
     assert result["build_id"] == "b1" and result["target_run_uuid"] == "t1"
 
 
-@pytest.mark.parametrize("source", ["env", "netrc"])
-def test_wandb_credentials_outside_the_gbserver_key_count(monkeypatch, tmp_path, source):
+@pytest.mark.parametrize("source", ["env", "netrc", "NETRC"])
+def test_wandb_credentials_outside_the_gbserver_key_count(
+    monkeypatch, tmp_path, source
+):
     # wandb.login(key="") falls back to WANDB_API_KEY, then the host's ~/.netrc.
     monkeypatch.setattr("gbserver.types.constants.GBSERVER_WANDB_API_KEY", "")
     monkeypatch.setattr(
@@ -396,10 +398,14 @@ def test_wandb_credentials_outside_the_gbserver_key_count(monkeypatch, tmp_path,
     )
     monkeypatch.delenv("WANDB_API_KEY", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("NETRC", raising=False)
     if source == "env":
         monkeypatch.setenv("WANDB_API_KEY", "k")
     else:
-        netrc_file = tmp_path / ".netrc"
+        # NETRC points W&B at a file other than ~/.netrc.
+        netrc_file = tmp_path / (".netrc" if source == "netrc" else "gb-netrc")
+        if source == "NETRC":
+            monkeypatch.setenv("NETRC", str(netrc_file))
         netrc_file.write_text("machine wandb.example.com login user password k\n")
         netrc_file.chmod(0o600)
     assert job_detail_mod._wandb_has_credentials() is True

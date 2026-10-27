@@ -1,24 +1,24 @@
 'use client'
 
 import * as React from 'react'
-import { Button, InlineLoading, Link, Modal, OverflowMenu, OverflowMenuItem } from '@carbon/react'
+import { Button, InlineLoading, OverflowMenu, OverflowMenuItem } from '@carbon/react'
 import {
   CenterSquare,
-  Launch,
   ZoomFit,
   ZoomIn,
   ZoomOut,
 } from '@carbon/icons-react'
-import { useRouter } from 'next/navigation'
+import layout from '@granite-build/ui-core/components/LineageGraph/LineagePanelLayout.module.scss'
 import styles from './LineagePanel.module.scss'
 import type { ElkExtendedEdge } from 'elkjs'
 import { parse as parseYaml } from 'yaml'
-import { useQuery, useQueries } from '@tanstack/react-query'
+import { useQuery, useQueries, type UseQueryResult } from '@tanstack/react-query'
 import type { Artifact, Build, BuildStatusDetail } from '@granite-build/ui-core/types'
 import { getArtifact, inferArtifactTypeFromUri } from '@granite-build/ui-core/api/gbserver'
 import { getBuildArchiveFiles } from '@granite-build/ui-core/api/gbserver'
 import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@granite-build/ui-core/components/LineageGraph/Graph'
 import { getHuggingFaceUrl } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
+import OpenArtifactModal, { canOpenArtifact, type OpenArtifactTarget } from '@granite-build/ui-core/components/LineageGraph/OpenArtifactModal'
 import { artifactTypeToNodeType, renameElkGraph } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import StepDrawer from '@granite-build/ui-core/components/StepDrawer/StepDrawer'
 
@@ -204,6 +204,15 @@ function plannedNodeType(uri: string): NodeType {
   return artifactTypeToNodeType(inferArtifactTypeFromUri(uri))
 }
 
+// Only the data, so a status poll or refetch that changes nothing keeps the same
+// array: combine's result is structurally shared, unlike the raw query results.
+function artifactsData(results: UseQueryResult<Artifact>[]) {
+  return results.map((r) => (r.isPending ? PENDING : r.data))
+}
+
+// An artifact whose fetch has not settled, told apart from one that failed.
+const PENDING = Symbol('pending')
+
 function isUUID(s: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
 }
@@ -313,21 +322,32 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     drawerReturnFocusRef.current = null
   }, [stepDetailTarget])
 
-  const { nodes: rawBuildNodes, links: rawBuildLinks, artifactIds } = React.useMemo(
+  const { nodes: rawBuildNodes, links: rawBuildLinks, artifactIds: polledArtifactIds } = React.useMemo(
     () => buildGraphData(buildStatus, plannedTargets, isActive),
     [buildStatus, plannedTargets, isActive]
   )
+  // Every status poll rebuilds the id list; keyed on its contents, the artifact
+  // lookups below only recompute when the set of artifacts changes.
+  const artifactIdsKey = polledArtifactIds.join('|')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const artifactIds = React.useMemo(() => polledArtifactIds, [artifactIdsKey])
 
   // Fetch artifact names for all UUID-shaped artifact IDs
-  const uuidArtifactIds = artifactIds.filter(isUUID)
-  const artifactQueries = useQueries({
+  const uuidArtifactIds = React.useMemo(() => artifactIds.filter(isUUID), [artifactIds])
+  const artifacts = useQueries({
     queries: uuidArtifactIds.map((id) => ({
       queryKey: ['artifact', id],
       queryFn: () => getArtifact(id),
       retry: false,
       staleTime: 5 * 60 * 1000,
     })),
+    combine: artifactsData,
   })
+  const artifactById = React.useMemo(() => {
+    const map = new Map<string, Artifact>()
+    uuidArtifactIds.forEach((id, i) => { const a = artifacts[i]; if (a && a !== PENDING) map.set(id, a) })
+    return map
+  }, [artifacts, uuidArtifactIds])
 
   // Finished targets record their artifacts by registry UUID, but a planned target
   // names them by the URI in build.yaml. Without folding, an artifact one target
@@ -338,17 +358,16 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // artifact one way; a miss only leaves a second node, never a wrong merge.
   const plannedUriToUuid = React.useMemo(() => {
     const byUri = new Map<string, string>()
-    uuidArtifactIds.forEach((id, i) => {
-      const data = artifactQueries[i]?.data
-      for (const uri of [data?.uri, data?.lineage_uri]) if (uri && !byUri.has(uri)) byUri.set(uri, id)
-    })
+    for (const [id, data] of artifactById) {
+      for (const uri of [data.uri, data.lineage_uri]) if (uri && !byUri.has(uri)) byUri.set(uri, id)
+    }
     const map = new Map<string, string>()
     for (const id of artifactIds) {
       const uuid = isUUID(id) ? undefined : byUri.get(id)
       if (uuid) map.set(id, uuid)
     }
     return map
-  }, [artifactQueries, uuidArtifactIds, artifactIds])
+  }, [artifactById, artifactIds])
   const { nodes: buildNodes, links: buildLinks } = React.useMemo(
     () => renameElkGraph({ nodes: rawBuildNodes, links: rawBuildLinks }, (id) => plannedUriToUuid.get(id) ?? id),
     [rawBuildNodes, rawBuildLinks, plannedUriToUuid]
@@ -356,44 +375,27 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
 
   // Enrich nodes with resolved artifact names and types
   const enrichedBuildNodes = React.useMemo<ElkNodeEx[]>(() => {
-    const artifactMap = new Map<string, { name: string; type: NodeType }>()
-    uuidArtifactIds.forEach((id, i) => {
-      const result = artifactQueries[i]?.data
-      if (result) {
-        artifactMap.set(id, {
-          name: result.name,
-          type: artifactTypeToNodeType(result.artifact_type),
-        })
-      }
-    })
-
     return buildNodes.map((node) => {
-      const enriched = artifactMap.get(node.id)
+      const enriched = artifactById.get(node.id)
       if (enriched) {
-        return { ...node, title: enriched.name, type: enriched.type }
+        return { ...node, title: enriched.name, type: artifactTypeToNodeType(enriched.artifact_type) }
       }
       // This build's own targets are runs of this build.
       if (node.type === 'Build' && !node.planned && build?.uuid) return { ...node, buildId: build.uuid }
       return node
     })
-  }, [buildNodes, artifactQueries, uuidArtifactIds, build?.uuid])
-
-  const artifactUriMap = React.useMemo(() => {
-    const map = new Map<string, string>()
-    uuidArtifactIds.forEach((id, i) => {
-      const uri = artifactQueries[i]?.data?.uri
-      if (uri) map.set(id, uri)
-    })
-    return map
-  }, [artifactQueries, uuidArtifactIds])
+  }, [buildNodes, artifactById, build?.uuid])
 
   // The graph shows what this build did, whole; lineage beyond it is on the
   // artifact page, which a click on an artifact offers to open.
 
   // Navigation state
   const [focusNodeId, setFocusNodeId] = React.useState<string | null>(initialFocusNodeId ?? null)
-  const [artifactNavNode, setArtifactNavNode] = React.useState<{ node: ElkNodeEx; artifact?: Artifact; hfUrl: string | null } | null>(null)
-  const router = useRouter()
+  // The clicked node, not a snapshot of its dialog: the target is derived from
+  // the artifact queries, so a click before its fetch lands still fills in.
+  const [openNode, setOpenNode] = React.useState<ElkNodeEx | null>(null)
+  // Said when a clicked artifact has nowhere to open: not registered, not on HuggingFace.
+  const [openError, setOpenError] = React.useState<string | null>(null)
   const [rendered, setRendered] = React.useState(false)
   const [showBuildInfo, setShowBuildInfo] = React.useState(true)
 
@@ -456,12 +458,36 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     setFocusNodeId(node.id)
     const isTarget = node.type === 'Build' && node.id.startsWith(TARGET_NODE_PREFIX)
     setStepDetailTarget(isTarget ? node.id.slice(TARGET_NODE_PREFIX.length) : null)
-    // The page's own artifact is already open.
-    if (node.type === 'Build' || !isUUID(node.id) || node.id === initialFocusNodeId) return
-    const uri = artifactUriMap.get(node.id)
-    const artifact = artifactQueries[uuidArtifactIds.indexOf(node.id)]?.data
-    setArtifactNavNode({ node, artifact, hfUrl: uri ? getHuggingFaceUrl(uri) : null })
+    // The page's own artifact is already open, so there is nothing to open from it.
+    setOpenError(null)
+    if (node.type === 'Build' || node.id === initialFocusNodeId) return
+    setOpenNode(node)
   }
+
+  // A planned artifact has no registry page, but may be on HuggingFace. The
+  // dialog offers whichever is left.
+  const openTarget = React.useMemo<OpenArtifactTarget | null>(() => {
+    if (!openNode) return null
+    const registered = isUUID(openNode.id)
+    const artifact = registered ? artifactById.get(openNode.id) : undefined
+    const uri = registered ? artifact?.uri : openNode.id
+    const target: OpenArtifactTarget = {
+      name: artifact?.name || openNode.title || openNode.id,
+      uri,
+      uuid: registered ? openNode.id : undefined,
+      artifactType: artifact?.artifact_type,
+      hfUrl: uri ? getHuggingFaceUrl(uri) : null,
+    }
+    return canOpenArtifact(target) ? target : null
+  }, [openNode, artifactById])
+  // A registered artifact may still be loading; once nothing is left to fetch and
+  // there is still nowhere to go, say so and let the click go.
+  const openPending = Boolean(openNode && artifacts[uuidArtifactIds.indexOf(openNode.id)] === PENDING)
+  React.useEffect(() => {
+    if (!openNode || openTarget || openPending) return
+    setOpenError(`${openNode.title || openNode.id} is not in the artifact registry.`)
+    setOpenNode(null)
+  }, [openNode, openTarget, openPending])
 
   // Back to the page's own artifact, now that clicks can select other nodes.
   const handleFocusNode = () => {
@@ -481,12 +507,12 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       {/* Any toolbar button closes the open drawer. Capture runs before the
           button's own handler, which still sees this render's selection. */}
       <div
-        className={styles.toolbar}
+        className={layout.toolbar}
         onClickCapture={(e) => {
           if ((e.target as HTMLElement).closest('button')) setStepDetailTarget(null)
         }}
       >
-        <div className={styles.toolbarLeft}>
+        <div className={layout.toolbarLeft}>
           {showFocusNode && (
             <Button
               size="sm"
@@ -498,7 +524,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
               Focus Node
             </Button>
           )}
-          {showFocusNode && <div className={styles.toolbarDivider} />}
+          {showFocusNode && <div className={layout.toolbarDivider} />}
           <Button
             size="sm"
             kind="ghost"
@@ -527,7 +553,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
             onClick={() => graphRef.current?.zoomOut()}
           />
 
-          <div className={styles.toolbarDivider} />
+          <div className={layout.toolbarDivider} />
 
           <OverflowMenu size="sm" selectorPrimaryFocus=".overflow-item">
             <OverflowMenuItem
@@ -555,10 +581,11 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
           the drawer merely overlaid the graph, a node near that edge could hide
           behind the drawer it just triggered; shrinking the SVG instead fires
           the graph's ResizeObserver, which refits the view. */}
-      <div className={styles.graphRow}>
+      <div className={layout.graphRow}>
       {/* Graph area. tabIndex=-1 so it can receive programmatic focus as the
           fallback when a closed drawer's trigger node is no longer in the DOM. */}
-      <div className={styles.graphArea} ref={graphContainerRef} tabIndex={-1}>
+      <div className={layout.graphArea} ref={graphContainerRef} tabIndex={-1}>
+        {openError && <div className={styles.openError}>{openError}</div>}
         {loading && (
           <div className={styles.centeredContent}>
             <InlineLoading description="Loading lineage…" />
@@ -601,7 +628,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       </div>
 
       {stepDetailTarget && (
-      <div className={styles.drawerSlot}>
+      <div className={layout.drawerSlot}>
         <StepDrawer
           targetName={stepDetailTarget}
           // Own-property lookup: a bare-object index would return
@@ -618,24 +645,10 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       )}
       </div>
 
-      {/* Two footer buttons only: Carbon sizes a three-button footer just through its
-          secondaryButtons prop, so the HuggingFace link sits in the body instead. */}
-      <Modal
-        open={artifactNavNode !== null}
-        onRequestClose={() => setArtifactNavNode(null)}
-        modalHeading="Navigate to artifact"
-        primaryButtonText="View artifact page"
-        secondaryButtonText="Cancel"
-        onRequestSubmit={() => {
-          if (artifactNavNode)
-            router.push(`/dashboard/artifacts/_/?id=${artifactNavNode.node.id}`);
-          setArtifactNavNode(null);
-        }}
-        onSecondarySubmit={() => setArtifactNavNode(null)}
-        size="sm"
-      >
-        {artifactNavNode && <ArtifactSummary {...artifactNavNode} />}
-      </Modal>
+      <OpenArtifactModal
+        target={openTarget}
+        onClose={() => setOpenNode(null)}
+      />
     </div>
   );
 })
@@ -644,34 +657,3 @@ export default LineagePanelInner
 
 // Re-export GraphHandle for use in parent
 export type { GraphHandle }
-
-// What the navigation modal is about to open, so a mis-click is recognisable.
-function ArtifactSummary({ node, artifact, hfUrl }: { node: ElkNodeEx; artifact?: Artifact; hfUrl: string | null }) {
-  const uri = artifact?.uri
-  return (
-    <dl className={styles.navSummary}>
-      <dt>Name</dt>
-      <dd>{artifact?.name || node.title || node.id}</dd>
-      <dt>ID</dt>
-      <dd><code>{node.id}</code></dd>
-      {artifact?.artifact_type && (
-        <>
-          <dt>Type</dt>
-          <dd>{artifact.artifact_type.toLowerCase()}</dd>
-        </>
-      )}
-      {uri && (
-        <>
-          <dt>URI</dt>
-          <dd>
-            {hfUrl ? (
-              <Link href={hfUrl} target="_blank" rel="noopener noreferrer" renderIcon={Launch}>{uri}</Link>
-            ) : (
-              <code>{uri}</code>
-            )}
-          </dd>
-        </>
-      )}
-    </dl>
-  )
-}

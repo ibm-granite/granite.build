@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Theme } from "@carbon/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useTheme } from "../hooks/useTheme";
+import { decodeRouteSegment } from "../hooks/useRouteId";
 import { type AppRoutes, RoutesProvider, useRoutes } from "../config/routes";
 import { AppHeader } from "./AppHeader";
 import { ChatWidget } from "./ChatWidget";
@@ -39,15 +40,11 @@ const queryClient = new QueryClient({
 // which `searchParams.get('id')` reads back as the literal `a%20b` — the wrong
 // id. UUIDs are unaffected, but ids carrying a reserved character are exactly
 // the ones the encoding was added for, so the two halves have to agree.
+// A stray `%` is not a valid escape; redirecting with the raw segment is wrong
+// in the same way it was before this fix, but throwing out of an effect would
+// blank the whole shell.
 function decodeSegment(segment: string): string {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    // A stray `%` is not a valid escape and makes decodeURIComponent throw.
-    // Redirecting with the raw segment is wrong in the same way it was before
-    // this fix; throwing out of an effect would blank the whole shell.
-    return segment;
-  }
+  return decodeRouteSegment(segment) ?? segment;
 }
 
 // Unlike builds/artifacts, /dashboard/autotunex has sibling static routes

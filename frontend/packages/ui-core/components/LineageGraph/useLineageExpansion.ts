@@ -9,9 +9,11 @@ const EMPTY: ElkGraph = { nodes: [], links: [] }
 
 // The last response for one `direction|seed`, with the nodes on screen when it was
 // asked for, so whether it added anything can be re-judged under a later rename.
+// Only ids are kept, except for `runs:` groups, whose job list says which lone
+// runs they already show.
 interface Expansion {
   result: LineageGraphResult
-  known: ElkNodeEx[]
+  known: Array<string | ElkNodeEx>
 }
 
 // Grows a lineage graph through GET /lineage/graph, seeded from the selected node.
@@ -78,7 +80,7 @@ export function useLineageExpansion(rename?: (id: string) => string, groupRuns =
       const result = await getLineageGraph({ ...expansionSeed(seedId, metadata), direction, depth, group_runs: groupRuns })
       if (!current()) return
       setUnexpanded(result.truncated ? result.unexpanded ?? 0 : 0)
-      const entry: Expansion = { result, known: known.nodes }
+      const entry: Expansion = { result, known: known.nodes.map((n) => (n.id.startsWith('runs:') ? n : n.id)) }
       setExpansions((prev) => {
         const next = new Map(prev)
         if (result.truncated) {
