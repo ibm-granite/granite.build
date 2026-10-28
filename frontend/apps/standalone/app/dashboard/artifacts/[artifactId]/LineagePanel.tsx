@@ -5,9 +5,8 @@ import { Button, InlineLoading, Loading, OverflowMenu, OverflowMenuItem } from '
 import { ArrowLeft, ArrowRight, Launch, ZoomIn, ZoomFit, ZoomOut } from '@carbon/icons-react'
 import { useQuery } from '@tanstack/react-query'
 import type { Artifact } from '@granite-build/ui-core/types'
-import { getHuggingFaceUrl } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
-import OpenArtifactModal, { canOpenArtifact, type OpenArtifactTarget } from '@granite-build/ui-core/components/LineageGraph/OpenArtifactModal'
-import { getBuild, getBuildStatus, getLineageGraph, listArtifacts } from '@granite-build/ui-core/api/gbserver'
+import OpenArtifactModal, { type OpenArtifactTarget } from '@granite-build/ui-core/components/LineageGraph/OpenArtifactModal'
+import { getBuild, getBuildStatus, getLineageGraph } from '@granite-build/ui-core/api/gbserver'
 import BuildLineagePanel from '../../builds/[buildId]/LineagePanel'
 import layout from '@granite-build/ui-core/components/LineageGraph/LineagePanelLayout.module.scss'
 import own from './LineagePanel.module.scss'
@@ -110,59 +109,25 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [jobNodeId])
 
-  // Index nodes are keyed by normalized URI, not UUID. metadata.uri is that same
-  // normalized URI, and GET /artifacts/?uri= matches on the normalized form too, so
-  // one lookup finds the registry artifact whatever spelling it was registered
-  // under. The artifact itself is already open.
-  const [opening, setOpening] = React.useState(false)
+  // Index nodes are keyed by normalized URI. The dialog opens at once: a node the
+  // index recorded a registry UUID for opens by it; any other opens by URI, which
+  // the artifact page resolves when "View artifact page" is clicked.
   const [openError, setOpenError] = React.useState<string | null>(null)
   // The page's own artifact is already open, so there is nothing to open from it.
   const canOpen = Boolean(activeNode && activeNode.type !== 'Build' && activeId !== rootId)
   const [openTarget, setOpenTarget] = React.useState<OpenArtifactTarget | null>(null)
-  const openArtifact = async () => {
-    const raw = (activeNode as IndexElkNode | undefined)?.indexNode?.metadata?.uri
-    const uri = typeof raw === 'string' ? raw : activeId
-    // An http(s):// or hf:// URI opens without a registry lookup here (that one
-    // scans the registry): a web URI opens as is (an hf:// one on HuggingFace),
-    // and the artifact page resolves the URI itself, saying so if none is registered.
-    if (/^(https?|hf):\/\//.test(uri)) {
-      // The index URI is normalized, as lineage_uri is, so another spelling of
-      // this page's own URI is caught without the lookup.
-      if (uri === artifact.lineage_uri || uri === artifact.uri) {
-        setOpenError(`${activeName} is the artifact already open.`)
-        return
-      }
-      setOpenError(null)
-      const hfUrl = getHuggingFaceUrl(uri)
-      const webUrl = hfUrl || uri.startsWith('hf://') ? null : uri
-      setOpenTarget({ name: activeName, uri, pageUri: uri, hfUrl, webUrl })
+  const openArtifact = () => {
+    const metadata = (activeNode as IndexElkNode | undefined)?.indexNode?.metadata
+    const uri = typeof metadata?.uri === 'string' ? metadata.uri : activeId
+    const uuid = typeof metadata?.gb_artifact_id === 'string' ? metadata.gb_artifact_id : undefined
+    // The index URI is normalized, as lineage_uri is, so another spelling of
+    // this page's own URI is caught without a lookup.
+    if (uuid === artifact.uuid || uri === artifact.lineage_uri || uri === artifact.uri) {
+      setOpenError(`${activeName} is the artifact already open.`)
       return
     }
-    setOpening(true)
     setOpenError(null)
-    try {
-      const match = (await listArtifacts({ uri, match_lineage_uri: true })).items[0]
-      // Another spelling of this page's own URI resolves back to it.
-      if (match?.uuid === artifact.uuid) {
-        setOpenError(`${activeName} is the artifact already open.`)
-        return
-      }
-      // The registry may record the HuggingFace spelling the index URI lacks.
-      const hfUrl = getHuggingFaceUrl(match?.uri ?? '') ?? getHuggingFaceUrl(uri)
-      const target: OpenArtifactTarget = {
-        name: match?.name || activeName,
-        uri: match?.uri ?? uri,
-        uuid: match?.uuid,
-        artifactType: match?.artifact_type,
-        hfUrl,
-      }
-      if (canOpenArtifact(target)) setOpenTarget(target)
-      else setOpenError(`${activeName} is not in the artifact registry.`)
-    } catch (e) {
-      setOpenError(`Failed to open ${activeName}: ${String(e)}`)
-    } finally {
-      setOpening(false)
-    }
+    setOpenTarget({ name: activeName, uri, uuid })
   }
 
   return (
@@ -225,7 +190,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
           <div className={layout.toolbarDivider} />
 
           <Button size="sm" kind="ghost" renderIcon={Launch}
-            disabled={!canOpen || opening}
+            disabled={!canOpen}
             title={canOpen ? `Open ${activeName}` : 'Select another artifact to open it'}
             onClick={openArtifact}>
             Open artifact

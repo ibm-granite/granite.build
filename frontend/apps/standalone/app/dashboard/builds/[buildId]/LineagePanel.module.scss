@@ -40,16 +40,3 @@
   background: var(--cds-layer-01);
   z-index: 10;
 }
-
-// Same place and look as the artifact panel's expansion status line.
-.openError {
-  position: absolute;
-  top: 0.5rem;
-  left: 1rem;
-  z-index: 10;
-  width: fit-content;
-  padding: 0 0.5rem;
-  font-size: 12px;
-  color: var(--cds-support-error);
-  background: var(--cds-layer-01);
-}

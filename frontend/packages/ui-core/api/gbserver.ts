@@ -682,24 +682,24 @@ export async function getLineageJobs(params: {
 
 // ── One lineage job with its full content (GET /lineage/jobs/{job_id}) ─────────
 
-// A job from the listing plus what its own store holds: the lineage job table,
-// this server's build and target run, or W&B (`job_store`). `build` and `target`
-// are raw, in the shape GET /builds/{id}/status uses; `detail` holds the large
-// payloads (step configs redacted). When the store could not answer,
-// `detail_available` is false and `detail_error` says why.
+// A job from the listing plus what this server holds for it: the build and target
+// run its rows name, whichever store (`job_store`) indexed it, else the lineage job
+// table's payloads. `build` and `target` are raw, in the shape
+// GET /builds/{id}/status uses; `detail` holds the large payloads (step configs
+// redacted). When neither answered, `detail_available` is false and
+// `detail_error` says why.
 export interface LineageJobDetail extends LineageJobEntry {
   job_store: 'lineage_job' | 'targets' | 'wandb' | 'other' | string
   detail: Record<string, unknown>
   build_id: string | null
   build: Build | null
   target: BuildTargetRun | null
-  origin_url: string
   detail_available: boolean
   detail_error: string | null
   // True when the detail was withheld because the caller may not read the job or
   // its build, as opposed to the store failing to answer.
   detail_denied?: boolean
-  // The target run the index recorded for a lineage event or W&B job; not followed.
+  // The target run the index recorded, when this server could not read it.
   target_run_uuid?: string | null
 }
 

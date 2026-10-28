@@ -17,10 +17,10 @@ import type { Artifact, Build, BuildStatusDetail } from '@granite-build/ui-core/
 import { getArtifact, inferArtifactTypeFromUri } from '@granite-build/ui-core/api/gbserver'
 import { getBuildArchiveFiles } from '@granite-build/ui-core/api/gbserver'
 import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@granite-build/ui-core/components/LineageGraph/Graph'
-import { getHuggingFaceUrl } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
-import OpenArtifactModal, { canOpenArtifact, type OpenArtifactTarget } from '@granite-build/ui-core/components/LineageGraph/OpenArtifactModal'
+import OpenArtifactModal, { type OpenArtifactTarget } from '@granite-build/ui-core/components/LineageGraph/OpenArtifactModal'
 import { artifactTypeToNodeType, renameElkGraph } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import StepDrawer from '@granite-build/ui-core/components/StepDrawer/StepDrawer'
+import { isUUID } from '@granite-build/ui-core/lib/uuid'
 
 const ACTIVE_STATUSES = new Set(['running', 'submitted', 'pending', 'cancel_requested'])
 
@@ -82,16 +82,21 @@ interface LineagePanelProps {
   initialFocusNodeId?: string
 }
 
+// `previousIds` is the last result's artifactIds: returned as-is when the set is
+// unchanged, so the artifact lookups keyed on it only recompute when it changes.
 function buildGraphData(
   buildStatus: BuildStatusDetail | undefined,
   plannedTargets: PlannedTarget[],
   isActive: boolean,
+  previousIds: string[] = EMPTY_IDS,
 ): {
   nodes: ElkNodeEx[]
   links: ElkExtendedEdge[]
   artifactIds: string[]
 } {
-  if (!buildStatus && !plannedTargets.length) return { nodes: [], links: [], artifactIds: [] }
+  if (!buildStatus && !plannedTargets.length) {
+    return { nodes: [], links: [], artifactIds: EMPTY_IDS }
+  }
 
   const nodes: ElkNodeEx[] = []
   const links: ElkExtendedEdge[] = []
@@ -195,8 +200,12 @@ function buildGraphData(
     }
   }
 
-  return { nodes, links, artifactIds: Array.from(seenArtifacts) }
+  const ids = Array.from(seenArtifacts)
+  const same = ids.length === previousIds.length && ids.every((id, i) => id === previousIds[i])
+  return { nodes, links, artifactIds: same ? previousIds : ids }
 }
+
+const EMPTY_IDS: string[] = []
 
 // A planned artifact is named by its build.yaml URI and not registered yet, so its
 // type is read off the URI; anything the URI does not say stays a Fileset.
@@ -212,10 +221,6 @@ function artifactsData(results: UseQueryResult<Artifact>[]) {
 
 // An artifact whose fetch has not settled, told apart from one that failed.
 const PENDING = Symbol('pending')
-
-function isUUID(s: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
-}
 
 const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(function LineagePanelInner(
   { build, buildStatus, loading, statusError, showFocusNode = false, initialFocusNodeId },
@@ -322,15 +327,16 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     drawerReturnFocusRef.current = null
   }, [stepDetailTarget])
 
-  const { nodes: rawBuildNodes, links: rawBuildLinks, artifactIds: polledArtifactIds } = React.useMemo(
-    () => buildGraphData(buildStatus, plannedTargets, isActive),
-    [buildStatus, plannedTargets, isActive]
+  // The previous result, so an unchanged id set keeps its array across polls.
+  const graphDataRef = React.useRef<ReturnType<typeof buildGraphData> | null>(null)
+  const graphData = React.useMemo(
+    () => buildGraphData(buildStatus, plannedTargets, isActive, graphDataRef.current?.artifactIds),
+    [buildStatus, plannedTargets, isActive],
   )
-  // Every status poll rebuilds the id list; keyed on its contents, the artifact
-  // lookups below only recompute when the set of artifacts changes.
-  const artifactIdsKey = polledArtifactIds.join('|')
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const artifactIds = React.useMemo(() => polledArtifactIds, [artifactIdsKey])
+  React.useEffect(() => {
+    graphDataRef.current = graphData
+  }, [graphData])
+  const { nodes: rawBuildNodes, links: rawBuildLinks, artifactIds } = graphData
 
   // Fetch artifact names for all UUID-shaped artifact IDs
   const uuidArtifactIds = React.useMemo(() => artifactIds.filter(isUUID), [artifactIds])
@@ -394,8 +400,6 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // The clicked node, not a snapshot of its dialog: the target is derived from
   // the artifact queries, so a click before its fetch lands still fills in.
   const [openNode, setOpenNode] = React.useState<ElkNodeEx | null>(null)
-  // Said when a clicked artifact has nowhere to open: not registered, not on HuggingFace.
-  const [openError, setOpenError] = React.useState<string | null>(null)
   const [rendered, setRendered] = React.useState(false)
   const [showBuildInfo, setShowBuildInfo] = React.useState(true)
 
@@ -459,35 +463,23 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     const isTarget = node.type === 'Build' && node.id.startsWith(TARGET_NODE_PREFIX)
     setStepDetailTarget(isTarget ? node.id.slice(TARGET_NODE_PREFIX.length) : null)
     // The page's own artifact is already open, so there is nothing to open from it.
-    setOpenError(null)
     if (node.type === 'Build' || node.id === initialFocusNodeId) return
     setOpenNode(node)
   }
 
-  // A planned artifact has no registry page, but may be on HuggingFace. The
-  // dialog offers whichever is left.
+  // A registered artifact opens by UUID; a planned one by its build.yaml URI,
+  // which the artifact page resolves when the dialog's button is clicked.
   const openTarget = React.useMemo<OpenArtifactTarget | null>(() => {
     if (!openNode) return null
     const registered = isUUID(openNode.id)
     const artifact = registered ? artifactById.get(openNode.id) : undefined
-    const uri = registered ? artifact?.uri : openNode.id
-    const target: OpenArtifactTarget = {
+    return {
       name: artifact?.name || openNode.title || openNode.id,
-      uri,
+      uri: registered ? artifact?.uri : openNode.id,
       uuid: registered ? openNode.id : undefined,
       artifactType: artifact?.artifact_type,
-      hfUrl: uri ? getHuggingFaceUrl(uri) : null,
     }
-    return canOpenArtifact(target) ? target : null
   }, [openNode, artifactById])
-  // A registered artifact may still be loading; once nothing is left to fetch and
-  // there is still nowhere to go, say so and let the click go.
-  const openPending = Boolean(openNode && artifacts[uuidArtifactIds.indexOf(openNode.id)] === PENDING)
-  React.useEffect(() => {
-    if (!openNode || openTarget || openPending) return
-    setOpenError(`${openNode.title || openNode.id} is not in the artifact registry.`)
-    setOpenNode(null)
-  }, [openNode, openTarget, openPending])
 
   // Back to the page's own artifact, now that clicks can select other nodes.
   const handleFocusNode = () => {
@@ -585,7 +577,6 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       {/* Graph area. tabIndex=-1 so it can receive programmatic focus as the
           fallback when a closed drawer's trigger node is no longer in the DOM. */}
       <div className={layout.graphArea} ref={graphContainerRef} tabIndex={-1}>
-        {openError && <div className={styles.openError}>{openError}</div>}
         {loading && (
           <div className={styles.centeredContent}>
             <InlineLoading description="Loading lineage…" />

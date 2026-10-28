@@ -347,6 +347,93 @@ class TestValidation:
             assert "owner" not in metadata and "job_namespace" not in metadata
         assert sorted(checked) == ["mine", "theirs"]
 
+    @staticmethod
+    def _produced_row(job_id, namespace):
+        return row(
+            job_id,
+            A,
+            B,
+            attributes={
+                "job": {"owner": "me", "namespace": namespace},
+                "output": {
+                    "id": B,
+                    "produced_by": {
+                        "artifact_id": "art-B",
+                        "build_id": f"build-{job_id}",
+                        "target_run_uuid": "tr",
+                    },
+                },
+            },
+        )
+
+    @pytest.mark.parametrize("group_runs", [False, True])
+    def test_artifact_nodes_get_their_producer_ids_when_readable(self, group_runs):
+        svc = service(self._produced_row("J1", "mine/b"))
+        result = svc.query_graph(
+            uri=A,
+            group_runs=group_runs,
+            authorize_job=lambda entry: entry["space_name"] == "mine",
+        )
+        metadata = {n["id"]: n["metadata"] for n in result["nodes"]}[B]
+        assert metadata["gb_artifact_id"] == "art-B"
+        assert metadata["gb_build_id"] == "build-J1"
+        assert metadata["gb_target_run_uuid"] == "tr"
+
+    def test_the_newest_producer_names_the_artifact(self):
+        """Two readable builds wrote B; the older one sorts first by job id, but
+        its registration may be gone, so the newer one's ids are shown."""
+        older = self._produced_row("J1", "mine/b")
+        older.attributes["output"]["produced_by"]["artifact_id"] = "art-old"
+        older.recorded_at = "2026-01-01T00:00:00Z"
+        newer = self._produced_row("J2", "mine/b")
+        newer.recorded_at = "2026-02-01T00:00:00Z"
+        result = service(older, newer).query_graph(
+            uri=A,
+            group_runs=False,
+            authorize_job=lambda entry: entry["space_name"] == "mine",
+        )
+        metadata = {n["id"]: n["metadata"] for n in result["nodes"]}[B]
+        assert metadata["gb_artifact_id"] == "art-B"
+        assert metadata["gb_build_id"] == "build-J2"
+        assert "_gb_recorded_at" not in metadata
+
+    def test_artifact_nodes_withhold_producer_ids_from_an_outsider(self):
+        svc = service(self._produced_row("J1", "theirs/b"))
+        result = svc.query_graph(
+            uri=A, group_runs=False, authorize_job=lambda entry: False
+        )
+        metadata = {n["id"]: n["metadata"] for n in result["nodes"]}[B]
+        assert metadata == {"uri": B}
+
+    def test_a_readers_input_does_not_release_another_spaces_producer_ids(self):
+        """J2 in my space reads B, which a build in another space produced; B's
+        produced_by on J2's input row names that build, so it stays withheld."""
+        consumer = row(
+            "J2",
+            B,
+            "lh://prod/ns/tables/c",
+            attributes={
+                "job": {"owner": "me", "namespace": "mine/b"},
+                "input": {
+                    "id": B,
+                    "produced_by": {
+                        "artifact_id": "art-B",
+                        "build_id": "build-theirs",
+                        "target_run_uuid": "tr",
+                    },
+                },
+            },
+        )
+        svc = service(self._produced_row("J1", "theirs/b"), consumer)
+        result = svc.query_graph(
+            uri=B,
+            direction="both",
+            group_runs=False,
+            authorize_job=lambda entry: entry["space_name"] == "mine",
+        )
+        metadata = {n["id"]: n["metadata"] for n in result["nodes"]}[B]
+        assert not any(key.startswith("gb_") for key in metadata)
+
     def test_a_forged_row_under_the_job_id_does_not_pass_the_check(self):
         """On W&B anyone can post a row under a real job id with themselves as
         owner; rows that disagree on owner/namespace must fail closed, whichever

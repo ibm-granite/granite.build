@@ -8,6 +8,7 @@ import { PageHeader } from '@granite-build/ui-core/components/PageHeader'
 import { ARTIFACT_TYPE_CONFIG, artifactTypeKey } from '@granite-build/ui-core/config/artifactTypes'
 import { ArtifactDetails } from './ArtifactDetails'
 import { useRouteId } from '@granite-build/ui-core/hooks/useRouteId'
+import { isUUID } from '@granite-build/ui-core/lib/uuid'
 
 // useSearchParams() bails the page out to client-side rendering up to the
 // nearest Suspense boundary during static export — without one here, the
@@ -40,10 +41,6 @@ function ArtifactDetailFallback() {
       </div>
     </div>
   )
-}
-
-function isUUID(s: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
 }
 
 // A lineage click may open the page by URI, in any spelling; null when nothing

@@ -32,7 +32,14 @@ columns store, so the root resolves in one indexed lookup.
 import logging
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from gbserver.lineage.attributes import origin_id
+from gbserver.lineage.attributes import (
+    OUTPUT,
+    PRODUCED_BY_ARTIFACT_ID,
+    PRODUCED_BY_BUILD_ID,
+    PRODUCED_BY_TARGET_RUN_UUID,
+    endpoint_produced_by,
+    origin_id,
+)
 from gbserver.lineage.db_responses import (
     global_job_entry,
     job_listing_entry,
@@ -232,48 +239,90 @@ class DBLineageService(LineageService):
         )
         # Only a single-artifact query has one root to flag; anything else has many.
         single_root = bool(root_uri) and not job_seeds
+        # The rows grouping reads, kept so the access check below does not read
+        # the same jobs again.
+        read_rows: Dict[str, List] = {}
+
+        def job_rows_of(job_ids: List[str]) -> List:
+            rows = self._rows_of_jobs_for_grouping(job_ids)
+            for row in rows:
+                read_rows.setdefault(row.job_id, []).append(row)
+            return rows
+
         result = build_graph_dict(
             graph,
             root_uri=root_uri,
             root_is_artifact=single_root,
             group_runs=group_runs,
-            job_rows_of=self._rows_of_jobs_for_grouping,
+            job_rows_of=job_rows_of,
         )
         if authorize_job is not None:
-            self._add_authorized_origin_ids(result.get("nodes", []), authorize_job)
+            self._add_authorized_origin_ids(
+                result.get("nodes", []), authorize_job, read_rows
+            )
         return result
 
     def _add_authorized_origin_ids(
-        self, nodes: List[Dict], authorize_job: Callable[[Dict], bool]
+        self,
+        nodes: List[Dict],
+        authorize_job: Callable[[Dict], bool],
+        read_rows: Optional[Dict[str, List]] = None,
     ) -> None:
-        """Add the build and target-run ids to each run node the caller may read.
+        """Add the granite.build ids the index holds to the nodes the caller may read.
 
         The graph is cross-space, so its nodes carry only the global fields (see
         ``db_responses.GLOBAL_JOB_FIELDS``). The origin's ids are behind the space
         check -- the one ``GET /lineage/jobs/{id}`` applies, passed in as
         ``authorize_job`` so the two cannot drift. A caller who could open the
-        job's detail gets them on the node too; nobody else does. Grouped nodes
-        (``runs:``) stand for many jobs and get neither.
+        job's detail gets them on the node too; nobody else does:
 
-        Batched reads of the run nodes' rows under ``_GROUP_ROWS_BUDGET`` (a job
-        past it gets no ids); the check runs once per distinct owner and space, on
-        all of each job's rows. A job with no namespace or owner (an import) fails
-        closed.
+        - a single run node gets ``gb_build_id`` and ``gb_target_run_uuid``;
+          grouped nodes stand for many jobs and get neither.
+        - an artifact node gets ``gb_artifact_id``, ``gb_build_id`` and
+          ``gb_target_run_uuid`` from the ``produced_by`` of an *output* row of a
+          job the caller may read -- the producer itself, a single run's or one
+          listed by a grouped node. An input's ``produced_by`` names another job's
+          build, maybe in a space the caller cannot read, so it is never used.
+          The first such job to record them wins.
+
+        ``read_rows`` holds the rows grouping already read; only the jobs missing
+        from it are read, single run nodes first so a large group cannot spend
+        ``_GROUP_ROWS_BUDGET`` before them (a job past it gets no ids). The check
+        runs once per distinct owner and space, on all of each job's rows. A job
+        with no namespace or owner (an import) fails closed.
         """
         by_job = {
             node["id"][len("run:") :]: node
             for node in nodes
             if str(node.get("id", "")).startswith("run:")
         }
-        if not by_job:
+        grouped_jobs = {
+            job_id
+            for node in nodes
+            for job_id in (
+                ((node.get("metadata") or {}).get("jobs_query") or {}).get("job_ids")
+                or []
+            )
+        }
+        artifacts = {
+            node["id"]: node for node in nodes if node.get("node_type") == "artifact"
+        }
+        single_ids = sorted(by_job)
+        job_ids = single_ids + sorted(grouped_jobs - set(by_job))
+        if not job_ids:
             return
-        rows_by_job: Dict[str, List] = {}
         # Every row, not the first: the entry takes owner and namespace only where
         # all rows agree, so a forged row under a real job id fails closed.
-        for row in self._rows_of_jobs_for_grouping(sorted(by_job)):
+        rows_by_job: Dict[str, List] = {
+            job_id: rows
+            for job_id, rows in (read_rows or {}).items()
+            if job_id in by_job or job_id in grouped_jobs
+        }
+        missing = [job_id for job_id in job_ids if job_id not in rows_by_job]
+        for row in self._rows_of_jobs_for_grouping(missing):
             rows_by_job.setdefault(row.job_id, []).append(row)
         allowed: Dict[Tuple[str, str], bool] = {}
-        for job_id, node in by_job.items():
+        for job_id in job_ids:
             rows = rows_by_job.get(job_id)
             if not rows:
                 continue
@@ -287,11 +336,18 @@ class DBLineageService(LineageService):
                     allowed[key] = False
             if not allowed[key]:
                 continue
+            _add_produced_by(artifacts, rows)
+            node = by_job.get(job_id)
+            if node is None:
+                continue
             metadata = node.setdefault("metadata", {})
             for key_name in ("build_id", "target_run_uuid"):
                 value = origin_id(rows[0].attributes, key_name)
                 if value:
                     metadata[f"gb_{key_name}"] = value
+        for node in artifacts.values():
+            # Only _add_produced_by's tie-break; not part of the response.
+            (node.get("metadata") or {}).pop("_gb_recorded_at", None)
 
     def _rows_of_jobs_for_grouping(self, job_ids: List[str]) -> List:
         """:meth:`_rows_of_jobs`, stopping once ``_GROUP_ROWS_BUDGET`` rows are read.
@@ -426,13 +482,12 @@ class DBLineageService(LineageService):
         job_id: str,
         authorize_build: Callable[[Any], None],
         admin_storage: Any = None,
-        wandb_runs: Optional[Callable[[str], List[Any]]] = None,
         authorize_entry: Optional[Callable[[Dict], bool]] = None,
     ) -> Optional[Dict]:
         """One job's listing entry plus its full content, or ``None`` if unknown.
 
-        The listing reads the index alone; this follows the rows' ``job_store`` to
-        the job's own store -- see :mod:`gbserver.lineage.job_detail`. One job at a
+        The listing reads the index alone; this reads a granite.build job's build
+        and target run from this server -- see :mod:`gbserver.lineage.job_detail`. One job at a
         time on purpose: the side panel asks for it when a run is opened, never for
         a whole page.
         """
@@ -449,7 +504,6 @@ class DBLineageService(LineageService):
             rows,
             admin_storage,
             authorize_build,
-            wandb_runs=wandb_runs,
             authorize_entry=authorize_entry,
         )
 
@@ -574,3 +628,41 @@ class DBLineageService(LineageService):
         id here versus target run uuid there -- and the two would disagree.
         """
         return target_ids
+
+
+_PRODUCED_BY_KEYS = (
+    PRODUCED_BY_ARTIFACT_ID,
+    PRODUCED_BY_BUILD_ID,
+    PRODUCED_BY_TARGET_RUN_UUID,
+)
+
+
+def _add_produced_by(artifacts: Dict[str, Dict], rows: List) -> None:
+    """Copy each endpoint's ``produced_by`` ids onto its artifact node as ``gb_*``.
+
+    Only for ``rows`` of a job the caller may read, and only their outputs: the
+    job is then the producer, so the ids are its own. An input's ``produced_by``
+    names another job's build, whose space the caller may not read. When several
+    readable jobs output one URI, the most recently recorded one wins: an older
+    producer's registration may since be deleted. ``gb_artifact_id`` is the
+    registry UUID, so the artifact page opens without looking the URI up.
+    """
+    for row in rows:
+        node = artifacts.get(row.output)
+        if node is None:
+            continue
+        produced_by = endpoint_produced_by(row.attributes, OUTPUT)
+        if not any(produced_by.get(key) for key in _PRODUCED_BY_KEYS):
+            continue
+        metadata = node.setdefault("metadata", {})
+        recorded_at = row.recorded_at or ""
+        if metadata.get("_gb_recorded_at", None) is not None and (
+            recorded_at <= metadata["_gb_recorded_at"]
+        ):
+            continue
+        metadata["_gb_recorded_at"] = recorded_at
+        for key in _PRODUCED_BY_KEYS:
+            if produced_by.get(key):
+                metadata[f"gb_{key}"] = produced_by[key]
+            else:
+                metadata.pop(f"gb_{key}", None)

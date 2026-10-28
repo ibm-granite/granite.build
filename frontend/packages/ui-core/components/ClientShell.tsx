@@ -38,14 +38,7 @@ const queryClient = new QueryClient({
 // percent-encoded and the builders encode again, so passing it through raw
 // double-encodes: `/dashboard/builds/a%20b` would redirect to `?id=a%2520b`,
 // which `searchParams.get('id')` reads back as the literal `a%20b` — the wrong
-// id. UUIDs are unaffected, but ids carrying a reserved character are exactly
-// the ones the encoding was added for, so the two halves have to agree.
-// A stray `%` is not a valid escape; redirecting with the raw segment is wrong
-// in the same way it was before this fix, but throwing out of an effect would
-// blank the whole shell.
-function decodeSegment(segment: string): string {
-  return decodeRouteSegment(segment) ?? segment;
-}
+// id. A segment that is not a valid escape is passed through as is.
 
 // Unlike builds/artifacts, /dashboard/autotunex has sibling static routes
 // (settings, start-tuning) sharing the prefix, so those are excluded from the
@@ -60,12 +53,12 @@ function useDeepLinkRedirect() {
     const path = window.location.pathname;
     const buildMatch = path.match(/^\/dashboard\/builds\/([^/]+)\/?$/);
     if (buildMatch && buildMatch[1] !== "_") {
-      router.replace(routes.buildHref(decodeSegment(buildMatch[1])));
+      router.replace(routes.buildHref(decodeRouteSegment(buildMatch[1]) ?? buildMatch[1]));
       return;
     }
     const artifactMatch = path.match(/^\/dashboard\/artifacts\/([^/]+)\/?$/);
     if (artifactMatch && artifactMatch[1] !== "_") {
-      router.replace(routes.artifactHref(decodeSegment(artifactMatch[1])));
+      router.replace(routes.artifactHref(decodeRouteSegment(artifactMatch[1]) ?? artifactMatch[1]));
       return;
     }
     const tuningMatch = path.match(/^\/dashboard\/autotunex\/([^/]+)\/?$/);

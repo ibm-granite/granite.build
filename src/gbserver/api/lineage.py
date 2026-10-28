@@ -571,14 +571,14 @@ def list_lineage_jobs(
 
 @lineage_api.get("/jobs/{job_id:path}", tags=["lineage-index"])
 def get_lineage_job_detail(request: Request, job_id: str) -> LineageJobDetail:
-    """One job execution with its full content, from wherever it is stored.
+    """One job execution with its full content, read from this server's builds.
 
-    The listing (``GET /jobs``) carries only what the index rows hold. This follows
-    the rows' ``job_store`` to the job's own store -- the lineage job table, this
-    server's builds and target runs, or W&B -- and returns one shape for all of them.
+    The listing (``GET /jobs``) carries only what the index rows hold. When the rows
+    name a granite.build build, its build, target run and steps are read from the
+    gb DB, whatever store indexed the job; no external system (W&B) is contacted.
 
-    404 only when the index has no such job. A store that cannot answer (build not
-    on this server, run deleted, no read access to the build) still returns 200,
+    404 only when the index has no such job. A job that cannot be read further (no
+    build recorded, build or target not on this server, no read access) still returns 200,
     with ``detail_available`` false and ``detail_error`` saying why. A build's step
     configs and target run are returned only to callers who may read that build.
     """

@@ -546,7 +546,8 @@ class WandBLineageStore(ILineageStore):
         # yields the number of jobstats records without scanning run history.
         required = [f"target_id={target_id}"] if target_id else None
         return self._service.count_runs_by_tags(
-            [f"build_id={release_id}"], required_tags=required
+            [f"build_id={release_id}", f"artifact_id={release_id}"],
+            required_tags=required,
         )
 
     def does_release_id_exist(
@@ -705,11 +706,12 @@ class WandBLineageStore(ILineageStore):
                 "runId": artifact.uuid,
                 "facets": {
                     "tags": {
-                        "artifact_id": artifact.uuid,
                         # For registered-artifact jobstats the "release_id" is
-                        # the artifact uuid itself — tag build_id with that so
-                        # count_release_ids({artifact.uuid}) finds this run.
-                        "build_id": artifact.uuid,
+                        # the artifact uuid itself; count_release_ids finds this
+                        # run by artifact_id. build_id is left untagged: it names
+                        # builds only, and a registration is not one of a build's
+                        # runs.
+                        "artifact_id": artifact.uuid,
                         "target_id": artifact.created_by_target_id,
                         "username": artifact.username,
                         "space_name": artifact.space_name,

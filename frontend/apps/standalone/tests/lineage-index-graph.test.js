@@ -1,6 +1,6 @@
 /**
  * Unit tests for the lineage index graph helpers: how a node seeds an expansion
- * through GET /lineage/graph, how deep to ask, and how an expansion merges into
+ * through POST /lineage/graph, how deep to ask, and how an expansion merges into
  * the graph on screen.
  *
  * Usage: node --test tests/lineage-index-graph.test.js

@@ -32,6 +32,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from gbserver.api import lineage as lineage_mod
@@ -534,6 +535,21 @@ def test_query_graph_rejects_out_of_range_params(params):
     """Bounds live on the request model, so FastAPI answers a violation with a 422."""
     with pytest.raises(ValidationError):
         LineageQueryRequest(uri="s3://b/x", **params)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"direction": "sideways"}, {"max_depth": 0}, {"max_nodes_per_level": 0}],
+    ids=["direction", "depth", "nodes-per-level"],
+)
+def test_the_graph_route_answers_a_bad_body_with_a_422(body):
+    """Through the route itself: the body model's rejection is the documented 422."""
+    service = _db_service(query_graph=lambda **_kw: pytest.fail("must not walk"))
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        resp = TestClient(lineage_mod.lineage_api).post(
+            "/graph", json={"uri": "s3://b/x", **body}
+        )
+    assert resp.status_code == 422
 
 
 # --------------------------------------- the graph is cross-space, by decision

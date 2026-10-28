@@ -30,8 +30,9 @@ const jobStatus = (s: string) => adaptStatus(STATUS_ALIASES[s.toLowerCase()] ?? 
 
 // The details of a job (run) node that came from the lineage index, shared by the
 // build and artifact lineage panels. The job is read from GET /lineage/jobs/{job_id},
-// which fetches it from the store that holds it; one granite.build ran is shown with
-// the build's own step drawer, anything else with what the index recorded about it.
+// which reads it from this server's builds whatever store indexed it; one
+// granite.build ran is shown with the build's own step drawer, anything else with
+// what the index recorded about it.
 export default function JobDrawer(props: Props) {
   // A grouped node stands for every job with the same source and target (an
   // in-place rewrite is the case where both are one artifact), not for its
@@ -168,7 +169,7 @@ function JsonField({ label, value }: { label: string; value: unknown }) {
 function JobPayloadSections({ job }: { job: LineageJobDetail }) {
   const entries = Object.entries(job.detail ?? {}).filter(([, v]) => v != null)
   const origin = isPlainObject(job.origin) ? job.origin : {}
-  const hasOrigin = Object.keys(origin).length > 0 || Boolean(job.origin_url)
+  const hasOrigin = Object.keys(origin).length > 0
   if (entries.length === 0 && !hasOrigin) return null
   return (
     <>
@@ -183,7 +184,6 @@ function JobPayloadSections({ job }: { job: LineageJobDetail }) {
       )}
       {hasOrigin && (
         <Section title="Origin">
-          {job.origin_url && <Field label="Source"><a href={job.origin_url} target="_blank" rel="noreferrer">{job.origin_url}</a></Field>}
           <DetailRows value={origin} />
         </Section>
       )}
@@ -407,9 +407,9 @@ function GroupedJobsDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) 
   )
 }
 
-// Why the drawer shows no steps, and where what it does show came from. The job is
-// read only from the store its index rows name, so the notice names that store and,
-// when it did not answer, why -- instead of guessing at the job's origin.
+// Why the drawer shows no steps, and where what it does show came from. The notice
+// names the store that indexed the job and, when this server could not read its
+// build or payloads, why -- instead of guessing at the job's origin.
 const SOURCE_LABELS: Record<string, string> = {
   wandb: 'W&B',
   gb_lineage_job: 'a lineage event',
@@ -421,9 +421,10 @@ function indexNotice(job: LineageJobDetail): string {
   if (job.detail_error) {
     const reason = job.detail_error.replace(/\.$/, '')
     // An external store's reason already names the source.
-    return job.job_store === 'other' ? `${reason}.` : `Recorded by ${source}. ${reason}.`
+    return job.job_store === 'other' ? `${reason}.` : `Indexed from ${source}. ${reason}.`
   }
-  return `Recorded by ${source}, which holds no build steps.`
+  // Detail is read from this server's builds only, never from the indexing store.
+  return `Indexed from ${source}; this server has no build for it.`
 }
 
 function buildIdOf(job: LineageJobEntry): string | undefined {

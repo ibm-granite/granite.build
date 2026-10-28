@@ -74,7 +74,8 @@ export function indexGraphToElk(
     const runCount = isRun && typeof n.metadata?.run_count === 'number' ? n.metadata.run_count : undefined
     const stackCount = runCount !== undefined && runCount > 1 ? runCount : undefined
     const title = n.name || n.id
-    // Present only on run nodes the caller may read (the server checks the space).
+    // On run nodes and on artifact nodes (their producer's build), only when the
+    // caller may read that job (the server checks the space).
     const buildId = n.metadata?.gb_build_id
     return {
       id: rename(n.id),
@@ -98,7 +99,7 @@ export function indexGraphToElk(
 
 // How many lineage levels of `nodeId` are on screen in one direction, measured on
 // the graph itself so it holds whichever node was expanded to get there. A level
-// is one job hop (artifact -> run -> artifact), i.e. two edges, as GET
+// is one job hop (artifact -> run -> artifact), i.e. two edges, as POST
 // /lineage/graph counts `depth`.
 export function visibleLevels(
   nodeId: string,
