@@ -54,6 +54,7 @@ from gbserver.environment._skypilot_metadata import (
     apply_slurm_comment_override,
     normalize_run_metadata,
     task_metadata_labels,
+    tracking_metadata,
 )
 from gbserver.environment._skypilot_ssh import (
     execute_on_host_via_ssh as _execute_on_host_via_ssh,
@@ -198,7 +199,8 @@ class Skypilot_managed(Environment):
             # Attach build-tracking metadata as a SLURM --comment (searchable via
             # sjob/squeue/sacct). Safe to set unconditionally: only the SLURM
             # backend reads it; the slurm section is inert on k8s/cloud/LSF.
-            apply_slurm_comment_override(cluster_config_overrides, run_metadata)
+            tracked = tracking_metadata(run_metadata, kwargs)
+            apply_slurm_comment_override(cluster_config_overrides, tracked)
 
             image_id = build_launcher_config.get("image_id") or launcher_config.get(
                 "image_id"
@@ -216,7 +218,7 @@ class Skypilot_managed(Environment):
                 image_id=image_id,
                 # Build-tracking labels. SkyPilot applies these on k8s (pod
                 # labels) and cloud (instance tags); ignored on SLURM/LSF.
-                labels=task_metadata_labels(run_metadata) or None,
+                labels=task_metadata_labels(tracked) or None,
                 _cluster_config_overrides=cluster_config_overrides or None,
             )
 

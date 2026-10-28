@@ -1474,7 +1474,9 @@ from gbserver.environment._skypilot_metadata import (
     apply_slurm_comment_override,
     normalize_run_metadata,
     task_metadata_labels,
+    tracking_metadata,
 )
+from gbserver.environment._skypilot_slurm import slurm_job_id_from_handle
 from gbserver.environment._skypilot_ssh import (
     execute_on_host_via_ssh as _execute_on_host_via_ssh,
 )
@@ -3441,7 +3443,8 @@ class Skypilot(Environment):
             # Applied BEFORE the per-step sbatch_options merge below so that
             # deep-merge preserves the comment (an explicit user `comment` in
             # sbatch_options still wins, as it is merged last).
-            apply_slurm_comment_override(cluster_config_overrides, run_metadata)
+            tracked = tracking_metadata(run_metadata, kwargs)
+            apply_slurm_comment_override(cluster_config_overrides, tracked)
 
             # Per-step SLURM sbatch directives (--time, --gres, --qos, ...).
             # SLURM is the only cloud whose SkyPilot fork exposes a per-task
@@ -3511,7 +3514,7 @@ class Skypilot(Environment):
                 image_id=image_id,
                 # Build-tracking labels. SkyPilot applies these on k8s (pod
                 # labels) and cloud (instance tags); ignored on SLURM/LSF.
-                labels=task_metadata_labels(run_metadata) or None,
+                labels=task_metadata_labels(tracked) or None,
                 _cluster_config_overrides=cluster_config_overrides or None,
             )
 
@@ -3692,10 +3695,9 @@ class Skypilot(Environment):
             if cloud_group in _SSH_HPC_CLOUDS:
                 self._ssh_hpc_launches.add(launch_id)
             if cloud_group == "lsf" and target_alias:
-                self._lsf_clusters[launch_id] = target_alias
-                on_cloud = getattr(_handle, "cluster_name_on_cloud", None)
-                if isinstance(on_cloud, str) and on_cloud:
-                    self._lsf_job_names[launch_id] = on_cloud
+                self._on_lsf_launched(launch_id, target_alias, _handle)
+            elif cloud_group == "slurm" and run_metadata.get("build_id"):
+                self._on_slurm_launched(launch_id, cluster_name, _handle, run_metadata)
 
             logger.info(
                 "SkyPilot cluster %s launched: job_id=%s launch_id=%s",
@@ -3789,6 +3791,47 @@ class Skypilot(Environment):
             raise
         finally:
             self._release_monitors(launch_id)
+
+    def _on_lsf_launched(
+        self: Self, launch_id: str, lsf_cluster: str, handle: Any
+    ) -> None:
+        """Record a launch's LSF cluster and job name for ``bjobs``/``bkill``.
+
+        :param launch_id: the launch to record.
+        :param lsf_cluster: the ``~/.lsf/config`` host the job was submitted to.
+        :param handle: the launch handle; ``cluster_name_on_cloud`` is the job name.
+        """
+        self._lsf_clusters[launch_id] = lsf_cluster
+        on_cloud = getattr(handle, "cluster_name_on_cloud", None)
+        if isinstance(on_cloud, str) and on_cloud:
+            self._lsf_job_names[launch_id] = on_cloud
+
+    def _on_slurm_launched(
+        self: Self,
+        launch_id: str,
+        cluster_name: str,
+        handle: Any,
+        run_metadata: Dict,
+    ) -> None:
+        """Post a launch's SLURM job id as a build message.
+
+        :param launch_id: the launch, for the log line if no id is found.
+        :param cluster_name: the SkyPilot cluster, for the same log line.
+        :param handle: the launch handle.
+        :param run_metadata: routes the message to the step.
+        """
+        slurm_job_id = slurm_job_id_from_handle(handle)
+        if slurm_job_id:
+            self._send_message(
+                msg=f"⚡ SLURM job submitted with JobID={slurm_job_id}",
+                run_metadata=run_metadata,
+            )
+        else:
+            logger.warning(
+                "Could not determine the SLURM job id for cluster %s (launch_id=%s)",
+                cluster_name,
+                launch_id,
+            )
 
     async def _provision_with_retry(
         self: Self,
