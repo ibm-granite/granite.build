@@ -429,19 +429,25 @@ push, and the first of these that applies wins:
    `REGISTRY`). `publish-image` fetches that `username_password` secret with the
    `ibmcloud sm` CLI and logs in with it. The `quay.io/granitebuild` robot
    `granitebuild+gbpush` (Write on the shared `gb-steps` repository) is stored as
-   `gb-registry/quay-gbpush-token` in the Granite.build Secrets Manager instance,
-   so any IBM developer with read access can publish a step image:
+   `gb-registry/quay-gbpush-token` in the Granite.build Secrets Manager instance
+   (`Granite-Build-Secrets-Manager`, in the `granite-build` resource group of the
+   cil15 LLM GPU account). Members of the **`granite-build` IBM Cloud access group**
+   can read it — that group's resource-group policy covers the whole instance — so
+   any of them can publish a step image:
 
    ```sh
-   ibmcloud login --sso                     # the account that owns the instance
+   ibmcloud login --sso                     # the cil15 LLM GPU account
    make publish-image                       # e.g. in steps/train/openinstruct-sft/skypilot
    ```
 
    It needs the `ibmcloud` CLI with the `secrets-manager` plugin
-   (`ibmcloud plugin install secrets-manager`), `jq`, and the **SecretsReader**
-   role on the `gb-registry` secret group (ask a Granite.build admin). Point at
-   another instance with `SECRETS_MANAGER_URL`. If the lookup fails, the push
-   stops.
+   (`ibmcloud plugin install secrets-manager`) and `jq`. Not in the access group?
+   Ask an account admin to add you. Point at another instance with
+   `SECRETS_MANAGER_URL`. If the lookup fails, the push stops.
+
+   Keep the `gb-registry` group's description empty: gbserver hands a space every
+   secret group whose description matches the space URI, so an empty description
+   keeps the token out of builds.
 
 3. **Interactive / local:** with neither of the above, there is no login; the push
    reuses an earlier `podman login quay.io/my-org` (or `docker login`).

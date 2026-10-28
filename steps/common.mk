@@ -384,7 +384,7 @@ ifeq ($(STEP_USES_IMAGE),true)
 			--service-url "$$GB_SECRETS_MANAGER_URL" --output json) \
 		&& user=$$(printf '%s' "$$cred" | jq -er '.username') \
 		&& printf '%s' "$$cred" | jq -er '.password' >/dev/null \
-		|| { echo "[$(STEP_NAME)] ERROR: could not read username_password secret $$GB_REGISTRY_SECRET (ibmcloud login? SecretsReader on group $$group?)" >&2; exit 1; }; \
+		|| { echo "[$(STEP_NAME)] ERROR: could not read username_password secret $$GB_REGISTRY_SECRET (ibmcloud login to the instance's account? read access to secret group $$group, e.g. via the granite-build access group?)" >&2; exit 1; }; \
 		echo "[$(STEP_NAME)] logging in to $(REGISTRY_LOGIN) as $$user"; \
 		printf '%s' "$$cred" | jq -j '.password' | $(DOCKER) login "$(REGISTRY_LOGIN)" -u "$$user" --password-stdin; \
 	fi

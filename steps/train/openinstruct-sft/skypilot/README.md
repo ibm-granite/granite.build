@@ -163,9 +163,10 @@ tag into it, so no per-step quay setup is needed.
 
 The robot's token is in the Granite.build IBM Cloud Secrets Manager as
 `gb-registry/quay-gbpush-token`, and this Makefile sets `REGISTRY_SECRET` to it, so
-`publish-image` fetches it and logs in by itself. You need `ibmcloud login`, the
-`secrets-manager` CLI plugin, `jq`, and SecretsReader on the `gb-registry` group
-(see `steps/README.md`, "Registry credentials"):
+`publish-image` fetches it and logs in by itself. You need to be in the
+`granite-build` IBM Cloud access group, plus `ibmcloud login`, the
+`secrets-manager` CLI plugin and `jq` (see `steps/README.md`, "Registry
+credentials"):
 
 ```bash
 ibmcloud login --sso

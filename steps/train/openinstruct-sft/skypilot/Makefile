@@ -7,7 +7,7 @@ STEP_NAME := openinstruct-sft
 # Public namespace (functional ID). Its shared gb-steps repo is pre-created, Public,
 # and grants the granitebuild+gbpush robot Write. The robot's token is in IBM Cloud
 # Secrets Manager, so `make publish-image` logs in with it (needs `ibmcloud login`
-# and SecretsReader on the gb-registry group; see steps/README.md).
+# as a member of the granite-build IBM Cloud access group; see steps/README.md).
 REGISTRY ?= quay.io/granitebuild
 REGISTRY_SECRET ?= gb-registry/quay-gbpush-token
 
