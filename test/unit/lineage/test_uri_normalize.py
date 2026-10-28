@@ -432,6 +432,16 @@ def test_uri_at_exactly_the_limit_is_kept():
     assert normalized == raw
 
 
+def test_uri_limit_counts_utf8_bytes_not_characters():
+    """~450 CJK characters fit 512 characters but not the byte-capped unique
+    index (``index row size ... exceeds btree maximum``), which would fail the
+    same row on every retry and stall the indexer."""
+    prefix = "https://huggingface.co/org/"
+    raw = prefix + "模" * 450
+    assert len(raw) <= MAX_LINEAGE_URI_LENGTH
+    assert normalize_uri(raw) == ""
+
+
 # Every raw spelling the tables above use, plus the cases a non-idempotent rule
 # broke before, so ``n(n(u)) == n(u)`` is checked across all of them.
 _ALL_SPELLINGS = sorted(

@@ -1300,3 +1300,108 @@ def test_wandb_ignores_the_settle_grace_environment(monkeypatch):
     monkeypatch.setenv("GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S", "600")
     ix, _, _ = _indexer([])
     assert ix.settle_grace_s == 0
+
+
+# -- issue 530: checkpoint robustness ------------------------------------------
+
+
+class CommError(Exception):
+    """Stands in for wandb's: the HTTPError it wraps is on ``exc``."""
+
+    def __init__(self, msg, exc=None):
+        super().__init__(msg)
+        self.exc = exc
+
+
+def _http_error(status):
+    error = Exception(f"HTTP {status}")
+    error.response = SimpleNamespace(status_code=status)
+    return error
+
+
+@pytest.mark.parametrize(
+    "exc, transient",
+    [
+        # A deterministic 4xx wrapped in a CommError counts toward the give-up.
+        (CommError("HTTP 400", _http_error(400)), False),
+        (CommError("HTTP 403", _http_error(403)), False),
+        (CommError("HTTP 404", _http_error(404)), False),
+        (CommError("HTTP 429", _http_error(429)), True),
+        # The raw HTTPError RunArtifacts pagination re-raises is an outage.
+        (_http_error(502), True),
+        (_http_error(503), True),
+        # A CommError with no status keeps its name-based classification.
+        (CommError("connection reset"), True),
+        # Postgres ProgramLimitExceeded arrives as an OperationalError.
+        (
+            OperationalError(
+                "index row size 3240 exceeds btree version 4 maximum 2704"
+            ),
+            False,
+        ),
+    ],
+)
+def test_transient_classification_by_http_status(exc, transient):
+    assert idx._is_transient_error(exc) is transient
+
+
+def test_a_deterministic_wandb_error_is_given_up_on():
+    storage = _storage()
+    ix, _, sink = _indexer([_run("r1", D1), _run("r2", D2)])
+    sink.write_job.side_effect = [CommError("HTTP 404", _http_error(404))] * (
+        idx._MAX_JOB_ATTEMPTS
+    ) + [None]
+    for _ in range(idx._MAX_JOB_ATTEMPTS):
+        ix.scan_once(storage)
+    assert _checkpoint(storage)["timestamp"] == D2
+
+
+def test_the_checkpoint_is_read_once_per_scan():
+    """A re-seed between two reads would become this scan's expectation, and
+    then be overwritten by it."""
+    storage = _storage()
+    ix, _, _ = _indexer([_run("r1", D1), _run("r2", D2)])
+    ix._write_timestamp(storage, D1)
+    reads = []
+    original = storage.kv_pair_storage.get_value
+
+    def get_value(key):
+        reads.append(key)
+        if len(reads) == 2:
+            # A --force re-seed lands after the scan's first read.
+            storage.kv_pair_storage.set_value(
+                key, ix._checkpoint_value("2025-06-01T00:00:00Z", [])
+            )
+        return original(key)
+
+    storage.kv_pair_storage.get_value = get_value
+    ix.scan_once(storage)
+    assert _checkpoint(storage)["timestamp"] == "2025-06-01T00:00:00Z"
+
+
+def test_done_ahead_is_kept_under_the_from_beginning_mark():
+    """Under ``all`` a held run at the front must not re-index everything past
+    it on every scan."""
+    storage = _storage()
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(tzinfo=None)
+    runs = [
+        _run("r1", recent.isoformat(), job_id="j1", state="running"),
+        _run("r2", (recent + timedelta(seconds=10)).isoformat(), job_id="j2"),
+    ]
+    ix, _, sink = _indexer(runs)
+    ix.settle_grace_s = 0
+    ix.seed_if_absent(storage, idx.SEED_ALL)
+    assert ix.scan_once(storage) == 1
+    assert set(_checkpoint(storage)["done_ahead"]) == {"r2"}
+    sink.write_job.reset_mock()
+    assert ix.scan_once(storage) == 0
+    sink.write_job.assert_not_called()
+
+
+def test_build_tags_reraises_an_outage_but_tolerates_a_missing_build():
+    storage = SimpleNamespace(build_storage=MagicMock())
+    storage.build_storage.get_by_uuid.side_effect = OperationalError("timed out")
+    with pytest.raises(OperationalError):
+        idx._build_tags(storage, "b1")
+    storage.build_storage.get_by_uuid.side_effect = ValueError("gone")
+    assert idx._build_tags(storage, "b1") == []

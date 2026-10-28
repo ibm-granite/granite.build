@@ -83,6 +83,10 @@ TERMINAL = ""
 # pass 256 on its own has been observed (a red-teaming dataset whose name repeats
 # as its table name).
 #
+# The guards count UTF-8 bytes, not characters: 256 + 2 x 512 bytes stays under
+# the Postgres btree maximum, whereas the same counts in multi-byte characters do
+# not (``index row size 3240 exceeds btree maximum 2704``).
+#
 # A URI longer than this is DROPPED rather than truncated. The column truncates
 # silently, and two distinct artifacts sharing a long prefix would then collapse
 # into one graph node -- provenance invented where nobody can see it. Losing a node

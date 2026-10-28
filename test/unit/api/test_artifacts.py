@@ -528,3 +528,32 @@ def test_the_normalized_match_keeps_the_space_scope():
             match_lineage_uri=True,
         )
     assert resp.artifacts == []
+
+
+def test_several_registrations_of_one_identity_come_back_in_a_fixed_order():
+    """``cos://`` and ``s3://`` (or two spellings of one HF repo) normalize to one
+    id; the panel takes the first, so it must be the same one every time: not
+    archived first, then newest."""
+    from datetime import datetime, timezone
+
+    old = _artifact_in(ALICE_SPACE, ALICE, "alice-model")
+    old.created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    new = _artifact_in(ALICE_SPACE, ALICE, "alice-model")
+    new.uri = f"https://huggingface.co/{ALICE_SPACE}/alice-model"
+    new.created_at = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    archived = _artifact_in(ALICE_SPACE, ALICE, "alice-model")
+    archived.created_at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    archived.is_archived = True
+    for order in ([old, new, archived], [archived, new, old]):
+        with (
+            _patched_list_registry(order),
+            patch("gbserver.api.utils.is_super_admin", return_value=False),
+            patch("gbserver.api.utils.get_space_access_manager") as manager,
+        ):
+            _set_alice_access(manager)
+            resp = list_artifacts(
+                _fake_request(ALICE, f"{ALICE}@example.com"),
+                uri=f"https://huggingface.co/{ALICE_SPACE}/alice-model/",
+                match_lineage_uri=True,
+            )
+        assert [a.uuid for a in resp.artifacts] == [new.uuid, old.uuid, archived.uuid]

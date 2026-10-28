@@ -21,7 +21,7 @@ import { getArtifact } from '@granite-build/ui-core/api/gbserver'
 import { getBuildArchiveFiles } from '@granite-build/ui-core/api/gbserver'
 import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@granite-build/ui-core/components/LineageGraph/Graph'
 import { getSubgraph, getHuggingFaceUrl } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
-import { artifactTypeToNodeType, depthForNextLevel, type IndexElkNode, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
+import { artifactTypeToNodeType, depthForNextLevel, expansionErrorMessage, type IndexElkNode, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import { useLineageExpansion, type ExpandDirection } from '@granite-build/ui-core/components/LineageGraph/useLineageExpansion'
 import StepDrawer from './StepDrawer'
 import JobDrawer from './JobDrawer'
@@ -323,7 +323,12 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   )
 
   // Fetch artifact names for all UUID-shaped artifact IDs
-  const uuidArtifactIds = artifactIds.filter(isUUID)
+  // Keyed on the ids' content: each status poll rebuilds `artifactIds`.
+  const uuidArtifactKey = artifactIds.filter(isUUID).join('\n')
+  const uuidArtifactIds = React.useMemo(() => (uuidArtifactKey ? uuidArtifactKey.split('\n') : []), [uuidArtifactKey])
+  // `combine` keeps just the data, and TanStack structurally shares the combined
+  // result, so its identity holds across status polls and the maps and `rename`
+  // below (and with it every expansion) only recompute when an artifact resolves.
   const artifactQueries = useQueries({
     queries: uuidArtifactIds.map((id) => ({
       queryKey: ['artifact', id],
@@ -331,6 +336,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       retry: false,
       staleTime: 5 * 60 * 1000,
     })),
+    combine: (results) => results.map((r) => ({ data: r.data })),
   })
 
   // Enrich nodes with resolved artifact names and types
@@ -771,7 +777,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
           <div className={styles.expansionStatus}>
             {expansion.loading && <InlineLoading description={`Loading ${expansion.loading} lineage…`} />}
             {Boolean(expansion.error) && (
-              <span className={styles.expansionError}>Failed to expand lineage: {String(expansion.error)}</span>
+              <span className={styles.expansionError}>Failed to expand lineage: {expansionErrorMessage(expansion.error)}</span>
             )}
             {!expansion.loading && expansion.unexpanded > 0 && <span>{expansion.unexpanded} nodes not expanded.</span>}
           </div>

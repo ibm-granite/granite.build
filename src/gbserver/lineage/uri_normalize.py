@@ -145,13 +145,15 @@ def normalize_uri(raw: str) -> str:
         logger.debug("Lineage URI failed to normalize, dropping endpoint: %r", raw)
         return ""
 
-    if len(normalized) > MAX_LINEAGE_URI_LENGTH:
+    if len(normalized.encode("utf-8")) > MAX_LINEAGE_URI_LENGTH:
         # Drop rather than truncate. The column would truncate silently, and two
         # distinct artifacts sharing a long prefix would then collapse into one
         # node -- inventing provenance, which is the one failure worth losing a
-        # node to avoid.
+        # node to avoid. Counted in UTF-8 bytes, not characters: the
+        # (job_id, input, output) btree entry is capped in bytes, and ~450 CJK
+        # characters per side fit the column yet overflow it on every retry.
         logger.warning(
-            "Lineage URI exceeds %d characters, dropping endpoint: %r",
+            "Lineage URI exceeds %d UTF-8 bytes, dropping endpoint: %r",
             MAX_LINEAGE_URI_LENGTH,
             raw,
         )

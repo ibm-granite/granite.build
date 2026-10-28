@@ -78,8 +78,7 @@ def test_keyset_read_follows_the_instant_across_offsets(storage):
     assert _names(storage, cutoff=CUTOFF) == ["first", "second", "third"]
 
 
-def test_a_successful_row_without_the_column_falls_back(storage):
-    uuid = _add(storage, "legacy", CUTOFF)
+def _null_column(storage, uuid):
     table = (
         f"{storage._db_schema}.{storage.table_name}"
         if storage._db_schema
@@ -89,5 +88,22 @@ def test_a_successful_row_without_the_column_falls_back(storage):
         conn.execute(
             text(f"UPDATE {table} SET finished_at = NULL WHERE uuid = :u"), {"u": uuid}
         )
+
+
+def test_a_successful_row_without_the_column_is_backfilled_from_the_blob(storage):
+    """Rows written before the column existed keep the time in the blob only; the
+    read copies it into the column instead of falling back to a full scan."""
+    _add(storage, "new", CUTOFF + timedelta(hours=1))
+    _null_column(storage, _add(storage, "legacy", CUTOFF))
+    assert _names(storage) == ["legacy", "new"]
+    # Idempotent: a second read finds nothing left to backfill.
+    assert _names(storage) == ["legacy", "new"]
+
+
+def test_without_the_backfill_the_read_still_falls_back(storage):
+    """The backfill only warns on failure; the probe then still sees the row and
+    the read falls back, as before the backfill existed."""
+    _null_column(storage, _add(storage, "legacy", CUTOFF))
+    storage._finished_at_backfilled = True  # as after a failed attempt
     with pytest.raises(NotImplementedError):
         storage.get_successful_finished_after(None, None, 10)

@@ -44,7 +44,7 @@ creation next to a source that saw what X was made from.
 """
 
 import copy
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy.exc import IntegrityError
 
@@ -172,8 +172,20 @@ def merge_job(existing: StoredLineageJob, incoming: StoredLineageJob) -> Dict[st
     return fields
 
 
-def upsert_job(storage: ILineageJobStorage, job: StoredLineageJob) -> str:
-    """Add ``job``, or merge it into the record already stored under its ``job_id``."""
+def upsert_job(
+    storage: ILineageJobStorage,
+    job: StoredLineageJob,
+    extra_fields: Optional[
+        Callable[[StoredLineageJob, Dict[str, Any]], Dict[str, Any]]
+    ] = None,
+) -> str:
+    """Add ``job``, or merge it into the record already stored under its ``job_id``.
+
+    ``extra_fields(stored, merged_fields)`` returns more fields to write with the
+    merge (a caller's own rules, e.g. the db sink's entry). Both are computed from
+    the row as ``update_fields`` locks it, inside its one transaction, so nothing
+    another writer commits in between is lost and no half-merged record is seen.
+    """
     if _job_id_too_long(job.job_id):
         return REJECTED
     existing = storage.get_job(job.job_id)
@@ -186,10 +198,18 @@ def upsert_job(storage: ILineageJobStorage, job: StoredLineageJob) -> str:
             existing = storage.get_job(job.job_id)
             if existing is None:
                 raise
-    fields = merge_job(existing, job)
-    if not fields:
+    fields: Dict[str, Any] = {}
+
+    def compute(locked: StoredLineageJob) -> bool:
+        # Filled in place: update_fields applies ``fields`` after this returns.
+        fields.clear()
+        fields.update(merge_job(locked, job))
+        if extra_fields is not None:
+            fields.update(extra_fields(locked, dict(fields)))
+        return bool(fields)
+
+    if storage.update_fields(existing.uuid, fields, should_update=compute) is None:
         return UNCHANGED
-    storage.update_fields(existing.uuid, fields)
     return UPDATED
 
 
@@ -265,12 +285,15 @@ def _delete_stale(storage: ILineageRowStorage, stale: List[StoredLineageRow]) ->
 
 
 def _job_id_too_long(job_id: str) -> bool:
-    if len(job_id or "") <= MAX_JOB_ID_LENGTH:
+    # In UTF-8 bytes, like the URI guard: job_id is part of the byte-capped
+    # (job_id, input, output) unique index.
+    size = len((job_id or "").encode("utf-8"))
+    if size <= MAX_JOB_ID_LENGTH:
         return False
     logger.warning(
-        "Lineage job_id is %d chars, over the %d the column holds; not stored "
-        "(job_id=%.80s...)",
-        len(job_id),
+        "Lineage job_id is %d UTF-8 bytes, over the %d the index holds; not "
+        "stored (job_id=%.80s...)",
+        size,
         MAX_JOB_ID_LENGTH,
         job_id,
     )

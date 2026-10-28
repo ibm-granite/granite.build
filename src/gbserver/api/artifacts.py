@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from functools import lru_cache
 from typing import Annotated, Any, List, Optional, Tuple, Union, cast
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
@@ -652,15 +653,31 @@ def _by_lineage_uri(storage, uri: str, **filters) -> List[ArtifactRegistration]:
     Opt-in because it scans the scoped registry and can resolve to a registration
     whose raw URI differs (``cos://`` vs ``s3://``), which a caller asking for an
     exact URI -- gbcli's ``get_artifact_uri`` -- must not get.
+
+    Normalization is memoized (:func:`_normalized`), so repeat clicks over the
+    same registry do not re-parse every URI. Several registrations can share one
+    identity; they come back in a fixed order -- not archived first, then newest
+    -- so a caller taking the first gets the same one every time.
     """
-    wanted = normalize_uri(uri)
+    wanted = _normalized(uri)
     if not wanted:
         return []
     candidates = cast(
         List[ArtifactRegistration],
         storage.artifact_registry.get_by_where(get_row_filter(uri="", **filters)),
     )
-    return [item for item in candidates if normalize_uri(item.uri or "") == wanted]
+    matches = [item for item in candidates if _normalized(item.uri or "") == wanted]
+    matches.sort(
+        key=lambda item: (str(item.created_at or ""), item.uuid or ""), reverse=True
+    )
+    matches.sort(key=lambda item: item.is_archived)  # stable: newest first within
+    return matches
+
+
+@lru_cache(maxsize=16384)
+def _normalized(uri: str) -> str:
+    """:func:`normalize_uri`, memoized: it is pure, and the registry repeats."""
+    return normalize_uri(uri)
 
 
 @artifacts_api.get("/tags")

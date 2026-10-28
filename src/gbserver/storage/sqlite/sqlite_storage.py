@@ -335,3 +335,20 @@ class SqliteKeyValuePairStorage(SqliteStorageOverrides, SQLKeyValuePairStorage):
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
+
+    def compare_and_set(self, key, expected, value) -> bool:
+        """The SQL compare-and-set under the file lock, retried on a busy file.
+
+        The read and the conditional update are separate statements; holding the
+        lock across both keeps another process from writing between them, and a
+        ``database is locked`` from a writer outside the lock is retried rather
+        than surfaced. The lock is taken per attempt, never across a backoff.
+        """
+        method = super().compare_and_set
+
+        @retry_read
+        def attempt() -> bool:
+            with self._db_file_lock:
+                return method(key, expected, value)
+
+        return attempt()

@@ -11,7 +11,7 @@ import BuildLineagePanel from '../../builds/[buildId]/LineagePanel'
 import styles from '../../builds/[buildId]/LineagePanel.module.scss'
 import JobDrawer from '../../builds/[buildId]/JobDrawer'
 import Graph, { type GraphHandle } from '@granite-build/ui-core/components/LineageGraph/Graph'
-import { depthForNextLevel, indexGraphToElk, type IndexElkNode, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
+import { depthForNextLevel, expansionErrorMessage, indexGraphToElk, type IndexElkNode, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import { useLineageExpansion } from '@granite-build/ui-core/components/LineageGraph/useLineageExpansion'
 
 // ── URI-based artifact lineage panel (lineage index) ──────────────────────────
@@ -195,7 +195,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
         <div className={styles.expansionStatus}>
           {busy && <InlineLoading description={`Loading ${expansion.loading} lineage…`} />}
           {Boolean(expansion.error) && (
-            <span className={styles.expansionError}>Failed to expand lineage: {String(expansion.error)}</span>
+            <span className={styles.expansionError}>Failed to expand lineage: {expansionErrorMessage(expansion.error)}</span>
           )}
           {openError && <span className={styles.expansionError}>{openError}</span>}
           {!busy && unexpanded > 0 && <span>{unexpanded} nodes not expanded.</span>}
