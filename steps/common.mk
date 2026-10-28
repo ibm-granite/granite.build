@@ -139,8 +139,9 @@ REGISTRY_LOGIN = $(if $(filter podman,$(notdir $(firstword $(DOCKER)))),$(REGIST
 
 # Shared robot credential in IBM Cloud Secrets Manager, as <group>/<name> of a
 # username_password secret. When set, publish-image fetches it with the
-# `ibmcloud sm` CLI (needs `ibmcloud login` and SecretsReader on the group) and
-# logs in to $(REGISTRY_LOGIN) before pushing. Empty by default: a step whose
+# `ibmcloud sm` CLI (needs `ibmcloud login` with read access to the group; for
+# Granite.build's instance, membership of the granite-build IBM Cloud access
+# group) and logs in to $(REGISTRY_LOGIN) before pushing. Empty by default: a step whose
 # REGISTRY has a shared robot sets it in its Makefile. SECRETS_MANAGER_URL picks
 # the instance (default: the Granite.build Secrets Manager).
 REGISTRY_SECRET     ?=
