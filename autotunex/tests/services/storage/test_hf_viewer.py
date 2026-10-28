@@ -26,8 +26,13 @@ BASE = "https://datasets-server.huggingface.co"
         ("hf:///datasets/org/my-dataset/v2/data/train.csv", "org/my-dataset"),
         ("hf://huggingface.co/models/org/model/main/checkpoints/best", "org/model"),
         ("hf:///owner/repo/v1.0", "owner/repo"),
+        # hf://<host>/... names a non-default HF endpoint, as in gbcommon's HfURI
+        ("hf://hub.internal/datasets/o/r", "o/r"),
+        ("hf://hub.internal/o/r", "o/r"),
+        ("hf://hub.internal/datasets/o/r/v2/data/train.csv", "o/r"),
         ("  hf://owner/repo  ", "owner/repo"),
         ("hf:///datasets/only-one", None),
+        ("hf://huggingface.co/only-one", None),
         ("lh://owner/repo", None),
         ("https://huggingface.co/owner/repo", None),
         ("hf://only-one", None),
