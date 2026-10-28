@@ -924,7 +924,11 @@ class Environment(ABC):
             environment_asset=environment_asset,
             space_name=space_name,
         )
-        cls._thread_local.environments[cache_key] = env
+        # Stored under the *resolved* URI, as before space_name was added: a
+        # template URI (space://...) is never a cache hit, so each target gets
+        # its own instance (and event_q). Keying by the raw URI would make
+        # later builds reuse an earlier build's instance and queue.
+        cls._thread_local.environments[(space_name, environment_uri)] = env
         return env
 
     def __cancel_monitoring(self, launch_id: str):

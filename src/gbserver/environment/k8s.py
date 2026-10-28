@@ -132,6 +132,22 @@ def _kubeconfig_without_skypilot_managed() -> Optional[str]:
     return os.pathsep.join(parts) or None
 
 
+def _kube_tool_env() -> Dict[str, str]:
+    """This process's environment for kubectl/oc/helm, with ``KUBECONFIG`` filtered.
+
+    The subprocesses would otherwise inherit the SkyPilot-managed kubeconfig
+    (see :func:`_kubeconfig_without_skypilot_managed`) and could resolve a
+    ``--context``/``--kube-context`` to another environment's credentials.
+    """
+    env = dict(os.environ)
+    filtered = _kubeconfig_without_skypilot_managed()
+    if filtered:
+        env["KUBECONFIG"] = filtered
+    else:
+        env.pop("KUBECONFIG", None)
+    return env
+
+
 class AtomicApiClient:
     """A client to interact with the K8s API server"""
 
@@ -615,6 +631,7 @@ class K8s(Environment):
                         *cmd,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
+                        env=_kube_tool_env(),
                     )
                 except FileNotFoundError as e:
                     # kubectl does not exist at all → retry with oc
@@ -888,6 +905,7 @@ class K8s(Environment):
                 await launch_command_and_raise_errors(
                     command_list=dry_run_command_list,
                     launch_id=launch_id + "-dry-run",
+                    env=_kube_tool_env(),
                 )
             except Exception as e:
                 raise ValueError("failed to do a helm install dry run") from e
@@ -899,6 +917,7 @@ class K8s(Environment):
                     process, stdout, stderr = await launch_command_and_raise_errors(
                         command_list=command_list,
                         launch_id=launch_id,
+                        env=_kube_tool_env(),
                     )
                     logger.debug("process: %s", process)
                     # ---------------
@@ -929,6 +948,7 @@ class K8s(Environment):
                         process, stdout, stderr = await launch_command_and_raise_errors(
                             command_list=command_list,
                             launch_id=launch_id,
+                            env=_kube_tool_env(),
                         )
                         logger.debug("helm template process: %s", process)
                         # ---------------
@@ -1156,6 +1176,7 @@ class K8s(Environment):
                 process, _, _ = await launch_command_and_raise_errors(
                     command_list=command_list,
                     launch_id=launch_id,
+                    env=_kube_tool_env(),
                 )
                 logger.debug("process: %s", process)
                 break  # success

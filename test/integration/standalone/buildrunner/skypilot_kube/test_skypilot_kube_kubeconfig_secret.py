@@ -115,8 +115,15 @@ class TestSkypilotKubeKubeconfigSecret(AbstractYamlBuildRunnerTest):
         monkeypatch.setenv("GBTEST_KUBE_SECRETS_DIR", str(secrets_dir))
         monkeypatch.setenv("KUBECONFIG", str(host))
         yield
-        # Remove what the env merged into gbserver's kubeconfig (~/.sky), so it
-        # does not outlive the test. KUBECONFIG itself is restored by monkeypatch.
-        from gbserver.environment.skypilot_config import release_kube_configs
+        # Teardown already releases; drop any owner a failed run left behind
+        # (owners are "<space>/<env>#<instance>"), so nothing outlives the test.
+        # KUBECONFIG itself is restored by monkeypatch.
+        from gbserver.environment.skypilot_config import (
+            managed_kube_contexts,
+            release_kube_configs,
+        )
 
-        release_kube_configs("kubeconfig-secret-test/sky-kube-secret")
+        prefix = "kubeconfig-secret-test/sky-kube-secret#"
+        for owner in {o for os_ in managed_kube_contexts().values() for o in os_}:
+            if owner.startswith(prefix):
+                release_kube_configs(owner)
