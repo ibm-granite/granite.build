@@ -24,7 +24,8 @@ _HF_CACHE_RE = re.compile(r"^/gb-read-write/hfcache/([^/]+)/([^/]+)/[^/]+/.+$")
 # gbserver names the dir after the repo verbatim (a trailing _<hex>, as on the app's own
 # <name>_<id8> repos, is part of the repo name, so it is kept), and the file may sit in a
 # subdirectory of the revision. A cache_path set in the environment is not recognised.
-_LOCAL_GBSERVER_HF_CACHE_RE = re.compile(r"^.*/(?:\.cache/gbserver/hf|hf_cache)/([^/]+)/([^/]+)/[^/]+/.+$")
+# The match is only trusted when the <revision> dir (group 1) is a real HF download.
+_LOCAL_GBSERVER_HF_CACHE_RE = re.compile(r"^(.*/(?:\.cache/gbserver/hf|hf_cache)/([^/]+)/([^/]+)/[^/]+)/.+$")
 
 
 def lakehouse_path_to_uri(path: str, strip_last_n: int = 1) -> tuple[str, str]:
@@ -73,8 +74,8 @@ def lakehouse_path_to_uri(path: str, strip_last_n: int = 1) -> tuple[str, str]:
         return f"hf:///datasets/{org}/{dataset}", dataset
 
     local_hf_match = _LOCAL_GBSERVER_HF_CACHE_RE.match(path)
-    if local_hf_match:
-        org, dataset = local_hf_match.groups()
+    if local_hf_match and _is_hf_download(local_hf_match.group(1)):
+        _, org, dataset = local_hf_match.groups()
         return f"hf:///datasets/{org}/{dataset}", dataset
 
     raise ValueError(f"Path does not match expected lakehouse or HF cache format: {path}")

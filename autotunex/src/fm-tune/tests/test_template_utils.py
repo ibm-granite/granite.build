@@ -47,42 +47,71 @@ def test_resolve_dataset_uri_hf_cache_still_resolves():
     assert name == "finance-test"
 
 
+def _snapshot(root, rel):
+    """A dir laid out like an HF download: it holds a .cache/huggingface folder."""
+    path = root / rel
+    (path / ".cache" / "huggingface").mkdir(parents=True)
+    return str(path)
+
+
 @pytest.mark.parametrize(
-    "path, uri, name",
+    "snapshot, file, uri, name",
     [
-        # an app-pushed <name>_<id8> repo, file at the revision root: the suffix is
-        # part of the repo name, so it stays in the URI
+        # bash: an app-pushed <name>_<id8> repo, file at the revision root; the suffix
+        # is part of the repo name, so it stays in the URI
         (
-            "/Users/u/.cache/gbserver/hf/ibm-research/finance-classification_9bb5cc58/main/"
+            ".cache/gbserver/hf/ibm-research/finance-classification_9bb5cc58/main",
             "finance-classification_validation.jsonl",
             "hf:///datasets/ibm-research/finance-classification_9bb5cc58",
             "finance-classification_9bb5cc58",
         ),
         # a repo name ending in hex-like digits is not truncated
         (
-            "/Users/u/.cache/gbserver/hf/acme/news_20240101/main/data/train.parquet",
+            ".cache/gbserver/hf/acme/news_20240101/main",
+            "data/train.parquet",
             "hf:///datasets/acme/news_20240101",
             "news_20240101",
         ),
         # gbserver's own <owner>/<repo>/<revision> layout, file in a subdir
         (
-            "/Users/u/.cache/gbserver/hf/axolotl-ai-co/alpaca_100_test/main/data/train-00000-of-00001.parquet",
+            ".cache/gbserver/hf/axolotl-ai-co/alpaca_100_test/main",
+            "data/train-00000-of-00001.parquet",
             "hf:///datasets/axolotl-ai-co/alpaca_100_test",
             "alpaca_100_test",
         ),
         # SkyPilot/Slurm: the default <shared_workdir>/hf_cache, same layout
         (
-            "/shared/hf_cache/axolotl-ai-co/alpaca_100_test/main/data/train.parquet",
+            "shared/hf_cache/axolotl-ai-co/alpaca_100_test/main",
+            "data/train.parquet",
             "hf:///datasets/axolotl-ai-co/alpaca_100_test",
             "alpaca_100_test",
         ),
-        ("/shared/hf_cache/org/ds/main/train.jsonl", "hf:///datasets/org/ds", "ds"),
-        # the cluster cache, file in a subdirectory of the hash dir
-        ("/gb-read-write/hfcache/org/ds/abc123/data/train.parquet", "hf:///datasets/org/ds", "ds"),
+        ("shared/hf_cache/org/ds/main", "train.jsonl", "hf:///datasets/org/ds", "ds"),
     ],
 )
-def test_local_gbserver_hf_cache_path_resolves_to_hf_uri(path, uri, name):
+def test_gbserver_hf_cache_path_resolves_to_hf_uri(tmp_path, snapshot, file, uri, name):
+    path = f"{_snapshot(tmp_path, snapshot)}/{file}"
     assert lakehouse_path_to_uri(path) == (uri, name)
+
+
+def test_cluster_hf_cache_path_in_a_subdir_resolves_to_hf_uri():
+    path = "/gb-read-write/hfcache/org/ds/abc123/data/train.parquet"
+    assert lakehouse_path_to_uri(path) == ("hf:///datasets/org/ds", "ds")
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        # a dir merely named hf_cache, with no HF download in the "revision" dir: an
+        # experiment tree, and an HF hub cache under HF_HOME=.../hf_cache
+        "home/u/hf_cache/my/exp/run1/train.jsonl",
+        "x/hf_cache/hub/datasets--o--r/snapshots/abc/train.jsonl",
+    ],
+)
+def test_hf_cache_lookalike_without_a_download_does_not_resolve(tmp_path, rel):
+    (tmp_path / rel).parent.mkdir(parents=True)
+    with pytest.raises(ValueError, match="does not match expected"):
+        lakehouse_path_to_uri(str(tmp_path / rel))
 
 
 @pytest.mark.parametrize(
@@ -96,13 +125,6 @@ def test_local_gbserver_hf_cache_path_resolves_to_hf_uri(path, uri, name):
 def test_non_cache_paths_do_not_resolve(path):
     with pytest.raises(ValueError, match="does not match expected"):
         lakehouse_path_to_uri(path)
-
-
-def _snapshot(root, rel):
-    """A dir laid out like an HF download: it holds a .cache/huggingface folder."""
-    path = root / rel
-    (path / ".cache" / "huggingface").mkdir(parents=True)
-    return str(path)
 
 
 @pytest.mark.parametrize(
