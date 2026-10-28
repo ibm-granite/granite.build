@@ -152,6 +152,106 @@ fi
 {%- endif %}
 
 # --------------------------------------------------------------------------
+# Multi-node topology
+#
+# blaunch runs this wrapper once per allocated host, so every copy derives its
+# own rank by locating itself in the ordered allocation. LSB_MCPU_HOSTS is
+# "host1 nslots1 host2 nslots2 ..."; LSB_HOSTS repeats a host once per slot.
+#
+# IMPORTANT: this file is rendered through Jinja2, whose comment opener is a
+# left brace followed by a hash. A bash length expansion (dollar, left brace,
+# hash, name) contains that exact pair, so writing one anywhere in this file
+# either aborts rendering or silently deletes everything up to the next hash +
+# right brace. Count with `set --` and $# instead; never use a length
+# expansion here. The rendering test in tests/ asserts this stays true.
+
+llmb_compute_topology() {
+    # `set --` inside a function rebinds only the function's own positional
+    # parameters, so the wrapper's "$@" -- forwarded to the workload script
+    # further down -- is left untouched.
+    local hosts="" h="" nnodes=0 me="" rank="" idx=0
+
+    if [[ -n "${LSB_MCPU_HOSTS:-}" ]]; then
+        # shellcheck disable=SC2086  # deliberate word splitting
+        set -- ${LSB_MCPU_HOSTS}
+        while [[ "$#" -gt 0 ]]; do
+            h="${1%%.*}"
+            case " ${hosts} " in
+                *" ${h} "*) ;;
+                *) hosts="${hosts}${hosts:+ }${h}"; nnodes=$((nnodes + 1)) ;;
+            esac
+            shift
+            # drop this host's slot count, when the list is well formed
+            [[ "$#" -gt 0 ]] && shift
+        done
+    elif [[ -n "${LSB_HOSTS:-}" ]]; then
+        # shellcheck disable=SC2086  # deliberate word splitting
+        set -- ${LSB_HOSTS}
+        for h in "$@"; do
+            h="${h%%.*}"
+            case " ${hosts} " in
+                *" ${h} "*) ;;
+                *) hosts="${hosts}${hosts:+ }${h}"; nnodes=$((nnodes + 1)) ;;
+            esac
+        done
+    fi
+
+    if [[ "${nnodes}" -eq 0 ]]; then
+        # Not under an LSF allocation (local run, or LSF did not export the
+        # host list). Single node by definition.
+        hosts="$(hostname -s)"
+        nnodes=1
+    fi
+
+    me="$(hostname -s)"
+    for h in ${hosts}; do
+        if [[ "${h}" == "${me}" ]]; then
+            rank="${idx}"
+            break
+        fi
+        idx=$((idx + 1))
+    done
+
+    if [[ -z "${rank}" ]]; then
+        if [[ "${nnodes}" -gt 1 ]]; then
+            # Refusing is deliberate: silently defaulting to 0 would give the
+            # job two rank 0s, corrupting the output artifact instead of
+            # failing visibly.
+            echo "${LLMB_LSF_JOB_NAME}: FATAL: host '${me}' is not in the LSF allocation '${hosts}'; refusing to run rather than risk a duplicate rank 0" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
+            return 1
+        fi
+        rank=0
+    fi
+
+    # shellcheck disable=SC2086  # deliberate word splitting
+    set -- ${hosts}
+
+    # GB_ is the current prefix; the LLMB_ aliases are the contract the BYOC
+    # step's README has advertised since v1, kept per the dual-accept policy
+    # in 5dccfb5 so user start_commands written against them keep working.
+    export GB_NNODES="${nnodes}"
+    export GB_NODE_RANK="${rank}"
+    export GB_MASTER_ADDR="${1}"
+    # Derived from the job id rather than $RANDOM: each task computes this
+    # independently, so all nodes must arrive at the same port.
+    export GB_MASTER_PORT="$(( 29500 + (${LSB_JOBID:-0} % 1000) ))"
+    export GB_HOSTS="${hosts}"
+
+    export LLMB_NNODES="${GB_NNODES}"
+    export LLMB_NODE_RANK="${GB_NODE_RANK}"
+    export LLMB_MASTER_ADDR="${GB_MASTER_ADDR}"
+    export LLMB_MASTER_PORT="${GB_MASTER_PORT}"
+    export LLMB_HOSTS="${GB_HOSTS}"
+}
+
+if ! llmb_compute_topology; then
+    echo "${LLMB_LSF_JOB_NAME}: GB_EVENT_WORKLOAD_STATUS:failed" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
+    exit 1
+fi
+
+echo "${LLMB_LSF_JOB_NAME}: topology nnodes=${GB_NNODES} rank=${GB_NODE_RANK} master=${GB_MASTER_ADDR}:${GB_MASTER_PORT} hosts='${GB_HOSTS}'" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
+
+# --------------------------------------------------------------------------
 # Run the workload
 
 echo "${LLMB_LSF_JOB_NAME}: running the workload script ${LLMB_LSF_SCRIPT_PATH}" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
@@ -173,7 +273,16 @@ echo '{{ filecontents | b64encode }}' | base64 -d > {{ filename }}
 
 LLMB_LSF_JOB_EXIT_CODE="${PIPESTATUS[0]}"
 
-{%- if clsf.skip_finding_output_artifacts is defined and clsf.skip_finding_output_artifacts %}
+{#- Artifact emission must happen exactly once per job. Under blaunch every
+    node reaches this point, so non-zero ranks stay quiet and rank 0 owns the
+    output artifact. #}
+if [[ "${GB_NODE_RANK:-0}" != "0" ]]; then
+
+echo "${LLMB_LSF_JOB_NAME}: rank ${GB_NODE_RANK} of ${GB_NNODES}: not emitting artifacts (rank 0 owns the output artifact)" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
+
+else
+
+{% if clsf.skip_finding_output_artifacts is defined and clsf.skip_finding_output_artifacts %}
 
 echo "${LLMB_LSF_JOB_NAME}: skip making artifacts out of ${LLMB_LSF_OUTPUT_DIR}"
 
@@ -187,14 +296,24 @@ echo "GB_ARTIFACT_ID:${LLMB_LSF_OUTPUT_DIR##*/} GB_ARTIFACT_PATH:${LLMB_LSF_OUTP
 echo "${LLMB_LSF_JOB_NAME}: making artifacts out of sub-directories of ${LLMB_LSF_OUTPUT_DIR}"
 find "${LLMB_LSF_OUTPUT_DIR}" -depth -mindepth 1 -maxdepth 1 -type d -exec bash -c 'echo "GB_ARTIFACT_ID:${0##*/} GB_ARTIFACT_PATH:{}"' {} \; | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
 
-{%- endif %}
+{% endif %}
 
+fi
+
+# Failure is reported by EVERY rank: a non-zero rank dying must not look like
+# success just because rank 0 was healthy. Success is reported only by rank 0,
+# so a clean job emits the status event exactly once. The bsub_monitor tracks
+# the real LSF job state independently of these lines.
 if [[ "${LLMB_LSF_JOB_EXIT_CODE}" != "0" ]]; then
     echo "${LLMB_LSF_JOB_NAME}: GB_EVENT_WORKLOAD_STATUS:failed" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
-    echo "${LLMB_LSF_JOB_NAME}: workload script failed, exit code: ${LLMB_LSF_JOB_EXIT_CODE}" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
+    echo "${LLMB_LSF_JOB_NAME}: rank ${GB_NODE_RANK:-0} workload script failed, exit code: ${LLMB_LSF_JOB_EXIT_CODE}" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
     exit 1
 fi
 
-echo "${LLMB_LSF_JOB_NAME}: GB_EVENT_WORKLOAD_STATUS:success" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
-echo "${LLMB_LSF_JOB_NAME}: workload script finished successfully" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
+if [[ "${GB_NODE_RANK:-0}" == "0" ]]; then
+    echo "${LLMB_LSF_JOB_NAME}: GB_EVENT_WORKLOAD_STATUS:success" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
+    echo "${LLMB_LSF_JOB_NAME}: workload script finished successfully" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
+else
+    echo "${LLMB_LSF_JOB_NAME}: rank ${GB_NODE_RANK} finished successfully" | tee -a "${LLMB_LSF_LOG_FILE_COMBINED}"
+fi
 # ===============================================
