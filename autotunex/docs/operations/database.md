@@ -127,7 +127,7 @@ The revisions form a single linear chain from the baseline to the current head:
 | `f09bd54b61b7` | Adds the `training_metrics` table, keyset-indexed for the read path. |
 | `a3c71d94e5b2` | Adds nullable `users.last_login_at`, backfilled from `updated_at` where the row was written after creation (**modifies data**). |
 | `dd4511a46fc5` | Adds nullable `datasets.hf_repo_id`, `hf_revision`, `hf_config`, `hf_split`, and `hf_provenance` (plain `add_column`, schema-only). |
-| `5e1d2c7a9b40` | Adds the server defaults the api-bridge's inserts rely on: `gb_tasks.status`, `jobs.status` and `trials.status` (`PENDING`), `jobs.seed` (`42`), `users.role` (`user`). Schema-only; a database built from `resources/autotunex_schema.sql` already has them, so on that path it is a no-op (**current head**). |
+| `5e1d2c7a9b40` | Adds the server defaults the api-bridge's inserts rely on: `gb_tasks.status`, `jobs.status` and `trials.status` (`PENDING`), `jobs.seed` (`42`), `users.role` (`user`). Schema-only; a database built from `resources/autotunex_schema.sql` already has them, so on that path it is a no-op. Its `downgrade()` drops them on both paths, including that one, where they predate it (**current head**). |
 
 ## Fresh or empty database (local dev, tests, CI)
 
