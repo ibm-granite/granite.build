@@ -27,8 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skypilot/aws and BlueVela SLURM. On SLURM the image is cached as a shared `.sqsh` by
   `slurm_image_cache`. The legacy hand-authored `space://steps/openinstruct-sft` assets (LSF, aws)
   and the granite4-350m recipes that use them are unchanged; moving those recipes over is a
-  follow-up (they need pre-tokenized `--tokenized_data` input, which only the IBM fork's
-  `finetune.py` has).
+  follow-up, #569 (they need pre-tokenized `--tokenized_data` input, which only the IBM
+  fork's `finetune.py` has).
 - **`make publish-image` can log in with a shared robot credential from IBM Cloud Secrets
   Manager (#229).** Set `REGISTRY_SECRET=<group>/<name>` (a `username_password` secret) and
   `publish-image` fetches it with `ibmcloud sm` and pipes the password into

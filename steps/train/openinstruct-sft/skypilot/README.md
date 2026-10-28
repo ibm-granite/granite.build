@@ -111,7 +111,7 @@ provisioning. The mitigations:
   `/etc/profile.d`, so the non-root user logs in with `HOME=/root` and provisioning
   fails. The VM exists for one job and is torn down after; Pyxis on SLURM still runs
   the container as the job user. Restoring a non-root user needs a SkyPilot fix
-  (follow-up);
+  (#566);
 - files under `/opt` are readable by any uid but writable only by root;
 - the image is scanned for vulnerabilities before `make publish-image` (below).
 
@@ -135,7 +135,7 @@ CRITICALs that trivy did not, fixed in `oi-v0.3.0-5`). Result for `oi-v0.3.0-5`,
 shipped image (trivy, CRITICAL+HIGH): 0 fixable CRITICAL; 18 CRITICAL without a fix,
 all in Ubuntu's `linux-libc-dev` (kernel UAPI headers, needed by DeepSpeed's JIT
 build); 593 HIGH, 74 of them fixable (64 Python packages, 9 jar, 1 Go binary),
-tracked as a follow-up.
+tracked in #567.
 
 ### Bumping IMAGE_VERSION
 
@@ -299,7 +299,12 @@ reuses the published image.
 - **More environments.** Build tests for K8s, SkyPilot-K8s and LSF. Issue #229
   stays open for them.
 - **Multi-node.** The step is single-node only (`num_nodes` must be 1).
-- **Legacy recipe compatibility.** The 8 `recipes/granite4-350m/{lsf,aws}/sft*`
+- **Non-root image (#566).** Blocked on a SkyPilot fork fix; see Security trade-off.
+- **Fixable HIGH and MEDIUM findings in the image (#567).** See Scanning.
+- **`publish-step`'s image check without skopeo (#568).** It reports a published
+  single-platform image as missing, so this step was published with
+  `PUBLISH_REQUIRE_IMAGE=false`.
+- **Legacy recipe compatibility (#569).** The 8 `recipes/granite4-350m/{lsf,aws}/sft*`
   builds use the hand-authored `space://steps/openinstruct-sft` (the
   `skypilot/lsf/ibm-bluevela` and `skypilot/aws` assets, unchanged here). They
   depend on:
