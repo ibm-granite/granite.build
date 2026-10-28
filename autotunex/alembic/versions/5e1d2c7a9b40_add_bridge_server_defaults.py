@@ -50,7 +50,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop the defaults again."""
+    """Drop the defaults again.
+
+    On a database adopted from ``resources/autotunex_schema.sql`` (stamped at the
+    baseline), these defaults existed before this revision, and downgrading drops them
+    anyway: the api-bridge's bootstrap still writes ``gb_tasks.status`` itself, but
+    its ``insert_user`` then leaves ``users.role`` NULL. Re-run ``upgrade`` to restore
+    them.
+    """
     for table, column, type_, nullable, _default in reversed(_DEFAULTS):
         with op.batch_alter_table(table) as batch:
             batch.alter_column(
