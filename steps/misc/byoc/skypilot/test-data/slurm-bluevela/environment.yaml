@@ -1,16 +1,19 @@
-name: sky-slurm-bluevela
-type: Skypilot
-subtype: slurm
 # EXAMPLE custom build-test environment: IBM BlueVela over SLURM. Not used by
 # default: the build.yaml beside this file runs on the shared
 # space://environments/skypilot/slurm/ibm-bluevela. To test local environment
 # changes, edit this copy and switch build.yaml to `environment_uri: file:.`
 # (the build's own directory; see "Custom test environments" in
 # steps/README.md).
-#
-# Starting point: a copy of the shared
-# configurations/assets/environments/skypilot/slurm/ibm-bluevela/environment.yaml.
-# Editing this copy doesn't affect the shared environment.
+name: sky-slurm-bluevela
+type: Skypilot
+subtype: slurm
+# IBM BlueVela over SLURM — the SLURM sibling of the LSF environment in
+# environments/skypilot/lsf/ibm-bluevela. Both reach BlueVela as the shared
+# `granitebuild` functional ID; they differ in scheduler and login nodes (login1/2
+# run SLURM, login3-5 run LSF). Settings mirror the SLURM environment that the
+# BlueVela integration fixtures under
+# test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/ run against.
+# Reference with: environment_uri: space://environments/skypilot/slurm/ibm-bluevela
 config:
   default_cloud: slurm
   # SLURM does not support cluster autostop (gbserver forces autostop=None); a
@@ -40,6 +43,18 @@ config:
   # in the build. See docs/environments/skypilot-slurm.md#override-the-partition-zone-per-build.
   sbatch_options:
     constraint: h200
+  # Import each container image once into a shared .sqsh and launch from that, instead
+  # of Pyxis importing it inside every job (~22 min per launch for a 5 GB eval image,
+  # with the GPU idle). share_path is the LSF environment's enroot share_path: same
+  # directory, file names and lock file, so either backend reuses the other's imports.
+  # The import job runs on the cpu partition, which only accepts qos=cpu. See
+  # docs/environments/skypilot-slurm.md#slurm_image_cache--shared-sqsh-image-cache.
+  slurm_image_cache:
+    share_path: /proj/granite-build/g4os
+    partition: cpu
+    sbatch_options:
+      account: grp_granite_dot_build
+      qos: cpu
   # Shared-FS root for per-run build workdirs (GB_BUILD_WORKDIR). It must be on
   # /proj AND under the SkyPilot `workdir` set in cloud_config below: SkyPilot's
   # SLURM backend bind-mounts only home + ccache + `workdir` into the enroot
