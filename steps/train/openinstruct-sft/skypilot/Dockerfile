@@ -73,8 +73,8 @@ COPY patches/finetune_local_model.py /tmp/finetune_local_model.py
 RUN uv run --no-project --python 3.12 python /tmp/finetune_local_model.py open_instruct/finetune.py \
  && rm /tmp/finetune_local_model.py
 
-# Security patches on top of the frozen lock (trivy CRITICAL, fix available; see
-# README.md "Scanning"). vllm is REMOVED, not upgraded: the fixed vllm needs
+# Security patches on top of the frozen lock (CRITICAL with a fix, from trivy or
+# quay's scanner; see README.md "Scanning"). vllm is REMOVED, not upgraded: the fixed vllm needs
 # torch 2.11, which would replace the locked torch 2.10 + flash-attn training
 # stack, and nothing finetune.py imports needs vllm (it serves RL/generation).
 # The rest are upgraded to the first fixed release. litellm leaves upstream's
@@ -86,8 +86,8 @@ RUN uv sync --frozen \
  && uv pip uninstall --python .venv/bin/python vllm \
  && uv pip install --python .venv/bin/python \
       "pillow==13.0.0" "nltk==3.10.3" "litellm==1.84.0" "PyJWT==2.14.0" \
-      "Authlib==1.6.9" "fastmcp==3.2.0" "anyio==4.14.2" "GitPython==3.1.59" \
-      "certifi==2026.10.18" "wandb==0.31.0" \
+      "Authlib==1.9.0" "fastmcp==3.2.0" "anyio==4.14.2" "GitPython==3.1.59" \
+      "certifi==2026.10.19" "cryptography==46.0.7" "wandb==0.31.0" \
  && chmod -R a+rX /opt/open-instruct /opt/uv-python
 
 # The step's scripts. step.yaml's setup:/run: call them at /opt/openinstruct-sft/.

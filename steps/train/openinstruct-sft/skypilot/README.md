@@ -67,7 +67,7 @@ unrendered-binding detector). `**/*.md` is listed so the docs can show `{{ ... }
 
 ## Image
 
-`quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-4`. It holds:
+`quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-5`. It holds:
 
 | Part | Pin |
 |---|---|
@@ -76,7 +76,7 @@ unrendered-binding detector). `**/*.md` is listed so the docs can show `{{ ... }
 | Open-Instruct | allenai/open-instruct tag v0.3.0, commit `26de99604002d6a7b25a2c5f2ee880e388a21dca` (Apache-2.0), at `/opt/open-instruct`. The build fetches exactly that commit and fails if `HEAD` differs. |
 | Training stack | `uv sync --frozen` from Open-Instruct's own `uv.lock` into `/opt/open-instruct/.venv`. |
 | clearml | `clearml==2.1.12`, installed into the same venv. |
-| Security patches | On top of the frozen lock, in the same install RUN: `vllm` uninstalled (the fixed release needs torch 2.11; SFT does not use it); `pillow`, `nltk`, `litellm`, `PyJWT`, `Authlib`, `fastmcp`, `anyio`, `GitPython`, `certifi`, `wandb` upgraded to their first fixed releases (versions pinned in the Dockerfile and `test/test_dockerfile.py`). `litellm` and `wandb` therefore leave upstream's pins. The NVIDIA Nsight Compute profiler is purged from the CUDA base. |
+| Security patches | On top of the frozen lock, in the same install RUN: `vllm` uninstalled (the fixed release needs torch 2.11; SFT does not use it); `pillow`, `nltk`, `litellm`, `PyJWT`, `Authlib`, `fastmcp`, `anyio`, `GitPython`, `certifi`, `cryptography`, `wandb` upgraded to their first fixed releases (versions pinned in the Dockerfile and `test/test_dockerfile.py`). `litellm` and `wandb` therefore leave upstream's pins. The NVIDIA Nsight Compute profiler is purged from the CUDA base. |
 | Step scripts | `src/` at `/opt/openinstruct-sft/`. |
 
 Why `finetune.py`: it is deprecated upstream in favour of `olmo_core_finetune.py`,
@@ -129,14 +129,17 @@ Scan every image before `make publish-image`:
 A fixable CRITICAL in a package that comes from upstream's lock is fixed by
 upgrading that package on top of `uv sync --frozen` in the install RUN (or removing
 it when SFT does not use it and the fix would move the training stack), then
-rebuilding and rescanning. Result for `oi-v0.3.0-4`, the shipped image (trivy,
-CRITICAL+HIGH): 0 fixable CRITICAL; 18 CRITICAL without a fix, all in Ubuntu's
-`linux-libc-dev` (kernel UAPI headers, needed by DeepSpeed's JIT build); 585 HIGH,
-66 of them fixable (57 Python packages, 8 jar, 1 Go binary), tracked as a follow-up.
+rebuilding and rescanning. Check quay's own scan of the pushed tag too: its
+database differs from trivy's (it flagged `Authlib`, `certifi` and `cryptography`
+CRITICALs that trivy did not, fixed in `oi-v0.3.0-5`). Result for `oi-v0.3.0-5`, the
+shipped image (trivy, CRITICAL+HIGH): 0 fixable CRITICAL; 18 CRITICAL without a fix,
+all in Ubuntu's `linux-libc-dev` (kernel UAPI headers, needed by DeepSpeed's JIT
+build); 593 HIGH, 74 of them fixable (64 Python packages, 9 jar, 1 Go binary),
+tracked as a follow-up.
 
 ### Bumping IMAGE_VERSION
 
-The Makefile's `IMAGE_VERSION` is a stable version (`oi-v0.3.0-4`), not the
+The Makefile's `IMAGE_VERSION` is a stable version (`oi-v0.3.0-5`), not the
 per-commit git SHA. The image is large, and BlueVela caches a `.sqsh` per tag
 (each new tag means a fresh cold import), so it must not churn on unrelated commits.
 
@@ -161,7 +164,7 @@ tag into it, so no per-step quay setup is needed:
 ```bash
 podman login -u 'granitebuild+gbpush' --password-stdin quay.io/granitebuild   # robot token on stdin
 make -C steps/train/openinstruct-sft/skypilot image publish-image
-skopeo inspect --raw docker://quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-4
+skopeo inspect --raw docker://quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-5
 ```
 
 Run the `skopeo inspect` with no credentials, to check the image pulls
