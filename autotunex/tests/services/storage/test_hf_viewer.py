@@ -193,20 +193,11 @@ async def test_discover_config_raises_unavailable(response: httpx.Response) -> N
             await hf_viewer.discover_config(client, base_url=BASE, repo_id="o/r", token="t")
 
 
-@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.parametrize("status", [401, 403, 404])
 async def test_discover_config_raises_inaccessible_on_a_refused_repo(status: int) -> None:
     async with _client(lambda request: httpx.Response(status)) as client:
         with pytest.raises(hf_viewer.HFViewerInaccessible):
             await hf_viewer.discover_config(client, base_url=BASE, repo_id="o/r", token=None)
-
-
-async def test_discover_config_404_is_not_ready_even_anonymously() -> None:
-    # The viewer answers an anonymous read of a missing/private/gated repo with 401;
-    # a 404 (ResponseNotFound) can be a new public repo it has not indexed yet.
-    async with _client(lambda request: httpx.Response(404)) as client:
-        with pytest.raises(hf_viewer.HFViewerUnavailable) as exc:
-            await hf_viewer.discover_config(client, base_url=BASE, repo_id="o/r", token=None)
-    assert not isinstance(exc.value, hf_viewer.HFViewerInaccessible)
 
 
 async def test_discover_config_wraps_transport_errors() -> None:
