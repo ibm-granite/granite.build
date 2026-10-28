@@ -43,14 +43,21 @@ _SCRIPTS = (
 )
 
 
-def _ctx(bindings=None, compute=None, **over):
+# A real build's GPU request, merged into config.launcher_config by gbserver.
+_LAUNCHER_CONFIG = {"resources": {"accelerators": "A10G:1"}}
+
+
+def _ctx(bindings=None, compute=None, launcher_config=_LAUNCHER_CONFIG, **over):
     cfg = dict(_DEFAULTS, image_id="docker:quay.io/x/img:t", dataset_mixer_list=_MIX)
     cfg.update(over)
+    config = {
+        "openinstruct_sft_config": cfg,
+        "compute_config": compute or {"num_nodes": 1},
+    }
+    if launcher_config is not None:
+        config["launcher_config"] = launcher_config
     return {
-        "config": {
-            "openinstruct_sft_config": cfg,
-            "compute_config": compute or {"num_nodes": 1},
-        },
+        "config": config,
         "bindings": _BASE if bindings is None else bindings,
     }
 
@@ -176,6 +183,31 @@ class TestValidation:
         assert "num_nodes must be 1" in _render_error(
             "run", _ctx(compute={"num_nodes": 2})
         )
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
+        "launcher_config",
+        [
+            None,
+            {},
+            {"resources": None},
+            {"resources": {}},
+            {"resources": {"accelerators": ""}},
+        ],
+    )
+    def test_no_gpu_request_refused(self, block, launcher_config):
+        # Without a GPU request SkyPilot gives a CPU node: finetune.py fails only
+        # after provisioning and the image pull. Fail at step creation instead.
+        err = _render_error(block, _ctx(launcher_config=launcher_config))
+        assert "no GPU request" in err
+        assert "accelerators" in err
+
+    @pytest.mark.parametrize(
+        "resources",
+        [{"accelerators": "H200:1"}, {"instance_type": "g5.xlarge"}],
+    )
+    def test_gpu_request_accepted(self, resources):
+        _render("run", _ctx(launcher_config={"resources": resources}))
 
     def test_deepspeed_config_is_a_file_name(self):
         assert "deepspeed_config" in _render_error(

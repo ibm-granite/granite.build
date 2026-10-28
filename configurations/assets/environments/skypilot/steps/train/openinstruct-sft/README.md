@@ -130,9 +130,10 @@ config:
 ```
 
 The step uses all of them. It launches one process per GPU, taking the count from
-`$SKYPILOT_NUM_GPUS_PER_NODE` (falling back to `nvidia-smi -L`). A node with no GPUs
-fails before training. There is no `gpu_model` or `num_gpus_per_node` key.
-`compute_config.num_nodes` must be `1`.
+`$SKYPILOT_NUM_GPUS_PER_NODE` (falling back to `nvidia-smi -L`). A build with neither
+`accelerators` nor a GPU `instance_type` fails at step creation, before a node is
+provisioned; a node that still has no GPUs fails before training. There is no
+`gpu_model` or `num_gpus_per_node` key. `compute_config.num_nodes` must be `1`.
 
 ## ClearML tracking
 

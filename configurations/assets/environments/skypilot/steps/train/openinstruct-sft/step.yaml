@@ -84,7 +84,7 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            {%- macro validate(c, cc, bound) -%}
+            {%- macro validate(c, cc, bound, res) -%}
             {%- set owned = ["model_name_or_path", "output_dir", "dataset_name", "dataset_mixer", "dataset_mixer_list", "dataset_mixer_list_splits", "with_tracking", "report_to", "wandb_entity", "push_to_hub", "try_launch_beaker_eval_jobs", "try_auto_save_to_beaker", "do_not_randomize_output_dir", "resume_from_checkpoint", "dataset_local_cache_dir"] -%}
             {%- if c.dataset_mixer_list is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list must map an HF dataset id to a fraction or count, e.g. {allenai/tulu-3-sft-personas-algebra: 1.0}.") }}{% endif -%}
             {%- if c.dataset_mixer_list_splits is string or c.dataset_mixer_list_splits is not iterable or not c.dataset_mixer_list_splits %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list_splits must be a non-empty list of split names, e.g. [train].") }}{% endif -%}
@@ -93,6 +93,7 @@ environment_configs:
             {%- if not c.output %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.output is required; it names the target's model output.") }}{% endif -%}
             {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
             {%- if (cc.num_nodes | string) != "1" %}{{ raise_error("openinstruct-sft: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
+            {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("openinstruct-sft: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type). compute_config.num_gpus_per_node is not a SkyPilot GPU request.") }}{% endif -%}
             {%- if "/" in (c.deepspeed_config | string) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.deepspeed_config must be a file name under the image's configs/ds_configs/, got '" ~ c.deepspeed_config ~ "'.") }}{% endif -%}
             {%- if (c.clearml_enabled | string | lower) not in ["auto", "true", "false", "on", "off", "1", "0"] %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.clearml_enabled must be auto, true or false, got '" ~ c.clearml_enabled ~ "'.") }}{% endif -%}
             {%- if c.args is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args must be a mapping of finetune.py flag to value.") }}{% endif -%}
@@ -103,7 +104,7 @@ environment_configs:
             {%- endmacro %}
             {%- set c = config.openinstruct_sft_config %}
             {%- set b = bindings if bindings is defined else {} %}
-            {{- validate(c, config.compute_config, "dataset" in b) }}
+            {{- validate(c, config.compute_config, "dataset" in b, (config.get("launcher_config") or {}).get("resources") or {}) }}
             bash /opt/openinstruct-sft/openinstruct_sft_guard.sh \
               --base-model '{{ q(b.base_model.binding.path if "base_model" in b else "") }}' \
               --dataset '{{ q(b.dataset.binding.path if "dataset" in b else "") }}'
@@ -116,7 +117,7 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            {%- macro validate(c, cc, bound) -%}
+            {%- macro validate(c, cc, bound, res) -%}
             {%- set owned = ["model_name_or_path", "output_dir", "dataset_name", "dataset_mixer", "dataset_mixer_list", "dataset_mixer_list_splits", "with_tracking", "report_to", "wandb_entity", "push_to_hub", "try_launch_beaker_eval_jobs", "try_auto_save_to_beaker", "do_not_randomize_output_dir", "resume_from_checkpoint", "dataset_local_cache_dir"] -%}
             {%- if c.dataset_mixer_list is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list must map an HF dataset id to a fraction or count, e.g. {allenai/tulu-3-sft-personas-algebra: 1.0}.") }}{% endif -%}
             {%- if c.dataset_mixer_list_splits is string or c.dataset_mixer_list_splits is not iterable or not c.dataset_mixer_list_splits %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list_splits must be a non-empty list of split names, e.g. [train].") }}{% endif -%}
@@ -125,6 +126,7 @@ environment_configs:
             {%- if not c.output %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.output is required; it names the target's model output.") }}{% endif -%}
             {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
             {%- if (cc.num_nodes | string) != "1" %}{{ raise_error("openinstruct-sft: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
+            {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("openinstruct-sft: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type). compute_config.num_gpus_per_node is not a SkyPilot GPU request.") }}{% endif -%}
             {%- if "/" in (c.deepspeed_config | string) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.deepspeed_config must be a file name under the image's configs/ds_configs/, got '" ~ c.deepspeed_config ~ "'.") }}{% endif -%}
             {%- if (c.clearml_enabled | string | lower) not in ["auto", "true", "false", "on", "off", "1", "0"] %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.clearml_enabled must be auto, true or false, got '" ~ c.clearml_enabled ~ "'.") }}{% endif -%}
             {%- if c.args is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args must be a mapping of finetune.py flag to value.") }}{% endif -%}
@@ -135,7 +137,7 @@ environment_configs:
             {%- endmacro %}
             {%- set c = config.openinstruct_sft_config %}
             {%- set b = bindings if bindings is defined else {} %}
-            {{- validate(c, config.compute_config, "dataset" in b) }}
+            {{- validate(c, config.compute_config, "dataset" in b, (config.get("launcher_config") or {}).get("resources") or {}) }}
             {%- set ce = c.clearml_enabled | string | lower %}
             {%- set clearml_mode = "on" if ce in ["true", "on", "1"] else ("off" if ce in ["false", "off", "0"] else "auto") %}
             bash /opt/openinstruct-sft/openinstruct_sft_guard.sh \
