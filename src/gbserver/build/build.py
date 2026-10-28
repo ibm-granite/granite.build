@@ -139,13 +139,33 @@ def _relative_file_path(uri: Optional[str]) -> Optional[str]:
     return path
 
 
+def _build_dir_candidate(path: str, build_dir: Path) -> Optional[Path]:
+    """Return ``build_dir / path`` resolved, if it exists and stays inside ``build_dir``.
+
+    Args:
+        path: A relative path from a build.yaml URI.
+        build_dir: The build's working copy of the build.yaml's directory.
+
+    Returns:
+        The resolved path, or ``None`` when it doesn't exist or resolves outside
+        ``build_dir`` (e.g. through a symlink).
+    """
+    candidate = (build_dir / path).resolve()
+    if build_dir.resolve() not in (candidate, *candidate.parents):
+        return None
+    return candidate if candidate.exists() else None
+
+
 def _anchor_relative_file_uri(uri: Optional[str], build_dir: Path) -> Optional[str]:
     """Return ``uri`` resolved against ``build_dir`` when that's where it exists.
 
     A relative ``file:`` (or bare-path) URI is looked up from the current
     directory first, exactly as before, so every build that already resolves
     keeps its meaning.  Only when it doesn't exist there is it looked up in
-    ``build_dir`` (the build's copy of the build.yaml's directory).  ``..``
+    ``build_dir`` (the build's copy of the build.yaml's directory).  When it
+    exists in both, the current directory's wins and a warning is logged: on a
+    server the current directory is wherever gbserver started, so this explains
+    a build's shipped environment or step being ignored.  ``..``
     segments are rejected by the build config's own validation, and a candidate
     that resolves outside ``build_dir`` (e.g. through a symlink) is ignored.
 
@@ -170,12 +190,18 @@ def _anchor_relative_file_uri(uri: Optional[str], build_dir: Path) -> Optional[s
         return None
     if Path(path) == Path("."):
         return f"{FILE_SCHEME}://{build_dir.resolve()}"
+    candidate = _build_dir_candidate(path, build_dir)
     if Path(path).exists():
+        if candidate is not None and candidate != Path(path).resolve():
+            logger.warning(
+                "%s exists both in the current directory (%s) and next to the "
+                "build.yaml (%s); using the current directory's",
+                uri,
+                Path(path).resolve(),
+                candidate,
+            )
         return None
-    candidate = (build_dir / path).resolve()
-    if build_dir.resolve() not in (candidate, *candidate.parents):
-        return None
-    return f"{FILE_SCHEME}://{candidate}" if candidate.exists() else None
+    return f"{FILE_SCHEME}://{candidate}" if candidate is not None else None
 
 
 def _anchor_relative_file_uris(config: BuildConfig, build_dir: Path) -> None:

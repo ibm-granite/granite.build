@@ -23,6 +23,7 @@ pin that order, that a path found in neither place is left alone, and which URIs
 count as relative.
 """
 
+import logging
 import os
 from pathlib import Path
 from typing import Optional
@@ -136,6 +137,33 @@ class TestAnchorRelativeEnvUris:
         _anchor_relative_file_uris(config, build_dir)
 
         assert config.targets["t"].environment_uri == "file:myenv"
+
+    def test_warns_when_the_build_dir_copy_is_shadowed(self, tmp_path, in_dir, caplog):
+        """Both exist: say which one was used, so an ignored shipped env is visible."""
+        build_dir, cwd = tmp_path / "build", tmp_path / "cwd"
+        _write_env(build_dir / "myenv", "from-build-dir")
+        _write_env(cwd / "myenv", "from-cwd")
+        config = _config(build_dir, "file:myenv")
+        in_dir(cwd)
+
+        with caplog.at_level(logging.WARNING):
+            _anchor_relative_file_uris(config, build_dir)
+
+        assert "exists both in the current directory" in caplog.text
+        assert str((build_dir / "myenv").resolve()) in caplog.text
+
+    def test_no_warning_when_only_the_current_dir_has_it(
+        self, tmp_path, in_dir, caplog
+    ):
+        build_dir, cwd = tmp_path / "build", tmp_path / "cwd"
+        _write_env(cwd / "myenv", "from-cwd")
+        config = _config(build_dir, "file:myenv")
+        in_dir(cwd)
+
+        with caplog.at_level(logging.WARNING):
+            _anchor_relative_file_uris(config, build_dir)
+
+        assert "exists both" not in caplog.text
 
     def test_found_in_neither_is_unchanged(self, tmp_path, in_dir):
         """A missing path is left as written, so it fails the usual validation."""
