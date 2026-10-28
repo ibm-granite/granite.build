@@ -43,13 +43,16 @@ _SCRIPTS = (
 )
 
 
-# A real build's GPU request, merged into config.launcher_config by gbserver.
-_LAUNCHER_CONFIG = {"resources": {"accelerators": "A10G:1"}}
+# _ctx's default: a real build's GPU request, merged into config.launcher_config
+# by gbserver. Pass launcher_config=None for a build that sets none.
+_GPU_REQUEST = object()
 
 
-def _ctx(bindings=None, compute=None, launcher_config=_LAUNCHER_CONFIG, **over):
+def _ctx(bindings=None, compute=None, launcher_config=_GPU_REQUEST, **over):
     cfg = dict(_DEFAULTS, image_id="docker:quay.io/x/img:t", dataset_mixer_list=_MIX)
     cfg.update(over)
+    if launcher_config is _GPU_REQUEST:
+        launcher_config = {"resources": {"accelerators": "A10G:1"}}
     config = {
         "openinstruct_sft_config": cfg,
         "compute_config": compute or {"num_nodes": 1},
