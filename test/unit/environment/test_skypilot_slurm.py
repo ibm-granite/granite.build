@@ -540,6 +540,8 @@ class TestSkypilotRetry:
                 run_metadata={"build_id": "b-1"},
                 retry_enabled=True,
                 retry_transparently=False,
+                space={"name": "public"},
+                gb_environment="STAGING",
             )
 
         stashed = slurm_env._launch_kwargs["retry-1"]
@@ -548,6 +550,9 @@ class TestSkypilotRetry:
         assert stashed["run_metadata"] == {"build_id": "b-1"}
         assert stashed["retry_enabled"] is True
         assert stashed["retry_transparently"] is False
+        # A relaunch keeps the comment's gb_env and space.
+        assert stashed["space"] == {"name": "public"}
+        assert stashed["gb_environment"] == "STAGING"
 
     def test_get_default_retry_strategies_returns_any_failure(self, slurm_env):
         """Skypilot ships AnyFailureRetryStrategy as the sole default."""

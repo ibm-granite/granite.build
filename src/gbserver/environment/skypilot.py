@@ -3397,6 +3397,9 @@ class Skypilot(Environment):
                 "retry_enabled": kwargs.get("retry_enabled"),
                 "retry_transparently": kwargs.get("retry_transparently"),
                 "bindings": kwargs.get("bindings"),
+                # Read by tracking_metadata() for the comment and labels.
+                "space": kwargs.get("space"),
+                "gb_environment": kwargs.get("gb_environment"),
             }
 
             # Build sky.Resources — merge order is precedence (last wins). The
