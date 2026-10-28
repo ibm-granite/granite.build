@@ -66,6 +66,8 @@ EXPECTED = {
     # NeMo-RL training: new, so base_model is required outright; dataset is optional
     # (omit it to use the NeMo-RL config's built-in dataset).
     f"{_SKY}/train/nemo-rl": ({"base_model"}, {"dataset"}),
+    # Evaluation: not in any tag yet either, so the model input is required outright.
+    f"{_SKY}/eval/unitxt": ({"model"}, set()),
     # Shipped in v0.3.x: optional during the deprecation window, with the old config
     # key as a fallback.
     f"{_LSF}/sage-eval": (set(), {"model"}),
