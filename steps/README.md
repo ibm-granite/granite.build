@@ -375,6 +375,10 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   secrets from SPS, exactly as for the repo suites (needs `make ibm-venv`), and the same
   env-restore and mock fixtures apply. Unlike the repo suites, `ibm`-marked step tests
   are not required to have IBM credentials: a test that needs one checks for it itself.
+  Their published copies under `test/steps/` are: they run under `test/conftest.py`'s
+  own check, which needs `IBM_CLOUD_API_KEY` and a GitHub token for `ibm` tests.
+  `make ibm-extended-tests`, the suite that selects them, gets both from
+  `GBTEST_SPS_IBMCLOUD_API_KEY`.
   `make test` also defaults `GB_ENVIRONMENT=STANDALONE` (unset, gbserver defaults to
   PROD and the build-test base refuses to run) and `GBTEST_STANDALONE_ENVIRONMENT=STAGING`
   (sends an `hf://` push to the staging resource group), each only if you haven't set

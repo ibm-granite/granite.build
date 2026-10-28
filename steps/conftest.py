@@ -133,6 +133,11 @@ def _check_test_env() -> Iterator[None]:
     manager) should call ``libgbtest.utils.check_cloud_config()`` itself, so it
     fails up front with a clear message. As the fixture closest to ``steps/``,
     this one is used instead of the plugin's.
+
+    It does not cover the published copies under ``test/steps/``: those run
+    under ``test/conftest.py``'s own check, so an ``ibm`` one needs
+    ``IBM_CLOUD_API_KEY`` and a GitHub token. ``make ibm-extended-tests``, the
+    suite that selects them, gets both from ``GBTEST_SPS_IBMCLOUD_API_KEY``.
     """
     from gbserver.types.constants import GB_ENVIRONMENT
 
