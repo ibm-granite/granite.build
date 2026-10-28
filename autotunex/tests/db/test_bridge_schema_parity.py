@@ -10,11 +10,19 @@ tests passing against its own ``metadata.create_all`` proved nothing about that.
 
 The module is loaded by file path: the bridge is a separate distribution that is not
 installed for this suite, and its ``tables.py`` imports nothing but SQLAlchemy.
+
+Each default is checked against both the ORM and the schema ``alembic upgrade head``
+builds, because a ``server_default`` added to the ORM without a migration passes the
+ORM comparison, and ``alembic check`` does not compare server defaults
+(``alembic/env.py`` sets ``compare_type`` only).
 """
 
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -86,6 +94,50 @@ def test_the_orm_and_bridge_server_defaults_agree(table: str, column: str) -> No
 
     assert _sqlite_default(Base.metadata, table, column) == _sqlite_default(
         bridge_table.metadata, table, column
+    )
+
+
+@pytest.fixture(scope="module")
+def migrated_database(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A SQLite database at ``alembic upgrade head``, built once for this module.
+
+    A subprocess, as in ``test_migrations._alembic``: ``alembic/env.py`` runs its own
+    event loop, and the developer's ``.env`` must not reach ``Settings``.
+    """
+    database = tmp_path_factory.mktemp("bridge_parity") / "head.db"
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        env={
+            **os.environ,
+            "AUTOTUNEX_DATABASE_URL": f"sqlite+aiosqlite:///{database}",
+            "AUTOTUNEX_JOB_BACKEND": "none",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, f"alembic upgrade head failed:\n{result.stderr}"
+    return database
+
+
+def _migrated_default(database: Path, table: str, column: str) -> str | None:
+    columns = inspect(create_engine(f"sqlite:///{database}")).get_columns(table)
+    rendered = {c["name"]: c["default"] for c in columns}[column]
+    return None if rendered is None else str(rendered).strip("'")
+
+
+@pytest.mark.parametrize(("table", "column"), _bridge_defaulted_columns())
+def test_the_migrated_schema_has_the_bridge_server_default(
+    migrated_database: Path, table: str, column: str
+) -> None:
+    bridge_table = _bridge_metadata().tables[table]
+    assert isinstance(bridge_table, Table)
+
+    assert _migrated_default(migrated_database, table, column) == _sqlite_default(
+        bridge_table.metadata, table, column
+    ), (
+        f"{table}.{column}: the bridge's server default is missing from, or differs "
+        "in, the schema Alembic builds. Add or fix a migration."
     )
 
 
