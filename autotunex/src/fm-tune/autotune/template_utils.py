@@ -82,25 +82,33 @@ def lakehouse_path_to_uri(path: str, strip_last_n: int = 1) -> tuple[str, str]:
 
 # A model snapshot gbserver pulled from HF: <cache_dir>/{owner}/{repo}/{revision}, with
 # cache_dir ~/.cache/gbserver/hf on bash and <shared_workdir>/hf_cache by default on SkyPilot.
-_GBSERVER_HF_MODEL_RE = re.compile(r"^.*/(?:\.cache/gbserver/hf|hf_cache)/([^/]+)/([^/]+)/([^/]+)$")
+_GBSERVER_HF_MODEL_RE = re.compile(r"^.*/(?:\.cache/gbserver/hf|hf_cache)/([^/]+)/([^/]+)/[^/]+$")
 
 
 def model_display_name(model_name_or_path: str) -> str:
     """Return ``owner/repo`` for a gbserver HF model cache path, else the input unchanged.
 
     The step binds ``base_model`` as its local snapshot dir, so ``--model_name_or_path``
-    is a path; this keeps the path out of the AutoTuneX job's ``model`` field. A
-    revision other than ``main`` is kept as ``owner/repo@revision``, so the job does
-    not read as the model at ``main``. A path is only taken for a snapshot when the
+    is a path; this keeps the path out of the AutoTuneX job's ``model`` field. The
+    revision is dropped: ``owner/repo@revision`` is not a valid HF repo id, and a job
+    has no separate revision field yet. A path is only taken for a snapshot when the
     dir holds the ``.cache/huggingface`` folder an HF download writes, so a local
     checkpoint that happens to sit under an ``hf_cache`` dir stays a path.
     """
     path = model_name_or_path.strip().rstrip("/")
     match = _GBSERVER_HF_MODEL_RE.match(path)
-    if not match or not os.path.isdir(os.path.join(path, ".cache", "huggingface")):
+    if not match or not _is_hf_download(path):
         return model_name_or_path
-    owner, repo, revision = match.groups()
-    return f"{owner}/{repo}" if revision == "main" else f"{owner}/{repo}@{revision}"
+    return f"{match.group(1)}/{match.group(2)}"
+
+
+def _is_hf_download(snapshot_dir: str) -> bool:
+    """Whether ``snapshot_dir`` holds the ``.cache/huggingface`` folder an HF download writes.
+
+    ``snapshot_download``/``hf download`` with ``--local-dir`` (what gbserver's pull uses)
+    always create it, so it tells a real snapshot apart from a lookalike path.
+    """
+    return os.path.isdir(os.path.join(snapshot_dir, ".cache", "huggingface"))
 
 
 # Mirrors AutoTuneX's datasets_io._EXTENSION_TO_FORMAT, so a bridge-registered

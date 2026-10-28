@@ -115,8 +115,9 @@ def _snapshot(root, rel):
         ),
         # SkyPilot/Slurm: the default <shared_workdir>/hf_cache
         ("shared/hf_cache/ibm-granite/granite-4.0-h-350m/main", "ibm-granite/granite-4.0-h-350m"),
-        # a pinned revision is kept, so the job does not read as the model at main
-        ("shared/hf_cache/ibm-granite/granite-4.0-h-350m/v2", "ibm-granite/granite-4.0-h-350m@v2"),
+        # a pinned revision is dropped: owner/repo@rev is no valid HF id, and a job has
+        # no revision field to carry it
+        ("shared/hf_cache/ibm-granite/granite-4.0-h-350m/v2", "ibm-granite/granite-4.0-h-350m"),
     ],
 )
 def test_model_display_name_of_a_snapshot(tmp_path, rel, name):
