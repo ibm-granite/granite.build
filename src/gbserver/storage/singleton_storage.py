@@ -86,6 +86,8 @@ def set_storage_factory(factory: StorageFactory):
     """
     global __STORAGE_FACTORY
     __STORAGE_FACTORY = factory
+    # After the swap, so a concurrent rebuild can't re-cache the old factory's storage.
+    reset_admin_storage()
 
 
 def get_storage_factory() -> StorageFactory:
