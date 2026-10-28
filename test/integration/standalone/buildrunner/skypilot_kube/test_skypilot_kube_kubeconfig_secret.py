@@ -25,8 +25,9 @@ Reuses the local kind cluster rather than a second one:
   ``kube_configs:``, which gbserver merges into its own kubeconfig and adds
   to ``KUBECONFIG``.
 
-The developer's ``~/.kube/config`` is never modified, and the entries merged
-into gbserver's kubeconfig are released at teardown. Requires the kind cluster
+The developer's ``~/.kube/config`` is never modified. gbserver releases the
+merged entries when the env's last target is torn down; the fixture releases
+them again in case the build failed before that. Requires the kind cluster
 (``make kube-setup``); auto-skips otherwise.
 """
 

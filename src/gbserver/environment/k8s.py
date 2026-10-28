@@ -107,6 +107,31 @@ CHART_KEY = "chart"
 HELM_RELEASE_NAME_PREFIX = "gb"
 
 
+def _kubeconfig_without_skypilot_managed() -> Optional[str]:
+    """``KUBECONFIG`` minus gbserver's SkyPilot-managed kubeconfig.
+
+    The Skypilot environment adds ``~/.sky/gbserver-kubeconfig`` (credentials
+    from other environments' ``kube_configs`` secrets) to this process's
+    ``KUBECONFIG``. The native K8s environment must not authenticate with them,
+    so it loads the user's own files only.
+
+    :returns: The filtered ``KUBECONFIG`` value, or ``None`` to use the client's
+        default (``~/.kube/config``) when nothing else remains.
+    """
+    raw = os.environ.get("KUBECONFIG")
+    if not raw:
+        return None
+    from gbserver.environment.skypilot_config import kubeconfig_path
+
+    managed = os.path.abspath(str(kubeconfig_path()))
+    parts = [
+        p
+        for p in raw.split(os.pathsep)
+        if p and os.path.abspath(os.path.expanduser(p)) != managed
+    ]
+    return os.pathsep.join(parts) or None
+
+
 class AtomicApiClient:
     """A client to interact with the K8s API server"""
 
@@ -140,14 +165,20 @@ class AtomicApiClient:
                         logger.info("loaded the default context from kube_config_dict")
                 else:
                     logger.info("no kube_config_string was provided")
+                    # Never read gbserver's SkyPilot kube_configs file: it holds
+                    # other environments' secret credentials and is on this
+                    # process's KUBECONFIG only for SkyPilot.
+                    user_config = _kubeconfig_without_skypilot_managed()
                     if kube_context:
-                        await config.load_kube_config(context=kube_context)
+                        await config.load_kube_config(
+                            config_file=user_config, context=kube_context
+                        )
                         logger.info(
                             "loaded the context %s from the default K8s config location",
                             kube_context,
                         )
                     else:
-                        await config.load_kube_config()
+                        await config.load_kube_config(config_file=user_config)
                         logger.info(
                             "loaded the default context from the default K8s config location"
                         )

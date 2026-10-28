@@ -2189,7 +2189,10 @@ class Skypilot(Environment):
         # instance; the merge itself is also idempotent, so retries are free.
         self._inline_configs_done: bool = False
         # Same guard for kube_configs, which other request paths also call.
-        self._kube_configs_done: bool = False
+        # Fingerprint of the kube_configs inputs last applied (None: never).
+        self._kube_configs_applied: Optional[str] = None
+        # setup_ids set up and not yet torn down (see setup_skypilot).
+        self._kube_active_setups: Set[str] = set()
         self._kube_configs_warned: bool = False
         # launch_id -> highest 1-based log line number already parsed, so a
         # periodic/startup pull resumes after the lines it last emitted events
@@ -2256,14 +2259,23 @@ class Skypilot(Environment):
         self._inline_configs_done = True
 
     def _ensure_kube_configs(self: Self, strict: bool = True) -> None:
-        """Make this env's ``kube_configs`` contexts reachable (once per instance).
+        """Make this env's ``kube_configs`` contexts reachable, and check its pins.
 
         Merges them into gbserver's kubeconfig and puts it on ``KUBECONFIG``
         (:mod:`gbserver.environment.skypilot_config`). Called before *every*
         request that can reach the cluster — setup and launch, but also polling,
         teardown, cleanup and ``sky.down`` — so a path that touches an existing
         cluster without a setup first (a retried teardown, say) still has its
-        credentials. Idempotent; the merge itself is a no-op when unchanged.
+        credentials. Re-merges whenever the entries or their secrets change (a
+        rotated token), and is a no-op otherwise.
+
+        Also refuses an ``allowed_contexts`` pin on a context gbserver manages
+        for *another* environment: those credentials are on the process's
+        ``KUBECONFIG``, so without this check any environment could use them by
+        naming the context.
+
+        Blocking (file I/O and a cross-process lock): async callers use
+        :meth:`_ensure_kube_configs_async`.
 
         :param strict: Raise on a bad ``kube_configs`` (setup and launch). The
             teardown, cleanup and polling paths pass False: setup has already
@@ -2273,20 +2285,37 @@ class Skypilot(Environment):
         :raises ValueError: If ``strict`` and ``kube_configs`` is malformed or
             unpinned (see :meth:`_kube_config_entries`).
         :raises SkypilotConfigCollisionError: If ``strict``, on a context owned
-            elsewhere.
+            elsewhere, or a pin on another environment's managed context.
         """
-        if self._kube_configs_done:
-            return
         try:
             kube_entries = self._kube_config_entries()
-            if kube_entries:
-                from gbserver.environment.skypilot_config import (
-                    activate_kubeconfig,
-                    merge_kube_configs,
-                )
+            fingerprint = self._kube_configs_fingerprint(kube_entries)
+            if fingerprint == self._kube_configs_applied:
+                return
+            from gbserver.environment.skypilot_config import (
+                activate_kubeconfig,
+                managed_kube_contexts,
+                merge_kube_configs,
+            )
 
-                merge_kube_configs(kube_entries, self.secrets or {}, self._kube_owner())
+            owner = self._kube_owner()
+            if kube_entries:
+                merge_kube_configs(kube_entries, self.secrets or {}, owner)
                 activate_kubeconfig()
+            allowed = _kube_allowed_contexts(self._cloud_config() or {})
+            foreign = sorted(
+                name
+                for name, owners in managed_kube_contexts().items()
+                if name in allowed and owner not in owners
+            )
+            if foreign:
+                raise SkypilotConfigCollisionError(
+                    f"environment '{self._env_name()}' pins kube context(s) "
+                    f"{foreign} in allowed_contexts, which gbserver manages for "
+                    "another environment's kube_configs. List the context under "
+                    "this environment's own kube_configs (with its own secret), "
+                    "or pin a different context."
+                )
         except (ValueError, SkypilotConfigCollisionError, OSError) as e:
             if strict:
                 raise
@@ -2299,7 +2328,70 @@ class Skypilot(Environment):
                 )
                 self._kube_configs_warned = True
             return
-        self._kube_configs_done = True
+        self._kube_configs_applied = fingerprint
+        self._kube_configs_warned = False
+
+    async def _release_kube_configs_if_idle(self: Self, setup_id: str) -> None:
+        """Release this env's ``kube_configs`` contexts after its last teardown.
+
+        Drops this environment as an owner in gbserver's kubeconfig
+        (:func:`~gbserver.environment.skypilot_config.release_kube_configs`); a
+        context is removed only when no other environment still owns it, so
+        environments sharing one keep it while any of them builds. A later
+        setup merges the contexts again. Never raises: a failure only leaves
+        the entries for the next merge or release.
+
+        :param setup_id: The setup being torn down.
+        """
+        self._kube_active_setups.discard(setup_id)
+        if self._kube_active_setups or self._kube_configs_applied is None:
+            return
+        if not self._kube_config_entries_or_empty():
+            return
+        from gbserver.environment.skypilot_config import release_kube_configs
+
+        try:
+            await asyncio.to_thread(release_kube_configs, self._kube_owner())
+        except (ValueError, OSError) as e:
+            logger.warning(
+                "environment '%s': kube_configs not released: %s", self._env_name(), e
+            )
+            return
+        # The next request must merge again.
+        self._kube_configs_applied = None
+
+    def _kube_config_entries_or_empty(self: Self) -> List[Any]:
+        try:
+            return self._kube_config_entries()
+        except ValueError:
+            return []
+
+    async def _ensure_kube_configs_async(self: Self, strict: bool = True) -> None:
+        """:meth:`_ensure_kube_configs` off the event loop.
+
+        Its file lock (bounded wait) and file I/O must not stall every other
+        build sharing this loop, nor keep ``asyncio.wait_for`` timeouts from
+        firing.
+        """
+        await asyncio.to_thread(self._ensure_kube_configs, strict)
+
+    def _kube_configs_fingerprint(self: Self, entries: List[Any]) -> str:
+        """Hash of this env's ``kube_configs`` inputs: entries and secret values.
+
+        A change (a rotated secret, an edited entry) yields a new fingerprint, so
+        :meth:`_ensure_kube_configs` re-merges; the hash keeps secret values out
+        of what is stored on the instance.
+        """
+        import hashlib
+
+        secrets = self.secrets or {}
+        material = json.dumps(
+            [[e.context, e.kubeconfig, secrets.get(e.kubeconfig)] for e in entries]
+            + [sorted(_kube_allowed_contexts(self._cloud_config() or {}))],
+            sort_keys=True,
+            default=str,
+        )
+        return hashlib.sha256(material.encode()).hexdigest()
 
     def _kube_config_entries(self: Self) -> List[Any]:
         """This environment's ``kube_configs`` entries, validated.
@@ -2339,12 +2431,11 @@ class Skypilot(Environment):
 
         The environment name alone is not unique across spaces, and two spaces'
         same-named environments must not replace each other's credentials. The
-        space is the one the build runs in (``URI.get_space_config``); ``-``
-        when unknown (e.g. unit tests).
+        space is the one this instance was created for (``space_name``, set by
+        the build's Target), not thread-local state, so it is stable for the
+        instance's life; ``-`` when unknown (e.g. unit tests).
         """
-        from gbcommon.uri.uri import URI
-
-        space = (URI.get_space_config().get("space") or {}).get("name") or "-"
+        space = self.space_name or "-"
         return f"{space}/{self._env_name()}"
 
     def _env_name(self: Self) -> str:
@@ -2711,6 +2802,9 @@ class Skypilot(Environment):
         # Materialize inline config as early as possible (before the
         # shared_workdir early-return below).
         self._ensure_inline_configs_materialized()
+        # Counted so teardown releases this env's kube_configs contexts only
+        # once its last setup is gone (see _release_kube_configs_if_idle).
+        self._kube_active_setups.add(setup_id)
         shared_workdir = resolve_shared_workdir(self.config)
         if not shared_workdir:
             return {}
@@ -2830,36 +2924,39 @@ class Skypilot(Environment):
         :param setup_id: Setup identifier originally returned to
             ``Environment.setup``; used to look up the stashed path.
         """
-        self._ensure_kube_configs(strict=False)
-        workdir = self._setup_workdirs.pop(setup_id, None)
-        run_meta = self._setup_run_meta.pop(setup_id, {})
-        provisioned = self._setup_provisioned.pop(setup_id, [])
-        if not workdir and not provisioned:
-            return
-        providers = self._shared_fs_providers()
-        workdir_mount = self._workdir_mount()
-        provider = next(
-            (
-                p
-                for p in providers
-                if workdir_mount is not None
-                and p.mount_point == workdir_mount.mount_point
-            ),
-            None,
-        )
-        workdir_is_ephemeral = bool(
-            workdir_mount is not None
-            and workdir_mount.efs is not None
-            and workdir_mount.efs.provision == "ephemeral"
-        )
-        # For a BYO workdir mount, reap the per-run tree via the throwaway VM. For
-        # an ephemeral workdir mount, skip it -- the deprovision below deletes the
-        # whole filesystem anyway.
-        if workdir and not workdir_is_ephemeral:
-            await self._reap_per_run_workdir(workdir, provider, run_meta, setup_id)
-        # Deprovision every ephemeral mount created in setup (regardless of which
-        # mount hosts the workdir).
-        await self._deprovision_ephemeral(provisioned, run_meta, setup_id)
+        await self._ensure_kube_configs_async(strict=False)
+        try:
+            workdir = self._setup_workdirs.pop(setup_id, None)
+            run_meta = self._setup_run_meta.pop(setup_id, {})
+            provisioned = self._setup_provisioned.pop(setup_id, [])
+            if not workdir and not provisioned:
+                return
+            providers = self._shared_fs_providers()
+            workdir_mount = self._workdir_mount()
+            provider = next(
+                (
+                    p
+                    for p in providers
+                    if workdir_mount is not None
+                    and p.mount_point == workdir_mount.mount_point
+                ),
+                None,
+            )
+            workdir_is_ephemeral = bool(
+                workdir_mount is not None
+                and workdir_mount.efs is not None
+                and workdir_mount.efs.provision == "ephemeral"
+            )
+            # For a BYO workdir mount, reap the per-run tree via the throwaway VM. For
+            # an ephemeral workdir mount, skip it -- the deprovision below deletes the
+            # whole filesystem anyway.
+            if workdir and not workdir_is_ephemeral:
+                await self._reap_per_run_workdir(workdir, provider, run_meta, setup_id)
+            # Deprovision every ephemeral mount created in setup (regardless of which
+            # mount hosts the workdir).
+            await self._deprovision_ephemeral(provisioned, run_meta, setup_id)
+        finally:
+            await self._release_kube_configs_if_idle(setup_id)
 
     async def _reap_per_run_workdir(
         self: Self, workdir: str, provider, run_meta: Dict, setup_id: str
@@ -4261,7 +4358,7 @@ class Skypilot(Environment):
         Returns on terminal SUCCESS, on ``stop_event`` (retry), or (when
         deferring) after the terminal FAILED handoff.
         """
-        self._ensure_kube_configs(strict=False)
+        await self._ensure_kube_configs_async(strict=False)
         event_log_parser_configs = []
         if event_configs is not None:
             event_log_parser_configs = [
@@ -4825,7 +4922,7 @@ class Skypilot(Environment):
         Args:
             cluster_name: The SkyPilot cluster name to remove.
         """
-        self._ensure_kube_configs(strict=False)
+        await self._ensure_kube_configs_async(strict=False)
         try:
             request_id = await asyncio.to_thread(sky.down, cluster_name, purge=True)
             await asyncio.to_thread(sky.get, request_id)
@@ -4847,7 +4944,7 @@ class Skypilot(Environment):
         **kwargs,
     ) -> None:
         """Tear down a SkyPilot cluster."""
-        self._ensure_kube_configs(strict=False)
+        await self._ensure_kube_configs_async(strict=False)
         if launch_id is None:
             logger.warning("cleanup_skypilot called with no launch_id")
             return
@@ -4895,7 +4992,7 @@ class Skypilot(Environment):
         launch_id. SERVICE clusters on LSF never autostop and never get a
         terminal-status cleanup, so this is how they get reclaimed.
         """
-        self._ensure_kube_configs(strict=False)
+        await self._ensure_kube_configs_async(strict=False)
         config = kwargs.get("config") or {}
         names = (config.get("teardown_config") or {}).get("cluster_names") or []
         names = [n.strip() for n in names if isinstance(n, str) and n.strip()]

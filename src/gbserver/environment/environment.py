@@ -290,9 +290,12 @@ class Environment(ABC):
         context: Optional[str] = None,
         secrets: Optional[dict] = None,
         environment_asset: Optional[Asset] = None,
+        space_name: Optional[str] = None,
         **kwargs,
     ) -> None:
         self.type = self.__class__.__name__
+        # The space the build runs in, when known (see get_environment).
+        self.space_name = space_name
         self.event_q = event_q
         self.config = environment_config
         self.context = context
@@ -883,14 +886,22 @@ class Environment(ABC):
         context: Optional[str] = None,
         secrets: Optional[dict] = None,
         force_fetch: bool = False,
+        space_name: Optional[str] = None,
     ) -> Self:
-        """Resolve environment uri to environment"""
+        """Resolve environment uri to environment.
+
+        ``space_name`` is the space the build runs in; it is stored on the
+        instance (credentials an environment supplies are recorded per space)
+        and keys the per-thread cache, so two spaces' same-URI environments
+        never share an instance.
+        """
         if not hasattr(cls._thread_local, "environments"):
             cls._thread_local.environments = {}
         if not hasattr(cls._thread_local, "asset_events"):
             cls._thread_local.asset_events = {}  # URI to event map
-        if environment_uri in cls._thread_local.environments:
-            return cls._thread_local.environments[environment_uri]
+        cache_key = (space_name, environment_uri)
+        if cache_key in cls._thread_local.environments:
+            return cls._thread_local.environments[cache_key]
         environment_config, environment_asset = cls.load_environment_config(
             environment_uri, context=context, force_fetch=force_fetch
         )
@@ -911,8 +922,9 @@ class Environment(ABC):
             context=context,
             secrets=secrets,
             environment_asset=environment_asset,
+            space_name=space_name,
         )
-        cls._thread_local.environments[environment_uri] = env
+        cls._thread_local.environments[cache_key] = env
         return env
 
     def __cancel_monitoring(self, launch_id: str):

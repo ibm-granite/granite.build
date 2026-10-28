@@ -112,7 +112,7 @@ class TestMerge:
         sc.merge_kube_configs(
             [_entry()], {"remote-kc": _kubeconfig("remote")}, "envA", home=tmp_path
         )
-        with pytest.raises(SkypilotConfigCollisionError, match="environment 'envA'"):
+        with pytest.raises(SkypilotConfigCollisionError, match="'envA'"):
             sc.merge_kube_configs(
                 [_entry()],
                 {"remote-kc": _kubeconfig("remote", token="other")},
@@ -265,23 +265,44 @@ class TestMerge:
                 home=tmp_path,
             )
 
-    def test_identical_shared_context_keeps_first_owner(self, tmp_path):
-        """envB using envA's exact context does not take it over."""
+    def test_identical_shared_context_is_co_owned(self, tmp_path):
+        """envB using envA's exact context becomes a co-owner (review note 7)."""
         secrets = {"remote-kc": _kubeconfig("remote")}
         sc.merge_kube_configs([_entry()], secrets, "envA", home=tmp_path)
         sc.merge_kube_configs([_entry()], secrets, "envB", home=tmp_path)
-        assert _managed(tmp_path)["x-gbserver-owners"] == {"remote": "envA"}
-        # envA can still rotate its own token...
+        assert _managed(tmp_path)["x-gbserver-owners"] == {"remote": ["envA", "envB"]}
+        # A co-owned context cannot be changed by either: it would change the
+        # credentials the other one uses.
+        with pytest.raises(SkypilotConfigCollisionError, match="'envB'"):
+            sc.merge_kube_configs(
+                [_entry()],
+                {"remote-kc": _kubeconfig("remote", token="t2")},
+                "envA",
+                home=tmp_path,
+            )
+        # Releasing one keeps the context for the other...
+        assert sc.release_kube_configs("envA", home=tmp_path)
+        assert [c["name"] for c in _managed(tmp_path)["contexts"]] == ["remote"]
+        assert _managed(tmp_path)["x-gbserver-owners"] == {"remote": ["envB"]}
+        # ...which, now sole owner, can rotate it; releasing it removes it.
         sc.merge_kube_configs(
             [_entry()],
             {"remote-kc": _kubeconfig("remote", token="t2")},
-            "envA",
+            "envB",
             home=tmp_path,
         )
         assert _managed(tmp_path)["users"][0]["user"]["token"] == "t2"
-        # ...and releasing envB removes nothing of envA's.
-        assert not sc.release_kube_configs("envB", home=tmp_path)
-        assert [c["name"] for c in _managed(tmp_path)["contexts"]] == ["remote"]
+        assert sc.release_kube_configs("envB", home=tmp_path)
+        assert _managed(tmp_path)["contexts"] == []
+
+    def test_legacy_single_owner_string_is_read_as_a_set(self, tmp_path):
+        sc.merge_kube_configs(
+            [_entry()], {"remote-kc": _kubeconfig("remote")}, "envA", home=tmp_path
+        )
+        raw = _raw_managed(tmp_path)
+        raw["x-gbserver-owners"] = {"remote": "envA"}
+        sc.kubeconfig_path(tmp_path).write_text(yaml.safe_dump(raw))
+        assert sc.managed_kube_contexts(home=tmp_path) == {"remote": {"envA"}}
 
     def test_yaml_error_does_not_chain_the_secret_text(self, tmp_path):
         """PyYAML's error echoes the offending line; it must not ride along."""
@@ -715,7 +736,11 @@ class TestEnvironmentWiring:
             "cancel", "stop", "exec", "get", "stream_and_get", "download_logs",
             "api_cancel",
         }  # fmt: skip
-        ensure_calls = {"_ensure_kube_configs", "_ensure_inline_configs_materialized"}
+        ensure_calls = {
+            "_ensure_kube_configs",
+            "_ensure_kube_configs_async",
+            "_ensure_inline_configs_materialized",
+        }
 
         def calls(node):
             for n in ast.walk(node):

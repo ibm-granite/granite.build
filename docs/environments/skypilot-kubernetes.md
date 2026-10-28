@@ -80,23 +80,37 @@ ways to supply them:
     `current-context`, so the environment's next setup is refused (`SkypilotConfigCollisionError`),
     because every tool would default to its credentials. Keep your `current-context` on one of your own
     contexts.
-  - **Nothing is removed while gbserver runs**, so every environment's builds can still poll and tear down.
+  - **Static credentials only.** The secret's `user` may hold only `token`, `client-certificate-data`,
+    `client-key-data`, or `username`/`password`; its `cluster` only `server`, `certificate-authority-data`
+    and TLS options. `exec` and `auth-provider` plugins are refused: they would make every use of the
+    context run a command on the gbserver host, so anyone able to write a space secret could run code
+    there. File paths (`client-key`, `client-certificate`, `tokenFile`, `certificate-authority`) are refused
+    too: they would resolve on the gbserver host. Embed credentials as `*-data` fields or a token.
+  - **Contexts are released when unused.** Each context records the environments using it. When an
+    environment's last target finishes, it drops out, and a context nobody else uses is removed from
+    `~/.sky/gbserver-kubeconfig`; the next setup merges it again. A context shared by two environments
+    (identical definitions) stays while either uses it, and neither can change it while both do.
+  - **Another environment's context can't be borrowed.** An environment whose `allowed_contexts` names a
+    context gbserver manages for a different environment is refused at setup, even though the credentials
+    are on the process's `KUBECONFIG`. To use the same cluster, list it under its own `kube_configs` with
+    its own secret. The native Kubernetes environment (`K8s`) never reads gbserver's kubeconfig at all.
 
   Limits:
-  - **Contexts are shared by the whole gbserver process.** Once an environment's context is merged, any
-    other environment in the same gbserver whose `allowed_contexts` names it (or allows all contexts) can
-    launch on that cluster with those credentials. Ownership stops another environment from *replacing* an
-    entry, not from *using* it. Run environments that must not share clusters in separate gbserver hosts.
+  - **The credentials are on the process's `KUBECONFIG`.** The `allowed_contexts` check stops another
+    environment from *configuring* a managed context, but code in the same process that reads `KUBECONFIG`
+    directly (an environment with `allowed_contexts: all`, or a `kubectl` call by a step running on the
+    gbserver host) can still see it. Run environments that must not share a host's credentials in separate
+    gbserver processes; per-environment kubeconfig isolation is a follow-up.
   - **Names:** SkyPilot ignores contexts whose names start with `ssh-`, and the placeholder name
-    `gbserver-no-default-context` is reserved. A relative certificate path inside a secret resolves against
-    `~/.sky`, where the merged file lives; prefer embedded `*-data` fields.
+    `gbserver-no-default-context` is reserved.
   - **Local API server only.** The SkyPilot client forwards `KUBECONFIG` to a local API server with each
     request; a remote one uses its own kubeconfig. The API server's own background jobs (e.g. its periodic
     status refresh) use the environment the server was *started* with, so they don't see these contexts;
     gbserver's own requests do.
   - **`remote_identity: LOCAL_CREDENTIALS`** uploads the whole merged kubeconfig to the pods, gbserver's
     entries and your own. The Kubernetes default, `SERVICE_ACCOUNT`, uploads none.
-  - **Exec-based auth plugins** (e.g. `aws eks get-token`) need their binary installed on the gbserver host.
+  - **No exec-based auth** (e.g. `aws eks get-token`): use a static token or client certificate instead
+    (see "Static credentials only").
 
 ### No `cluster_ssh_configs` or `aws_credentials`
 

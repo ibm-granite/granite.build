@@ -122,6 +122,7 @@ class Target(BuildEntity):
             context=self.context,
             secrets=self.secrets,
             force_fetch=self.force_fetch,
+            space_name=getattr(getattr(self.space, "space_config", None), "name", None),
         )
         assert self.dir is not None, "Target.dir is None"
         self.targetsteps = [
