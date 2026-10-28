@@ -25,8 +25,9 @@ config:
     # itself (model, output dir, data, tracking, hub push, beaker) are refused.
     args: {}
     # The step's image, filled in by `make space` / `make publish-step`. Override it
-    # with another image or, on SLURM, a prebuilt .sqsh path; `docker:` is added
-    # when missing (SkyPilot's SLURM provisioner hands a .sqsh to Pyxis as is).
+    # with another image or, on SLURM, optionally a .sqsh path (SLURM environments
+    # with slurm_image_cache cache the registry image automatically); `docker:` is
+    # added when missing (SkyPilot's SLURM provisioner hands a .sqsh to Pyxis as is).
     image_id: "docker:${IMAGE_REF}"
     # ClearML tracking: auto (on iff CLEARML_API_HOST, CLEARML_API_ACCESS_KEY and
     # CLEARML_API_SECRET_KEY are all set in the step env), true, or false.
@@ -96,7 +97,7 @@ environment_configs:
             {%- if (c.clearml_enabled | string | lower) not in ["auto", "true", "false", "on", "off", "1", "0"] %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.clearml_enabled must be auto, true or false, got '" ~ c.clearml_enabled ~ "'.") }}{% endif -%}
             {%- if c.args is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args must be a mapping of finetune.py flag to value.") }}{% endif -%}
             {%- for k, v in c.args.items() %}
-            {%- if k in owned %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is set by the step; use the base_model/dataset inputs, output_path, dataset_mixer_list(_splits) or clearml_* instead.") }}{% endif -%}
+            {%- if (k | string | replace("-", "_")) in owned %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is set by the step; use the base_model/dataset inputs, output_path, dataset_mixer_list(_splits) or clearml_* instead.") }}{% endif -%}
             {%- if v is mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
             {%- endfor -%}
             {%- endmacro %}
@@ -128,7 +129,7 @@ environment_configs:
             {%- if (c.clearml_enabled | string | lower) not in ["auto", "true", "false", "on", "off", "1", "0"] %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.clearml_enabled must be auto, true or false, got '" ~ c.clearml_enabled ~ "'.") }}{% endif -%}
             {%- if c.args is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args must be a mapping of finetune.py flag to value.") }}{% endif -%}
             {%- for k, v in c.args.items() %}
-            {%- if k in owned %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is set by the step; use the base_model/dataset inputs, output_path, dataset_mixer_list(_splits) or clearml_* instead.") }}{% endif -%}
+            {%- if (k | string | replace("-", "_")) in owned %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is set by the step; use the base_model/dataset inputs, output_path, dataset_mixer_list(_splits) or clearml_* instead.") }}{% endif -%}
             {%- if v is mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
             {%- endfor -%}
             {%- endmacro %}

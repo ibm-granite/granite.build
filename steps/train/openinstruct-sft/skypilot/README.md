@@ -129,16 +129,16 @@ Scan every image before `make publish-image`:
 A fixable CRITICAL in a package that comes from upstream's lock is fixed by
 upgrading that package on top of `uv sync --frozen` in the install RUN (or removing
 it when SFT does not use it and the fix would move the training stack), then
-rebuilding and rescanning. Result for `oi-v0.3.0-2` (trivy, CRITICAL+HIGH; `oi-v0.3.0-3` differs only by dropping the non-root user): 0
-fixable CRITICAL; 18 CRITICAL without a fix, all in Ubuntu's `linux-libc-dev`
-(kernel UAPI headers, needed by DeepSpeed's JIT build); 585 HIGH, 66 of them
-fixable (57 Python packages, 8 jar, 1 Go binary), tracked as a follow-up.
+rebuilding and rescanning. Result for `oi-v0.3.0-4`, the shipped image (trivy,
+CRITICAL+HIGH): 0 fixable CRITICAL; 18 CRITICAL without a fix, all in Ubuntu's
+`linux-libc-dev` (kernel UAPI headers, needed by DeepSpeed's JIT build); 585 HIGH,
+66 of them fixable (57 Python packages, 8 jar, 1 Go binary), tracked as a follow-up.
 
 ### Bumping IMAGE_VERSION
 
 The Makefile's `IMAGE_VERSION` is a stable version (`oi-v0.3.0-4`), not the
 per-commit git SHA. The image is large, and BlueVela caches a `.sqsh` per tag
-(a cold import takes about an hour), so it must not churn on unrelated commits.
+(each new tag means a fresh cold import), so it must not churn on unrelated commits.
 
 - Bump the suffix (`-1` to `-2`) when the Dockerfile or `src/` changes.
 - Bump the prefix with the Open-Instruct pin (for example `oi-v0.4.0-1`).
@@ -219,7 +219,8 @@ The unit tests at `test/`'s root need no cluster or image. They stub `accelerate
 
 | Test | Pins |
 |---|---|
-| `test_dockerfile.py` | every `FROM` digest-pinned; Open-Instruct pinned to a full commit and checked after fetch; `uv sync --frozen` and an exact `clearml==` pin; no `USER` and no `useradd` (runs as root); `OPEN_INSTRUCT_COMMIT` set and no `GIT_COMMIT`; every script the template calls exists in `src/` |
+| `test_dockerfile.py` | every `FROM` digest-pinned; Open-Instruct pinned to a full commit and checked after fetch; `uv sync --frozen` and an exact `clearml==` pin; no `USER` and no `useradd` (runs as root); `OPEN_INSTRUCT_COMMIT` set and no `GIT_COMMIT`; every script the template calls exists in `src/`; the finetune patch runs before `uv sync` |
+| `test_finetune_local_model_patch.py` | the build-time finetune.py patch applies once, refuses an upstream change, refuses a second apply |
 | `test_skypilot_train_openinstruct_sft_render.py` | the template rendered with gbserver's strict renderer: identity and I/O schema, the shared monitor, no GPU request, identical macro copies, the `docker:` prefix (including `.sqsh`), valid bash, every `raise_error` (data source, mixer and splits shape, `output`, `num_nodes`, `deepspeed_config`, `clearml_enabled`, step-owned and map `args`), and the guard and run argv (defaults, bound dataset, splits, `args` rendering, ClearML mode, output path) |
 | `test_openinstruct_sft_guard_sh.py` | staged-path checks: empty or unrendered `base_model`, missing dir, no `config.json`, missing dataset, unknown option; valid paths pass silently |
 | `test_openinstruct_sft_setup_sh.py` | the image check: passes on a good image, fails without `finetune.py` or when the training stack does not import |
@@ -250,7 +251,7 @@ need the image published first.
 | `step_count` | 1 (hf:// staged inline) | 3 (two hfpull steps + the step) |
 
 Both check the `model` artifact and the `open_instruct_commit` metadata. The
-BlueVela `step_count` is marked to calibrate against the first green run.
+BlueVela `step_count` is calibrated (3) against a green run (build 5cf7d460).
 
 ### aws
 
@@ -260,19 +261,28 @@ generated space's secrets, per `docs/environments/skypilot-aws.md`.
 ```bash
 export AWS_PROFILE=gb-skypilot
 make -C steps/train/openinstruct-sft/skypilot space
-GB_ENVIRONMENT=STANDALONE make -C steps/train/openinstruct-sft/skypilot test TEST_DIR=test/aws
+cd steps/train/openinstruct-sft/skypilot && GB_ENVIRONMENT=STANDALONE PYTHONPATH=src \
+  python -m pytest -s test/aws -k test_runner    # with the repo .venv active
 ```
+
+`make test` would also rebuild the image (needs >60 GB free); the direct pytest call
+reuses the published image.
 
 ### slurm-bluevela
 
 Marked `ibm`. Skips unless the BlueVela key for the `granitebuild` functional ID is
-at `~/.ssh/ibm-bluevela.key`, and skips in SPS CI. A cold image cache adds about an hour before the GPU
-job (see [BlueVela image cache](#bluevela-image-cache)).
+at `~/.ssh/ibm-bluevela.key`, and skips in SPS CI. A cold image cache adds an
+import job before the GPU job (about 10 minutes, plus CPU-partition queueing; see
+[BlueVela image cache](#bluevela-image-cache)).
 
 ```bash
 make -C steps/train/openinstruct-sft/skypilot space
-GB_ENVIRONMENT=STANDALONE make -C steps/train/openinstruct-sft/skypilot test TEST_DIR=test/slurm-bluevela
+cd steps/train/openinstruct-sft/skypilot && GB_ENVIRONMENT=STANDALONE PYTHONPATH=src \
+  python -m pytest -s test/slurm-bluevela -k test_runner    # with the repo .venv active
 ```
+
+`make test` would also rebuild the image (needs >60 GB free); the direct pytest call
+reuses the published image.
 
 ## Follow-ups
 

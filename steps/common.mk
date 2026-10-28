@@ -584,7 +584,7 @@ publish-step:
 # immune to the image-tag SHA: for image steps it re-renders with the SAME image
 # reference already committed (extracted from the published step.yaml via
 # IMAGE_REF), so only genuine content drift — an edited template/src/test that
-# was never re-published — is reported, not the per-commit IMAGE_TAG churn (see
+# was never re-published — is reported, not the per-commit IMAGE_VERSION churn (see
 # the "keep the published image tag and your local build in sync" note under "Two
 # test modes" in steps/README.md). It also passes PUBLISH_REQUIRE_IMAGE=false to
 # the re-render so drift-checking stays offline (it never queries the registry — the

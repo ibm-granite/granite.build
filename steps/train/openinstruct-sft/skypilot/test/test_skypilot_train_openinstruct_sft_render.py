@@ -200,6 +200,10 @@ class TestValidation:
             "run", _ctx(args={key: "x"})
         )
 
+    @pytest.mark.parametrize("key", ["output-dir", "push-to-hub", "model-name-or-path"])
+    def test_step_owned_dash_aliases_refused(self, key):
+        assert "is set by the step" in _render_error("run", _ctx(args={key: "x"}))
+
     def test_mapping_arg_refused(self):
         assert "scalar or a list" in _render_error("run", _ctx(args={"x": {"a": 1}}))
 

@@ -3,11 +3,11 @@
 Runs supervised fine-tuning (SFT) with upstream
 [Open-Instruct](https://github.com/allenai/open-instruct) `open_instruct/finetune.py`,
 pinned at release v0.3.0. Training runs under `accelerate launch`, with DeepSpeed
-ZeRO-3 by default. The step trains on a single node and uses every GPU on it. It
-runs on any SkyPilot endpoint (cloud or SLURM). It takes the build's bound base
-model, trains it on HF datasets or a staged dataset, and registers the trained HF
-model as a `model` artifact. ClearML experiment tracking turns on automatically
-when server credentials are present in the step env.
+ZeRO-3 by default. The step trains on a single node and uses the GPUs the build
+requests. It runs on any SkyPilot endpoint (cloud or SLURM). It takes the build's
+bound base model, trains it on HF datasets or a staged dataset, and registers the
+trained HF model as a `model` artifact. ClearML experiment tracking turns on
+automatically when server credentials are present in the step env.
 
 The step runs in its own image. The image bakes in the pinned Open-Instruct source,
 its locked training stack (torch, accelerate, DeepSpeed, transformers), `clearml`,
@@ -206,8 +206,8 @@ endpoint:
 - **The image is cached automatically.** SLURM environments with a `slurm_image_cache`
   block (`ibm-bluevela` has one) import the step's registry image once into a shared
   `.sqsh` and launch every later run from it. The first run on a cold cache imports
-  it in a CPU job before the GPU job starts (about an hour for this image); later
-  runs start the container in seconds. No manual `enroot` import and no `image_id`
+  it in a CPU job before the GPU job starts (about 10 minutes for this 11 GB image
+  once the CPU job starts, plus queueing); later runs start the container in seconds. No manual `enroot` import and no `image_id`
   override are needed. To pin a `.sqsh` you built yourself, set `image_id` to its
   path; the step adds `docker:`, and Pyxis gets the path as is.
 - **Request memory.** gbserver drops `compute_config` memory on SLURM, and a

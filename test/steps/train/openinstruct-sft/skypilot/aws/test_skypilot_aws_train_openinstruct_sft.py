@@ -20,8 +20,9 @@ data, and the `model` artifact plus the open_instruct_commit metadata are
 recorded from the step's markers.
 
 Real EC2 (costs money): extended AND skipped unless AWS credentials are in the
-environment. The image must already be published (Task 5 of the plan). Fixtures
-live in the test-data/ dir mirroring this file (get_test_data_dir_for).
+environment. The image must already be published (README.md, "Publishing the
+image"). Fixtures live in the test-data/ dir mirroring this file
+(get_test_data_dir_for).
 """
 
 from pathlib import Path

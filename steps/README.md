@@ -388,7 +388,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `REGISTRY`        | *(required for image steps; set by the step's Makefile)* | image registry + namespace |
 | `IMAGE_NAME`      | `gb-steps`                                | image repository, shared by every custom step |
 | `IMAGE_VERSION`   | git short SHA, else `latest`              | version part of the tag; pin a release in the step's Makefile |
-| `IMAGE_TAG`       | `<STEP_PATH with / → ->-<STEP_ENV>-<IMAGE_VERSION>` | image tag; carries the step's directory, e.g. `train-openinstruct-sft-skypilot-oi-v0.3.0-2` |
+| `IMAGE_TAG`       | `<STEP_PATH with / → ->-<STEP_ENV>-<IMAGE_VERSION>` | image tag; carries the step's directory, e.g. `train-openinstruct-sft-skypilot-oi-v0.3.0-2`. The `/`→`-` flattening is lossy (`a/b-c` and `a-b/c` give the same tag), so keep step paths distinct after flattening. |
 | `IMAGE_REF`       | `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)`   | full image reference (derived)   |
 | `SPACE_DIR`       | `space`                                   | generated Space directory name   |
 | `SPACE_NAME`      | `public`                                  | `name:` in the generated `space.yaml`. Matches the shared `configurations/spaces/local`, because an `hf://` push derives its HF resource group from the space name (`gbspace-<space>`); a step-named space would look for a group that doesn't exist |

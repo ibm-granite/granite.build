@@ -25,9 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   node, with ClearML tracking (`auto` when `CLEARML_API_*` creds are present). Custom image
   `quay.io/granitebuild/gb-steps` (tag `train-openinstruct-sft-skypilot-<version>`). Build tests on
   skypilot/aws and BlueVela SLURM. On SLURM the image is cached as a shared `.sqsh` by
-  `slurm_image_cache`. The legacy hand-authored `space://steps/openinstruct-sft` assets (LSF, aws) and the
-  granite4-350m recipes that use them are unchanged; moving those recipes over is a follow-up (they
-  need pre-tokenized `--tokenized_data` input, which only the IBM fork's `finetune.py` has).
+  `slurm_image_cache`. The legacy hand-authored `space://steps/openinstruct-sft` assets (LSF, aws)
+  and the granite4-350m recipes that use them are unchanged; moving those recipes over is a
+  follow-up (they need pre-tokenized `--tokenized_data` input, which only the IBM fork's
+  `finetune.py` has).
 
 ### Changed
 
@@ -37,7 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `$(REGISTRY)/gb-steps:train-openinstruct-sft-skypilot-<version>` instead of
   `$(REGISTRY)/gb-step-openinstruct-sft:<sha>`. One pre-created public repository serves every step.
   The version part is the new `IMAGE_VERSION` (default: git short SHA); `IMAGE_NAME` and `IMAGE_TAG`
-  can still be overridden. No published step changes.
+  can still be overridden. Local image names change too (`gb-step-<name>` →
+  `gb-steps:<path>-<env>-<version>`), so retag or rebuild local images. No published step changes.
 - **The `dpk` step moved into the `data` category: `space://steps/data/dpk` (#512).** This is
   the first step to move into a category directory under `steps/` (here `steps/data`).
   **Breaking change:** `space://steps/dpk` is no longer supported, so update builds to the
