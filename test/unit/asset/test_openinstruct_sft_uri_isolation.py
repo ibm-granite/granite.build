@@ -75,6 +75,7 @@ def _resolve(uri: str, env: str) -> pathlib.Path:
         "Skypilot", env_dir_uri=f"file://{env_dir}", env_subtype=subtype
     ):
         resolved = URI.get_uri(uri, default_scheme="file", secrets={})
+    assert resolved.uri is not None, f"{uri} did not resolve to a path"
     return pathlib.Path(resolved.uri.path).resolve()
 
 
