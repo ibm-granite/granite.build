@@ -44,10 +44,10 @@ granite.build:
                 checkpointing.save_period: 3
                 policy.tokenizer.name: HuggingFaceTB/SmolLM2-135M
             compute_config:
-              # Single A10G is the cheapest bf16-capable GPU on aws (g5.xlarge,
-              # us-east-1). gpu_model is required: the step renders the SkyPilot
-              # accelerators request as "<gpu_model>:<num_gpus_per_node>" (here
-              # "A10G:1"), and also pins NeMo-RL's cluster.gpus_per_node to it.
               num_nodes: 1
-              num_gpus_per_node: 1
-              gpu_model: A10G
+            launcher_config:
+              resources:
+                # Single A10G is the cheapest bf16-capable GPU on aws (g5.xlarge,
+                # us-east-1). The step pins NeMo-RL's cluster.gpus_per_node to the
+                # count, which SkyPilot exports as SKYPILOT_NUM_GPUS_PER_NODE.
+                accelerators: "A10G:1"

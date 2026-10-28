@@ -44,6 +44,7 @@ All fields live under the step's `config.nemo_rl_config`.
 | `clearml_project` / `clearml_task_name` | string | no | ClearML grouping. Only used when ClearML is enabled. |
 | `hf_output_repo` | string | no | Optional push target — the converted HF model is also uploaded here via `hf upload`. Needs a write-capable `HF_TOKEN` in the step env. |
 | `hf_output_private` | bool | no | Create a **missing** `hf_output_repo` private (`true`, default) or public (`false`). The Hub ignores it for a repo that already exists, so an existing public repo stays public. |
+| `gpus_per_node` | integer | no | GPUs NeMo-RL trains on (`cluster.gpus_per_node`). Empty (default) = the count SkyPilot allocated. Set it only to train on fewer GPUs than the node has. A value of 0 or a non-whole number is logged and ignored, and the SkyPilot count is used. |
 
 ## Inputs
 
@@ -121,20 +122,24 @@ disable even when creds are present (no `clearml` import, no install).
 ```yaml
 compute_config:
   num_nodes: 1              # iteration 1 is single-node only; any other value fails the build at step creation
-  num_gpus_per_node: 2      # how many GPUs to request on the node
-  gpu_model: A10G           # REQUIRED — the SkyPilot accelerator TYPE for your endpoint
+launcher_config:
+  resources:
+    accelerators: "A10G:2"  # REQUIRED — "<type>:<count>" GPUs per node, a type your endpoint offers
 ```
 
-GPUs are the one resource the step requests itself. gbserver's SkyPilot launcher
-sources cpus/memory from `compute_config` but **not** GPUs, so the step renders a
-SkyPilot `accelerators` request of `<gpu_model>:<num_gpus_per_node>` (e.g.
-`A10G:2`) and pins NeMo-RL's `cluster.gpus_per_node` to `num_gpus_per_node` so a
-multi-GPU node is actually used (the shipped configs default it to 1).
+`accelerators` is SkyPilot's own GPU request, so set it to a type your endpoint
+offers (`A10G`, `A100`, `H100`, …). A GPU `instance_type` (e.g. `g6e.12xlarge`)
+works too. With neither, the build fails at step creation, before anything is
+provisioned: the node would have no GPU. `compute_config.num_gpus_per_node` is
+not read by the SkyPilot launcher, so it is no substitute.
 
-`gpu_model` is **required**: an empty type would request a blank-named
-accelerator that SkyPilot silently satisfies with a CPU-only node, so the step
-fails at render time if it is unset. Set it to a type your endpoint offers
-(`A10G`, `A100`, `H100`, …).
+The step-creation check cannot see what an `instance_type` contains, so it
+accepts any instance type. Pick one that has GPUs: a CPU type such as
+`m5.xlarge` passes the check and fails only on the node, after the image pull.
+
+The step pins NeMo-RL's `cluster.gpus_per_node` to the count SkyPilot allocated,
+so a multi-GPU node is actually used (the shipped configs default it to 1). Set
+`nemo_rl_config.gpus_per_node` to override it.
 
 ## Running on SLURM
 
@@ -142,26 +147,32 @@ The same step runs on a SkyPilot SLURM endpoint (for example
 `space://environments/skypilot/slurm/ibm-bluevela`). Three things differ from a
 cloud endpoint:
 
-- **Use a prebuilt image.** On SLURM the image runs as a Pyxis/enroot container.
-  Pulling the multi-GB NeMo-RL image on a cold node can take over an hour, which
-  can exceed the job's time limit or preemption window. Import it once to a
-  squashfs on shared storage and point `image_id` at that file:
+- **Launch from a squashfs, not the registry.** On SLURM the image runs as a
+  Pyxis/enroot container. Importing the 20 GB NeMo-RL image inside the job takes
+  over an hour, which can exceed the job's time limit or preemption window.
+  - **If the environment sets `slurm_image_cache`** (`ibm-bluevela` does), leave
+    `image_id` at its default. gbserver imports the registry image once into a
+    shared `.sqsh`, in a CPU job, before the GPU job is submitted, and every later
+    launch starts from that file. See `slurm_image_cache` in
+    `docs/environments/skypilot-slurm.md`. A `.sqsh` path in `image_id` bypasses
+    the cache.
+  - **Otherwise**, import it once to shared storage and point `image_id` at the file:
 
-  ```bash
-  enroot import -o nemo-rl-v0.7.0.sqsh "docker://nvcr.io#nvidia/nemo-rl:v0.7.0"
-  ```
+    ```bash
+    enroot import -o nemo-rl-v0.7.0.sqsh "docker://nvcr.io#nvidia/nemo-rl:v0.7.0"
+    ```
 
-  ```yaml
-  nemo_rl_config:
-    image_id: /shared/images/nemo-rl-v0.7.0.sqsh   # a path, not a registry ref
-  ```
+    ```yaml
+    nemo_rl_config:
+      image_id: /shared/images/nemo-rl-v0.7.0.sqsh   # a path, not a registry ref
+    ```
 
-  Keep it a plain path. The step adds SkyPilot's `docker:` marker itself, and
-  SkyPilot passes a `.sqsh` path to Pyxis as-is.
-- **Match the partition's GPU type.** `gpu_model` becomes a typed GRES request
-  (`--gres=gpu:<type>:<count>`), so use a type the partition has, and one that
-  any environment-wide `sbatch_options.constraint` allows (`ibm-bluevela` pins
-  `h200`).
+    Keep it a plain path. The step adds SkyPilot's `docker:` marker itself, and
+    SkyPilot passes a `.sqsh` path to Pyxis as-is.
+- **Match the partition's GPU type.** The `accelerators` type becomes a typed
+  GRES request (`--gres=gpu:<type>:<count>`), so use a type the partition has,
+  and one that any environment-wide `sbatch_options.constraint` allows
+  (`ibm-bluevela` pins `h200`, so use `H200:<count>`).
 - **The base model is staged by its own step.** SLURM endpoints usually stage
   `hf://` inputs with a separate hfpull job onto shared storage rather than
   inside this step, so a build shows one extra step.
@@ -195,8 +206,9 @@ granite.build:
                 sft.max_num_steps: 20
             compute_config:
               num_nodes: 1
-              num_gpus_per_node: 8
-              gpu_model: A100      # the SkyPilot accelerator type (required)
+            launcher_config:
+              resources:
+                accelerators: "A100:8"   # GPU type and count per node (required)
 ```
 
 To train on your own data, bind a `dataset` and name its Hydra key:

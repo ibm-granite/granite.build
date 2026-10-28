@@ -37,6 +37,18 @@ config:
   # in the build. See docs/environments/skypilot-slurm.md#override-the-partition-zone-per-build.
   sbatch_options:
     constraint: h200
+  # Import each container image once into a shared .sqsh and launch from that, instead
+  # of Pyxis importing it inside every job (~22 min per launch for a 5 GB eval image,
+  # with the GPU idle). share_path is the LSF environment's enroot share_path: same
+  # directory, file names and lock file, so either backend reuses the other's imports.
+  # The import job runs on the cpu partition, which only accepts qos=cpu. See
+  # docs/environments/skypilot-slurm.md#slurm_image_cache--shared-sqsh-image-cache.
+  slurm_image_cache:
+    share_path: /proj/granite-build/g4os
+    partition: cpu
+    sbatch_options:
+      account: grp_granite_dot_build
+      qos: cpu
   # Shared-FS root for per-run build workdirs (GB_BUILD_WORKDIR). It must be on
   # /proj AND under the SkyPilot `workdir` set in cloud_config below: SkyPilot's
   # SLURM backend bind-mounts only home + ccache + `workdir` into the enroot

@@ -164,6 +164,19 @@ class EnvironmentConfig(Config):
     subtype: Optional[str] = None
 
     @model_validator(mode="after")
+    def _validate_slurm_image_cache(self) -> "EnvironmentConfig":
+        """Reject a malformed ``slurm_image_cache`` block when the environment
+        loads, rather than at launch, where it would only log a warning and
+        quietly launch every image from the registry."""
+        raw = (self.config or {}).get("slurm_image_cache")
+        if raw:
+            # Inside the method to avoid an import cycle at module load.
+            from gbserver.environment._slurm_image_cache import parse_cache_config
+
+            parse_cache_config(raw)
+        return self
+
+    @model_validator(mode="after")
     def _gate_shared_filesystem(self) -> "EnvironmentConfig":
         cfg = self.config or {}
         sf = cfg.get("shared_filesystem")

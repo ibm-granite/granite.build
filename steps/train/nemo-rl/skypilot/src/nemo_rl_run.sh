@@ -15,7 +15,7 @@
 # CONTRACT
 #   nemo_rl_run.sh --algorithm <a> --config-name <c> --nemo-rl-root <root> \
 #                  --base-model <path> [--dataset <path> --dataset-key <key>] \
-#                  [--num-gpus-per-node <n>] \
+#                  [--gpus-per-node <n>] \
 #                  --artifact-id <id> --output-path <dir> \
 #                  --clearml-mode <auto|on|off> \
 #                  [--clearml-project <p>] [--clearml-task <t>] \
@@ -30,6 +30,10 @@
 #                 re-run, so it must be absent, empty, or a previous HF model.
 #   --            everything after it is a Hydra override passed to the driver
 #                 verbatim, one argv word each.
+#
+#   --gpus-per-node  NeMo-RL's cluster.gpus_per_node. Default: the env var
+#                 SKYPILOT_NUM_GPUS_PER_NODE, which SkyPilot sets from the GPUs it
+#                 allocated (resources.accelerators or the instance type).
 set -euo pipefail
 
 algorithm=""
@@ -38,7 +42,7 @@ nemo_rl_root=""
 base_model=""
 dataset=""
 dataset_key=""
-num_gpus_per_node=""
+gpus_per_node=""
 artifact_id=""
 output_path=""
 clearml_mode=""
@@ -55,7 +59,7 @@ while [ "$#" -gt 0 ]; do
     --base-model)      base_model="$2";      shift 2 ;;
     --dataset)         dataset="$2";         shift 2 ;;
     --dataset-key)     dataset_key="$2";     shift 2 ;;
-    --num-gpus-per-node) num_gpus_per_node="$2"; shift 2 ;;
+    --gpus-per-node)   gpus_per_node="$2";   shift 2 ;;
     --artifact-id)     artifact_id="$2";     shift 2 ;;
     --output-path)     output_path="$2";     shift 2 ;;
     --clearml-mode)    clearml_mode="$2";    shift 2 ;;
@@ -191,10 +195,40 @@ overrides+=(
 #
 # Pin NeMo-RL's cluster view to the node's GPU count. The shipped configs
 # default cluster.gpus_per_node=1 (sft.yaml), so without this a multi-GPU node
-# would still train on one GPU. Forced (after "$@") so it stays locked to the
-# same num_gpus_per_node that sized the SkyPilot accelerators request.
-if [ -n "$num_gpus_per_node" ]; then
-  overrides+=("cluster.gpus_per_node=${num_gpus_per_node}")
+# would still train on one GPU. The count is --gpus-per-node if the build set
+# it, else what SkyPilot allocated (from resources.accelerators or the instance
+# type). Forced (after "$@") so it stays locked to the node. A value that is not
+# a whole number is reported, not silently dropped: dropping it would train on
+# sft.yaml's single GPU. An invalid or zero explicit count falls back to
+# SkyPilot's: NeMo-RL cannot train on 0 GPUs.
+#
+# whole_count VALUE: print VALUE as a plain integer if it is a whole number
+# ("4", "04", "4.0", "4.000"); otherwise print nothing and return 1.
+whole_count() {
+  case "$1" in
+    "" | *[!0-9.]* | *.*.* | .*) return 1 ;;
+  esac
+  local int="${1%%.*}" frac=""
+  [ "$int" != "$1" ] && frac="${1#*.}"
+  case "$frac" in *[!0]*) return 1 ;; esac
+  printf '%s\n' "$((10#$int))"
+}
+
+gpu_count=""
+if [ -n "$gpus_per_node" ]; then
+  gpu_count="$(whole_count "$gpus_per_node")" \
+    || echo "nemo-rl: --gpus-per-node '${gpus_per_node}' is not a whole number; using SkyPilot's GPU count instead" >&2
+  if [ "$gpu_count" = "0" ]; then
+    echo "nemo-rl: --gpus-per-node is 0; using SkyPilot's GPU count instead" >&2
+    gpu_count=""
+  fi
+fi
+if [ -z "$gpu_count" ] && [ -n "${SKYPILOT_NUM_GPUS_PER_NODE:-}" ]; then
+  gpu_count="$(whole_count "$SKYPILOT_NUM_GPUS_PER_NODE")" \
+    || echo "nemo-rl: SKYPILOT_NUM_GPUS_PER_NODE '${SKYPILOT_NUM_GPUS_PER_NODE}' is not a whole number; not setting cluster.gpus_per_node" >&2
+fi
+if [ -n "$gpu_count" ] && [ "$gpu_count" -gt 0 ]; then
+  overrides+=("cluster.gpus_per_node=${gpu_count}")
 fi
 
 # --- ClearML enablement, mirrored from clearml_launch.clearml_enabled -----------
