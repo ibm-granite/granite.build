@@ -305,8 +305,10 @@ _DETERMINISTIC_ERROR_MARKERS = (
     "exceeds btree",
 )
 # HTTP statuses (W&B) that a later retry can get past: the server is overloaded,
-# rate limiting, or down. Every other 4xx is the request's own fault.
-_TRANSIENT_HTTP_STATUSES = frozenset({408, 425, 429})
+# rate limiting, or down -- or the credentials are expired or revoked, which is
+# an outage of access, not a bad job, and must not skip the window. Every other
+# 4xx is the request's own fault.
+_TRANSIENT_HTTP_STATUSES = frozenset({401, 403, 408, 425, 429})
 # After this many transient failures in a row on the same job the warning becomes
 # an error: still not counted (an outage must skip nothing), but no longer quiet.
 _TRANSIENT_ALERT_AFTER = 20
@@ -343,8 +345,8 @@ def _is_transient_error(exc: BaseException) -> bool:
     or it would pin the checkpoint forever.
 
     An HTTP status decides first, whatever the exception's class: a ``CommError``
-    for a 400/403/404 is the request's fault and counts toward the give-up, while
-    a raw ``HTTPError`` for a 502/503/429 is an outage and is waited out.
+    for a 400/404 is the request's fault and counts toward the give-up, while
+    a raw ``HTTPError`` for a 401/403/502/503/429 is an outage and is waited out.
     """
     status = _http_status(exc)
     if status is not None:
@@ -1097,6 +1099,8 @@ class TargetLineageIndexer(JobLineageIndexer):
                 exc,
             )
             return False
+        # Read once, before any write: an outage here fails the job whole.
+        tags = _build_tags(storage, job.build_id)
         indexed = False
         for event in events:
             indexed |= self._rows.index_job_entry(
@@ -1105,7 +1109,7 @@ class TargetLineageIndexer(JobLineageIndexer):
                 target_run_uuid=job.uuid,
                 # The build's own tags are the user's; they are not in the job
                 # entry, which the shared builder shapes for W&B.
-                extra_tags=_build_tags(storage, job.build_id),
+                extra_tags=tags,
                 job_store=JobStore.TARGETS,
             )
         return indexed

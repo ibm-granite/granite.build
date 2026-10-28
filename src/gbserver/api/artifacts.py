@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Annotated, Any, List, Optional, Tuple, Union, cast
 
@@ -36,6 +37,7 @@ from gbserver.api.utils import (
     split_tags,
 )
 from gbserver.lineage.jobstats import get_lineage_store
+from gbserver.lineage.lineage_reconciler import as_aware
 from gbserver.lineage.uri_normalize import normalize_uri
 from gbserver.spaces.hf_push_config import resolve_space_resource_group_id
 from gbserver.storage.artifact_registration import (
@@ -668,7 +670,15 @@ def _by_lineage_uri(storage, uri: str, **filters) -> List[ArtifactRegistration]:
     )
     matches = [item for item in candidates if _normalized(item.uri or "") == wanted]
     matches.sort(
-        key=lambda item: (str(item.created_at or ""), item.uuid or ""), reverse=True
+        key=lambda item: (
+            (
+                as_aware(item.created_at)
+                if item.created_at
+                else datetime.min.replace(tzinfo=timezone.utc)
+            ),
+            item.uuid or "",
+        ),
+        reverse=True,
     )
     matches.sort(key=lambda item: item.is_archived)  # stable: newest first within
     return matches

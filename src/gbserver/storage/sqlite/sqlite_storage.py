@@ -343,12 +343,22 @@ class SqliteKeyValuePairStorage(SqliteStorageOverrides, SQLKeyValuePairStorage):
         lock across both keeps another process from writing between them, and a
         ``database is locked`` from a writer outside the lock is retried rather
         than surfaced. The lock is taken per attempt, never across a backoff.
+
+        A retried attempt may follow one whose write committed before it raised;
+        finding ``value`` already stored then counts as this call's success.
         """
         method = super().compare_and_set
+        tried = False
 
         @retry_read
         def attempt() -> bool:
+            nonlocal tried
             with self._db_file_lock:
+                if tried and expected != value:
+                    current = self.get_by_key(key)
+                    if current is not None and current.value == value:
+                        return True
+                tried = True
                 return method(key, expected, value)
 
         return attempt()

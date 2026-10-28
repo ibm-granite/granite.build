@@ -804,7 +804,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                     session.bulk_save_objects(batch_insert)
             else:
                 for item_data in items:
-                    self.logger.info(f"_add: {item_data}")
+                    self.logger.debug(f"_add: {item_data}")
                     db_item = self._sql_alchemy_model(**item_data)
                     session.add(db_item)
             session.commit()

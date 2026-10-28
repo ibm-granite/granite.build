@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Any, List, Optional, Self, Tuple
 
 from sqlalchemy import and_, desc, func, literal_column, or_, tuple_
+from sqlalchemy.exc import DataError
 
 from gbserver.storage.sql.sql_storage import BaseSQLItemStorage, retry_read
 from gbserver.storage.storage import JSON_COLUMN_NAME, UUID_COLUMN_NAME
@@ -153,48 +154,6 @@ class SQLTargetRunStorage(
     # The blob's finished_at on Postgres, where the json column is text.
     _PG_BLOB_FINISHED = f"({JSON_COLUMN_NAME}::json ->> 'finished_at')"
 
-    _finished_at_backfilled = False
-
-    def _backfill_finished_at_once(self) -> None:
-        """Copy ``finished_at`` from the blob into a NULL column, once per process.
-
-        Rows written before the column was promoted have it NULL while the blob
-        holds the time; the keyset probe would read those as unorderable and send
-        the indexer to the full-scan fallback for good. Idempotent (only NULL
-        columns are touched) and a data fix, not a schema change. A failure only
-        warns: the probe then still finds the rows and the scan falls back, as
-        before.
-        """
-        if self._finished_at_backfilled:
-            return
-        self._finished_at_backfilled = True
-        model = self._sql_alchemy_model
-        session = self._get_session_without_retry()
-        try:
-            blob: Any = literal_column(self._PG_BLOB_FINISHED)
-            updated = (
-                session.query(model)
-                .filter(
-                    model.status == Status.SUCCESS.name,
-                    model.finished_at.is_(None),
-                    blob.isnot(None),
-                )
-                .update(
-                    {model.finished_at: func.cast(blob, model.finished_at.type)},
-                    synchronize_session=False,
-                )
-            )
-            session.commit()
-            if updated:
-                self.logger.info(
-                    f"Backfilled finished_at on {updated} successful target(s)"
-                )
-        except Exception as e:
-            session.rollback()
-            self.logger.warning(f"Error backfilling finished_at: {e}")
-        finally:
-            session.close()
-
     @retry_read
     def get_successful_finished_after(
         self,
@@ -261,19 +220,27 @@ class SQLTargetRunStorage(
                 )
             ]
             cutoff_key = cutoff_utc
-            self._backfill_finished_at_once()
         session = self._get_session_without_retry()
         try:
             if after is None:
                 # On every scan's first page, not once per process: a row written
                 # later that cannot be placed would otherwise be passed over for
                 # good. Each probe is an index seek, so this stays cheap.
-                for probe in unplaceable:
-                    if session.query(uuid_col).filter(probe).first() is not None:
-                        raise NotImplementedError(
-                            "successful targets with a completion time that cannot "
-                            "be ordered in SQL"
-                        )
+                # A malformed blob makes the Postgres ``::json`` cast raise; that
+                # row cannot be ordered either, so it means the fallback too.
+                try:
+                    found = any(
+                        session.query(uuid_col).filter(probe).first() is not None
+                        for probe in unplaceable
+                    )
+                except DataError:
+                    session.rollback()
+                    found = True
+                if found:
+                    raise NotImplementedError(
+                        "successful targets with a completion time that cannot "
+                        "be ordered in SQL"
+                    )
             query = session.query(model, key).filter(success, key.isnot(None))
             if cutoff_key is not None:
                 query = query.filter(key >= cutoff_key)

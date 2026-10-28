@@ -64,7 +64,7 @@ export function depthForNextLevel(seedId: string, shown: number, metadata?: Reco
 }
 
 // What to show when GET /lineage/graph fails. A 422 is a request the API refused,
-// typically past the non-admin depth cap ("depth must be at most N"), and any other
+// such as past the non-admin depth cap ("depth must be at most N"), and any other
 // string `detail` says why in the server's words; a 503 means
 // the index could not be read. Read structurally rather than via
 // `axios.isAxiosError`, so this module stays free of runtime imports.
@@ -72,7 +72,8 @@ export function expansionErrorMessage(error: unknown): string {
   const response = (error as { response?: { status?: unknown; data?: { detail?: unknown } } } | null)?.response
   const detail = response?.data?.detail
   if (response?.status === 422) {
-    if (typeof detail !== 'string' || !detail) return 'Expansion depth limit reached'
+    // A non-string detail is FastAPI's request validation, not the depth cap.
+    if (typeof detail !== 'string' || !detail) return 'Invalid lineage request'
     return detail.startsWith('depth ') ? `Expansion depth limit reached (${detail})` : detail
   }
   if (response?.status === 503) return 'Lineage index temporarily unavailable, try again'

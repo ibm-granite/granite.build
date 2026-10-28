@@ -170,7 +170,7 @@ describe('expansionErrorMessage', () => {
 
   it('names the depth cap on a 422, keeping the server detail', () => {
     assert.equal(expansionErrorMessage(httpError(422, 'depth must be at most 20')), 'Expansion depth limit reached (depth must be at most 20)')
-    assert.equal(expansionErrorMessage(httpError(422, [{ msg: 'x' }])), 'Expansion depth limit reached')
+    assert.equal(expansionErrorMessage(httpError(422, [{ msg: 'x' }])), 'Invalid lineage request')
   })
 
   it('prefers another 422 string detail as is', () => {

@@ -1324,7 +1324,9 @@ def _http_error(status):
     [
         # A deterministic 4xx wrapped in a CommError counts toward the give-up.
         (CommError("HTTP 400", _http_error(400)), False),
-        (CommError("HTTP 403", _http_error(403)), False),
+        # Expired or revoked credentials are an outage, not a bad job.
+        (CommError("HTTP 401", _http_error(401)), True),
+        (CommError("HTTP 403", _http_error(403)), True),
         (CommError("HTTP 404", _http_error(404)), False),
         (CommError("HTTP 429", _http_error(429)), True),
         # The raw HTTPError RunArtifacts pagination re-raises is an outage.
