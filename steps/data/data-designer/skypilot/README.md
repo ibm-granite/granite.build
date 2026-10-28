@@ -87,7 +87,7 @@ PYTHONPATH=src <venv>/bin/python -m pytest -c /dev/null --noconftest \
   test/test_dd_step_render.py test/test_dd_guard_sh.py test/test_dd_run.py test/test_dd_ollama_sh.py
 ```
 
-There are 176 tests in all:
+There are 178 tests in all:
 
 - `test_dd_step_render.py` pins what the template computes:
   - the rendered blocks parse under `bash -n`;

@@ -384,9 +384,12 @@ def foreign_contents(
     return None
 
 
-# What a run interrupted before its first row group leaves (no metadata.json yet): Data
-# Designer clears the partials and rewrites builder_config.json on every start, so
-# neither can mix into the next run.
+# Data Designer outputs that can't mix into the next run, so a leftover copy is never
+# refused: it clears the partials and rewrites builder_config.json on every start. A run
+# interrupted before its first row group usually leaves only these. With an image column
+# it may also leave images/, and with run_config.write_scheduler_events the appended
+# scheduler_events.jsonl; those WOULD carry over, so they are refused like any other
+# output and resume: restart clears them (independent review of the #543 fixes).
 _RESTARTABLE_LEFTOVERS = ("tmp-partial-parquet-files", "builder_config.json")
 
 
@@ -397,9 +400,9 @@ def orphaned_outputs(output_path: Path, metadata: Any) -> list[str]:
     so they become part of the registered dataset. Row groups in ``parquet-files/``
     mixed two runs' rows (measured: "generated 4 of 2 requested", rows from two
     configs; review of #543); dropped columns, processor outputs and images were kept
-    the same way (re-review of #543). Only what an ordinary early interruption leaves
-    (``_RESTARTABLE_LEFTOVERS``) is not counted, so that retry still works. Returns
-    the names found, empty when there is a metadata.json.
+    the same way (re-review of #543). Only ``_RESTARTABLE_LEFTOVERS``, which Data
+    Designer clears or rewrites itself, is not counted. Returns the names found, empty
+    when there is a metadata.json.
     """
     if metadata is not None:
         return []

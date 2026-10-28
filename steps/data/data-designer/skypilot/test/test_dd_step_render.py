@@ -347,6 +347,20 @@ class TestSpecEnv:
         with pytest.raises(ValueError, match="could not encode it plainly"):
             _render(launcher["envs"]["GB_DD_SPEC_B64"], cfg)
 
+    def test_the_render_error_shows_the_offending_field(self, launcher, defaults):
+        """Independent review: the message showed the spec's first 300 characters, so
+        in a large config the bad value was not in it at all."""
+        columns = [
+            {"name": f"c{i}", "column_type": "llm-text", "prompt": "x" * 40}
+            for i in range(10)
+        ]
+        cfg = _cfg(
+            defaults, config={"columns": columns}, run_config={"buffer_size": (1, 2)}
+        )
+        with pytest.raises(ValueError) as e:
+            _render(launcher["envs"]["GB_DD_SPEC_B64"], cfg)
+        assert "buffer_size: !!python/tuple" in str(e.value)
+
     def test_a_to_yaml_error_string_fails_the_render(self, launcher, defaults):
         """gbserver's to_yaml returns "Error: ..." instead of raising."""
         env = _env()

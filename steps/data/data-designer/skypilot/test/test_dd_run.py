@@ -1030,3 +1030,20 @@ class TestRunEndToEnd:
         _touch(out / "builder_config.json")
         _touch(out / "tmp-partial-parquet-files" / "batch.parquet")
         assert run_dd(2, run_config={"buffer_size": 2}) == 0, run_dd.last.err
+
+    def test_scheduler_events_left_by_an_early_interruption_need_restart(
+        self, run_dd, tmp_path
+    ):
+        """Independent review of the #543 fixes: with write_scheduler_events, Data
+        Designer starts scheduler_events.jsonl (appending) before the first row group,
+        so an early interruption leaves it. It would carry over, so the default refuses
+        the retry and restart clears it."""
+        out = tmp_path / "out"
+        _touch(out / "builder_config.json")
+        _touch(out / "tmp-partial-parquet-files" / "batch.parquet")
+        (out / "scheduler_events.jsonl").write_text('{"old": true}\n')
+        rc = {"buffer_size": 2, "write_scheduler_events": True}
+        assert run_dd(2, run_config=rc) == 1
+        assert "scheduler_events.jsonl" in run_dd.last.err
+        assert run_dd(2, resume="restart", run_config=rc) == 0, run_dd.last.err
+        assert '{"old": true}' not in (out / "scheduler_events.jsonl").read_text()

@@ -224,14 +224,17 @@ images, scheduler events or an export file) but `metadata.json` is gone, it can'
 resumed, and Data Designer would write the new run beside it, so the dataset would
 combine two runs. The step refuses that before generating and removes nothing.
 `resume: restart` clears it, but only when the `builder_config.json` Data Designer writes
-is there too. A run interrupted before its first row group leaves only
+is there too. A run interrupted before its first row group usually leaves only
 `tmp-partial-parquet-files/` and `builder_config.json`, which Data Designer discards or
-rewrites by itself, so a plain retry still works.
+rewrites by itself, so a plain retry still works. With an image column it may also have
+saved images, and with `run_config.write_scheduler_events` it has started
+`scheduler_events.jsonl`. Both would carry over into the retry, so that retry is
+refused too: set `resume: restart` to clear them.
 
 **A config the build can't encode plainly fails the render.** The step passes its config
 to the node as YAML. A value YAML can only write with a Python-specific tag (a tuple, a
-`Decimal`, a custom object) fails the target as it renders, naming the field, rather than
-later on the node.
+`Decimal`, a custom object) fails the target as it renders, and the error shows the
+lines around that value, rather than failing later on the node.
 
 The fingerprint ignores `max_parallel_requests`, `timeout`, `skip_health_check` and
 profilers, so you can retune concurrency and still resume. **Changing `buffer_size`

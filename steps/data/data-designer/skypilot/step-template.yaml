@@ -155,7 +155,9 @@ environment_configs:
             GB_DD_SPEC_B64: >-
               {%- set dd_spec = {"config": config.data_designer_config.config, "model_providers": config.data_designer_config.model_providers, "run_config": config.data_designer_config.run_config, "local_model": config.data_designer_config.local_model} | to_yaml -%}
               {%- if dd_spec.startswith("Error:") or "!!python/" in dd_spec -%}
-              {{ raise_error("data-designer: data_designer_config (config, model_providers, run_config, local_model) must hold only strings, numbers, booleans, dates, lists and mappings; to_yaml could not encode it plainly: " ~ dd_spec[:300]) }}
+              {%- set dd_at = dd_spec.find("!!python/") -%}
+              {%- set dd_from = dd_spec.rfind("\n", 0, [dd_at - 200, 0] | max) + 1 if dd_at > 0 else 0 -%}
+              {{ raise_error("data-designer: data_designer_config (config, model_providers, run_config, local_model) must hold only strings, numbers, booleans, dates, lists and mappings; to_yaml could not encode it plainly: ..." ~ dd_spec[dd_from:dd_from + 400]) }}
               {%- endif -%}
               {{ dd_spec | b64encode }}
           # setup runs ONCE at cluster bring-up. It guards first, so an invalid build is
