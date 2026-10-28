@@ -390,6 +390,8 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `IMAGE_VERSION`   | git short SHA, else `latest`              | version part of the tag; pin a release in the step's Makefile |
 | `IMAGE_TAG`       | `<STEP_PATH with / → ->-<STEP_ENV>-<IMAGE_VERSION>` | image tag; carries the step's directory, e.g. `train-openinstruct-sft-skypilot-oi-v0.3.0-2`. The `/`→`-` flattening is lossy (`a/b-c` and `a-b/c` give the same tag), so keep step paths distinct after flattening. |
 | `IMAGE_REF`       | `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)`   | full image reference (derived)   |
+| `REGISTRY_SECRET` | *(empty)*                                 | `<group>/<name>` of the registry's robot credential in IBM Cloud Secrets Manager; `publish-image` logs in with it (see [Registry credentials](#registry-credentials)) |
+| `SECRETS_MANAGER_URL` | the Granite.build Secrets Manager instance | Secrets Manager endpoint for `REGISTRY_SECRET` |
 | `SPACE_DIR`       | `space`                                   | generated Space directory name   |
 | `SPACE_NAME`      | `public`                                  | `name:` in the generated `space.yaml`. Matches the shared `configurations/spaces/local`, because an `hf://` push derives its HF resource group from the space name (`gbspace-<space>`); a step-named space would look for a group that doesn't exist |
 | `SPACE_BASE_URI`  | relative `file://` to `configurations/assets` (resolved against the space.yaml's dir) | base_uri chained by the generated Space |
@@ -409,22 +411,45 @@ Example: `make all REGISTRY=quay.io/myorg IMAGE_VERSION=0.1.0`.
 
 ### Registry credentials
 
-`make publish-image` must be authenticated to `$(REGISTRY)`. Two ways:
+`make publish-image` must be authenticated to `$(REGISTRY)`. It logs in before the
+push, and the first of these that applies wins:
 
-* **Interactive / local (default):** `podman login <registry-host>` (or
-  `docker login`) once; the push reuses the stored token. Nothing else to
-  configure.
-* **CI / non-interactive:** export `REGISTRY_USER` and `REGISTRY_PASSWORD` (a
-  robot-account token) **in the environment** — do *not* pass them as `make`
-  variables. `publish-image` logs in first, piping the token via
-  `--password-stdin`, so the secret never appears in `ps`, make's output, or
-  shell history:
+1. **CI / non-interactive:** export `REGISTRY_USER` and `REGISTRY_PASSWORD` (a
+   robot-account token) **in the environment** — do *not* pass them as `make`
+   variables:
 
-  ```sh
-  export REGISTRY_USER='my-org+ci'
-  export REGISTRY_PASSWORD="$QUAY_TOKEN"   # from your CI secret store
-  make publish-image REGISTRY=quay.io/my-org IMAGE_VERSION=0.1.0
-  ```
+   ```sh
+   export REGISTRY_USER='my-org+ci'
+   export REGISTRY_PASSWORD="$QUAY_TOKEN"   # from your CI secret store
+   make publish-image REGISTRY=quay.io/my-org IMAGE_VERSION=0.1.0
+   ```
+
+2. **Shared robot credential in IBM Cloud Secrets Manager:** set
+   `REGISTRY_SECRET=<group>/<name>` (a step sets it in its Makefile next to
+   `REGISTRY`). `publish-image` fetches that `username_password` secret with the
+   `ibmcloud sm` CLI and logs in with it. The `quay.io/granitebuild` robot
+   `granitebuild+gbpush` (Write on the shared `gb-steps` repository) is stored as
+   `gb-registry/quay-gbpush-token` in the Granite.build Secrets Manager instance,
+   so any IBM developer with read access can publish a step image:
+
+   ```sh
+   ibmcloud login --sso                     # the account that owns the instance
+   make publish-image                       # e.g. in steps/train/openinstruct-sft/skypilot
+   ```
+
+   It needs the `ibmcloud` CLI with the `secrets-manager` plugin
+   (`ibmcloud plugin install secrets-manager`), `jq`, and the **SecretsReader**
+   role on the `gb-registry` secret group (ask a Granite.build admin). Point at
+   another instance with `SECRETS_MANAGER_URL`. If the lookup fails, the push
+   stops.
+
+3. **Interactive / local:** with neither of the above, there is no login; the push
+   reuses an earlier `podman login quay.io/my-org` (or `docker login`).
+
+The token only ever goes through a pipe into `--password-stdin`, so it never
+appears in `ps`, make's output, or shell history. With podman the login is scoped
+to `$(REGISTRY)` (e.g. `quay.io/granitebuild`), so it leaves your other logins on
+that host alone; docker logs in to the whole host.
 
 ## Rendering: how the image reference is inserted
 

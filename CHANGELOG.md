@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the granite4-350m recipes that use them are unchanged; moving those recipes over is a
   follow-up (they need pre-tokenized `--tokenized_data` input, which only the IBM fork's
   `finetune.py` has).
+- **`make publish-image` can log in with a shared robot credential from IBM Cloud Secrets
+  Manager (#229).** Set `REGISTRY_SECRET=<group>/<name>` (a `username_password` secret) and
+  `publish-image` fetches it with `ibmcloud sm` and pipes the password into
+  `login --password-stdin`. `REGISTRY_USER`/`REGISTRY_PASSWORD` in the environment still take
+  precedence. The `quay.io/granitebuild` robot is stored as `gb-registry/quay-gbpush-token`;
+  `steps/train/openinstruct-sft/skypilot` uses it. With podman, the login is now scoped to
+  `$(REGISTRY)` instead of the whole registry host.
 
 ### Changed
 

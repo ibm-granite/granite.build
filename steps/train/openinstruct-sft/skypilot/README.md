@@ -159,10 +159,16 @@ derives the tag from the step directory (`/` becomes `-`).
 The granitebuild quay account is a user namespace, whose push robot cannot create
 repositories. So `gb-steps` was pre-created once under `quay.io/granitebuild`, set
 Public, and grants the robot `granitebuild+gbpush` Write. Every step pushes a new
-tag into it, so no per-step quay setup is needed:
+tag into it, so no per-step quay setup is needed.
+
+The robot's token is in the Granite.build IBM Cloud Secrets Manager as
+`gb-registry/quay-gbpush-token`, and this Makefile sets `REGISTRY_SECRET` to it, so
+`publish-image` fetches it and logs in by itself. You need `ibmcloud login`, the
+`secrets-manager` CLI plugin, `jq`, and SecretsReader on the `gb-registry` group
+(see `steps/README.md`, "Registry credentials"):
 
 ```bash
-podman login -u 'granitebuild+gbpush' --password-stdin quay.io/granitebuild   # robot token on stdin
+ibmcloud login --sso
 make -C steps/train/openinstruct-sft/skypilot image publish-image
 skopeo inspect --raw docker://quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-5
 ```

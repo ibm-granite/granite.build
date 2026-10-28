@@ -5,8 +5,11 @@
 STEP_NAME := openinstruct-sft
 
 # Public namespace (functional ID). Its shared gb-steps repo is pre-created, Public,
-# and grants the granitebuild+gbpush robot Write, so `make publish-image` just works.
+# and grants the granitebuild+gbpush robot Write. The robot's token is in IBM Cloud
+# Secrets Manager, so `make publish-image` logs in with it (needs `ibmcloud login`
+# and SecretsReader on the gb-registry group; see steps/README.md).
 REGISTRY ?= quay.io/granitebuild
+REGISTRY_SECRET ?= gb-registry/quay-gbpush-token
 
 # The version part of the image tag (common.mk derives the tag
 # train-openinstruct-sft-skypilot-<IMAGE_VERSION> in the shared gb-steps repo).

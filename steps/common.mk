@@ -62,6 +62,9 @@
 #   IMAGE_NAME     image repository          (default: gb-steps, shared by every step)
 #   IMAGE_VERSION  version part of the tag   (default: git short SHA, else "latest")
 #   IMAGE_TAG      image tag                 (default: <step path, / → ->-<env>-<IMAGE_VERSION>)
+#   REGISTRY_SECRET  <group>/<name> of the registry's robot credential in IBM Cloud
+#                  Secrets Manager, used by publish-image (default: empty, no lookup)
+#   SECRETS_MANAGER_URL  that Secrets Manager instance (default: Granite.build's)
 #   STEP_ENV    step's environment segment      (default: this Makefile's dir name)
 #   PUBLISH_STEP_DIR  where `publish-step` renders the step (default: the env-nested
 #                     assets path configurations/assets/environments/<env>/steps/<path>)
@@ -127,9 +130,21 @@ IMAGE_VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
 IMAGE_TAG     ?= $(subst /,-,$(STEP_PATH))-$(STEP_ENV)-$(IMAGE_VERSION)
 
 # Registry host (e.g. quay.io) parsed from REGISTRY (quay.io/my-org) — this is
-# what `docker/podman login` authenticates against. Used only by publish-image's
+# what `docker login` authenticates against. Used only by publish-image's
 # optional non-interactive login below.
 REGISTRY_HOST := $(firstword $(subst /, ,$(REGISTRY)))
+# podman can scope a login to the namespace (quay.io/my-org), which leaves the
+# user's other logins on that host alone; docker logs in per host only.
+REGISTRY_LOGIN = $(if $(filter podman,$(notdir $(firstword $(DOCKER)))),$(REGISTRY),$(REGISTRY_HOST))
+
+# Shared robot credential in IBM Cloud Secrets Manager, as <group>/<name> of a
+# username_password secret. When set, publish-image fetches it with the
+# `ibmcloud sm` CLI (needs `ibmcloud login` and SecretsReader on the group) and
+# logs in to $(REGISTRY_LOGIN) before pushing. Empty by default: a step whose
+# REGISTRY has a shared robot sets it in its Makefile. SECRETS_MANAGER_URL picks
+# the instance (default: the Granite.build Secrets Manager).
+REGISTRY_SECRET     ?=
+SECRETS_MANAGER_URL ?= https://3a634e1e-2591-4a19-baa8-34cf8f12defb.us-east.secrets-manager.appdomain.cloud
 
 # IMAGE_REF is the fully qualified image reference (e.g. quay.io/org/img:tag)
 # that `make space` substitutes into the template's ${IMAGE_REF} token. The
@@ -336,18 +351,42 @@ else
 	@echo "[$(STEP_NAME)] no $(DOCKERFILE) found; no custom image to build."
 endif
 
-# By default this assumes you have already authenticated to the registry out of
-# band (`podman login $(REGISTRY_HOST)` / `docker login`), so no credentials live
-# in this Makefile. For non-interactive use (CI), export REGISTRY_USER and
-# REGISTRY_PASSWORD (a robot-account token) in the ENVIRONMENT — not as make
-# variables — and publish-image logs in first, piping the secret via
-# --password-stdin so it never appears in `ps`, make's echo, or shell history.
+# Logs in before the push, first match wins:
+#   1. REGISTRY_USER + REGISTRY_PASSWORD in the ENVIRONMENT (not as make
+#      variables), e.g. a CI robot token;
+#   2. REGISTRY_SECRET=<group>/<name>: the shared robot credential, fetched from
+#      IBM Cloud Secrets Manager (see REGISTRY_SECRET above);
+#   3. neither: no login; the push reuses an earlier `podman login`/`docker login`.
+# The password goes only through a pipe into --password-stdin, so it never
+# appears in `ps`, make's echo, or shell history. A failed lookup stops the push.
+# The secret name reaches the recipe through the environment (target-specific
+# export), so no value is ever pasted into shell source.
+publish-image: export GB_REGISTRY_SECRET := $(REGISTRY_SECRET)
+publish-image: export GB_SECRETS_MANAGER_URL := $(SECRETS_MANAGER_URL)
 publish-image:
 ifeq ($(STEP_USES_IMAGE),true)
 	$(call require-image-tag)
 	@if [ -n "$${REGISTRY_USER:-}" ] && [ -n "$${REGISTRY_PASSWORD:-}" ]; then \
-		echo "[$(STEP_NAME)] logging in to $(REGISTRY_HOST) as $$REGISTRY_USER"; \
-		printf '%s' "$$REGISTRY_PASSWORD" | $(DOCKER) login "$(REGISTRY_HOST)" -u "$$REGISTRY_USER" --password-stdin; \
+		echo "[$(STEP_NAME)] logging in to $(REGISTRY_LOGIN) as $$REGISTRY_USER"; \
+		printf '%s' "$$REGISTRY_PASSWORD" | $(DOCKER) login "$(REGISTRY_LOGIN)" -u "$$REGISTRY_USER" --password-stdin; \
+	elif [ -n "$$GB_REGISTRY_SECRET" ]; then \
+		group=$${GB_REGISTRY_SECRET%%/*}; name=$${GB_REGISTRY_SECRET#*/}; \
+		case "$$GB_REGISTRY_SECRET" in */*) ;; *) group=;; esac; \
+		if [ -z "$$group" ] || [ -z "$$name" ] || [ "$$group/$$name" != "$$GB_REGISTRY_SECRET" ]; then \
+			echo "[$(STEP_NAME)] ERROR: REGISTRY_SECRET must be <group>/<name>, got '$$GB_REGISTRY_SECRET'." >&2; \
+			exit 1; \
+		fi; \
+		command -v ibmcloud >/dev/null || { echo "[$(STEP_NAME)] ERROR: REGISTRY_SECRET needs the ibmcloud CLI with the secrets-manager plugin." >&2; exit 1; }; \
+		command -v jq >/dev/null || { echo "[$(STEP_NAME)] ERROR: REGISTRY_SECRET needs jq." >&2; exit 1; }; \
+		echo "[$(STEP_NAME)] fetching registry credential $$GB_REGISTRY_SECRET from IBM Cloud Secrets Manager"; \
+		cred=$$(ibmcloud sm secret-by-name --secret-type username_password \
+			--secret-group-name "$$group" --name "$$name" \
+			--service-url "$$GB_SECRETS_MANAGER_URL" --output json) \
+		&& user=$$(printf '%s' "$$cred" | jq -er '.username') \
+		&& printf '%s' "$$cred" | jq -er '.password' >/dev/null \
+		|| { echo "[$(STEP_NAME)] ERROR: could not read username_password secret $$GB_REGISTRY_SECRET (ibmcloud login? SecretsReader on group $$group?)" >&2; exit 1; }; \
+		echo "[$(STEP_NAME)] logging in to $(REGISTRY_LOGIN) as $$user"; \
+		printf '%s' "$$cred" | jq -j '.password' | $(DOCKER) login "$(REGISTRY_LOGIN)" -u "$$user" --password-stdin; \
 	fi
 	$(DOCKER) push $(IMAGE_REF)
 else
