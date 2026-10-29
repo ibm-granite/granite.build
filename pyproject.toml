@@ -175,7 +175,9 @@ dev = [
     "pre-commit",
     "psutil",
     "pylint",
-    "pytest",
+    # pytest 9.2 breaks xdist 3.8.0's --dist=loadgroup (groups silently ignored).
+    # Lift once a fixed xdist is released.
+    "pytest<9.2",
     "pytest-asyncio",
     "pytest-cov",
     "pytest-timeout",
