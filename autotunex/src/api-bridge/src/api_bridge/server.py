@@ -14,6 +14,7 @@ import jwt
 import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
+from sqlalchemy.exc import IntegrityError
 from starlette.middleware.cors import CORSMiddleware
 
 # Local
@@ -519,12 +520,7 @@ async def bootstrap(
     if existing_job is not None:
         return _existing(existing_job)
 
-    # 2. fresh (template path): find-or-create everything. The client retries a
-    # timed-out bootstrap while the first attempt may still be running here, so
-    # the two can race past step 1. The unique keys (job id, (user, name) for
-    # configs and datasets) stop a second row; when this attempt loses, return
-    # the winner's job instead of the constraint error.
-    try:
+    def _find_or_create_rows() -> tuple[str, str, str]:
         config_id = configuration.find_or_create(
             name=request.config.name,
             tuner_type=request.config.tuner_type,
@@ -548,13 +544,30 @@ async def bootstrap(
             seed=request.job.seed,
             build_id=request.build_id,
         )
-        job_id = job.create(tuning_cfg)
-    except HTTPException:
+        return config_id, dataset_id, job.create(tuning_cfg)
+
+    # 2. fresh (template path): find-or-create everything. The client retries a
+    # timed-out bootstrap while the first attempt may still be running, so the
+    # two can race past step 1. The unique keys (job id, (user, name) for
+    # configs and datasets) stop a second row. When this attempt loses, the
+    # winner's job may already exist: return it. Otherwise the winner committed
+    # only the config or dataset this attempt's lookup missed, so one more pass
+    # finds those rows instead of inserting them again.
+    try:
+        config_id, dataset_id, job_id = _find_or_create_rows()
+    except (HTTPException, IntegrityError):
         raced_job = job.get_by_id(request.job_id)
-        if raced_job is None:
-            raise
-        logger.info("bootstrap: job %s registered by a concurrent attempt", request.job_id)
-        return _existing(raced_job)
+        if raced_job is not None:
+            logger.info("bootstrap: job %s registered by a concurrent attempt", request.job_id)
+            return _existing(raced_job)
+        logger.info("bootstrap: job %s lost a find-or-create race, retrying once", request.job_id)
+        try:
+            config_id, dataset_id, job_id = _find_or_create_rows()
+        except (HTTPException, IntegrityError):
+            raced_job = job.get_by_id(request.job_id)
+            if raced_job is None:
+                raise
+            return _existing(raced_job)
     # Link the Granite Build task (template path: build_id == job_id). Mirrors
     # register_job; the UX path returns above and manages gb_tasks via gb_runner.
     if request.build_id:
