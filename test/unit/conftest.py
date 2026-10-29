@@ -23,6 +23,7 @@ Point GB_HOME_DIR at a per-test temp dir instead.
 """
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -40,7 +41,7 @@ def _real_db_tables(db_path: Path) -> set[str]:
     if not db_path.exists():
         return set()
     # Read-only, so the guard itself never touches the developer's db.
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
         rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         return {name for (name,) in rows}
 
@@ -54,15 +55,24 @@ def _guard_real_gb_home_db(request):
     unit test: integration/e2e tests are not isolated by this conftest and may
     legitimately use the real db, which would show up here as a false positive.
     """
-    unit_dir = Path(__file__).parent
-    if not all(Path(item.path).is_relative_to(unit_dir) for item in request.session.items):
+    unit_dir = Path(__file__).parent.resolve()
+    if not all(item.path.resolve().is_relative_to(unit_dir) for item in request.session.items):
         yield
         return
     db_path = Path(get_gb_home_dir()) / SQLITE_DB_FILE_NAME
     existed = db_path.exists()
-    before = _real_db_tables(db_path)
+    try:
+        before = _real_db_tables(db_path)
+    except sqlite3.Error:
+        # Locked, WAL without -shm, or corrupt: can't snapshot, so don't guard.
+        yield
+        return
     yield
-    leaked = sorted(_real_db_tables(db_path) - before)
+    try:
+        after = _real_db_tables(db_path)
+    except sqlite3.Error:
+        return
+    leaked = sorted(after - before)
     created = not existed and db_path.exists()
     assert not leaked and not created, (
         f"Unit tests wrote to the real SQLite db {db_path}: "
