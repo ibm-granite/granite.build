@@ -29,8 +29,8 @@ import pytest
 
 from gbcommon.types.constants import get_gb_home_dir
 from gbserver.storage import singleton_storage
-from gbserver.storage.sqlite.sqlite_storage import SQLITE_DB_FILE_NAME
 from gbserver.storage.sql.engine_cache import get_singleton_engine_cache
+from gbserver.storage.sqlite.sqlite_storage import SQLITE_DB_FILE_NAME
 
 # Cached module globals in singleton_storage that a test can populate lazily.
 _SINGLETON_GLOBALS = ("__STORAGE", "__STORAGE_FACTORY")
