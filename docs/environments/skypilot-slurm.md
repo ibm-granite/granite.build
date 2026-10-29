@@ -40,6 +40,10 @@ Keys are the **exact OpenSSH directive names**, so the env mirrors `~/.slurm/con
 via a secret — gbserver writes a `0600` file and points `IdentityFile` at it); specifying both is an
 error. The SSH private key and the cluster itself stay out-of-band — gbserver does not provision them.
 
+Every non-`Host` directive value is **secret-name-or-literal** — when it exactly matches a secret name
+in the space using this environment, the secret's value is what gets written to `~/.slurm/config`. See
+[Secrets in `cluster_ssh_configs`](#secrets-in-cluster_ssh_configs) for how to set those secrets.
+
 A host can instead authenticate via an already-issued rotating SSH cert (e.g. Smallstep `step`) with
 `IdentityStepCert: true` in place of `IdentityFile`/`IdentityKey` — see
 [LSF: rotating SSH cert](skypilot-lsf.md#clusterssh_configslsf--reachability) for the full explanation;
@@ -65,6 +69,20 @@ sharing one `Host` block — the fit for a cluster reached through several equiv
           - login2.cluster.example.com
         User: root
         IdentityFile: ~/.ssh/slurm_docker_key
+```
+
+Each candidate — or a scalar `HostName` — may instead name a **secret**, like any other directive.
+Because `HostName` feeds candidate selection before rendering, its secret may hold one login node
+**or several** (comma- or whitespace-separated), and every one joins the same failover pool:
+
+```yaml
+  cluster_ssh_configs:
+    slurm:
+      - Host: slurm-docker
+        # Secret holding e.g. "login1.cluster.example.com,login2.cluster.example.com":
+        HostName: SLURM_LOGIN_NODES
+        User: SLURM_LOGIN_USER        # Any directive can name a secret the same way.
+        IdentityKey: SSH_PRIVATE_KEY
 ```
 
 At launch gbserver picks one candidate and writes it as a normal scalar `HostName`. The pick is
@@ -105,6 +123,40 @@ the genuine error surfaces, so a true outage is never hidden.
 > re-authentication with the current key. This is a **test-only** toggle (manually set, unconditional
 > — not idle-gated); production never clears sockets, since the socket root is shared by all of the OS
 > user's SkyPilot SSH connections. It is not an environment-config key.
+
+#### Secrets in `cluster_ssh_configs`
+
+Every non-`Host` directive value is **secret-name-or-literal**: when the value exactly matches a secret
+name in the space using this environment, the secret's value is what gets written to `~/.slurm/config`.
+This is how a public environment asset can name its reachability requirements — `HostName`, `User`, the
+key — without embedding cluster-internal hostnames, accounts, or key material; the space that deploys it
+supplies the values.
+
+`HostName` follows the same rule with one addition: it is resolved *before* login-node selection, so a
+`HostName` secret may hold **several** interchangeable login nodes (comma- or whitespace-separated) and
+all of them become failover candidates (see [Multiple login nodes](#multiple-login-nodes-hostname-list)).
+A value that looks like a secret name (UPPER_SNAKE) but matches no secret is used as a literal, with a
+warning in gbserver's log — an SSH failure right after is the usual symptom of a missing secret.
+
+The shipped `ibm-bluevela` environment uses exactly this shape; a space running it defines three
+secrets:
+
+| Secret | Holds |
+|---|---|
+| `BV_SLURM_LOGIN_NODES` | The candidate login hostnames, comma- or whitespace-separated. |
+| `BV_SLURM_LOGIN_USER` | The account on the login nodes. |
+| `BV_SSH_PRIVATE_KEY` | The SSH private key contents (`IdentityKey`). |
+
+How you set them depends on the secret manager the space's `space.yaml` selects (see
+[Secrets](../../secrets/README.md) for the full backend docs):
+
+- **`local`** — a file in the space's secrets dir (default
+  `$GB_HOME_DIR/space_secrets/<space name>/`), with the value base64-encoded in `payload` and tagged
+  `labels: [encode:base64]`. For example, `BV_SLURM_LOGIN_USER=granitebuild` is
+  `echo -n 'granitebuild' | base64` → `payload: Z3Jhbml0ZWJ1aWxk`.
+- **`env`** — environment variables with the `GBSERVER_SECRET_` prefix, e.g.
+  `GBSERVER_SECRET_BV_SLURM_LOGIN_NODES` (ideal for CI/CD and containers).
+- **`ibmcloud`** — the secret of the same name in IBM Cloud Secrets Manager (read-only at build time).
 
 ### `cluster` / `zone`
 
