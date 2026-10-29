@@ -55,6 +55,13 @@ config:
     sbatch_options:
       account: grp_granite_dot_build
       qos: cpu
+  # Opt in to the generated Pyxis GPU sbatch directives (--gpus-per-node plus
+  # the NVIDIA_* export list): both work around BlueVela specifics (its submit
+  # filter reinterprets a bare --gres as an H100 request; its driver libs
+  # live under /usr/lib/x86_64-linux-gnu), so generation is off by default
+  # and only BlueVela-like clusters enable it. See
+  # skypilot.py:_pyxis_gpu_sbatch_directives.
+  slurm_gpu_sbatch_directives: true
   # Env-level shared filesystem root for per-run build workdirs (same path the
   # LSF bluevela environment uses — both backends reach the same /proj GPFS
   # mount). gbserver derives ${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/
@@ -123,7 +130,15 @@ config:
           # inside the container if it falls under this path. See
           # docs/environments/skypilot-slurm.md#workdir-containerized-steps.
           workdir: /proj/data-eng/llmb-read-write
-          tmpdir: /opt/nvme/$USER/skypilot-tmp
+          # SkyPilot's per-cluster runtime dir (skylet state, jobs database) lives
+          # under tmpdir and must sit on storage shared by ALL login nodes behind
+          # the HostName candidates: a node-local path gives each login node its
+          # own divergent skylet state. $HOME is GPFS-shared across the login
+          # nodes (the fork expands $VARs with the remote login user's
+          # environment). /opt/nvme is a compute-node path — it does not exist on
+          # any login node, and /opt is root-owned, so it cannot be created
+          # there either.
+          tmpdir: $HOME/skypilot-tmp
           # The SLURM backend bind-mounts only $HOME, ccache and `workdir` into the
           # container, so anything else a step reads or writes on the shared filesystem
           # is invisible inside it. Mount the whole /proj GPFS tree identity (container
@@ -161,15 +176,16 @@ config:
       # priority 0, preempted by burst/cpu) that an LSF-group-swap maps to
       # anyway, so this isn't a real functionality loss for this environment.
       #
-      # GPU directives (`gpus`, pyxis driver-injection `export`) are NOT set
-      # here: gbserver generates them per-step from the step's own
+      # GPU directives (`gpus-per-node`, pyxis driver-injection `export`) are
+      # NOT set here: gbserver generates them per-step from the step's own
       # resources.accelerators + image_id (Skypilot._pyxis_gpu_sbatch_directives
       # in src/gbserver/environment/skypilot.py) rather than a static
       # per-environment value, so a step requesting a different GPU count or
-      # type is never silently miscounted. See issue #510. Set
-      # `slurm_gpu_sbatch_directives: false` above (sibling of `cluster`/`zone`)
-      # to opt this environment out, if a future cluster's Pyxis/driver setup
-      # ever needs something different from BlueVela's.
+      # type is never silently miscounted. See issue #510. Generation is
+      # opt-in via `slurm_gpu_sbatch_directives: true` above (sibling of
+      # `cluster`/`zone`) — clear it, or set it to false, if a future
+      # cluster's Pyxis/driver setup ever needs something different from
+      # BlueVela's.
       sbatch_options:
         account: grp_granite_dot_build
         qos: grp_granite_dot_build_medium
