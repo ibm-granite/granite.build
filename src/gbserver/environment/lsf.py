@@ -1423,16 +1423,16 @@ class Lsf(Environment):
 
     def _resolve_builtin_step_yaml(self: Self, step_name: str) -> Path:
         """Resolve ``space://steps/<step_name>`` to the local step.yaml Path,
-        routing through SpaceURI's env-class-match tier so the Lsf env-keyed
-        copy at ``<builtins>/steps/lsf/<step_name>/step.yaml`` is selected.
+        routing through SpaceURI's env-class match so the Lsf env-keyed copy at
+        ``<builtins>/steps/lsf/<step_name>/step.yaml`` is selected.
 
         Wrapped in :meth:`SpaceURI.with_current_env` because these helpers run
         during pullasset/pushasset (target setup), which happens before any
         ``TargetStep`` enters the resolver's env-aware scope. Scoping from
         ``self`` supplies the full env context — class name, env-dir URI (for
-        the ancestor-walk tier) and sub-type (for the sub-type filter) — so
-        resolution exercises the same tiers as a normal step and doesn't depend
-        on caller context.
+        the env-folder ownership check) and sub-type (for the sub-type filter) —
+        so resolution runs exactly as for a normal step and doesn't depend on
+        caller context.
         """
         with SpaceURI.with_current_env(self):
             uri = URI.get_uri(f"space://steps/{step_name}", default_scheme="file")

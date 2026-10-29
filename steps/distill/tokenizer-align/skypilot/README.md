@@ -53,8 +53,8 @@ make check-published
 ```
 
 `publish-step` writes to `configurations/assets/environments/skypilot/steps/` — **not** under
-`lsf/ibm-bluevela/`. BlueVela still resolves it via the Tier-1 ancestor walk; the step gates
-itself to LSF with `environment_configs.Skypilot.subtypes: [lsf]`.
+`lsf/ibm-bluevela/`. BlueVela still resolves it, because `skypilot/steps/` serves every skypilot
+environment below it; the step gates itself to LSF with `environment_configs.Skypilot.subtypes: [lsf]`.
 
 ## Tests
 

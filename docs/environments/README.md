@@ -159,8 +159,9 @@ of them.
 Steps are resolved relative to the active environment (see
 [step-resolution.md](step-resolution.md)). A **single** `step.yaml` at a shared ancestor of
 several environments' directories — e.g. `environments/skypilot/steps/digit/step.yaml` — is
-discovered by every environment beneath it (`skypilot/kubernetes`, `skypilot/slurm`, …) via the
-resolver's ancestor-walk. An env's own `steps/<name>/` still overrides. No configuration needed.
+served to every environment beneath it (`skypilot/kubernetes`, `skypilot/slurm`, …), because a
+`steps/` folder serves the environments at or below the folder that holds it. An env's own
+`steps/<name>/` still overrides (the deeper folder wins). No configuration needed.
 
 ### Restricting a shared step by sub-type (`subtype` / `subtypes`)
 
@@ -186,8 +187,8 @@ environment_configs:
     ...
 ```
 
-The sub-type filter is applied by both resolver tiers (ancestor-walk and env-class-match), so the
-restriction holds regardless of which tier finds the file.
+The sub-type filter is applied wherever the resolver finds a copy of the step, so the restriction
+holds regardless of which base or folder the file is in.
 
 ### Asset stores
 

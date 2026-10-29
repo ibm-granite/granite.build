@@ -88,9 +88,9 @@ class StepEnvironmentTypeConfig(Config):
             universal — it matches any environment of this class regardless of
             sub-type.  A non-empty list restricts resolution to environments
             whose ``subtype`` is one of these values (exact string match); such
-            a step will not resolve for an environment with no ``subtype``.  Used
-            by the ``SpaceURI`` resolver's ancestor-walk and env-class-match
-            tiers.
+            a step will not resolve for an environment with no ``subtype``.
+            Applied by the ``SpaceURI`` resolver wherever it finds a copy of the
+            step.
     """
 
     default_launcher: Optional[str] = None

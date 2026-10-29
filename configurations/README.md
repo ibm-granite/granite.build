@@ -23,10 +23,10 @@ configurations/
 │   │   ├── docker/environment.yaml
 │   │   ├── skypilot/
 │   │   │   ├── steps/                   # shared by ALL skypilot envs below
-│   │   │   │   └── <name>/step.yaml     # (via the ancestor-walk, nearest-wins)
+│   │   │   │   └── <name>/step.yaml     # (deepest owning folder wins)
 │   │   │   ├── kubernetes/
 │   │   │   │   ├── environment.yaml     # inherits ../steps; may add its own
-│   │   │   │   └── steps/               # optional: env-co-located override
+│   │   │   │   └── steps/               # optional: env's own override
 │   │   │   │       └── <name>/step.yaml # wins over the shared ../steps copy
 │   │   │   └── slurm/environment.yaml   # inherits ../steps
 │   │   └── skypilot-managed/
@@ -49,12 +49,13 @@ configurations/
 
 - **`assets/`** is the leaf primitives directory. It holds no `space.yaml`; it's a target for `base_uris`, not a space in its own right.
 - **`configurations/spaces/local/space.yaml`** is the canonical user-facing space. Its `base_uris` chains into `configurations/assets/` so `space://environments/...`, `space://assetstores/...`, and `space://steps/...` resolve through to the assets tree.
-- **Step resolution tiers**: when a target runs, `space://steps/<name>` is resolved in order:
-  1. Walk up from `<env-dir>` to the enclosing base_uri, checking `<dir>/steps/<name>/` at each level — nearest-wins, so an env's own dir overrides a shared ancestor (e.g. `skypilot/steps/<name>` is shared by `skypilot/kubernetes` and `skypilot/slurm`).
-  2. Recursive glob `<base>/**/<name>/step.yaml` — first candidate whose `environment_configs` keys contain the active env's class name (e.g. `Bash`, `Docker`, `K8s`, `Skypilot`).
-  3. `<base>/steps/<name>/` — env-agnostic fallback.
+- **Step resolution**: when a target runs, `space://steps/<name>` resolves to one copy of the step:
+  1. **Candidates.** A copy counts only if its `environment_configs` list the active environment's class (e.g. `Bash`, `Docker`, `K8s`, `Skypilot`), its optional `subtypes` admit the environment, and its `steps/` folder serves the environment. A base's top-level `steps/` serves every environment. An `environments/<…>/steps/` folder serves only environments at or below it, so `skypilot/steps/<name>` is shared by `skypilot/kubernetes` and `skypilot/slurm`, while `skypilot/aws/steps/<name>` serves only `skypilot/aws`. A step with no `environment_configs` is never a candidate.
+  2. **Base order.** Bases are searched in order: the space's own directory, the environment's own folder if no base contains it, the space's `base_uris` as listed, then the builtins. The first base holding a candidate wins.
+  3. **Within one base.** The space's root `steps/<name>` first, then the deepest owning folder (an environment's own `steps/` overrides its family's), then fewest `environment_configs` keys, then path.
+  4. **Fallback.** If no base has a candidate, `<base>/steps/<name>/` is tried in base order, still subject to the environment check.
 
-  Both step-scoped tiers honour an optional per-step `environment_configs.<Class>.subtypes` list, which restricts a shared step to environments declaring one of those `subtype` values (e.g. `digit`/`sage` are shared by `skypilot/steps/` but limited to `subtypes: [kubernetes, slurm]`). See [docs/environments/step-resolution.md](../docs/environments/step-resolution.md) for the full reference.
+  `subtypes` restricts a shared step to environments declaring one of those `subtype` values; for example, `digit`/`sage` are shared by `skypilot/steps/` but limited to `subtypes: [kubernetes, slurm]`. See [docs/environments/step-resolution.md](../docs/environments/step-resolution.md) for the full reference.
 
 ## Consumers
 
@@ -65,6 +66,6 @@ configurations/
 ## See also
 
 - [docs/environments/README.md](../docs/environments/README.md) — environment.yaml and step.yaml reference.
-- [docs/environments/step-resolution.md](../docs/environments/step-resolution.md) — full step resolution rules (ancestor-walk, shared-steps pool, env-class match, env-agnostic).
-- [src/gbcommon/uri/space.py](../src/gbcommon/uri/space.py) — `SpaceURI` resolver implementing the tiered lookup.
+- [docs/environments/step-resolution.md](../docs/environments/step-resolution.md) — full step resolution rules (base order, env-folder ownership, env-class match, env-agnostic fallback).
+- [src/gbcommon/uri/space.py](../src/gbcommon/uri/space.py) — `SpaceURI` resolver implementing the lookup.
 - [src/gbserver/build/targetstep.py](../src/gbserver/build/targetstep.py) — scopes the active env on the resolver thread-local during step assimilation.

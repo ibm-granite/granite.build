@@ -329,12 +329,15 @@ class Environment(ABC):
     def environment_dir_uri(self: Self) -> Optional[str]:
         """URI of the directory that contains this env's environment.yaml.
 
-        Used by the SpaceURI resolver to discover env-co-located steps at
-        ``<env-dir>/steps/<name>/`` when this env is the active target's env.
-        Returned with no trailing slash.  Returns ``None`` when the env was
-        constructed without an asset (e.g. some unit tests), in which case
-        the resolver skips the env-dir tier and falls through to the
-        env-class-match and env-agnostic tiers.
+        Used by the SpaceURI resolver, when this env is the active target's
+        env, to decide which ``environments/<...>/steps/`` folders serve it (its
+        own and its ancestors') and to enable the space-root lookup.  Returned
+        with no trailing slash.  Returns ``None`` when the env was constructed
+        without an asset (e.g. some unit tests).  The resolver then skips the
+        space-root lookup, and, since no folder can be shown to own the env,
+        accepts copies from every ``steps/`` folder whose ``environment_configs``
+        admit the env's class, ranked shallowest folder first (a base's
+        top-level ``steps/``, then shared family folders, then one env's own).
         """
         if self.environment_asset is None:
             return None

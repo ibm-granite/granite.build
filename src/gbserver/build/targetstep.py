@@ -296,9 +296,10 @@ class TargetStep(BuildEntity):
         self.monitors = {}
         self.parent_target_config = parent_target_config
         # Scope the active env's step-discovery context on SpaceURI so that
-        # any `space://steps/...` URIs resolved during step assimilation try,
-        # in order: (1) the env's own directory (env-co-located steps),
-        # (2) env-class-match against `environment_configs` keys, (3) the
+        # any `space://steps/...` URIs resolved during step assimilation pick
+        # a copy that matches this env, from the earliest base_uri holding one
+        # (the space's own steps/<name> first; within a base, the deepest
+        # owning folder, i.e. the env's own over its family's), else the
         # env-agnostic fallback location.
         with SpaceURI.with_current_env(environment):
             self.step = Step(
