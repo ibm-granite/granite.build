@@ -320,6 +320,14 @@ class TestRayShardNotResharded:
         ds.is_rank_sharded = False
         assert self._yielded(trainer, ds) == 20
 
+    def test_shard_refuses_loader_workers(self, tmp_path):
+        """The shard does not split on worker info, so each worker would replay all of it."""
+        trainer = _trainer(tmp_path, [1, 2, 3])
+        trainer.args.dataloader_num_workers = 2
+        ds = RayShardIterableDataset(_FakeShard(self._rows()), batch_size=4, total_samples=40)
+        with pytest.raises(ValueError, match="dataloader_num_workers"):
+            trainer._get_dataloader(ds, "Training", batch_size=4, is_training=True)
+
 
 class TestDriversUseCollator:
     @pytest.mark.parametrize("name", SFT_DRIVERS)
