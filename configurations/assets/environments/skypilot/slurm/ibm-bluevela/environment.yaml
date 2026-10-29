@@ -25,9 +25,14 @@ config:
     max_retries: 20
     provision_backoff_max: 180
   # The auto-queued HF I/O steps need no GPU, so send them to the cpu partition
-  # (keyed by step-type slug; a build can still override). The cpu partition has
-  # no H200 nodes, so they also drop the h200 constraint below: `null` removes the
-  # directive, where "" would emit a bare `--constraint=`.
+  # (keyed by step-type slug; a build can still override). That partition is the
+  # cluster-wide superset, not a GPU-free lane (2026-10-29: 768 nodes, 636 of
+  # them 8-GPU H100/H200, the rest CPU-only — same GPU nodes gpu-mid serves),
+  # so it contains every H200 node and the h200 constraint below would be
+  # satisfiable there. Drop it anyway: a GPU-less I/O job has no business being
+  # pinned to the H200 subset — the exact nodes GPU work competes for — when
+  # the CPU-only bulk will do. `null` removes the directive, where "" would
+  # emit a bare `--constraint=`.
   steps:
     hfpull:
       zone: cpu
