@@ -14,6 +14,13 @@ TEACHER_MODEL_URI: "env:///proj/granite-build/g4os/kd-sandbox/teacher_overlays/g
 # ─── Run identification ────────────────────────────────────────────────
 RUN_NAME: "distill-gold-trainonly"
 
+# ─── Resume from an interrupted run ────────────────────────────────────
+# EMPTY = fresh start. Set to a prior run's `<run_name>_node<N>` checkpoint dir to
+# resume (weights + optimizer + scheduler + RNG + data position from its highest
+# checkpoint-<N>). World size (NUM_NODES) AND schedule (MAX_STEPS, batch sizes, LR)
+# must match the source run. See the gold-slurm step.yaml "Resume from an earlier run".
+RESUME_FROM_CHECKPOINT_DIR: ""
+
 # ─── On-policy switch ──────────────────────────────────────────────────
 # false => train-gold only (1 target). true adds vllm-server + teardown; set LMBDA>0
 # and LMBDA_SCHEDULE=linear for a ramped on-policy run (see build.yaml header).

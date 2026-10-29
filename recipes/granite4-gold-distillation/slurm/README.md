@@ -162,12 +162,39 @@ Remaining values (LR, NCCL pins, image, queues, the fork pin) are the trainonly
   (effective batch 128 either way). batch=8/ga=1 gives no further gain (compute-bound);
   memory is never the limit (ZeRO-3 shards the 30B teacher, ~7 GB/rank peak).
 - **A full epoch is ~8,601 steps ≈ 7.5 days at ~76 s/step — over the gpu-mid 7-day
-  `MaxTime`.** The env sets `time: 7-00:00:00`; the run checkpoints every 500 steps,
-  hits the wall near step ~7,850, and is **finished with a resume submit** — rerun the
-  same command adding `--param` for the step's `code_config.resume_from` (the
-  `<run_name>_node<N>` checkpoint dir of the interrupted run); HF resumes weights +
-  optimizer + scheduler + data position from the highest `checkpoint-<N>`. gpu-mid is
-  preemptible (`PreemptMode=REQUEUE`), so an eviction resumes the same way.
+  `MaxTime`, and gpu-mid is preemptible (`PreemptMode=REQUEUE`).** The env sets
+  `time: 7-00:00:00`; the run checkpoints every `SAVE_STEPS` and, on a wall-clock cap
+  OR a preemption, is **continued with a resume submit** (see below). On a near-full
+  cluster preemptions are frequent and early — keep `SAVE_STEPS` well under the typical
+  preempt interval (we saw evictions at 2 h and 9.6 h; `SAVE_STEPS=250` ≈ 5.3 h bounded
+  the loss, after `=500` lost a whole 9.6 h window with zero checkpoints).
+
+##### Resuming after a preemption / wall-clock cap
+`RESUME_FROM_CHECKPOINT_DIR` points the next build at the interrupted run's
+`<run_name>_node<N>` checkpoint dir. Rank 0 hardlinks every COMPLETE `checkpoint-<N>`
+into the new run, then HF resumes from the highest one (weights + optimizer + scheduler +
+RNG + data position). **The schedule and world size MUST match the source** (`NUM_NODES`,
+`MAX_STEPS`, batch sizes, LR) — a ZeRO-3 checkpoint has one optimizer shard per rank.
+Find the dir via `find .../builds/builds/<BUILD>/runs/<run>/checkpoints -maxdepth 1 -name
+'<run_name>_node*'`; verify the highest `checkpoint-<N>` is complete (`model.safetensors`,
+`trainer_state.json`, `scheduler.pt`, `rng_state_*` for every rank).
+```bash
+# Same command as the full-epoch launch, plus ONE param (the source checkpoint dir):
+gb build start -f recipes/granite4-gold-distillation/slurm/distill-gold-trainonly/build.yaml \
+  --param RESUME_FROM_CHECKPOINT_DIR=/proj/granite-build/g4os/gbtest/builds/builds/<BUILD>/runs/<run>/checkpoints/distill-gold-trainonly_node2 \
+  --param RETAGGED_STUDENT_URI=env:///proj/granite-build/g4os/kd-sandbox/model_copies/granite-4.0-1b-instruct_retagged_42 \
+  --param CORPUS_URI=env:///proj/granite-build/g4os/kd-sandbox/data/g42sft_allcat_rh_pretok_basehub \
+  --param TEACHER_MODEL_URI=env:///proj/granite-build/g4os/kd-sandbox/teacher_overlays/granite-4.2-30b-slurm \
+  --param MAX_STEPS=-1 --param NUM_TRAIN_EPOCHS=1.0 --param SAVE_STEPS=250 --param NUM_NODES=2 \
+  --param MAX_LENGTH=16384 --param MAX_COMPLETION_LENGTH=15872 \
+  --param PER_DEVICE_TRAIN_BATCH_SIZE=4 --param GRADIENT_ACCUMULATION_STEPS=2 \
+  --param USE_LIGER_FUSED_JSD=true --param RESPONSE_TEMPLATE='<|im_start|>assistant' \
+  --param ON_POLICY=false \
+  --param LOG_RETRIEVAL_INTERVAL_SECONDS=30 --param POLL_INTERVAL_SECONDS=30 --skip-version-check
+```
+Confirm the resume took: the trainer's FIRST step line should read `<N+1>/8601`, not
+`1/8601` — e.g. seeding from `checkpoint-1250` must start at step 1251, not a fresh 0.
+`RESUME_FROM_CHECKPOINT_DIR` is empty by default, so a normal launch is unaffected.
 - The first 1b attempt (build `c3698cfd`, 2026-10-20) was scancelled after a transient
   `nvidia-container-cli` driver-rpc timeout wedged container-init on `p1-r10-n1`; that
   host is now in the env's `sbatch_options.exclude` list.
@@ -206,6 +233,24 @@ gives per-microstep teacher all-gather ≈ 10.5 s and fixed-per-token compute �
 Memory is never the gate (ZeRO-3 shards the 30B teacher; ~7 GB/rank peak even at batch 8),
 so batch 8 does **not** OOM — it just isn't faster. **Use 4 × 2 + Liger.** At ~76 s/step a
 full epoch (~8,601 steps) is ~7.5 days — see the resume note above.
+
+The 97→76 s gain is **two independent levers**, not just the batch reshape: (a) the 4×2
+microbatch (fewer, fatter microbatches amortize the fixed per-step teacher all-gather),
+and (b) `USE_LIGER_FUSED_JSD=true` — a GPU-kernel change that fuses the JSD loss +
+gradient into one Triton pass over the vocab without materializing the full student/teacher
+logits tensors (cuts memory traffic + kernel launches, lowering `t_train`). This is
+`use_liger_fused_jsd` (the distillation loss kernel), NOT `use_liger_kernel` /
+`use_liger_swiglu_mlp` (HF's RMSNorm/SwiGLU/RoPE fusions), which stay off.
+
+> **⚠️ Fused JSD + Granite can NaN — watch the loss.** The step default is
+> `use_liger_fused_jsd: false` on purpose: Granite's `logits_scaling=10` can overflow the
+> fused **bf16** JSD kernel and produce NaN loss. We force it on here for the −22% speedup
+> and verified finite, healthy loss (~0.46, no NaN) on the 1b←30b all-category run — but
+> this is config-specific, not a blanket guarantee. On any new model/precision/scaling,
+> **watch the first few hundred steps**: if `loss`/`off_policy_loss` goes `nan`/`inf`,
+> drop `--param USE_LIGER_FUSED_JSD=false` (back to ~97 s/step, the unfused path) rather
+> than train a corrupted student. A NaN here is silent to the step's exit code until a
+> downstream check catches it.
 
 ### First bring-up
 Start single-node (`--param NUM_NODES=1`) to validate before scaling to 2.
@@ -544,6 +589,53 @@ design — now viable on SLURM too.
   1 node. Install with `pip install -e . --no-deps`. The editable build reports
   version `0.0.0`, which trips the CLI's version floor; append `--skip-version-check`
   to `gb` commands.
+- **gbserver MUST stay alive + reachable for the WHOLE queue wait AND the entire run —
+  run it on a persistent host, NOT a laptop.** The standalone gbserver is the
+  orchestrator: after `sbatch`, it is what `sky exec`s the workload into the containers
+  once the job gets GPUs, and what drives checkpoint-artifact emission and teardown
+  throughout. If its host sleeps or drops off the network:
+  - *during the queue wait* → the job gets nodes, the containers start, but nothing
+    exec's the workload into them → an **orphan** allocation (ready containers, idle
+    GPUs, zero training) that also burns the group GRES quota and blocks the next
+    submit. This repeatedly bit a laptop-hosted gbserver: a ~7 h gpu-mid queue wait is
+    far longer than a laptop stays awake, so the job scheduled while the laptop was
+    closed and orphaned every time.
+  - *during the run* → gbserver can't emit checkpoint artifacts or tear down; on
+    reconnect it may consider the build failed.
+  An orphan is NOT recoverable in-framework: once gbserver marks the build failed and
+  cleans it up it will never re-adopt that allocation, and the rendered `run:` script
+  (the real workload) is streamed over SSH in-memory, never written to disk, so it
+  cannot be hand-re-exec'd without reconstructing the full ~900-line launch contract
+  (resume-seed handshake, 2-node accelerate rendezvous, the `gold_config` yaml). The fix
+  is to host gbserver somewhere that never sleeps — ideally a **BlueVela login node**
+  (under tmux/systemd, co-located with SLURM, no SSH-latency and no laptop-sleep window),
+  or an always-on VM that can reach the cluster. Keeping it on a laptop with
+  `caffeinate` + power is only a band-aid — it still dies on reboot or network drop.
+  `gb build restart <id>` re-drives a failed build cleanly but launches a FRESH cluster
+  (new job, back in the queue) — it does NOT reuse an orphan's still-`UP` allocation.
+- **Stale SkyPilot Pyxis cache (`docker_image is not supported ... Pyxis plugin is not
+  installed`).** A build fails in ~80s **before any SLURM job** with that error even
+  though Pyxis IS installed (every prior docker-image run used it). SkyPilot caches per-
+  cluster capabilities in **`~/.sky/kv_cache.db`** (table `kv_cache`, keys
+  `slurm:pyxis_enabled:<cluster>` and `slurm:fuse_enabled:<cluster>`) and, per its own
+  "availability is unlikely to change" assumption, does **not** re-probe until the entry
+  expires. When the cluster is near-full or a login node is briefly flaky the probe can
+  fail once and cache `false`, poisoning every subsequent docker-image build. Fix — BOTH
+  steps (a disk delete alone is not enough; the running gbserver holds the stale value in
+  memory and fails identically until restarted):
+  ```bash
+  # 1. delete the stale false-negatives so the next submit re-probes + re-caches 'true'
+  python -c "import sqlite3, os; c = sqlite3.connect(os.path.expanduser('~/.sky/kv_cache.db')); \
+  c.execute(\"DELETE FROM kv_cache WHERE key IN ('slurm:pyxis_enabled:bluevela', 'slurm:fuse_enabled:bluevela')\"); \
+  c.commit(); c.close()"
+  # 2. restart gbserver so it drops the in-memory copy (GB_ENVIRONMENT set; see below)
+  pkill -f 'gbserver standalone'
+  GB_ENVIRONMENT=STANDALONE nohup .venv/bin/gbserver standalone \
+    --space-dir configurations/spaces/local > /tmp/standalone.log 2>&1 &
+  ```
+  Inspect current values with the same sqlite path:
+  `SELECT key, value FROM kv_cache WHERE key LIKE 'slurm:%:bluevela';`. Read
+  `sinfo NODES(A/I/O/T)` as Allocated/Idle/Other/Total — the 2nd field is free nodes.
 - **Reference / provenance.** The hand-run SkyPilot YAMLs these recipes replace, and
   the fork/cluster setup notes, are in
   `gbansible/docs/skypilot_kd_bluevela_slurm.md` and

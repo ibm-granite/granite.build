@@ -480,7 +480,8 @@ environment_configs:
             export NCCL_IGNORE_CPU_AFFINITY=1
             export NCCL_IB_SPLIT_DATA_ON_QPS=0
             export NCCL_WORK_FIFO_DEPTH=1048576
-            export NCCL_ASYNC_ERROR_HANDLING=1
+            # TORCH_NCCL_ASYNC_ERROR_HANDLING is the current name; the legacy
+            # NCCL_ASYNC_ERROR_HANDLING alias is dropped (PyTorch warns it is deprecated).
             export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
             # GPUDirect-RDMA. DEFAULT OFF (stage IB through host memory). Inside the
             # pyxis/enroot container GDR device support (gdrdrv/nvidia_peermem) is NOT

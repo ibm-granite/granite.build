@@ -122,6 +122,10 @@ granite.build:
               expect_ref: "$${CODE_REF}"
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            # Resume an interrupted run: the prior run's `<run_name>_node<N>` checkpoint
+            # dir. Empty = fresh start. World size + schedule (max_steps, batch, LR) MUST
+            # match the source. See gold-slurm step.yaml "Resume from an earlier run".
+            resume_from_checkpoint_dir: "$${RESUME_FROM_CHECKPOINT_DIR}"
             compute_config:
               num_nodes: $${NUM_NODES}
               num_gpus_per_node: $${NUM_GPUS_PER_NODE}
