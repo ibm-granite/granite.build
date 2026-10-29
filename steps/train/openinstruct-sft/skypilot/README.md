@@ -161,21 +161,18 @@ repositories. So `gb-steps` was pre-created once under `quay.io/granitebuild`, s
 Public, and grants the robot `granitebuild+gbpush` Write. Every step pushes a new
 tag into it, so no per-step quay setup is needed.
 
-The robot's token is in the Granite.build IBM Cloud Secrets Manager as
-`gb-registry/quay-gbpush-token`, and this Makefile sets `REGISTRY_SECRET` to it, so
-`publish-image` fetches it and logs in by itself. You need to be in the
-`granite-build` IBM Cloud access group, plus `ibmcloud login`, the
-`secrets-manager` CLI plugin and `jq` (see `steps/README.md`, "Registry
-credentials"):
+Log in with the robot first (`podman login quay.io/granitebuild`, or
+`REGISTRY_USER`/`REGISTRY_PASSWORD` in the environment; see `steps/README.md`,
+"Registry credentials"), then:
 
 ```bash
-ibmcloud login --sso
 make -C steps/train/openinstruct-sft/skypilot image publish-image
-skopeo inspect --raw docker://quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-5
+sh steps/registry-tag-status.sh quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-6
 ```
 
-Run the `skopeo inspect` with no credentials, to check the image pulls
-anonymously.
+`publish-image` refuses a tag that already exists, so bump `IMAGE_VERSION` (see
+above) before publishing a changed image. Run `registry-tag-status.sh` with no
+credentials: `present` means the image pulls anonymously.
 
 The image is large (CUDA, torch, DeepSpeed and flash-attn wheels). A local
 build needs well over 60 GB free in the podman machine.

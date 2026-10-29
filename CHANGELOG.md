@@ -29,16 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the granite4-350m recipes that use them are unchanged; moving those recipes over is a
   follow-up, #569 (they need pre-tokenized `--tokenized_data` input, which only the IBM
   fork's `finetune.py` has).
-- **`make publish-image` can log in with a shared robot credential from IBM Cloud Secrets
-  Manager (#229).** Set `REGISTRY_SECRET=<group>/<name>` (a `username_password` secret) and
-  `publish-image` fetches it with `ibmcloud sm` and pipes the password into
-  `login --password-stdin`. `REGISTRY_USER`/`REGISTRY_PASSWORD` in the environment still take
-  precedence. The `quay.io/granitebuild` robot is stored as `gb-registry/quay-gbpush-token`;
-  `steps/train/openinstruct-sft/skypilot` uses it. With podman, the login is now scoped to
-  `$(REGISTRY)` instead of the whole registry host.
+- **`make publish-image` refuses to overwrite an existing image tag (#229).** A tag must keep
+  pointing at one image, and SLURM's `slurm_image_cache` keys its `.sqsh` by tag, so a re-pushed
+  tag never reached it. `publish-image` now checks the registry first and pushes only a new tag;
+  it also refuses when the check cannot tell. Bump `IMAGE_VERSION`, or pass
+  `PUBLISH_OVERWRITE=true` to replace a tag on purpose. The check is the new
+  `steps/registry-tag-status.sh` (`skopeo` when installed, else the registry's v2 API).
 
 ### Changed
 
+- **With podman, `make publish-image`'s `REGISTRY_USER`/`REGISTRY_PASSWORD` login is scoped to
+  `$(REGISTRY)` instead of the whole registry host (#229),** so it no longer replaces your other
+  logins on that host. docker still logs in per host.
 - **Custom step images share one repository; the tag carries the step's directory (#229).**
   `steps/common.mk` now pushes every custom step image to `$(REGISTRY)/gb-steps` with the tag
   `<step path, / → ->-<env>-<IMAGE_VERSION>`, so `steps/train/openinstruct-sft/skypilot` pushes
@@ -205,6 +207,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   downloads when `model` is not bound, so it stays as a real default with no warning.
 
 ### Fixed
+
+- **`make publish-step` no longer reports a published single-platform image as missing (#568).**
+  Without `skopeo`, its image check used `podman manifest inspect`, which fails on a
+  single-platform image. It now uses `steps/registry-tag-status.sh`, the same check as
+  `publish-image`.
 
 - **SkyPilot launch crash on non-identifier secret names.** Whole-bag secret injection
   turned every secret name into a task env-var key, so a name such as `rits-access`

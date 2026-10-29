@@ -62,9 +62,6 @@
 #   IMAGE_NAME     image repository          (default: gb-steps, shared by every step)
 #   IMAGE_VERSION  version part of the tag   (default: git short SHA, else "latest")
 #   IMAGE_TAG      image tag                 (default: <step path, / → ->-<env>-<IMAGE_VERSION>)
-#   REGISTRY_SECRET  <group>/<name> of the registry's robot credential in IBM Cloud
-#                  Secrets Manager, used by publish-image (default: empty, no lookup)
-#   SECRETS_MANAGER_URL  that Secrets Manager instance (default: Granite.build's)
 #   STEP_ENV    step's environment segment      (default: this Makefile's dir name)
 #   PUBLISH_STEP_DIR  where `publish-step` renders the step (default: the env-nested
 #                     assets path configurations/assets/environments/<env>/steps/<path>)
@@ -137,15 +134,11 @@ REGISTRY_HOST := $(firstword $(subst /, ,$(REGISTRY)))
 # user's other logins on that host alone; docker logs in per host only.
 REGISTRY_LOGIN = $(if $(filter podman,$(notdir $(firstword $(DOCKER)))),$(REGISTRY),$(REGISTRY_HOST))
 
-# Shared robot credential in IBM Cloud Secrets Manager, as <group>/<name> of a
-# username_password secret. When set, publish-image fetches it with the
-# `ibmcloud sm` CLI (needs `ibmcloud login` with read access to the group; for
-# Granite.build's instance, membership of the granite-build IBM Cloud access
-# group) and logs in to $(REGISTRY_LOGIN) before pushing. Empty by default: a step whose
-# REGISTRY has a shared robot sets it in its Makefile. SECRETS_MANAGER_URL picks
-# the instance (default: the Granite.build Secrets Manager).
-REGISTRY_SECRET     ?=
-SECRETS_MANAGER_URL ?= https://3a634e1e-2591-4a19-baa8-34cf8f12defb.us-east.secrets-manager.appdomain.cloud
+# publish-image refuses to push a tag that already exists on the registry: a tag
+# pins an image (and SLURM's image cache keys its .sqsh by tag, so a re-pushed
+# tag never reaches it). Bump IMAGE_VERSION instead, or set PUBLISH_OVERWRITE=true
+# (exactly `true`) to replace the tag on purpose.
+PUBLISH_OVERWRITE ?= false
 
 # IMAGE_REF is the fully qualified image reference (e.g. quay.io/org/img:tag)
 # that `make space` substitutes into the template's ${IMAGE_REF} token. The
@@ -208,6 +201,9 @@ VENV_DIR ?= $(REPO_ROOT)/.venv
 # Makefile pulls it in, so `lastword` names it regardless of the caller's cwd.
 COMMON_MK_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
 README        := $(COMMON_MK_DIR)README.md
+# Prints present / absent / unknown for an image ref (exit 0 / 1 / 2); used by
+# publish-image's overwrite guard and publish-step's image check.
+TAG_STATUS    := sh $(COMMON_MK_DIR)registry-tag-status.sh
 
 # Relative file:// base_uri written into the generated space.yaml so space://
 # URIs (environments, monitors, other steps) resolve into the shared assets
@@ -352,42 +348,34 @@ else
 	@echo "[$(STEP_NAME)] no $(DOCKERFILE) found; no custom image to build."
 endif
 
-# Logs in before the push, first match wins:
-#   1. REGISTRY_USER + REGISTRY_PASSWORD in the ENVIRONMENT (not as make
-#      variables), e.g. a CI robot token;
-#   2. REGISTRY_SECRET=<group>/<name>: the shared robot credential, fetched from
-#      IBM Cloud Secrets Manager (see REGISTRY_SECRET above);
-#   3. neither: no login; the push reuses an earlier `podman login`/`docker login`.
-# The password goes only through a pipe into --password-stdin, so it never
-# appears in `ps`, make's echo, or shell history. A failed lookup stops the push.
-# The secret name reaches the recipe through the environment (target-specific
-# export), so no value is ever pasted into shell source.
-publish-image: export GB_REGISTRY_SECRET := $(REGISTRY_SECRET)
-publish-image: export GB_SECRETS_MANAGER_URL := $(SECRETS_MANAGER_URL)
+# By default this assumes you have already logged in to the registry out of
+# band (`podman login $(REGISTRY)` / `docker login`), so no credentials live in
+# this Makefile. For non-interactive use (CI), export REGISTRY_USER and
+# REGISTRY_PASSWORD (a robot-account token) in the ENVIRONMENT — not as make
+# variables — and publish-image logs in to $(REGISTRY_LOGIN) first, piping the
+# secret via --password-stdin so it never appears in `ps`, make's echo, or shell
+# history.
+#
+# Then it refuses to overwrite a tag (see PUBLISH_OVERWRITE): it pushes only
+# when the registry reports the tag absent. A tag it cannot check (network,
+# auth, an unexpected answer) is refused too, so a broken check never turns
+# into a silent overwrite.
 publish-image:
 ifeq ($(STEP_USES_IMAGE),true)
 	$(call require-image-tag)
 	@if [ -n "$${REGISTRY_USER:-}" ] && [ -n "$${REGISTRY_PASSWORD:-}" ]; then \
 		echo "[$(STEP_NAME)] logging in to $(REGISTRY_LOGIN) as $$REGISTRY_USER"; \
 		printf '%s' "$$REGISTRY_PASSWORD" | $(DOCKER) login "$(REGISTRY_LOGIN)" -u "$$REGISTRY_USER" --password-stdin; \
-	elif [ -n "$$GB_REGISTRY_SECRET" ]; then \
-		group=$${GB_REGISTRY_SECRET%%/*}; name=$${GB_REGISTRY_SECRET#*/}; \
-		case "$$GB_REGISTRY_SECRET" in */*) ;; *) group=;; esac; \
-		if [ -z "$$group" ] || [ -z "$$name" ] || [ "$$group/$$name" != "$$GB_REGISTRY_SECRET" ]; then \
-			echo "[$(STEP_NAME)] ERROR: REGISTRY_SECRET must be <group>/<name>, got '$$GB_REGISTRY_SECRET'." >&2; \
-			exit 1; \
-		fi; \
-		command -v ibmcloud >/dev/null || { echo "[$(STEP_NAME)] ERROR: REGISTRY_SECRET needs the ibmcloud CLI with the secrets-manager plugin." >&2; exit 1; }; \
-		command -v jq >/dev/null || { echo "[$(STEP_NAME)] ERROR: REGISTRY_SECRET needs jq." >&2; exit 1; }; \
-		echo "[$(STEP_NAME)] fetching registry credential $$GB_REGISTRY_SECRET from IBM Cloud Secrets Manager"; \
-		cred=$$(ibmcloud sm secret-by-name --secret-type username_password \
-			--secret-group-name "$$group" --name "$$name" \
-			--service-url "$$GB_SECRETS_MANAGER_URL" --output json) \
-		&& user=$$(printf '%s' "$$cred" | jq -er '.username') \
-		&& printf '%s' "$$cred" | jq -er '.password' >/dev/null \
-		|| { echo "[$(STEP_NAME)] ERROR: could not read username_password secret $$GB_REGISTRY_SECRET (ibmcloud login to the instance's account? read access to secret group $$group, e.g. via the granite-build access group?)" >&2; exit 1; }; \
-		echo "[$(STEP_NAME)] logging in to $(REGISTRY_LOGIN) as $$user"; \
-		printf '%s' "$$cred" | jq -j '.password' | $(DOCKER) login "$(REGISTRY_LOGIN)" -u "$$user" --password-stdin; \
+	fi
+	@if [ "$(PUBLISH_OVERWRITE)" = "true" ]; then \
+		echo "[$(STEP_NAME)] PUBLISH_OVERWRITE=true: pushing $(IMAGE_REF) without checking for an existing tag."; \
+	else \
+		status=$$($(TAG_STATUS) "$(IMAGE_REF)"); \
+		case "$$status" in \
+			absent) echo "[$(STEP_NAME)] $(IMAGE_REF) is a new tag." ;; \
+			present) echo "[$(STEP_NAME)] ERROR: $(IMAGE_REF) already exists on the registry; a tag must keep pointing at one image. Bump IMAGE_VERSION, or pass PUBLISH_OVERWRITE=true to replace it on purpose." >&2; exit 1 ;; \
+			*) echo "[$(STEP_NAME)] ERROR: could not determine whether $(IMAGE_REF) already exists (registry unreachable, or it refused the check). Fix access and retry, or pass PUBLISH_OVERWRITE=true to push without the check." >&2; exit 1 ;; \
+		esac; \
 	fi
 	$(DOCKER) push $(IMAGE_REF)
 else
@@ -482,25 +470,25 @@ endef
 # require-image-published — for custom-image steps, fail publish-step unless the step's
 # IMAGE_REF is present on its registry, so a step's step.yaml + build tests are only
 # published once the image they reference is pullable. No-op for non-image steps (empty
-# IMAGE_REF) and when PUBLISH_REQUIRE_IMAGE is not "true". Queries the registry manifest
-# only (no layer pull): prefers skopeo (registry-native, independent of $(DOCKER)),
-# falling back to `$(DOCKER) manifest inspect`. A public image needs no credentials.
+# IMAGE_REF) and when PUBLISH_REQUIRE_IMAGE is not "true". Asks the registry for the
+# manifest only, no layer pull (registry-tag-status.sh: skopeo when installed, else
+# the registry's v2 API). Not `$(DOCKER) manifest inspect`, which fails on a
+# single-platform image under podman (#568). A public image needs no credentials.
 define require-image-published
 	@if [ -n "$(IMAGE_REF)" ] && [ "$(PUBLISH_REQUIRE_IMAGE)" = "true" ]; then \
 		echo "[$(STEP_NAME)] verifying image is published: $(IMAGE_REF)"; \
-		if command -v skopeo >/dev/null 2>&1; then \
-			skopeo inspect --raw "docker://$(IMAGE_REF)" >/dev/null 2>&1 || { \
+		status=$$($(TAG_STATUS) "$(IMAGE_REF)"); \
+		case "$$status" in \
+			present) echo "[$(STEP_NAME)] image present on registry." ;; \
+			absent) \
 				echo "[publish-step] refusing: image '$(IMAGE_REF)' not found on its registry."; \
 				echo "[publish-step] run 'make publish-image' (and ensure the repo is public) before 'make publish-step', or pass PUBLISH_REQUIRE_IMAGE=false to override."; \
-				exit 1; }; \
-		elif $(DOCKER) manifest inspect "$(IMAGE_REF)" >/dev/null 2>&1; then \
-			:; \
-		else \
-			echo "[publish-step] refusing: image '$(IMAGE_REF)' not found on its registry (via '$(DOCKER) manifest inspect'; install skopeo for a more reliable check)."; \
-			echo "[publish-step] run 'make publish-image' first, or pass PUBLISH_REQUIRE_IMAGE=false to override."; \
-			exit 1; \
-		fi; \
-		echo "[$(STEP_NAME)] image present on registry."; \
+				exit 1 ;; \
+			*) \
+				echo "[publish-step] refusing: could not check whether '$(IMAGE_REF)' is on its registry (unreachable, or a private repo)."; \
+				echo "[publish-step] retry, or pass PUBLISH_REQUIRE_IMAGE=false to override."; \
+				exit 1 ;; \
+		esac; \
 	fi
 endef
 

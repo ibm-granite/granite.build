@@ -299,6 +299,11 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   SkyPilot provisions). Image steps only; no-op otherwise.
 * **`publish-image`** — push the image to `$(REGISTRY)` (no-op for non-image
   steps). Requires authentication — see [Registry credentials](#registry-credentials).
+  It **refuses to overwrite a tag** that already exists on the registry, and refuses
+  when it cannot tell (network, auth): a tag must keep pointing at one image, and
+  SLURM's image cache keys its `.sqsh` by tag, so a re-pushed tag would never reach
+  it. Bump `IMAGE_VERSION`, or pass `PUBLISH_OVERWRITE=true` to replace a tag on
+  purpose.
 * **`space`** — render a self-contained Space into `$(SPACE_DIR)/`: a generated
   `space.yaml` plus `steps/<path>/step.yaml` (from `step-template.yaml`) and
   bundled `src/`. Cheap and offline; it does *not* rebuild/push.
@@ -317,8 +322,9 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   step's image is actually published to its registry (a published `step.yaml`/test that
   references an unpushed image is broken — the Mode-2 skypilot test's remote node can't
   pull it), so run `make image publish-image` **before** `make publish-step`. The check
-  queries the registry manifest only (no pull; `skopeo` preferred, else `$(DOCKER)
-  manifest inspect`) and needs no credentials for a public image. Bypass it with
+  queries the registry manifest only, no pull (`steps/registry-tag-status.sh`: `skopeo`
+  when installed, else the registry's v2 API with `curl`), and needs no credentials for
+  a public image. It refuses an image it cannot confirm. Bypass it with
   `make publish-step PUBLISH_REQUIRE_IMAGE=false` (offline/local publishing).
   Non-image (public-image) steps have no `IMAGE_REF`, so the check is skipped.
   A step whose Makefile sets `override STEP_PUBLISHABLE := false` (an exemplar kept
@@ -390,8 +396,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `IMAGE_VERSION`   | git short SHA, else `latest`              | version part of the tag; pin a release in the step's Makefile |
 | `IMAGE_TAG`       | `<STEP_PATH with / → ->-<STEP_ENV>-<IMAGE_VERSION>` | image tag; carries the step's directory, e.g. `train-openinstruct-sft-skypilot-oi-v0.3.0-2`. The `/`→`-` flattening is lossy (`a/b-c` and `a-b/c` give the same tag), so keep step paths distinct after flattening. |
 | `IMAGE_REF`       | `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)`   | full image reference (derived)   |
-| `REGISTRY_SECRET` | *(empty)*                                 | `<group>/<name>` of the registry's robot credential in IBM Cloud Secrets Manager; `publish-image` logs in with it (see [Registry credentials](#registry-credentials)) |
-| `SECRETS_MANAGER_URL` | the Granite.build Secrets Manager instance | Secrets Manager endpoint for `REGISTRY_SECRET` |
+| `PUBLISH_OVERWRITE` | `false`                                 | set exactly `true` to let `publish-image` replace an existing tag (or push without checking) |
 | `SPACE_DIR`       | `space`                                   | generated Space directory name   |
 | `SPACE_NAME`      | `public`                                  | `name:` in the generated `space.yaml`. Matches the shared `configurations/spaces/local`, because an `hf://` push derives its HF resource group from the space name (`gbspace-<space>`); a step-named space would look for a group that doesn't exist |
 | `SPACE_BASE_URI`  | relative `file://` to `configurations/assets` (resolved against the space.yaml's dir) | base_uri chained by the generated Space |
@@ -411,51 +416,26 @@ Example: `make all REGISTRY=quay.io/myorg IMAGE_VERSION=0.1.0`.
 
 ### Registry credentials
 
-`make publish-image` must be authenticated to `$(REGISTRY)`. It logs in before the
-push, and the first of these that applies wins:
+`make publish-image` must be authenticated to `$(REGISTRY)`. Two ways:
 
-1. **CI / non-interactive:** export `REGISTRY_USER` and `REGISTRY_PASSWORD` (a
-   robot-account token) **in the environment** — do *not* pass them as `make`
-   variables:
+* **Interactive / local (default):** `podman login quay.io/my-org` (or
+  `docker login`) once; the push reuses the stored token. Nothing else to
+  configure.
+* **CI / non-interactive:** export `REGISTRY_USER` and `REGISTRY_PASSWORD` (a
+  robot-account token) **in the environment** — do *not* pass them as `make`
+  variables. `publish-image` logs in first, piping the token via
+  `--password-stdin`, so the secret never appears in `ps`, make's output, or
+  shell history:
 
-   ```sh
-   export REGISTRY_USER='my-org+ci'
-   export REGISTRY_PASSWORD="$QUAY_TOKEN"   # from your CI secret store
-   make publish-image REGISTRY=quay.io/my-org IMAGE_VERSION=0.1.0
-   ```
+  ```sh
+  export REGISTRY_USER='my-org+ci'
+  export REGISTRY_PASSWORD="$QUAY_TOKEN"   # from your CI secret store
+  make publish-image REGISTRY=quay.io/my-org IMAGE_VERSION=0.1.0
+  ```
 
-2. **Shared robot credential in IBM Cloud Secrets Manager:** set
-   `REGISTRY_SECRET=<group>/<name>` (a step sets it in its Makefile next to
-   `REGISTRY`). `publish-image` fetches that `username_password` secret with the
-   `ibmcloud sm` CLI and logs in with it. The `quay.io/granitebuild` robot
-   `granitebuild+gbpush` (Write on the shared `gb-steps` repository) is stored as
-   `gb-registry/quay-gbpush-token` in the Granite.build Secrets Manager instance
-   (`Granite-Build-Secrets-Manager`, in the `granite-build` resource group of the
-   cil15 LLM GPU account). Members of the **`granite-build` IBM Cloud access group**
-   can read it — that group's resource-group policy covers the whole instance — so
-   any of them can publish a step image:
-
-   ```sh
-   ibmcloud login --sso                     # the cil15 LLM GPU account
-   make publish-image                       # e.g. in steps/train/openinstruct-sft/skypilot
-   ```
-
-   It needs the `ibmcloud` CLI with the `secrets-manager` plugin
-   (`ibmcloud plugin install secrets-manager`) and `jq`. Not in the access group?
-   Ask an account admin to add you. Point at another instance with
-   `SECRETS_MANAGER_URL`. If the lookup fails, the push stops.
-
-   Keep the `gb-registry` group's description empty: gbserver hands a space every
-   secret group whose description matches the space URI, so an empty description
-   keeps the token out of builds.
-
-3. **Interactive / local:** with neither of the above, there is no login; the push
-   reuses an earlier `podman login quay.io/my-org` (or `docker login`).
-
-The token only ever goes through a pipe into `--password-stdin`, so it never
-appears in `ps`, make's output, or shell history. With podman the login is scoped
-to `$(REGISTRY)` (e.g. `quay.io/granitebuild`), so it leaves your other logins on
-that host alone; docker logs in to the whole host.
+With podman the login is scoped to `$(REGISTRY)` (e.g. `quay.io/my-org`), so it
+leaves your other logins on that host alone; docker logs in to the whole host. The
+overwrite check uses the same credentials when the repository is private.
 
 ## Rendering: how the image reference is inserted
 

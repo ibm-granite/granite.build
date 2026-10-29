@@ -1,0 +1,111 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+#
+# registry-tag-status.sh <image-ref> — does this image tag exist on its registry?
+#
+# Prints one word and exits with its code:
+#   present  0   the registry returned the manifest
+#   absent   1   the registry said the tag (or repository) does not exist
+#   unknown  2   anything else: network error, auth failure, an unexpected answer
+# Callers must treat `unknown` as neither answer: `make publish-image` refuses to
+# overwrite a `present` tag, and `make publish-step` refuses an image that is not
+# `present`.
+#
+# Asks the registry for the manifest only (no layer pull):
+#   1. `skopeo inspect --raw`, when skopeo is installed;
+#   2. otherwise the registry's v2 API with curl, following a Bearer token
+#      challenge. The token request is anonymous, or uses REGISTRY_USER and
+#      REGISTRY_PASSWORD from the environment when both are set (a private repo).
+#      Credentials go to curl as config on stdin, never on its command line.
+# `podman/docker manifest inspect` is not used: podman fails on a single-platform
+# image ("Treating single images as manifest lists is not implemented").
+set -u
+
+ref="${1:-}"
+if [ -z "$ref" ]; then
+  echo "usage: registry-tag-status.sh <image-ref>" >&2
+  echo unknown
+  exit 2
+fi
+
+say() {
+  echo "$1"
+  case "$1" in present) exit 0 ;; absent) exit 1 ;; *) exit 2 ;; esac
+}
+
+# --- 1. skopeo ---------------------------------------------------------------------
+if command -v skopeo >/dev/null 2>&1; then
+  if err="$(skopeo inspect --raw "docker://${ref}" 2>&1 >/dev/null)"; then
+    say present
+  fi
+  case "$err" in
+    *"manifest unknown"*|*"MANIFEST_UNKNOWN"*|*"name unknown"*|*"NAME_UNKNOWN"*) say absent ;;
+  esac
+  # Any other skopeo failure: ask the registry directly before giving up.
+fi
+
+command -v curl >/dev/null 2>&1 || say unknown
+
+# --- 2. registry v2 API --------------------------------------------------------------
+# Split <host>/<path>[:<tag>|@<digest>], with Docker Hub's defaults.
+name="$ref"
+reference=""
+case "$name" in
+  *@*) reference="${name#*@}"; name="${name%%@*}" ;;
+esac
+if [ -z "$reference" ]; then
+  last="${name##*/}"
+  case "$last" in
+    *:*) reference="${last##*:}"; name="${name%:*}" ;;
+    *) reference="latest" ;;
+  esac
+fi
+first="${name%%/*}"
+if [ "$first" != "$name" ] && { case "$first" in *.*|*:*|localhost) true ;; *) false ;; esac; }; then
+  host="$first"
+  repo="${name#*/}"
+else
+  host="registry-1.docker.io"
+  repo="$name"
+  case "$repo" in */*) ;; *) repo="library/${repo}" ;; esac
+fi
+[ "$host" = "docker.io" ] && host="registry-1.docker.io"
+
+accept="application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json"
+url="https://${host}/v2/${repo}/manifests/${reference}"
+tmp="$(mktemp -d)" || say unknown
+trap 'rm -rf "$tmp"' EXIT
+
+# HEAD the manifest; $1 is curl config (an Authorization header) for stdin.
+head_manifest() {
+  printf '%s' "$1" | curl -s -I -o /dev/null -D "$tmp/headers" -w '%{http_code}' \
+    --max-time 30 -H "Accept: ${accept}" --config - "$url" 2>/dev/null
+}
+
+code="$(head_manifest "")" || say unknown
+if [ "$code" = "401" ]; then
+  challenge="$(tr -d '\r' < "$tmp/headers" | sed -n '/^[Ww][Ww][Ww]-[Aa]uthenticate: *[Bb]earer */{s///p;q;}')"
+  [ -n "$challenge" ] || say unknown
+  param() { printf '%s' "$challenge" | sed -n "s/.*$1=\"\([^\"]*\)\".*/\1/p"; }
+  realm="$(param realm)"
+  service="$(param service)"
+  scope="$(param scope)"
+  [ -n "$realm" ] || say unknown
+  [ -n "$scope" ] || scope="repository:${repo}:pull"
+  creds=""
+  if [ -n "${REGISTRY_USER:-}" ] && [ -n "${REGISTRY_PASSWORD:-}" ]; then
+    creds="user = \"${REGISTRY_USER}:${REGISTRY_PASSWORD}\""
+  fi
+  tcode="$(printf '%s' "$creds" | curl -s -o "$tmp/token" -w '%{http_code}' --max-time 30 \
+    --config - "${realm}?service=${service}&scope=${scope}" 2>/dev/null)" || say unknown
+  [ "$tcode" = "200" ] || say unknown
+  token="$(tr -d '\n' < "$tmp/token" | sed -n 's/.*"\(access_\)\{0,1\}token" *: *"\([^"]*\)".*/\2/p')"
+  [ -n "$token" ] || say unknown
+  code="$(head_manifest "header = \"Authorization: Bearer ${token}\"")" || say unknown
+fi
+
+case "$code" in
+  200) say present ;;
+  404) say absent ;;
+  *) say unknown ;;
+esac
