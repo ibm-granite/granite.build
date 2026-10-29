@@ -66,6 +66,18 @@ environment definitions (`space://environments/<name>`); see
 the [environments overview](../environments/README.md)
 for what those definitions can contain.
 
+A **relative `file:`** `environment_uri` or `step_uri` (e.g.
+`file:environments/my-env`, `file:steps/my-step`, or a bare path) is looked up from
+the current directory first, as it always was. If it isn't found there, it's looked
+up in the build's own directory, the copy of the folder holding `build.yaml`, so a
+build can ship its own environment or step next to its `build.yaml`. Found in
+neither, it fails validation as "doesn't exist". `file:.` (or `.`) always means the
+build's own directory, so an `environment.yaml` right next to `build.yaml` is
+`environment_uri: file:.`. Write a relative path as
+`file:<path>`, not `file://<path>`: with two slashes the first segment is read as a
+host name. Absolute `file:///…` paths and other schemes are used as written. `file:`
+URIs are accepted only on a standalone server (see [Validation](#validation)).
+
 ## Inputs
 
 An input names an artifact the target depends on. Each input is either
@@ -225,7 +237,8 @@ For **skypilot** the launch path consumes `num_cpus_per_node` and
 floor (values under `launcher_config.resources` override them), plus `num_nodes`,
 which becomes `sky.Task(num_nodes=...)`. GPU/accelerator selection is supplied via
 `launcher_config.resources` on the step (e.g. `accelerators: "A100:8"`), not via
-`num_gpus_per_node` — and note that accelerators are **per node**, so
+`num_gpus_per_node`; gbserver warns when `num_gpus_per_node > 0` is set without
+`accelerators` or `instance_type`. Note that accelerators are **per node**, so
 `accelerators: "H100:8"` with `num_nodes: 2` requests 16 GPUs in total.
 
 `num_nodes` may also be overridden by `launcher_config.num_nodes` (in the step or

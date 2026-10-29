@@ -230,6 +230,23 @@ class TestSbatchOptionsWithMetadataComment:
         )
         assert overrides["slurm"]["sbatch_options"]["comment"] == "operator-note"
 
+    @pytest.mark.asyncio
+    async def test_env_and_space_from_launch_config_reach_comment(self):
+        # gb_env and space come from the step config, not run_metadata.
+        env = _make_env({"default_cloud": "slurm"})
+        overrides = await _overrides_for(
+            env,
+            "sb-comment-space",
+            launcher_config={"run": "hostname", "resources": {}},
+            config={},
+            run_metadata={"build_id": "b1"},
+            space={"name": "public", "variables": {}},
+            gb_environment="STAGING",
+        )
+        assert overrides["slurm"]["sbatch_options"]["comment"] == (
+            "build_id=b1;gb_env=STAGING;space=public"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Pyxis GPU directives (issue #510 item 2): generated from the step's own

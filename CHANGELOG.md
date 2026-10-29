@@ -138,6 +138,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failing healthy clusters, so it (and `GBSERVER_SKYPILOT_SSH_PROBE_TIMEOUT_S` / the per-host
   `ssh_probe_timeout_s` key) has been removed. A single-node cluster simply retries the same
   node, so a genuine outage still surfaces the real error.
+- **SkyPilot — a GPU count without a GPU request now logs a warning (#536).** The launcher does
+  not read `compute_config.num_gpus_per_node`; GPUs come only from
+  `launcher_config.resources.accelerators` (or an `instance_type` that has them). A step that
+  sets `num_gpus_per_node > 0` with neither used to launch on a node with no GPU, silently. It
+  still launches, but gbserver now warns, once per step. `Skypilot_managed` now layers resources
+  like the unmanaged launcher, through the same helpers: the build's `launcher_config.resources`
+  wins over the step launcher's, and `cloud`/`infra`/`zone`, `instance_type` and `use_spot` are
+  honored (it used to drop the build's resources and those keys, so a managed GPU request could
+  silently land on a default CPU node). It logs the same warning. The `nemo-rl` step no longer renders `accelerators` or
+  defaults `num_gpus_per_node: 8`: a build sets `launcher_config.resources.accelerators` (e.g.
+  `"A10G:1"`) or a GPU `instance_type`, and the step pins NeMo-RL's `cluster.gpus_per_node` from
+  `SKYPILOT_NUM_GPUS_PER_NODE` (override with the new `nemo_rl_config.gpus_per_node`). A `nemo-rl`
+  build with neither fails at step creation, before anything is provisioned. **Breaking change
+  for `nemo-rl` builds:** `compute_config` `gpu_model` / `num_gpus_per_node` are no longer read;
+  move the GPU request to `accelerators`.
 - **SkyPilot — the post-build workdir-cleanup VM is right-sized to 1 CPU.** `teardown_skypilot`
   launches a throwaway VM that mounts the shared filesystem and `rm -rf`s the run's per-run
   workdir after the build has finished. It now requests a single vCPU (the smallest

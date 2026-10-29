@@ -65,7 +65,7 @@ and have no effect here.
 
 | Field | Type | Purpose |
 |---|---|---|
-| `compute_config` | mapping | Node and GPU counts, e.g. `{num_nodes: 1, num_gpus_per_node: 8}`. The server runs on one node; its GPU count sets the default data-parallel size. |
+| `compute_config` | mapping | Node count, e.g. `{num_nodes: 1}`; the server runs on one node. Request its GPUs with `launcher_config.resources.accelerators` (e.g. `"H100:8"`), since the SkyPilot launcher does not read `num_gpus_per_node`. The node's GPU count sets the default data-parallel size. |
 | `launcher_config` | mapping | SkyPilot launcher overrides: `image_id` (default `docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv`) and `resources` (`accelerators`, `memory`, `cluster`, `zone`). |
 | `poll_interval_seconds` | integer | Monitor status-poll interval. Default: `300`. |
 | `log_retrieval_mode` | string | Monitor log-retrieval mode. Default: `periodic` (see [log_retrieval.mode](#log_retrievalmode-is-periodic-not-startup_window)). |
