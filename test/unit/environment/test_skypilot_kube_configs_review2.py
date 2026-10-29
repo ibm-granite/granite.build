@@ -50,6 +50,23 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(sc, "host_sky_config", lambda home=None: real_host(tmp_path))
 
 
+def _user_owns(tmp_path, *names):
+    """Make the user's own kubeconfig define ``names`` (as a real one would)."""
+    contexts = [{"name": n, "context": {"cluster": n, "user": n}} for n in names]
+    (tmp_path / "user-kubeconfig").write_text(
+        yaml.safe_dump(
+            {
+                "clusters": [
+                    {"name": n, "cluster": {"server": "https://u"}} for n in names
+                ],
+                "users": [{"name": n, "user": {"token": "u"}} for n in names],
+                "contexts": contexts,
+                "current-context": names[0],
+            }
+        )
+    )
+
+
 def _merge(tmp_path, text, owner="s/envA", context="remote"):
     return sc.merge_kube_configs(
         [KubeConfigEntry(context=context, kubeconfig="kc")],
@@ -243,16 +260,33 @@ class TestForeignPin:
         with pytest.raises(SkypilotConfigCollisionError, match="another environment"):
             thief._ensure_kube_configs()
 
-    def test_non_strict_paths_log_instead(self, home, caplog):
+    def test_non_strict_paths_skip_the_pin_check(self, home):
+        """Polls/teardown/cleanup only touch clusters a strict launch checked."""
         owner = _Env.make(_Env.config(), {"kc": _kubeconfig("remote")}, "spaceA")
         owner._ensure_kube_configs()
         thief = _Env.make(_Env.config(kube=False), {}, "spaceB")
-        thief._ensure_kube_configs(strict=False)
+        with patch.object(thief, "_check_no_foreign_pins") as check:
+            thief._ensure_kube_configs(strict=False)
+        check.assert_not_called()
+        with pytest.raises(SkypilotConfigCollisionError):
+            thief._ensure_kube_configs()
+
+    def test_non_strict_errors_are_logged_not_raised(self, home, caplog):
+        env = _Env.make(_Env.config(), {}, "s")  # its kubeconfig secret is missing
+        env._ensure_kube_configs(strict=False)
         assert "kube_configs not applied" in caplog.text
 
-    def test_pinning_unmanaged_contexts_is_unaffected(self, home):
+    def test_pinning_the_users_own_context_is_unaffected(self, home):
+        _user_owns(home, "kind-skypilot")
         env = _Env.make(_Env.config(contexts=("kind-skypilot",), kube=False), {}, "s")
-        env._ensure_kube_configs()  # no managed contexts: nothing to refuse
+        env._ensure_kube_configs()
+
+    def test_pinning_an_unknown_context_is_refused(self, home):
+        """Even with nothing managed yet: another env could merge it before the
+        API server resolves the context (the time-of-check gap)."""
+        env = _Env.make(_Env.config(contexts=("later",), kube=False), {}, "s")
+        with pytest.raises(SkypilotConfigCollisionError, match="neither your own"):
+            env._ensure_kube_configs()
 
     def test_co_owner_with_its_own_identical_entry_may_pin(self, home):
         text = _kubeconfig("remote")
@@ -406,21 +440,28 @@ class TestPerInstanceOwnership:
         asyncio.run(a._release_kube_configs_if_idle("x"))
         assert sc.managed_kube_contexts() == {"remote": {b._kube_owner()}}
 
-    def test_rotation_refused_while_another_build_co_owns(self, home):
+    def test_rotation_by_another_build_of_the_same_env_goes_through(self, home):
         a = _Env.make(_Env.config(), {"kc": _kubeconfig("remote")}, "s")
         b = _Env.make(_Env.config(), {"kc": _kubeconfig("remote")}, "s")
         a._ensure_kube_configs()
         b._ensure_kube_configs()
         a.secrets["kc"] = _kubeconfig("remote", user={"token": "rotated"})
-        with pytest.raises(SkypilotConfigCollisionError):
-            a._ensure_kube_configs()
-        # Once b is done, the rotation goes through.
-        b._kube_active_setups.add("y")
-        asyncio.run(b._release_kube_configs_if_idle("y"))
-        a._ensure_kube_configs()
+        a._ensure_kube_configs()  # b is the same <space>/<env>: no collision
         doc = yaml.safe_load(sc.kubeconfig_path().read_text())
         (user,) = [u for u in doc["users"] if u["name"] == "gbserver/remote"]
         assert user["user"]["token"] == "rotated"
+        assert sc.managed_kube_contexts() == {
+            "remote": {a._kube_owner(), b._kube_owner()}
+        }
+
+    def test_rotation_refused_while_another_env_co_owns(self, home):
+        a = _Env.make(_Env.config(), {"kc": _kubeconfig("remote")}, "spaceA")
+        b = _Env.make(_Env.config(), {"kc": _kubeconfig("remote")}, "spaceB")
+        a._ensure_kube_configs()
+        b._ensure_kube_configs()
+        a.secrets["kc"] = _kubeconfig("remote", user={"token": "rotated"})
+        with pytest.raises(SkypilotConfigCollisionError, match="spaceB/env-k"):
+            a._ensure_kube_configs()
 
     def test_setup_after_release_merges_again(self, home):
         from unittest.mock import MagicMock
@@ -435,14 +476,21 @@ class TestPerInstanceOwnership:
 
 
 class TestForeignPinEveryCall:
-    def test_pin_made_before_the_owner_merged_is_refused_next_time(self, home):
+    def test_pin_of_a_not_yet_merged_context_is_refused_up_front(self, home):
         thief = _Env.make(_Env.config(kube=False), {}, "spaceB")
-        thief._ensure_kube_configs()  # nothing managed yet
+        with pytest.raises(SkypilotConfigCollisionError, match="neither your own"):
+            thief._ensure_kube_configs()  # before anyone merged 'remote'
+
+    def test_allow_all_made_before_the_owner_merged_is_refused_next_time(self, home):
+        cfg = _Env.config(kube=False)
+        cfg["cloud_config"]["kubernetes"]["allowed_contexts"] = "all"
+        env = _Env.make(cfg, {}, "spaceB")
+        env._ensure_kube_configs()  # nothing managed yet
         _Env.make(
             _Env.config(), {"kc": _kubeconfig("remote")}, "spaceA"
         )._ensure_kube_configs()
-        with pytest.raises(SkypilotConfigCollisionError, match="another environment"):
-            thief._ensure_kube_configs()
+        with pytest.raises(SkypilotConfigCollisionError, match="allows all"):
+            env._ensure_kube_configs()
 
     def test_allowed_contexts_all_refused_while_others_are_managed(self, home):
         _Env.make(
@@ -575,7 +623,8 @@ class TestAllowAllPrecedence:
         with pytest.raises(SkypilotConfigCollisionError, match="another environment"):
             env._ensure_kube_configs()
 
-    def test_workspace_list_overrides_top_level_all(self, owned):
+    def test_workspace_list_overrides_top_level_all(self, owned, home):
+        _user_owns(home, "mine")
         env = self._env_with(
             {"allowed_contexts": "all"}, {"allowed_contexts": ["mine"]}
         )
@@ -661,7 +710,7 @@ class TestStaleOwners:
     def test_collision_message_hides_instance_and_process(self, tmp_path):
         a = "s/envA#aaa" + sc.kube_process_tag()
         _merge(tmp_path, _kubeconfig("remote"), owner=a)
-        b = "s/envA#bbb" + sc.kube_process_tag()
+        b = "s/envB#bbb" + sc.kube_process_tag()
         _merge(tmp_path, _kubeconfig("remote"), owner=b)
         with pytest.raises(SkypilotConfigCollisionError) as e:
             _merge(tmp_path, _kubeconfig("remote", user={"token": "x"}), owner=a)
@@ -796,11 +845,19 @@ class TestReview3:
             env._check_no_foreign_pins()
         m.assert_not_called()
 
-    def test_allow_all_env_var_ignored_for_non_kube_env(self, home, monkeypatch):
+    def test_allow_all_env_var_applies_to_every_env(self, home, monkeypatch):
+        """Fail closed: an AWS env's step can still target Kubernetes."""
         _Env.make(
             _Env.config(), {"kc": _kubeconfig("remote")}, "spaceA"
         )._ensure_kube_configs()
         monkeypatch.setenv("SKYPILOT_ALLOW_ALL_KUBERNETES_CONTEXTS", "true")
+        with pytest.raises(SkypilotConfigCollisionError, match="allows all"):
+            self._aws()._ensure_kube_configs()
+
+    def test_non_kube_env_without_allow_all_is_untouched(self, home):
+        _Env.make(
+            _Env.config(), {"kc": _kubeconfig("remote")}, "spaceA"
+        )._ensure_kube_configs()
         self._aws()._ensure_kube_configs()
 
     def test_host_config_all_is_refused(self, home):
@@ -832,6 +889,7 @@ class TestReview3:
         (home / ".sky" / "config.yaml").write_text(
             yaml.safe_dump({"kubernetes": {"allowed_contexts": "all"}})
         )
+        _user_owns(home, "mine")
         _Env.make(
             _Env.config(contexts=("mine",), kube=False), {}, "spaceB"
         )._ensure_kube_configs()
@@ -938,3 +996,274 @@ class TestReview3:
     def test_any_malformed_secret_is_a_value_error(self, tmp_path, text):
         with pytest.raises(ValueError):
             sc._extract_kube_context(text, "remote")
+
+
+class TestReview4:
+    """daw3rd's second review."""
+
+    def _dead(self, owner):
+        import socket
+
+        return f"{owner}@{socket.gethostname()}:1:12345.00"
+
+    def test_stale_owned_context_still_counts_for_allow_all(self, home):
+        """A crashed gbserver's context stays on KUBECONFIG until pruned."""
+        dead = self._dead("space1/env1#x")
+        sc.merge_kube_configs(
+            [KubeConfigEntry(context="remote", kubeconfig="kc")],
+            {"kc": _kubeconfig("remote")},
+            dead,
+        )
+        assert sc.managed_kube_contexts() == {}  # hidden from normal readers
+        cfg = _Env.config(kube=False)
+        cfg["cloud_config"]["kubernetes"]["allowed_contexts"] = "all"
+        with pytest.raises(SkypilotConfigCollisionError, match="allows all"):
+            _Env.make(cfg, {}, "space2")._ensure_kube_configs()
+
+    def test_stale_owned_context_cant_be_pinned(self, home):
+        dead = self._dead("space1/env1#x")
+        sc.merge_kube_configs(
+            [KubeConfigEntry(context="remote", kubeconfig="kc")],
+            {"kc": _kubeconfig("remote")},
+            dead,
+        )
+        with pytest.raises(SkypilotConfigCollisionError):
+            _Env.make(_Env.config(kube=False), {}, "space2")._ensure_kube_configs()
+
+    def test_release_waits_for_tracked_clusters(self, home):
+        """A SERVICE outliving its target keeps the contexts for its polls/down."""
+        env = _Env.make(_Env.config(), {"kc": _kubeconfig("remote")}, "s")
+        env._kube_active_setups.add("x")
+        env._ensure_kube_configs()
+        env._cluster_names["l1"] = "gb-svc"
+        asyncio.run(env._release_kube_configs_if_idle("x"))
+        assert sc.managed_kube_contexts() == {"remote": {env._kube_owner()}}
+        # A later poll still sees them (not "released").
+        env._ensure_kube_configs(strict=False)
+
+        async def fake_teardown(name):
+            pass
+
+        env._teardown = fake_teardown
+        env._monitoring_cleanup = lambda launch_id: None
+        asyncio.run(env.cleanup_skypilot(launch_id="l1"))
+        assert sc.managed_kube_contexts() == {}
+
+    def test_cancel_while_merging_still_releases(self, home):
+        env = _Env.make(_Env.config(), {"kc": _kubeconfig("remote")}, "s")
+        env._kube_active_setups.add("x")
+        env._ensure_kube_configs()
+
+        async def scenario():
+            started = asyncio.Event()
+
+            async def slow_merge(strict=True):
+                started.set()
+                await asyncio.sleep(10)
+
+            env._ensure_kube_configs_async = slow_merge
+            task = asyncio.create_task(env.teardown_skypilot("x"))
+            await started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(scenario())
+        assert "x" not in env._kube_active_setups
+        assert sc.managed_kube_contexts() == {}
+
+    def test_launch_teardown_cancel_still_releases(self, home):
+        env = _Env.make(_Env.config(), {"kc": _kubeconfig("remote")}, "s")
+        released = []
+
+        async def scenario():
+            started = asyncio.Event()
+
+            async def slow_merge(strict=True):
+                started.set()
+                await asyncio.sleep(10)
+
+            async def record(setup_id):
+                released.append(setup_id)
+
+            env._ensure_kube_configs_async = slow_merge
+            env._release_kube_configs_if_idle = record
+            task = asyncio.create_task(env.launch_skypilot_teardown(config={}))
+            await started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(scenario())
+        assert released == [None]
+
+    def test_remote_api_server_skips_the_pin_check(self, home, monkeypatch):
+        from gbserver.environment import skypilot as sp
+
+        monkeypatch.setattr(sp, "_sky_api_server_is_local", lambda: False)
+        env = _Env.make(_Env.config(contexts=("theirs",), kube=False), {}, "s")
+        env._ensure_kube_configs()  # the server's own kubeconfig defines it
+
+    def test_one_precedence_function(self, home):
+        """The env-only view is the effective one without the host config."""
+        from gbserver.environment import skypilot as sp
+
+        (home / ".sky").mkdir(exist_ok=True)
+        (home / ".sky" / "config.yaml").write_text(
+            yaml.safe_dump({"kubernetes": {"allowed_contexts": ["host-ctx"]}})
+        )
+        assert sp._effective_allowed_contexts({}) == ["host-ctx"]
+        assert sp._kube_allowed_contexts({}) == []
+        cfg = {
+            "kubernetes": {"allowed_contexts": "all"},
+            "workspaces": {"default": {"kubernetes": {"allowed_contexts": ["w"]}}},
+        }
+        assert sp._kube_allowed_contexts(cfg) == ["w"]
+        assert sp._effective_allowed_contexts(cfg) == ["w"]
+
+
+@requires_k8s
+class TestK8sFilterReusesPathHelper:
+    def test_tilde_and_relative_entries_are_matched(self, home, monkeypatch):
+        from gbserver.environment.k8s import _kubeconfig_without_skypilot_managed
+
+        managed = sc.kubeconfig_path()
+        rel = os.path.relpath(managed)
+        monkeypatch.setenv("KUBECONFIG", os.pathsep.join(["/x/mine", rel, "", "/x/o"]))
+        assert _kubeconfig_without_skypilot_managed() == os.pathsep.join(
+            ["/x/mine", "/x/o"]
+        )
+
+
+class TestReview5:
+    """Independent review of the review-4 fixes."""
+
+    def test_launch_teardown_keeps_contexts_for_every_name(self, home):
+        """cleanup_skypilot's release mid-loop must not strand a later sky.down."""
+        from unittest.mock import MagicMock
+
+        from gbserver.environment import skypilot as sp
+
+        env = _Env.make(_Env.config(), {"kc": _kubeconfig("remote")}, "s")
+        env._cluster_names["l1"] = "gb-a"  # tracked: goes through cleanup_skypilot
+        seen = []
+
+        async def fake_teardown(name):
+            pass
+
+        env._teardown = fake_teardown
+        env._monitoring_cleanup = lambda launch_id: None
+        fake_sky = MagicMock()
+
+        def down(name, purge=True):
+            seen.append((name, set(sc.managed_kube_contexts())))
+            return "r"
+
+        fake_sky.down = down
+        with (
+            patch.object(sp, "sky", fake_sky),
+            patch.object(sp, "_require_skypilot", lambda: None),
+        ):
+            asyncio.run(
+                env.launch_skypilot_teardown(
+                    config={"teardown_config": {"cluster_names": ["gb-a", "gb-b"]}}
+                )
+            )
+        assert seen == [("gb-b", {"remote"})]  # untracked: still has its context
+        assert sc.managed_kube_contexts() == {}  # released at the end
+
+    def test_in_cluster_pin_is_allowed_when_available(self, home, monkeypatch):
+        from gbserver.environment import skypilot as sp
+
+        monkeypatch.setattr(sp, "_in_cluster_context_name", lambda: "in-cluster")
+        _Env.make(
+            _Env.config(contexts=("in-cluster",), kube=False), {}, "s"
+        )._ensure_kube_configs()
+
+    def test_in_cluster_pin_refused_when_not_in_a_pod(self, home, monkeypatch):
+        from gbserver.environment import skypilot as sp
+
+        monkeypatch.setattr(sp, "_in_cluster_context_name", lambda: None)
+        with pytest.raises(SkypilotConfigCollisionError, match="neither your own"):
+            _Env.make(
+                _Env.config(contexts=("in-cluster",), kube=False), {}, "s"
+            )._ensure_kube_configs()
+
+    def test_ssh_pins_are_allowed(self, home):
+        _Env.make(
+            _Env.config(contexts=("ssh-pool",), kube=False), {}, "s"
+        )._ensure_kube_configs()
+
+    @pytest.mark.parametrize("name", ["in-cluster", "ssh-pool"])
+    def test_kube_configs_may_not_define_reserved_names(self, tmp_path, name):
+        with pytest.raises(ValueError, match="reserved"):
+            _merge(tmp_path, _kubeconfig(name), context=name)
+
+    def test_custom_in_cluster_name_is_reserved(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SKYPILOT_IN_CLUSTER_CONTEXT_NAME", "pod-ctx")
+        with pytest.raises(ValueError, match="reserved"):
+            _merge(tmp_path, _kubeconfig("pod-ctx"), context="pod-ctx")
+
+    def test_stale_host_only_pin_does_not_stop_other_envs(self, home):
+        """One bad host ~/.sky/config.yaml pin must not fail every env's setup."""
+        (home / ".sky").mkdir(exist_ok=True)
+        (home / ".sky" / "config.yaml").write_text(
+            yaml.safe_dump({"kubernetes": {"allowed_contexts": ["gone"]}})
+        )
+        aws = {"default_cloud": "aws", "cloud_config": {"aws": {"vpc_name": "v"}}}
+        _Env.make(aws, {}, "s")._ensure_kube_configs()
+
+    def test_host_only_pin_of_a_managed_context_is_refused(self, home):
+        _Env.make(
+            _Env.config(), {"kc": _kubeconfig("remote")}, "spaceA"
+        )._ensure_kube_configs()
+        (home / ".sky" / "config.yaml").write_text(
+            yaml.safe_dump({"kubernetes": {"allowed_contexts": ["remote"]}})
+        )
+        aws = {"default_cloud": "aws", "cloud_config": {"aws": {"vpc_name": "v"}}}
+        with pytest.raises(SkypilotConfigCollisionError, match="neither your own"):
+            _Env.make(aws, {}, "spaceB")._ensure_kube_configs()
+
+    def test_stale_secrets_cannot_undo_a_rotation(self, tmp_path):
+        old = _kubeconfig("remote", user={"token": "old"})
+        new = _kubeconfig("remote", user={"token": "new"})
+        tag = sc.kube_process_tag()
+        a, b = "s/env#a" + tag, "s/env#b" + tag
+        _merge(tmp_path, old, owner=a)
+        _merge(tmp_path, old, owner=b)  # build b read its secrets before the rotation
+        _merge(tmp_path, new, owner=a)  # build a rotates
+        _merge(tmp_path, old, owner=b)  # b re-merges its stale copy
+        doc = yaml.safe_load(sc.kubeconfig_path(tmp_path).read_text())
+        (user,) = [u for u in doc["users"] if u["name"] == "gbserver/remote"]
+        assert user["user"]["token"] == "new"
+        assert sc.managed_kube_contexts(tmp_path) == {"remote": {a, b}}
+
+    def test_superseded_history_dropped_with_the_context(self, tmp_path):
+        tag = sc.kube_process_tag()
+        a = "s/env#a" + tag
+        _merge(tmp_path, _kubeconfig("remote", user={"token": "old"}), owner=a)
+        _merge(tmp_path, _kubeconfig("remote", user={"token": "new"}), owner=a)
+        doc = yaml.safe_load(sc.kubeconfig_path(tmp_path).read_text())
+        assert list(doc["x-gbserver-superseded"]) == ["remote"]
+        assert "old" not in yaml.safe_dump(doc["x-gbserver-superseded"])
+        sc.release_kube_configs(a, home=tmp_path)
+        doc = yaml.safe_load(sc.kubeconfig_path(tmp_path).read_text()) or {}
+        assert "x-gbserver-superseded" not in doc
+
+    def test_a_definition_never_used_before_still_rotates(self, tmp_path):
+        tag = sc.kube_process_tag()
+        a = "s/env#a" + tag
+        for token in ("t1", "t2", "t3"):
+            _merge(tmp_path, _kubeconfig("remote", user={"token": token}), owner=a)
+        doc = yaml.safe_load(sc.kubeconfig_path(tmp_path).read_text())
+        (user,) = [u for u in doc["users"] if u["name"] == "gbserver/remote"]
+        assert user["user"]["token"] == "t3"
+
+    def test_main_launch_passes_the_pin_check_as_pre_submit(self):
+        """The provision path must check pins under _CLOUD_CONFIG_LOCK."""
+        import inspect
+
+        from gbserver.environment import skypilot as sp
+
+        src = inspect.getsource(sp)
+        assert "pre_submit=self._check_no_foreign_pins" in src

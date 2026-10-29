@@ -51,6 +51,7 @@ import configparser
 import copy
 import hashlib
 import io
+import json
 import os
 import random
 import socket
@@ -835,6 +836,11 @@ _DEFAULT_KUBECONFIG = "~/.kube/config"
 #: Key in the managed kubeconfig recording which environment wrote each context.
 _KUBE_OWNERS_KEY = "x-gbserver-owners"
 
+#: Key recording, per context, hashes of definitions it has replaced, so a
+#: build still holding pre-rotation secrets can't put the old ones back.
+_KUBE_SUPERSEDED_KEY = "x-gbserver-superseded"
+_KUBE_SUPERSEDED_MAX = 16
+
 
 def _start_time(proc: psutil.Process) -> str:
     """``proc``'s start time, as recorded in owner keys.
@@ -1252,6 +1258,11 @@ def _store_owners(doc: Dict, owners: Dict[str, Set[str]]) -> None:
 
 def _drop_context(doc: Dict, name: str) -> None:
     """Remove a managed context with its ``gbserver/<context>`` cluster and user."""
+    superseded = doc.get(_KUBE_SUPERSEDED_KEY)
+    if isinstance(superseded, dict):
+        superseded.pop(name, None)
+        if not superseded:
+            doc.pop(_KUBE_SUPERSEDED_KEY, None)
     _without(doc, "contexts", name)
     _without(doc, "clusters", _KUBE_NAME_PREFIX + name)
     _without(doc, "users", _KUBE_NAME_PREFIX + name)
@@ -1328,6 +1339,18 @@ def _change_managed(
     return result, changed
 
 
+def reserved_kube_context(name: str) -> bool:
+    """Whether a ``kube_configs`` entry may not use context ``name``.
+
+    ``ssh-*`` names, which SkyPilot ignores for Kubernetes, and SkyPilot's
+    in-cluster context name (``in-cluster``, or
+    ``$SKYPILOT_IN_CLUSTER_CONTEXT_NAME``): environments may pin those without
+    supplying them, so a secret must not be able to define one.
+    """
+    in_cluster = os.environ.get("SKYPILOT_IN_CLUSTER_CONTEXT_NAME") or "in-cluster"
+    return name.startswith("ssh-") or name == in_cluster
+
+
 def _validated_incoming(
     entries: List[KubeConfigEntry], secrets: Dict[str, str], env_name: str
 ) -> List[Dict[str, Dict]]:
@@ -1340,8 +1363,12 @@ def _validated_incoming(
     incoming = []
     seen: Set[str] = set()
     for entry in entries:
-        if entry.context == _KUBE_PLACEHOLDER:
-            raise ValueError(f"kube_configs context name '{entry.context}' is reserved")
+        if entry.context == _KUBE_PLACEHOLDER or reserved_kube_context(entry.context):
+            raise ValueError(
+                f"kube_configs context name '{entry.context}' is reserved "
+                "(SkyPilot's in-cluster context, an ssh-* name, or gbserver's "
+                "placeholder)"
+            )
         if entry.context in seen:
             raise ValueError(
                 f"environment '{kube_owner_label(env_name)}': kube_configs lists context "
@@ -1400,6 +1427,13 @@ def _check_user_collisions(
         )
 
 
+def _definition_hash(parts: List[Any]) -> str:
+    """Hash of a context's ``[context, cluster, user]`` entries (no secrets kept)."""
+    return hashlib.sha256(
+        json.dumps(parts, sort_keys=True, default=str).encode()
+    ).hexdigest()
+
+
 def _apply_entry(
     doc: Dict,
     owners: Dict[str, Set[str]],
@@ -1411,8 +1445,12 @@ def _apply_entry(
 
     * Not present: added, owned by ``env_name``.
     * Identical to what is there: ``env_name`` joins its owners.
-    * Different, and ``env_name`` is its *only* owner: replaced (a rotated
-      token).
+    * Different, and every owner is the same ``<space>/<env>`` (other builds
+      of this environment): replaced, e.g. a rotated token. It's the same
+      environment's secret, and the old token has likely been revoked. The
+      replaced definition is recorded as superseded: a build that still holds
+      it (its secrets were read before the rotation) joins as an owner of the
+      newer one instead of putting the old one back.
     * Different otherwise: refused. Replacing it would change the credentials
       another environment uses.
 
@@ -1428,9 +1466,25 @@ def _apply_entry(
             ("users", parts["user"]["name"]),
         )
     ]
-    identical = existing == [parts["context"], parts["cluster"], parts["user"]]
-    if current and not identical and current != {env_name}:
-        others = sorted({kube_owner_label(o) for o in current - {env_name}})
+    incoming = [parts["context"], parts["cluster"], parts["user"]]
+    identical = existing == incoming
+    superseded = doc.setdefault(_KUBE_SUPERSEDED_KEY, {})
+    if not isinstance(superseded, dict):
+        superseded = doc[_KUBE_SUPERSEDED_KEY] = {}
+    history = superseded.get(name)
+    history = history if isinstance(history, list) else []
+    if not identical and current and _definition_hash(incoming) in history:
+        logger.info(
+            "kube context '%s': environment '%s' has an older definition than "
+            "the one in use (its secrets predate a rotation); keeping the newer",
+            name,
+            kube_owner_label(env_name),
+        )
+        owners[name] = current | {env_name}
+        return
+    label = kube_owner_label(env_name)
+    if current and not identical and {kube_owner_label(o) for o in current} != {label}:
+        others = sorted({kube_owner_label(o) for o in current} - {label})
         _raise_collision(
             "kube context",
             name,
@@ -1439,6 +1493,9 @@ def _apply_entry(
             str(dest),
         )
     if not identical:
+        if current and all(e is not None for e in existing):
+            history = (history + [_definition_hash(existing)])[-_KUBE_SUPERSEDED_MAX:]
+            superseded[name] = history
         for section, key in (
             ("contexts", "context"),
             ("clusters", "cluster"),
@@ -1446,6 +1503,8 @@ def _apply_entry(
         ):
             _without(doc, section, parts[key]["name"])
             doc.setdefault(section, []).append(parts[key])
+    if not superseded:
+        doc.pop(_KUBE_SUPERSEDED_KEY, None)
     owners[name] = current | {env_name}
 
 
@@ -1460,8 +1519,9 @@ def merge_kube_configs(
     Owner-aware per context, like the SSH blocks: each context, with its own
     ``gbserver/<context>`` cluster and user, records the *set* of environments
     using it (see :func:`_apply_entry`). An identical entry adds an owner; a
-    sole owner's differing entry replaces it (a rotated token); a context shared
-    with, or owned by, another environment cannot be changed; and a context, a
+    differing entry from the same ``<space>/<env>`` replaces it (a rotated
+    token), unless it's one that was already replaced (stale secrets); a
+    context shared with, or owned by, another environment cannot be changed; and a context, a
     cluster or a user of the same name in the user's own kubeconfig, or a user
     current-context naming one, is refused. Contexts are removed only by
     :func:`release_kube_configs`, once no owner is left, so environments sharing
@@ -1571,18 +1631,25 @@ def user_kube_context_names(home: Optional[Path] = None) -> Set[str]:
     return _user_kubeconfig(kubeconfig_path(home)).contexts
 
 
-def managed_kube_contexts(home: Optional[Path] = None) -> Dict[str, Set[str]]:
+def managed_kube_contexts(
+    home: Optional[Path] = None, include_stale: bool = False
+) -> Dict[str, Set[str]]:
     """The contexts gbserver's kubeconfig holds, with their owners.
 
     Read without the lock: a reader only checks membership, and the file is
     replaced atomically. Owners from gbserver processes that no longer run are
-    left out (the next merge or release removes them from the file).
+    left out (the next merge or release removes them from the file), unless
+    ``include_stale``: their credentials are still in the file until then, so
+    isolation checks must count them.
 
     :param home: Home dir override (tests).
+    :param include_stale: Keep owners whose gbserver process is gone.
     :returns: ``{context: {owner, ...}}``; empty when there is no file.
     :raises ValueError: If the file is not a valid kubeconfig mapping.
     """
     owners = _kube_owners(_read_managed(kubeconfig_path(home)))
+    if include_stale:
+        return owners
     live = {n: {o for o in os_ if not _owner_is_stale(o)} for n, os_ in owners.items()}
     return {n: os_ for n, os_ in live.items() if os_}
 

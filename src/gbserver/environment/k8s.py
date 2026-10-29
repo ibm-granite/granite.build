@@ -118,17 +118,17 @@ def _kubeconfig_without_skypilot_managed() -> Optional[str]:
     :returns: The filtered ``KUBECONFIG`` value, or ``None`` to use the client's
         default (``~/.kube/config``) when nothing else remains.
     """
-    raw = os.environ.get("KUBECONFIG")
-    if not raw:
+    if not os.environ.get("KUBECONFIG"):
         return None
-    from gbserver.environment.skypilot_config import kubeconfig_path
+    from gbserver.environment.skypilot_config import (
+        _kubeconfig_paths,
+        kubeconfig_path,
+    )
 
-    managed = os.path.abspath(str(kubeconfig_path()))
-    parts = [
-        p
-        for p in raw.split(os.pathsep)
-        if p and os.path.abspath(os.path.expanduser(p)) != managed
-    ]
+    # The same normalization activate_kubeconfig uses, so both agree on
+    # which entry is the managed file.
+    managed = _kubeconfig_paths(str(kubeconfig_path()))[0]
+    parts = [p for p in _kubeconfig_paths() if p != managed]
     return os.pathsep.join(parts) or None
 
 

@@ -62,11 +62,14 @@ ways to supply them:
     written differently by another environment, is refused (`SkypilotConfigCollisionError`). An identical
     context is shared: each environment instance using it is recorded as an owner (gbserver creates one
     instance per space, environment and build thread, so concurrent builds normally get their own). An
-    environment re-writing its own entry replaces it, e.g. a rotated token, but only while no other instance
-    also owns it; otherwise the change is refused until those finish, so a running build's credentials never
-    change under it. Same-named environments in two spaces never replace each other's credentials. Each
-    owner also records the gbserver process that wrote it: an owner left behind by a gbserver that stopped
-    mid-build is dropped on the next write, so its contexts can be rotated or removed again.
+    environment re-writing its own entry replaces it, e.g. a rotated token, even while other builds of the
+    same environment use it (it's the same secret, and the old token is likely revoked). A build whose
+    secrets were read before the rotation keeps using the newer definition rather than putting the old one
+    back. A *different*
+    environment sharing the context can't change it until that environment's builds finish. Same-named
+    environments in two spaces never replace each other's credentials. Each owner also records the gbserver
+    process that wrote it: an owner left behind by a gbserver that stopped mid-build is dropped on the next
+    write on that host.
   - **No environment's cluster becomes the default.** gbserver's file comes last on `KUBECONFIG`, so your
     own entries win any name clash. If your kubeconfig sets a `current-context`, gbserver's file sets none,
     and both `kubectl` and the Python client use yours. If it sets none, gbserver's file names an
@@ -95,26 +98,37 @@ ways to supply them:
     and `proxy-url` are not restricted: gbserver connects to whatever endpoint the secret names, so
     whoever can write a space secret chooses where gbserver sends requests (and that cluster's credentials).
   - **Contexts are released when unused.** Each context records the instances using it. When an instance's
-    last target finishes, it drops out, and a context nobody else uses is removed from
-    `~/.sky/gbserver-kubeconfig`; the next setup merges it again. A context shared by two environments
-    (identical definitions) stays while either uses it, and neither can change it while both do.
-  - **Another environment's context can't be borrowed.** An environment whose `allowed_contexts` names a
-    context gbserver manages for a different environment is refused at setup, even though the credentials
-    are on the process's `KUBECONFIG`. To use the same cluster, list it under its own `kube_configs` with
-    its own secret. An environment that allows every context is refused while gbserver holds any other
-    environment's context, since it would include that one: `allowed_contexts: all` in the active workspace
-    or at the top level, or no `allowed_contexts` at all while `SKYPILOT_ALLOW_ALL_KUBERNETES_CONTEXTS` is
-    true (read from gbserver's environment, which a local API server it starts inherits). Pin the contexts
-    explicitly. Values in the host's own `~/.sky/config.yaml` count too, where the environment's
-    `cloud_config` doesn't set one. Environments that can't reach Kubernetes (no Kubernetes
-    `default_cloud`, `kube_configs` or `kubernetes` config) are never checked. The check runs on
-    every setup and again just before each launch is submitted, so a pin that predates the other
-    environment's merge is caught at its next one.
-    A context your own kubeconfig defines is yours, and is never counted. The native Kubernetes environment
-    (`K8s`) never reads gbserver's kubeconfig: neither its Python client nor its `kubectl`, `oc` and `helm`
-    commands.
+    last target finishes and none of its clusters is still tracked (a SERVICE outlives its target, for
+    example), it drops out, and a context nobody else uses is removed from `~/.sky/gbserver-kubeconfig`;
+    the next setup merges it again. A context shared by two environments (identical definitions) stays
+    while either uses it.
+  - **Pins must name a context you or the environment supply.** Every name in an environment's
+    `allowed_contexts` must be defined by your own kubeconfig or by that environment's `kube_configs`; any
+    other name is refused at setup and launch. Another environment's context is on the process's
+    `KUBECONFIG`, and SkyPilot resolves a context when the request runs, so a name that isn't defined yet
+    could be merged by another environment in between. To use the same cluster, list it under the
+    environment's own `kube_configs` with its own secret. SkyPilot's in-cluster context (when gbserver runs
+    in a pod) and `ssh-*` names are always allowed, and `kube_configs` may not define them. A pin set only
+    in the host's `~/.sky/config.yaml` is refused only while gbserver holds that context for an environment,
+    so a stale host entry doesn't stop every environment.
+  - **"All contexts" is refused while other environments' contexts exist:** `allowed_contexts: all` in the
+    active workspace or at the top level, or no `allowed_contexts` while
+    `SKYPILOT_ALLOW_ALL_KUBERNETES_CONTEXTS` is true (read from gbserver's environment, which a local API
+    server it starts inherits). Pin the contexts explicitly. Contexts left by a gbserver that stopped
+    mid-build count until they're pruned.
+
+    Both checks apply to every environment, whatever its `default_cloud` (a step can target Kubernetes on
+    its own). They read the host's own `~/.sky/config.yaml` too, where the environment's `cloud_config`
+    doesn't set a value. They run on every setup and again just before each launch is submitted. With a
+    remote API server they're skipped: it uses its own kubeconfig, never gbserver's.
+  - **The native Kubernetes environment (`K8s`) never reads gbserver's kubeconfig:** neither its Python
+    client nor its `kubectl`, `oc` and `helm` commands.
 
   Limits:
+  - **"All contexts" timing gap.** An environment allowed all contexts at a moment when no other
+    environment held one can still see a context another environment merges before SkyPilot runs its
+    request. Pin contexts explicitly to avoid it. Tracked in
+    [#571](https://github.com/ibm-granite/granite.build/issues/571), together with the next item.
   - **The credentials are on the process's `KUBECONFIG`.** The `allowed_contexts` check stops another
     environment from *configuring* a managed context, but code in the same process that reads `KUBECONFIG`
     directly (a `kubectl` call by a step running on the gbserver host, say) can still see it. Run environments that must not share a host's credentials in separate

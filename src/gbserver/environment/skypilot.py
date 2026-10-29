@@ -9,6 +9,7 @@ require it unless a Skypilot environment is actually configured.
 
 import asyncio
 import concurrent.futures
+import contextlib
 import functools
 import glob
 import importlib.util
@@ -516,63 +517,103 @@ def _apply_cloud_config(env_name: str, cloud_config: Optional[Dict]) -> None:
         _LOADED_CLOUD_CONFIG = key
 
 
-def _kube_allowed_contexts(cloud_config: Dict) -> List[str]:
-    """The Kubernetes ``allowed_contexts`` an env's ``cloud_config`` pins.
-
-    Follows SkyPilot's precedence (``sky.clouds.Kubernetes
-    .existing_allowed_contexts``) within the env's own ``cloud_config`` only:
-    the active workspace's ``workspaces.<name>.kubernetes.allowed_contexts`` when
-    it sets one, else ``kubernetes.allowed_contexts``. The active workspace is
-    the env's ``active_workspace``, defaulting to SkyPilot's ``default``.
-    ``'all'`` or an unset value pins nothing, so it yields an empty list. (A
-    host ``~/.sky/config.yaml`` may set its own value where the env sets none;
-    :func:`_effective_allowed_contexts` covers that for the pin checks.)
-
-    :param cloud_config: The environment's ``cloud_config`` block.
-    :returns: The pinned context names.
-    """
-    workspace = cloud_config.get("active_workspace") or "default"
-    workspaces = cloud_config.get("workspaces") or {}
-    ws = ((workspaces.get(workspace) or {}).get("kubernetes")) or {}
-    allowed = ws.get("allowed_contexts")
-    if allowed is None:
-        allowed = (cloud_config.get("kubernetes") or {}).get("allowed_contexts")
-    return list(allowed) if isinstance(allowed, list) else []
-
-
-def _effective_allowed_contexts(cloud_config: Dict) -> Any:
+def _effective_allowed_contexts(cloud_config: Dict, include_host: bool = True) -> Any:
     """The ``allowed_contexts`` SkyPilot would apply for an env, or ``None``.
 
     SkyPilot's precedence (``sky.clouds.Kubernetes.existing_allowed_contexts``):
-    the active workspace's value when set, else the top-level one. Both the
-    env's ``cloud_config`` and the host's ``~/.sky/config.yaml`` count, since
-    gbserver deep-merges the former into the latter and keeps the host's other
-    keys: the env's value wins where it sets one, the host's applies otherwise.
+    the active workspace's value when set, else the top-level one. The active
+    workspace is the env's ``active_workspace`` (else the host's, else
+    SkyPilot's ``default``). With ``include_host``, the host's
+    ``~/.sky/config.yaml`` counts too: gbserver deep-merges the env's
+    ``cloud_config`` into it and keeps the host's other keys, so at each level
+    the env's value wins where it sets one and the host's applies otherwise.
+
+    :param cloud_config: The environment's ``cloud_config`` block.
+    :param include_host: Also consider the host's own sky config.
+    :returns: A list of names, ``'all'``, or ``None`` when unset.
     """
     from gbserver.environment.skypilot_config import host_sky_config
 
-    def pick(cfg: Dict) -> Any:
-        workspace = (
-            cloud_config.get("active_workspace")
-            or cfg.get("active_workspace")
-            or "default"
-        )
+    host = host_sky_config() if include_host else {}
+    workspace = (
+        cloud_config.get("active_workspace")
+        or host.get("active_workspace")
+        or "default"
+    )
+
+    def in_workspace(cfg: Dict) -> Any:
         workspaces = cfg.get("workspaces")
         ws = workspaces.get(workspace) if isinstance(workspaces, dict) else None
         ws_k8s = ws.get("kubernetes") if isinstance(ws, dict) else None
-        if isinstance(ws_k8s, dict) and ws_k8s.get("allowed_contexts") is not None:
-            return ws_k8s["allowed_contexts"]
-        return None
+        return ws_k8s.get("allowed_contexts") if isinstance(ws_k8s, dict) else None
 
     def top(cfg: Dict) -> Any:
         k8s = cfg.get("kubernetes")
         return k8s.get("allowed_contexts") if isinstance(k8s, dict) else None
 
-    host = host_sky_config()
-    for value in (pick(cloud_config), pick(host), top(cloud_config), top(host)):
+    for value in (
+        in_workspace(cloud_config),
+        in_workspace(host),
+        top(cloud_config),
+        top(host),
+    ):
         if value is not None:
             return value
     return None
+
+
+def _kube_allowed_contexts(cloud_config: Dict) -> List[str]:
+    """The context names an env's own ``cloud_config`` pins.
+
+    :func:`_effective_allowed_contexts` without the host config: what the env
+    itself declares (its ``kube_configs`` entries must be listed here).
+    ``'all'`` or an unset value pins nothing, so it yields an empty list.
+
+    :param cloud_config: The environment's ``cloud_config`` block.
+    :returns: The pinned context names.
+    """
+    allowed = _effective_allowed_contexts(cloud_config, include_host=False)
+    return list(allowed) if isinstance(allowed, list) else []
+
+
+def _is_skypilot_own_context(name: str) -> bool:
+    """Whether SkyPilot supplies or ignores kube context ``name`` itself.
+
+    The in-cluster context (when gbserver runs in a pod with a service
+    account) is never on ``KUBECONFIG``, and SkyPilot drops ``ssh-*`` names
+    from Kubernetes' ``allowed_contexts``, so pinning either is always safe.
+    :func:`~gbserver.environment.skypilot_config.merge_kube_configs` refuses
+    ``kube_configs`` entries with such names, so this can't be used to borrow.
+    """
+    return name.startswith("ssh-") or name == _in_cluster_context_name()
+
+
+def _in_cluster_context_name() -> Optional[str]:
+    """SkyPilot's in-cluster context name, when in-cluster auth is available."""
+    try:
+        from sky.adaptors import kubernetes as sky_k8s
+        from sky.provision.kubernetes import utils as sky_k8s_utils
+
+        if sky_k8s_utils.is_incluster_config_available():
+            return sky_k8s.in_cluster_context_name()
+    except Exception:  # pylint: disable=broad-exception-caught
+        pass
+    return None
+
+
+def _sky_api_server_is_local() -> bool:
+    """Whether SkyPilot requests go to a local API server.
+
+    Only a local one receives this process's ``KUBECONFIG`` (the client
+    forwards it with each request); a remote server uses its own. Assumed local
+    when SkyPilot can't tell.
+    """
+    try:
+        from sky.server import common as sky_server_common
+
+        return bool(sky_server_common.is_api_server_local())
+    except Exception:  # pylint: disable=broad-exception-caught
+        return True
 
 
 def _kube_allows_all_contexts(cloud_config: Dict) -> bool:
@@ -2342,10 +2383,10 @@ class Skypilot(Environment):
         credentials. Re-merges whenever the entries or their secrets change (a
         rotated token), and is a no-op otherwise.
 
-        Also refuses an ``allowed_contexts`` pin on a context gbserver manages
-        for *another* environment: those credentials are on the process's
-        ``KUBECONFIG``, so without this check any environment could use them by
-        naming the context.
+        On strict calls, also checks the env's kube context pins
+        (:meth:`_check_no_foreign_pins`): other environments' credentials are on
+        the process's ``KUBECONFIG``, so it may only pin contexts it or the user
+        supplies, and may not allow all while others' contexts are present.
 
         Blocking (file I/O and a cross-process lock): async callers use
         :meth:`_ensure_kube_configs_async`.
@@ -2358,7 +2399,7 @@ class Skypilot(Environment):
         :raises ValueError: If ``strict`` and ``kube_configs`` is malformed or
             unpinned (see :meth:`_kube_config_entries`).
         :raises SkypilotConfigCollisionError: If ``strict``, on a context owned
-            elsewhere, or a pin on another environment's managed context.
+            elsewhere, or a pin :meth:`_check_no_foreign_pins` refuses.
         """
         try:
             kube_entries = self._kube_config_entries()
@@ -2384,9 +2425,11 @@ class Skypilot(Environment):
                     self._kube_configs_applied = fingerprint
                     if strict:
                         self._kube_released = False
-            # Every call, even with unchanged inputs: another environment may
-            # have merged the context since this one pinned it.
-            self._check_no_foreign_pins()
+            # Every strict call, even with unchanged inputs: another
+            # environment may have merged a context since. Polls, teardown and
+            # cleanup only touch clusters a strict launch already checked.
+            if strict:
+                self._check_no_foreign_pins()
         except Exception as e:  # pylint: disable=broad-exception-caught
             if strict:
                 raise
@@ -2402,17 +2445,24 @@ class Skypilot(Environment):
         self._kube_configs_warned = False
 
     def _check_no_foreign_pins(self: Self) -> None:
-        """Refuse pinning a context gbserver manages for another environment.
+        """Refuse kube contexts this environment may not use.
 
-        Those credentials come from another environment's secret and are on
-        this process's ``KUBECONFIG``, so without this check any environment
-        could use them by naming the context in ``allowed_contexts``. A context
-        the user's own kubeconfig also defines is not another environment's
-        secret (and :func:`merge_kube_configs` refuses such a ``kube_configs``
-        entry anyway), so it is never counted. ``allowed_contexts: all`` lets
-        SkyPilot use *every* context on ``KUBECONFIG``, so it is refused while
-        any other environment's managed context exists, wherever it is set
-        (see :func:`_kube_allows_all_contexts`).
+        Other environments' ``kube_configs`` credentials are on this process's
+        ``KUBECONFIG``, and SkyPilot's API server resolves a context when it
+        runs the request, after this check. So:
+
+        * **An explicit pin** may only name a context from the user's own
+          kubeconfig or this environment's ``kube_configs``. Any other name is
+          refused, whether or not another environment holds it right now, since
+          one could merge it before the request runs.
+        * **Allowing all contexts** (:func:`_kube_allows_all_contexts`) is
+          refused while gbserver holds any context this environment doesn't own.
+          (One merged after this check is a known gap, tracked in #571.)
+
+        Contexts whose owners are all stale (a gbserver that died mid-build)
+        still count: their credentials stay on ``KUBECONFIG`` until the next
+        write prunes them. Every environment is checked, whatever its
+        ``default_cloud``, since a step can target Kubernetes on its own.
 
         :raises SkypilotConfigCollisionError: On such a pin.
         """
@@ -2421,25 +2471,49 @@ class Skypilot(Environment):
             user_kube_context_names,
         )
 
+        if not _sky_api_server_is_local():
+            return  # a remote server uses its own kubeconfig, never this process's
         cloud_config = self._cloud_config() or {}
-        if not self._may_use_kubernetes(cloud_config):
-            return
+        allowed = _effective_allowed_contexts(cloud_config)
+        pinned = set(allowed) if isinstance(allowed, list) else set()
         allows_all = _kube_allows_all_contexts(cloud_config)
-        effective = _effective_allowed_contexts(cloud_config)
-        pinned = set(effective) if isinstance(effective, list) else set()
         if not allows_all and not pinned:
-            return  # SkyPilot uses only the default context: nothing to borrow
-        owner = self._kube_owner()
+            return  # SkyPilot uses only the default context
         mine = {e.context for e in self._kube_config_entries()}
         user_own = user_kube_context_names()
+        unknown = sorted(
+            n for n in pinned - mine - user_own if not _is_skypilot_own_context(n)
+        )
+        if unknown:
+            from gbserver.environment.skypilot_config import (
+                managed_kube_contexts,
+            )
+
+            env_pins = set(_kube_allowed_contexts(cloud_config))
+            managed = set(managed_kube_contexts(include_stale=True))
+            # A host-only pin (~/.sky/config.yaml) gates every environment; a
+            # stale or missing name there is refused only when it could be
+            # borrowed right now, so one bad host entry can't stop them all.
+            unknown = [n for n in unknown if n in env_pins or n in managed]
+        if unknown:
+            raise SkypilotConfigCollisionError(
+                f"environment '{self._env_name()}' pins kube context(s) "
+                f"{unknown} in allowed_contexts, which neither your own "
+                "kubeconfig (every readable KUBECONFIG file, or ~/.kube/config) "
+                "nor this environment's kube_configs defines. gbserver may hold "
+                "such a context for another environment's kube_configs, so it "
+                "can't be pinned: list it under this environment's kube_configs "
+                "(with its own secret), or add it to your own kubeconfig."
+            )
+        if not allows_all:
+            return
+        owner = self._kube_owner()
         others = sorted(
             name
-            for name, owners in managed_kube_contexts().items()
+            for name, owners in managed_kube_contexts(include_stale=True).items()
             if owner not in owners and name not in mine and name not in user_own
         )
-        if not others:
-            return
-        if allows_all:
+        if others:
             raise SkypilotConfigCollisionError(
                 f"environment '{self._env_name()}' allows all kube contexts "
                 "(allowed_contexts: all, in its workspace or at the top level, "
@@ -2448,34 +2522,30 @@ class Skypilot(Environment):
                 "kube_configs, which 'all' would let it use. Pin the contexts this "
                 "environment needs explicitly."
             )
-        foreign = sorted(set(others) & pinned)
-        if foreign:
-            raise SkypilotConfigCollisionError(
-                f"environment '{self._env_name()}' pins kube context(s) "
-                f"{foreign} in allowed_contexts, which gbserver manages for "
-                "another environment's kube_configs. List the context under "
-                "this environment's own kube_configs (with its own secret), "
-                "or pin a different context."
-            )
 
-    def _may_use_kubernetes(self: Self, cloud_config: Dict) -> bool:
-        """Whether this env can launch onto Kubernetes at all.
+    @contextlib.asynccontextmanager
+    async def _kube_configs_held(self: Self, setup_id: Optional[str]):
+        """Merge this env's ``kube_configs`` (non-strict) for a teardown, then release.
 
-        Its ``default_cloud`` is Kubernetes, it brings ``kube_configs``, or its
-        ``cloud_config`` configures Kubernetes (top level or a workspace). An
-        AWS, LSF or SSH environment is not affected by gbserver's managed kube
-        contexts, so the pin checks skip it.
+        The merge is awaited *inside* the bracket, so a cancel while it waits
+        on the lock still releases (the merge itself finishes on its worker
+        thread either way).
+
+        While it runs, the bracket itself counts as an active setup, so a
+        release inside it (``cleanup_skypilot`` downing the last tracked
+        cluster) can't remove contexts the rest of the teardown still needs.
+
+        :param setup_id: The setup being torn down, or ``None`` for a launcher
+            without one (:meth:`launch_skypilot_teardown`).
         """
-        if self._get_cloud().lower() in _CLOUDS_AUTODOWN_ONLY:
-            return True
-        if (self.config.config if self.config else {}).get("kube_configs"):
-            return True
-        if isinstance(cloud_config.get("kubernetes"), dict):
-            return True
-        workspaces = cloud_config.get("workspaces")
-        return isinstance(workspaces, dict) and any(
-            isinstance(ws, dict) and "kubernetes" in ws for ws in workspaces.values()
-        )
+        token = f"teardown:{uuid.uuid4().hex}"
+        self._kube_active_setups.add(token)
+        try:
+            await self._ensure_kube_configs_async(strict=False)
+            yield
+        finally:
+            self._kube_active_setups.discard(token)
+            await self._release_kube_configs_if_idle(setup_id)
 
     async def _release_kube_configs_if_idle(
         self: Self, setup_id: Optional[str]
@@ -2504,15 +2574,23 @@ class Skypilot(Environment):
     def _release_kube_configs_locked(self: Self) -> None:
         """The release itself, under this instance's kube lock (blocking).
 
-        The idle check is made *under* the lock: a setup that registered after
-        it is still waiting to merge (it takes the same lock), and merges again
-        once the release has reset ``_kube_configs_applied``; a setup that
-        registered before it keeps the contexts.
+        Idle means no setup is active and no cluster is tracked
+        (``_cluster_names``). The check is made *under* the lock: a setup that
+        registered after it is still waiting to merge (it takes the same lock),
+        and merges again once the release has reset ``_kube_configs_applied``; a
+        setup that registered before it keeps the contexts.
         """
         from gbserver.environment.skypilot_config import release_kube_configs
 
         with self._kube_lock:
-            if self._kube_active_setups or self._kube_configs_applied is None:
+            # A cluster still tracked (a SERVICE, or one cleanup hasn't downed
+            # yet) needs the contexts for its polls and its sky.down;
+            # cleanup_skypilot releases once the last one is gone.
+            if (
+                self._kube_active_setups
+                or self._cluster_names
+                or self._kube_configs_applied is None
+            ):
                 return
             if not self._kube_config_entries_or_empty():
                 return
@@ -3108,8 +3186,7 @@ class Skypilot(Environment):
         :param setup_id: Setup identifier originally returned to
             ``Environment.setup``; used to look up the stashed path.
         """
-        await self._ensure_kube_configs_async(strict=False)
-        try:
+        async with self._kube_configs_held(setup_id):
             workdir = self._setup_workdirs.pop(setup_id, None)
             run_meta = self._setup_run_meta.pop(setup_id, {})
             provisioned = self._setup_provisioned.pop(setup_id, [])
@@ -3139,8 +3216,6 @@ class Skypilot(Environment):
             # Deprovision every ephemeral mount created in setup (regardless of which
             # mount hosts the workdir).
             await self._deprovision_ephemeral(provisioned, run_meta, setup_id)
-        finally:
-            await self._release_kube_configs_if_idle(setup_id)
 
     async def _reap_per_run_workdir(
         self: Self, workdir: str, provider, run_meta: Dict, setup_id: str
@@ -5161,6 +5236,9 @@ class Skypilot(Environment):
             self._launch_kwargs.pop(launch_id, None)
             self._relaunch_attempts.pop(launch_id, None)
             self._log_lines_parsed.pop(launch_id, None)
+            # The last cluster outliving its target's teardown (a SERVICE, say)
+            # held the contexts; release now if nothing else does.
+            await self._release_kube_configs_if_idle(None)
 
     async def launch_skypilot_teardown(
         self: Self,
@@ -5178,11 +5256,10 @@ class Skypilot(Environment):
         launch_id. SERVICE clusters on LSF never autostop and never get a
         terminal-status cleanup, so this is how they get reclaimed.
         """
-        # Its own merge (and the release below), even after an earlier
-        # release: the clusters it downs may need the contexts.
+        # Its own merge and release, even after an earlier release: the
+        # clusters it downs may need the contexts.
         self._kube_released = False
-        await self._ensure_kube_configs_async(strict=False)
-        try:
+        async with self._kube_configs_held(None):
             config = kwargs.get("config") or {}
             names = (config.get("teardown_config") or {}).get("cluster_names") or []
             names = [n.strip() for n in names if isinstance(n, str) and n.strip()]
@@ -5232,10 +5309,6 @@ class Skypilot(Environment):
                     logger.error(
                         "launch_skypilot_teardown: failed to tear down %s: %s", name, e
                     )
-        finally:
-            # Without a setup of its own, nothing else would release what the
-            # line above merged; still a no-op while another setup is live.
-            await self._release_kube_configs_if_idle(None)
 
     async def retry_workload(
         self: Self,

@@ -740,6 +740,7 @@ class TestEnvironmentWiring:
             "_ensure_kube_configs",
             "_ensure_kube_configs_async",
             "_ensure_inline_configs_materialized",
+            "_kube_configs_held",  # async-with bracket: merge, then release
         }
 
         def calls(node):
