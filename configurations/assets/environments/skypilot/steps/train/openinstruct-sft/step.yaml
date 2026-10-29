@@ -28,7 +28,7 @@ config:
     # with another image or, on SLURM, optionally a .sqsh path (SLURM environments
     # with slurm_image_cache cache the registry image automatically); `docker:` is
     # added when missing (SkyPilot's SLURM provisioner hands a .sqsh to Pyxis as is).
-    image_id: "docker:quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-5"
+    image_id: "docker:quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-6"
     # ClearML tracking: auto (on iff CLEARML_API_HOST, CLEARML_API_ACCESS_KEY and
     # CLEARML_API_SECRET_KEY are all set in the step env), true, or false.
     clearml_enabled: "auto"

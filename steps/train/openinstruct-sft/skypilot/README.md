@@ -67,7 +67,7 @@ unrendered-binding detector). `**/*.md` is listed so the docs can show `{{ ... }
 
 ## Image
 
-`quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-5`. It holds:
+`quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-6`. It holds:
 
 | Part | Pin |
 |---|---|
@@ -131,7 +131,7 @@ upgrading that package on top of `uv sync --frozen` in the install RUN (or remov
 it when SFT does not use it and the fix would move the training stack), then
 rebuilding and rescanning. Check quay's own scan of the pushed tag too: its
 database differs from trivy's (it flagged `Authlib`, `certifi` and `cryptography`
-CRITICALs that trivy did not, fixed in `oi-v0.3.0-5`). Result for `oi-v0.3.0-5`, the
+CRITICALs that trivy did not, fixed in `oi-v0.3.0-5`). Result for `oi-v0.3.0-6`, the
 shipped image (trivy, CRITICAL+HIGH): 0 fixable CRITICAL; 18 CRITICAL without a fix,
 all in Ubuntu's `linux-libc-dev` (kernel UAPI headers, needed by DeepSpeed's JIT
 build); 593 HIGH, 74 of them fixable (64 Python packages, 9 jar, 1 Go binary),
@@ -139,7 +139,7 @@ tracked in #567.
 
 ### Bumping IMAGE_VERSION
 
-The Makefile's `IMAGE_VERSION` is a stable version (`oi-v0.3.0-5`), not the
+The Makefile's `IMAGE_VERSION` is a stable version (`oi-v0.3.0-6`), not the
 per-commit git SHA. The image is large, and BlueVela caches a `.sqsh` per tag
 (each new tag means a fresh cold import), so it must not churn on unrelated commits.
 
@@ -152,22 +152,18 @@ re-imports the new tag automatically on its next run (see
 
 ## Publishing the image
 
-The image is `$(REGISTRY)/gb-steps:train-openinstruct-sft-skypilot-<IMAGE_VERSION>`:
-every custom step pushes to one shared repository, `gb-steps`, and `steps/common.mk`
-derives the tag from the step directory (`/` becomes `-`).
+The image is `$(REGISTRY)/steps/train/openinstruct-sft/skypilot:<IMAGE_VERSION>`:
+`steps/common.mk` gives every custom step its own repository, named after the step
+directory, and the tag is `IMAGE_VERSION`. The repository must be public (SkyPilot
+pulls anonymously); see `steps/README.md`, "A new step's repository".
 
-The granitebuild quay account is a user namespace, whose push robot cannot create
-repositories. So `gb-steps` was pre-created once under `quay.io/granitebuild`, set
-Public, and grants the robot `granitebuild+gbpush` Write. Every step pushes a new
-tag into it, so no per-step quay setup is needed.
-
-Log in with the robot first (`podman login quay.io/granitebuild`, or
-`REGISTRY_USER`/`REGISTRY_PASSWORD` in the environment; see `steps/README.md`,
-"Registry credentials"), then:
+Log in first (`podman login quay.io/granitebuild`, or `REGISTRY_USER` /
+`REGISTRY_PASSWORD` in the environment; see `steps/README.md`, "Registry
+credentials"), then:
 
 ```bash
 make -C steps/train/openinstruct-sft/skypilot image publish-image
-sh steps/registry-tag-status.sh quay.io/granitebuild/gb-steps:train-openinstruct-sft-skypilot-oi-v0.3.0-6
+sh steps/registry-tag-status.sh quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-6
 ```
 
 `publish-image` refuses a tag that already exists, so bump `IMAGE_VERSION` (see
