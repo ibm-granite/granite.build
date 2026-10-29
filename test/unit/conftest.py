@@ -18,7 +18,7 @@
 
 The standalone SQLite db lives under ``GB_HOME_DIR`` (default ~/.granite.build).
 Many unit tests create randomly named tables through ``SqliteStorageFactory()``;
-without this fixture they would pile up in the developer's real db (#574).
+without this fixture they would pile up in the developer's real db.
 Point GB_HOME_DIR at a per-test temp dir instead.
 """
 
@@ -46,12 +46,18 @@ def _real_db_tables(db_path: Path) -> set[str]:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _guard_real_gb_home_db():
-    """Fail the run if any unit test left new tables in the real db (#574).
+def _guard_real_gb_home_db(request):
+    """Fail the run if any unit test left new tables in the real db.
 
     Resolved before any per-test override, so it is the db the developer's
-    standalone server actually uses.
+    standalone server actually uses. Only active when every collected test is a
+    unit test: integration/e2e tests are not isolated by this conftest and may
+    legitimately use the real db, which would show up here as a false positive.
     """
+    unit_dir = Path(__file__).parent
+    if not all(Path(item.path).is_relative_to(unit_dir) for item in request.session.items):
+        yield
+        return
     db_path = Path(get_gb_home_dir()) / SQLITE_DB_FILE_NAME
     existed = db_path.exists()
     before = _real_db_tables(db_path)
@@ -70,8 +76,10 @@ def _isolate_gb_home_dir(tmp_path_factory, monkeypatch):
     # Outside the test's own tmp_path: some tests assert exactly what is in it, and
     # some create a "gb_home" there themselves to check it gets created.
     home = tmp_path_factory.mktemp("gb_home_sqlite")
-    # sqlite_storage resolves the home dir via get_gb_home_dir() at call time, so
-    # setting the env var is enough to redirect it to a per-test temp dir.
+    # sqlite_storage resolves the home dir via get_gb_home_dir() when a storage is
+    # constructed, so setting the env var is enough to redirect storage built during
+    # the test. Storage built earlier (setup_class, module/session fixtures) still
+    # points at the real db.
     monkeypatch.setenv("GB_HOME_DIR", str(home))
     # A test that lazily builds the admin storage singleton would pin it to its own
     # temp db for every later test; restore whatever was there before (None, or a
@@ -81,5 +89,7 @@ def _isolate_gb_home_dir(tmp_path_factory, monkeypatch):
     for name, value in saved.items():
         setattr(singleton_storage, name, value)
     # Each test gets its own db path and so its own cached engine; dispose them so
-    # pooled connections don't accumulate until atexit.
+    # pooled connections don't accumulate until atexit. This also disposes Postgres
+    # engines under live-storage tests (and logs INFO lines per engine); that is
+    # expected and harmless, they are recreated on demand.
     get_singleton_engine_cache().dispose_all()
