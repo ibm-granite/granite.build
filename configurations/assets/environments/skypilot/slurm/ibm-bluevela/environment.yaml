@@ -55,20 +55,22 @@ config:
   # entry, remove it first — gbserver refuses to overwrite foreign entries
   # (refuse-on-conflict).
   #
-  # MULTIPLE LOGIN NODES: `HostName` lists interchangeable candidate login hostnames
-  # under one `Host` block: gbserver picks one at random per launch and fails over to
-  # the next on a transient SSH control-plane error. login0-login3 are all confirmed
-  # reachable for SLURM (login0 verified interactively: sinfo/scontrol answer there
-  # under the same granitebuild identity).
+  # Reachability values are secret NAMES, not literals, so this public asset
+  # carries no cluster-internal details. Define the secrets in the space that
+  # uses this environment — see
+  # docs/environments/skypilot-slurm.md#secrets-in-cluster_ssh_configs for
+  # per-backend instructions:
+  #   BV_SLURM_LOGIN_NODES — the interchangeable candidate login hostnames,
+  #     comma- or whitespace-separated. MULTIPLE LOGIN NODES: gbserver expands
+  #     them into one failover pool, picks one at random per launch, and fails
+  #     over to the next on a transient SSH control-plane error (every
+  #     candidate was confirmed reachable for SLURM under the same identity).
+  #   BV_SLURM_LOGIN_USER — the shared service account on the login nodes.
   cluster_ssh_configs:
     slurm:
       - Host: bluevela
-        HostName:
-          - login0.bluevela.rmf.ibm.com
-          - login1.bluevela.rmf.ibm.com
-          - login2.bluevela.rmf.ibm.com
-          - login3.bluevela.rmf.ibm.com
-        User: granitebuild
+        HostName: BV_SLURM_LOGIN_NODES
+        User: BV_SLURM_LOGIN_USER
         # granitebuild's SSH identity is a 1Password-managed key, not a
         # Smallstep cert (confirmed: no `step` CLI and no loaded cert for this
         # account) — IdentityStepCert would fail fast with
@@ -88,7 +90,8 @@ config:
         # contents, and gbserver writes it to a 0600 file and points IdentityFile at that
         # file when it materializes ~/.slurm/config. That keeps this environment free of any
         # machine-specific path. Define the secret (BV_SSH_PRIVATE_KEY) in the space that
-        # uses this environment; see docs/environments/skypilot-slurm.md.
+        # uses this environment; see
+        # docs/environments/skypilot-slurm.md#secrets-in-cluster_ssh_configs.
         IdentityKey: BV_SSH_PRIVATE_KEY
         # Offer ONLY that key. Without it ssh also offers every key in the agent, and login1
         # drops the connection with "Too many authentication failures" before the right one
