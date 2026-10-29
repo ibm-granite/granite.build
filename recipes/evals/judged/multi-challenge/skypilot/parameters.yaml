@@ -29,6 +29,8 @@ TENSOR_PARALLEL_SIZE: 1
 # ─── Judge (paid; key from the GRANITE_EVALS_JUDGE_API_KEY secret) ──────
 # OpenAI-compatible endpoint of the judge gateway. No default; set it for your site.
 JUDGE_BASE_URL: ""
+# build-local.yaml and score-local.yaml: the judge model on that gateway. Empty = granite-evals' default judge.
+JUDGE_MODEL: ""
 
 # ─── Cluster ──────────────────────────────────────────────────────────
 ENVIRONMENT_URI: "space://environments/skypilot/slurm/ibm-bluevela"
@@ -41,3 +43,28 @@ SCORE_MEMORY: 64
 MAX_RETRIES: 2
 POLL_INTERVAL_SECONDS: 300
 LOG_RETRIEVAL_INTERVAL_SECONDS: 300
+
+# ─── Local scoring (build-local.yaml only) ────────────────────────────
+# build-local.yaml generates on BlueVela as above, then copies the output dir (generation.json and
+# items/) to the gbserver host and scores it there in IMAGE_CPU (local Docker), for a judge BlueVela cannot reach. E.g.:
+#   gb build start -f recipes/evals/judged/multi-challenge/skypilot/build-local.yaml --space <space> \
+#     --param JUDGE_BASE_URL=https://litellm.cb.ete.res.ibm.com/v1 \
+#     --param JUDGE_MODEL=rits/deepseek-ai/DeepSeek-V4.1-Flash-1017 --param LIMIT=5
+# SCORE_CPUS / SCORE_MEMORY above size the local container.
+SCORE_REMOTE_HOST: "bluevela"
+# ssh config for SCORE_REMOTE_HOST, relative to the gbserver user's home (the step gets no HOME).
+SCORE_SSH_CONFIG: ".lsf/config"
+
+# ─── Re-scoring (score-local.yaml only) ───────────────────────────────
+# score-local.yaml re-scores existing outputs on the gbserver host, e.g. to compare judges:
+#   gb build start -f recipes/evals/judged/multi-challenge/skypilot/score-local.yaml --space <space> \
+#     --param GENERATION_PATH=<abs path>/multi-challenge/generation.json \
+#     --param JUDGE_BASE_URL=https://litellm.cb.ete.res.ibm.com/v1 \
+#     --param JUDGE_MODEL=rits/zai-org/glm-5-3 --param JUDGE_TAG=glm-5-3
+# A build-local.yaml run leaves its outputs under ~/.granite.build/workdir/llm-build-<build id>/
+# target-multi-challenge-fetch/.../outputs/multi-challenge/. Model, limit and repeats come from
+# generation.json.
+# Absolute path of a generation.json with items/ beside it. Required by score-local.yaml.
+GENERATION_PATH: ""
+# Tags this judge's grades and results (judgment-<tag>.json, results-<tag>.json). Empty = untagged.
+JUDGE_TAG: ""
