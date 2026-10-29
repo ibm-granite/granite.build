@@ -56,7 +56,9 @@ def _guard_real_gb_home_db(request):
     legitimately use the real db, which would show up here as a false positive.
     """
     unit_dir = Path(__file__).parent.resolve()
-    if not all(item.path.resolve().is_relative_to(unit_dir) for item in request.session.items):
+    if not all(
+        item.path.resolve().is_relative_to(unit_dir) for item in request.session.items
+    ):
         yield
         return
     db_path = Path(get_gb_home_dir()) / SQLITE_DB_FILE_NAME
