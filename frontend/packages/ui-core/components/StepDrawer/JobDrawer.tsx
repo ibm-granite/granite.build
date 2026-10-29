@@ -423,6 +423,8 @@ function indexNotice(job: LineageJobDetail): string {
     // An external store's reason already names the source.
     return job.job_store === 'other' ? `${reason}.` : `Indexed from ${source}. ${reason}.`
   }
+  // A space denial carries no reason; it is not a missing build.
+  if (job.detail_denied) return `Indexed from ${source}. Not authorized to read this job's details.`
   // Detail is read from this server's builds only, never from the indexing store.
   return `Indexed from ${source}; this server has no build for it.`
 }

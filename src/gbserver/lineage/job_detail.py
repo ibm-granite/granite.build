@@ -93,30 +93,6 @@ def _fetch_lineage_job(job_id: str, storage: Any) -> Dict[str, Any]:
     return {"detail": _payload(payload_detail(job.attributes))}
 
 
-def _is_legacy_registration(build_id: str, target_run_uuid: str, storage: Any) -> bool:
-    """Whether ``build_id`` is the UUID of an artifact ``target_run_uuid`` produced.
-
-    The legacy W&B registration shape, and only that: any other missing build is
-    reported as missing rather than resolved through its target.
-    """
-    if not build_id:
-        return False
-    artifact = storage.artifact_registry.get_by_uuid(build_id)
-    return (
-        artifact is not None
-        and getattr(artifact, "created_by_target_id", None) == target_run_uuid
-    )
-
-
-def _is_registration_without_target(
-    build_id: str, target_run_uuid: str, storage: Any
-) -> bool:
-    """Whether ``build_id`` is a registered artifact's UUID on a row with no target."""
-    if not build_id or target_run_uuid:
-        return False
-    return storage.artifact_registry.get_by_uuid(build_id) is not None
-
-
 def _fetch_target(
     build_id: str,
     target_run_uuid: str,
@@ -128,14 +104,6 @@ def _fetch_target(
     target = (
         storage.target_storage.get_by_uuid(target_run_uuid) if target_run_uuid else None
     )
-    if (
-        build is None
-        and target is not None
-        and _is_legacy_registration(build_id, target_run_uuid, storage)
-    ):
-        # W&B registered-artifact runs written before ``artifact_id`` tagged
-        # ``build_id`` with the artifact UUID; its producing target names the build.
-        build = storage.build_storage.get_by_uuid(target.build_id)
     if build is None:
         # No id in the text: the caller has not been authorized for this build.
         raise JobDetailUnavailable("The build is not on this server")
@@ -191,7 +159,8 @@ def fetch_job_detail(
     # Fail closed: the global fields only, unless the caller passes the space
     # check. The full entry (owner, namespace, tags, origin ids) describes a job
     # beyond a lineage trace; a caller who may read it gets it whether or not the
-    # build is still here (an import, a pruned build).
+    # build is still here (an import, a pruned build). The build check releases
+    # the build and target only, never these.
     entry_readable = authorize_entry is None or authorize_entry(entry)
     detail: Dict[str, Any] = {
         **global_job_entry(entry),
@@ -203,10 +172,6 @@ def fetch_job_detail(
     }
     fetched: Dict[str, Any] = {}
     build_missing = False
-    if _is_registration_without_target(build_id, target_run_uuid, admin_storage):
-        # Registered-artifact rows written before ``artifact_id`` put the artifact
-        # UUID in ``build_id``: not a build, so read like any job with no build.
-        build_id = ""
     if not build_id:
         # Not a granite.build job: only the lineage job table may hold more. Its
         # payloads have no build check of their own, so the space check gates them.
@@ -246,8 +211,7 @@ def fetch_job_detail(
             detail.update(
                 detail_available=False, detail_error="Could not read the build"
             )
-    if fetched or entry_readable:
-        # A fetch that returned passed the build's own check.
+    if entry_readable:
         detail.update(entry)
         if not fetched:
             # The target these rows name, as the index recorded it.

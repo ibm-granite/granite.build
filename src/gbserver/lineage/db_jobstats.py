@@ -184,10 +184,11 @@ class DBLineageStore(ILineageStore):
         """Record lineage for a registered artifact and the sources it came from.
 
         This path has no target run, so the rows carry an empty
-        ``target_run_uuid`` and an empty ``build_id``; the artifact's uuid is in
-        the ``artifact_id`` tag, as the W&B sink does -- a registered artifact's
-        "release_id" *is* its uuid, and :meth:`count_release_ids` matches that tag.
-        The ``(job_id, input, output)`` unique still protects against duplicates, so having no target run costs nothing.
+        ``target_run_uuid``; ``build_id`` holds the artifact's uuid instead, which
+        is what the W&B sink also does -- its own comment says the "release_id" for
+        a registered artifact *is* the artifact uuid, and that is the column
+        :meth:`count_release_ids` queries. The ``(job_id, input, output)`` unique
+        still protects against duplicates, so having no target run costs nothing.
 
         One consequence worth knowing: these rows are never skipped by the
         presence-based dedup, which keys on ``target_run_uuid``. They do not need
@@ -197,10 +198,10 @@ class DBLineageStore(ILineageStore):
         job = self.create_jobstats_for_original_artifact(artifact, sources)
         if not job:
             return
-        # No build: the artifact uuid rides in the ``artifact_id`` tag, which
-        # count_release_ids(artifact.uuid) matches -- the same convention the W&B
-        # sink uses. build_id names builds only.
-        self._write_job(job, build_id="", target_run_uuid="")
+        # build_id carries the artifact uuid so count_release_ids(artifact.uuid)
+        # finds these rows -- the same convention the W&B sink uses, where a
+        # registered artifact's "release_id" IS its uuid.
+        self._write_job(job, build_id=artifact.uuid, target_run_uuid="")
 
     def _record_target(
         self,
@@ -504,9 +505,7 @@ class DBLineageStore(ILineageStore):
         matched = 0
         for page in self.job_storage.get_paged():
             for job in page:
-                if origin_id(
-                    job.attributes, "build_id"
-                ) != release_id and f"artifact_id={release_id}" not in (job.tags or []):
+                if origin_id(job.attributes, "build_id") != release_id:
                     continue
                 if target_id and (
                     origin_id(job.attributes, "target_run_uuid") != target_id

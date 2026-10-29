@@ -107,35 +107,35 @@ def targets_storage():
     )
 
 
-LEGACY = {"retrieve": {"build_id": "art1", "target_run_uuid": "t1"}}
+REGISTRATION = {"retrieve": {"build_id": "art1"}}
 
 
-def test_a_legacy_wandb_registration_reads_its_producing_build():
-    # build_id holds the artifact UUID; the artifact's own target names the build.
+def test_a_registration_row_shows_only_the_index():
+    """A registration's build_id holds its artifact UUID, which names no build
+    here: the index is shown, whatever the registry holds."""
     result = detail(
-        [index_row("j1", JobStore.WANDB, **LEGACY)],
-        artifacts={"art1": SimpleNamespace(uuid="art1", created_by_target_id="t1")},
-        **targets_storage(),
-    )
-    assert result["detail_available"] is True
-    assert result["build_id"] == "b1"
-    assert result["target"]["target_name"] == "train"
-
-
-@pytest.mark.parametrize(
-    "artifacts",
-    [{}, {"art1": SimpleNamespace(uuid="art1", created_by_target_id="other")}],
-)
-def test_a_missing_build_is_not_resolved_through_its_target(artifacts):
-    # Not an artifact, or an artifact another target produced: reported missing.
-    result = detail(
-        [index_row("j1", JobStore.WANDB, **LEGACY)],
+        [index_row("j1", JobStore.WANDB, **REGISTRATION)],
         authorize_entry=lambda e: True,
-        artifacts=artifacts,
+        artifacts={"art1": SimpleNamespace(uuid="art1", created_by_target_id="t1")},
         **targets_storage(),
     )
     assert result["detail_available"] is False
     assert result["detail_error"] == "The build is not on this server"
+    assert "target" not in result
+
+
+def test_a_build_reader_outside_the_jobs_space_gets_no_space_gated_fields():
+    """The build check releases the build and target; owner, namespace and tags
+    stay behind the space check."""
+    result = detail(
+        [index_row("j1", JobStore.WANDB, **TARGETS)],
+        authorize_entry=lambda e: False,
+        **targets_storage(),
+    )
+    assert result["detail_available"] is True
+    assert result["target"]["target_name"] == "train"
+    for key in _SPACE_GATED:
+        assert key not in result
 
 
 def test_targets_store_returns_the_target_with_its_steps():
@@ -386,16 +386,3 @@ def test_a_target_with_no_build_shows_only_the_index():
     assert result["detail_error"] == "Only the index is recorded"
     assert result["detail_denied"] is False
     assert "target" not in result
-
-
-def test_an_older_db_registration_still_reads_the_job_table():
-    # Written before ``artifact_id``: build_id holds the artifact UUID, no target.
-    job = SimpleNamespace(attributes={"payload": {"execution_stats": {"rows": 3}}})
-    result = detail(
-        [index_row("j1", JobStore.LINEAGE_JOB, retrieve={"build_id": "art1"})],
-        authorize_entry=lambda entry: True,
-        jobs={"j1": job},
-        artifacts={"art1": SimpleNamespace(uuid="art1", created_by_target_id=None)},
-    )
-    assert result["detail_available"] is True
-    assert result["detail"]["execution_stats"] == {"rows": 3}

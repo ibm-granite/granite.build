@@ -541,15 +541,15 @@ class TestArtifactRegistrationRows:
     """The path with no target run (D11)."""
 
     def test_rows_carry_no_target_run(self):
-        # Neither id is set: there is no build or target run. The artifact uuid
-        # is the job_id, and the artifact_id tag count_release_ids matches.
+        # build_id holds the artifact uuid so count_release_ids finds them, while
+        # target_run_uuid is absent: there is no target run.
         row = _row_from_draft(
             LineageRowDraft(job_id="ART-UUID", input="lh://prod/ns/tables/t"),
-            build_id="",
+            build_id="ART-UUID",
             target_run_uuid="",
         )
         assert origin_id(row.attributes, "target_run_uuid") == ""
-        assert origin_id(row.attributes, "build_id") == ""
+        assert origin_id(row.attributes, "build_id") == "ART-UUID"
         # job_id still identifies the rows, so the composite unique keeps
         # protecting them without depending on a target run.
         assert row.job_id == "ART-UUID"

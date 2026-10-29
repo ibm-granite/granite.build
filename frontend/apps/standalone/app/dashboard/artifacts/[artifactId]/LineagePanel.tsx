@@ -109,9 +109,8 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [jobNodeId])
 
-  // Index nodes are keyed by normalized URI. The dialog opens at once: a node the
-  // index recorded a registry UUID for opens by it; any other opens by URI, which
-  // the artifact page resolves when "View artifact page" is clicked.
+  // Index nodes are keyed by normalized URI. The dialog opens at once and opens by
+  // URI, which the artifact page resolves when "View artifact page" is clicked.
   const [openError, setOpenError] = React.useState<string | null>(null)
   // The page's own artifact is already open, so there is nothing to open from it.
   const canOpen = Boolean(activeNode && activeNode.type !== 'Build' && activeId !== rootId)
@@ -119,15 +118,14 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
   const openArtifact = () => {
     const metadata = (activeNode as IndexElkNode | undefined)?.indexNode?.metadata
     const uri = typeof metadata?.uri === 'string' ? metadata.uri : activeId
-    const uuid = typeof metadata?.gb_artifact_id === 'string' ? metadata.gb_artifact_id : undefined
     // The index URI is normalized, as lineage_uri is, so another spelling of
     // this page's own URI is caught without a lookup.
-    if (uuid === artifact.uuid || uri === artifact.lineage_uri || uri === artifact.uri) {
+    if (uri === artifact.lineage_uri || uri === artifact.uri) {
       setOpenError(`${activeName} is the artifact already open.`)
       return
     }
     setOpenError(null)
-    setOpenTarget({ name: activeName, uri, uuid })
+    setOpenTarget({ name: activeName, uri })
   }
 
   return (
