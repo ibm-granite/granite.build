@@ -151,6 +151,29 @@ environment_configs:
             # PYTHONPATH=/opt/gb-steps-distillation/src is already set by the image
             # itself; nothing to export here.
 
+            # GPU visibility normalization -- same guard as distill/gold and
+            # distill/eval (see gold's step-template for the full analysis):
+            # inside a pyxis/enroot container only the allocated GPUs are
+            # mounted and CUDA renumbers them 0..N-1, so a CUDA_VISIBLE_DEVICES
+            # mask written against a different view of the node is invalid
+            # here, and torch silently drops every entry from the first
+            # out-of-range ordinal on -- the server then comes up on fewer
+            # GPUs than requested, or fails to place its tensor-parallel
+            # shards at all. Only rewrite when the value cannot be valid in
+            # this container: empty, or a numeric ordinal at or beyond the
+            # mounted-GPU count (UUID/MIG entries are valid as-is; a shorter
+            # subset mask is a legitimate partial bind). Unset is safe because
+            # the mounted /dev/nvidia* set IS the allocation.
+            echo "distill-vllm-server: container CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-<unset>}'"
+            if [ "${CUDA_VISIBLE_DEVICES+set}" = set ]; then
+              N_GPU="$(ls /dev/nvidia[0-9]* 2>/dev/null | wc -l)"
+              MAX_ORD="$(printf '%s\n' "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | tr -d '[:space:]' | grep -xE '[0-9]+' | sort -n | tail -n 1)"
+              if [ "$N_GPU" -gt 0 ] && { [ -z "$CUDA_VISIBLE_DEVICES" ] || { [ -n "$MAX_ORD" ] && [ "$MAX_ORD" -ge "$N_GPU" ]; }; }; then
+                echo "distill-vllm-server: CUDA_VISIBLE_DEVICES='$CUDA_VISIBLE_DEVICES' is invalid inside the container ($N_GPU GPU(s) mounted, ordinals 0..$((N_GPU-1))); unsetting so CUDA exposes the mounted -- allocated -- set"
+                unset CUDA_VISIBLE_DEVICES
+              fi
+            fi
+
             # run_vllm_serve.py reads this and raises SamplingParams.min_tokens to it
             # for every request, which is the only place a floor can be applied: the
             # trainer's own min_completion_length does not travel with a served

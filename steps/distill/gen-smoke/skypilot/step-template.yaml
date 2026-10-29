@@ -77,6 +77,33 @@ environment_configs:
             OUT_DIR="{{ config.gen_smoke_config.output_dir }}"
             case "$OUT_DIR" in /*) ;; *) OUT_DIR="$WORK/$OUT_DIR" ;; esac
             mkdir -p "$OUT_DIR"
+
+            # GPU visibility normalization -- same guard as distill/gold and
+            # distill/eval (see gold's step-template for the full analysis):
+            # inside a pyxis/enroot container only the allocated GPUs are
+            # mounted and CUDA renumbers them 0..N-1, so a CUDA_VISIBLE_DEVICES
+            # mask written against a different view of the node is invalid
+            # here, and torch silently drops every entry from the first
+            # out-of-range ordinal on -- the smoke generation then silently
+            # runs on fewer GPUs than requested. Only rewrite when the value
+            # cannot be valid in this container: empty, or a numeric ordinal
+            # at or beyond the mounted-GPU count (UUID/MIG entries are valid
+            # as-is; a shorter subset mask is a legitimate partial bind).
+            # Unset is safe because the mounted /dev/nvidia* set IS the
+            # allocation.
+            echo "gen-smoke: container CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-<unset>}'"
+            if [ "${CUDA_VISIBLE_DEVICES+set}" = set ]; then
+              # The || true differs from the other steps' guard on purpose:
+              # this script runs set -euo pipefail, and ls/grep exit nonzero
+              # on no match -- wc's count (0) and the empty MAX_ORD are the
+              # answers we want, not failures.
+              N_GPU="$(ls /dev/nvidia[0-9]* 2>/dev/null | wc -l || true)"
+              MAX_ORD="$(printf '%s\n' "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | tr -d '[:space:]' | grep -xE '[0-9]+' | sort -n | tail -n 1 || true)"
+              if [ "$N_GPU" -gt 0 ] && { [ -z "$CUDA_VISIBLE_DEVICES" ] || { [ -n "$MAX_ORD" ] && [ "$MAX_ORD" -ge "$N_GPU" ]; }; }; then
+                echo "gen-smoke: CUDA_VISIBLE_DEVICES='$CUDA_VISIBLE_DEVICES' is invalid inside the container ($N_GPU GPU(s) mounted, ordinals 0..$((N_GPU-1))); unsetting so CUDA exposes the mounted -- allocated -- set"
+                unset CUDA_VISIBLE_DEVICES
+              fi
+            fi
             RUNGS=()
             {% for rung in config.gen_smoke_config.rungs %}
             RUNGS+=("{{ rung }}")

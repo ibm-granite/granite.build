@@ -240,6 +240,30 @@ environment_configs:
             echo "GB_STEP_METADATA_KEY:distill_code_commit GB_STEP_METADATA_VALUE:a5d59bc45524a8d75706e20d44ae1a254f273f23"
             # --- distill source: END ---
 
+            # GPU visibility normalization -- same guard as distill/gold and
+            # distill/eval (see gold's step-template for the full analysis):
+            # inside a pyxis/enroot container only the allocated GPUs are
+            # mounted and CUDA renumbers them 0..N-1, so a CUDA_VISIBLE_DEVICES
+            # mask written against a different view of the node is invalid
+            # here, and torch silently drops every entry from the first
+            # out-of-range ordinal on -- an accelerate/deepspeed rank then
+            # dies in init_process_group on a collapsed device count (the
+            # train-gold failure mode, build 00a0888f). Only rewrite when the
+            # value cannot be valid in this container: empty, or a numeric
+            # ordinal at or beyond the mounted-GPU count (UUID/MIG entries are
+            # valid as-is; a shorter subset mask is a legitimate partial
+            # bind). Unset is safe because the mounted /dev/nvidia* set IS
+            # the allocation.
+            echo "distill-sft: container CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-<unset>}'"
+            if [ "${CUDA_VISIBLE_DEVICES+set}" = set ]; then
+              N_GPU="$(ls /dev/nvidia[0-9]* 2>/dev/null | wc -l)"
+              MAX_ORD="$(printf '%s\n' "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | tr -d '[:space:]' | grep -xE '[0-9]+' | sort -n | tail -n 1)"
+              if [ "$N_GPU" -gt 0 ] && { [ -z "$CUDA_VISIBLE_DEVICES" ] || { [ -n "$MAX_ORD" ] && [ "$MAX_ORD" -ge "$N_GPU" ]; }; }; then
+                echo "distill-sft: CUDA_VISIBLE_DEVICES='$CUDA_VISIBLE_DEVICES' is invalid inside the container ($N_GPU GPU(s) mounted, ordinals 0..$((N_GPU-1))); unsetting so CUDA exposes the mounted -- allocated -- set"
+                unset CUDA_VISIBLE_DEVICES
+              fi
+            fi
+
             # Absolutise before the marker: the monitor hands this path to the env:// store,
             # possibly from another host, and a relative env: URI is rejected at config load.
             OUT_DIR="{{ config.sft_config.output_dir }}"
