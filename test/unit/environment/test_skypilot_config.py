@@ -650,6 +650,30 @@ class TestStepCert:
         )
         assert "IdentityStepCert" not in _read(dest)
 
+    def test_unparseable_timestamp_skips_cert_rather_than_crashing(self, tmp_path):
+        # A `Valid:` format fromisoformat cannot parse skips that cert (with a
+        # warning) instead of raising — here leaving no valid cert, so the
+        # actionable expiry error fires rather than a raw ValueError.
+        with pytest.raises(StepCertExpiredError, match="step ssh login"):
+            self._materialize(
+                tmp_path,
+                [_cert_text("2026/08/24 09:41:46", ["granitebuild"])],
+                HostName="h",
+                User="granitebuild",
+                IdentityStepCert=True,
+            )
+
+    def test_unparseable_timestamp_ignored_when_another_cert_is_valid(self, tmp_path):
+        future = "2099-01-01T00:00:00"
+        dest = self._materialize(
+            tmp_path,
+            [_cert_text("not-a-timestamp", ["x"]), _cert_text(future, ["y"])],
+            HostName="h",
+            User="granitebuild",
+            IdentityStepCert=True,
+        )
+        assert "IdentityStepCert" not in _read(dest)
+
     def test_step_cli_missing_raises_clear_error(self, monkeypatch):
         import gbserver.environment.skypilot_config as sc_mod
 
