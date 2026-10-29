@@ -734,6 +734,83 @@ class TestHostnameCandidates:
         assert sc._read_managed_hostnames("slurm", home=tmp_path) == {}
 
 
+class TestHostnameSecretResolution:
+    """``_resolve_hostname_secrets`` — ``HostName`` is the one directive consumed
+    before render time (login-node selection), so its secret resolution happens up
+    front; a secret may also expand to several comma-/whitespace-separated
+    candidates, and a resolution to no candidates fails fast."""
+
+    def test_scalar_secret_expands_to_candidates(self):
+        hosts = sc._resolve_hostname_secrets(
+            [_host(HostName="BV_LOGIN_NODES", User="root")],
+            {"BV_LOGIN_NODES": "login1.ex.com,login2.ex.com"},
+        )
+        assert hosts[0]["HostName"] == ["login1.ex.com", "login2.ex.com"]
+        assert hosts[0]["User"] == "root"  # other directives untouched
+
+    def test_secret_whitespace_separated(self):
+        hosts = sc._resolve_hostname_secrets(
+            [_host(HostName="BV_NODES")],
+            {"BV_NODES": "login1.ex.com login2.ex.com\nlogin3.ex.com"},
+        )
+        assert hosts[0]["HostName"] == [
+            "login1.ex.com",
+            "login2.ex.com",
+            "login3.ex.com",
+        ]
+
+    def test_list_items_secret_or_literal(self):
+        hosts = sc._resolve_hostname_secrets(
+            [_host(HostName=["BV_LOGIN_A", "login2.ex.com"])],
+            {"BV_LOGIN_A": "login1.ex.com"},
+        )
+        assert hosts[0]["HostName"] == ["login1.ex.com", "login2.ex.com"]
+
+    def test_literal_scalar_becomes_candidate_list(self):
+        # A literal scalar is normalized to a one-element list; selection already
+        # handled list-valued HostName, so nothing downstream changes.
+        hosts = sc._resolve_hostname_secrets([_host(HostName="only.ex.com")], {})
+        assert hosts[0]["HostName"] == ["only.ex.com"]
+
+    def test_no_hostname_passes_through(self):
+        host = _host(User="root")
+        assert sc._resolve_hostname_secrets([host], {}) == [host]
+
+    def test_unresolved_secret_name_warns_and_falls_back(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            hosts = sc._resolve_hostname_secrets([_host(HostName="BV_LOGIN_NODES")], {})
+        assert "looks like a secret name" in caplog.text
+        assert hosts[0]["HostName"] == ["BV_LOGIN_NODES"]  # literal fallback
+
+    def test_empty_resolution_raises(self):
+        with pytest.raises(ValueError):
+            sc._resolve_hostname_secrets(
+                [_host(HostName="BV_EMPTY")], {"BV_EMPTY": "  ,  "}
+            )
+
+    def test_materialize_resolves_hostname_and_user_secrets(
+        self, tmp_path, monkeypatch
+    ):
+        # End-to-end through the launch chokepoint: the secret expands into the
+        # failover pool, one candidate is written as the scalar HostName, and the
+        # User secret resolves at render time like any other directive.
+        monkeypatch.setattr(sc.random, "shuffle", lambda seq: None)  # keep order
+        ssh = ClusterSshConfigs(
+            slurm=[_host("bluevela", HostName="BV_LOGIN_NODES", User="BV_LOGIN_USER")]
+        )
+        secrets = {
+            "BV_LOGIN_NODES": "login1.ex.com,login2.ex.com",
+            "BV_LOGIN_USER": "granitebuild",
+        }
+        sc.materialize_ssh_for_cloud("sky-slurm", ssh, secrets, "slurm", home=tmp_path)
+        text = _read(tmp_path / ".slurm" / "config")
+        assert "HostName login1.ex.com" in text  # the (pinned) first candidate
+        assert "User granitebuild" in text  # resolved from secret
+        assert "login2.ex.com" not in text  # only the selected candidate is written
+
+
 class TestHostnameOnlyMergeRelaxation:
     """A block differing from another environment's ONLY in ``HostName`` last-writer-
     wins *only* when the already-written node is one of the incoming env's own candidate

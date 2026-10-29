@@ -295,6 +295,69 @@ def _materialize_identity_keys(
 
 
 # --------------------------------------------------------------------------- #
+# HostName resolution (secrets) — ahead of candidate selection
+# --------------------------------------------------------------------------- #
+def _resolve_hostname_secrets(
+    hosts: List[Dict[str, Any]], secrets: Dict[str, str]
+) -> List[Dict[str, Any]]:
+    """Resolve ``HostName`` values against secrets before candidate selection.
+
+    Every other directive is secret-resolved at render time (see
+    :func:`render_ssh_host`), but ``HostName`` feeds login-node *selection*
+    first (see :func:`_expand_hostname_candidates`), so it must be resolved up
+    front for a secret to be able to name a login node. Each scalar-or-list
+    item is resolved secret-name-or-literal; a resolved secret may hold several
+    interchangeable login nodes (comma- or whitespace-separated), which are
+    split into individual candidates. Hosts without a ``HostName`` directive
+    pass through unchanged.
+
+    :param hosts: Host directive mappings for one cloud.
+    :param secrets: Secret name -> value mapping for resolution.
+    :returns: New host dicts with ``HostName`` a list of literal candidates.
+    :raises ValueError: If a host's ``HostName`` resolves to no candidates.
+    """
+    result: List[Dict[str, Any]] = []
+    for host in hosts:
+        raw = host.get("HostName")
+        if raw is None:
+            result.append(host)  # no HostName directive: nothing to resolve
+            continue
+        alias = host.get("Host")
+        values = raw if isinstance(raw, list) else [raw]
+        candidates: List[str] = []
+        for value in values:
+            if value is None:
+                continue  # an unset list entry contributes no candidate
+            raw_str = str(value)
+            if raw_str in secrets:
+                # A secret may name several login nodes at once; split into
+                # candidates. Hostnames contain neither commas nor whitespace,
+                # so the split cannot corrupt a single-node value.
+                candidates.extend(
+                    c for c in re.split(r"[,\s]+", secrets[raw_str].strip()) if c
+                )
+                continue
+            if raw_str and _looks_like_secret_name(raw_str):
+                logger.warning(
+                    "HostName for host %s has value %r, which looks like a "
+                    "secret name but was not found in this environment's "
+                    "secrets; using it as a literal. If it should resolve to "
+                    "a secret, make sure that secret is available in the "
+                    "environment's secret store.",
+                    alias,
+                    raw_str,
+                )
+            candidates.append(raw_str)
+        if not candidates:
+            raise ValueError(
+                f"SSH host {alias!r}: HostName resolved to no login nodes; "
+                "expected at least one candidate hostname."
+            )
+        result.append({**host, "HostName": candidates})
+    return result
+
+
+# --------------------------------------------------------------------------- #
 # HostName selection (multiple login nodes)
 # --------------------------------------------------------------------------- #
 def _expand_hostname_candidates(
@@ -1128,15 +1191,19 @@ def _resolve_cloud_hosts(
     :param cloud: ``"slurm"`` or ``"lsf"`` — the cloud whose hosts to resolve.
     :param home: Home dir override (tests).
     :returns: The host dicts for ``cloud`` (``[]`` if none), each with any
-        ``IdentityKey`` rewritten to a managed ``IdentityFile`` and ``HostName`` still
-        scalar-or-list (candidate selection has not run yet).
-    :raises ValueError: If a host sets both ``IdentityKey`` and ``IdentityFile``, or
-        ``IdentityKey`` resolves to empty (see :func:`_materialize_identity_keys`).
+        ``IdentityKey`` rewritten to a managed ``IdentityFile`` and ``HostName``
+        resolved to a list of literal candidate login nodes (selection has not
+        run yet).
+    :raises ValueError: If a host sets both ``IdentityKey`` and ``IdentityFile``,
+        ``IdentityKey`` resolves to empty (see :func:`_materialize_identity_keys`),
+        or ``HostName`` resolves to no candidates (see
+        :func:`_resolve_hostname_secrets`).
     """
     hosts = {"slurm": ssh.slurm, "lsf": ssh.lsf}.get(cloud)
     if not hosts:
         return []
-    return _materialize_identity_keys(hosts, cloud, secrets, _home(home))
+    resolved = _materialize_identity_keys(hosts, cloud, secrets, _home(home))
+    return _resolve_hostname_secrets(resolved, secrets)
 
 
 def _merge_selected_hosts(

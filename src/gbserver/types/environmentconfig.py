@@ -53,7 +53,10 @@ class ClusterSshConfigs(Config):
     at random per launch (spreading load) and, if a transient SSH control-plane error
     stalls provisioning, fails over to the next candidate on retry. The chosen
     hostname is rendered as a normal scalar ``HostName`` directive, so all candidates
-    share this entry's ``User``/``Port``/``IdentityFile``/etc.
+    share this entry's ``User``/``Port``/``IdentityFile``/etc. A ``HostName`` item
+    may also name a secret (resolved before candidate selection); such a secret may
+    hold one login node or several comma-/whitespace-separated ones, all of which
+    become failover candidates.
 
     Attributes:
         slurm: Host entries rendered into ``~/.slurm/config``.
