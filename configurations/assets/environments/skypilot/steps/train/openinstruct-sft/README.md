@@ -84,6 +84,7 @@ not an expansion. Parameterise the build with `$${PARAM}` instead.
 | list: `dataset_transform_fn: [a, b]` | `--dataset_transform_fn a b` (repeated values) |
 | bool: `gradient_checkpointing: true` | `--gradient_checkpointing true` (`false` renders `false`) |
 | null: `seed: null` | omitted |
+| empty list: `foo: []` | refused at step creation (`--foo` alone would take the next flag as its value) |
 | map | refused at step creation |
 
 The step sets these flags itself, so they are refused in `args`:
@@ -192,7 +193,8 @@ and use the same path in an `env:///` output URI:
 Make the path unique per run (for example with a `$${PARAM}` suffix). A re-run of
 the same path replaces the earlier model. To avoid deleting anything else, the step
 refuses, before training, an `output_path` that is non-empty and has no
-`config.json` at its root.
+`config.json` at its root, and one that is the staged `base_model`, inside it, or
+contains it.
 
 The model is written to `<output_path>.partial` first. It is moved to `output_path`
 only after training saved a `config.json`. A run that saves no model registers

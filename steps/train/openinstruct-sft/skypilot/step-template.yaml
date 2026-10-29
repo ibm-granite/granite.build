@@ -100,6 +100,7 @@ environment_configs:
             {%- for k, v in c.args.items() %}
             {%- if (k | string | replace("-", "_")) in owned %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is set by the step; use the base_model/dataset inputs, output_path, dataset_mixer_list(_splits) or clearml_* instead.") }}{% endif -%}
             {%- if v is mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
+            {%- if v is iterable and v is not string and v is not mapping and not v %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is an empty list; finetune.py would read the next flag as its value. Remove it, or set it to null to omit it.") }}{% endif -%}
             {%- endfor -%}
             {%- endmacro %}
             {%- set c = config.openinstruct_sft_config %}
@@ -133,6 +134,7 @@ environment_configs:
             {%- for k, v in c.args.items() %}
             {%- if (k | string | replace("-", "_")) in owned %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is set by the step; use the base_model/dataset inputs, output_path, dataset_mixer_list(_splits) or clearml_* instead.") }}{% endif -%}
             {%- if v is mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
+            {%- if v is iterable and v is not string and v is not mapping and not v %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is an empty list; finetune.py would read the next flag as its value. Remove it, or set it to null to omit it.") }}{% endif -%}
             {%- endfor -%}
             {%- endmacro %}
             {%- set c = config.openinstruct_sft_config %}

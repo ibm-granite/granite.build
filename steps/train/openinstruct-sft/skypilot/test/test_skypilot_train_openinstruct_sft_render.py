@@ -242,6 +242,13 @@ class TestValidation:
     def test_mapping_arg_refused(self):
         assert "scalar or a list" in _render_error("run", _ctx(args={"x": {"a": 1}}))
 
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_empty_list_arg_refused(self, block):
+        # `--foo` with no value would make finetune.py read the next flag as
+        # foo's value.
+        err = _render_error(block, _ctx(args={"foo": [], "max_train_steps": 3}))
+        assert "args.foo is an empty list" in err
+
 
 class TestGuardArgv:
     @pytest.mark.parametrize("block", ["setup", "run"])
