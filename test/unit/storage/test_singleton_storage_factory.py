@@ -1,4 +1,4 @@
-"""Swapping the storage factory drops admin storage cached from the old one."""
+"""Swapping the storage factory rebuilds cached admin storage from the new one."""
 
 import pytest
 
@@ -25,6 +25,8 @@ def isolated_storage(tmp_path, monkeypatch):
     saved = singleton_storage.get_storage_factory()
     yield
     singleton_storage.set_storage_factory(saved)
+    # Don't leave storage pointing at tmp_path for later tests.
+    singleton_storage.reset_admin_storage()
 
 
 def test_set_storage_factory_drops_cached_storage(isolated_storage):
@@ -35,3 +37,16 @@ def test_set_storage_factory_drops_cached_storage(isolated_storage):
     singleton_storage.set_storage_factory(new)
 
     assert singleton_storage.get_admin_storage().space_storage in new.built
+
+
+def test_set_storage_factory_keeps_table_prefix(isolated_storage):
+    singleton_storage.set_storage_factory(_TaggedFactory())
+    singleton_storage.set_storage_prefix("t_")
+    new = _TaggedFactory()
+
+    singleton_storage.set_storage_factory(new)
+
+    storage = singleton_storage.get_admin_storage()
+    assert storage.table_name_prefix == "t_"
+    assert storage.space_storage in new.built
+    assert storage.space_storage.table_name.startswith("t_")
