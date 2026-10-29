@@ -171,6 +171,31 @@ environment_configs:
             echo "GB_STEP_METADATA_KEY:distill_code_commit GB_STEP_METADATA_VALUE:a5d59bc45524a8d75706e20d44ae1a254f273f23"
             # --- distill source: END ---
 
+            # GPU visibility normalization -- same reasoning as distill/gold's
+            # step-template (see there for the full analysis): inside a
+            # pyxis/enroot container only this job's allocated GPUs are
+            # mounted and CUDA renumbers them 0..N-1, and a mask written
+            # against a different view of the node -- physical host indices,
+            # a stale export -- is invalid here. torch drops every entry
+            # from the first out-of-range ordinal on, so an eval step can
+            # silently see fewer GPUs than it requested. Which link
+            # delivered a mismatched mask in the observed failures is not
+            # recoverable (the container CVD was never logged), hence the
+            # echo below. Only rewrite when the value cannot be valid in
+            # this container: empty, or a numeric ordinal at or beyond the
+            # mounted-GPU count (UUID/MIG entries are valid as-is, and a
+            # shorter subset mask is a legitimate partial bind). Unset is
+            # safe because the mounted /dev/nvidia* set IS the allocation.
+            echo "distill-eval: container CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-<unset>}'"
+            if [ "${CUDA_VISIBLE_DEVICES+set}" = set ]; then
+              N_GPU="$(ls /dev/nvidia[0-9]* 2>/dev/null | wc -l)"
+              MAX_ORD="$(printf '%s\n' "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | tr -d '[:space:]' | grep -xE '[0-9]+' | sort -n | tail -n 1)"
+              if [ "$N_GPU" -gt 0 ] && { [ -z "$CUDA_VISIBLE_DEVICES" ] || { [ -n "$MAX_ORD" ] && [ "$MAX_ORD" -ge "$N_GPU" ]; }; }; then
+                echo "distill-eval: CUDA_VISIBLE_DEVICES='$CUDA_VISIBLE_DEVICES' is invalid inside the container ($N_GPU GPU(s) mounted, ordinals 0..$((N_GPU-1))); unsetting so CUDA exposes the mounted -- allocated -- set"
+                unset CUDA_VISIBLE_DEVICES
+              fi
+            fi
+
             # Absolutised here rather than in the script, because the SCRIPT prints the
             # artifact marker (see below) and the monitor hands that path to the env://
             # store, possibly from another host.
