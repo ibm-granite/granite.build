@@ -268,9 +268,19 @@ class LengthGroupedTrainer(Trainer):
         Ray's own ``prepare_trainer`` returns a plain ``DataLoader`` for its
         iterables for the same reason; HF moves the batch to the device in
         ``_prepare_inputs``. Datasets opt in with ``is_rank_sharded = True``.
+
+        Both drivers pin ``dataloader_num_workers=0``, so this loader skips HF's
+        worker-only settings (``persistent_workers``, ``prefetch_factor``, the
+        eval-loader cache). It refuses workers outright: the shard does not split
+        on ``get_worker_info()``, so every worker would iterate all of it.
         """
         if not getattr(dataset, "is_rank_sharded", False):
             return super()._get_dataloader(dataset, description, batch_size, sampler_fn, is_training, dataloader_key)
+        if self.args.dataloader_num_workers > 0:
+            raise ValueError(
+                f"dataloader_num_workers={self.args.dataloader_num_workers} with a per-rank Ray Data "
+                "shard: the shard does not split across loader workers, so each would replay it. Use 0."
+            )
         return DataLoader(
             dataset,
             batch_size=batch_size,
