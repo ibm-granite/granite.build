@@ -271,6 +271,61 @@ class TestOutput:
         assert "not a previous model" in proc.stderr
         assert (d / "precious.txt").exists()
 
+    @pytest.mark.parametrize(
+        "where",
+        ["same", "same-trailing-slash", "relative", "via-symlink", "output-inside"],
+    )
+    def test_refuses_output_overlapping_the_base_model(self, node, where):
+        # The base model has a config.json, so it passes the "previous model"
+        # check, and a successful run would `rm -rf` it. Refuse before training.
+        tmp, _, _, work = node
+        base = work / "base"
+        base.mkdir()
+        (base / "config.json").write_text("{}")
+        (tmp / "link").symlink_to(base)
+        out = {
+            "same": str(base),
+            "same-trailing-slash": f"{base}/",
+            "relative": "./base",
+            "via-symlink": str(tmp / "link"),
+            "output-inside": str(base / "sub"),
+        }[where]
+        proc, rec = _run(node, base_model=str(base), output_path=out)
+        assert proc.returncode == 1 and rec is None
+        assert "overlaps the base_model" in proc.stderr
+        assert (base / "config.json").is_file()
+
+    def test_refuses_base_model_inside_the_output(self, node):
+        _, _, _, work = node
+        out = work / "model_output"
+        (out / "base").mkdir(parents=True)
+        (out / "config.json").write_text("{}")
+        (out / "base" / "config.json").write_text("{}")
+        proc, rec = _run(node, base_model=str(out / "base"), output_path=str(out))
+        assert proc.returncode == 1 and rec is None
+        assert "overlaps the base_model" in proc.stderr
+
+    def test_refuses_a_base_model_at_the_staging_dir(self, node):
+        # <output_path>.partial is cleared before training, so it must not be
+        # the base model either.
+        _, _, _, work = node
+        base = work / "model_output.partial"
+        base.mkdir()
+        (base / "config.json").write_text("{}")
+        proc, rec = _run(node, base_model=str(base))
+        assert proc.returncode == 1 and rec is None
+        assert "overlaps the base_model" in proc.stderr
+        assert (base / "config.json").is_file()
+
+    def test_sibling_with_a_shared_prefix_is_not_an_overlap(self, node):
+        _, _, _, work = node
+        base = work / "model"
+        base.mkdir()
+        (base / "config.json").write_text("{}")
+        proc, _ = _run(node, base_model=str(base), output_path=str(work / "model2"))
+        assert proc.returncode == 0, proc.stderr
+        assert (base / "config.json").is_file()
+
     def test_no_model_saved_means_no_marker(self, node):
         proc, _ = _run(node, env={"FAKE_NO_MODEL": "1"})
         assert proc.returncode == 1

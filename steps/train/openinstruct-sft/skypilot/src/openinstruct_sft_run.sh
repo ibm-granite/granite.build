@@ -84,6 +84,34 @@ stage="${out_dir}.partial"
 # job user under Pyxis). Keep it next to the output, in the step's working dir.
 cache_dir="$(pwd)/local_dataset_cache"
 case $out_dir in *'"'*) fail "output path contains a double quote: '${out_dir}'." ;; esac
+
+# Symlink-free absolute path; for a path that does not exist yet, its nearest
+# existing ancestor's plus the rest.
+physical() {
+  local p="$1" rest="" d
+  while [ ! -d "$p" ]; do
+    rest="/$(basename "$p")${rest}"
+    p="$(dirname "$p")"
+  done
+  d="$(cd "$p" && pwd -P)"
+  d="${d%/}${rest}"
+  printf '%s\n' "${d:-/}"
+}
+# True when one path is the other or contains it.
+overlaps() {
+  case "$1/" in "$2/"*) return 0 ;; esac
+  case "$2/" in "$1/"*) return 0 ;; esac
+  return 1
+}
+# The base model has a config.json, so it would pass the previous-model check
+# below and be deleted by the swap (or by clearing the staging dir).
+base_phys="$(physical "$base_model")"
+for p in "$out_dir" "$stage"; do
+  if overlaps "$(physical "$p")" "$base_phys"; then
+    fail "output path ${p} overlaps the base_model ${base_model}; replacing it would delete the input. Point output_path at a different directory."
+  fi
+done
+
 # Replacing output_path deletes it: refuse anything but nothing / an empty dir /
 # a previous model, before any GPU time.
 if [ -e "$out_dir" ] && [ ! -d "$out_dir" ]; then
