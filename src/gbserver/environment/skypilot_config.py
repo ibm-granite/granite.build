@@ -424,8 +424,13 @@ def _step_loaded_certs() -> List[str]:
     """Return each Smallstep SSH cert currently loaded, as ``ssh-keygen -L`` text.
 
     Fully offline/non-interactive: ``step ssh list --raw`` prints one
-    ``authorized_keys``-format line per loaded cert; each is decoded via
-    ``ssh-keygen -L -f -``. Neither command triggers a login prompt.
+    ``authorized_keys``-format line per loaded agent identity; each is decoded
+    via ``ssh-keygen -L -f -``. Neither command triggers a login prompt. The
+    listing includes every identity the agent holds, not only certificates —
+    a plain (non-cert) key loaded alongside the cert makes ``ssh-keygen -L``
+    fail on that line, so failed lines are skipped rather than fatal: only a
+    certificate can satisfy ``IdentityStepCert`` anyway, and the presence of
+    other keys in the agent is a normal state, not a configuration error.
 
     :returns: One human-readable cert description per loaded cert (possibly empty).
     """
@@ -440,15 +445,19 @@ def _step_loaded_certs() -> List[str]:
         line = line.strip()
         if not line:
             continue
-        descriptions.append(
-            subprocess.run(
-                ["ssh-keygen", "-L", "-f", "-"],
-                input=line,
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
+        proc = subprocess.run(
+            ["ssh-keygen", "-L", "-f", "-"],
+            input=line,
+            capture_output=True,
+            text=True,
+            check=False,
         )
+        if proc.returncode != 0:
+            logger.debug(
+                "Skipping agent identity that is not a certificate: %.60s", line
+            )
+            continue
+        descriptions.append(proc.stdout)
     return descriptions
 
 

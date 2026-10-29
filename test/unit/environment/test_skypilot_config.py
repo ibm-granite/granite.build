@@ -620,6 +620,55 @@ class TestStepCert:
         assert "step ssh login" in str(exc.value)
 
 
+class TestStepLoadedCerts:
+    """``_step_loaded_certs`` decodes the *agent* listing — which holds every
+    identity, not only certificates. A plain key loaded alongside the cert must
+    be skipped, not crash the launch (reproduces a real failure: an agent
+    holding ``hew@bluevela-personal`` plus a valid ECDSA cert made every
+    ``IdentityStepCert`` launch die with ``ssh-keygen -L`` exit 1)."""
+
+    _PLAIN = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIplainkeynotacert hew@laptop"
+    _CERT_LINE = (
+        "ecdsa-sha2-nistp256-cert-v01@openssh.com "
+        "AAAAKGVjZHNhLXNoYTItbmlzdHAyNTYtY2VydC12MDFAb3BlbnNzaC5jb20AAAAIY2VydAAAAAA"
+    )
+
+    class _RunResult:
+        def __init__(self, returncode=0, stdout=""):
+            self.returncode = returncode
+            self.stdout = stdout
+
+    def _patch_subprocess(self, monkeypatch, plain_alone):
+        """Stub the module's subprocess so `step` lists a plain key + a cert."""
+        import types
+
+        import gbserver.environment.skypilot_config as sc_mod
+
+        cert_desc = _cert_text("2099-01-01T00:00:00", ["hew"])
+        listing = self._PLAIN if plain_alone else f"{self._PLAIN}\n{self._CERT_LINE}"
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["step", "ssh", "list"]:
+                return self._RunResult(stdout=listing + "\n")
+            assert cmd == ["ssh-keygen", "-L", "-f", "-"]
+            if kwargs.get("input") == self._PLAIN:
+                return self._RunResult(returncode=1)  # "is not a certificate"
+            return self._RunResult(stdout=cert_desc)
+
+        # Replace the module's subprocess reference (not the global module) so
+        # nothing else in the process is affected while the test runs.
+        monkeypatch.setattr(sc_mod, "subprocess", types.SimpleNamespace(run=fake_run))
+        return cert_desc
+
+    def test_plain_key_beside_cert_is_skipped(self, monkeypatch):
+        cert_desc = self._patch_subprocess(monkeypatch, plain_alone=False)
+        assert sc._step_loaded_certs() == [cert_desc]
+
+    def test_plain_key_alone_means_no_certs(self, monkeypatch):
+        self._patch_subprocess(monkeypatch, plain_alone=True)
+        assert sc._step_loaded_certs() == []
+
+
 # --------------------------------------------------------------------------- #
 # No teardown + concurrency
 # --------------------------------------------------------------------------- #
