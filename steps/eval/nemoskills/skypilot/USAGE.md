@@ -21,16 +21,22 @@ steps:
 | `benchmark` | Metric | Notes |
 |---|---|---|
 | `aa-lcr` | pass@1 judge correct | `ArtificialAnalysis/AA-LCR`, 100 questions over ~100k-token documents; prompts reach ~130k tokens — set `max_model_len` to ~160k+ |
+| `aime24` | pass@1 symbolic correct | |
 | `aime25` | pass@1 symbolic correct | |
+| `aime26` | pass@1 symbolic correct | `MathArena/aime_2026` (30 problems) |
 | `arena-hard-v2` | win rate | NeMo-Skills' pairwise arena judge |
 | `browsecomp` | mean reward | OpenAI simple-evals' 1266 questions (encrypted, pinned by sha256); web search via the IBM Google PSE MCP server (no key), page fetch; benchmark data itself is refused on fetch |
+| `browsecomp-plus` | mean reward | Tevatron's BrowseComp+ (`Tevatron/browsecomp-plus`, 830 queries sourced from BrowseComp, canary-encrypted and decrypted at run time); the same search/fetch run as `browsecomp` with Tevatron's query template and grader |
 | `critpt` | challenge accuracy | 70 physics research challenges, two-turn generation; graded by Artificial Analysis's CritPt API |
 | `critpt-tools` | challenge accuracy | as `critpt`, plus a stateful python tool each turn in an enroot sandbox (network off) |
+| `flores200` | en→xx COMET (XCOMET-XXL) | `openlanguagedata/flores_plus` devtest (1012 segments per language), default languages ar/cs/de/es/fr/it/ja/ko/nl/pt/zh (BCP-47 codes; `options: languages=` overrides); scored exactly as `wmt24pp` — XCOMET-XXL (`Unbabel/XCOMET-XXL`, gated, CC-BY-NC-SA-4.0) in the image's separate COMET env, phase `score` needs the gated model's access |
 | `gpqa` | pass@1 symbolic correct | `Idavidrein/gpqa` (gpqa_diamond), 198 questions; **gated** — needs `HF_TOKEN` of an account that accepted its terms |
 | `hle` | pass@1 judge correct | NeMo-Skills' `text` split of `cais/hle` (no-image questions); the official HLE judge prompt |
 | `hle-tools` | pass@1 judge correct | as `hle`, plus a stateful python tool (enroot sandbox, network off) and web search via the IBM Google PSE MCP server |
 | `hmmt-feb25` | pass@1 symbolic correct | |
+| `imo-answerbench` | pass@1 judge correct | google-deepmind/superhuman's IMO AnswerBench (400 short-answer problems, CSV fetched from a commit-pinned URL); NeMo-Skills' IMO AnswerBench judge prompt |
 | `livecodebench-v6` | pass@1 accuracy | 454 problems, release v6 (`test_v6_2408_2505`, contests 2024-08 to 2025-05); graded with the pinned `livecodebench` package in the job container |
+| `math-500` | pass@1 symbolic correct | OpenAI's MATH-500 (the prm800k test subset, 500 problems), fetched from a commit-pinned URL at run time |
 | `mmlu-pro` | 5-shot CoT symbolic correct | |
 | `omniscience` | pass@1 judge correct | `ArtificialAnalysis/AA-Omniscience-Public`, 600 questions; judge: A correct, B incorrect, C partial, D not attempted |
 | `omniscience-hallucination` | pass@1 judge_omni_hallucination (lower is better) | same pipeline as `omniscience`; hallucination rate = incorrect / (incorrect + partial + not attempted). `options: generations_from=<omniscience output dir>` re-scores that run instead of generating again |

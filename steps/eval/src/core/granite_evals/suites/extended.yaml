@@ -15,11 +15,16 @@ benchmarks:
   - {id: bfcl-v4, group: agentic-general, name: BFCL(v4), metric: overall_accuracy accuracy}
   - {id: gdpval, group: agentic-general, name: GDPval, metric: Elo}
   - {id: browsecomp, group: agentic-general, name: BrowseComp, metric: mean reward}
+  - {id: browsecomp-plus, group: agentic-general, name: BrowseComp+, metric: mean reward}
   - {id: mcpatlas, group: agentic-general, name: "MCPAtlas (key-less servers, 30 tasks)", metric: "pass rate (coverage >= 0.75)"}
   - {id: toolathlon, group: agentic-general, name: toolathlon, metric: success rate}
   # Reasoning
   - {id: aime25, group: reasoning, name: AIME25 (no tools), metric: "pass@1 symbolic correct"}
   - {id: hmmt-feb25, group: reasoning, name: HMMT Feb25 (no tools), metric: "pass@1 symbolic correct"}
+  - {id: aime24, group: reasoning, name: AIME24 (no tools), metric: "pass@1 symbolic correct"}
+  - {id: aime26, group: reasoning, name: AIME26 (no tools), metric: "pass@1 symbolic correct"}
+  - {id: math-500, group: reasoning, name: MATH-500 (no tools), metric: "pass@1 symbolic correct"}
+  - {id: imo-answerbench, group: reasoning, name: IMO AnswerBench (no tools), metric: pass@1 judge_correct}
   - {id: gpqa, group: reasoning, name: GPQA (no tools), metric: "pass@1 symbolic correct"}
   - {id: omniscience, group: reasoning, name: Omniscience, metric: pass@1 judge_correct}
   - {id: livecodebench-v6, group: reasoning, name: LiveCodeBench v6, metric: "pass@1 accuracy"}
@@ -31,6 +36,7 @@ benchmarks:
   # Chat & Instruction Following
   - {id: mmlu-pro, group: chat-if, name: MMLU-Pro, metric: "5-shot CoT symbolic correct"}
   - {id: mmlu-prox-lite, group: chat-if, name: MMLU-ProX lite (IBM), metric: exact match (custom-extract)}
+  - {id: include-44, group: chat-if, name: INCLUDE-44, metric: accuracy}
   - {id: arena-hard-v2, group: chat-if, name: Arena-Hard-V2, metric: win rate}
   - {id: ifbench, group: chat-if, name: IFBench (prompt), metric: "pass@1 prompt loose / strict accuracy"}
   - {id: multi-challenge, group: chat-if, name: Scale AI Multi-Challenge, metric: "pass@1 correct (--repeats 8: pass@1[avg-of-8])"}
@@ -40,6 +46,7 @@ benchmarks:
   - {id: strongreject, group: safety, name: StrongREJECT, metric: "Harmlessness (1 - StrongREJECT score)"}
   # Extras
   - {id: wmt24pp, group: extras, name: WMT24++, metric: "en→xx comet"}
+  - {id: flores200, group: extras, name: FLORES-200, metric: "en→xx comet"}
   - {id: aa-lcr, group: extras, name: AA-LCR, metric: pass@1 judge correct}
   - {id: ruler-1m, group: extras, name: RULER 1M completions, metric: accuracy}
   - {id: ruler-512k, group: extras, name: RULER 512k completions, metric: accuracy}

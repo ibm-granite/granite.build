@@ -7,6 +7,7 @@ import sys
 import types
 from pathlib import Path
 
+import httpx
 import pytest
 import yaml
 
@@ -22,6 +23,7 @@ IDS = {
     "critpt": ("Challenge Accuracy", 1),
     "aa-lcr": ("pass@1 judge correct", 16),
     "wmt24pp": ("en→xx comet", 1),
+    "flores200": ("en→xx comet", 1),
 }
 KEY_ENV = "GRANITE_EVALS_TEST_FAKE_JUDGE_KEY"
 
@@ -54,8 +56,137 @@ def test_pins(tmp_path):
     assert bench("hle", tmp_path).pins() == {"cais/hle": g5.HLE_REVISION}
     assert bench("aa-lcr", tmp_path).pins() == {"ArtificialAnalysis/AA-LCR": g5.LCR_REVISION}
     assert bench("omniscience-hallucination", tmp_path).pins() == {g5.OMNI_DATASET: g5.OMNI_REVISION}
+    assert bench("flores200", tmp_path).pins() == {g5.FLORES_DATASET: g5.FLORES_REVISION}
+    assert bench("imo-answerbench", tmp_path).pins() == {}  # a pinned URL download, not an HF repo
     for ref in (g5.COMET_MODEL, g5.COMET_ENCODER):
         assert len(ref.partition("@")[2]) == 40
+
+
+def test_imo_answerbench_registered_with_a_pinned_url(tmp_path):
+    """IMO AnswerBench's pin is a commit-pinned CSV URL with its sha256 (ns's
+    prepare is a urlopen of it, run natively by our adapter)."""
+    cls = registry.get("imo-answerbench")
+    assert issubclass(cls, nsb.NemoSkillsBenchmark) and cls.splittable
+    assert (cls.metric, cls.default_repeats) == ("pass@1 judge_correct", 1)
+    assert cls.extra == "nemoskills" and "nemo-skills" in cls.harness_packages
+    b = bench("imo-answerbench", tmp_path)
+    assert b.dataset == g5.IMO_URL and b.dataset_revision == f"sha256:{g5.IMO_SHA256}"
+    assert g5.IMO_N == 400 and "gemini-2.5-pro" in cls.official_judge
+    suite = yaml.safe_load((Path(registry.__file__).parent / "suites" / "extended.yaml").read_text())
+    assert {b["id"]: b["metric"] for b in suite["benchmarks"]}["imo-answerbench"] == cls.metric
+
+
+def test_imo_prepare_downloads_transforms_and_checks(tmp_path, monkeypatch):
+    import csv
+    import io
+
+    fields = ["Problem ID", "Problem", "Short Answer", "Category", "Subcategory", "Source"]
+    table = [["1", "What is x?", "42", "Algebra", "Linear", "IMO 2024"],
+             ["2", "Sum?", "7", "Number Theory", "Divisibility", "IMO 2025"]]
+    content = io.StringIO()
+    w = csv.writer(content)
+    w.writerow(fields)
+    w.writerows(table)
+    raw = content.getvalue().encode()
+
+    import hashlib
+
+    monkeypatch.setattr(g5, "IMO_SHA256", hashlib.sha256(raw).hexdigest())
+    monkeypatch.setattr(g5, "IMO_N", 2)
+    calls = []
+
+    def get(url, **k):
+        calls.append(url)
+        return httpx.Response(200, content=raw, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(g5.httpx, "get", get)
+    path, prov = bench("imo-answerbench", tmp_path).prepare_data()
+    assert calls == [g5.IMO_URL]
+    assert [json.loads(x) for x in path.read_text().splitlines()] == [
+        {"problem_id": "1", "problem": "What is x?", "expected_answer": "42", "category": "Algebra",
+         "subcategory": "Linear", "source": "IMO 2024"},  # fmt: skip
+        {"problem_id": "2", "problem": "Sum?", "expected_answer": "7", "category": "Number Theory",
+         "subcategory": "Divisibility", "source": "IMO 2025"},  # fmt: skip
+    ]
+    assert (tmp_path / "ns-data/imo-answerbench/answerbench_v2.csv").read_bytes() == raw  # kept for resume
+    assert prov["raw_sha256"] == hashlib.sha256(raw).hexdigest() and prov["ns_commit"] == nsb.NS_COMMIT
+
+    # A tampered download fails the pin
+    monkeypatch.setattr(g5.httpx, "get", lambda url, **k: httpx.Response(
+        200, content=b"tampered", request=httpx.Request("GET", url)))  # fmt: skip
+    with pytest.raises(RuntimeError, match="sha256"):
+        bench("imo-answerbench", tmp_path / "out2").prepare_data()
+
+
+def test_imo_judge_valid_and_ns_judge_args(ns, tmp_path):
+    """ns's imo judge config is gemini-flavoured: its ``reasoning_effort``
+    flows to the shared Sonnet-5 judge unless overridden (smoke-watch)."""
+    b = bench("imo-answerbench", tmp_path)
+    assert b.uses_judge() and b.gold_judged
+    assert b.judge_failures({"judgement": "The answer is right. \\boxed{Correct}"}) == (0, 1)
+    assert b.judge_failures({"judgement": "\\boxed{Incorrect}"}) == (0, 1)
+    assert b.judge_failures({"judgement": "Judgement: yes"}) == (0, 1)  # ns's parser is shared
+    assert b.judge_failures({"judgement": "I cannot tell"}) == (1, 1)
+    assert b.judge_failures({"judgement": ""}) == (1, 1)
+    args = b.judge_overrides()
+    assert "++prompt_config=judge/imo_answerbench" in args
+    assert "++inference.reasoning_effort=dynamic" in args
+    assert "++inference.temperature=0.0" in args  # our greedy override lands too
+
+
+def test_flores200_languages_default_option_and_validation(tmp_path):
+    b = bench("flores200", tmp_path)
+    assert b.languages() == g5.FLORES_LANGUAGES  # Granite 4.x languages minus English
+    assert bench("flores200", tmp_path, options={"languages": "de, zh-Hant"}).languages() == ("de", "zh-Hant")
+    with pytest.raises(SystemExit, match="BCP-47"):
+        bench("flores200", tmp_path, options={"languages": "english"}).languages()
+
+
+def test_flores_config_maps_bcp47_to_the_corpus_configs():
+    pytest.importorskip("langcodes")
+    assert {c: g5.flores_config(c) for c in g5.FLORES_LANGUAGES} == {
+        "ar": "arb_Arab", "cs": "ces_Latn", "de": "deu_Latn", "es": "spa_Latn", "fr": "fra_Latn",
+        "it": "ita_Latn", "ja": "jpn_Jpan", "ko": "kor_Hang", "nl": "nld_Latn", "pt": "por_Latn",
+        "zh": "cmn_Hans",
+    }  # fmt: skip
+    # langcodes' likely form where it differs from the corpus: Standard Arabic
+    # (not ara), Hangul (not Kore), Mandarin (not zho); plain codes pass through
+    assert g5.flores_config("zh-Hant") == "cmn_Hant" and g5.flores_config("ru") == "rus_Cyrl"
+    assert g5.flores_config("pt-BR") == "por_Latn" and g5.flores_config("deu-Latn") == "deu_Latn"
+
+
+def test_flores200_prepare_zips_the_parallel_devtest(tmp_path, monkeypatch):
+    """wmt24pp's row shape from FLORES's parallel devtest (ns's prepare with
+    the corpus swapped), cached against (dataset, revision, languages)."""
+    pytest.importorskip("langcodes")
+    from granite_evals import data
+
+    en = [{"text": f"en sentence {i}"} for i in range(3)]
+    de = [{"text": f"de Satz {i}"} for i in range(3)]
+    reads = []
+
+    def load_split(source, *, revision=None, split="test", name=None):
+        reads.append((source, revision, split, name))
+        return {"eng_Latn": en, "deu_Latn": de, "cmn_Hans": de}[name]
+
+    monkeypatch.setattr(data, "load_split", load_split)
+    b = bench("flores200", tmp_path, options={"languages": "de"})
+    path, prov = b.prepare_data()
+    assert [json.loads(x) for x in path.read_text().splitlines()] == [
+        {"source": f"en sentence {i}", "reference": f"de Satz {i}", "source_language": "en",
+         "target_language": "de", "source_lang_name": "English", "target_lang_name": "German"}
+        for i in range(3)
+    ]
+    assert reads == [(g5.FLORES_DATASET, g5.FLORES_REVISION, "devtest", "eng_Latn"),
+                     (g5.FLORES_DATASET, g5.FLORES_REVISION, "devtest", "deu_Latn")]
+    assert prov["rows"] == 3 and prov["languages"] == ["de"] and prov["dataset"] == g5.FLORES_DATASET
+
+    # Cached: the second call reads nothing; different languages re-prepare
+    reads.clear()
+    path2, prov2 = b.prepare_data()
+    assert path2 == path and prov2 == prov and reads == []
+    bench("flores200", tmp_path, options={"languages": "zh"}).prepare_data()
+    assert [r[3] for r in reads] == ["eng_Latn", "cmn_Hans"]  # FLORES_SPECIAL applied
 
 
 def test_judge_defaults_are_the_granite_judge(ns, tmp_path):
