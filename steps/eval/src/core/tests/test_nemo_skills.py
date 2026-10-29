@@ -11,7 +11,9 @@ from granite_evals.benchmarks import nemo_skills as nsb
 from granite_evals.registry import RunConfig
 
 IDS = {
+    "aime24": ("pass@1 symbolic correct", 1),
     "aime25": ("pass@1 symbolic correct", 1),
+    "aime26": ("pass@1 symbolic correct", 1),
     "hmmt-feb25": ("pass@1 symbolic correct", 1),
     "gpqa": ("pass@1 symbolic correct", 2),
     "mmlu-pro": ("5-shot CoT symbolic correct", 1),
@@ -36,10 +38,53 @@ def test_pins_include_primary_dataset(tmp_path):
     b = bench("gpqa", tmp_path)
     assert b.pins() == {"Idavidrein/gpqa": "83022cefff930aea54f654c0b282e74b9eeda5c6"}
     assert bench("aime25", tmp_path).pins() == {}  # bundled in the pinned ns commit
+    assert bench("aime24", tmp_path).pins() == {}  # bundled in the pinned ns commit
+    assert bench("aime26", tmp_path).pins() == {"MathArena/aime_2026": "d61f486805306e6e6b5913504c07763a99e1b112"}
     urls = registry.get("arena-hard-v2").pinned_urls
     assert len(urls) == 3
     for orig, (pinned, sha) in urls.items():
         assert "/main/" in orig and nsb._ARENA_HARD_COMMIT in pinned and len(sha) == 64
+
+
+def test_math500_pins_a_url_not_a_repo(tmp_path):
+    """MATH-500's pin is a commit-pinned file URL with its sha256, not an HF
+    repo read: ns's prepare is a wget of it (run natively by our adapter)."""
+    cls = registry.get("math-500")
+    assert (cls.metric, cls.default_repeats) == ("pass@1 symbolic correct", 1)
+    assert cls.extra == "nemoskills" and "nemo-skills" in cls.harness_packages
+    b = bench("math-500", tmp_path)
+    assert b.dataset == nsb.MATH_500_URL and b.dataset_revision == f"sha256:{nsb.MATH_500_SHA256}"
+    assert b.pins() == {}  # a URL download, no HF revisions to pin
+    assert nsb.MATH_500_N == 500
+
+
+def test_math500_prepare_downloads_renames_and_checks(tmp_path, monkeypatch):
+    import hashlib
+
+    rows = [{"problem": f"p{i}", "answer": str(i), "solution": f"s{i}"} for i in range(3)]
+    content = ("\n".join(json.dumps(r) for r in rows) + "\n").encode()
+    monkeypatch.setattr(nsb, "MATH_500_SHA256", hashlib.sha256(content).hexdigest())
+    monkeypatch.setattr(nsb, "MATH_500_N", 3)
+    calls = []
+
+    def get(url, **k):
+        calls.append(url)
+        return httpx.Response(200, content=content, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(nsb.httpx, "get", get)
+    path, prov = bench("math-500", tmp_path).prepare_data()
+    assert calls == [nsb.MATH_500_URL]
+    assert [json.loads(x) for x in path.read_text().splitlines()] == [
+        {"problem": f"p{i}", "expected_answer": str(i), "reference_solution": f"s{i}"} for i in range(3)
+    ]
+    assert (tmp_path / "ns-data/math-500/original_test.jsonl").read_bytes() == content  # kept for resume
+    assert prov["raw_sha256"] == hashlib.sha256(content).hexdigest() and prov["ns_commit"] == nsb.NS_COMMIT
+
+    # A tampered download fails the pin
+    monkeypatch.setattr(nsb.httpx, "get", lambda url, **k: httpx.Response(
+        200, content=b"tampered", request=httpx.Request("GET", url)))  # fmt: skip
+    with pytest.raises(RuntimeError, match="sha256"):
+        bench("math-500", tmp_path / "out2").prepare_data()
 
 
 def test_sampling_defaults_to_generation_config(tmp_path):

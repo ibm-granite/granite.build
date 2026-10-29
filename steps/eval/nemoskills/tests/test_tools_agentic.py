@@ -1,4 +1,4 @@
-"""Tool benchmarks (hle-tools, critpt-tools, browsecomp) and their tools, with
+"""Tool benchmarks (hle-tools, critpt-tools, browsecomp, browsecomp-plus) and their tools, with
 fakes only: a tool-calling fake model, fake MCP search / web page / judge /
 CritPt API servers, and the python tool's ``unsafe-local`` sandbox (no
 container, so its network cannot be cut: ``python_network=on``)."""
@@ -43,6 +43,7 @@ def _cfg_file(tmp_path, **sections):
         ("hle-tools", "pass@1 judge_correct", ["python", "search"]),
         ("critpt-tools", "Challenge Accuracy", ["python"]),
         ("browsecomp", "mean reward", ["search", "fetch"]),
+        ("browsecomp-plus", "mean reward", ["search", "fetch"]),
     ],
 )
 def test_registered_as_in_suite(bid, metric, tools, tmp_path):
@@ -366,6 +367,74 @@ def test_browsecomp_prompts_are_upstream_templates(tmp_path):
     g = judge["user"].format(problem="Q", generation="R", expected_answer="A")
     assert "[question]: Q\n\n[response]: R" in g and "[correct_answer]: A" in g and "0|\\%| and 100|\\%|" in g
     assert f"++prompt_config={tmp_path / 'prompts' / 'browsecomp.yaml'}" in b.generation_args([])
+    assert b.uses_judge() and b.split() == "test"
+
+
+def test_browsecomp_plus_prepare_decrypts_the_hf_rows(tmp_path, monkeypatch):
+    """The pinned HF dataset's rows are canary-encrypted (everything but
+    query_id); prepare decrypts them into BrowseComp's ns row shape, checking
+    the pinned row count. No short-circuit: HF is re-read every phase."""
+    queries = [
+        ("Which fake city hosts the fake tower built in 1999?", "Springfield", "q-001"),
+        ("Name the fake author of the fake novel 'Q'.", "J. Doe", "q-002"),
+    ]
+    rows = [
+        {
+            "query_id": qid,
+            "query": ta.browsecomp_encrypt(q, ta.BROWSECOMP_PLUS_CANARY),
+            "answer": ta.browsecomp_encrypt(a, ta.BROWSECOMP_PLUS_CANARY),
+        }
+        for q, a, qid in queries
+    ]
+    reads = []
+
+    def load_split(source, *, revision=None, split="test", name=None):
+        reads.append((source, revision, split))
+        return rows
+
+    monkeypatch.setattr(ta.data, "load_split", load_split)
+    monkeypatch.setattr(ta, "BROWSECOMP_PLUS_N", 2)
+    b = bench("browsecomp-plus", tmp_path / "out")
+    path, prov = b.prepare_data()
+    assert reads == [(ta.BROWSECOMP_PLUS_DATASET, ta.BROWSECOMP_PLUS_REVISION, "test")]
+    assert _rows(path) == [
+        {"id": "q-001", "problem": "Which fake city hosts the fake tower built in 1999?",
+         "expected_answer": "Springfield", "subset_for_metrics": "browsecomp-plus"},  # fmt: skip
+        {"id": "q-002", "problem": "Name the fake author of the fake novel 'Q'.",
+         "expected_answer": "J. Doe", "subset_for_metrics": "browsecomp-plus"},  # fmt: skip
+    ]
+    assert prov["source"] == "Tevatron browsecomp-plus (HF), canary-decrypted"
+    assert prov["dataset"] == ta.BROWSECOMP_PLUS_DATASET and prov["revision"] == ta.BROWSECOMP_PLUS_REVISION
+    assert prov["tevatron_commit"] == ta.TEVATRON_COMMIT and prov["rows"] == 2
+    assert len(ta.BROWSECOMP_PLUS_REVISION) == 40  # a real commit pin, not a sha256: pin
+
+    # The pinned row count is checked (an unmolested dataset must have 830)
+    monkeypatch.setattr(ta, "BROWSECOMP_PLUS_N", 830)
+    with pytest.raises(RuntimeError, match="2 rows, expected 830"):
+        bench("browsecomp-plus", tmp_path / "out2").prepare_data()
+
+
+def test_browsecomp_plus_prompts_are_tevatron_templates(tmp_path):
+    import yaml
+
+    b = bench("browsecomp-plus", tmp_path)
+    b.prepare_prompts()
+    gen = yaml.safe_load((tmp_path / "prompts" / "browsecomp-plus.yaml").read_text())
+    judge = yaml.safe_load((tmp_path / "prompts" / "browsecomp-plus-judge.yaml").read_text())
+    # Tevatron's query template and grader, each a user turn only (Tevatron's
+    # grader is sent with no system message).
+    assert gen == {"user": ta.BROWSECOMP_PLUS_QUERY} and judge == {"user": ta.BROWSECOMP_PLUS_GRADER}
+    filled = gen["user"].format(problem="Q?")
+    assert filled.startswith("You are a deep research agent.") and "Question: Q?" in filled
+    assert "Exact Answer: {your succinct, final answer}" in filled
+    g = judge["user"].format(problem="Q", generation="R", expected_answer="A")
+    assert "[question]: Q\n\n[response]: R" in g and "[correct_answer]: A" in g and "0|\\%| and 100|\\%|" in g
+    assert f"++prompt_config={tmp_path / 'prompts' / 'browsecomp-plus.yaml'}" in b.generation_args([])
+    judge_args = b._module_attr("JUDGE_ARGS")
+    assert "browsecomp-plus-judge.yaml" in judge_args and "++generation_key=judgement" in judge_args
+    assert "Qwen/Qwen3-32B" in b.official_judge and ta.TEVATRON_COMMIT[:12] in b.official_judge
+    assert any("tevatron" in p for p in b.blocked_url_patterns)
+    assert any("texttron" in p for p in b.blocked_url_patterns)
     assert b.uses_judge() and b.split() == "test"
 
 
