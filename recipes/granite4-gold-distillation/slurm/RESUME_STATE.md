@@ -4,12 +4,27 @@ Live handoff for resuming the paused 1b epoch. For the full recipe, tuning table
 cleanup, and gbserver-persistence rationale see [README.md](README.md) ("Resuming after a
 preemption / wall-clock cap", "Step timing vs batch size", and the Gotchas section).
 
-## Current state (paused 2026-10-28)
+## Current state (paused 2026-10-28, resume attempt cancelled 2026-10-29)
 - Recipe `distill-gold-trainonly`, student granite-4.0-1b-instruct ← teacher granite-4.2-30b,
   pretokenized all-category corpus. Off-policy, 2 nodes, batch=4 + Liger (~76 s/step).
 - **Paused after 5 consecutive gpu-mid preemptions.** `MAX_STEPS=-1` (full epoch = ~8,601
   steps). Latest valid checkpoint banked: **checkpoint-1250** (~16% of the epoch).
 - No SLURM job queued, no orphan. Nothing lost — resume continues from checkpoint-1250.
+
+### 2026-10-29 resume attempt — cancelled before it started (deliberate)
+- Build `e32bea93-8295-4804-898e-74a0087c5af5` submitted with the resume command below
+  (pre-checks passed: Pyxis/fuse cache keys `true`, checkpoint-1250 complete). It reached
+  gpu-mid as SLURM job 488005 and sat `PENDING (Priority)`; **no training step ran**.
+- Cancelled on purpose with `gb build cancel` (restart later). gbserver's cancel thread timed
+  out at 120 s, but the SkyPilot teardown completed ~4 min after the cancel and removed
+  job 488005; no auto-resubmit followed. Teardown only cleaned that build's own run dir —
+  the resume source below is untouched. Checkpoint-1250 is still the latest.
+- Note: this attempt ran on gbserver from the `~/granite.build` checkout (`defense` branch),
+  inside the sandbox pod — NOT a persistent host. Its gold-slurm step has the same resume
+  logic; it differs only by the deprecated `NCCL_ASYNC_ERROR_HANDLING` alias (harmless
+  warning). The persistent-host requirement below is still unmet.
+- After a cancel, wait for the "Torn down SkyPilot cluster" log line / empty `squeue`
+  before resubmitting; the build shows CANCELLED minutes before the SLURM job is gone.
 
 ## Latest checkpoint (resume source)
 ```
