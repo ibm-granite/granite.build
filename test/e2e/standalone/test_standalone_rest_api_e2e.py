@@ -83,11 +83,20 @@ def _shutdown_standalone_server(
             the key ``"server"`` with the ``uvicorn.Server`` instance.
         server_thread: the thread running ``_run_standalone``.
         timeout: seconds to wait for the server thread to exit.
+
+    Raises:
+        AssertionError: if the thread is still alive after ``timeout``. Teardown then
+            resets the singleton and restores GB_HOME_DIR, so a still-running
+            BuildWatcher would rebuild unprefixed storage in the real
+            ~/.granite.build; the test must fail rather than leave that behind.
     """
     server = server_holder.get("server")
     if server is not None:
         server.should_exit = True
     server_thread.join(timeout=timeout)
+    assert (
+        not server_thread.is_alive()
+    ), f"standalone server thread did not stop within {timeout}s"
 
 
 class TestStandaloneRestApiE2E(AbstractSingletonStorageUsingTest):

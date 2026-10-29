@@ -164,3 +164,9 @@ class TestStandaloneCommand(AbstractSingletonStorageUsingTest):
                 if server is not None:
                     server.should_exit = True
                 thread.join(timeout=15)
+                # Fail loudly if it didn't stop: teardown_method then resets the
+                # singleton and restores GB_HOME_DIR, so a still-running BuildWatcher
+                # would rebuild unprefixed storage in the real ~/.granite.build.
+                assert (
+                    not thread.is_alive()
+                ), "standalone server thread did not stop within 15s"
