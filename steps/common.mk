@@ -59,9 +59,11 @@
 #   DOCKER      container tool          (default: podman)
 #   DOCKERFILE  Dockerfile to detect/build (default: Dockerfile)
 #   PLATFORM    target build platform   (default: linux/amd64)
-#   IMAGE_NAME     image repository          (default: gb-steps, shared by every step)
+#   IMAGE_NAME     image repository          (default: steps/<step path>/<env>, one per step)
 #   IMAGE_VERSION  version part of the tag   (default: git short SHA, else "latest")
-#   IMAGE_TAG      image tag                 (default: <step path, / → ->-<env>-<IMAGE_VERSION>)
+#   IMAGE_TAG      image tag                 (default: $(IMAGE_VERSION))
+#   QUAY_API_TOKEN quay.io OAuth token in the ENVIRONMENT; publish-image creates a new
+#                  repository public with it (default: unset, no API call)
 #   STEP_ENV    step's environment segment      (default: this Makefile's dir name)
 #   PUBLISH_STEP_DIR  where `publish-step` renders the step (default: the env-nested
 #                     assets path configurations/assets/environments/<env>/steps/<path>)
@@ -110,21 +112,18 @@ $(error REGISTRY is not set. Define it in the including Makefile (e.g. 'REGISTRY
 endif
 endif
 
-# Every custom step image goes into ONE shared repository, and the step's
-# directory goes into the TAG (#229): steps/train/openinstruct-sft/skypilot
-# builds $(REGISTRY)/gb-steps:train-openinstruct-sft-skypilot-<IMAGE_VERSION>.
-# A shared repo means one pre-created, public registry repository for every
-# step (a quay user namespace's push robot cannot create repositories, and
-# push-created repos are private). A tag cannot contain `/`, so the step path's
-# `/` become `-`. Override IMAGE_NAME for another repository, or IMAGE_TAG to
-# set the whole tag yourself. `?=` keeps them recursive: STEP_PATH and STEP_ENV
-# are assigned further down this file.
-IMAGE_NAME    ?= gb-steps
+# Every custom step image gets its own repository, named after the step's
+# directory, and the tag is the version (#229): steps/train/openinstruct-sft/skypilot
+# builds $(REGISTRY)/steps/train/openinstruct-sft/skypilot:<IMAGE_VERSION>. Override
+# IMAGE_NAME for another repository, or IMAGE_TAG to set the whole tag yourself.
+# `?=` keeps them recursive: STEP_PATH and STEP_ENV are assigned further down
+# this file.
+IMAGE_NAME    ?= steps/$(STEP_PATH)/$(STEP_ENV)
 # The version part of the tag. Defaults to the git short SHA (else "latest") so
 # iterative builds get a unique, traceable tag; a step pins a release in its
 # Makefile, e.g. IMAGE_VERSION ?= 0.1.0.
 IMAGE_VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
-IMAGE_TAG     ?= $(subst /,-,$(STEP_PATH))-$(STEP_ENV)-$(IMAGE_VERSION)
+IMAGE_TAG     ?= $(IMAGE_VERSION)
 
 # Registry host (e.g. quay.io) parsed from REGISTRY (quay.io/my-org) — this is
 # what `docker login` authenticates against. Used only by publish-image's
@@ -139,6 +138,13 @@ REGISTRY_LOGIN = $(if $(filter podman,$(notdir $(firstword $(DOCKER)))),$(REGIST
 # tag never reaches it). Bump IMAGE_VERSION instead, or set PUBLISH_OVERWRITE=true
 # (exactly `true`) to replace the tag on purpose.
 PUBLISH_OVERWRITE ?= false
+
+# quay.io only: with QUAY_API_TOKEN (an OAuth token with the "Create Repositories"
+# scope) in the ENVIRONMENT, publish-image creates a repository that does not exist
+# yet as PUBLIC through quay's API before the first push. A repository created by
+# a push is private, and SkyPilot pulls the image anonymously. Without the token a
+# new repository must be made public once by hand.
+QUAY_API ?= https://quay.io/api/v1
 
 # IMAGE_REF is the fully qualified image reference (e.g. quay.io/org/img:tag)
 # that `make space` substitutes into the template's ${IMAGE_REF} token. The
@@ -360,12 +366,42 @@ endif
 # when the registry reports the tag absent. A tag it cannot check (network,
 # auth, an unexpected answer) is refused too, so a broken check never turns
 # into a silent overwrite.
+#
+# On quay.io it first makes sure the step's repository exists and is public
+# (see QUAY_API_TOKEN above): a repository the registry reports absent is
+# created public through quay's API when the token is set, and named in a note
+# otherwise. The token reaches curl as config on stdin, never on its argv.
 publish-image:
 ifeq ($(STEP_USES_IMAGE),true)
 	$(call require-image-tag)
 	@if [ -n "$${REGISTRY_USER:-}" ] && [ -n "$${REGISTRY_PASSWORD:-}" ]; then \
 		echo "[$(STEP_NAME)] logging in to $(REGISTRY_LOGIN) as $$REGISTRY_USER"; \
 		printf '%s' "$$REGISTRY_PASSWORD" | $(DOCKER) login "$(REGISTRY_LOGIN)" -u "$$REGISTRY_USER" --password-stdin; \
+	fi
+	@if [ "$(REGISTRY_HOST)" = "quay.io" ]; then \
+		ns='$(word 2,$(subst /, ,$(REGISTRY)))'; \
+		repo='$(patsubst $(REGISTRY_HOST)/%,%,$(REGISTRY))/$(IMAGE_NAME)'; repo="$${repo#*/}"; \
+		rstatus=$$($(TAG_STATUS) --repository "$(IMAGE_REF)"); \
+		case "$$rstatus" in \
+			present) ;; \
+			absent) \
+				if [ -z "$${QUAY_API_TOKEN:-}" ]; then \
+					echo "[$(STEP_NAME)] NOTE: quay.io repository $$ns/$$repo is new; the push creates it PRIVATE. Make it public once (repository Settings), or set QUAY_API_TOKEN to have publish-image create it public."; \
+				else \
+					body=$$(mktemp) || exit 1; \
+					printf '{"namespace":"%s","repository":"%s","visibility":"public","description":"granite.build step image (%s)","repo_kind":"image"}' "$$ns" "$$repo" "$$repo" > "$$body"; \
+					code=$$(printf 'header = "Authorization: Bearer %s"\n' "$$QUAY_API_TOKEN" | curl -s -g -o /dev/null -w '%{http_code}' --max-time 30 --config - \
+						-X POST -H 'Content-Type: application/json' --data-binary "@$$body" --url "$(QUAY_API)/repository"); \
+					rm -f "$$body"; \
+					if [ "$$code" = "201" ]; then \
+						echo "[$(STEP_NAME)] created public repository quay.io/$$ns/$$repo"; \
+					else \
+						echo "[$(STEP_NAME)] ERROR: could not create public repository quay.io/$$ns/$$repo (HTTP $$code). Check QUAY_API_TOKEN's scopes (Create Repositories), or create it in the quay UI." >&2; \
+						exit 1; \
+					fi; \
+				fi ;; \
+			*) echo "[$(STEP_NAME)] ERROR: could not determine whether repository quay.io/$$ns/$$repo exists (unreachable, or credentials needed: set REGISTRY_USER/REGISTRY_PASSWORD)." >&2; exit 1 ;; \
+		esac; \
 	fi
 	@if [ "$(PUBLISH_OVERWRITE)" = "true" ]; then \
 		echo "[$(STEP_NAME)] PUBLISH_OVERWRITE=true: pushing $(IMAGE_REF) without checking for an existing tag."; \
@@ -433,6 +469,12 @@ define require-image-tag
 	if [ "$${#tag}" -gt 128 ] || ! printf '%s' "$$tag" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]*$$'; then \
 		echo "[$(STEP_NAME)] ERROR: image tag '$$tag' is not a valid OCI tag (max 128 chars of [A-Za-z0-9_.-])." >&2; \
 		echo "[$(STEP_NAME)] Shorten IMAGE_VERSION, or set IMAGE_TAG in this step's Makefile." >&2; \
+		exit 1; \
+	fi; \
+	name='$(IMAGE_NAME)'; \
+	if ! printf '%s' "$$name" | grep -Eq '^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$$'; then \
+		echo "[$(STEP_NAME)] ERROR: image repository '$$name' is not a valid repository name (lowercase [a-z0-9], components separated by '/', '.', '_' or '-' only between characters)." >&2; \
+		echo "[$(STEP_NAME)] Rename the step directory, or set IMAGE_NAME in this step's Makefile." >&2; \
 		exit 1; \
 	fi
 endef

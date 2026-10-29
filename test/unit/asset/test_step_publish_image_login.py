@@ -22,11 +22,16 @@ Overwrite guard: a tag pins an image, and SLURM's image cache keys its .sqsh by
 tag, so publish-image refuses to push a tag that already exists on the registry
 (or whose existence it cannot determine) unless PUBLISH_OVERWRITE=true.
 
-Runs the real steps/common.mk against a throwaway step, with a fake `podman`
-first on PATH that records its argv and stdin, and a fake
+New public repository: on quay.io, with QUAY_API_TOKEN in the environment, a
+repository the registry reports absent is first created as public through quay's
+API (a repo created by a push is private, and SkyPilot pulls anonymously).
+
+Runs the real steps/common.mk against a throwaway step, with a fake `podman` and
+`curl` first on PATH that record their argv and stdin, and a fake
 `registry-tag-status.sh` that answers present / absent / unknown.
 """
 
+import json
 import os
 import pathlib
 import shutil
@@ -37,9 +42,15 @@ import pytest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 COMMON_MK = REPO_ROOT / "steps" / "common.mk"
 _MAKE_VARS = ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES")
-_LOGIN_VARS = ("REGISTRY_USER", "REGISTRY_PASSWORD", "PUBLISH_OVERWRITE", "DOCKER")
+_LOGIN_VARS = (
+    "REGISTRY_USER",
+    "REGISTRY_PASSWORD",
+    "PUBLISH_OVERWRITE",
+    "DOCKER",
+    "QUAY_API_TOKEN",
+)
 _TOKEN = "s3cr3t-robot-token"
-_REF = "quay.io/org/gb-steps:train-foo-skypilot-v1"
+_REF = "quay.io/org/steps/train/foo/skypilot:v1"
 
 # Records each call's argv as a line and, for `login`, its stdin.
 _FAKE_PODMAN = """#!/bin/sh
@@ -48,12 +59,30 @@ if [ "$1" = login ]; then cat > "$FAKE_LOG/podman.login.stdin"; fi
 exit 0
 """
 
-# Stands in for steps/registry-tag-status.sh: answers $FAKE_TAG_STATUS.
+# Stands in for steps/registry-tag-status.sh: answers $FAKE_TAG_STATUS, or
+# $FAKE_REPO_STATUS for the `:repo` probe (does the repository exist at all).
 _FAKE_STATUS = """#!/bin/sh
 echo "$*" >> "$FAKE_LOG/status.calls"
 s="${FAKE_TAG_STATUS:-absent}"
+case "$*" in *--repository*) s="${FAKE_REPO_STATUS:-present}" ;; esac
 echo "$s"
 case "$s" in present) exit 0 ;; absent) exit 1 ;; *) exit 2 ;; esac
+"""
+
+# Records argv, the stdin config (the Authorization header) and the request body
+# file, then answers $FAKE_CURL_CODE (default 201).
+_FAKE_CURL = """#!/bin/sh
+echo "$*" >> "$FAKE_LOG/curl.calls"
+body=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --config) [ "$2" = "-" ] && cat > "$FAKE_LOG/curl.config"; shift 2 ;;
+    --data-binary) body="${2#@}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$body" ] && cp "$body" "$FAKE_LOG/curl.body"
+printf '%s' "${FAKE_CURL_CODE:-201}"
 """
 
 
@@ -85,9 +114,10 @@ def fakes(tmp_path: pathlib.Path) -> pathlib.Path:
         pytest.skip("make not installed")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    tool = bin_dir / "podman"
-    tool.write_text(_FAKE_PODMAN)
-    tool.chmod(0o755)
+    for name, body in (("podman", _FAKE_PODMAN), ("curl", _FAKE_CURL)):
+        tool = bin_dir / name
+        tool.write_text(body)
+        tool.chmod(0o755)
     return bin_dir
 
 
@@ -116,6 +146,11 @@ def _publish(step, fakes, *args, **env) -> subprocess.CompletedProcess:
 def _calls(fakes: pathlib.Path, tool: str = "podman") -> list[str]:
     log = fakes / f"{tool}.calls"
     return log.read_text().splitlines() if log.exists() else []
+
+
+def _tag_checks(fakes: pathlib.Path) -> list[str]:
+    """The overwrite guard's tag checks (not the quay repository probe)."""
+    return [c for c in _calls(fakes, "status") if not c.startswith("--repository")]
 
 
 class TestLogin:
@@ -161,7 +196,7 @@ class TestOverwriteGuard:
     def test_new_tag_is_pushed(self, step, fakes):
         proc = _publish(step, fakes, FAKE_TAG_STATUS="absent")
         assert proc.returncode == 0, proc.stderr
-        assert _calls(fakes, "status") == [_REF]
+        assert _tag_checks(fakes) == [_REF]
         assert _calls(fakes) == [f"push {_REF}"]
 
     def test_existing_tag_is_refused(self, step, fakes):
@@ -183,7 +218,7 @@ class TestOverwriteGuard:
         proc = _publish(step, fakes, "PUBLISH_OVERWRITE=true", FAKE_TAG_STATUS=status)
         assert proc.returncode == 0, proc.stderr
         assert _calls(fakes) == [f"push {_REF}"]
-        assert _calls(fakes, "status") == []
+        assert _tag_checks(fakes) == []
 
     @pytest.mark.parametrize("value", ["yes", "1", "True", ""])
     def test_only_exact_true_overwrites(self, step, fakes, value):
@@ -204,6 +239,89 @@ class TestOverwriteGuard:
         )
         assert _calls(fakes)[0].startswith("login ")
         assert _calls(fakes)[1] == f"push {_REF}"
+
+
+class TestNewPublicRepository:
+    """With QUAY_API_TOKEN set, a missing quay.io repository is created public."""
+
+    def _quay_step(self, step):
+        mk = step / "Makefile"
+        mk.write_text(mk.read_text().replace("quay.io/org", "quay.io/granitebuild"))
+
+    def test_missing_repo_is_created_public_before_the_push(self, step, fakes):
+        self._quay_step(step)
+        proc = _publish(
+            step,
+            fakes,
+            QUAY_API_TOKEN=_TOKEN,
+            FAKE_REPO_STATUS="absent",
+            FAKE_TAG_STATUS="absent",
+        )
+        assert proc.returncode == 0, proc.stderr
+        curl = _calls(fakes, "curl")
+        assert len(curl) == 1 and "https://quay.io/api/v1/repository" in curl[0]
+        body = json.loads((fakes / "curl.body").read_text())
+        assert body == {
+            "namespace": "granitebuild",
+            "repository": "steps/train/foo/skypilot",
+            "visibility": "public",
+            "description": "granite.build step image (steps/train/foo/skypilot)",
+            "repo_kind": "image",
+        }
+        assert (fakes / "curl.config").read_text().strip() == (
+            f'header = "Authorization: Bearer {_TOKEN}"'
+        )
+        assert _calls(fakes) == [
+            "push quay.io/granitebuild/steps/train/foo/skypilot:v1"
+        ]
+        assert "created public repository" in proc.stdout
+
+    def test_the_token_never_reaches_argv_or_output(self, step, fakes):
+        self._quay_step(step)
+        proc = _publish(step, fakes, QUAY_API_TOKEN=_TOKEN, FAKE_REPO_STATUS="absent")
+        assert proc.returncode == 0, proc.stderr
+        assert _TOKEN not in proc.stdout + proc.stderr
+        assert all(_TOKEN not in c for c in _calls(fakes, "curl"))
+
+    def test_existing_repo_is_not_recreated(self, step, fakes):
+        self._quay_step(step)
+        proc = _publish(step, fakes, QUAY_API_TOKEN=_TOKEN, FAKE_REPO_STATUS="present")
+        assert proc.returncode == 0, proc.stderr
+        assert _calls(fakes, "curl") == []
+
+    def test_without_a_token_nothing_is_created(self, step, fakes):
+        self._quay_step(step)
+        proc = _publish(step, fakes, FAKE_REPO_STATUS="absent")
+        assert proc.returncode == 0, proc.stderr
+        assert _calls(fakes, "curl") == []
+        assert "QUAY_API_TOKEN" in proc.stdout
+
+    def test_a_failed_create_stops_before_the_push(self, step, fakes):
+        self._quay_step(step)
+        proc = _publish(
+            step,
+            fakes,
+            QUAY_API_TOKEN=_TOKEN,
+            FAKE_REPO_STATUS="absent",
+            FAKE_CURL_CODE="403",
+        )
+        assert proc.returncode != 0
+        assert _calls(fakes) == []
+        assert "could not create" in proc.stderr
+
+    def test_unknown_repo_status_is_refused(self, step, fakes):
+        self._quay_step(step)
+        proc = _publish(step, fakes, QUAY_API_TOKEN=_TOKEN, FAKE_REPO_STATUS="unknown")
+        assert proc.returncode != 0
+        assert _calls(fakes, "curl") == [] and _calls(fakes) == []
+
+    def test_other_registries_never_call_the_quay_api(self, step, fakes):
+        mk = step / "Makefile"
+        mk.write_text(mk.read_text().replace("quay.io/org", "ghcr.io/org"))
+        proc = _publish(step, fakes, QUAY_API_TOKEN=_TOKEN, FAKE_REPO_STATUS="absent")
+        assert proc.returncode == 0, proc.stderr
+        assert _calls(fakes, "curl") == []
+        assert not [c for c in _calls(fakes, "status") if "--repository" in c]
 
 
 class TestPublishStepImageCheck:

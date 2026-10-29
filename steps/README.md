@@ -303,7 +303,8 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   when it cannot tell (network, auth): a tag must keep pointing at one image, and
   SLURM's image cache keys its `.sqsh` by tag, so a re-pushed tag would never reach
   it. Bump `IMAGE_VERSION`, or pass `PUBLISH_OVERWRITE=true` to replace a tag on
-  purpose.
+  purpose. On quay.io it also makes sure the step's repository is public before the
+  first push; see [A new step's repository](#a-new-steps-repository).
 * **`space`** — render a self-contained Space into `$(SPACE_DIR)/`: a generated
   `space.yaml` plus `steps/<path>/step.yaml` (from `step-template.yaml`) and
   bundled `src/`. Cheap and offline; it does *not* rebuild/push.
@@ -392,11 +393,12 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `DOCKER`          | `podman`                                  | container tool                   |
 | `DOCKERFILE`      | `Dockerfile`                              | its presence enables image build/push |
 | `REGISTRY`        | *(required for image steps; set by the step's Makefile)* | image registry + namespace |
-| `IMAGE_NAME`      | `gb-steps`                                | image repository, shared by every custom step |
+| `IMAGE_NAME`      | `steps/<STEP_PATH>/<STEP_ENV>`            | image repository, one per step, mirroring the step's directory (e.g. `steps/train/openinstruct-sft/skypilot`) |
 | `IMAGE_VERSION`   | git short SHA, else `latest`              | version part of the tag; pin a release in the step's Makefile |
-| `IMAGE_TAG`       | `<STEP_PATH with / → ->-<STEP_ENV>-<IMAGE_VERSION>` | image tag; carries the step's directory, e.g. `train-openinstruct-sft-skypilot-oi-v0.3.0-2`. The `/`→`-` flattening is lossy (`a/b-c` and `a-b/c` give the same tag), so keep step paths distinct after flattening. |
+| `IMAGE_TAG`       | `$(IMAGE_VERSION)`                        | image tag; the version of the step's image, e.g. `oi-v0.3.0-6` |
 | `IMAGE_REF`       | `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)`   | full image reference (derived)   |
 | `PUBLISH_OVERWRITE` | `false`                                 | set exactly `true` to let `publish-image` replace an existing tag (or push without checking) |
+| `QUAY_API_TOKEN`  | *(unset; environment only)*               | quay.io OAuth token (*Create Repositories* scope); `publish-image` creates a new repository public with it |
 | `SPACE_DIR`       | `space`                                   | generated Space directory name   |
 | `SPACE_NAME`      | `public`                                  | `name:` in the generated `space.yaml`. Matches the shared `configurations/spaces/local`, because an `hf://` push derives its HF resource group from the space name (`gbspace-<space>`); a step-named space would look for a group that doesn't exist |
 | `SPACE_BASE_URI`  | relative `file://` to `configurations/assets` (resolved against the space.yaml's dir) | base_uri chained by the generated Space |
@@ -421,9 +423,9 @@ Example: `make all REGISTRY=quay.io/myorg IMAGE_VERSION=0.1.0`.
 * **Interactive / local (default):** `podman login quay.io/my-org` (or
   `docker login`) once; the push reuses the stored token. Nothing else to
   configure.
-* **CI / non-interactive:** export `REGISTRY_USER` and `REGISTRY_PASSWORD` (a
-  robot-account token) **in the environment** — do *not* pass them as `make`
-  variables. `publish-image` logs in first, piping the token via
+* **CI / non-interactive:** export `REGISTRY_USER` and `REGISTRY_PASSWORD` (an
+  account's or robot's CLI token) **in the environment** — do *not* pass them as
+  `make` variables. `publish-image` logs in first, piping the token via
   `--password-stdin`, so the secret never appears in `ps`, make's output, or
   shell history:
 
@@ -436,6 +438,24 @@ Example: `make all REGISTRY=quay.io/myorg IMAGE_VERSION=0.1.0`.
 With podman the login is scoped to `$(REGISTRY)` (e.g. `quay.io/my-org`), so it
 leaves your other logins on that host alone; docker logs in to the whole host. The
 overwrite check uses the same credentials when the repository is private.
+
+### A new step's repository
+
+Each custom step has its own repository, `$(REGISTRY)/steps/<path>/<env>`, so the
+first publish of a new step creates one. SkyPilot pulls step images anonymously,
+so the repository must be **public**, but a repository that a push creates is
+private. On quay.io, `publish-image` checks whether the step's repository exists
+before pushing:
+
+* it exists: nothing to do;
+* it does not, and `QUAY_API_TOKEN` is set in the environment: `publish-image`
+  creates it **public** through quay's API (`POST /api/v1/repository`), then pushes;
+* it does not, and no token is set: the push creates it private, and
+  `publish-image` prints a note to make it public once (repository → Settings).
+
+`QUAY_API_TOKEN` is a quay OAuth access token with the *Create Repositories* scope,
+acting as a user who may create repositories in the namespace. It is passed to
+`curl` on stdin, never on its command line.
 
 ## Rendering: how the image reference is inserted
 

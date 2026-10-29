@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Every custom-image step pushes to one shared repository; its tag carries the step dir.
+"""Every custom-image step gets its own repository, named after its directory.
 
-steps/<path>/<env>/ builds $(REGISTRY)/gb-steps:<path with / -> ->-<env>-<IMAGE_VERSION>,
-so one pre-created public repository serves every step and the tag still tells which
-step built it. Runs the real steps/common.mk against throwaway steps in a temp tree.
+steps/<path>/<env>/ builds $(REGISTRY)/steps/<path>/<env>:<IMAGE_VERSION>, so the image
+path mirrors the step directory and the tag is just the version. Runs the real
+steps/common.mk against throwaway steps in a temp tree.
 """
 
 import os
@@ -93,43 +93,62 @@ def _make(step: pathlib.Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
-def test_nested_step_tag_carries_its_directory(tmp_path):
+def test_nested_step_repository_mirrors_its_directory(tmp_path):
     step = _make_step(tmp_path, "train/foo/skypilot")
-    assert _var(step, "IMAGE_REF") == "quay.io/org/gb-steps:train-foo-skypilot-v1"
+    assert _var(step, "IMAGE_REF") == "quay.io/org/steps/train/foo/skypilot:v1"
 
 
-def test_flat_step_tag_carries_its_directory(tmp_path):
+def test_flat_step_repository_mirrors_its_directory(tmp_path):
     step = _make_step(tmp_path, "foo/docker")
-    assert _var(step, "IMAGE_REF") == "quay.io/org/gb-steps:foo-docker-v1"
+    assert _var(step, "IMAGE_REF") == "quay.io/org/steps/foo/docker:v1"
+
+
+def test_the_tag_is_the_version(tmp_path):
+    step = _make_step(tmp_path, "train/foo/skypilot")
+    assert _var(step, "IMAGE_TAG") == "v1"
 
 
 def test_a_step_can_choose_its_repository(tmp_path):
     step = _make_step(tmp_path, "train/foo/skypilot", extra="IMAGE_NAME := flat-foo\n")
-    assert _var(step, "IMAGE_REF") == "quay.io/org/flat-foo:train-foo-skypilot-v1"
+    assert _var(step, "IMAGE_REF") == "quay.io/org/flat-foo:v1"
 
 
 def test_a_step_can_set_the_whole_tag(tmp_path):
     step = _make_step(tmp_path, "train/foo/skypilot", extra="IMAGE_TAG := mytag\n")
-    assert _var(step, "IMAGE_REF") == "quay.io/org/gb-steps:mytag"
+    assert _var(step, "IMAGE_REF") == "quay.io/org/steps/train/foo/skypilot:mytag"
 
 
 def test_command_line_override_wins(tmp_path):
     step = _make_step(tmp_path, "train/foo/skypilot")
-    assert (
-        _var(step, "IMAGE_REF", "IMAGE_NAME=x/y")
-        == "quay.io/org/x/y:train-foo-skypilot-v1"
-    )
+    assert _var(step, "IMAGE_REF", "IMAGE_NAME=x/y") == "quay.io/org/x/y:v1"
 
 
 def test_too_long_tag_is_refused(tmp_path):
     step = _make_step(tmp_path, "train/foo/skypilot")
-    proc = _make(step, "image", f"IMAGE_VERSION={'x' * 120}")
+    proc = _make(step, "image", f"IMAGE_VERSION={'x' * 130}")
     assert proc.returncode != 0
     assert "not a valid OCI tag" in proc.stderr
+
+
+@pytest.mark.parametrize("bad", ["Train/Foo", "a//b", "a/-b", "a/b/", "/a", "a b"])
+def test_invalid_repository_name_is_refused(tmp_path, bad):
+    step = _make_step(tmp_path, "train/foo/skypilot")
+    proc = _make(step, "image", f"IMAGE_NAME={bad}")
+    assert proc.returncode != 0
+    assert "not a valid repository name" in proc.stderr
+
+
+@pytest.mark.parametrize(
+    "rel", ["train/foo_bar/skypilot", "data/a.b/docker", "distill/x-y/skypilot"]
+)
+def test_real_step_paths_make_valid_repository_names(tmp_path, rel):
+    step = _make_step(tmp_path, rel)
+    proc = _make(step, "-n", "image")
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_valid_tag_passes_the_guard(tmp_path):
     step = _make_step(tmp_path, "train/foo/skypilot")
     proc = _make(step, "-n", "image")
     assert proc.returncode == 0, proc.stderr
-    assert "gb-steps:train-foo-skypilot-v1" in proc.stdout
+    assert "quay.io/org/steps/train/foo/skypilot:v1" in proc.stdout

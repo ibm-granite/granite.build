@@ -29,8 +29,8 @@ import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / "steps" / "registry-tag-status.sh"
-REF = "quay.io/org/gb-steps:train-foo-skypilot-v1"
-_MANIFEST_URL = "https://quay.io/v2/org/gb-steps/manifests/train-foo-skypilot-v1"
+REF = "quay.io/org/steps/train/foo/skypilot:v1"
+_MANIFEST_URL = "https://quay.io/v2/org/steps/train/foo/skypilot/manifests/v1"
 
 # Answers HEAD on the manifest with $FAKE_MANIFEST_CODE, the token endpoint with
 # a token, and records every call's argv. With $FAKE_CHALLENGE set, an
@@ -56,13 +56,15 @@ case "$cfg" in
 esac
 [ -n "${FAKE_CURL_FAIL:-}" ] && exit 7
 case "$url" in
+  *"/tags/list"*)
+    printf '%s' "${FAKE_TAGS_CODE:-200}" ;;
   *"/token"*|*"/auth"*)
     [ -n "$auth" ] && echo "$auth" > "$FAKE_LOG/token.auth"
     [ -n "$out" ] && printf '{"token": "tok123"}' > "$out"
     printf '%s' "${FAKE_TOKEN_CODE:-200}" ;;
   *)
     if [ -n "${FAKE_CHALLENGE:-}" ] && [ "$auth" != "Authorization: Bearer tok123" ]; then
-      [ -n "$head" ] && printf 'HTTP/2 401\\r\\nwww-authenticate: Bearer realm="https://quay.io/v2/auth",service="quay.io",scope="repository:org/gb-steps:pull"\\r\\n\\r\\n' > "$head"
+      [ -n "$head" ] && printf 'HTTP/2 401\\r\\nwww-authenticate: Bearer realm="https://quay.io/v2/auth",service="quay.io",scope="repository:org/steps/train/foo/skypilot:pull"\\r\\n\\r\\n' > "$head"
       printf '401'
     else
       printf '%s' "${FAKE_MANIFEST_CODE:-200}"
@@ -96,11 +98,14 @@ def _add_skopeo(fakes: pathlib.Path) -> None:
     (fakes / "skopeo").chmod(0o755)
 
 
-def _status(fakes: pathlib.Path, ref: str = REF, **env: str):
+def _status(fakes: pathlib.Path, *args: str, **env: str):
+    """Run the script; ``args`` are its arguments (default: REF)."""
+    if not args or args == ("--repository",):
+        args = (*args, REF)
     e = {"PATH": str(fakes), "FAKE_LOG": str(fakes), "HOME": str(fakes)}
     e.update(env)
     proc = subprocess.run(
-        ["sh", str(SCRIPT), ref],
+        ["sh", str(SCRIPT), *args],
         env=e,
         capture_output=True,
         text=True,
@@ -135,7 +140,7 @@ class TestCurl:
         assert (out, rc) == ("absent", 1)
         token_call = [c for c in _calls(fakes, "curl") if "/v2/auth" in c]
         assert token_call and "service=quay.io" in token_call[0]
-        assert "scope=repository:org/gb-steps:pull" in token_call[0]
+        assert "scope=repository:org/steps/train/foo/skypilot:pull" in token_call[0]
 
     def test_token_request_uses_registry_credentials_when_set(self, fakes):
         _status(
@@ -197,6 +202,35 @@ class TestSkopeo:
         )
         assert out[:2] == ("absent", 1)
         assert _calls(fakes, "curl")
+
+
+class TestRepository:
+    """--repository: does the repository exist at all (tags/list), any tag."""
+
+    def test_existing_repository(self, fakes):
+        out, rc, _ = _status(fakes, "--repository", FAKE_TAGS_CODE="200")
+        assert (out, rc) == ("present", 0)
+        assert "https://quay.io/v2/org/steps/train/foo/skypilot/tags/list" in (
+            _calls(fakes, "curl")[0]
+        )
+
+    def test_missing_repository(self, fakes):
+        assert _status(fakes, "--repository", FAKE_TAGS_CODE="404")[:2] == (
+            "absent",
+            1,
+        )
+
+    @pytest.mark.parametrize("code", ["401", "403", "500"])
+    def test_other_answers_are_unknown(self, fakes, code):
+        assert _status(fakes, "--repository", FAKE_TAGS_CODE=code)[:2] == (
+            "unknown",
+            2,
+        )
+
+    def test_skopeo_is_not_used_for_repositories(self, fakes):
+        _add_skopeo(fakes)
+        _status(fakes, "--repository", FAKE_TAGS_CODE="200")
+        assert _calls(fakes, "skopeo") == []
 
 
 def test_usage_error_is_unknown(fakes):

@@ -41,14 +41,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **With podman, `make publish-image`'s `REGISTRY_USER`/`REGISTRY_PASSWORD` login is scoped to
   `$(REGISTRY)` instead of the whole registry host (#229),** so it no longer replaces your other
   logins on that host. docker still logs in per host.
-- **Custom step images share one repository; the tag carries the step's directory (#229).**
-  `steps/common.mk` now pushes every custom step image to `$(REGISTRY)/gb-steps` with the tag
-  `<step path, / → ->-<env>-<IMAGE_VERSION>`, so `steps/train/openinstruct-sft/skypilot` pushes
-  `$(REGISTRY)/gb-steps:train-openinstruct-sft-skypilot-<version>` instead of
-  `$(REGISTRY)/gb-step-openinstruct-sft:<sha>`. One pre-created public repository serves every step.
-  The version part is the new `IMAGE_VERSION` (default: git short SHA); `IMAGE_NAME` and `IMAGE_TAG`
-  can still be overridden. Local image names change too (`gb-step-<name>` →
-  `gb-steps:<path>-<env>-<version>`), so retag or rebuild local images. No published step changes.
+- **Each custom step image gets its own repository, named after the step's directory (#229).**
+  `steps/common.mk` now pushes `steps/<category>/<name>/<env>` as
+  `$(REGISTRY)/steps/<category>/<name>/<env>:<IMAGE_VERSION>`, e.g.
+  `quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-6`, instead of
+  `$(REGISTRY)/gb-step-<name>:<sha>`. The tag is the new `IMAGE_VERSION` (default: git short
+  SHA); `IMAGE_NAME` and `IMAGE_TAG` can still be overridden, and an invalid repository name is
+  refused. On quay.io, `publish-image` creates a step's new repository **public** through quay's
+  API when `QUAY_API_TOKEN` is set (a push-created repository is private, and SkyPilot pulls
+  anonymously). Local image names change too, so retag or rebuild local images. No published
+  step changes.
 - **The `dpk` step moved into the `data` category: `space://steps/data/dpk` (#512).** This is
   the first step to move into a category directory under `steps/` (here `steps/data`).
   **Breaking change:** `space://steps/dpk` is no longer supported, so update builds to the
