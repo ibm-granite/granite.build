@@ -263,7 +263,10 @@ def _materialize_identity_keys(
             result.append(host)
             continue
         alias = host.get("Host")
-        if "IdentityFile" in host or IDENTITY_STEP_CERT_DIRECTIVE in host:
+        # A truthy IdentityStepCert conflicts with IdentityKey (they name
+        # different auth sources); a falsy one is simply disabled (dropped
+        # later by _check_step_certs) and must not block IdentityKey here.
+        if "IdentityFile" in host or host.get(IDENTITY_STEP_CERT_DIRECTIVE):
             raise ValueError(
                 f"SSH host {alias!r}: specify only one of IdentityFile, "
                 f"{IDENTITY_KEY_DIRECTIVE}, or {IDENTITY_STEP_CERT_DIRECTIVE}."
@@ -418,6 +421,11 @@ def _collapse_to_random_hostname(host: Dict[str, Any]) -> Dict[str, Any]:
 
 
 _VALID_RANGE_RE = re.compile(r"Valid:\s*from\s*(\S+)\s*to\s*(\S+)")
+# A cert printed as `Valid: forever` carries no expiry timestamp at all; the
+# sentinel below is what _parse_cert_description returns for it (a plain string
+# that can never collide with a fromisoformat-parsable timestamp).
+_VALID_FOREVER = "forever"
+_VALID_FOREVER_RE = re.compile(r"Valid:\s*forever")
 
 
 def _step_loaded_certs() -> List[str]:
@@ -433,13 +441,32 @@ def _step_loaded_certs() -> List[str]:
     other keys in the agent is a normal state, not a configuration error.
 
     :returns: One human-readable cert description per loaded cert (possibly empty).
+    :raises StepCertExpiredError: If the ``step`` CLI is missing, exits non-zero
+        (e.g. no agent reachable), or a loaded cert cannot be decoded — the same
+        actionable "run ``step ssh login``" error the expiry check raises, rather
+        than a raw ``FileNotFoundError``/``CalledProcessError``.
     """
-    raw = subprocess.run(
-        ["step", "ssh", "list", "--raw"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
+    try:
+        raw = subprocess.run(
+            ["step", "ssh", "list", "--raw"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except FileNotFoundError as exc:
+        raise StepCertExpiredError(
+            "the `step` CLI is not installed (or not on PATH), so no loaded "
+            "Smallstep SSH certificate can be found. Install `step` and run "
+            "`step ssh login` to obtain a certificate, or switch this host to "
+            "IdentityFile/IdentityKey, then retry."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise StepCertExpiredError(
+            f"`step ssh list --raw` failed (exit {exc.returncode}; typically no "
+            "step agent is reachable), so no loaded Smallstep SSH certificate "
+            "can be found. Run `step ssh login` to obtain a certificate, then "
+            "retry."
+        ) from exc
     descriptions = []
     for line in raw.splitlines():
         line = line.strip()
@@ -466,13 +493,16 @@ def _parse_cert_description(text: str) -> Tuple[Optional[str], List[str]]:
 
     :param text: One cert's ``ssh-keygen -L -f -`` output.
     :returns: ``(valid_to, principals)`` — ``valid_to`` is the raw ``Valid: ...
-        to <X>`` timestamp text (``None`` if not found); ``principals`` is the
-        indented lines under ``Principals:``.
+        to <X>`` timestamp text, the ``_VALID_FOREVER`` sentinel for a cert
+        printed as ``Valid: forever``, or ``None`` if neither form is found;
+        ``principals`` is the indented lines under ``Principals:``.
     """
     valid_to = None
     match = _VALID_RANGE_RE.search(text)
     if match:
         valid_to = match.group(2)
+    elif _VALID_FOREVER_RE.search(text):
+        valid_to = _VALID_FOREVER
     principals: List[str] = []
     in_principals = False
     for line in text.splitlines():
@@ -497,7 +527,9 @@ def _check_step_certs(hosts: List[Dict[str, Any]], cloud: str) -> List[Dict[str,
     ssh-agent, so no ``IdentityFile`` is needed, which keeps the rendered
     ``Host`` block stable across cert rotations (unaffected by
     ``_blocks_equivalent`` idempotency checks). Hosts without ``IdentityStepCert``
-    pass through unchanged.
+    pass through unchanged; a falsy ``IdentityStepCert`` is dropped rather than
+    rendered — ``IdentityStepCert no`` is not a real ssh option, and ``ssh -F``
+    rejects the whole config file over an unknown directive.
 
     This does not attempt to match a cert's principals against the host's
     ``User`` directive: a cert's principals are the identity-provider-issued
@@ -521,11 +553,17 @@ def _check_step_certs(hosts: List[Dict[str, Any]], cloud: str) -> List[Dict[str,
     result: List[Dict[str, Any]] = []
     cert_descriptions: Optional[List[str]] = None
     for host in hosts:
-        if (
-            IDENTITY_STEP_CERT_DIRECTIVE not in host
-            or not host[IDENTITY_STEP_CERT_DIRECTIVE]
-        ):
+        if IDENTITY_STEP_CERT_DIRECTIVE not in host:
             result.append(host)
+            continue
+        if not host[IDENTITY_STEP_CERT_DIRECTIVE]:
+            # Falsy (`IdentityStepCert: false`): drop the directive rather
+            # than render `IdentityStepCert no` — ssh -F rejects unknown
+            # directives, taking the whole config file (every host in it)
+            # down with it.
+            result.append(
+                {k: v for k, v in host.items() if k != IDENTITY_STEP_CERT_DIRECTIVE}
+            )
             continue
         alias = host.get("Host")
         if "IdentityFile" in host or IDENTITY_KEY_DIRECTIVE in host:
@@ -551,6 +589,10 @@ def _check_step_certs(hosts: List[Dict[str, Any]], cloud: str) -> List[Dict[str,
             valid_to, _principals = _parse_cert_description(desc)
             if valid_to is None:
                 continue
+            if valid_to == _VALID_FOREVER:
+                # `Valid: forever`: a cert with no expiry never expires.
+                has_valid_cert = True
+                break
             try:
                 expiry = datetime.datetime.fromisoformat(valid_to)
             except ValueError:

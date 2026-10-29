@@ -490,13 +490,21 @@ class TestIdentityKey:
 # IdentityStepCert: check-only against already-loaded Smallstep SSH certs
 # --------------------------------------------------------------------------- #
 def _cert_text(valid_to, principals):
-    """Build fake ``ssh-keygen -L -f -`` output text (the real field shapes)."""
+    """Build fake ``ssh-keygen -L -f -`` output text (the real field shapes).
+
+    ``valid_to="forever"`` emits the ``Valid: forever`` form — a cert with no
+    expiry timestamp, which the range regex alone would not match.
+    """
     principal_lines = "\n".join(f"\t\t{p}" for p in principals)
+    if valid_to == "forever":
+        valid_line = "        Valid: forever\n"
+    else:
+        valid_line = f"        Valid: from 2026-08-24T09:41:46 to {valid_to}\n"
     return (
         "        Type: ecdsa-sha2-nistp256-cert-v01@openssh.com user certificate\n"
         '        Key ID: "someone@ibm.com"\n'
         "        Serial: 123\n"
-        f"        Valid: from 2026-08-24T09:41:46 to {valid_to}\n"
+        f"{valid_line}"
         "        Principals: \n"
         f"{principal_lines}\n"
     )
@@ -618,6 +626,110 @@ class TestStepCert:
                 tmp_path, [], HostName="h", User="granitebuild", IdentityStepCert=True
             )
         assert "step ssh login" in str(exc.value)
+
+    def test_forever_cert_passes(self, tmp_path):
+        # `Valid: forever` (no expiry timestamp) must count as a valid cert,
+        # not as a missing validity window that gets skipped.
+        dest = self._materialize(
+            tmp_path,
+            [_cert_text("forever", ["granitebuild"])],
+            HostName="h",
+            User="granitebuild",
+            IdentityStepCert=True,
+        )
+        assert "IdentityStepCert" not in _read(dest)
+
+    def test_expired_and_forever_certs_pass_on_the_forever_one(self, tmp_path):
+        past = "2000-01-01T00:00:00"
+        dest = self._materialize(
+            tmp_path,
+            [_cert_text(past, ["x"]), _cert_text("forever", ["y"])],
+            HostName="h",
+            User="granitebuild",
+            IdentityStepCert=True,
+        )
+        assert "IdentityStepCert" not in _read(dest)
+
+    def test_unparseable_timestamp_skips_cert_rather_than_crashing(self, tmp_path):
+        # A `Valid:` format fromisoformat cannot parse skips that cert (with a
+        # warning) instead of raising — here leaving no valid cert, so the
+        # actionable expiry error fires rather than a raw ValueError.
+        with pytest.raises(StepCertExpiredError, match="step ssh login"):
+            self._materialize(
+                tmp_path,
+                [_cert_text("2026/08/24 09:41:46", ["granitebuild"])],
+                HostName="h",
+                User="granitebuild",
+                IdentityStepCert=True,
+            )
+
+    def test_unparseable_timestamp_ignored_when_another_cert_is_valid(self, tmp_path):
+        future = "2099-01-01T00:00:00"
+        dest = self._materialize(
+            tmp_path,
+            [_cert_text("not-a-timestamp", ["x"]), _cert_text(future, ["y"])],
+            HostName="h",
+            User="granitebuild",
+            IdentityStepCert=True,
+        )
+        assert "IdentityStepCert" not in _read(dest)
+
+    def test_step_cli_missing_raises_clear_error(self, monkeypatch):
+        import gbserver.environment.skypilot_config as sc_mod
+
+        def boom(*args, **kwargs):
+            raise FileNotFoundError("step")
+
+        monkeypatch.setattr(sc_mod.subprocess, "run", boom)
+        with pytest.raises(StepCertExpiredError, match="step ssh login"):
+            sc_mod._step_loaded_certs()
+
+    def test_step_cli_nonzero_exit_raises_clear_error(self, monkeypatch):
+        import subprocess as subprocess_mod
+
+        import gbserver.environment.skypilot_config as sc_mod
+
+        def boom(*args, **kwargs):
+            raise subprocess_mod.CalledProcessError(255, "step ssh list --raw")
+
+        monkeypatch.setattr(sc_mod.subprocess, "run", boom)
+        with pytest.raises(StepCertExpiredError, match="step ssh login"):
+            sc_mod._step_loaded_certs()
+
+    def test_falsy_directive_is_dropped_not_rendered(self, tmp_path):
+        # `IdentityStepCert: false` must not reach the rendered config:
+        # `IdentityStepCert no` is not a real ssh option and ssh -F rejects
+        # the whole file over it. The directive is simply dropped, and no
+        # cert check runs (the check-only directive is disabled).
+        dest = self._materialize(
+            tmp_path,
+            [],  # no loaded certs at all — must not matter when disabled
+            HostName="h",
+            User="granitebuild",
+            IdentityStepCert=False,
+        )
+        assert "IdentityStepCert" not in _read(dest)
+
+    def test_falsy_directive_does_not_block_identity_key(self, tmp_path):
+        # A falsy IdentityStepCert beside an IdentityKey is a disabled cert
+        # check, not a conflicting auth source: the key must resolve to a
+        # managed IdentityFile instead of raising the only-one-of-them error.
+        pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc123\n-----END-----"
+        ssh = ClusterSshConfigs(
+            lsf=[
+                _host(
+                    "bluevela",
+                    HostName="h",
+                    User="granitebuild",
+                    IdentityKey="BV_KEY",
+                    IdentityStepCert=False,
+                )
+            ]
+        )
+        sc.materialize("sky-lsf", ssh, None, None, {"BV_KEY": pem}, home=tmp_path)
+        text = _read(tmp_path / ".lsf" / "config")
+        assert "IdentityStepCert" not in text
+        assert "IdentityFile" in text
 
 
 class TestStepLoadedCerts:
