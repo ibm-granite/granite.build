@@ -436,7 +436,6 @@ logs a warning and launches from the registry reference as before. An `image_id`
 A tag that is re-pushed with new content keeps its old cached file. Delete the `.sqsh` to re-import it,
 or use a new tag (the image builds in this repo already tag by commit).
 
-
 ### `workdir` (containerized steps)
 
 A containerized step (`command_config.image` set) runs its `run:` inside an enroot container whose

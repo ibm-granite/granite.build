@@ -3561,10 +3561,15 @@ class Skypilot(Environment):
             # Trailing `or None` maps an empty image_id to None: the merged
             # `command` step renders image_id to "" when no image is given, and
             # sky.Resources expects None (bare node) rather than an empty string.
+            # A shared .sqsh resolved from slurm_image_cache takes precedence.
             image_id = (
-                (config.get("launcher_config") or {}).get("image_id")
-                or launcher_config.get("image_id")
-            ) or None
+                cached_image_id
+                or (
+                    (config.get("launcher_config") or {}).get("image_id")
+                    or launcher_config.get("image_id")
+                )
+                or None
+            )
 
             # Per-step SLURM sbatch directives (--time, --gres, --qos, ...).
             # SLURM is the only cloud whose SkyPilot fork exposes a per-task
