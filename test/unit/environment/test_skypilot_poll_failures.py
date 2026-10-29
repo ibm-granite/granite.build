@@ -494,9 +494,9 @@ class TestLsfJobName:
     """The tracker's LSF job-name bookkeeping.
 
     The bjobs/bkill client-level tests against a fake LsfClient were dropped
-    with the gb-sky/v0.14 pin: that fork line carries no LSF cloud, and LSF
-    support is going away upstream. SLURM launches have no probe by design --
-    the grace period alone ends them (TestGracePeriod's slurm tests).
+    when the installed fork line went SLURM-only: it carries no LSF cloud,
+    and LSF support is going away upstream. SLURM launches have no probe by
+    design -- the grace period alone ends them (TestGracePeriod's slurm tests).
     """
 
     def test_recorded_job_name_wins(self):
