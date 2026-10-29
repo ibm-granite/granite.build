@@ -1097,6 +1097,89 @@ class HMMTFeb25(NemoSkillsBenchmark):
 
 
 @register
+class AIME24(NemoSkillsBenchmark):
+    """AIME 2024 I+II (30 problems), shipped in the ns repo (dataset/aime24/test.txt)."""
+
+    id = "aime24"
+    metric = "pass@1 symbolic correct"
+    ns_benchmark = "aime24"
+    dataset = f"{NS_REPO}/tree/{NS_COMMIT}/nemo_skills/dataset/aime24"
+    dataset_revision = NS_COMMIT
+    prepared_sha256 = "e428f83ec735201c9db2a232727f4c20dbce87079ed386b6e3fb7f756d078756"
+
+
+@register
+class AIME26(NemoSkillsBenchmark):
+    """AIME 2026 I+II (30 problems), MathArena's aime_2026: ns's prepare reads
+    its only split (train) and writes test.jsonl (its --split default)."""
+
+    id = "aime26"
+    metric = "pass@1 symbolic correct"
+    ns_benchmark = "aime26"
+    dataset = "MathArena/aime_2026"
+    dataset_revision = "d61f486805306e6e6b5913504c07763a99e1b112"
+
+
+MATH_500_URL = "https://raw.githubusercontent.com/openai/prm800k/00811d6de065642a6967b9017d4cee59550c0ef4/prm800k/math_splits/test.jsonl"
+"""prm800k's math_splits/test.jsonl at the file's last commit (2023-05-31);
+ns's math-500 prepare wgets the main-branch URL, byte-identical to this pin."""
+MATH_500_SHA256 = "35dc41080a3680858b27fa7e0533d2d547825316fc5dafe5d316f4ccc5a06132"
+MATH_500_N = 500
+
+
+@register
+class Math500(NemoSkillsBenchmark):
+    """MATH-500 (the 500-problem test subset of MATH that openai/prm800k's
+    math_splits holds), ns's generic/math prompt and symbolic answer checking.
+    ns's prepare (a wget of the URL plus field renames) bypasses the pinned
+    urlretrieve, so it runs natively here: the raw jsonl downloaded from the
+    commit-pinned URL and hashed, ``answer``/``solution`` renamed to
+    ``expected_answer``/``reference_solution`` (ns dataset/math-500/prepare.py),
+    test.jsonl written."""
+
+    id = "math-500"
+    metric = "pass@1 symbolic correct"
+    ns_benchmark = "math-500"
+    dataset = MATH_500_URL
+    dataset_revision = f"sha256:{MATH_500_SHA256}"
+
+    def prepare_data(self) -> tuple[Path, dict[str, Any]]:
+        src = self.config.dataset
+        if src and Path(src).exists():
+            return super().prepare_data()  # an already prepared jsonl
+        ddir = self.config.output_dir / "ns-data" / "math-500"
+        ddir.mkdir(parents=True, exist_ok=True)
+        raw = ddir / "original_test.jsonl"
+        if not raw.exists() or _sha256(raw) != MATH_500_SHA256:
+            url = src or MATH_500_URL
+            log.info("%s: downloading %s", self.id, url)
+            r = httpx.get(url, follow_redirects=True, timeout=300)
+            r.raise_for_status()
+            digest = hashlib.sha256(r.content).hexdigest()
+            if digest != MATH_500_SHA256:
+                raise RuntimeError(f"{url}: sha256 {digest}, expected {MATH_500_SHA256}")
+            raw.write_bytes(r.content)
+        rows = []
+        for line in raw.read_text().splitlines():
+            if line.strip():
+                entry = json.loads(line)
+                entry["expected_answer"] = entry.pop("answer")
+                entry["reference_solution"] = entry.pop("solution")
+                rows.append(entry)
+        if len(rows) != MATH_500_N:
+            raise RuntimeError(f"{raw}: {len(rows)} rows, expected {MATH_500_N}")
+        out = ddir / "test.jsonl"
+        _write_jsonl(out, rows)
+        return out, {
+            "source": "ns math-500 prepare (wget + renames), URL pinned",
+            "url": MATH_500_URL,
+            "raw_sha256": MATH_500_SHA256,
+            "ns_commit": NS_COMMIT,
+            "sha256": _sha256(out),
+        }
+
+
+@register
 class GPQA(NemoSkillsBenchmark):
     """GPQA Diamond (198), ns's 4-choice prompt; choices shuffled with ns's seed 42."""
 

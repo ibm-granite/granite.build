@@ -43,6 +43,11 @@ DATASETS: dict[str, tuple[str, str, str]] = {
         "6fdc4277120810ff75aa22d2d5489b91f7a262a1",
         "nemoskills",
     ),
+    "aime26": (
+        "MathArena/aime_2026",
+        "d61f486805306e6e6b5913504c07763a99e1b112",
+        "nemoskills",
+    ),
     "gpqa": (
         "Idavidrein/gpqa",
         "83022cefff930aea54f654c0b282e74b9eeda5c6",
@@ -79,14 +84,29 @@ DATASETS: dict[str, tuple[str, str, str]] = {
         "9a77ef56b717057ade24ceab4d273712a0b4f19e",
         "nemoskills",
     ),
+    "browsecomp-plus": (
+        "Tevatron/browsecomp-plus",
+        "144cff8e35b5eaef7e526346aa60774a9deb941f",
+        "nemoskills",
+    ),
     "wmt24pp": (
         "google/wmt24pp",
         "fd7405c06494bc66a57b25f55d217a72f96e60dc",
         "nemoskills",
     ),
+    "flores200": (
+        "openlanguagedata/flores_plus",
+        "1147e2dc59f37fbb5c22fd8478770de02cd399f9",
+        "nemoskills",
+    ),
     "mmlu-prox-lite": (
         "li-lab/MMLU-ProX-Lite",
         "e82aafb9460529687d3c7e51b401d8dd1dd309dd",
+        "lmeval",
+    ),
+    "include-44": (
+        "CohereLabs/include-base-44",
+        "d2e1f6015f67a43c02a9a68db98e2298e2d6a660",
         "lmeval",
     ),
     "terminal-bench-2.1": (
