@@ -873,6 +873,25 @@ def _mock_space_access(request):
             "gbserver.api.artifacts.is_super_admin",
             return_value=True,
         ),
+        # These modules bind is_super_admin at import time, so the utils patch
+        # above doesn't reach them; unpatched, it calls the real space-access
+        # manager and hangs until the per-test timeout.
+        patch(
+            "gbserver.api.lineage.is_super_admin",
+            return_value=True,
+        ),
+        patch(
+            "gbserver.api.builds.is_super_admin",
+            return_value=True,
+        ),
+        patch(
+            "gbserver.api.spaces.is_super_admin",
+            return_value=True,
+        ),
+        patch(
+            "gbserver.api.node_health.is_super_admin",
+            return_value=True,
+        ),
         patch(
             "gbserver.api.builds.confirm_existing_item_write_access",
             return_value=None,
