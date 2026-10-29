@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from libgbtest.constants import requires_k8s
 
 from gbserver.environment import skypilot_config as sc
 from gbserver.types.environmentconfig import KubeConfigEntry
@@ -264,6 +265,8 @@ class TestForeignPin:
         }
 
 
+# k8s.py imports kubernetes_asyncio, absent from the quick-test CI venv.
+@requires_k8s
 class TestNativeK8sIgnoresManagedFile:
     def test_filter_drops_only_the_managed_path(self, home, monkeypatch):
         from gbserver.environment.k8s import _kubeconfig_without_skypilot_managed
@@ -476,6 +479,8 @@ class TestUserKubeContextNames:
         assert sc.user_kube_context_names(tmp_path) == {"mine"}
 
 
+# k8s.py imports kubernetes_asyncio, absent from the quick-test CI venv.
+@requires_k8s
 class TestKubeToolSubprocessEnv:
     def test_managed_file_is_filtered_from_tool_env(self, home, monkeypatch):
         from gbserver.environment.k8s import _kube_tool_env
