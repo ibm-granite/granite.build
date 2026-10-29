@@ -4,6 +4,22 @@
 > Read [skypilot.md](skypilot.md) first for the compute model and config common to all clouds; this
 > page covers only what is SLURM-specific.
 
+## SkyPilot fork
+
+gbserver installs SkyPilot from the granite-build fork
+([cmadam/skypilot](https://github.com/cmadam/skypilot)), pinned in `pyproject.toml` to the tag
+`gb-sky-v1-stable`. Upstream SkyPilot has no SLURM cloud. The fork adds the SLURM cloud driver —
+containerized steps via the Pyxis SPANK plugin and per-task `sbatch_options`. The tag tracks the
+fork's SLURM-only line: the LSF cloud driver this repo's clusters used before moving to SLURM is
+not on it, but the fork's LSF line remains installable under its own snapshot tag
+(see [skypilot-lsf.md](skypilot-lsf.md)).
+
+`gb-sky-v1-stable` is a moving tag: it is re-pointed to the recommended commit of the fork's
+SLURM-only line as the fork advances, and a breaking change gets a new tag. Fresh installs pick up
+the current target; an existing clone keeps the old one until you run
+`git fetch --tags --force` — and rebuild the venv, since the Makefile only reinstalls when
+`pyproject.toml` changes.
+
 ## Compute environment
 
 With `default_cloud: slurm`, SkyPilot provisions onto an existing **SLURM** cluster. It reaches the
@@ -45,9 +61,32 @@ in the space using this environment, the secret's value is what gets written to 
 [Secrets in `cluster_ssh_configs`](#secrets-in-cluster_ssh_configs) for how to set those secrets.
 
 A host can instead authenticate via an already-issued rotating SSH cert (e.g. Smallstep `step`) with
-`IdentityStepCert: true` in place of `IdentityFile`/`IdentityKey` — see
-[LSF: rotating SSH cert](skypilot-lsf.md#clusterssh_configslsf--reachability) for the full explanation;
-the same check applies to SLURM hosts.
+`IdentityStepCert: true` in place of `IdentityFile`/`IdentityKey`:
+
+```yaml
+  cluster_ssh_configs:
+    slurm:
+      - Host: slurm-cluster
+        HostName: SLURM_LOGIN_NODES      # Secret name (or literal) — as above.
+        User: SLURM_LOGIN_USER           # The *login account*, not the cert's identity-provider
+        IdentityStepCert: true           # principal — the two need not match; the remote host
+                                         # reconciles them, not gbserver.
+```
+
+With `IdentityStepCert: true`, gbserver checks at launch that **some** currently loaded cert (e.g.
+from `step ssh list`) is still within its validity window — a cert printed `Valid: forever` counts as
+valid — then drops the directive. It never adds an `IdentityFile`/`CertificateFile` line, since the
+cert is already in the local ssh-agent and its bytes rotate independently of this config; identities
+in the agent that are *not* certificates (plain keys) are skipped, not errors. gbserver **never runs
+`step ssh login` itself** (that needs interactive browser/OIDC auth it can't perform from a build
+codepath); if no valid cert is loaded — or the `step` CLI is missing or unreachable — the build fails
+fast with an actionable error telling you to run `step ssh login` yourself and retry. A falsy value
+simply disables the check: the directive is dropped and never rendered (`IdentityStepCert no` is not
+a real ssh option, and `ssh -F` would reject the whole config file over an unknown directive), and
+it does not conflict with an `IdentityKey`/`IdentityFile` on the same host. Do **not** set
+`IdentitiesOnly` on an `IdentityStepCert` host: since no `IdentityFile` is ever added,
+`IdentitiesOnly: "yes"` would tell `ssh` to offer no identities at all, so it would never offer the
+agent-loaded certificate either — gbserver rejects this combination at materialize time.
 
 gbserver merges this block into `~/.slurm/config` with last-writer-wins semantics: a differing
 gbserver-managed block for the same alias is **overwritten** (so a stale or re-keyed entry self-heals
@@ -323,6 +362,12 @@ Notes:
   LSF set the runlimit at the environment level via
   `cloud_config.lsf...bsub_options.W` (minutes) — see
   [skypilot-lsf.md](skypilot-lsf.md).
+- For a containerized GPU step, gbserver can additionally **generate** a typed
+  `gpus-per-node` directive and the `NVIDIA_*` export list Pyxis needs — opt-in
+  per environment via `slurm_gpu_sbatch_directives: true` (off by default; the
+  ibm-bluevela environment sets it). An explicit `sbatch_options` value still
+  wins per key. See the GPU note under
+  [No `image_id` on bare-host clusters](#no-image_id-on-bare-host-clusters).
 
 ### No `image_id` on bare-host clusters
 
@@ -347,7 +392,10 @@ launch fails with `NotSupportedError`; the `run:` command then executes directly
 > **devel** base (e.g. an NGC `nvcr.io/nvidia/cuda:<ver>-devel-<distro>` tag) directly, matching the
 > CUDA minor version your step's own pinned wheels expect. Two residual gaps that image does NOT
 > solve on its own, split across two different layers:
-> this environment's `sbatch_options.export` already sets `NVIDIA_VISIBLE_DEVICES`/
+> the generated Pyxis GPU sbatch directives (opt-in via
+> `slurm_gpu_sbatch_directives: true` — see
+> [`sbatch_options`](#sbatch_options--slurm-sbatch-directives)) already set
+> `NVIDIA_VISIBLE_DEVICES`/
 > `NVIDIA_DRIVER_CAPABILITIES` so pyxis actually injects the host's driver libraries into the
 > container (without it, pyxis's NVIDIA hook sees `NVIDIA_VISIBLE_DEVICES` unset, defaults to
 > `"void"`, and skips injection entirely — no `ldconfig` can fix a library that was never injected);
@@ -357,8 +405,10 @@ launch fails with `NotSupportedError`; the `run:` command then executes directly
 > that part stays a genuine per-consumer concern, pip/uv can also still shadow the toolkit at the
 > package level regardless of either fix.
 >
-> Enroot's image cache is confirmed per-node (local NVMe, not shared) — the first job to land on a
-> given node after an image changes pays a real cold-import cost; that's expected, not a hang.
+> Without `slurm_image_cache`, Pyxis's own enroot import runs inside each job and its result is
+> confirmed per-node (node-local storage, not shared) — the first job to land on a given node after
+> an image changes pays a real cold-import cost; that's expected, not a hang. The shared `.sqsh`
+> cache below exists precisely to remove that cost.
 
 ### `slurm_image_cache` — shared `.sqsh` image cache
 
