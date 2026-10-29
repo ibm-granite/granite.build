@@ -986,6 +986,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                         f"Error deleting table: {e}"
                     )  # When table does not exist.
                     raise e
+            return
         try:
             self.__connect_without_retry()  # Ensure engine is initialized
             self._sql_alchemy_model.__table__.drop(self._engine)
