@@ -31,10 +31,17 @@ name without the key reaching the log (a pydantic error prints the whole entry; 
 review). Every later Data Designer call (the builder, `validate()`, `create()`, the
 export) runs under `redacted_errors`, which reports any error as one line with each
 resolved credential replaced by `<redacted>`, since Data Designer's `ModelProvider`
-prints `api_key` and `extra_headers` in clear (review of #543). What counts as a
-credential is the value, not the variable a plain `api_key` names; the local model's
-placeholder key and anything under 8 characters are left alone, since redacting them
-garbled every error (`dd_ollama.sh` became `dd_<redacted>.sh`; re-review of #543).
+prints `api_key` and `extra_headers` in clear (review of #543). A value counts as a
+credential by where it came from, never by its length: every `api_key` (for a plain one
+that names a set variable, the variable's value, so the name stays readable) and every
+`extra_headers` value, literal or from the environment, since which headers carry a
+credential can't be told from their names. The local model's placeholder key is the only
+exception; redacting it turned `dd_ollama.sh` into `dd_<redacted>.sh` (re-review of
+#543). An 8-character cutoff tried before let a short real key through and still garbled
+long plain values (third review). `redact()` replaces every value in one pass, so a
+`<redacted>` is never rewritten by a later, shorter value; it also matches each value as
+Python's repr escapes it; and a value under 8 characters is matched only as a whole
+token, not inside a longer word, number or path (independent reviews of the #543 fixes).
 
 **How the config reaches the node.** The `config`, `model_providers`, `run_config` and
 `local_model` travel together as base64 YAML in `$GB_DD_SPEC_B64`, which the launcher's
@@ -87,7 +94,7 @@ PYTHONPATH=src <venv>/bin/python -m pytest -c /dev/null --noconftest \
   test/test_dd_step_render.py test/test_dd_guard_sh.py test/test_dd_run.py test/test_dd_ollama_sh.py
 ```
 
-There are 178 tests in all:
+There are 193 tests in all:
 
 - `test_dd_step_render.py` pins what the template computes:
   - the rendered blocks parse under `bash -n`;
@@ -98,7 +105,10 @@ There are 178 tests in all:
   - `$GB_DD_SPEC_B64` decodes back to the config, with prompts verbatim, and carries
     `run_config` and `local_model`; an unquoted date renders, and arrives as an ISO
     string; a value `to_yaml` can only write with a `!!python/` tag, or a `to_yaml`
-    error string, fails the render instead of reaching the node.
+    error string, fails the render instead of reaching the node. The guard walks the
+    config itself and names only the bad value's path, so no literal provider
+    credential appears, and a prompt that mentions a tag still renders. One test renders
+    through gbserver's own `fill_template` when gbserver is importable.
 - `test_dd_guard_sh.py` runs the guard on every refusal and on the passing cases,
   including `min_records` > `num_records`, an out-of-range port, and `local_model` with
   `dd_image`.

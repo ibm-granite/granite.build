@@ -152,12 +152,43 @@ environment_configs:
             # value plain YAML can't hold with a !!python/ tag that yaml.safe_load on
             # the node rejects. Either would only fail after cluster setup, with the
             # cause lost (re-review of #543), so both fail the render here instead.
+            # The error names only the PATH of the bad value (key names and list
+            # indexes), never any value: the spec holds literal provider credentials
+            # (api_key, extra_headers), which an excerpt of the dump printed into the
+            # build's error (third review of #543). The path comes from walking the
+            # config itself, not from reading the dumped text, which a wrapped or
+            # multi-line string can make look like "key: !!python/..." (independent
+            # review of the #543 fixes). Only strings, numbers, booleans, nulls,
+            # dates, lists and string-keyed mappings pass; a prompt that merely
+            # mentions "!!python/tuple" renders fine.
             GB_DD_SPEC_B64: >-
-              {%- set dd_spec = {"config": config.data_designer_config.config, "model_providers": config.data_designer_config.model_providers, "run_config": config.data_designer_config.run_config, "local_model": config.data_designer_config.local_model} | to_yaml -%}
-              {%- if dd_spec.startswith("Error:") or "!!python/" in dd_spec -%}
-              {%- set dd_at = dd_spec.find("!!python/") -%}
-              {%- set dd_from = dd_spec.rfind("\n", 0, [dd_at - 200, 0] | max) + 1 if dd_at > 0 else 0 -%}
-              {{ raise_error("data-designer: data_designer_config (config, model_providers, run_config, local_model) must hold only strings, numbers, booleans, dates, lists and mappings; to_yaml could not encode it plainly: ..." ~ dd_spec[dd_from:dd_from + 400]) }}
+              {%- macro dd_bad(v, path, depth) -%}
+              {%- if depth > 64 -%}{{ path ~ " (nested more than 64 levels deep)\x1e" }}
+              {%- elif v is mapping and ({"k": v} | to_yaml).startswith("k: !!") -%}{{ path ~ "\x1e" }}
+              {%- elif v is mapping -%}
+              {%- for k, x in v.items() -%}
+              {%- if k is not string -%}{{ path ~ " (a key that is not a string)\x1e" }}
+              {%- else -%}{{ dd_bad(x, path ~ "." ~ k, depth + 1) }}
+              {%- endif -%}
+              {%- endfor -%}
+              {%- elif v is none -%}
+              {%- elif v is string or v is boolean or v is number -%}
+              {%- if ({"k": v} | to_yaml).startswith("k: !!") or (v is number and not (v is integer or v is float or v is boolean)) -%}{{ path ~ "\x1e" }}{%- endif -%}
+              {%- elif v is sequence -%}
+              {%- if (v | string)[:1] != "[" or ({"k": v} | to_yaml).startswith("k: !!") -%}{{ path ~ "\x1e" }}
+              {%- else -%}{%- for x in v -%}{{ dd_bad(x, path ~ "[" ~ loop.index0 ~ "]", depth + 1) }}{%- endfor -%}
+              {%- endif -%}
+              {%- elif (v | to_yaml).startswith("!!") or (v | to_yaml).startswith("Error:") -%}{{ path ~ "\x1e" }}
+              {%- endif -%}
+              {%- endmacro -%}
+              {%- set dd = config.data_designer_config -%}
+              {%- set dd_found = dd_bad({"config": dd.config, "model_providers": dd.model_providers, "run_config": dd.run_config, "local_model": dd.local_model}, "data_designer_config", 0) | trim -%}
+              {%- if dd_found -%}
+              {{ raise_error("data-designer: " ~ (dd_found.split("\x1e") | first) ~ " can't be passed to the node; data_designer_config must hold only strings, numbers, booleans, dates, lists and mappings with string keys.") }}
+              {%- endif -%}
+              {%- set dd_spec = {"config": dd.config, "model_providers": dd.model_providers, "run_config": dd.run_config, "local_model": dd.local_model} | to_yaml -%}
+              {%- if dd_spec.startswith("Error:") or "\n!!" in "\n" ~ dd_spec -%}
+              {{ raise_error("data-designer: data_designer_config could not be encoded as YAML; it must hold only strings, numbers, booleans, dates, lists and mappings with string keys.") }}
               {%- endif -%}
               {{ dd_spec | b64encode }}
           # setup runs ONCE at cluster bring-up. It guards first, so an invalid build is

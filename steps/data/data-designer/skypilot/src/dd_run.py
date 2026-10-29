@@ -66,9 +66,6 @@ PATH_SEED_TYPES = ("local", "directory", "file_contents", "agent_rollout")
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # The key local_model_provider() sends. Ollama ignores it; it is not a secret.
 LOCAL_API_KEY = "ollama"
-# Shorter values are never redacted: no real credential is this short, and replacing a
-# short word (``none``, ``x``) everywhere made errors unreadable (re-review of #543).
-MIN_SECRET_LEN = 8
 
 
 class StepError(Exception):
@@ -234,12 +231,25 @@ def provider_secrets(
 ) -> list[str]:
     """Every credential value in the resolved providers, longest first.
 
-    The api_key and extra_headers values. A plain api_key that names a variable set on
-    the node is a NAME — Data Designer reads it as one first — so the variable's value
-    is the secret, and the name stays readable in errors. Left out: the local model's
-    placeholder key, and anything shorter than MIN_SECRET_LEN. Both were redacted
-    before, which turned ``dd_ollama.sh`` into ``dd_<redacted>.sh`` and
-    ``OPENAI_API_KEY`` into ``<redacted>`` in error messages (re-review of #543).
+    Decided by where a value came from, never by its length (third review of #543: a
+    length cutoff let a short real key through and still garbled long plain values):
+      - ``api_key``: from ``api_key_env``, or literal. A plain api_key that names a
+        variable set on the node is a NAME (Data Designer reads it as one first), so
+        that variable's value is the secret and the name stays readable in errors.
+      - every ``extra_headers`` value, literal or from ``extra_headers_from_env``.
+        Which headers carry a credential can't be told from their names, so none is
+        assumed safe.
+    The local model's placeholder key is the one exception: it is not a secret, and
+    redacting it turned ``dd_ollama.sh`` into ``dd_<redacted>.sh`` (re-review of #543).
+
+    Args:
+        providers: The resolved provider dicts from build_providers() (and the local
+            model's provider, if any).
+        env: The environment the providers were resolved from.
+
+    Returns:
+        The distinct non-empty secret values, longest first, so a secret containing
+        another is replaced whole.
     """
     secrets = set()
     for p in providers:
@@ -250,15 +260,42 @@ def provider_secrets(
         if isinstance(headers, dict):
             secrets.update(v for v in headers.values() if isinstance(v, str))
     secrets.discard(LOCAL_API_KEY)
-    return sorted(
-        (x for x in secrets if len(x) >= MIN_SECRET_LEN), key=len, reverse=True
-    )
+    return sorted((x for x in secrets if x), key=len, reverse=True)
 
 
 def redact(text: str, secrets: list[str]) -> str:
+    """``text`` with every value in ``secrets`` replaced by ``<redacted>``.
+
+    One pass over ``text``, so a ``<redacted>`` already written is never scanned again:
+    replacing secrets one after another let a short value (a header such as ``2`` or
+    ``e``) rewrite the markers and every word around them (independent review of the
+    #543 fixes). Each secret is matched as written and as Python's repr shows it
+    (escaped backslashes and quotes), since Data Designer's ModelProvider repr is
+    where tracebacks print it. A value under 8 characters (``none``, ``2``, ``1.0``,
+    ``en-US``) is matched only as a whole token, not inside a longer word, number or
+    path, so it doesn't turn ``nonexistent``, ``212`` or ``11.05s`` into noise; it is
+    still always redacted where it stands alone. Anything 8 characters or longer
+    (``sk-…``, ``Bearer …``, a 32-character hex token) is matched anywhere, even glued
+    to other text.
+
+    Args:
+        text: The text to clean, e.g. an error message or a formatted traceback.
+        secrets: Values to remove, as provider_secrets() returns them.
+
+    Returns:
+        The cleaned text.
+    """
+    forms = set()
     for secret in secrets:
-        text = text.replace(secret, "<redacted>")
-    return text
+        forms.update({secret, repr(secret)[1:-1]})
+    forms.discard("")
+    if not forms:
+        return text
+    patterns = [
+        rf"(?<![\w.\-/]){re.escape(f)}(?![\w.\-/])" if len(f) < 8 else re.escape(f)
+        for f in sorted(forms, key=len, reverse=True)
+    ]
+    return re.sub("|".join(patterns), "<redacted>", text)
 
 
 @contextlib.contextmanager

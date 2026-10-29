@@ -24,7 +24,9 @@ is what splits and unquotes these words on the node.
 """
 
 import base64
+import collections
 import decimal
+import enum
 import json
 import pathlib
 import shutil
@@ -336,39 +338,149 @@ class TestSpecEnv:
         }
 
     @pytest.mark.parametrize(
-        "bad", [decimal.Decimal("1.5"), (1, 2)], ids=["decimal", "tuple"]
+        "bad",
+        [decimal.Decimal("1.5"), (1, 2), b"ab", object()],
+        ids=["decimal", "tuple", "bytes", "object"],
     )
     def test_a_value_yaml_cant_hold_plainly_fails_the_render(
         self, launcher, defaults, bad
     ):
-        """Re-review of #543: to_yaml wrote these as !!python/ tags, which safe_load
-        on the node rejected after cluster setup; now the render itself refuses."""
+        """Re-review of #543: to_yaml wrote these as !!python/ (or !!binary) tags, which
+        failed on the node after cluster setup; now the render itself refuses."""
         cfg = _cfg(defaults, run_config={"x": bad})
-        with pytest.raises(ValueError, match="could not encode it plainly"):
+        with pytest.raises(
+            ValueError, match="run_config.x can't be passed to the node"
+        ):
             _render(launcher["envs"]["GB_DD_SPEC_B64"], cfg)
 
-    def test_the_render_error_shows_the_offending_field(self, launcher, defaults):
-        """Independent review: the message showed the spec's first 300 characters, so
-        in a large config the bad value was not in it at all."""
+    def test_the_render_error_names_the_path(self, launcher, defaults):
+        """The message names where the bad value sits, by key names and list indexes,
+        however large the config (an excerpt of the dump could miss it)."""
         columns = [
             {"name": f"c{i}", "column_type": "llm-text", "prompt": "x" * 40}
             for i in range(10)
-        ]
-        cfg = _cfg(
-            defaults, config={"columns": columns}, run_config={"buffer_size": (1, 2)}
-        )
+        ] + [{"name": "d", "params": {"opts": [1, {"w": (1, 2)}]}}]
+        cfg = _cfg(defaults, config={"columns": columns})
         with pytest.raises(ValueError) as e:
             _render(launcher["envs"]["GB_DD_SPEC_B64"], cfg)
-        assert "buffer_size: !!python/tuple" in str(e.value)
+        assert "data_designer_config.config.columns[10].params.opts[1].w " in str(
+            e.value
+        )
+
+    def test_subclasses_of_plain_types_fail_the_render(self, launcher, defaults):
+        """Second independent review: str/int/list/dict subclasses and Enums pass Jinja's
+        ``is string``/``is mapping`` tests but yaml.dump tags them !!python/, which
+        failed on the node. The walker checks each value's own dump."""
+
+        class S(str):
+            pass
+
+        class E(str, enum.Enum):
+            A = "a"
+
+        for bad in (S("x"), E.A, collections.OrderedDict(a=1)):
+            cfg = _cfg(defaults, run_config={"k": bad})
+            with pytest.raises(ValueError, match="run_config.k can't be passed"):
+                _render(launcher["envs"]["GB_DD_SPEC_B64"], cfg)
+
+    def test_plain_scalars_render(self, launcher, defaults):
+        rc = {"a": 1e20, "b": -0.0, "c": 10**30, "d": True, "e": False, "f": None}
+        rc["g"] = [[1, [2]], []]
+        spec = yaml.safe_load(
+            base64.b64decode(
+                _render(
+                    launcher["envs"]["GB_DD_SPEC_B64"], _cfg(defaults, run_config=rc)
+                )
+            )
+        )
+        assert spec["run_config"] == rc
+
+    def test_a_key_that_is_not_a_string_fails_the_render(self, launcher, defaults):
+        cfg = _cfg(defaults, run_config={(1, 2): "v"})
+        with pytest.raises(ValueError, match="a key that is not a string"):
+            _render(launcher["envs"]["GB_DD_SPEC_B64"], cfg)
+
+    def test_the_render_error_never_prints_credentials(self, launcher, defaults):
+        """Third review of #543: the message printed ~400 characters of the dumped
+        spec, and model_providers sorts right before run_config, so literal provider
+        credentials landed in the build's error. Also a bad value INSIDE the provider
+        that holds them."""
+        provider = {
+            "name": "gw",
+            "endpoint": "https://e/v1",
+            "api_key": "sk-LITERAL-SECRET-123",
+            "extra_headers": {"Authorization": "Bearer HDR-SECRET-456"},
+        }
+        for over in (
+            {"model_providers": [provider], "run_config": {"buffer_size": (1, 2)}},
+            {"model_providers": [dict(provider, extra_body={"x": (1, 2)})]},
+        ):
+            with pytest.raises(ValueError) as e:
+                _render(launcher["envs"]["GB_DD_SPEC_B64"], _cfg(defaults, **over))
+            assert "LITERAL-SECRET" not in str(e.value)
+            assert "HDR-SECRET" not in str(e.value)
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            "Explain what the !!python/tuple YAML tag means",
+            "!!python/tuple",
+            "line one\nSECRETKEY: !!python/tuple\nend",
+            ("w " * 40) + "PASS: !!python/tuple more",
+        ],
+        ids=["mention", "whole-value", "multi-line", "wrapped"],
+    )
+    def test_text_that_looks_like_a_tag_renders(self, launcher, defaults, prompt):
+        """Independent review of the #543 fixes: a substring check refused a prompt
+        that only mentions a tag, and read "key: !!python/..." out of a wrapped or
+        multi-line string. The guard walks the config, not the dumped text."""
+        cfg = _cfg(
+            defaults,
+            config={
+                "columns": [{"name": "q", "column_type": "llm-text", "prompt": prompt}]
+            },
+        )
+        spec = yaml.safe_load(
+            base64.b64decode(_render(launcher["envs"]["GB_DD_SPEC_B64"], cfg))
+        )
+        assert spec["config"]["columns"][0]["prompt"] == prompt
 
     def test_a_to_yaml_error_string_fails_the_render(self, launcher, defaults):
-        """gbserver's to_yaml returns "Error: ..." instead of raising."""
+        """gbserver's to_yaml returns "Error: ..." instead of raising. Its text quotes
+        the value it got, so the message leaves that text out."""
         env = _env()
-        env.filters["to_yaml"] = lambda v: "Error: YAML conversion failed: boom"
-        with pytest.raises(ValueError, match="boom"):
+        env.filters["to_yaml"] = lambda v: "Error: YAML conversion failed: sk-SECRET"
+        with pytest.raises(ValueError) as e:
             env.from_string(launcher["envs"]["GB_DD_SPEC_B64"]).render(
                 config={"data_designer_config": _cfg(defaults)}, bindings={}
             )
+        assert "sk-SECRET" not in str(e.value)
+
+    def test_gbserver_real_render(self, launcher, defaults):
+        """Third review of #543: the tests above use a stand-in Jinja env. This renders
+        through gbserver's own fill_template (SandboxedEnvironment, its to_yaml and
+        raise_error), which re-raises the guard's error as the RuntimeError's cause."""
+        template = pytest.importorskip(
+            "gbserver.utils.template", reason="gbserver is not importable here"
+        )
+        src = launcher["envs"]["GB_DD_SPEC_B64"]
+        cfg = _cfg(defaults, model_providers=[])
+        rendered = template.fill_template(
+            src, {"config": {"data_designer_config": cfg}}, strict=True
+        )
+        assert yaml.safe_load(base64.b64decode(rendered))["config"] == cfg["config"]
+        bad = _cfg(
+            defaults,
+            model_providers=[{"name": "gw", "api_key": "sk-LITERAL-SECRET-123"}],
+            run_config={"buffer_size": (1, 2)},
+        )
+        with pytest.raises(RuntimeError) as e:
+            template.fill_template(
+                src, {"config": {"data_designer_config": bad}}, strict=True
+            )
+        cause = str(e.value.__cause__)
+        assert "data_designer_config.run_config.buffer_size can't be passed" in cause
+        assert "LITERAL-SECRET" not in cause
 
     def test_telemetry_is_off(self, launcher):
         assert launcher["envs"]["NEMO_TELEMETRY_ENABLED"] == "false"

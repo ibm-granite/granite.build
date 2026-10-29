@@ -470,24 +470,93 @@ class TestRedaction:
         assert [len(x) for x in secrets] == sorted(map(len, secrets), reverse=True)
 
     def test_errors_stay_readable(self):
-        """Re-review of #543: the local placeholder key and short values were redacted
-        everywhere, so ``dd_ollama.sh`` became ``dd_<redacted>.sh``."""
+        """Re-review of #543: the local placeholder key and the NAME a plain api_key
+        points at were redacted everywhere, so ``dd_ollama.sh`` became
+        ``dd_<redacted>.sh``."""
         local = dd_run.local_model_provider({"runtime": "ollama", "model": "m"}, [])
-        providers = [
-            local,
-            {"name": "gw", "api_key": "OPENAI_API_KEY"},
-            {"name": "short", "api_key": "none", "extra_headers": {"X": "x"}},
-        ]
+        providers = [local, {"name": "gw", "api_key": "OPENAI_API_KEY"}]
         secrets = dd_run.provider_secrets(
             providers, {"OPENAI_API_KEY": "sk-real-12345"}
         )
         assert secrets == ["sk-real-12345"]
         text = (
             "dd_ollama.sh: ollama/granite4:350m failed; set OPENAI_API_KEY "
-            "(sk-real-12345); api_key none, header x"
+            "(sk-real-12345)"
         )
         assert dd_run.redact(text, secrets) == text.replace(
             "sk-real-12345", "<redacted>"
+        )
+
+    def test_short_credentials_are_redacted(self):
+        """Third review of #543: an 8-character cutoff let a short real key through.
+        What counts is where a value came from, not its length."""
+        env = {"KEY": "ab12cd", "HDR": "x9"}
+        providers = dd_run.build_providers(
+            [
+                {
+                    "name": "gw",
+                    "endpoint": "https://e/v1",
+                    "api_key_env": "KEY",
+                    "extra_headers_from_env": {"X-Token": "HDR"},
+                }
+            ],
+            env,
+        )
+        assert set(dd_run.provider_secrets(providers, env)) == {"ab12cd", "x9"}
+
+    def test_every_literal_header_value_is_redacted(self):
+        """Which headers carry a credential can't be told from their names, so every
+        literal extra_headers value is redacted, auth or not."""
+        providers = [
+            {
+                "name": "gw",
+                "extra_headers": {
+                    "Authorization": "Bearer abc",
+                    "X-Custom-Thing": "q7",
+                    "Content-Type": "application/json",
+                },
+            }
+        ]
+        assert set(dd_run.provider_secrets(providers, {})) == {
+            "Bearer abc",
+            "q7",
+            "application/json",
+        }
+
+    def test_redaction_is_one_pass_and_keeps_text_readable(self):
+        """Independent review of the #543 fixes: replacing secrets one after another let
+        a short header value (``2``, ``e``) rewrite the ``<redacted>`` markers and the
+        words around them."""
+        secrets = dd_run.provider_secrets(
+            [{"api_key": "sk-REAL-KEY-123", "extra_headers": {"V": "2", "F": "e"}}], {}
+        )
+        text = 'File "/opt/x.py", line 212, in create: key=sk-REAL-KEY-123 v 2 f e'
+        assert dd_run.redact(text, secrets) == (
+            'File "/opt/x.py", line 212, in create: key=<redacted> v <redacted> '
+            "f <redacted>"
+        )
+        # A short value is redacted standing alone, not inside a longer word, number
+        # or path (second independent review: "1.0" turned "11.05s" into noise)...
+        assert dd_run.redact("nonexistent; api_key=none", ["none"]) == (
+            "nonexistent; api_key=<redacted>"
+        )
+        assert dd_run.redact(
+            'took 11.05s in "/usr/lib/python3.12/a.py"; lang en-US',
+            ["1.0", "3.1", "/a", "en-US"],
+        ) == ('took 11.05s in "/usr/lib/python3.12/a.py"; lang <redacted>')
+        # ...but a real key is removed even glued to other text, however it's written.
+        hexkey = "abcd" * 8  # a long, plain-alphanumeric stand-in for a hex key
+        assert dd_run.redact(f"x{hexkey}y sk-1abcd!", [hexkey, "sk-1abcd"]) == (
+            "x<redacted>y <redacted>!"
+        )
+
+    def test_repr_escaped_secrets_are_redacted(self):
+        """Data Designer's ModelProvider repr escapes backslashes and quotes."""
+        secret = "ab\\cd'\"q"
+        assert "<redacted>" in dd_run.redact(repr({"api_key": secret}), [secret])
+        assert secret not in dd_run.redact(repr({"api_key": secret}), [secret])
+        assert repr(secret)[1:-1] not in dd_run.redact(
+            repr({"api_key": secret}), [secret]
         )
 
     def test_errors_and_tracebacks_lose_every_secret(self, capsys):

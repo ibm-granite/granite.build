@@ -63,6 +63,13 @@ A missing variable fails the target and names the variable. A malformed provider
 or two providers with the same `name`, fails the same way, naming the problem without
 printing any credential.
 
+In any error the step reports, every `api_key` and every `extra_headers` value is
+replaced by `<redacted>`, at any length, whether it came from a variable or was written
+as a literal. That includes non-secret headers such as `Content-Type`, since the step
+can't tell which headers carry a credential. A value under 8 characters (like `2`,
+`none` or `1.0`) is redacted wherever it stands alone, but not inside a longer word,
+number or path, so the rest of the message stays readable.
+
 **Never put a credential in the build.yaml as a literal**, whether as `api_key` or as an
 `extra_headers` value. Step config is stored with the build and travels to the node, so a
 literal there is visible to anyone who can read the build. Use `api_key_env` and
@@ -233,8 +240,11 @@ refused too: set `resume: restart` to clear them.
 
 **A config the build can't encode plainly fails the render.** The step passes its config
 to the node as YAML. A value YAML can only write with a Python-specific tag (a tuple, a
-`Decimal`, a custom object) fails the target as it renders, and the error shows the
-lines around that value, rather than failing later on the node.
+`Decimal`, bytes, a custom object, a mapping key that isn't a string) fails the target as
+it renders, rather than later on the node. The error names where the value sits, as a
+path like `data_designer_config.run_config.buffer_size`, never the value itself, so no
+provider credential is printed. Text that merely mentions a YAML tag, such as a prompt
+about `!!python/tuple`, is fine.
 
 The fingerprint ignores `max_parallel_requests`, `timeout`, `skip_health_check` and
 profilers, so you can retune concurrency and still resume. **Changing `buffer_size`
