@@ -7,6 +7,8 @@ fm-tune retries a timed-out bootstrap while the first attempt may still be
 running, so both can miss the job_id short-circuit. The unique keys stop a
 second row; the losing attempt used to surface the constraint error ("Dataset
 name must be unique", or insert_job's 404) instead of the job the winner made.
+The loser can also hit the constraint before the winner's job exists, when its
+config or dataset lookup ran before the winner's insert committed.
 """
 
 from __future__ import annotations
@@ -77,6 +79,54 @@ def test_losing_racer_returns_winner_job(server, monkeypatch):
     assert loser.json()["created"] is False
     assert loser.json()["job_id"] == winner["job_id"]
     assert loser.json()["dataset_id"] == winner["dataset_id"]
+
+
+def _winner_commits_rows_but_not_the_job(server):
+    """Leave the DB as a winner does right before its job insert lands."""
+    from api_bridge.services import config_service, dataset_service
+
+    server.db.insert_user("dev@example.com")
+    user_id = server.db.get_user("dev@example.com")["id"]
+    config_service.Config(server.db).find_or_create(user_id=user_id, **BODY["config"])
+    dataset_service.Dataset(server.db).find_or_create(user_id=user_id, **BODY["dataset"])
+
+
+def test_loser_that_missed_the_winners_dataset_reuses_it(server, monkeypatch):
+    """The loser's dataset lookup ran before the winner's dataset insert committed."""
+    _winner_commits_rows_but_not_the_job(server)
+    real_get_datasets = server.db.get_datasets
+    calls = {"n": 0}
+
+    def stale_then_real(user_id, ids=None):
+        calls["n"] += 1
+        return [] if calls["n"] == 1 else real_get_datasets(user_id, ids)
+
+    monkeypatch.setattr(server.db, "get_datasets", stale_then_real)
+    with TestClient(server.app) as client:
+        resp = client.post("/fmtune/api/job/bootstrap", json=BODY)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["job_id"] == JOB_ID
+
+
+def test_loser_that_missed_the_winners_config_reuses_it(server, monkeypatch):
+    """The loser's config lookup ran before the winner's config insert committed."""
+    _winner_commits_rows_but_not_the_job(server)
+    real_get_config = server.db.get_config_by_name_and_user
+    calls = {"n": 0}
+
+    def stale_then_real(config_name, user_id):
+        calls["n"] += 1
+        return (
+            None if calls["n"] == 1 else real_get_config(config_name=config_name, user_id=user_id)
+        )
+
+    monkeypatch.setattr(server.db, "get_config_by_name_and_user", stale_then_real)
+    with TestClient(server.app, raise_server_exceptions=False) as client:
+        resp = client.post("/fmtune/api/job/bootstrap", json=BODY)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["job_id"] == JOB_ID
 
 
 def test_real_failure_still_raises(server, monkeypatch):
