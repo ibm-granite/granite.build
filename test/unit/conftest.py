@@ -66,10 +66,10 @@ def _guard_real_gb_home_db():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_gb_home_dir(tmp_path, monkeypatch):
-    # Not "gb_home": some tests create that dir themselves to check it gets created.
-    home = tmp_path / "gb_home_sqlite"
-    home.mkdir()
+def _isolate_gb_home_dir(tmp_path_factory, monkeypatch):
+    # Outside the test's own tmp_path: some tests assert exactly what is in it, and
+    # some create a "gb_home" there themselves to check it gets created.
+    home = tmp_path_factory.mktemp("gb_home_sqlite")
     # sqlite_storage resolves the home dir via get_gb_home_dir() at call time, so
     # setting the env var is enough to redirect it to a per-test temp dir.
     monkeypatch.setenv("GB_HOME_DIR", str(home))
