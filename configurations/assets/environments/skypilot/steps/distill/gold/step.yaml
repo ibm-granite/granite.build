@@ -454,6 +454,41 @@ environment_configs:
             MADDR="$(printf '%s\n' "${SKYPILOT_NODE_IPS:?SKYPILOT_NODE_IPS not set by the provisioner}" | head -n1)"
             MPORT=$((29500 + (${SKYPILOT_INTERNAL_JOB_ID:-0} % 1000)))
 
+            # GPU visibility normalization. Inside a pyxis/enroot container the
+            # GPU ordinals restart at zero: only this job's allocated GPUs are
+            # mounted, and CUDA numbers whatever is mounted 0..N-1. A
+            # CUDA_VISIBLE_DEVICES mask written against a different view of
+            # the node -- physical host indices, a stale export, a mask from
+            # before the container's device set was fixed -- is invalid HERE,
+            # and torch's response is to drop every entry from the first
+            # out-of-range ordinal on (_device_count_nvml: "Trim the list up
+            # to a maximum available device"): "0,3" over two mounted GPUs
+            # collapses torch.cuda.device_count() to 1 and the second
+            # accelerate/deepspeed rank dies in init_process_group with
+            # "device_id cuda:1 is out of range ... accelerators available:
+            # 1" -- the train-gold failure in build 00a0888f (both attempts;
+            # which link delivered the mismatched mask is not recoverable,
+            # since the container CVD was never logged -- hence the echo
+            # below). This does NOT rewrite unconditionally: only when the
+            # current value cannot be valid in this container -- empty (which
+            # hides every GPU), or a numeric ordinal at or beyond the number
+            # of mounted GPUs. UUID/MIG entries are valid as-is, and a subset
+            # mask with fewer entries than mounted GPUs is a legitimate
+            # partial bind; both are left alone. LSF masks are
+            # container-relative ordinals already. Unsetting is safe inside
+            # the container precisely because the mounted /dev/nvidia* set IS
+            # the allocation: with no mask, CUDA exposes exactly the GPUs
+            # this job owns, renumbered from zero.
+            echo "distill-gold: container CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-<unset>}'"
+            if [ "${CUDA_VISIBLE_DEVICES+set}" = set ]; then
+              N_GPU="$(ls /dev/nvidia[0-9]* 2>/dev/null | wc -l)"
+              MAX_ORD="$(printf '%s\n' "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | tr -d '[:space:]' | grep -xE '[0-9]+' | sort -n | tail -n 1)"
+              if [ "$N_GPU" -gt 0 ] && { [ -z "$CUDA_VISIBLE_DEVICES" ] || { [ -n "$MAX_ORD" ] && [ "$MAX_ORD" -ge "$N_GPU" ]; }; }; then
+                echo "distill-gold: CUDA_VISIBLE_DEVICES='$CUDA_VISIBLE_DEVICES' is invalid inside the container ($N_GPU GPU(s) mounted, ordinals 0..$((N_GPU-1))); unsetting so CUDA exposes the mounted -- allocated -- set"
+                unset CUDA_VISIBLE_DEVICES
+              fi
+            fi
+
             # Weight residency, BEFORE the role split below: the vLLM branch `exec`s, so a
             # check placed after it would never run on the node that serves the student --
             # which loads the student too. Every node checks (metadata-only, a few
