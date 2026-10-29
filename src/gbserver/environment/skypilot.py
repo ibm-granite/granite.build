@@ -2454,8 +2454,11 @@ class Skypilot(Environment):
         silently reinterprets a bare ``--gres=gpu:h200:N`` as an H100 request
         unless ``--gpus=h200:N`` is also present — see issue #510. Both follow
         from the step itself (it requested an accelerator and runs a container
-        image), not from site policy, so they are generated here rather than
-        hardcoded per-environment.
+        image) — but the fixes encode site quirks (BlueVela's submit filter and
+        its driver library layout), so the generation is opt-in: an environment
+        must set ``slurm_gpu_sbatch_directives: true`` to receive them (the
+        ibm-bluevela environment does; every other SLURM environment,
+        including the local slurm-docker test fixture, stays off).
 
         Only applies when the step both requests an accelerator and runs a
         container image: a bare-node SLURM step needs neither, and a CPU-only
@@ -2466,15 +2469,14 @@ class Skypilot(Environment):
         :param image_id: the step's resolved ``image_id`` (``None`` for a bare
             node).
         :returns: the directives to merge into ``sbatch_options``, or ``{}``
-            when they don't apply or ``slurm_gpu_sbatch_directives: false`` in
-            environment.yaml opts out (e.g. a cluster whose Pyxis/driver setup
-            differs from BlueVela's).
+            when they don't apply or the environment has not set
+            ``slurm_gpu_sbatch_directives: true`` (off by default — the
+            generated values encode BlueVela's Pyxis/driver setup, so only a
+            BlueVela-like cluster opts in).
         """
         if not accelerators or not image_id:
             return {}
-        if self.config and not self.config.config.get(
-            "slurm_gpu_sbatch_directives", True
-        ):
+        if not (self.config and self.config.config.get("slurm_gpu_sbatch_directives")):
             return {}
         directives: Dict[str, Any] = {
             "export": (
@@ -3558,18 +3560,10 @@ class Skypilot(Environment):
             tracked = tracking_metadata(run_metadata, kwargs)
             apply_slurm_comment_override(cluster_config_overrides, tracked)
 
-            # Trailing `or None` maps an empty image_id to None: the merged
-            # `command` step renders image_id to "" when no image is given, and
-            # sky.Resources expects None (bare node) rather than an empty string.
-            # A shared .sqsh resolved from slurm_image_cache takes precedence.
-            image_id = (
-                cached_image_id
-                or (
-                    (config.get("launcher_config") or {}).get("image_id")
-                    or launcher_config.get("image_id")
-                )
-                or None
-            )
+            # A shared .sqsh resolved from slurm_image_cache takes precedence
+            # over the step's own image_id (build layer over step layer, empty
+            # mapped to None — see _step_image_id).
+            image_id = cached_image_id or self._step_image_id(launcher_config, config)
 
             # Per-step SLURM sbatch directives (--time, --gres, --qos, ...).
             # SLURM is the only cloud whose SkyPilot fork exposes a per-task

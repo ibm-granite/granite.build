@@ -490,13 +490,21 @@ class TestIdentityKey:
 # IdentityStepCert: check-only against already-loaded Smallstep SSH certs
 # --------------------------------------------------------------------------- #
 def _cert_text(valid_to, principals):
-    """Build fake ``ssh-keygen -L -f -`` output text (the real field shapes)."""
+    """Build fake ``ssh-keygen -L -f -`` output text (the real field shapes).
+
+    ``valid_to="forever"`` emits the ``Valid: forever`` form — a cert with no
+    expiry timestamp, which the range regex alone would not match.
+    """
     principal_lines = "\n".join(f"\t\t{p}" for p in principals)
+    if valid_to == "forever":
+        valid_line = "        Valid: forever\n"
+    else:
+        valid_line = f"        Valid: from 2026-08-24T09:41:46 to {valid_to}\n"
     return (
         "        Type: ecdsa-sha2-nistp256-cert-v01@openssh.com user certificate\n"
         '        Key ID: "someone@ibm.com"\n'
         "        Serial: 123\n"
-        f"        Valid: from 2026-08-24T09:41:46 to {valid_to}\n"
+        f"{valid_line}"
         "        Principals: \n"
         f"{principal_lines}\n"
     )
@@ -618,6 +626,65 @@ class TestStepCert:
                 tmp_path, [], HostName="h", User="granitebuild", IdentityStepCert=True
             )
         assert "step ssh login" in str(exc.value)
+
+    def test_forever_cert_passes(self, tmp_path):
+        # `Valid: forever` (no expiry timestamp) must count as a valid cert,
+        # not as a missing validity window that gets skipped.
+        dest = self._materialize(
+            tmp_path,
+            [_cert_text("forever", ["granitebuild"])],
+            HostName="h",
+            User="granitebuild",
+            IdentityStepCert=True,
+        )
+        assert "IdentityStepCert" not in _read(dest)
+
+    def test_expired_and_forever_certs_pass_on_the_forever_one(self, tmp_path):
+        past = "2000-01-01T00:00:00"
+        dest = self._materialize(
+            tmp_path,
+            [_cert_text(past, ["x"]), _cert_text("forever", ["y"])],
+            HostName="h",
+            User="granitebuild",
+            IdentityStepCert=True,
+        )
+        assert "IdentityStepCert" not in _read(dest)
+
+    def test_step_cli_missing_raises_clear_error(self, monkeypatch):
+        import gbserver.environment.skypilot_config as sc_mod
+
+        def boom(*args, **kwargs):
+            raise FileNotFoundError("step")
+
+        monkeypatch.setattr(sc_mod.subprocess, "run", boom)
+        with pytest.raises(StepCertExpiredError, match="step ssh login"):
+            sc_mod._step_loaded_certs()
+
+    def test_step_cli_nonzero_exit_raises_clear_error(self, monkeypatch):
+        import subprocess as subprocess_mod
+
+        import gbserver.environment.skypilot_config as sc_mod
+
+        def boom(*args, **kwargs):
+            raise subprocess_mod.CalledProcessError(255, "step ssh list --raw")
+
+        monkeypatch.setattr(sc_mod.subprocess, "run", boom)
+        with pytest.raises(StepCertExpiredError, match="step ssh login"):
+            sc_mod._step_loaded_certs()
+
+    def test_undecodable_cert_raises_clear_error(self, monkeypatch):
+        import subprocess as subprocess_mod
+
+        import gbserver.environment.skypilot_config as sc_mod
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "step":
+                return subprocess_mod.CompletedProcess(cmd, 0, stdout="fake-line\n")
+            raise subprocess_mod.CalledProcessError(1, "ssh-keygen -L")
+
+        monkeypatch.setattr(sc_mod.subprocess, "run", fake_run)
+        with pytest.raises(StepCertExpiredError, match="ssh-keygen"):
+            sc_mod._step_loaded_certs()
 
 
 # --------------------------------------------------------------------------- #

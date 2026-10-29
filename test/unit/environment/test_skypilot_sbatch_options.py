@@ -252,6 +252,9 @@ class TestSbatchOptionsWithMetadataComment:
 # Pyxis GPU directives (issue #510 item 2): generated from the step's own
 # resources.accelerators + image_id rather than hardcoded per-environment, so
 # a step requesting a different GPU count/type is never silently miscounted.
+# Opt-in per environment (slurm_gpu_sbatch_directives: true): the generated
+# values encode BlueVela's submit filter and driver layout, so only
+# BlueVela-like environments enable them.
 # ---------------------------------------------------------------------------
 _PYXIS_EXPORT = (
     "ALL,NVIDIA_VISIBLE_DEVICES=all,NVIDIA_DRIVER_CAPABILITIES=all,"
@@ -263,7 +266,7 @@ _PYXIS_EXPORT = (
 class TestPyxisGpuSbatchDirectives:
     @pytest.mark.asyncio
     async def test_gpu_and_image_id_generates_export_and_gpus(self):
-        env = _make_env({"default_cloud": "slurm"})
+        env = _make_env({"default_cloud": "slurm", "slurm_gpu_sbatch_directives": True})
         overrides = await _overrides_for(
             env,
             "sb-gpu-image",
@@ -283,7 +286,7 @@ class TestPyxisGpuSbatchDirectives:
     async def test_two_gpu_count_is_reflected_in_gpus(self):
         # The acceptance criterion in issue #510: a TP=2 step must produce
         # gpus: "h200:2", not a hardcoded "h200:1" regardless of count.
-        env = _make_env({"default_cloud": "slurm"})
+        env = _make_env({"default_cloud": "slurm", "slurm_gpu_sbatch_directives": True})
         overrides = await _overrides_for(
             env,
             "sb-gpu-tp2",
@@ -300,7 +303,7 @@ class TestPyxisGpuSbatchDirectives:
     async def test_bare_node_gpu_request_without_image_is_noop(self):
         # A bare-node GPU step (no container) has no Pyxis driver injection to
         # fix, so no directives should be generated.
-        env = _make_env({"default_cloud": "slurm"})
+        env = _make_env({"default_cloud": "slurm", "slurm_gpu_sbatch_directives": True})
         overrides = await _overrides_for(
             env,
             "sb-gpu-bare",
@@ -315,7 +318,7 @@ class TestPyxisGpuSbatchDirectives:
     @pytest.mark.asyncio
     async def test_cpu_container_without_accelerators_is_noop(self):
         # A CPU-only containerized step has no driver to inject either.
-        env = _make_env({"default_cloud": "slurm"})
+        env = _make_env({"default_cloud": "slurm", "slurm_gpu_sbatch_directives": True})
         overrides = await _overrides_for(
             env,
             "sb-cpu-image",
@@ -335,7 +338,7 @@ class TestPyxisGpuSbatchDirectives:
         # rather than replacing it wholesale: dropping the generated NVIDIA_*
         # items would cost the container its CUDA visibility. `gpus` (not
         # touched by the override) still comes from the generated value.
-        env = _make_env({"default_cloud": "slurm"})
+        env = _make_env({"default_cloud": "slurm", "slurm_gpu_sbatch_directives": True})
         overrides = await _overrides_for(
             env,
             "sb-gpu-override",
@@ -361,6 +364,7 @@ class TestPyxisGpuSbatchDirectives:
         env = _make_env(
             {
                 "default_cloud": "slurm",
+                "slurm_gpu_sbatch_directives": True,
                 "sbatch_options": {"export": "NCCL_DEBUG=INFO"},
             }
         )
@@ -383,7 +387,7 @@ class TestPyxisGpuSbatchDirectives:
         # A same-key explicit item (here LD_LIBRARY_PATH, e.g. pointing at a
         # custom driver path) replaces exactly that item; the neighboring
         # generated NVIDIA_* items survive.
-        env = _make_env({"default_cloud": "slurm"})
+        env = _make_env({"default_cloud": "slurm", "slurm_gpu_sbatch_directives": True})
         overrides = await _overrides_for(
             env,
             "sb-gpu-ldlib",
@@ -406,7 +410,7 @@ class TestPyxisGpuSbatchDirectives:
         # NONE (empty submission environment) cannot be combined with the
         # ALL-prefixed generated list, so an explicit NONE wins verbatim —
         # the author asked for a from-scratch environment.
-        env = _make_env({"default_cloud": "slurm"})
+        env = _make_env({"default_cloud": "slurm", "slurm_gpu_sbatch_directives": True})
         overrides = await _overrides_for(
             env,
             "sb-gpu-none",
@@ -419,6 +423,24 @@ class TestPyxisGpuSbatchDirectives:
             config={},
         )
         assert overrides["slurm"]["sbatch_options"]["export"] == "NONE,FOO=1"
+
+    @pytest.mark.asyncio
+    async def test_default_off_without_the_flag(self):
+        # Opt-in: an environment that does not set slurm_gpu_sbatch_directives
+        # (the local slurm-docker fixture, any non-BlueVela cluster) gets no
+        # generated directives even for a containerized GPU step.
+        env = _make_env({"default_cloud": "slurm"})
+        overrides = await _overrides_for(
+            env,
+            "sb-gpu-default-off",
+            launcher_config={
+                "run": "hostname",
+                "resources": {"accelerators": "H200:1"},
+                "image_id": "docker:my-image:tag",
+            },
+            config={},
+        )
+        assert overrides is None
 
     @pytest.mark.asyncio
     async def test_opt_out_flag_suppresses_generation(self):
@@ -439,7 +461,7 @@ class TestPyxisGpuSbatchDirectives:
 
     @pytest.mark.asyncio
     async def test_dict_accelerators_form_is_also_parsed(self):
-        env = _make_env({"default_cloud": "slurm"})
+        env = _make_env({"default_cloud": "slurm", "slurm_gpu_sbatch_directives": True})
         overrides = await _overrides_for(
             env,
             "sb-gpu-dict",

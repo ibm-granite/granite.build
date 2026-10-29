@@ -55,6 +55,13 @@ config:
     sbatch_options:
       account: grp_granite_dot_build
       qos: cpu
+  # Opt in to the generated Pyxis GPU sbatch directives (--gpus plus the
+  # NVIDIA_* export list): both work around BlueVela specifics (its submit
+  # filter reinterprets a bare --gres as an H100 request; its driver libs
+  # live under /usr/lib/x86_64-linux-gnu), so generation is off by default
+  # and only BlueVela-like clusters enable it. See
+  # skypilot.py:_pyxis_gpu_sbatch_directives.
+  slurm_gpu_sbatch_directives: true
   # Env-level shared filesystem root for per-run build workdirs (same path the
   # LSF bluevela environment uses — both backends reach the same /proj GPFS
   # mount). gbserver derives ${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/
@@ -69,9 +76,9 @@ config:
   #
   # MULTIPLE LOGIN NODES: `HostName` lists interchangeable candidate login hostnames
   # under one `Host` block: gbserver picks one at random per launch and fails over to
-  # the next on a transient SSH control-plane error. login0-login3 are all confirmed
-  # reachable for SLURM (login0 verified interactively: sinfo/scontrol answer there
-  # under the same granitebuild identity).
+  # the next on a transient SSH control-plane error. login0-login4 all answer sinfo
+  # (verified per node 2026-10-29; the scheduler and the SLURM client install are
+  # shared across the login nodes, so any of them can drive the control plane).
   cluster_ssh_configs:
     slurm:
       - Host: bluevela
@@ -80,6 +87,7 @@ config:
           - login1.bluevela.rmf.ibm.com
           - login2.bluevela.rmf.ibm.com
           - login3.bluevela.rmf.ibm.com
+          - login4.bluevela.rmf.ibm.com
         User: granitebuild
         # granitebuild's SSH identity is a 1Password-managed key, not a
         # Smallstep cert (confirmed: no `step` CLI and no loaded cert for this
@@ -120,7 +128,14 @@ config:
           # inside the container if it falls under this path. See
           # docs/environments/skypilot-slurm.md#workdir-containerized-steps.
           workdir: /proj/data-eng/llmb-read-write
-          tmpdir: /opt/nvme/$USER/skypilot-tmp
+          # SkyPilot's per-cluster runtime dir (skylet state, jobs database) lives
+          # under tmpdir and must sit on storage shared by ALL login nodes listed
+          # above: a node-local path gives each login node its own divergent
+          # skylet state. $HOME is GPFS-shared across the login nodes (the fork
+          # expands $VARs with the remote login user's environment). /opt/nvme is
+          # a compute-node path — it does not exist on any login node, and /opt
+          # is root-owned, so it cannot be created there either.
+          tmpdir: $HOME/skypilot-tmp
           # The SLURM backend bind-mounts only $HOME, ccache and `workdir` into the
           # container, so anything else a step reads or writes on the shared filesystem
           # is invisible inside it. Mount the whole /proj GPFS tree identity (container

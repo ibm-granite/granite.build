@@ -22,6 +22,12 @@ a target runs.
 
 ## Images
 
+> **The image tags pinned in the recipes live on an IBM-internal registry**
+> (`us.icr.io/cil15-shared-registry`) — a temporary measure until the step
+> framework builds and publishes per-step images to a public registry (#565).
+> Outside IBM, build the family images yourself (below) and point the recipes'
+> `IMAGE` / `IMAGE_CPU` parameters at yours.
+
 `make images REGISTRY=...` from this directory builds every family image from
 `<family>/Dockerfile.{gpu,cpu}` (build context: this directory; see the
 [Makefile](Makefile)). The steps themselves build nothing at run time: each picks
@@ -34,6 +40,11 @@ Bumping a benchmark's behavior means editing `src/` or the family's
 pushing it, and re-pinning its tag in the recipe `parameters.yaml` — recipes under
 `recipes/evals/<family>/<benchmark>/skypilot/` choose which benchmarks a model
 family is scored on and own the image pins.
+
+`RUN_NAME` (with `OUTPUT_ROOT`) shapes every artifact path a recipe writes. Make it
+unique per run — e.g. append a date or the build id: re-running the same model with
+the same `RUN_NAME` resolves to the same artifact URIs, and a reused SUCCESS
+target's downstream score target never dispatches.
 
 ## Layout of a family step
 

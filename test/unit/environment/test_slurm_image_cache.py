@@ -216,6 +216,32 @@ class TestEnvironmentLoad:
                 },
             )
 
+    def test_gpu_sbatch_directives_must_be_boolean_when_set(self):
+        from pydantic import ValidationError
+
+        from gbserver.types.environmentconfig import EnvironmentConfig
+
+        # A typo'd value fails at environment load, not as a silent no-op.
+        with pytest.raises(ValidationError, match="slurm_gpu_sbatch_directives"):
+            EnvironmentConfig(
+                name="x",
+                type="Skypilot",
+                config={"slurm_gpu_sbatch_directives": "flase"},
+            )
+
+    def test_gpu_sbatch_directives_unset_and_boolean_both_load(self):
+        from gbserver.types.environmentconfig import EnvironmentConfig
+
+        for cfg in (
+            {},
+            {"slurm_gpu_sbatch_directives": True},
+            {"slurm_gpu_sbatch_directives": False},
+        ):
+            env = EnvironmentConfig(name="x", type="Skypilot", config=cfg)
+            assert env.config.get("slurm_gpu_sbatch_directives") == cfg.get(
+                "slurm_gpu_sbatch_directives"
+            )
+
     def test_the_bluevela_environment_loads(self):
         from pathlib import Path
 

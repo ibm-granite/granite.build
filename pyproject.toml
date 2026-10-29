@@ -99,9 +99,10 @@ thirdparty = [
     "docker>=7.0.0",
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
     "psycopg[binary]>=3.3.6",	# PostgreSQL driver (also in [ibm]); here so the local-PostgreSQL storage tests run in non-ibm CI
-    # Temporarily pinned to gb-sky/v0.14 (not the gb-sky-v1-stable moving tag) for SLURM
-    # enablement (issue #510) -- move back to the moving tag in a follow-up PR once v1
-    # carries what this branch needs. See docs/environments/skypilot-lsf.md#skypilot-fork.
+    # Pinned to gb-sky/v0.14: the deliberate SLURM-only line (issue #510). LSF
+    # is being decommissioned in favour of SLURM, and v0.14 is the fork branch
+    # that carries the SLURM backend this repo builds on. See
+    # docs/environments/skypilot-lsf.md#skypilot-fork.
     "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky/v0.14",
     "wandb",
 ]
@@ -118,9 +119,10 @@ ibm = [
     "kubernetes_asyncio>=35.0.1",	# Avoids missing watch import created in kubernetes==36.0.0
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
     "psycopg[binary]>=3.3.6",
-    # Temporarily pinned to gb-sky/v0.14 (not the gb-sky-v1-stable moving tag) for SLURM
-    # enablement (issue #510) -- move back to the moving tag in a follow-up PR once v1
-    # carries what this branch needs. See docs/environments/skypilot-lsf.md#skypilot-fork.
+    # Pinned to gb-sky/v0.14: the deliberate SLURM-only line (issue #510). LSF
+    # is being decommissioned in favour of SLURM, and v0.14 is the fork branch
+    # that carries the SLURM backend this repo builds on. See
+    # docs/environments/skypilot-lsf.md#skypilot-fork.
     "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky/v0.14",
 ]
 # gbmcp: the FastMCP server bundled at src/gbmcp. Pulled in by `standalone`, so

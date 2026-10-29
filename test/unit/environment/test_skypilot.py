@@ -2760,7 +2760,7 @@ class TestInlineConfigMaterialization:
             "        Serial: 123\n"
             "        Valid: from 2026-08-24T09:41:46 to 2099-01-01T00:00:00\n"
             "        Principals: \n"
-            "\t\thew\n"
+            "\t\tsomeone\n"
         )
         with (
             patch("gbserver.environment.skypilot_config._merge_selected_hosts") as m,

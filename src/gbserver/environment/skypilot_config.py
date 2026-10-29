@@ -355,6 +355,11 @@ def _collapse_to_random_hostname(host: Dict[str, Any]) -> Dict[str, Any]:
 
 
 _VALID_RANGE_RE = re.compile(r"Valid:\s*from\s*(\S+)\s*to\s*(\S+)")
+# A cert printed as `Valid: forever` carries no expiry timestamp at all; the
+# sentinel below is what _parse_cert_description returns for it (a plain string
+# that can never collide with a fromisoformat-parsable timestamp).
+_VALID_FOREVER = "forever"
+_VALID_FOREVER_RE = re.compile(r"Valid:\s*forever")
 
 
 def _step_loaded_certs() -> List[str]:
@@ -365,27 +370,53 @@ def _step_loaded_certs() -> List[str]:
     ``ssh-keygen -L -f -``. Neither command triggers a login prompt.
 
     :returns: One human-readable cert description per loaded cert (possibly empty).
+    :raises StepCertExpiredError: If the ``step`` CLI is missing, exits non-zero
+        (e.g. no agent reachable), or a loaded cert cannot be decoded — the same
+        actionable "run ``step ssh login``" error the expiry check raises, rather
+        than a raw ``FileNotFoundError``/``CalledProcessError``.
     """
-    raw = subprocess.run(
-        ["step", "ssh", "list", "--raw"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
+    try:
+        raw = subprocess.run(
+            ["step", "ssh", "list", "--raw"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except FileNotFoundError as exc:
+        raise StepCertExpiredError(
+            "the `step` CLI is not installed (or not on PATH), so no loaded "
+            "Smallstep SSH certificate can be found. Install `step` and run "
+            "`step ssh login` to obtain a certificate, or switch this host to "
+            "IdentityFile/IdentityKey, then retry."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise StepCertExpiredError(
+            f"`step ssh list --raw` failed (exit {exc.returncode}; typically no "
+            "step agent is reachable), so no loaded Smallstep SSH certificate "
+            "can be found. Run `step ssh login` to obtain a certificate, then "
+            "retry."
+        ) from exc
     descriptions = []
     for line in raw.splitlines():
         line = line.strip()
         if not line:
             continue
-        descriptions.append(
-            subprocess.run(
-                ["ssh-keygen", "-L", "-f", "-"],
-                input=line,
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
-        )
+        try:
+            descriptions.append(
+                subprocess.run(
+                    ["ssh-keygen", "-L", "-f", "-"],
+                    input=line,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout
+            )
+        except subprocess.CalledProcessError as exc:
+            raise StepCertExpiredError(
+                "a loaded Smallstep SSH certificate could not be decoded "
+                f"(`ssh-keygen -L` exited {exc.returncode}). Run `step ssh "
+                "login` to refresh the loaded certificates, then retry."
+            ) from exc
     return descriptions
 
 
@@ -394,13 +425,16 @@ def _parse_cert_description(text: str) -> Tuple[Optional[str], List[str]]:
 
     :param text: One cert's ``ssh-keygen -L -f -`` output.
     :returns: ``(valid_to, principals)`` — ``valid_to`` is the raw ``Valid: ...
-        to <X>`` timestamp text (``None`` if not found); ``principals`` is the
-        indented lines under ``Principals:``.
+        to <X>`` timestamp text, the ``_VALID_FOREVER`` sentinel for a cert
+        printed as ``Valid: forever``, or ``None`` if neither form is found;
+        ``principals`` is the indented lines under ``Principals:``.
     """
     valid_to = None
     match = _VALID_RANGE_RE.search(text)
     if match:
         valid_to = match.group(2)
+    elif _VALID_FOREVER_RE.search(text):
+        valid_to = _VALID_FOREVER
     principals: List[str] = []
     in_principals = False
     for line in text.splitlines():
@@ -479,6 +513,10 @@ def _check_step_certs(hosts: List[Dict[str, Any]], cloud: str) -> List[Dict[str,
             valid_to, _principals = _parse_cert_description(desc)
             if valid_to is None:
                 continue
+            if valid_to == _VALID_FOREVER:
+                # `Valid: forever`: a cert with no expiry never expires.
+                has_valid_cert = True
+                break
             try:
                 expiry = datetime.datetime.fromisoformat(valid_to)
             except ValueError:

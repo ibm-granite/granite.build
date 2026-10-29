@@ -177,6 +177,22 @@ class EnvironmentConfig(Config):
         return self
 
     @model_validator(mode="after")
+    def _validate_slurm_gpu_sbatch_directives(self) -> "EnvironmentConfig":
+        """Reject a non-boolean ``slurm_gpu_sbatch_directives`` at load time.
+
+        The key is optional (off by default; the ibm-bluevela environment sets
+        it true), but when set it must be a bool — a typo like ``flase`` would
+        otherwise silently never opt the environment in.
+        """
+        raw = (self.config or {}).get("slurm_gpu_sbatch_directives")
+        if raw is not None and not isinstance(raw, bool):
+            raise ValueError(
+                "slurm_gpu_sbatch_directives must be a boolean (true/false), "
+                f"got {raw!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _gate_shared_filesystem(self) -> "EnvironmentConfig":
         cfg = self.config or {}
         sf = cfg.get("shared_filesystem")
