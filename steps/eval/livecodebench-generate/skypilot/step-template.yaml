@@ -1,0 +1,224 @@
+name: livecodebench-generate
+version: 1.0.0
+# Generates LiveCodeBench (https://github.com/LiveCodeBench/LiveCodeBench) code
+# generation completions for the bound `model` with vLLM, and registers them as an
+# artifact for eval/livecodebench-score. Needs a GPU.
+#
+# LiveCodeBench's own runner only accepts models it lists, and the listing picks
+# the prompt format. So the bundled src/lcb_generate.py uses LiveCodeBench as a
+# library instead: LiveCodeBench's problems and generic prompt, formatted with the
+# model's OWN chat template; vLLM for generation; LiveCodeBench's code extractor on
+# each output. Any chat model with a chat template works.
+#
+# This step does NOT run the generated code; eval/livecodebench-score does, in a
+# separate job without credentials.
+#
+# `custom` rather than EVAL: there is no EVAL member in StepType (see bfcl-eval's
+# step-template.yaml for the longer note).
+type: custom
+config:
+  lcb_generate_config:
+    # LiveCodeBench release, e.g. "release_v6". REQUIRED. The score step must use
+    # the same release and date window.
+    release_version: ""
+    # Date window (YYYY-MM-DD, inclusive) on the problems' contest dates. Empty
+    # means no bound on that side. A one-day window is a quick smoke test.
+    start_date: ""
+    end_date: ""
+    # Samples per problem (pass@1 is averaged over them). LiveCodeBench's own
+    # default is 10.
+    n: 1
+    temperature: 0.2
+    top_p: 0.95
+    # Maximum new tokens per sample. REQUIRED: the right budget depends on the
+    # model and whether it reasons first. Too small cuts answers off before the
+    # code, and the score step then counts them as wrong (see USAGE.md).
+    max_tokens: 0
+    # Passed to the chat template as enable_thinking when "true" or "false" (models
+    # whose template has that switch, such as granite-4.2). Empty keeps the
+    # template's own default.
+    enable_thinking: ""
+    # vLLM settings. tensor_parallel_size should equal the GPUs the build requests.
+    # 0 keeps vLLM's default for gpu_memory_utilization and the model's own
+    # context length for max_model_len.
+    tensor_parallel_size: 1
+    dtype: "bfloat16"
+    gpu_memory_utilization: 0
+    max_model_len: 0
+    # Passed to vLLM and the tokenizer for models that ship custom code.
+    trust_remote_code: false
+    # Directory the completions are written to, registered as the `completions`
+    # artifact. Relative paths resolve in the step's working directory.
+    output_path: "output"
+    # LiveCodeBench commit installed in setup (it is not on PyPI); installed
+    # --no-deps, with the few packages its library modules need pinned in
+    # src/requirements-generate.txt.
+    lcb_commit: "28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24"
+    lcb_repo: "https://github.com/LiveCodeBench/LiveCodeBench.git"
+    # vLLM release installed in setup; it brings torch and transformers. Pinned
+    # separately from LiveCodeBench's own lock (which has vLLM 0.8.4), so the
+    # torch build can match the node's GPU driver. Ignored when install is false.
+    vllm_package: "vllm==0.32.0"
+    pip_index_url: "https://pypi.org/simple"
+    # Public container image the step runs in, rendered as SkyPilot `docker:<image>`.
+    # "" runs on the bare launcher node. The image must be Debian/Ubuntu-based
+    # (SkyPilot bootstraps its shim with apt-get), run as root, and provide python3
+    # (3.11 or newer, vLLM's floor) with pip, plus git for the LiveCodeBench
+    # checkout; setup installs git with apt-get when it is missing. GPUs need no
+    # CUDA in the image: vLLM's torch wheel carries the CUDA runtime.
+    image: "python:3.12-slim"
+    # Install vLLM and LiveCodeBench into a venv at setup. Set false only when
+    # `image` already provides them and a LiveCodeBench checkout at lcb_checkout.
+    install: true
+    lcb_checkout: "LiveCodeBench"
+  # GPUs are not read from here: request them in the build's
+  # launcher_config.resources (e.g. accelerators: "H100:1"), with cpus and memory.
+  compute_config:
+    num_gpus_per_node: 1
+    total_memory_per_node: "32Gi"
+
+# The model and the dataset are declared inputs (the #457 convention). For an hf://
+# URI the SkyPilot launcher downloads each into its binding path ahead of setup.
+# allow_unknown stays true so a recipe can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  required:
+    model:
+      type: model
+      accept: [uri, binding]
+    # A copy of the livecodebench/code_generation_lite dataset repo: its loading
+    # script plus the JSONL files the release needs.
+    dataset:
+      type: dataset
+      accept: [uri, binding]
+outputs:
+  optional:
+    completions:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    # No `subtypes:` restriction: resolves on every SkyPilot endpoint.
+    default_launcher: lcb_generate
+    launchers:
+      lcb_generate:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # Not shell-escaped: passed to sky.Resources(image_id=...) as a python
+          # value, never through a shell.
+          image_id: '{{ ("docker:" ~ config.lcb_generate_config.image) if config.lcb_generate_config.image else "" }}'
+          # Cloud-agnostic: the build supplies accelerators/cpus/memory via
+          # config.launcher_config.resources.
+          resources: {}
+          # The bundled scripts land at ./src, relative to the step's working
+          # directory, where setup and run start.
+          file_mounts:
+            src: src
+          setup: |
+            set -eu
+            {#- Shell-quote escaping for author-supplied values. Jinja macros are
+                block-scoped, so `run` carries its own identical copy. #}
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            {%- if config.lcb_generate_config.install %}
+            # git for the LiveCodeBench checkout; slim images do not ship it.
+            if ! command -v git >/dev/null 2>&1; then
+              if command -v apt-get >/dev/null 2>&1; then
+                apt-get update -qq && apt-get install -y -qq --no-install-recommends git ca-certificates >/dev/null
+              else
+                echo "eval/livecodebench-generate: ERROR git is required to fetch LiveCodeBench." >&2; exit 1
+              fi
+            fi
+            LCB_DIR='{{ q(config.lcb_generate_config.lcb_checkout) }}'
+            rm -rf "$LCB_DIR"
+            git init -q "$LCB_DIR"
+            git -C "$LCB_DIR" fetch -q --depth 1 '{{ q(config.lcb_generate_config.lcb_repo) }}' '{{ q(config.lcb_generate_config.lcb_commit) }}'
+            git -C "$LCB_DIR" checkout -q FETCH_HEAD
+            # uv into a venv, as dpk does. --break-system-packages is needed on PEP
+            # 668 interpreters; older pip lacks it, so fall back.
+            if ! pip install --quiet --no-cache-dir --break-system-packages uv 2>/dev/null; then
+              pip install --quiet --no-cache-dir uv
+            fi
+            # Caches stay inside the build's own workdir (setup starts in it).
+            export UV_CACHE_DIR="$PWD/.uv-cache"
+            # A Python that uv downloads itself, into the workdir, rather than
+            # whichever python3 the node or account puts first on PATH: a
+            # conda-style Python can ship its own C++ runtime, which clashes
+            # with the one torch loads first (vLLM's `import sqlite3` then
+            # fails with `GLIBCXX_... not found`).
+            export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
+            uv venv --managed-python --python 3.12 ./venv
+            . ./venv/bin/activate
+            uv pip install --index-url '{{ q(config.lcb_generate_config.pip_index_url) }}' \
+              '{{ q(config.lcb_generate_config.vllm_package) }}' \
+              -r ./src/requirements-generate.txt
+            # --no-deps: its declared deps would pin vLLM 0.8.4 and torch 2.6.
+            uv pip install --no-deps -e "$LCB_DIR"
+            {%- endif %}
+          # run starts in the same working directory as setup.
+          run: |
+            set -euo pipefail
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            RELEASE='{{ q(config.lcb_generate_config.release_version) }}'
+            if [ -z "$RELEASE" ]; then
+              echo "eval/livecodebench-generate: ERROR lcb_generate_config.release_version is required (e.g. release_v6)." >&2; exit 1
+            fi
+            MAX_TOKENS='{{ q(config.lcb_generate_config.max_tokens) }}'
+            case "$MAX_TOKENS" in
+              ''|0|*[!0-9]*)
+                echo "eval/livecodebench-generate: ERROR lcb_generate_config.max_tokens is required (a positive integer; see USAGE.md for choosing it)." >&2; exit 1 ;;
+            esac
+            {%- if config.lcb_generate_config.install %}
+            . ./venv/bin/activate
+            {%- endif %}
+            SRC_DIR="$(pwd)/src"
+            OUTPUT_DIR='{{ q(config.lcb_generate_config.output_path) }}'
+            mkdir -p "$OUTPUT_DIR"
+            # Absolute, because the server reads the artifact marker off-node, and
+            # because the script runs from inside the LiveCodeBench checkout.
+            OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
+            MODEL_DIR='{{ q(bindings.model.binding.path) }}'
+            DATASET_DIR='{{ q(bindings.dataset.binding.path) }}'
+            # Inputs are already downloaded; nothing here needs the Hub.
+            export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1
+            export HF_HOME="$PWD/.hf-cache"
+            # vLLM's FlashInfer top-p/top-k sampler JIT-compiles CUDA kernels with the
+            # node's nvcc when its prebuilt kernels (flashinfer-cubin) aren't available,
+            # and an older toolkit rejects FlashInfer's flags (seen: CUDA 12.4,
+            # "nvcc fatal: Unknown option '--compress-mode=size'"). vLLM's own sampler
+            # needs no compiler, so the step works whatever toolkit a node has.
+            export VLLM_USE_FLASHINFER_SAMPLER=0
+            # LiveCodeBench reads its prompt files by relative path, so it runs from
+            # inside its checkout.
+            cd '{{ q(config.lcb_generate_config.lcb_checkout) }}'
+            PYTHONPATH="$SRC_DIR" python "$SRC_DIR/lcb_generate.py" \
+              --model-dir "$MODEL_DIR" \
+              --dataset-dir "$DATASET_DIR" \
+              --output-dir "$OUTPUT_DIR" \
+              --release-version "$RELEASE" \
+              --start-date '{{ q(config.lcb_generate_config.start_date) }}' \
+              --end-date '{{ q(config.lcb_generate_config.end_date) }}' \
+              --n '{{ q(config.lcb_generate_config.n) }}' \
+              --temperature '{{ q(config.lcb_generate_config.temperature) }}' \
+              --top-p '{{ q(config.lcb_generate_config.top_p) }}' \
+              --max-tokens "$MAX_TOKENS" \
+              --enable-thinking '{{ q(config.lcb_generate_config.enable_thinking) }}' \
+              --tensor-parallel-size '{{ q(config.lcb_generate_config.tensor_parallel_size) }}' \
+              --dtype '{{ q(config.lcb_generate_config.dtype) }}' \
+              --gpu-memory-utilization '{{ q(config.lcb_generate_config.gpu_memory_utilization) }}' \
+              --max-model-len '{{ q(config.lcb_generate_config.max_model_len) }}' \
+              {%- if config.lcb_generate_config.trust_remote_code %}
+              --trust-remote-code \
+              {%- endif %}
+              --lcb-commit '{{ q(config.lcb_generate_config.lcb_commit) }}'
+            # Must start the line for skypilot_monitor's regex to capture it.
+            echo "GB_ARTIFACT_ID:completions GB_ARTIFACT_PATH:${OUTPUT_DIR}"
+    monitors:
+      # Standard artifact/status convention from the shipped monitor library.
+      skypilot_monitor:
+        ref: space://monitors/skypilot

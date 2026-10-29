@@ -1,0 +1,46 @@
+# YAML-driven spec for test_skypilot_slurm_cpu_eval_livecodebench_score.py (located
+# by the test/ <-> test-data/ helper, so this pairing holds in both test modes; see
+# steps/README.md).
+#
+# THREE targets on the local Docker SLURM cluster; see the sibling build.yaml (and
+# ../fixture/make_fixture.py, which generates it) for what SUCCESS proves. `check`
+# fails the build unless the score is exactly the fixture's expected one.
+targets:
+  - stage
+  - score
+  - check
+target_expectations:
+  # Every input and output is env://, which queues no hfpull or hfpush, so each
+  # target is one step.
+  - target_name: stage
+    step_count: 1               # the command step that unpacks the fixture
+    input_artifact_count: 0
+    output_artifact_count: 2    # dataset, completions
+  - target_name: score
+    step_count: 1               # eval/livecodebench-score
+    input_artifact_count: 2     # dataset, completions
+    output_artifact_count: 1    # results
+    # Only keys the build.yaml supplied appear in the persisted step config.
+    expected_steps:
+      - step_uri: space://steps/eval/livecodebench-score
+        config:
+          lcb_score_config:
+            image: ""
+            release_version: "release_v6"
+  - target_name: check
+    step_count: 1               # the command step that asserts the score
+    input_artifact_count: 1     # results
+    output_artifact_count: 0
+# Mode 1: the Space `make space` renders (steps/eval/livecodebench-score/skypilot/space/),
+# chained to configurations/assets. `make publish-step` rewrites this line to
+# configurations/spaces/local for Mode 2, resolving the PUBLISHED step.
+space_uri: ../../space
+# Happy path only: the jobs are short, with no stable RUNNING window to cancel in.
+tests:
+  - runner
+# No injected failure: the score step has no retry enabled (see the playbook), and
+# `check` already fails the build on a wrong result.
+simulate_step_failure: false
+# Three short SLURM jobs; the score step's setup installs ~1 GB (CPU torch and the
+# pinned packages) and clones LiveCodeBench. Generous headroom.
+timeout_minutes: 25
