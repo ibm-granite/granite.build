@@ -544,10 +544,16 @@ class WandBLineageStore(ILineageStore):
         # One wandb run is created per (target, output artifact), so counting
         # runs tagged with this build_id (and optionally target_id) directly
         # yields the number of jobstats records without scanning run history.
+        # A registration's release id is its artifact uuid, tagged artifact_id;
+        # each tag is counted on its own, so one id never counts a run twice.
         required = [f"target_id={target_id}"] if target_id else None
+        builds = self._service.count_runs_by_tags(
+            [f"build_id={release_id}"], required_tags=required
+        )
+        if builds:
+            return builds
         return self._service.count_runs_by_tags(
-            [f"build_id={release_id}", f"artifact_id={release_id}"],
-            required_tags=required,
+            [f"artifact_id={release_id}"], required_tags=required
         )
 
     def does_release_id_exist(

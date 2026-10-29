@@ -186,8 +186,8 @@ class DBLineageStore(ILineageStore):
         This path has no target run, so the rows carry an empty
         ``target_run_uuid`` and an empty ``build_id``; the artifact's uuid is in
         the ``artifact_id`` tag, as the W&B sink does -- a registered artifact's
-        "release_id" *is* its uuid, and :meth:`count_release_ids` matches that tag. The ``(job_id, input, output)`` unique
-        still protects against duplicates, so having no target run costs nothing.
+        "release_id" *is* its uuid, and :meth:`count_release_ids` matches that tag.
+        The ``(job_id, input, output)`` unique still protects against duplicates, so having no target run costs nothing.
 
         One consequence worth knowing: these rows are never skipped by the
         presence-based dedup, which keys on ``target_run_uuid``. They do not need

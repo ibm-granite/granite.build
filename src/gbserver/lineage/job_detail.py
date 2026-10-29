@@ -108,6 +108,15 @@ def _is_legacy_registration(build_id: str, target_run_uuid: str, storage: Any) -
     )
 
 
+def _is_registration_without_target(
+    build_id: str, target_run_uuid: str, storage: Any
+) -> bool:
+    """Whether ``build_id`` is a registered artifact's UUID on a row with no target."""
+    if not build_id or target_run_uuid:
+        return False
+    return storage.artifact_registry.get_by_uuid(build_id) is not None
+
+
 def _fetch_target(
     build_id: str,
     target_run_uuid: str,
@@ -194,7 +203,11 @@ def fetch_job_detail(
     }
     fetched: Dict[str, Any] = {}
     build_missing = False
-    if not build_id and not target_run_uuid:
+    if _is_registration_without_target(build_id, target_run_uuid, admin_storage):
+        # Registered-artifact rows written before ``artifact_id`` put the artifact
+        # UUID in ``build_id``: not a build, so read like any job with no build.
+        build_id = ""
+    if not build_id:
         # Not a granite.build job: only the lineage job table may hold more. Its
         # payloads have no build check of their own, so the space check gates them.
         if job_store != JobStore.LINEAGE_JOB:

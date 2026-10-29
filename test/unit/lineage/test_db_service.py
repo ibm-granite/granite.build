@@ -379,6 +379,21 @@ class TestValidation:
         assert metadata["gb_build_id"] == "build-J1"
         assert metadata["gb_target_run_uuid"] == "tr"
 
+    def test_an_artifact_rewritten_in_place_gets_its_producer_ids(self):
+        """Self-loops fold into one node whose query is by URI, not job ids; the
+        artifact they rewrite still gets the ids of a readable producer."""
+        loops = [self._produced_row(f"J{i}", "mine/b") for i in range(2)]
+        for loop in loops:
+            loop.input = B
+        result = service(*loops).query_graph(
+            uri=B,
+            group_runs=True,
+            authorize_job=lambda entry: entry["space_name"] == "mine",
+        )
+        nodes = {n["id"]: n["metadata"] for n in result["nodes"]}
+        assert any(m.get("self_loop") for m in nodes.values())
+        assert nodes[B]["gb_artifact_id"] == "art-B"
+
     def test_the_newest_producer_names_the_artifact(self):
         """Two readable builds wrote B; the older one sorts first by job id, but
         its registration may be gone, so the newer one's ids are shown."""

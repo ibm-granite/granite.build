@@ -88,3 +88,19 @@ class TestRecordedCacheUnderFailure:
         assert result == {"t2"}
         assert ("t1", 1) in store._recorded_until
         assert ("t2", 1) not in store._recorded_until
+
+    def test_a_release_id_counts_each_run_once(self):
+        """A build's runs and a registration share no tag, so an id that is both a
+        build_id on one run and an artifact_id on another counts only the builds."""
+
+        class _Service:
+            runs = [{"build_id=X"}, {"build_id=X"}, {"artifact_id=X"}]
+
+            def count_runs_by_tags(self, tags, required_tags=None):
+                return sum(1 for run in self.runs if run & set(tags))
+
+        store = self._store(_Service())
+
+        assert store.count_release_ids("X") == 2
+        _Service.runs = [{"artifact_id=X"}]
+        assert store.count_release_ids("X") == 1

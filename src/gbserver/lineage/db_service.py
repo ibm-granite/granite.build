@@ -281,7 +281,7 @@ class DBLineageService(LineageService):
         - an artifact node gets ``gb_artifact_id``, ``gb_build_id`` and
           ``gb_target_run_uuid`` from the ``produced_by`` of an *output* row of a
           job the caller may read -- the producer itself, a single run's or one
-          listed by a grouped node. An input's ``produced_by`` names another job's
+          a grouped node names (see :func:`_grouped_job_ids`). An input's ``produced_by`` names another job's
           build, maybe in a space the caller cannot read, so it is never used.
           The first such job to record them wins.
 
@@ -299,10 +299,7 @@ class DBLineageService(LineageService):
         grouped_jobs = {
             job_id
             for node in nodes
-            for job_id in (
-                ((node.get("metadata") or {}).get("jobs_query") or {}).get("job_ids")
-                or []
-            )
+            for job_id in _grouped_job_ids(node.get("metadata") or {})
         }
         artifacts = {
             node["id"]: node for node in nodes if node.get("node_type") == "artifact"
@@ -635,6 +632,21 @@ _PRODUCED_BY_KEYS = (
     PRODUCED_BY_BUILD_ID,
     PRODUCED_BY_TARGET_RUN_UUID,
 )
+
+
+def _grouped_job_ids(metadata: Dict) -> List[str]:
+    """The jobs a grouped node stands for, as far as the graph names them.
+
+    A signature group lists them in ``jobs_query.job_ids``. A self-loop group's
+    query is by URI, so only its representative job is named -- enough for the
+    artifact it rewrites to get the ids of a producer the caller may read.
+    """
+    job_ids = (metadata.get("jobs_query") or {}).get("job_ids") or []
+    if job_ids:
+        return list(job_ids)
+    if metadata.get("self_loop") and metadata.get("representative_job_id"):
+        return [metadata["representative_job_id"]]
+    return []
 
 
 def _add_produced_by(artifacts: Dict[str, Dict], rows: List) -> None:

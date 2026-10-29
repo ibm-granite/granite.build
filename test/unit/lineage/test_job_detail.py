@@ -373,3 +373,29 @@ def test_a_missing_build_is_reported_as_denied_to_an_outsider():
     assert result["detail_denied"] is True
     for key in _SPACE_GATED:
         assert key not in result
+
+
+def test_a_target_with_no_build_shows_only_the_index():
+    # A W&B registration tags its producing target but no build: not a build read.
+    result = detail(
+        [index_row("j1", JobStore.WANDB, retrieve={"target_run_uuid": "t1"})],
+        authorize_entry=lambda entry: True,
+        **targets_storage(),
+    )
+    assert result["detail_available"] is False
+    assert result["detail_error"] == "Only the index is recorded"
+    assert result["detail_denied"] is False
+    assert "target" not in result
+
+
+def test_an_older_db_registration_still_reads_the_job_table():
+    # Written before ``artifact_id``: build_id holds the artifact UUID, no target.
+    job = SimpleNamespace(attributes={"payload": {"execution_stats": {"rows": 3}}})
+    result = detail(
+        [index_row("j1", JobStore.LINEAGE_JOB, retrieve={"build_id": "art1"})],
+        authorize_entry=lambda entry: True,
+        jobs={"j1": job},
+        artifacts={"art1": SimpleNamespace(uuid="art1", created_by_target_id=None)},
+    )
+    assert result["detail_available"] is True
+    assert result["detail"]["execution_stats"] == {"rows": 3}

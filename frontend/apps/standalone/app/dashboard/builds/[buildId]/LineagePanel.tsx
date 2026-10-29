@@ -327,16 +327,15 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     drawerReturnFocusRef.current = null
   }, [stepDetailTarget])
 
-  // The previous result, so an unchanged id set keeps its array across polls.
-  const graphDataRef = React.useRef<ReturnType<typeof buildGraphData> | null>(null)
+  // The previous result's ids, kept in state (not a ref read during render) so an
+  // unchanged id set keeps its array across polls.
+  const [previousIds, setPreviousIds] = React.useState<string[]>(EMPTY_IDS)
   const graphData = React.useMemo(
-    () => buildGraphData(buildStatus, plannedTargets, isActive, graphDataRef.current?.artifactIds),
-    [buildStatus, plannedTargets, isActive],
+    () => buildGraphData(buildStatus, plannedTargets, isActive, previousIds),
+    [buildStatus, plannedTargets, isActive, previousIds],
   )
-  React.useEffect(() => {
-    graphDataRef.current = graphData
-  }, [graphData])
   const { nodes: rawBuildNodes, links: rawBuildLinks, artifactIds } = graphData
+  if (artifactIds !== previousIds) setPreviousIds(artifactIds)
 
   // Fetch artifact names for all UUID-shaped artifact IDs
   const uuidArtifactIds = React.useMemo(() => artifactIds.filter(isUUID), [artifactIds])
