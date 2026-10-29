@@ -72,7 +72,10 @@ class _AdminStorage:
 
 @pytest.fixture(name="storage")
 def storage_fixture():
-    return _AdminStorage(SqliteStorageFactory(), uuid_module.uuid4().hex[:8])
+    storage = _AdminStorage(SqliteStorageFactory(), uuid_module.uuid4().hex[:8])
+    yield storage
+    for table in vars(storage).values():
+        table.delete_table()
 
 
 def add_build(storage) -> StoredBuild:
