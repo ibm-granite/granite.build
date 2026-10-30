@@ -97,6 +97,13 @@ judged = [
     "python-pptx>=1.0",
     "pypdf>=5.0",
 ]
+# OfficeQA (Databricks): the reward port is stdlib-only, but the oracle_parsed
+# context renders the parsed corpus' HTML tables to Markdown, which needs
+# pandas.read_html and its lxml parser (results.json records both versions).
+officeqa = [
+    "pandas>=2.2",
+    "lxml>=5.2",
+]
 # The inference server. Kept out of the base install so the CLI, tests and the
 # result tooling run on a laptop without CUDA.
 serve = [
