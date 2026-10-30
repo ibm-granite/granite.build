@@ -1,0 +1,41 @@
+# YAML spec for test_skypilot_slurm_bluevela_train_hf_peft_sft.py.
+targets:
+  - lora-fsdp
+  - qlora-deepspeed
+target_expectations:
+  - target_name: lora-fsdp
+    # skypilot/slurm runs each hf:// pull as its own hfpull step. Expected:
+    # hfpull(base_model) + hfpull(dataset) + step. Recalibrate on the first
+    # green run and record the build id here.
+    step_count: 3
+    input_artifact_count: 2
+    output_artifact_count: 1
+    expected_steps:
+      - step_uri: space://steps/train/hf-peft-sft
+        config:
+          hf_peft_sft_config:
+            method: lora
+            distributed: fsdp
+        metadata_matches:
+          method: "lora"
+          peft_version: "0\\.21\\.2"
+  - target_name: qlora-deepspeed
+    step_count: 2               # hfpull(base_model) + step; recalibrate as above
+    input_artifact_count: 1
+    output_artifact_count: 1
+    expected_steps:
+      - step_uri: space://steps/train/hf-peft-sft
+        config:
+          hf_peft_sft_config:
+            method: qlora
+            distributed: deepspeed
+        metadata_matches:
+          method: "qlora"
+          peft_version: "0\\.21\\.2"
+space_uri: ../../space
+tests:
+  - runner
+simulate_step_failure: false
+# A cold image cache adds a CPU import job first; then gpu-mid queueing for two
+# 2-GPU jobs, hfpull jobs, and short runs.
+timeout_minutes: 300

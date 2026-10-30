@@ -1,0 +1,62 @@
+#####
+# hf-peft-sft: LoRA / QLoRA / aLoRA SFT with HF PEFT + TRL, single node.
+#
+# ONE target. The step loads the bound base model, attaches a peft LoRA adapter
+# (method: lora), trains it with TRL's SFTTrainer on an HF dataset with the
+# model's chat template, and registers the ADAPTER (not a merged model) as the
+# `adapter` artifact. ClearML is `auto`: on only when CLEARML_API_HOST,
+# CLEARML_API_ACCESS_KEY and CLEARML_API_SECRET_KEY reach the step env.
+#
+# Render/submit:
+#   gb build render -f build.yaml --param-file parameters.yaml
+#   gb build start  -f build.yaml --param-file parameters.yaml
+#####
+granite.build:
+  name: hf-peft-sft
+
+  targets:
+
+    train:
+      environment_uri: space://environments/$${ENVIRONMENT}
+      inputs:
+        base_model:
+          uri: "hf:///$${BASE_MODEL_ID}"
+      outputs:
+        # The PEFT adapter dir; hf_peft_sft_config.output names this entry.
+        adapter:
+          uri: "$${ADAPTER_URI}"
+          type: model
+      steps:
+        - step_uri: space://steps/train/hf-peft-sft
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            launcher_config:
+              resources:
+                # GPUs are requested here; the step uses all of them.
+                accelerators: "$${ACCELERATORS}"
+            compute_config:
+              num_nodes: 1
+            hf_peft_sft_config:
+              method: lora
+              distributed: ddp
+              dataset_name: "$${DATASET}"
+              dataset_split: "$${DATASET_SPLIT}"
+              base_model_id: "$${BASE_MODEL_ID}"
+              clearml_project: "$${CLEARML_PROJECT}"
+              lora:
+                r: 16
+                alpha: 32
+                dropout: 0.05
+                target_modules: all-linear
+              # Any TRL SFTConfig field, as --<key> <value>.
+              args:
+                max_length: 4096
+                per_device_train_batch_size: 2
+                gradient_accumulation_steps: 4
+                learning_rate: 2.0e-04
+                lr_scheduler_type: cosine
+                warmup_ratio: 0.03
+                num_train_epochs: 1
+                gradient_checkpointing: true
+                logging_steps: 10
+                seed: 123

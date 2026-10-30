@@ -1,0 +1,70 @@
+granite.build:
+  name: skypilot-aws-hf-peft-sft
+  # HF-PEFT SFT on a real EC2 GPU (SkyPilot/aws): TWO targets, 3 steps each, on
+  # one A10G. SUCCESS proves the aws path for the two single-GPU methods: the
+  # quay.io image pulls, the inline `hf download` stages the base model, QLoRA
+  # trains on a 4-bit base and aLoRA on a bf16 base, both on HF-id data, and
+  # each `adapter` artifact is registered from the step's marker. ClearML stays
+  # `auto` (no creds => off).
+  targets:
+    qlora:
+      environment_uri: space://environments/skypilot/aws
+      inputs:
+        base_model:
+          # Public, tiny (135M, Apache-2.0, ChatML template): no HF_TOKEN needed.
+          uri: hf:///HuggingFaceTB/SmolLM2-135M-Instruct
+      outputs:
+        adapter:
+          uri: "env:///adapter"
+          type: model
+      steps:
+        - step_uri: space://steps/train/hf-peft-sft
+          config:
+            poll_interval_seconds: 30
+            launcher_config:
+              resources:
+                # g5.xlarge, the cheapest bf16-capable aws GPU.
+                accelerators: "A10G:1"
+            hf_peft_sft_config:
+              method: qlora
+              dataset_name: trl-lib/Capybara
+              dataset_split: "train[:64]"
+              base_model_id: HuggingFaceTB/SmolLM2-135M-Instruct
+              # Same args in both targets (inlined, not a YAML anchor).
+              args:
+                max_steps: 3
+                max_length: 1024
+                per_device_train_batch_size: 1
+                gradient_accumulation_steps: 1
+                logging_steps: 1
+                seed: 123
+    alora:
+      environment_uri: space://environments/skypilot/aws
+      inputs:
+        base_model:
+          uri: hf:///HuggingFaceTB/SmolLM2-135M-Instruct
+      outputs:
+        adapter:
+          uri: "env:///adapter"
+          type: model
+      steps:
+        - step_uri: space://steps/train/hf-peft-sft
+          config:
+            poll_interval_seconds: 30
+            launcher_config:
+              resources:
+                accelerators: "A10G:1"
+            hf_peft_sft_config:
+              method: alora
+              # SmolLM2 is ChatML: the assistant turn opens with this.
+              alora_invocation_string: "<|im_start|>assistant"
+              dataset_name: trl-lib/Capybara
+              dataset_split: "train[:64]"
+              base_model_id: HuggingFaceTB/SmolLM2-135M-Instruct
+              args:
+                max_steps: 3
+                max_length: 1024
+                per_device_train_batch_size: 1
+                gradient_accumulation_steps: 1
+                logging_steps: 1
+                seed: 123
