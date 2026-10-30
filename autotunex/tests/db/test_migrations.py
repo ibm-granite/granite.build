@@ -363,3 +363,8 @@ def test_alembic_check_finds_no_drift_at_head(tmp_path: Path) -> None:
     database = tmp_path / "check.db"
     _alembic(database, "upgrade", "head")
     _alembic(database, "check")
+
+
+def test_alembic_compares_server_defaults() -> None:
+    """Without the flag the check above passes even when a default has no migration."""
+    assert "compare_server_default=True" in Path("alembic/env.py").read_text()
