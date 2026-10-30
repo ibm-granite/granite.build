@@ -400,7 +400,8 @@ class HuggingFaceStorageBackend:
         concurrently with the discovered config; a single failed split degrades to
         ``[]`` while the other still shows, and ``viewer_ready`` stays ``True``
         unless *both* splits were unavailable — a fully-empty preview caused by the
-        viewer, not by a genuinely empty dataset.
+        viewer, not by a genuinely empty dataset. A refused split (401/403/404) is
+        final, so it does not count as unavailable.
 
         Uses the injected client when present (tests), else opens a short-lived one
         bounded by ``hf_viewer_timeout_seconds`` and closes it.
@@ -454,8 +455,11 @@ class HuggingFaceStorageBackend:
         finally:
             if owns_client:
                 await client.aclose()
+        # A refused split (HFViewerInaccessible) is final, so it never counts as
+        # "not ready"; only a viewer that could still serve it does.
         both_unavailable = all(
-            isinstance(result, HFViewerUnavailable) for result in (train_result, validation_result)
+            isinstance(result, HFViewerUnavailable) and not isinstance(result, HFViewerInaccessible)
+            for result in (train_result, validation_result)
         )
         return DatasetPreview(
             train=_rows_or_empty(train_result),

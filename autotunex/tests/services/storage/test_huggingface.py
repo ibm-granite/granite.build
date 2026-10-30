@@ -854,6 +854,30 @@ async def test_preview_never_raises_on_unexpected_error(
     assert preview == DatasetPreview(train=[], validation=[])
 
 
+@pytest.mark.parametrize("status", [401, 403, 404])
+async def test_preview_of_refused_rows_is_empty_not_pending(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    """A refusal on /rows is as final as one on /splits: waiting will not change it."""
+    monkeypatch.setenv(HF_ENV, "hf_tok")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/splits":
+            return httpx.Response(200, json={"splits": [{"config": "default", "split": "train"}]})
+        return httpx.Response(status)
+
+    async with _viewer_client(handler) as client:
+        preview = await _backend(http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url=VALID_URL,
+            rows=10,
+        )
+
+    assert preview == DatasetPreview(train=[], validation=[], viewer_ready=True)
+
+
 async def test_preview_not_ready_when_splits_unavailable(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
