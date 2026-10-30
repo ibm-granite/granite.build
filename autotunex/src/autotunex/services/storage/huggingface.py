@@ -405,7 +405,8 @@ class HuggingFaceStorageBackend:
         ``[]`` while the other still shows, and ``viewer_ready`` stays ``True``
         unless *both* splits were unavailable — a fully-empty preview caused by the
         viewer, not by a genuinely empty dataset. A refused split (401/403/404) is
-        final, so it does not count as unavailable.
+        final: two refusals are ``viewer_ready=True``, while a refusal beside a split
+        that failed transiently stays ``False``.
 
         Uses the injected client when present (tests), else opens a short-lived one
         bounded by ``hf_viewer_timeout_seconds`` and closes it.
@@ -463,16 +464,17 @@ class HuggingFaceStorageBackend:
         finally:
             if owns_client:
                 await client.aclose()
-        # A refused split (HFViewerInaccessible) is final, so it never counts as
-        # "not ready"; only a viewer that could still serve it does.
-        both_unavailable = all(
-            isinstance(result, HFViewerUnavailable) and not isinstance(result, HFViewerInaccessible)
-            for result in (train_result, validation_result)
+        # Not ready when no split gave rows and one can still come back. A refused
+        # split (HFViewerInaccessible) is final, so two refusals are ready, but a
+        # refusal (e.g. no validation split) must not hide a transient train error.
+        results = (train_result, validation_result)
+        not_ready = all(isinstance(r, HFViewerUnavailable) for r in results) and any(
+            not isinstance(r, HFViewerInaccessible) for r in results
         )
         return DatasetPreview(
             train=_rows_or_empty(train_result),
             validation=_rows_or_empty(validation_result),
-            viewer_ready=not both_unavailable,
+            viewer_ready=not not_ready,
         )
 
     async def delete(self, *, dataset_id: UUID, name: str, artifact_url: str | None) -> None:

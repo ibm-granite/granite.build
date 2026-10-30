@@ -969,6 +969,36 @@ async def test_preview_warns_when_the_token_itself_is_rejected(
     assert any(r.levelno == logging.WARNING and "401" in r.getMessage() for r in caplog.records)
 
 
+@pytest.mark.parametrize("transient", [429, 503])
+async def test_preview_stays_not_ready_when_a_refused_split_masks_a_transient_one(
+    monkeypatch: pytest.MonkeyPatch, transient: int
+) -> None:
+    """No split gave rows and one can still come back, so the preview is not ready.
+
+    A repo with no validation split answers it with a refusal; that must not turn
+    a train split the viewer cannot serve right now into an empty, ready preview.
+    """
+    monkeypatch.setenv(HF_ENV, "hf_tok")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/splits":
+            return httpx.Response(200, json={"splits": [{"config": "default", "split": "train"}]})
+        if request.url.params["split"] == "train":
+            return httpx.Response(transient)
+        return httpx.Response(404)
+
+    async with _viewer_client(handler) as client:
+        preview = await _backend(http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url=VALID_URL,
+            rows=10,
+        )
+
+    assert preview == DatasetPreview(train=[], validation=[], viewer_ready=False)
+
+
 async def test_preview_not_ready_when_splits_unavailable(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
