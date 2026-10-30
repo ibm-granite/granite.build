@@ -1,0 +1,74 @@
+granite.build:
+  name: eval-profbench
+  # profbench (judged family). Two targets on one output dir: `profbench-generate` holds a GPU only while the model generates, and `profbench` grades that output on a CPU node (no vLLM), binding the generate target, so selecting `profbench` runs both.
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+  targets:
+    profbench-generate:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/judged
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            benchmark: "profbench"
+            image: "$${IMAGE}"
+            model_path: "$${MODEL_PATH}"
+            served_model_name: "$${SERVED_MODEL_NAME}"
+            output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/profbench"
+            limit: "$${LIMIT}"
+            repeats: "$${REPEATS}"
+            workers: "$${WORKERS}"
+            options: "$${OPTIONS} judge_base_url=$${JUDGE_BASE_URL}"
+            phase: "generate"
+            tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+            hf_home: "$${HF_HOME}"
+            sandbox_cache: "$${SANDBOX_CACHE if SANDBOX_CACHE else OUTPUT_ROOT ~ '/' ~ RUN_NAME ~ '/enroot-cache'}"
+            launcher_config:
+              resources:
+                accelerators: "H200:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    profbench:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        generation:
+          binding: profbench-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/judged
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            benchmark: "profbench"
+            image: "$${IMAGE_CPU}"
+            model_path: "$${MODEL_PATH}"
+            served_model_name: "$${SERVED_MODEL_NAME}"
+            output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/profbench"
+            limit: "$${LIMIT}"
+            repeats: "$${REPEATS}"
+            workers: "$${WORKERS}"
+            options: "$${OPTIONS} judge_base_url=$${JUDGE_BASE_URL}"
+            phase: "score"
+            tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+            hf_home: "$${HF_HOME}"
+            sandbox_cache: "$${SANDBOX_CACHE if SANDBOX_CACHE else OUTPUT_ROOT ~ '/' ~ RUN_NAME ~ '/enroot-cache'}"
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: GRANITE_EVALS_JUDGE_API_KEY
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${CPU_QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"

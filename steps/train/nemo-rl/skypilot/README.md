@@ -101,10 +101,13 @@ can succeed (see the last bullet). To run it:
 
 ### slurm-sft (real BlueVela SLURM)
 
-Marked `ibm`. Skips unless the BlueVela key for the shared `granitebuild` functional
-ID is at `~/.ssh/ibm-bluevela.key` (mode 600, no passphrase), and skips on SPS CI. It
-runs against `space://environments/skypilot/slurm/ibm-bluevela` and needs:
+Marked `ibm`. Skips unless `~/.ssh/ibm-bluevela.key` (mode 600, no passphrase) exists — the
+key the space secret below is created from — and skips on SPS CI. It runs against
+`space://environments/skypilot/slurm/ibm-bluevela` and needs:
 
+- The `BV_SSH_PRIVATE_KEY` secret in the space the build runs in (create it from the key file:
+  `gb secret create BV_SSH_PRIVATE_KEY --from-file ~/.ssh/ibm-bluevela.key`). The environment
+  resolves its SSH identity from that secret, not from an on-host path.
 - The step's image in ibm-bluevela's shared image cache
   (`/proj/granite-build/g4os/enroot/`, see "SLURM launches from a cached image"
   below). A cold cache adds a ~72 min import that the 90-minute timeout does not

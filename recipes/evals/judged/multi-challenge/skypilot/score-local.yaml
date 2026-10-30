@@ -1,0 +1,50 @@
+granite.build:
+  name: eval-multi-challenge-score-local
+  # Re-scores existing multi-challenge outputs on the gbserver host: no GPU, no BlueVela. For
+  # comparing judges or scoring settings on the same generations. GENERATION_PATH is the absolute
+  # path of a generation.json whose directory also holds items/ (e.g. a build-local.yaml fetch
+  # output). Each run scores a fresh copy, so the source is never changed. The model, limit and
+  # repeats come from generation.json itself, since the score phase must match them. JUDGE_TAG
+  # names this judge's grades (items/*/*/judgment-<tag>.json, results-<tag>.json). Needs the
+  # GRANITE_EVALS_JUDGE_API_KEY gb secret. Shares parameters.yaml with build.yaml.
+  targets:
+    multi-challenge-score:
+      environment_uri: "space://environments/docker"
+      inputs:
+        generation:
+          uri: "env://$${GENERATION_PATH}"
+          type: dataset
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            docker:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: GRANITE_EVALS_JUDGE_API_KEY
+            compute_config:
+              num_cpus_per_node: $${SCORE_CPUS}
+              total_memory_per_node: "$${SCORE_MEMORY}Gi"
+            command_config:
+              image: "$${IMAGE_CPU}"
+              command: >-
+                set -euo pipefail;
+                export PATH=/opt/granite-evals/.venv/bin:$PATH;
+                OUT=/gb-workspace/outputs/multi-challenge; mkdir -p "$OUT";
+                trap 'chown -R "$(stat -c %u:%g /gb-workspace)" /gb-workspace/outputs' EXIT;
+                GEN="{{ bindings.generation.binding.path }}"; cp -r "${GEN%/*}/." "$OUT/";
+                rm -f "$OUT"/results*.json;
+                test -d "$OUT/items" || { echo "granite: no items/ next to $GEN"; exit 1; };
+                MODEL=$(jq -r .model "$OUT/generation.json");
+                LIMIT_ARGS=$(jq -r '[(if .limit then "--limit \(.limit)" else empty end), (if .repeats then "--repeats \(.repeats)" else empty end)] | join(" ")' "$OUT/generation.json");
+                OPTS=(); for kv in $${OPTIONS} judge_base_url=$${JUDGE_BASE_URL}<% if JUDGE_MODEL %> judge_model=$${JUDGE_MODEL}<% endif %><% if JUDGE_TAG %> judge_tag=$${JUDGE_TAG}<% endif %>; do OPTS+=(--option "$kv"); done;
+                echo "granite: scoring $MODEL $LIMIT_ARGS from $GEN";
+                granite-evals run multi-challenge --model "$MODEL" --output-dir "$OUT" --phase score $LIMIT_ARGS
+                --workers $${WORKERS} "${OPTS[@]}" 2>&1 | tee "$OUT/granite<% if JUDGE_TAG %>-$${JUDGE_TAG}<% endif %>.log";
+                test -s "$OUT/results.json" || { echo "granite: no $OUT/results.json"; exit 1; };
+                RES="$OUT/results<% if JUDGE_TAG %>-$${JUDGE_TAG}<% endif %>.json";
+                [ "$RES" = "$OUT/results.json" ] || mv "$OUT/results.json" "$RES";
+                echo "GB_ARTIFACT_ID:granite_results GB_ARTIFACT_PATH:$RES"

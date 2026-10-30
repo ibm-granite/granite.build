@@ -1,0 +1,51 @@
+# Extended Granite benchmark suite (additional benchmarks beyond granite42.yaml).
+# See granite42.yaml for the conventions.
+name: extended
+benchmarks:
+  # Agentic (Coding)
+  - {id: swebench-verified, group: agentic-coding, name: SWE Bench Verified, metric: "pass@1 resolve rate"}
+  - {id: swebench-pro, group: agentic-coding, name: SWE Bench Pro, metric: "pass@1 resolve rate"}
+  - {id: swebench-multilingual, group: agentic-coding, name: SWE Bench Multilingual, metric: "pass@1 resolve rate"}
+  - {id: terminal-bench-2.1, group: agentic-coding, name: Terminal-Bench 2.1, metric: "pass@1 resolve rate"}
+  # Agentic (General)
+  - {id: tau3-airline, group: agentic-general, name: "τ³-bench Airline", metric: pass@1}
+  - {id: tau3-banking-knowledge, group: agentic-general, name: "τ³-bench Banking Knowledge (BM25 + grep)", metric: pass@1}
+  - {id: tau3-retail, group: agentic-general, name: "τ³-bench Retail", metric: pass@1}
+  - {id: tau3-telecom, group: agentic-general, name: "τ³-bench Telecom", metric: pass@1}
+  - {id: bfcl-v4, group: agentic-general, name: BFCL(v4), metric: overall_accuracy accuracy}
+  - {id: gdpval, group: agentic-general, name: GDPval, metric: Elo}
+  - {id: browsecomp, group: agentic-general, name: BrowseComp, metric: mean reward}
+  - {id: mcpatlas, group: agentic-general, name: "MCPAtlas (key-less servers, 30 tasks)", metric: "pass rate (coverage >= 0.75)"}
+  - {id: toolathlon, group: agentic-general, name: toolathlon, metric: success rate}
+  # Reasoning
+  - {id: aime25, group: reasoning, name: AIME25 (no tools), metric: "pass@1 symbolic correct"}
+  - {id: hmmt-feb25, group: reasoning, name: HMMT Feb25 (no tools), metric: "pass@1 symbolic correct"}
+  - {id: gpqa, group: reasoning, name: GPQA (no tools), metric: "pass@1 symbolic correct"}
+  - {id: omniscience, group: reasoning, name: Omniscience, metric: pass@1 judge_correct}
+  - {id: livecodebench-v6, group: reasoning, name: LiveCodeBench v6, metric: "pass@1 accuracy"}
+  - {id: scicode, group: reasoning, name: SciCode (subtask), metric: "pass@1 subtask accuracy"}
+  - {id: hle, group: reasoning, name: HLE (no tools), metric: pass@1 judge_correct}
+  - {id: hle-tools, group: reasoning, name: HLE (with tools), metric: pass@1 judge_correct}
+  - {id: critpt, group: reasoning, name: CritPt (no tools), metric: Challenge Accuracy}
+  - {id: critpt-tools, group: reasoning, name: CritPt (with tools), metric: Challenge Accuracy}
+  # Chat & Instruction Following
+  - {id: mmlu-pro, group: chat-if, name: MMLU-Pro, metric: "5-shot CoT symbolic correct"}
+  - {id: mmlu-prox-lite, group: chat-if, name: MMLU-ProX lite (IBM), metric: exact match (custom-extract)}
+  - {id: arena-hard-v2, group: chat-if, name: Arena-Hard-V2, metric: win rate}
+  - {id: ifbench, group: chat-if, name: IFBench (prompt), metric: "pass@1 prompt loose / strict accuracy"}
+  - {id: multi-challenge, group: chat-if, name: Scale AI Multi-Challenge, metric: "pass@1 correct (--repeats 8: pass@1[avg-of-8])"}
+  # Safety
+  - {id: fortress-adversity, group: safety, name: Fortress, metric: "Adversity resilience (1 - ARS/100)"}
+  - {id: fortress-benign, group: safety, name: Fortress, metric: "Benign compliance (1 - ORS/100)"}
+  - {id: strongreject, group: safety, name: StrongREJECT, metric: "Harmlessness (1 - StrongREJECT score)"}
+  # Extras
+  - {id: wmt24pp, group: extras, name: WMT24++, metric: "en→xx comet"}
+  - {id: aa-lcr, group: extras, name: AA-LCR, metric: pass@1 judge correct}
+  - {id: ruler-1m, group: extras, name: RULER 1M completions, metric: accuracy}
+  - {id: ruler-512k, group: extras, name: RULER 512k completions, metric: accuracy}
+  - {id: ruler-256k, group: extras, name: RULER 256k completions, metric: accuracy}
+  - {id: ruler-128k, group: extras, name: RULER 128k completions, metric: accuracy}
+  - {id: ruler-64k, group: extras, name: RULER 64k completions, metric: accuracy}
+  - {id: profbench, group: extras, name: ProfBench, metric: overall}
+  - {id: pinchbench, group: extras, name: PinchBench, metric: reward}
+  - {id: omniscience-hallucination, group: extras, name: Omniscience (hallucination), metric: pass@1 judge_omni_hallucination}

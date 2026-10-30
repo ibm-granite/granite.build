@@ -1,0 +1,161 @@
+[project]
+name = "granite-evals"
+version = "0.1.0"
+description = "Runtime for a benchmark collection used to evaluate language models, packaged for granite.build steps"
+authors = [
+    { name = "The granite.build authors" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "datasets>=3.0",
+    "httpx>=0.27",
+    "huggingface-hub>=0.30",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# One extra per benchmark family. Upstream harnesses stay external and pinned
+# here; each step image installs only the extra it needs, because the harnesses'
+# own dependencies conflict with one another.
+swebench = [
+    "mini-swe-agent==2.4.6",
+    "swebench==5.0.2",
+]
+# NVIDIA NeMo-Skills (github.com/NVIDIA-NeMo/Skills), the harness behind the suite
+# metrics named like "pass@1[avg-of-4] symbolic correct" (aime25, gpqa, mmlu-pro,
+# arena-hard-v2, ...). No PyPI release: pinned to a commit. Only its prepare / generate /
+# evaluate / metrics modules run, locally against the step's vLLM (no Slurm, no NeMo-Run).
+nemoskills = [
+    "nemo-skills @ git+https://github.com/NVIDIA-NeMo/Skills@bcf059af55c20a89f797724598f9908d126153e6",
+    # livecodebench-v6: the evaluator ns's LiveCodeBench eval pip-installs, pinned.
+    "livecodebench @ git+https://github.com/wasiahmad/livecodebench@de8b59485a841a43ee2d66fc058f017e42f638db",
+    # ruler-*: RULER's data generators (ns's prepare pip-installs them unpinned).
+    # tenacity: RULER's scripts/data/tokenizer.py imports it at the top.
+    "wonderwords",
+    "nltk",
+    "tenacity",
+    # wmt24pp: ns's BLEU tokenizes Japanese with sacrebleu's ja-mecab, which ns's
+    # metrics pip-install at run time (patched out; nemo_skills_extended.WMT24pp).
+    "sacrebleu[ja]==2.6.0",
+    # browsecomp: the fetch_url tool's PDF text.
+    "pypdf>=5.0",
+]
+# IFBench through NeMo-Skills (the `nemoskills` extra) plus the requirements of
+# allenai/IFBench's run_eval.py, which ns's ifbench evaluator runs from
+# /opt/benchmarks/IFBench (docker/extras/ifbench.sh), as ns's own image does.
+ifbench = [
+    "granite-evals[nemoskills]",
+    "absl-py==2.5.0",
+    "langdetect==1.0.9",
+    "nltk==3.10.3",
+    "immutabledict==4.3.1",
+    "spacy==3.8.16",
+    "emoji==2.16.0",
+    "syllapy==0.7.2",
+    "unicodedata2==18.0.0",
+    "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+]
+# lm-evaluation-harness, against the served model's OpenAI API (mmlu-prox-lite).
+lmeval = [
+    "lm-eval[api]==0.4.13",
+]
+# Terminal-Bench 2.x: Harbor (terminus-2 agent, oracle, verifier). Harbor needs
+# Python >= 3.12 (the image's); on 3.11 the extra is empty and tbench is unavailable.
+tbench = [
+    "harbor==0.23.0; python_version >= '3.12'",
+]
+# tau3-bench (sierra-research/tau2-bench v1.0.1). Task data is not in the wheel;
+# benchmarks/tau.py reads data/tau2 from the same pinned commit. Python 3.12 only:
+# tau2 imports the stdlib audioop, which 3.13 removed (the image is 3.12).
+tau = [
+    "tau2[knowledge] @ git+https://github.com/sierra-research/tau2-bench@fc0055dc4e0a316c3f83133267fbd6faaa770992 ; python_full_version == '3.12.*'",
+]
+# BFCL v4 (gorilla). Its benchmark data ships inside the package, so this pin
+# is also the dataset pin. soundfile: imported by bfcl_eval, undeclared.
+bfcl = [
+    "bfcl-eval==2026.3.23",
+    "soundfile==0.13.1",
+]
+# BIRD text-to-SQL (birdbench): NeMo-Skills' birdbench, the harness behind the
+# Granite 4.2 model card's BirdBench number (its prompt, schema dump and SQL
+# extraction). Same commit as the nemoskills extra.
+bird = [
+    "nemo-skills @ git+https://github.com/NVIDIA-NeMo/Skills@bcf059af55c20a89f797724598f9908d126153e6",
+]
+# LLM-judged general benchmarks (profbench, gdpval): the GDPval agent harness
+# (Stirrup, as in Artificial Analysis' GDPval-AA), the judge client, ProfBench's
+# scorer dependencies and the office-file readers that render deliverables for
+# the judge. ProfBench's own scripts are fetched by commit (docker/extras/judged.sh).
+judged = [
+    "stirrup==0.2.0; python_version >= '3.12'",  # stirrup needs 3.12 (the image has it)
+    "openai>=1.99",
+    "numpy>=1.26",
+    "scikit-learn>=1.5",
+    "tqdm>=4.66",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+    "python-pptx>=1.0",
+    "pypdf>=5.0",
+]
+# The inference server. Kept out of the base install so the CLI, tests and the
+# result tooling run on a laptop without CUDA.
+serve = [
+    "vllm==0.27.1",
+]
+
+[project.scripts]
+granite-evals = "granite_evals.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+override-dependencies = [
+    # bfcl-eval pins numpy==1.26.4 (a blanket "pin what is installed" upstream, not a
+    # numpy-2 incompatibility; granite.build's bfcl-eval step runs it on numpy 2), while
+    # vllm==0.27.1, in every image, needs numpy>=2. Every image resolves numpy 2 anyway.
+    "numpy>=2",
+    # NeMo-Skills (nemoskills, ifbench, bird) declares its cluster orchestration
+    # (NeMo-Run, nemo-evaluator-launcher) as hard dependencies. granite-evals runs only
+    # its local prepare / generate / evaluate / metrics modules, which never import
+    # them, and NeMo-Run's leptonai pins (httpx==0.27.2,
+    # prometheus-fastapi-instrumentator==7) cannot co-install with vLLM. A marker
+    # outside requires-python drops them from the resolution.
+    "nemo-run ; python_version < '3'",
+    "nemo-evaluator-launcher ; python_version < '3'",
+]
+# Each image installs one family's extra (plus serve), so families whose pins
+# clash resolve apart. vllm pins torch, so every fork shares the serve layer.
+conflicts = [
+    # tau2 pins litellm<1.82.7; mini-swe-agent resolves a newer one.
+    [{ extra = "swebench" }, { extra = "tau" }],
+    # bfcl-eval pins filelock==3.20.0 and more; keep it from downgrading other images.
+    [{ extra = "bfcl" }, { extra = "swebench" }],
+    # tree-sitter: bfcl-eval pins 0.21.3, NeMo-Skills' compute-eval needs >=0.25.2.
+    [{ extra = "bfcl" }, { extra = "bird" }],
+    [{ extra = "bfcl" }, { extra = "nemoskills" }],
+    [{ extra = "bfcl" }, { extra = "ifbench" }],
+    # NeMo-Skills pins litellm==1.84.10 and mcp<2; keep swebench's and tau's resolutions apart.
+    [{ extra = "bird" }, { extra = "swebench" }],
+    [{ extra = "nemoskills" }, { extra = "swebench" }],
+    [{ extra = "ifbench" }, { extra = "swebench" }],
+    [{ extra = "bird" }, { extra = "tau" }],
+    [{ extra = "nemoskills" }, { extra = "tau" }],
+    [{ extra = "ifbench" }, { extra = "tau" }],
+    # harbor pins filelock>=3.29.4 (bfcl-eval: ==3.20.0) and newer litellm / mcp than
+    # tau2 and NeMo-Skills allow.
+    [{ extra = "bfcl" }, { extra = "tbench" }],
+    [{ extra = "tau" }, { extra = "tbench" }],
+    [{ extra = "bird" }, { extra = "tbench" }],
+    [{ extra = "ifbench" }, { extra = "tbench" }],
+    [{ extra = "nemoskills" }, { extra = "tbench" }],
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

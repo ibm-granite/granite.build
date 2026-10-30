@@ -1,24 +1,29 @@
 name: sky-slurm-bluevela
 type: Skypilot
 subtype: slurm
-# IBM BlueVela over SLURM — the SLURM sibling of the LSF environment in
-# environments/skypilot/lsf/ibm-bluevela. Both reach BlueVela as the shared
-# `granitebuild` functional ID; they differ in scheduler and login nodes (login1/2
-# run SLURM, login3-5 run LSF). Settings mirror the SLURM environment that the
-# BlueVela integration fixtures under
-# test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/ run against.
-# Reference with: environment_uri: space://environments/skypilot/slurm/ibm-bluevela
 config:
   default_cloud: slurm
-  # SLURM does not support cluster autostop (gbserver forces autostop=None); a
-  # per-step `sky down` releases the allocation instead.
+  # SLURM has no cluster autostop; gbserver forces idle_minutes_to_autostop=None
+  # on this cloud regardless, so this is purely documentation.
   idle_minutes_to_autostop: 0
-  # infra=slurm/<cluster>/<zone>: the SSH `Host` alias below must match `cluster`,
-  # and `zone` is the SLURM partition. gpu-mid holds 8-GPU H100 and H200 nodes
-  # (7-day limit) and only accepts GPU jobs. Override per build with `zone:` in
-  # the step config; see docs/environments/skypilot-slurm.md#cluster--zone.
+  # `cluster` is composed into infra=slurm/<cluster>; `zone` maps to the SLURM
+  # partition (--partition). gpu-mid is the H200 partition on BlueVela. Both are
+  # env-wide defaults — a build/step can override `zone` (e.g. to gpu-high)
+  # without repeating `cluster`, see docs/environments/skypilot-slurm.md#cluster--zone.
   cluster: bluevela
   zone: gpu-mid
+  # gpu-mid is heavily contended (hundreds of jobs queued, 0-8 idle nodes out of
+  # ~384 observed fluctuating). gbserver's own bounded provisioning retry
+  # (_provision_with_retry in skypilot.py) is the actual retry-until-up
+  # equivalent here — sky.launch itself is never called with retry_until_up by
+  # gbserver, so that SkyPilot CLI flag has no effect through this path. Raise
+  # both knobs well past the defaults (4 attempts / 30s-capped backoff) so a
+  # launch keeps retrying through transient ResourcesUnavailableError for
+  # much longer before giving up, trading a slower failure for a much better
+  # chance of catching a freed GPU on a saturated partition.
+  retry:
+    max_retries: 20
+    provision_backoff_max: 180
   # The auto-queued HF I/O steps need no GPU, so send them to the cpu partition
   # (keyed by step-type slug; a build can still override). The cpu partition has
   # no H200 nodes, so they also drop the h200 constraint below: `null` removes the
@@ -30,11 +35,12 @@ config:
     hfpush:
       zone: cpu
       launcher_config: { sbatch_options: { constraint: null } }
-  # Pin every job to H200 nodes (#SBATCH --constraint=h200, billed at 1.4x H100);
-  # GPU steps must request H200 (e.g. accelerators: "H200:1").
-  # gpu-mid rejects jobs that request no GPUs, so CPU-only steps (other than
-  # hfpull/hfpush above) must set `zone: cpu` and `sbatch_options.constraint: null`
-  # in the build. See docs/environments/skypilot-slurm.md#override-the-partition-zone-per-build.
+  # Pin every job to H200 nodes (#SBATCH --constraint=h200, billed at 1.4x H100).
+  # gpu-mid's submit filter rejects ANY job -- even a CPU-only one with 0 GPUs --
+  # when no H100 node is free. A step requesting GPUs must therefore ask for H200
+  # (gpu_model: H200), or clear this per build with
+  # config.launcher_config.sbatch_options.constraint: null. See
+  # docs/environments/skypilot-slurm.md#sbatch_options--slurm-sbatch-directives.
   sbatch_options:
     constraint: h200
   # Import each container image once into a shared .sqsh and launch from that, instead
@@ -49,41 +55,145 @@ config:
     sbatch_options:
       account: grp_granite_dot_build
       qos: cpu
-  # Shared-FS root for per-run build workdirs (GB_BUILD_WORKDIR). It must be on
-  # /proj AND under the SkyPilot `workdir` set in cloud_config below: SkyPilot's
-  # SLURM backend bind-mounts only home + ccache + `workdir` into the enroot
-  # container (unlike LSF, which mounts all of /proj), so outside it a
-  # containerized step's output never reaches the separate (bare) hfpush step.
+  # Opt in to the generated Pyxis GPU sbatch directives (--gpus plus the
+  # NVIDIA_* export list): both work around BlueVela specifics (its submit
+  # filter reinterprets a bare --gres as an H100 request; its driver libs
+  # live under /usr/lib/x86_64-linux-gnu), so generation is off by default
+  # and only BlueVela-like clusters enable it. See
+  # skypilot.py:_pyxis_gpu_sbatch_directives.
+  slurm_gpu_sbatch_directives: true
+  # Env-level shared filesystem root for per-run build workdirs (same path the
+  # LSF bluevela environment uses — both backends reach the same /proj GPFS
+  # mount). gbserver derives ${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/
+  # from this and exports it as GB_BUILD_WORKDIR.
   shared_workdir: /proj/data-eng/llmb-read-write/builds/
-  # Inline SLURM SSH reachability, materialized to ~/.slurm/config at launch. Keys
-  # are exact OpenSSH directive names; each value is secret-name-or-literal.
-  # HostName lists interchangeable login nodes: gbserver picks one at random and
-  # fails over to the next on a transient SSH control-plane error.
+
+  # Inline SLURM cluster SSH reachability. gbserver materializes this into
+  # ~/.slurm/config at launch so SkyPilot's SLURM provisioner can reach the
+  # cluster. If a ~/.slurm/config already exists on the host with a bluevela
+  # entry, remove it first — gbserver refuses to overwrite foreign entries
+  # (refuse-on-conflict).
   #
-  # Local runs read the granitebuild key from ~/.ssh/ibm-bluevela.key (mode 600,
-  # no passphrase — gbserver cannot answer a prompt). For CI with no key on the
-  # host, use `IdentityKey: BV_SSH_PRIVATE_KEY` (a space secret) instead. Testing
-  # a changed key? See the GBTEST_SKY_SSH_RESET caveat in
-  # docs/environments/skypilot-slurm.md.
+  # MULTIPLE LOGIN NODES: `HostName` lists interchangeable candidate login hostnames
+  # under one `Host` block: gbserver picks one at random per launch and fails over to
+  # the next on a transient SSH control-plane error. login0-login4 all answer sinfo
+  # (verified per node 2026-10-29; the scheduler and the SLURM client install are
+  # shared across the login nodes, so any of them can drive the control plane).
   cluster_ssh_configs:
     slurm:
       - Host: bluevela
         HostName:
+          - login0.bluevela.rmf.ibm.com
           - login1.bluevela.rmf.ibm.com
           - login2.bluevela.rmf.ibm.com
+          - login3.bluevela.rmf.ibm.com
+          - login4.bluevela.rmf.ibm.com
         User: granitebuild
-        IdentityFile: ~/.ssh/ibm-bluevela.key
-        #IdentityKey: BV_SSH_PRIVATE_KEY
+        # granitebuild's SSH identity is a 1Password-managed key, not a
+        # Smallstep cert (confirmed: no `step` CLI and no loaded cert for this
+        # account) — IdentityStepCert would fail fast with
+        # StepCertExpiredError. IdentityAgent (pointing ssh at the 1Password
+        # agent socket) was tried first but does NOT work for this cloud:
+        # SkyPilot's SLURM driver (SlurmClient / sky/adaptors/slurm.py) builds
+        # its own ssh invocation from Python args (ssh_private_key -> `-i`,
+        # IdentitiesOnly -> `-o`) and never passes `-F <config>` to the real
+        # ssh subprocess for control-plane calls (partition/job queries), so
+        # it has no way to pick up an IdentityAgent directive from the
+        # materialized config at all — confirmed via a real failed smoke
+        # build (`scontrol show partitions -o` exit 255) despite the exact
+        # same command succeeding when run manually with `ssh -F`. A real
+        # on-disk private key is the only identity SlurmClient can use.
+        #
+        # The key is NOT a path in this file: `IdentityKey` names a secret holding the key
+        # contents, and gbserver writes it to a 0600 file and points IdentityFile at that
+        # file when it materializes ~/.slurm/config. That keeps this environment free of any
+        # machine-specific path. Define the secret (BV_SSH_PRIVATE_KEY) in the space that
+        # uses this environment; see docs/environments/skypilot-slurm.md.
+        IdentityKey: BV_SSH_PRIVATE_KEY
+        # Offer ONLY that key. Without it ssh also offers every key in the agent, and login1
+        # drops the connection with "Too many authentication failures" before the right one
+        # is tried. (Not valid together with IdentityStepCert; this host uses a key.)
         IdentitiesOnly: "yes"
-  # Deep-merged into ~/.sky/config.yaml at launch. `workdir` is the SkyPilot SLURM
-  # cluster base dir AND the one path bind-mounted into the enroot container; it
-  # is an ancestor of `shared_workdir` so per-run output lands on the shared FS.
-  # Lookup key: slurm/cluster_configs/<cluster>/workdir (cluster = bluevela).
+
+  # Inline SLURM behavioral config. gbserver deep-merges this into the API
+  # server's ~/.sky/config.yaml at launch (see merge_cloud_config).
   cloud_config:
     slurm:
       cluster_configs:
-        bluevela:
+        bluevela:                                        # must match `cluster:` above
+          # SkyPilot `workdir` set to an ancestor of `shared_workdir`. Unlike the
+          # LSF backend (which identity-mounts all of /proj into the enroot
+          # container), the SLURM backend bind-mounts only home + ccache +
+          # workdir, so a containerized step's $GB_BUILD_WORKDIR only exists
+          # inside the container if it falls under this path. See
+          # docs/environments/skypilot-slurm.md#workdir-containerized-steps.
           workdir: /proj/data-eng/llmb-read-write
+          # SkyPilot's per-cluster runtime dir (skylet state, jobs database) lives
+          # under tmpdir and must sit on storage shared by ALL login nodes listed
+          # above: a node-local path gives each login node its own divergent
+          # skylet state. $HOME is GPFS-shared across the login nodes (the fork
+          # expands $VARs with the remote login user's environment). /opt/nvme is
+          # a compute-node path — it does not exist on any login node, and /opt
+          # is root-owned, so it cannot be created there either.
+          tmpdir: $HOME/skypilot-tmp
+          # The SLURM backend bind-mounts only $HOME, ccache and `workdir` into the
+          # container, so anything else a step reads or writes on the shared filesystem
+          # is invisible inside it. Mount the whole /proj GPFS tree identity (container
+          # path == host path), not one group subtree: it is a strict superset of the
+          # earlier /proj/granite-build-only mount, matches what the LSF backend
+          # identity-mounts for the same cluster, and is the layout BlueVela ops
+          # validated for multi-node NCCL training jobs (container_mounts=/proj:/proj
+          # in their reference sbatch script). Overlap with `workdir` above is
+          # harmless — nested bind mounts of the same underlying filesystem coexist,
+          # and inputs staged anywhere under /proj (not just one group tree) become
+          # visible in-container.
+          container_mounts:
+            /proj:
+              host_path: /proj
+              mode: rw
+          # BlueVela's CPU-only lane. Its submission filter refuses a job with no GPUs on
+          # any gpu-* partition, and `cpu` only accepts qos=cpu, so CPU-only targets set
+          # `zone: cpu` (see CPU_QUEUE in the distill recipe) and get this QOS here rather
+          # than the env-wide grp_granite_dot_build_medium below.
+          partition_configs:
+            cpu:
+              sbatch_options:
+                qos: cpu
+      # Env-wide #SBATCH defaults, forwarded verbatim to sbatch (keys without the
+      # leading --). `account` is granitebuild's own SLURM association
+      # (confirmed via `sacctmgr show associations user=granitebuild`); jobs run as
+      # granitebuild, so that is the association to use.
+      #
+      # `qos` MUST be grp_granite_dot_build_medium on gpu-mid, not the
+      # higher-priority grp_granite_dot_build_high: confirmed by direct sbatch
+      # testing that this cluster's own submission filter rejects _high here
+      # with "Project grp_granite_dot_build uses --qos=grp_granite_dot_build_medium
+      # in gpu-mid (this job requested grp_granite_dot_build_high)". _medium is
+      # also the lower-priority/preemptable-equivalent tier (sacctmgr show qos:
+      # priority 0, preempted by burst/cpu) that an LSF-group-swap maps to
+      # anyway, so this isn't a real functionality loss for this environment.
+      #
+      # GPU directives (`gpus`, pyxis driver-injection `export`) are NOT set
+      # here: gbserver generates them per-step from the step's own
+      # resources.accelerators + image_id (Skypilot._pyxis_gpu_sbatch_directives
+      # in src/gbserver/environment/skypilot.py) rather than a static
+      # per-environment value, so a step requesting a different GPU count or
+      # type is never silently miscounted. See issue #510. Set
+      # `slurm_gpu_sbatch_directives: false` above (sibling of `cluster`/`zone`)
+      # to opt this environment out, if a future cluster's Pyxis/driver setup
+      # ever needs something different from BlueVela's.
+      sbatch_options:
+        account: grp_granite_dot_build
+        qos: grp_granite_dot_build_medium
+        # NODE EXCLUSIONS: the LSF bluevela environment excludes several hosts
+        # known to fail (CUDA init errors, missing /opt/nvme) via bsub's -R
+        # select[]. The SLURM equivalent is `exclude` (comma-separated hostnames,
+        # confirmed to pass through sbatch_options unprotected) — none of those
+        # LSF-side exclusions have been confirmed to apply to this cluster's SLURM
+        # partition (different scheduler, possibly different node pool), so none
+        # are carried over yet. Add here if/when a bad node is identified on
+        # gpu-mid, e.g.:
+        # exclude: "p2-r03-n1,p5-r03-n1"
 assetstores:
   - store_uri: space://assetstores/hf
     pull:
@@ -92,6 +202,13 @@ assetstores:
           # On /proj (shared), not /tmp: a compute node's /tmp is per-node, so an
           # hf:// input pulled there would be invisible to the training node.
           cache_path: /proj/data-eng/llmb-read-write/hfcache/
+    push:
+      - mode: default
+        config: {}
+  - store_uri: space://assetstores/s3/
+    pull:
+      - mode: default
+        config: {}
     push:
       - mode: default
         config: {}
