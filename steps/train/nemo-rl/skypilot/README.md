@@ -103,9 +103,9 @@ can succeed (see the last bullet). To run it:
 
 Marked `ibm`. Skips unless the BlueVela key for the shared `granitebuild` functional
 ID is at `~/.ssh/ibm-bluevela.key` (mode 600, no passphrase), and skips on SPS CI. It
-runs against `space://environments/skypilot/slurm/ibm-bluevela` and needs:
+runs against `space://environments/skypilot/slurm/bluevela` and needs:
 
-- The step's image in ibm-bluevela's shared image cache
+- The step's image in bluevela's shared image cache
   (`/proj/granite-build/g4os/enroot/`, see "SLURM launches from a cached image"
   below). A cold cache adds a ~72 min import that the 90-minute timeout does not
   cover; warm it with one longer run.
@@ -163,7 +163,7 @@ change that undoes one fails fast instead of on a GPU node.
 - **SLURM launches from a cached image.** Importing the NGC image inside a BlueVela
   GPU job took 73 minutes, longer than a gpu-mid job's 2-hour preemption protection
   can safely absorb on top of training. `slurm-sft` therefore sets no `image_id`:
-  ibm-bluevela's `slurm_image_cache` (#560) imports the step's pinned registry image
+  bluevela's `slurm_image_cache` (#560) imports the step's pinned registry image
   once into a shared `.sqsh`, in a CPU job before the GPU job is submitted, and
   later launches start from that file. `test_exemplar_build.py` checks the fixture
   keeps it that way. An `image_id` that is already a `.sqsh` path still works and is
@@ -178,7 +178,7 @@ where the cluster forces it:
 
 | | aws-sft | slurm-sft |
 |---|---|---|
-| environment | `skypilot/aws` | `skypilot/slurm/ibm-bluevela` |
+| environment | `skypilot/aws` | `skypilot/slurm/bluevela` |
 | image | NGC registry ref (pulled at launch) | same ref, launched from the environment's shared `.sqsh` cache |
 | GPU | `A10G:1` | `H200:1` (the environment pins `h200`) |
 | `step_count` | 1 (aws stages `hf://` inline) | 2 (separate hfpull step) |

@@ -95,7 +95,7 @@ outlives the target:
 
 | Endpoint | Output URI for a handoff | `output_path` |
 |---|---|---|
-| `skypilot/slurm`, `skypilot/lsf` | `env:///<shared path>` (e.g. under `/proj` on `ibm-bluevela`) | explicit, matching the `uri` |
+| `skypilot/slurm`, `skypilot/lsf` | `env:///<shared path>` (e.g. under `/proj` on `bluevela`) | explicit, matching the `uri` |
 | `skypilot/aws` | `s3://bucket/…` (the S3 assetstore pushes it; the consumer pulls it) | may be left default |
 
 Make the path unique per run (e.g. a `$${PARAM}` or
@@ -144,13 +144,13 @@ so a multi-GPU node is actually used (the shipped configs default it to 1). Set
 ## Running on SLURM
 
 The same step runs on a SkyPilot SLURM endpoint (for example
-`space://environments/skypilot/slurm/ibm-bluevela`). Three things differ from a
+`space://environments/skypilot/slurm/bluevela`). Three things differ from a
 cloud endpoint:
 
 - **Launch from a squashfs, not the registry.** On SLURM the image runs as a
   Pyxis/enroot container. Importing the 20 GB NeMo-RL image inside the job takes
   over an hour, which can exceed the job's time limit or preemption window.
-  - **If the environment sets `slurm_image_cache`** (`ibm-bluevela` does), leave
+  - **If the environment sets `slurm_image_cache`** (`bluevela` does), leave
     `image_id` at its default. gbserver imports the registry image once into a
     shared `.sqsh`, in a CPU job, before the GPU job is submitted, and every later
     launch starts from that file. See `slurm_image_cache` in
@@ -172,7 +172,7 @@ cloud endpoint:
 - **Match the partition's GPU type.** The `accelerators` type becomes a typed
   GRES request (`--gres=gpu:<type>:<count>`), so use a type the partition has,
   and one that any environment-wide `sbatch_options.constraint` allows
-  (`ibm-bluevela` pins `h200`, so use `H200:<count>`).
+  (`bluevela` pins `h200`, so use `H200:<count>`).
 - **The base model is staged by its own step.** SLURM endpoints usually stage
   `hf://` inputs with a separate hfpull job onto shared storage rather than
   inside this step, so a build shows one extra step.

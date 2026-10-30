@@ -16,7 +16,7 @@
 
 """Integration test: the byoc step runs end to end on BlueVela SLURM (Skypilot).
 
-Runs on the shared ``space://environments/skypilot/slurm/ibm-bluevela``. The step
+Runs on the shared ``space://environments/skypilot/slurm/bluevela``. The step
 comes from the Space ``make space`` renders (``space_uri: ../../space``), i.e. from
 your local source.
 

@@ -16,7 +16,7 @@
 
 The SLURM counterpart of ``test/aws-sft``: the same short SFT run on a tiny base
 model, on BlueVela's gpu-mid partition via
-``space://environments/skypilot/slurm/ibm-bluevela``. Reaching SUCCESS proves the
+``space://environments/skypilot/slurm/bluevela``. Reaching SUCCESS proves the
 step's SLURM path: the base model is staged by a separate hfpull step onto the
 shared /proj filesystem, the NeMo-RL image runs as a Pyxis/enroot container from
 the environment's shared ``.sqsh`` image cache (#560), ``examples/run_sft.py`` trains, ``convert_dcp_to_hf.py``
@@ -45,7 +45,7 @@ from libgbtest.constants import extended_testing_only
 
 pytestmark = [pytest.mark.skypilot_integration, pytest.mark.ibm]
 
-# The key the ibm-bluevela SLURM environment reads (cluster_ssh_configs IdentityFile).
+# The key the bluevela SLURM environment reads (cluster_ssh_configs IdentityFile).
 _BLUEVELA_KEY = Path("~/.ssh/ibm-bluevela.key").expanduser()
 
 

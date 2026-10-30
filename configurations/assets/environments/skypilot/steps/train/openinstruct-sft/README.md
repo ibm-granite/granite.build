@@ -203,11 +203,11 @@ nothing.
 ## Running on SLURM
 
 The same step runs on a SkyPilot SLURM endpoint (for example
-`space://environments/skypilot/slurm/ibm-bluevela`). What differs from a cloud
+`space://environments/skypilot/slurm/bluevela`). What differs from a cloud
 endpoint:
 
 - **The image is cached automatically.** SLURM environments with a `slurm_image_cache`
-  block (`ibm-bluevela` has one) import the step's registry image once into a shared
+  block (`bluevela` has one) import the step's registry image once into a shared
   `.sqsh` and launch every later run from it. The first run on a cold cache imports
   it in a CPU job before the GPU job starts (about 10 minutes for this 11 GB image
   once the CPU job starts, plus queueing); later runs start the container in seconds. No manual `enroot` import and no `image_id`
@@ -226,7 +226,7 @@ endpoint:
 
 - **Match the partition's GPU type.** `accelerators` becomes a typed GRES request
   (`--gres=gpu:<type>:<count>`). Use a type the partition has and that any
-  environment-wide constraint allows (`ibm-bluevela` pins `h200`).
+  environment-wide constraint allows (`bluevela` pins `h200`).
 - **Inputs are staged by their own steps.** SLURM endpoints stage `hf://` inputs
   with separate hfpull jobs onto shared storage, so a build shows one extra step per
   `hf://` input.

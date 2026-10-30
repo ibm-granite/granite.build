@@ -3,7 +3,7 @@ granite.build:
   targets:
     byoc-run:
       # The goal is to run with this shared environment.yaml 
-      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      environment_uri: space://environments/skypilot/slurm/bluevela
       # But, if you want to test some local environment customizations, then
       # add your own environment.yaml next to this build.yaml and use this environment_uri
       # environment_uri: file:.   # ./environment.yaml

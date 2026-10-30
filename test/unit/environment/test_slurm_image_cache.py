@@ -225,7 +225,7 @@ class TestEnvironmentLoad:
 
         path = (
             Path(__file__).resolve().parents[3]
-            / "configurations/assets/environments/skypilot/slurm/ibm-bluevela/environment.yaml"
+            / "configurations/assets/environments/skypilot/slurm/bluevela/environment.yaml"
         )
         env = EnvironmentConfig(**yaml.safe_load(path.read_text()))
         assert parse_cache_config(env.config["slurm_image_cache"]) is not None

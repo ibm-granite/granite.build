@@ -9,7 +9,7 @@ granite.build:
   # `model` artifact is registered from the step's marker.
   targets:
     train:
-      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
         base_model:
           uri: hf:///HuggingFaceTB/SmolLM2-135M
@@ -27,7 +27,7 @@ granite.build:
             poll_interval_seconds: 30
             launcher_config:
               resources:
-                # SLURM-SPECIFIC: H200, the only GPU ibm-bluevela schedules (its
+                # SLURM-SPECIFIC: H200, the only GPU bluevela schedules (its
                 # sbatch constraint). Renders as --gres=gpu:h200:1.
                 accelerators: "H200:1"
                 # gbserver drops compute_config memory on slurm and the partition

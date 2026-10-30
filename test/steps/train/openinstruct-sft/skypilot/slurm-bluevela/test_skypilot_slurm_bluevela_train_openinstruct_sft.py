@@ -37,7 +37,7 @@ from libgbtest.constants import extended_testing_only
 
 pytestmark = [pytest.mark.skypilot_integration, pytest.mark.ibm]
 
-# The key the ibm-bluevela SLURM environment reads (cluster_ssh_configs IdentityFile).
+# The key the bluevela SLURM environment reads (cluster_ssh_configs IdentityFile).
 _BLUEVELA_KEY = Path("~/.ssh/ibm-bluevela.key").expanduser()
 
 
