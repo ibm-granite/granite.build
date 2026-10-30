@@ -24,6 +24,10 @@ from gbserver.lineage import indexer as idx
 from gbserver.storage.stored_lineage_row import JobStore
 from gbserver.storage.stored_target_run import StoredTargetRun
 
+# The registry resolves nothing, so lineage_view keeps every uuid as-is: these
+# tests are about the scan, not mem:// filtering (see test_mem_artifacts).
+_NO_ARTIFACTS = SimpleNamespace(get_by_uuid=lambda uuid: None)
+
 
 @pytest.fixture(autouse=True)
 def _standalone_by_default():
@@ -54,7 +58,7 @@ class _KV:
 
 
 def _storage():
-    return SimpleNamespace(kv_pair_storage=_KV())
+    return SimpleNamespace(kv_pair_storage=_KV(), artifact_registry=_NO_ARTIFACTS)
 
 
 def _artifact(uri, type="dataset"):
@@ -623,7 +627,7 @@ def _target_indexer(targets, indexed=()):
     """Targets are served newest-finished first, as the DB page would."""
     sink = MagicMock()
     # The builder is pure; one event per target is enough to drive the loop.
-    sink.create_jobstats_for_target.side_effect = lambda storage, target, build=None: (
+    sink.create_jobstats_for_target.side_effect = lambda storage, target, build=None, view=None: (
         [{"job_id": target.uuid}],
         {},
     )

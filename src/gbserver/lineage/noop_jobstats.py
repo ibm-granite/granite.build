@@ -16,13 +16,16 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 from gbserver.lineage.jobstats import ILineageStore
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.singleton_storage import SingletonAdminStorage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
+
+if TYPE_CHECKING:
+    from gbserver.lineage.mem_artifacts import LineageView
 
 
 class NoopLineageStore(ILineageStore):
@@ -59,6 +62,7 @@ class NoopLineageStore(ILineageStore):
         storage: SingletonAdminStorage,
         targetrun: StoredTargetRun,
         build: Optional[StoredBuild] = None,
+        view: Optional["LineageView"] = None,
     ) -> Tuple:
         return [], {}
 

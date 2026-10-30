@@ -77,6 +77,7 @@ from gbserver.lineage.lineage_seeding import (
     SEED_FROM_LATEST,
     LineageSeedError,
 )
+from gbserver.lineage.mem_artifacts import lineage_view
 from gbserver.lineage.row_indexing import LineageRowIndexer
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.storage import Pagination, QueryControl, SortOrder
@@ -1031,6 +1032,12 @@ class TargetLineageIndexer(JobLineageIndexer):
     def _index(self, storage: SingletonAdminStorage, job: StoredTargetRun) -> bool:
         if not job.input_artifacts and not any(job.output_artifacts.values()):
             return False
+        # mem:// artifacts are not lineage (see mem_artifacts): a target whose only
+        # artifacts are mem:// is artifact-less too. The view is handed to the
+        # builder, so the registry is read once.
+        view = lineage_view(storage, job)
+        if view.is_artifact_less:
+            return False
         # gb_targets IS the job store for this source, so nothing is copied into
         # gb_lineage_job: the rows are stamped TARGETS and their ``retrieve`` keys
         # (build_id, target_run_uuid) are what GET /lineage/jobs/{id} follows back
@@ -1042,7 +1049,7 @@ class TargetLineageIndexer(JobLineageIndexer):
             # raise when it is gone: a target whose build vanished has no
             # provenance to index, and the rows' retrieve keys would point at a
             # build the detail route cannot fetch.
-            events, _ = self._sink.create_jobstats_for_target(storage, job)
+            events, _ = self._sink.create_jobstats_for_target(storage, job, view=view)
         except ValueError as exc:
             logger.warning(
                 "Target run %s could not be built into lineage entries; "

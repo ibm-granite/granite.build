@@ -834,11 +834,11 @@ class TestRecordTargetLineage:
 class TestExpectedRunCount:
     def test_counts_all_output_artifacts_across_lists(self):
         t = _target("b1", "t1", output_artifacts={"a": ["o1"], "b": ["o2", "o3"]})
-        assert expected_run_count(t) == 3
+        assert expected_run_count(MagicMock(), t) == 3
 
     def test_no_outputs_expects_one_run(self):
         t = _target("b1", "t1", input_artifacts={"data": "in-1"})
-        assert expected_run_count(t) == 1
+        assert expected_run_count(MagicMock(), t) == 1
 
     def test_empty_output_lists_with_inputs_expects_one_run(self):
         """An output name holding no artifacts is not an output.
@@ -854,7 +854,7 @@ class TestExpectedRunCount:
             input_artifacts={"data": "in-1"},
             output_artifacts={"model": []},
         )
-        assert expected_run_count(t) == 1
+        assert expected_run_count(MagicMock(), t) == 1
 
 
 class TestRecordSelectedTargets:

@@ -24,6 +24,7 @@ import wandb
 from huggingface_hub import dataset_info, model_info
 
 from gbcommon.uri.hf import HfURI
+from gbserver.lineage.mem_artifacts import is_mem_resource
 from gbserver.lineage.openlineage_service import LineageService
 from gbserver.lineage.openlineage_utils import (
     get_hf_artifact_uri,
@@ -213,6 +214,11 @@ class WandBLineageService(LineageService):
         ):
             is_output = direction == "output"
             for resource in resources:
+                # mem:// is a build-local Memstore key, not data; there is
+                # nothing to version. _build_events_for_target already drops
+                # these, this guards events from any other producer.
+                if is_mem_resource(resource):
+                    continue
                 resource_name = self._dataset_name(resource)
                 resource_type = self._get_hf_type(resource)
                 artifact_type = (

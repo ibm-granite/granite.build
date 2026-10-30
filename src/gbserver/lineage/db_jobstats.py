@@ -45,7 +45,7 @@ ignored.
 """
 
 import logging
-from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from gbserver.lineage.attributes import (
     build_job_attributes,
@@ -61,6 +61,9 @@ from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_lineage_job import StoredLineageJob
 from gbserver.storage.stored_lineage_row import JobStore
 from gbserver.storage.stored_target_run import StoredTargetRun
+
+if TYPE_CHECKING:
+    from gbserver.lineage.mem_artifacts import LineageView
 
 logger = logging.getLogger(__name__)
 
@@ -439,6 +442,7 @@ class DBLineageStore(ILineageStore):
         storage: SingletonAdminStorage,
         targetrun: StoredTargetRun,
         build: Optional[StoredBuild] = None,
+        view: Optional["LineageView"] = None,
     ) -> Tuple[List[dict], Dict[str, List[dict]]]:
         """Build the job entries for a target run.
 
@@ -457,6 +461,7 @@ class DBLineageStore(ILineageStore):
             storage,
             self._require_build_of(storage, targetrun, build),
             targetrun,
+            view,
         )
 
     def create_jobstats_for_original_artifact(

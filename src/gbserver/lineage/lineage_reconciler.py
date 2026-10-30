@@ -55,6 +55,7 @@ from datetime import datetime, timezone, tzinfo
 from typing import Callable, Iterable, Optional
 
 from gbserver.lineage.jobstats import ILineageStore
+from gbserver.lineage.mem_artifacts import LineageView, lineage_view
 from gbserver.storage.singleton_storage import SingletonAdminStorage
 from gbserver.storage.storage import (
     CREATED_TIME_FIELD_NAME,
@@ -440,6 +441,14 @@ def select_recordable_targets(
     storage: SingletonAdminStorage,
     build_id: str,
 ) -> list[StoredTargetRun]:
+    """The targets of :func:`select_recordable_views`, without their views."""
+    return [target for target, _ in select_recordable_views(storage, build_id)]
+
+
+def select_recordable_views(
+    storage: SingletonAdminStorage,
+    build_id: str,
+) -> list[tuple[StoredTargetRun, LineageView]]:
     """Select one build's successful target runs whose lineage should be recorded.
 
     A target is recordable once it has completed successfully; its lineage is
@@ -465,6 +474,13 @@ def select_recordable_targets(
     such a name, and a selector that kept the target would leave it permanently
     unconfirmable.
 
+    ``mem://`` artifacts count as absent (see ``mem_artifacts``): a target whose
+    only artifacts are mem:// is artifact-less and skipped; one with real inputs
+    and only mem:// outputs is recorded as a no-output target. That check needs
+    the artifact registry, so it runs after ``latest_success_per_target``, on the
+    kept runs only, and its resolved view is returned with each target for
+    ``expected_run_count`` and the emitter to reuse.
+
     Note what the artifact-less skip does to state keyed on targets this function
     no longer returns. Such a target never reaches ``candidates``, so it is also
     absent from ``ReconcileResult.dropped`` -- meaning the watcher's
@@ -485,7 +501,8 @@ def select_recordable_targets(
         build_id: Build whose successful targets to select.
 
     Returns:
-        The build's recordable target runs, newest-finished first.
+        The build's recordable target runs, newest-finished first, each with its
+        mem://-filtered lineage view.
     """
     selected: list[StoredTargetRun] = []
     artifact_less = 0
@@ -518,6 +535,29 @@ def select_recordable_targets(
     # skip list every monitoring interval, forever. The per-target detail is
     # still available at debug, same tradeoff as the recorded-cache hit log in
     # WandBLineageStore.filter_unrecorded.
+    # In-place retry reuses one build id, so a target can hold more than one
+    # SUCCESS run (a prior success with unregistered artifacts is re-run; a
+    # reuse-disabled build re-runs every target). Record only the latest per
+    # target — the pages are newest-finished first, so the winner stays first.
+    #
+    # mem:// artifacts are not lineage (see mem_artifacts), so a survivor whose
+    # only artifacts are mem:// is artifact-less too. Checked after the dedup,
+    # not with the raw check above, so the registry is read only for the runs
+    # that are kept, and only once each: the view travels with the target to
+    # expected_run_count and the emitter.
+    recordable: list[tuple[StoredTargetRun, LineageView]] = []
+    for target in latest_success_per_target(selected):
+        view = lineage_view(storage, target)
+        if view.is_artifact_less:
+            artifact_less += 1
+            logger.debug(
+                "Skipping wandb lineage recording for target %s (build %s): "
+                "only mem:// artifacts.",
+                target.uuid,
+                build_id,
+            )
+            continue
+        recordable.append((target, view))
     if artifact_less:
         logger.info(
             "Skipped wandb lineage recording for %d target(s) of build %s: "
@@ -525,14 +565,14 @@ def select_recordable_targets(
             artifact_less,
             build_id,
         )
-    # In-place retry reuses one build id, so a target can hold more than one
-    # SUCCESS run (a prior success with unregistered artifacts is re-run; a
-    # reuse-disabled build re-runs every target). Record only the latest per
-    # target — the pages are newest-finished first, so the winner stays first.
-    return latest_success_per_target(selected)
+    return recordable
 
 
-def expected_run_count(target: StoredTargetRun) -> int:
+def expected_run_count(
+    storage: SingletonAdminStorage,
+    target: StoredTargetRun,
+    view: Optional[LineageView] = None,
+) -> int:
     """Number of lineage runs a fully-recorded ``target`` should have in a sink.
 
     Must mirror how ``WandBLineageStore._build_events_for_target`` emits events:
@@ -541,12 +581,18 @@ def expected_run_count(target: StoredTargetRun) -> int:
     otherwise do not add runs — they are attached to each output's run — so only
     outputs are counted when there are any. ``select_recordable_targets`` excludes
     fully artifact-less targets, so every target reaching here has at least one
-    real edge. This is derived from the in-memory
-    ``StoredTargetRun`` (already loaded by the scan) to avoid any extra storage
-    read. Keep this in lockstep with ``_build_events_for_target``; the
+    real edge.
+
+    Counted on the target's :func:`~gbserver.lineage.mem_artifacts.lineage_view`,
+    never its raw dicts: mem:// outputs are not emitted, so counting them would
+    expect runs that never come and pin the checkpoint. That is why ``storage`` is
+    required. Pass the ``view`` the selector already resolved to avoid reading the
+    registry again. Keep this in lockstep with ``_build_events_for_target``; the
     count-vs-events coherence test guards drift.
     """
-    n = sum(len(uuids) for uuids in target.output_artifacts.values())
+    if view is None:
+        view = lineage_view(storage, target)
+    n = view.output_count
     return n if n > 0 else 1
 
 
@@ -638,7 +684,8 @@ def reconcile_build(
         A ``ReconcileResult`` describing what happened for this build.
     """
     dropped = skip or set()
-    targets = select_recordable_targets(storage, build_id=build_id)
+    views = select_recordable_views(storage, build_id=build_id)
+    targets = [target for target, _ in views]
     if not targets:
         # No recordable target: nothing to write and nothing outstanding, so the
         # build is trivially confirmed and the checkpoint may pass it.
@@ -668,11 +715,15 @@ def reconcile_build(
 
     # Expected run count per candidate, so ``filter_unrecorded`` can tell a
     # fully-recorded target from one whose runs were only partially emitted by a
-    # prior crashed scan. Derived in memory from the already-loaded targets — no
-    # extra storage read. Every candidate is a real run whose own output_artifacts
-    # give the correct count (there is no skip concept: an in-place retry keeps
-    # both the FAILED and the SUCCESS run in one build).
-    expected = {t.uuid: expected_run_count(t) for t in targets if t.uuid in candidates}
+    # prior crashed scan. Derived from the views the selector already resolved —
+    # no extra storage read. Every candidate is a real run whose own outputs
+    # (mem:// excluded) give the correct count (there is no skip concept: an
+    # in-place retry keeps both the FAILED and the SUCCESS run in one build).
+    expected = {
+        t.uuid: expected_run_count(storage, t, view)
+        for t, view in views
+        if t.uuid in candidates
+    }
 
     failure: Optional[Exception] = None
 

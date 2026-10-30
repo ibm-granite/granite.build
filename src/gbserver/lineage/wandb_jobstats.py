@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN, is_public_github
 from gbserver.lineage.jobstats import ILineageStore
+from gbserver.lineage.mem_artifacts import LineageView, lineage_view
 from gbserver.lineage.openlineage_service import LineageService, LineageServiceFactory
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.singleton_storage import SingletonAdminStorage
@@ -200,6 +201,7 @@ class WandBLineageStore(ILineageStore):
         storage: SingletonAdminStorage,
         build: StoredBuild,
         targetrun: StoredTargetRun,
+        view: Optional[LineageView] = None,
     ) -> Tuple[List[dict], Dict[str, List[dict]]]:
         event_type = _STATUS_TO_EVENT_TYPE.get(targetrun.status, "OTHER")
         event_time = (
@@ -212,10 +214,16 @@ class WandBLineageStore(ILineageStore):
             )
         )
 
+        # mem:// artifacts are not lineage (see mem_artifacts). Read every
+        # artifact below from this view, so the emitter decides exactly what
+        # select_recordable_targets and expected_run_count do. The view also
+        # resolves each uuid once, so nothing below re-reads the registry.
+        if view is None:
+            view = lineage_view(storage, targetrun)
+
         inputs = []
-        for target_artifact_name, uuid in targetrun.input_artifacts.items():
-            artifact = storage.artifact_registry.get_by_uuid(uuid)
-            if artifact and isinstance(artifact, ArtifactRegistration):
+        for target_artifact_name, (_, artifact) in view.inputs.items():
+            if artifact is not None:
                 inputs.append(
                     _artifact_to_lineage_entry(
                         artifact,
@@ -304,27 +312,22 @@ class WandBLineageStore(ILineageStore):
         # all output-artifact lists, or one "no-output" event below when there are
         # inputs but no outputs) must stay in lockstep with
         # lineage_reconciler.expected_run_count, which derives the same count from
-        # the target in memory to detect partial records.
-        for (
-            target_artifact_name,
-            output_artifact_list,
-        ) in targetrun.output_artifacts.items():
+        # the same mem://-filtered view to detect partial records.
+        for target_artifact_name, kept_outputs in view.outputs.items():
             target_events: List[dict] = []
-            include_index = len(output_artifact_list) > 1
-            index = -1
-            for output_uuid in output_artifact_list:
-                if include_index:
-                    index += 1
-                artifact = storage.artifact_registry.get_by_uuid(output_uuid)
+            for kept in kept_outputs:
+                # kept.index is the position in the build's original list, so a
+                # dropped mem:// sibling does not renumber this reference.
+                output_uuid = kept.uuid
                 outputs = []
-                if artifact and isinstance(artifact, ArtifactRegistration):
+                if kept.artifact is not None:
                     outputs.append(
                         _artifact_to_lineage_entry(
-                            artifact,
+                            kept.artifact,
                             target_artifact_name,
                             target_name=targetrun.name,
                             is_input=False,
-                            index=index,
+                            index=kept.index,
                         )
                     )
                 event = {
@@ -397,7 +400,8 @@ class WandBLineageStore(ILineageStore):
         # scan and -- since run ids are random -- each scan writes a fresh
         # duplicate run set while pinning the checkpoint forever.
         #
-        # Hence the *raw* dicts, not `inputs` and not the output_artifacts keys:
+        # Hence the view (mem://-filtered, as the selector sees it), not
+        # `inputs` and not the output_artifacts keys:
         # `output_artifacts={"model": []}` has a key but no artifact, so the
         # per-output loop above emitted nothing and this branch must cover it;
         # and `inputs` is post-filter (only uuids that resolve in
@@ -405,7 +409,7 @@ class WandBLineageStore(ILineageStore):
         # whose input rows were pruned would emit nothing at all if gated on it.
         # The selector is not the primary gate either -- api/lineage.py reaches
         # this builder directly, without consulting it.
-        if not any(targetrun.output_artifacts.values()) and targetrun.input_artifacts:
+        if not view.has_outputs and view.inputs:
             event = {
                 **base_event,
                 "inputs": inputs,
@@ -466,7 +470,8 @@ class WandBLineageStore(ILineageStore):
         build: StoredBuild,
         targetrun: StoredTargetRun,
     ) -> None:
-        events, _ = self.create_jobstats_for_target(storage, targetrun, build)
+        view = lineage_view(storage, targetrun)
+        events, _ = self.create_jobstats_for_target(storage, targetrun, build, view)
         if not events:
             # No events means emit_event is never called. For a fully
             # artifact-less target that is the intended outcome — there is no
@@ -474,9 +479,9 @@ class WandBLineageStore(ILineageStore):
             # targets out before the reconciler ever gets here. Any *other*
             # empty result is a silent no-op: the caller marks the target
             # recorded while nothing reaches the backend, so warn on that.
-            artifact_less = not targetrun.input_artifacts and not any(
-                targetrun.output_artifacts.values()
-            )
+            # Judged on the same view the emitter used: a target whose only
+            # artifacts are mem:// is artifact-less, not a gap.
+            artifact_less = view.is_artifact_less
             if artifact_less:
                 logger.debug(
                     "No lineage events for artifact-less target %s (name=%s) in "
@@ -511,6 +516,7 @@ class WandBLineageStore(ILineageStore):
         storage: SingletonAdminStorage,
         targetrun: StoredTargetRun,
         build: Optional[StoredBuild] = None,
+        view: Optional[LineageView] = None,
     ) -> Tuple[List[dict], Dict[str, List[dict]]]:
         if build is None:
             build_result = storage.build_storage.get_by_uuid(targetrun.build_id)
@@ -529,7 +535,7 @@ class WandBLineageStore(ILineageStore):
         # Every SUCCESS run is a real run with its own outputs (in-place retry keeps
         # both the FAILED and the SUCCESS run in one build), so lineage is built
         # directly from the target's own outputs.
-        return self._build_events_for_target(storage, build, targetrun)
+        return self._build_events_for_target(storage, build, targetrun, view)
 
     def create_jobstats_for_original_artifact(
         self,

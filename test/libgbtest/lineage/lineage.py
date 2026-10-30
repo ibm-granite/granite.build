@@ -315,7 +315,7 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
 
         assert len(events) == 1, "an empty output list must not suppress the event"
         assert "no-output" in events_dict
-        assert expected_run_count(targetrun) == len(events)
+        assert expected_run_count(self.storage, targetrun) == len(events)
 
     def test_dangling_input_uuids_still_emit_one_event(self):
         """Inputs that do not resolve in the registry must not suppress the event.
@@ -349,7 +349,7 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
 
         assert len(events) == 1, "a dangling input must not suppress the event"
         assert events[0]["inputs"] == []
-        assert expected_run_count(targetrun) == len(events)
+        assert expected_run_count(self.storage, targetrun) == len(events)
 
     def test_expected_run_count_matches_events_built(self):
         """``expected_run_count`` must equal the events the builder emits.
@@ -390,8 +390,8 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
             self.storage, targetrun, build
         )
 
-        assert expected_run_count(targetrun) == 3
-        assert expected_run_count(targetrun) == len(events)
+        assert expected_run_count(self.storage, targetrun) == 3
+        assert expected_run_count(self.storage, targetrun) == len(events)
 
     def test_every_emitted_event_carries_the_target_id_tag(self):
         """Every event must carry ``target_id``: it is the run's only identity.
