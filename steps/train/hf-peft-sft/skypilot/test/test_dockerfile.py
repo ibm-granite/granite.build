@@ -85,6 +85,21 @@ def test_no_excluded_packages():
         assert pkg not in entries, pkg
 
 
+def test_managed_python_ships_no_pip():
+    # uv never needs pip, and pip's vendored msgpack/urllib3/setuptools carried
+    # the only fixable HIGH findings in the peft-v0.21.2-1 scan (README.md,
+    # "Scanning"). Remove it from uv's managed CPython, after the venv exists.
+    install = _DOCKERFILE.index("--require-hashes")
+    removal = re.search(
+        r"rm -rf /opt/uv-python/\*/lib/python3\.12/site-packages/pip "
+        r"/opt/uv-python/\*/lib/python3\.12/site-packages/pip-\*\.dist-info "
+        r"/opt/uv-python/\*/lib/python3\.12/ensurepip",
+        _DOCKERFILE,
+    )
+    assert removal, "pip/ensurepip are not removed from the managed Python"
+    assert install < removal.start()
+
+
 def test_runs_as_root_for_skypilot():
     assert not _instructions("USER")
     assert not re.search(r"^RUN useradd", _DOCKERFILE, re.M)
