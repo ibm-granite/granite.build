@@ -14,11 +14,11 @@ benchmark runtime those images are built from, and the image recipes themselves.
 | `scripts/prefetch_datasets.py` | Pins and pre-fetches the HF datasets into a cache the (offline) jobs read. |
 | `eval-example/` | The framework's generic eval exemplar step — pre-existing, not one of the granite-evals families. |
 
-The eleven families — `bfcl`, `bird`, `ifbench`, `judged`, `lmeval`, `mcpmark`,
-`nemoskills`, `nl2repo`, `swebench`, `tau`, `tbench` — exist because the upstream
-harnesses' own dependencies conflict (see the `[tool.uv]` conflicts in
-`src/core/pyproject.toml`), so each ships as its own image. `benchmark` selects
-which benchmark in the family a target runs.
+The twelve families — `bfcl`, `bird`, `ifbench`, `judged`, `lmeval`, `mcpmark`,
+`nemoskills`, `nl2repo`, `officeqa`, `swebench`, `tau`, `tbench` — exist because
+the upstream harnesses' own dependencies conflict (see the `[tool.uv]` conflicts
+in `src/core/pyproject.toml`), so each ships as its own image. `benchmark`
+selects which benchmark in the family a target runs.
 
 ## Images
 
