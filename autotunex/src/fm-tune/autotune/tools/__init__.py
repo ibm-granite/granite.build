@@ -12,20 +12,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Dataset-building and data-prep tools.
 
-"""TRL compatibility shim for verl's PPO critic workers.
+Each ``build_*_dataset`` module is runnable both as a script and as a module::
 
-verl 0.7.1 does ``from trl import AutoModelForCausalLMWithValueHead``.
-In trl >= 0.29.0 the class moved to ``trl.experimental.ppo``.
-Importing this module patches it back into the ``trl`` namespace.
+    python autotune/tools/build_factuality_dataset.py --help
+    python -m autotune.tools.build_factuality_dataset --help
 
-This module is loaded inside Ray workers via verl's ``external_lib``
-config key so the patch is applied before verl attempts the import.
+The modules therefore use absolute imports (``from autotune.tools.chat_utils
+import ...``) rather than relative ones: a relative import needs a parent
+package, which direct script execution does not provide.
 """
-
-import trl
-
-if not hasattr(trl, "AutoModelForCausalLMWithValueHead"):
-    from trl.experimental.ppo import AutoModelForCausalLMWithValueHead
-
-    trl.AutoModelForCausalLMWithValueHead = AutoModelForCausalLMWithValueHead

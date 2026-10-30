@@ -27,6 +27,7 @@
 import logging
 import math
 import os
+import shutil
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
@@ -38,17 +39,22 @@ from ray.train.huggingface.transformers import RayTrainReportCallback, prepare_t
 from ray.train.torch import TorchTrainer
 from transformers import AutoModelForCausalLM
 from transformers.utils.logging import disable_progress_bar, enable_progress_bar
-
-# TRL imports (trl == 0.9.6) because of compatibility with verl 0.7.1 !!!
 from trl import DPOConfig, DPOTrainer, KTOConfig, KTOTrainer
 
-# Local
+from autotune.callbacks.sync_best_checkpoint import SyncBestCheckpointCallback
 from autotune.callbacks.training_metrics import TrainingMetricsCallback
+
+# Local
+from autotune.device import disable_cudnn_sdpa
+from autotune.shadow_residual import reject_sr_for_trl_driver
 from autotune.trainers._alora_gc import (
     AloraGradCheckpointDrainCallback,
     install_alora_gc_safety_wrapper,
 )
+from autotune.trainers._checkpointing import resolve_resume_checkpoint
+from autotune.trainers._moe import router_aux_loss_coef as moe_router_aux_loss_coef
 from autotune.trainers._resume import peft_adapter_load_on_cpu
+from autotune.trainers._steps import resolve_epoch_steps
 from autotune.utils import (
     estimate_ds_strategy,
     extract_tokenizer_kwargs,
@@ -67,37 +73,6 @@ logger = logging.getLogger(__name__)
 # from the PlacementGroupCleaner. These occur when the Ray State API is
 # temporarily slow under load from Ray Tune + TorchTrainer.
 logging.getLogger("ray.train.v2._internal.execution.controller.placement_group_cleaner").setLevel(logging.ERROR)
-
-
-def _resolve_resume_checkpoint(training_output_dir: str, resume_flag: bool):
-    """Resolve the ``resume_from_checkpoint`` argument for ``Trainer.train()``.
-
-    Returns the path of the latest ``checkpoint-<step>`` directory under
-    ``training_output_dir`` when ``resume_flag`` is set and one exists, or
-    ``False`` otherwise (HF Trainer treats ``False`` as "train from scratch").
-
-    Pure / side-effect-free (only stats the filesystem) so it is unit-testable
-    without Ray or Torch. Kept in sync with the copy in
-    ``driver_multi_hf_fsdp``.
-    """
-    if not resume_flag:
-        return False
-    if not os.path.isdir(training_output_dir):
-        return False
-    candidates = []
-    for name in os.listdir(training_output_dir):
-        if not name.startswith("checkpoint-"):
-            continue
-        path = os.path.join(training_output_dir, name)
-        if not os.path.isdir(path):
-            continue
-        step_str = name[len("checkpoint-") :]
-        if step_str.isdigit():
-            candidates.append((int(step_str), path))
-    if not candidates:
-        return False
-    # Highest step number is the most recent checkpoint.
-    return max(candidates, key=lambda c: c[0])[1]
 
 
 # --- DeepSpeed config builder (same as driver_multi_hf_ds_1.py) ---
@@ -286,6 +261,7 @@ def _build_trl_config(
     loss_type: str = "sigmoid",
     kto_desirable_weight: float = 1.0,
     kto_undesirable_weight: float = 1.0,
+    router_aux_loss_coef: Optional[float] = None,
 ):
     """
     Build the TRL training config and return (config, trainer_class).
@@ -333,6 +309,11 @@ def _build_trl_config(
         load_best_model_at_end=load_best_model_at_end,
     )
 
+    # Granite MoE / 4.0-H classes cannot emit router logits in transformers 5.9, so
+    # TRL's aux-loss term is an int 0 that crashes its metric gather; see _moe.py.
+    if router_aux_loss_coef is not None:
+        common_kwargs["router_aux_loss_coef"] = router_aux_loss_coef
+
     if save_steps is not None:
         common_kwargs["save_steps"] = save_steps
     if eval_steps is not None:
@@ -347,7 +328,7 @@ def _build_trl_config(
     # in the DPO/KTO config builders below.
 
     if rl_algorithm == "dpo":
-        # trl 0.29: loss_type is list[str]
+        # trl >= 0.29: loss_type is list[str]
         lt = [loss_type] if isinstance(loss_type, str) else loss_type
         config = DPOConfig(
             **common_kwargs,
@@ -408,6 +389,7 @@ def _extract_metrics_from_log_history(log_history: list) -> Dict[str, Any]:
 
 def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     """Training function executed by each Ray Train worker (one per GPU)."""
+    disable_cudnn_sdpa()  # per process: NaN grads on left-padded batches, see device.py
     from autotune.logging_setup import bind_trial_id, setup_logging
 
     setup_logging()
@@ -427,6 +409,9 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     peft_kwargs = train_loop_config.get("peft_config")
     peft_type = train_loop_config.get("peft_type")
     is_qlora = training_config.get("tuning_algorithm") == "qlora"
+    # Optimizer steps per epoch (already divided by gradient_accumulation_steps
+    # by the driver -- see _steps.py). Every step-valued knob below counts in
+    # these, not in micro-batches.
     steps_per_epoch = train_loop_config.get("steps_per_epoch")
     trial_id = train_loop_config.get("trial_id")
     bind_trial_id(trial_id)
@@ -572,6 +557,7 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     # Build TRL config and trainer
     training_args, trainer_class = _build_trl_config(
         rl_algorithm=rl_algorithm,
+        router_aux_loss_coef=moe_router_aux_loss_coef(model),
         deepspeed_config=deepspeed_config,
         output_dir=training_output_dir,
         logging_dir=training_logs_dir,
@@ -615,6 +601,8 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     # Added unconditionally on every worker; on_log self-guards to rank 0 via
     # state.is_world_process_zero — independent of the per-epoch top-rung gate below.
     trainer.add_callback(TrainingMetricsCallback(trial_id=trial_id))
+    # Rank 0's best checkpoint is the one rotation keeps: make every rank load it.
+    trainer.add_callback(SyncBestCheckpointCallback())
 
     # RayTrainReportCallback reports metrics from the worker back to the
     # driver process via Ray Train. Without it, train_result.metrics is empty.
@@ -640,7 +628,7 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
     # Train. Resume from the last checkpoint only during final training
     # (never during HPO trials) and only when --resume_from_checkpoint is set.
     resume_flag = (not hpo_search) and training_config.get("resume_from_checkpoint", False)
-    resume_arg = _resolve_resume_checkpoint(training_output_dir, resume_flag)
+    resume_arg = resolve_resume_checkpoint(training_output_dir, resume_flag)
     if resume_flag:
         if resume_arg:
             logger.info(f"[AutoTune] Resuming final training from checkpoint: {resume_arg}")
@@ -650,12 +638,17 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
                 f"under {training_output_dir!r}; training from scratch."
             )
     logger.info(f"[AutoTune] Worker starting {rl_algorithm.upper()} training (trial {trial_id})...")
-    # When resuming a PEFT checkpoint, force the adapter load onto CPU to avoid
-    # the exclusive-process GPU-0 contention across ranks (see _resume.py).
-    if resume_arg:
-        with peft_adapter_load_on_cpu():
-            trainer.train(resume_from_checkpoint=resume_arg)
-    else:
+    # Force any PEFT adapter load inside train() onto CPU, avoiding the
+    # exclusive-process GPU-0 contention across ranks (see _resume.py).
+    #
+    # Wraps train() unconditionally: both _load_from_checkpoint() (resume, at the
+    # start) and _load_best_model() (load_best_model_at_end=True, at the end) call
+    # model.load_adapter() -> load_peft_weights() ->
+    # safe_load_file(device=infer_device()), which resolves to a bare "cuda"
+    # (cuda:0) on every rank. Final training sets load_best_model_at_end=True, so
+    # gating on resume_arg left that load unprotected.
+    # The context manager is a no-op for non-PEFT models.
+    with peft_adapter_load_on_cpu():
         trainer.train(resume_from_checkpoint=resume_arg)
 
     # Collect metrics in-memory
@@ -692,7 +685,6 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
                 # nothing and starts fresh; an interrupted run leaves them behind
                 # to resume from.
                 import glob as _glob
-                import shutil
 
                 ckpt_dirs = _glob.glob(os.path.join(training_output_dir, "checkpoint-*"))
                 for ckpt_dir in ckpt_dirs:
@@ -707,10 +699,12 @@ def train_loop_per_worker(train_loop_config: Dict[str, Any]):
                 if os.path.exists(outputs_dir):
                     shutil.rmtree(outputs_dir, ignore_errors=True)
                     logger.info(f"[AutoTune] Cleaned up training outputs dir: {outputs_dir}")
-                train_results_dir = os.path.join(output_dir, "train_results")
-                if os.path.exists(train_results_dir):
-                    shutil.rmtree(train_results_dir, ignore_errors=True)
-                    logger.info(f"[AutoTune] Cleaned up training results dir: {train_results_dir}")
+                # NOTE: do NOT rmtree output_dir/train_results here — Ray Train's
+                # TrainController periodically writes checkpoint_manager_snapshot.json
+                # into that directory, and is still alive until ray_trainer.fit()
+                # returns on the driver. Deleting it from the worker races with the
+                # controller and raises "No such file or directory". The driver
+                # cleans up train_results after fit() returns.
                 data_cache_dir = os.path.join(output_dir, "data_cache")
                 if os.path.exists(data_cache_dir):
                     shutil.rmtree(data_cache_dir, ignore_errors=True)
@@ -749,6 +743,8 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Unpack config sections (discard unused ones — pop for side effect)
     training_config = local_config.pop("training_config")
+
+    reject_sr_for_trl_driver(training_config)
     local_config.pop("training_rl_config")
     tuner_flags = local_config.pop("tuner_flags")
     local_config.pop("tune_config")
@@ -834,10 +830,20 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         column_mapping=column_mapping,
     )
 
-    # Calculate steps per epoch
     batch_size = train_kwargs["per_device_train_batch_size"]
+    grad_accum = local_config.get("gradient_accumulation_steps", 1)
     train_ds_size = len(train_ds)
-    steps_per_epoch = max(1, train_ds_size // (batch_size * num_workers))
+    # Optimizer steps per epoch -- the unit every step-valued TrainingArguments
+    # knob counts in (max_steps, logging_steps, save_steps/eval_steps). Dividing
+    # the per-rank micro-batch count by gradient_accumulation_steps is
+    # load-bearing; see _steps.py for what omitting it did to the schedule.
+    epoch_steps = resolve_epoch_steps(
+        train_ds_size=train_ds_size,
+        per_device_batch_size=batch_size,
+        gradient_accumulation_steps=grad_accum,
+        num_workers=num_workers,
+    )
+    steps_per_epoch = epoch_steps.optimizer_steps
 
     logger.info(
         f"[AutoTune] Dataset: {train_ds_size} train samples, {steps_per_epoch} steps/epoch, "
@@ -928,12 +934,19 @@ def train_driver_multi_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     # Always removed, independent of --keep_checkpoints (which governs only
     # final-training artifacts).
     if hpo_search:
-        import shutil
-
         hpo_trial_dir = os.path.join(output_dir, "outputs", f"{trial_id}")
         if os.path.isdir(hpo_trial_dir):
             shutil.rmtree(hpo_trial_dir, ignore_errors=True)
             logger.info(f"[AutoTune] Cleaned up HPO trial dir: {hpo_trial_dir}")
+
+    # Clean up Ray Train's run directory now that fit() has returned and the
+    # TrainController has shut down. Doing this from inside the worker races
+    # with the controller's periodic snapshot writes and raises ENOENT.
+    if not hpo_search and not training_config.get("keep_checkpoints", False):
+        train_results_dir = os.path.join(output_dir, "train_results")
+        if os.path.isdir(train_results_dir):
+            shutil.rmtree(train_results_dir, ignore_errors=True)
+            logger.info(f"[AutoTune] Cleaned up training results dir: {train_results_dir}")
 
     # Return trial result
     result = {

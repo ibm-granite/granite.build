@@ -141,19 +141,31 @@ Or with Compose: `docker compose --profile cuda up --build`.
 or `cuda` — and the value names deliberately match fm-tune's own
 `FMTUNE_DEVICE=cuda|mps|cpu` runtime override, which forces a device when
 autodetection picks the wrong one. `--build-arg CUDA_BASE=...` changes the CUDA
-version, but keep an Ubuntu whose system python is 3.12: the pinned flash-attn
-wheel is `cp312`-only. It is also the escape hatch if Docker Hub rate-limits the
+base, but it must stay a CUDA 13 `-devel` tag on an Ubuntu whose system python is
+3.12: torch 2.11 is built for CUDA 13, and the prebuilt kernel wheels (below) were
+built against it. It is also the escape hatch if Docker Hub rate-limits the
 base-image pull (`toomanyrequests`) — NVIDIA's own registry serves the same tags:
 
 ```bash
 docker build -t autotunex:cuda --build-arg DEVICE=cuda \
-  --build-arg CUDA_BASE=nvcr.io/nvidia/cuda:12.8.0-devel-ubuntu24.04 .
+  --build-arg CUDA_BASE=nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu24.04 .
 ```
 
-> **Expect a large image** — a `-devel` CUDA base (needed for deepspeed's runtime
-> JIT compilation) plus verl/vLLM is several times the size of the CPU image. The
-> CPU image itself is unaffected: a plain `docker build .` still produces it, with
-> the identical package set it has today.
+> **Expect a large image and a long build** — a `-devel` CUDA base (needed for
+> deepspeed's runtime JIT compilation, and for compiling the kernels when the
+> prebuilt wheels are turned off) plus verl/vLLM
+> is several times the size of the CPU image. Running the result needs an NVIDIA
+> driver that supports CUDA 13 (>= 580). The CPU image itself is unaffected: a plain
+> `docker build .` still produces it, with the identical package set it has today.
+
+> **Prebuilt kernel wheels.** flash-attn, mamba-ssm and causal-conv1d have no
+> official wheel for torch 2.11 + CUDA 13, so the CUDA image installs prebuilt ones
+> from the [`gpu-kernel-wheels`](https://github.com/priyanshu891/gpu-kernel-wheels)
+> release `cu130-torch2.11-cp312`. They are pinned by SHA-256 in
+> `docker/cuda-kernel-wheels.txt`, and pip refuses a file whose hash differs. To
+> compile them from source instead (~15 minutes on 32 cores; lower `MAX_JOBS` on a
+> small builder), build with `--build-arg CUDA_KERNEL_WHEELS=`. To use other wheels,
+> change the URLs and hashes in that file.
 
 > **Training execution.** The default (CPU) image installs the lean
 > `fm-tune[core]` training stack — `torch` plus `ray[tune,default]`,

@@ -371,3 +371,27 @@ def configure_runtime_env(accel: "Accelerator") -> None:
                 "[AutoTune] PYTORCH_ENABLE_MPS_FALLBACK=1: unimplemented MPS ops run on CPU "
                 "(slower). Set it to 0 to locate op gaps."
             )
+
+
+def disable_cudnn_sdpa() -> None:
+    """Turn off PyTorch's cuDNN SDPA backend in this process. Idempotent.
+
+    torch 2.11's cuDNN SDPA backward returns NaN gradients for a fully masked
+    query row, which every left-padded batch has (``tokenize_batch_arrays``
+    left-pads, and the dynamic-padding collator keeps the rows right-aligned).
+    On H100 ``attn_implementation="sdpa"`` dispatches there by default, so the
+    first step logs a finite loss with ``grad_norm=nan`` and every later step is
+    nan -- seen on plain LoRA and on Shadow Residual (whose configs default to
+    sdpa). With the backend off, SDPA falls back to its flash / memory-efficient
+    kernels, which handle the masked rows. Forward-only paths were never
+    affected, and neither are flash_attention_2 / eager.
+
+    Called at the top of each training worker (every process that runs a
+    backward pass), since the flag is per process and Ray workers are separate
+    processes.
+    """
+    import torch
+
+    if torch.cuda.is_available() and torch.backends.cuda.cudnn_sdp_enabled():
+        torch.backends.cuda.enable_cudnn_sdp(False)
+        logger.info("[AutoTune] Disabled the cuDNN SDPA backend (NaN gradients on fully masked rows).")

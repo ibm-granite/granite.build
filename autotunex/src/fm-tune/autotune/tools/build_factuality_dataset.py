@@ -31,6 +31,10 @@ Usage:
         --task detection \
         --model ibm-granite/granite-4.1-3b
 
+Either invocation form works — as a module (above) or as a plain script
+(``python autotune/tools/build_factuality_dataset.py ...``); the tools use absolute
+imports so direct execution needs no ``PYTHONPATH``.
+
 The output filename is derived from the input file, the task, and the format:
 ``eli5_raw_train.json`` with ``--task detection`` yields
 ``eli5_raw_train_detection_formatted.jsonl`` and
@@ -50,12 +54,19 @@ and adapts (see ``detect_document_style``):
   XML block in the system message. Keys appear *verbatim* in the prompt, so a
   stray ``doc_id`` would leak as a meaningless field; only ``text`` is emitted.
 - **Granite 4.2** dropped ``documents`` support entirely (and moved to ChatML).
-  Passing ``documents=`` there is silently ignored.
+  Passing ``documents=`` there is silently ignored, so the passages go in as a
+  ``tool`` message, which 4.2 renders as a ``<tool_response>[...]</tool_response>``
+  block — how it natively represents retrieved context. That block is one JSON
+  *array*, so all passages are merged into a **single** document (blank-line
+  separated) rather than N array entries, keeping the rendered context equivalent
+  to 4.1's single ``<documents>`` block. The message is placed
+  *before the assistant response being judged*, since the documents are that
+  response's grounding while the trailing user turn is the judging instruction.
 
 ``apply_chat_template`` never raises on an unsupported ``documents=`` kwarg, so
 a template that ignores it would otherwise yield training data whose context is
-missing from the prompt — teaching the judge to guess. For those templates this
-tool inlines the documents into a leading system message instead (portable: the
+missing from the prompt — teaching the judge to guess. For any other such template
+this tool inlines the documents into a leading system message instead (portable: the
 inlined text also survives 3.x/4.x templates), and refuses to emit anything if
 inlining is disabled.
 
@@ -74,39 +85,47 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 # Re-exported under the historical private names so existing callers and tests
-# keep working now that the capability helpers live in _chat_utils.
-from ._chat_utils import (  # noqa: F401
+# keep working now that the capability helpers live in chat_utils.
+from autotune.tools.chat_utils import (  # noqa: F401
     CRITERIA,
     CRITERIA_ID,
     DOC_STYLE_GRANITE3,
     DOC_STYLE_GRANITE4,
     DOC_STYLE_INLINE,
+    DOC_STYLE_TOOL,
     DOC_STYLES,
     IdentityTokenizer,
+    attach_documents,
     detect_document_style,
     guardian_text,
     render_chat_input,
     template_supports_kwarg,
+    uses_json_schema,
 )
-from ._chat_utils import build_documents as _build_documents  # noqa: F401
-from ._chat_utils import inline_documents_message as _inline_documents_message  # noqa: F401
-from ._chat_utils import output_name_for as _output_name_for
-from ._chat_utils import resolve_formats as _resolve_formats  # noqa: F401
-from ._chat_utils import split_documents as _split_documents  # noqa: F401
+from autotune.tools.chat_utils import build_documents as _build_documents  # noqa: F401
+from autotune.tools.chat_utils import inline_documents_message as _inline_documents_message  # noqa: F401
+from autotune.tools.chat_utils import output_name_for as _output_name_for
+from autotune.tools.chat_utils import resolve_formats as _resolve_formats  # noqa: F401
+from autotune.tools.chat_utils import split_documents as _split_documents  # noqa: F401
 
 
-def _guardian_block(is_detection: bool, for_prompt: bool) -> str:
+def _guardian_block(is_detection: bool, for_prompt: bool, json_schema: bool = False) -> str:
     """Build the ``<guardian>`` user-turn content.
 
     The preamble, criteria (from ``CRITERIA[CRITERIA_ID]``), and scoring schema
-    are assembled by ``_chat_utils.guardian_text`` so the training and eval
+    are assembled by ``chat_utils.guardian_text`` so the training and eval
     prompts can never drift. ``for_prompt`` appends the JSON dict schema hint
     that the prompt-style variants use.
+
+    ``json_schema`` (Granite 4.2) swaps in a schema that asks for the verdict as a
+    JSON dict outright, instead of the "return 'yes'/'no'" phrasing. It already
+    states the format, so the ``for_prompt`` hint is suppressed there.
     """
     return guardian_text(
         CRITERIA_ID,
         variant="detection" if is_detection else "correction",
         for_prompt=for_prompt,
+        json_schema=json_schema,
     )
 
 
@@ -169,16 +188,26 @@ def _build_messages(
     is_detection: bool,
     for_prompt: bool,
     documents: Optional[List[Dict[str, str]]] = None,
+    doc_style: str = DOC_STYLE_INLINE,
 ) -> List[Dict[str, str]]:
-    """Build the 3-turn judge conversation, optionally prefixed with inlined docs."""
+    """Build the 3-turn judge conversation, with message-borne docs attached.
+
+    ``documents`` are the message-borne passages from :func:`split_documents` (empty
+    for the native ``documents=`` styles). :func:`attach_documents` decides the shape
+    and position from ``doc_style``: a ``tool`` message before the response being
+    judged on Granite 4.2, a leading system message on templates that ignore the kwarg.
+    """
     messages = [
         {"role": "user", "content": query},
         {"role": "assistant", "content": response},
-        {"role": "user", "content": _guardian_block(is_detection, for_prompt)},
+        {
+            "role": "user",
+            "content": _guardian_block(is_detection, for_prompt, uses_json_schema(doc_style)),
+        },
     ]
-    if documents:
-        messages.insert(0, _inline_documents_message(documents))
-    return messages
+    # The documents ground the assistant response under judgement, so they precede
+    # it; the trailing user turn is the judging instruction.
+    return attach_documents(messages, documents or [], doc_style, before_first_assistant=True)
 
 
 def _record_detection(
@@ -198,8 +227,15 @@ def _record_detection(
     if not contexts:
         # No grounding context -> the judge would have to guess. Drop the record.
         return None
-    inline_docs, template_docs = _split_documents(contexts, doc_style)
-    messages = _build_messages(query, response, is_detection=True, for_prompt=for_prompt, documents=inline_docs)
+    message_docs, template_docs = _split_documents(contexts, doc_style)
+    messages = _build_messages(
+        query,
+        response,
+        is_detection=True,
+        for_prompt=for_prompt,
+        documents=message_docs,
+        doc_style=doc_style,
+    )
     output_seq = json.dumps({"score": label.lower()})
 
     if fmt == "formatted":
@@ -233,11 +269,18 @@ def _record_correction(
     if not contexts:
         # No grounding context -> the judge would have to guess. Drop the record.
         return None
-    inline_docs, template_docs = _split_documents(contexts, doc_style)
-    messages = _build_messages(query, response, is_detection=False, for_prompt=for_prompt, documents=inline_docs)
+    message_docs, template_docs = _split_documents(contexts, doc_style)
+    messages = _build_messages(
+        query,
+        response,
+        is_detection=False,
+        for_prompt=for_prompt,
+        documents=message_docs,
+        doc_style=doc_style,
+    )
     output_seq = json.dumps({"correction": correction})
 
-    # Length gate the target — mirrors the scratchpad behavior.
+    # Length gate the target: drop the record when the target alone reaches max_length.
     num_tokens = len(tokenizer(output_seq)["input_ids"])
     if num_tokens >= max_length:
         return None
@@ -272,15 +315,18 @@ def convert_split(
     max_correction_length: int = 1024,
     doc_style: str = DOC_STYLE_GRANITE4,
     thinking: bool = False,
-    include_meta: bool = False,
+    include_meta: bool = True,
     context_field: Optional[str] = None,
 ) -> None:
     """Convert one raw JSON file to the target JSONL.
 
     Records with no grounding context are dropped: a factuality judge trained on
     a context-free prompt can only guess. ``include_meta`` echoes the original
-    ``query``/``response``/``label`` onto each correction record so eval can
-    recover the originals — useful for a held-out file, off by default.
+    ``query``/``response``/``label`` onto each **correction** record so eval can
+    recover the originals and score the generated correction; on by default, since
+    a correction file is usually consumed that way. Pass ``include_meta=False``
+    (``--no-include-meta``) for a minimal ``input``/``output`` file. Detection
+    records never carry meta — the label there *is* the target.
     """
     with open(input_path, "r", encoding="utf-8") as f:
         records = json.load(f)
@@ -385,13 +431,20 @@ def resolve_document_style(
         doc_style = requested
         print(f"[doc-style] using '{doc_style}' (explicit)")
 
-    if doc_style == DOC_STYLE_INLINE:
+    if doc_style == DOC_STYLE_TOOL:
+        # Not a fallback: a tool response is how Granite 4.2 natively represents RAG
+        # context, so --no-inline-documents deliberately does not gate it.
+        print(
+            "[doc-style] documents will be passed as a tool message "
+            "(rendered as <tool_response>), before the response being judged"
+        )
+    elif doc_style == DOC_STYLE_INLINE:
         if not inline_documents:
             raise SystemExit(
-                "The chat template does not consume `documents=` (e.g. Granite 4.2), so the "
-                "context would be silently dropped from every prompt, and --no-inline-documents "
-                "disables the fallback. Re-run without --no-inline-documents, or choose a model "
-                "whose template supports documents."
+                "The chat template does not consume `documents=`, so the context would be "
+                "silently dropped from every prompt, and --no-inline-documents disables the "
+                "fallback. Re-run without --no-inline-documents, or choose a model whose "
+                "template supports documents."
             )
         print("[doc-style] documents will be inlined into a leading system message")
     return doc_style
@@ -430,13 +483,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["auto", *DOC_STYLES],
         help="How to pass RAG documents. 'auto' (default) inspects the chat template: "
         "granite3 (doc_id+text), granite4 (text only, verbatim keys), "
+        "tool (Granite 4.2/ChatML — a tool message rendered as <tool_response>), "
         "inline (template ignores documents= — inlined into a system message).",
     )
     p.add_argument(
         "--no-inline-documents",
         dest="inline_documents",
         action="store_false",
-        help="Fail instead of inlining documents when the chat template ignores `documents=`.",
+        help="Fail instead of inlining documents into a system message when the chat "
+        "template ignores `documents=`. Does not affect the 'tool' style, which is "
+        "Granite 4.2's native RAG representation rather than a fallback.",
     )
     p.add_argument(
         "--thinking",
@@ -464,11 +520,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
         f"{' then '.join(CONTEXT_LIST_FIELDS)}. Ignored for records with c_a* keys.",
     )
     p.add_argument(
-        "--include-meta",
-        action="store_true",
-        help="Echo the original query/response/label onto each correction record so eval "
-        "can recover the originals (use for a held-out file).",
+        "--no-include-meta",
+        dest="include_meta",
+        action="store_false",
+        help="Omit the original query/response/label from correction records, writing a "
+        "minimal input/output file. By default they are echoed so eval can recover the "
+        "originals and score the generated correction.",
     )
+    p.add_argument(
+        "--include-meta",
+        dest="include_meta",
+        action="store_true",
+        help=argparse.SUPPRESS,  # now the default; kept so existing invocations still run.
+    )
+    p.set_defaults(include_meta=True)
     return p
 
 

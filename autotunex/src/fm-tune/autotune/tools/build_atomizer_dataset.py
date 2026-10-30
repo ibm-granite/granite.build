@@ -23,7 +23,7 @@ The input is a JSON file holding a top-level list of records, each with:
 
 Each record becomes one SFT example whose prompt instructs the model to
 decompose the response into atomic units and whose target is the atoms, one per
-line. The prompt itself comes from ``autotune.tools._chat_utils`` so the training
+line. The prompt itself comes from ``autotune.tools.chat_utils`` so the training
 and eval prompts can never drift. Two output shapes (matching
 ``build_factuality_dataset.py``):
 
@@ -55,7 +55,7 @@ run without a model again).
 Granite 4.2 moved to ChatML and defaults to ``enable_thinking=True``, which would
 end the prompt inside an open ``<think>`` block and train the atoms as reasoning
 content. Thinking is therefore disabled unless ``--thinking`` is passed; see
-``autotune/tools/_chat_utils.py``.
+``autotune/tools/chat_utils.py``.
 
 For ``--format formatted`` (and only then, since it is the only mode with a
 real tokenizer) the tool also prints token-length stats — count/min/max/mean
@@ -71,7 +71,7 @@ import os
 import sys
 from typing import Any, Dict, List, Optional
 
-from ._chat_utils import (
+from autotune.tools.chat_utils import (
     IdentityTokenizer,
     get_atomizer_messages,
     load_tokenizer,

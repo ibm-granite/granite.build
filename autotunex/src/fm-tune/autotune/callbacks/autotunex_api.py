@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_RETRIES = 3
 _DEFAULT_BACKOFF = 1.0  # seconds
+# Per-request timeout. Without one, a bridge that accepts the connection but never
+# answers hangs fm-tune's startup indefinitely at bootstrap().
+_DEFAULT_TIMEOUT = 30  # seconds
 
 # Fallback identity used when the bridge cannot resolve the caller's email. The
 # default is an RFC 2606 reserved placeholder and will NOT authenticate against a
@@ -73,8 +76,9 @@ class AutoTuneXAPI:
         retries: int = _DEFAULT_RETRIES,
         **kwargs,
     ) -> requests.Response:
-        """Issue an HTTP request with retry on 5xx / connection errors."""
+        """Issue an HTTP request with retry on 5xx / connection errors / timeouts."""
         url = f"{self.base_url}{path}"
+        kwargs.setdefault("timeout", _DEFAULT_TIMEOUT)
         backoff = _DEFAULT_BACKOFF
         last_exc: Optional[Exception] = None
 
@@ -90,12 +94,13 @@ class AutoTuneXAPI:
                     retries,
                     resp.status_code,
                 )
-            except requests.ConnectionError as exc:
+            except (requests.ConnectionError, requests.Timeout) as exc:
                 last_exc = exc
                 logger.warning(
-                    "Attempt %d/%d: connection error, retrying…",
+                    "Attempt %d/%d: %s, retrying…",
                     attempt,
                     retries,
+                    "timeout" if isinstance(exc, requests.Timeout) else "connection error",
                 )
 
             if attempt < retries:

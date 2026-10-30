@@ -24,7 +24,7 @@ shrink accordingly, and activations dominate for long sequences.
 
 ## FSDP Strategy Ladder
 
-fm-tune's `--fsdp_strategy` accepts five values: `auto`, `no_shard`,
+fm-tune's `fsdp_strategy` key (in the YAML `training_config`) accepts five values: `auto`, `no_shard`,
 `shard_grad_op`, `full_shard`, `hybrid_shard`. With 8 GPUs in a single node,
 the picker walks the first three from least to most sharding and selects the
 first one that fits:
@@ -36,7 +36,7 @@ first one that fits:
 | `full_shard`    | `÷N`     | `÷N`      | `÷N`      | "ZeRO-3 equivalent". Weights are gathered just-in-time per layer. Use when even the weights don't fit per GPU. Adds all-gather overhead each forward/backward. |
 | `hybrid_shard`  | `÷N_local` | `÷N_local` | `÷N_local` | Multi-node — shards within a node, replicates across nodes, so all-gathers stay on the fast intra-node NVLink fabric. Not needed for the single-node 8× A100 target, but the practical choice for the 120B/230B models below. |
 
-`--fsdp_strategy auto` picks the first option that fits given a 1.5× overhead
+`fsdp_strategy: auto` (a `training_config` key, not a CLI flag) picks the first option that fits given a 1.5× overhead
 budget against 80 GB capacity. The recommendations below are the same
 selections, written out so you can plan without trial-running.
 
@@ -139,7 +139,7 @@ node for any training mode except — barely — 120B LoRA. They are the reason 
 > estimator: it derives params from `hidden_size`/`num_layers`/`intermediate_size`
 > and has no notion of experts, so for an MoE model it will badly *undercount*
 > total params and pick too optimistic a strategy. **Do not trust
-> `--fsdp_strategy auto` for these models** — set the strategy and GPU count
+> `fsdp_strategy: auto` for these models** — set the strategy and GPU count
 > explicitly per the tables below.
 
 All numbers below come from the same `weights + optimizer + gradients +
@@ -221,30 +221,41 @@ The `ray_data` data backend (FSDP and DeepSpeed multi-GPU drivers) tokenizes the
 dataset with a distributed Ray Data pipeline so the work spreads across every
 node's CPUs. Two conditions must both hold for it to actually fan out:
 
-1. **Enough blocks.** Ray Data runs at most one stateless `map_batches` task per
-   input *block*. A single source file (jsonl/json/parquet) usually reads as one
-   block, so the driver repartitions train/eval into ≈`concurrency` blocks
+1. **Enough blocks.** Ray Data hands each input *block* to one tokenizer actor.
+   A single source file (jsonl/json/parquet) usually reads as one block, so the
+   driver repartitions train/eval into ≈`concurrency` blocks
    (`repartition(n, shuffle=False)` — a cheap split, no full shuffle) before
    tokenizing. Block count is clamped to the row count so small eval sets aren't
    split into empty blocks.
-2. **Enough free CPUs.** `concurrency` (and `num_cpus` per task) cap how many of
-   those block-tasks run at once.
+2. **Enough free CPUs.** `concurrency` (and `num_cpus` per actor) size the
+   tokenizer actor pool.
 
-**Auto sizing.** By default `concurrency = floor(total_cluster_cpus) − num_workers`
-— all CPUs except the one each GPU training worker reserves. On an 8-node cluster
-with 32 CPUs/node (256 total) running 8 GPU workers, that's 248 parallel tokenize
-tasks. `num_cpus` defaults to 1.0 (one CPU per task).
+The raw records are read, subsampled (`hpo_dataset_percentage`), shuffled
+(seeded by `seed`) and repartitioned, then **materialized before tokenization**,
+so the tokenizer pool is the only stage that needs CPUs. That ordering matters
+because the pool is sized to every free CPU: with the shuffle still running
+upstream, the pool held every CPU and the pipeline deadlocked. The tokenized
+blocks store only `input_ids` plus per-row `pad_len`/`target_len` (int32); each
+GPU worker rebuilds `attention_mask` and `labels` itself, so the object store
+holds ≈ rows × `max_length` × 4 bytes instead of × 12.
+
+**Auto sizing.** By default `concurrency = floor(available_cpus / num_cpus)`,
+counted when tokenization starts. It finishes, and its actors are released,
+before the trial's GPU workers are scheduled, so it doesn't need to reserve CPUs
+for them. On an 8-node cluster with 32 CPUs/node (256 total), a single trial
+tokenizes on ~255 actors (the trial itself holds one CPU). `num_cpus` defaults to
+1.0 (one CPU per actor).
 
 **Overrides.** Set `--ray_data_concurrency <int>` and `--ray_data_num_cpus <float>`
 on the CLI (or the matching YAML training-config keys). To oversubscribe CPUs, use
 `--ray_data_num_cpus 0.5` (two tasks per physical CPU).
 
-**Concurrent HPO caveat.** During an HPO sweep, each trial computes its auto
-`concurrency` from the *full* cluster CPU count, unaware of sibling trials. With
-several trials tokenizing at once this oversubscribes CPUs. `max_concurrent_trials`
-(auto-derived from `total_gpus / gpus_per_trial`) bounds the trial count, but for
-large sweeps set `--ray_data_concurrency` explicitly to roughly
-`(total_cpus − total_gpu_workers) / max_concurrent_trials`.
+**Concurrent HPO.** Because sizing counts *available* CPUs, a trial doesn't count
+CPUs that sibling trials' GPU workers already hold. Two trials that start tokenizing
+at the same moment can still both claim the same free CPUs. That doesn't deadlock,
+since the actors are provisioned asynchronously and the pool just grows as CPUs free
+up, but for wide sweeps you can set `--ray_data_concurrency` to roughly
+`total_cpus / max_concurrent_trials` for predictable startup.
 
 **Recommended starting point:** leave it on auto for single final-training runs;
 set it explicitly for wide HPO sweeps.

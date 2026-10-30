@@ -14,6 +14,7 @@ import jwt
 import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
+from sqlalchemy.exc import IntegrityError
 from starlette.middleware.cors import CORSMiddleware
 
 # Local
@@ -506,41 +507,67 @@ async def bootstrap(
             )
     user_id = db_user["id"]
 
-    # 1. job_id-first short-circuit (UX path)
-    existing_job = job.get_by_id(request.job_id)
-    if existing_job is not None:
+    def _existing(row) -> dict:
         return {
-            "config_id": str(existing_job["config_id"]),
-            "dataset_id": str(existing_job["dataset_id"]),
-            "job_id": str(existing_job["id"]),
+            "config_id": str(row["config_id"]),
+            "dataset_id": str(row["dataset_id"]),
+            "job_id": str(row["id"]),
             "created": False,
         }
 
-    # 2. fresh (template path): find-or-create everything
-    config_id = configuration.find_or_create(
-        name=request.config.name,
-        tuner_type=request.config.tuner_type,
-        config_data=request.config.config_data,
-        user_id=user_id,
-        rl_tuner_type=request.config.rl_tuner_type,
-    )
-    dataset_id = dataset.find_or_create(
-        name=request.dataset.name,
-        artifact_uri=request.dataset.artifact_uri,
-        user_id=user_id,
-    )
-    tuning_cfg = base_models.TuningConfig(
-        id=request.job_id,
-        user_id=user_id,
-        config_id=config_id,
-        dataset_id=dataset_id,
-        model=request.job.model,
-        experiment_name=request.job.experiment_name,
-        tuning_type=request.job.tuning_type,
-        seed=request.job.seed,
-        build_id=request.build_id,
-    )
-    job_id = job.create(tuning_cfg)
+    # 1. job_id-first short-circuit (UX path)
+    existing_job = job.get_by_id(request.job_id)
+    if existing_job is not None:
+        return _existing(existing_job)
+
+    def _find_or_create_rows() -> tuple[str, str, str]:
+        config_id = configuration.find_or_create(
+            name=request.config.name,
+            tuner_type=request.config.tuner_type,
+            config_data=request.config.config_data,
+            user_id=user_id,
+            rl_tuner_type=request.config.rl_tuner_type,
+        )
+        dataset_id = dataset.find_or_create(
+            name=request.dataset.name,
+            artifact_uri=request.dataset.artifact_uri,
+            user_id=user_id,
+        )
+        tuning_cfg = base_models.TuningConfig(
+            id=request.job_id,
+            user_id=user_id,
+            config_id=config_id,
+            dataset_id=dataset_id,
+            model=request.job.model,
+            experiment_name=request.job.experiment_name,
+            tuning_type=request.job.tuning_type,
+            seed=request.job.seed,
+            build_id=request.build_id,
+        )
+        return config_id, dataset_id, job.create(tuning_cfg)
+
+    # 2. fresh (template path): find-or-create everything. The client retries a
+    # timed-out bootstrap while the first attempt may still be running, so the
+    # two can race past step 1. The unique keys (job id, (user, name) for
+    # configs and datasets) stop a second row. When this attempt loses, the
+    # winner's job may already exist: return it. Otherwise the winner committed
+    # only the config or dataset this attempt's lookup missed, so one more pass
+    # finds those rows instead of inserting them again.
+    try:
+        config_id, dataset_id, job_id = _find_or_create_rows()
+    except (HTTPException, IntegrityError):
+        raced_job = job.get_by_id(request.job_id)
+        if raced_job is not None:
+            logger.info("bootstrap: job %s registered by a concurrent attempt", request.job_id)
+            return _existing(raced_job)
+        logger.info("bootstrap: job %s lost a find-or-create race, retrying once", request.job_id)
+        try:
+            config_id, dataset_id, job_id = _find_or_create_rows()
+        except (HTTPException, IntegrityError):
+            raced_job = job.get_by_id(request.job_id)
+            if raced_job is None:
+                raise
+            return _existing(raced_job)
     # Link the Granite Build task (template path: build_id == job_id). Mirrors
     # register_job; the UX path returns above and manages gb_tasks via gb_runner.
     if request.build_id:
