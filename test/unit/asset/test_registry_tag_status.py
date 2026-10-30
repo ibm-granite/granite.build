@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""steps/registry-tag-status.sh: does an image tag exist on its registry?
+"""steps/scripts/registry-tag-status.sh: does an image tag exist on its registry?
 
 It prints `present`, `absent` or `unknown` (exit 0, 1, 2). `publish-image` refuses
 to overwrite a `present` tag, and `publish-step` refuses an image that is not
@@ -28,7 +28,7 @@ import subprocess
 import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
-SCRIPT = REPO_ROOT / "steps" / "registry-tag-status.sh"
+SCRIPT = REPO_ROOT / "steps" / "scripts" / "registry-tag-status.sh"
 REF = "quay.io/org/steps/train/foo/skypilot:v1"
 _MANIFEST_URL = "https://quay.io/v2/org/steps/train/foo/skypilot/manifests/v1"
 
@@ -67,6 +67,9 @@ case "$url" in
       [ -n "$head" ] && printf 'HTTP/2 401\\r\\nwww-authenticate: Bearer realm="https://quay.io/v2/auth",service="quay.io",scope="repository:org/steps/train/foo/skypilot:pull"\\r\\n\\r\\n' > "$head"
       printf '401'
     else
+      if [ -n "${FAKE_MANIFEST_BODY:-}" ] && [ -n "$out" ] && [ "$out" != /dev/null ]; then
+        printf '%s' "$FAKE_MANIFEST_BODY" > "$out"
+      fi
       printf '%s' "${FAKE_MANIFEST_CODE:-200}"
     fi ;;
 esac
@@ -100,7 +103,7 @@ def _add_skopeo(fakes: pathlib.Path) -> None:
 
 def _status(fakes: pathlib.Path, *args: str, **env: str):
     """Run the script; ``args`` are its arguments (default: REF)."""
-    if not args or args == ("--repository",):
+    if not args or args in (("--repository",), ("--config-digest",)):
         args = (*args, REF)
     e = {"PATH": str(fakes), "FAKE_LOG": str(fakes), "HOME": str(fakes)}
     e.update(env)
@@ -230,6 +233,40 @@ class TestRepository:
     def test_skopeo_is_not_used_for_repositories(self, fakes):
         _add_skopeo(fakes)
         _status(fakes, "--repository", FAKE_TAGS_CODE="200")
+        assert _calls(fakes, "skopeo") == []
+
+
+_OCI_MANIFEST = (
+    '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json",'
+    '"config":{"mediaType":"application/vnd.oci.image.config.v1+json",'
+    '"digest":"sha256:7f9e94997de914cb","size":1234},'
+    '"layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip",'
+    '"digest":"sha256:aaaa","size":1}]}'
+)
+_OCI_INDEX = (
+    '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json",'
+    '"manifests":[{"digest":"sha256:bbbb","platform":{"architecture":"amd64"}}]}'
+)
+
+
+class TestConfigDigest:
+    """--config-digest: the image's config digest (equal to its local image ID)."""
+
+    def test_prints_the_config_digest(self, fakes):
+        out, rc, _ = _status(fakes, "--config-digest", FAKE_MANIFEST_BODY=_OCI_MANIFEST)
+        assert (out, rc) == ("sha256:7f9e94997de914cb", 0)
+
+    def test_missing_tag_is_absent(self, fakes):
+        out, rc, _ = _status(fakes, "--config-digest", FAKE_MANIFEST_CODE="404")
+        assert (out, rc) == ("absent", 1)
+
+    def test_an_index_has_no_single_config_and_is_unknown(self, fakes):
+        out, rc, _ = _status(fakes, "--config-digest", FAKE_MANIFEST_BODY=_OCI_INDEX)
+        assert (out, rc) == ("unknown", 2)
+
+    def test_skopeo_is_not_used(self, fakes):
+        _add_skopeo(fakes)
+        _status(fakes, "--config-digest", FAKE_MANIFEST_BODY=_OCI_MANIFEST)
         assert _calls(fakes, "skopeo") == []
 
 

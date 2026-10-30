@@ -20,9 +20,9 @@
 #                 already-committed image ref, so it is immune to the image-tag
 #                 SHA and flags only genuine content drift); exit 1 on drift
 #   all           end-to-end: image + publish-image + space (image steps),
-#                 or just space (non-image steps)
+#                 or just space (non-custom-image steps)
 #   test          render the Space (via `space`) and build the image locally
-#                 (via `image`; no-op/no publish for non-image steps), then run
+#                 (via `image`; no-op/no publish for non-custom-image steps), then run
 #                 the step's Python tests in $(TEST_DIR)/ (adjacent to src/,
 #                 organised in per-cluster subdirs; not bundled)
 #   test-setup    OPTIONAL per-step hook: stand up any infrastructure the step's
@@ -139,16 +139,24 @@ REGISTRY_LOGIN = $(if $(filter podman,$(notdir $(firstword $(DOCKER)))),$(REGIST
 # (exactly `true`) to replace the tag on purpose.
 PUBLISH_OVERWRITE ?= false
 
+# `make test` for a custom-image step refuses to run when IMAGE_REF already exists on
+# the registry as a DIFFERENT image than the one it just built: SkyPilot build tests
+# (aws, SLURM, k8s) pull the published image, not the local build, so with a pinned
+# IMAGE_VERSION a Dockerfile edit would pass against the old image. Set
+# TEST_PUBLISHED=true (exactly `true`) to test the published image on purpose.
+TEST_PUBLISHED ?= false
+
 # quay.io only: with QUAY_API_TOKEN (an OAuth token with the "Create Repositories"
 # scope) in the ENVIRONMENT, publish-image creates a repository that does not exist
 # yet as PUBLIC through quay's API before the first push. A repository created by
-# a push is private, and SkyPilot pulls the image anonymously. Without the token a
-# new repository must be made public once by hand.
+# a push is private, and SkyPilot pulls the image anonymously. Without the token,
+# publish-image refuses a new repository rather than create a private one; create
+# it as Public in the quay UI first, then publish.
 QUAY_API ?= https://quay.io/api/v1
 
 # IMAGE_REF is the fully qualified image reference (e.g. quay.io/org/img:tag)
 # that `make space` substitutes into the template's ${IMAGE_REF} token. The
-# template wraps it as SkyPilot `docker:${IMAGE_REF}`. It is empty for non-image
+# template wraps it as SkyPilot `docker:${IMAGE_REF}`. It is empty for non-custom-image
 # steps, whose templates carry no ${IMAGE_REF} token and select their image via
 # runtime Jinja instead. Both the image/publish-image recipes and the render use
 # this same value, so there is one source of truth.
@@ -209,7 +217,7 @@ COMMON_MK_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
 README        := $(COMMON_MK_DIR)README.md
 # Prints present / absent / unknown for an image ref (exit 0 / 1 / 2); used by
 # publish-image's overwrite guard and publish-step's image check.
-TAG_STATUS    := sh $(COMMON_MK_DIR)registry-tag-status.sh
+TAG_STATUS    := sh $(COMMON_MK_DIR)scripts/registry-tag-status.sh
 
 # Relative file:// base_uri written into the generated space.yaml so space://
 # URIs (environments, monitors, other steps) resolve into the shared assets
@@ -306,7 +314,7 @@ REMOTE_SPACE_URI_RE := $(SPACE_URI_VALUE_RE)([a-zA-Z][a-zA-Z0-9+.-]*://|[a-zA-Z0
 # the registry — a step.yaml/build test referencing an unpublished image is broken
 # (the Mode-2 skypilot test's remote node cannot pull it). Set PUBLISH_REQUIRE_IMAGE=false
 # to bypass (offline publish, or the check-published re-render below). No effect on
-# non-image steps, whose IMAGE_REF is empty (see require-image-published).
+# non-custom-image steps, whose IMAGE_REF is empty (see require-image-published).
 PUBLISH_REQUIRE_IMAGE ?= true
 
 # STEP_PUBLISHABLE gates `publish-step` (see the includer variables above).
@@ -369,8 +377,8 @@ endif
 #
 # On quay.io it first makes sure the step's repository exists and is public
 # (see QUAY_API_TOKEN above): a repository the registry reports absent is
-# created public through quay's API when the token is set, and named in a note
-# otherwise. The token reaches curl as config on stdin, never on its argv.
+# created public through quay's API when the token is set, and refused (before
+# any push) otherwise. The token reaches curl as config on stdin, never on its argv.
 publish-image:
 ifeq ($(STEP_USES_IMAGE),true)
 	$(call require-image-tag)
@@ -386,7 +394,8 @@ ifeq ($(STEP_USES_IMAGE),true)
 			present) ;; \
 			absent) \
 				if [ -z "$${QUAY_API_TOKEN:-}" ]; then \
-					echo "[$(STEP_NAME)] NOTE: quay.io repository $$ns/$$repo is new; the push creates it PRIVATE. Make it public once (repository Settings), or set QUAY_API_TOKEN to have publish-image create it public."; \
+					echo "[$(STEP_NAME)] ERROR: quay.io repository $$ns/$$repo does not exist yet, and a push would create it PRIVATE (SkyPilot pulls anonymously). Set QUAY_API_TOKEN to have publish-image create it public, or create it as Public in the quay UI first." >&2; \
+					exit 1; \
 				else \
 					body=$$(mktemp) || exit 1; \
 					printf '{"namespace":"%s","repository":"%s","visibility":"public","description":"granite.build step image (%s)","repo_kind":"image"}' "$$ns" "$$repo" "$$repo" > "$$body"; \
@@ -421,7 +430,7 @@ endif
 # ---- Rendering helper -------------------------------------------------------
 
 # render-step-template — render step-template.yaml to the file named by $(1),
-# substituting ONLY the literal ${IMAGE_REF} token (empty for non-image steps).
+# substituting ONLY the literal ${IMAGE_REF} token (empty for non-custom-image steps).
 # Everything else passes through verbatim: runtime Jinja ({{ ... }}) and shell
 # expansions (${VAR}, $(cmd)) in run:/setup: blocks. Uses sed (POSIX, always
 # present) rather than envsubst, so no gettext install is required. The image
@@ -511,9 +520,9 @@ endef
 
 # require-image-published — for custom-image steps, fail publish-step unless the step's
 # IMAGE_REF is present on its registry, so a step's step.yaml + build tests are only
-# published once the image they reference is pullable. No-op for non-image steps (empty
+# published once the image they reference is pullable. No-op for non-custom-image steps (empty
 # IMAGE_REF) and when PUBLISH_REQUIRE_IMAGE is not "true". Asks the registry for the
-# manifest only, no layer pull (registry-tag-status.sh: skopeo when installed, else
+# manifest only, no layer pull (scripts/registry-tag-status.sh: skopeo when installed, else
 # the registry's v2 API). Not `$(DOCKER) manifest inspect`, which fails on a
 # single-platform image under podman (#568). A public image needs no credentials.
 define require-image-published
@@ -787,6 +796,24 @@ test: space image
 	@if [ ! -d "$(TEST_DIR)" ] || [ -z "$$(ls -A $(TEST_DIR) 2>/dev/null)" ]; then \
 		echo "[$(STEP_NAME)] no tests in $(TEST_DIR)/; nothing to run."; \
 		exit 0; \
+	fi; \
+	if [ "$(STEP_USES_IMAGE)" = "true" ] && [ "$(TEST_PUBLISHED)" != "true" ]; then \
+		published=$$($(TAG_STATUS) --config-digest "$(IMAGE_REF)"); \
+		case "$$published" in \
+			absent) ;; \
+			sha256:*) \
+				local_id=$$($(DOCKER) image inspect --format '{{.Id}}' "$(IMAGE_REF)" 2>/dev/null); \
+				if [ "sha256:$${local_id#sha256:}" != "$$published" ]; then \
+					echo "[$(STEP_NAME)] ERROR: $(IMAGE_REF) is already published as a different image than the one just built." >&2; \
+					echo "[$(STEP_NAME)] SkyPilot build tests pull the PUBLISHED image, so they would not test your local changes." >&2; \
+					echo "[$(STEP_NAME)] Bump IMAGE_VERSION (or use a scratch one, e.g. IMAGE_VERSION=dev-<name>) and run 'make image publish-image' first, or pass TEST_PUBLISHED=true to test the published image on purpose." >&2; \
+					exit 1; \
+				fi ;; \
+			*) \
+				echo "[$(STEP_NAME)] ERROR: could not compare $(IMAGE_REF) with the published image (registry unreachable, a private repository, or a multi-platform index)." >&2; \
+				echo "[$(STEP_NAME)] Fix access and retry, or pass TEST_PUBLISHED=true to test the published image on purpose." >&2; \
+				exit 1 ;; \
+		esac; \
 	fi; \
 	if [ ! -f "$(VENV_DIR)/bin/activate" ]; then \
 		echo "[$(STEP_NAME)] ERROR: no virtualenv at $(VENV_DIR)."; \

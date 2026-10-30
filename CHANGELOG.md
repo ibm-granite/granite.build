@@ -34,7 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tag never reached it. `publish-image` now checks the registry first and pushes only a new tag;
   it also refuses when the check cannot tell. Bump `IMAGE_VERSION`, or pass
   `PUBLISH_OVERWRITE=true` to replace a tag on purpose. The check is the new
-  `steps/registry-tag-status.sh` (`skopeo` when installed, else the registry's v2 API).
+  `steps/scripts/registry-tag-status.sh` (`skopeo` when installed, else the registry's v2 API).
+- **`make test` refuses to test an outdated published image (#229).** A custom-image step's
+  SkyPilot build tests pull the published `IMAGE_REF`, not the local build, so with a pinned
+  `IMAGE_VERSION` a Dockerfile edit passed against the old image. `make test` now compares the
+  local image ID with the published image's config digest and stops when they differ; publish
+  the change under a new (or scratch) `IMAGE_VERSION` first, or pass `TEST_PUBLISHED=true` to
+  test the published image on purpose.
 
 ### Changed
 
@@ -49,7 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SHA); `IMAGE_NAME` and `IMAGE_TAG` can still be overridden, and an invalid repository name is
   refused. On quay.io, `publish-image` creates a step's new repository **public** through quay's
   API when `QUAY_API_TOKEN` is set (a push-created repository is private, and SkyPilot pulls
-  anonymously). Local image names change too, so retag or rebuild local images. No published
+  anonymously); without the token it refuses a new repository rather than create a private one.
+  Local image names change too, so retag or rebuild local images. No published
   step changes.
 - **The `dpk` step moved into the `data` category: `space://steps/data/dpk` (#512).** This is
   the first step to move into a category directory under `steps/` (here `steps/data`).
@@ -212,7 +219,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`make publish-step` no longer reports a published single-platform image as missing (#568).**
   Without `skopeo`, its image check used `podman manifest inspect`, which fails on a
-  single-platform image. It now uses `steps/registry-tag-status.sh`, the same check as
+  single-platform image. It now uses `steps/scripts/registry-tag-status.sh`, the same check as
   `publish-image`.
 
 - **SkyPilot launch crash on non-identifier secret names.** Whole-bag secret injection

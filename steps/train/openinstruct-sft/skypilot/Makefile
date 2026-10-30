@@ -5,7 +5,7 @@
 STEP_NAME := openinstruct-sft
 
 # Public namespace. The step's repository there must be public; see
-# steps/README.md, "Registry credentials" and "A new step's repository".
+# steps/README.md, "Registry credentials" and "A custom image-based step's image repository".
 REGISTRY ?= quay.io/granitebuild
 
 # The image tag. A stable version instead of the per-commit git SHA: the image is large and

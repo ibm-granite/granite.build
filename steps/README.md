@@ -16,6 +16,20 @@ implementation of the `eval-example` step in the `eval` category.
 > picking a built-in step), see the user-facing guide:
 > [docs/steps/README.md](../docs/steps/README.md).
 
+## Two step types
+
+Which type a step is is **auto-detected from the presence of a `Dockerfile`**
+next to the Makefile — there is no flag to set.
+
+1. **Custom-image step** (has a `Dockerfile`, exemplar: **`eval-example`** at
+   `steps/eval/eval-example/skypilot`, kept unpublished as a template) — the
+   step's code/deps are baked into an image built from `Dockerfile`, published to a
+   registry, and referenced from the generated `step.yaml` via `image_id`.
+2. **Public-image step** (no `Dockerfile`, exemplar: **`byoc`**) — the
+   step runs in a public container image and brings its code at runtime. `byoc`
+   clones a public git repo in the launcher's `setup` phase and runs a
+   user-defined `command`; it builds no custom image.
+
 ## Source of truth: `steps/` vs. `configurations/`
 
 Think of the two trees as **source vs. release**: `steps/` is a source-like
@@ -276,20 +290,6 @@ nested step even when an outer `steps/distill/step.yaml` also exists, and existi
 single-segment URIs (and sub-asset URIs like `space://steps/digit/helm-charts`,
 where no `step.yaml` sits at the longer prefix) resolve exactly as before.
 
-## Two step types
-
-Which type a step is is **auto-detected from the presence of a `Dockerfile`**
-next to the Makefile — there is no flag to set.
-
-1. **Custom-image step** (has a `Dockerfile`, exemplar: **`eval-example`** at
-   `steps/eval/eval-example/skypilot`, kept unpublished as a template) — the
-   step's code/deps are baked into an image built from `Dockerfile`, published to a
-   registry, and referenced from the generated `step.yaml` via `image_id`.
-2. **Public-image step** (no `Dockerfile`, exemplar: **`byoc`**) — the
-   step runs in a public container image and brings its code at runtime. `byoc`
-   clones a public git repo in the launcher's `setup` phase and runs a
-   user-defined `command`; it builds no custom image.
-
 ## Makefile target conventions
 
 Defined once in [`common.mk`](common.mk) and shared by every step:
@@ -297,14 +297,14 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 * **`image`** — build the image from `./Dockerfile` for `$(PLATFORM)` (default
   `linux/amd64`, so it cross-builds on an Apple Silicon host for the x86 clusters
   SkyPilot provisions). Image steps only; no-op otherwise.
-* **`publish-image`** — push the image to `$(REGISTRY)` (no-op for non-image
+* **`publish-image`** — push the image to `$(REGISTRY)` (no-op for non-custom-image
   steps). Requires authentication — see [Registry credentials](#registry-credentials).
   It **refuses to overwrite a tag** that already exists on the registry, and refuses
   when it cannot tell (network, auth): a tag must keep pointing at one image, and
   SLURM's image cache keys its `.sqsh` by tag, so a re-pushed tag would never reach
   it. Bump `IMAGE_VERSION`, or pass `PUBLISH_OVERWRITE=true` to replace a tag on
   purpose. On quay.io it also makes sure the step's repository is public before the
-  first push; see [A new step's repository](#a-new-steps-repository).
+  first push; see [A custom image-based step's image repository](#a-custom-image-based-steps-image-repository).
 * **`space`** — render a self-contained Space into `$(SPACE_DIR)/`: a generated
   `space.yaml` plus `steps/<path>/step.yaml` (from `step-template.yaml`) and
   bundled `src/`. Cheap and offline; it does *not* rebuild/push.
@@ -323,11 +323,12 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   step's image is actually published to its registry (a published `step.yaml`/test that
   references an unpushed image is broken — the Mode-2 skypilot test's remote node can't
   pull it), so run `make image publish-image` **before** `make publish-step`. The check
-  queries the registry manifest only, no pull (`steps/registry-tag-status.sh`: `skopeo`
+  queries the registry manifest only, no pull (`steps/scripts/registry-tag-status.sh`: `skopeo`
   when installed, else the registry's v2 API with `curl`), and needs no credentials for
-  a public image. It refuses an image it cannot confirm. Bypass it with
+  a public image. It refuses an image it cannot confirm. `skopeo` is optional and
+  nothing installs it; `curl` is enough. Bypass it with
   `make publish-step PUBLISH_REQUIRE_IMAGE=false` (offline/local publishing).
-  Non-image (public-image) steps have no `IMAGE_REF`, so the check is skipped.
+  Non-custom-image (public-image) steps have no `IMAGE_REF`, so the check is skipped.
   A step whose Makefile sets `override STEP_PUBLISHABLE := false` (an exemplar kept
   only as a template, e.g. [`eval/eval-example/skypilot`](eval/eval-example/skypilot/README.md))
   refuses `publish-step` outright, before writing anything. The guard fails closed:
@@ -348,7 +349,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 * **`all`** — the full pipeline: `image` + `publish-image` + `space` for image steps,
   or just `space` for public-image steps.
 * **`test`** — render the Space (depends on `space`) **and build the image
-  locally** (depends on `image`; a no-op with no publish for non-image steps),
+  locally** (depends on `image`; a no-op with no publish for non-custom-image steps),
   then run the step's tests in `test/` with `pytest` (`src/` is put on
   `PYTHONPATH`; pytest recurses per-cluster subdirs). Depending on `space` lets a
   build test just reference the rendered `$(SPACE_DIR)/`; depending on `image`
@@ -398,6 +399,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `IMAGE_TAG`       | `$(IMAGE_VERSION)`                        | image tag; the version of the step's image, e.g. `oi-v0.3.0-6` |
 | `IMAGE_REF`       | `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)`   | full image reference (derived)   |
 | `PUBLISH_OVERWRITE` | `false`                                 | set exactly `true` to let `publish-image` replace an existing tag (or push without checking) |
+| `TEST_PUBLISHED`  | `false`                                   | set exactly `true` to let `make test` run when `IMAGE_REF` is published as a different image than the local build (see [Two test modes](#two-test-modes)) |
 | `QUAY_API_TOKEN`  | *(unset; environment only)*               | quay.io OAuth token (*Create Repositories* scope); `publish-image` creates a new repository public with it |
 | `SPACE_DIR`       | `space`                                   | generated Space directory name   |
 | `SPACE_NAME`      | `public`                                  | `name:` in the generated `space.yaml`. Matches the shared `configurations/spaces/local`, because an `hf://` push derives its HF resource group from the space name (`gbspace-<space>`); a step-named space would look for a group that doesn't exist |
@@ -439,19 +441,20 @@ With podman the login is scoped to `$(REGISTRY)` (e.g. `quay.io/my-org`), so it
 leaves your other logins on that host alone; docker logs in to the whole host. The
 overwrite check uses the same credentials when the repository is private.
 
-### A new step's repository
+### A custom image-based step's image repository
 
-Each custom step has its own repository, `$(REGISTRY)/steps/<path>/<env>`, so the
-first publish of a new step creates one. SkyPilot pulls step images anonymously,
-so the repository must be **public**, but a repository that a push creates is
-private. On quay.io, `publish-image` checks whether the step's repository exists
-before pushing:
+Each custom image-based step has its own image repository,
+`$(REGISTRY)/steps/<path>/<env>`, so the first publish of a new step needs one.
+SkyPilot pulls step images anonymously, so the image repository must be
+**public**, but one that a push creates is private. On quay.io, `publish-image`
+checks whether the step's image repository exists before pushing:
 
 * it exists: nothing to do;
 * it does not, and `QUAY_API_TOKEN` is set in the environment: `publish-image`
   creates it **public** through quay's API (`POST /api/v1/repository`), then pushes;
-* it does not, and no token is set: the push creates it private, and
-  `publish-image` prints a note to make it public once (repository → Settings).
+* it does not, and no token is set: `publish-image` **stops** before pushing,
+  rather than create a private one that could be forgotten. Set the token, or
+  create the image repository as Public in the quay UI first, then publish.
 
 `QUAY_API_TOKEN` is a quay OAuth access token with the *Create Repositories* scope,
 acting as a user who may create repositories in the namespace. It is passed to
@@ -594,6 +597,19 @@ resolves the step differs (the `space_uri`):
   `steps/<step>/<env>/space/` (the `test` target's `space` prerequisite renders it
   first). This is the fast authoring loop and needs nothing published. The
   fixtures' `space_uri: ../../space` points at that local Space.
+
+  **Which image Mode 1 tests, for a custom-image step.** `make test` builds the image
+  locally (`image`), but only a test on the local **Docker** environment uses that
+  build (its `pull_policy` is `if-not-present`). A **SkyPilot** cluster test (aws,
+  SLURM, k8s) has the remote node pull `docker:<IMAGE_REF>` from the registry, so it
+  tests whatever is published under that tag. To test a change on a cluster, publish
+  it first under a new or scratch tag: `make image publish-image
+  IMAGE_VERSION=dev-<name>`, then `make test IMAGE_VERSION=dev-<name>`. A dev tag
+  cannot be re-pushed either (the overwrite guard), so use a new one per attempt.
+  `make test` refuses to run when `IMAGE_REF` is already published as a **different**
+  image than the one it just built (it compares the local image ID with the published
+  image's config digest), so a local edit can't pass silently against the old image;
+  pass `TEST_PUBLISHED=true` to test the published image on purpose.
 * **Mode 2 — post-publish (in `test/steps/`).** `make publish-step` copies the
   per-cluster build tests to `test/steps/<step>/<env>/<cluster>/` — the step dir's
   inner `test/` segment is **flattened away**, so the published tree parallels the

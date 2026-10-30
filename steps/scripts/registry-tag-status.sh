@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: Apache-2.0
 #
-# registry-tag-status.sh [--repository] <image-ref>
+# registry-tag-status.sh [--repository | --config-digest] <image-ref>
 #
 # Does this image tag (or, with --repository, this repository) exist on its
 # registry? Prints one word and exits with its code:
@@ -12,10 +12,19 @@
 # overwrite a `present` tag, and `make publish-step` refuses an image that is not
 # `present`.
 #
+# --config-digest prints the published image's config digest instead of `present`
+# (exit 0); `absent`/`unknown` as above. For a single-platform image that digest is
+# the local image ID (`<docker> image inspect --format '{{.Id}}'`), so `make test`
+# can tell whether the image it built is the one already published under the tag.
+# A multi-platform index has no single config, so it is `unknown`.
+#
 # Asks the registry only (no layer pull):
-#   1. tag mode: `skopeo inspect --raw`, when skopeo is installed;
-#   2. otherwise the registry's v2 API with curl (the manifest, or with
-#      --repository the tag list), following a Bearer token challenge. The token
+#   1. tag mode: `skopeo inspect --raw`, when skopeo is installed. skopeo is
+#      OPTIONAL: nothing installs it (not the repo's venv, not CI); install it
+#      yourself if you prefer it (brew/dnf/apt install skopeo);
+#   2. otherwise the registry's v2 API with curl, which is all this script needs
+#      (the manifest, or with --repository the tag list), following a Bearer
+#      token challenge. The token
 #      request is anonymous, or uses REGISTRY_USER and REGISTRY_PASSWORD from the
 #      environment when both are set (a private repo, or a registry such as
 #      quay.io that answers an anonymous probe of a missing repo with 401).
@@ -25,13 +34,13 @@
 set -u
 
 mode=tag
-if [ "${1:-}" = "--repository" ]; then
-  mode=repository
-  shift
-fi
+case "${1:-}" in
+  --repository) mode=repository; shift ;;
+  --config-digest) mode=config; shift ;;
+esac
 ref="${1:-}"
 if [ -z "$ref" ]; then
-  echo "usage: registry-tag-status.sh [--repository] <image-ref>" >&2
+  echo "usage: registry-tag-status.sh [--repository | --config-digest] <image-ref>" >&2
   echo unknown
   exit 2
 fi
@@ -89,11 +98,15 @@ tmp="$(mktemp -d)" || say unknown
 trap 'rm -rf "$tmp"' EXIT
 
 # Ask the registry; $1 is curl config (an Authorization header) for stdin. A HEAD
-# for a manifest, a GET (body discarded) for the tag list.
+# for a manifest, a GET for the tag list (body discarded) or for the manifest
+# itself (--config-digest, body kept).
 probe() {
   if [ "$mode" = repository ]; then
     printf '%s' "$1" | curl -s -o /dev/null -D "$tmp/headers" -w '%{http_code}' \
       --max-time 30 --config - "$url" 2>/dev/null
+  elif [ "$mode" = config ]; then
+    printf '%s' "$1" | curl -s -o "$tmp/manifest" -D "$tmp/headers" -w '%{http_code}' \
+      --max-time 30 -H "Accept: ${accept}" --config - "$url" 2>/dev/null
   else
     printf '%s' "$1" | curl -s -I -o /dev/null -D "$tmp/headers" -w '%{http_code}' \
       --max-time 30 -H "Accept: ${accept}" --config - "$url" 2>/dev/null
@@ -120,6 +133,14 @@ if [ "$code" = "401" ]; then
   token="$(tr -d '\n' < "$tmp/token" | sed -n 's/.*"\(access_\)\{0,1\}token" *: *"\([^"]*\)".*/\2/p')"
   [ -n "$token" ] || say unknown
   code="$(probe "header = \"Authorization: Bearer ${token}\"")" || say unknown
+fi
+
+if [ "$mode" = config ] && [ "$code" = "200" ]; then
+  # The config digest of a single-image manifest: "config":{...,"digest":"sha256:..."}.
+  digest="$(tr -d '\n' < "$tmp/manifest" | sed -n 's/.*"config" *: *{[^}]*"digest" *: *"\(sha256:[0-9a-f]*\)".*/\1/p')"
+  [ -n "$digest" ] || say unknown
+  echo "$digest"
+  exit 0
 fi
 
 case "$code" in

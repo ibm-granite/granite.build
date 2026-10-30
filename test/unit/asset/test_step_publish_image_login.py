@@ -59,7 +59,7 @@ if [ "$1" = login ]; then cat > "$FAKE_LOG/podman.login.stdin"; fi
 exit 0
 """
 
-# Stands in for steps/registry-tag-status.sh: answers $FAKE_TAG_STATUS, or
+# Stands in for steps/scripts/registry-tag-status.sh: answers $FAKE_TAG_STATUS, or
 # $FAKE_REPO_STATUS for the `:repo` probe (does the repository exist at all).
 _FAKE_STATUS = """#!/bin/sh
 echo "$*" >> "$FAKE_LOG/status.calls"
@@ -92,7 +92,8 @@ def step(tmp_path: pathlib.Path) -> pathlib.Path:
     steps = tmp_path / "steps"
     steps.mkdir()
     shutil.copy(COMMON_MK, steps / "common.mk")
-    status = steps / "registry-tag-status.sh"
+    (steps / "scripts").mkdir()
+    status = steps / "scripts" / "registry-tag-status.sh"
     status.write_text(_FAKE_STATUS)
     status.chmod(0o755)
     step_dir = steps / "train" / "foo" / "skypilot"
@@ -289,12 +290,23 @@ class TestNewPublicRepository:
         assert proc.returncode == 0, proc.stderr
         assert _calls(fakes, "curl") == []
 
-    def test_without_a_token_nothing_is_created(self, step, fakes):
+    def test_without_a_token_a_new_repo_stops_before_the_push(self, step, fakes):
+        # A push would create it private, and SkyPilot pulls anonymously: easy to
+        # forget to make public, so refuse instead of warning (#565 review).
         self._quay_step(step)
         proc = _publish(step, fakes, FAKE_REPO_STATUS="absent")
+        assert proc.returncode != 0
+        assert _calls(fakes, "curl") == [] and _calls(fakes) == []
+        assert "QUAY_API_TOKEN" in proc.stderr
+        assert "public" in proc.stderr
+
+    def test_without_a_token_an_existing_repo_is_pushed(self, step, fakes):
+        self._quay_step(step)
+        proc = _publish(step, fakes, FAKE_REPO_STATUS="present")
         assert proc.returncode == 0, proc.stderr
-        assert _calls(fakes, "curl") == []
-        assert "QUAY_API_TOKEN" in proc.stdout
+        assert _calls(fakes) == [
+            "push quay.io/granitebuild/steps/train/foo/skypilot:v1"
+        ]
 
     def test_a_failed_create_stops_before_the_push(self, step, fakes):
         self._quay_step(step)

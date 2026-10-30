@@ -155,7 +155,7 @@ re-imports the new tag automatically on its next run (see
 The image is `$(REGISTRY)/steps/train/openinstruct-sft/skypilot:<IMAGE_VERSION>`:
 `steps/common.mk` gives every custom step its own repository, named after the step
 directory, and the tag is `IMAGE_VERSION`. The repository must be public (SkyPilot
-pulls anonymously); see `steps/README.md`, "A new step's repository".
+pulls anonymously); see `steps/README.md`, "A custom image-based step's image repository".
 
 Log in first (`podman login quay.io/granitebuild`, or `REGISTRY_USER` /
 `REGISTRY_PASSWORD` in the environment; see `steps/README.md`, "Registry
@@ -163,7 +163,7 @@ credentials"), then:
 
 ```bash
 make -C steps/train/openinstruct-sft/skypilot image publish-image
-sh steps/registry-tag-status.sh quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-6
+sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-6
 ```
 
 `publish-image` refuses a tag that already exists, so bump `IMAGE_VERSION` (see
