@@ -1,0 +1,127 @@
+# Copyright 2026 Granite.Build Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# granite-evals image for the `mcpmark` benchmark family: MCPMark
+# (mcpmark-filesystem, mcpmark-postgres, mcpmark-playwright).
+#
+# One image per benchmark family, because the upstream harnesses' own dependencies
+# conflict with one another (see [tool.uv] conflicts in src/core/pyproject.toml).
+# Build context is steps/eval/ (see the Makefile):
+#   podman build --platform linux/amd64 -f mcpmark/Dockerfile.gpu . -t <registry>/gb-step-eval-mcpmark:<tag>
+#
+# The MCPMark harness cannot be a uv extra: its wheel packages only src/ and
+# tasks/ (the repo-root pipeline.py it runs from is not installed), it hard-pins
+# litellm==1.80.0 against the nemoskills/tbench camps, and it declares tooling
+# (pixi, pipx) no other family wants. mcpmark/extras.sh bakes the pinned commit
+# at /opt/mcpmark/<commit> (Apache-2.0, tarball sha256 + tree digest verified,
+# .granite-commit marker) with its own venv; the `mcpmark` extra is empty and
+# the module runs the harness as a subprocess from a writable copy of that
+# checkout. The image is also the service runtime MCPMark drives: node 20 +
+# chromium for the npx MCP servers (filesystem, playwright) and a PGDG
+# postgres 17 + pgvector for mcpmark-postgres (the adapter starts a per-job
+# cluster with initdb/pg_ctl on a node-locked port). Task state (filesystem
+# zips, postgres backups) is NEVER baked: the harness downloads it from
+# storage.mcpmark.ai at run time and results.json records its digests.
+# System packages are installed in a throwaway stage and shipped as ONE plain layer.
+# Installing them on top of the base image in place would replace files the base
+# ships (e.g. the /etc/alternatives awk links), leaving overlay whiteouts. An
+# unprivileged unsquashfs (Pyxis) cannot create those, so the container would
+# not start on SLURM.
+FROM python:3.12-slim-bookworm AS sysdeps
+
+ARG ENROOT_VERSION=4.2.1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash ca-certificates curl git jq gawk parallel pigz squashfs-tools zstd \
+        libcap2-bin procps build-essential \
+    && arch=$(dpkg --print-architecture) \
+    && curl -fsSLO "https://github.com/NVIDIA/enroot/releases/download/v${ENROOT_VERSION}/enroot_${ENROOT_VERSION}-1_${arch}.deb" \
+    && apt-get install -y --no-install-recommends ./enroot_${ENROOT_VERSION}-1_${arch}.deb \
+    && rm -f ./enroot_*.deb \
+    # MCPMark's own image's system layers: chromium's shared libraries ...
+    && apt-get install -y --no-install-recommends \
+        libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+        libxkbcommon0 libatspi2.0-0 libx11-6 libxcomposite1 libxdamage1 \
+        libxfixes3 libxrandr2 libgbm1 libxcb1 libpango-1.0-0 libcairo2 libasound2 \
+    # ... a postgres 17 server + pgvector + client (Debian's own 15 is too old
+    # for the pg17 custom-format backups the harness restores; only PGDG's 17
+    # client is installed, so pg_restore cannot come from a different major), ...
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        -o /usr/share/keyrings/pgdg.asc \
+    && echo "deb [signed-by=/usr/share/keyrings/pgdg.asc] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list \
+    && echo 'create_main_cluster = false' > /etc/postgresql-common/create_cluster.conf \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        postgresql-17 postgresql-17-pgvector postgresql-client-17 \
+    # ... and node 20 for the npx MCP servers (upstream's choice).
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:0.12.20@sha256:100047e74f30778ab704942321a09750d6158739573ff58bf3924085cc6cd2d8 /uv /usr/local/bin/uv
+
+FROM scratch
+COPY --from=sysdeps / /
+# What the python base image would have set.
+ENV PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
+    LANG=C.UTF-8
+
+ENV EVALS_HOME=/opt/granite-evals
+WORKDIR ${EVALS_HOME}
+ENV UV_PROJECT_ENVIRONMENT=${EVALS_HOME}/.venv \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    VIRTUAL_ENV=${EVALS_HOME}/.venv \
+    PATH=${EVALS_HOME}/.venv/bin:$PATH
+# Where extras.sh puts the pipx'd postgres-mcp (and its mcp<2 constraint
+# file), and the two caches the MCP-server runtimes share with the run:
+# chromium for the playwright server (baked; stays writable so a server
+# needing another revision can download it) and npm's cache for the npx
+# servers (pre-warmed at the pinned versions).
+ENV PIPX_HOME=/opt/pipx \
+    PIPX_BIN_DIR=/usr/local/bin \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
+    NPM_CONFIG_CACHE=/opt/npm-cache
+
+# One sync, in a single layer. A later sync that re-resolved a package would
+# replace files from this layer and leave overlay whiteouts (see above). Dependencies
+# come first so code edits don't reinstall them. --chmod: the build host's checkout may be
+# unreadable to other users, which COPY would preserve.
+COPY --chmod=755 src/core/pyproject.toml src/core/uv.lock ./
+# Family-specific system setup (mcpmark/extras.sh), bind-mounted so nothing is
+# left behind in a layer. UV_NO_CONFIG: the script runs from WORKDIR, and uv
+# would otherwise apply this project's [tool.uv] settings to the harness's
+# side venv.
+RUN --mount=type=bind,source=mcpmark/extras.sh,target=/tmp/extras/mcpmark.sh \
+    UV_NO_CONFIG=1 bash -euxo pipefail /tmp/extras/mcpmark.sh \
+    && rm -rf /var/lib/apt/lists/*
+
+# The `mcpmark` extra is empty (see the comment block at its definition).
+RUN uv sync --locked --no-install-project --no-dev --extra serve --extra mcpmark
+# The shared core first, then the family's modules merged into the same package.
+COPY --chmod=755 src/core/granite_evals ./src/granite_evals
+COPY --chmod=755 mcpmark/src ./src/granite_evals/benchmarks
+COPY --chmod=755 src/core/tests ./tests
+COPY --chmod=755 mcpmark/tests ./tests
+RUN uv sync --locked --no-dev --extra serve --extra mcpmark \
+    && uv run --no-sync --with pytest pytest -q -p no:cacheprovider --basetemp=/opt/granite-evals/.pytest-tmp tests \
+    && granite-evals list \
+    && rm -rf /opt/granite-evals/.pytest-tmp /tmp/pytest-of-root
+
+ENV GRANITE_EVALS_SANDBOX=enroot
+# The HF cache's fixed in-container mount point; the environment bind-mounts its
+# cache here (or overrides HF_HOME).
+ENV HF_HOME=/opt/hf-cache
+ENTRYPOINT []
+CMD ["granite-evals", "--help"]
