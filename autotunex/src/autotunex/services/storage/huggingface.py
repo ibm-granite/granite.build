@@ -129,17 +129,15 @@ class HuggingFaceStorageBackend:
     def _is_own_push(self, repo_id: str, dataset_id: UUID) -> bool:
         """Whether ``repo_id`` is the repo this backend pushed for ``dataset_id``.
 
-        That is ``<name>_<dataset id[:8]>`` (see :meth:`_artifact_name`), in
-        ``hf_namespace`` when that is set (unset, gbcli picked the org). Only that
-        repo may be read with the HF token, and only when ``hf_import_namespaces``
-        allows its owner: a stored locator can come from a caller (the api-bridge
-        registers whatever a run reports), and one cannot name the random id of a row
-        before it exists.
+        That is ``<name>_<dataset id[:8]>`` (see :meth:`_artifact_name`), under
+        whichever org the push used: the stored locator records it, so changing
+        ``hf_namespace`` later does not disown earlier pushes. Only that repo may be
+        read with the HF token, and only when ``hf_import_namespaces`` allows its
+        owner: a stored locator can come from a caller (the api-bridge registers
+        whatever a run reports), and one cannot name the random id of a row before
+        it exists.
         """
-        owner, _, repo = repo_id.rpartition("/")
-        if not repo.endswith(f"_{str(dataset_id)[:8]}"):
-            return False
-        return self._hf_namespace is None or owner == self._hf_namespace
+        return repo_id.rpartition("/")[2].endswith(f"_{str(dataset_id)[:8]}")
 
     async def persist(
         self,

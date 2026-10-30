@@ -333,8 +333,7 @@ class Settings(BaseSettings):
 
     Unset (or blank), the flag is omitted and gbcli pushes to the GB environment's
     own ``hf_organization``. A dataset's own push is the one repo its preview may
-    read with the HF token (when ``hf_import_namespaces`` lists its owner); when this
-    is set, that repo must also be in this org."""
+    read with the HF token, when ``hf_import_namespaces`` lists its owner."""
 
     hf_preview_enabled: bool = True
     """Enable dataset preview via the HuggingFace dataset viewer.
