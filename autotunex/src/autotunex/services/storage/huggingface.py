@@ -390,7 +390,9 @@ class HuggingFaceStorageBackend:
 
         ``/splits`` is queried first: it yields the repo's real config (subset)
         name and is the viewer's authoritative "is this dataset precomputed"
-        signal. If it is unavailable — down, or still precomputing — the whole
+        signal. A refusal (401/403/404) is final, with or without the token: the
+        preview is empty with ``viewer_ready=True``. If ``/splits`` is otherwise
+        unavailable — down, or still precomputing — the whole
         preview is reported ``viewer_ready=False`` and no ``/rows`` fetch is
         attempted (the rows cannot exist yet). Otherwise the two splits are fetched
         concurrently with the discovered config; a single failed split degrades to
@@ -411,10 +413,10 @@ class HuggingFaceStorageBackend:
                     client, base_url=self._hf_viewer_base_url, repo_id=repo_id, token=token
                 )
             except HFViewerUnavailable as exc:
-                if token is None and isinstance(exc, HFViewerInaccessible):
-                    # An anonymous read was refused: the repo is private, gated or
-                    # gone, so there is no preview to wait for.
-                    logger.debug("HF repo %s not readable anonymously: %s", repo_id, exc)
+                if isinstance(exc, HFViewerInaccessible):
+                    # The read was refused: the repo is private, gated or gone for
+                    # these credentials, so there is no preview to wait for.
+                    logger.debug("HF repo %s not readable: %s", repo_id, exc)
                     return DatasetPreview(train=[], validation=[])
                 logger.warning(
                     "HF dataset viewer not ready for %s (config discovery): %s", repo_id, exc

@@ -666,13 +666,18 @@ async def test_preview_of_a_renamed_foreign_repo_is_empty_not_pending(
     assert preview == DatasetPreview(train=[], validation=[], viewer_ready=True)
 
 
-async def test_preview_own_repo_refused_is_still_reported_not_ready(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("status", [401, 403, 404])
+async def test_preview_of_a_refused_own_push_is_empty_not_pending(
+    monkeypatch: pytest.MonkeyPatch, status: int
 ) -> None:
-    """With the token, a 404 on the app's own repo can be a push the viewer has not seen yet."""
+    """A tokened read refused (deleted repo, token without access) never resolves either.
+
+    A push the viewer has not indexed yet gets a 500, not a 404 (see
+    ``test_preview_not_ready_when_splits_unavailable``).
+    """
     monkeypatch.setenv(HF_ENV, "hf_tok")
 
-    async with _viewer_client(lambda request: httpx.Response(404)) as client:
+    async with _viewer_client(lambda request: httpx.Response(status)) as client:
         preview = await _backend(http_client=client).preview(
             dataset_id=DATASET_ID,
             name="finance",
@@ -681,7 +686,7 @@ async def test_preview_own_repo_refused_is_still_reported_not_ready(
             rows=10,
         )
 
-    assert preview.viewer_ready is False
+    assert preview == DatasetPreview(train=[], validation=[], viewer_ready=True)
 
 
 @pytest.mark.parametrize(
