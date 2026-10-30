@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`openinstruct-sft` step (#229)**, `space://steps/train/openinstruct-sft`: SFT with upstream
   Open-Instruct `finetune.py` (v0.3.0, accelerate + DeepSpeed) on any SkyPilot endpoint, single
   node, with ClearML tracking (`auto` when `CLEARML_API_*` creds are present). Custom image
-  `quay.io/granitebuild/gb-steps` (tag `train-openinstruct-sft-skypilot-<version>`). Build tests on
+  `quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:<version>`. Build tests on
   skypilot/aws and BlueVela SLURM. On SLURM the image is cached as a shared `.sqsh` by
   `slurm_image_cache`. The legacy hand-authored `space://steps/openinstruct-sft` assets (LSF, aws)
   and the granite4-350m recipes that use them are unchanged; moving those recipes over is a
