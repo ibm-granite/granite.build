@@ -596,7 +596,7 @@ def _listed_keys_read():
 
 # Every target built by _target, by uuid: the scan lists keys, then loads the
 # targets by uuid, which _load_targets_from_registry serves from here.
-_TARGETS = {}
+_TARGETS: dict[str, StoredTargetRun] = {}
 
 
 @pytest.fixture(autouse=True)

@@ -22,7 +22,7 @@ so the batched :meth:`BaseLineageJobStorage.get_jobs` is the one that matters: a
 graph walk resolves all of a level's jobs in one query rather than one per row.
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple, Union
 
 from gbserver.storage.storage import BaseItemStorage, IItemStorage
 from gbserver.storage.stored_lineage_job import StoredLineageJob
@@ -31,6 +31,12 @@ from gbserver.types.constants import GB_LINEAGE_JOB_TABLE_NAME
 
 class ILineageJobStorage(IItemStorage[StoredLineageJob]):
     """Interface for lineage job storage implementations."""
+
+    def get_paged(
+        self, where: Optional[Union[str, dict]] = None, page_size: int = 200
+    ) -> Iterator[List[StoredLineageJob]]:
+        """Yield pages of jobs; see ``BaseItemStorage.get_paged``."""
+        raise NotImplementedError
 
     def get_job(self, job_id: str) -> Optional[StoredLineageJob]:
         """Return the job record for ``job_id``, or ``None``."""

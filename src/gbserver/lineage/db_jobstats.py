@@ -465,8 +465,8 @@ class DBLineageStore(ILineageStore):
         # self -- so no W&B instance (and no wandb import) is needed. Passing None
         # rather than binding makes that dependency explicit and fails loudly if a
         # future edit starts reaching for instance state.
-        return WandBLineageStore._build_events_for_target(
-            None,
+        return WandBLineageStore._build_events_for_target(  # pylint: disable=protected-access
+            None,  # type: ignore[arg-type]
             storage,
             self._require_build_of(storage, targetrun, build),
             targetrun,
@@ -481,7 +481,9 @@ class DBLineageStore(ILineageStore):
         """Build the job entry for a registered artifact. See above for delegation."""
         from gbserver.lineage.wandb_jobstats import WandBLineageStore
 
-        return WandBLineageStore._build_event_for_artifact(None, artifact, sources)
+        return WandBLineageStore._build_event_for_artifact(  # pylint: disable=protected-access
+            None, artifact, sources  # type: ignore[arg-type]
+        )
 
     # -- Completeness queries -----------------------------------------------
 

@@ -28,11 +28,12 @@ never reported confirmed.
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
+from typing import Optional
+
 import pytest
 
 from gbserver.lineage.lineage_reconciler import (
     UTC_MIN,
-    as_aware,
     expected_run_count,
     get_most_recent_build,
     is_permanent_sink_failure,
@@ -65,9 +66,9 @@ def _target(
     build_id: str,
     uuid: str,
     status: Status = Status.SUCCESS,
-    finished_at: datetime = None,
-    input_artifacts: dict[str, str] = None,
-    output_artifacts: dict[str, list[str]] = None,
+    finished_at: Optional[datetime] = None,
+    input_artifacts: Optional[dict[str, str]] = None,
+    output_artifacts: Optional[dict[str, list[str]]] = None,
     retry_of_target_id: str = "",
     name: str = "",
 ) -> StoredTargetRun:
@@ -189,9 +190,9 @@ class _StubStore:
 
     def __init__(
         self,
-        already_recorded: set[str] = None,
-        fail: set[str] = None,
-        query_error: Exception = None,
+        already_recorded: Optional[set[str]] = None,
+        fail: Optional[set[str]] = None,
+        query_error: Optional[Exception] = None,
     ):
         self._recorded = set(already_recorded or set())
         self._fail = set(fail or set())
@@ -201,7 +202,9 @@ class _StubStore:
         # tests can assert it derived per-target run counts from the targets.
         self.last_expected_counts: dict[str, int] | None = None
 
-    def add_jobstats_for_build_target(self, storage, build_id, target_id, view=None):
+    def add_jobstats_for_build_target(
+        self, storage, build_id, target_id, view=None
+    ):  # pylint: disable=unused-argument
         if target_id in self._fail:
             raise RuntimeError("boom")
         self.recorded_calls.append((build_id, target_id))
@@ -210,7 +213,7 @@ class _StubStore:
     def filter_unrecorded(
         self,
         target_ids: set[str],
-        expected_counts: dict[str, int] = None,
+        expected_counts: Optional[dict[str, int]] = None,
         on_query_error=None,
     ) -> set[str]:
         self.last_expected_counts = expected_counts

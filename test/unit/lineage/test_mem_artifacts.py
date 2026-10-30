@@ -30,7 +30,6 @@ from gbserver.lineage.lineage_reconciler import (
     expected_run_count,
     reconcile_build,
     select_recordable_views,
-    select_recordable_views,
 )
 from gbserver.lineage.mem_artifacts import (
     is_mem_resource,

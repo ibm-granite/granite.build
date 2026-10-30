@@ -21,7 +21,10 @@ import re
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, cast
 
 import wandb
-from huggingface_hub import dataset_info, model_info
+from huggingface_hub import (
+    dataset_info,
+    model_info,
+)  # pylint: disable=wrong-import-order
 
 from gbcommon.uri.hf import HfURI
 from gbserver.lineage.mem_artifacts import is_mem_resource
@@ -476,13 +479,11 @@ class WandBLineageService(LineageService):
             or "huggingface://dataset" in namespace
         ):
             return "dataset"
-        elif "huggingface://models" in namespace or "huggingface://model" in namespace:
+        if "huggingface://models" in namespace or "huggingface://model" in namespace:
             return "model"
-        elif (
-            "huggingface://buckets" in namespace or "huggingface://bucket" in namespace
-        ):
+        if "huggingface://buckets" in namespace or "huggingface://bucket" in namespace:
             return "bucket"
-        elif "huggingface" in namespace:
+        if "huggingface" in namespace:
             return "dataset"
         return None
 

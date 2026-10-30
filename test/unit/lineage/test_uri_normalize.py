@@ -430,7 +430,7 @@ def test_uri_at_exactly_the_limit_is_kept():
 # Every raw spelling the tables above use, plus the cases a non-idempotent rule
 # broke before, so ``n(n(u)) == n(u)`` is checked across all of them.
 _ALL_SPELLINGS = sorted(
-    {raw for group in CONVERGING_GROUPS for raw in group.values[0]}
+    {raw for group in CONVERGING_GROUPS for raw in group.values[0]}  # type: ignore[union-attr]
     | {
         "hf:///buckets/org/b/tree/x",
         "lh://prod/ns/models/tbl/granite-dot-build",

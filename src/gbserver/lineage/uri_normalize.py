@@ -225,7 +225,7 @@ def _normalize_hf(candidate: str, parsed) -> str:
     if default_revision_path and hf_type != HfType.BUCKET:
         revision, path_in_repo = DEFAULT_REVISION, default_revision_path
     segments = []
-    if hf_type != HfType.MODEL:
+    if hf_type is not None and hf_type != HfType.MODEL:
         segments.append(HF_TYPE_TO_SEGMENT[hf_type])
     segments.extend([hf.get_owner(), hf.get_repo()])
     if hf_type == HfType.BUCKET:
