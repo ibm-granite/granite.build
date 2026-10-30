@@ -113,3 +113,17 @@ def test_makefile_identity():
     assert re.search(r"^REGISTRY \?= quay\.io/granitebuild$", mk, re.M)
     assert re.search(r"^IMAGE_VERSION \?= peft-v0\.21\.2-\d+$", mk, re.M)
     assert "include ../../../common.mk" in mk
+
+
+def test_every_script_and_config_the_step_calls_exists():
+    run = (_STEP_DIR / "src" / "hf_peft_sft_run.sh").read_text()
+    for name in re.findall(r'cfg="(\w+\.yaml)"', run) + re.findall(
+        r"accelerate/(\w+\.yaml)", run
+    ):
+        assert (_STEP_DIR / "src" / "accelerate" / name).is_file(), name
+    template = _STEP_DIR / "step-template.yaml"
+    if template.exists():  # written in Task 8
+        for script in re.findall(
+            r"/opt/hf-peft-sft/(\w+\.(?:sh|py))", template.read_text()
+        ):
+            assert (_STEP_DIR / "src" / script).is_file(), script
