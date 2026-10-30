@@ -916,6 +916,26 @@ async def test_preview_of_refused_rows_is_empty_not_pending(
     assert preview == DatasetPreview(train=[], validation=[], viewer_ready=True)
 
 
+async def test_preview_warns_when_the_token_itself_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A tokened 401 means a bad HF_TOKEN; the empty preview must not be silent."""
+    monkeypatch.setenv(HF_ENV, "hf_tok")
+    caplog.set_level(logging.WARNING)
+
+    async with _viewer_client(lambda request: httpx.Response(401)) as client:
+        preview = await _backend(http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url=VALID_URL,
+            rows=10,
+        )
+
+    assert preview == DatasetPreview(train=[], validation=[], viewer_ready=True)
+    assert any(r.levelno == logging.WARNING and "401" in r.getMessage() for r in caplog.records)
+
+
 async def test_preview_not_ready_when_splits_unavailable(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

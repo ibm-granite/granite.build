@@ -424,8 +424,12 @@ class HuggingFaceStorageBackend:
             except HFViewerUnavailable as exc:
                 if isinstance(exc, HFViewerInaccessible):
                     # The read was refused: the repo is private, gated or gone for
-                    # these credentials, so there is no preview to wait for.
-                    logger.debug("HF repo %s not readable: %s", repo_id, exc)
+                    # these credentials, so there is no preview to wait for. A 401
+                    # with the token means the token itself was rejected.
+                    if token is not None and "HTTP 401" in str(exc):
+                        logger.warning("HF token rejected reading %s: %s", repo_id, exc)
+                    else:
+                        logger.debug("HF repo %s not readable: %s", repo_id, exc)
                     return DatasetPreview(train=[], validation=[])
                 logger.warning(
                     "HF dataset viewer not ready for %s (config discovery): %s", repo_id, exc
