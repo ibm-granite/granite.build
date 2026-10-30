@@ -28,6 +28,7 @@ _FAMILIES = (
     "mcpmark",
     "nl2repo",
     "nemoskills",
+    "officeqa",
     "swebench",
     "tau",
     "tbench",
