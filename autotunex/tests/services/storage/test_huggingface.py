@@ -33,6 +33,7 @@ PUSH_STDOUT = (
 def _backend(
     *,
     hf_namespace: str | None = "example-org",
+    hf_import_namespaces: list[str] | None = None,
     hf_preview_enabled: bool = True,
     tags: str = "autotunex",
     http_client: httpx.AsyncClient | None = None,
@@ -43,6 +44,10 @@ def _backend(
         hf_token_env=HF_ENV,
         gb_token_env=GB_ENV,
         hf_namespace=hf_namespace,
+        # The push org is listed by default, so the own push previews with the token.
+        hf_import_namespaces=(
+            ["example-org"] if hf_import_namespaces is None else hf_import_namespaces
+        ),
         hf_preview_enabled=hf_preview_enabled,
         hf_viewer_base_url="https://viewer.test",
         hf_viewer_timeout_seconds=2.5,
@@ -699,9 +704,8 @@ async def test_preview_of_a_refused_own_push_is_empty_not_pending(
         # such a locator through the bridge, so it never borrows the token
         ("hf:///datasets/example-org/finance_9bb5cc58", False),
         ("hf:///datasets/example-org/not-pushed-by-the-app", False),
-        # an import-allowlisted org: the token is for imports, not stored locators
+        # another allowlisted org's repo that is not this row's own push
         ("hf:///datasets/allowed-org/private_ds", False),
-        ("hf:///datasets/allowed-org/finance_0f55c1a6", False),
         # any other owner, even one copying this row's id8 suffix
         ("hf://huggingface.co/datasets/other-org/finance_0f55c1a6", False),
         ("hf:///datasets/Example-Org/finance_0f55c1a6", False),
@@ -720,7 +724,9 @@ async def test_preview_sends_the_token_only_to_the_rows_own_push(
         return httpx.Response(200, json={"rows": [{"row": {"a": 1}}]})
 
     async with _viewer_client(handler) as client:
-        await _backend(http_client=client).preview(
+        await _backend(
+            hf_import_namespaces=["example-org", "allowed-org"], http_client=client
+        ).preview(
             dataset_id=DATASET_ID,
             name="finance",
             data_format="jsonl",
@@ -733,10 +739,40 @@ async def test_preview_sends_the_token_only_to_the_rows_own_push(
 
 
 @pytest.mark.parametrize(
+    "hf_import_namespaces",
+    [[], ["other-org"]],
+)
+async def test_preview_of_the_own_push_is_anonymous_when_its_org_is_not_allowlisted(
+    monkeypatch: pytest.MonkeyPatch, hf_import_namespaces: list[str]
+) -> None:
+    """The token goes only where hf_import_namespaces allows: empty means never."""
+    monkeypatch.setenv(HF_ENV, "hf_tok")
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/splits":
+            return httpx.Response(200, json={"splits": [{"config": "default", "split": "train"}]})
+        return httpx.Response(200, json={"rows": [{"row": {"a": 1}}]})
+
+    async with _viewer_client(handler) as client:
+        await _backend(hf_import_namespaces=hf_import_namespaces, http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url=VALID_URL,
+            rows=10,
+        )
+
+    assert seen and all("authorization" not in r.headers for r in seen)
+
+
+@pytest.mark.parametrize(
     ("artifact_url", "sends_token"),
     [
-        # gbcli picked the org, so any owner of this row's own <name>_<id8> repo
+        # gbcli picked the org: the own <name>_<id8> repo still needs its owner allowlisted
         ("hf://huggingface.co/datasets/env-org/finance_0f55c1a6", True),
+        ("hf://huggingface.co/datasets/evil-org/finance_0f55c1a6", False),
         ("hf:///datasets/env-org/finance_9bb5cc58", False),
         ("hf:///datasets/env-org/not-pushed-by-the-app", False),
     ],
@@ -754,7 +790,9 @@ async def test_preview_without_a_namespace_matches_the_own_push_by_name(
         return httpx.Response(200, json={"rows": [{"row": {"a": 1}}]})
 
     async with _viewer_client(handler) as client:
-        await _backend(hf_namespace=None, http_client=client).preview(
+        await _backend(
+            hf_namespace=None, hf_import_namespaces=["env-org"], http_client=client
+        ).preview(
             dataset_id=DATASET_ID,
             name="finance",
             data_format="jsonl",

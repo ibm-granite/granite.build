@@ -332,8 +332,9 @@ class Settings(BaseSettings):
     """HF org the HuggingFace backend pushes dataset repos to (``--hf-organization``).
 
     Unset (or blank), the flag is omitted and gbcli pushes to the GB environment's
-    own ``hf_organization``. A dataset's own push is the one repo its preview reads
-    with the HF token; when this is set, that repo must also be in this org."""
+    own ``hf_organization``. A dataset's own push is the one repo its preview may
+    read with the HF token (when ``hf_import_namespaces`` lists its owner); when this
+    is set, that repo must also be in this org."""
 
     hf_preview_enabled: bool = True
     """Enable dataset preview via the HuggingFace dataset viewer.
@@ -372,7 +373,9 @@ class Settings(BaseSettings):
 
     Empty means never send the token — public repos only. A shared server token
     is otherwise a universal read key: any caller who can name a private repo the
-    token can read would get it. Also decides the ``/hf/models`` search/card scope
+    token can read would get it. Also gates the dataset preview's token: a dataset's
+    own push is read with it only when its owner is listed here, so list the push
+    org for the app's private pushes to preview. Also decides the ``/hf/models`` search/card scope
     and which base models a tuning build binds as an ``hf://`` input — that binding
     pulls with the space's credentials, not this token. It likewise decides which
     completed tuning outputs ``GET /jobs/tuned-models`` lists, since only an

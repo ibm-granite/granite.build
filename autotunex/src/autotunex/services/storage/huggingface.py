@@ -48,6 +48,7 @@ import httpx
 from autotunex.core.exceptions import DatasetPushFailedError, DatasetPushTimeoutError
 from autotunex.core.logging import get_logger
 from autotunex.models.dataset import DatasetPreview
+from autotunex.services.storage.hf_hub import token_for
 from autotunex.services.storage.hf_viewer import (
     HFViewerInaccessible,
     HFViewerUnavailable,
@@ -95,6 +96,7 @@ class HuggingFaceStorageBackend:
         hf_token_env: str,
         gb_token_env: str,
         hf_namespace: str | None,
+        hf_import_namespaces: list[str],
         hf_preview_enabled: bool,
         hf_viewer_base_url: str,
         hf_viewer_timeout_seconds: float,
@@ -106,6 +108,7 @@ class HuggingFaceStorageBackend:
         self._hf_token_env = hf_token_env
         self._gb_token_env = gb_token_env
         self._hf_namespace = hf_namespace
+        self._hf_import_namespaces = hf_import_namespaces
         self._hf_preview_enabled = hf_preview_enabled
         self._hf_viewer_base_url = hf_viewer_base_url
         self._hf_viewer_timeout_seconds = hf_viewer_timeout_seconds
@@ -128,9 +131,10 @@ class HuggingFaceStorageBackend:
 
         That is ``<name>_<dataset id[:8]>`` (see :meth:`_artifact_name`), in
         ``hf_namespace`` when that is set (unset, gbcli picked the org). Only that
-        repo is read with the HF token: a stored locator can come from a caller (the
-        api-bridge registers whatever a run reports), and one cannot name the random
-        id of a row before it exists.
+        repo may be read with the HF token, and only when ``hf_import_namespaces``
+        allows its owner: a stored locator can come from a caller (the api-bridge
+        registers whatever a run reports), and one cannot name the random id of a row
+        before it exists.
         """
         owner, _, repo = repo_id.rpartition("/")
         if not repo.endswith(f"_{str(dataset_id)[:8]}"):
@@ -343,13 +347,14 @@ class HuggingFaceStorageBackend:
 
         Reads at most ``rows`` rows per split from ``datasets-server.huggingface.co``
         using the dataset's stored ``hf://`` ``artifact_url``. Only this row's own
-        push (:meth:`_is_own_push`) is read with the HF token — the app's pushes are
-        private. Any other repo — e.g. a public dataset a training run registered
-        through the bridge — is read anonymously, so a locator a caller supplied never
-        borrows the token (a private, gated or missing foreign repo then simply has no
-        preview, reported ``viewer_ready=True`` since waiting will not change that).
-        With no token set, the row's own push is read anonymously too, so a public one
-        still previews. Every failure mode —
+        push (:meth:`_is_own_push`) is read with the HF token, and only when its owner
+        is in ``hf_import_namespaces`` (``hf_hub.token_for``, the rule imports use; an
+        empty list means never). The app's pushes are private, so the push org must be
+        listed for them to preview. Any other repo — e.g. a public dataset a training
+        run registered through the bridge — is read anonymously, so a locator a caller
+        supplied never borrows the token (a private, gated or missing foreign repo then
+        simply has no preview, reported ``viewer_ready=True`` since waiting will not
+        change that). Without the token, a public repo still previews. Every failure mode —
         disabled, an underivable locator, or a viewer that is unavailable or still
         precomputing — degrades to an empty (or partial) preview. This method never
         raises: a preview must never fail a metadata read.
@@ -372,14 +377,15 @@ class HuggingFaceStorageBackend:
                     dataset_id,
                 )
                 return await self._preview_from_viewer(repo_id, None, rows)
-            token = os.environ.get(self._hf_token_env) or None
-            if token is None:
+            env_token = os.environ.get(self._hf_token_env) or None
+            if env_token is None:
                 # Still worth an anonymous read: the repo may be public.
                 logger.warning(
                     "%s not set; reading the HF preview for %s anonymously.",
                     self._hf_token_env,
                     dataset_id,
                 )
+            token = token_for(repo_id, token=env_token, namespaces=self._hf_import_namespaces)
             return await self._preview_from_viewer(repo_id, token, rows)
         except Exception:
             logger.exception("Unexpected HF preview failure for %s; returning empty.", dataset_id)
