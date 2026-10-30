@@ -48,7 +48,6 @@ import httpx
 from autotunex.core.exceptions import DatasetPushFailedError, DatasetPushTimeoutError
 from autotunex.core.logging import get_logger
 from autotunex.models.dataset import DatasetPreview
-from autotunex.services.storage.hf_hub import is_allowlisted
 from autotunex.services.storage.hf_viewer import (
     HFViewerInaccessible,
     HFViewerUnavailable,
@@ -96,7 +95,6 @@ class HuggingFaceStorageBackend:
         hf_token_env: str,
         gb_token_env: str,
         hf_namespace: str,
-        hf_import_namespaces: list[str],
         hf_preview_enabled: bool,
         hf_viewer_base_url: str,
         hf_viewer_timeout_seconds: float,
@@ -108,9 +106,6 @@ class HuggingFaceStorageBackend:
         self._hf_token_env = hf_token_env
         self._gb_token_env = gb_token_env
         self._hf_namespace = hf_namespace
-        # Owners whose repos are read with the HF token: the org this backend
-        # pushes to, plus the import allowlist (``hf_hub.token_for``'s rule).
-        self._token_namespaces = [hf_namespace, *hf_import_namespaces]
         self._hf_preview_enabled = hf_preview_enabled
         self._hf_viewer_base_url = hf_viewer_base_url
         self._hf_viewer_timeout_seconds = hf_viewer_timeout_seconds
@@ -127,6 +122,17 @@ class HuggingFaceStorageBackend:
         in an artifact name.
         """
         return f"{name}_{str(dataset_id)[:8]}"
+
+    def _is_own_push(self, repo_id: str, dataset_id: UUID) -> bool:
+        """Whether ``repo_id`` is the repo this backend pushed for ``dataset_id``.
+
+        That is ``<hf_namespace>/<name>_<dataset id[:8]>`` (see :meth:`_artifact_name`).
+        Only that repo is read with the HF token: a stored locator can come from a
+        caller (the api-bridge registers whatever a run reports), and one cannot
+        name the random id of a row before it exists.
+        """
+        owner, _, repo = repo_id.rpartition("/")
+        return owner == self._hf_namespace and repo.endswith(f"_{str(dataset_id)[:8]}")
 
     async def persist(
         self,
@@ -332,15 +338,14 @@ class HuggingFaceStorageBackend:
         """Best-effort bounded preview from the HuggingFace dataset viewer.
 
         Reads at most ``rows`` rows per split from ``datasets-server.huggingface.co``
-        using the dataset's stored ``hf://`` ``artifact_url``. A repo whose owner is
-        the push org (``hf_namespace``) or in ``hf_import_namespaces`` is read with
-        the HF token — the app's own pushes are private — whichever row or locator
-        spelling names it. Any other repo — e.g. a public dataset a training run
-        registered through the bridge — is read anonymously, so the token never goes
-        to an owner the operator did not configure (a private, gated or missing
-        foreign repo then simply has no preview, reported ``viewer_ready=True`` since
-        waiting will not change that). With no token set, a configured owner's repo
-        is read anonymously too, so a public one still previews. Every failure mode —
+        using the dataset's stored ``hf://`` ``artifact_url``. Only this row's own
+        push (:meth:`_is_own_push`) is read with the HF token — the app's pushes are
+        private. Any other repo — e.g. a public dataset a training run registered
+        through the bridge — is read anonymously, so a locator a caller supplied never
+        borrows the token (a private, gated or missing foreign repo then simply has no
+        preview, reported ``viewer_ready=True`` since waiting will not change that).
+        With no token set, the row's own push is read anonymously too, so a public one
+        still previews. Every failure mode —
         disabled, an underivable locator, or a viewer that is unavailable or still
         precomputing — degrades to an empty (or partial) preview. This method never
         raises: a preview must never fail a metadata read.
@@ -354,9 +359,9 @@ class HuggingFaceStorageBackend:
             if repo_id is None:
                 logger.debug("No hf:// locator for %s; returning empty preview.", dataset_id)
                 return empty
-            if not is_allowlisted(repo_id, self._token_namespaces):
+            if not self._is_own_push(repo_id, dataset_id):
                 logger.debug(
-                    "HF locator %s of dataset %s has an unlisted owner; reading it anonymously.",
+                    "HF locator %s is not dataset %s's own push; reading it anonymously.",
                     repo_id,
                     dataset_id,
                 )

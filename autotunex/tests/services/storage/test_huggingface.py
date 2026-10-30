@@ -33,7 +33,6 @@ PUSH_STDOUT = (
 def _backend(
     *,
     hf_namespace: str = "example-org",
-    hf_import_namespaces: list[str] | None = None,
     hf_preview_enabled: bool = True,
     tags: str = "autotunex",
     http_client: httpx.AsyncClient | None = None,
@@ -44,7 +43,6 @@ def _backend(
         hf_token_env=HF_ENV,
         gb_token_env=GB_ENV,
         hf_namespace=hf_namespace,
-        hf_import_namespaces=hf_import_namespaces or [],
         hf_preview_enabled=hf_preview_enabled,
         hf_viewer_base_url="https://viewer.test",
         hf_viewer_timeout_seconds=2.5,
@@ -662,19 +660,22 @@ async def test_preview_own_repo_refused_is_still_reported_not_ready(
 @pytest.mark.parametrize(
     ("artifact_url", "sends_token"),
     [
-        # the push org, under either locator spelling and whatever the name suffix:
-        # a bridge row for an app-pushed repo has a different id than the pushing row
+        # this row's own push, under either locator spelling
         ("hf://huggingface.co/datasets/example-org/finance_0f55c1a6", True),
-        ("hf:///datasets/example-org/finance_9bb5cc58", True),
-        ("hf:///datasets/example-org/not-pushed-by-the-app", True),
-        # an import-allowlisted org
-        ("hf:///datasets/allowed-org/private_ds", True),
+        ("hf:///datasets/example-org/finance_0f55c1a6", True),
+        # another row's suffix, or no suffix, in the push org: a caller can store
+        # such a locator through the bridge, so it never borrows the token
+        ("hf:///datasets/example-org/finance_9bb5cc58", False),
+        ("hf:///datasets/example-org/not-pushed-by-the-app", False),
+        # an import-allowlisted org: the token is for imports, not stored locators
+        ("hf:///datasets/allowed-org/private_ds", False),
+        ("hf:///datasets/allowed-org/finance_0f55c1a6", False),
         # any other owner, even one copying this row's id8 suffix
         ("hf://huggingface.co/datasets/other-org/finance_0f55c1a6", False),
         ("hf:///datasets/Example-Org/finance_0f55c1a6", False),
     ],
 )
-async def test_preview_sends_the_token_only_to_a_configured_owner(
+async def test_preview_sends_the_token_only_to_the_rows_own_push(
     monkeypatch: pytest.MonkeyPatch, artifact_url: str, sends_token: bool
 ) -> None:
     monkeypatch.setenv(HF_ENV, "hf_tok")
@@ -687,7 +688,7 @@ async def test_preview_sends_the_token_only_to_a_configured_owner(
         return httpx.Response(200, json={"rows": [{"row": {"a": 1}}]})
 
     async with _viewer_client(handler) as client:
-        await _backend(hf_import_namespaces=["allowed-org"], http_client=client).preview(
+        await _backend(http_client=client).preview(
             dataset_id=DATASET_ID,
             name="finance",
             data_format="jsonl",
@@ -699,7 +700,7 @@ async def test_preview_sends_the_token_only_to_a_configured_owner(
     assert all(("authorization" in r.headers) is sends_token for r in seen)
 
 
-async def test_preview_of_a_configured_owner_reads_anonymously_when_token_missing(
+async def test_preview_of_the_own_push_reads_anonymously_when_token_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With no token there is nothing to protect, so a public repo still previews."""
@@ -725,7 +726,7 @@ async def test_preview_of_a_configured_owner_reads_anonymously_when_token_missin
     assert seen and all("authorization" not in r.headers for r in seen)
 
 
-async def test_preview_of_a_configured_owner_refused_without_a_token_is_empty(
+async def test_preview_of_the_own_push_refused_without_a_token_is_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A private own repo with no token set has no preview; waiting will not change that."""
