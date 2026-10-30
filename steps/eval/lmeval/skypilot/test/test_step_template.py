@@ -23,6 +23,7 @@ _FAMILIES = (
     "ifbench",
     "judged",
     "lmeval",
+    "mcpmark",
     "nl2repo",
     "nemoskills",
     "swebench",
