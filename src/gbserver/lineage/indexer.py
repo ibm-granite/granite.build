@@ -277,9 +277,16 @@ _TRANSIENT_ERROR_NAMES = frozenset(
         "DisconnectionError",
         "TimeoutError",
         "ConnectionError",
-        "CommError",
+        # requests' base class, for its connection errors and timeouts (not the
+        # builtins'). An HTTPError is one too, but carries a status, which
+        # decides first.
+        "RequestException",
     }
 )
+# Not "CommError": W&B wraps every failure in one, a GraphQL error returned with
+# a 200 (a run or artifact not found, permission denied) included, so its class
+# says nothing. What it wraps (``.exc``) decides: a status, or a requests
+# connection error or timeout, is read through it; anything else is the job's.
 _TRANSIENT_ERROR_MARKERS = (
     "database is locked",
     "could not connect",

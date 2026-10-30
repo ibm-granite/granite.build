@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from gbserver.lineage import indexer as idx
 from gbserver.storage.stored_lineage_row import JobStore
@@ -1337,8 +1338,14 @@ def _http_error(status):
         # Any 5xx is an outage: it must skip nothing.
         (_http_error(500), True),
         (CommError("HTTP 501", _http_error(501)), True),
-        # A CommError with no status keeps its name-based classification.
+        # A CommError with no status: what it wraps decides, not its class.
         (CommError("connection reset"), True),
+        (CommError("Read timed out", requests.exceptions.ReadTimeout()), True),
+        (CommError("x", requests.exceptions.ConnectionError("refused")), True),
+        (CommError("x", requests.exceptions.ChunkedEncodingError()), True),
+        # A GraphQL error W&B returns with a 200 is the run's own failure.
+        (CommError("permission denied", Exception("permission denied")), False),
+        (CommError("project not found", Exception("project not found")), False),
         # Postgres ProgramLimitExceeded arrives as an OperationalError.
         (
             OperationalError(
