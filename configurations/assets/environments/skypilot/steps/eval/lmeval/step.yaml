@@ -1,6 +1,7 @@
 name: lmeval
 version: 0.1.0
-# Granite benchmark: MMLU-ProX lite (IBM), exact match (custom-extract).
+# Granite benchmarks: MMLU-ProX lite (IBM), exact match (custom-extract), and
+# INCLUDE-44, accuracy.
 #
 # ONE STEP PER GRANITE_EVALS IMAGE FAMILY. `benchmark` selects which
 # benchmark in this family to run; every steps/eval/*/ template has the same shape
@@ -15,13 +16,17 @@ version: 0.1.0
 # The image is chosen at run time from config.image. Nothing is cloned or
 # mounted at launch.
 #
-# WHAT RUNS. `granite-evals run mmlu-prox-lite` serves model_path with vLLM inside the
-# job and runs lm-evaluation-harness's own mmlu_prox_lite_<lang>_<subject> tasks
-# (5-shot CoT, custom-extract regex, exact_match) against it in chat mode
-# (local-chat-completions, apply_chat_template, fewshot_as_multiturn), over the 11
-# Granite languages MMLU-ProX has, on li-lab/MMLU-ProX-Lite at a pinned commit.
-# The value is the mean over languages. Writes one results.json
-# (schema: granite_evals/results.py).
+# WHAT RUNS. `granite-evals run <benchmark>` serves model_path with vLLM inside the
+# job and runs lm-evaluation-harness's own tasks against it. mmlu-prox-lite runs the
+# mmlu_prox_lite_<lang>_<subject> tasks (5-shot CoT, custom-extract regex,
+# exact_match) in chat mode (local-chat-completions, apply_chat_template,
+# fewshot_as_multiturn), over the 11 Granite languages MMLU-ProX has, on
+# li-lab/MMLU-ProX-Lite at a pinned commit. include-44 runs the
+# include_base_44_<lang>_<domain> tasks (CohereLabs/include-base-44 at a pinned
+# commit, 44 languages x 11 domains) in the harness's base mode — one
+# loglikelihood request per option letter, acc = the argmax letter. Each writes
+# one results.json (schema: granite_evals/results.py) whose value is the mean
+# over languages.
 #
 # PHASES. This benchmark scores inside generation, so it runs as one GPU job
 # (phase: all); see the sibling granite-* steps for the generate/score split.
