@@ -4,6 +4,22 @@
 > Read [skypilot.md](skypilot.md) first for the compute model and config common to all clouds; this
 > page covers only what is SLURM-specific.
 
+## SkyPilot fork
+
+gbserver installs SkyPilot from the granite-build fork
+([cmadam/skypilot](https://github.com/cmadam/skypilot)), pinned in `pyproject.toml` to the tag
+`gb-sky-v1-stable`. Upstream SkyPilot has no SLURM cloud. The fork adds the SLURM cloud driver —
+containerized steps via the Pyxis SPANK plugin and per-task `sbatch_options`. The tag tracks the
+fork's SLURM-only line: the LSF cloud driver this repo's clusters used before moving to SLURM is
+not on it, but the fork's LSF line remains installable under its own snapshot tag
+(see [skypilot-lsf.md](skypilot-lsf.md)).
+
+`gb-sky-v1-stable` is a moving tag: it is re-pointed to the recommended commit of the fork's
+SLURM-only line as the fork advances, and a breaking change gets a new tag. Fresh installs pick up
+the current target; an existing clone keeps the old one until you run
+`git fetch --tags --force` — and rebuild the venv, since the Makefile only reinstalls when
+`pyproject.toml` changes.
+
 ## Compute environment
 
 With `default_cloud: slurm`, SkyPilot provisions onto an existing **SLURM** cluster. It reaches the
@@ -40,6 +56,38 @@ Keys are the **exact OpenSSH directive names**, so the env mirrors `~/.slurm/con
 via a secret — gbserver writes a `0600` file and points `IdentityFile` at it); specifying both is an
 error. The SSH private key and the cluster itself stay out-of-band — gbserver does not provision them.
 
+Every non-`Host` directive value is **secret-name-or-literal** — when it exactly matches a secret name
+in the space using this environment, the secret's value is what gets written to `~/.slurm/config`. See
+[Secrets in `cluster_ssh_configs`](#secrets-in-cluster_ssh_configs) for how to set those secrets.
+
+A host can instead authenticate via an already-issued rotating SSH cert (e.g. Smallstep `step`) with
+`IdentityStepCert: true` in place of `IdentityFile`/`IdentityKey`:
+
+```yaml
+  cluster_ssh_configs:
+    slurm:
+      - Host: slurm-cluster
+        HostName: SLURM_LOGIN_NODES      # Secret name (or literal) — as above.
+        User: SLURM_LOGIN_USER           # The *login account*, not the cert's identity-provider
+        IdentityStepCert: true           # principal — the two need not match; the remote host
+                                         # reconciles them, not gbserver.
+```
+
+With `IdentityStepCert: true`, gbserver checks at launch that **some** currently loaded cert (e.g.
+from `step ssh list`) is still within its validity window — a cert printed `Valid: forever` counts as
+valid — then drops the directive. It never adds an `IdentityFile`/`CertificateFile` line, since the
+cert is already in the local ssh-agent and its bytes rotate independently of this config; identities
+in the agent that are *not* certificates (plain keys) are skipped, not errors. gbserver **never runs
+`step ssh login` itself** (that needs interactive browser/OIDC auth it can't perform from a build
+codepath); if no valid cert is loaded — or the `step` CLI is missing or unreachable — the build fails
+fast with an actionable error telling you to run `step ssh login` yourself and retry. A falsy value
+simply disables the check: the directive is dropped and never rendered (`IdentityStepCert no` is not
+a real ssh option, and `ssh -F` would reject the whole config file over an unknown directive), and
+it does not conflict with an `IdentityKey`/`IdentityFile` on the same host. Do **not** set
+`IdentitiesOnly` on an `IdentityStepCert` host: since no `IdentityFile` is ever added,
+`IdentitiesOnly: "yes"` would tell `ssh` to offer no identities at all, so it would never offer the
+agent-loaded certificate either — gbserver rejects this combination at materialize time.
+
 gbserver merges this block into `~/.slurm/config` with last-writer-wins semantics: a differing
 gbserver-managed block for the same alias is **overwritten** (so a stale or re-keyed entry self-heals
 — no manual `rm ~/.slurm/config`); a *foreign* (non-gbserver) entry for the same alias is refused
@@ -60,6 +108,20 @@ sharing one `Host` block — the fit for a cluster reached through several equiv
           - login2.cluster.example.com
         User: root
         IdentityFile: ~/.ssh/slurm_docker_key
+```
+
+Each candidate — or a scalar `HostName` — may instead name a **secret**, like any other directive.
+Because `HostName` feeds candidate selection before rendering, its secret may hold one login node
+**or several** (comma- or whitespace-separated), and every one joins the same failover pool:
+
+```yaml
+  cluster_ssh_configs:
+    slurm:
+      - Host: slurm-docker
+        # Secret holding e.g. "login1.cluster.example.com,login2.cluster.example.com":
+        HostName: SLURM_LOGIN_NODES
+        User: SLURM_LOGIN_USER        # Any directive can name a secret the same way.
+        IdentityKey: SSH_PRIVATE_KEY
 ```
 
 At launch gbserver picks one candidate and writes it as a normal scalar `HostName`. The pick is
@@ -100,6 +162,40 @@ the genuine error surfaces, so a true outage is never hidden.
 > re-authentication with the current key. This is a **test-only** toggle (manually set, unconditional
 > — not idle-gated); production never clears sockets, since the socket root is shared by all of the OS
 > user's SkyPilot SSH connections. It is not an environment-config key.
+
+#### Secrets in `cluster_ssh_configs`
+
+Every non-`Host` directive value is **secret-name-or-literal**: when the value exactly matches a secret
+name in the space using this environment, the secret's value is what gets written to `~/.slurm/config`.
+This is how a public environment asset can name its reachability requirements — `HostName`, `User`, the
+key — without embedding cluster-internal hostnames, accounts, or key material; the space that deploys it
+supplies the values.
+
+`HostName` follows the same rule with one addition: it is resolved *before* login-node selection, so a
+`HostName` secret may hold **several** interchangeable login nodes (comma- or whitespace-separated) and
+all of them become failover candidates (see [Multiple login nodes](#multiple-login-nodes-hostname-list)).
+A value that looks like a secret name (UPPER_SNAKE) but matches no secret is used as a literal, with a
+warning in gbserver's log — an SSH failure right after is the usual symptom of a missing secret.
+
+The shipped `ibm-bluevela` environment uses exactly this shape; a space running it defines three
+secrets:
+
+| Secret | Holds |
+|---|---|
+| `BV_SLURM_LOGIN_NODES` | The candidate login hostnames, comma- or whitespace-separated. |
+| `BV_SLURM_LOGIN_USER` | The account on the login nodes. |
+| `BV_SSH_PRIVATE_KEY` | The SSH private key contents (`IdentityKey`). |
+
+How you set them depends on the secret manager the space's `space.yaml` selects (see
+[Secrets](../../secrets/README.md) for the full backend docs):
+
+- **`local`** — a file in the space's secrets dir (default
+  `$GB_HOME_DIR/space_secrets/<space name>/`), with the value base64-encoded in `payload` and tagged
+  `labels: [encode:base64]`. For example, `BV_SLURM_LOGIN_USER=granitebuild` is
+  `echo -n 'granitebuild' | base64` → `payload: Z3Jhbml0ZWJ1aWxk`.
+- **`env`** — environment variables with the `GBSERVER_SECRET_` prefix, e.g.
+  `GBSERVER_SECRET_BV_SLURM_LOGIN_NODES` (ideal for CI/CD and containers).
+- **`ibmcloud`** — the secret of the same name in IBM Cloud Secrets Manager (read-only at build time).
 
 ### `cluster` / `zone`
 
@@ -239,14 +335,15 @@ Values use SLURM's own formats — e.g. `time` accepts bare minutes (`240`),
 > | `cpus-per-task` | `compute_config.num_cpus_per_node`, or `resources.cpus` |
 > | `mem` | `resources.memory` (the `compute_config.total_memory_per_node` floor is intentionally skipped on slurm/lsf, so set an explicit `resources.memory`) |
 > | `partition` | the `infra` string / `zone` (`"slurm/<cluster>/<partition>"`) — see [`cluster` / `zone`](#cluster--zone) |
-> | `nodes` | *(not plumbed through the SkyPilot launcher — see below)* |
+> | `nodes` | `compute_config.num_nodes` — plumbed to `sky.Task.num_nodes`, from which the provisioner generates `--nodes` (see [Multi-node jobs and NCCL](#multi-node-jobs-and-nccl)) |
 >
 > `nodes`, `job-name`, `output`, and `error` are likewise SkyPilot-managed.
-> Multi-node is **not** driven from the step config on this launcher: SkyPilot's
-> `--nodes` comes from its own provisioner node count, and the SkyPilot launcher
-> does not read `compute_config.num_nodes` (that field is honored only by the
-> native k8s/LSF gbstep paths). Confirmed to pass through unchanged: `time`,
-> `qos`, `account`, `constraint`, `nodelist`.
+> Multi-node is driven by `compute_config.num_nodes` (or a step/build
+> `launcher_config.num_nodes`): the launcher resolves it to `sky.Task.num_nodes`
+> and the provisioner derives `--nodes` from it, so a `nodes` key inside
+> `sbatch_options` is still dropped. A `num_nodes` placed under `resources` is
+> ignored with a warning — it is a task field, not a resources one. Confirmed to
+> pass through unchanged: `time`, `qos`, `account`, `constraint`, `nodelist`.
 
 It resolves per step, merged **per key** (highest precedence last), so a step can
 override one directive while inheriting the rest:
@@ -265,6 +362,12 @@ Notes:
   LSF set the runlimit at the environment level via
   `cloud_config.lsf...bsub_options.W` (minutes) — see
   [skypilot-lsf.md](skypilot-lsf.md).
+- For a containerized GPU step, gbserver can additionally **generate** a typed
+  `gpus-per-node` directive and the `NVIDIA_*` export list Pyxis needs — opt-in
+  per environment via `slurm_gpu_sbatch_directives: true` (off by default; the
+  ibm-bluevela environment sets it). An explicit `sbatch_options` value still
+  wins per key. See the GPU note under
+  [No `image_id` on bare-host clusters](#no-image_id-on-bare-host-clusters).
 
 ### No `image_id` on bare-host clusters
 
@@ -281,6 +384,31 @@ launch fails with `NotSupportedError`; the `run:` command then executes directly
 > `sacct -j <job_id> --format=JobID,State,ExitCode,Reason`: the container-setup sub-steps show
 > `FAILED 1:0` while the host-side steps complete. The image must also grant passwordless `sudo` (or run
 > as root).
+
+> **GPU steps needing runtime CUDA JIT compilation**: a plain `python:slim`/`ubuntu` base with only
+> pip-installed `nvidia-*-cu12` wheels has no `nvcc`/dev toolkit, so anything that JIT-compiles CUDA at
+> runtime (`torch.compile`/Inductor, raw Triton kernels, FlashInfer's JIT sampler) fails with
+> `libcuda.so cannot found!` or `Could not find nvcc`. Build your step's own image `FROM` a CUDA
+> **devel** base (e.g. an NGC `nvcr.io/nvidia/cuda:<ver>-devel-<distro>` tag) directly, matching the
+> CUDA minor version your step's own pinned wheels expect. Two residual gaps that image does NOT
+> solve on its own, split across two different layers:
+> the generated Pyxis GPU sbatch directives (opt-in via
+> `slurm_gpu_sbatch_directives: true` — see
+> [`sbatch_options`](#sbatch_options--slurm-sbatch-directives)) already set
+> `NVIDIA_VISIBLE_DEVICES`/
+> `NVIDIA_DRIVER_CAPABILITIES` so pyxis actually injects the host's driver libraries into the
+> container (without it, pyxis's NVIDIA hook sees `NVIDIA_VISIBLE_DEVICES` unset, defaults to
+> `"void"`, and skips injection entirely — no `ldconfig` can fix a library that was never injected);
+> but once injected, the container's own `/etc/ld.so.cache` is still stale (built at image time, never
+> refreshed), so Triton's driver discovery (`ldconfig -p` first, `LD_LIBRARY_PATH` only as a fallback)
+> still won't find it until a step's own launch script runs `ldconfig` as root at container start —
+> that part stays a genuine per-consumer concern, pip/uv can also still shadow the toolkit at the
+> package level regardless of either fix.
+>
+> Without `slurm_image_cache`, Pyxis's own enroot import runs inside each job and its result is
+> confirmed per-node (node-local storage, not shared) — the first job to land on a given node after
+> an image changes pays a real cold-import cost; that's expected, not a hang. The shared `.sqsh`
+> cache below exists precisely to remove that cost.
 
 ### `slurm_image_cache` — shared `.sqsh` image cache
 
@@ -405,6 +533,61 @@ Constraints and notes:
 - This mirrors LSF's `cloud_config.lsf.cluster_configs.<cluster>.workdir`, but LSF does **not** require
   the ancestor relationship because its backend identity-mounts all of `/proj` (see
   [skypilot-lsf.md](skypilot-lsf.md#file_mounts-inside-enroot-containers)).
+
+### `container_mounts` (extra container bind mounts)
+
+`workdir` covers the per-run build tree, but a containerized step that reads or writes anywhere
+**else** on the shared filesystem needs that path mounted too: the SLURM backend's
+`--container-mounts` starts from only `home:home`, `ccache:ccache`, and `workdir:workdir`. The
+`container_mounts` key (a `slurm.cluster_configs.<cluster>` sibling of `workdir`, deep-merged into
+`~/.sky/config.yaml` at launch) adds host paths, mapped container path → host path with an optional
+`mode`:
+
+```yaml
+config:
+  cloud_config:
+    slurm:
+      cluster_configs:
+        bluevela:                              # must match config.cluster
+          container_mounts:
+            /proj:
+              host_path: /proj
+              mode: rw
+```
+
+The `ibm-bluevela` environment mounts the whole `/proj` GPFS tree identity — the same mount the LSF
+backend applies unconditionally — so inputs and outputs staged anywhere under `/proj` are visible
+in-container regardless of which group tree holds them, and every node of a multi-node job sees an
+identical layout. That supersedes an earlier, narrower `/proj/granite-build`-only mount and matches
+the mount set BlueVela ops validated for multi-node NCCL training (`container_mounts=/proj:/proj`
+in their reference sbatch script). Nested overlap with `workdir` is fine: bind mounts of the same
+underlying filesystem coexist.
+
+### Multi-node jobs and NCCL
+
+Multi-node is requested per step with `compute_config.num_nodes` (a step/build
+`launcher_config.num_nodes` also works; a `num_nodes` under `resources` is ignored with a warning).
+The launcher maps it to `sky.Task.num_nodes`, from which the provisioner derives `--nodes`, and the
+fork's SLURM executor (`sky/skylet/executor/slurm.py`) runs one task per node
+(`--ntasks-per-node=1`, `--kill-on-bad-exit`) while re-asserting `SKYPILOT_NODE_RANK` and
+`SKYPILOT_NODE_IPS` on each node at run time — the rank/rendezvous inputs torchrun-based steps
+(e.g. the distill `gold` step) consume for `--node_rank`/`--nnodes`. No PMIx or hostfile plumbing is
+needed; `MASTER_ADDR`/`MASTER_PORT` come from the step's own launcher script.
+
+No device mounts are needed for NCCL on this cluster: enroot's own device hook carries `/dev` into
+the container (with `/dev/shm` explicitly mounted even under `ENROOT_RESTRICT_DEV`), and BlueVela
+ops' multi-node all-reduce reference runs on exactly the `home + ccache + workdir + /proj` mount set
+this environment produces. If a future step needs an additional shared path, add it via
+[`container_mounts`](#container_mounts-extra-container-bind-mounts), not device nodes.
+
+NCCL diagnostics and tuning (`NCCL_DEBUG`, `NCCL_DEBUG_SUBSYS`, `NCCL_DEBUG_FILE`, ...) belong to
+the **recipe/build layer** — a step-level `sbatch_options.export` or the recipe's NCCL parameters —
+never to the environment-wide default and never to step images: they are run-scoped knobs, not
+cluster identity. An explicit `export` is merged with the generated Pyxis `NVIDIA_*` items item by
+item (`_merge_sbatch_export_items` in `src/gbserver/environment/skypilot.py`), so setting
+`export: NCCL_DEBUG=INFO` on a step cannot accidentally drop the generated CUDA-visibility
+directives. `--exclusive` (useful for clean multi-node performance comparisons) is likewise per
+step, via `sbatch_options.exclusive: true`.
 
 ## Example `environment.yaml` (bare-host SLURM)
 

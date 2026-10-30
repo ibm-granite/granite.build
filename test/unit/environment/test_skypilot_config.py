@@ -31,7 +31,7 @@ from gbserver.types.environmentconfig import (
     AwsCredentialProfile,
     ClusterSshConfigs,
 )
-from gbserver.types.errors import SkypilotConfigCollisionError
+from gbserver.types.errors import SkypilotConfigCollisionError, StepCertExpiredError
 
 
 def _host(alias="clusterA", **directives):
@@ -487,6 +487,301 @@ class TestIdentityKey:
 
 
 # --------------------------------------------------------------------------- #
+# IdentityStepCert: check-only against already-loaded Smallstep SSH certs
+# --------------------------------------------------------------------------- #
+def _cert_text(valid_to, principals):
+    """Build fake ``ssh-keygen -L -f -`` output text (the real field shapes).
+
+    ``valid_to="forever"`` emits the ``Valid: forever`` form — a cert with no
+    expiry timestamp, which the range regex alone would not match.
+    """
+    principal_lines = "\n".join(f"\t\t{p}" for p in principals)
+    if valid_to == "forever":
+        valid_line = "        Valid: forever\n"
+    else:
+        valid_line = f"        Valid: from 2026-08-24T09:41:46 to {valid_to}\n"
+    return (
+        "        Type: ecdsa-sha2-nistp256-cert-v01@openssh.com user certificate\n"
+        '        Key ID: "someone@ibm.com"\n'
+        "        Serial: 123\n"
+        f"{valid_line}"
+        "        Principals: \n"
+        f"{principal_lines}\n"
+    )
+
+
+class TestStepCert:
+    def _materialize(self, tmp_path, cert_descriptions, **directives):
+        ssh = ClusterSshConfigs(lsf=[_host("bluevela", **directives)])
+        return self._materialize_multi(tmp_path, ssh, cert_descriptions)
+
+    def _materialize_multi(self, tmp_path, ssh, cert_descriptions, monkeypatch=None):
+        # Patch the low-level cert-loading call, not subprocess directly, so tests
+        # stay independent of the exact step/ssh-keygen invocation shape.
+        import gbserver.environment.skypilot_config as sc_mod
+
+        orig = sc_mod._step_loaded_certs
+        sc_mod._step_loaded_certs = lambda: cert_descriptions
+        try:
+            sc.materialize("sky-lsf", ssh, None, None, {}, home=tmp_path)
+        finally:
+            sc_mod._step_loaded_certs = orig
+        return tmp_path / ".lsf" / "config"
+
+    def test_valid_cert_passes_and_drops_directive(self, tmp_path):
+        future = "2099-01-01T00:00:00"
+        dest = self._materialize(
+            tmp_path,
+            [_cert_text(future, ["granitebuild"])],
+            HostName="h",
+            User="granitebuild",
+            IdentityStepCert=True,
+        )
+        text = _read(dest)
+        assert "IdentityStepCert" not in text
+        assert "IdentityFile" not in text
+        assert "Host bluevela" in text and "User granitebuild" in text
+
+    def test_no_certs_loaded_raises(self, tmp_path):
+        with pytest.raises(StepCertExpiredError):
+            self._materialize(
+                tmp_path, [], HostName="h", User="granitebuild", IdentityStepCert=True
+            )
+
+    def test_expired_cert_raises(self, tmp_path):
+        past = "2000-01-01T00:00:00"
+        with pytest.raises(StepCertExpiredError):
+            self._materialize(
+                tmp_path,
+                [_cert_text(past, ["granitebuild"])],
+                HostName="h",
+                User="granitebuild",
+                IdentityStepCert=True,
+            )
+
+    def test_one_expired_one_valid_cert_passes(self, tmp_path):
+        past = "2000-01-01T00:00:00"
+        future = "2099-01-01T00:00:00"
+        dest = self._materialize(
+            tmp_path,
+            [_cert_text(past, ["x"]), _cert_text(future, ["y"])],
+            HostName="h",
+            User="granitebuild",
+            IdentityStepCert=True,
+        )
+        text = _read(dest)
+        assert "Host bluevela" in text
+
+    def test_both_identitykey_and_stepcert_raises(self, tmp_path):
+        with pytest.raises(ValueError):
+            self._materialize(
+                tmp_path,
+                [],
+                User="granitebuild",
+                IdentityKey="BV_KEY",
+                IdentityStepCert=True,
+            )
+
+    def test_both_identityfile_and_stepcert_raises(self, tmp_path):
+        with pytest.raises(ValueError):
+            self._materialize(
+                tmp_path,
+                [],
+                User="granitebuild",
+                IdentityFile="~/.ssh/k",
+                IdentityStepCert=True,
+            )
+
+    def test_identities_only_and_stepcert_raises(self, tmp_path):
+        with pytest.raises(ValueError):
+            self._materialize(
+                tmp_path,
+                [],
+                HostName="h",
+                User="granitebuild",
+                IdentityStepCert=True,
+                IdentitiesOnly="yes",
+            )
+
+    def test_idempotent_rerender(self, tmp_path):
+        future = "2099-01-01T00:00:00"
+        ssh = ClusterSshConfigs(
+            lsf=[
+                _host(
+                    "bluevela", HostName="h", User="granitebuild", IdentityStepCert=True
+                )
+            ]
+        )
+        certs = [_cert_text(future, ["granitebuild"])]
+        dest = self._materialize_multi(tmp_path, ssh, certs)
+        first = _read(dest)
+        # Re-materializing (as a different env) with the same valid cert must not
+        # raise SkypilotConfigCollisionError — the rendered block is stable.
+        self._materialize_multi(tmp_path, ssh, certs)
+        assert _read(dest) == first
+
+    def test_error_message_names_remediation(self, tmp_path):
+        with pytest.raises(StepCertExpiredError) as exc:
+            self._materialize(
+                tmp_path, [], HostName="h", User="granitebuild", IdentityStepCert=True
+            )
+        assert "step ssh login" in str(exc.value)
+
+    def test_forever_cert_passes(self, tmp_path):
+        # `Valid: forever` (no expiry timestamp) must count as a valid cert,
+        # not as a missing validity window that gets skipped.
+        dest = self._materialize(
+            tmp_path,
+            [_cert_text("forever", ["granitebuild"])],
+            HostName="h",
+            User="granitebuild",
+            IdentityStepCert=True,
+        )
+        assert "IdentityStepCert" not in _read(dest)
+
+    def test_expired_and_forever_certs_pass_on_the_forever_one(self, tmp_path):
+        past = "2000-01-01T00:00:00"
+        dest = self._materialize(
+            tmp_path,
+            [_cert_text(past, ["x"]), _cert_text("forever", ["y"])],
+            HostName="h",
+            User="granitebuild",
+            IdentityStepCert=True,
+        )
+        assert "IdentityStepCert" not in _read(dest)
+
+    def test_unparseable_timestamp_skips_cert_rather_than_crashing(self, tmp_path):
+        # A `Valid:` format fromisoformat cannot parse skips that cert (with a
+        # warning) instead of raising — here leaving no valid cert, so the
+        # actionable expiry error fires rather than a raw ValueError.
+        with pytest.raises(StepCertExpiredError, match="step ssh login"):
+            self._materialize(
+                tmp_path,
+                [_cert_text("2026/08/24 09:41:46", ["granitebuild"])],
+                HostName="h",
+                User="granitebuild",
+                IdentityStepCert=True,
+            )
+
+    def test_unparseable_timestamp_ignored_when_another_cert_is_valid(self, tmp_path):
+        future = "2099-01-01T00:00:00"
+        dest = self._materialize(
+            tmp_path,
+            [_cert_text("not-a-timestamp", ["x"]), _cert_text(future, ["y"])],
+            HostName="h",
+            User="granitebuild",
+            IdentityStepCert=True,
+        )
+        assert "IdentityStepCert" not in _read(dest)
+
+    def test_step_cli_missing_raises_clear_error(self, monkeypatch):
+        import gbserver.environment.skypilot_config as sc_mod
+
+        def boom(*args, **kwargs):
+            raise FileNotFoundError("step")
+
+        monkeypatch.setattr(sc_mod.subprocess, "run", boom)
+        with pytest.raises(StepCertExpiredError, match="step ssh login"):
+            sc_mod._step_loaded_certs()
+
+    def test_step_cli_nonzero_exit_raises_clear_error(self, monkeypatch):
+        import subprocess as subprocess_mod
+
+        import gbserver.environment.skypilot_config as sc_mod
+
+        def boom(*args, **kwargs):
+            raise subprocess_mod.CalledProcessError(255, "step ssh list --raw")
+
+        monkeypatch.setattr(sc_mod.subprocess, "run", boom)
+        with pytest.raises(StepCertExpiredError, match="step ssh login"):
+            sc_mod._step_loaded_certs()
+
+    def test_falsy_directive_is_dropped_not_rendered(self, tmp_path):
+        # `IdentityStepCert: false` must not reach the rendered config:
+        # `IdentityStepCert no` is not a real ssh option and ssh -F rejects
+        # the whole file over it. The directive is simply dropped, and no
+        # cert check runs (the check-only directive is disabled).
+        dest = self._materialize(
+            tmp_path,
+            [],  # no loaded certs at all — must not matter when disabled
+            HostName="h",
+            User="granitebuild",
+            IdentityStepCert=False,
+        )
+        assert "IdentityStepCert" not in _read(dest)
+
+    def test_falsy_directive_does_not_block_identity_key(self, tmp_path):
+        # A falsy IdentityStepCert beside an IdentityKey is a disabled cert
+        # check, not a conflicting auth source: the key must resolve to a
+        # managed IdentityFile instead of raising the only-one-of-them error.
+        pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc123\n-----END-----"
+        ssh = ClusterSshConfigs(
+            lsf=[
+                _host(
+                    "bluevela",
+                    HostName="h",
+                    User="granitebuild",
+                    IdentityKey="BV_KEY",
+                    IdentityStepCert=False,
+                )
+            ]
+        )
+        sc.materialize("sky-lsf", ssh, None, None, {"BV_KEY": pem}, home=tmp_path)
+        text = _read(tmp_path / ".lsf" / "config")
+        assert "IdentityStepCert" not in text
+        assert "IdentityFile" in text
+
+
+class TestStepLoadedCerts:
+    """``_step_loaded_certs`` decodes the *agent* listing — which holds every
+    identity, not only certificates. A plain key loaded alongside the cert must
+    be skipped, not crash the launch (reproduces a real failure: an agent
+    holding ``hew@bluevela-personal`` plus a valid ECDSA cert made every
+    ``IdentityStepCert`` launch die with ``ssh-keygen -L`` exit 1)."""
+
+    _PLAIN = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIplainkeynotacert hew@laptop"
+    _CERT_LINE = (
+        "ecdsa-sha2-nistp256-cert-v01@openssh.com "
+        "AAAAKGVjZHNhLXNoYTItbmlzdHAyNTYtY2VydC12MDFAb3BlbnNzaC5jb20AAAAIY2VydAAAAAA"
+    )
+
+    class _RunResult:
+        def __init__(self, returncode=0, stdout=""):
+            self.returncode = returncode
+            self.stdout = stdout
+
+    def _patch_subprocess(self, monkeypatch, plain_alone):
+        """Stub the module's subprocess so `step` lists a plain key + a cert."""
+        import types
+
+        import gbserver.environment.skypilot_config as sc_mod
+
+        cert_desc = _cert_text("2099-01-01T00:00:00", ["hew"])
+        listing = self._PLAIN if plain_alone else f"{self._PLAIN}\n{self._CERT_LINE}"
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["step", "ssh", "list"]:
+                return self._RunResult(stdout=listing + "\n")
+            assert cmd == ["ssh-keygen", "-L", "-f", "-"]
+            if kwargs.get("input") == self._PLAIN:
+                return self._RunResult(returncode=1)  # "is not a certificate"
+            return self._RunResult(stdout=cert_desc)
+
+        # Replace the module's subprocess reference (not the global module) so
+        # nothing else in the process is affected while the test runs.
+        monkeypatch.setattr(sc_mod, "subprocess", types.SimpleNamespace(run=fake_run))
+        return cert_desc
+
+    def test_plain_key_beside_cert_is_skipped(self, monkeypatch):
+        cert_desc = self._patch_subprocess(monkeypatch, plain_alone=False)
+        assert sc._step_loaded_certs() == [cert_desc]
+
+    def test_plain_key_alone_means_no_certs(self, monkeypatch):
+        self._patch_subprocess(monkeypatch, plain_alone=True)
+        assert sc._step_loaded_certs() == []
+
+
+# --------------------------------------------------------------------------- #
 # No teardown + concurrency
 # --------------------------------------------------------------------------- #
 class TestNoTeardownAndConcurrency:
@@ -598,6 +893,83 @@ class TestHostnameCandidates:
 
     def test_read_managed_hostnames_absent_file_is_empty(self, tmp_path):
         assert sc._read_managed_hostnames("slurm", home=tmp_path) == {}
+
+
+class TestHostnameSecretResolution:
+    """``_resolve_hostname_secrets`` — ``HostName`` is the one directive consumed
+    before render time (login-node selection), so its secret resolution happens up
+    front; a secret may also expand to several comma-/whitespace-separated
+    candidates, and a resolution to no candidates fails fast."""
+
+    def test_scalar_secret_expands_to_candidates(self):
+        hosts = sc._resolve_hostname_secrets(
+            [_host(HostName="BV_LOGIN_NODES", User="root")],
+            {"BV_LOGIN_NODES": "login1.ex.com,login2.ex.com"},
+        )
+        assert hosts[0]["HostName"] == ["login1.ex.com", "login2.ex.com"]
+        assert hosts[0]["User"] == "root"  # other directives untouched
+
+    def test_secret_whitespace_separated(self):
+        hosts = sc._resolve_hostname_secrets(
+            [_host(HostName="BV_NODES")],
+            {"BV_NODES": "login1.ex.com login2.ex.com\nlogin3.ex.com"},
+        )
+        assert hosts[0]["HostName"] == [
+            "login1.ex.com",
+            "login2.ex.com",
+            "login3.ex.com",
+        ]
+
+    def test_list_items_secret_or_literal(self):
+        hosts = sc._resolve_hostname_secrets(
+            [_host(HostName=["BV_LOGIN_A", "login2.ex.com"])],
+            {"BV_LOGIN_A": "login1.ex.com"},
+        )
+        assert hosts[0]["HostName"] == ["login1.ex.com", "login2.ex.com"]
+
+    def test_literal_scalar_becomes_candidate_list(self):
+        # A literal scalar is normalized to a one-element list; selection already
+        # handled list-valued HostName, so nothing downstream changes.
+        hosts = sc._resolve_hostname_secrets([_host(HostName="only.ex.com")], {})
+        assert hosts[0]["HostName"] == ["only.ex.com"]
+
+    def test_no_hostname_passes_through(self):
+        host = _host(User="root")
+        assert sc._resolve_hostname_secrets([host], {}) == [host]
+
+    def test_unresolved_secret_name_warns_and_falls_back(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            hosts = sc._resolve_hostname_secrets([_host(HostName="BV_LOGIN_NODES")], {})
+        assert "looks like a secret name" in caplog.text
+        assert hosts[0]["HostName"] == ["BV_LOGIN_NODES"]  # literal fallback
+
+    def test_empty_resolution_raises(self):
+        with pytest.raises(ValueError):
+            sc._resolve_hostname_secrets(
+                [_host(HostName="BV_EMPTY")], {"BV_EMPTY": "  ,  "}
+            )
+
+    def test_materialize_resolves_hostname_and_user_secrets(
+        self, tmp_path, monkeypatch
+    ):
+        # End-to-end through the launch chokepoint: the secret expands into the
+        # failover pool, one candidate is written as the scalar HostName, and the
+        # User secret resolves at render time like any other directive.
+        monkeypatch.setattr(sc.random, "shuffle", lambda seq: None)  # keep order
+        ssh = ClusterSshConfigs(
+            slurm=[_host("bluevela", HostName="BV_LOGIN_NODES", User="BV_LOGIN_USER")]
+        )
+        secrets = {
+            "BV_LOGIN_NODES": "login1.ex.com,login2.ex.com",
+            "BV_LOGIN_USER": "granitebuild",
+        }
+        sc.materialize_ssh_for_cloud("sky-slurm", ssh, secrets, "slurm", home=tmp_path)
+        text = _read(tmp_path / ".slurm" / "config")
+        assert "HostName login1.ex.com" in text  # the (pinned) first candidate
+        assert "User granitebuild" in text  # resolved from secret
+        assert "login2.ex.com" not in text  # only the selected candidate is written
 
 
 class TestHostnameOnlyMergeRelaxation:
