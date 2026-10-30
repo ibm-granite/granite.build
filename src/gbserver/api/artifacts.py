@@ -680,7 +680,7 @@ def _by_lineage_uri(storage, uri: str, **filters) -> List[ArtifactRegistration]:
         ),
         reverse=True,
     )
-    matches.sort(key=lambda item: item.is_archived)  # stable: newest first within
+    matches.sort(key=lambda item: bool(item.is_archived))  # stable: newest first within
     return matches
 
 
