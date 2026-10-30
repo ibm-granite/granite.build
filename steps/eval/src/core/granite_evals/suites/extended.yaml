@@ -39,6 +39,9 @@ benchmarks:
   - {id: hle-tools, group: reasoning, name: HLE (with tools), metric: pass@1 judge_correct}
   - {id: critpt, group: reasoning, name: CritPt (no tools), metric: Challenge Accuracy}
   - {id: critpt-tools, group: reasoning, name: CritPt (with tools), metric: Challenge Accuracy}
+  # Document QA (context provided: each question's gold pages from the parsed corpus)
+  - {id: officeqa-pro, group: document-qa, name: "OfficeQA Pro (oracle context)", metric: accuracy@0%}
+  - {id: officeqa-full, group: document-qa, name: "OfficeQA Full (oracle context)", metric: accuracy@0%}
   # Chat & Instruction Following
   - {id: mmlu-pro, group: chat-if, name: MMLU-Pro, metric: "5-shot CoT symbolic correct"}
   - {id: mmlu-prox-lite, group: chat-if, name: MMLU-ProX lite (IBM), metric: exact match (custom-extract)}
