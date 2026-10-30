@@ -63,6 +63,16 @@ if [ -z "$num_gpus" ]; then
 fi
 case $num_gpus in ''|*[!0-9]*) num_gpus=0 ;; esac
 [ "$num_gpus" -ge 1 ] || fail "no GPUs on this node. Request them in the build with launcher_config.resources.accelerators (e.g. \"A10G:1\")."
+# One process per allocated GPU: if this process sees fewer GPUs than were
+# allocated, the extra ranks bind a GPU another rank already holds and NCCL fails
+# later ("Multiple Ranks are using the same GPU"). Refuse with the real cause. A
+# failed or missing nvidia-smi (0 visible) proves nothing, so only an undercount
+# it actually reports is refused.
+visible="$(nvidia-smi -L 2>/dev/null | grep -c '^GPU ' || true)"
+case $visible in ''|*[!0-9]*) visible=0 ;; esac
+if [ "$visible" -ge 1 ] && [ "$visible" -lt "$num_gpus" ]; then
+  fail "${num_gpus} GPU(s) were allocated (SKYPILOT_NUM_GPUS_PER_NODE) but only ${visible} are visible to this process (nvidia-smi -L; CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}). The container did not get the whole allocation; rerun, or report the node."
+fi
 if [ "$distributed" != ddp ] && [ "$num_gpus" -lt 2 ]; then
   fail "distributed: ${distributed} needs at least 2 GPUs; this node has ${num_gpus}. Use distributed: ddp, or request more GPUs."
 fi
