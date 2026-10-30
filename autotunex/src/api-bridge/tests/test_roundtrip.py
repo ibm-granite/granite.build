@@ -402,3 +402,70 @@ def test_find_or_create_leaves_a_reused_dataset_format_alone(db):
 
     assert reused_id == first_id
     assert db.get_dataset(dataset_id=reused_id, user_id=user_id)["data_format"] == "csv"
+
+
+def _app_pushed_dataset(db, user_id, name="finance-classification"):
+    """A row as the main service leaves it after a push: ``<name>_<id8>`` on HF."""
+    from api_bridge import models
+
+    created = db.insert_dataset(models.DatasetInfo(user_id=user_id, name=name, description=""))
+    repo = f"ibm-research/{name}_{str(created.id)[:8]}"
+    db.update_dataset_metadata(
+        id=str(created.id),
+        user_id=user_id,
+        metadata={
+            "train_records": 10,
+            "train_file_size": 100,
+            "validation_records": None,
+            "validation_file_size": None,
+            "artifact_id": None,
+            "artifact_url": f"hf://huggingface.co/datasets/{repo}",
+        },
+    )
+    return str(created.id), repo
+
+
+def test_find_or_create_reuses_the_app_pushed_row_for_its_repo(db):
+    # A run trains on the repo the app pushed: the gbserver cache path names it
+    # <name>_<id8> and spells the URI hf:///, but it is still that row's dataset.
+    from api_bridge.services.dataset_service import Dataset
+
+    user_id = seed_user(db)
+    pushed_id, repo = _app_pushed_dataset(db, user_id)
+
+    found = Dataset(db).find_or_create(
+        name=repo.split("/")[1], artifact_uri=f"hf:///datasets/{repo}", user_id=user_id
+    )
+
+    assert found == pushed_id
+    assert len(db.get_datasets(user_id)) == 1
+
+
+def test_find_or_create_does_not_reuse_an_app_row_for_another_repo(db):
+    # Same id8 suffix, another owner: not the repo that row pushed.
+    from api_bridge.services.dataset_service import Dataset
+
+    user_id = seed_user(db)
+    pushed_id, repo = _app_pushed_dataset(db, user_id)
+    other = "other-org/" + repo.split("/")[1]
+
+    found = Dataset(db).find_or_create(
+        name=other.split("/")[1], artifact_uri=f"hf:///datasets/{other}", user_id=user_id
+    )
+
+    assert found != pushed_id
+    assert len(db.get_datasets(user_id)) == 2
+
+
+def test_find_or_create_does_not_reuse_another_users_app_row(db):
+    from api_bridge.services.dataset_service import Dataset
+
+    owner_id = seed_user(db, "owner@example.com")
+    pushed_id, repo = _app_pushed_dataset(db, owner_id)
+    caller_id = seed_user(db, "caller@example.com")
+
+    found = Dataset(db).find_or_create(
+        name=repo.split("/")[1], artifact_uri=f"hf:///datasets/{repo}", user_id=caller_id
+    )
+
+    assert found != pushed_id
