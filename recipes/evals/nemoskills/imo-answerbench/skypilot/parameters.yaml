@@ -31,6 +31,12 @@ TENSOR_PARALLEL_SIZE: 1
 
 # ─── Judge (paid; key from the EVAL_JUDGE_API_KEY secret) ──────
 # OpenAI-compatible endpoint of the judge gateway. No default; set it for your site.
+# Validated with the family's default judge (aws/claude-sonnet-5). Be careful
+# overriding judge_model via OPTIONS: during validation, claude-sonnet-5-5 on one
+# gateway content-filtered this benchmark's autograder prompt — HTTP 200 with
+# empty judgements (finish_reason=content_filter) — while the default judge
+# graded the same rows cleanly. The score step's judge_invalid guard fails the
+# run on empty judgements, so a filtered endpoint cannot yield a bogus score.
 JUDGE_BASE_URL: ""
 
 # ─── Cluster ──────────────────────────────────────────────────────────
