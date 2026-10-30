@@ -26,9 +26,8 @@ never reported confirmed.
 """
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
-
 from typing import Optional
+from unittest.mock import MagicMock
 
 import pytest
 

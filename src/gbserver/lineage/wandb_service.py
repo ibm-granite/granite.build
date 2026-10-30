@@ -21,10 +21,10 @@ import re
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, cast
 
 import wandb
-from huggingface_hub import (
+from huggingface_hub import (  # pylint: disable=wrong-import-order
     dataset_info,
     model_info,
-)  # pylint: disable=wrong-import-order
+)
 
 from gbcommon.uri.hf import HfURI
 from gbserver.lineage.mem_artifacts import is_mem_resource
