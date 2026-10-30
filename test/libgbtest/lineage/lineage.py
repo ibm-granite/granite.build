@@ -250,7 +250,7 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
 
         The standalone UI reads target nodes straight from admin storage
         regardless of artifacts, so a wandb run is no longer needed to make a
-        fully artifact-less target appear as a node. ``select_recordable_targets``
+        fully artifact-less target appear as a node. ``select_recordable_views``
         drops such targets before this builder is reached; this pins the builder
         itself to agree, because ``api/lineage.py`` reaches it without consulting
         the selector.
@@ -283,7 +283,7 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
         ``output_artifacts={"out0": []}`` has a key but no artifact, so the
         per-output loop emits nothing. With inputs present the target still has
         real lineage and the no-output branch must cover it, matching both
-        ``select_recordable_targets`` (which keeps such a target) and
+        ``select_recordable_views`` (which keeps such a target) and
         ``expected_run_count`` (which returns 1 for it). A guard keyed on
         ``len(output_artifacts)`` instead of its values emits zero events here,
         leaving the target unconfirmable: it is reported unrecorded on every scan
@@ -321,7 +321,7 @@ class AbstractLineageTest(AbstractSingletonStorageUsingTest):
         """Inputs that do not resolve in the registry must not suppress the event.
 
         The builder's ``inputs`` list is post-filter: only uuids that resolve as an
-        ``ArtifactRegistration`` survive. ``select_recordable_targets`` checks the
+        ``ArtifactRegistration`` survive. ``select_recordable_views`` checks the
         raw ``input_artifacts`` dict, so an inputs-only target whose input rows were
         pruned is still selected and still expected to have one run. Gating the
         no-output branch on the filtered list would emit nothing, producing the

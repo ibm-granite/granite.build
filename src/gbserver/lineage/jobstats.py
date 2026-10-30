@@ -53,7 +53,11 @@ class ILineageStore(ABC):
 
     @abstractmethod
     def add_jobstats_for_build_target(
-        self, storage: SingletonAdminStorage, build_id: str, target_id: str
+        self,
+        storage: SingletonAdminStorage,
+        build_id: str,
+        target_id: str,
+        view: Optional["LineageView"] = None,
     ) -> None: ...
 
     @abstractmethod

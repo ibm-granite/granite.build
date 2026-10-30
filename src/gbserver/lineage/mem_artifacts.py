@@ -1,3 +1,19 @@
+#!/usr/bin/env python3
+
+# Copyright LLM.build Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Keep ``mem://`` artifacts out of recorded lineage.
 
 A ``mem://`` URI is not persisted data: it is an opaque key into a build's
@@ -11,10 +27,11 @@ A ``mem://`` artifact counts as absent. Every gate that decides whether a target
 has lineage, and how many runs it should have, must read :func:`lineage_view`
 rather than the target's raw dicts, or they disagree:
 
-- ``lineage_reconciler.select_recordable_targets`` (artifact-less skip),
+- ``lineage_reconciler.select_recordable_views`` (artifact-less skip),
 - ``lineage_reconciler.expected_run_count`` (run count),
 - ``wandb_jobstats._build_events_for_target`` (what is emitted),
-- ``indexer.TargetsLineageIndexer._index`` (artifact-less skip).
+- ``indexer.TargetLineageIndexer._index`` (artifact-less skip),
+- ``api/lineage.py`` (reaches the event builder directly).
 
 If the selector keeps a target the emitter then declines to emit for, the target
 is reported unrecorded on every scan and pins the checkpoint (see the note in

@@ -216,7 +216,7 @@ class WandBLineageStore(ILineageStore):
 
         # mem:// artifacts are not lineage (see mem_artifacts). Read every
         # artifact below from this view, so the emitter decides exactly what
-        # select_recordable_targets and expected_run_count do. The view also
+        # select_recordable_views and expected_run_count do. The view also
         # resolves each uuid once, so nothing below re-reads the registry.
         if view is None:
             view = lineage_view(storage, targetrun)
@@ -394,7 +394,7 @@ class WandBLineageStore(ILineageStore):
         # regardless of artifacts, so a wandb run is no longer needed to make a
         # fully artifact-less target appear as a node.
         # The condition below must stay identical to the skip in
-        # select_recordable_targets (lineage_reconciler) and to the branch in
+        # select_recordable_views (lineage_reconciler) and to the branch in
         # expected_run_count. If the selector keeps a target that this branch
         # then declines to emit for, the target is reported unrecorded on every
         # scan and -- since run ids are random -- each scan writes a fresh
@@ -446,7 +446,11 @@ class WandBLineageStore(ILineageStore):
             raise ValueError(f"Zero targets found in build with id {build_id}")
 
     def add_jobstats_for_build_target(
-        self, storage: SingletonAdminStorage, build_id: str, target_id: str
+        self,
+        storage: SingletonAdminStorage,
+        build_id: str,
+        target_id: str,
+        view: Optional[LineageView] = None,
     ) -> None:
         build = storage.build_storage.get_by_uuid(build_id)
         if build is None:
@@ -459,7 +463,7 @@ class WandBLineageStore(ILineageStore):
         count = 0
         for target in targets:
             assert isinstance(target, StoredTargetRun)
-            self.__add_jobstats_for_target(storage, build, target)
+            self.__add_jobstats_for_target(storage, build, target, view)
             count += 1
         if count == 0:
             raise ValueError(f"Zero targets found in build with id {build_id}")
@@ -469,13 +473,15 @@ class WandBLineageStore(ILineageStore):
         storage: SingletonAdminStorage,
         build: StoredBuild,
         targetrun: StoredTargetRun,
+        view: Optional[LineageView] = None,
     ) -> None:
-        view = lineage_view(storage, targetrun)
+        if view is None:
+            view = lineage_view(storage, targetrun)
         events, _ = self.create_jobstats_for_target(storage, targetrun, build, view)
         if not events:
             # No events means emit_event is never called. For a fully
             # artifact-less target that is the intended outcome — there is no
-            # lineage to record, and `select_recordable_targets` filters such
+            # lineage to record, and `select_recordable_views` filters such
             # targets out before the reconciler ever gets here. Any *other*
             # empty result is a silent no-op: the caller marks the target
             # recorded while nothing reaches the backend, so warn on that.

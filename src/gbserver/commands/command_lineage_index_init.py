@@ -34,6 +34,7 @@ import click
 from gbserver.lineage.indexer import create_indexer, resolve_indexer_source
 from gbserver.lineage.lineage_seeding import SEED_ALL, LineageSeedError
 from gbserver.storage.singleton_storage import get_admin_storage
+from gbserver.types.constants import MEM_URI_SCHEME
 from gbserver.types.context import CliEnvironment, pass_environment
 
 
@@ -84,6 +85,17 @@ from gbserver.types.context import CliEnvironment, pass_environment
     ),
 )
 @click.option(
+    "--purge-mem",
+    is_flag=True,
+    default=False,
+    help=(
+        "Remove the mem:// endpoints rows indexed before #561 still carry, and "
+        "exit. Each affected job keeps its real artifacts (as a no-output or "
+        "no-input row when mem:// was its only other side). Does not touch the "
+        "checkpoint. Must be passed alone."
+    ),
+)
+@click.option(
     "--show",
     is_flag=True,
     default=False,
@@ -99,9 +111,23 @@ def cli(
     force: bool,
     rebuild: bool,
     empty_from_beginning: bool,
+    purge_mem: bool,
     show: bool,
 ) -> None:
     """Seed the lineage indexer checkpoint (gb_kv_pairs) without running it."""
+    if purge_mem:
+        if base_timestamp is not None or force or rebuild or show:
+            raise click.ClickException(
+                "--purge-mem is a one-off cleanup and must be passed alone."
+            )
+        deleted, added = get_admin_storage().lineage_row_storage.purge_scheme(
+            MEM_URI_SCHEME
+        )
+        click.echo(
+            f"Deleted {deleted} gb_lineage_index row(s) with a mem:// endpoint; "
+            f"added {added} terminal row(s) for the real artifacts they left alone."
+        )
+        return
     if rebuild:
         if show:
             raise click.ClickException(

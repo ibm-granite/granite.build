@@ -110,7 +110,7 @@ def get_build_jobstats(request: Request, build_id: str) -> BuildJobStatsResponse
     Every target of the build gets an entry, but a target with neither input nor
     output artifacts contributes an empty dict: it has no lineage events to
     report. This endpoint reaches ``create_jobstats_for_target`` directly, without
-    going through ``select_recordable_targets``, so the builder's own artifact-less
+    going through ``select_recordable_views``, so the builder's own artifact-less
     check is what produces that -- not a filter here.
 
     Because of those empty dicts, ``targets`` must not be consumed positionally

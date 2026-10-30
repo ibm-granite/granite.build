@@ -20,7 +20,7 @@ artifact-less when it has none. The selector, ``expected_run_count`` and the
 emitter must all agree on that, so each case checks all three together.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,7 +29,7 @@ from gbserver.lineage.indexer import TargetLineageIndexer
 from gbserver.lineage.lineage_reconciler import (
     expected_run_count,
     reconcile_build,
-    select_recordable_targets,
+    select_recordable_views,
     select_recordable_views,
 )
 from gbserver.lineage.mem_artifacts import (
@@ -143,7 +143,7 @@ class TestTargetShapes:
         target = _target(outputs={"svc": ["mem-1"]})
         storage = _storage(target)
 
-        assert select_recordable_targets(storage, "b1") == []
+        assert select_recordable_views(storage, "b1") == []
         assert _emit(storage, target) == []
 
     def test_only_mem_outputs_with_inputs_is_a_no_output_target(self):
@@ -152,7 +152,7 @@ class TestTargetShapes:
         )
         storage = _storage(target)
 
-        [selected] = select_recordable_targets(storage, "b1")
+        [(selected, _)] = select_recordable_views(storage, "b1")
         events = _emit(storage, target)
 
         assert expected_run_count(storage, selected) == 1 == len(events)
@@ -163,7 +163,7 @@ class TestTargetShapes:
         target = _target(inputs={"svc": "mem-1"})
         storage = _storage(target)
 
-        assert select_recordable_targets(storage, "b1") == []
+        assert select_recordable_views(storage, "b1") == []
         assert _emit(storage, target) == []
 
     def test_mixed_records_only_real_artifacts(self):
@@ -173,7 +173,7 @@ class TestTargetShapes:
         )
         storage = _storage(target)
 
-        [selected] = select_recordable_targets(storage, "b1")
+        [(selected, _)] = select_recordable_views(storage, "b1")
         events = _emit(storage, target)
 
         assert expected_run_count(storage, selected) == 1 == len(events)
@@ -185,7 +185,7 @@ class TestTargetShapes:
         target = _target(outputs={"model": ["gone"]})
         storage = _storage(target)
 
-        [selected] = select_recordable_targets(storage, "b1")
+        [(selected, _)] = select_recordable_views(storage, "b1")
 
         assert expected_run_count(storage, selected) == 1 == len(_emit(storage, target))
 
@@ -236,19 +236,67 @@ class TestOutputIndex:
 
 class TestRegistryReads:
     def test_reconcile_reads_each_artifact_once(self):
-        """Selector, count and emitter share one resolved view."""
+        """The real reconcile path shares one resolved view end to end."""
         target = _target(inputs={"data": "real-in"}, outputs={"out": ["real-out"]})
         storage = _storage(target)
         storage.build_storage.get_by_uuid.return_value = _build()
+        storage.target_storage.get_by_where.side_effect = (
+            lambda where, query_control=None: (
+                [target]
+                if query_control is None or query_control.pagination.index == 0
+                else []
+            )
+        )
         store = WandBLineageStore.__new__(WandBLineageStore)
         store._service = MagicMock()
-        store._recorded_until = {}
+        store.filter_unrecorded = lambda c, expected, on_query_error: set(c)
 
-        [(selected, view)] = select_recordable_views(storage, "b1")
-        expected_run_count(storage, selected, view)
-        store.create_jobstats_for_target(storage, selected, view=view)
+        result = reconcile_build(store, storage, "b1")
 
+        assert result.newly_recorded == 1
+        store._service.emit_event.assert_called_once()
         assert storage.artifact_registry.get_by_uuid.call_count == 2
+
+
+class TestSelectionOrder:
+    def test_mem_only_retry_does_not_shadow_an_older_real_run(self):
+        """A newer mem-only SUCCESS run is skipped before the dedup, like an
+        artifact-less one, so the older run's real lineage is still recorded."""
+        old = _target(inputs={"data": "real-in"}, outputs={"out": ["real-out"]})
+        new = StoredTargetRun(
+            uuid="t1-retry",
+            build_id="b1",
+            name="t1",
+            environment_uri="env://test",
+            status=Status.SUCCESS,
+            finished_at=_FINISHED + timedelta(minutes=5),
+            output_artifacts={"svc": ["mem-1"]},
+        )
+        storage = _storage(old)
+        storage.target_storage.get_by_where.side_effect = (
+            lambda where, query_control=None: (
+                [new, old] if query_control.pagination.index == 0 else []
+            )
+        )
+
+        assert [t.uuid for t, _ in select_recordable_views(storage, "b1")] == ["t1"]
+
+
+class TestRegistryErrors:
+    def test_a_failed_registry_read_is_contained_to_its_target(self):
+        target = _target(inputs={"data": "real-in"}, outputs={"out": ["real-out"]})
+        storage = _storage(target)
+        storage.artifact_registry.get_by_uuid.side_effect = RuntimeError("locked")
+        store = MagicMock()
+        errors = []
+
+        result = reconcile_build(
+            store, storage, "b1", on_error=lambda b, t, e: errors.append((b, t))
+        )
+
+        assert not result.all_confirmed
+        assert errors == [("b1", "t1")]
+        store.add_jobstats_for_build_target.assert_not_called()
 
 
 class TestIndexer:

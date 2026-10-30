@@ -57,7 +57,7 @@ def _target(
     name: str = "",
 ) -> StoredTargetRun:
     # Default ``name`` to ``uuid`` so each distinct uuid is a distinct *logical*
-    # target: select_recordable_targets dedupes SUCCESS runs by name (in-place
+    # target: select_recordable_views dedupes SUCCESS runs by name (in-place
     # retry can leave more than one SUCCESS run for one logical target), so
     # targets sharing a name collapse to one. These tests use distinct uuids to
     # mean distinct targets; pass ``name`` explicitly to model two runs of one.
@@ -69,7 +69,7 @@ def _target(
         status=Status.SUCCESS,
         finished_at=finished_at if finished_at is not None else _BASE,
         # One output artifact so the target is recordable: these tests exercise
-        # watcher/checkpoint mechanics, and select_recordable_targets drops
+        # watcher/checkpoint mechanics, and select_recordable_views drops
         # targets with no input and no output artifacts. The uuid need not
         # resolve in the registry -- nothing here reads the artifact itself.
         output_artifacts={"out0": [f"artifact-{uuid}"]},
@@ -99,7 +99,7 @@ class _StubStore:
         self.query_error = query_error
         self.calls: list = []
 
-    def add_jobstats_for_build_target(self, storage, build_id, target_id):
+    def add_jobstats_for_build_target(self, storage, build_id, target_id, view=None):
         if target_id in self._fail:
             raise RuntimeError("boom")
         self.calls.append((build_id, target_id))

@@ -627,9 +627,11 @@ def _target_indexer(targets, indexed=()):
     """Targets are served newest-finished first, as the DB page would."""
     sink = MagicMock()
     # The builder is pure; one event per target is enough to drive the loop.
-    sink.create_jobstats_for_target.side_effect = lambda storage, target, build=None, view=None: (
-        [{"job_id": target.uuid}],
-        {},
+    sink.create_jobstats_for_target.side_effect = (
+        lambda storage, target, build=None, view=None: (
+            [{"job_id": target.uuid}],
+            {},
+        )
     )
     # "Already indexed" is a question about the index, which the rows collaborator
     # owns. Under this source gb_targets IS the job store, so there is no job

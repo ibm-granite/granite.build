@@ -397,7 +397,7 @@ class LineageWatcher:
             # claim. It is a real sink query, not a status inference: the uuid is
             # added only after filter_unrecorded answered for every candidate and
             # every needed write succeeded. But it is accurate as of *that pass's*
-            # target read. A target inserted after select_recordable_targets
+            # target read. A target inserted after select_recordable_views
             # returned was never in `candidates`, so the sink was never asked about
             # it, and this gate then skips the build without re-reading it.
             #
@@ -507,7 +507,7 @@ class LineageWatcher:
                 #     writes that status only when the build is not already
                 #     finished. So on the ordinary path the targets are committed
                 #     first, by construction rather than by luck.
-                #   - select_recordable_targets asks for status==SUCCESS with a
+                #   - select_recordable_views asks for status==SUCCESS with a
                 #     non-NULL finished_at, so a merely-present row is not enough to
                 #     lose. Notably the re-run entity finalization does NOT
                 #     manufacture one: _finalize_target_or_step_status leaves a

@@ -178,6 +178,7 @@ def record_target_lineage(
     storage: SingletonAdminStorage,
     build_id: str,
     target_id: str,
+    view: Optional[LineageView] = None,
 ) -> None:
     """Record lineage for a single (build, target) — the one recording leaf.
 
@@ -191,8 +192,17 @@ def record_target_lineage(
         storage: Admin storage the store reads the target's lineage from.
         build_id: Build the target belongs to.
         target_id: Target run to record lineage for.
+        view: The target's already-resolved lineage view, if the caller has one,
+            so the store does not read the artifact registry again.
     """
-    store.add_jobstats_for_build_target(storage, build_id=build_id, target_id=target_id)
+    if view is None:
+        store.add_jobstats_for_build_target(
+            storage, build_id=build_id, target_id=target_id
+        )
+    else:
+        store.add_jobstats_for_build_target(
+            storage, build_id=build_id, target_id=target_id, view=view
+        )
 
 
 def _successful_targets_page(
@@ -421,7 +431,7 @@ def as_aware(value: datetime) -> datetime:
     below is defensive rather than routinely taken. The backend that drops an
     offset is SQLite's typed ``DateTime(timezone=True)`` column, which stores
     wall-clock text; that only affects the ``ORDER BY finished_at`` sort (see
-    ``select_recordable_targets``), not the value read back here.
+    ``select_recordable_views``), not the value read back here.
 
     Two caveats on the naive branch, for whoever does reach it. It is exact only
     when the reader shares the writer's offset — true for a single-timezone
@@ -437,17 +447,10 @@ def as_aware(value: datetime) -> datetime:
     return value
 
 
-def select_recordable_targets(
-    storage: SingletonAdminStorage,
-    build_id: str,
-) -> list[StoredTargetRun]:
-    """The targets of :func:`select_recordable_views`, without their views."""
-    return [target for target, _ in select_recordable_views(storage, build_id)]
-
-
 def select_recordable_views(
     storage: SingletonAdminStorage,
     build_id: str,
+    on_view_error: Optional[Callable[[StoredTargetRun, Exception], None]] = None,
 ) -> list[tuple[StoredTargetRun, LineageView]]:
     """Select one build's successful target runs whose lineage should be recorded.
 
@@ -477,9 +480,14 @@ def select_recordable_views(
     ``mem://`` artifacts count as absent (see ``mem_artifacts``): a target whose
     only artifacts are mem:// is artifact-less and skipped; one with real inputs
     and only mem:// outputs is recorded as a no-output target. That check needs
-    the artifact registry, so it runs after ``latest_success_per_target``, on the
-    kept runs only, and its resolved view is returned with each target for
-    ``expected_run_count`` and the emitter to reuse.
+    the artifact registry, and it runs *before* ``latest_success_per_target``,
+    like the raw artifact-less check, so a mem-only retry never shadows an older
+    SUCCESS run that has real lineage. Its resolved view is returned with each
+    target for ``expected_run_count`` and the emitter to reuse.
+
+    A registry read that raises is contained per target: the target is left out
+    and ``on_view_error`` is called with it, so one bad read cannot fail the
+    whole scan. Without ``on_view_error`` the error propagates.
 
     Note what the artifact-less skip does to state keyed on targets this function
     no longer returns. Such a target never reaches ``candidates``, so it is also
@@ -499,12 +507,15 @@ def select_recordable_views(
     Args:
         storage: Admin storage to read targets from.
         build_id: Build whose successful targets to select.
+        on_view_error: Called as ``(target, exc)`` when resolving a target's
+            lineage view raises; the target is then not selected.
 
     Returns:
         The build's recordable target runs, newest-finished first, each with its
         mem://-filtered lineage view.
     """
     selected: list[StoredTargetRun] = []
+    views: dict[str, LineageView] = {}
     artifact_less = 0
     page_index = 0
     while True:
@@ -523,6 +534,33 @@ def select_recordable_views(
                     build_id,
                 )
                 continue
+            # mem:// artifacts are not lineage (see mem_artifacts), so a run whose
+            # only artifacts are mem:// is artifact-less too. Checked here, before
+            # the dedup, for the same reason as the raw check above: a mem-only
+            # retry must not shadow an older SUCCESS run with real lineage.
+            try:
+                view = lineage_view(storage, target)
+            except Exception as exc:  # noqa: BLE001 — one target must not end the scan
+                if on_view_error is None:
+                    raise
+                logger.warning(
+                    "Failed to resolve lineage artifacts for target %s of build %s: %s",
+                    target.uuid,
+                    build_id,
+                    exc,
+                )
+                on_view_error(target, exc)
+                continue
+            if view.is_artifact_less:
+                artifact_less += 1
+                logger.debug(
+                    "Skipping wandb lineage recording for target %s (build %s): "
+                    "only mem:// artifacts.",
+                    target.uuid,
+                    build_id,
+                )
+                continue
+            views[target.uuid] = view
             selected.append(target)
         if len(page) < _SCAN_PAGE_SIZE:
             break
@@ -535,37 +573,20 @@ def select_recordable_views(
     # skip list every monitoring interval, forever. The per-target detail is
     # still available at debug, same tradeoff as the recorded-cache hit log in
     # WandBLineageStore.filter_unrecorded.
+    if artifact_less:
+        logger.info(
+            "Skipped wandb lineage recording for %d target(s) of build %s: "
+            "no input or output artifacts (mem:// ones do not count).",
+            artifact_less,
+            build_id,
+        )
     # In-place retry reuses one build id, so a target can hold more than one
     # SUCCESS run (a prior success with unregistered artifacts is re-run; a
     # reuse-disabled build re-runs every target). Record only the latest per
     # target — the pages are newest-finished first, so the winner stays first.
-    #
-    # mem:// artifacts are not lineage (see mem_artifacts), so a survivor whose
-    # only artifacts are mem:// is artifact-less too. Checked after the dedup,
-    # not with the raw check above, so the registry is read only for the runs
-    # that are kept, and only once each: the view travels with the target to
-    # expected_run_count and the emitter.
-    recordable: list[tuple[StoredTargetRun, LineageView]] = []
-    for target in latest_success_per_target(selected):
-        view = lineage_view(storage, target)
-        if view.is_artifact_less:
-            artifact_less += 1
-            logger.debug(
-                "Skipping wandb lineage recording for target %s (build %s): "
-                "only mem:// artifacts.",
-                target.uuid,
-                build_id,
-            )
-            continue
-        recordable.append((target, view))
-    if artifact_less:
-        logger.info(
-            "Skipped wandb lineage recording for %d target(s) of build %s: "
-            "no input or output artifacts.",
-            artifact_less,
-            build_id,
-        )
-    return recordable
+    return [
+        (target, views[target.uuid]) for target in latest_success_per_target(selected)
+    ]
 
 
 def expected_run_count(
@@ -579,7 +600,7 @@ def expected_run_count(
     one run per output artifact (summed across every output-artifact list), or a
     single "no-output" run when the target has inputs but no outputs. Inputs
     otherwise do not add runs — they are attached to each output's run — so only
-    outputs are counted when there are any. ``select_recordable_targets`` excludes
+    outputs are counted when there are any. ``select_recordable_views`` excludes
     fully artifact-less targets, so every target reaching here has at least one
     real edge.
 
@@ -684,9 +705,23 @@ def reconcile_build(
         A ``ReconcileResult`` describing what happened for this build.
     """
     dropped = skip or set()
-    views = select_recordable_views(storage, build_id=build_id)
+    view_failures: list[str] = []
+
+    def _note_view_failure(target: StoredTargetRun, exc: Exception) -> None:
+        # Same containment as a failed record below: report it, keep the build
+        # unconfirmed so the checkpoint does not pass it, and move on.
+        view_failures.append(target.uuid)
+        if on_error is not None:
+            on_error(build_id, target.uuid, exc)
+
+    views = select_recordable_views(
+        storage, build_id=build_id, on_view_error=_note_view_failure
+    )
     targets = [target for target, _ in views]
+    view_by_uuid = {target.uuid: view for target, view in views}
     if not targets:
+        if view_failures:
+            return ReconcileResult(all_confirmed=False)
         # No recordable target: nothing to write and nothing outstanding, so the
         # build is trivially confirmed and the checkpoint may pass it.
         #
@@ -711,7 +746,9 @@ def reconcile_build(
         # only targets so far happen to all be dropped lands here, and the ones
         # written between this scan and its terminal status are still to come --
         # so the caller must not cache it as done while it can still gain them.
-        return ReconcileResult(all_confirmed=True, dropped=skipped, sink_unqueried=True)
+        return ReconcileResult(
+            all_confirmed=not view_failures, dropped=skipped, sink_unqueried=True
+        )
 
     # Expected run count per candidate, so ``filter_unrecorded`` can tell a
     # fully-recorded target from one whose runs were only partially emitted by a
@@ -743,13 +780,17 @@ def reconcile_build(
         return ReconcileResult(dedup_query_failed=True, query_failure=failure)
 
     recorded = 0
-    all_confirmed = True
+    all_confirmed = not view_failures
     for target in targets:
         if target.uuid not in unrecorded:
             continue
         try:
             record_target_lineage(
-                store, storage, build_id=build_id, target_id=target.uuid
+                store,
+                storage,
+                build_id=build_id,
+                target_id=target.uuid,
+                view=view_by_uuid[target.uuid],
             )
         except Exception as exc:  # noqa: BLE001 — one target must not end the pass
             logger.warning(

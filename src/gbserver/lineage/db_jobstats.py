@@ -159,7 +159,11 @@ class DBLineageStore(ILineageStore):
             self._record_target(storage, build, target)
 
     def add_jobstats_for_build_target(
-        self, storage: SingletonAdminStorage, build_id: str, target_id: str
+        self,
+        storage: SingletonAdminStorage,
+        build_id: str,
+        target_id: str,
+        view: Optional["LineageView"] = None,
     ) -> None:
         """Record one target of a build -- the single recording leaf.
 
@@ -177,7 +181,7 @@ class DBLineageStore(ILineageStore):
             raise ValueError(f"Zero targets found in build with id {build_id}")
 
         for target in targets:
-            self._record_target(storage, build, target)
+            self._record_target(storage, build, target, view)
 
     def add_jobstats_for_original_artifact(
         self,
@@ -211,8 +215,13 @@ class DBLineageStore(ILineageStore):
         storage: SingletonAdminStorage,
         build: StoredBuild,
         target: StoredTargetRun,
+        view: Optional["LineageView"] = None,
     ) -> None:
-        """Decompose one target run's job entries into rows and store them."""
+        """Decompose one target run's job entries into rows and store them.
+
+        ``view`` is the target's lineage view when the reconciler already
+        resolved it; passing it on avoids a second artifact-registry read.
+        """
         if not isinstance(target, StoredTargetRun):
             return
 
@@ -234,7 +243,7 @@ class DBLineageStore(ILineageStore):
             logger.debug("Target run %s already has a lineage job record", target.uuid)
             return
 
-        events, _ = self.create_jobstats_for_target(storage, target, build)
+        events, _ = self.create_jobstats_for_target(storage, target, build, view)
         if not events:
             return
         # All of the target's events (one per output) in ONE write: presence of
