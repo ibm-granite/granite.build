@@ -7,6 +7,9 @@ benchmarks:
   - {id: swebench-pro, group: agentic-coding, name: SWE Bench Pro, metric: "pass@1 resolve rate"}
   - {id: swebench-multilingual, group: agentic-coding, name: SWE Bench Multilingual, metric: "pass@1 resolve rate"}
   - {id: terminal-bench-2.1, group: agentic-coding, name: Terminal-Bench 2.1, metric: "pass@1 resolve rate"}
+  # UNLICENSED upstream task data, fetched (never baked) at run start by the adapter;
+  # scored runs pending OSPO sign-off. See steps/eval/nl2repo/skypilot/USAGE.md.
+  - {id: nl2repo, group: agentic-coding, name: NL2RepoBench, metric: "test pass rate"}
   # Agentic (General)
   - {id: tau3-airline, group: agentic-general, name: "τ³-bench Airline", metric: pass@1}
   - {id: tau3-banking-knowledge, group: agentic-general, name: "τ³-bench Banking Knowledge (BM25 + grep)", metric: pass@1}

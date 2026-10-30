@@ -17,6 +17,7 @@ tests sit beside its modules at `<family>/tests/`:
 | `ifbench/src/`               | `ifbench` (split out of upstream `chat_if.py`)                                |
 | `judged/src/`                | `judge_general` (profbench, gdpval), `mcpatlas`, `multi_challenge`, `safety`  |
 | `lmeval/src/`                | `chat_if` (mmlu-prox-lite)                                                    |
+| `nl2repo/src/`               | `nl2repo` (a port of unlicensed NL2RepoBench's harness; task data fetched at run start, never vendored) |
 | `nemoskills/src/`            | `nemo_skills_code`, `nemo_skills_extended`, `nemo_skills_ruler`, `scicode_prefill`, `tools_agentic` |
 | `swebench/src/`              | `swebench`                                                                    |
 | `tau/src/`                   | `tau`                                                                         |
