@@ -59,21 +59,48 @@ uv pip freeze --python "$DEST/.venv/bin/python" > "$DEST/granite-freeze.txt"
 "$DEST/.venv/bin/playwright" install chromium
 timeout 900 npx -y playwright install chromium
 
-# postgres-mcp (the postgres MCP server, driven as `pipx run` by the harness)
-# with mcp constrained <2: an unconstrained resolve installs mcp 2.0.0, which
-# dropped mcp.server.fastmcp and fails every postgres task in ~3 s with
-# "Connection closed" -- reading as a model failure. The constraint file is
-# also exported (UV_CONSTRAINT/PIP_CONSTRAINT) by the module at run time, so
-# even a cold re-resolve stays mcp<2. The `pipx run` smoke is the exact
-# command the harness and the module's preflight use: it must answer --help.
+# postgres-mcp (the postgres MCP server, driven as `pipx run
+# postgres-mcp==0.3.0` by the harness) -- baked as a warm venv plus a pipx
+# shim on PATH, not a `pipx install`. Two reasons. (a) postgres-mcp 0.3.0
+# pins pglast==7.2.0, which never existed on PyPI (releases jump 7.21 ->
+# 8.3), so every cold resolve of the spec fails today -- `pipx install`
+# included; upstream's own Dockerfile hits the same wall. The venv is
+# therefore assembled directly (the package --no-deps, then its deps with a
+# pglast that exists) and frozen for the record. (b) Even a good install
+# would not serve `pipx run`: pipx 1.18's run routes to `uv tool run`, a
+# cold resolve that never reuses install venvs. The shim answers exactly
+# `run postgres-mcp==0.3.0` by execing the baked binary (exec keeps the
+# environment, e.g. DATABASE_URI); anything else falls through to the real
+# pipx. mcp is constrained <2 everywhere: an unconstrained resolve installs
+# mcp 2.0.0, which dropped mcp.server.fastmcp and fails every postgres task
+# in ~3 s with "Connection closed" -- reading as a model failure. The
+# constraint file is also exported (UV_CONSTRAINT/PIP_CONSTRAINT) by the
+# module at run time, guarding any other cold re-resolve. The smoke below
+# is the exact command the harness and the module's preflight use, resolved
+# the same way (shim first on PATH): it must answer --help.
 export PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin
-mkdir -p "$PIPX_HOME"
+WARM="$PIPX_HOME/warm/postgres-mcp"
+SHIM="$PIPX_HOME/shim"
+mkdir -p "$SHIM"
 printf 'mcp<2\n' > "$PIPX_HOME/mcp_constraints.txt"
-PIPX_CONSTRAINTS="$PIPX_HOME/mcp_constraints.txt"
-UV_CONSTRAINT="$PIPX_CONSTRAINTS" PIP_CONSTRAINT="$PIPX_CONSTRAINTS" \
-    "$DEST/.venv/bin/pipx" install postgres-mcp==0.3.0
-UV_CONSTRAINT="$PIPX_CONSTRAINTS" PIP_CONSTRAINT="$PIPX_CONSTRAINTS" \
-    "$DEST/.venv/bin/pipx" run postgres-mcp==0.3.0 --help > /dev/null
+uv venv "$WARM"
+uv pip install --python "$WARM/bin/python" --no-deps postgres-mcp==0.3.0
+uv pip install --python "$WARM/bin/python" 'mcp[cli]>=1.5.0,<2' pglast==7.21 \
+    instructor attrs humanize 'psycopg[binary]' psycopg-pool
+uv pip freeze --python "$WARM/bin/python" > "$WARM/granite-freeze.txt"
+ln -sf "$DEST/.venv/bin/pipx" "$SHIM/real-pipx"
+cat > "$SHIM/pipx" <<'EOF'
+#!/bin/bash
+# Answer `pipx run postgres-mcp==0.3.0` from the baked warm venv (extras.sh);
+# forward anything else to the real pipx one directory over.
+if [ "$1" = run ] && [ "$2" = "postgres-mcp==0.3.0" ]; then
+    shift 2
+    exec /opt/pipx/warm/postgres-mcp/bin/postgres-mcp "$@"
+fi
+exec "$(dirname "$0")/real-pipx" "$@"
+EOF
+chmod 755 "$SHIM/pipx"
+PATH="$SHIM:$PATH" pipx run postgres-mcp==0.3.0 --help > /dev/null
 
 # Pre-warm the npx MCP servers the filesystem and playwright tasks drive, at
 # the versions the harness pins (mcpmark_agent.py at the commit): the npm

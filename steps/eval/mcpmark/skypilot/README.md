@@ -13,8 +13,8 @@ family's adapter (`steps/eval/mcpmark/src/mcpmark.py`), baked into this family's
 image by `Dockerfile.gpu` one directory up (built by `steps/eval/Makefile`), which
 also carries the pinned MCPMark checkout with its own venv and the service
 runtimes (node/chromium for the npx MCP servers, a PGDG postgres 17 for
-`mcpmark-postgres`, a pipx'd `postgres-mcp`). Nothing is built from this step at
-run time.
+`mcpmark-postgres`, a baked `postgres-mcp` venv served through a pipx-run
+shim). Nothing is built from this step at run time.
 
 ```yaml
 steps:
@@ -87,8 +87,9 @@ declares none. No HF token is needed.
 node-local scratch, `pg_ctl` on a node-locked port — two jobs on one node never
 share a port) and stops it at the end. `initdb` refuses to run as root, so this
 benchmark needs the job's usual non-root container user. A preflight runs the
-pipx'd `postgres-mcp` server's `--help` before any task, so a broken install
-fails the run loudly instead of mis-scoring every task.
+`postgres-mcp` server's `--help` (the same `pipx run` the harness uses, served
+by the baked-venv shim) before any task, so a broken install fails the run
+loudly instead of mis-scoring every task.
 
 ## Resume
 
