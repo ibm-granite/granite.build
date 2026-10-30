@@ -14,11 +14,11 @@ benchmark runtime those images are built from, and the image recipes themselves.
 | `scripts/prefetch_datasets.py` | Pins and pre-fetches the HF datasets into a cache the (offline) jobs read. |
 | `eval-example/` | The framework's generic eval exemplar step — pre-existing, not one of the granite-evals families. |
 
-The ten families — `bfcl`, `bird`, `ifbench`, `judged`, `lmeval`, `nemoskills`,
-`nl2repo`, `swebench`, `tau`, `tbench` — exist because the upstream harnesses' own
-dependencies conflict (see the `[tool.uv]` conflicts in `src/core/pyproject.toml`),
-so each ships as its own image. `benchmark` selects which benchmark in the family
-a target runs.
+The eleven families — `bfcl`, `bird`, `ifbench`, `judged`, `lmeval`, `mcpmark`,
+`nemoskills`, `nl2repo`, `swebench`, `tau`, `tbench` — exist because the upstream
+harnesses' own dependencies conflict (see the `[tool.uv]` conflicts in
+`src/core/pyproject.toml`), so each ships as its own image. `benchmark` selects
+which benchmark in the family a target runs.
 
 ## Images
 
@@ -51,7 +51,7 @@ target's downstream score target never dispatches.
 Each `steps/eval/<family>/skypilot/` is one step: `step-template.yaml` (the source
 of truth), `README.md` / `USAGE.md`, and `test/test_step_template.py` (a shared
 contract test — every sibling has the identical copy, which is what lets one test
-file assert all ten steps follow the same shape). The rendered, committed form
+file assert all eleven steps follow the same shape). The rendered, committed form
 that `space://steps/eval/<family>` actually resolves to lives under
 `configurations/assets/environments/skypilot/steps/eval/<family>/`, produced by
 `make publish-step` from the source template — never hand-edited.
