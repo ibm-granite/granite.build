@@ -661,7 +661,9 @@ def _by_lineage_uri(storage, uri: str, **filters) -> List[ArtifactRegistration]:
     identity; they come back in a fixed order -- not archived first, then newest
     -- so a caller taking the first gets the same one every time.
     """
-    wanted = _normalized(uri)
+    # The request's own uri is normalized once, uncached: it is caller-supplied
+    # and unbounded, so caching it would let any client fill the cache.
+    wanted = normalize_uri(uri)
     if not wanted:
         return []
     candidates = cast(
@@ -684,9 +686,21 @@ def _by_lineage_uri(storage, uri: str, **filters) -> List[ArtifactRegistration]:
     return matches
 
 
-@lru_cache(maxsize=16384)
+# Registry URIs longer than this are normalized uncached, so the cache stays
+# bounded in bytes, not just in entries (16k x 2 KiB, about 32 MiB at most).
+_MAX_CACHED_URI_LENGTH = 2048
+
+
 def _normalized(uri: str) -> str:
-    """:func:`normalize_uri`, memoized: it is pure, and the registry repeats."""
+    """:func:`normalize_uri`, memoized for registry URIs: it is pure, and the
+    registry repeats. Never for a request's own URI (see ``_by_lineage_uri``)."""
+    if len(uri) > _MAX_CACHED_URI_LENGTH:
+        return normalize_uri(uri)
+    return _normalized_cached(uri)
+
+
+@lru_cache(maxsize=16384)
+def _normalized_cached(uri: str) -> str:
     return normalize_uri(uri)
 
 

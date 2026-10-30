@@ -186,10 +186,12 @@ def upsert_job(
     the row as ``update_fields`` locks it, inside its one transaction, so nothing
     another writer commits in between is lost and no half-merged record is seen.
     """
-    if _job_id_too_long(job.job_id):
+    if _job_id_too_long(job.job_id, stored=True):
         return REJECTED
     existing = storage.get_job(job.job_id)
     if existing is None:
+        if _job_id_too_long(job.job_id):
+            return REJECTED
         try:
             storage.add(job)
             return ADDED
@@ -225,9 +227,11 @@ def upsert_row(storage: ILineageRowStorage, row: StoredLineageRow) -> str:
     leaves a stale terminal next to its real edge; the next write of that edge (an
     ``UNCHANGED`` re-run included) deletes it.
     """
-    if _job_id_too_long(row.job_id):
+    if _job_id_too_long(row.job_id, stored=True):
         return REJECTED
     job_rows = storage.get_rows_by_job(row.job_id)
+    if not job_rows and _job_id_too_long(row.job_id):
+        return REJECTED
     stored = _same_identity(row, job_rows)
     if stored is None:
         if _superseded(row, job_rows):
@@ -284,16 +288,23 @@ def _delete_stale(storage: ILineageRowStorage, stale: List[StoredLineageRow]) ->
         storage.delete([stored.uuid for stored in stale])
 
 
-def _job_id_too_long(job_id: str) -> bool:
-    # In UTF-8 bytes, like the URI guard: job_id is part of the byte-capped
-    # (job_id, input, output) unique index.
-    size = len((job_id or "").encode("utf-8"))
+def _job_id_too_long(job_id: str, stored: bool = False) -> bool:
+    """Whether ``job_id`` cannot be written.
+
+    A new job_id is counted in UTF-8 bytes, like a new endpoint: it is part of
+    the byte-capped ``(job_id, input, output)`` unique index. One already
+    ``stored`` (written before this guard) is held only to the column's
+    character limit, so its record and rows keep merging rather than being
+    rejected on every re-record.
+    """
+    size = len(job_id or "") if stored else len((job_id or "").encode("utf-8"))
     if size <= MAX_JOB_ID_LENGTH:
         return False
     logger.warning(
-        "Lineage job_id is %d UTF-8 bytes, over the %d the index holds; not "
-        "stored (job_id=%.80s...)",
+        "Lineage job_id is %d %s, over the %d the index holds; not stored "
+        "(job_id=%.80s...)",
         size,
+        "chars" if stored else "UTF-8 bytes",
         MAX_JOB_ID_LENGTH,
         job_id,
     )

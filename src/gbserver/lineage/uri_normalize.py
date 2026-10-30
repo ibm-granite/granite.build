@@ -145,20 +145,37 @@ def normalize_uri(raw: str) -> str:
         logger.debug("Lineage URI failed to normalize, dropping endpoint: %r", raw)
         return ""
 
-    if len(normalized.encode("utf-8")) > MAX_LINEAGE_URI_LENGTH:
+    if len(normalized) > MAX_LINEAGE_URI_LENGTH:
         # Drop rather than truncate. The column would truncate silently, and two
         # distinct artifacts sharing a long prefix would then collapse into one
         # node -- inventing provenance, which is the one failure worth losing a
-        # node to avoid. Counted in UTF-8 bytes, not characters: the
-        # (job_id, input, output) btree entry is capped in bytes, and ~450 CJK
-        # characters per side fit the column yet overflow it on every retry.
+        # node to avoid.
         logger.warning(
-            "Lineage URI exceeds %d UTF-8 bytes, dropping endpoint: %r",
+            "Lineage URI exceeds %d characters, dropping endpoint: %r",
             MAX_LINEAGE_URI_LENGTH,
             raw,
         )
         return ""
     return normalized
+
+
+def fits_lineage_index(normalized: str) -> bool:
+    """Whether a normalized URI may be written as a new lineage endpoint.
+
+    Counted in UTF-8 bytes, not characters: the ``(job_id, input, output)``
+    btree entry is capped in bytes, and ~450 CJK characters per side fit the
+    column yet overflow it on every retry. Only for writes -- :func:`normalize_uri`
+    keeps its character limit, so an endpoint indexed before this guard still
+    normalizes to the id its rows carry and stays reachable.
+    """
+    if len(normalized.encode("utf-8")) <= MAX_LINEAGE_URI_LENGTH:
+        return True
+    logger.warning(
+        "Lineage URI exceeds %d UTF-8 bytes, dropping endpoint: %.120r",
+        MAX_LINEAGE_URI_LENGTH,
+        normalized,
+    )
+    return False
 
 
 def _normalize_hf(candidate: str, parsed) -> str:

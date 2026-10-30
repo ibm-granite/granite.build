@@ -1333,6 +1333,10 @@ def _http_error(status):
         # The raw HTTPError RunArtifacts pagination re-raises is an outage.
         (_http_error(502), True),
         (_http_error(503), True),
+        (_http_error(504), True),
+        # A 500/501 may be one broken run: it counts, over a longer give-up.
+        (_http_error(500), False),
+        (CommError("HTTP 501", _http_error(501)), False),
         # A CommError with no status keeps its name-based classification.
         (CommError("connection reset"), True),
         # Postgres ProgramLimitExceeded arrives as an OperationalError.
@@ -1365,14 +1369,66 @@ def test_a_forbidden_wandb_run_is_given_up_on_after_more_attempts():
     storage = _storage()
     ix, _, sink = _indexer([_run("r1", D1), _run("r2", D2)])
     sink.write_job.side_effect = [CommError("HTTP 403", _http_error(403))] * (
-        idx._MAX_FORBIDDEN_ATTEMPTS
+        idx._MAX_SLOW_GIVE_UP_ATTEMPTS
     ) + [None]
     for _ in range(idx._MAX_JOB_ATTEMPTS):
         ix.scan_once(storage)
     assert _checkpoint(storage) is None or _checkpoint(storage)["timestamp"] != D2
-    for _ in range(idx._MAX_FORBIDDEN_ATTEMPTS - idx._MAX_JOB_ATTEMPTS):
+    for _ in range(idx._MAX_SLOW_GIVE_UP_ATTEMPTS - idx._MAX_JOB_ATTEMPTS):
         ix.scan_once(storage)
     assert _checkpoint(storage)["timestamp"] == D2
+
+
+@pytest.mark.parametrize("status", [403, 500, 501])
+def test_ambiguous_statuses_get_the_longer_give_up(status):
+    exc = CommError(f"HTTP {status}", _http_error(status))
+    assert idx._give_up_after(exc) == idx._MAX_SLOW_GIVE_UP_ATTEMPTS
+    assert idx._give_up_after(CommError("HTTP 404", _http_error(404))) == (
+        idx._MAX_JOB_ATTEMPTS
+    )
+
+
+def test_a_run_failing_with_500_every_time_is_given_up_on():
+    """A W&B run that 500s on every request must not hold the checkpoint forever."""
+    storage = _storage()
+    ix, _, sink = _indexer([_run("r1", D1), _run("r2", D2)])
+    sink.write_job.side_effect = [_http_error(500)] * (
+        idx._MAX_SLOW_GIVE_UP_ATTEMPTS
+    ) + [None]
+    for _ in range(idx._MAX_SLOW_GIVE_UP_ATTEMPTS):
+        ix.scan_once(storage)
+    assert _checkpoint(storage)["timestamp"] == D2
+
+
+def test_a_handled_http_error_does_not_classify_a_later_failure():
+    """A 404 already caught (``__context__``) must not turn a DB outage permanent,
+    nor a 429 already caught turn a deterministic error transient."""
+
+    def raised_while_handling(handled, exc):
+        try:
+            try:
+                raise handled
+            except Exception:
+                raise exc
+        except Exception as caught:
+            return caught
+
+    outage = raised_while_handling(
+        CommError("HTTP 404", _http_error(404)),
+        OperationalError("server closed the connection unexpectedly"),
+    )
+    assert idx._http_status(outage) is None
+    assert idx._is_transient_error(outage) is True
+    bad = raised_while_handling(_http_error(429), ValueError("bad job payload"))
+    assert idx._is_transient_error(bad) is False
+    # An explicit cause is followed.
+    try:
+        try:
+            raise _http_error(503)
+        except Exception as inner:
+            raise RuntimeError("wrapped") from inner
+    except RuntimeError as wrapped:
+        assert idx._http_status(wrapped) == 503
 
 
 def test_the_checkpoint_is_read_once_per_scan():

@@ -25,7 +25,7 @@ negative tests here are therefore as load-bearing as the positive ones.
 
 import pytest
 
-from gbserver.lineage.uri_normalize import normalize_uri
+from gbserver.lineage.uri_normalize import fits_lineage_index, normalize_uri
 from gbserver.storage.stored_lineage_row import MAX_LINEAGE_URI_LENGTH
 
 # Groups of raw spellings that must each collapse to one identity. Every member
@@ -432,14 +432,18 @@ def test_uri_at_exactly_the_limit_is_kept():
     assert normalized == raw
 
 
-def test_uri_limit_counts_utf8_bytes_not_characters():
+def test_uri_limit_counts_utf8_bytes_on_write_only():
     """~450 CJK characters fit 512 characters but not the byte-capped unique
     index (``index row size ... exceeds btree maximum``), which would fail the
-    same row on every retry and stall the indexer."""
+    same row on every retry and stall the indexer. So a new endpoint is refused
+    by bytes, while reading still normalizes it, so rows indexed before the
+    guard stay reachable."""
     prefix = "https://huggingface.co/org/"
     raw = prefix + "模" * 450
     assert len(raw) <= MAX_LINEAGE_URI_LENGTH
-    assert normalize_uri(raw) == ""
+    assert normalize_uri(raw) == raw
+    assert fits_lineage_index(normalize_uri(raw)) is False
+    assert fits_lineage_index(normalize_uri(prefix + "m" * 450)) is True
 
 
 # Every raw spelling the tables above use, plus the cases a non-idempotent rule

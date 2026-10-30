@@ -43,7 +43,7 @@ confirm_space_member_access is never stubbed by conftest.
 
 from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -557,3 +557,19 @@ def test_several_registrations_of_one_identity_come_back_in_a_fixed_order():
                 match_lineage_uri=True,
             )
         assert [a.uuid for a in resp.artifacts] == [new.uuid, old.uuid, archived.uuid]
+
+
+def test_lineage_uri_match_does_not_cache_the_request_uri_or_long_uris():
+    """The request's uri is caller-supplied and unbounded: caching it would let
+    any client fill the module cache. Long registry URIs skip it too."""
+    from gbserver.api import artifacts as api
+
+    api._normalized_cached.cache_clear()
+    storage = MagicMock()
+    storage.artifact_registry.get_by_where.return_value = []
+    api._by_lineage_uri(storage, "hf://org/" + "x" * 5000)
+    assert api._normalized_cached.cache_info().currsize == 0
+    api._normalized("hf://org/" + "y" * (api._MAX_CACHED_URI_LENGTH + 1))
+    assert api._normalized_cached.cache_info().currsize == 0
+    api._normalized("hf://org/model")
+    assert api._normalized_cached.cache_info().currsize == 1
