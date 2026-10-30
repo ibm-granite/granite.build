@@ -76,7 +76,9 @@ class SQLKeyValuePairStorage(
         for last in (False, True):
             if not self._table_ready:
                 self._prepare_table()
-                self._table_ready = True
+                # Ready only once the table is seen; else the attempt reports
+                # the real error (a missing table recreates once below).
+                self._table_ready = self._ensure_table_without_retry()
             try:
                 return self._run_attempts(attempt)
             except Exception as exc:
