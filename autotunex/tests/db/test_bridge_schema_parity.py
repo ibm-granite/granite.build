@@ -20,6 +20,7 @@ own ``MetaData``.
 from __future__ import annotations
 
 import importlib.util
+from functools import cache
 from pathlib import Path
 from types import ModuleType
 
@@ -40,7 +41,9 @@ def _bridge_tables() -> ModuleType:
     return module
 
 
+@cache
 def _bridge_metadata() -> MetaData:
+    """Loaded once: every test and parametrized case reads the same ``MetaData``."""
     metadata = _bridge_tables().metadata
     assert isinstance(metadata, MetaData)
     return metadata
@@ -72,16 +75,26 @@ def test_a_column_the_bridge_defaults_has_a_server_default_in_the_orm(
     )
 
 
-def _sqlite_default(metadata: MetaData, table: str, column: str) -> str | None:
-    """The column's default as SQLite renders it, unquoted: ``'42'`` and ``42`` read alike.
+@cache
+def _sqlite_defaults(metadata: MetaData) -> dict[tuple[str, str], str | None]:
+    """Every column's default as SQLite renders it, unquoted: ``'42'`` and ``42`` read alike.
 
-    An ``INT`` column stores either as 42, so the quoting is not a difference that
-    matters (the bridge writes ``seed`` as a string, the ORM as ``text("42")``).
+    Built once per ``MetaData``. An ``INT`` column stores either as 42, so the quoting
+    is not a difference that matters (the bridge writes ``seed`` as a string, the ORM
+    as ``text("42")``).
     """
     engine = create_engine("sqlite://")
     metadata.create_all(engine)
-    rendered = {c["name"]: c["default"] for c in inspect(engine).get_columns(table)}[column]
-    return None if rendered is None else str(rendered).strip("'")
+    inspector = inspect(engine)
+    return {
+        (table, c["name"]): None if c["default"] is None else str(c["default"]).strip("'")
+        for table in inspector.get_table_names()
+        for c in inspector.get_columns(table)
+    }
+
+
+def _sqlite_default(metadata: MetaData, table: str, column: str) -> str | None:
+    return _sqlite_defaults(metadata)[(table, column)]
 
 
 @pytest.mark.parametrize(("table", "column"), _bridge_defaulted_columns())
