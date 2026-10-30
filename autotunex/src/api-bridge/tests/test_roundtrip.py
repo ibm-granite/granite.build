@@ -470,3 +470,35 @@ def test_find_or_create_does_not_reuse_another_users_app_row(db):
     )
 
     assert found != pushed_id
+
+
+def test_find_or_create_prefers_the_app_pushed_row_to_an_old_duplicate(db):
+    # Before the bridge reused app-pushed rows, a run on one registered a duplicate
+    # named after the repo. Later runs must attach to the original, whose preview
+    # reads the repo, not to the duplicate.
+    from api_bridge import models
+    from api_bridge.services.dataset_service import Dataset
+
+    user_id = seed_user(db)
+    pushed_id, repo = _app_pushed_dataset(db, user_id)
+    duplicate = db.insert_dataset(
+        models.DatasetInfo(user_id=user_id, name=repo.split("/")[1], description="")
+    )
+    db.update_dataset_metadata(
+        id=str(duplicate.id),
+        user_id=user_id,
+        metadata={
+            "train_records": None,
+            "train_file_size": None,
+            "validation_records": None,
+            "validation_file_size": None,
+            "artifact_id": None,
+            "artifact_url": f"hf:///datasets/{repo}",
+        },
+    )
+
+    found = Dataset(db).find_or_create(
+        name=repo.split("/")[1], artifact_uri=f"hf:///datasets/{repo}", user_id=user_id
+    )
+
+    assert found == pushed_id

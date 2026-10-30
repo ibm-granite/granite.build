@@ -86,14 +86,16 @@ class Dataset:
         """
         fmt = data_format if data_format in DATA_FORMATS else None
         datasets = self.db.get_datasets(user_id)
-        for ds in datasets:
-            if ds.get("name") == name and ds.get("artifact_url") == artifact_uri:
-                logger.info("Dataset reused: %s (id=%s)", name, ds["id"])
-                return str(ds["id"])
+        # First, so a run attaches to the row whose own push this is, not to a
+        # duplicate an earlier run registered under the repo's name.
         pushed = _app_pushed_row(datasets, artifact_uri)
         if pushed is not None:
             logger.info("Dataset reused: %s is app-pushed (id=%s)", artifact_uri, pushed["id"])
             return str(pushed["id"])
+        for ds in datasets:
+            if ds.get("name") == name and ds.get("artifact_url") == artifact_uri:
+                logger.info("Dataset reused: %s (id=%s)", name, ds["id"])
+                return str(ds["id"])
 
         info = models.DatasetInfo(user_id=user_id, name=name, description="")
         created = self.db.insert_dataset(dataset=info, data_format=fmt)
