@@ -4,6 +4,7 @@
 """Dataset service for api-bridge (local copy from api/services/dataset_service.py)."""
 
 import logging
+import re
 
 from fastapi import HTTPException
 
@@ -13,6 +14,39 @@ logger = logging.getLogger(__name__)
 
 # The formats the main service accepts (DatasetCreate.data_format).
 DATA_FORMATS = {"jsonl", "csv", "parquet"}
+
+
+_HF_DATASET_PREFIXES = ("hf://huggingface.co/datasets/", "hf:///datasets/")
+_APP_REPO_SUFFIX = re.compile(r"_([0-9a-f]{8})$")
+
+
+def _hf_dataset_repo(uri: str | None) -> str | None:
+    """``owner/repo`` of a huggingface.co dataset locator, either spelling, else None."""
+    for prefix in _HF_DATASET_PREFIXES:
+        if uri and uri.startswith(prefix):
+            parts = uri[len(prefix) :].split("/")
+            return "/".join(parts[:2]) if len(parts) >= 2 and all(parts[:2]) else None
+    return None
+
+
+def _app_pushed_row(datasets: list, artifact_uri: str) -> dict | None:
+    """The row whose own push is ``artifact_uri``'s repo, if the caller can see it.
+
+    The main service pushes a row's files to ``<name>_<id8>`` and stores the
+    locator llmb prints (``hf://huggingface.co/...``), while a run names the repo
+    from gbserver's cache path (``hf:///...``). A row matches only when its id
+    starts with the suffix and its stored locator names the same repo.
+    """
+    repo = _hf_dataset_repo(artifact_uri)
+    match = _APP_REPO_SUFFIX.search(repo) if repo else None
+    if match is None:
+        return None
+    for ds in datasets:
+        if str(ds["id"]).startswith(match.group(1)) and (
+            _hf_dataset_repo(ds.get("artifact_url")) == repo
+        ):
+            return ds
+    return None
 
 
 class Dataset:
@@ -51,10 +85,15 @@ class Dataset:
         or validated by the main service, so one run's file must not rewrite it.
         """
         fmt = data_format if data_format in DATA_FORMATS else None
-        for ds in self.db.get_datasets(user_id):
+        datasets = self.db.get_datasets(user_id)
+        for ds in datasets:
             if ds.get("name") == name and ds.get("artifact_url") == artifact_uri:
                 logger.info("Dataset reused: %s (id=%s)", name, ds["id"])
                 return str(ds["id"])
+        pushed = _app_pushed_row(datasets, artifact_uri)
+        if pushed is not None:
+            logger.info("Dataset reused: %s is app-pushed (id=%s)", artifact_uri, pushed["id"])
+            return str(pushed["id"])
 
         info = models.DatasetInfo(user_id=user_id, name=name, description="")
         created = self.db.insert_dataset(dataset=info, data_format=fmt)
