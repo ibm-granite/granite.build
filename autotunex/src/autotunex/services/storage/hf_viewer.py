@@ -40,7 +40,7 @@ class HFViewerUnavailable(Exception):  # noqa: N818 (name is a fixed cross-task 
 
 
 class HFViewerInaccessible(HFViewerUnavailable):
-    """The viewer refused the repo: HTTP 401, 403 or 404 on ``/splits``.
+    """The viewer refused the repo: HTTP 401, 403 or 404 on ``/splits`` or ``/rows``.
 
     The repo is private, gated, or missing for the credentials sent, so (unlike
     "still precomputing") retrying with the same credentials will not help. A 404
@@ -168,8 +168,9 @@ async def fetch_rows(
     Calls ``GET {base_url}/rows``. ``length`` is clamped to the viewer's 100-row
     page cap. A bearer token is sent only when one is provided (public datasets
     need none; the app's pushed repos are private, so one is required in
-    practice). Raises :class:`HFViewerUnavailable` on any failure — including a
-    200 whose body carries no usable rows.
+    practice). Raises :class:`HFViewerInaccessible` on HTTP 401/403/404, and
+    :class:`HFViewerUnavailable` on any other failure — including a 200 whose body
+    carries no usable rows.
     """
     params: dict[str, str | int] = {
         "dataset": repo_id,
@@ -185,6 +186,8 @@ async def fetch_rows(
     except httpx.HTTPError as exc:
         raise HFViewerUnavailable(f"{where}: transport error: {exc}") from exc
 
+    if response.status_code in _INACCESSIBLE_STATUSES:
+        raise HFViewerInaccessible(f"{where}: HTTP {response.status_code}")
     if response.status_code != 200:
         raise HFViewerUnavailable(f"{where}: HTTP {response.status_code}")
     try:
