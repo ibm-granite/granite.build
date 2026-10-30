@@ -80,6 +80,10 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
 
     """
 
+    # Fields the database stamps on write, so a stored item never matches the one passed to add().
+    # Sub-classes list them to have the generic tests ignore them.
+    _db_stamped_fields: list[str] = []
+
     @classmethod
     def setup_class(cls):
         super().setup_class()
@@ -125,7 +129,7 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
         item = storage.get_by_uuid(item0.uuid)
         assert item is not None, "Stored item was not retrieved from storage"
         # print(f"diffs={get_differing_attributes(item0.build_event,item.build_event)}")
-        assert item0 == item, "Stored item not equal"
+        assert self._verify_equal(item, item0), "Stored item not equal"
 
         # add 2nd item.
         item1 = self._get_test_item(1)
@@ -152,8 +156,8 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
         assert uuids == [item2.uuid, item3.uuid]
         items: list = storage.get_by_uuid(uuids)
         assert len(items) == 2
-        assert items[0] == item2, "Did not get back expected item 0"
-        assert items[1] == item3, "Did not get back expected item 1"
+        assert self._verify_equal(items[0], item2), "Did not get back expected item 0"
+        assert self._verify_equal(items[1], item3), "Did not get back expected item 1"
 
     def test_get_by_uuid(self):
 
@@ -747,6 +751,7 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
                 UPDATED_TIME_FIELD_NAME,
                 CREATED_TIME_FIELD_NAME,
                 UUID_COLUMN_NAME,
+                *self._db_stamped_fields,
             ] and not name.startswith("_"):
                 matches[name] = value
 
@@ -788,8 +793,8 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
             ), "Updated attribute {name} did not get assigned value {value}"
 
         item = storage.get_by_uuid(item0.uuid)
-        assert (
-            item == updated_item0
+        assert self._verify_equal(
+            item, updated_item0
         ), "Reading item from db did not give the updated item"
 
         # Make sure we can update protected UUID column

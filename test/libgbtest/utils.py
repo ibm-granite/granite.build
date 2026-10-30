@@ -30,6 +30,8 @@ from gbserver.types.constants import (
     GB_BUILDS_TABLE_NAME,
     GB_ENVIRONMENT,
     GB_EVENTS_TABLE_NAME,
+    GB_LINEAGE_JOB_TABLE_NAME,
+    GB_LINEAGE_TABLE_NAME,
     GB_NODE_FAILURES_TABLE_NAME,
     GB_SPACES_TABLE_NAME,
     GB_STEP_RUNS_TABLE_NAME,
@@ -50,6 +52,8 @@ _SACRED_TABLE_NAMES = [
     GB_SPACES_TABLE_NAME,
     GB_EVENTS_TABLE_NAME,
     GB_NODE_FAILURES_TABLE_NAME,
+    GB_LINEAGE_TABLE_NAME,
+    GB_LINEAGE_JOB_TABLE_NAME,
 ]
 
 
@@ -181,10 +185,10 @@ class AbstractSingletonStorageUsingTest(AbstractReadonlySingletonStorageUsingTes
         # Build a prefix that fits within PostgreSQL's 63-char identifier limit.
         # A 6-char hex hash of the full method name ensures uniqueness even when the
         # name is truncated.  Format: d{MMDD}_{hex6}_{rand5}_{method_name}_
-        # Fixed overhead: 5+1+6+1+5+1+1 = 20 chars; longest suffix "gb_space_users" = 14 chars.
-        # That leaves 63 - 20 - 14 = 29 chars for the (possibly truncated) method name.
+        # Fixed overhead: 5+1+6+1+5+1+1 = 20 chars; longest suffix "gb_lineage_index" = 16 chars.
+        # That leaves 63 - 20 - 16 = 27 chars for the (possibly truncated) method name.
         name_hash = hashlib.sha1(method.__name__.encode()).hexdigest()[:6]
-        short_method_name = method.__name__[:29]
+        short_method_name = method.__name__[:27]
         table_prefix = (
             f"{_DATESTR}_{name_hash}_{random_number:05d}_{short_method_name}_"
         )
@@ -192,6 +196,9 @@ class AbstractSingletonStorageUsingTest(AbstractReadonlySingletonStorageUsingTes
         assert (
             storage is None
         ), "This is not thread-safe.  Tests within a class must be run serially."
+        # Re-apply the class's factory: the first import of gbserver.api.root_api (e.g. by a
+        # function-scoped fixture) runs the standalone init, which installs SQLite after setup_class.
+        singleton_storage.set_storage_factory(self._get_storage_factory())
         self.storage = singleton_storage.set_storage_prefix(table_prefix)
         self._clear_storage()
 

@@ -5,6 +5,12 @@ which runs them against the local test PostgreSQL.
 """
 
 from libgbtest.local_postgres import HOSTED_POSTGRES_TEST_MARKS
-from unit.storage.postgres.test_postgres_lineage_job_storage import *  # noqa: F401,F403
+from unit.storage.postgres.test_postgres_lineage_job_storage import (
+    SQLLineageJobStorageTests,
+)
 
 pytestmark = HOSTED_POSTGRES_TEST_MARKS
+
+
+class TestSQLLineageJobStorage(SQLLineageJobStorageTests):
+    """``gb_lineage_job`` tests against the hosted PostgreSQL."""
