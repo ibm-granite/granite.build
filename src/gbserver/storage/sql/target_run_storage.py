@@ -218,7 +218,7 @@ class SQLTargetRunStorage(
             ]
         else:
             key = model.finished_at
-            legacy = literal_column(self._PG_LEGACY_FINISHED)
+            legacy: Any = literal_column(self._PG_LEGACY_FINISHED)
             # Only a row whose blob has a time counts: one with none is not
             # finished, and is passed over like a null key elsewhere.
             unplaceable = [

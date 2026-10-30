@@ -595,5 +595,7 @@ def test_lineage_uri_matches_come_unarchived_first_then_newest():
         reg("new", False, 5),
         reg("none", None, 7),
     ]
-    order = [m.uuid for m in api._by_lineage_uri(storage, "https://huggingface.co/org/model")]
+    order = [
+        m.uuid for m in api._by_lineage_uri(storage, "https://huggingface.co/org/model")
+    ]
     assert order == ["none", "new", "old", "archived-new"]
