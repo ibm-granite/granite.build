@@ -21,6 +21,9 @@ benchmarks:
   - {id: browsecomp-plus, group: agentic-general, name: BrowseComp+, metric: mean reward}
   - {id: mcpatlas, group: agentic-general, name: "MCPAtlas (key-less servers, 30 tasks)", metric: "pass rate (coverage >= 0.75)"}
   - {id: toolathlon, group: agentic-general, name: toolathlon, metric: success rate}
+  - {id: mcpmark-filesystem, group: agentic-general, name: "MCPMark Filesystem", metric: pass@1}
+  - {id: mcpmark-postgres, group: agentic-general, name: "MCPMark Postgres", metric: pass@1}
+  - {id: mcpmark-playwright, group: agentic-general, name: "MCPMark Playwright", metric: pass@1}
   # Reasoning
   - {id: aime25, group: reasoning, name: AIME25 (no tools), metric: "pass@1 symbolic correct"}
   - {id: hmmt-feb25, group: reasoning, name: HMMT Feb25 (no tools), metric: "pass@1 symbolic correct"}
