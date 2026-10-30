@@ -3,10 +3,10 @@
 import * as React from 'react'
 import { IconButton } from '@carbon/react'
 import { Close } from '@carbon/icons-react'
-import type { Build, BuildTargetRun } from '@granite-build/ui-core/types'
-import { BuildStatusBadge } from '@granite-build/ui-core/components/BuildStatusBadge'
+import type { Build, BuildTargetRun } from '../../types'
+import { BuildStatusBadge } from '../BuildStatusBadge'
 import StepDetailsPanel, { stepDrawerSummary } from './StepDetailsPanel'
-import styles from './LineagePanel.module.scss'
+import styles from './StepDrawer.module.scss'
 
 interface Props {
   targetName: string
@@ -21,13 +21,18 @@ interface Props {
   notice?: React.ReactNode
   /** Extra sections after the steps. */
   children?: React.ReactNode
+  /**
+   * False for a job known only from the lineage index: it records no steps, so the
+   * steps panel would only say the target has not started -- wrong for a job that ran.
+   */
+  showSteps?: boolean
 }
 
 // A target's step details, shared by the build and artifact lineage panels. A
 // drawer, not a modal: no overlay, so the graph behind stays visible and
 // clickable and picking another target just re-points the drawer.
 export default function StepDrawer({
-  targetName, target, build, onClose, drawerRef, closeButtonRef, buildId, notice, children,
+  targetName, target, build, onClose, drawerRef, closeButtonRef, buildId, notice, children, showSteps = true,
 }: Props) {
   const { status, subtitle, summary } = stepDrawerSummary(target, build)
   return (
@@ -56,12 +61,14 @@ export default function StepDrawer({
       </div>
       <div className={styles.stepSidePanelBody}>
         {notice && <div className={styles.stepNotice}>{notice}</div>}
-        <StepDetailsPanel
-          targetName={targetName}
-          target={target}
-          sourceUri={build?.source_uri}
-          buildId={build?.uuid ?? buildId}
-        />
+        {showSteps && (
+          <StepDetailsPanel
+            targetName={targetName}
+            target={target}
+            sourceUri={build?.source_uri}
+            buildId={build?.uuid ?? buildId}
+          />
+        )}
         {children && <div className={styles.stepExtraSections}>{children}</div>}
       </div>
     </div>

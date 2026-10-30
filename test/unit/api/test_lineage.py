@@ -32,6 +32,8 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from gbserver.api import lineage as lineage_mod
 from gbserver.lineage.openlineage_models import (
@@ -263,18 +265,13 @@ def _db_service(**kwargs):
     return service
 
 
-# --------------------------------------------------------------- POST/GET /graph
+# ------------------------------------------------------------------- POST /graph
 
 
 def test_query_graph_rejects_an_unknown_direction():
-    """A bad direction is a 422, as the route documents, like any invalid param."""
-    with pytest.raises(HTTPException) as caught:
-        lineage_mod.query_lineage_graph_get(
-            _fake_request("member", "member@example.com"),
-            uri="s3://b/x",
-            direction="sideways",
-        )
-    assert caught.value.status_code == 422
+    """A bad direction fails the body model, which FastAPI answers with a 422."""
+    with pytest.raises(ValidationError):
+        LineageQueryRequest(uri="s3://b/x", direction="sideways")
 
 
 def test_index_routes_read_the_index_whatever_the_provider():
@@ -304,8 +301,8 @@ def test_query_graph_requires_a_uri_or_a_job_id():
     service = _db_service(query_graph=lambda **_kw: pytest.fail("must not walk"))
     with patch.object(lineage_mod, "_get_index_service", return_value=service):
         with pytest.raises(HTTPException) as caught:
-            lineage_mod.query_lineage_graph_get(
-                _fake_request("member", "member@example.com")
+            lineage_mod.query_lineage_graph_post(
+                _fake_request("member", "member@example.com"), LineageQueryRequest()
             )
     assert caught.value.status_code == 422
 
@@ -407,8 +404,9 @@ def test_query_graph_accepts_job_ids_alone_as_a_seed():
         patch.object(lineage_mod, "_get_index_service", return_value=service),
         patch.object(lineage_mod, "is_super_admin", return_value=False),
     ):
-        lineage_mod.query_lineage_graph_get(
-            _fake_request("member", "member@example.com"), job_ids=["J1", "J2"]
+        lineage_mod.query_lineage_graph_post(
+            _fake_request("member", "member@example.com"),
+            LineageQueryRequest(job_ids=["J1", "J2"]),
         )
     assert seen["job_ids"] == ["J1", "J2"]
 
@@ -508,8 +506,8 @@ def test_query_graph_carries_node_depth_to_the_response():
     assert depths == {"s3://b/x": 0, "s3://b/y": 2}
 
 
-def test_query_graph_get_form_maps_its_query_params():
-    """The GET form exists so a lineage view can be bookmarked and shared."""
+def test_query_graph_passes_its_body_through():
+    """Every field of the body reaches the walk."""
     seen = {}
 
     def fake(**kwargs):
@@ -518,14 +516,12 @@ def test_query_graph_get_form_maps_its_query_params():
 
     service = _db_service(query_graph=fake)
     with patch.object(lineage_mod, "_get_index_service", return_value=service):
-        lineage_mod.query_lineage_graph_get(
+        lineage_mod.query_lineage_graph_post(
             _fake_request("member", "member@example.com"),
-            uri="s3://b/x",
-            job_id="J1",
-            direction="downstream",
-            depth=4,
+            LineageQueryRequest(
+                uri="s3://b/x", job_id="J1", direction="downstream", max_depth=4
+            ),
         )
-    # note: the wire calls it `depth`, the service `max_depth`
     assert seen["max_depth"] == 4
     assert seen["direction"] == "downstream"
     assert seen["uri"] == "s3://b/x"
@@ -533,15 +529,27 @@ def test_query_graph_get_form_maps_its_query_params():
 
 
 @pytest.mark.parametrize(
-    "params", [{"depth": 100}, {"depth": 0}, {"max_nodes_per_level": 0}]
+    "params", [{"max_depth": 100}, {"max_depth": 0}, {"max_nodes_per_level": 0}]
 )
-def test_query_graph_get_answers_422_on_out_of_range_params(params):
-    """Bounds live on the request model; a violation is the client's error, not a 500."""
-    with pytest.raises(HTTPException) as caught:
-        lineage_mod.query_lineage_graph_get(
-            _fake_request("member", "member@example.com"), uri="s3://b/x", **params
+def test_query_graph_rejects_out_of_range_params(params):
+    """Bounds live on the request model, so FastAPI answers a violation with a 422."""
+    with pytest.raises(ValidationError):
+        LineageQueryRequest(uri="s3://b/x", **params)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"direction": "sideways"}, {"max_depth": 0}, {"max_nodes_per_level": 0}],
+    ids=["direction", "depth", "nodes-per-level"],
+)
+def test_the_graph_route_answers_a_bad_body_with_a_422(body):
+    """Through the route itself: the body model's rejection is the documented 422."""
+    service = _db_service(query_graph=lambda **_kw: pytest.fail("must not walk"))
+    with patch.object(lineage_mod, "_get_index_service", return_value=service):
+        resp = TestClient(lineage_mod.lineage_api).post(
+            "/graph", json={"uri": "s3://b/x", **body}
         )
-    assert caught.value.status_code == 422
+    assert resp.status_code == 422
 
 
 # --------------------------------------- the graph is cross-space, by decision
@@ -833,8 +841,9 @@ def test_query_graph_answers_503_when_the_index_cannot_be_read():
     service = _db_service(query_graph=broken)
     with patch.object(lineage_mod, "_get_index_service", return_value=service):
         with pytest.raises(HTTPException) as caught:
-            lineage_mod.query_lineage_graph_get(
-                _fake_request("member", "member@example.com"), job_id="J1"
+            lineage_mod.query_lineage_graph_post(
+                _fake_request("member", "member@example.com"),
+                LineageQueryRequest(job_id="J1"),
             )
     assert caught.value.status_code == 503
 
@@ -899,7 +908,8 @@ def test_query_graph_keeps_an_http_error_raised_inside_the_walk():
         patch.object(lineage_mod, "_get_index_service", return_value=service),
         pytest.raises(HTTPException) as caught,
     ):
-        lineage_mod.query_lineage_graph_get(
-            _fake_request("member", "member@example.com"), uri="s3://b/x"
+        lineage_mod.query_lineage_graph_post(
+            _fake_request("member", "member@example.com"),
+            LineageQueryRequest(uri="s3://b/x"),
         )
     assert caught.value.status_code == 403

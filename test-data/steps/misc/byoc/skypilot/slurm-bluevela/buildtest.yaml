@@ -1,0 +1,29 @@
+# YAML-driven spec for test_skypilot_slurm_bluevela_byoc.py (located by the
+# test/ <-> test-data/ helper; see steps/README.md). Same byoc workload as the
+# local slurm test, on the BlueVela SLURM cluster, using the shared BlueVela
+# SLURM environment. The environment.yaml beside this file is an example of a
+# custom one (switch build.yaml to `environment_uri: file:.` to use it).
+targets:
+  - byoc-run
+target_expectations:
+  - target_name: byoc-run
+    # Just the one workload runs: the env:// input/output are no-ops on the
+    # shared FS (no extra pull/push step).
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    expected_steps:
+      - metadata_matches:
+          commit_hash: "^[0-9a-f]{40}$"
+        config:
+          byoc_config:
+            repo: "https://github.com/octocat/Hello-World.git"
+# The Space rendered by `make space` (the local byoc step), as for the other
+# clusters; publish-step rewrites it to configurations/spaces/local. The
+# environment comes from this fixture, not the space.
+space_uri: ../../../../../../configurations/spaces/local
+tests:
+  - runner
+simulate_step_failure: false
+# Shared-partition queueing on BlueVela can take a while.
+timeout_minutes: 30

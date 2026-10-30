@@ -4,14 +4,14 @@ import * as React from 'react'
 import { Button, IconButton, InlineLoading, InlineNotification } from '@carbon/react'
 import { Close } from '@carbon/icons-react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { adaptStatus, getLineageJobDetail, getLineageJobs, type LineageJobDetail, type LineageJobEntry } from '@granite-build/ui-core/api/gbserver'
-import type { BuildTargetRun } from '@granite-build/ui-core/types'
-import type { IndexElkNode } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
+import { adaptStatus, getLineageJobDetail, getLineageJobs, type LineageJobDetail, type LineageJobEntry } from '../../api/gbserver'
+import type { BuildTargetRun } from '../../types'
+import type { IndexElkNode } from '../LineageGraph/indexGraph'
 import StepDrawer from './StepDrawer'
 import StepDetailsPanel, { ExecutionSummary, Field, Section, hasValue, humanizeKey } from './StepDetailsPanel'
 import { stepDrawerSummary, toIsoTimestamp } from './stepDrawerSummary'
-import { BuildStatusBadge } from '@granite-build/ui-core/components/BuildStatusBadge'
-import styles from './LineagePanel.module.scss'
+import { BuildStatusBadge } from '../BuildStatusBadge'
+import styles from './StepDrawer.module.scss'
 
 interface Props {
   node: IndexElkNode
@@ -30,8 +30,9 @@ const jobStatus = (s: string) => adaptStatus(STATUS_ALIASES[s.toLowerCase()] ?? 
 
 // The details of a job (run) node that came from the lineage index, shared by the
 // build and artifact lineage panels. The job is read from GET /lineage/jobs/{job_id},
-// which fetches it from the store that holds it; one granite.build ran is shown with
-// the build's own step drawer, anything else with what the index recorded about it.
+// which reads it from this server's builds whatever store indexed it; one
+// granite.build ran is shown with the build's own step drawer, anything else with
+// what the index recorded about it.
 export default function JobDrawer(props: Props) {
   // A grouped node stands for every job with the same source and target (an
   // in-place rewrite is the case where both are one artifact), not for its
@@ -61,7 +62,10 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef, soleOfGroup
   // The build's own target run when this server has it; otherwise one rebuilt from
   // what the lineage index captured, so both render through the same drawer.
   const target = job?.target ?? (job ? targetFromJob(job, title) : undefined)
-  const fromIndex = !job?.target && !isLoading
+  // Only once the detail is in: while it loads, neither the steps nor the index
+  // notice is known to apply. A failed fetch still shows what the node recorded.
+  const fromIndex = Boolean(job) && !job?.target
+  const showIndex = fromIndex || Boolean(error)
 
   return (
     <StepDrawer
@@ -72,6 +76,7 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef, soleOfGroup
       onClose={onClose}
       drawerRef={drawerRef}
       closeButtonRef={closeButtonRef}
+      showSteps={Boolean(job?.target)}
       // Carbon's inline notification: persistent, in context, and not something
       // to act on, so info, low contrast and no close button.
       notice={fromIndex && job && (
@@ -79,9 +84,9 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef, soleOfGroup
           kind="info"
           lowContrast
           hideCloseButton
-          title="From the lineage index"
+          title="No build steps for this job"
           // A plain-string subtitle, so it takes the notification's own compact type.
-          subtitle={[job.detail_error ?? 'Not a granite.build run.', 'Showing what the lineage index recorded'].join('. ') + '.'}
+          subtitle={indexNotice(job)}
         />
       )}
     >
@@ -92,7 +97,7 @@ function SingleJobDrawer({ node, onClose, drawerRef, closeButtonRef, soleOfGroup
           <Field label="Shape">In-place rewrite (reads and writes the same artifact)</Field>
         </Section>
       )}
-      {fromIndex && <JobIndexSections job={job} target={target} jobId={jobId} buildId={buildId} noAccess={isAccessDenied(job)} />}
+      {showIndex && <JobIndexSections job={job} target={target} jobId={jobId} buildId={buildId} noAccess={isAccessDenied(job)} />}
       {job && <JobPayloadSections job={job} />}
     </StepDrawer>
   )
@@ -164,7 +169,7 @@ function JsonField({ label, value }: { label: string; value: unknown }) {
 function JobPayloadSections({ job }: { job: LineageJobDetail }) {
   const entries = Object.entries(job.detail ?? {}).filter(([, v]) => v != null)
   const origin = isPlainObject(job.origin) ? job.origin : {}
-  const hasOrigin = Object.keys(origin).length > 0 || Boolean(job.origin_url)
+  const hasOrigin = Object.keys(origin).length > 0
   if (entries.length === 0 && !hasOrigin) return null
   return (
     <>
@@ -179,7 +184,6 @@ function JobPayloadSections({ job }: { job: LineageJobDetail }) {
       )}
       {hasOrigin && (
         <Section title="Origin">
-          {job.origin_url && <Field label="Source"><a href={job.origin_url} target="_blank" rel="noreferrer">{job.origin_url}</a></Field>}
           <DetailRows value={origin} />
         </Section>
       )}
@@ -243,7 +247,7 @@ function JobIndexSections({ job, target, jobId, buildId, noAccess }: {
       )}
       <Section title="Lineage">
         <CodeField label="Build ID" value={buildId} fallback={hidden} />
-        <CodeField label="Target run" value={job ? tagValue(job, 'target_run_uuid') : undefined} fallback={hidden} />
+        <CodeField label="Target run" value={targetRunOf(job)} fallback={hidden} />
         <CodeField label="Job ID" value={job?.job_id ?? jobId} />
         {/* Owner and namespace come only from the access-checked detail; the graph
             node and the listing entry do not carry them. */}
@@ -403,8 +407,37 @@ function GroupedJobsDrawer({ node, onClose, drawerRef, closeButtonRef }: Props) 
   )
 }
 
+// Why the drawer shows no steps, and where what it does show came from. The notice
+// names the store that indexed the job and, when this server could not read its
+// build or payloads, why -- instead of guessing at the job's origin.
+const SOURCE_LABELS: Record<string, string> = {
+  wandb: 'W&B',
+  gb_lineage_job: 'a lineage event',
+  gb_targets: 'a granite.build target run',
+}
+
+function indexNotice(job: LineageJobDetail): string {
+  const source = SOURCE_LABELS[job.job_store] ?? 'an external system'
+  if (job.detail_error) {
+    const reason = job.detail_error.replace(/\.$/, '')
+    // An external store's reason already names the source.
+    return job.job_store === 'other' ? `${reason}.` : `Indexed from ${source}. ${reason}.`
+  }
+  // A space denial carries no reason; it is not a missing build.
+  if (job.detail_denied) return `Indexed from ${source}. Not authorized to read this job's details.`
+  // Detail is read from this server's builds only, never from the indexing store.
+  return `Indexed from ${source}; this server has no build for it.`
+}
+
 function buildIdOf(job: LineageJobEntry): string | undefined {
   return tagValue(job, 'build_id')
+}
+
+// The detail carries the target run as its own field; a bare listing entry only
+// in its tags.
+function targetRunOf(job: LineageJobEntry | LineageJobDetail | undefined): string | undefined {
+  if (!job) return undefined
+  return ('target_run_uuid' in job && job.target_run_uuid) || tagValue(job, 'target_run_uuid')
 }
 
 function tagValue(job: LineageJobEntry, key: string): string | undefined {

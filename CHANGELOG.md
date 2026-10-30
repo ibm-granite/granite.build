@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   copy over the published one).
 
 - **Lineage: artifact lineage now reads the local lineage index (#470).** The artifact
-  page and `GET /lineage/graph` read `gb_lineage_index`, whatever
+  page and `POST /lineage/graph` read `gb_lineage_index`, whatever
   `GBSERVER_LINEAGE_PROVIDER` is. **Upgrading a W&B deployment:** outside standalone the
   indexer indexes nothing until a checkpoint exists, and the Helm chart never seeds
   one: seed it by hand with `gbserver lineage-index-init --base-timestamp
@@ -46,12 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeping the table, and re-seeds at `all`; `--force` alone would keep the old-form rows
   beside the new). A running gbserver keeps working on the emptied table; a scan already
   in progress when the rows are deleted may write a few old-form rows back.
-- **Lineage API (#470).** `POST /lineage/artifact` is removed; use `GET /lineage/graph`.
+- **Lineage API (#470).** `POST /lineage/artifact` is removed; use `POST /lineage/graph`.
   `POST /lineage/search` is deprecated (flagged in the OpenAPI schema): it stays for
   existing external callers and will be removed once they move to
-  `GET /lineage/jobs` / `GET /lineage/graph?job_ids=...`.
-  `GET /lineage/graph` accepts repeated `job_ids`, answers 422 for a bad `direction`,
-  and limits callers who are not super admins to `depth <= 20` and the default
+  `GET /lineage/jobs` / `POST /lineage/graph` with `job_ids`.
+  `POST /lineage/graph` takes the query as a JSON body (`job_ids` included, so a grouped
+  node expands in one walk), answers 422 for a bad `direction`,
+  and limits callers who are not super admins to `max_depth <= 20` and the default
   per-level node ceiling. Nodes carry only cross-space fields; build and target-run
   ids appear on a run node only for callers who can read that job's space.
   `GET /lineage/jobs` answers 422 for `limit` outside 1–1000 or a negative `offset`, and
@@ -59,11 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   also matches an artifact by its normalized lineage URI (opt-in; without it `uri` is
   matched exactly), and each artifact, including `GET /artifacts/{id}`, carries a derived
   `lineage_uri`. `GET /lineage/jobs/{id}` adds `detail_denied`, true when the detail was
-  withheld for lack of access rather than a store failure. `POST /lineage/graph` takes the
-  same query as a body, for a `job_ids` list too long for a URL; the UI uses it to expand
-  a grouped node in one walk.
-  `GET /lineage/graph` answers 422 (was 400) for out-of-range input, and both
-  `GET /lineage/graph` and `GET /lineage/jobs` answer 503 rather than an empty 200 when
+  withheld for lack of access rather than a store failure.
+  `POST /lineage/graph` answers 422 (was 400) for out-of-range input, and both
+  `POST /lineage/graph` and `GET /lineage/jobs` answer 503 rather than an empty 200 when
   the index cannot be read. `GET /lineage/jobs` caps `job_ids` at 1000, as the graph does.
 - **Lineage index init (#470).** `gbserver lineage-index-init --rebuild` with provider
   `wandb` re-seeds at `all`, so the indexer back-fills the whole shared W&B project, not

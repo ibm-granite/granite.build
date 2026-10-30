@@ -352,17 +352,38 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   (`$(VENV_DIR)`, default `.venv` at the repo root): `make test` activates it
   automatically and fails fast with a pointer to `make venv` if it is missing.
   Override `VENV_DIR` if your virtualenv lives elsewhere.
+  Runs every test in `test/` by default. To run only some, set `TESTS` to pytest paths
+  or node ids (relative to the step env dir) and/or pass pytest options in
+  `PYTEST_ARGS`:
+
+  ```sh
+  make test TESTS=test/slurm                           # one cluster's build tests
+  make test TESTS="test/slurm test/aws"                # several
+  make test TESTS=test/slurm/test_skypilot_byoc.py::TestSkypilotSlurmByoc::test_runner
+  make test PYTEST_ARGS='-k "not cancellation" -x'
+  ```
+
   Runs pytest with `$(PYTEST_CAPTURE)`, default `-s`, matching the repo-root
   Makefile. **Do not drop `-s` for a SkyPilot build test.** Under pytest's capture the
   SkyPilot SDK's `click.secho(cluster_name)` flushes a stdout fd that has been replaced,
   and a *second* `sky launch` in the same pytest process then fails during provisioning
   with `OSError: [Errno 9] Bad file descriptor`. A single-launch test survives by luck, so
   the failure appears only in multi-target fixtures and looks intermittent.
-  pytest doesn't load the repo's `test/conftest.py` for tests under `steps/`, so
-  `make test` sets two variables the repo suites get from there, each only if you
-  haven't set it: `GB_ENVIRONMENT=STANDALONE` (unset, gbserver defaults to PROD and the
-  build-test base refuses to run) and `GBTEST_STANDALONE_ENVIRONMENT=STAGING` (sends an
-  `hf://` push to the staging resource group). Set either yourself to override it.
+  Step tests get the repo's [`test/conftest.py`](../test/conftest.py) through
+  [`steps/conftest.py`](conftest.py), which registers it as a plugin. So
+  `GBTEST_SPS_IBMCLOUD_API_KEY` loads `IBM_CLOUD_API_KEY`, `HF_TOKEN` and the other test
+  secrets from SPS, exactly as for the repo suites (needs `make ibm-venv`), and the same
+  env-restore and mock fixtures apply. Unlike the repo suites, `ibm`-marked step tests
+  are not required to have IBM credentials: a test that needs one checks for it itself.
+  Their published copies under `test/steps/` are: they run under `test/conftest.py`'s
+  own check, which needs `IBM_CLOUD_API_KEY` and a GitHub token for `ibm` tests.
+  `make ibm-extended-tests`, the suite that selects them, gets both from
+  `GBTEST_SPS_IBMCLOUD_API_KEY`.
+  `make test` also defaults `GB_ENVIRONMENT=STANDALONE` (unset, gbserver defaults to
+  PROD and the build-test base refuses to run) and `GBTEST_STANDALONE_ENVIRONMENT=STAGING`
+  (sends an `hf://` push to the staging resource group), each only if you haven't set
+  it. A `GB_ENVIRONMENT=STAGING` left in your shell sends the test to the hosted staging
+  database instead, so unset it for step tests.
 * **`test-setup`** — optional per-step hook that stands up the infrastructure a
   step's tests need (e.g. a local Docker SLURM cluster). It is a **separate
   target, deliberately not a prerequisite of `test`**, so the (often slow) infra
@@ -604,6 +625,45 @@ only local ones: a bare path or a `file://` URI. In both modes, a remote-space t
 `space://steps/<name>` from the remote space, so it exercises the step that space
 has, **not** your local source: publish the step to that space's assets before relying
 on it.
+
+### Custom test environments
+
+To run a build test against an environment that isn't in the space, for example a
+cluster-specific variant, put the `environment.yaml` right next to the fixture's
+`build.yaml` and point the build at it with `environment_uri: file:.`:
+
+```
+test-data/<cluster>/
+  build.yaml          # environment_uri: file:.
+  buildtest.yaml      # space_uri: ../../space   (as for any cluster)
+  environment.yaml
+```
+
+`file:.` always means the build's own directory (the copy of the folder holding
+`build.yaml`), so the fixture's environment is found wherever the test runs from, in
+both test modes: `make publish-step` copies the whole `test-data/<cluster>/` folder,
+environment included. The step still comes from the generated space, so the test
+exercises your local source.
+
+The example is [`misc/byoc/skypilot/test-data/slurm-bluevela/`](misc/byoc/skypilot/test-data/slurm-bluevela/).
+Its `build.yaml` runs on the shared BlueVela SLURM environment by default; the
+`environment.yaml` beside it is a ready-made copy to edit when testing environment
+changes, by switching to `environment_uri: file:.`. Notes:
+
+* The fixture folder is what's loaded as the environment, so it must hold exactly one
+  `environment.yaml`. To ship several, give each its own folder (`environments/<name>/`)
+  and reference it with a relative path, `file:environments/<name>`: a relative path is
+  looked up from the current directory first, then in the build's own directory.
+* Start from the shared environment (`configurations/assets/environments/...`) and
+  edit the copy; the shared one is unaffected. Say in its header comment where it came
+  from.
+* `file:` environment URIs work only on a standalone server, which `make test` uses.
+* The same rule applies to a relative `file:` `step_uri`, so a fixture can also ship a
+  small helper step (`file:steps/<name>`). Don't use it for the step under test: that
+  should come from the generated space (`space://steps/<path>`), so the test exercises
+  your rendered source.
+* Write relative paths as `file:<path>`, not `file://<path>`: with two slashes the
+  first segment is read as a host name.
 
 > **Image steps: keep the published image tag and your local build in sync.** For a
 > custom-image step, `make publish-step` freezes a concrete image reference into the

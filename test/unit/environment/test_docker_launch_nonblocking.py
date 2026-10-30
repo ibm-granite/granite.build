@@ -50,7 +50,7 @@ def _make_docker_env(client: MagicMock) -> Docker:
     """
     env = object.__new__(Docker)
     env._launched_containers = {}
-    env._launched_workspaces = {}
+    env._env_input_volumes = {}
     env._extra_volumes = {}
     env._get_docker = MagicMock(return_value=(MagicMock(), client))  # type: ignore[method-assign]
     env._resolve_image = MagicMock(return_value="img:latest")  # type: ignore[method-assign]
