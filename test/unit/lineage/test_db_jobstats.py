@@ -1062,3 +1062,20 @@ def test_a_merge_error_reaches_the_caller_as_itself(sink, jobs):
 
     with pytest.raises(KeyError, match="bad stored blob"):
         upsert_job(jobs, stored.model_copy(update={"tags": ["z=1"]}), extra_fields=boom)
+
+
+def test_an_unchanged_re_record_takes_no_locked_write(sink, jobs, monkeypatch):
+    """A re-record that adds nothing is one plain read, as before the merge moved
+    into update_fields."""
+    first = job("t3", [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)])
+    sink._write_job(first, build_id="BLD", target_run_uuid="t3")
+    calls = []
+    original = type(jobs).update_fields
+
+    def counting(self, *args, **kwargs):
+        calls.append(args)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(jobs), "update_fields", counting)
+    sink._write_job(first, build_id="BLD", target_run_uuid="t3")
+    assert calls == []

@@ -199,6 +199,14 @@ def upsert_job(
             existing = storage.get_job(job.job_id)
             if existing is None:
                 raise
+    # Nothing to change on the record as read: no locked write at all, as before
+    # the merge moved into update_fields. A writer landing after this read is
+    # merged by its own upsert, which sees this job's fields already stored.
+    unlocked = merge_job(existing, job)
+    if extra_fields is not None:
+        unlocked.update(extra_fields(existing, dict(unlocked)))
+    if not unlocked:
+        return UNCHANGED
     fields: Dict[str, Any] = {}
     failure: List[BaseException] = []
 

@@ -148,3 +148,30 @@ def test_compare_and_set_recreates_a_table_dropped_under_it():
     with patch("tenacity.nap.time.sleep"):
         assert storage.compare_and_set("k", None, {"v": 2}) is True
     assert storage.get_value("k") == {"v": 2}
+
+
+@pytest.mark.skipif(
+    os.environ.get("SKIP_SQL_ADMIN_TESTS", "False").lower() == "true",
+    reason="Don't want to run this in CICD.",
+)
+def test_compare_and_set_prepares_the_table_outside_the_file_lock():
+    """Creating the table retries on its own: it must not run under the lock an
+    attempt holds, nor inside the attempts' retry."""
+    from unittest.mock import patch
+
+    from gbserver.storage.sql.kv_pair_storage import SQLKeyValuePairStorage
+
+    storage = SqliteStorageFactory().create_kv_pair_storage(
+        table_name=f"t_kv_{uuid_module.uuid4().hex[:8]}"
+    )
+    held = []
+    original = SQLKeyValuePairStorage._prepare_table
+
+    def prepare(self):
+        held.append(self._db_file_lock.is_locked)
+        return original(self)
+
+    with patch.object(SQLKeyValuePairStorage, "_prepare_table", prepare):
+        assert storage.compare_and_set("k", None, {"v": 1}) is True
+        assert storage.compare_and_set("k", {"v": 1}, {"v": 2}) is True
+    assert held == [False]

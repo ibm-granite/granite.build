@@ -391,16 +391,13 @@ def _is_transient_error(exc: BaseException) -> bool:
     a raw ``HTTPError`` for a 401/429/5xx is an outage and is waited out. A 403
     is not transient; it gets a longer give-up instead (see ``_give_up_after``).
     """
-    # The status the failure carries (itself, its wrapped ``.exc``, its cause)
-    # decides first, whatever the classes around it say.
-    status = _http_status(exc)
-    if status is not None:
-        return status >= 500 or status in _TRANSIENT_HTTP_STATUSES
-    # Then link by link, outermost first: the first link that reads either way
+    # Link by link, outermost first: the first link that reads either way
     # decides, so a handled exception deeper in the chain cannot overrule what
-    # the failure itself says.
+    # the failure itself says. At each link the HTTP status it carries (itself,
+    # its wrapped ``.exc``, its cause) decides first, whatever its class says --
+    # for the first link, the same status _give_up_after reads.
     for current in _causes(exc):
-        status = _own_status(current)
+        status = _http_status(current)
         if status is not None:
             return status >= 500 or status in _TRANSIENT_HTTP_STATUSES
         message = str(current).lower()
