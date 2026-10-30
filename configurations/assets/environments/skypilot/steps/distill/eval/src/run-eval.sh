@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 #
 # PORTED, not authored here. Upstream source of truth:
-#   repo   github.ibm.com/Herbert-Woisetschlaeger/gb-steps-collection-post-training
 #   path   steps/distill-eval/src/run-eval.sh
-#   commit 70c1550a171aa8e09a9ad9047a5bf763c39e8579
 #
 # The ONLY intentional divergence is the artifact marker prefix: LLMB_ARTIFACT_* ->
 # GB_ARTIFACT_*. The monitor accepts both; GB_ is what every other step here prints.

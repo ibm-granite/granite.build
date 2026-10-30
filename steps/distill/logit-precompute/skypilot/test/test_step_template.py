@@ -87,10 +87,7 @@ class TestLauncherFactsLearnedElsewhere:
             'export PRECOMPUTE_SRC="$CODE_DIR/src/gb_steps_post_training/distillation"'
             in run_script
         )
-        assert (
-            'export LIB_DIR="$CODE_DIR/steps/distill-logit-precompute/src/lib"'
-            in run_script
-        )
+        assert 'export LIB_DIR="$DISTILL_HOME/shell"' in run_script
         assert "export CHECKOUT_ROOT=" not in run_script
 
     def test_the_script_still_overwrites_checkout_root(self, pc_sh):
@@ -103,7 +100,8 @@ class TestLauncherFactsLearnedElsewhere:
         assert 'if [[ -z "${LIB_DIR:-}" ]]' in pc_sh
 
     def test_the_venv_is_on_path_for_the_bare_accelerate(self, run_script, pc_sh):
-        assert "export PATH=/stage/.venv/bin:$PATH" in run_script
+        assert "/stage/" not in run_script
+        assert 'PYBIN="python"' in run_script
         assert "export ACCELERATE=" in run_script
         assert 'ACCELERATE="${ACCELERATE:-accelerate}"' in pc_sh
 
@@ -112,7 +110,8 @@ class TestLauncherFactsLearnedElsewhere:
 
     def test_the_hub_is_reachable_because_this_step_loads_the_teacher(self, launcher):
         assert "HF_HUB_OFFLINE" not in launcher["envs"]
-        assert launcher["envs"]["HF_HOME"] == "/opt/hf-cache"
+        # HF_HOME is the image's ENV (a fixed in-container mount point), never a step setting.
+        assert "HF_HOME" not in launcher["envs"]
 
 
 class TestResponseTemplateNewline:
@@ -290,3 +289,9 @@ class TestMonitor:
     def test_log_retrieval_is_periodic(self, monitor):
         """One forward pass of a 30B teacher over a real corpus is an hours-long job."""
         assert monitor["config"]["log_retrieval"]["mode"].endswith("'periodic') }}")
+
+
+class TestSlurmExecutorEnv:
+    def test_the_stripped_env_is_restored(self, launcher):
+        assert launcher["envs"]["PYTHONPATH"] == "/opt/distill/src"
+        assert launcher["envs"]["VIRTUAL_ENV"] == "/stage/.venv"

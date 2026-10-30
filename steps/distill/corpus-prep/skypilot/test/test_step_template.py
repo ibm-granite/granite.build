@@ -73,7 +73,7 @@ class TestRunScriptIsValidShell:
 
 class TestLauncher:
     def test_lsf_only(self, step):
-        assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf"]
+        assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf", "slurm"]
 
     def test_runs_in_a_prebuilt_registry_image(self, launcher):
         assert launcher["image_id"].startswith("docker:")
@@ -87,7 +87,7 @@ class TestLauncher:
         assert launcher["resources"] == {}
 
     def test_the_entrypoints_are_shipped(self, launcher):
-        assert launcher["file_mounts"] == {"src": "src"}
+        assert "file_mounts" not in launcher
 
     def test_both_entrypoints_are_present(self):
         """merge_shards imports prep_corpus by flat name, so both must ship together."""
@@ -211,3 +211,9 @@ class TestConfigDefaults:
         from gbcommon.types.stepconfig import StepType
 
         assert step["type"] in {m.value for m in StepType}
+
+
+class TestSlurmExecutorEnv:
+    def test_the_stripped_env_is_restored(self, launcher):
+        assert launcher["envs"]["PYTHONPATH"] == "/opt/distill/src"
+        assert launcher["envs"]["VIRTUAL_ENV"] == "/stage/.venv"

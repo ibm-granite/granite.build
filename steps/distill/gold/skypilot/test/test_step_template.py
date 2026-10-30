@@ -10,11 +10,9 @@ whether or not ``make space`` has been run.
 """
 
 import json
-import os
 import re
 import subprocess
 import sys
-import textwrap
 from pathlib import Path
 
 import pytest
@@ -68,9 +66,12 @@ class TestRunScriptIsValidShell:
         )
         assert result.returncode == 0, result.stderr
 
-    def test_container_venv_is_put_on_path(self, run_script):
-        """The image's venv is not on PATH by default."""
-        assert "export PATH=/stage/.venv/bin:$PATH" in run_script
+    def test_container_venv_comes_from_the_image_not_the_script(self, run_script):
+        """The image sets VIRTUAL_ENV and puts its bin on PATH; the script asks uv for the
+        interpreter and hardcodes no venv path."""
+        assert 'PYBIN="python"' in run_script
+        assert 'export PATH="$VIRTUAL_ENV/bin:$PATH"' in run_script
+        assert "/stage/" not in run_script
 
     def test_no_login_shell_anywhere(self, run_script):
         """A login shell re-runs /etc/profile and drops the venv from PATH."""
@@ -79,20 +80,26 @@ class TestRunScriptIsValidShell:
 
 
 class TestRankHandling:
-    """accelerate owns per-process rank; the provisioner's vars are node-level."""
+    """accelerate owns per-process rank; SkyPilot's vars are node-level.
 
-    def test_inherited_rank_vars_are_unset_before_launch(self, run_script):
-        assert "unset RANK WORLD_SIZE LOCAL_RANK MASTER_ADDR MASTER_PORT" in run_script
-        assert run_script.index("unset RANK") < run_script.index("accelerate launch")
+    NODE_RANK is read from SKYPILOT_NODE_RANK (SkyPilot's own generic var,
+    confirmed present on both the lsf and slurm subtypes), not from RANK
+    (LSF-only) -- see the step's header comment.
+    """
 
-    def test_topology_is_snapshotted_before_being_unset(self, run_script):
-        for var in ("RANK", "TOTAL_NODES", "NUM_GPUS_PER_NODE", "MASTER_ADDR"):
+    def test_topology_is_snapshotted_from_skypilot_generic_vars(self, run_script):
+        for var in (
+            "SKYPILOT_NODE_RANK",
+            "SKYPILOT_NUM_NODES",
+            "SKYPILOT_NUM_GPUS_PER_NODE",
+            "SKYPILOT_NODE_IPS",
+        ):
             assert f"${{{var}" in run_script
 
     def test_master_addr_is_required_not_defaulted(self, run_script):
         """A silently-wrong master address hangs NCCL init until the timeout, so
         fail loudly instead of substituting a default."""
-        assert "${MASTER_ADDR:?" in run_script
+        assert "${SKYPILOT_NODE_IPS:?" in run_script
 
     def test_accelerate_receives_the_snapshotted_topology(self, run_script):
         for flag in (
@@ -186,10 +193,13 @@ class TestStepDeclaration:
         assert step["type"] == "training"
         assert step["outputs"]["optional"]["checkpoint"]["type"] == "model"
 
-    def test_restricted_to_the_lsf_subtype(self, step):
-        """enroot and the LSF topology contract are LSF-specific, and the image
-        is an SM90 build that cannot run on A100."""
-        assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf"]
+    def test_restricted_to_lsf_and_slurm(self, step):
+        """The topology this step reads (SKYPILOT_NODE_RANK & co.) is SkyPilot's
+        own generic set, confirmed present on both subtypes -- so one step
+        serves both. Still excludes aws/kubernetes: the image is an SM90 build
+        that cannot run on A100, and those subtypes aren't validated for this
+        step yet."""
+        assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf", "slurm"]
 
     def test_no_setup_phase(self, launcher):
         """The trainer comes from /proj, so there is nothing to clone or install —
@@ -200,8 +210,9 @@ class TestStepDeclaration:
         """One step serves the smoke and reference runs."""
         assert launcher["resources"] == {}
 
-    def test_renderer_is_shipped_as_a_file_mount(self, launcher):
-        assert launcher["file_mounts"] == {"src": "src"}
+    def test_renderer_is_baked_into_the_image_not_mounted(self, launcher):
+        assert "file_mounts" not in launcher
+        assert (_STEP.parent / "src" / "render_gold_config.py").is_file()
 
     def test_nccl_timeout_env_is_present(self, launcher):
         """The 30B teacher forward plus ZeRO-3 collectives outlast the default
@@ -320,8 +331,9 @@ class TestRendererInvocation:
             ), f"{key} is also passed to the renderer"
 
     def test_renderer_is_run_with_the_container_interpreter(self, run_script):
-        """So the config is dumped by the same PyYAML the trainer parses with."""
-        assert "/stage/.venv/bin/python ./src/render_gold_config.py" in run_script
+        """So the config is dumped by the same PyYAML the trainer parses with --
+        the synced venv's python, not a baked image path."""
+        assert '"$PYBIN" "$DISTILL_HOME/steps/gold/render_gold_config.py"' in run_script
 
     def test_total_nodes_is_passed_from_the_allocation(self, run_script):
         assert '--total-nodes "$NODES"' in run_script
@@ -366,24 +378,19 @@ class TestDistributedDiagnostics:
 class TestMasterAddressIsAnIp:
     """accelerate is given an IP, matching the reference launcher.
 
-    The provisioner exports MASTER_ADDR as a short hostname. Rendezvous works with
-    either form, but NCCL's bootstrap selects its interface from this value, so
-    the validated path's choice is not something to assume equivalent.
+    SKYPILOT_NODE_IPS is SkyPilot's own node-IP list (confirmed newline-joined,
+    rank-ordered, in SkyPilot's own task_codegen.py), so its first entry is
+    already an IP on both the lsf and slurm subtypes -- unlike LSF's own
+    MASTER_ADDR, which is a short hostname. No /etc/hosts/getent resolution is
+    needed as a result.
     """
 
-    def test_master_is_resolved_before_use(self, run_script):
-        assert "/etc/hosts" in run_script
-        assert run_script.index("MIP=") < run_script.index("--main_process_ip")
+    def test_master_is_derived_from_skypilot_node_ips(self, run_script):
+        assert "MADDR=\"$(printf '%s\\n' \"${SKYPILOT_NODE_IPS:?" in run_script
+        assert run_script.index("MADDR=") < run_script.index("--main_process_ip")
 
     def test_accelerate_receives_the_resolved_address(self, run_script):
         assert '--main_process_ip "$MIP"' in run_script
-        assert '--main_process_ip "$MADDR"' not in run_script
-
-    def test_resolution_falls_back_rather_than_failing(self, run_script):
-        """A missing /etc/hosts entry must not abort the run: fall through to
-        getent, then to the hostname, which is what worked before."""
-        assert "getent ahostsv4" in run_script
-        assert '[ -z "$MIP" ] && MIP="$MADDR"' in run_script
 
 
 class TestExternalVllmServer:
@@ -470,66 +477,55 @@ class TestExternalVllmServer:
 
 
 class TestDistillSourceDelivery:
-    """The shared-checkout block, unconditional here like the other six ported steps.
-
-    distill-gold used to be the one ported step whose trainer came from a separate,
-    unpinned kd_code_dir checkout rather than this block's clone. That field is gone:
-    the trainer (gold.py, custom_gold_trainer.py, and friends) is now part of the same
-    public source-of-truth repo every other ported step clones, so delivery is
-    unconditional rather than opt-in.
+    """No code_config here, unlike the other six ported steps: the trainer is baked
+    into the shared GPU image (steps/distill/images/gpu/Dockerfile COPYs
+    steps/distill/src/), not cloned at job-launch time. distill-gold is the one
+    ported step that runs multi-node, where a runtime clone needs its own
+    rank-0-clones/others-wait guard against a real race (measured on build
+    7e9995b3) -- baking the source in sidesteps that race entirely instead of
+    guarding it.
     """
 
-    def test_the_contract_block_is_present(self, step):
-        """test_source_contract.py asserts it is byte-identical to the reference; this only
-        asserts distill-gold has one at all, so a failure here reads as "missing" rather
-        than as an obscure ValueError from that file's .index()."""
-        assert "code_config" in step["config"]
-        cc = step["config"]["code_config"]
-        # The public source repo, not a /proj checkout -- the value itself is owned by
-        # test_source_contract.py's _PINNED_REPO/_PINNED_REF, which assert it for
-        # distill-gold too now that the contract glob is `*distill*`.
-        assert cc["code_dir"] == ""
-        assert cc["python"] == "/stage/.venv/bin/python"
-        # Empty on purpose: gb-steps-distillation is public, so the clone needs no
-        # credential in the container.
-        assert cc["repo"] != "" and cc["token_secret"] == ""
-
-    def test_no_separate_trainer_checkout_field_remains(self, step):
-        """kd_code_dir and deliver_distill_source are gone. Their reappearance would mean
-        the trainer split back into a second, unpinned source of code."""
+    def test_no_code_config_remains(self, step):
+        """code_config (and the separate, older kd_code_dir it replaced) are both
+        gone: this step's trainer source has no runtime delivery mechanism to
+        configure at all."""
+        assert "code_config" not in step["config"]
         assert "kd_code_dir" not in step["config"]["gold_config"]
         assert "deliver_distill_source" not in step["config"]["gold_config"]
 
-    def test_the_region_is_unconditional(self, run_script):
-        """No Jinja guard around the shared block: every ported step, including this one,
-        now delivers the source unconditionally."""
-        begin = run_script.index("# --- distill source delivery: BEGIN")
-        end = run_script.index("# --- distill source delivery: END")
-        region = run_script[begin:end]
-        assert "deliver_distill_source" not in region
-        assert "{% if" not in region.split("\n")[0]
+    def test_code_dir_and_pybin_are_static(self, run_script):
+        """Both paths are fixed by steps/distill/images/gpu/Dockerfile's own COPY/ENV
+        lines, not resolved from a config field or a clone destination."""
+        assert (
+            'CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"' in run_script
+        )
+        assert 'PYBIN="python"' in run_script
+
+    def test_no_clone_or_runtime_venv_sync_remains(self, run_script):
+        """A clone or a uv sync reappearing here would mean this step regressed
+        back to runtime source delivery, defeating the point of baking the GPU
+        image."""
+        assert "git clone" not in run_script
+        assert "uv sync" not in run_script
+        assert "UV_PROJECT_ENVIRONMENT" not in run_script
 
     def test_the_region_runs_above_the_rank_split(self, run_script):
-        """Asserted because it is the reason two tests in this file had to name their
-        full anchor, and because it is a property worth being explicit about: the region
-        runs on EVERY node, so its three metadata echoes are emitted N times on an
-        N-node run. That is the shared region's behaviour, byte-identical in all seven
-        ported steps and untested in the reference step (which asserts only that the
-        keys exist, not that they are guarded) -- so it is recorded here rather than
-        diverged from, since guarding it in one step would break the byte-identity
-        contract for the other six.
-        """
-        assert run_script.index(
-            "# --- distill source delivery: BEGIN"
-        ) < run_script.index('if [ "$NODE_RANK" = "0" ]; then')
-        assert "GB_STEP_METADATA_KEY:distill_code_dirty" in run_script
+        """The static CODE_DIR/PYBIN assignment (and its metadata echoes) sits
+        above the rank-0 guard: every node needs PYBIN/PATH set before training
+        starts, same position the old source-delivery region held."""
+        assert run_script.index('CODE_DIR="${DISTILL_HOME') < run_script.index(
+            'if [ "$NODE_RANK" = "0" ]; then'
+        )
+        assert "GB_STEP_METADATA_KEY:distill_code_source" in run_script
+        assert "GB_STEP_METADATA_KEY:distill_code_commit" in run_script
 
     def test_pythonpath_reaches_the_renderer(self, run_script):
-        """The point of delivering the source at all: the renderer is what imports it, so
-        the export must precede the invocation rather than merely existing."""
-        assert run_script.index('export PYTHONPATH="$CODE_DIR/src') < run_script.index(
-            "/stage/.venv/bin/python ./src/render_gold_config.py"
-        )
+        """The renderer imports gb_steps_post_training, so PYTHONPATH (set by the
+        image itself, not exported here) must already be in effect before the
+        invocation -- there is just nothing to export in this script any more."""
+        assert 'export PYTHONPATH="$CODE_DIR/src' not in run_script
+        assert '"$PYBIN" "$DISTILL_HOME/steps/gold/render_gold_config.py"' in run_script
 
     def test_trainer_runs_as_a_module_from_the_delivered_source(self, run_script):
         """gold.py's imports are package-qualified now (gb_steps_post_training.distillation),
@@ -806,6 +802,10 @@ class TestResumeFromCheckpointDir:
         """Run the seeding block as rank `rank` of this attempt (`launch_id`).
         quick_wait cuts a worker's 900s wait for rank 0 to one 1s poll."""
         dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        home = tmp_path / "distill-home"
+        (home / "steps").mkdir(parents=True, exist_ok=True)
+        if not (home / "steps" / "gold").exists():
+            (home / "steps" / "gold").symlink_to(_STEP.parent / "src")
         script = "set -eu\n" + self._seed_block(src, vllm_server_url, **gold)
         if quick_wait:
             script = script.replace("-ge 900 ]", "-ge 1 ]").replace(
@@ -821,13 +821,14 @@ class TestResumeFromCheckpointDir:
                 "VLLM_SERVERS": vllm_servers,
                 "CKPT_DIR": str(dst),
                 "PYBIN": sys.executable,
+                # The block calls $DISTILL_HOME/steps/gold/align_resume_state.py, as in the image.
+                "DISTILL_HOME": str(home),
                 "GB_SKYPILOT_LAUNCH_ID": launch_id,
             },
             capture_output=True,
             text=True,
             check=False,
             timeout=60,
-            # The block calls ./src/align_resume_state.py, as on the node.
             cwd=_STEP.parent,
         )
         return result, dst
@@ -1300,74 +1301,7 @@ class TestResumeEmitSeeded:
         assert "not re-emitting seeded" not in self._render(resume_emit_seeded=False)
 
 
-class TestCloneHandshake:
-    """Ranks other than 0 wait for rank 0's clone, and only for THIS attempt's.
-
-    The marker used to be checked for existence alone. A relaunch into the same per-run
-    workdir found the previous attempt's marker still there, so the other ranks went
-    straight to training while rank 0 was deleting and re-cloning the tree.
-    """
-
-    @staticmethod
-    def _wait_snippet(run_script):
-        """From the marker definition through the end of the waiting branch, with the
-        600s timeout cut to one 2s poll so a refusal is quick to observe."""
-        anchor = run_script.index('DONE_MARKER="$CODE_DIR.gb-clone-done"')
-        begin = run_script.rindex("\n", 0, anchor) + 1
-        indent = run_script[begin:anchor]
-        end = run_script.index(f"\n{indent}else\n", begin)
-        snippet = textwrap.dedent(run_script[begin:end]) + "\nfi\n"
-        return snippet.replace("-ge 600 ]", "-ge 2 ]")
-
-    @staticmethod
-    def _write_snippet(run_script):
-        lines = [
-            line.strip()
-            for line in run_script.splitlines()
-            if "$DONE_MARKER.tmp.$$" in line
-        ]
-        assert len(lines) == 2, lines  # the printf and the mv
-        return "\n".join(lines)
-
-    @staticmethod
-    def _run(script, tmp_path, rank, launch_id):
-        env = {
-            "PATH": os.environ["PATH"],
-            "CODE_DIR": str(tmp_path / "code"),
-            "RANK": rank,
-            "GB_SKYPILOT_LAUNCH_ID": launch_id,
-            "SKYPILOT_INTERNAL_JOB_ID": "1",
-            "LSB_JOBID": "4242",
-        }
-        return subprocess.run(
-            ["bash", "-c", "set -euo pipefail\n" + script],
-            env=env,
-            capture_output=True,
-            text=True,
-        )
-
-    def test_a_previous_attempts_marker_is_not_accepted(self, run_script, tmp_path):
-        (tmp_path / "code.gb-clone-done").write_text("launch-a:1:4242\n")
-
-        result = self._run(self._wait_snippet(run_script), tmp_path, "1", "launch-b")
-
-        assert result.returncode == 1
-        assert "never appeared" in result.stderr
-
-    def test_this_attempts_marker_is_accepted(self, run_script, tmp_path):
-        wait = self._wait_snippet(run_script)
-        # Rank 0's side: the same token definition, then the atomic write.
-        token_lines = "\n".join(wait.splitlines()[:2])
-        assert "CLONE_TOKEN=" in token_lines
-        rank0 = self._run(
-            token_lines + "\n" + self._write_snippet(run_script),
-            tmp_path,
-            "0",
-            "launch-b",
-        )
-        assert rank0.returncode == 0, rank0.stderr
-        assert (tmp_path / "code.gb-clone-done").read_text() == "launch-b:1:4242\n"
-
-        result = self._run(wait, tmp_path, "1", "launch-b")
-
-        assert result.returncode == 0, result.stderr
+class TestSlurmExecutorEnv:
+    def test_the_stripped_env_is_restored(self, launcher):
+        assert launcher["envs"]["PYTHONPATH"] == "/opt/distill/src"
+        assert launcher["envs"]["VIRTUAL_ENV"] == "/stage/.venv"

@@ -99,7 +99,11 @@ thirdparty = [
     "docker>=7.0.0",
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
     "psycopg[binary]>=3.3.6",	# PostgreSQL driver (also in [ibm]); here so the local-PostgreSQL storage tests run in non-ibm CI
-    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable",  # granite-build fork, moving tag: see docs/environments/skypilot-lsf.md#skypilot-fork
+    # Pinned to the gb-sky-v1-stable moving tag: the fork now tracks its
+    # SLURM-only line (the LSF cluster is being decommissioned; the LSF line
+    # stays installable under its own snapshot tag). See
+    # docs/environments/skypilot-slurm.md#skypilot-fork.
+    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable",
     "wandb",
 ]
 # Tier 3: IBM-specific — requires IBM infrastructure (cloud, cluster, Artifactory)
@@ -115,7 +119,11 @@ ibm = [
     "kubernetes_asyncio>=35.0.1",	# Avoids missing watch import created in kubernetes==36.0.0
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
     "psycopg[binary]>=3.3.6",
-    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable",  # granite-build fork, moving tag: see docs/environments/skypilot-lsf.md#skypilot-fork
+    # Pinned to the gb-sky-v1-stable moving tag: the fork now tracks its
+    # SLURM-only line (the LSF cluster is being decommissioned; the LSF line
+    # stays installable under its own snapshot tag). See
+    # docs/environments/skypilot-slurm.md#skypilot-fork.
+    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable",
 ]
 # gbmcp: the FastMCP server bundled at src/gbmcp. Pulled in by `standalone`, so
 # it's installed by default there; also available on its own as `[mcp]`.

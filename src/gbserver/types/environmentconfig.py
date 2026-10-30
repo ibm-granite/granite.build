@@ -53,7 +53,10 @@ class ClusterSshConfigs(Config):
     at random per launch (spreading load) and, if a transient SSH control-plane error
     stalls provisioning, fails over to the next candidate on retry. The chosen
     hostname is rendered as a normal scalar ``HostName`` directive, so all candidates
-    share this entry's ``User``/``Port``/``IdentityFile``/etc.
+    share this entry's ``User``/``Port``/``IdentityFile``/etc. A ``HostName`` item
+    may also name a secret (resolved before candidate selection); such a secret may
+    hold one login node or several comma-/whitespace-separated ones, all of which
+    become failover candidates.
 
     Attributes:
         slurm: Host entries rendered into ``~/.slurm/config``.
@@ -174,6 +177,22 @@ class EnvironmentConfig(Config):
             from gbserver.environment._slurm_image_cache import parse_cache_config
 
             parse_cache_config(raw)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_slurm_gpu_sbatch_directives(self) -> "EnvironmentConfig":
+        """Reject a non-boolean ``slurm_gpu_sbatch_directives`` at load time.
+
+        The key is optional (off by default; the ibm-bluevela environment sets
+        it true), but when set it must be a bool — a typo like ``flase`` would
+        otherwise silently never opt the environment in.
+        """
+        raw = (self.config or {}).get("slurm_gpu_sbatch_directives")
+        if raw is not None and not isinstance(raw, bool):
+            raise ValueError(
+                "slurm_gpu_sbatch_directives must be a boolean (true/false), "
+                f"got {raw!r}"
+            )
         return self
 
     @model_validator(mode="after")

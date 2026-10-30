@@ -27,7 +27,6 @@ config:
     gate_final_rung: true
     # Where repetition.json is written. A relative path lands under GB_BUILD_WORKDIR.
     output_dir: "gen-smoke"
-    python: "/stage/.venv/bin/python"
 
 # No named inputs, by design: gen_smoke_config.rungs is a variable-length list, one
 # entry per exported checkpoint, so there is no fixed set of input names to declare.
@@ -45,6 +44,7 @@ environment_configs:
   Skypilot:
     subtypes:
       - lsf
+      - slurm
     default_launcher: gen_smoke
     launchers:
       gen_smoke:
@@ -52,15 +52,16 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
+          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:e9501415"
           # Cloud-agnostic: the build supplies the GPU, cpus and memory via
           # config.compute_config and config.launcher_config.resources.
           resources: {}
-          file_mounts:
-            src: src
           envs:
+            # The SLURM executor runs the task under `env -u PYTHONPATH` and without
+            # VIRTUAL_ENV, so the image's ENV values for both are gone at run time.
+            PYTHONPATH: /opt/distill/src
+            VIRTUAL_ENV: /stage/.venv
             HF_HUB_OFFLINE: "1"
-            HF_HOME: /opt/hf-cache
           # The rungs go into an array, one append per entry, and NOT into a
           # backslash-continued argument list. Jinja block tags are not trimmed here, so
           # every one of them leaves a blank line where it stood, and a blank line after
@@ -76,11 +77,38 @@ environment_configs:
             OUT_DIR="{{ config.gen_smoke_config.output_dir }}"
             case "$OUT_DIR" in /*) ;; *) OUT_DIR="$WORK/$OUT_DIR" ;; esac
             mkdir -p "$OUT_DIR"
+
+            # GPU visibility normalization -- same guard as distill/gold and
+            # distill/eval (see gold's step-template for the full analysis):
+            # inside a pyxis/enroot container only the allocated GPUs are
+            # mounted and CUDA renumbers them 0..N-1, so a CUDA_VISIBLE_DEVICES
+            # mask written against a different view of the node is invalid
+            # here, and torch silently drops every entry from the first
+            # out-of-range ordinal on -- the smoke generation then silently
+            # runs on fewer GPUs than requested. Only rewrite when the value
+            # cannot be valid in this container: empty, or a numeric ordinal
+            # at or beyond the mounted-GPU count (UUID/MIG entries are valid
+            # as-is; a shorter subset mask is a legitimate partial bind).
+            # Unset is safe because the mounted /dev/nvidia* set IS the
+            # allocation.
+            echo "gen-smoke: container CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-<unset>}'"
+            if [ "${CUDA_VISIBLE_DEVICES+set}" = set ]; then
+              # The || true differs from the other steps' guard on purpose:
+              # this script runs set -euo pipefail, and ls/grep exit nonzero
+              # on no match -- wc's count (0) and the empty MAX_ORD are the
+              # answers we want, not failures.
+              N_GPU="$(ls /dev/nvidia[0-9]* 2>/dev/null | wc -l || true)"
+              MAX_ORD="$(printf '%s\n' "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | tr -d '[:space:]' | grep -xE '[0-9]+' | sort -n | tail -n 1 || true)"
+              if [ "$N_GPU" -gt 0 ] && { [ -z "$CUDA_VISIBLE_DEVICES" ] || { [ -n "$MAX_ORD" ] && [ "$MAX_ORD" -ge "$N_GPU" ]; }; }; then
+                echo "gen-smoke: CUDA_VISIBLE_DEVICES='$CUDA_VISIBLE_DEVICES' is invalid inside the container ($N_GPU GPU(s) mounted, ordinals 0..$((N_GPU-1))); unsetting so CUDA exposes the mounted -- allocated -- set"
+                unset CUDA_VISIBLE_DEVICES
+              fi
+            fi
             RUNGS=()
             {% for rung in config.gen_smoke_config.rungs %}
             RUNGS+=("{{ rung }}")
             {% endfor %}
-            "{{ config.gen_smoke_config.python }}" ./src/gen_smoke.py \
+            python "$DISTILL_HOME/steps/gen-smoke/gen_smoke.py" \
               "$OUT_DIR/repetition.json" \
               "{{ config.gen_smoke_config.max_repetition }}" \
               "{{ config.gen_smoke_config.new_tokens }}" \
