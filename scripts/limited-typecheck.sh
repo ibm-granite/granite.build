@@ -17,7 +17,11 @@
 #     on its own.
 #   * everything else (src/, test/, scripts/, ...): checked together from the repo
 #     root with src/ and test/ on the path, matching pytest's `pythonpath`.
-# autotunex/ is skipped: it has its own ruff config and CI.
+# autotunex/ is skipped: it has its own ruff config and CI. The vendored
+# granite-evals tree (steps/eval/src/, steps/eval/<family>/src/ and
+# steps/eval/<family>/tests/) is skipped for the same reason the root
+# pyproject.toml excludes it from repo-wide black/isort: it keeps its
+# upstream formatting and has its own gates (make -C steps/eval test-src).
 
 MY_LINE_BREAK="---------------------------"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -159,6 +163,7 @@ check_changed() {
         [[ -f "${x}" && "${x}" == *.py ]] || continue
         case "${x}" in
             autotunex/*) ;;
+            steps/eval/src/* | steps/eval/*/src/* | steps/eval/*/tests/*) ;;
             steps/*) steps+=("${x}") ;;
             configurations/* | test-data/*) by_dir+=("${x}") ;;
             *) repo+=("${x}") ;;

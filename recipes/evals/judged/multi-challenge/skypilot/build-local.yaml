@@ -1,0 +1,106 @@
+granite.build:
+  name: eval-multi-challenge-local
+  # multi-challenge, scored on the gbserver host instead of BlueVela: for a judge gateway that
+  # BlueVela cannot reach. `multi-challenge-generate` holds a BlueVela GPU while the model generates
+  # (same as build.yaml); `multi-challenge-fetch` copies its output dir (generation.json and the
+  # per-item responses under items/, which the score phase reads) back with scp on the local Bash
+  # environment; `multi-challenge` scores it in the CPU image on the local Docker environment.
+  # Needs a standalone gbserver (Bash, Docker), `ssh -F ~/$${SCORE_SSH_CONFIG} $${SCORE_REMOTE_HOST}`
+  # working for the gbserver user, and the EVAL_JUDGE_API_KEY gb secret. Shares
+  # parameters.yaml with build.yaml.
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+  targets:
+    multi-challenge-generate:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/judged
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            benchmark: "multi-challenge"
+            image: "$${IMAGE}"
+            model_path: "$${MODEL_PATH}"
+            served_model_name: "$${SERVED_MODEL_NAME}"
+            output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/multi-challenge"
+            limit: "$${LIMIT}"
+            repeats: "$${REPEATS}"
+            workers: "$${WORKERS}"
+            options: "$${OPTIONS} judge_base_url=$${JUDGE_BASE_URL}<% if JUDGE_MODEL %> judge_model=$${JUDGE_MODEL}<% endif %>"
+            phase: "generate"
+            tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+            hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H200:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    multi-challenge-fetch:
+      environment_uri: "space://environments/bash"
+      inputs:
+        generation:
+          binding: multi-challenge-generate.granite_generation
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            command_config:
+              # Copies the whole output dir: the score phase reads each response from
+              # items/<id>/<repeat>/response.json, not from generation.json. The Bash environment
+              # passes no PATH or HOME, so the home comes from passwd.
+              command: >-
+                set -eu;
+                HOME_DIR=$(/usr/bin/getent passwd "$(/usr/bin/id -u)" | /usr/bin/cut -d: -f6);
+                SRC="{{ bindings.generation.binding.path }}"; SRC_DIR="${SRC%/*}";
+                DEST="$GB_BASH_OUTPUT_DIR/${SRC_DIR##*/}"; /usr/bin/rm -rf "$DEST";
+                /usr/bin/scp -r -F "$HOME_DIR/$${SCORE_SSH_CONFIG}" -o BatchMode=yes
+                "$${SCORE_REMOTE_HOST}:$SRC_DIR" "$GB_BASH_OUTPUT_DIR/";
+                test -s "$DEST/generation.json" || { echo "fetch: no $DEST/generation.json"; exit 1; };
+                test -d "$DEST/items" || { echo "fetch: no $DEST/items"; exit 1; };
+                echo "GB_ARTIFACT_ID:granite_generation GB_ARTIFACT_PATH:$DEST/generation.json"
+    multi-challenge:
+      environment_uri: "space://environments/docker"
+      inputs:
+        generation:
+          binding: multi-challenge-fetch.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            docker:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: EVAL_JUDGE_API_KEY
+            compute_config:
+              num_cpus_per_node: $${SCORE_CPUS}
+              total_memory_per_node: "$${SCORE_MEMORY}Gi"
+            command_config:
+              image: "$${IMAGE_CPU}"
+              # Same flags as build.yaml's score target; the score phase checks model, limit and
+              # repeats against generation.json. The container runs as root, so the outputs are
+              # handed back to the owner of the workspace mount. The env:// input mount covers
+              # generation.json's directory, so items/ comes with it.
+              command: >-
+                set -euo pipefail;
+                export PATH=/opt/granite-evals/.venv/bin:$PATH;
+                OUT=/gb-workspace/outputs/multi-challenge; mkdir -p "$OUT";
+                trap 'chown -R "$(stat -c %u:%g /gb-workspace)" /gb-workspace/outputs' EXIT;
+                GEN="{{ bindings.generation.binding.path }}"; cp -r "${GEN%/*}/." "$OUT/";
+                OPTS=(); for kv in $${OPTIONS} judge_base_url=$${JUDGE_BASE_URL}<% if JUDGE_MODEL %> judge_model=$${JUDGE_MODEL}<% endif %>; do OPTS+=(--option "$kv"); done;
+                granite-evals run multi-challenge --model "$${MODEL_PATH}" --output-dir "$OUT" --phase score
+                --workers $${WORKERS}<% if SERVED_MODEL_NAME %> --served-model-name "$${SERVED_MODEL_NAME}"<% endif %><% if LIMIT %> --limit $${LIMIT}<% endif %><% if REPEATS %> --repeats $${REPEATS}<% endif %>
+                "${OPTS[@]}" 2>&1 | tee "$OUT/granite.log";
+                test -s "$OUT/results.json" || { echo "granite: no $OUT/results.json"; exit 1; };
+                echo "GB_ARTIFACT_ID:granite_results GB_ARTIFACT_PATH:$OUT/results.json"

@@ -1,0 +1,72 @@
+# multi-challenge on BlueVela (SkyPilot / SLURM), judged family image.
+# Data: pinned inside the image (GitHub/PyPI/task data baked by the family's extras.sh), nothing to fetch.
+#
+# LIMIT is empty: the full benchmark. For a quick functional check, score only the first N
+# examples (3-10 is enough to prove the plumbing):
+#   gb build start -f recipes/evals/judged/multi-challenge/skypilot/build.yaml --space <space> --param LIMIT=5
+# Override any value with --param KEY=VALUE.
+
+# ─── Model ────────────────────────────────────────────────────────────
+# https://huggingface.co/ibm-granite/granite-4.2-3b (vLLM downloads a hub id into the HF cache).
+MODEL_PATH: "ibm-granite/granite-4.2-3b"
+SERVED_MODEL_NAME: ""
+# Unique per run: re-running the same model with the same RUN_NAME re-resolves the same
+# artifact URIs, so a reused SUCCESS target's downstream (score) never dispatches.
+RUN_NAME: "granite-4.2-3b"
+OUTPUT_ROOT: "/proj/granite-build/g4os/granite/runs"
+# HF cache the container reads and writes (model + datasets). Empty = the image's /opt/hf-cache.
+HF_HOME: ""
+
+# ─── Images (GPU generate + CPU score) ────────────────────────────────────
+IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-judged:9f341f75"
+IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-judged-cpu:9f341f75"
+
+# ─── Scale ────────────────────────────────────────────────────────────
+LIMIT: ""
+REPEATS: ""
+WORKERS: 16
+OPTIONS: ""
+TENSOR_PARALLEL_SIZE: 1
+
+# ─── Judge (paid; key from the EVAL_JUDGE_API_KEY secret) ──────
+# OpenAI-compatible endpoint of the judge gateway. No default; set it for your site.
+JUDGE_BASE_URL: ""
+# build-local.yaml and score-local.yaml: the judge model on that gateway. Empty = granite-evals' default judge.
+JUDGE_MODEL: ""
+
+# ─── Cluster ──────────────────────────────────────────────────────────
+ENVIRONMENT_URI: "space://environments/skypilot/slurm/ibm-bluevela"
+CLUSTER: "bluevela"
+QUEUE: "gpu-mid"
+GPU_MEMORY: 256
+CPU_QUEUE: "cpu"
+SCORE_CPUS: 8
+SCORE_MEMORY: 64
+MAX_RETRIES: 2
+POLL_INTERVAL_SECONDS: 300
+LOG_RETRIEVAL_INTERVAL_SECONDS: 300
+
+# ─── Local scoring (build-local.yaml only) ────────────────────────────
+# build-local.yaml generates on BlueVela as above, then copies the output dir (generation.json and
+# items/) to the gbserver host and scores it there in IMAGE_CPU (local Docker), for a judge BlueVela cannot reach. E.g.:
+#   gb build start -f recipes/evals/judged/multi-challenge/skypilot/build-local.yaml --space <space> \
+#     --param JUDGE_BASE_URL=https://litellm.cb.ete.res.ibm.com/v1 \
+#     --param JUDGE_MODEL=rits/deepseek-ai/DeepSeek-V4.1-Flash-1017 --param LIMIT=5
+# SCORE_CPUS / SCORE_MEMORY above size the local container.
+SCORE_REMOTE_HOST: "bluevela"
+# ssh config for SCORE_REMOTE_HOST, relative to the gbserver user's home (the step gets no HOME).
+SCORE_SSH_CONFIG: ".lsf/config"
+
+# ─── Re-scoring (score-local.yaml only) ───────────────────────────────
+# score-local.yaml re-scores existing outputs on the gbserver host, e.g. to compare judges:
+#   gb build start -f recipes/evals/judged/multi-challenge/skypilot/score-local.yaml --space <space> \
+#     --param GENERATION_PATH=<abs path>/multi-challenge/generation.json \
+#     --param JUDGE_BASE_URL=https://litellm.cb.ete.res.ibm.com/v1 \
+#     --param JUDGE_MODEL=rits/zai-org/glm-5-3 --param JUDGE_TAG=glm-5-3
+# A build-local.yaml run leaves its outputs under ~/.granite.build/workdir/llm-build-<build id>/
+# target-multi-challenge-fetch/.../outputs/multi-challenge/. Model, limit and repeats come from
+# generation.json.
+# Absolute path of a generation.json with items/ beside it. Required by score-local.yaml.
+GENERATION_PATH: ""
+# Tags this judge's grades and results (judgment-<tag>.json, results-<tag>.json). Empty = untagged.
+JUDGE_TAG: ""

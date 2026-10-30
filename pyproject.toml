@@ -99,7 +99,11 @@ thirdparty = [
     "docker>=7.0.0",
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
     "psycopg[binary]>=3.3.6",	# PostgreSQL driver (also in [ibm]); here so the local-PostgreSQL storage tests run in non-ibm CI
-    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable",  # granite-build fork, moving tag: see docs/environments/skypilot-lsf.md#skypilot-fork
+    # Pinned to gb-sky/v0.14: the deliberate SLURM-only line (issue #510). LSF
+    # is being decommissioned in favour of SLURM, and v0.14 is the fork branch
+    # that carries the SLURM backend this repo builds on. See
+    # docs/environments/skypilot-lsf.md#skypilot-fork.
+    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky/v0.14",
     "wandb",
 ]
 # Tier 3: IBM-specific — requires IBM infrastructure (cloud, cluster, Artifactory)
@@ -115,7 +119,11 @@ ibm = [
     "kubernetes_asyncio>=35.0.1",	# Avoids missing watch import created in kubernetes==36.0.0
     "kubernetes<36.0.0",	# Avoids missing watch import created in kubernetes==36.0.0
     "psycopg[binary]>=3.3.6",
-    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable",  # granite-build fork, moving tag: see docs/environments/skypilot-lsf.md#skypilot-fork
+    # Pinned to gb-sky/v0.14: the deliberate SLURM-only line (issue #510). LSF
+    # is being decommissioned in favour of SLURM, and v0.14 is the fork branch
+    # that carries the SLURM backend this repo builds on. See
+    # docs/environments/skypilot-lsf.md#skypilot-fork.
+    "skypilot[kubernetes,slurm,aws] @ git+https://github.com/cmadam/skypilot.git@gb-sky/v0.14",
 ]
 # gbmcp: the FastMCP server bundled at src/gbmcp. Pulled in by `standalone`, so
 # it's installed by default there; also available on its own as `[mcp]`.
@@ -248,15 +256,26 @@ known_first_party = ["gbserver", "gbcli", "gbcommon"]
 known_third_party = ["huggingface_hub", "wandb"]
 # The vendored autotunex/ subtree uses ruff (format + import sorting) and has its
 # own CI (.github/workflows/autotunex-ci.yml); keep the repo-wide isort profile off
-# it (AutoTuneX import, PR #297).
-extend_skip_glob = ["autotunex/*"]
+# it (AutoTuneX import, PR #297). The granite-evals suite is vendored upstream code
+# as well: the runtime core under steps/eval/src/ and the per-family modules under
+# steps/eval/<family>/{src,tests}/ keep their upstream formatting.
+extend_skip_glob = [
+    "autotunex/*",
+    "steps/eval/src/*",
+    "steps/eval/*/src/*",
+    "steps/eval/*/tests/*",
+]
 
 [tool.black]
 target-version = ["py311"]
-# See the isort note above: exclude the autotunex/ subtree from repo-wide black so
-# its ruff-formatted (line-length 100) tree is not reflowed (AutoTuneX PR #297).
+# See the isort note above: exclude the vendored autotunex/ and granite-evals
+# subtrees from repo-wide black so their upstream formatting is not reflowed
+# (AutoTuneX PR #297).
 extend-exclude = '''
 /autotunex/
+|/steps/eval/src/
+|/steps/eval/[^/]+/src/
+|/steps/eval/[^/]+/tests/
 '''
 
 [tool.pytest.ini_options]

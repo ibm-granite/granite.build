@@ -1,0 +1,52 @@
+# mcpmark-filesystem on BlueVela (SkyPilot / SLURM), mcpmark family image.
+# Harness + task definitions: github.com/eval-sys/mcpmark @ cd45b7f57923b9b3985467f5139927575f83141c
+# (pinned in the image's code; Apache-2.0). Task state (the per-category zips) is NOT
+# baked: the harness downloads it at run time from storage.mcpmark.ai, and results.json
+# records digests of what it got. Tasks need outbound internet (state downloads, the
+# npx filesystem MCP server).
+#
+# LIMIT is empty: the full 30-task standard (MCPMark Verified) suite. For a quick
+# functional check, the first N tasks of the easy suite:
+#   gb build start -f recipes/evals/mcpmark/mcpmark-filesystem/skypilot/build.yaml \
+#     --space <space> --param RUN_NAME=<unique> --param LIMIT=5 --param "OPTIONS=task_suite=easy"
+# Override any value with --param KEY=VALUE.
+
+# ─── Model ────────────────────────────────────────────────────────────
+# https://huggingface.co/ibm-granite/granite-4.2-3b (vLLM downloads a hub id into the HF cache).
+MODEL_PATH: "ibm-granite/granite-4.2-3b"
+SERVED_MODEL_NAME: ""
+# Unique per run: re-running the same model with the same RUN_NAME re-resolves the same
+# artifact URIs, so a reused SUCCESS target's downstream (score) never dispatches.
+RUN_NAME: "granite-4.2-3b"
+OUTPUT_ROOT: "/proj/granite-build/g4os/granite/runs"
+# HF cache the container reads and writes (model). Empty = the image's /opt/hf-cache.
+HF_HOME: ""
+
+# ─── Image (GPU only) ────────────────────────────────────
+# Fill with the tag of a built + pushed family image before the first run:
+#   make -C steps/eval image-mcpmark REGISTRY=us.icr.io/cil15-shared-registry publish-image-mcpmark REGISTRY=...
+# (the tag defaults to the building checkout's git short SHA).
+IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-mcpmark:<tag>"
+
+# ─── Scale ────────────────────────────────────────────────────────────
+LIMIT: ""
+REPEATS: ""
+# Upstream's pipeline runs one service's tasks serially (the module validates
+# workers to 1); run the three services as separate targets for parallelism.
+WORKERS: 1
+# e.g. "task_suite=easy" (the 10-task suite), "timeout=1800" (seconds per task).
+OPTIONS: ""
+TENSOR_PARALLEL_SIZE: 1
+# The agent requests max_tokens=32768 per turn; leave headroom for the prompt +
+# tools schema. Empty = vLLM's model default.
+MAX_MODEL_LEN: ""
+
+# ─── Cluster ──────────────────────────────────────────────────────────
+ENVIRONMENT_URI: "space://environments/skypilot/slurm/ibm-bluevela"
+CLUSTER: "bluevela"
+QUEUE: "gpu-mid"
+GPU_MEMORY: 64
+# A retried target resumes per task from the harness's own results tree.
+MAX_RETRIES: 3
+POLL_INTERVAL_SECONDS: 300
+LOG_RETRIEVAL_INTERVAL_SECONDS: 300

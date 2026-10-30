@@ -1,0 +1,34 @@
+# Granite suite for Granite 4.2 models. `id` is the granite-evals benchmark id and
+# the suffix of the granite.build step name (steps/granite-<id>). Order is the
+# bring-up order.
+name: granite42
+benchmarks:
+  # Agentic (Coding)
+  - {id: swebench-verified, group: agentic-coding, name: SWE Bench Verified, metric: "pass@1 resolve rate"}
+  - {id: swebench-pro, group: agentic-coding, name: SWE Bench Pro, metric: "pass@1 resolve rate"}
+  - {id: swebench-multilingual, group: agentic-coding, name: SWE Bench Multilingual, metric: "pass@1 resolve rate"}
+  - {id: terminal-bench-2.1, group: agentic-coding, name: Terminal-Bench 2.1, metric: "pass@1 resolve rate"}
+  - {id: birdbench, group: agentic-coding, name: BirdBench, metric: "pass@1 execution match"}
+  # Agentic (General)
+  - {id: tau3-bench, group: agentic-general, name: "τ³-bench", metric: "pass@1 (avg of 3)"}
+  - {id: tau3-airline, group: agentic-general, name: "τ³-bench Airline", metric: pass@1}
+  - {id: tau3-banking-knowledge, group: agentic-general, name: "τ³-bench Banking Knowledge (BM25 + grep)", metric: pass@1}
+  - {id: tau3-retail, group: agentic-general, name: "τ³-bench Retail", metric: pass@1}
+  - {id: tau3-telecom, group: agentic-general, name: "τ³-bench Telecom", metric: pass@1}
+  - {id: bfcl-v4, group: agentic-general, name: BFCL(v4), metric: overall_accuracy accuracy}
+  - {id: gdpval, group: agentic-general, name: GDPval, metric: Elo}
+  - {id: profbench, group: agentic-general, name: ProfBench, metric: overall}
+  # Reasoning
+  - {id: aime25, group: reasoning, name: AIME25 (no tools), metric: "pass@1 symbolic correct"}
+  - {id: hmmt-feb25, group: reasoning, name: HMMT Feb25 (no tools), metric: "pass@1 symbolic correct"}
+  - {id: gpqa, group: reasoning, name: GPQA (no tools), metric: "pass@1 symbolic correct"}
+  - {id: livecodebench-v6, group: reasoning, name: LiveCodeBench v6, metric: "pass@1 accuracy"}
+  - {id: scicode, group: reasoning, name: SciCode (subtask), metric: "pass@1 subtask accuracy"}
+  # Chat & Instruction Following
+  - {id: mmlu-pro, group: chat-if, name: MMLU-Pro, metric: "5-shot CoT symbolic correct"}
+  - {id: mmlu-prox-lite, group: chat-if, name: MMLU-ProX lite (IBM), metric: exact match (custom-extract)}
+  - {id: arena-hard-v2, group: chat-if, name: Arena-Hard-V2, metric: win rate}
+  - {id: ifbench, group: chat-if, name: IFBench (prompt), metric: "pass@1 prompt loose / strict accuracy"}
+  # Long Context
+  - {id: ruler-128k, group: long-context, name: RULER 128k completions, metric: accuracy}
+  - {id: ruler-64k, group: long-context, name: RULER 64k completions, metric: accuracy}
