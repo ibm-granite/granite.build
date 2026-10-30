@@ -166,7 +166,7 @@ def test_judge_endpoint_defaults_and_self(tmp_path):
     assert ep == {
         "base_url": nsb.JUDGE_BASE_URL,
         "model": "aws/claude-sonnet-5",
-        "api_key_env": "GRANITE_EVALS_JUDGE_API_KEY",
+        "api_key_env": "EVAL_JUDGE_API_KEY",
         "is_self": False,
     }
     ep = bench("arena-hard-v2", tmp_path, options={"judge_model": "self"}).judge_endpoint("http://v/v1", "g")

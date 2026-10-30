@@ -32,7 +32,7 @@ granite.build:
             skypilot:
               secrets:
                 secret_names_to_use_as_env_variable:
-                  - env_name: GRANITE_EVALS_USER_API_KEY
+                  - env_name: EVAL_USER_API_KEY
             launcher_config:
               resources:
                 accelerators: "H200:$${TENSOR_PARALLEL_SIZE}"
@@ -69,7 +69,7 @@ granite.build:
             skypilot:
               secrets:
                 secret_names_to_use_as_env_variable:
-                  - env_name: GRANITE_EVALS_JUDGE_API_KEY
+                  - env_name: EVAL_JUDGE_API_KEY
             launcher_config:
               resources:
                 cluster: "$${CLUSTER}"

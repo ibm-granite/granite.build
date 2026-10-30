@@ -125,7 +125,7 @@ NS_COMMIT = "bcf059af55c20a89f797724598f9908d126153e6"
 
 JUDGE_BASE_URL = ""  # set --option judge_base_url=<OpenAI-compatible judge endpoint>
 JUDGE_MODEL = "aws/claude-sonnet-5"
-JUDGE_API_KEY_ENV = "GRANITE_EVALS_JUDGE_API_KEY"
+JUDGE_API_KEY_ENV = "EVAL_JUDGE_API_KEY"
 
 AZURE_JUDGE_BASE_URL = JUDGE_BASE_URL
 AZURE_JUDGE_MODEL = "azure/gpt-4o-ncf"

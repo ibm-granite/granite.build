@@ -146,7 +146,7 @@ def test_usage_totals_and_cost():
 def test_default_judge_goes_through_the_meter(tmp_path, monkeypatch):
     monkeypatch.setattr(jg, "DEFAULT_JUDGE_BASE_URL", "https://judge.example.test/v1")  # no built-in endpoint: use a placeholder
     bench = jg.ProfBench(RunConfig(model="m", output_dir=tmp_path))
-    monkeypatch.setenv("GRANITE_EVALS_JUDGE_API_KEY", "k")
+    monkeypatch.setenv("EVAL_JUDGE_API_KEY", "k")
     seen = []
     monkeypatch.setattr(meter, "metered", lambda url, role: seen.append((url, role)) or "http://127.0.0.1:1/v1")
     j = bench.make_judge("http://policy/v1", "served")
@@ -157,7 +157,7 @@ def test_default_judge_goes_through_the_meter(tmp_path, monkeypatch):
 
 def test_default_judge_url_is_proxied_by_an_active_meter(tmp_path, monkeypatch):
     monkeypatch.setattr(jg, "DEFAULT_JUDGE_BASE_URL", "https://judge.example.test/v1")  # no built-in endpoint: use a placeholder
-    monkeypatch.setenv("GRANITE_EVALS_JUDGE_API_KEY", "k")
+    monkeypatch.setenv("EVAL_JUDGE_API_KEY", "k")
     monkeypatch.delenv("GRANITE_EVALS_SPEND_LEDGER", raising=False)
     bench = jg.GDPval(RunConfig(model="m", output_dir=tmp_path))
     with meter.Meters(bench.config.options, {"benchmark": "gdpval"}) as meters:
@@ -167,7 +167,7 @@ def test_default_judge_url_is_proxied_by_an_active_meter(tmp_path, monkeypatch):
 
 
 def test_judge_base_url_option_is_not_metered_twice(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRANITE_EVALS_JUDGE_API_KEY", "k")
+    monkeypatch.setenv("EVAL_JUDGE_API_KEY", "k")
     monkeypatch.setattr(meter, "metered", lambda *a, **k: pytest.fail("the CLI meters the option already"))
     opts = {"judge_base_url": "http://127.0.0.1:9/v1", "judge_model": "claude-haiku-4-5-20251001"}
     j = jg.ProfBench(RunConfig(model="m", output_dir=tmp_path, options=opts)).make_judge("http://p/v1", "s")
@@ -175,8 +175,8 @@ def test_judge_base_url_option_is_not_metered_twice(tmp_path, monkeypatch):
 
 
 def test_real_judge_needs_its_key(tmp_path, monkeypatch):
-    monkeypatch.delenv("GRANITE_EVALS_JUDGE_API_KEY", raising=False)
-    with pytest.raises(SystemExit, match="GRANITE_EVALS_JUDGE_API_KEY"):
+    monkeypatch.delenv("EVAL_JUDGE_API_KEY", raising=False)
+    with pytest.raises(SystemExit, match="EVAL_JUDGE_API_KEY"):
         jg.ProfBench(RunConfig(model="m", output_dir=tmp_path)).make_judge("http://p/v1", "s")
     self_judge = jg.ProfBench(RunConfig(model="m", output_dir=tmp_path, options={"judge_model": "self"}))
     j = self_judge.make_judge("http://p/v1", "served")
@@ -184,7 +184,7 @@ def test_real_judge_needs_its_key(tmp_path, monkeypatch):
 
 
 def test_judge_thinking_options_go_into_every_request_body(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRANITE_EVALS_JUDGE_API_KEY", "k")
+    monkeypatch.setenv("EVAL_JUDGE_API_KEY", "k")
     monkeypatch.setattr(meter, "metered", lambda url, role: "http://127.0.0.1:1/v1")
     opts = {"judge_thinking": "adaptive", "judge_effort": "max", "judge_extra_body": '{"x": 1}'}
     bench = jg.ProfBench(RunConfig(model="m", output_dir=tmp_path, options=opts))
@@ -439,7 +439,7 @@ def _phase(bench, phase):
 
 @needs_upstream
 def test_profbench_generate_then_score(tmp_path, monkeypatch, pb_env):
-    monkeypatch.delenv("GRANITE_EVALS_JUDGE_API_KEY", raising=False)  # generating needs no judge key
+    monkeypatch.delenv("EVAL_JUDGE_API_KEY", raising=False)  # generating needs no judge key
     gen = _phase(jg.ProfBench(RunConfig(model="m", output_dir=tmp_path, workers=2)), "generate")
     assert gen.needs_server() and not gen.score_needs_server()
     out = gen.run("http://p/v1", "s")
@@ -567,7 +567,7 @@ class LocalDirSandbox:
         self.closed = True
 
     def _run_env(self):
-        return {"PATH": "/usr/bin:/bin", "GRANITE_EVALS_JUDGE_API_KEY": "secret", "HF_TOKEN": "t", "HOME": "/h"}
+        return {"PATH": "/usr/bin:/bin", "EVAL_JUDGE_API_KEY": "secret", "HF_TOKEN": "t", "HOME": "/h"}
 
     def execute(self, command, *, cwd="/", timeout=None, env=None, stdin=None):
         import subprocess
@@ -590,7 +590,7 @@ def test_sandbox_provider_file_transfer_and_env(tmp_path):
     async def go():
         async with provider:
             assert sb.started and provider.setup_output.strip() == "ready"
-            assert "GRANITE_EVALS_JUDGE_API_KEY" not in sb._run_env() and "HF_TOKEN" not in sb._run_env()
+            assert "EVAL_JUDGE_API_KEY" not in sb._run_env() and "HF_TOKEN" not in sb._run_env()
             assert sb._run_env()["HOME"] == "/h"
             blob = bytes(range(256)) * 10
             await provider.write_file_bytes("out/data.bin", blob)
@@ -775,7 +775,7 @@ def _memo_agent(agents):
 def test_gdpval_generate_then_score(tmp_path, monkeypatch, gdp_env):
     agents = []
     monkeypatch.setattr(jg.GDPval, "_agent", _memo_agent(agents))
-    monkeypatch.delenv("GRANITE_EVALS_JUDGE_API_KEY", raising=False)  # generating needs no judge key
+    monkeypatch.delenv("EVAL_JUDGE_API_KEY", raising=False)  # generating needs no judge key
     gen = jg.GDPval(RunConfig(model="m", output_dir=tmp_path / "run", dataset=str(gdp_env), workers=2,
                               phase="generate"))
     assert gen.needs_server() and not gen.score_needs_server()

@@ -43,7 +43,7 @@ version: 0.1.0
 # THE JUDGE, for the judged benchmarks in this family (aa-lcr, browsecomp, hle,
 # hle-tools, omniscience, omniscience-hallucination), is a paid OpenAI-compatible
 # endpoint (model aws/claude-sonnet-5; the gateway URL has no default: pass options "judge_base_url=<OpenAI-compatible endpoint>"). Its key must reach the score
-# job as $GRANITE_EVALS_JUDGE_API_KEY. Judge calls go through granite-evals' spend
+# job as $EVAL_JUDGE_API_KEY. Judge calls go through granite-evals' spend
 # meter ($GRANITE_EVALS_SPEND_LEDGER / $GRANITE_EVALS_SPEND_BUDGET_USD, if set); a 402
 # stops the run. The rest of this family grades symbolically (no judge, no spend).
 #
