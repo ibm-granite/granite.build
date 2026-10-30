@@ -220,7 +220,7 @@ def upsert_job(
         updated = storage.update_fields(existing.uuid, fields, should_update=compute)
     except Exception:
         if failure:
-            raise failure[0] from None
+            raise failure[0]
         raise
     if updated is None:
         return UNCHANGED
