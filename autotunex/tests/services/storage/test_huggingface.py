@@ -32,7 +32,7 @@ PUSH_STDOUT = (
 
 def _backend(
     *,
-    hf_namespace: str = "example-org",
+    hf_namespace: str | None = "example-org",
     hf_preview_enabled: bool = True,
     tags: str = "autotunex",
     http_client: httpx.AsyncClient | None = None,
@@ -105,6 +105,33 @@ async def test_persist_authenticates_then_pushes_and_parses_refs(
     assert pushed_names == ["finance_train.jsonl", "finance_validation.jsonl"]
     assert artifact_id == UUID("11111111-1111-1111-1111-111111111111")
     assert artifact_url == "hf://huggingface.co/datasets/example-org/finance_0f55c1a6"
+
+
+async def test_persist_leaves_the_org_to_gbcli_when_no_namespace_is_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unset, gbcli pushes to its own per-environment ``hf_organization``."""
+    monkeypatch.setenv(GB_ENV, "gb-secret")
+    train, validation = _staged(tmp_path)
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout=PUSH_STDOUT, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    await _backend(hf_namespace=None).persist(
+        dataset_id=DATASET_ID,
+        name="finance",
+        data_format="jsonl",
+        train=train,
+        validation=validation,
+    )
+
+    push = calls[1]
+    assert "--hf-organization" not in push
+    assert push[push.index("--artifact-name") + 1] == "finance_0f55c1a6"
 
 
 async def test_persist_passes_the_configured_tag_to_the_push(
@@ -689,6 +716,40 @@ async def test_preview_sends_the_token_only_to_the_rows_own_push(
 
     async with _viewer_client(handler) as client:
         await _backend(http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url=artifact_url,
+            rows=10,
+        )
+
+    assert seen
+    assert all(("authorization" in r.headers) is sends_token for r in seen)
+
+
+@pytest.mark.parametrize(
+    ("artifact_url", "sends_token"),
+    [
+        # gbcli picked the org, so any owner of this row's own <name>_<id8> repo
+        ("hf://huggingface.co/datasets/env-org/finance_0f55c1a6", True),
+        ("hf:///datasets/env-org/finance_9bb5cc58", False),
+        ("hf:///datasets/env-org/not-pushed-by-the-app", False),
+    ],
+)
+async def test_preview_without_a_namespace_matches_the_own_push_by_name(
+    monkeypatch: pytest.MonkeyPatch, artifact_url: str, sends_token: bool
+) -> None:
+    monkeypatch.setenv(HF_ENV, "hf_tok")
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/splits":
+            return httpx.Response(200, json={"splits": [{"config": "default", "split": "train"}]})
+        return httpx.Response(200, json={"rows": [{"row": {"a": 1}}]})
+
+    async with _viewer_client(handler) as client:
+        await _backend(hf_namespace=None, http_client=client).preview(
             dataset_id=DATASET_ID,
             name="finance",
             data_format="jsonl",

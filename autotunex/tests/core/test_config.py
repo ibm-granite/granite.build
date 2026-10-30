@@ -986,14 +986,17 @@ def test_local_cancel_timeout_seconds_defaults_to_30() -> None:
     assert settings.local_cancel_timeout_seconds == 30.0
 
 
+def test_hf_namespace_is_unset_by_default() -> None:
+    """Unset, the push org is gbcli's per-environment ``hf_organization``."""
+    assert Settings(_env_file=None).hf_namespace is None
+
+
 @pytest.mark.parametrize("blank", ["", "   "])
-def test_a_blank_hf_namespace_falls_back_to_the_default(
-    monkeypatch: pytest.MonkeyPatch, blank: str
-) -> None:
-    """``AUTOTUNEX_HF_NAMESPACE=`` used to mean "no prefix"; it must not stop startup."""
+def test_a_blank_hf_namespace_is_unset(monkeypatch: pytest.MonkeyPatch, blank: str) -> None:
+    """``AUTOTUNEX_HF_NAMESPACE=`` must not pass an empty ``--hf-organization``."""
     monkeypatch.setenv("AUTOTUNEX_HF_NAMESPACE", blank)
 
-    assert Settings(_env_file=None).hf_namespace == "ibm-research"
+    assert Settings(_env_file=None).hf_namespace is None
 
 
 def test_an_hf_namespace_is_trimmed() -> None:

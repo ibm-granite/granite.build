@@ -94,7 +94,7 @@ class HuggingFaceStorageBackend:
         llmb_command: str,
         hf_token_env: str,
         gb_token_env: str,
-        hf_namespace: str,
+        hf_namespace: str | None,
         hf_preview_enabled: bool,
         hf_viewer_base_url: str,
         hf_viewer_timeout_seconds: float,
@@ -118,21 +118,24 @@ class HuggingFaceStorageBackend:
     def _artifact_name(self, dataset_id: UUID, name: str) -> str:
         """Derive the artifact name ``<name>_<id[:8]>`` (2025 shape).
 
-        The org is passed separately (``--hf-organization``): llmb rejects a ``/``
-        in an artifact name.
+        The org, when set, is passed separately (``--hf-organization``): llmb
+        rejects a ``/`` in an artifact name.
         """
         return f"{name}_{str(dataset_id)[:8]}"
 
     def _is_own_push(self, repo_id: str, dataset_id: UUID) -> bool:
         """Whether ``repo_id`` is the repo this backend pushed for ``dataset_id``.
 
-        That is ``<hf_namespace>/<name>_<dataset id[:8]>`` (see :meth:`_artifact_name`).
-        Only that repo is read with the HF token: a stored locator can come from a
-        caller (the api-bridge registers whatever a run reports), and one cannot
-        name the random id of a row before it exists.
+        That is ``<name>_<dataset id[:8]>`` (see :meth:`_artifact_name`), in
+        ``hf_namespace`` when that is set (unset, gbcli picked the org). Only that
+        repo is read with the HF token: a stored locator can come from a caller (the
+        api-bridge registers whatever a run reports), and one cannot name the random
+        id of a row before it exists.
         """
         owner, _, repo = repo_id.rpartition("/")
-        return owner == self._hf_namespace and repo.endswith(f"_{str(dataset_id)[:8]}")
+        if not repo.endswith(f"_{str(dataset_id)[:8]}"):
+            return False
+        return self._hf_namespace is None or owner == self._hf_namespace
 
     async def persist(
         self,
@@ -209,14 +212,15 @@ class HuggingFaceStorageBackend:
                 str(push_dir),
                 "--artifact-name",
                 artifact_name,
-                "--hf-organization",
-                self._hf_namespace,
                 "--type",
                 "dataset",
                 "--store",
                 "hf",
                 "--certify-no-restrictions",
             ]
+            # Unset, gbcli pushes to the GB environment's own hf_organization.
+            if self._hf_namespace is not None:
+                args += ["--hf-organization", self._hf_namespace]
             # An empty/whitespace-only setting means "no tags": omit --tag rather
             # than pass an empty value the CLI would reject.
             if self._tags.strip():
