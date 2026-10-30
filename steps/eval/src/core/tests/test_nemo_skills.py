@@ -54,6 +54,8 @@ def test_math500_pins_a_url_not_a_repo(tmp_path):
     assert cls.extra == "nemoskills" and "nemo-skills" in cls.harness_packages
     b = bench("math-500", tmp_path)
     assert b.dataset == nsb.MATH_500_URL and b.dataset_revision == f"sha256:{nsb.MATH_500_SHA256}"
+    # LFS: the media URL serves the content; raw.githubusercontent.com the pointer.
+    assert nsb.MATH_500_URL.startswith("https://media.githubusercontent.com/media/")
     assert b.pins() == {}  # a URL download, no HF revisions to pin
     assert nsb.MATH_500_N == 500
 

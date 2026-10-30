@@ -119,8 +119,9 @@ def test_imo_prepare_downloads_transforms_and_checks(tmp_path, monkeypatch):
 
 
 def test_imo_judge_valid_and_ns_judge_args(ns, tmp_path):
-    """ns's imo judge config is gemini-flavoured: its ``reasoning_effort``
-    flows to the shared Sonnet-5 judge unless overridden (smoke-watch)."""
+    """ns's imo judge config is gemini-flavoured: its ``reasoning_effort`` is nulled
+    for the shared Sonnet-5 judge (ns's wrapper raises ValueError for any
+    non-gpt-5/o-series judge)."""
     b = bench("imo-answerbench", tmp_path)
     assert b.uses_judge() and b.gold_judged
     assert b.judge_failures({"judgement": "The answer is right. \\boxed{Correct}"}) == (0, 1)
@@ -130,8 +131,15 @@ def test_imo_judge_valid_and_ns_judge_args(ns, tmp_path):
     assert b.judge_failures({"judgement": ""}) == (1, 1)
     args = b.judge_overrides()
     assert "++prompt_config=judge/imo_answerbench" in args
-    assert "++inference.reasoning_effort=dynamic" in args
+    assert "++inference.reasoning_effort=dynamic" in args  # ns's config, kept...
+    assert "++inference.reasoning_effort=null" in args  # ...but nulled for the claude default
+    assert args.index("++inference.reasoning_effort=null") > args.index("++inference.reasoning_effort=dynamic")
     assert "++inference.temperature=0.0" in args  # our greedy override lands too
+    # An ns reasoning-model judge keeps ns's effort; an explicit option beats both.
+    b2 = bench("imo-answerbench", tmp_path, options={"judge_model": "gpt-5.1"})
+    assert "++inference.reasoning_effort=null" not in b2.judge_overrides()
+    b3 = bench("imo-answerbench", tmp_path, options={"judge.inference.reasoning_effort": "low"})
+    assert b3.judge_overrides()[-1] == "++inference.reasoning_effort=low"
 
 
 def test_flores200_languages_default_option_and_validation(tmp_path):

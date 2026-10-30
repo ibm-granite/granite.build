@@ -102,6 +102,7 @@ import http.server
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import socket
@@ -562,16 +563,23 @@ class NemoSkillsBenchmark(Benchmark):
 
     def judge_overrides(self) -> list[str]:
         module_args = shlex.split(self._module_attr("JUDGE_ARGS", "") or "")
-        return [
+        # Judges run greedy; top_p unset because Anthropic-served judges reject
+        # temperature and top_p together.
+        args = [
             *module_args,
             *self.judge_args,
-            # Judges run greedy; top_p unset because Anthropic-served judges reject
-            # temperature and top_p together.
             "++inference.temperature=0.0",
             "++inference.top_p=null",
             f"++inference.tokens_to_generate={self.opt('judge_max_tokens', 16000)}",
-            *_passthrough(self.config.options, "judge."),
-        ]
+        ]  # fmt: skip
+        model = self.opt("judge_model", self.judge_model_default or JUDGE_MODEL)
+        if _sets_reasoning_effort(module_args, self.judge_args) and _ns_rejects_reasoning_effort(model):
+            # A judge config written for a reasoning model (imo-answerbench's is
+            # gemini-flavoured) must not reach a judge ns's wrapper rejects it
+            # for: every call would ValueError. Null it; a judge.-prefixed option
+            # still overrides (the passthrough lands after: hydra last-wins).
+            args.append("++inference.reasoning_effort=null")
+        return [*args, *_passthrough(self.config.options, "judge.")]
 
     def _judge_all(self, gen_dir: Path, judged_dir: Path, base_url: str, served: str) -> dict[str, Any]:
         ep = self.judge_endpoint(base_url, served)
@@ -807,6 +815,21 @@ def _hydra(value: Any) -> str:
 
 def _passthrough(options: dict[str, Any], prefix: str) -> list[str]:
     return [f"++{k[len(prefix):]}={v}" for k, v in sorted(options.items()) if k.startswith(prefix)]
+
+
+def _ns_rejects_reasoning_effort(model: str) -> bool:
+    """Whether ns's OpenAI wrapper refuses ``reasoning_effort`` for ``model``: it accepts
+    the parameter only from gpt-5*/o*-series models and raises ``ValueError`` for every
+    other one per call (nemo_skills/inference/model/openai.py) -- e.g. the claude judge
+    default, or ``judge_model=self``."""
+    return "gpt-5" not in model and re.match(r"^o\d", model) is None
+
+
+def _sets_reasoning_effort(*arg_lists: list[str] | tuple[str, ...]) -> bool:
+    """Whether any hydra arg in the lists sets a non-null ``inference.reasoning_effort``."""
+    return any(
+        a.startswith("++inference.reasoning_effort=") and not a.endswith("=null") for args in arg_lists for a in args
+    )
 
 
 # -- local OpenAI-compatible helpers ---------------------------------------------
@@ -1120,9 +1143,12 @@ class AIME26(NemoSkillsBenchmark):
     dataset_revision = "d61f486805306e6e6b5913504c07763a99e1b112"
 
 
-MATH_500_URL = "https://raw.githubusercontent.com/openai/prm800k/00811d6de065642a6967b9017d4cee59550c0ef4/prm800k/math_splits/test.jsonl"
-"""prm800k's math_splits/test.jsonl at the file's last commit (2023-05-31);
-ns's math-500 prepare wgets the main-branch URL, byte-identical to this pin."""
+MATH_500_URL = "https://media.githubusercontent.com/media/openai/prm800k/00811d6de065642a6967b9017d4cee59550c0ef4/prm800k/math_splits/test.jsonl"
+"""prm800k's math_splits/test.jsonl at the file's last commit (2023-05-31). LFS-tracked:
+raw.githubusercontent.com serves only the pointer (a 3-line text file), so this is the
+contents API's download_url, which serves the LFS-resolved bytes; ns's own prepare wgets
+the raw main URL and would get the pointer too. The pin below is the pointer's oid, i.e.
+the content's sha256."""
 MATH_500_SHA256 = "35dc41080a3680858b27fa7e0533d2d547825316fc5dafe5d316f4ccc5a06132"
 MATH_500_N = 500
 
@@ -1157,7 +1183,8 @@ class Math500(NemoSkillsBenchmark):
             r.raise_for_status()
             digest = hashlib.sha256(r.content).hexdigest()
             if digest != MATH_500_SHA256:
-                raise RuntimeError(f"{url}: sha256 {digest}, expected {MATH_500_SHA256}")
+                hint = " (an LFS pointer, not the content?)" if r.content.startswith(b"version https://git-lfs") else ""
+                raise RuntimeError(f"{url}: sha256 {digest}, expected {MATH_500_SHA256}{hint}")
             raw.write_bytes(r.content)
         rows = []
         for line in raw.read_text().splitlines():
