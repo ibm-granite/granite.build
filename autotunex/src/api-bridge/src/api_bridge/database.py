@@ -560,7 +560,8 @@ class Database:
                     id=task_id,
                     job_id=str(job_id),
                     build_id=build_id,
-                    # Explicit: the service-created schema has no DDL default for status.
+                    # Explicit: a database not yet at migration 5e1d2c7a9b40 has no
+                    # DDL default for status.
                     status="PENDING",
                     type=task_type,
                     started_at=now,

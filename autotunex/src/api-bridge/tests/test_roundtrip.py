@@ -250,9 +250,10 @@ def test_insert_gb_task_roundtrip(db):
 
 
 def test_insert_gb_task_without_a_status_server_default(db):
-    # The live schema comes from the AutoTuneX service's create_all, whose
-    # gb_tasks.status has only a Python-side default (no DDL DEFAULT), unlike
-    # this bridge metadata. The insert must not rely on the server default.
+    # A database the AutoTuneX service built before migration 5e1d2c7a9b40 has
+    # only a Python-side default for gb_tasks.status (no DDL DEFAULT), unlike
+    # this bridge metadata. Until every database has run it, the insert must
+    # not rely on the server default.
     from sqlalchemy import text
 
     user_id = seed_user(db)
