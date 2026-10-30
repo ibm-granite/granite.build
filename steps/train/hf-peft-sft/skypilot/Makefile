@@ -10,7 +10,7 @@ REGISTRY ?= quay.io/granitebuild
 
 # Stable tag, not the git SHA: BlueVela caches a .sqsh per tag. Bump the suffix
 # when the Dockerfile, requirements.lock or src/ changes; the prefix with peft.
-IMAGE_VERSION ?= peft-v0.21.2-1
+IMAGE_VERSION ?= peft-v0.21.2-2
 
 # Pinned uv for the lock, same version as the image's uv stage.
 UV_LOCK ?= uvx --from uv==0.13.6 uv

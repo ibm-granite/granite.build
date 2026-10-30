@@ -49,12 +49,15 @@ ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python \
 
 # Every package, transitive ones included, comes from the hashed lock. DeepSpeed
 # ships only an sdist; DS_BUILD_OPS=0 builds it without pre-compiling ops (they
-# JIT-compile on first use, hence the devel base).
+# JIT-compile on first use, hence the devel base). uv never needs pip, so pip and
+# ensurepip are removed from the managed CPython: their vendored msgpack/urllib3/
+# setuptools were the only fixable HIGH findings in the peft-v0.21.2-1 scan.
 COPY requirements.lock /tmp/requirements.lock
 RUN uv venv --python 3.12 /opt/hf-peft-sft/.venv \
  && DS_BUILD_OPS=0 uv pip install --python /opt/hf-peft-sft/.venv/bin/python \
       --require-hashes --no-deps -r /tmp/requirements.lock \
  && rm /tmp/requirements.lock \
+ && rm -rf /opt/uv-python/*/lib/python3.12/site-packages/pip /opt/uv-python/*/lib/python3.12/site-packages/pip-*.dist-info /opt/uv-python/*/lib/python3.12/ensurepip \
  && chmod -R a+rX /opt/hf-peft-sft /opt/uv-python
 
 # The step's scripts and accelerate configs, called by step.yaml at /opt/hf-peft-sft/.
