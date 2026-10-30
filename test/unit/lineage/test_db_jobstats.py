@@ -23,9 +23,9 @@ a fake would just re-implement (and possibly contradict) both.
 """
 
 import os
-import uuid as uuid_module
 
 import pytest
+from libgbtest.lineage.lineage import AbstractLineageTablesTest
 
 from gbserver.lineage.attributes import (
     ALT_URIS,
@@ -41,7 +41,6 @@ from gbserver.lineage.db_jobstats import DBLineageStore
 from gbserver.lineage.decompose import LineageRowDraft
 from gbserver.lineage.row_indexing import LineageRowIndexer
 from gbserver.lineage.row_indexing import row_from_draft as _row_from_draft
-from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 
 pytestmark = pytest.mark.skipif(
@@ -50,17 +49,18 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture(name="rows")
-def rows_fixture():
-    """A lineage row storage on a table unique to this test."""
-    table = f"t_sink_{uuid_module.uuid4().hex[:8]}"
-    return SqliteStorageFactory().create_lineage_row_storage(table_name=table)
+class _LineageTablesTest(AbstractLineageTablesTest):
+    """``rows`` and ``jobs`` are this test's prefixed ``gb_lineage_index`` and ``gb_lineage_job``."""
 
+    @pytest.fixture(name="rows")
+    def rows_fixture(self):
+        """The lineage index, ``gb_lineage_index``."""
+        return self.storage.lineage_row_storage
 
-@pytest.fixture(name="jobs")
-def jobs_fixture():
-    table = f"t_jobs_{uuid_module.uuid4().hex[:8]}"
-    return SqliteStorageFactory().create_lineage_job_storage(table_name=table)
+    @pytest.fixture(name="jobs")
+    def jobs_fixture(self):
+        """The job table, ``gb_lineage_job``."""
+        return self.storage.lineage_job_storage
 
 
 @pytest.fixture(name="sink")
@@ -116,7 +116,7 @@ LH_TABLE = "lh://prod/ns/tables/raw_tbl"
 LH_MODEL = "lh://prod/ns/models/mdl_tbl/trained/v1"
 
 
-class TestDecomposition:
+class TestDecomposition(_LineageTablesTest):
     """One job entry becomes max(N, M) rows sharing a job_id."""
 
     def test_one_input_one_output_is_one_row(self, write_job, rows):
@@ -216,7 +216,7 @@ class TestDecomposition:
         assert [r for pg in rows.get_paged() for r in pg] == []
 
 
-class TestIdempotence:
+class TestIdempotence(_LineageTablesTest):
     """Re-ingesting the same lineage must not duplicate rows."""
 
     def test_writing_the_same_job_twice_does_not_duplicate(self, write_job, rows):
@@ -242,7 +242,7 @@ class TestIdempotence:
         assert len(rows.get_rows_by_job("J1")) == 1
 
 
-class TestDedupByPresence:
+class TestDedupByPresence(_LineageTablesTest):
     """Dedup keys on ``job_id``, which for build lineage IS the target run uuid.
 
     ``_build_events_for_target`` stamps ``job_details.job_id = targetrun.uuid``
@@ -299,7 +299,7 @@ class TestDedupByPresence:
         assert DBLineageStore(job_storage=Failing()).filter_unrecorded({"t1"}) == {"t1"}
 
 
-class TestReleaseCounts:
+class TestReleaseCounts(_LineageTablesTest):
     """release_id is a build_id; the UNIT is jobs, which is W&B's run shape."""
 
     def test_counts_one_job_per_execution_not_one_per_edge(self, sink):
@@ -347,7 +347,7 @@ class TestReleaseCounts:
         assert sink.does_release_id_exist("BLD", 5) is False
 
 
-class TestRowContents:
+class TestRowContents(_LineageTablesTest):
     def test_endpoint_detail_comes_from_the_artifact_dict(self):
         """Kind and name are recorded, not derived from the URI.
 
@@ -555,7 +555,7 @@ class TestArtifactRegistrationRows:
         assert row.job_id == "ART-UUID"
 
 
-class TestWiring:
+class TestWiring(_LineageTablesTest):
     def test_the_sink_records_centralized_lineage(self, sink):
         # lineage-watch exits immediately for a store reporting False, which would
         # leave the index permanently empty.
@@ -602,14 +602,8 @@ class TestJobNormalization:
         event = {"job_id": "J1", "sources": [], "targets": []}
         assert _normalized_job(event)["job_id"] == "J1"
 
-    def test_an_event_with_no_job_details_is_unchanged(self):
-        from gbserver.lineage.db_jobstats import _normalized_job
 
-        event = {"job_id": "J1", "sources": [], "targets": []}
-        assert _normalized_job(event)["job_id"] == "J1"
-
-
-class TestNamespacePropagation:
+class TestNamespacePropagation(_LineageTablesTest):
     """``job_namespace`` must survive the write path, or authorization eats the graph.
 
     The read path splits it on the first ``/`` to recover the space and prunes nodes
@@ -664,18 +658,16 @@ class TestNamespacePropagation:
         assert job_detail(stored.attributes)["namespace"] == "my-space/build-x"
 
 
-class TestJobTags:
+class TestJobTags(_LineageTablesTest):
     """Every recorded job is tagged on its rows, and a release count queries them."""
 
     @pytest.fixture(name="tagged_sink")
-    def tagged_sink_fixture(self, rows):
-        suffix = uuid_module.uuid4().hex[:8]
-        factory = SqliteStorageFactory()
+    def tagged_sink_fixture(self, rows, jobs):
         # Tags live on the rows' ``attributes.job.tags``; the row storage answers
         # them. The store records the job, the indexer derives the tagged rows, so
         # both halves are kept here and _write runs them in order.
         self.tags = rows
-        self.jobs = factory.create_lineage_job_storage(table_name=f"t_job_{suffix}")
+        self.jobs = jobs
         self.indexer = LineageRowIndexer(storage=rows)
         return DBLineageStore(job_storage=self.jobs)
 
@@ -756,7 +748,7 @@ class TestJobTags:
         assert service.list_jobs()["total"] == 0
 
 
-class TestJobsTouchingInSQL:
+class TestJobsTouchingInSQL(_LineageTablesTest):
     """The SQL overrides that keep a lone-``uri`` listing off the rows.
 
     Counted in distinct jobs: a many-input job repeats its output on every row, so
@@ -865,7 +857,7 @@ class TestJobRecordBackfill:
         assert not sink._has_job_record("OTHER")
 
 
-class TestRejectedJobs:
+class TestRejectedJobs(_LineageTablesTest):
     """A job the table refuses is not rebuilt and re-refused on every pass."""
 
     def test_a_rejected_job_counts_as_recorded(self, sink, jobs):
@@ -887,7 +879,7 @@ class TestCommaTags:
         assert not is_storable_tag("labels=a,b")
 
 
-class TestTagSearchEscapesLike:
+class TestTagSearchEscapesLike(_LineageTablesTest):
     """``%`` and ``_`` in a tag are literal, so they cannot widen the SQL filter."""
 
     def _job(self, job_id, tags):
@@ -909,7 +901,7 @@ class TestTagSearchEscapesLike:
         assert [j.job_id for j in jobs.search_by_tags(["run_1"])[1]] == ["J1"]
 
 
-class TestUpsertRow:
+class TestUpsertRow(_LineageTablesTest):
     """The row merge: a lost race merges, and a stale terminal is repaired."""
 
     def _row(self, job_id, source, target, **attributes):
@@ -953,7 +945,7 @@ class TestUpsertRow:
         assert (stored.input, stored.attributes) == ("a", {"seen": {"lh": 1}})
 
 
-class TestFinishedStatusReplacesInProgress:
+class TestFinishedStatusReplacesInProgress(_LineageTablesTest):
     def _job(self, status, completed_at=""):
         from gbserver.storage.stored_lineage_job import StoredLineageJob
 
@@ -991,7 +983,7 @@ class TestFinishedStatusReplacesInProgress:
         assert jobs.get_job("J1").status == "finished"
 
 
-class TestMergeStampsRecordedAtAtomically:
+class TestMergeStampsRecordedAtAtomically(_LineageTablesTest):
     """A merge and its recorded_at bump are one write: if it fails, neither is in."""
 
     def test_a_merge_moves_recorded_at_with_its_content(self, sink, jobs):

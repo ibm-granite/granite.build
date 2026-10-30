@@ -33,6 +33,7 @@ from unittest.mock import patch
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from libgbtest.lineage.lineage import AbstractLineageTablesTest
 from pydantic import ValidationError
 
 from gbserver.api import lineage as lineage_mod
@@ -124,47 +125,45 @@ def test_search_lineage_events_excludes_cross_space_run():
     assert resp.count == 1
 
 
-def test_search_lineage_events_filters_a_real_db_provider_result():
-    """The db provider's own envelope must satisfy the shared route contract.
+class TestSearchLineageEventsDBProvider(AbstractLineageTablesTest):
+    """``POST /lineage/search`` over a real ``gb_lineage_job``, prefixed per test."""
 
-    Not a hand-written run dict like the tests above: this goes through
-    DBLineageService, so it fails if db_responses ever stops emitting the two
-    facets the route filters on. The route is provider-agnostic and fails closed,
-    so a missing one silently empties every search instead of erroring.
-    """
-    import uuid as uuid_module
+    def test_search_lineage_events_filters_a_real_db_provider_result(self):
+        """The db provider's own envelope must satisfy the shared route contract.
 
-    from gbserver.lineage.db_service import DBLineageService
-    from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
-    from gbserver.storage.stored_lineage_job import StoredLineageJob
+        Not a hand-written run dict like the tests above: this goes through
+        DBLineageService, so it fails if db_responses ever stops emitting the two
+        facets the route filters on. The route is provider-agnostic and fails closed,
+        so a missing one silently empties every search instead of erroring.
+        """
+        from gbserver.lineage.db_service import DBLineageService
+        from gbserver.storage.stored_lineage_job import StoredLineageJob
 
-    jobs = SqliteStorageFactory().create_lineage_job_storage(
-        table_name=f"t_api_{uuid_module.uuid4().hex[:8]}"
-    )
-    for space in (MY_SPACE, OTHER_SPACE):
-        jobs.add(
-            StoredLineageJob(
-                job_id=f"run-{space}",
-                job_namespace=f"{space}/some-build",
-                space_name=space,
-                owner="someone_else@example.com",
-                tags=["team=nlp"],
+        jobs = self.storage.lineage_job_storage
+        for space in (MY_SPACE, OTHER_SPACE):
+            jobs.add(
+                StoredLineageJob(
+                    job_id=f"run-{space}",
+                    job_namespace=f"{space}/some-build",
+                    space_name=space,
+                    owner="someone_else@example.com",
+                    tags=["team=nlp"],
+                )
             )
-        )
-    service = DBLineageService(job_storage=jobs)
+        service = DBLineageService(job_storage=jobs)
 
-    is_admin, is_member = _member_of(MY_SPACE)
-    with (
-        is_admin,
-        is_member,
-        patch.object(lineage_mod, "_get_openlineage_service", return_value=service),
-    ):
-        resp = lineage_mod.search_lineage_events(
-            _fake_request("member", "member@example.com"),
-            TagSearchRequest(tags=["team=nlp"]),
-        )
-    assert [r["run"]["runId"] for r in resp.runs] == [f"run-{MY_SPACE}"]
-    assert resp.total == 1
+        is_admin, is_member = _member_of(MY_SPACE)
+        with (
+            is_admin,
+            is_member,
+            patch.object(lineage_mod, "_get_openlineage_service", return_value=service),
+        ):
+            resp = lineage_mod.search_lineage_events(
+                _fake_request("member", "member@example.com"),
+                TagSearchRequest(tags=["team=nlp"]),
+            )
+        assert [r["run"]["runId"] for r in resp.runs] == [f"run-{MY_SPACE}"]
+        assert resp.total == 1
 
 
 def test_search_lineage_events_includes_owned_run_from_any_space():
