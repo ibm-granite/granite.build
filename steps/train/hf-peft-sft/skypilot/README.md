@@ -147,9 +147,11 @@ DeepSpeed uses for its JIT ops matches torch's runtime. The base's
 `NVIDIA_REQUIRE_CUDA` admits both the 580 and 590 driver branches.
 
 Only the driver versions above were measured (2026-10-30). On either cluster the
-image's CUDA 13.2 runtime may rely on CUDA minor-version compatibility. The aws and
-BlueVela build tests are the proof (pending). If they fail on the driver, the
-fallback is torch 2.11.0+cu128 on `cuda:12.8.1-devel-ubuntu22.04`.
+image's CUDA 13.2 runtime may rely on CUDA minor-version compatibility. On aws it
+works: the aws build test passed on the 580.159.04 driver (2026-10-30, QLoRA with
+bitsandbytes 4-bit and aLoRA, 3 steps each). BlueVela is pending its build test. If
+it fails on the driver, the fallback is torch 2.11.0+cu128 on
+`cuda:12.8.1-devel-ubuntu22.04`.
 
 ### Choices in the Dockerfile that look odd, and why
 
@@ -162,7 +164,7 @@ fallback is torch 2.11.0+cu128 on `cuda:12.8.1-devel-ubuntu22.04`.
   a run uses JIT-compiles on the node at first use.
   That is why the base is `devel` and why its CUDA minor matches torch's.
 - **A CUDA 13.2 runtime on 580/590 drivers.** See [The torch/CUDA pair](#the-torchcuda-pair):
-  it may rely on minor-version compatibility, to be confirmed by the build tests.
+  it may rely on minor-version compatibility. Confirmed on aws (580); BlueVela pending.
 - **chmod in two layers.** Pyxis on SLURM runs the container as the job user, not
   root. The venv and uv's managed Python (`/opt/uv-python`, not root's home, since
   the venv's interpreter is a symlink into it) get `chmod -R a+rX` in the install
@@ -380,6 +382,12 @@ click's captured file descriptors.
 
 Both check each target's `adapter` artifact and the `method` and `peft_version`
 metadata.
+
+| Result | aws | slurm-bluevela |
+|---|---|---|
+| status | **passed** 2026-10-30, 7m21s for both targets | pending |
+| loss, steps 1→3 | qlora and alora each logged `Step: 1/3`…`3/3` | |
+| markers | `adapter` at `/root/sky_workdir/adapter_output` per target; `method`, `peft_version` 0.21.2, `trl_version` 1.17.1 | |
 
 #### aws
 

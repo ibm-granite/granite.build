@@ -229,9 +229,10 @@ Verified combinations (method × `distributed`):
 | | ddp | fsdp | deepspeed |
 |---|---|---|---|
 | lora | render-tested | e2e pending (BlueVela) | render-tested |
-| qlora | e2e pending (aws) | render-tested | e2e pending (BlueVela) |
-| alora | e2e pending (aws) | render-tested | render-tested |
+| qlora | e2e (aws) | render-tested | e2e pending (BlueVela) |
+| alora | e2e (aws) | render-tested | render-tested |
 
+`e2e` means a real build on that cluster trained and registered an adapter;
 `e2e pending` means a build test exists for that cluster and will be recorded here
 when it passes; `render-tested` means covered by render and unit tests only.
 
