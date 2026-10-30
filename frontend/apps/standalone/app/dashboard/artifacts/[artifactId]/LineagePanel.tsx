@@ -12,7 +12,7 @@ import layout from '@granite-build/ui-core/components/LineageGraph/LineagePanelL
 import own from './LineagePanel.module.scss'
 import JobDrawer from '@granite-build/ui-core/components/StepDrawer/JobDrawer'
 import Graph, { type GraphHandle } from '@granite-build/ui-core/components/LineageGraph/Graph'
-import { depthForNextLevel, groupListingRun, indexGraphToElk, type IndexElkNode, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
+import { depthForNextLevel, expansionErrorMessage, groupListingRun, indexGraphToElk, type IndexElkNode, mergeElkGraphs, visibleLevels } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
 import { useLineageExpansion } from '@granite-build/ui-core/components/LineageGraph/useLineageExpansion'
 
 // ── URI-based artifact lineage panel (lineage index) ──────────────────────────
@@ -200,7 +200,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
         <div className={own.expansionStatus}>
           {busy && <InlineLoading description={`Loading ${expansion.loading} lineage…`} />}
           {Boolean(expansion.error) && (
-            <span className={own.expansionError}>Failed to expand lineage: {String(expansion.error)}</span>
+            <span className={own.expansionError}>Failed to expand lineage: {expansionErrorMessage(expansion.error)}</span>
           )}
           {openError && <span className={own.expansionError}>{openError}</span>}
           {!busy && unexpanded > 0 && <span>{unexpanded} nodes not expanded.</span>}
@@ -221,7 +221,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
         )}
         {!isLoading && Boolean(error) && (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--cds-support-error)', fontSize: '0.875rem', padding: '1rem', textAlign: 'center' }}>
-            Failed to load lineage: {String(error)}
+            Failed to load lineage: {expansionErrorMessage(error)}
           </div>
         )}
         {noLineage && (

@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from gbserver.lineage import indexer as idx
 from gbserver.storage.stored_lineage_row import JobStore
@@ -1300,3 +1301,234 @@ def test_wandb_ignores_the_settle_grace_environment(monkeypatch):
     monkeypatch.setenv("GBSERVER_LINEAGE_INDEX_SETTLE_GRACE_S", "600")
     ix, _, _ = _indexer([])
     assert ix.settle_grace_s == 0
+
+
+# -- issue 530: checkpoint robustness ------------------------------------------
+
+
+class CommError(Exception):
+    """Stands in for wandb's: the HTTPError it wraps is on ``exc``."""
+
+    def __init__(self, msg, exc=None):
+        super().__init__(msg)
+        self.exc = exc
+
+
+def _http_error(status):
+    error = Exception(f"HTTP {status}")
+    error.response = SimpleNamespace(status_code=status)
+    return error
+
+
+@pytest.mark.parametrize(
+    "exc, transient",
+    [
+        # A deterministic 4xx wrapped in a CommError counts toward the give-up.
+        (CommError("HTTP 400", _http_error(400)), False),
+        # Expired or revoked credentials are an outage, not a bad job.
+        (CommError("HTTP 401", _http_error(401)), True),
+        # A 403 may be one forbidden run: it counts, over a longer give-up.
+        (CommError("HTTP 403", _http_error(403)), False),
+        (CommError("HTTP 404", _http_error(404)), False),
+        (CommError("HTTP 429", _http_error(429)), True),
+        # The raw HTTPError RunArtifacts pagination re-raises is an outage.
+        (_http_error(502), True),
+        (_http_error(503), True),
+        (_http_error(504), True),
+        # Any 5xx is an outage: it must skip nothing.
+        (_http_error(500), True),
+        (CommError("HTTP 501", _http_error(501)), True),
+        # A CommError with no status: what it wraps decides, not its class.
+        (CommError("connection reset"), True),
+        (CommError("Read timed out", requests.exceptions.ReadTimeout()), True),
+        (CommError("x", requests.exceptions.ConnectionError("refused")), True),
+        (CommError("x", requests.exceptions.ChunkedEncodingError()), True),
+        # A GraphQL error W&B returns with a 200 is the run's own failure.
+        (CommError("permission denied", Exception("permission denied")), False),
+        (CommError("project not found", Exception("project not found")), False),
+        # Postgres ProgramLimitExceeded arrives as an OperationalError.
+        (
+            OperationalError(
+                "index row size 3240 exceeds btree version 4 maximum 2704"
+            ),
+            False,
+        ),
+    ],
+)
+def test_transient_classification_by_http_status(exc, transient):
+    assert idx._is_transient_error(exc) is transient
+
+
+def test_a_deterministic_wandb_error_is_given_up_on():
+    storage = _storage()
+    ix, _, sink = _indexer([_run("r1", D1), _run("r2", D2)])
+    sink.write_job.side_effect = [CommError("HTTP 404", _http_error(404))] * (
+        idx._MAX_JOB_ATTEMPTS
+    ) + [None]
+    for _ in range(idx._MAX_JOB_ATTEMPTS):
+        ix.scan_once(storage)
+    assert _checkpoint(storage)["timestamp"] == D2
+
+
+def test_a_forbidden_wandb_run_is_given_up_on_after_more_attempts():
+    """A 403 is waited out past the plain give-up, then skipped, so one run this
+    key may not read cannot hold the checkpoint forever."""
+    storage = _storage()
+    ix, _, sink = _indexer([_run("r1", D1), _run("r2", D2)])
+    sink.write_job.side_effect = [CommError("HTTP 403", _http_error(403))] * (
+        idx._MAX_SLOW_GIVE_UP_ATTEMPTS
+    ) + [None]
+    for _ in range(idx._MAX_JOB_ATTEMPTS):
+        ix.scan_once(storage)
+    assert _checkpoint(storage) is None or _checkpoint(storage)["timestamp"] != D2
+    for _ in range(idx._MAX_SLOW_GIVE_UP_ATTEMPTS - idx._MAX_JOB_ATTEMPTS):
+        ix.scan_once(storage)
+    assert _checkpoint(storage)["timestamp"] == D2
+
+
+def test_a_403_gets_the_longer_give_up():
+    exc = CommError("HTTP 403", _http_error(403))
+    assert idx._give_up_after(exc) == idx._MAX_SLOW_GIVE_UP_ATTEMPTS
+    assert idx._give_up_after(CommError("HTTP 404", _http_error(404))) == (
+        idx._MAX_JOB_ATTEMPTS
+    )
+
+
+def test_a_w_and_b_500_outage_skips_nothing():
+    """However long W&B 500s, the run is waited out, never given up on."""
+    storage = _storage()
+    ix, _, sink = _indexer([_run("r1", D1), _run("r2", D2)])
+    sink.write_job.side_effect = [_http_error(500)] * (
+        idx._MAX_SLOW_GIVE_UP_ATTEMPTS + 5
+    ) + [None, None]
+    for _ in range(idx._MAX_SLOW_GIVE_UP_ATTEMPTS + 5):
+        ix.scan_once(storage)
+    assert _checkpoint(storage) is None or _checkpoint(storage)["timestamp"] != D2
+    ix.scan_once(storage)
+    assert _checkpoint(storage)["timestamp"] == D2
+    assert sink.write_job.call_count == idx._MAX_SLOW_GIVE_UP_ATTEMPTS + 7
+
+
+def test_a_handled_http_error_does_not_classify_a_later_failure():
+    """A 404 already caught (``__context__``) must not turn a DB outage permanent,
+    nor a 429 already caught turn a deterministic error transient."""
+
+    def raised_while_handling(handled, exc):
+        try:
+            try:
+                raise handled
+            except Exception:
+                raise exc
+        except Exception as caught:
+            return caught
+
+    outage = raised_while_handling(
+        CommError("HTTP 404", _http_error(404)),
+        OperationalError("server closed the connection unexpectedly"),
+    )
+    assert idx._http_status(outage) is None
+    assert idx._is_transient_error(outage) is True
+    # The give-up bound ignores a handled status too.
+    assert idx._give_up_after(
+        raised_while_handling(
+            CommError("HTTP 403", _http_error(403)), ValueError("bad job payload")
+        )
+    ) == (idx._MAX_JOB_ATTEMPTS)
+    # An explicit cause is followed.
+    try:
+        try:
+            raise _http_error(503)
+        except Exception as inner:
+            raise RuntimeError("wrapped") from inner
+    except RuntimeError as wrapped:
+        assert idx._http_status(wrapped) == 503
+
+
+def test_the_failure_itself_decides_before_a_handled_error():
+    """Outermost link first: what the failure says wins over a handled error in
+    its ``__context__``; the context decides only when the failure says nothing."""
+
+    def raised_while_handling(handled, exc):
+        try:
+            try:
+                raise handled
+            except Exception:
+                raise exc
+        except Exception as caught:
+            return caught
+
+    # A "does not exist" carried past must not make an outage look permanent.
+    outage = raised_while_handling(
+        ValueError("artifact does not exist"),
+        OperationalError("server closed the connection unexpectedly"),
+    )
+    assert idx._is_transient_error(outage) is True
+    # A 429 carried past must not make a schema error look transient.
+    schema = raised_while_handling(
+        _http_error(429), OperationalError("no such column: tags")
+    )
+    assert idx._is_transient_error(schema) is False
+    # A wrapper that re-raises an outage without ``from`` is still an outage.
+    wrapped = raised_while_handling(
+        ConnectionError("reset"), RuntimeError("write failed")
+    )
+    assert idx._is_transient_error(wrapped) is True
+    # ``from None`` cuts the chain, as it does in a traceback.
+    try:
+        try:
+            raise ConnectionError("reset")
+        except ConnectionError:
+            raise RuntimeError("write failed") from None
+    except RuntimeError as cut:
+        assert idx._is_transient_error(cut) is False
+
+
+def test_the_checkpoint_is_read_once_per_scan():
+    """A re-seed between two reads would become this scan's expectation, and
+    then be overwritten by it."""
+    storage = _storage()
+    ix, _, _ = _indexer([_run("r1", D1), _run("r2", D2)])
+    ix._write_timestamp(storage, D1)
+    reads = []
+    original = storage.kv_pair_storage.get_value
+
+    def get_value(key):
+        reads.append(key)
+        if len(reads) == 2:
+            # A --force re-seed lands after the scan's first read.
+            storage.kv_pair_storage.set_value(
+                key, ix._checkpoint_value("2025-06-01T00:00:00Z", [])
+            )
+        return original(key)
+
+    storage.kv_pair_storage.get_value = get_value
+    ix.scan_once(storage)
+    assert _checkpoint(storage)["timestamp"] == "2025-06-01T00:00:00Z"
+
+
+def test_done_ahead_is_kept_under_the_from_beginning_mark():
+    """Under ``all`` a held run at the front must not re-index everything past
+    it on every scan."""
+    storage = _storage()
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(tzinfo=None)
+    runs = [
+        _run("r1", recent.isoformat(), job_id="j1", state="running"),
+        _run("r2", (recent + timedelta(seconds=10)).isoformat(), job_id="j2"),
+    ]
+    ix, _, sink = _indexer(runs)
+    ix.settle_grace_s = 0
+    ix.seed_if_absent(storage, idx.SEED_ALL)
+    assert ix.scan_once(storage) == 1
+    assert set(_checkpoint(storage)["done_ahead"]) == {"r2"}
+    sink.write_job.reset_mock()
+    assert ix.scan_once(storage) == 0
+    sink.write_job.assert_not_called()
+
+
+def test_build_tags_reraises_an_outage_but_tolerates_a_missing_build():
+    storage = SimpleNamespace(build_storage=MagicMock())
+    storage.build_storage.get_by_uuid.side_effect = OperationalError("timed out")
+    with pytest.raises(OperationalError):
+        idx._build_tags(storage, "b1")
+    storage.build_storage.get_by_uuid.side_effect = ValueError("gone")
+    assert idx._build_tags(storage, "b1") == []

@@ -33,6 +33,7 @@ from sqlalchemy.exc import (
     SQLAlchemyError,
 )
 from sqlalchemy.orm import declarative_base, scoped_session, sessionmaker
+from sqlalchemy.sql.elements import ClauseElement
 from tenacity import (
     retry,
     retry_if_exception,
@@ -781,8 +782,16 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
 
         """
         session = self._get_session_without_retry()
+        # bulk_save_objects binds plain values only, so a row carrying a SQL
+        # expression (gb_lineage_job's database-stamped recorded_at) goes through
+        # session.add, which renders it into the INSERT.
+        has_expression = any(
+            isinstance(value, ClauseElement)
+            for item_data in items
+            for value in item_data.values()
+        )
         try:
-            if len(items) > 5:
+            if len(items) > 5 and not has_expression:
                 batch_size = 100
                 batch_insert = []
                 for item_data in items:
@@ -795,7 +804,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                     session.bulk_save_objects(batch_insert)
             else:
                 for item_data in items:
-                    self.logger.info(f"_add: {item_data}")
+                    self.logger.debug(f"_add: {item_data}")
                     db_item = self._sql_alchemy_model(**item_data)
                     session.add(db_item)
             session.commit()

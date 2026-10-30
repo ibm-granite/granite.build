@@ -1022,3 +1022,60 @@ class TestMergeStampsRecordedAtAtomically:
         after = jobs.get_job("J1")
         assert after.tags == before.tags
         assert after.recorded_at == before.recorded_at
+
+
+def test_a_merged_entry_and_tags_are_one_update(sink, jobs, monkeypatch):
+    """The merge and the entry used to be two writes; a writer landing between
+    them saw, or overwrote, a half-merged record. Now they are one locked
+    update_fields call."""
+    first = job("t1", [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)])
+    sink._write_job(first, build_id="BLD", target_run_uuid="t1", extra_tags=["x=1"])
+    calls = []
+    original = type(jobs).update_fields
+
+    def counting(self, *args, **kwargs):
+        calls.append(args)
+        return original(self, *args, **kwargs)
+
+    # On the class: the storage is a pydantic model, so its instance is closed.
+    monkeypatch.setattr(type(jobs), "update_fields", counting)
+    second = job("t1", [artifact("a", LH_TABLE)], [artifact("c", LH_MODEL)])
+    sink._write_job(second, build_id="BLD", target_run_uuid="t1", extra_tags=["y=2"])
+    assert len(calls) == 1
+    stored = jobs.get_job("t1")
+    assert {"x=1", "y=2"} <= set(stored.tags)
+
+
+def test_a_merge_error_reaches_the_caller_as_itself(sink, jobs):
+    """update_fields wraps a callback's error in a generic ValueError; the merge's
+    own error is what the caller must see, to log and classify it."""
+    import pytest
+
+    from gbserver.lineage.merge import upsert_job
+
+    first = job("t2", [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)])
+    sink._write_job(first, build_id="BLD", target_run_uuid="t2")
+    stored = jobs.get_job("t2")
+
+    def boom(_stored, _fields):
+        raise KeyError("bad stored blob")
+
+    with pytest.raises(KeyError, match="bad stored blob"):
+        upsert_job(jobs, stored.model_copy(update={"tags": ["z=1"]}), extra_fields=boom)
+
+
+def test_an_unchanged_re_record_takes_no_locked_write(sink, jobs, monkeypatch):
+    """A re-record that adds nothing is one plain read, as before the merge moved
+    into update_fields."""
+    first = job("t3", [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)])
+    sink._write_job(first, build_id="BLD", target_run_uuid="t3")
+    calls = []
+    original = type(jobs).update_fields
+
+    def counting(self, *args, **kwargs):
+        calls.append(args)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(jobs), "update_fields", counting)
+    sink._write_job(first, build_id="BLD", target_run_uuid="t3")
+    assert calls == []

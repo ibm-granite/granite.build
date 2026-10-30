@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Annotated, Any, List, Optional, Tuple, Union, cast
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
@@ -35,6 +37,7 @@ from gbserver.api.utils import (
     split_tags,
 )
 from gbserver.lineage.jobstats import get_lineage_store
+from gbserver.lineage.lineage_reconciler import as_aware
 from gbserver.lineage.uri_normalize import normalize_uri
 from gbserver.spaces.hf_push_config import resolve_space_resource_group_id
 from gbserver.storage.artifact_registration import (
@@ -652,7 +655,14 @@ def _by_lineage_uri(storage, uri: str, **filters) -> List[ArtifactRegistration]:
     Opt-in because it scans the scoped registry and can resolve to a registration
     whose raw URI differs (``cos://`` vs ``s3://``), which a caller asking for an
     exact URI -- gbcli's ``get_artifact_uri`` -- must not get.
+
+    Normalization is memoized (:func:`_normalized`), so repeat clicks over the
+    same registry do not re-parse every URI. Several registrations can share one
+    identity; they come back in a fixed order -- not archived first, then newest
+    -- so a caller taking the first gets the same one every time.
     """
+    # The request's own uri is normalized once, uncached: it is caller-supplied
+    # and unbounded, so caching it would let any client fill the cache.
     wanted = normalize_uri(uri)
     if not wanted:
         return []
@@ -660,7 +670,40 @@ def _by_lineage_uri(storage, uri: str, **filters) -> List[ArtifactRegistration]:
         List[ArtifactRegistration],
         storage.artifact_registry.get_by_where(get_row_filter(uri="", **filters)),
     )
-    return [item for item in candidates if normalize_uri(item.uri or "") == wanted]
+    matches = [item for item in candidates if _normalized(item.uri or "") == wanted]
+    # Not archived first, then newest, then by uuid: one key, so the order reads
+    # directly and does not rest on two stable sorts.
+    matches.sort(
+        key=lambda item: (
+            not item.is_archived,
+            (
+                as_aware(item.created_at)
+                if item.created_at
+                else datetime.min.replace(tzinfo=timezone.utc)
+            ),
+            item.uuid or "",
+        ),
+        reverse=True,
+    )
+    return matches
+
+
+# Registry URIs longer than this are normalized uncached, so the cache stays
+# bounded in bytes, not just in entries (16k x 2 KiB, about 32 MiB at most).
+_MAX_CACHED_URI_LENGTH = 2048
+
+
+def _normalized(uri: str) -> str:
+    """:func:`normalize_uri`, memoized for registry URIs: it is pure, and the
+    registry repeats. Never for a request's own URI (see ``_by_lineage_uri``)."""
+    if len(uri) > _MAX_CACHED_URI_LENGTH:
+        return normalize_uri(uri)
+    return _normalized_cached(uri)
+
+
+@lru_cache(maxsize=16384)
+def _normalized_cached(uri: str) -> str:
+    return normalize_uri(uri)
 
 
 @artifacts_api.get("/tags")
