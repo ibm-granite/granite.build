@@ -35,6 +35,7 @@ def test_an_unused_instance_drops_the_table_without_retrying():
         StoredSpace(name="s1", git_repo_uri="file:///s1")
     )
     unused = SqliteStorageFactory().create_space_storage(table_name=TABLE)
+    assert unused._sql_alchemy_model is None  # pylint: disable=protected-access
 
     # Patch tenacity's time reference only (see test_sqlite_get_by_where_retry).
     with patch("tenacity.nap.time") as tenacity_time:
