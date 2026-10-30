@@ -2,6 +2,7 @@ from typing import Optional
 
 from tenacity import (
     retry,
+    retry_if_exception_type,
     retry_if_not_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -25,7 +26,8 @@ def _import_lakehouse_iceberg():
     wait=wait_exponential(multiplier=2, min=2, max=64),
     stop=stop_after_attempt(5),
     # A missing lakehouse library is permanent; don't spend ~30s backing off.
-    retry=retry_if_not_exception_type(ImportError),
+    # Keep the default Exception filter so KeyboardInterrupt isn't retried.
+    retry=retry_if_exception_type(Exception) & retry_if_not_exception_type(ImportError),
     reraise=True,
 )
 def create_lakehouse_iceberg(
