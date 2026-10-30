@@ -13,7 +13,11 @@ version: 0.1.0
 #   hle                        Humanity's Last Exam (text), pass@1 judge correct
 #   hle-tools                   Humanity's Last Exam (text) with tools, pass@1 judge correct
 #   hmmt-feb25                 HMMT Feb25, pass@1 symbolic correct
+#   human-eval                 HumanEval, pass@1 accuracy (upstream execution harness)
+#   human-eval-tools           HumanEval with a python tool, pass@1 accuracy
 #   livecodebench-v6            LiveCodeBench v6, pass@1 accuracy
+#   mbpp                       MBPP (sanitized), pass@1 accuracy
+#   mbpp-tools                 MBPP (sanitized) with a python tool, pass@1 accuracy
 #   mmlu-pro                   MMLU-Pro, 5-shot CoT symbolic correct
 #   omniscience                AA-Omniscience, pass@1 judge correct
 #   omniscience-hallucination    AA-Omniscience hallucination rate (lower is better)
@@ -97,9 +101,9 @@ config:
   tensor_parallel_size: "1"
   gpu_memory_utilization: "0.9"
   max_model_len: ""
-  # Shared enroot squashfs cache. Only critpt-tools, hle-tools, livecodebench-v6,
-  # ruler-* and scicode in this family sandbox; set this for those, leave empty
-  # (skips the setup below) for the rest.
+  # Shared enroot squashfs cache. Only critpt-tools, hle-tools, human-eval*,
+  # livecodebench-v6, mbpp*, ruler-* and scicode in this family sandbox; set this
+  # for those, leave empty (skips the setup below) for the rest.
   sandbox_cache: ""
   # Empty leaves the image's HF cache default alone.
   hf_home: ""

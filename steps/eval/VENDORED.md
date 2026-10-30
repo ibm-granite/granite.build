@@ -19,7 +19,7 @@ tests sit beside its modules at `<family>/tests/`:
 | `lmeval/src/`                | `chat_if` (mmlu-prox-lite)                                                    |
 | `mcpmark/src/`               | `mcpmark` (filesystem, postgres, playwright; upstream's own harness runs as a subprocess from the checkout `mcpmark/extras.sh` bakes with a side venv — it cannot live in this venv — and the service runtimes live in the family image; task state downloads at run time, never vendored) |
 | `nl2repo/src/`               | `nl2repo` (a port of unlicensed NL2RepoBench's harness; task data fetched at run start, never vendored) |
-| `nemoskills/src/`            | `nemo_skills_code`, `nemo_skills_extended`, `nemo_skills_ruler`, `scicode_prefill`, `tools_agentic` |
+| `nemoskills/src/`            | `nemo_skills_code`, `nemo_skills_codegen`, `nemo_skills_extended`, `nemo_skills_ruler`, `scicode_prefill`, `tools_agentic` |
 | `officeqa/src/`              | `officeqa` (a port of Databricks OfficeQA's Apache-2.0 scorer and page extraction; the gated CC-BY-SA-4.0 questions and corpus are fetched at run start, never vendored) |
 | `swebench/src/`              | `swebench`                                                                    |
 | `tau/src/`                   | `tau`                                                                         |

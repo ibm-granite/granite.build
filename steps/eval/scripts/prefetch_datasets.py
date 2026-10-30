@@ -72,6 +72,16 @@ DATASETS: dict[str, tuple[str, str, str] | tuple[str, str, str, tuple[str, ...]]
         "4510f6a6aa27c43fad7b43da2c59602a86e88480",
         "nemoskills",
     ),
+    "human-eval": (
+        "openai/openai_humaneval",
+        "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544",
+        "nemoskills",
+    ),
+    "mbpp": (
+        "google-research-datasets/mbpp",
+        "4bb6404fdc6cacfda99d4ac4205087b89d32030c",
+        "nemoskills",
+    ),
     "hle": ("cais/hle", "5a81a4c7271a2a2a312b9a690f0c2fde837e4c29", "nemoskills"),
     "omniscience": (
         "ArtificialAnalysis/AA-Omniscience-Public",

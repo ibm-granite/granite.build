@@ -1,7 +1,9 @@
-"""Tool benchmarks (hle-tools, critpt-tools, browsecomp, browsecomp-plus) and their tools, with
-fakes only: a tool-calling fake model, fake MCP search / web page / judge /
-CritPt API servers, and the python tool's ``unsafe-local`` sandbox (no
-container, so its network cannot be cut: ``python_network=on``)."""
+"""Tool benchmarks (hle-tools, critpt-tools, human-eval-tools, mbpp-tools,
+browsecomp, browsecomp-plus) and their tools, with fakes only: a tool-calling
+fake model, fake MCP search / web page / judge / CritPt API servers, and the
+python tool's ``unsafe-local`` sandbox (no container, so its network cannot be
+cut: ``python_network=on``; the codegen tools' grading runs there too, with
+``grade_network=on``)."""
 
 import asyncio
 import csv
@@ -42,6 +44,8 @@ def _cfg_file(tmp_path, **sections):
     [
         ("hle-tools", "pass@1 judge_correct", ["python", "search"]),
         ("critpt-tools", "Challenge Accuracy", ["python"]),
+        ("human-eval-tools", "pass@1 accuracy", ["python"]),
+        ("mbpp-tools", "pass@1 accuracy", ["python"]),
         ("browsecomp", "mean reward", ["search", "fetch"]),
         ("browsecomp-plus", "mean reward", ["search", "fetch"]),
     ],
@@ -665,3 +669,65 @@ def test_critpt_tools_needs_key_and_refuses_gold(ns, tmp_path, monkeypatch):
         b._submit([])
     with pytest.raises(SystemExit, match="no answers=gold"):
         bench("critpt-tools", tmp_path, options={"answers": "gold"}).run("", "")
+
+
+def _codegen_data(tmp_path):
+    """One ns-shaped HumanEval row (``nemo_skills_codegen``'s row shape)."""
+    rows = [
+        {
+            "task_id": "HumanEval/999",
+            "prompt": 'def add(a: int, b: int) -> int:\n    """Add two integers."""\n',
+            "canonical_solution": "    return a + b\n",
+            "test": "def check(candidate):\n    assert candidate(2, 3) == 5\n    assert candidate(-1, 1) == 0\n",
+            "entry_point": "add",
+            "question": 'def add(a: int, b: int) -> int:\n\t"""Add two integers."""\n',
+        }
+    ]  # fmt: skip
+    p = tmp_path / "codegen.jsonl"
+    nsb._write_jsonl(p, rows)
+    return p
+
+
+def test_human_eval_tools_end_to_end_with_python(ns, tmp_path):
+    """The model runs code with the python tool, then answers; the final
+    answer's fenced block is the completion the grading harness runs."""
+    plan = [("stateful_python_code_exec", {"code": "2 + 3"})]
+
+    def answer(msgs):
+        tool_out = [m["content"] for m in msgs if m.get("role") == "tool"]
+        assert tool_out[0] == "5"
+        return "```python\n    return a + b\n```"
+
+    with _ToolModel(plan, answer) as model:
+        opts = {
+            "sandbox": "unsafe-local",
+            "python_network": "on",
+            "python_packages": "none",
+            "grade_network": "on",
+        }
+        b = bench(
+            "human-eval-tools",
+            tmp_path / "out",
+            dataset=str(_codegen_data(tmp_path)),
+            options=opts,
+        )
+        r = b.run(model.base_url, "fake")
+    assert (r["value"], r["n"]) == (1.0, 1)
+    gen = _rows(tmp_path / "out" / "generation" / "output-rs0.jsonl")
+    assert (
+        gen[0]["num_tool_calls"] == 1
+        and gen[0]["is_correct"]
+        and gen[0]["grade_status"] == "passed"
+    )
+    assert (
+        "Here is a problem" in model.requests[0]["messages"][0]["content"]
+    )  # ns's codegen prompt
+    assert {t["function"]["name"] for t in model.requests[0]["tools"]} == {
+        "stateful_python_code_exec"
+    }
+    assert r["tools"]["enabled"] == ["python"] and r["tools"]["calls"]["total"] == 1
+    assert r["tools"]["python_sandbox"]["ready"]  # the python tool's own sandbox
+    assert (
+        r["grading_sandbox"]["network_isolation"] == "not requested"
+    )  # the grading one
+    assert r["grading_sandbox"]["graded"] == 1

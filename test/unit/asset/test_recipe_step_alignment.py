@@ -16,7 +16,7 @@
 
 """The eval recipes mirror the step tree: recipes/evals/<family>/<benchmark>/skypilot.
 
-The 41 benchmark recipes live under ``recipes/evals/<family>/<benchmark>/skypilot/``,
+The 58 benchmark recipes live under ``recipes/evals/<family>/<benchmark>/skypilot/``,
 one per benchmark, grouped by the step family that runs it — mirroring
 ``steps/eval/<family>/skypilot/`` so the step <-> recipe mapping is structural.
 A recipe that referenced another family's step would still run, but the grouping

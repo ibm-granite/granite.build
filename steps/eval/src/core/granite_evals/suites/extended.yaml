@@ -35,6 +35,10 @@ benchmarks:
   - {id: omniscience, group: reasoning, name: Omniscience, metric: pass@1 judge_correct}
   - {id: livecodebench-v6, group: reasoning, name: LiveCodeBench v6, metric: "pass@1 accuracy"}
   - {id: scicode, group: reasoning, name: SciCode (subtask), metric: "pass@1 subtask accuracy"}
+  - {id: human-eval, group: reasoning, name: HumanEval (no tools), metric: "pass@1 accuracy"}
+  - {id: human-eval-tools, group: reasoning, name: HumanEval (with tools), metric: "pass@1 accuracy"}
+  - {id: mbpp, group: reasoning, name: MBPP (no tools), metric: "pass@1 accuracy"}
+  - {id: mbpp-tools, group: reasoning, name: MBPP (with tools), metric: "pass@1 accuracy"}
   - {id: hle, group: reasoning, name: HLE (no tools), metric: pass@1 judge_correct}
   - {id: hle-tools, group: reasoning, name: HLE (with tools), metric: pass@1 judge_correct}
   - {id: critpt, group: reasoning, name: CritPt (no tools), metric: Challenge Accuracy}

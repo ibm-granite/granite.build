@@ -34,9 +34,13 @@ steps:
 | `hle` | pass@1 judge correct | NeMo-Skills' `text` split of `cais/hle` (no-image questions); the official HLE judge prompt |
 | `hle-tools` | pass@1 judge correct | as `hle`, plus a stateful python tool (enroot sandbox, network off) and web search via the IBM Google PSE MCP server |
 | `hmmt-feb25` | pass@1 symbolic correct | |
+| `human-eval` | pass@1 accuracy | `openai/openai_humaneval` (164 problems, MIT); scored by a port of HumanEval's own execution harness (openai/human-eval @ 37c4dd63) in an enroot sandbox (python:3.13-bookworm, network off) |
+| `human-eval-tools` | pass@1 accuracy | as `human-eval`, plus a stateful python tool (enroot sandbox) for scratch work while writing the function |
 | `imo-answerbench` | pass@1 judge correct | google-deepmind/superhuman's IMO AnswerBench (400 short-answer problems, CSV fetched from a commit-pinned URL); NeMo-Skills' IMO AnswerBench judge prompt |
 | `livecodebench-v6` | pass@1 accuracy | 454 problems, release v6 (`test_v6_2408_2505`, contests 2024-08 to 2025-05); graded with the pinned `livecodebench` package in the job container |
 | `math-500` | pass@1 symbolic correct | OpenAI's MATH-500 (the prm800k test subset, 500 problems), fetched from a commit-pinned URL at run time |
+| `mbpp` | pass@1 accuracy | `google-research-datasets/mbpp` config `sanitized` (257 manually-verified problems, CC-BY-4.0); scored by the same ported HumanEval execution harness in an enroot sandbox (network off) |
+| `mbpp-tools` | pass@1 accuracy | as `mbpp`, plus a stateful python tool (enroot sandbox) for scratch work while writing the function |
 | `mmlu-pro` | 5-shot CoT symbolic correct | |
 | `omniscience` | pass@1 judge correct | `ArtificialAnalysis/AA-Omniscience-Public`, 600 questions; judge: A correct, B incorrect, C partial, D not attempted |
 | `omniscience-hallucination` | pass@1 judge_omni_hallucination (lower is better) | same pipeline as `omniscience`; hallucination rate = incorrect / (incorrect + partial + not attempted). `options: generations_from=<omniscience output dir>` re-scores that run instead of generating again |
@@ -62,7 +66,7 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `options` | Space-separated `key=value` benchmark options. Common: `temperature`, `top_p`, `top_k`, `max_tokens`, `ns.<key>=<value>` (any NeMo-Skills generation override), `answers=gold` (reference answers through the same grading; `model_path` may be `none`). Benchmark-specific options exist for several of the above — see each benchmark's own granite-evals docs. |
 | `phase` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`granite_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json`. |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | vLLM. Several RULER sizes and `aa-lcr` need a non-default `max_model_len` — see the table above. |
-| `sandbox_cache` | Shared squashfs cache. Only `critpt-tools`, `hle-tools`, `livecodebench-v6`, `ruler-*` and `scicode` in this family sandbox; set this for those, leave empty for the rest. |
+| `sandbox_cache` | Shared squashfs cache. Only `critpt-tools`, `hle-tools`, `human-eval*`, `livecodebench-v6`, `mbpp*`, `ruler-*` and `scicode` in this family sandbox; set this for those, leave empty for the rest. |
 | `hf_home` | Overrides `HF_HOME`. |
 
 GPUs, queue and memory come from the target's `launcher_config.resources`. The step
