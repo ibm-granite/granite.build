@@ -372,7 +372,7 @@ click's captured file descriptors.
 |---|---|---|
 | environment | `skypilot/aws` | `skypilot/slurm/ibm-bluevela` |
 | image | quay.io ref, pulled at launch | registry ref, cached as a shared `.sqsh` (`slurm_image_cache`) |
-| base model | `hf:///HuggingFaceTB/SmolLM2-135M-Instruct` | same |
+| base model | `hf:///HuggingFaceTB/SmolLM2-135M-Instruct` | `hf:///HuggingFaceTB/SmolLM2-135M` with `args.chat_template_path: HuggingFaceTB/SmolLM2-135M-Instruct`. The Instruct repo also ships 1.7 GB of onnx exports, and BlueVela's hfpull (1 GiB cpu-partition cgroup, whole-repo parallel download) is OOM-killed on it; the base repo is 272 MB with the same vocab |
 | target 1 | `qlora`, `ddp`, `A10G:1` | `lora`, `fsdp`, `H200:2`, `memory: "128"` |
 | target 2 | `alora`, `ddp`, `A10G:1`, invocation `<\|im_start\|>assistant` | `qlora`, `deepspeed`, `H200:2`, `memory: "128"` |
 | data | `dataset_name: trl-lib/Capybara` (both) | target 1: bound `dataset` (`hf:///datasets/trl-lib/Capybara`); target 2: `dataset_name` |

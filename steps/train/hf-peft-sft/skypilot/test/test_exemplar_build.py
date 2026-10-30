@@ -135,6 +135,23 @@ def test_fixtures_cover_every_method_and_sharding_mode():
     }
 
 
+def test_bluevela_fixture_stages_a_small_base_model():
+    # BlueVela's hfpull runs in the cpu partition's 1 GiB cgroup (gbserver drops
+    # compute_config memory on slurm) and downloads the whole repo with parallel
+    # workers. SmolLM2-135M-Instruct also ships 1.7 GB of onnx exports and is
+    # OOM-killed there (probe jobs 563715/563716); the base repo is 272 MB. The
+    # Instruct chat template is cloned at train time instead (same vocab).
+    for target in _targets("slurm-bluevela/build.yaml"):
+        assert (
+            target["inputs"]["base_model"]["uri"] == "hf:///HuggingFaceTB/SmolLM2-135M"
+        )
+        cfg = _cfg(target)
+        assert cfg["base_model_id"] == "HuggingFaceTB/SmolLM2-135M"
+        assert (
+            cfg["args"]["chat_template_path"] == "HuggingFaceTB/SmolLM2-135M-Instruct"
+        )
+
+
 def test_bluevela_fixture_matches_the_environment():
     repo = _HERE.parents[4]
     env = yaml.safe_load(

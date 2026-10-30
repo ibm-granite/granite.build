@@ -5,12 +5,16 @@ granite.build:
   # runs under Pyxis from the shared .sqsh cache, LoRA trains under FSDP on a
   # BOUND dataset and QLoRA under DeepSpeed ZeRO-3 on HF-id data, ClearML tracks
   # in offline mode, and each `adapter` artifact is registered.
+  #
+  # The base model is SmolLM2-135M, not -Instruct as on aws: BlueVela's hfpull runs
+  # in a 1 GiB cpu-partition cgroup and pulls the whole repo, and the Instruct repo's
+  # 1.7 GB of onnx exports get it OOM-killed. TRL clones the Instruct chat template.
   targets:
     lora-fsdp:
       environment_uri: space://environments/skypilot/slurm/ibm-bluevela
       inputs:
         base_model:
-          uri: hf:///HuggingFaceTB/SmolLM2-135M-Instruct
+          uri: hf:///HuggingFaceTB/SmolLM2-135M
         # SLURM-SPECIFIC: data as a bound, staged dataset dir.
         dataset:
           uri: hf:///datasets/trl-lib/Capybara
@@ -34,11 +38,14 @@ granite.build:
               method: lora
               distributed: fsdp
               dataset_split: "train[:64]"
-              base_model_id: HuggingFaceTB/SmolLM2-135M-Instruct
+              base_model_id: HuggingFaceTB/SmolLM2-135M
               clearml_enabled: true
               clearml_project: gbtest-hf-peft-sft
               # Same args in both targets (inlined, not a YAML anchor).
               args:
+                # The base repo has no chat template; clone the Instruct one
+                # (same 49152-token vocab, so no tokens are added).
+                chat_template_path: HuggingFaceTB/SmolLM2-135M-Instruct
                 max_steps: 3
                 max_length: 1024
                 per_device_train_batch_size: 1
@@ -49,7 +56,7 @@ granite.build:
       environment_uri: space://environments/skypilot/slurm/ibm-bluevela
       inputs:
         base_model:
-          uri: hf:///HuggingFaceTB/SmolLM2-135M-Instruct
+          uri: hf:///HuggingFaceTB/SmolLM2-135M
       outputs:
         adapter:
           uri: "env:///adapter"
@@ -69,10 +76,13 @@ granite.build:
               distributed: deepspeed
               dataset_name: trl-lib/Capybara
               dataset_split: "train[:64]"
-              base_model_id: HuggingFaceTB/SmolLM2-135M-Instruct
+              base_model_id: HuggingFaceTB/SmolLM2-135M
               clearml_enabled: true
               clearml_project: gbtest-hf-peft-sft
               args:
+                # The base repo has no chat template; clone the Instruct one
+                # (same 49152-token vocab, so no tokens are added).
+                chat_template_path: HuggingFaceTB/SmolLM2-135M-Instruct
                 max_steps: 3
                 max_length: 1024
                 per_device_train_batch_size: 1
