@@ -21,12 +21,15 @@ Abstract interface for lineage storage and singleton accessor.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Callable, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, Optional, Tuple
 
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.singleton_storage import SingletonAdminStorage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
+
+if TYPE_CHECKING:
+    from gbserver.lineage.mem_artifacts import LineageView
 
 
 class ILineageStore(ABC):
@@ -50,7 +53,11 @@ class ILineageStore(ABC):
 
     @abstractmethod
     def add_jobstats_for_build_target(
-        self, storage: SingletonAdminStorage, build_id: str, target_id: str
+        self,
+        storage: SingletonAdminStorage,
+        build_id: str,
+        target_id: str,
+        view: Optional["LineageView"] = None,
     ) -> None: ...
 
     @abstractmethod
@@ -64,6 +71,7 @@ class ILineageStore(ABC):
         storage: SingletonAdminStorage,
         targetrun: StoredTargetRun,
         build: Optional[StoredBuild] = None,
+        view: Optional["LineageView"] = None,
     ) -> Tuple: ...
 
     @abstractmethod

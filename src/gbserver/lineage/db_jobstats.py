@@ -45,7 +45,7 @@ ignored.
 """
 
 import logging
-from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from gbserver.lineage.attributes import (
     build_job_attributes,
@@ -61,6 +61,9 @@ from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_lineage_job import StoredLineageJob
 from gbserver.storage.stored_lineage_row import JobStore
 from gbserver.storage.stored_target_run import StoredTargetRun
+
+if TYPE_CHECKING:
+    from gbserver.lineage.mem_artifacts import LineageView
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +159,11 @@ class DBLineageStore(ILineageStore):
             self._record_target(storage, build, target)
 
     def add_jobstats_for_build_target(
-        self, storage: SingletonAdminStorage, build_id: str, target_id: str
+        self,
+        storage: SingletonAdminStorage,
+        build_id: str,
+        target_id: str,
+        view: Optional["LineageView"] = None,
     ) -> None:
         """Record one target of a build -- the single recording leaf.
 
@@ -174,7 +181,7 @@ class DBLineageStore(ILineageStore):
             raise ValueError(f"Zero targets found in build with id {build_id}")
 
         for target in targets:
-            self._record_target(storage, build, target)
+            self._record_target(storage, build, target, view)
 
     def add_jobstats_for_original_artifact(
         self,
@@ -208,8 +215,13 @@ class DBLineageStore(ILineageStore):
         storage: SingletonAdminStorage,
         build: StoredBuild,
         target: StoredTargetRun,
+        view: Optional["LineageView"] = None,
     ) -> None:
-        """Decompose one target run's job entries into rows and store them."""
+        """Decompose one target run's job entries into rows and store them.
+
+        ``view`` is the target's lineage view when the reconciler already
+        resolved it; passing it on avoids a second artifact-registry read.
+        """
         if not isinstance(target, StoredTargetRun):
             return
 
@@ -231,7 +243,7 @@ class DBLineageStore(ILineageStore):
             logger.debug("Target run %s already has a lineage job record", target.uuid)
             return
 
-        events, _ = self.create_jobstats_for_target(storage, target, build)
+        events, _ = self.create_jobstats_for_target(storage, target, build, view)
         if not events:
             return
         # All of the target's events (one per output) in ONE write: presence of
@@ -439,6 +451,7 @@ class DBLineageStore(ILineageStore):
         storage: SingletonAdminStorage,
         targetrun: StoredTargetRun,
         build: Optional[StoredBuild] = None,
+        view: Optional["LineageView"] = None,
     ) -> Tuple[List[dict], Dict[str, List[dict]]]:
         """Build the job entries for a target run.
 
@@ -452,11 +465,12 @@ class DBLineageStore(ILineageStore):
         # self -- so no W&B instance (and no wandb import) is needed. Passing None
         # rather than binding makes that dependency explicit and fails loudly if a
         # future edit starts reaching for instance state.
-        return WandBLineageStore._build_events_for_target(
-            None,
+        return WandBLineageStore._build_events_for_target(  # pylint: disable=protected-access
+            None,  # type: ignore[arg-type]
             storage,
             self._require_build_of(storage, targetrun, build),
             targetrun,
+            view,
         )
 
     def create_jobstats_for_original_artifact(
@@ -467,7 +481,9 @@ class DBLineageStore(ILineageStore):
         """Build the job entry for a registered artifact. See above for delegation."""
         from gbserver.lineage.wandb_jobstats import WandBLineageStore
 
-        return WandBLineageStore._build_event_for_artifact(None, artifact, sources)
+        return WandBLineageStore._build_event_for_artifact(  # pylint: disable=protected-access
+            None, artifact, sources  # type: ignore[arg-type]
+        )
 
     # -- Completeness queries -----------------------------------------------
 

@@ -29,6 +29,7 @@ records nothing at all rather than being seeded implicitly.
 """
 
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -53,11 +54,11 @@ _BASE = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 def _target(
     build_id: str,
     uuid: str,
-    finished_at: datetime = None,
+    finished_at: Optional[datetime] = None,
     name: str = "",
 ) -> StoredTargetRun:
     # Default ``name`` to ``uuid`` so each distinct uuid is a distinct *logical*
-    # target: select_recordable_targets dedupes SUCCESS runs by name (in-place
+    # target: select_recordable_views dedupes SUCCESS runs by name (in-place
     # retry can leave more than one SUCCESS run for one logical target), so
     # targets sharing a name collapse to one. These tests use distinct uuids to
     # mean distinct targets; pass ``name`` explicitly to model two runs of one.
@@ -69,7 +70,7 @@ def _target(
         status=Status.SUCCESS,
         finished_at=finished_at if finished_at is not None else _BASE,
         # One output artifact so the target is recordable: these tests exercise
-        # watcher/checkpoint mechanics, and select_recordable_targets drops
+        # watcher/checkpoint mechanics, and select_recordable_views drops
         # targets with no input and no output artifacts. The uuid need not
         # resolve in the registry -- nothing here reads the artifact itself.
         output_artifacts={"out0": [f"artifact-{uuid}"]},
@@ -93,13 +94,17 @@ class _StubStore:
     """Lineage store stub: records into a set, dedupes per-sink, can be told to
     fail specific targets or to fail the dedup query itself."""
 
-    def __init__(self, fail: set = None, query_error: Exception = None):
+    def __init__(
+        self, fail: Optional[set] = None, query_error: Optional[Exception] = None
+    ):
         self._recorded: set = set()
         self._fail: set = set(fail or set())
         self.query_error = query_error
         self.calls: list = []
 
-    def add_jobstats_for_build_target(self, storage, build_id, target_id):
+    def add_jobstats_for_build_target(
+        self, storage, build_id, target_id, view=None
+    ):  # pylint: disable=unused-argument
         if target_id in self._fail:
             raise RuntimeError("boom")
         self.calls.append((build_id, target_id))
@@ -209,11 +214,11 @@ class TestLineageWatcher:
         return None if value is None else value.get("build_id")
 
     def _make_watcher(
-        self, fail: set = None, query_error: Exception = None
+        self, fail: Optional[set] = None, query_error: Optional[Exception] = None
     ) -> tuple[LineageWatcher, _StubStore]:
         watcher = LineageWatcher()
         store = _StubStore(fail=fail, query_error=query_error)
-        watcher._store = store
+        watcher._store = store  # type: ignore[assignment]
         return watcher, store
 
     def _three_builds(self, middle_status: Status) -> tuple[str, str, str]:

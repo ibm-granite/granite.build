@@ -656,3 +656,24 @@ def test_add_replacing_deletes_nothing_when_the_add_conflicts(storage):
     with pytest.raises(IntegrityError):
         storage.add_replacing(row(job_id="J"), [terminal.uuid])
     assert len(storage.get_rows_by_job("J")) == 2
+
+
+def test_purge_scheme_drops_mem_endpoints_and_keeps_real_artifacts(storage):
+    """#561: rows indexed before mem:// was excluded. A real side left with no row
+    becomes a terminal row; jobs without mem:// are untouched."""
+    storage.add(row(job_id="J1", input="s3://b/in", output="mem://svc"))
+    storage.add(row(job_id="J2", input="s3://b/in", output="mem://svc"))
+    storage.add(row(job_id="J2", input="s3://b/in", output="s3://b/out"))
+    storage.add(row(job_id="J3", input="MEM://k", output="s3://b/out2"))
+    storage.add(row(job_id="J4", input="s3://b/x", output="s3://b/y"))
+
+    assert storage.purge_scheme("mem") == (3, 2)
+
+    def pairs(job_id):
+        return sorted((r.input, r.output) for r in storage.get_rows_by_job(job_id))
+
+    assert pairs("J1") == [("s3://b/in", TERMINAL)]
+    assert pairs("J2") == [("s3://b/in", "s3://b/out")]
+    assert pairs("J3") == [(TERMINAL, "s3://b/out2")]
+    assert pairs("J4") == [("s3://b/x", "s3://b/y")]
+    assert storage.purge_scheme("mem") == (0, 0)

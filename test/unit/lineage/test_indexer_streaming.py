@@ -24,6 +24,10 @@ import pytest
 from gbserver.lineage import indexer as idx
 from gbserver.storage.stored_target_run import StoredTargetRun
 
+# The registry resolves nothing, so lineage_view keeps every uuid as-is: these
+# tests are about the scan, not mem:// filtering (see test_mem_artifacts).
+_NO_ARTIFACTS = SimpleNamespace(get_by_uuid=lambda uuid: None)
+
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 KEY = idx._checkpoint_key_for_provider("none")
 
@@ -99,11 +103,11 @@ class _TargetStore:
 
 def _run_scan(targets, checkpoint=None, index_side_effect=None, every=3):
     store = _TargetStore(targets)
-    storage = SimpleNamespace(kv_pair_storage=_KV())
+    storage = SimpleNamespace(kv_pair_storage=_KV(), artifact_registry=_NO_ARTIFACTS)
     if checkpoint:
         storage.kv_pair_storage.values[KEY] = dict(checkpoint)
     sink = MagicMock()
-    sink.create_jobstats_for_target.side_effect = lambda s, t, build=None: (
+    sink.create_jobstats_for_target.side_effect = lambda s, t, build=None, view=None: (
         [{"job_id": t.uuid}],
         {},
     )
@@ -151,9 +155,9 @@ def test_unsettled_target_stops_the_scan_and_later_batches_are_never_loaded():
     for i, t in enumerate(later):
         t.finished_at = now + timedelta(minutes=i + 1)
     store = _TargetStore(targets + [fresh] + later)
-    storage = SimpleNamespace(kv_pair_storage=_KV())
+    storage = SimpleNamespace(kv_pair_storage=_KV(), artifact_registry=_NO_ARTIFACTS)
     sink = MagicMock()
-    sink.create_jobstats_for_target.side_effect = lambda s, t, build=None: (
+    sink.create_jobstats_for_target.side_effect = lambda s, t, build=None, view=None: (
         [{"job_id": t.uuid}],
         {},
     )
@@ -200,9 +204,9 @@ def test_a_transient_load_failure_keeps_the_checkpoint_where_indexing_reached():
             raise OperationalError("database is locked")
         return store.by_uuid(storage, uuids)
 
-    storage = SimpleNamespace(kv_pair_storage=_KV())
+    storage = SimpleNamespace(kv_pair_storage=_KV(), artifact_registry=_NO_ARTIFACTS)
     sink = MagicMock()
-    sink.create_jobstats_for_target.side_effect = lambda s, t, build=None: (
+    sink.create_jobstats_for_target.side_effect = lambda s, t, build=None, view=None: (
         [{"job_id": t.uuid}],
         {},
     )
@@ -227,11 +231,11 @@ def test_a_target_deleted_after_listing_is_passed_over():
     store = _TargetStore(targets)
     listed = store.page(None, 0, None)
     del store.targets["t1"]
-    storage = SimpleNamespace(kv_pair_storage=_KV())
+    storage = SimpleNamespace(kv_pair_storage=_KV(), artifact_registry=_NO_ARTIFACTS)
     rows = MagicMock()
     rows.index_job_entry.return_value = True
     sink = MagicMock()
-    sink.create_jobstats_for_target.side_effect = lambda s, t, build=None: (
+    sink.create_jobstats_for_target.side_effect = lambda s, t, build=None, view=None: (
         [{"job_id": t.uuid}],
         {},
     )
