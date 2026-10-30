@@ -110,8 +110,15 @@ def check_invocation(rows: list[list[int]], tokens: list[int]) -> list[int]:
 
 
 def use_reentrant(method: str, distributed: str, world_size: int) -> bool:
-    """peft's examples: reentrant only for QLoRA outside multi-process DDP."""
-    return method == "qlora" and not (distributed == "ddp" and world_size > 1)
+    """Reentrant under DeepSpeed; otherwise only for QLoRA outside multi-process DDP.
+
+    The non-DeepSpeed rule follows peft's examples. Under DeepSpeed, TRL's
+    SFTTrainer forces use_reentrant=True for PEFT + ZeRO-3 (and warns), so the
+    step picks True there rather than have its value silently overridden.
+    """
+    return distributed == "deepspeed" or (
+        method == "qlora" and not (distributed == "ddp" and world_size > 1)
+    )
 
 
 def lora_kwargs(
