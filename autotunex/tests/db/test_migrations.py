@@ -351,3 +351,15 @@ def test_a_gb_task_inserted_without_a_status_is_pending(tmp_path: Path) -> None:
         )
         status = connection.execute(text("SELECT status FROM gb_tasks")).scalar_one()
     assert status == "PENDING"
+
+
+def test_alembic_check_finds_no_drift_at_head(tmp_path: Path) -> None:
+    """The ORM and the migrations build the same schema, server defaults included.
+
+    ``alembic/env.py`` sets ``compare_server_default``, so a ``server_default``
+    added to the ORM without a migration fails here. ``make migrations-check``
+    runs the same command but is not part of ``make check``.
+    """
+    database = tmp_path / "check.db"
+    _alembic(database, "upgrade", "head")
+    _alembic(database, "check")
