@@ -75,10 +75,12 @@ class Dataset:
     def find_or_create(
         self, name: str, artifact_uri: str, user_id: str, data_format: str | None = None
     ) -> str:
-        """Return a dataset id, reusing a (name, artifact_url) match or creating one.
+        """Return a dataset id, reusing an existing row or creating one.
 
-        Mirrors the prior client behavior: match on name AND artifact_url; if no
-        match, register the dataset and attach the artifact metadata. A
+        Reuses, in order: the row whose own app push ``artifact_uri`` names (see
+        :func:`_app_pushed_row`), whatever the run called it; then a row matching
+        name AND artifact_url. With no match, register the dataset and attach the
+        artifact metadata. A
         ``data_format`` outside :data:`DATA_FORMATS` is dropped (the column default,
         jsonl, applies), so the main service never reads a format it rejects. The
         format applies only to a new row: a reused one can be shared (SYSTEM_USER)
