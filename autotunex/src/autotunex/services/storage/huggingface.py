@@ -359,9 +359,11 @@ class HuggingFaceStorageBackend:
             if not self._hf_preview_enabled:
                 logger.debug("HF preview disabled; returning empty for %s.", dataset_id)
                 return empty
-            repo_id = repo_id_from_artifact_url(artifact_url)
+            repo_id = repo_id_from_artifact_url(artifact_url, default_host_only=True)
             if repo_id is None:
-                logger.debug("No hf:// locator for %s; returning empty preview.", dataset_id)
+                logger.debug(
+                    "No huggingface.co locator for %s; returning empty preview.", dataset_id
+                )
                 return empty
             if not self._is_own_push(repo_id, dataset_id):
                 logger.debug(
