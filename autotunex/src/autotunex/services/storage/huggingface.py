@@ -48,7 +48,9 @@ import httpx
 from autotunex.core.exceptions import DatasetPushFailedError, DatasetPushTimeoutError
 from autotunex.core.logging import get_logger
 from autotunex.models.dataset import DatasetPreview
+from autotunex.services.storage.hf_hub import token_for
 from autotunex.services.storage.hf_viewer import (
+    HFViewerInaccessible,
     HFViewerUnavailable,
     discover_config,
     fetch_rows,
@@ -94,6 +96,7 @@ class HuggingFaceStorageBackend:
         hf_token_env: str,
         gb_token_env: str,
         hf_namespace: str | None,
+        hf_import_namespaces: list[str],
         hf_preview_enabled: bool,
         hf_viewer_base_url: str,
         hf_viewer_timeout_seconds: float,
@@ -105,6 +108,7 @@ class HuggingFaceStorageBackend:
         self._hf_token_env = hf_token_env
         self._gb_token_env = gb_token_env
         self._hf_namespace = hf_namespace
+        self._hf_import_namespaces = hf_import_namespaces
         self._hf_preview_enabled = hf_preview_enabled
         self._hf_viewer_base_url = hf_viewer_base_url
         self._hf_viewer_timeout_seconds = hf_viewer_timeout_seconds
@@ -115,9 +119,25 @@ class HuggingFaceStorageBackend:
         self._http_client = http_client
 
     def _artifact_name(self, dataset_id: UUID, name: str) -> str:
-        """Derive the artifact name ``[<namespace>/]<name>_<id[:8]>`` (2025 shape)."""
-        base = f"{name}_{str(dataset_id)[:8]}"
-        return f"{self._hf_namespace}/{base}" if self._hf_namespace else base
+        """Derive the artifact name ``<name>_<id[:8]>`` (2025 shape).
+
+        The org, when set, is passed separately (``--hf-organization``): llmb
+        rejects a ``/`` in an artifact name.
+        """
+        return f"{name}_{str(dataset_id)[:8]}"
+
+    def _is_own_push(self, repo_id: str, dataset_id: UUID) -> bool:
+        """Whether ``repo_id`` is the repo this backend pushed for ``dataset_id``.
+
+        That is ``<name>_<dataset id[:8]>`` (see :meth:`_artifact_name`), under
+        whichever org the push used: the stored locator records it, so changing
+        ``hf_namespace`` later does not disown earlier pushes. Only that repo may be
+        read with the HF token, and only when ``hf_import_namespaces`` allows its
+        owner: a stored locator can come from a caller (the api-bridge registers
+        whatever a run reports), and one cannot name the random id of a row before
+        it exists.
+        """
+        return repo_id.rpartition("/")[2].endswith(f"_{str(dataset_id)[:8]}")
 
     async def persist(
         self,
@@ -200,6 +220,9 @@ class HuggingFaceStorageBackend:
                 "hf",
                 "--certify-no-restrictions",
             ]
+            # Unset, gbcli pushes to the GB environment's own hf_organization.
+            if self._hf_namespace is not None:
+                args += ["--hf-organization", self._hf_namespace]
             # An empty/whitespace-only setting means "no tags": omit --tag rather
             # than pass an empty value the CLI would reject.
             if self._tags.strip():
@@ -321,54 +344,69 @@ class HuggingFaceStorageBackend:
         """Best-effort bounded preview from the HuggingFace dataset viewer.
 
         Reads at most ``rows`` rows per split from ``datasets-server.huggingface.co``
-        using the dataset's stored ``hf://`` ``artifact_url``. Every failure mode —
-        disabled, an underivable or foreign locator, a missing token, or a viewer
-        that is unavailable or still precomputing — degrades to an empty (or
-        partial) preview. This method never raises: a preview must never fail a
-        metadata read.
+        using the dataset's stored ``hf://`` ``artifact_url``. Only this row's own
+        push (:meth:`_is_own_push`) is read with the HF token, and only when its owner
+        is in ``hf_import_namespaces`` (``hf_hub.token_for``, the rule imports use; an
+        empty list means never). The app's pushes are private, so the push org must be
+        listed for them to preview. Any other repo — e.g. a public dataset a training
+        run registered through the bridge — is read anonymously, so a locator a caller
+        supplied never borrows the token (a private, gated or missing foreign repo then
+        simply has no preview, reported ``viewer_ready=True`` since waiting will not
+        change that). Without the token, a public repo still previews. Every failure mode —
+        disabled, an underivable locator, or a viewer that is unavailable or still
+        precomputing — degrades to an empty (or partial) preview. This method never
+        raises: a preview must never fail a metadata read.
         """
         empty = DatasetPreview(train=[], validation=[])
         try:
             if not self._hf_preview_enabled:
                 logger.debug("HF preview disabled; returning empty for %s.", dataset_id)
                 return empty
-            repo_id = repo_id_from_artifact_url(artifact_url)
+            repo_id = repo_id_from_artifact_url(artifact_url, default_host_only=True)
             if repo_id is None:
-                logger.debug("No hf:// locator for %s; returning empty preview.", dataset_id)
+                logger.debug(
+                    "No huggingface.co locator for %s; returning empty preview.", dataset_id
+                )
                 return empty
-            expected_suffix = f"_{str(dataset_id)[:8]}"
-            if not repo_id.rsplit("/", 1)[-1].endswith(expected_suffix):
-                logger.warning(
-                    "HF locator %s does not belong to dataset %s; returning empty preview.",
+            if not self._is_own_push(repo_id, dataset_id):
+                logger.debug(
+                    "HF locator %s is not dataset %s's own push; reading it anonymously.",
                     repo_id,
                     dataset_id,
                 )
-                return empty
-            token = os.environ.get(self._hf_token_env)
-            if not token:
+                return await self._preview_from_viewer(repo_id, None, rows)
+            env_token = os.environ.get(self._hf_token_env) or None
+            if env_token is None:
+                # Still worth an anonymous read: the repo may be public.
                 logger.warning(
-                    "%s not set; cannot read HF preview for %s.",
+                    "%s not set; reading the HF preview for %s anonymously.",
                     self._hf_token_env,
                     dataset_id,
                 )
-                return empty
+            token = token_for(repo_id, token=env_token, namespaces=self._hf_import_namespaces)
             return await self._preview_from_viewer(repo_id, token, rows)
         except Exception:
             logger.exception("Unexpected HF preview failure for %s; returning empty.", dataset_id)
             return empty
 
-    async def _preview_from_viewer(self, repo_id: str, token: str, rows: int) -> DatasetPreview:
+    async def _preview_from_viewer(
+        self, repo_id: str, token: str | None, rows: int
+    ) -> DatasetPreview:
         """Discover the config via ``/splits``, then fetch ``train``/``validation`` rows.
 
         ``/splits`` is queried first: it yields the repo's real config (subset)
         name and is the viewer's authoritative "is this dataset precomputed"
-        signal. If it is unavailable — down, or still precomputing — the whole
+        signal. A refusal (401/403/404) is final, with or without the token: the
+        preview is empty with ``viewer_ready=True``. If ``/splits`` is otherwise
+        unavailable — down, or still precomputing — the whole
         preview is reported ``viewer_ready=False`` and no ``/rows`` fetch is
         attempted (the rows cannot exist yet). Otherwise the two splits are fetched
         concurrently with the discovered config; a single failed split degrades to
         ``[]`` while the other still shows, and ``viewer_ready`` stays ``True``
         unless *both* splits were unavailable — a fully-empty preview caused by the
-        viewer, not by a genuinely empty dataset.
+        viewer, not by a genuinely empty dataset. A refused split (401/403/404) is
+        final: two refusals are ``viewer_ready=True``, while a refusal beside a split
+        that failed transiently stays ``False``.
 
         Uses the injected client when present (tests), else opens a short-lived one
         bounded by ``hf_viewer_timeout_seconds`` and closes it.
@@ -383,6 +421,15 @@ class HuggingFaceStorageBackend:
                     client, base_url=self._hf_viewer_base_url, repo_id=repo_id, token=token
                 )
             except HFViewerUnavailable as exc:
+                if isinstance(exc, HFViewerInaccessible):
+                    # The read was refused: the repo is private, gated or gone for
+                    # these credentials, so there is no preview to wait for. A 401
+                    # with the token means the token itself was rejected.
+                    if token is not None and "HTTP 401" in str(exc):
+                        logger.warning("HF token rejected reading %s: %s", repo_id, exc)
+                    else:
+                        logger.debug("HF repo %s not readable: %s", repo_id, exc)
+                    return DatasetPreview(train=[], validation=[])
                 logger.warning(
                     "HF dataset viewer not ready for %s (config discovery): %s", repo_id, exc
                 )
@@ -417,13 +464,17 @@ class HuggingFaceStorageBackend:
         finally:
             if owns_client:
                 await client.aclose()
-        both_unavailable = all(
-            isinstance(result, HFViewerUnavailable) for result in (train_result, validation_result)
+        # Not ready when no split gave rows and one can still come back. A refused
+        # split (HFViewerInaccessible) is final, so two refusals are ready, but a
+        # refusal (e.g. no validation split) must not hide a transient train error.
+        results = (train_result, validation_result)
+        not_ready = all(isinstance(r, HFViewerUnavailable) for r in results) and any(
+            not isinstance(r, HFViewerInaccessible) for r in results
         )
         return DatasetPreview(
             train=_rows_or_empty(train_result),
             validation=_rows_or_empty(validation_result),
-            viewer_ready=not both_unavailable,
+            viewer_ready=not not_ready,
         )
 
     async def delete(self, *, dataset_id: UUID, name: str, artifact_url: str | None) -> None:

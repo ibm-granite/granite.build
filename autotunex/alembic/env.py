@@ -48,6 +48,9 @@ def do_run_migrations(connection: Connection) -> None:
         connection=connection,
         target_metadata=target_metadata,
         compare_type=True,
+        # The api-bridge's Core inserts rely on DDL defaults, so `alembic check`
+        # must fail on a server_default the ORM has and no migration added.
+        compare_server_default=True,
         # Required for SQLite, harmless on PostgreSQL: emits ALTER as
         # create-copy-drop so migrations stay portable across both.
         render_as_batch=True,

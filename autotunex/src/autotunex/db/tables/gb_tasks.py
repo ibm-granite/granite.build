@@ -34,8 +34,13 @@ class GbTaskTable(Base):
         Uuid36, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
     )
     build_id: Mapped[UUID | None] = mapped_column(Uuid36, default=None)
+    # server_default backs the api-bridge's Core inserts, which never see the
+    # Python-side default (Alembic 5e1d2c7a9b40). The DDL value is the member name.
     status: Mapped[RunStatus] = mapped_column(
-        Enum(RunStatus, name="run_status"), nullable=False, default=RunStatus.PENDING
+        Enum(RunStatus, name="run_status"),
+        nullable=False,
+        default=RunStatus.PENDING,
+        server_default=RunStatus.PENDING.name,
     )
     type: Mapped[GbTaskType] = mapped_column(Enum(GbTaskType, name="gb_task_type"), nullable=False)
     pr_url: Mapped[str | None] = mapped_column(Text, default=None)

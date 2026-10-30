@@ -20,7 +20,19 @@ BASE = "https://datasets-server.huggingface.co"
         ("hf://owner/repo", "owner/repo"),
         ("hf://huggingface.co/owner/repo", "owner/repo"),
         ("hf://huggingface.co/datasets/owner/repo", "owner/repo"),
+        ("hf:///datasets/owner/repo", "owner/repo"),
+        ("hf:///models/owner/repo", "owner/repo"),
+        # a revision and a path in the repo follow owner/repo (gbcommon HfURI forms)
+        ("hf:///datasets/org/my-dataset/v2/data/train.csv", "org/my-dataset"),
+        ("hf://huggingface.co/models/org/model/main/checkpoints/best", "org/model"),
+        ("hf:///owner/repo/v1.0", "owner/repo"),
+        # hf://<host>/... names a non-default HF endpoint, as in gbcommon's HfURI
+        ("hf://hub.internal/datasets/o/r", "o/r"),
+        ("hf://hub.internal/o/r", "o/r"),
+        ("hf://hub.internal/datasets/o/r/v2/data/train.csv", "o/r"),
         ("  hf://owner/repo  ", "owner/repo"),
+        ("hf:///datasets/only-one", None),
+        ("hf://huggingface.co/only-one", None),
         ("lh://owner/repo", None),
         ("https://huggingface.co/owner/repo", None),
         ("hf://only-one", None),
@@ -30,6 +42,36 @@ BASE = "https://datasets-server.huggingface.co"
 )
 def test_repo_id_from_artifact_url(artifact_url: str | None, expected: str | None) -> None:
     assert hf_viewer.repo_id_from_artifact_url(artifact_url) == expected
+
+
+@pytest.mark.parametrize(
+    ("artifact_url", "expected"),
+    [
+        # a bare hf://owner/repo/<rev> is HfURI's host form, not owner + revision
+        ("hf://owner/repo/v2", "repo/v2"),
+        ("hf://owner/repo", "owner/repo"),
+    ],
+)
+def test_a_bare_locator_is_owner_repo_only_when_exactly_two_segments(
+    artifact_url: str, expected: str
+) -> None:
+    assert hf_viewer.repo_id_from_artifact_url(artifact_url) == expected
+
+
+@pytest.mark.parametrize(
+    ("artifact_url", "expected"),
+    [
+        ("hf:///datasets/org/ds", "org/ds"),
+        ("hf://huggingface.co/datasets/org/ds/v2/data/train.csv", "org/ds"),
+        ("hf://owner/repo", "owner/repo"),
+        # another host would be previewed against huggingface.co's repo of that name
+        ("hf://mirror.example/datasets/ibm-research/x", None),
+        ("hf://hub.internal/o/r", None),
+        ("hf://owner/repo/v2", None),
+    ],
+)
+def test_default_host_only_refuses_another_host(artifact_url: str, expected: str | None) -> None:
+    assert hf_viewer.repo_id_from_artifact_url(artifact_url, default_host_only=True) == expected
 
 
 def _client(handler: object) -> httpx.AsyncClient:
@@ -184,6 +226,13 @@ async def test_discover_config_raises_unavailable(response: httpx.Response) -> N
     async with _client(lambda request: response) as client:
         with pytest.raises(hf_viewer.HFViewerUnavailable):
             await hf_viewer.discover_config(client, base_url=BASE, repo_id="o/r", token="t")
+
+
+@pytest.mark.parametrize("status", [401, 403, 404])
+async def test_discover_config_raises_inaccessible_on_a_refused_repo(status: int) -> None:
+    async with _client(lambda request: httpx.Response(status)) as client:
+        with pytest.raises(hf_viewer.HFViewerInaccessible):
+            await hf_viewer.discover_config(client, base_url=BASE, repo_id="o/r", token=None)
 
 
 async def test_discover_config_wraps_transport_errors() -> None:
