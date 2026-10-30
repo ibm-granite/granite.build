@@ -33,10 +33,12 @@ from gbserver.resilience import (
 from gbserver.types.buildevent import (
     BuildEvent,
     BuildEventType,
+    BuildEventWorkloadStatusPayload,
     EntityRunMetadata,
     EventPayload,
 )
 from gbserver.types.errors import WorkloadFailedException
+from gbserver.types.status import Status
 
 
 class MockEnvironment:
@@ -838,6 +840,28 @@ class TestExtractFailureMessage:
         event = create_test_event('\n```json\n{"state": "Failed"}\n```\n')
         msg = self._handler()._extract_failure_message(event)
         assert msg == "[RetryHandler launch_id 2c26a9c0] workload is in a Failed state."
+
+    def test_workload_status_failed_surfaces_payload_error(self: Self) -> None:
+        # SkyPilot's FAILED WORKLOAD_STATUS_EVENT carries the job-log tail in
+        # payload.data["error"]; it must replace the bare generic fallback.
+        event = BuildEvent(
+            run_metadata=EntityRunMetadata(build_id="test-build-id"),
+            type=BuildEventType.WORKLOAD_STATUS_EVENT,
+            payload=BuildEventWorkloadStatusPayload(
+                status=Status.FAILED, data={"error": "Traceback: boom"}
+            ),
+        )
+        msg = self._handler()._extract_failure_message(event)
+        assert msg == "[RetryHandler launch_id 2c26a9c0] Traceback: boom"
+
+    def test_payload_error_wins_over_a_non_json_message(self: Self) -> None:
+        # An event carrying both a free-text msg and a structured
+        # payload.data["error"] must surface the structured detail, not the
+        # generic "See event message" fallback.
+        event = create_test_event("some plain failure text, not json")
+        event.payload.data = {"error": "Traceback: boom"}
+        msg = self._handler()._extract_failure_message(event)
+        assert msg == "[RetryHandler launch_id 2c26a9c0] Traceback: boom"
 
     def test_non_json_message_falls_back_to_generic(self: Self) -> None:
         # A message with no ```json``` block at all -> the generic fallback.

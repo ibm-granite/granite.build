@@ -2,9 +2,9 @@
 
 import * as React from 'react'
 import { CopyButton, Link } from '@carbon/react'
-import styles from './LineagePanel.module.scss'
-import type { BuildStepRun, BuildTargetRun } from '@granite-build/ui-core/types'
-import { BuildStatusBadge } from '@granite-build/ui-core/components/BuildStatusBadge'
+import styles from './StepDrawer.module.scss'
+import type { BuildStepRun, BuildTargetRun } from '../../types'
+import { BuildStatusBadge } from '../BuildStatusBadge'
 import { formatDateTime, parseTimestamp } from './stepDrawerSummary'
 
 export { stepDrawerSummary } from './stepDrawerSummary'

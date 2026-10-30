@@ -70,6 +70,7 @@ from gbserver.types.errors import (
     WorkloadFailedException,
 )
 from gbserver.utils.logger import get_logger
+from gbserver.utils.redaction import sanitize_log_tail
 from gbserver.utils.unwrap_errors import (
     escape_for_one_record,
     format_oserror,
@@ -179,6 +180,17 @@ _DEFAULT_POLL_INTERVAL_SECONDS = 300
 # RetryHandler should see it at once rather than after 15 minutes.
 _MIN_POLL_FAILURES = 3
 _DEFAULT_POLL_FAILURE_GRACE_SECONDS = 900
+
+# Runner-local root for the downloaded and live-streamed copies of SkyPilot job
+# logs (<root>/<cluster>/job-<id>/ and <root>/<cluster>/job-<id>.log).
+_LOCAL_LOG_ROOT = "/tmp/sky-logs"
+# How much of a job log's end to read for the failure tail. Bounds the read for
+# multi-GB logs; comfortably above sanitize_log_tail's display cap.
+_LOG_TAIL_READ_BYTES = 64 * 1024
+# Bound on the extra log download a failure does for a step whose run never pulled
+# the log (no event parsers). Best-effort: past this the failure is reported
+# without a tail rather than waiting on SkyPilot's download retries.
+_FAILURE_LOG_DOWNLOAD_TIMEOUT_S = 60
 # For LSF clusters the grace is followed by a direct `bjobs` check, and a job LSF
 # still reports as alive -- or one LSF cannot be asked about -- is kept until this
 # ceiling. Bounded, because a cluster SkyPilot can no longer see is one this
@@ -1710,6 +1722,228 @@ def _get_cli_prefix(build_workdir: Optional[str]) -> str:
     return prefix
 
 
+def _job_log_dir(
+    shared_workdir: Optional[str],
+    run_metadata: Dict,
+    step_name: str,
+    launch_id: str,
+) -> Optional[str]:
+    """Directory on the shared FS that keeps one launch's job log.
+
+    Uses the native LSF layout (``build_workspace_sub_dir``) under
+    ``shared_workdir``:
+    ``<shared_workdir>/llm-build-<build_id>/target-<target>/target-run-<id>/
+    step-<step>/step-run-<id>/launch-<launch_id>/outputs``. On bluevela, where
+    ``shared_workdir`` equals the LSF ``workspace.remote_dir``, a SkyPilot job's
+    ``job.log`` lands exactly where an LSF job's does, so whatever collects LSF
+    logs from there sees both. It is outside the per-run workdir
+    (``<shared_workdir>/builds/<build_id>/runs/<targetrun_id>``), so the
+    ``rm -rf`` in ``teardown_skypilot`` leaves it in place.
+
+    :param shared_workdir: the env's ``shared_workdir``, or ``None`` if unset.
+    :param run_metadata: the launch's run metadata (plain dict).
+    :param step_name: the step's name (``kwargs["step"]["name"]``).
+    :param launch_id: the launch whose log the directory holds.
+    :returns: the absolute log directory, or ``None`` when there is no
+        ``shared_workdir`` or a path component is missing (no log is kept).
+    """
+    from gbserver.environment.lsf_paths import build_workspace_sub_dir
+
+    parts = {
+        k: run_metadata.get(k) or ""
+        for k in ("build_id", "target_name", "targetrun_id", "targetsteprun_id")
+    }
+    if not shared_workdir or not step_name or not all(parts.values()):
+        return None
+    sub_dir = build_workspace_sub_dir(step_name=step_name, launch_id=launch_id, **parts)
+    return os.path.join(shared_workdir, str(sub_dir), "outputs")
+
+
+# Writes ``<log>.metadata`` beside the job log, in exactly the format the native LSF
+# wrapper (``llmb_lsf_wrapper.sh``) uses, so whatever ships LSF job logs from the shared
+# FS labels SkyPilot ones with the build id that ``gb build log`` filters on. Overwritten
+# (not appended) on every phase so it stays one valid YAML document. Skipped when there
+# is no real log file or no GB_BUILD_ID (an empty label is worse than none).
+_JOB_LOG_METADATA_SNIPPET = (
+    'if [ "$__gb_log" != /dev/null ] && [ -n "${GB_BUILD_ID:-}" ]; then\n'
+    '  printf "labels:\\n'
+    "  kubernetes.labels.granite-dot-build/build-id: %s\\n"
+    '  kubernetes.labels.llmbuild/build-id: %s\\n" '
+    '"$GB_BUILD_ID" "$GB_BUILD_ID" > "$__gb_log.metadata" 2>/dev/null || true\n'
+    "fi\n"
+)
+
+
+def _with_job_log(
+    job_log_dir: Optional[str], body: str, phase: str, attempt: int
+) -> str:
+    """Wrap a step script body so its output is also kept in the job log.
+
+    Runs ``body`` in a ``{ ...; }`` group piped through ``tee -a`` into
+    ``$GB_JOB_LOG_DIR/job.log`` (node rank N>0 writes ``job.rankN.log``), so
+    stdout and stderr still reach SkyPilot's own log, and exits with the body's
+    status (``PIPESTATUS[0]``). A pipe rather than ``exec > >(tee ...)`` because
+    the pipeline only ends once ``tee`` has flushed, on any bash version.
+    Best-effort: if the directory can't be created the output goes to
+    ``/dev/null`` instead, with a warning, and the step still runs.
+
+    Like the native LSF wrapper, it also writes ``<log>.metadata`` beside the log
+    (build-id labels; see ``_JOB_LOG_METADATA_SNIPPET``) so log shipping labels it.
+
+    A relaunch reuses the launch_id and so the same log file, appending to it as
+    native LSF does. Each phase therefore first writes a marker line, to the
+    log only (not to SkyPilot's log, so event parsers see just the step's
+    output): ``=== granite.build: attempt <N> (<phase>) at <UTC time> ===``.
+
+    :param job_log_dir: the launch's log dir (exported as ``GB_JOB_LOG_DIR``),
+        or ``None`` when no log is kept (the body is returned unchanged).
+    :param body: the step's setup or run script. Both phases append to the
+        same file, so setup output precedes the run output.
+    :param phase: ``"setup"`` or ``"run"``, named in the marker.
+    :param attempt: 0 for the first launch, N for the Nth relaunch
+        (``_relaunch_attempts``); the marker shows it 1-based.
+    :returns: the wrapped script, or ``body`` unchanged without a log dir.
+    """
+    if not job_log_dir:
+        return body
+    marker = f"=== granite.build: attempt {attempt + 1} ({phase}) at"
+    return (
+        '__gb_rank="${SKYPILOT_NODE_RANK:-${SKYPILOT_SETUP_NODE_RANK:-0}}"\n'
+        '__gb_log="$GB_JOB_LOG_DIR/job.log"\n'
+        '[ "$__gb_rank" = 0 ] || __gb_log="$GB_JOB_LOG_DIR/job.rank$__gb_rank.log"\n'
+        'if ! { mkdir -p "$GB_JOB_LOG_DIR" && touch "$__gb_log"; } 2>/dev/null; then\n'
+        '  echo "granite.build: cannot write the job log $__gb_log; continuing without it" >&2\n'
+        "  __gb_log=/dev/null\n"
+        "fi\n"
+        + _JOB_LOG_METADATA_SNIPPET
+        + f'echo "{marker} $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" >> "$__gb_log" || true\n'
+        "{\n"
+        f"{body}\n"
+        '} 2>&1 | tee -a "$__gb_log"\n'
+        'exit "${PIPESTATUS[0]}"\n'
+    )
+
+
+def _read_saved_log_tail(
+    cluster_name: str,
+    job_id: Optional[int],
+    max_lines: int = 50,
+    secret_values: Optional[List[str]] = None,
+) -> str:
+    """The sanitized tail of the runner's local copy of a SkyPilot job log.
+
+    Reads the copy ``_download_and_parse_logs`` saved under
+    ``_LOCAL_LOG_ROOT/<cluster>/job-<id>/`` (preferring ``run.log``), falling back
+    to the live-stream file ``_LOCAL_LOG_ROOT/<cluster>/job-<id>.log``. The tail
+    lands in the build log, so it goes through the same
+    :func:`~gbserver.utils.redaction.sanitize_log_tail` as LSF's: secrets
+    redacted, size capped with a truncation marker, ``` fences defused.
+
+    It reads SkyPilot's log, not the persisted ``job.log``, because gbserver can
+    only reach job output through the SkyPilot API, not the cluster's shared FS.
+    That log is SkyPilot's combined stream for this attempt (setup and all ranks,
+    with SkyPilot's line prefixes), and the failure message labels it so.
+
+    :param cluster_name: the SkyPilot cluster the job ran on.
+    :param job_id: the SkyPilot job id, or ``None`` if the launch never got one.
+    :param max_lines: keep at most this many trailing lines.
+    :param secret_values: the launch's declared secret values, masked verbatim.
+    :returns: the sanitized tail without a trailing newline, or ``""`` when no
+        saved log exists or it can't be read.
+    """
+    if job_id is None:
+        return ""
+    job_dir = os.path.join(_LOCAL_LOG_ROOT, cluster_name, f"job-{job_id}")
+    candidates = [os.path.join(job_dir, "run.log")]
+    candidates += sorted(glob.glob(os.path.join(job_dir, "*.log")))
+    candidates.append(f"{job_dir}.log")
+    path = next((p for p in candidates if os.path.isfile(p)), None)
+    if path is None:
+        return ""
+    try:
+        text = _read_file_end(path, _LOG_TAIL_READ_BYTES)
+    except OSError as e:
+        logger.warning("Failed to read the job log tail from %s: %s", path, e)
+        return ""
+    lines = text.rstrip("\n").split("\n")[-max_lines:]
+    return sanitize_log_tail("\n".join(lines), secret_values) or ""
+
+
+def _save_local_log_copy(log_dir: str, cluster_name: str, job_id: int) -> None:
+    """Copy a downloaded SkyPilot job log dir to the runner's local log root.
+
+    The copy at ``_LOCAL_LOG_ROOT/<cluster>/job-<id>/`` is what
+    :func:`_read_saved_log_tail` reads and is handy for debugging on the runner.
+    Best-effort: files that fail to copy are skipped.
+
+    :param log_dir: the directory ``sky.download_logs`` returned.
+    :param cluster_name: the SkyPilot cluster the job ran on.
+    :param job_id: the SkyPilot job id.
+    """
+    import shutil
+
+    tmp_log_dir = f"{_LOCAL_LOG_ROOT}/{cluster_name}/job-{job_id}"
+    os.makedirs(tmp_log_dir, exist_ok=True)
+    for src_path in glob.glob(f"{log_dir}/*"):
+        try:
+            shutil.copy2(src_path, tmp_log_dir)
+        except OSError:
+            pass
+    logger.info(
+        "Saved job logs to %s (cluster %s job %s)", tmp_log_dir, cluster_name, job_id
+    )
+
+
+def _has_local_log_copy(cluster_name: str, job_id: int) -> bool:
+    """Whether a complete downloaded copy of the job log already exists.
+
+    Only the ``sky.download_logs`` copy counts. The live-stream file
+    (``job-<id>.log``) is not enough: the stream can lag the terminal status and
+    miss the last lines, which is where the traceback is.
+
+    :param cluster_name: the SkyPilot cluster the job ran on.
+    :param job_id: the SkyPilot job id.
+    :returns: True if a downloaded copy exists under ``job-<id>/``.
+    """
+    job_dir = os.path.join(_LOCAL_LOG_ROOT, cluster_name, f"job-{job_id}")
+    return bool(glob.glob(os.path.join(job_dir, "*.log")))
+
+
+def _fetch_local_log_copy(cluster_name: str, job_id: int) -> None:
+    """Download a job's log and save the local copy, for a step whose run never
+    pulled it (no event log parsers). Blocking; run it in a thread.
+
+    :param cluster_name: the SkyPilot cluster the job ran on.
+    :param job_id: the SkyPilot job id.
+    :raises Exception: whatever ``sky.download_logs`` raises after its retries.
+    """
+    log_dir = _download_logs_with_retry(cluster_name, job_id)
+    if log_dir:
+        _save_local_log_copy(os.path.expanduser(log_dir), cluster_name, job_id)
+
+
+def _read_file_end(path: str, max_bytes: int) -> str:
+    """The last ``max_bytes`` of a file, decoded, starting on a line boundary.
+
+    Seeks from the end, so the cost is bounded by ``max_bytes`` however large the
+    file is. When the read starts mid-file, the (usually partial) first line is
+    dropped.
+
+    :param path: the file to read.
+    :param max_bytes: the most bytes to read from the end.
+    :returns: the decoded text (invalid UTF-8 replaced).
+    :raises OSError: if the file can't be opened or read.
+    """
+    with open(path, "rb") as f:
+        size = f.seek(0, os.SEEK_END)
+        start = max(0, size - max_bytes)
+        f.seek(start)
+        data = f.read(max_bytes)
+    if start > 0:
+        data = data.partition(b"\n")[2]
+    return data.decode("utf-8", errors="replace")
+
+
 def _resolved_shared_fs_dns(setup_config) -> dict:
     """mount_point -> runtime DNS from setup_config.skypilot.shared_fs_mounts
     (empty for BYO-only envs / before ephemeral provisioning)."""
@@ -2146,6 +2380,9 @@ class Skypilot(Environment):
         # uniquely-named cluster instead of reusing the draining original.
         self._relaunch_attempts: Dict[str, int] = {}
         self._setup_workdirs: Dict[str, str] = {}  # setup_id -> per-run workdir
+        # launch_id -> shared-FS dir holding the launch's persistent job logs
+        # (GB_JOB_LOG_DIR); named in the failure message so users can find it.
+        self._job_log_dirs: Dict[str, str] = {}
         # setup_id -> {"target_name","build_id","build_config_name"} so teardown can
         # name its cleanup cluster the same human-identifiable way as launch.
         self._setup_run_meta: Dict[str, Dict[str, str]] = {}
@@ -3114,7 +3351,8 @@ class Skypilot(Environment):
 
         :param kwargs: the launch context; reads ``run_metadata`` (GB_TARGETRUN_ID),
             ``launcher_config`` / ``config`` (``envs``), ``launch_id``,
-            ``cluster_name``, ``build_workdir``, and ``bindings`` (inline HF_TOKEN).
+            ``cluster_name``, ``build_workdir``, ``job_log_dir``, and ``bindings``
+            (inline HF_TOKEN).
         :returns: the ordered env layers to compose.
         """
         launcher_config = kwargs.get("launcher_config") or {}
@@ -3126,6 +3364,7 @@ class Skypilot(Environment):
             kwargs.get("launch_id", ""),
             kwargs.get("cluster_name", ""),
             kwargs.get("build_workdir"),
+            kwargs.get("job_log_dir"),
         )
         if run_metadata.get("targetrun_id"):
             builtins["GB_TARGETRUN_ID"] = run_metadata["targetrun_id"]
@@ -3147,6 +3386,7 @@ class Skypilot(Environment):
         launch_id: str,
         cluster_name: str,
         build_workdir: Optional[str],
+        job_log_dir: Optional[str] = None,
     ) -> Dict[str, str]:
         """Assemble the always-present ``GB_SKYPILOT_*``/workdir launcher vars.
 
@@ -3157,6 +3397,8 @@ class Skypilot(Environment):
         :param launch_id: unique id for this launch (GB_SKYPILOT_LAUNCH_ID).
         :param cluster_name: the sky cluster name (GB_SKYPILOT_CLUSTER_NAME).
         :param build_workdir: per-run workdir (GB_BUILD_WORKDIR) if provisioned.
+        :param job_log_dir: dir the launcher tees the step's output into
+            (GB_JOB_LOG_DIR), if a log is kept for this launch.
         :returns: a dict of the built-in launcher env vars.
         """
         env: Dict[str, str] = {
@@ -3181,6 +3423,8 @@ class Skypilot(Environment):
                 )
         if build_workdir:
             env["GB_BUILD_WORKDIR"] = build_workdir
+        if job_log_dir:
+            env["GB_JOB_LOG_DIR"] = job_log_dir
         return env
 
     async def launch_skypilot(
@@ -3397,6 +3641,9 @@ class Skypilot(Environment):
                 "retry_enabled": kwargs.get("retry_enabled"),
                 "retry_transparently": kwargs.get("retry_transparently"),
                 "bindings": kwargs.get("bindings"),
+                # The step name is part of the job.log path (_job_log_dir); without
+                # it a relaunch would run unwrapped and its output miss job.log.
+                "step": kwargs.get("step"),
                 # Read by tracking_metadata() for the comment and labels.
                 "space": kwargs.get("space"),
                 "gb_environment": kwargs.get("gb_environment"),
@@ -3554,6 +3801,14 @@ class Skypilot(Environment):
             build_workdir = (
                 kwargs.get("setup_config", {}).get("skypilot", {}).get("build_workdir")
             )
+            job_log_dir = _job_log_dir(
+                resolve_shared_workdir(self.config),
+                run_metadata,
+                (kwargs.get("step") or {}).get("name", ""),
+                launch_id,
+            )
+            if job_log_dir:
+                self._job_log_dirs[launch_id] = job_log_dir
             # Build the full env for the sky.Task. GB_BUILD_ID (and any future
             # standard var) comes from Environment.get_launch_env_vars() and is
             # authoritative over launcher/config env.
@@ -3564,6 +3819,7 @@ class Skypilot(Environment):
                 launch_id=launch_id,
                 cluster_name=cluster_name,
                 build_workdir=build_workdir,
+                job_log_dir=job_log_dir,
                 bindings=kwargs.get("bindings"),
             )
 
@@ -3638,9 +3894,16 @@ class Skypilot(Environment):
             cli_prefix = _compose_step_prologue(
                 providers, resolved, workdir_mount, build_workdir
             )
-            run_script = cli_prefix + launcher_config.get("run", "")
+            # Tee setup and run output to one durable job.log in the LSF-layout
+            # outputs/ dir, outside the per-run workdir, so it survives
+            # teardown's rm -rf of that workdir. Both append: setup comes first.
+            run_script = cli_prefix + _with_job_log(
+                job_log_dir, launcher_config.get("run", ""), "run", attempt
+            )
             if setup_script:
-                setup_script = cli_prefix + setup_script
+                setup_script = cli_prefix + _with_job_log(
+                    job_log_dir, setup_script, "setup", attempt
+                )
 
             # Build sky.Task
             task = sky.Task(
@@ -3710,7 +3973,7 @@ class Skypilot(Environment):
             )
 
             # Ensure log directory exists for job log streaming
-            os.makedirs(f"/tmp/sky-logs/{cluster_name}", exist_ok=True)
+            os.makedirs(f"{_LOCAL_LOG_ROOT}/{cluster_name}", exist_ok=True)
 
             # Execute post-launch tasks (e.g., start evaluator sidecars) if defined
             post_launch_task = launcher_config.get("post_launch_task")
@@ -4523,6 +4786,9 @@ class Skypilot(Environment):
                             terminal_resume, new_last
                         )
                 if str(status) != "JobStatus.SUCCEEDED":
+                    terminal_msg = await self._terminal_failure_message(
+                        launch_id, cluster_name, job_id, status
+                    )
                     if event_q and entityrun_metadata:
                         from gbserver.types.buildevent import (
                             BuildEvent,
@@ -4531,19 +4797,17 @@ class Skypilot(Environment):
                         )
                         from gbserver.types.status import Status
 
+                        # payload.data["error"] is what the RetryHandler shows
+                        # when it gives up, instead of a bare "Workload failed".
                         fail_event = BuildEvent(
                             run_metadata=entityrun_metadata,
                             type=BuildEventType.WORKLOAD_STATUS_EVENT,
                             payload=BuildEventWorkloadStatusPayload(
                                 status=Status.FAILED,
+                                data={"error": terminal_msg},
                             ),
                         )
                         await event_q.put(fail_event)
-                    terminal_msg = (
-                        f"SkyPilot job {job_id} on {cluster_name} "
-                        f"terminated with status {status} "
-                        f"(launch_id={launch_id})"
-                    )
                     if defer_terminal_failure:
                         # A RetryHandler is active: hand the FAILED event off to
                         # it and wait. It either initiates a retry (sets
@@ -4576,6 +4840,80 @@ class Skypilot(Environment):
             except asyncio.TimeoutError:
                 pass  # Normal timeout, continue polling
 
+    async def _terminal_failure_message(
+        self: Self, launch_id: str, cluster_name: str, job_id: Optional[int], status
+    ) -> str:
+        """Describe a non-success terminal job: status, durable log, log tail.
+
+        The log read runs in a worker thread so a slow filesystem can't stall
+        the event loop shared by every launch's poll.
+
+        :param launch_id: the failed launch.
+        :param cluster_name: the SkyPilot cluster the job ran on.
+        :param job_id: the SkyPilot job id (``None`` if never assigned).
+        :param status: the terminal ``sky.JobStatus``.
+        :returns: a multi-line message naming the persistent job log (when the
+            environment has a ``shared_workdir``) and ending with the tail of
+            SkyPilot's log for this attempt (see :func:`_read_saved_log_tail` for
+            why the tail is not read from ``job.log``).
+        """
+        msg = (
+            f"SkyPilot job {job_id} on {cluster_name} "
+            f"terminated with status {status} (launch_id={launch_id})"
+        )
+        log_dir = self._job_log_dirs.get(launch_id)
+        if log_dir:
+            msg += f"\nFull job log (all attempts, on the cluster): {log_dir}/job.log"
+        await self._ensure_local_log_copy(cluster_name, job_id)
+        tail = await asyncio.to_thread(
+            _read_saved_log_tail,
+            cluster_name,
+            job_id,
+            secret_values=self.get_launch_secret_values(launch_id),
+        )
+        if tail:
+            msg += (
+                "\nLast lines of SkyPilot's log for this attempt:" f"\n```\n{tail}\n```"
+            )
+        return msg
+
+    async def _ensure_local_log_copy(
+        self: Self, cluster_name: str, job_id: Optional[int]
+    ) -> None:
+        """Make sure a local log copy exists for the failure tail.
+
+        Steps with event log parsers in a pull mode already downloaded one.
+        Others (no parsers, or live-stream mode, whose file may lag) fetch it
+        now, in a thread and bounded by ``_FAILURE_LOG_DOWNLOAD_TIMEOUT_S``. A
+        timeout or error is logged and the failure is reported with whatever
+        copy exists (possibly none); a cancel propagates.
+
+        :param cluster_name: the SkyPilot cluster the job ran on.
+        :param job_id: the SkyPilot job id (``None``: nothing to fetch).
+        """
+        if job_id is None or _has_local_log_copy(cluster_name, job_id):
+            return
+        fut = asyncio.ensure_future(
+            asyncio.to_thread(_fetch_local_log_copy, cluster_name, job_id)
+        )
+        try:
+            # Not wait_for: on 3.11 it can swallow a racing cancel (gh-86296).
+            async with asyncio.timeout(_FAILURE_LOG_DOWNLOAD_TIMEOUT_S):
+                await asyncio.shield(fut)
+        except Exception as e:  # pylint: disable=broad-except
+            logger.warning(
+                "Could not fetch the log of %s job %s for the failure tail: %s",
+                cluster_name,
+                job_id,
+                e,
+            )
+            # The thread can't be interrupted; let it finish in the background.
+            fut.add_done_callback(lambda f: f.cancelled() or f.exception())
+        except asyncio.CancelledError:
+            # Same for a cancel: retrieve the result later, then propagate.
+            fut.add_done_callback(lambda f: f.cancelled() or f.exception())
+            raise
+
     def _start_log_stream_task(
         self: Self,
         cluster_name: str,
@@ -4595,7 +4933,7 @@ class Skypilot(Environment):
         )
 
         # Open a local log file for streaming writes
-        tmp_log_dir = f"/tmp/sky-logs/{cluster_name}"
+        tmp_log_dir = f"{_LOCAL_LOG_ROOT}/{cluster_name}"
         os.makedirs(tmp_log_dir, exist_ok=True)
         log_file_path = f"{tmp_log_dir}/job-{job_id}.log"
         log_file = open(log_file_path, "a", encoding="utf-8")
@@ -4672,22 +5010,7 @@ class Skypilot(Environment):
                 return max_line
 
             log_dir = os.path.expanduser(log_dir)
-            # Save a copy to /tmp for easy debugging access
-            tmp_log_dir = f"/tmp/sky-logs/{cluster_name}/job-{job_id}"
-            os.makedirs(tmp_log_dir, exist_ok=True)
-            for src_path in glob.glob(f"{log_dir}/*"):
-                try:
-                    import shutil
-
-                    shutil.copy2(src_path, tmp_log_dir)
-                except OSError:
-                    pass
-            logger.info(
-                "Saved job logs to %s (cluster %s job %s)",
-                tmp_log_dir,
-                cluster_name,
-                job_id,
-            )
+            _save_local_log_copy(log_dir, cluster_name, job_id)
 
             log_files = sorted(glob.glob(f"{log_dir}/*.log"))
             if not log_files:
@@ -4799,6 +5122,7 @@ class Skypilot(Environment):
             self._launch_kwargs.pop(launch_id, None)
             self._relaunch_attempts.pop(launch_id, None)
             self._log_lines_parsed.pop(launch_id, None)
+            self._job_log_dirs.pop(launch_id, None)
 
     async def launch_skypilot_teardown(
         self: Self,

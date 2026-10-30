@@ -1,0 +1,25 @@
+# YAML spec for test_skypilot_aws_train_openinstruct_sft.py (found by the test/ <->
+# test-data/ helper, so the pairing holds in both test modes; see steps/README.md).
+targets:
+  - train
+target_expectations:
+  - target_name: train
+    # 1: skypilot/aws pulls hf:// inputs inline (injected into the step's setup),
+    # and the env:// output queues no push step.
+    step_count: 1
+    input_artifact_count: 1     # base_model
+    output_artifact_count: 1    # model (env://, from the step's marker)
+    expected_steps:
+      - step_uri: space://steps/train/openinstruct-sft
+        config:
+          openinstruct_sft_config:
+            dataset_mixer_list:
+              allenai/tulu-3-sft-personas-algebra: 64
+        metadata_matches:
+          open_instruct_commit: "[0-9a-f]{40}"
+space_uri: ../../space
+tests:
+  - runner
+simulate_step_failure: false
+# EC2 cold start + a large image pull + DeepSpeed op JIT + a 3-step run.
+timeout_minutes: 90

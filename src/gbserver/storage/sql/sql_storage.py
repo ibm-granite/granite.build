@@ -36,6 +36,7 @@ from sqlalchemy.orm import declarative_base, scoped_session, sessionmaker
 from tenacity import (
     retry,
     retry_if_exception,
+    retry_if_exception_type,
     retry_if_not_exception_type,
     stop_after_attempt,
     wait_random_exponential,
@@ -88,6 +89,13 @@ retry_read = retry(
     retry=retry_if_exception(_is_retryable_read_error),
     reraise=True,
 )
+
+
+def _retry_except(*excluded: type[BaseException]):
+    """Retry any Exception but ``excluded``. A bare retry_if_not_exception_type
+    drops tenacity's default Exception filter, so KeyboardInterrupt would retry."""
+    return retry_if_exception_type(Exception) & retry_if_not_exception_type(excluded)
+
 
 # SQLAlchemy Base
 Base = declarative_base()
@@ -769,7 +777,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         stop=stop_after_attempt(10),
         # DataError (value too long, bad type) is deterministic: retrying it only
         # stalls the caller for ~47s before the same failure.
-        retry=retry_if_not_exception_type((IntegrityError, DataError)),
+        retry=_retry_except(IntegrityError, DataError),
         reraise=True,
     )
     def _add_item_dicts(self, items: list[dict[str, Any]]):
@@ -986,6 +994,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                         f"Error deleting table: {e}"
                     )  # When table does not exist.
                     raise e
+            return
         try:
             self.__connect_without_retry()  # Ensure engine is initialized
             self._sql_alchemy_model.__table__.drop(self._engine)
@@ -1130,7 +1139,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
     @retry(
         wait=wait_random_exponential(multiplier=1, min=1, max=30),
         stop=stop_after_attempt(10),
-        retry=retry_if_not_exception_type((ValueError, NotImplementedError)),
+        retry=_retry_except(ValueError, NotImplementedError),
         reraise=True,
     )
     def _get_by_where_with_retry(
@@ -1257,7 +1266,7 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
         wait=wait_random_exponential(multiplier=1, min=1, max=30),
         stop=stop_after_attempt(10),
         # DataError is deterministic, as in _add_item_dicts.
-        retry=retry_if_not_exception_type((ValueError, IntegrityError, DataError)),
+        retry=_retry_except(ValueError, IntegrityError, DataError),
         reraise=True,
     )
     def update_fields(

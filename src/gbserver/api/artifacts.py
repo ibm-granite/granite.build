@@ -570,7 +570,7 @@ class ListedArtifact(ArtifactRegistration):
     """An artifact as the listing returns it: the registration plus derived fields.
 
     ``lineage_uri`` is the artifact's identity in the lineage index (the
-    normalized URI, the ``id`` of its node in ``GET /lineage/graph``), so a client
+    normalized URI, the ``id`` of its node in ``POST /lineage/graph``), so a client
     can match graph nodes to registry entries without restating the normalization
     rules. Derived per response, never stored; ``""`` when the URI is one the
     index cannot key on.

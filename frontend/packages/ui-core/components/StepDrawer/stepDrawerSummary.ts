@@ -1,5 +1,5 @@
-import type { Build, BuildStatus, BuildTargetRun } from '@granite-build/ui-core/types'
-import { formatDurationBetween } from '@granite-build/ui-core/lib/duration'
+import type { Build, BuildStatus, BuildTargetRun } from '../../types'
+import { formatDurationBetween } from '../../lib/duration'
 
 // Pure header logic for the step drawer, kept out of StepDetailsPanel.tsx so
 // it can be unit-tested without React (tests/step-drawer-summary.test.js).

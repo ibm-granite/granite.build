@@ -66,6 +66,9 @@ EXPECTED = {
     # NeMo-RL training: new, so base_model is required outright; dataset is optional
     # (omit it to use the NeMo-RL config's built-in dataset).
     f"{_SKY}/train/nemo-rl": ({"base_model"}, {"dataset"}),
+    # Open-Instruct SFT: new, so base_model is required outright; dataset is optional
+    # (omit it to train on openinstruct_sft_config.dataset_mixer_list instead).
+    f"{_SKY}/train/openinstruct-sft": ({"base_model"}, {"dataset"}),
     # Shipped in v0.3.x: optional during the deprecation window, with the old config
     # key as a fallback.
     f"{_LSF}/sage-eval": (set(), {"model"}),
@@ -80,6 +83,8 @@ EXPECTED = {
     "environments/bash/steps/inference": ({"model"}, set()),
     "environments/bash/steps/inference-lora": ({"model"}, {"adapter"}),
     "environments/bash/steps/lora-finetune": ({"model"}, {"dataset"}),
+    "environments/bash/steps/tune/fm-tune": ({"dataset"}, {"base_model"}),
+    f"{_SKY}/tune/fm-tune": ({"dataset"}, {"base_model"}),
     # Exceptions: no named inputs, by design.
     f"{_SKY}/misc/byoc": (set(), set()),  # free-form command, any number of inputs
     f"{_LSF}/skypilot-teardown": (set(), set()),  # variable-length cluster list

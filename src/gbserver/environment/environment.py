@@ -1105,6 +1105,28 @@ class Environment(ABC):
             resolved[env_name] = secrets[secret_name]
         return resolved
 
+    def get_launch_secret_values(self: Self, launch_id: str) -> List[str]:
+        """Values of the secrets a launch declared, for redacting its log output.
+
+        Resolves the launch's :meth:`_declared_secret_mappings` (from the kwargs
+        the environment stashed in ``_launch_kwargs`` at launch) against
+        ``self.secrets``. Used to mask those exact values in a failure log tail
+        (:func:`gbserver.utils.redaction.sanitize_log_tail`). Never raises: a
+        launch it can't resolve yields ``[]`` and the pattern-based redaction
+        still applies.
+
+        :param launch_id: the launch whose declared secrets to look up.
+        :returns: the declared secret values (possibly empty).
+        """
+        launch_kwargs = getattr(self, "_launch_kwargs", {}).get(launch_id) or {}
+        try:
+            mappings = self._declared_secret_mappings(**launch_kwargs)
+            resolved = self._resolve_declared_secret_env_vars(mappings, self.secrets)
+        except Exception as e:  # pylint: disable=broad-except
+            logger.debug("no declared secrets to redact for %s: %s", launch_id, e)
+            return []
+        return [v for v in resolved.values() if v]
+
     @staticmethod
     def _declared_secret_env_key_names(
         mappings: List[EnvironmentVariableConfig],

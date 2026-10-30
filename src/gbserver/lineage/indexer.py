@@ -1034,7 +1034,7 @@ class TargetLineageIndexer(JobLineageIndexer):
         # gb_targets IS the job store for this source, so nothing is copied into
         # gb_lineage_job: the rows are stamped TARGETS and their ``retrieve`` keys
         # (build_id, target_run_uuid) are what GET /lineage/jobs/{id} follows back
-        # to the target run and its steps -- see job_detail's per-store dispatch.
+        # to the target run and its steps -- see job_detail.fetch_job_detail.
         # Writing a job record too would duplicate, under this index's own notion
         # of a job, data the admin DB already owns and keeps current.
         try:
@@ -1543,10 +1543,10 @@ class WandBLineageIndexer(JobLineageIndexer):
         tags = _tags_of(job)
         build_id = tags.get("build_id", "")
         target_run_uuid = tags.get("target_id", "")
-        # Only the index is written. W&B is the job store here: the rows are
-        # stamped WANDB and the job's detail is read back from W&B when asked for
-        # (see job_detail's per-store dispatch), so nothing is copied into
-        # gb_lineage_job, which is the db provider's store alone.
+        # Only the index is written: the rows are stamped WANDB and carry the
+        # run's build_id/target_run_uuid in ``retrieve``, which job_detail reads
+        # back from this server's builds. Nothing is copied into gb_lineage_job,
+        # which is the db provider's store alone.
         self._rows.index_job_entry(
             entry,
             build_id=build_id,
