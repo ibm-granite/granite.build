@@ -47,8 +47,8 @@ fails the build at step creation, before any node is provisioned.
 
 The data must be in one of TRL's standard SFT formats, detected from the columns:
 a `messages` column (conversational, formatted with the model's chat template),
-`prompt` + `completion` columns, or a `text` column. Other columns fail before
-training. The step does no column mapping; reshape the data in an upstream step.
+`prompt` + `completion` columns, or a `text` column. Data with none of these fails
+before training (extra columns next to them are fine). The step does no column mapping; reshape the data in an upstream step.
 
 The step accepts extra inputs and outputs (`allow_unknown: true`), so a recipe can
 bind other inputs purely to order targets.
@@ -164,8 +164,9 @@ passes `--save_strategy no`, `--push_to_hub false`, `--bf16 true|false` and
 `--fp16 true|false` (from `mixed_precision`), and `--report_to clearml` or
 `--report_to none` (from `clearml_enabled`).
 
-With `gradient_checkpointing: true`, the step sets `use_reentrant` itself: `true`
-under `distributed: deepspeed` (TRL forces it for PEFT with ZeRO-3), otherwise
+TRL turns gradient checkpointing on by default, and the step sets `use_reentrant`
+whenever it is on (set `gradient_checkpointing: false` in `args` to turn it off):
+`true` under `distributed: deepspeed` (TRL forces it for PEFT with ZeRO-3), otherwise
 `true` only for `qlora` outside multi-GPU DDP.
 
 **Loss on the completion only.** `assistant_only_loss: true` needs a chat template
@@ -227,13 +228,12 @@ Verified combinations (method × `distributed`):
 
 | | ddp | fsdp | deepspeed |
 |---|---|---|---|
-| lora | render-tested | e2e (BlueVela) | render-tested |
-| qlora | e2e (aws) | render-tested | e2e (BlueVela) |
-| alora | e2e (aws) | render-tested | render-tested |
+| lora | render-tested | e2e pending (BlueVela) | render-tested |
+| qlora | e2e pending (aws) | render-tested | e2e pending (BlueVela) |
+| alora | e2e pending (aws) | render-tested | render-tested |
 
-`e2e` means a real build trained and registered an adapter on that cluster;
-`render-tested` means the step's unit tests pin the rendered command and launch
-config, but no GPU run has covered it.
+`e2e pending` means a build test exists for that cluster and will be recorded here
+when it passes; `render-tested` means covered by render and unit tests only.
 
 ## ClearML tracking
 
@@ -330,7 +330,7 @@ and use the same path in an `env:///` output URI:
 
 Make the path unique per run (for example with a `$${PARAM}` suffix). A re-run of
 the same path replaces the earlier adapter. To avoid deleting anything else, the
-step refuses, before training, an `output_path` that is not a directory, one that is
+step refuses, before training, an `output_path` that exists and is not a directory, one that is
 non-empty and has no `adapter_config.json` at its root, one that names no directory
 (`/`, `.`, `..`), and one that is the staged `base_model`, inside it, or contains it.
 

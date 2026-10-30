@@ -146,10 +146,10 @@ builds). The base is `cuda:13.2.1-devel`, the same CUDA minor, so the `nvcc`
 DeepSpeed uses for its JIT ops matches torch's runtime. The base's
 `NVIDIA_REQUIRE_CUDA` admits both the 580 and 590 driver branches.
 
-The 590 driver on BlueVela supports CUDA 13.2 natively. The 580 driver on aws
-natively supports CUDA 13.0, so CUDA 13.2 runs there through CUDA minor-version
-compatibility. The aws build test (pending) is the proof. If it fails on the
-driver, the fallback is torch 2.11.0+cu128 on `cuda:12.8.1-devel-ubuntu22.04`.
+Only the driver versions above were measured (2026-10-30). On either cluster the
+image's CUDA 13.2 runtime may rely on CUDA minor-version compatibility. The aws and
+BlueVela build tests are the proof (pending). If they fail on the driver, the
+fallback is torch 2.11.0+cu128 on `cuda:12.8.1-devel-ubuntu22.04`.
 
 ### Choices in the Dockerfile that look odd, and why
 
@@ -161,8 +161,8 @@ driver, the fallback is torch 2.11.0+cu128 on `cuda:12.8.1-devel-ubuntu22.04`.
 - **`DS_BUILD_OPS=0`.** DeepSpeed is built without pre-compiling its ops; any op
   a run uses JIT-compiles on the node at first use.
   That is why the base is `devel` and why its CUDA minor matches torch's.
-- **CUDA 13.2 on aws's 580 driver.** See [The torch/CUDA pair](#the-torchcuda-pair):
-  minor-version compatibility, to be confirmed by the aws build test.
+- **A CUDA 13.2 runtime on 580/590 drivers.** See [The torch/CUDA pair](#the-torchcuda-pair):
+  it may rely on minor-version compatibility, to be confirmed by the build tests.
 - **chmod in two layers.** Pyxis on SLURM runs the container as the job user, not
   root. The venv and uv's managed Python (`/opt/uv-python`, not root's home, since
   the venv's interpreter is a symlink into it) get `chmod -R a+rX` in the install
@@ -327,7 +327,7 @@ env -u AWS_PROFILE -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY \
 `test_hf_peft_sft_train_cpu.py` runs the real training script, so it needs peft and
 trl, which the repo venv does not have. It catches TRL and peft API drift before
 any GPU time. Build a separate venv with the image's pins (CPU torch: PyPI's macOS
-torch wheels are CPU-only; on Linux add `--index-url
+torch wheels are CPU-only; on Linux add `--extra-index-url
 https://download.pytorch.org/whl/cpu` for torch):
 
 ```bash
