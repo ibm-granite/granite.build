@@ -1,0 +1,51 @@
+granite.build:
+  name: skypilot-slurm-bluevela-openinstruct-sft
+  # Open-Instruct SFT on IBM BlueVela over SLURM: the counterpart of aws, with
+  # what differs called out. SUCCESS proves the SLURM path: separate hfpull steps
+  # stage the base model AND the dataset onto shared /proj, the image runs under
+  # Pyxis from the environment's shared .sqsh cache (slurm_image_cache: imported once
+  # by a CPU job on a cold cache, reused afterwards), finetune.py trains with plain accelerate (no
+  # DeepSpeed) on the BOUND dataset, ClearML tracks in offline mode, and the
+  # `model` artifact is registered from the step's marker.
+  targets:
+    train:
+      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      inputs:
+        base_model:
+          uri: hf:///HuggingFaceTB/SmolLM2-135M
+        # SLURM-SPECIFIC: the data comes as a bound, staged dataset dir (not an
+        # HF id), exercising the `dataset` input path.
+        dataset:
+          uri: hf:///datasets/allenai/tulu-3-sft-personas-algebra
+      outputs:
+        model:
+          uri: "env:///model"
+          type: model
+      steps:
+        - step_uri: space://steps/train/openinstruct-sft
+          config:
+            poll_interval_seconds: 30
+            launcher_config:
+              resources:
+                # SLURM-SPECIFIC: H200, the only GPU ibm-bluevela schedules (its
+                # sbatch constraint). Renders as --gres=gpu:h200:1.
+                accelerators: "H200:1"
+                # gbserver drops compute_config memory on slurm and the partition
+                # default is 2G: bare GiB, as a string.
+                memory: "64"
+              envs:
+                # ClearML on without a server: the session is written locally.
+                CLEARML_OFFLINE_MODE: "1"
+            openinstruct_sft_config:
+              deepspeed_config: ""
+              clearml_enabled: true
+              clearml_project: gbtest-openinstruct-sft
+              args:
+                chat_template_name: tulu
+                max_train_samples: 64
+                max_train_steps: 3
+                max_seq_length: 1024
+                per_device_train_batch_size: 1
+                gradient_accumulation_steps: 1
+                logging_steps: 1
+                seed: 123

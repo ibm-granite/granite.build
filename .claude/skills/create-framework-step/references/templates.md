@@ -29,6 +29,7 @@ STEP_NAME := <name>
 # Custom image only. FIXME: the registry and namespace the image is pushed to.
 # `?=` so `make ... REGISTRY=quay.io/<org>` can still override it.
 REGISTRY ?= quay.io/FIXME
+# The image is pushed as $(REGISTRY)/steps/<category>/<name>/<env>:<version> (one repo per step, mirroring this dir).
 
 # Only for a step that must never be published, such as an exemplar or template
 # (see steps/eval/eval-example). A new step is publishable by default, so normally

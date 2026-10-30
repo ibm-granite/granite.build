@@ -1,0 +1,59 @@
+#####
+# openinstruct-sft: single-node, multi-GPU SFT with upstream Open-Instruct.
+#
+# ONE target. The step runs open_instruct/finetune.py (accelerate + DeepSpeed
+# ZeRO-3 by default) on the bound base model, trains on the HF datasets in
+# openinstruct_sft_config.dataset_mixer_list, and registers the trained HF model
+# as the `model` artifact. ClearML is `auto`: on only when CLEARML_API_HOST,
+# CLEARML_API_ACCESS_KEY and CLEARML_API_SECRET_KEY reach the step env (space
+# secrets), a clean no-op otherwise.
+#
+# To train on your own data instead, bind a `dataset` input (a staged dataset dir)
+# and remove dataset_mixer_list.
+#
+# Render/submit:
+#   gb build render -f build.yaml --param-file parameters.yaml
+#   gb build start  -f build.yaml --param-file parameters.yaml
+#####
+granite.build:
+  name: openinstruct-sft
+
+  targets:
+
+    train:
+      environment_uri: space://environments/$${ENVIRONMENT}
+      inputs:
+        base_model:
+          uri: "$${BASE_MODEL}"
+      outputs:
+        # The trained HF model; openinstruct_sft_config.output names this entry.
+        model:
+          uri: "$${MODEL_URI}"
+          type: model
+      steps:
+        - step_uri: space://steps/train/openinstruct-sft
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            launcher_config:
+              resources:
+                # GPUs are requested here; the step uses all of them.
+                accelerators: "$${ACCELERATORS}"
+            compute_config:
+              num_nodes: 1
+            openinstruct_sft_config:
+              dataset_mixer_list:
+                "$${DATASET}": $${DATASET_SAMPLES}
+              clearml_project: "$${CLEARML_PROJECT}"
+              # Any finetune.py flag, as --<key> <value>.
+              args:
+                chat_template_name: tulu
+                max_seq_length: 4096
+                per_device_train_batch_size: 1
+                gradient_accumulation_steps: 4
+                learning_rate: 5.0e-06
+                lr_scheduler_type: linear
+                warmup_ratio: 0.03
+                num_train_epochs: 2
+                gradient_checkpointing: true
+                logging_steps: 1
+                seed: 123
