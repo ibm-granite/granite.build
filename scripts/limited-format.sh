@@ -69,6 +69,18 @@ do
             echo "skip excluded path (own formatter/CI): ${x}"
             continue
         fi
+        # Same bypass, same fix, for the vendored granite-evals tree: the root
+        # pyproject.toml excludes steps/eval/src/, steps/eval/<family>/src/ and
+        # steps/eval/<family>/tests/ from repo-wide black/isort (upstream
+        # formatting preserved), but this script names files explicitly, which
+        # bypasses those excludes. The tree has its own gates
+        # (make -C steps/eval test-src / check-pins).
+        case "${x}" in
+            steps/eval/src/* | steps/eval/*/src/* | steps/eval/*/tests/*)
+                echo "skip excluded path (vendored eval tree): ${x}"
+                continue
+                ;;
+        esac
         echo "${MY_LINE_BREAK}"
         echo -e "\033[0;36m Formatting file: \033[0m\033[0;32m${x}\033[0m"
         # Check both formatters: an unchecked failure here also exits 0 overall,
