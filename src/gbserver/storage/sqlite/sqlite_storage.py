@@ -345,9 +345,8 @@ class SqliteKeyValuePairStorage(SqliteStorageOverrides, SQLKeyValuePairStorage):
         than surfaced. The lock is held per attempt, never across a backoff.
         """
 
-        @retry_read
         def locked() -> bool:
             with self._db_file_lock:
                 return attempt()
 
-        return locked()
+        return super()._run_attempts(locked)

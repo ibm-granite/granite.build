@@ -221,7 +221,7 @@ function ArtifactLineageGraph({ artifact }: { artifact: Artifact }) {
         )}
         {!isLoading && Boolean(error) && (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--cds-support-error)', fontSize: '0.875rem', padding: '1rem', textAlign: 'center' }}>
-            Failed to load lineage: {String(error)}
+            Failed to load lineage: {expansionErrorMessage(error)}
           </div>
         )}
         {noLineage && (

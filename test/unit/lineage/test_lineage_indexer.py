@@ -1421,8 +1421,12 @@ def test_a_handled_http_error_does_not_classify_a_later_failure():
     )
     assert idx._http_status(outage) is None
     assert idx._is_transient_error(outage) is True
-    bad = raised_while_handling(_http_error(429), ValueError("bad job payload"))
-    assert idx._is_transient_error(bad) is False
+    # The give-up bound ignores a handled status too.
+    assert idx._give_up_after(
+        raised_while_handling(
+            CommError("HTTP 403", _http_error(403)), ValueError("bad job payload")
+        )
+    ) == (idx._MAX_JOB_ATTEMPTS)
     # An explicit cause is followed.
     try:
         try:
@@ -1433,8 +1437,9 @@ def test_a_handled_http_error_does_not_classify_a_later_failure():
         assert idx._http_status(wrapped) == 503
 
 
-def test_a_handled_error_does_not_decide_the_name_or_marker_rules():
-    """The class and message rules skip ``__context__`` too, not only the status."""
+def test_the_failure_itself_decides_before_a_handled_error():
+    """Outermost link first: what the failure says wins over a handled error in
+    its ``__context__``; the context decides only when the failure says nothing."""
 
     def raised_while_handling(handled, exc):
         try:
@@ -1445,15 +1450,30 @@ def test_a_handled_error_does_not_decide_the_name_or_marker_rules():
         except Exception as caught:
             return caught
 
-    # A CommError carried past must not make a bad payload look transient.
-    bad = raised_while_handling(CommError("conn reset"), ValueError("bad payload"))
-    assert idx._is_transient_error(bad) is False
     # A "does not exist" carried past must not make an outage look permanent.
     outage = raised_while_handling(
         ValueError("artifact does not exist"),
         OperationalError("server closed the connection unexpectedly"),
     )
     assert idx._is_transient_error(outage) is True
+    # A 429 carried past must not make a schema error look transient.
+    schema = raised_while_handling(
+        _http_error(429), OperationalError("no such column: tags")
+    )
+    assert idx._is_transient_error(schema) is False
+    # A wrapper that re-raises an outage without ``from`` is still an outage.
+    wrapped = raised_while_handling(
+        ConnectionError("reset"), RuntimeError("write failed")
+    )
+    assert idx._is_transient_error(wrapped) is True
+    # ``from None`` cuts the chain, as it does in a traceback.
+    try:
+        try:
+            raise ConnectionError("reset")
+        except ConnectionError:
+            raise RuntimeError("write failed") from None
+    except RuntimeError as cut:
+        assert idx._is_transient_error(cut) is False
 
 
 def test_the_checkpoint_is_read_once_per_scan():

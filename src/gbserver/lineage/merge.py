@@ -200,16 +200,29 @@ def upsert_job(
             if existing is None:
                 raise
     fields: Dict[str, Any] = {}
+    failure: List[BaseException] = []
 
     def compute(locked: StoredLineageJob) -> bool:
         # Filled in place: update_fields applies ``fields`` after this returns.
         fields.clear()
-        fields.update(merge_job(locked, job))
-        if extra_fields is not None:
-            fields.update(extra_fields(locked, dict(fields)))
+        try:
+            fields.update(merge_job(locked, job))
+            if extra_fields is not None:
+                fields.update(extra_fields(locked, dict(fields)))
+        except Exception as exc:
+            # update_fields wraps a callback's error in a generic ValueError;
+            # kept here so the caller sees, and classifies, the merge's own.
+            failure.append(exc)
+            raise
         return bool(fields)
 
-    if storage.update_fields(existing.uuid, fields, should_update=compute) is None:
+    try:
+        updated = storage.update_fields(existing.uuid, fields, should_update=compute)
+    except Exception:
+        if failure:
+            raise failure[0] from None
+        raise
+    if updated is None:
         return UNCHANGED
     return UPDATED
 

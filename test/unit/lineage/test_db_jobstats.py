@@ -1044,3 +1044,21 @@ def test_a_merged_entry_and_tags_are_one_update(sink, jobs, monkeypatch):
     assert len(calls) == 1
     stored = jobs.get_job("t1")
     assert {"x=1", "y=2"} <= set(stored.tags)
+
+
+def test_a_merge_error_reaches_the_caller_as_itself(sink, jobs):
+    """update_fields wraps a callback's error in a generic ValueError; the merge's
+    own error is what the caller must see, to log and classify it."""
+    import pytest
+
+    from gbserver.lineage.merge import upsert_job
+
+    first = job("t2", [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)])
+    sink._write_job(first, build_id="BLD", target_run_uuid="t2")
+    stored = jobs.get_job("t2")
+
+    def boom(_stored, _fields):
+        raise KeyError("bad stored blob")
+
+    with pytest.raises(KeyError, match="bad stored blob"):
+        upsert_job(jobs, stored.model_copy(update={"tags": ["z=1"]}), extra_fields=boom)

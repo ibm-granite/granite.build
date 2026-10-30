@@ -671,8 +671,11 @@ def _by_lineage_uri(storage, uri: str, **filters) -> List[ArtifactRegistration]:
         storage.artifact_registry.get_by_where(get_row_filter(uri="", **filters)),
     )
     matches = [item for item in candidates if _normalized(item.uri or "") == wanted]
+    # Not archived first, then newest, then by uuid: one key, so the order reads
+    # directly and does not rest on two stable sorts.
     matches.sort(
         key=lambda item: (
+            not item.is_archived,
             (
                 as_aware(item.created_at)
                 if item.created_at
@@ -682,7 +685,6 @@ def _by_lineage_uri(storage, uri: str, **filters) -> List[ArtifactRegistration]:
         ),
         reverse=True,
     )
-    matches.sort(key=lambda item: bool(item.is_archived))  # stable: newest first within
     return matches
 
 

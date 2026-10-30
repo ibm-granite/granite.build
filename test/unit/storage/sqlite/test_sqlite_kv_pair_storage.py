@@ -123,3 +123,28 @@ def test_compare_and_set_keeps_a_legacy_rows_missing_created_time():
     assert storage.get_by_key("k").created_time == BEGINNING_OF_TIME
     assert storage.compare_and_set("k", {"v": 1}, {"v": 2}) is True
     assert storage.get_by_key("k").created_time == BEGINNING_OF_TIME
+
+
+@pytest.mark.skipif(
+    os.environ.get("SKIP_SQL_ADMIN_TESTS", "False").lower() == "true",
+    reason="Don't want to run this in CICD.",
+)
+def test_compare_and_set_recreates_a_table_dropped_under_it():
+    """The table-exists flag is per instance: a table dropped under a live
+    process is recreated, not failed on every checkpoint write until restart."""
+    from unittest.mock import patch
+
+    from sqlalchemy import text
+
+    storage = SqliteStorageFactory().create_kv_pair_storage(
+        table_name=f"t_kv_{uuid_module.uuid4().hex[:8]}"
+    )
+    assert storage.compare_and_set("k", None, {"v": 1}) is True
+    storage.delete_table()
+    assert storage.compare_and_set("k", None, {"v": 1}) is True
+    # Dropped behind the storage's back, not through delete_table.
+    with storage._engine.begin() as connection:
+        connection.execute(text(f"DROP TABLE {storage.table_name}"))
+    with patch("tenacity.nap.time.sleep"):
+        assert storage.compare_and_set("k", None, {"v": 2}) is True
+    assert storage.get_value("k") == {"v": 2}

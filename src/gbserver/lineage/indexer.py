@@ -324,13 +324,16 @@ _MAX_SLOW_GIVE_UP_ATTEMPTS = 20
 _TRANSIENT_ALERT_AFTER = 20
 
 
-def _causes(exc: BaseException) -> Iterator[BaseException]:
-    """``exc`` and what it was caused by: W&B's wrapped ``.exc``, then ``__cause__``.
+def _causes(exc: BaseException, implicit: bool = True) -> Iterator[BaseException]:
+    """``exc`` and what it was caused by: W&B's wrapped ``.exc``, ``__cause__``,
+    and (``implicit``) ``__context__`` where the link is an implicit re-raise.
 
-    Never ``__context__``: that is an exception already handled when ``exc`` was
-    raised -- a 404 caught and carried past, say -- and must not decide how a
-    later, unrelated failure (a DB outage) is classified. The drivers and wrappers
-    this sees chain their cause explicitly (SQLAlchemy, ``raise ... from``).
+    ``__context__`` is an exception already handled when ``exc`` was raised. It
+    is followed when ``exc`` has no explicit cause and does not suppress it
+    (``raise X`` inside ``except``, a wrapper that forgot ``from``) -- the same
+    rule Python's traceback uses -- so an outage a wrapper re-raises implicitly
+    is still seen. :func:`_is_transient_error` reads its own signal first, so a
+    context only decides when the outer exception says nothing either way.
     """
     seen: set = set()
     current: Optional[BaseException] = exc
@@ -338,25 +341,34 @@ def _causes(exc: BaseException) -> Iterator[BaseException]:
         seen.add(id(current))
         yield current
         wrapped = getattr(current, "exc", None)
-        current = (
-            wrapped
-            if isinstance(wrapped, BaseException) and id(wrapped) not in seen
-            else current.__cause__
-        )
+        if isinstance(wrapped, BaseException) and id(wrapped) not in seen:
+            current = wrapped
+        elif current.__cause__ is not None:
+            current = current.__cause__
+        elif implicit and not current.__suppress_context__:
+            current = current.__context__
+        else:
+            current = None
 
 
 def _http_status(exc: BaseException) -> Optional[int]:
-    """The HTTP status behind ``exc`` (see :func:`_causes`), or ``None``.
+    """The HTTP status ``exc`` carries itself or by explicit cause, or ``None``.
 
     W&B wraps a ``requests.HTTPError`` in a ``CommError`` (its ``exc``), while
     ``RunArtifacts`` pagination re-raises the raw ``HTTPError``; both carry it on
-    ``.response``.
+    ``.response``. Not through ``__context__``: a status handled earlier must not
+    set the give-up bound of an unrelated failure (see :func:`_give_up_after`).
     """
-    for current in _causes(exc):
-        status = getattr(getattr(current, "response", None), "status_code", None)
-        if isinstance(status, int):
+    for current in _causes(exc, implicit=False):
+        status = _own_status(current)
+        if status is not None:
             return status
     return None
+
+
+def _own_status(current: BaseException) -> Optional[int]:
+    status = getattr(getattr(current, "response", None), "status_code", None)
+    return status if isinstance(status, int) else None
 
 
 def _give_up_after(exc: Optional[BaseException]) -> int:
@@ -379,24 +391,27 @@ def _is_transient_error(exc: BaseException) -> bool:
     a raw ``HTTPError`` for a 401/429/5xx is an outage and is waited out. A 403
     is not transient; it gets a longer give-up instead (see ``_give_up_after``).
     """
+    # The status the failure carries (itself, its wrapped ``.exc``, its cause)
+    # decides first, whatever the classes around it say.
     status = _http_status(exc)
     if status is not None:
         return status >= 500 or status in _TRANSIENT_HTTP_STATUSES
-    chain = list(_causes(exc))
-    if any(
-        m in str(current).lower()
-        for current in chain
-        for m in _DETERMINISTIC_ERROR_MARKERS
-    ):
-        return False
-    for current in chain:
+    # Then link by link, outermost first: the first link that reads either way
+    # decides, so a handled exception deeper in the chain cannot overrule what
+    # the failure itself says.
+    for current in _causes(exc):
+        status = _own_status(current)
+        if status is not None:
+            return status >= 500 or status in _TRANSIENT_HTTP_STATUSES
+        message = str(current).lower()
+        if any(m in message for m in _DETERMINISTIC_ERROR_MARKERS):
+            return False
         if isinstance(current, (ConnectionError, TimeoutError)):
             return True
         if _TRANSIENT_ERROR_NAMES & {c.__name__ for c in type(current).__mro__}:
             return True
         if getattr(current, "connection_invalidated", False):
             return True
-        message = str(current).lower()
         if any(marker in message for marker in _TRANSIENT_ERROR_MARKERS):
             return True
     return False

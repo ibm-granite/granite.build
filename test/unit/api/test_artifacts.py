@@ -573,3 +573,27 @@ def test_lineage_uri_match_does_not_cache_the_request_uri_or_long_uris():
     assert api._normalized_cached.cache_info().currsize == 0
     api._normalized("hf://org/model")
     assert api._normalized_cached.cache_info().currsize == 1
+
+
+def test_lineage_uri_matches_come_unarchived_first_then_newest():
+    from datetime import datetime, timezone
+
+    from gbserver.api import artifacts as api
+
+    def reg(uuid, archived, day):
+        return MagicMock(
+            uri="https://huggingface.co/org/model",
+            uuid=uuid,
+            is_archived=archived,
+            created_at=datetime(2026, 1, day, tzinfo=timezone.utc),
+        )
+
+    storage = MagicMock()
+    storage.artifact_registry.get_by_where.return_value = [
+        reg("old", False, 1),
+        reg("archived-new", True, 9),
+        reg("new", False, 5),
+        reg("none", None, 7),
+    ]
+    order = [m.uuid for m in api._by_lineage_uri(storage, "https://huggingface.co/org/model")]
+    assert order == ["none", "new", "old", "archived-new"]

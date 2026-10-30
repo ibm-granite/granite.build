@@ -21,12 +21,21 @@ SQL storage implementation for the generic gb_kv_pairs key-value store.
 from typing import Any, Callable, Dict, Optional
 
 from sqlalchemy.exc import IntegrityError
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_random_exponential,
+)
 
 from gbserver.storage.kv_pair_storage import (
     BaseKeyValuePairStorage,
     IKeyValuePairStorage,
 )
-from gbserver.storage.sql.sql_storage import BaseSQLItemStorage, retry_read
+from gbserver.storage.sql.sql_storage import (
+    BaseSQLItemStorage,
+    _is_retryable_read_error,
+)
 from gbserver.storage.storage import JSON_COLUMN_NAME, UUID_COLUMN_NAME
 from gbserver.storage.stored_kv_pair import StoredKeyValuePair
 
@@ -48,7 +57,8 @@ class SQLKeyValuePairStorage(
         kwargs["unique_columns"] = {"key": None}
         super().__init__(**kwargs)
         # Whether compare_and_set has seen the table exist, so the checkpoint
-        # write does not inspect the schema on every call.
+        # write does not inspect the schema on every call. Reset with the table
+        # (delete_table) and on a missing-table error, so it is recreated.
         self._table_ready = False
 
     def compare_and_set(
@@ -63,6 +73,10 @@ class SQLKeyValuePairStorage(
         def attempt() -> bool:
             nonlocal tried
             if not self._table_ready:
+                # What the add() this replaced did on first use and after the
+                # table was dropped: create it, or adjust it to the item.
+                sample = self._convert_item_to_row_dict(self._get_sample_item())
+                self._create_or_adjust_schema_item_dict(sample)
                 if not self._ensure_table_without_retry():
                     return False
                 self._table_ready = True
@@ -73,16 +87,26 @@ class SQLKeyValuePairStorage(
                 if self._stored_value_without_retry(key) == value:
                     return True
             tried = True
-            return self._compare_and_set_without_retry(key, expected, value)
+            try:
+                return self._compare_and_set_without_retry(key, expected, value)
+            except Exception as exc:
+                if _is_missing_table(exc):
+                    # Dropped under a live process: the next attempt recreates it.
+                    self._table_ready = False
+                raise
 
         return self._run_attempts(attempt)
+
+    def _delete_table(self):
+        self._table_ready = False
+        super()._delete_table()
 
     def _run_attempts(self, attempt: Callable[[], bool]) -> bool:
         """Retry ``attempt`` like a read (``retry_read``): a dropped connection or a
         busy database is retried, as the ``get_by_key``/``add`` it replaced were.
         Each attempt runs only plain statements, so no retry nests inside another.
         """
-        return retry_read(attempt)()
+        return _CAS_RETRY(attempt)()
 
     def _stored_value_without_retry(self, key: str) -> Optional[Dict[str, Any]]:
         """The value under ``key`` in one plain query: no retry, no lock of its own."""
@@ -155,6 +179,24 @@ class SQLKeyValuePairStorage(
         finally:
             session.close()
 
-    @staticmethod
-    def _convert_json_column(stored: str) -> Optional[Dict[str, Any]]:
-        return StoredKeyValuePair.model_validate_json(stored).value
+
+def _is_missing_table(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return "no such table" in message or (
+        "relation" in message and "does not exist" in message
+    )
+
+
+def _is_retryable_cas_error(exc: BaseException) -> bool:
+    """Like a read, plus a missing table: the next attempt recreates it."""
+    return _is_missing_table(exc) or _is_retryable_read_error(exc)
+
+
+# The compare-and-set's retry: a read's policy, and a table dropped under a live
+# process is recreated on the next attempt rather than failing every scan.
+_CAS_RETRY = retry(
+    wait=wait_random_exponential(multiplier=1, min=1, max=30),
+    stop=stop_after_attempt(10),
+    retry=retry_if_exception(_is_retryable_cas_error),
+    reraise=True,
+)

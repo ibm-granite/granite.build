@@ -96,3 +96,33 @@ def test_a_successful_row_without_the_column_falls_back(storage):
     _null_column(storage, _add(storage, "legacy", CUTOFF))
     with pytest.raises(NotImplementedError):
         storage.get_successful_finished_after(None, None, 10)
+
+
+def test_a_legacy_row_behind_the_cutoff_does_not_force_the_fallback(storage):
+    """An upgraded deployment's legacy rows are behind the checkpoint: the keyset
+    read goes on, so they do not mean a full read on every scan."""
+    _null_column(storage, _add(storage, "legacy", CUTOFF - timedelta(days=30)))
+    _add(storage, "new", CUTOFF + timedelta(hours=1))
+    assert _names(storage, cutoff=CUTOFF) == ["new"]
+
+
+def test_a_legacy_row_at_or_after_the_cutoff_still_falls_back(storage):
+    _null_column(storage, _add(storage, "legacy", CUTOFF))
+    with pytest.raises(NotImplementedError):
+        storage.get_successful_finished_after(CUTOFF, None, 10)
+
+
+def test_a_malformed_blob_on_another_row_does_not_force_the_fallback(storage):
+    """The cast runs on legacy successful rows only."""
+    _add(storage, "new", CUTOFF + timedelta(hours=1))
+    bad = _add(storage, "broken", CUTOFF, status=Status.FAILED)
+    table = (
+        f"{storage._db_schema}.{storage.table_name}"
+        if storage._db_schema
+        else storage.table_name
+    )
+    with storage._engine.begin() as conn:  # pylint: disable=protected-access
+        conn.execute(
+            text(f"UPDATE {table} SET json = 'not json' WHERE uuid = :u"), {"u": bad}
+        )
+    assert _names(storage, cutoff=CUTOFF) == ["new"]
