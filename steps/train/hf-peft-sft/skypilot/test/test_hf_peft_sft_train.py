@@ -91,6 +91,8 @@ class TestReentrant:
             ("lora", "ddp", 1, False),
             ("lora", "fsdp", 4, False),
             ("alora", "ddp", 2, False),
+            ("lora", "deepspeed", 2, True),
+            ("alora", "deepspeed", 4, True),
         ],
     )
     def test_rule(self, method, dist, ws, expected):
