@@ -1,0 +1,66 @@
+# nl2repo on BlueVela (SkyPilot / SLURM), nl2repo family image.
+#
+# Data: github.com/multimodal-art-projection/NL2RepoBench @ 781a1da1ee41fb8edb0bed22f586d69111610edf
+# — UNLICENSED upstream, so it is NOT pinned in the image and NOT prefetched here: the
+# adapter fetches only test_files/ at run start, verifies it against a pinned tree
+# sha256 (plus the 104-task count) and caches it under ~/.cache/granite/nl2repobench.
+# See steps/eval/nl2repo/skypilot/USAGE.md ("Why this shape is safe"); scored runs are
+# pending OSPO sign-off.
+#
+# The agent is OpenHands 0.56 (docker.all-hands.dev/all-hands-ai/openhands:0.56) and
+# the grade images are ghcr.io/multimodal-art-projection/nl2repobench/<task>:1.0 — both
+# pulled at run time into sandbox_cache via enroot. The only secret is HF_TOKEN (the
+# model checkpoint pull); browsing (enable_browsing, on by default) runs a local browser
+# inside the OpenHands sandbox and needs no API key.
+#
+# LIMIT is empty: the full benchmark (104 tasks). For a quick functional check, score
+# only the first N tasks (3-10 is enough to prove the plumbing):
+#   gb build start -f recipes/evals/nl2repo/nl2repo/skypilot/build.yaml --space <space> --param LIMIT=3
+# Override any value with --param KEY=VALUE.
+
+# ─── Model ────────────────────────────────────────────────────────────
+# https://huggingface.co/ibm-granite/granite-4.2-3b (vLLM downloads a hub id into the HF cache).
+MODEL_PATH: "ibm-granite/granite-4.2-3b"
+SERVED_MODEL_NAME: ""
+# Unique per run: re-running the same model with the same RUN_NAME re-resolves the same
+# artifact URIs, so a reused SUCCESS target's downstream (score) never dispatches.
+RUN_NAME: "granite-4.2-3b"
+OUTPUT_ROOT: "/proj/granite-build/g4os/granite/runs"
+# HF cache the container reads and writes (model). Empty = the image's /opt/hf-cache.
+HF_HOME: ""
+
+# ─── Images (GPU generate + CPU score) ────────────────────────────────────
+# Fill with the tag of a built + pushed family image before the first run:
+#   make -C steps/eval image-nl2repo REGISTRY=us.icr.io/cil15-shared-registry publish-image-nl2repo REGISTRY=...
+#   make -C steps/eval image-cpu-nl2repo REGISTRY=... publish-image-cpu-nl2repo REGISTRY=...
+# (the tag defaults to the building checkout's git short SHA). The family image adds no
+# pip dependency of its own, so any nl2repo image tag is license-clean to redistribute.
+IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-nl2repo:<tag>"
+IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-nl2repo-cpu:<tag>"
+
+# ─── Scale ────────────────────────────────────────────────────────────
+LIMIT: ""
+REPEATS: ""
+# Each worker holds one OpenHands agent run (generate) or one grade sandbox (score).
+WORKERS: 8
+# e.g. "agent=gold" (model-free plumbing check; then MODEL_PATH can be "none"),
+# "tasks=^six$" (regex on the task name), "temperature=0.6", "eval_timeout=3600".
+OPTIONS: ""
+TENSOR_PARALLEL_SIZE: 1
+# Shared enroot squashfs cache for the OpenHands app image and the per-task test
+# images. Empty derives a per-run cache at ${OUTPUT_ROOT}/${RUN_NAME}/enroot-cache,
+# writable by whoever dispatched the run (they own the output dir); set a shared path
+# to reuse imported images across runs.
+SANDBOX_CACHE: ""
+
+# ─── Cluster ──────────────────────────────────────────────────────────
+ENVIRONMENT_URI: "space://environments/skypilot/slurm/ibm-bluevela"
+CLUSTER: "bluevela"
+QUEUE: "gpu-mid"
+GPU_MEMORY: 256
+CPU_QUEUE: "cpu"
+SCORE_CPUS: 8
+SCORE_MEMORY: 64
+MAX_RETRIES: 2
+POLL_INTERVAL_SECONDS: 300
+LOG_RETRIEVAL_INTERVAL_SECONDS: 300
