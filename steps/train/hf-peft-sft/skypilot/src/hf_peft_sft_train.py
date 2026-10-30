@@ -183,3 +183,127 @@ def rewrite_base_model(adapter_config: dict, base_model_id: str) -> dict:
 def fail(msg: str) -> None:
     print(f"hf-peft-sft: ERROR {msg}", file=sys.stderr, flush=True)
     sys.exit(1)
+
+
+def _training_args(argv: list[str]):
+    from transformers import HfArgumentParser
+    from trl import SFTConfig
+
+    parser = HfArgumentParser((StepArgs, SFTConfig))
+    step, cfg = parser.parse_args_into_dataclasses(args=argv)
+    return step, cfg
+
+
+def _progress_callback():
+    from transformers import TrainerCallback
+
+    class StepLogCallback(TrainerCallback):
+        def on_log(self, args, state, control, logs=None, **kwargs):
+            if state.is_world_process_zero and logs and "loss" in logs:
+                print(step_line(state.global_step, state.max_steps, logs), flush=True)
+
+    return StepLogCallback()
+
+
+def main(argv: list[str] | None = None) -> None:
+    import json
+    import os
+
+    import torch
+    from datasets import load_dataset
+    from peft import LoraConfig
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    from trl import SFTTrainer
+
+    step, cfg = _training_args(sys.argv[1:] if argv is None else argv)
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+
+    if cfg.gradient_checkpointing:
+        cfg.gradient_checkpointing_kwargs = {
+            "use_reentrant": use_reentrant(step.method, step.distributed, world_size)
+        }
+
+    tokenizer = AutoTokenizer.from_pretrained(step.model_name_or_path)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    dataset = load_dataset(step.dataset_path, split=step.dataset_split)
+    fmt = detect_format(list(dataset.column_names))
+    print(f"hf-peft-sft: {len(dataset)} training rows, format {fmt}", flush=True)
+
+    alora_tokens = None
+    if step.method == "alora":
+        alora_tokens = tokenizer.encode(
+            step.alora_invocation_string, add_special_tokens=False
+        )
+        if not alora_tokens:
+            raise StepError(
+                "alora_invocation_string tokenizes to nothing with this tokenizer."
+            )
+
+    kw = model_kwargs(step.method, step.distributed, step.mixed_precision, local_rank)
+    load = {
+        "dtype": getattr(torch, kw["dtype"]),
+        "attn_implementation": kw["attn_implementation"],
+    }
+    if "quantization" in kw:
+        q = dict(kw["quantization"])
+        for k in ("bnb_4bit_compute_dtype", "bnb_4bit_quant_storage"):
+            q[k] = getattr(torch, q[k])
+        load["quantization_config"] = BitsAndBytesConfig(**q)
+    if "device_map" in kw:
+        load["device_map"] = kw["device_map"]
+    model = AutoModelForCausalLM.from_pretrained(step.model_name_or_path, **load)
+
+    peft_config = LoraConfig(
+        **lora_kwargs(
+            step.lora_r,
+            step.lora_alpha,
+            step.lora_dropout,
+            parse_target_modules(step.lora_target_modules),
+            step.lora_modules_to_save or None,
+            alora_tokens,
+        )
+    )
+    trainer = SFTTrainer(
+        model=model,
+        args=cfg,
+        train_dataset=dataset,
+        processing_class=tokenizer,
+        peft_config=peft_config,
+        callbacks=[_progress_callback()],
+    )
+    if alora_tokens:
+        n = min(INVOCATION_CHECK_ROWS, len(trainer.train_dataset))
+        rows = [trainer.train_dataset[i]["input_ids"] for i in range(n)]
+        missing = check_invocation(rows, alora_tokens)
+        if missing:
+            print(
+                f"hf-peft-sft: WARNING the aLoRA invocation is missing from rows {missing} of "
+                f"the first {n} (truncated at max_length?); those rows train nothing.",
+                flush=True,
+            )
+
+    trainer.train()
+
+    if trainer.is_fsdp_enabled:
+        trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
+    trainer.save_model(cfg.output_dir)
+
+    if trainer.is_world_process_zero() and step.base_model_id:
+        path = os.path.join(cfg.output_dir, "adapter_config.json")
+        with open(path, encoding="utf-8") as f:
+            adapter_config = json.load(f)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(
+                rewrite_base_model(adapter_config, step.base_model_id), f, indent=2
+            )
+        print(f"hf-peft-sft: adapter base recorded as {step.base_model_id}", flush=True)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except StepError as e:
+        fail(str(e))
