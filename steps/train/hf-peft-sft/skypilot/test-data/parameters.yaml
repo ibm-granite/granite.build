@@ -3,8 +3,8 @@ ENVIRONMENT: "skypilot/aws"
 # Public, Apache-2.0. A gated model needs HF_TOKEN in the step env (space secret).
 BASE_MODEL_ID: "ibm-granite/granite-3.3-2b-instruct"
 ADAPTER_URI: "env:///adapter"
-# 4x A100 80GB: DDP, one full bf16 copy of the 2B base per GPU.
-ACCELERATORS: "A100-80GB:4"
+# 8x A100 80GB (p4de): DDP, one full bf16 copy of the 2B base per GPU.
+ACCELERATORS: "A100-80GB:8"
 DATASET: "trl-lib/Capybara"
 DATASET_SPLIT: "train"
 CLEARML_PROJECT: "hf-peft-sft"

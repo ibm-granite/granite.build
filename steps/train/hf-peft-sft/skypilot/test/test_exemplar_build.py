@@ -127,8 +127,12 @@ def test_fixtures_cover_every_method_and_sharding_mode():
         for b in BUILDS[1:]
         for t in _targets(b)
     }
-    assert {m for m, _ in seen} == {"lora", "qlora", "alora"}
-    assert {d for _, d in seen} == {"ddp", "fsdp", "deepspeed"}
+    assert seen == {
+        ("qlora", "ddp"),
+        ("alora", "ddp"),
+        ("lora", "fsdp"),
+        ("qlora", "deepspeed"),
+    }
 
 
 def test_bluevela_fixture_matches_the_environment():

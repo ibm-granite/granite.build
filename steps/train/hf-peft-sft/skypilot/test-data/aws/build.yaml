@@ -1,6 +1,6 @@
 granite.build:
   name: skypilot-aws-hf-peft-sft
-  # HF-PEFT SFT on a real EC2 GPU (SkyPilot/aws): TWO targets, 3 steps each, on
+  # HF-PEFT SFT on a real EC2 GPU (SkyPilot/aws): TWO targets, 3 training steps each, on
   # one A10G. SUCCESS proves the aws path for the two single-GPU methods: the
   # quay.io image pulls, the inline `hf download` stages the base model, QLoRA
   # trains on a 4-bit base and aLoRA on a bf16 base, both on HF-id data, and
