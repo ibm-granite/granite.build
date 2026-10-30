@@ -92,7 +92,8 @@ def _run(node, env=None, tail=("--dataset_path", "ds"), **opts):
     o.update({k.replace("_", "-"): v for k, v in opts.items()})
     argv = ["bash", str(_SCRIPT)]
     for k, v in o.items():
-        argv += [f"--{k}", v]
+        if v is not None:  # None = omit the option
+            argv += [f"--{k}", v]
     argv += ["--", *tail]
     e = {
         "PATH": f"{bin_dir}:/usr/bin:/bin",
@@ -241,6 +242,26 @@ class TestLaunch:
     def test_bad_enum_refused(self, node, opt, bad):
         proc, rec = _run(node, **{opt: bad})
         assert proc.returncode == 1 and rec is None
+        assert "hf-peft-sft: ERROR" in proc.stderr
+
+    def test_missing_option_value_is_a_prefixed_error(self, node):
+        tmp, bin_dir, home, work = node
+        proc = subprocess.run(
+            ["bash", str(_SCRIPT), "--base-model"],
+            capture_output=True,
+            text=True,
+            env={"PATH": f"{bin_dir}:/usr/bin:/bin", "HF_PEFT_SFT_HOME": str(home)},
+            cwd=work,
+            check=False,
+        )
+        assert proc.returncode == 1
+        assert "hf-peft-sft: ERROR" in proc.stderr
+        assert "unbound variable" not in proc.stderr
+
+    def test_missing_required_option_is_a_prefixed_error(self, node):
+        proc, rec = _run(node, output_id=None)
+        assert proc.returncode == 1 and rec is None
+        assert "hf-peft-sft: ERROR --output-id is required" in proc.stderr
 
 
 class TestClearml:
@@ -279,6 +300,7 @@ class TestClearml:
     def test_bad_mode_refused(self, node):
         proc, rec = _run(node, clearml_mode="maybe")
         assert proc.returncode == 1 and rec is None
+        assert "hf-peft-sft: ERROR" in proc.stderr
 
 
 class TestOutput:
@@ -379,3 +401,13 @@ class TestOutput:
     def test_bad_output_id(self, node, bad):
         proc, rec = _run(node, output_id=bad)
         assert proc.returncode == 1 and rec is None
+        assert "hf-peft-sft: ERROR" in proc.stderr
+
+    @pytest.mark.parametrize("bad", ["/", ".", "..", "./", "sub/.."])
+    def test_refuses_a_degenerate_output_path(self, node, bad):
+        (node[3] / "sub").mkdir()
+        proc, rec = _run(node, output_path=bad)
+        assert proc.returncode == 1 and rec is None
+        assert "hf-peft-sft: ERROR" in proc.stderr
+        assert "does not name a directory to create" in proc.stderr
+        assert node[3].is_dir()
