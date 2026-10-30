@@ -61,6 +61,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         -o /usr/share/keyrings/pgdg.asc \
     && echo "deb [signed-by=/usr/share/keyrings/pgdg.asc] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
         > /etc/apt/sources.list.d/pgdg.list \
+    # ... create_main_cluster must be seeded before postgresql-common's postinst
+    # runs (it would create a default cluster), yet /etc/postgresql-common ships
+    # with that very package, which is not installed yet -- mkdir it first.
+    && mkdir -p /etc/postgresql-common \
     && echo 'create_main_cluster = false' > /etc/postgresql-common/create_cluster.conf \
     && apt-get update && apt-get install -y --no-install-recommends \
         postgresql-17 postgresql-17-pgvector postgresql-client-17 \
@@ -84,11 +88,14 @@ ENV UV_PROJECT_ENVIRONMENT=${EVALS_HOME}/.venv \
     UV_LINK_MODE=copy \
     VIRTUAL_ENV=${EVALS_HOME}/.venv \
     PATH=${EVALS_HOME}/.venv/bin:$PATH
-# Where extras.sh puts the pipx'd postgres-mcp (and its mcp<2 constraint
-# file), and the two caches the MCP-server runtimes share with the run:
-# chromium for the playwright server (baked; stays writable so a server
-# needing another revision can download it) and npm's cache for the npx
-# servers (pre-warmed at the pinned versions).
+# Where extras.sh puts the postgres MCP server -- a baked warm venv served
+# through a pipx-run shim (the package's pglast==7.2.0 pin never existed on
+# PyPI, so a cold resolve of `pipx run postgres-mcp==0.3.0` is
+# unsatisfiable), plus its mcp<2 constraint file -- and the two caches the
+# MCP-server runtimes share with the run: chromium for the playwright
+# server (baked; stays writable so a server needing another revision can
+# download it) and npm's cache for the npx servers (pre-warmed at the
+# pinned versions).
 ENV PIPX_HOME=/opt/pipx \
     PIPX_BIN_DIR=/usr/local/bin \
     PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \

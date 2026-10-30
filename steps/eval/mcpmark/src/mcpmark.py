@@ -97,6 +97,12 @@ TREE_SHA256 = "f825fd368508329f7e51a1f512828e36ff996506fbe09207ab31449f0cde8c23"
 MCPMARK_HOME = Path(f"/opt/mcpmark/{MCPMARK_COMMIT}")
 MCPMARK_PY = MCPMARK_HOME / ".venv" / "bin" / "python"
 MCP_CONSTRAINTS = Path("/opt/pipx/mcp_constraints.txt")
+PIPX_SHIM = Path("/opt/pipx/shim")
+"""The pipx shim extras.sh plants: ``run postgres-mcp==0.3.0`` execs the
+baked warm venv's binary (a cold resolve of the spec is unsatisfiable
+today -- postgres-mcp pins a pglast that never existed on PyPI), anything
+else falls through to the real pipx. Leads the pipeline PATH so the
+harness's spawn and the preflight both hit it."""
 
 # Task counts at the pinned commit, from the commit's git tree
 # (tasks/<service>/<suite>/<category>/<task>/); the run checks them.
@@ -264,18 +270,20 @@ class Mcpmark(Benchmark):
     def _pipeline_env(self, checkout: Path, base_url: str, pg_env: dict[str, str] | None = None) -> dict[str, str]:
         """The pipeline subprocess env: litellm's openai provider resolution
         (OPENAI_BASE_URL at the in-job vLLM, the dummy key it requires), the
-        writable checkout on PYTHONPATH, the baked venv first on PATH (it
-        ships pipx, the postgres MCP server's launcher), and the mcp<2
-        constraint guarding a cold re-resolve of postgres-mcp (an
-        unconstrained one installs mcp 2.0.0, which dropped
-        mcp.server.fastmcp and fails every postgres task with "Connection
-        closed" -- reading as a model failure)."""
+        writable checkout on PYTHONPATH, and on PATH the pipx shim ahead of
+        the baked venv (which ships the real pipx): the harness spawns the
+        postgres MCP server as `pipx run postgres-mcp==0.3.0`, which the
+        shim answers from the baked warm venv -- a cold resolve of the spec
+        is unsatisfiable today. Plus the mcp<2 constraint guarding any other
+        cold re-resolve (an unconstrained one installs mcp 2.0.0, which
+        dropped mcp.server.fastmcp and fails every postgres task with
+        "Connection closed" -- reading as a model failure)."""
         env = {
             **os.environ,
             "OPENAI_BASE_URL": base_url,
             "OPENAI_API_KEY": "EMPTY",
             "PYTHONPATH": str(checkout),
-            "PATH": f"{MCPMARK_HOME}/.venv/bin{os.pathsep}{os.environ.get('PATH', '')}",
+            "PATH": f"{PIPX_SHIM}{os.pathsep}{MCPMARK_HOME}/.venv/bin{os.pathsep}{os.environ.get('PATH', '')}",
             "UV_CONSTRAINT": str(MCP_CONSTRAINTS),
             "PIP_CONSTRAINT": str(MCP_CONSTRAINTS),
         }
@@ -398,10 +406,11 @@ class Mcpmark(Benchmark):
         return result
 
     def _postgres_preflight(self, env: dict[str, str]) -> None:
-        """Prove the pipx'd postgres-mcp starts before the node is spent: the
-        baked venv (mcp<2, extras.sh) must answer --help. A broken resolve
-        fails every task in ~3 s with "Connection closed", which reads as a
-        model failure -- exactly the misreport this preflight prevents."""
+        """Prove the postgres MCP server starts before the node is spent: the
+        `pipx run` (through the shim, from the baked warm venv with mcp<2)
+        must answer --help. A broken resolve fails every task in ~3 s with
+        "Connection closed", which reads as a model failure -- exactly the
+        misreport this preflight prevents."""
         result = subprocess.run(
             ["pipx", "run", POSTGRES_MCP, "--help"], env=env, capture_output=True, text=True, check=False
         )
@@ -409,8 +418,9 @@ class Mcpmark(Benchmark):
             tail = (result.stderr or result.stdout or "").strip()[-500:]
             raise SystemExit(
                 f"{self.id}: {POSTGRES_MCP} preflight failed (exit {result.returncode}): {tail}; "
-                f"the pipx venv is baked with mcp<2 ({MCP_CONSTRAINTS}) -- an unconstrained "
-                "resolve installs mcp 2.0.0, which dropped mcp.server.fastmcp"
+                f"the shim must lead PATH ({PIPX_SHIM}) and serve the baked venv (mcp<2, "
+                f"{MCP_CONSTRAINTS}) -- an unconstrained resolve installs mcp 2.0.0, which "
+                "dropped mcp.server.fastmcp"
             )
 
     # -- entry point ----------------------------------------------------------

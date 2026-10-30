@@ -181,6 +181,13 @@ def test_the_pins_appear_in_extras_sh():
     text = extras.read_text()
     for pin in (mm.MCPMARK_COMMIT, mm.TARBALL_SHA256, mm.TREE_SHA256):
         assert pin in text, pin
+    # The warm venv must bake the exact spec the harness drives, and a
+    # pglast that actually exists on PyPI: postgres-mcp 0.3.0's own pin,
+    # pglast==7.2.0, never shipped (releases jump 7.21 -> 8.3), so a cold
+    # resolve of the spec is unsatisfiable and extras.sh assembles the venv
+    # directly instead.
+    for pin in (mm.POSTGRES_MCP, "pglast==7.21"):
+        assert pin in text, pin
 
 
 def test_option_parsing(tmp_path):
@@ -343,7 +350,7 @@ def test_pipeline_env_wiring(baked, tmp_path):
     assert env["FILESYSTEM_TEST_ROOT"] == str(tmp_path / "out" / "test_environments")
     assert env["UV_CONSTRAINT"] == str(mm.MCP_CONSTRAINTS)
     assert env["PIP_CONSTRAINT"] == str(mm.MCP_CONSTRAINTS)
-    assert env["PATH"].startswith(f"{mm.MCPMARK_HOME}/.venv/bin:")
+    assert env["PATH"].startswith(f"{mm.PIPX_SHIM}:{mm.MCPMARK_HOME}/.venv/bin:")  # pipx shim leads; the real pipx follows
 
     pg = mkbench("postgres", tmp_path)
     env = pg._pipeline_env(
