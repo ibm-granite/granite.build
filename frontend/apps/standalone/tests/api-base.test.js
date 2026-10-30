@@ -75,10 +75,19 @@ describe('the AutoTuneX client is wired to the host seam', () => {
   const path = require('node:path')
   const src = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'packages', 'ui-core', 'api', 'autotunex.ts'), 'utf8')
 
-  it('is built with createApiClient, without the gbserver-only base-URL opt-in', () => {
+  it('is built with createAutotunexClient, not a bare axios instance', () => {
     // gbserver authenticates /api/autotunex/*, so a client the host's headers
-    // cannot reach 401s every call. allowHostBaseUrl would point it at /api/v1.
-    assert.match(src, /^const client = createApiClient\(autotunexApiBase\(''\)\)$/m)
+    // cannot reach 401s every call. createAutotunexClient applies them on the
+    // proxy path (and only there -- see the direct-client tests below).
+    assert.match(src, /^const client = createAutotunexClient\(\)$/m)
     assert.doesNotMatch(src, /axios\.create\(/)
+  })
+
+  it('builds its download links through autotunexResourceUrl', () => {
+    // An <a href> bypasses the axios client, so a link built on the proxy path
+    // would still point at gbserver after a host configured a direct AutoTuneX.
+    assert.doesNotMatch(src, /autotunexApiBase\(/)
+    assert.match(src, /autotunexResourceUrl\(\s*`\/jobs\/\$\{jobId\}\/result-report\/file/)
+    assert.match(src, /autotunexResourceUrl\(`\/jobs\/\$\{jobId\}\/result-report\/archive/)
   })
 })

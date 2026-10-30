@@ -6,7 +6,9 @@
  * gbserver's same-origin proxy — never at AUTOTUNEX_API_URL directly, which the
  * browser cannot reach without CORS. That includes `getHFModels`/`getHFModelCard`:
  * AutoTuneX queries HuggingFace server-side, so private repos in its allowlisted
- * namespaces are visible, which a direct browser call never could.
+ * namespaces are visible, which a direct browser call never could. A hosted
+ * dashboard can instead opt in at runtime with `configureAutotunexClient` to call
+ * the AutoTuneX API directly (still not HuggingFace).
  *
  * Targets AutoTuneX API v0.4.0 (`/api/v1/*`, offset-paginated list envelopes
  * `{items,total,limit,offset}`). `pageQuery`/`toListResult` and the `adaptX()`
@@ -49,7 +51,7 @@ import type {
   TuningJob,
 } from '../types'
 import axios from 'axios'
-import { autotunexApiBase, createApiClient } from './client'
+import { autotunexResourceUrl, createAutotunexClient } from './client'
 import { normalizeVerlRows } from '../lib/autotunex/verlNormalize'
 import {
   adaptAsset,
@@ -70,12 +72,12 @@ import {
 // non-type-only imports (see its header comment for why that matters).
 export { adaptAsset, adaptConfiguration, adaptJob, adaptSuggestion, adaptTrial, adaptTunedModel, collectKeysetPages, collectPages, pageQuery, toListResult }
 
-// Built through createApiClient so a host's auth headers and 401 hook reach it:
-// gbserver gates the /api/autotunex proxy like every other API path, so a bare axios
-// client 401s every call in a deployment that authenticates. No
-// allowHostBaseUrl -- the host's base URL points at gbserver's /api/v1 and would
-// 404 the proxy path.
-const client = createApiClient(autotunexApiBase(''))
+// Built through createAutotunexClient so a host's auth headers and 401 hook reach
+// it: gbserver gates the /api/autotunex proxy like every other API path, so a bare
+// axios client 401s every call in a deployment that authenticates. A host that
+// calls configureAutotunexClient switches it to AutoTuneX directly instead --
+// credentialed, and without the gbserver headers (see AutotunexClientOptions).
+const client = createAutotunexClient()
 
 type Scope = 'own' | 'all'
 
@@ -623,15 +625,17 @@ export async function getJobAssets(jobId: string, scope: Scope = 'own'): Promise
 // Direct-download URL builders. The file/archive endpoints stream with
 // `Content-Disposition: attachment`, so these are consumed as plain <a href>
 // links (bytes go straight to disk) rather than fetched through axios — the
-// same approach as the AutoTuneX UI. AutoTuneX runs auth-free in standalone, so
-// no credentials are attached. `path` is the asset's relative `path` and is
-// URL-encoded so nested slashes survive as a single query value.
+// same approach as the AutoTuneX UI. A link carries no headers, so behind an
+// authenticating gbserver proxy it relies on gbserver admitting the request; a
+// direct host (configureAutotunexClient) gets AutoTuneX's own session cookie, since
+// the navigation is to AutoTuneX's host. `path` is the asset's relative `path` and
+// is URL-encoded so nested slashes survive as a single query value.
 export function resultFileUrl(jobId: string, path: string, scope: Scope = 'own'): string {
-  return autotunexApiBase(
+  return autotunexResourceUrl(
     `/jobs/${jobId}/result-report/file?path=${encodeURIComponent(path)}&scope=${scope}`
   )
 }
 
 export function resultArchiveUrl(jobId: string, scope: Scope = 'own'): string {
-  return autotunexApiBase(`/jobs/${jobId}/result-report/archive?scope=${scope}`)
+  return autotunexResourceUrl(`/jobs/${jobId}/result-report/archive?scope=${scope}`)
 }

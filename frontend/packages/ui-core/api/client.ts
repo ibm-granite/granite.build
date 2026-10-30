@@ -214,6 +214,115 @@ export function createApiClient(
 }
 
 /**
+ * How a host reaches AutoTuneX directly, instead of through gbserver's proxy.
+ *
+ * Unconfigured (the default, and what the standalone app uses), the AutoTuneX
+ * client calls the same-origin `/api/autotunex/*` proxy with the shared host
+ * seam above, exactly as before. A hosted dashboard whose AutoTuneX runs the
+ * `session` provider cannot use that path: AutoTuneX's session cookie is scoped
+ * to AutoTuneX's own host, so the browser never attaches it to a request for
+ * gbserver's. Such a host configures `baseUrl` instead and the browser talks to
+ * AutoTuneX itself, credentialed.
+ *
+ * **A direct client deliberately does not apply the shared `resolveHeaders`.**
+ * Those headers carry the host's gbserver credential, and AutoTuneX routes a
+ * bearer token *ahead of* its session cookie (`core/auth/routing.py`). With
+ * `oidc` off it has nothing to verify that bearer with, so forwarding it would
+ * 401 every request even when the cookie is valid — and would disclose the
+ * gbserver token to a second service. The shared `onUnauthorized` is skipped for
+ * the same reason: it restarts the *host's* login, which a 401 from AutoTuneX
+ * says nothing about. `onUnauthorized` here is the AutoTuneX-specific hook.
+ *
+ * Every hook is read per request, like the shared seam, so a host may call
+ * {@link configureAutotunexClient} after the AutoTuneX module has loaded.
+ */
+export interface AutotunexClientOptions {
+  /**
+   * AutoTuneX's origin, e.g. `https://autotunex.example.com`, without the
+   * `/api/v1` suffix — that is appended here. A trailing slash is ignored.
+   */
+  baseUrl: string
+  /**
+   * Called when AutoTuneX answers 401, before the error propagates. Typically
+   * sends the browser through AutoTuneX's `/auth/login`, which completes without
+   * a prompt when the user already holds an SSO session.
+   */
+  onUnauthorized?: (error: unknown) => void
+}
+
+let autotunexOptions: AutotunexClientOptions | null = null
+
+/**
+ * Point ui-core's AutoTuneX client straight at an AutoTuneX server. See
+ * {@link AutotunexClientOptions} for when and why. Pass `null` to go back to
+ * the gbserver proxy. Like {@link configureApiClient}, call it before the first
+ * request — from module scope of something the app shell imports.
+ */
+export function configureAutotunexClient(next: AutotunexClientOptions | null): void {
+  autotunexOptions = next
+}
+
+/** Read the installed AutoTuneX options, or `null` when using the proxy. */
+export function autotunexClientOptions(): AutotunexClientOptions | null {
+  return autotunexOptions
+}
+
+/** `baseUrl` with any trailing slash removed and AutoTuneX's API prefix added. */
+function autotunexDirectBase(baseUrl: string): string {
+  return `${baseUrl.replace(/\/+$/, '')}/api/v1`
+}
+
+/**
+ * The AutoTuneX client: proxied through the shared seam by default, or direct and
+ * credentialed once a host calls {@link configureAutotunexClient}.
+ *
+ * One instance serves both modes, decided per request, because the AutoTuneX
+ * module builds its client at import time and a host may configure afterwards.
+ * Ownership is still judged against the default `baseURL`, the same rule as
+ * {@link createApiClient}: a request that names its own base is left alone.
+ */
+export function createAutotunexClient(): AxiosInstance {
+  const proxyBase = autotunexApiBase('')
+  const instance = axios.create({ baseURL: proxyBase })
+
+  instance.interceptors.request.use(async (config) => {
+    if (config.baseURL !== proxyBase) return config
+    ;(config as typeof config & OwnedConfig)[OWNED_REQUEST] = true
+    const direct = autotunexOptions
+    if (direct) {
+      config.baseURL = autotunexDirectBase(direct.baseUrl)
+      config.withCredentials = true
+      return config
+    }
+    const extra = await resolveApiHeaders()
+    for (const [name, value] of Object.entries(extra)) {
+      config.headers.set(name, value)
+    }
+    return config
+  })
+
+  instance.interceptors.response.use(
+    (response) => response,
+    (error) => {
+      const err = error as {
+        response?: { status?: number }
+        config?: OwnedConfig
+      }
+      if (err?.response?.status === 401 && err?.config?.[OWNED_REQUEST]) {
+        // Read at response time, not captured on the way out: the decision only
+        // has to match the mode the request was sent in, and a host never
+        // switches mode mid-session.
+        if (autotunexOptions) autotunexOptions.onUnauthorized?.(error)
+        else overrides.onUnauthorized?.(error)
+      }
+      return Promise.reject(error)
+    },
+  )
+
+  return instance
+}
+
+/**
  * Returns the base URL prefix for AutoTuneX API calls.
  *
  * Dev mode (yarn dev): always returns a relative path. next.config.ts rewrites
@@ -233,9 +342,27 @@ export function createApiClient(
  * `AUTOTUNEX_API_URL=… make build-frontend` shipped a silently broken app.
  * GBSERVER_API_URL is different: it names the origin the proxy lives on, so a
  * static export served from another host must reach the proxy there.
+ *
+ * A host that deliberately goes direct does so at runtime with
+ * {@link configureAutotunexClient}, never through a baked env var; this function
+ * keeps describing the proxy path either way.
  */
 export function autotunexApiBase(path: string): string {
   return apiBase(`/api/autotunex${path}`)
+}
+
+/**
+ * A full URL for an AutoTuneX resource, for consumers that cannot go through the
+ * axios client — `<a href>` downloads, whose bytes should stream straight to disk.
+ *
+ * Follows {@link configureAutotunexClient}: the direct AutoTuneX origin when one is
+ * configured, otherwise the same proxy path as {@link autotunexApiBase}. A direct
+ * link is a top-level navigation to AutoTuneX's own host, so the browser attaches
+ * its session cookie without any CORS involvement.
+ */
+export function autotunexResourceUrl(path: string): string {
+  const direct = autotunexOptions
+  return direct ? `${autotunexDirectBase(direct.baseUrl)}${path}` : autotunexApiBase(path)
 }
 
 /**
