@@ -1326,7 +1326,8 @@ def _http_error(status):
         (CommError("HTTP 400", _http_error(400)), False),
         # Expired or revoked credentials are an outage, not a bad job.
         (CommError("HTTP 401", _http_error(401)), True),
-        (CommError("HTTP 403", _http_error(403)), True),
+        # A 403 may be one forbidden run: it counts, over a longer give-up.
+        (CommError("HTTP 403", _http_error(403)), False),
         (CommError("HTTP 404", _http_error(404)), False),
         (CommError("HTTP 429", _http_error(429)), True),
         # The raw HTTPError RunArtifacts pagination re-raises is an outage.
@@ -1354,6 +1355,22 @@ def test_a_deterministic_wandb_error_is_given_up_on():
         idx._MAX_JOB_ATTEMPTS
     ) + [None]
     for _ in range(idx._MAX_JOB_ATTEMPTS):
+        ix.scan_once(storage)
+    assert _checkpoint(storage)["timestamp"] == D2
+
+
+def test_a_forbidden_wandb_run_is_given_up_on_after_more_attempts():
+    """A 403 is waited out past the plain give-up, then skipped, so one run this
+    key may not read cannot hold the checkpoint forever."""
+    storage = _storage()
+    ix, _, sink = _indexer([_run("r1", D1), _run("r2", D2)])
+    sink.write_job.side_effect = [CommError("HTTP 403", _http_error(403))] * (
+        idx._MAX_FORBIDDEN_ATTEMPTS
+    ) + [None]
+    for _ in range(idx._MAX_JOB_ATTEMPTS):
+        ix.scan_once(storage)
+    assert _checkpoint(storage) is None or _checkpoint(storage)["timestamp"] != D2
+    for _ in range(idx._MAX_FORBIDDEN_ATTEMPTS - idx._MAX_JOB_ATTEMPTS):
         ix.scan_once(storage)
     assert _checkpoint(storage)["timestamp"] == D2
 

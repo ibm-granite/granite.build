@@ -305,10 +305,16 @@ _DETERMINISTIC_ERROR_MARKERS = (
     "exceeds btree",
 )
 # HTTP statuses (W&B) that a later retry can get past: the server is overloaded,
-# rate limiting, or down -- or the credentials are expired or revoked, which is
-# an outage of access, not a bad job, and must not skip the window. Every other
-# 4xx is the request's own fault.
-_TRANSIENT_HTTP_STATUSES = frozenset({401, 403, 408, 425, 429})
+# rate limiting, or down -- or the credentials are expired or revoked (401), an
+# outage of access that hits every job alike and must not skip the window. Every
+# other 4xx is the request's own fault.
+_TRANSIENT_HTTP_STATUSES = frozenset({401, 408, 425, 429})
+# A 403 is ambiguous: a key that lost access to the whole entity, or one run or
+# project this key may not read. It counts toward the give-up, so a forbidden run
+# cannot pin the checkpoint forever, but over more attempts than a plain failure,
+# so a short access outage is waited out rather than costing the window its lineage.
+_FORBIDDEN_HTTP_STATUS = 403
+_MAX_FORBIDDEN_ATTEMPTS = 20
 # After this many transient failures in a row on the same job the warning becomes
 # an error: still not counted (an outage must skip nothing), but no longer quiet.
 _TRANSIENT_ALERT_AFTER = 20
@@ -346,7 +352,8 @@ def _is_transient_error(exc: BaseException) -> bool:
 
     An HTTP status decides first, whatever the exception's class: a ``CommError``
     for a 400/404 is the request's fault and counts toward the give-up, while
-    a raw ``HTTPError`` for a 401/403/502/503/429 is an outage and is waited out.
+    a raw ``HTTPError`` for a 401/502/503/429 is an outage and is waited out. A
+    403 is not transient; it gets a longer give-up instead (see _record_failure).
     """
     status = _http_status(exc)
     if status is not None:
@@ -493,12 +500,17 @@ class JobLineageIndexer:
         self._transient_streak.pop(item_id, None)
         attempts = self._failed_attempts.get(item_id, 0) + 1
         self._failed_attempts[item_id] = attempts
-        if attempts < _MAX_JOB_ATTEMPTS:
+        limit = (
+            _MAX_FORBIDDEN_ATTEMPTS
+            if exc is not None and _http_status(exc) == _FORBIDDEN_HTTP_STATUS
+            else _MAX_JOB_ATTEMPTS
+        )
+        if attempts < limit:
             logger.exception(
                 "Failed to index job %s (attempt %d/%d); retrying next scan.",
                 item_id,
                 attempts,
-                _MAX_JOB_ATTEMPTS,
+                limit,
             )
             return False
         logger.exception(
