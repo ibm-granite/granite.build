@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { getJobByBuildId } from '@granite-build/ui-core/api/autotunex'
-import { listSpaces } from '@granite-build/ui-core/api/gbserver'
+import { useAutotunexIsAdmin } from '@granite-build/ui-core/hooks/useAutotunexIsAdmin'
 import type { JobDetail } from '@granite-build/ui-core/types'
 
 /**
@@ -28,23 +28,19 @@ export function useLinkedTuningJob(buildId: string): {
   job: JobDetail | null
   scope: 'own' | 'all'
 } {
-  // Same "admin of at least one space" gate the tunings and settings tables use —
-  // admins get scope=all so a job linked to another user's build still resolves.
-  const { data: spaces = [], isPending: spacesPending } = useQuery({
-    queryKey: ['spaces'],
-    queryFn: listSpaces,
-  })
-  const isAdmin = spaces.some((s) => s.is_admin)
+  // Same AutoTuneX admin check the tunings and settings tables use — admins get
+  // scope=all so a job linked to another user's build still resolves.
+  const { isAdmin, isPending: adminPending } = useAutotunexIsAdmin()
   const scope: 'own' | 'all' = isAdmin ? 'all' : 'own'
 
   const { data } = useQuery({
     queryKey: ['autotunex-job-by-build', buildId, isAdmin],
     queryFn: () => getJobByBuildId(buildId, scope),
-    // `isAdmin` is part of the key and starts false while `spaces` is in flight.
-    // Firing before it settles ran this lookup twice for an admin — once at
-    // scope=own, then again at scope=all under a new key. Wait for spaces.
-    // (A failed `listSpaces` also settles, leaving scope=own, so this cannot hang.)
-    enabled: Boolean(buildId) && !spacesPending,
+    // `isAdmin` is part of the key and starts false while the admin check is in
+    // flight. Firing before it settles ran this lookup twice for an admin — once
+    // at scope=own, then again at scope=all under a new key. Wait for it.
+    // (A failed check also settles, leaving scope=own, so this cannot hang.)
+    enabled: Boolean(buildId) && !adminPending,
     // Nothing is rendered on failure, so a retry buys no visible recovery — and on
     // a deployment whose proxy is enabled but AutoTuneX is down, every build page
     // would pay one extra request for a 502 that cannot succeed. That's one, not

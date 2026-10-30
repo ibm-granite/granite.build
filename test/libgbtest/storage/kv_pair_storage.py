@@ -1,4 +1,5 @@
 from typing import Any, Self
+from unittest.mock import patch
 
 from libgbtest.storage.storage import AbstractStorageTest, AbstractStorageTestSupport
 from libgbtest.utils import AbstractSingletonStorageUsingTest
@@ -124,3 +125,32 @@ class TestKeyValuePairValueMethods(AbstractSingletonStorageUsingTest):
         assert second is not None
         assert second.created_time == first.created_time
         assert second.uuid == first.uuid
+
+    def test_compare_and_set_writes_only_over_the_expected_value(self: Self) -> None:
+        storage = self.storage.kv_pair_storage
+        assert storage.compare_and_set("k1", None, {"v": 1}) is True
+        assert storage.compare_and_set("k1", None, {"v": 9}) is False
+        assert storage.compare_and_set("k1", {"v": 2}, {"v": 9}) is False
+        assert storage.get_value("k1") == {"v": 1}
+        assert storage.compare_and_set("k1", {"v": 1}, {"v": 2}) is True
+        assert storage.get_value("k1") == {"v": 2}
+        assert storage.count(where={"key": "k1"}) == 1
+
+    def test_compare_and_set_loses_to_a_write_after_its_read(self: Self) -> None:
+        """A write landing between the read and the update is not overwritten."""
+        storage = self.storage.kv_pair_storage
+        storage.set_value("k1", {"v": 1})
+        cls = type(storage)
+        real = cls.get_by_key
+        calls = []
+
+        def read_then_another_writer(this, key):
+            item = real(this, key)
+            if not calls:
+                calls.append(key)
+                this.set_value(key, {"v": "reseeded"})
+            return item
+
+        with patch.object(cls, "get_by_key", read_then_another_writer):
+            assert storage.compare_and_set("k1", {"v": 1}, {"v": 2}) is False
+        assert storage.get_value("k1") == {"v": "reseeded"}

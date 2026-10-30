@@ -186,7 +186,7 @@ class TestOutputGuard:
 class TestInputPathGuard:
     """The step takes a PATH resolved by the build, not the NAME of a binding.
 
-    That is the byoc pattern (steps/byoc/skypilot/USAGE.md): the build author declared
+    That is the byoc pattern (steps/misc/byoc/skypilot/USAGE.md): the build author declared
     the bindings, so the build author writes `{{ bindings.<name>.binding.path }}`. It
     removes a whole family of failures — the sanitizer that made a name a valid shell
     variable, the collision guard for two names sanitizing alike, and the `set -u` abort

@@ -5,11 +5,7 @@
 .cardColumn {
   flex: 1 1 320px;
   min-width: 280px;
-}
-
-.cardColumnWide {
-  flex: 1.2 1 360px;
-  min-width: 300px;
+  align-self: stretch;
 }
 
 .reviewCard {

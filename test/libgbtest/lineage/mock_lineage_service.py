@@ -85,13 +85,3 @@ class MockLineageService(LineageService):
         tag_set = set(tags)
         matching = [e for e in self._events if tag_set & self._tags_for_event(e)]
         return len(matching), matching[offset : offset + limit]
-
-    def get_artifact_graph(
-        self,
-        artifact_name: Optional[str] = None,
-        artifact_url: Optional[str] = None,
-        artifact_type: Optional[str] = None,
-        max_depth: int = 10,
-        direction: str = "downstream",
-    ) -> Optional[Dict]:
-        return None

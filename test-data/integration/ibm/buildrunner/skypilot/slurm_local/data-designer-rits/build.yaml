@@ -1,0 +1,61 @@
+granite.build:
+  name: skypilot-slurm-data-designer-rits
+  # One Data Designer generation on the local Docker SLURM cluster, against RITS.
+  # Reaching SUCCESS proves, on a real node: the uv install of the pinned release, the
+  # spec reaching dd_run.py intact through $GB_DD_SPEC_B64 (including a {% raw %}
+  # prompt), the RITS_API_KEY space secret arriving as an env var and becoming the
+  # provider's header, validate() + create() against a live model, the min_records
+  # gate, the jsonl export, and the artifact marker resolving to an absolute path the
+  # monitor accepts.
+  targets:
+
+    generate:
+      environment_uri: space://environments/skypilot/slurm
+      outputs:
+        questions:
+          # Terminal output: nothing downstream reads it, so the step's default
+          # output_path (./output in the per-run workdir) is fine.
+          uri: "env:///questions"
+          type: dataset
+      steps:
+        - step_uri: space://steps/data/data-designer
+          config:
+            poll_interval_seconds: 5
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: RITS_API_KEY
+                    secret_name: RITS_API_KEY
+            data_designer_config:
+              output: questions
+              num_records: 4
+              min_records: 4
+              export_format: jsonl
+              model_providers:
+                - name: rits
+                  endpoint: https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/granite-4-1-8b/v1
+                  extra_headers_from_env:
+                    RITS_API_KEY: RITS_API_KEY
+              config:
+                model_configs:
+                  - alias: text
+                    model: ibm-granite/granite-4.1-8b
+                    provider: rits
+                    inference_parameters:
+                      temperature: 0.7
+                      max_tokens: 128
+                      max_parallel_requests: 2
+                columns:
+                  - name: topic
+                    column_type: sampler
+                    sampler_type: category
+                    params:
+                      values: [astronomy, cooking, geology]
+                  - name: question
+                    column_type: llm-text
+                    model_alias: text
+                    prompt: "{% raw %}Write one short trivia question about {{ topic }}. Output only the question.{% endraw %}"
+            compute_config:
+              num_cpus_per_node: 2
+              num_gpus_per_node: 0
+              total_memory_per_node: 4Gi

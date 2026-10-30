@@ -1,0 +1,57 @@
+granite.build:
+  name: skypilot-slurm-nemo-rl-sft
+  # NeMo-RL SFT on IBM BlueVela over SLURM. The SLURM counterpart of aws-sft: the
+  # same ONE target, the smallest shipped SFT config, a short run. What differs is
+  # how the run reaches the node, called out below. Reaching SUCCESS proves the
+  # step's SLURM path: a separate hfpull step stages the base model onto shared
+  # /proj, the NeMo-RL image runs as a Pyxis/enroot container from the
+  # environment's shared .sqsh image cache (#560), run_sft.py trains, DCP->HF
+  # conversion runs, and the `model` artifact is
+  # registered from the step's marker. `dataset` is unbound, so sft.yaml's built-in
+  # dataset is used. ClearML is left in `auto` (no CLEARML_* creds => disabled).
+  targets:
+
+    train:
+      # BlueVela SLURM, gpu-mid partition, as the shared granitebuild functional ID.
+      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      inputs:
+        base_model:
+          # Public, tiny model so the hfpull runs anonymously. Overriding
+          # policy.model_name + tokenizer below keeps the whole run on this model
+          # rather than sft.yaml's gated Llama default.
+          uri: hf:///HuggingFaceTB/SmolLM2-135M
+      outputs:
+        model:
+          # Terminal env:// output, registered inline from the step's marker.
+          uri: "env:///model"
+          type: model
+      steps:
+        - step_uri: space://steps/train/nemo-rl
+          config:
+            poll_interval_seconds: 30
+            nemo_rl_config:
+              algorithm: sft
+              config_name: sft.yaml
+              output: model
+              # No image_id: the step's pinned NGC digest is used, and ibm-bluevela's
+              # slurm_image_cache launches it from a shared .sqsh
+              # (<share_path>/enroot/nvcr.io-nvidia-nemo-rl@sha256-<digest>.sqsh).
+              # On a miss gbserver imports it first in a cpu-partition job (about
+              # 72 min for this 20 GB image) and only then submits the GPU job, so
+              # the import no longer eats a gpu-mid job's preemption window. Do not
+              # set a .sqsh path here: it would bypass the cache.
+              overrides:
+                # Keep the run tiny: a handful of steps on a small model.
+                sft.max_num_steps: 3
+                sft.val_period: 3
+                checkpointing.save_period: 3
+                policy.tokenizer.name: HuggingFaceTB/SmolLM2-135M
+            compute_config:
+              num_nodes: 1
+            launcher_config:
+              resources:
+                # SLURM-SPECIFIC: H200, not H100. The ibm-bluevela environment pins
+                # every job to H200 nodes (sbatch constraint h200), so an H100
+                # request would never schedule. gpu-mid also rejects a job that
+                # requests no GPUs. -> #SBATCH --gres=gpu:H200:1.
+                accelerators: "H200:1"

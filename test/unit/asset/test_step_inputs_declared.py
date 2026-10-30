@@ -63,6 +63,12 @@ EXPECTED = {
     f"{_SKY}/distill/corpus-sources": (set(), set()),  # variable-length sources list
     f"{_SKY}/distill/gen-smoke": (set(), set()),  # variable-length rungs list
     f"{_SKY}/distill/probe": (set(), set()),  # diagnostic, literal paths
+    # NeMo-RL training: new, so base_model is required outright; dataset is optional
+    # (omit it to use the NeMo-RL config's built-in dataset).
+    f"{_SKY}/train/nemo-rl": ({"base_model"}, {"dataset"}),
+    # Open-Instruct SFT: new, so base_model is required outright; dataset is optional
+    # (omit it to train on openinstruct_sft_config.dataset_mixer_list instead).
+    f"{_SKY}/train/openinstruct-sft": ({"base_model"}, {"dataset"}),
     # Shipped in v0.3.x: optional during the deprecation window, with the old config
     # key as a fallback.
     f"{_LSF}/sage-eval": (set(), {"model"}),
@@ -78,7 +84,7 @@ EXPECTED = {
     "environments/bash/steps/inference-lora": ({"model"}, {"adapter"}),
     "environments/bash/steps/lora-finetune": ({"model"}, {"dataset"}),
     # Exceptions: no named inputs, by design.
-    f"{_SKY}/byoc": (set(), set()),  # free-form command, any number of inputs
+    f"{_SKY}/misc/byoc": (set(), set()),  # free-form command, any number of inputs
     f"{_LSF}/skypilot-teardown": (set(), set()),  # variable-length cluster list
     f"{_LSF}/rm-server": (set(), set()),
     f"{_LSF}/code-server": (set(), set()),

@@ -1,29 +1,26 @@
 'use client'
 
 import * as React from 'react'
-import { Button, ComposedModal, IconButton, InlineLoading, Modal, ModalBody, ModalFooter, ModalHeader, OverflowMenu, OverflowMenuItem } from '@carbon/react'
+import { Button, InlineLoading, OverflowMenu, OverflowMenuItem } from '@carbon/react'
 import {
-  ArrowLeft,
-  ArrowRight,
   CenterSquare,
-  Close,
-  Launch,
   ZoomFit,
   ZoomIn,
   ZoomOut,
 } from '@carbon/icons-react'
-import { useRouter } from 'next/navigation'
+import layout from '@granite-build/ui-core/components/LineageGraph/LineagePanelLayout.module.scss'
 import styles from './LineagePanel.module.scss'
 import type { ElkExtendedEdge } from 'elkjs'
 import { parse as parseYaml } from 'yaml'
-import { useQuery, useQueries } from '@tanstack/react-query'
-import type { Build, BuildStatusDetail } from '@granite-build/ui-core/types'
-import { getArtifact } from '@granite-build/ui-core/api/gbserver'
+import { useQuery, useQueries, type UseQueryResult } from '@tanstack/react-query'
+import type { Artifact, Build, BuildStatusDetail } from '@granite-build/ui-core/types'
+import { getArtifact, inferArtifactTypeFromUri } from '@granite-build/ui-core/api/gbserver'
 import { getBuildArchiveFiles } from '@granite-build/ui-core/api/gbserver'
 import Graph, { type ElkNodeEx, type GraphHandle, type NodeType } from '@granite-build/ui-core/components/LineageGraph/Graph'
-import { getSubgraph, getHuggingFaceUrl } from '@granite-build/ui-core/components/LineageGraph/diagramUtilities'
-import StepDetailsPanel, { stepDrawerSummary } from './StepDetailsPanel'
-import { BuildStatusBadge } from '@granite-build/ui-core/components/BuildStatusBadge'
+import OpenArtifactModal, { type OpenArtifactTarget } from '@granite-build/ui-core/components/LineageGraph/OpenArtifactModal'
+import { artifactTypeToNodeType, renameElkGraph } from '@granite-build/ui-core/components/LineageGraph/indexGraph'
+import StepDrawer from '@granite-build/ui-core/components/StepDrawer/StepDrawer'
+import { isUUID } from '@granite-build/ui-core/lib/uuid'
 
 const ACTIVE_STATUSES = new Set(['running', 'submitted', 'pending', 'cancel_requested'])
 
@@ -85,26 +82,21 @@ interface LineagePanelProps {
   initialFocusNodeId?: string
 }
 
-function artifactTypeToNodeType(artifactType: string): NodeType {
-  switch (artifactType.toUpperCase()) {
-    case 'MODEL': return 'Model'
-    case 'DATASET': return 'Dataset'
-    case 'FILESET': return 'Fileset'
-    case 'BUCKET': return 'Bucket'
-    default: return 'Fileset'
-  }
-}
-
+// `previousIds` is the last result's artifactIds: returned as-is when the set is
+// unchanged, so the artifact lookups keyed on it only recompute when it changes.
 function buildGraphData(
   buildStatus: BuildStatusDetail | undefined,
   plannedTargets: PlannedTarget[],
   isActive: boolean,
+  previousIds: string[] = EMPTY_IDS,
 ): {
   nodes: ElkNodeEx[]
   links: ElkExtendedEdge[]
   artifactIds: string[]
 } {
-  if (!buildStatus && !plannedTargets.length) return { nodes: [], links: [], artifactIds: [] }
+  if (!buildStatus && !plannedTargets.length) {
+    return { nodes: [], links: [], artifactIds: EMPTY_IDS }
+  }
 
   const nodes: ElkNodeEx[] = []
   const links: ElkExtendedEdge[] = []
@@ -184,7 +176,7 @@ function buildGraphData(
         // If the input artifact already exists in actual lineage, just add the edge
         if (!seenArtifacts.has(artifactId)) {
           seenArtifacts.add(artifactId)
-          nodes.push({ id: artifactId, title: paramName, type: 'Fileset', planned: true, width: 224, height: 64, labels: [{ text: paramName }] })
+          nodes.push({ id: artifactId, title: paramName, type: plannedNodeType(artifactId), planned: true, width: 224, height: 64, labels: [{ text: paramName }] })
         }
         const edgeId = `${artifactId}-to-${targetId}`
         if (!seenEdges.has(edgeId)) {
@@ -197,7 +189,7 @@ function buildGraphData(
         if (!artifactId) continue
         if (!seenArtifacts.has(artifactId)) {
           seenArtifacts.add(artifactId)
-          nodes.push({ id: artifactId, title: paramName, type: 'Fileset', planned: true, width: 224, height: 64, labels: [{ text: paramName }] })
+          nodes.push({ id: artifactId, title: paramName, type: plannedNodeType(artifactId), planned: true, width: 224, height: 64, labels: [{ text: paramName }] })
         }
         const edgeId = `${targetId}-to-${artifactId}`
         if (!seenEdges.has(edgeId)) {
@@ -208,12 +200,27 @@ function buildGraphData(
     }
   }
 
-  return { nodes, links, artifactIds: Array.from(seenArtifacts) }
+  const ids = Array.from(seenArtifacts)
+  const same = ids.length === previousIds.length && ids.every((id, i) => id === previousIds[i])
+  return { nodes, links, artifactIds: same ? previousIds : ids }
 }
 
-function isUUID(s: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
+const EMPTY_IDS: string[] = []
+
+// A planned artifact is named by its build.yaml URI and not registered yet, so its
+// type is read off the URI; anything the URI does not say stays a Fileset.
+function plannedNodeType(uri: string): NodeType {
+  return artifactTypeToNodeType(inferArtifactTypeFromUri(uri))
 }
+
+// Only the data, so a status poll or refetch that changes nothing keeps the same
+// array: combine's result is structurally shared, unlike the raw query results.
+function artifactsData(results: UseQueryResult<Artifact>[]) {
+  return results.map((r) => (r.isPending ? PENDING : r.data))
+}
+
+// An artifact whose fetch has not settled, told apart from one that failed.
+const PENDING = Symbol('pending')
 
 const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(function LineagePanelInner(
   { build, buildStatus, loading, statusError, showFocusNode = false, initialFocusNodeId },
@@ -225,10 +232,11 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   React.useImperativeHandle(ref, () => ({
     zoomIn: () => graphRef.current?.zoomIn(),
     zoomOut: () => graphRef.current?.zoomOut(),
-    resetZoom: () => graphRef.current?.resetZoom(),
+    resetZoom: (nodeId?: string) => graphRef.current?.resetZoom(nodeId),
     resetView: () => graphRef.current?.resetView(),
     currentZoom: () => graphRef.current?.currentZoom() ?? 90,
     centerOnNode: (nodeId: string) => graphRef.current?.centerOnNode(nodeId),
+    centerOnNodeAfterLayout: (nodeId: string) => graphRef.current?.centerOnNodeAfterLayout(nodeId),
   }))
 
   // Fetch build archive YAML to derive planned targets for active builds
@@ -296,7 +304,10 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
       if (!wasOpen) {
         drawerReturnFocusRef.current = document.activeElement as HTMLElement | null
       }
-      drawerCloseButtonRef.current?.focus()
+      // preventScroll on every focus move here: focusing scrolls the nearest
+      // overflow container even when it is overflow:hidden, which slid the graph
+      // sideways each time the drawer opened, switched or closed.
+      drawerCloseButtonRef.current?.focus({ preventScroll: true })
       return
     }
 
@@ -309,84 +320,95 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     // focus lands somewhere sensible rather than the top of the document.
     const returnTo = drawerReturnFocusRef.current
     if (returnTo?.isConnected) {
-      returnTo.focus?.()
+      returnTo.focus?.({ preventScroll: true })
     } else {
-      graphContainerRef.current?.focus?.()
+      graphContainerRef.current?.focus?.({ preventScroll: true })
     }
     drawerReturnFocusRef.current = null
   }, [stepDetailTarget])
 
-  const { nodes: allNodes, links: allLinks, artifactIds } = React.useMemo(
-    () => buildGraphData(buildStatus, plannedTargets, isActive),
-    [buildStatus, plannedTargets, isActive]
+  // The previous result's ids, kept in state (not a ref read during render) so an
+  // unchanged id set keeps its array across polls.
+  const [previousIds, setPreviousIds] = React.useState<string[]>(EMPTY_IDS)
+  const graphData = React.useMemo(
+    () => buildGraphData(buildStatus, plannedTargets, isActive, previousIds),
+    [buildStatus, plannedTargets, isActive, previousIds],
   )
+  const { nodes: rawBuildNodes, links: rawBuildLinks, artifactIds } = graphData
+  if (artifactIds !== previousIds) setPreviousIds(artifactIds)
 
   // Fetch artifact names for all UUID-shaped artifact IDs
-  const uuidArtifactIds = artifactIds.filter(isUUID)
-  const artifactQueries = useQueries({
+  const uuidArtifactIds = React.useMemo(() => artifactIds.filter(isUUID), [artifactIds])
+  const artifacts = useQueries({
     queries: uuidArtifactIds.map((id) => ({
       queryKey: ['artifact', id],
       queryFn: () => getArtifact(id),
       retry: false,
       staleTime: 5 * 60 * 1000,
     })),
+    combine: artifactsData,
   })
+  const artifactById = React.useMemo(() => {
+    const map = new Map<string, Artifact>()
+    uuidArtifactIds.forEach((id, i) => { const a = artifacts[i]; if (a && a !== PENDING) map.set(id, a) })
+    return map
+  }, [artifacts, uuidArtifactIds])
+
+  // Finished targets record their artifacts by registry UUID, but a planned target
+  // names them by the URI in build.yaml. Without folding, an artifact one target
+  // produced and a planned one consumes draws twice: the typed UUID node, and a
+  // 'Fileset' beside it holding the planned edge.
+  // The planned URI is matched as the build.yaml spells it, against both the
+  // registry's recorded uri and its lineage_uri. One build.yaml usually spells one
+  // artifact one way; a miss only leaves a second node, never a wrong merge.
+  const plannedUriToUuid = React.useMemo(() => {
+    const byUri = new Map<string, string>()
+    for (const [id, data] of artifactById) {
+      for (const uri of [data.uri, data.lineage_uri]) if (uri && !byUri.has(uri)) byUri.set(uri, id)
+    }
+    const map = new Map<string, string>()
+    for (const id of artifactIds) {
+      const uuid = isUUID(id) ? undefined : byUri.get(id)
+      if (uuid) map.set(id, uuid)
+    }
+    return map
+  }, [artifactById, artifactIds])
+  const { nodes: buildNodes, links: buildLinks } = React.useMemo(
+    () => renameElkGraph({ nodes: rawBuildNodes, links: rawBuildLinks }, (id) => plannedUriToUuid.get(id) ?? id),
+    [rawBuildNodes, rawBuildLinks, plannedUriToUuid]
+  )
 
   // Enrich nodes with resolved artifact names and types
-  const enrichedNodes = React.useMemo<ElkNodeEx[]>(() => {
-    const artifactMap = new Map<string, { name: string; type: NodeType }>()
-    uuidArtifactIds.forEach((id, i) => {
-      const result = artifactQueries[i]?.data
-      if (result) {
-        artifactMap.set(id, {
-          name: result.name,
-          type: artifactTypeToNodeType(result.artifact_type),
-        })
-      }
-    })
-
-    return allNodes.map((node) => {
-      const enriched = artifactMap.get(node.id)
+  const enrichedBuildNodes = React.useMemo<ElkNodeEx[]>(() => {
+    return buildNodes.map((node) => {
+      const enriched = artifactById.get(node.id)
       if (enriched) {
-        return { ...node, title: enriched.name, type: enriched.type }
+        return { ...node, title: enriched.name, type: artifactTypeToNodeType(enriched.artifact_type) }
       }
+      // This build's own targets are runs of this build.
+      if (node.type === 'Build' && !node.planned && build?.uuid) return { ...node, buildId: build.uuid }
       return node
     })
-  }, [allNodes, artifactQueries, uuidArtifactIds])
+  }, [buildNodes, artifactById, build?.uuid])
 
-  const artifactUriMap = React.useMemo(() => {
-    const map = new Map<string, string>()
-    uuidArtifactIds.forEach((id, i) => {
-      const uri = artifactQueries[i]?.data?.uri
-      if (uri) map.set(id, uri)
-    })
-    return map
-  }, [artifactQueries, uuidArtifactIds])
-
-  const artifactNavModalHeader = (artifactNavNode: { node: ElkNodeEx; hfUrl: string | null } | null) => {
-    if (artifactNavNode) {
-      return <h4>Would you like to view <code>{artifactNavNode.node?.title || artifactNavNode.node?.id}</code> on HuggingFace or proceed to the artifact page?</h4>
-    } else {
-      return <h4>Would you like to view this artifact on HuggingFace or proceed to the artifact page?</h4>
-    }
-  }
+  // The graph shows what this build did, whole; lineage beyond it is on the
+  // artifact page, which a click on an artifact offers to open.
 
   // Navigation state
   const [focusNodeId, setFocusNodeId] = React.useState<string | null>(initialFocusNodeId ?? null)
-  const [upstreamLevels, setUpstreamLevels] = React.useState(Infinity)
-  const [downstreamLevels, setDownstreamLevels] = React.useState(Infinity)
-  const [partial, setPartial] = React.useState(false)
-  const [artifactNavNode, setArtifactNavNode] = React.useState<{ node: ElkNodeEx; hfUrl: string | null } | null>(null)
-  const router = useRouter()
+  // The clicked node, not a snapshot of its dialog: the target is derived from
+  // the artifact queries, so a click before its fetch lands still fills in.
+  const [openNode, setOpenNode] = React.useState<ElkNodeEx | null>(null)
   const [rendered, setRendered] = React.useState(false)
+  const [showBuildInfo, setShowBuildInfo] = React.useState(true)
 
   // The current artifact's node is always highlighted on artifact pages
   // (showFocusNode is only true there) — this is not click-driven.
   const currentArtifactNode = React.useMemo(
     () => (showFocusNode && initialFocusNodeId
-      ? enrichedNodes.find((n) => n.id === initialFocusNodeId)
+      ? enrichedBuildNodes.find((n) => n.id === initialFocusNodeId)
       : undefined),
-    [showFocusNode, initialFocusNodeId, enrichedNodes]
+    [showFocusNode, initialFocusNodeId, enrichedBuildNodes]
   )
 
   // The node whose step drawer is open. Opening that drawer is what shrinks the
@@ -394,9 +416,9 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // and, unlike currentArtifactNode, it is set on build pages (where the drawer
   // exists) rather than only on artifact pages.
   //
-  // Memoized on `stepDetailTarget` alone, not on `enrichedNodes`: both consumers
+  // Memoized on `stepDetailTarget` alone, not on `enrichedBuildNodes`: both consumers
   // of `selectedNode` read only `.id` (GraphNode's isSelected check, and the
-  // resize compensation's position lookup), and `enrichedNodes` is a fresh array
+  // resize compensation's position lookup), and `enrichedBuildNodes` is a fresh array
   // on every status poll. Depending on it would hand Graph a new object each
   // poll, defeating its React.memo and re-running the nodeElements effect on
   // every tick of a live build with the drawer open.
@@ -407,13 +429,6 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
     [stepDetailTarget]
   )
 
-  const { filteredNodes, filteredLinks } = React.useMemo(() => {
-    if (!focusNodeId || (upstreamLevels === Infinity && downstreamLevels === Infinity)) {
-      return { filteredNodes: enrichedNodes, filteredLinks: allLinks }
-    }
-    const sub = getSubgraph(focusNodeId, downstreamLevels, upstreamLevels, enrichedNodes, allLinks)
-    return { filteredNodes: sub.nodes, filteredLinks: sub.links }
-  }, [focusNodeId, upstreamLevels, downstreamLevels, enrichedNodes, allLinks])
 
   // If the open target disappears from a later relayout (renamed, or dropped from
   // the build), close the drawer rather than leave it pointing at a target that no
@@ -430,80 +445,65 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
   // Guarded on the node set being non-empty so a transient empty layout (first
   // render, or a poll that briefly returns no targets) does not close it either.
   React.useEffect(() => {
-    if (!stepDetailTarget || enrichedNodes.length === 0) return
+    if (!stepDetailTarget || enrichedBuildNodes.length === 0) return
     const nodeId = `${TARGET_NODE_PREFIX}${stepDetailTarget}`
-    if (enrichedNodes.some((n) => n.id === nodeId)) return
+    if (enrichedBuildNodes.some((n) => n.id === nodeId)) return
     setStepDetailTarget(null)
-  }, [stepDetailTarget, enrichedNodes])
+  }, [stepDetailTarget, enrichedBuildNodes])
 
+  // A click selects a node. A target (run) node also opens its step details; a registered artifact asks whether to open
+  // its page, where its lineage beyond this build is.
   const handleNodeClick = (node: ElkNodeEx) => {
-    // Skeleton stubs are placeholders for hidden upstream/downstream branches,
-    // not real nodes: Graph synthesises them with an empty title and an id of
-    // `<nodeId>-upstream-skeleton`. That id still starts with TARGET_NODE_PREFIX
-    // when the node it hangs off is a target, so without this guard the target
-    // branch below opens the drawer for the non-existent target
-    // `<name>-upstream-skeleton`, which the reconcile effect then immediately
-    // closes again — the click reads as doing nothing at all.
+    // Skeleton stubs are placeholders for hidden branches, not real nodes: their
+    // id still starts with TARGET_NODE_PREFIX when they hang off a target, and
+    // opening the drawer for one would close again at once.
     if (node.type === 'skeleton-source' || node.type === 'skeleton-target') return
-    if (!showFocusNode) {
-      setFocusNodeId(node.id)
-    }
-    if (node.type !== 'Build' && isUUID(node.id)) {
-      const uri = artifactUriMap.get(node.id)
-      // Close the step drawer first — otherwise the artifact modal stacks on top
-      // of it and the drawer is left open underneath once the modal is dismissed.
-      setStepDetailTarget(null)
-      setArtifactNavNode({ node, hfUrl: uri ? getHuggingFaceUrl(uri) : null })
-      return
-    }
-    // Clicking a target (run) node opens its step details. Artifact
-    // click-through is handled above and is unchanged.
-    if (node.type === 'Build' && node.id.startsWith(TARGET_NODE_PREFIX)) {
-      setStepDetailTarget(node.id.slice(TARGET_NODE_PREFIX.length))
-    }
+    setFocusNodeId(node.id)
+    const isTarget = node.type === 'Build' && node.id.startsWith(TARGET_NODE_PREFIX)
+    setStepDetailTarget(isTarget ? node.id.slice(TARGET_NODE_PREFIX.length) : null)
+    // The page's own artifact is already open, so there is nothing to open from it.
+    if (node.type === 'Build' || node.id === initialFocusNodeId) return
+    setOpenNode(node)
   }
 
+  // A registered artifact opens by UUID; a planned one by its build.yaml URI,
+  // which the artifact page resolves when the dialog's button is clicked.
+  const openTarget = React.useMemo<OpenArtifactTarget | null>(() => {
+    if (!openNode) return null
+    const registered = isUUID(openNode.id)
+    const artifact = registered ? artifactById.get(openNode.id) : undefined
+    return {
+      name: artifact?.name || openNode.title || openNode.id,
+      uri: registered ? artifact?.uri : openNode.id,
+      uuid: registered ? openNode.id : undefined,
+      artifactType: artifact?.artifact_type,
+    }
+  }, [openNode, artifactById])
+
+  // Back to the page's own artifact, now that clicks can select other nodes.
   const handleFocusNode = () => {
-    if (!focusNodeId) return
-    setUpstreamLevels(Infinity)
-    setDownstreamLevels(Infinity)
-    setPartial(false)
-    graphRef.current?.centerOnNode?.(focusNodeId)
+    const target = initialFocusNodeId ?? focusNodeId
+    if (!target) return
+    setFocusNodeId(target)
+    graphRef.current?.centerOnNode?.(target)
   }
 
-  const handleUpstream = () => {
-    if (!focusNodeId) return
-    const newUp = upstreamLevels === Infinity ? 2 : upstreamLevels + 1
-    const sub = getSubgraph(focusNodeId, downstreamLevels, newUp, enrichedNodes, allLinks)
-    setUpstreamLevels(sub.hasMoreUpstream ? newUp : Infinity)
-    setPartial(sub.hasMoreUpstream || sub.hasMoreDownstream)
-  }
+  const focusNode = focusNodeId ? enrichedBuildNodes.find((n) => n.id === focusNodeId) : undefined
 
-  const handleDownstream = () => {
-    if (!focusNodeId) return
-    const newDown = downstreamLevels === Infinity ? 2 : downstreamLevels + 1
-    const sub = getSubgraph(focusNodeId, newDown, upstreamLevels, enrichedNodes, allLinks)
-    setDownstreamLevels(sub.hasMoreDownstream ? newDown : Infinity)
-    setPartial(sub.hasMoreUpstream || sub.hasMoreDownstream)
-  }
-
-  const noLineage = !loading && !statusError && allNodes.length === 0
+  const noLineage = !loading && !statusError && enrichedBuildNodes.length === 0
 
   return (
     <div className={styles.container}>
       {/* Toolbar */}
-      <div className={styles.toolbar}>
-        <div className={styles.toolbarLeft}>
-          <Button
-            size="sm"
-            kind="ghost"
-            renderIcon={ArrowLeft}
-            disabled={!focusNodeId}
-            onClick={handleUpstream}
-            iconDescription="One level upstream"
-          >
-            Upstream
-          </Button>
+      {/* Any toolbar button closes the open drawer. Capture runs before the
+          button's own handler, which still sees this render's selection. */}
+      <div
+        className={layout.toolbar}
+        onClickCapture={(e) => {
+          if ((e.target as HTMLElement).closest('button')) setStepDetailTarget(null)
+        }}
+      >
+        <div className={layout.toolbarLeft}>
           {showFocusNode && (
             <Button
               size="sm"
@@ -515,19 +515,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
               Focus Node
             </Button>
           )}
-          <Button
-            size="sm"
-            kind="ghost"
-            renderIcon={ArrowRight}
-            disabled={!focusNodeId}
-            onClick={handleDownstream}
-            iconDescription="One level downstream"
-          >
-            Downstream
-          </Button>
-
-          <div className={styles.toolbarDivider} />
-
+          {showFocusNode && <div className={layout.toolbarDivider} />}
           <Button
             size="sm"
             kind="ghost"
@@ -544,7 +532,7 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
             tooltipPosition="right"
             iconDescription="Reset Zoom"
             renderIcon={ZoomFit}
-            onClick={() => graphRef.current?.resetZoom()}
+            onClick={() => graphRef.current?.resetZoom((currentArtifactNode ?? focusNode ?? openDrawerNode)?.id)}
           />
           <Button
             size="sm"
@@ -556,38 +544,27 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
             onClick={() => graphRef.current?.zoomOut()}
           />
 
-          <div className={styles.toolbarDivider} />
+          <div className={layout.toolbarDivider} />
 
           <OverflowMenu size="sm" selectorPrimaryFocus=".overflow-item">
             <OverflowMenuItem
               className="overflow-item"
               itemText="Reset view"
               onClick={() => {
-                // Clear every filter, then fit. `resetView` fits against the
-                // current layout immediately and clears the user-adjusted flag,
-                // so a relayout triggered by the expanded node set simply
-                // auto-fits again over this one with nothing fighting it —
-                // whether or not the graph was actually filtered.
+                // Clear the selection, then fit. `resetView` fits against the
+                // current layout immediately and clears the user-adjusted flag.
                 setFocusNodeId(null);
-                setUpstreamLevels(Infinity);
-                setDownstreamLevels(Infinity);
-                setPartial(false);
                 graphRef.current?.resetView();
               }}
             />
+            <OverflowMenuItem
+              className="overflow-item"
+              itemText={showBuildInfo ? 'Hide build IDs' : 'Show build IDs'}
+              onClick={() => setShowBuildInfo((v) => !v)}
+            />
           </OverflowMenu>
-
-          <div className={styles.toolbarDivider} />
         </div>
       </div>
-
-      {/* Status messages */}
-      {partial && (
-        <div className={styles.partialMessage}>
-          The lineage graph is partially displayed. Click Upstream or Downstream
-          to show more nodes.
-        </div>
-      )}
 
       {/* Graph and drawer are flex siblings in a row so opening the drawer
           physically shrinks the graph's width. ELK lays out RIGHT (downstream
@@ -595,10 +572,10 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
           the drawer merely overlaid the graph, a node near that edge could hide
           behind the drawer it just triggered; shrinking the SVG instead fires
           the graph's ResizeObserver, which refits the view. */}
-      <div className={styles.graphRow}>
+      <div className={layout.graphRow}>
       {/* Graph area. tabIndex=-1 so it can receive programmatic focus as the
           fallback when a closed drawer's trigger node is no longer in the DOM. */}
-      <div className={styles.graphArea} ref={graphContainerRef} tabIndex={-1}>
+      <div className={layout.graphArea} ref={graphContainerRef} tabIndex={-1}>
         {loading && (
           <div className={styles.centeredContent}>
             <InlineLoading description="Loading lineage…" />
@@ -629,10 +606,10 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
             <Graph
               ref={graphRef}
               graphKey={build?.uuid}
-              nodes={filteredNodes}
-              links={filteredLinks}
-              allLinks={allLinks}
-              selectedNode={currentArtifactNode ?? openDrawerNode}
+              nodes={enrichedBuildNodes}
+              links={buildLinks}
+              selectedNode={focusNode ?? currentArtifactNode ?? openDrawerNode}
+              showBuildInfo={showBuildInfo}
               onClick={handleNodeClick}
               onSvgRendered={() => setRendered(true)}
             />
@@ -640,128 +617,28 @@ const LineagePanelInner = React.forwardRef<GraphHandle, LineagePanelProps>(funct
         )}
       </div>
 
-      {/* A drawer, not a modal: no overlay, so the graph behind stays visible
-          and clickable and picking another target just re-points the drawer. */}
       {stepDetailTarget && (
-        <div
-          ref={drawerRef}
-          className={styles.stepSidePanel}
-          role="dialog"
-          aria-label={`Step details — ${stepDetailTarget}`}
-        >
-          {(() => {
-            // Own-property lookup: a bare-object index would return
-            // Object.prototype.toString (a function) for a target named `toString`.
-            const targets = buildStatus?.targets
-            const target =
-              targets && Object.prototype.hasOwnProperty.call(targets, stepDetailTarget)
-                ? targets[stepDetailTarget]
-                : undefined
-            const { status, subtitle, summary } = stepDrawerSummary(target, build)
-            return (
-              <>
-                <div className={styles.stepSidePanelHeader}>
-                  <div className={styles.stepSidePanelIdentity}>
-                    <h4 className={styles.stepSidePanelHeading}>{stepDetailTarget}</h4>
-                    <div className={styles.stepSidePanelSubtitle}>{subtitle}</div>
-                    {status && (
-                      <div className={styles.stepSidePanelStatus}>
-                        <BuildStatusBadge status={status} />
-                      </div>
-                    )}
-                    {summary && (
-                      <div className={styles.stepSidePanelSummary}>{summary}</div>
-                    )}
-                  </div>
-                  <IconButton
-                    ref={drawerCloseButtonRef}
-                    kind="ghost"
-                    label="Close"
-                    align="bottom"
-                    onClick={() => setStepDetailTarget(null)}
-                  >
-                    <Close />
-                  </IconButton>
-                </div>
-                <div className={styles.stepSidePanelBody}>
-                  <StepDetailsPanel
-                    targetName={stepDetailTarget}
-                    target={target}
-                    sourceUri={build?.source_uri}
-                    buildId={build?.uuid}
-                  />
-                </div>
-              </>
-            )
-          })()}
-        </div>
+      <div className={layout.drawerSlot}>
+        <StepDrawer
+          targetName={stepDetailTarget}
+          // Own-property lookup: a bare-object index would return
+          // Object.prototype.toString (a function) for a target named `toString`.
+          target={buildStatus?.targets && Object.prototype.hasOwnProperty.call(buildStatus.targets, stepDetailTarget)
+            ? buildStatus.targets[stepDetailTarget]
+            : undefined}
+          build={build}
+          onClose={() => setStepDetailTarget(null)}
+          drawerRef={drawerRef}
+          closeButtonRef={drawerCloseButtonRef}
+        />
+      </div>
       )}
       </div>
 
-      {artifactNavNode?.hfUrl ? (
-        <ComposedModal
-          open={artifactNavNode !== null}
-          onClose={() => setArtifactNavNode(null)}
-          size="sm"
-        >
-          <ModalHeader>{artifactNavModalHeader(artifactNavNode)}</ModalHeader>
-          <ModalBody />
-          <ModalFooter className={styles.navModalActions}>
-            <Button
-              kind="secondary"
-              onClick={() => {
-                setArtifactNavNode(null);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              kind="secondary"
-              onClick={() => {
-                if (artifactNavNode)
-                  router.push(`/dashboard/artifacts/_/?id=${artifactNavNode.node.id}`);
-                setArtifactNavNode(null);
-              }}
-            >
-              View artifact page
-            </Button>
-
-            <Button
-              kind="secondary"
-              renderIcon={Launch}
-              href={artifactNavNode.hfUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={() => setArtifactNavNode(null)}
-            >
-              Open on HuggingFace
-            </Button>
-          </ModalFooter>
-        </ComposedModal>
-      ) : (
-        <Modal
-          open={artifactNavNode !== null}
-          onRequestClose={() => setArtifactNavNode(null)}
-          modalHeading="Navigate to artifact"
-          primaryButtonText="Proceed"
-          secondaryButtonText="Cancel"
-          onRequestSubmit={() => {
-            if (artifactNavNode)
-              router.push(`/dashboard/artifacts/_/?id=${artifactNavNode.node.id}`);
-            setArtifactNavNode(null);
-          }}
-          onSecondarySubmit={() => setArtifactNavNode(null)}
-          size="sm"
-        >
-          <p>
-            Go to the artifact page for{" "}
-            <strong>
-              {artifactNavNode?.node.title || artifactNavNode?.node.id}
-            </strong>
-            ?
-          </p>
-        </Modal>
-      )}
+      <OpenArtifactModal
+        target={openTarget}
+        onClose={() => setOpenNode(null)}
+      />
     </div>
   );
 })

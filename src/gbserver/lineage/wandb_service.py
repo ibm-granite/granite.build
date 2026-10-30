@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import logging
 import re
-from collections import deque
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, cast
 
 import wandb
@@ -44,6 +43,9 @@ from gbserver.types.constants import (
 from gbserver.utils.logger import get_log_level, get_logger
 
 logger = get_logger(__name__)
+
+# W&B job_type of the runs emit_event creates; the indexer reads it by value.
+LINEAGE_RUN_JOB_TYPE = "gb-lineage-event"
 
 _PASSTHROUGH_FACET_KEYS = ("job_input_params", "execution_stats")
 _JOB_DETAIL_KEYS = (
@@ -133,6 +135,10 @@ class WandBLineageService(LineageService):
             entity=GBSERVER_WANDB_ENTITY,
             id=run_id,
             name=job_name,
+            # Marks the run as a lineage event before its job_id lands (config is
+            # updated asynchronously), so the indexer can wait on it while it runs
+            # without also waiting on unrelated runs in a shared project.
+            job_type=LINEAGE_RUN_JOB_TYPE,
             # "never", not "allow": run ids are fresh random uuids
             # (WandBLineageStore._build_events_for_target), so a resume can never
             # legitimately happen. Under "allow" a uuid collision or a bug that
@@ -336,14 +342,13 @@ class WandBLineageService(LineageService):
         outputs: List[Dict] = []
 
         for artifact in run.used_artifacts():
-            # Should we filter out WandB system artifacts here? For now, we include all artifacts to ensure we capture Hugging Face references, but we might want to revisit this logic in the future
-            # if self._is_wandb_system_artifact(artifact):
-            #     continue
+            if self._is_wandb_system_artifact(artifact):
+                continue
             inputs.append(self._artifact_to_openlineage_dataset(artifact))
 
         for artifact in run.logged_artifacts():
-            # if self._is_wandb_system_artifact(artifact):
-            #     continue
+            if self._is_wandb_system_artifact(artifact):
+                continue
             outputs.append(self._artifact_to_openlineage_dataset(artifact))
 
         config = run.config or {}
@@ -400,7 +405,10 @@ class WandBLineageService(LineageService):
 
     @staticmethod
     def _is_wandb_system_artifact(artifact: wandb.Artifact) -> bool:
-        return artifact.type.startswith("wandb-") or artifact.name.startswith("run-")
+        # By type, not name: wandb attaches these to any run (e.g. wandb-history
+        # once someone opens its charts), and gbserver never logs these types, so
+        # a model/dataset/bucket -- HF references included -- is never dropped.
+        return artifact.type.startswith("wandb-") or artifact.type == "run_table"
 
     @staticmethod
     def _artifact_to_openlineage_dataset(artifact: wandb.Artifact) -> Dict:
@@ -556,289 +564,6 @@ class WandBLineageService(LineageService):
                 logger.info(
                     "Using existing HF %s input: %s", resource_type, resource_id
                 )
-
-    def _resolve_artifact_by_url(self, api, url: str):
-        org, name, artifact_type = parse_hf_url(url)
-        repo_id = f"{org}/{name}"
-
-        project_path = (
-            f"{GBSERVER_WANDB_ENTITY}/{GBSERVER_WANDB_PROJECT}"
-            if GBSERVER_WANDB_ENTITY
-            else GBSERVER_WANDB_PROJECT
-        )
-
-        search_types = (
-            [artifact_type] if artifact_type else ["model", "dataset", "bucket"]
-        )
-        for art_type in search_types:
-            try:
-                type_obj = api.artifact_type(art_type, project_path)
-                for collection in type_obj.collections():
-                    for artifact in collection.artifacts():
-                        meta = artifact.metadata or {}
-                        if meta.get("repo_id") == repo_id:
-                            return artifact
-            except Exception:
-                continue
-        return None
-
-    @staticmethod
-    def _with_version(name: str) -> str:
-        if ":" in name:
-            return name
-        return f"{name}:latest"
-
-    def _resolve_url_from_uri(self, uri: str) -> str:
-        org, name, artifact_type = parse_hf_uri(uri)
-        repo_id = f"{org}/{name}"
-        return get_huggingface_hub_url(artifact_type, repo_id)
-
-    def _get_artifact_names_from_url(self, url: str) -> List[str]:
-        org, name, _ = parse_hf_url(url)
-        candidates = [self._sanitize_artifact_name(name)]
-        repo_id_sanitized = self._sanitize_artifact_name(f"{org}/{name}")
-        if repo_id_sanitized != candidates[0]:
-            candidates.append(repo_id_sanitized)
-        return candidates
-
-    def get_artifact_graph(
-        self,
-        artifact_name: Optional[str] = None,
-        artifact_url: Optional[str] = None,
-        artifact_type: Optional[str] = None,
-        max_depth: int = 10,
-        direction: str = "downstream",
-    ) -> Optional[Dict]:
-        try:
-            api = wandb.Api()
-            root_artifact = None
-
-            if artifact_name:
-                hf_prefixes = ("datasets/", "models/", "buckets/", "spaces/")
-                has_version = ":" in artifact_name
-                if artifact_name.startswith(hf_prefixes):
-                    parts = artifact_name.split("/")
-                    hf_type = parts[0].rstrip("s")
-                    repo_id = "/".join(parts[1:])
-                    artifact_url = get_huggingface_hub_url(hf_type, repo_id)
-                elif not has_version and artifact_name.count("/") == 1:
-                    org, name = artifact_name.split("/")
-                    candidates = [
-                        self._sanitize_artifact_name(name),
-                        self._sanitize_artifact_name(artifact_name),
-                    ]
-                    for candidate in candidates:
-                        try:
-                            full_name = f"{GBSERVER_WANDB_ENTITY}/{GBSERVER_WANDB_PROJECT}/{self._with_version(candidate)}"
-                            root_artifact = api.artifact(full_name)
-                            break
-                        except Exception:
-                            continue
-                elif artifact_name.count("/") < 2:
-                    full_name = f"{GBSERVER_WANDB_ENTITY}/{GBSERVER_WANDB_PROJECT}/{self._with_version(artifact_name)}"
-                    root_artifact = api.artifact(full_name)
-                else:
-                    full_name = self._with_version(artifact_name)
-                    root_artifact = api.artifact(full_name)
-
-            if root_artifact is None and artifact_url:
-                if artifact_url.startswith("hf://"):
-                    artifact_url = self._resolve_url_from_uri(artifact_url)
-                for candidate in self._get_artifact_names_from_url(artifact_url):
-                    try:
-                        full_name = f"{GBSERVER_WANDB_ENTITY}/{GBSERVER_WANDB_PROJECT}/{self._with_version(candidate)}"
-                        root_artifact = api.artifact(full_name)
-                        break
-                    except Exception:
-                        continue
-                if root_artifact is None:
-                    root_artifact = self._resolve_artifact_by_url(api, artifact_url)
-
-            if root_artifact is None:
-                logger.warning(
-                    "Artifact not found: artifact_name=%s, artifact_url=%s",
-                    artifact_name,
-                    artifact_url,
-                )
-                return None
-        except Exception as e:
-            logger.error(
-                "Error resolving artifact: artifact_name=%s, artifact_url=%s, error=%s",
-                artifact_name,
-                artifact_url,
-                e,
-            )
-            return None
-
-        if artifact_type and root_artifact.type != artifact_type:
-            raise ValueError(
-                f"Artifact type mismatch: expected '{artifact_type}', "
-                f"but artifact '{root_artifact.name}' has type '{root_artifact.type}'"
-            )
-
-        root_id = root_artifact.qualified_name
-        root_node = {
-            "id": root_id,
-            "node_type": "artifact",
-            "name": root_artifact.name,
-            "artifact_type": root_artifact.type,
-            "is_root": True,
-            "metadata": root_artifact.metadata or {},
-        }
-
-        if direction == "both":
-            down = self._traverse_graph(root_artifact, root_id, max_depth, "downstream")
-            up = self._traverse_graph(root_artifact, root_id, max_depth, "upstream")
-
-            node_map: Dict[str, Dict] = {root_id: root_node}
-            for n in down["nodes"] + up["nodes"]:
-                node_map[n["id"]] = n
-            node_map[root_id] = root_node
-
-            edge_set: set = set()
-            edges: List[Dict] = []
-            for edge in down["edges"] + up["edges"]:
-                key = (edge["source"], edge["target"])
-                if key not in edge_set:
-                    edge_set.add(key)
-                    edges.append(edge)
-
-            return {
-                "root_id": root_id,
-                "nodes": list(node_map.values()),
-                "edges": edges,
-                "truncated": down["truncated"] or up["truncated"],
-            }
-
-        result = self._traverse_graph(root_artifact, root_id, max_depth, direction)
-        result["nodes"].insert(0, root_node)
-        return result
-
-    def _traverse_graph(
-        self,
-        root_artifact,
-        root_id: str,
-        max_depth: int,
-        direction: str,
-    ) -> Dict:
-        nodes: List[Dict] = []
-        edges: List[Dict] = []
-        visited_artifacts: set = {root_id}
-        visited_runs: set = set()
-        truncated = False
-
-        queue: deque = deque()
-        queue.append(("artifact", root_artifact, 0))
-
-        while queue:
-            item_type, item, depth = queue.popleft()
-
-            if depth >= max_depth:
-                truncated = True
-                continue
-
-            if item_type == "artifact":
-                if direction == "downstream":
-                    next_runs = list(item.used_by())
-                else:
-                    try:
-                        producer = item.logged_by()
-                    except (AttributeError, Exception):
-                        producer = None
-                    next_runs = [producer] if producer else []
-
-                for run in next_runs:
-                    if not hasattr(run, "id") or not hasattr(run, "entity"):
-                        continue
-                    run_id = f"{run.entity}/{run.project}/{run.id}"
-                    edges.append({"source": item.qualified_name, "target": run_id})
-
-                    if run_id not in visited_runs:
-                        visited_runs.add(run_id)
-                        run_name = getattr(run, "name", None) or run.id
-                        run_config = getattr(run, "config", {}) or {}
-                        run_tags = list(getattr(run, "tags", None) or [])
-                        nodes.append(
-                            {
-                                "id": run_id,
-                                "node_type": "run",
-                                "name": run_name,
-                                "artifact_type": None,
-                                "is_root": False,
-                                "metadata": {
-                                    "run_id": run.id,
-                                    "job_name": run_config.get("job_name", run_name),
-                                    "job_namespace": run_config.get(
-                                        "job_namespace", ""
-                                    ),
-                                    "job_type": run_config.get("job_type", ""),
-                                    "state": getattr(run, "state", None),
-                                    "created_at": getattr(run, "createdAt", None),
-                                    "job_id": run_config.get("job_id", ""),
-                                    "job_status": run_config.get("job_status", ""),
-                                    "job_started_at": run_config.get(
-                                        "job_started_at", ""
-                                    ),
-                                    "job_completed_at": run_config.get(
-                                        "job_completed_at", ""
-                                    ),
-                                    "release_id": run_config.get("release_id", ""),
-                                    "category": run_config.get("category", ""),
-                                    "owner": run_config.get("owner", ""),
-                                    "source_code_details": {
-                                        "url": run_config.get("source_code_url", ""),
-                                        "commit_hash": "",
-                                        "path": "",
-                                    },
-                                    "job_input_params": run_config.get(
-                                        "job_input_params", {}
-                                    ),
-                                    "execution_stats": run_config.get(
-                                        "execution_stats", {}
-                                    ),
-                                    "job_output_stats": run_config.get(
-                                        "job_output_stats", {}
-                                    ),
-                                },
-                                "tags": run_tags,
-                            }
-                        )
-                        queue.append(("run", run, depth + 1))
-
-            elif item_type == "run":
-                if direction == "downstream":
-                    next_artifacts = list(item.logged_artifacts())
-                else:
-                    next_artifacts = list(item.used_artifacts())
-
-                for artifact in next_artifacts:
-                    if self._is_wandb_system_artifact(artifact):
-                        continue
-
-                    art_id = artifact.qualified_name
-                    run_id = f"{item.entity}/{item.project}/{item.id}"
-                    edges.append({"source": run_id, "target": art_id})
-
-                    if art_id not in visited_artifacts:
-                        visited_artifacts.add(art_id)
-                        nodes.append(
-                            {
-                                "id": art_id,
-                                "node_type": "artifact",
-                                "name": artifact.name,
-                                "artifact_type": artifact.type,
-                                "is_root": False,
-                                "metadata": artifact.metadata or {},
-                            }
-                        )
-                        queue.append(("artifact", artifact, depth + 1))
-
-        return {
-            "root_id": root_id,
-            "nodes": nodes,
-            "edges": edges,
-            "truncated": truncated,
-        }
 
     def count_events_by_tags(
         self, tags: list, required_tags: Optional[list] = None

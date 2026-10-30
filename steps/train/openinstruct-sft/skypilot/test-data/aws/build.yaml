@@ -1,0 +1,41 @@
+granite.build:
+  name: skypilot-aws-openinstruct-sft
+  # Open-Instruct SFT on a real EC2 GPU (SkyPilot/aws), ONE target, a 3-step run.
+  # SUCCESS proves the aws path: the quay.io image pulls, the inline `hf download`
+  # stages the base model, finetune.py trains under DeepSpeed ZeRO-3 (the step
+  # default) on HF-id data (dataset_mixer_list), and the `model` artifact is
+  # registered from the step's marker. ClearML stays `auto` (no creds => off).
+  targets:
+    train:
+      environment_uri: space://environments/skypilot/aws
+      inputs:
+        base_model:
+          # Public, tiny (135M, Apache-2.0): downloads with no HF_TOKEN.
+          uri: hf:///HuggingFaceTB/SmolLM2-135M
+      outputs:
+        model:
+          # Terminal env:// output, registered inline from the step's marker.
+          uri: "env:///model"
+          type: model
+      steps:
+        - step_uri: space://steps/train/openinstruct-sft
+          config:
+            poll_interval_seconds: 30
+            launcher_config:
+              resources:
+                # The step requests no GPUs itself (#542): the build does.
+                # A10G:1 is g5.xlarge, the cheapest bf16-capable aws GPU.
+                accelerators: "A10G:1"
+            openinstruct_sft_config:
+              # 64 samples of a public, ungated SFT set, tokenized on the node.
+              dataset_mixer_list:
+                allenai/tulu-3-sft-personas-algebra: 64
+              args:
+                # SmolLM2 ships no chat template.
+                chat_template_name: tulu
+                max_train_steps: 3
+                max_seq_length: 1024
+                per_device_train_batch_size: 1
+                gradient_accumulation_steps: 1
+                logging_steps: 1
+                seed: 123

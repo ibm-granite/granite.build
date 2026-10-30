@@ -37,13 +37,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gbserver.monitoring.lsf_bsub_monitor import (
-    _FAILURE_LOG_TAIL_MAX_BYTES,
     LSF_ACTIVE_STATE_TO_GB_STATUS,
     LSF_STATE_CLASS,
     BJobRecord,
     LSFBsubMonitor,
     LsfStateClass,
-    _sanitize_log_tail,
 )
 from gbserver.resilience.retry_handler import RetryHandler
 from gbserver.types.buildevent import (
@@ -340,23 +338,52 @@ async def test_read_log_tail_is_bounded_and_never_hangs():
     assert result is None
 
 
-def test_sanitize_log_tail_caps_bytes_and_neutralizes_fences():
-    """The attached tail is display-only, but rides into the PR markdown: cap its
-    width and defuse triple-backticks so it can't break the code fence."""
-    assert _sanitize_log_tail(None) is None
-    assert _sanitize_log_tail("") is None
-
-    # A stray ``` in remote content must not survive to break the fence.
-    assert "```" not in _sanitize_log_tail("boom ``` still going")
-
-    # Oversized input is capped (keeping the tail) and marked truncated.
-    huge = "A" * (_FAILURE_LOG_TAIL_MAX_BYTES * 2) + "REAL_ERROR_AT_END"
-    out = _sanitize_log_tail(huge)
-    assert len(out.encode("utf-8")) <= _FAILURE_LOG_TAIL_MAX_BYTES + len(
-        "...[truncated]...\n"
+@pytest.mark.asyncio
+async def test_read_log_tail_redacts_secrets_and_fences():
+    """The real tail read goes through the shared sanitizer: fences are defused,
+    token-shaped secrets and the launch's declared secret values are masked.
+    (The sanitizer itself is covered in test/unit/utils/test_redaction.py.)"""
+    monitor, _, _ = _make_monitor([_bjobs_json("RUN")])
+    monitor._read_log_tail = types.MethodType(  # type: ignore[method-assign]
+        LSFBsubMonitor._read_log_tail, monitor
     )
-    assert "REAL_ERROR_AT_END" in out
-    assert "truncated" in out
+    monitor.lsf.get_launch_secret_values.return_value = ["declaredvalue123"]
+    monitor._run_log_tail_cmd = AsyncMock(  # type: ignore[method-assign]
+        return_value=(
+            "HF_TOKEN=hf_abcdefghijklmnopqrstuvwxyz\n"
+            "connecting with declaredvalue123\n"
+            "``` RuntimeError: boom"
+        )
+    )
+    out = await monitor._read_log_tail("/tmp/job.log", 40)
+    assert "hf_abcdefghijklmnopqrstuvwxyz" not in out
+    assert "declaredvalue123" not in out
+    assert "```" not in out
+    assert "RuntimeError: boom" in out
+    monitor.lsf.get_launch_secret_values.assert_called_once_with("test-launch")
+
+
+@pytest.mark.asyncio
+async def test_read_log_tail_sanitizes_off_the_event_loop():
+    """Redaction runs in a worker thread, so a large tail can't stall every
+    monitor sharing the runner's event loop."""
+    import threading
+
+    monitor, _, _ = _make_monitor([_bjobs_json("RUN")])
+    monitor._read_log_tail = types.MethodType(  # type: ignore[method-assign]
+        LSFBsubMonitor._read_log_tail, monitor
+    )
+    monitor.lsf.get_launch_secret_values.return_value = []
+    monitor._run_log_tail_cmd = AsyncMock(return_value="boom")  # type: ignore[method-assign]
+    threads = []
+
+    def spy(content, secret_values=None):
+        threads.append(threading.get_ident())
+        return content
+
+    with patch("gbserver.monitoring.lsf_bsub_monitor.sanitize_log_tail", spy):
+        await monitor._read_log_tail("/tmp/job.log", 40)
+    assert threads and threading.get_ident() not in threads
 
 
 # ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@ invokes the baked entrypoint ([`src/eval.sh`](src/eval.sh)) with parameters from
 `config.eval_config`, then registers the single results file as the step's output.
 
 This is a custom-image counterpart to the public-image
-[byoc](../../../byoc/skypilot/README.md) step. It is *generated* from the sources in
+[byoc](../../../misc/byoc/skypilot/README.md) step. It is *generated* from the sources in
 this directory by the shared Makefile conventions — see the framework overview:
 [steps/README.md](../../../README.md).
 
@@ -50,9 +50,9 @@ Eval-specific notes:
 
 - `REGISTRY` ships as a **placeholder** (`quay.io/your-org`) so the offline
   targets work out of the box; replace it in the `Makefile`, or override per
-  release, e.g. `make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0`.
+  release, e.g. `make all REGISTRY=quay.io/myorg IMAGE_VERSION=0.1.0`.
   `make publish-image` against the placeholder will fail auth — set a real
-  registry first. `IMAGE_TAG` defaults to the git short SHA.
+  registry first. `IMAGE_VERSION` defaults to the git short SHA.
 - At `make space` time the image reference
   `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)` is substituted into the Skypilot
   launcher's `image_id: "docker:${IMAGE_REF}"`.
@@ -65,7 +65,7 @@ Eval-specific notes:
 `make -C steps/eval/eval-example/skypilot test` runs the whole `test/` tree, including
 `test/aws/test_skypilot_aws_eval.py`, which runs the eval-example step on a real EC2
 node via SkyPilot. Like the [byoc AWS
-test](../../../byoc/skypilot/README.md#environment-variables-for-the-aws-test) it is
+test](../../../misc/byoc/skypilot/README.md#environment-variables-for-the-aws-test) it is
 **extended-suite only** (`@extended_testing_only` + the `skypilot_integration`
 marker) and **self-skips** unless AWS credentials are in the environment, so it
 never provisions an instance by accident.

@@ -13,7 +13,7 @@ via SkyPilot, with artifact push to a local S3-compatible store (SeaweedFS).
 
 ```bash
 # 1. Create virtual environment with SkyPilot support
-make g4os-skypilot-venv PYTHON=python3.13
+make venv PYTHON=python3.13
 source .venv/bin/activate
 
 # 2. Start the local S3-compatible artifact store (SeaweedFS)

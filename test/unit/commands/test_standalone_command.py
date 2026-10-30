@@ -17,7 +17,9 @@
 """Tests for the gbserver standalone command."""
 
 import os
+import shutil
 import socket
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -26,6 +28,12 @@ from unittest.mock import patch
 import httpx
 import pytest
 from click.testing import CliRunner
+from libgbtest.utils import AbstractSingletonStorageUsingTest
+
+from gbserver.storage.singleton_storage import reset_admin_storage
+from gbserver.storage.sql.engine_cache import get_singleton_engine_cache
+from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
+from gbserver.storage.storage_factory import StorageFactory
 
 TEST_DATA_DIR = Path(__file__).parent.parent.parent.parent / "test-data"
 STANDALONE_SPACE_DIR = TEST_DATA_DIR / "e2e" / "standalone" / "standalone-quickstart"
@@ -38,8 +46,38 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
-class TestStandaloneCommand:
-    """Tests for the gbserver standalone CLI command."""
+class TestStandaloneCommand(AbstractSingletonStorageUsingTest):
+    """Tests for the gbserver standalone CLI command.
+
+    Based on AbstractSingletonStorageUsingTest so the standalone server registers its
+    space into this test's own prefixed SQLite tables, never into shared ``gb_spaces``
+    left cached by an earlier test. Follows test_build_runner_cli.py: SQLite forced,
+    GB_HOME_DIR isolated to a temp dir, and the whole temp db discarded in teardown.
+    """
+
+    @classmethod
+    def _get_storage_factory(cls) -> StorageFactory:
+        """Force SQLite, whatever the session's default factory is."""
+        return SqliteStorageFactory()
+
+    def setup_method(self, method):
+        """Isolate GB_HOME_DIR before the base class builds the prefixed storage."""
+        self._prev_gb_home = os.environ.get("GB_HOME_DIR")
+        self._gb_home = tempfile.mkdtemp(prefix="gb_standalone_cmd_")
+        os.environ["GB_HOME_DIR"] = self._gb_home
+        super().setup_method(method)
+
+    def teardown_method(self, method):
+        """Discard the isolated db and restore GB_HOME_DIR (not the base per-table drop,
+        which can hang on a SQLite db the server thread wrote to)."""
+        get_singleton_engine_cache().dispose_all()
+        self.storage = None
+        reset_admin_storage()
+        if self._prev_gb_home is None:
+            os.environ.pop("GB_HOME_DIR", None)
+        else:
+            os.environ["GB_HOME_DIR"] = self._prev_gb_home
+        shutil.rmtree(self._gb_home, ignore_errors=True)
 
     def test_command_is_discoverable(self):
         """Verify the standalone command file is auto-discovered by the CLI."""
@@ -69,12 +107,6 @@ class TestStandaloneCommand:
             started_event.set()
 
         with patch.dict(os.environ, env):
-            # Reset singleton storage so it picks up the sqlite backend from env.
-            from gbserver.storage import singleton_storage
-            from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
-
-            singleton_storage.set_storage_factory(SqliteStorageFactory())
-
             from gbserver.commands.command_standalone import _run_standalone
 
             server_holder: dict = {}
@@ -132,3 +164,9 @@ class TestStandaloneCommand:
                 if server is not None:
                     server.should_exit = True
                 thread.join(timeout=15)
+                # Fail loudly if it didn't stop: teardown_method then resets the
+                # singleton and restores GB_HOME_DIR, so a still-running BuildWatcher
+                # would rebuild unprefixed storage in the real ~/.granite.build.
+                assert (
+                    not thread.is_alive()
+                ), "standalone server thread did not stop within 15s"

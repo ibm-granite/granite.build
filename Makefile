@@ -1,11 +1,21 @@
 SHELL=/bin/bash
 # Useful commands for building and running
 PYTHON=python3
-PIP=$(PYTHON) -m pip
+# PIP_USER is unset for every pip call: a globally exported PIP_USER=1 (common on
+# rootless hosts) makes pip refuse to install into a venv ("Can not perform a
+# '--user' install"), and every pip call here runs inside $(VENVDIR).
+PIP=env -u PIP_USER $(PYTHON) -m pip
 DOCKER ?= podman
 GB_GH_DOMAIN ?= github.ibm.com
 VENVDIR=.venv
-VENV_INSTALL_TARGET='.[dev]'
+# pip install targets (extras) for the $(VENVDIR) rule. VENV_INSTALL_TARGET is the
+# default, used by `make venv` and by targets that depend on $(VENVDIR) directly
+# (e.g. `make build`); `make ibm-venv` builds with IBM_VENV_INSTALL_TARGET instead.
+VENV_INSTALL_TARGET ?= .[standalone,thirdparty,dev]
+IBM_VENV_INSTALL_TARGET ?= .[all,dev]
+VENV_USE_ARTIFACTORY ?=
+# The $(VENVDIR) rule records the flavor it built here (ibm or standalone).
+VENV_FLAVOR_FILE = $(VENVDIR)/.flavor
 ARTIFACTORY_DESTINATION=https://na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-engineering-team-pypi-local
 # Eventually this number (a percentage over all the code) needs to be bumped up.
 MIN_COVERAGE?=20
@@ -279,12 +289,12 @@ cicd-test:
 
 .PHONY: cicd-pr-test
 cicd-pr-test: 
-	$(MAKE) cicd-venv
+	$(MAKE) ibm-venv
 	$(MAKE) test-pr 
 
 .PHONY: quick-tests-setup
 quick-tests-setup:
-	$(MAKE) g4os-skypilot-venv
+	$(MAKE) venv
 
 # Setup does not setup slurm, so the skypilot/slurm tests are skipped
 # GBTEST_MODE=mock defaults GBTEST_MOCK_HF=true (see test/libgbtest/mock_env.py), so
@@ -303,7 +313,7 @@ quick-tests:
 # kind cluster for the skypilot/kubernetes tests (either one missing fails setup),
 # plus a best-effort local PostgreSQL.
 extended-tests-setup:
-	$(MAKE) g4os-skypilot-venv
+	$(MAKE) venv
 	$(MAKE) slurm-setup
 	$(MAKE) kube-setup
 	@# Best-effort: without a container runtime/openssl or a free port, the
@@ -334,13 +344,13 @@ extended-tests: check-image-tag-not-dirty
 
 .PHONY: ibm-quick-tests-setup
 ibm-quick-tests-setup:
-	$(MAKE) venv
+	$(MAKE) ibm-venv
 
 # GBTEST_MODE=mock defaults GBTEST_MOCK_HF=true so HF is never touched (no HF_TOKEN
 # secret on PRs; avoids HF rate-limit flakes).
 # secret_manager tests require IBM_CLOUD_SECRETS_MANAGER_SERVICE_URL env var, which SPS is not providing or so it seems
 .PHONY: ibm-quick-tests
-ibm-quick-tests: check_ibm_sps_api_key
+ibm-quick-tests: check_ibm_sps_api_key .check-ibm-venv
 	export GB_ENVIRONMENT=STAGING &&			\
 	$(MAKE) GBTEST_MODE=mock				\
 		PYTEST_MARKERS="ibm and not extended" 	\
@@ -349,10 +359,10 @@ ibm-quick-tests: check_ibm_sps_api_key
 
 .PHONY: ibm-extended-tests-setup
 ibm-extended-tests-setup: start-nats
-	$(MAKE) venv
+	$(MAKE) ibm-venv
 
 .PHONY: ibm-extended-tests
-ibm-extended-tests: check_ibm_sps_api_key check-image-tag-not-dirty
+ibm-extended-tests: check_ibm_sps_api_key check-image-tag-not-dirty .check-ibm-venv
 	export GB_ENVIRONMENT=STAGING &&			\
 	$(MAKE) GBTEST_MODE=live				\
 		PYTEST_MARKERS="ibm" 			\
@@ -370,7 +380,7 @@ check_ibm_sps_api_key:
 	echo The GBTEST_SPS_IBMCLOUD_API_KEY env var is present for IBM tests. 
 
 .PHONY: test-pr
-test-pr: check-image-tag-not-dirty
+test-pr: check-image-tag-not-dirty .check-ibm-venv
 	# NOTE: #92 switched this target to GBTEST_MODE=mock, but the full PR suite is
 	# not green under mock yet (some tests need an admin GitHub token and the
 	# IBM-backed secret manager). Revert to live for now; making test-pr pass under
@@ -382,11 +392,11 @@ test-pr: check-image-tag-not-dirty
 
 .PHONY: cicd-merge-test
 cicd-merge-test:
-	$(MAKE) cicd-venv
+	$(MAKE) ibm-venv
 	$(MAKE) test-merge 
 
 .PHONY: test-merge
-test-merge: check-image-tag-not-dirty
+test-merge: check-image-tag-not-dirty .check-ibm-venv
 	$(MAKE) GBTEST_MODE=live				\
 		PYTEST_MARKERS="$(MERGE_PYTEST_MARKERS)" 	\
 		PYTEST_TEST_TARGETS="test/unit test/e2e test/integration/ibm"	\
@@ -435,7 +445,7 @@ py-test:
 	# - Default (all tests): make py-test
 	# - Specific test: make py-test ARGS=test/integration/ibm/utils/test_user_spaces_list.py
 	# - Multiple args: make py-test ARGS="test/integration/ibm/api -k test_artifact_get"
-	# $(MAKE) cicd-venv
+	# $(MAKE) ibm-venv
 	source $(VENVDIR)/bin/activate && \
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
@@ -615,7 +625,7 @@ clean::
 
 .check-build-env:
 	@if [ -z "$(SKIP_ARTIFACTORY_CHECK)" ]; then \
-		if [ -z "$(ARTIFACTORY_USER)" ] || [ -z "$(ARTIFACTORY_API_KEY)" ]; then echo "You must set ARTIFACTORY_USER and ARTIFACTORY_API_KEY env vars"; false ; fi; \
+		if [ -z "$$ARTIFACTORY_USER" ] || [ -z "$$ARTIFACTORY_API_KEY" ]; then echo "You must set ARTIFACTORY_USER and ARTIFACTORY_API_KEY env vars"; exit 1 ; fi; \
 		echo "Artifactory checks passed."; \
 	fi
 
@@ -648,8 +658,8 @@ build-frontend:
 
 .PHONY: build
 build: $(VENVDIR)
-	source $(VENVDIR)/bin/activate;	\
-	${PIP} install --upgrade build;	\
+	source $(VENVDIR)/bin/activate &&	\
+	${PIP} install --upgrade build &&	\
 	${PYTHON} -m build
 
 .PHONY: publish 
@@ -660,9 +670,6 @@ publish:: .check-build-env
 		-u ${ARTIFACTORY_USER} \
 		-p ${ARTIFACTORY_API_KEY} \
 		dist/*
-
-.PHONY: venv
-venv: 	dev-venv
 
 # This publishes a bash image for use in build tests in CI/CD 
 publish-test-images-icr:
@@ -683,56 +690,74 @@ publish-icr:
 # (especially with a different Python version) while the server runs, it keeps
 # serving from a now-missing path and fails with
 #   "FileNotFoundError: .../site-packages/sky/__init__.py".
-# Run this BEFORE deleting the venv. Harmless no-op if there is no venv or server.
+# Run this BEFORE deleting the venv. Skipped when the venv (or its sky CLI) does
+# not exist; a no-op when no server is running.
 .PHONY: sky-api-stop
 sky-api-stop:
-	-source $(VENVDIR)/bin/activate 2>/dev/null && sky api stop >/dev/null 2>&1 || true
+	@if [ -f "$(VENVDIR)/bin/activate" ] && [ -x "$(VENVDIR)/bin/sky" ]; then	\
+		echo "Stopping any SkyPilot API server running from $(VENVDIR)";	\
+		source $(VENVDIR)/bin/activate && sky api stop >/dev/null 2>&1 || true;	\
+	fi
 
-.PHONY: dev-venv
-dev-venv: sky-api-stop
-	rm -rf $(VENVDIR)
-	$(MAKE) VENV_INSTALL_TARGET='.[all,dev]' $(VENVDIR)
+# Two venv flavors, both built into the single $(VENVDIR) by the $(VENVDIR) rule
+# below (building one replaces the other):
+#   venv      $(VENV_INSTALL_TARGET) from PyPI only — no IBM Artifactory.
+#             Runs gbserver/gbmcp and the non-ibm suites (quick/extended tests).
+#   ibm-venv  $(IBM_VENV_INSTALL_TARGET) — adds the IBM-only deps (dmf-lib etc.)
+#             from IBM Artifactory; needs ARTIFACTORY_USER / ARTIFACTORY_API_KEY.
 
-.PHONY: cicd-venv
-cicd-venv: sky-api-stop
-	rm -rf $(VENVDIR)
-	$(MAKE) VENV_INSTALL_TARGET='.[all,dev]' $(VENVDIR)	# [all,dev] installs all optional deps + test tools
+# Both force (-B) a rebuild through the $(VENVDIR) rule, which owns the cleanup
+# (sky-api-stop + rm) and, for ibm-venv, checks the Artifactory credentials before
+# deleting the existing venv.
+.PHONY: venv
+venv:
+	$(MAKE) -B VENV_USE_ARTIFACTORY= $(VENVDIR)
 
-.PHONY: standalone-venv
-standalone-venv: sky-api-stop
-	rm -rf $(VENVDIR)
-	$(MAKE) VENV_INSTALL_TARGET='.[standalone,dev]' SKIP_ARTIFACTORY_CHECK=1 $(VENVDIR)
+.PHONY: ibm-venv
+ibm-venv:
+	$(MAKE) -B VENV_INSTALL_TARGET='$(IBM_VENV_INSTALL_TARGET)' VENV_USE_ARTIFACTORY=1 $(VENVDIR)
 
-.PHONY: demo-venv
-demo-venv: sky-api-stop
-	rm -rf $(VENVDIR)
-	$(MAKE) VENV_INSTALL_TARGET='.[standalone,docker,dev]' SKIP_ARTIFACTORY_CHECK=1 $(VENVDIR)
+# Fails if $(VENVDIR) was built as a non-IBM flavor. Guards the targets that run
+# the ibm-marked tests, which otherwise fail or skip far from the cause (missing
+# dmf-lib / kubernetes_asyncio) when run in a standalone venv. A venv built before
+# the flavor file existed has none; it only gets a warning, so it keeps working.
+.PHONY: .check-ibm-venv
+.check-ibm-venv:
+	@if [ ! -f $(VENV_FLAVOR_FILE) ]; then						\
+		echo "WARNING: $(VENV_FLAVOR_FILE) not found, assuming an IBM venv; run 'make ibm-venv' if ibm tests fail" >&2; \
+	elif ! grep -qx ibm $(VENV_FLAVOR_FILE); then					\
+		echo "IBM venv required (found: $$(cat $(VENV_FLAVOR_FILE))); run 'make ibm-venv'" >&2; exit 1; \
+	fi
 
-.PHONY: g4os-skypilot-venv
-g4os-skypilot-venv: sky-api-stop
-	rm -rf $(VENVDIR)
-	$(PYTHON) -m venv $(VENVDIR)
-	source $(VENVDIR)/bin/activate; \
-	${PIP} install --upgrade pip; \
-	${PIP} install -e '.[standalone,thirdparty,dev]'
+# Deprecated aliases for the targets above; to be removed in a follow-up commit.
+.PHONY: standalone-venv dev-venv cicd-venv demo-venv g4os-skypilot-venv
+dev-venv cicd-venv: ibm-venv
+standalone-venv demo-venv g4os-skypilot-venv: venv
 
+# Builds $(VENVDIR) from VENV_INSTALL_TARGET (pip extras) and records its flavor.
+# VENV_USE_ARTIFACTORY=1 checks for and configures the IBM Artifactory index
+# (needed by the [ibm] extras).
+# The install steps are chained with && so any failure fails the target (pip runs
+# with PIP_USER unset; see PIP). The final check catches an install that quietly
+# left no gbserver.
 $(VENVDIR): pyproject.toml
-	$(MAKE) .check-build-env
-	-@source $(VENVDIR)/bin/activate 2>/dev/null && sky api stop >/dev/null 2>&1 || true	# stop stale SkyPilot server before rebuild (see sky-api-stop)
+	$(if $(VENV_USE_ARTIFACTORY),$(MAKE) .check-build-env)
+	$(MAKE) sky-api-stop
 	rm -rf $(VENVDIR)
 	$(PYTHON) -m venv $(VENVDIR)
 	echo '[global]' > $(VENVDIR)/pip.conf
-	#echo "extra-index-url = https://$$ARTIFACTORY_USER:$$ARTIFACTORY_API_KEY@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-engineering-team-pypi-local/simple" >> $(VENVDIR)/pip.conf
-	if [ -z "$(SKIP_ARTIFACTORY_CHECK)" ]; then \
+	if [ -n "$(VENV_USE_ARTIFACTORY)" ]; then \
 		echo "extra-index-url = https://$$ARTIFACTORY_USER:$$ARTIFACTORY_API_KEY@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-model-factory-team-pypi-local/simple" >> $(VENVDIR)/pip.conf; \
 	fi
-	source $(VENVDIR)/bin/activate; 	\
-	${PIP} install --upgrade pip;		\
-	${PIP} install -e '$(VENV_INSTALL_TARGET)';	\
-	#${PIP} install pytest pytest-cov pytest-asyncio pytest-xdist coverage # Why are these not in the [dev] part of pyproject.toml
+	source $(VENVDIR)/bin/activate &&			\
+	${PIP} install --upgrade pip &&		\
+	${PIP} install -e '$(VENV_INSTALL_TARGET)'
+	@test -x $(VENVDIR)/bin/gbserver ||					\
+		{ echo "venv install failed: $(VENVDIR)/bin/gbserver missing" >&2; exit 1; }
+	echo '$(if $(VENV_USE_ARTIFACTORY),ibm,standalone)' > $(VENV_FLAVOR_FILE)
 
 gbcli:
-	source $(VENVDIR)/bin/activate; 	\
+	source $(VENVDIR)/bin/activate &&	\
 	${PIP} install "gbcli @ git+ssh://git@${GB_GH_DOMAIN}/granite-dot-build/gbcli.git"
 
 .PHONY: image

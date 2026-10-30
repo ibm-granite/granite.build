@@ -208,6 +208,19 @@ export function Step2Configure({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allConfigs, selectedAlgorithm, selectedGoal])
 
+  // The edit/create flags are wizard state, but the forms they open live here and
+  // are lost when this step unmounts on Back or the step indicator. A returning
+  // step then rendered an empty panel that Save and Confirm could not leave, with
+  // Next gated off on the flag. Leave both modes as the forms go.
+  useEffect(
+    () => () => {
+      setIsEditingConfig(false)
+      setIsCreatingConfig(false)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  )
+
   async function enterEditMode() {
     if (!selectedConfig) return
     if (isCreatingConfig) cancelCreateMode()
@@ -272,7 +285,8 @@ export function Step2Configure({
         : selectedConfig.rl_tuner_type || null
     const configData = configDataFromForm(editableConfig)
 
-    const rangeMessage = outOfRangeMessage(configData) ?? invalidValuesMessage(editConfigInvalidFields)
+    const rangeMessage =
+      outOfRangeMessage(configData, { tuner: tuner_type, rlTuner: rl_tuner_type }) ?? invalidValuesMessage(editConfigInvalidFields)
     if (rangeMessage) {
       setEditSaveError(rangeMessage)
       return
@@ -400,8 +414,13 @@ export function Step2Configure({
   // through (TimeInput calls onChange even when invalid), so Confirm accepted a
   // config the fields had already flagged -- a 500-hour time budget reached the
   // launch as 1800000 seconds against the template's two-week ceiling.
-  function outOfRangeMessage(configSections: unknown): string | null {
-    const offenders = findOutOfRangeFields(configSections)
+  function outOfRangeMessage(
+    configSections: unknown,
+    selected: { tuner?: string | null; rlTuner?: string | null }
+  ): string | null {
+    // Only the selected tuners are on screen; another's stale default would be
+    // named here with no field to correct.
+    const offenders = findOutOfRangeFields(configSections, selected)
     if (offenders.length === 0) return null
     return `Some values are outside their allowed range: ${offenders.join(', ')}. Correct the highlighted fields and try again.`
   }
@@ -427,7 +446,8 @@ export function Step2Configure({
 
     const { name: _name, tuner_type, rl_tuner_type, ...configSections } = newConfigForm
 
-    const rangeMessage = outOfRangeMessage(configSections) ?? invalidValuesMessage(newConfigInvalidFields)
+    const rangeMessage =
+      outOfRangeMessage(configSections, { tuner: tuner_type, rlTuner: rl_tuner_type }) ?? invalidValuesMessage(newConfigInvalidFields)
     if (rangeMessage) {
       setSaveError(rangeMessage)
       return
@@ -520,7 +540,7 @@ export function Step2Configure({
                   <div className={styles.leftPanelActions}>
                     <Button size="sm" kind="ghost" onClick={cancelEditMode}>Cancel</Button>
                     <Button size="sm" kind="primary" disabled={isLoadingEditConfig || (needsSaveAs && !editConfigName.trim())} onClick={confirmConfigEdit}>
-                      {needsSaveAs ? 'Confirm as New' : 'Confirm'}
+                      {needsSaveAs ? 'Save as New' : 'Save'}
                     </Button>
                   </div>
                 </>

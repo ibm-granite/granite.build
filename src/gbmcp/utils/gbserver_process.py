@@ -59,7 +59,7 @@ def resolve_bin() -> str:
     raise RuntimeError(
         "No gbserver executable found next to this interpreter or on PATH. "
         "Install with `pip install 'granite.build[standalone]'`, or build a "
-        "checkout with `make standalone-venv`, or set GBSERVER_BIN."
+        "checkout with `make venv`, or set GBSERVER_BIN."
     )
 
 

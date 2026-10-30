@@ -1,6 +1,6 @@
 # steps/common.mk — shared conventions for generating Granite.build step directories.
 #
-# Each step's environment dir (e.g. steps/byoc/skypilot) has a thin Makefile that
+# Each step's environment dir (e.g. steps/misc/byoc/skypilot) has a thin Makefile that
 # sets a few variables and then `include`s this file. It provides the canonical
 # targets used across all steps:
 #
@@ -20,9 +20,9 @@
 #                 already-committed image ref, so it is immune to the image-tag
 #                 SHA and flags only genuine content drift); exit 1 on drift
 #   all           end-to-end: image + publish-image + space (image steps),
-#                 or just space (non-image steps)
+#                 or just space (non-custom-image steps)
 #   test          render the Space (via `space`) and build the image locally
-#                 (via `image`; no-op/no publish for non-image steps), then run
+#                 (via `image`; no-op/no publish for non-custom-image steps), then run
 #                 the step's Python tests in $(TEST_DIR)/ (adjacent to src/,
 #                 organised in per-cluster subdirs; not bundled)
 #   test-setup    OPTIONAL per-step hook: stand up any infrastructure the step's
@@ -59,8 +59,11 @@
 #   DOCKER      container tool          (default: podman)
 #   DOCKERFILE  Dockerfile to detect/build (default: Dockerfile)
 #   PLATFORM    target build platform   (default: linux/amd64)
-#   IMAGE_NAME  image repository name   (default: gb-step-$(STEP_NAME))
-#   IMAGE_TAG   image tag               (default: git short SHA, else "latest")
+#   IMAGE_NAME     image repository          (default: steps/<step path>/<env>, one per step)
+#   IMAGE_VERSION  version part of the tag   (default: git short SHA, else "latest")
+#   IMAGE_TAG      image tag                 (default: $(IMAGE_VERSION))
+#   QUAY_API_TOKEN quay.io OAuth token in the ENVIRONMENT; publish-image creates a new
+#                  repository public with it (default: unset, no API call)
 #   STEP_ENV    step's environment segment      (default: this Makefile's dir name)
 #   PUBLISH_STEP_DIR  where `publish-step` renders the step (default: the env-nested
 #                     assets path configurations/assets/environments/<env>/steps/<path>)
@@ -74,7 +77,7 @@
 #
 # The rendered $(SPACE_DIR)/ directory (named "space" by default) is a
 # self-contained Granite.build Space. Point a build test / build.yaml at it via
-#   space_uri: <path to steps/byoc/skypilot/space>
+#   space_uri: <path to steps/misc/byoc/skypilot/space>
 # and reference the step by the stable URI  step_uri: space://steps/$(STEP_PATH)
 # — everything else (environments, monitors, other steps) resolves through the
 # generated space.yaml's base_uris chain to $(SPACE_BASE_URI).
@@ -109,26 +112,60 @@ $(error REGISTRY is not set. Define it in the including Makefile (e.g. 'REGISTRY
 endif
 endif
 
-IMAGE_NAME ?= gb-step-$(STEP_NAME)
-# Defaults to the git short SHA (else "latest") so iterative builds get a unique,
-# traceable tag without ceremony. Override per release, e.g. IMAGE_TAG=0.1.0.
-IMAGE_TAG  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
+# Every custom step image gets its own repository, named after the step's
+# directory, and the tag is the version (#229): steps/train/openinstruct-sft/skypilot
+# builds $(REGISTRY)/steps/train/openinstruct-sft/skypilot:<IMAGE_VERSION>. Override
+# IMAGE_NAME for another repository, or IMAGE_TAG to set the whole tag yourself.
+# `?=` keeps them recursive: STEP_PATH and STEP_ENV are assigned further down
+# this file.
+IMAGE_NAME    ?= steps/$(STEP_PATH)/$(STEP_ENV)
+# The version part of the tag. Defaults to the git short SHA (else "latest") so
+# iterative builds get a unique, traceable tag; a step pins a release in its
+# Makefile, e.g. IMAGE_VERSION ?= 0.1.0.
+IMAGE_VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
+IMAGE_TAG     ?= $(IMAGE_VERSION)
 
 # Registry host (e.g. quay.io) parsed from REGISTRY (quay.io/my-org) — this is
-# what `docker/podman login` authenticates against. Used only by publish-image's
+# what `docker login` authenticates against. Used only by publish-image's
 # optional non-interactive login below.
 REGISTRY_HOST := $(firstword $(subst /, ,$(REGISTRY)))
+# podman can scope a login to the namespace (quay.io/my-org), which leaves the
+# user's other logins on that host alone; docker logs in per host only.
+REGISTRY_LOGIN = $(if $(filter podman,$(notdir $(firstword $(DOCKER)))),$(REGISTRY),$(REGISTRY_HOST))
+
+# publish-image refuses to push a tag that already exists on the registry: a tag
+# pins an image (and SLURM's image cache keys its .sqsh by tag, so a re-pushed
+# tag never reaches it). Bump IMAGE_VERSION instead, or set PUBLISH_OVERWRITE=true
+# (exactly `true`) to replace the tag on purpose.
+PUBLISH_OVERWRITE ?= false
+
+# `make test` for a custom-image step WARNS (and still runs the tests) when IMAGE_REF
+# is already published as a DIFFERENT image than the one it just built, or when it
+# cannot compare them: SkyPilot build tests (aws, SLURM, k8s) pull the published
+# image, not the local build, so with a pinned IMAGE_VERSION a Dockerfile edit would
+# otherwise pass silently against the old image. The comparison uses podman image
+# IDs; with another DOCKER it is skipped with a note. TEST_PUBLISHED=true (exactly
+# `true`) skips the check, and its registry query, entirely.
+TEST_PUBLISHED ?= false
+
+# quay.io only: with QUAY_API_TOKEN (an OAuth token with the "Create Repositories"
+# scope) in the ENVIRONMENT, publish-image creates a repository that does not exist
+# yet as PUBLIC through quay's API before the first push. A repository created by
+# a push is private, and SkyPilot pulls the image anonymously. Without the token,
+# publish-image refuses a new repository rather than create a private one; create
+# it as Public in the quay UI first, then publish.
+QUAY_API ?= https://quay.io/api/v1
 
 # IMAGE_REF is the fully qualified image reference (e.g. quay.io/org/img:tag)
 # that `make space` substitutes into the template's ${IMAGE_REF} token. The
-# template wraps it as SkyPilot `docker:${IMAGE_REF}`. It is empty for non-image
+# template wraps it as SkyPilot `docker:${IMAGE_REF}`. It is empty for non-custom-image
 # steps, whose templates carry no ${IMAGE_REF} token and select their image via
 # runtime Jinja instead. Both the image/publish-image recipes and the render use
 # this same value, so there is one source of truth.
 ifeq ($(STEP_USES_IMAGE),true)
-IMAGE_REF := $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
+IMAGE_REF = $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
 else
-IMAGE_REF :=
+IMAGE_REF =
 endif
 
 # Name of the generated Space directory, created as ./$(SPACE_DIR) next to the
@@ -138,8 +175,12 @@ endif
 # steps/$(STEP_PATH)/step.yaml and the bundled src/. Overridable on the command
 # line or in the including Makefile.
 SPACE_DIR  ?= space
-# `name:` written into the generated space.yaml. Defaults to the step name.
-SPACE_NAME ?= $(STEP_NAME)
+# `name:` written into the generated space.yaml. Defaults to `public`, the name of
+# the shared configurations/spaces/local that Mode-2 tests resolve through, because
+# an hf:// push derives its HF Enterprise resource group from the space name
+# (gbspace-<space>[-<env>]): a space named after the step would look for a
+# gbspace-<step> group that does not exist. Override it to push to another group.
+SPACE_NAME ?= public
 # When non-empty, a variables.DEFAULT_ENVIRONMENT entry is written into the
 # generated space.yaml (e.g. DEFAULT_ENVIRONMENT=skypilot/slurm). Empty by
 # default — builds that set environment_uri explicitly do not need it.
@@ -164,6 +205,15 @@ PYTHON   ?= python3
 # debugging a test that does not launch SkyPilot.
 PYTEST_CAPTURE ?= -s
 
+# Which tests `make test` runs. TESTS is a space-separated list of pytest paths or
+# node ids, relative to the step env dir (default: all of $(TEST_DIR)); PYTEST_ARGS
+# is passed to pytest as is (e.g. -k, -m, -x). For example:
+#   make test TESTS=test/slurm                          # one cluster's build tests
+#   make test TESTS=test/slurm/test_skypilot_byoc.py    # one file
+#   make test PYTEST_ARGS='-k "not cancellation"'
+TESTS       ?= $(TEST_DIR)
+PYTEST_ARGS ?=
+
 # Repo-root virtualenv that `make test` activates before running pytest. The step
 # tests import gbserver/libgbtest (and their deps), which live in the repo's
 # shared .venv created by `make venv` at the repo root — not in a per-step env.
@@ -176,6 +226,9 @@ VENV_DIR ?= $(REPO_ROOT)/.venv
 # Makefile pulls it in, so `lastword` names it regardless of the caller's cwd.
 COMMON_MK_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
 README        := $(COMMON_MK_DIR)README.md
+# Prints present / absent / unknown for an image ref (exit 0 / 1 / 2); used by
+# publish-image's overwrite guard and publish-step's image check.
+TAG_STATUS    := sh $(COMMON_MK_DIR)scripts/registry-tag-status.sh
 
 # Relative file:// base_uri written into the generated space.yaml so space://
 # URIs (environments, monitors, other steps) resolve into the shared assets
@@ -218,8 +271,8 @@ REPO_ROOT        := $(abspath $(COMMON_MK_DIR)..)
 #   STEP_ROOT = the enclosing steps/ dir (COMMON_MK_DIR points at it: it is the
 #               `../..`-style include path, one `..` per authoring level, so
 #               $(abspath) lands on steps/ regardless of nesting depth).
-#   STEP_REL  = CURDIR relative to steps/  (e.g. byoc/skypilot | distill/foo/skypilot).
-#   STEP_PATH = STEP_REL with the final <env> segment removed (byoc | distill/foo).
+#   STEP_REL  = CURDIR relative to steps/  (e.g. foo/skypilot | misc/byoc/skypilot).
+#   STEP_PATH = STEP_REL with the final <env> segment removed (foo | misc/byoc).
 # STEP_PATH is structural — derived from CURDIR, independent of any STEP_ENV
 # override — so it stays correct when check-published re-invokes publish-step.
 STEP_ROOT        := $(abspath $(COMMON_MK_DIR))
@@ -255,12 +308,24 @@ space := $(empty) $(empty)
 MODE2_PARENTS := test-data steps $(subst /, ,$(STEP_PATH)) $(STEP_ENV) cluster
 MODE2_DOTDOT  := $(subst $(space),,$(foreach s,$(MODE2_PARENTS),../))
 MODE2_SPACE_URI  ?= $(MODE2_DOTDOT)configurations/spaces/local
+# Which buildtest.yaml space_uris publish-step rewrites. LOCAL means a bare path or
+# a file:// URI, as libgbtest's _resolve_space_uri reads them; it is rewritten.
+# REMOTE means any other <scheme>:// URI (git://, git+ssh://, https://, ...) or the
+# scp-like user@host:path form; it is copied unchanged. An ERE can't say "any scheme
+# except file", so file:// lines are rewritten first (FILE_...), then every line
+# not matching REMOTE_... is. Both anchor the URI right after blanks and at most one
+# opening quote, so a local path containing `@`, `:` or `://` (../../a@b:c/space)
+# stays local. The RE is pasted into a single-quoted sed program, so the `'` in the
+# quote class is written as the shell's '"'"'.
+SPACE_URI_VALUE_RE  := ^space_uri:[[:space:]]*["'"'"']?
+FILE_SPACE_URI_RE   := $(SPACE_URI_VALUE_RE)file://
+REMOTE_SPACE_URI_RE := $(SPACE_URI_VALUE_RE)([a-zA-Z][a-zA-Z0-9+.-]*://|[a-zA-Z0-9_][a-zA-Z0-9._-]*@[a-zA-Z0-9.-]+:)
 
 # publish-step refuses to publish a custom-image step until its IMAGE_REF exists on
 # the registry — a step.yaml/build test referencing an unpublished image is broken
 # (the Mode-2 skypilot test's remote node cannot pull it). Set PUBLISH_REQUIRE_IMAGE=false
 # to bypass (offline publish, or the check-published re-render below). No effect on
-# non-image steps, whose IMAGE_REF is empty (see require-image-published).
+# non-custom-image steps, whose IMAGE_REF is empty (see require-image-published).
 PUBLISH_REQUIRE_IMAGE ?= true
 
 # STEP_PUBLISHABLE gates `publish-step` (see the includer variables above).
@@ -291,33 +356,83 @@ help:
 	@echo "  publish-image  push the image to the registry                 (no-op when no Dockerfile is present)"
 	@echo "  all            $(if $(filter true,$(STEP_USES_IMAGE)),image + publish-image + space,space (this step builds no image))"
 	@echo "  test           render the Space + build the image locally, then run the step's tests in $(TEST_DIR)/ (no-op when absent)"
+	@echo "                 narrow with TESTS=<paths|node ids> (e.g. TESTS=test/slurm) and/or PYTEST_ARGS='-k ...'"
 	@echo "  test-setup     stand up infra the step's tests need (run once before 'make test'; no-op unless the step defines it)"
 	@echo "  clean          remove the generated Space $(SPACE_DIR)/"
 	@echo "  help           show this message"
 	@echo
-	@echo "Common overrides: make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0"
+	@echo "Common overrides: make all REGISTRY=quay.io/myorg IMAGE_VERSION=0.1.0"
 	@echo "Full documentation: $(README)"
 
 # ---- Image build / publish (custom image steps only) ------------------------------
 
 image:
 ifeq ($(STEP_USES_IMAGE),true)
+	$(call require-image-tag)
 	$(DOCKER) build --platform $(PLATFORM) -f $(DOCKERFILE) . -t $(IMAGE_REF)
 else
 	@echo "[$(STEP_NAME)] no $(DOCKERFILE) found; no custom image to build."
 endif
 
-# By default this assumes you have already authenticated to the registry out of
-# band (`podman login $(REGISTRY_HOST)` / `docker login`), so no credentials live
-# in this Makefile. For non-interactive use (CI), export REGISTRY_USER and
+# By default this assumes you have already logged in to the registry out of
+# band (`podman login $(REGISTRY)` / `docker login`), so no credentials live in
+# this Makefile. For non-interactive use (CI), export REGISTRY_USER and
 # REGISTRY_PASSWORD (a robot-account token) in the ENVIRONMENT — not as make
-# variables — and publish-image logs in first, piping the secret via
-# --password-stdin so it never appears in `ps`, make's echo, or shell history.
+# variables — and publish-image logs in to $(REGISTRY_LOGIN) first, piping the
+# secret via --password-stdin so it never appears in `ps`, make's echo, or shell
+# history.
+#
+# Then it refuses to overwrite a tag (see PUBLISH_OVERWRITE): it pushes only
+# when the registry reports the tag absent. A tag it cannot check (network,
+# auth, an unexpected answer) is refused too, so a broken check never turns
+# into a silent overwrite.
+#
+# On quay.io it first makes sure the step's repository exists and is public
+# (see QUAY_API_TOKEN above): a repository the registry reports absent is
+# created public through quay's API when the token is set, and refused (before
+# any push) otherwise. The token reaches curl as config on stdin, never on its argv.
 publish-image:
 ifeq ($(STEP_USES_IMAGE),true)
+	$(call require-image-tag)
 	@if [ -n "$${REGISTRY_USER:-}" ] && [ -n "$${REGISTRY_PASSWORD:-}" ]; then \
-		echo "[$(STEP_NAME)] logging in to $(REGISTRY_HOST) as $$REGISTRY_USER"; \
-		printf '%s' "$$REGISTRY_PASSWORD" | $(DOCKER) login "$(REGISTRY_HOST)" -u "$$REGISTRY_USER" --password-stdin; \
+		echo "[$(STEP_NAME)] logging in to $(REGISTRY_LOGIN) as $$REGISTRY_USER"; \
+		printf '%s' "$$REGISTRY_PASSWORD" | $(DOCKER) login "$(REGISTRY_LOGIN)" -u "$$REGISTRY_USER" --password-stdin; \
+	fi
+	@if [ "$(REGISTRY_HOST)" = "quay.io" ]; then \
+		ns='$(word 2,$(subst /, ,$(REGISTRY)))'; \
+		repo='$(patsubst $(REGISTRY_HOST)/%,%,$(REGISTRY))/$(IMAGE_NAME)'; repo="$${repo#*/}"; \
+		rstatus=$$($(TAG_STATUS) --repository "$(IMAGE_REF)"); \
+		case "$$rstatus" in \
+			present) ;; \
+			absent) \
+				if [ -z "$${QUAY_API_TOKEN:-}" ]; then \
+					echo "[$(STEP_NAME)] ERROR: quay.io repository $$ns/$$repo does not exist yet, and a push would create it PRIVATE (SkyPilot pulls anonymously). Set QUAY_API_TOKEN to have publish-image create it public, or create it as Public in the quay UI first." >&2; \
+					exit 1; \
+				else \
+					body=$$(mktemp) || exit 1; \
+					printf '{"namespace":"%s","repository":"%s","visibility":"public","description":"granite.build step image (%s)","repo_kind":"image"}' "$$ns" "$$repo" "$$repo" > "$$body"; \
+					code=$$(printf 'header = "Authorization: Bearer %s"\n' "$$QUAY_API_TOKEN" | curl -s -g -o /dev/null -w '%{http_code}' --max-time 30 --config - \
+						-X POST -H 'Content-Type: application/json' --data-binary "@$$body" --url "$(QUAY_API)/repository"); \
+					rm -f "$$body"; \
+					if [ "$$code" = "201" ]; then \
+						echo "[$(STEP_NAME)] created public repository quay.io/$$ns/$$repo"; \
+					else \
+						echo "[$(STEP_NAME)] ERROR: could not create public repository quay.io/$$ns/$$repo (HTTP $$code). Check QUAY_API_TOKEN's scopes (Create Repositories), or create it in the quay UI." >&2; \
+						exit 1; \
+					fi; \
+				fi ;; \
+			*) echo "[$(STEP_NAME)] ERROR: could not determine whether repository quay.io/$$ns/$$repo exists. quay.io answers an anonymous check of a repository that does not exist yet with 401, so this needs credentials: run 'podman login $(REGISTRY)' (a login kept in a credential helper is not read), or export REGISTRY_USER and REGISTRY_PASSWORD." >&2; exit 1 ;; \
+		esac; \
+	fi
+	@if [ "$(PUBLISH_OVERWRITE)" = "true" ]; then \
+		echo "[$(STEP_NAME)] PUBLISH_OVERWRITE=true: pushing $(IMAGE_REF) without checking for an existing tag."; \
+	else \
+		status=$$($(TAG_STATUS) "$(IMAGE_REF)"); \
+		case "$$status" in \
+			absent) echo "[$(STEP_NAME)] $(IMAGE_REF) is a new tag." ;; \
+			present) echo "[$(STEP_NAME)] ERROR: $(IMAGE_REF) already exists on the registry; a tag must keep pointing at one image. Bump IMAGE_VERSION, or pass PUBLISH_OVERWRITE=true to replace it on purpose." >&2; exit 1 ;; \
+			*) echo "[$(STEP_NAME)] ERROR: could not determine whether $(IMAGE_REF) already exists (registry unreachable, or it refused the check). Fix access and retry, or pass PUBLISH_OVERWRITE=true to push without the check." >&2; exit 1 ;; \
+		esac; \
 	fi
 	$(DOCKER) push $(IMAGE_REF)
 else
@@ -327,7 +442,7 @@ endif
 # ---- Rendering helper -------------------------------------------------------
 
 # render-step-template — render step-template.yaml to the file named by $(1),
-# substituting ONLY the literal ${IMAGE_REF} token (empty for non-image steps).
+# substituting ONLY the literal ${IMAGE_REF} token (empty for non-custom-image steps).
 # Everything else passes through verbatim: runtime Jinja ({{ ... }}) and shell
 # expansions (${VAR}, $(cmd)) in run:/setup: blocks. Uses sed (POSIX, always
 # present) rather than envsubst, so no gettext install is required. The image
@@ -338,23 +453,51 @@ define render-step-template
 	sed "s#\$${IMAGE_REF}#$$ref#g" "$(TEMPLATE)" > "$(1)"
 endef
 
-# write-gbignore — drop a .gbignore next to the published step.yaml so the g.b
-# build process ships the listed files verbatim instead of Jinja-rendering them.
-# The .gbignore is an ADDITIVE glob list (this impl has NO gitignore-style "!"
-# negation — see utils/filesystem.py:_get_matching_ignored_files), so it must
-# enumerate what to SKIP rather than "ignore all but step.yaml": that keeps
-# step.yaml's runtime {{ ... }} rendered while sparing the docs (README.md, which
-# may show {{ ... }} examples) and the whole src/ tree (step scripts/helpers,
-# shipped as-is). The .gbignore is itself a dotfile, so the renderer's glob never
-# picks it up — its own {{ ... }} in the comment is safe. $(1) is the target dir.
-define write-gbignore
-	@printf '%s\n' \
-		'# The following allows the docs to contain {{ ... }} but be ignored by the g.b build process.' \
-		'**/*.md' \
-		'# Ship the src/ tree verbatim — do not jinja-process step scripts/helpers.' \
-		'src/**' \
-		> "$(1)/.gbignore"
-	@echo "[$(STEP_NAME)] wrote $(1)/.gbignore (skip Jinja for docs + src/)"
+# copy-gbignore — copy the step's own .gbignore next to the rendered step.yaml, so
+# the g.b build process ships the listed files verbatim instead of Jinja-rendering
+# them. Every step carries one next to its Makefile (the create-framework-step
+# skill writes it for new steps); common.mk generates nothing, so the file in the
+# step source is exactly what is tested and published. Both `space` (so `make
+# test`) and `publish-step` use this macro, so a step renders the same way when
+# tested and when published. The usual list is `**/*.md` (docs may show {{ ... }}
+# examples) and `src/**` (scripts ship as is). The .gbignore is an ADDITIVE glob
+# list (no gitignore-style "!" negation; see
+# utils/filesystem.py:_get_matching_ignored_files), so it names what to SKIP
+# rather than "ignore all but step.yaml". It is a dotfile, so the renderer's glob
+# never picks it up itself. $(1) is the target dir.
+define copy-gbignore
+	@cp .gbignore "$(1)/.gbignore"
+	@echo "[$(STEP_NAME)] copied .gbignore to $(1)/"
+endef
+
+# require-gbignore — fail before anything is written when the step has no
+# .gbignore. Shipping a step without one would Jinja-render its docs and scripts,
+# which fails silently on a cluster rather than here.
+define require-gbignore
+	@test -f .gbignore || { \
+		echo "[$(STEP_NAME)] ERROR: no .gbignore next to this Makefile." >&2; \
+		echo "[$(STEP_NAME)] Add one listing the files to ship without Jinja rendering, usually:" >&2; \
+		echo "[$(STEP_NAME)]   **/*.md" >&2; \
+		echo "[$(STEP_NAME)]   src/**" >&2; \
+		echo "[$(STEP_NAME)] (see steps/README.md, .gbignore)." >&2; \
+		exit 1; }
+endef
+
+# require-image-tag — fail before building/pushing when the derived tag is not a
+# valid OCI tag (at most 128 chars of [A-Za-z0-9_.-], not starting with . or -).
+define require-image-tag
+	@tag='$(IMAGE_TAG)'; \
+	if [ "$${#tag}" -gt 128 ] || ! printf '%s' "$$tag" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]*$$'; then \
+		echo "[$(STEP_NAME)] ERROR: image tag '$$tag' is not a valid OCI tag (max 128 chars of [A-Za-z0-9_.-])." >&2; \
+		echo "[$(STEP_NAME)] Shorten IMAGE_VERSION, or set IMAGE_TAG in this step's Makefile." >&2; \
+		exit 1; \
+	fi; \
+	name='$(IMAGE_NAME)'; \
+	if ! printf '%s' "$$name" | grep -Eq '^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$$'; then \
+		echo "[$(STEP_NAME)] ERROR: image repository '$$name' is not a valid repository name (lowercase [a-z0-9], components separated by '/', '.', '_' or '-' only between characters)." >&2; \
+		echo "[$(STEP_NAME)] Rename the step directory, or set IMAGE_NAME in this step's Makefile." >&2; \
+		exit 1; \
+	fi
 endef
 
 # guard-publish-paths — fail fast before `publish-step` runs any rm -rf. The publish
@@ -389,26 +532,26 @@ endef
 
 # require-image-published — for custom-image steps, fail publish-step unless the step's
 # IMAGE_REF is present on its registry, so a step's step.yaml + build tests are only
-# published once the image they reference is pullable. No-op for non-image steps (empty
-# IMAGE_REF) and when PUBLISH_REQUIRE_IMAGE is not "true". Queries the registry manifest
-# only (no layer pull): prefers skopeo (registry-native, independent of $(DOCKER)),
-# falling back to `$(DOCKER) manifest inspect`. A public image needs no credentials.
+# published once the image they reference is pullable. No-op for non-custom-image steps (empty
+# IMAGE_REF) and when PUBLISH_REQUIRE_IMAGE is not "true". Asks the registry for the
+# manifest only, no layer pull (scripts/registry-tag-status.sh: skopeo when installed, else
+# the registry's v2 API). Not `$(DOCKER) manifest inspect`, which fails on a
+# single-platform image under podman (#568). A public image needs no credentials.
 define require-image-published
 	@if [ -n "$(IMAGE_REF)" ] && [ "$(PUBLISH_REQUIRE_IMAGE)" = "true" ]; then \
 		echo "[$(STEP_NAME)] verifying image is published: $(IMAGE_REF)"; \
-		if command -v skopeo >/dev/null 2>&1; then \
-			skopeo inspect --raw "docker://$(IMAGE_REF)" >/dev/null 2>&1 || { \
+		status=$$($(TAG_STATUS) "$(IMAGE_REF)"); \
+		case "$$status" in \
+			present) echo "[$(STEP_NAME)] image present on registry." ;; \
+			absent) \
 				echo "[publish-step] refusing: image '$(IMAGE_REF)' not found on its registry."; \
 				echo "[publish-step] run 'make publish-image' (and ensure the repo is public) before 'make publish-step', or pass PUBLISH_REQUIRE_IMAGE=false to override."; \
-				exit 1; }; \
-		elif $(DOCKER) manifest inspect "$(IMAGE_REF)" >/dev/null 2>&1; then \
-			:; \
-		else \
-			echo "[publish-step] refusing: image '$(IMAGE_REF)' not found on its registry (via '$(DOCKER) manifest inspect'; install skopeo for a more reliable check)."; \
-			echo "[publish-step] run 'make publish-image' first, or pass PUBLISH_REQUIRE_IMAGE=false to override."; \
-			exit 1; \
-		fi; \
-		echo "[$(STEP_NAME)] image present on registry."; \
+				exit 1 ;; \
+			*) \
+				echo "[publish-step] refusing: could not check whether '$(IMAGE_REF)' is on its registry (unreachable, or a private repo)."; \
+				echo "[publish-step] retry, or pass PUBLISH_REQUIRE_IMAGE=false to override."; \
+				exit 1 ;; \
+		esac; \
 	fi
 endef
 
@@ -416,7 +559,7 @@ endef
 
 # Render a self-contained Space into $(SPACE_DIR)/:
 #   $(SPACE_DIR)/steps/$(STEP_PATH)/step.yaml   (+ bundled src/)
-#   $(SPACE_DIR)/steps/$(STEP_PATH)/.gbignore   (skip Jinja for **/*.md + src/)
+#   $(SPACE_DIR)/steps/$(STEP_PATH)/.gbignore   (the step's own, copied)
 #   $(SPACE_DIR)/space.yaml                       (base_uris -> $(SPACE_BASE_URI))
 # step-template.yaml is rendered substituting ONLY ${IMAGE_REF} so runtime Jinja
 # ({{ ... }}) and shell expansions (${VAR}, $(cmd)) in the run/setup blocks pass
@@ -426,6 +569,7 @@ endef
 # slash-free STEP_NAME) is used for the steps/ tree so a nested step's identity is
 # preserved locally exactly as it will be once published.
 space:
+	$(call require-gbignore)
 	@mkdir -p $(SPACE_DIR)/steps/$(STEP_PATH)
 	$(call render-step-template,$(SPACE_DIR)/steps/$(STEP_PATH)/step.yaml)
 	@if [ -d "$(SRC_DIR)" ] && [ -n "$$(ls -A $(SRC_DIR) 2>/dev/null)" ]; then \
@@ -433,7 +577,7 @@ space:
 		cp -R "$(SRC_DIR)" "$(SPACE_DIR)/steps/$(STEP_PATH)/$(SRC_DIR)"; \
 		echo "[$(STEP_NAME)] bundled $(SRC_DIR)/ into $(SPACE_DIR)/steps/$(STEP_PATH)/"; \
 	fi
-	$(call write-gbignore,$(SPACE_DIR)/steps/$(STEP_PATH))
+	$(call copy-gbignore,$(SPACE_DIR)/steps/$(STEP_PATH))
 	@printf 'name: %s\nsecret_manager:\n  type: local\n  config: {}\nbase_uris:\n  - %s\n' \
 		"$(SPACE_NAME)" "$(SPACE_BASE_URI)" > $(SPACE_DIR)/space.yaml
 	@if [ -n "$(DEFAULT_ENVIRONMENT)" ]; then \
@@ -447,15 +591,15 @@ space:
 # the repo's parallel top-level test/ <-> test-data/ trees:
 #   $(PUBLISH_STEP_DIR)/step.yaml               (+ bundled src/)   — the published step
 #   $(PUBLISH_STEP_DIR)/README.md               (from USAGE.md)    — user-facing usage doc
-#   $(PUBLISH_STEP_DIR)/.gbignore                                  — skip Jinja for **/*.md + src/
+#   $(PUBLISH_STEP_DIR)/.gbignore                                  — the step's own, copied
 #   $(PUBLISH_TEST_DIR)/<cluster>/              — per-cluster build tests (copied)
 #   $(PUBLISH_TESTDATA_DIR)/<cluster>/          — their fixtures, with space_uri rewritten
 #
 # The step's own README.md (development-oriented) is NOT published; only USAGE.md is,
 # renamed to README.md so a user browsing the released assets tree finds usage docs.
-# A .gbignore is written beside step.yaml so the g.b build process ships the docs
-# (**/*.md) and the src/ tree verbatim instead of Jinja-rendering them — docs may
-# contain {{ ... }} examples and src scripts must not be templated (see write-gbignore).
+# The step's .gbignore is copied beside step.yaml so the g.b build process ships the
+# files it lists (usually the docs and src/) verbatim instead of Jinja-rendering
+# them (see copy-gbignore). A step without one is refused (require-gbignore).
 #
 # The step's own `test/<cluster>/` nesting is flattened on copy (the inner `test`
 # segment is dropped) so the published test lands at test/steps/<path>/<env>/<cluster>/
@@ -472,10 +616,14 @@ space:
 # itself are intentionally NOT copied; those stay Mode-1 only (run via `make
 # test`). The copied buildtest.yaml files have their space_uri rewritten to
 # $(MODE2_SPACE_URI) so the Mode-2 tests resolve the PUBLISHED step via
-# configurations/spaces/local instead of the local space/. Deliberately NOT part
+# configurations/spaces/local instead of the local space/. Only LOCAL space_uris
+# are rewritten. A REMOTE one (see REMOTE_SPACE_URI_RE, e.g. the IBM
+# git+ssh://github.ibm.com space used by tests marked `ibm`) is copied unchanged:
+# it already resolves the step from that remote space in both modes. Deliberately NOT part
 # of `all`: publish-step writes the committed assets tree.
 publish-step:
 	$(call require-publishable)
+	$(call require-gbignore)
 	$(call require-image-published)
 	$(call guard-publish-paths)
 	@mkdir -p $(PUBLISH_STEP_DIR)
@@ -490,7 +638,7 @@ publish-step:
 	else \
 		echo "[$(STEP_NAME)] WARNING: no USAGE.md to publish as README.md"; \
 	fi
-	$(call write-gbignore,$(PUBLISH_STEP_DIR))
+	$(call copy-gbignore,$(PUBLISH_STEP_DIR))
 	@rm -rf "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)"
 	@mkdir -p "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)"
 	@copied=0; for d in $(TEST_DIR)/*/; do \
@@ -509,7 +657,10 @@ publish-step:
 	@find "$(PUBLISH_STEP_DIR)" "$(PUBLISH_TEST_DIR)" "$(PUBLISH_TESTDATA_DIR)" \
 		-name __pycache__ -type d -prune -exec rm -rf {} +
 	@find "$(PUBLISH_TESTDATA_DIR)" -name buildtest.yaml -exec \
-		sed -i.bak 's#^space_uri:.*#space_uri: $(MODE2_SPACE_URI)#' {} \; -exec rm -f {}.bak \;
+		sed -E -i.bak \
+			-e '\#$(FILE_SPACE_URI_RE)#s#^space_uri:.*#space_uri: $(MODE2_SPACE_URI)#' \
+			-e '\#$(REMOTE_SPACE_URI_RE)#!s#^space_uri:.*#space_uri: $(MODE2_SPACE_URI)#' \
+			{} \; -exec rm -f {}.bak \;
 	@echo "[$(STEP_NAME)] published step -> $(PUBLISH_STEP_DIR)"
 	@echo "[$(STEP_NAME)] copied build tests -> $(PUBLISH_TEST_DIR)"
 	@echo "[$(STEP_NAME)] copied fixtures   -> $(PUBLISH_TESTDATA_DIR) (space_uri -> $(MODE2_SPACE_URI))"
@@ -524,7 +675,7 @@ publish-step:
 # immune to the image-tag SHA: for image steps it re-renders with the SAME image
 # reference already committed (extracted from the published step.yaml via
 # IMAGE_REF), so only genuine content drift — an edited template/src/test that
-# was never re-published — is reported, not the per-commit IMAGE_TAG churn (see
+# was never re-published — is reported, not the per-commit IMAGE_VERSION churn (see
 # the "keep the published image tag and your local build in sync" note under "Two
 # test modes" in steps/README.md). It also passes PUBLISH_REQUIRE_IMAGE=false to
 # the re-render so drift-checking stays offline (it never queries the registry — the
@@ -644,10 +795,40 @@ endef
 # virtualenv ($(VENV_DIR)). This recipe fails fast with a pointer to `make venv`
 # if that venv is absent, then activates it (sourced in the same shell as pytest,
 # since each recipe line is its own shell) before running the tests.
+#
+# The step tests get the repo's test/conftest.py (SPS secret loading from
+# GBTEST_SPS_IBMCLOUD_API_KEY, env restore, mock fixtures) via steps/conftest.py.
+# Two variables the repo suites get from their Makefile targets are defaulted here,
+# each only when the caller hasn't set it:
+#   * GB_ENVIRONMENT=STANDALONE: unset, gbserver defaults to PROD and the build-test
+#     base refuses to run ("Refusing to run storage tests with GB_ENVIRONMENT=PROD").
+#   * GBTEST_STANDALONE_ENVIRONMENT=STAGING: sends a STANDALONE hf:// push to the
+#     staging resource group, not the production one (test/conftest.py also
+#     defaults it).
+# GBTEST_MODE is left alone: libgbtest already defaults it to live.
 test: space image
 	@if [ ! -d "$(TEST_DIR)" ] || [ -z "$$(ls -A $(TEST_DIR) 2>/dev/null)" ]; then \
 		echo "[$(STEP_NAME)] no tests in $(TEST_DIR)/; nothing to run."; \
 		exit 0; \
+	fi; \
+	if [ "$(STEP_USES_IMAGE)" = "true" ] && [ "$(TEST_PUBLISHED)" != "true" ]; then \
+		if [ "$(notdir $(firstword $(DOCKER)))" != "podman" ]; then \
+			echo "[$(STEP_NAME)] note: not comparing the local build with the published $(IMAGE_REF) (the check relies on podman image IDs; DOCKER=$(DOCKER))."; \
+		else \
+			published=$$($(TAG_STATUS) --config-digest "$(IMAGE_REF)"); \
+			case "$$published" in \
+				absent) ;; \
+				sha256:*) \
+					local_id=$$($(DOCKER) image inspect --format '{{.Id}}' "$(IMAGE_REF)" 2>/dev/null); \
+					if [ "sha256:$${local_id#sha256:}" != "$$published" ]; then \
+						echo "[$(STEP_NAME)] WARNING: $(IMAGE_REF) is already published as a different image than the one just built." >&2; \
+						echo "[$(STEP_NAME)] WARNING: SkyPilot build tests pull the PUBLISHED image, so they will not test your local changes." >&2; \
+						echo "[$(STEP_NAME)] WARNING: to test a change on a cluster, bump IMAGE_VERSION (or use a scratch one, e.g. IMAGE_VERSION=dev-<name>) and 'make image publish-image' first. Pass TEST_PUBLISHED=true to silence this when testing the published image on purpose." >&2; \
+					fi ;; \
+				*) \
+					echo "[$(STEP_NAME)] WARNING: could not compare the local build with the published $(IMAGE_REF) (not published yet, offline, or a private repository). SkyPilot build tests will use whatever the registry serves under that tag." >&2 ;; \
+			esac; \
+		fi; \
 	fi; \
 	if [ ! -f "$(VENV_DIR)/bin/activate" ]; then \
 		echo "[$(STEP_NAME)] ERROR: no virtualenv at $(VENV_DIR)."; \
@@ -656,7 +837,10 @@ test: space image
 	fi; \
 	echo "[$(STEP_NAME)] activating venv $(VENV_DIR)"; \
 	. "$(VENV_DIR)/bin/activate"; \
-	PYTHONPATH="$(SRC_DIR)$${PYTHONPATH:+:$$PYTHONPATH}" $(PYTHON) -m pytest $(PYTEST_CAPTURE) $(TEST_DIR)
+	export GB_ENVIRONMENT="$${GB_ENVIRONMENT:-STANDALONE}"; \
+	export GBTEST_STANDALONE_ENVIRONMENT="$${GBTEST_STANDALONE_ENVIRONMENT:-STAGING}"; \
+	echo "[$(STEP_NAME)] GB_ENVIRONMENT=$$GB_ENVIRONMENT GBTEST_STANDALONE_ENVIRONMENT=$$GBTEST_STANDALONE_ENVIRONMENT"; \
+	PYTHONPATH="$(SRC_DIR)$${PYTHONPATH:+:$$PYTHONPATH}" $(PYTHON) -m pytest $(PYTEST_CAPTURE) $(PYTEST_ARGS) $(TESTS)
 
 # ---- Optional pre-test setup hook ------------------------------------------
 # `test-setup` is where a step brings up the infrastructure its tests need (a

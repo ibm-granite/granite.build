@@ -1,0 +1,69 @@
+granite.build:
+  name: skypilot-kube-data-designer-ollama
+  # The slurm-ollama generation in a pod on skypilot/kubernetes/local (the kind cluster
+  # from `make kube-setup`). Only environment_uri differs from the slurm fixture.
+  #
+  # One Data Designer generation, with the model served
+  # on the node by the step's own local_model option: no API key, no secret, no model
+  # endpoint. Anyone with the local kind cluster can run it, which is why it ships with the
+  # step (tests that need IBM-internal services live under test/integration/ibm/).
+  #
+  # Reaching SUCCESS proves, on a real node:
+  #   - setup installs data-designer AND Ollama (CPU libraries only) and pulls the model.
+  #     SkyPilot's default kube image has no python3, pip or zstd of its own, so this
+  #     also proves the install works from SkyPilot's runtime Python and the venv's
+  #     zstandard fallback, as on the SLURM nodes;
+  #   - the cache lands on the env's ReadWriteMany gb-shared volume (/shared), so a
+  #     second run reuses Ollama and the model;
+  #   - run starts the server on 127.0.0.1, generates through it, and stops it;
+  #   - the local provider is added with model_providers left empty;
+  #   - min_records, the jsonl export, the metadata lines and the artifact marker.
+  #
+  # Output is checked for shape only. granite4:350m is a 350M-parameter model: it
+  # writes fluent questions whose facts are often wrong.
+  targets:
+
+    generate:
+      environment_uri: space://environments/skypilot/kubernetes/local
+      outputs:
+        questions:
+          # Terminal output: nothing downstream reads it, so the step's default
+          # output_path (./output in the per-run workdir) is fine.
+          uri: "env:///questions"
+          type: dataset
+      steps:
+        - step_uri: space://steps/data/data-designer
+          config:
+            poll_interval_seconds: 5
+            data_designer_config:
+              output: questions
+              num_records: 4
+              min_records: 4
+              export_format: jsonl
+              local_model:
+                runtime: ollama
+                model: granite4:350m
+              config:
+                model_configs:
+                  - alias: text
+                    model: granite4:350m
+                    provider: local
+                    inference_parameters:
+                      temperature: 0.7
+                      max_tokens: 96
+                      max_parallel_requests: 2
+                columns:
+                  - name: topic
+                    column_type: sampler
+                    sampler_type: category
+                    params:
+                      values: [astronomy, cooking, geology]
+                  - name: question
+                    column_type: llm-text
+                    model_alias: text
+                    prompt: "{% raw %}Write one short trivia question about {{ topic }}. Output only the question.{% endraw %}"
+            compute_config:
+              # The model runs here too: 2 CPUs and 4Gi hold granite4:350m (~0.7 GB).
+              num_cpus_per_node: 2
+              num_gpus_per_node: 0
+              total_memory_per_node: 4Gi

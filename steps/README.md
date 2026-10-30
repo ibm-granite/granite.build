@@ -7,14 +7,28 @@ Granite.build space.
 Subdirectories contain step implementations (`byoc`, `dpk`, etc.), each with
 per-compute-environment subdirectories (`skypilot`, `lsf`, `k8s`, ...). Related steps
 can be grouped under a category directory (see [Nested steps](#nested-steps)). For
-example, `steps/byoc/skypilot` holds the flat `byoc` step's SkyPilot implementation,
-and `steps/eval/eval-example/skypilot` holds the SkyPilot implementation of the
-`eval-example` step in the `eval` category.
+example, `steps/misc/byoc/skypilot` holds the SkyPilot implementation of the `byoc`
+step in the `misc` category, and `steps/eval/eval-example/skypilot` holds the SkyPilot
+implementation of the `eval-example` step in the `eval` category.
 
 > **Audience:** step *developers* authoring and publishing step implementations.
 > If you are instead *using* steps in a `build.yaml` (referencing, configuring, or
 > picking a built-in step), see the user-facing guide:
 > [docs/steps/README.md](../docs/steps/README.md).
+
+## Two step types
+
+Which type a step is is **auto-detected from the presence of a `Dockerfile`**
+next to the Makefile — there is no flag to set.
+
+1. **Custom-image step** (has a `Dockerfile`, exemplar: **`eval-example`** at
+   `steps/eval/eval-example/skypilot`, kept unpublished as a template) — the
+   step's code/deps are baked into an image built from `Dockerfile`, published to a
+   registry, and referenced from the generated `step.yaml` via `image_id`.
+2. **Public-image step** (no `Dockerfile`, exemplar: **`byoc`**) — the
+   step runs in a public container image and brings its code at runtime. `byoc`
+   clones a public git repo in the launcher's `setup` phase and runs a
+   user-defined `command`; it builds no custom image.
 
 ## Source of truth: `steps/` vs. `configurations/`
 
@@ -58,7 +72,8 @@ of them).
 out to change a hand-authored step under `configurations/assets/.../steps/*`, prefer
 migrating it into `steps/` first (add a `step-template.yaml` + `Makefile`, move any
 code into `src/`, then let `make publish-step` regenerate the asset) rather than
-editing the released asset in place.
+editing the released asset in place. To start a new step, see
+[Creating a new step with Claude Code](#creating-a-new-step-with-claude-code).
 
 ### What promotion does — and what the framework is *for*
 
@@ -68,7 +83,7 @@ builds on) does five things and no more:
 1. **Renders one token.** `step-template.yaml` → `step.yaml` substituting only the
    literal `${IMAGE_REF}` (empty for public-image steps); all runtime Jinja `{{ … }}`
    and shell `${VAR}` pass through verbatim.
-2. **Copies `src/`** into the released step.
+2. **Copies `src/` and the step's `.gbignore`** into the released step.
 3. **Publishes `USAGE.md` as `README.md`** beside the released `step.yaml`, so the
    step ships user docs (the authoring `README.md` is dev-oriented and is *not*
    published).
@@ -106,9 +121,64 @@ place, bypassing the source, its tests, and the sync — the same reason you don
 a build artifact instead of its source. Change the step in `steps/` and re-run
 `make publish-step`.
 
+## Creating a new step with Claude Code
+
+The repo ships a Claude Code skill,
+[`create-framework-step`](../.claude/skills/create-framework-step/SKILL.md), that
+generates the skeleton of a new step in this framework. In Claude Code, run
+`/create-framework-step`, or just ask to create a new framework step.
+
+It asks two rounds of questions, skipping any your request already answers:
+
+1. **What the step is:** its name, its category, and comma-separated lists of input
+   and output names. The category is `eval`, `train`, `tune`, `data`, or one you
+   type, and it becomes the directory under `steps/`: the step lands at
+   `steps/<category>/<name>/<env>/` and is referenced as
+   `space://steps/<category>/<name>` (see [Nested steps](#nested-steps)).
+2. **Where it runs:** the environment (`skypilot`, `docker` or `bash`), a public or
+   custom image (see [Two step types](#two-step-types)), and which clusters get
+   build tests.
+
+It then writes the whole skeleton:
+
+* **`Makefile`**: `STEP_NAME`, the include of `common.mk`, `test-setup` targets for the
+  local clusters chosen, and `REGISTRY` for a custom image.
+* **`step-template.yaml`**: each input and output with `type: dataset` by default, an
+  empty step-specific config block for you to fill in, and a launcher whose `run:`
+  passes every input and output to `src/run.sh`.
+* **`src/setup.sh` and `src/run.sh`**: comment-only stubs that say what each script is
+  for and how `step-template.yaml` calls it. The skill implements nothing.
+* **`Dockerfile`**, for a custom image: a buildable Debian-slim skeleton with a
+  non-root user.
+* **One build test per chosen cluster**, in `test/<cluster>/`, with fixtures in
+  `test-data/<cluster>/`. A test whose `space_uri` is an IBM `github.ibm.com` space is
+  marked `ibm` (see [Two test modes](#two-test-modes)). Fixture outputs are `hf://`
+  datasets that `HfPushCleanupMixin` names per run and deletes afterwards.
+* **`USAGE.md` and `README.md`** outlines.
+
+Everything still to decide is marked `FIXME`, so `grep -rn FIXME steps/<category>/<name>`
+lists it. The skill runs nothing (no `make`, tests or builds) and commits nothing. It
+finishes with your next steps, in order:
+
+1. Check the input and output types.
+2. Describe the configuration you want; you can tell Claude, and it fills it in.
+3. Set the image.
+4. Implement `src/setup.sh` and `src/run.sh`.
+5. Choose test data.
+6. Write the docs.
+7. Run `make space` and `make test`.
+8. `make publish-step` once no `FIXME` remains.
+
+The build tests can't pass until `run.sh` prints the artifact marker (see
+[Emitting data from a step](#emitting-data-from-a-step-stdout-markers)).
+
+**Existing steps.** Every step sits under a category (`steps/data/dpk`,
+`steps/eval/bfcl`, `steps/eval/eval-example`, `steps/misc/byoc`, the `steps/distill/*`
+steps). A single-level `steps/<name>/<env>/` step is still supported, but none ship today.
+
 ## Layout of a step/environment directory
 
-Each step/environment directory (e.g. `steps/byoc/skypilot`) mixes files you
+Each step/environment directory (e.g. `steps/misc/byoc/skypilot`) mixes files you
 author with a directory `make` generates. They fall into three groups.
 
 ### Required
@@ -140,6 +210,14 @@ Present or absent depending on what the step needs:
 * **`src/`** — a directory of code referenced by the step. For image
   steps it is baked into the image; for public-image steps it can be made
   available to the running step (e.g. via SkyPilot `file_mounts`).
+* **`.gbignore`** — the files gbserver ships verbatim instead of Jinja-rendering them,
+  as an additive list of globs (no `!` negation). Every step needs one, next to its
+  Makefile: `make space` (and so `make test`) and `make publish-step` both copy it
+  beside the rendered `step.yaml`, so the step renders the same way when tested and
+  when published, and both refuse a step that has none. The usual list is `**/*.md`
+  (docs can show `{{ … }}` examples) and `src/**` (scripts are never templated); the
+  `create-framework-step` skill writes that for new steps. Edit it when a step needs a
+  different list.
 * **`test/`** — the step's own tests, run with `make test` (`src/` is
   put on `PYTHONPATH`; pytest recurses the whole tree). These are developed and
   run **independently** of the repository's central suite (they are not in its
@@ -155,7 +233,7 @@ Present or absent depending on what the step needs:
   tree, so the step is self-contained.
 * **`README.md`** — the **development-oriented** doc: how the step is
   generated/built/published, its test modes, drift, and framework framing, plus a
-  prominent pointer to `USAGE.md` (see [`byoc/skypilot`](byoc/skypilot/README.md) and
+  prominent pointer to `USAGE.md` (see [`misc/byoc/skypilot`](misc/byoc/skypilot/README.md) and
   [`eval/eval-example/skypilot`](eval/eval-example/skypilot/README.md) for the two step-type examples). Unlike
   `USAGE.md`, this authoring README is **not** published — `publish-step` ships
   `USAGE.md` as the released step's `README.md` instead. Conventional for every step,
@@ -181,14 +259,14 @@ related steps in sub-directories — e.g. `steps/distill/foo/skypilot/` — and 
 nesting is **preserved end-to-end**. The step's identity is its path relative to
 the enclosing `steps/` ancestor, minus the trailing `<env>` segment (the
 auto-derived `STEP_PATH`): `steps/distill/foo/skypilot` → `STEP_PATH = distill/foo`.
-A flat step `steps/byoc/skypilot` has `STEP_PATH = byoc`, identical to `STEP_NAME`,
-so flat steps publish byte-for-byte as before.
+A flat step `steps/foo/skypilot` has `STEP_PATH = foo`, identical to `STEP_NAME`, so
+flat steps publish byte-for-byte as before.
 
 To author a nested step, the only thing that changes is the Makefile's `include`
 depth — it must point at `steps/common.mk` from wherever the step dir lives:
 
 ```make
-STEP_NAME := foo                 # slash-free leaf (feeds IMAGE_NAME / SPACE_NAME)
+STEP_NAME := foo                 # slash-free leaf
 include ../../../common.mk       # one ../ deeper than a flat step's ../../common.mk
 ```
 
@@ -212,20 +290,6 @@ nested step even when an outer `steps/distill/step.yaml` also exists, and existi
 single-segment URIs (and sub-asset URIs like `space://steps/digit/helm-charts`,
 where no `step.yaml` sits at the longer prefix) resolve exactly as before.
 
-## Two step types
-
-Which type a step is is **auto-detected from the presence of a `Dockerfile`**
-next to the Makefile — there is no flag to set.
-
-1. **Custom-image step** (has a `Dockerfile`, exemplar: **`eval-example`** at
-   `steps/eval/eval-example/skypilot`, kept unpublished as a template) — the
-   step's code/deps are baked into an image built from `Dockerfile`, published to a
-   registry, and referenced from the generated `step.yaml` via `image_id`.
-2. **Public-image step** (no `Dockerfile`, exemplar: **`byoc`**) — the
-   step runs in a public container image and brings its code at runtime. `byoc`
-   clones a public git repo in the launcher's `setup` phase and runs a
-   user-defined `command`; it builds no custom image.
-
 ## Makefile target conventions
 
 Defined once in [`common.mk`](common.mk) and shared by every step:
@@ -233,8 +297,14 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 * **`image`** — build the image from `./Dockerfile` for `$(PLATFORM)` (default
   `linux/amd64`, so it cross-builds on an Apple Silicon host for the x86 clusters
   SkyPilot provisions). Image steps only; no-op otherwise.
-* **`publish-image`** — push the image to `$(REGISTRY)` (no-op for non-image
+* **`publish-image`** — push the image to `$(REGISTRY)` (no-op for non-custom-image
   steps). Requires authentication — see [Registry credentials](#registry-credentials).
+  It **refuses to overwrite a tag** that already exists on the registry, and refuses
+  when it cannot tell (network, auth): a tag must keep pointing at one image, and
+  SLURM's image cache keys its `.sqsh` by tag, so a re-pushed tag would never reach
+  it. Bump `IMAGE_VERSION`, or pass `PUBLISH_OVERWRITE=true` to replace a tag on
+  purpose. On quay.io it also makes sure the step's repository is public before the
+  first push; see [A custom image-based step's image repository](#a-custom-image-based-steps-image-repository).
 * **`space`** — render a self-contained Space into `$(SPACE_DIR)/`: a generated
   `space.yaml` plus `steps/<path>/step.yaml` (from `step-template.yaml`) and
   bundled `src/`. Cheap and offline; it does *not* rebuild/push.
@@ -253,10 +323,12 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   step's image is actually published to its registry (a published `step.yaml`/test that
   references an unpushed image is broken — the Mode-2 skypilot test's remote node can't
   pull it), so run `make image publish-image` **before** `make publish-step`. The check
-  queries the registry manifest only (no pull; `skopeo` preferred, else `$(DOCKER)
-  manifest inspect`) and needs no credentials for a public image. Bypass it with
+  queries the registry manifest only, no pull (`steps/scripts/registry-tag-status.sh`: `skopeo`
+  when installed, else the registry's v2 API with `curl`), and needs no credentials for
+  a public image. It refuses an image it cannot confirm. `skopeo` is optional and
+  nothing installs it; `curl` is enough. Bypass it with
   `make publish-step PUBLISH_REQUIRE_IMAGE=false` (offline/local publishing).
-  Non-image (public-image) steps have no `IMAGE_REF`, so the check is skipped.
+  Non-custom-image (public-image) steps have no `IMAGE_REF`, so the check is skipped.
   A step whose Makefile sets `override STEP_PUBLISHABLE := false` (an exemplar kept
   only as a template, e.g. [`eval/eval-example/skypilot`](eval/eval-example/skypilot/README.md))
   refuses `publish-step` outright, before writing anything. The guard fails closed:
@@ -267,7 +339,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   `publish-step` into a temp dir and `diff`s it against the three committed trees,
   exiting non-zero on drift. It re-renders image steps with the **already-committed**
   image reference (extracted from the published `step.yaml`), so it is immune to the
-  per-commit `IMAGE_TAG` churn and flags only genuine content drift. Succeeds when in
+  per-commit `IMAGE_VERSION` churn and flags only genuine content drift. Succeeds when in
   sync, or when none of the three published locations exists. Otherwise it fails, and
   its message says why: `DRIFT` (re-run `make publish-step`); `STALE` (a step that is
   not publishable, `STEP_PUBLISHABLE` not `true`, still has a committed copy in any of
@@ -277,7 +349,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 * **`all`** — the full pipeline: `image` + `publish-image` + `space` for image steps,
   or just `space` for public-image steps.
 * **`test`** — render the Space (depends on `space`) **and build the image
-  locally** (depends on `image`; a no-op with no publish for non-image steps),
+  locally** (depends on `image`; a no-op with no publish for non-custom-image steps),
   then run the step's tests in `test/` with `pytest` (`src/` is put on
   `PYTHONPATH`; pytest recurses per-cluster subdirs). Depending on `space` lets a
   build test just reference the rendered `$(SPACE_DIR)/`; depending on `image`
@@ -288,12 +360,38 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
   (`$(VENV_DIR)`, default `.venv` at the repo root): `make test` activates it
   automatically and fails fast with a pointer to `make venv` if it is missing.
   Override `VENV_DIR` if your virtualenv lives elsewhere.
+  Runs every test in `test/` by default. To run only some, set `TESTS` to pytest paths
+  or node ids (relative to the step env dir) and/or pass pytest options in
+  `PYTEST_ARGS`:
+
+  ```sh
+  make test TESTS=test/slurm                           # one cluster's build tests
+  make test TESTS="test/slurm test/aws"                # several
+  make test TESTS=test/slurm/test_skypilot_byoc.py::TestSkypilotSlurmByoc::test_runner
+  make test PYTEST_ARGS='-k "not cancellation" -x'
+  ```
+
   Runs pytest with `$(PYTEST_CAPTURE)`, default `-s`, matching the repo-root
   Makefile. **Do not drop `-s` for a SkyPilot build test.** Under pytest's capture the
   SkyPilot SDK's `click.secho(cluster_name)` flushes a stdout fd that has been replaced,
   and a *second* `sky launch` in the same pytest process then fails during provisioning
   with `OSError: [Errno 9] Bad file descriptor`. A single-launch test survives by luck, so
   the failure appears only in multi-target fixtures and looks intermittent.
+  Step tests get the repo's [`test/conftest.py`](../test/conftest.py) through
+  [`steps/conftest.py`](conftest.py), which registers it as a plugin. So
+  `GBTEST_SPS_IBMCLOUD_API_KEY` loads `IBM_CLOUD_API_KEY`, `HF_TOKEN` and the other test
+  secrets from SPS, exactly as for the repo suites (needs `make ibm-venv`), and the same
+  env-restore and mock fixtures apply. Unlike the repo suites, `ibm`-marked step tests
+  are not required to have IBM credentials: a test that needs one checks for it itself.
+  Their published copies under `test/steps/` are: they run under `test/conftest.py`'s
+  own check, which needs `IBM_CLOUD_API_KEY` and a GitHub token for `ibm` tests.
+  `make ibm-extended-tests`, the suite that selects them, gets both from
+  `GBTEST_SPS_IBMCLOUD_API_KEY`.
+  `make test` also defaults `GB_ENVIRONMENT=STANDALONE` (unset, gbserver defaults to
+  PROD and the build-test base refuses to run) and `GBTEST_STANDALONE_ENVIRONMENT=STAGING`
+  (sends an `hf://` push to the staging resource group), each only if you haven't set
+  it. A `GB_ENVIRONMENT=STAGING` left in your shell sends the test to the hosted staging
+  database instead, so unset it for step tests.
 * **`test-setup`** — optional per-step hook that stands up the infrastructure a
   step's tests need (e.g. a local Docker SLURM cluster). It is a **separate
   target, deliberately not a prerequisite of `test`**, so the (often slow) infra
@@ -312,16 +410,20 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 
 | Variable          | Default                                   | Meaning                          |
 |-------------------|-------------------------------------------|----------------------------------|
-| `STEP_NAME`       | *(set by each step's Makefile)*           | logical step name; the **slash-free leaf** (feeds `IMAGE_NAME`/`SPACE_NAME`, which can't contain `/`) |
+| `STEP_NAME`       | *(set by each step's Makefile)*           | logical step name; the **slash-free leaf** (used in messages and the publish guard) |
 | `STEP_PATH`       | *(auto-derived)* the step's dir relative to the enclosing `steps/`, minus the `<env>` segment | the step's **identity path**; drives the publish/test/space locations and the `space://steps/<path>` URI. For a flat step (`steps/<name>/<env>`) it equals `STEP_NAME`; for a nested step (`steps/<a>/<b>/<env>`) it is `<a>/<b>`. Structural (from `CURDIR` + include depth) — authors never set it |
 | `DOCKER`          | `podman`                                  | container tool                   |
 | `DOCKERFILE`      | `Dockerfile`                              | its presence enables image build/push |
 | `REGISTRY`        | *(required for image steps; set by the step's Makefile)* | image registry + namespace |
-| `IMAGE_NAME`      | `gb-step-$(STEP_NAME)`                     | image repository name            |
-| `IMAGE_TAG`       | git short SHA, else `latest`              | image tag                        |
+| `IMAGE_NAME`      | `steps/<STEP_PATH>/<STEP_ENV>`            | image repository, one per step, mirroring the step's directory (e.g. `steps/train/openinstruct-sft/skypilot`) |
+| `IMAGE_VERSION`   | git short SHA, else `latest`              | version part of the tag; pin a release in the step's Makefile |
+| `IMAGE_TAG`       | `$(IMAGE_VERSION)`                        | image tag; the version of the step's image, e.g. `oi-v0.3.0-6` |
 | `IMAGE_REF`       | `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)`   | full image reference (derived)   |
+| `PUBLISH_OVERWRITE` | `false`                                 | set exactly `true` to let `publish-image` replace an existing tag (or push without checking) |
+| `TEST_PUBLISHED`  | `false`                                   | set exactly `true` to skip `make test`'s comparison of the local build with the published `IMAGE_REF`, and its registry query (see [Two test modes](#two-test-modes)) |
+| `QUAY_API_TOKEN`  | *(unset; environment only)*               | quay.io OAuth token (*Create Repositories* scope); `publish-image` creates a new repository public with it |
 | `SPACE_DIR`       | `space`                                   | generated Space directory name   |
-| `SPACE_NAME`      | `$(STEP_NAME)`                            | `name:` in the generated `space.yaml` |
+| `SPACE_NAME`      | `public`                                  | `name:` in the generated `space.yaml`. Matches the shared `configurations/spaces/local`, because an `hf://` push derives its HF resource group from the space name (`gbspace-<space>`); a step-named space would look for a group that doesn't exist |
 | `SPACE_BASE_URI`  | relative `file://` to `configurations/assets` (resolved against the space.yaml's dir) | base_uri chained by the generated Space |
 | `DEFAULT_ENVIRONMENT` | *(empty)*                             | if set, written as `variables.DEFAULT_ENVIRONMENT` in `space.yaml` |
 | `TEST_DIR`        | `test`                                    | dir of Python tests run by `make test` |
@@ -335,26 +437,56 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `PUBLISH_TESTDATA_DIR` | `test-data/steps/$(STEP_PATH)/$(STEP_ENV)` | where `publish-step` copies the tests' fixtures |
 | `MODE2_SPACE_URI` | relative `file://`-less path to `configurations/spaces/local`, **depth-derived from `STEP_PATH`** (`N+4` levels up for an `N`-segment path — 5×`../` for a flat step, 6× for a one-level-nested one) | `space_uri` written into copied `buildtest.yaml`s |
 
-Example: `make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0`.
+Example: `make all REGISTRY=quay.io/myorg IMAGE_VERSION=0.1.0`.
 
 ### Registry credentials
 
 `make publish-image` must be authenticated to `$(REGISTRY)`. Two ways:
 
-* **Interactive / local (default):** `podman login <registry-host>` (or
+* **Interactive / local (default):** `podman login quay.io/my-org` (or
   `docker login`) once; the push reuses the stored token. Nothing else to
   configure.
-* **CI / non-interactive:** export `REGISTRY_USER` and `REGISTRY_PASSWORD` (a
-  robot-account token) **in the environment** — do *not* pass them as `make`
-  variables. `publish-image` logs in first, piping the token via
+* **CI / non-interactive:** export `REGISTRY_USER` and `REGISTRY_PASSWORD` (an
+  account's or robot's CLI token) **in the environment** — do *not* pass them as
+  `make` variables. `publish-image` logs in first, piping the token via
   `--password-stdin`, so the secret never appears in `ps`, make's output, or
   shell history:
 
   ```sh
   export REGISTRY_USER='my-org+ci'
   export REGISTRY_PASSWORD="$QUAY_TOKEN"   # from your CI secret store
-  make publish-image REGISTRY=quay.io/my-org IMAGE_TAG=0.1.0
+  make publish-image REGISTRY=quay.io/my-org IMAGE_VERSION=0.1.0
   ```
+
+With podman the login is scoped to `$(REGISTRY)` (e.g. `quay.io/my-org`), so it
+leaves your other logins on that host alone; docker logs in to the whole host.
+
+The registry checks (`publish-image`'s overwrite and new-repository checks,
+`publish-step`'s image check) use `REGISTRY_USER`/`REGISTRY_PASSWORD` when set,
+otherwise the login a `podman login` stored in `$REGISTRY_AUTH_FILE` or
+`~/.config/containers/auth.json`. They need one when the repository is private, and on
+quay.io for a step's first publish: quay answers an anonymous check of a repository
+that does not exist yet with 401. A login kept in a credential helper instead of the
+auth file is not read; export `REGISTRY_USER`/`REGISTRY_PASSWORD` then.
+
+### A custom image-based step's image repository
+
+Each custom image-based step has its own image repository,
+`$(REGISTRY)/steps/<path>/<env>`, so the first publish of a new step needs one.
+SkyPilot pulls step images anonymously, so the image repository must be
+**public**, but one that a push creates is private. On quay.io, `publish-image`
+checks whether the step's image repository exists before pushing:
+
+* it exists: nothing to do;
+* it does not, and `QUAY_API_TOKEN` is set in the environment: `publish-image`
+  creates it **public** through quay's API (`POST /api/v1/repository`), then pushes;
+* it does not, and no token is set: `publish-image` **stops** before pushing,
+  rather than create a private one that could be forgotten. Set the token, or
+  create the image repository as Public in the quay UI first, then publish.
+
+`QUAY_API_TOKEN` is a quay OAuth access token with the *Create Repositories* scope,
+acting as a user who may create repositories in the namespace. It is passed to
+`curl` on stdin, never on its command line.
 
 ## Rendering: how the image reference is inserted
 
@@ -384,14 +516,14 @@ substitution.) This is factored into the `render-step-template` helper in
 ## Referencing a generated step from a build.yaml
 
 After `make space`, the step lives in the generated Space at
-`steps/byoc/skypilot/space/`. Point the build's Space at that directory (its
-`space_uri`) and reference the step by the stable `space://steps/<step-name>` URI —
+`steps/misc/byoc/skypilot/space/`. Point the build's Space at that directory (its
+`space_uri`) and reference the step by the stable `space://steps/<step-path>` URI —
 the generated `space.yaml`'s `base_uris` resolve everything else (environments,
 monitors, other steps) from `configurations/assets`:
 
 ```yaml
 steps:
-  - step_uri: space://steps/byoc
+  - step_uri: space://steps/misc/byoc
     config:
       byoc_config:
         image: "python:3.12-slim"
@@ -403,10 +535,10 @@ steps:
 Two worked examples, one per step type, each in a per-cluster subdir:
 
 * **Public-image step on SkyPilot/slurm** — the `byoc` build test at
-  [`byoc/skypilot/test/slurm/test_skypilot_byoc.py`](byoc/skypilot/test/slurm/test_skypilot_byoc.py),
+  [`misc/byoc/skypilot/test/slurm/test_skypilot_byoc.py`](misc/byoc/skypilot/test/slurm/test_skypilot_byoc.py),
   driven by its fixtures in the sibling
-  [`byoc/skypilot/test-data/slurm/`](byoc/skypilot/test-data/slurm/). Run it with
-  `make -C steps/byoc/skypilot test`, which renders the Space (`make space`) first
+  [`misc/byoc/skypilot/test-data/slurm/`](misc/byoc/skypilot/test-data/slurm/). Run it with
+  `make -C steps/misc/byoc/skypilot test`, which renders the Space (`make space`) first
   so the test's `space_uri` resolves. End-to-end execution needs a real SkyPilot
   cluster (see the local `make slurm-setup`).
 * **Custom-image step on SkyPilot/aws** — the `eval-example` build test at
@@ -469,7 +601,7 @@ step**: a step records metadata only if its own `run:` block prints the marker.
   line appears in both files. That pair is [source vs. release](#source-of-truth-steps-vs-configurations),
   **not** a duplicate hand-edit — only the `step-template.yaml` copy is edited; the
   asset copy is regenerated. Never hand-edit the emitted marker in the asset tree.
-- **Current coverage.** Only [`byoc/skypilot`](byoc/skypilot/step-template.yaml)
+- **Current coverage.** Only [`misc/byoc/skypilot`](misc/byoc/skypilot/step-template.yaml)
   emits metadata today (a `commit_hash` recording the resolved git commit). Every
   other step emits nothing — the absence is expected, not a bug.
 - **Asset-only steps cannot inherit it.** The ~30+ steps that exist *only* under
@@ -493,6 +625,23 @@ resolves the step differs (the `space_uri`):
   `steps/<step>/<env>/space/` (the `test` target's `space` prerequisite renders it
   first). This is the fast authoring loop and needs nothing published. The
   fixtures' `space_uri: ../../space` points at that local Space.
+
+  **Which image Mode 1 tests, for a custom-image step.** `make test` builds the image
+  locally (`image`), but only a test on the local **Docker** environment uses that
+  build (its `pull_policy` is `if-not-present`). A **SkyPilot** cluster test (aws,
+  SLURM, k8s) has the remote node pull `docker:<IMAGE_REF>` from the registry, so it
+  tests whatever is published under that tag. To test a change on a cluster, publish
+  it first under a new or scratch tag: `make image publish-image
+  IMAGE_VERSION=dev-<name>`, then `make test IMAGE_VERSION=dev-<name>`. A dev tag
+  cannot be re-pushed either (the overwrite guard), so use a new one per attempt.
+  `make test` **warns**, then runs the tests, when `IMAGE_REF` is already published as
+  a **different** image than the one it just built (it compares the local image ID
+  with the published image's config digest), or when it cannot compare them (not
+  published yet, offline, a private repository), so a local edit doesn't pass
+  silently against the old image. A rebuild rarely reproduces the published image
+  bit for bit, so expect the warning when you test an image you did not publish. The
+  comparison relies on podman image IDs and is skipped with another `DOCKER`. Pass
+  `TEST_PUBLISHED=true` to skip it, and its registry query, entirely.
 * **Mode 2 — post-publish (in `test/steps/`).** `make publish-step` copies the
   per-cluster build tests to `test/steps/<step>/<env>/<cluster>/` — the step dir's
   inner `test/` segment is **flattened away**, so the published tree parallels the
@@ -524,9 +673,60 @@ subdirs) are copied — `src/` and cluster-agnostic unit tests at `test/`'s root
 [`eval/eval-example/skypilot/test/test_eval.py`](eval/eval-example/skypilot/test/test_eval.py)) stay Mode-1
 only.
 
+**Remote-space (IBM) build tests.** A cluster that only an IBM space defines (e.g.
+BlueVela SLURM, `space://environments/skypilot/slurm/bluevela`) needs a fixture whose
+`space_uri` is that remote git space, e.g.
+`git+ssh://github.ibm.com/granite-dot-build/gb-test.git@gbspace-config`. Mark such a
+test `pytestmark = pytest.mark.ibm`. `publish-step` copies a **remote** `space_uri`
+(any `<scheme>://` URI other than `file://`, such as `git://`, `git+ssh://` or
+`https://`, or the scp-like `user@host:path` form) through **unchanged**. It rewrites
+only local ones: a bare path or a `file://` URI. In both modes, a remote-space test resolves
+`space://steps/<name>` from the remote space, so it exercises the step that space
+has, **not** your local source: publish the step to that space's assets before relying
+on it.
+
+### Custom test environments
+
+To run a build test against an environment that isn't in the space, for example a
+cluster-specific variant, put the `environment.yaml` right next to the fixture's
+`build.yaml` and point the build at it with `environment_uri: file:.`:
+
+```
+test-data/<cluster>/
+  build.yaml          # environment_uri: file:.
+  buildtest.yaml      # space_uri: ../../space   (as for any cluster)
+  environment.yaml
+```
+
+`file:.` always means the build's own directory (the copy of the folder holding
+`build.yaml`), so the fixture's environment is found wherever the test runs from, in
+both test modes: `make publish-step` copies the whole `test-data/<cluster>/` folder,
+environment included. The step still comes from the generated space, so the test
+exercises your local source.
+
+The example is [`misc/byoc/skypilot/test-data/slurm-bluevela/`](misc/byoc/skypilot/test-data/slurm-bluevela/).
+Its `build.yaml` runs on the shared BlueVela SLURM environment by default; the
+`environment.yaml` beside it is a ready-made copy to edit when testing environment
+changes, by switching to `environment_uri: file:.`. Notes:
+
+* The fixture folder is what's loaded as the environment, so it must hold exactly one
+  `environment.yaml`. To ship several, give each its own folder (`environments/<name>/`)
+  and reference it with a relative path, `file:environments/<name>`: a relative path is
+  looked up from the current directory first, then in the build's own directory.
+* Start from the shared environment (`configurations/assets/environments/...`) and
+  edit the copy; the shared one is unaffected. Say in its header comment where it came
+  from.
+* `file:` environment URIs work only on a standalone server, which `make test` uses.
+* The same rule applies to a relative `file:` `step_uri`, so a fixture can also ship a
+  small helper step (`file:steps/<name>`). Don't use it for the step under test: that
+  should come from the generated space (`space://steps/<path>`), so the test exercises
+  your rendered source.
+* Write relative paths as `file:<path>`, not `file://<path>`: with two slashes the
+  first segment is read as a host name.
+
 > **Image steps: keep the published image tag and your local build in sync.** For a
 > custom-image step, `make publish-step` freezes a concrete image reference into the
-> committed `step.yaml` — with the default `IMAGE_TAG` (git short SHA) that tag is
+> committed `step.yaml` — with the default `IMAGE_VERSION` (git short SHA) that tag is
 > the commit `publish-step` ran at, and it goes stale on the next commit. A Mode-2 test
 > whose environment uses `pull_policy: if-not-present` (i.e. a local Docker
 > environment test) then resolves **only** when a local image at that exact tag
@@ -534,7 +734,7 @@ only.
 > launcher tries to pull the (often placeholder) registry and fails. Before running
 > such a committed Mode-2 test, rebuild **and** re-publish at the current commit
 > (`make -C steps/<step>/<env> image publish-step`) so both sides agree — or pin a stable
-> `IMAGE_TAG` (e.g. `IMAGE_TAG=local`) on both the build and the publish-step so the
+> `IMAGE_VERSION` (e.g. `IMAGE_VERSION=local`) on both the build and the publish-step so the
 > committed assets don't drift. Mode 1 (`make test`) is immune: it builds and renders
 > at HEAD together. Public-image steps (e.g. byoc) have no such coupling.
 
@@ -557,7 +757,7 @@ leaves the committed copies stale.
 Run **`make check-published`** to catch that drift: it re-renders `publish-step` into a
 temp dir and diffs it against the three committed trees, exiting non-zero if they
 differ. It re-renders image steps with the image reference **already committed** in
-`step.yaml`, so a routine `IMAGE_TAG` (git-SHA) bump alone is *not* flagged — only a
+`step.yaml`, so a routine `IMAGE_VERSION` (git-SHA) bump alone is *not* flagged — only a
 genuine template/`src/`/test change that was never re-published (contrast the
 image-tag coupling note above). It is not wired into CI; run it locally after editing a
 step's source, or add it to a pre-commit / CI check if you want the guarantee enforced.

@@ -42,6 +42,13 @@ granite.build:
             # Fast completion detection for the test (base skypilot default is
             # 300s; a quick test job finishes in seconds).
             poll_interval_seconds: 5
+            # CPU-only step: bluevela rejects GPU-less jobs on gpu-mid, so run
+            # in the `cpu` partition and drop the env-wide `constraint: h200`, as
+            # the environment does for hfpull/hfpush. See 1step/build.yaml.
+            zone: cpu
+            launcher_config:
+              sbatch_options:
+                constraint: null
             command_config:
               # Run the verification + command INSIDE a container image. On SLURM
               # this goes through Pyxis (bluevela's container runtime), so the
@@ -57,5 +64,5 @@ granite.build:
               # the memory floor is silently skipped on SLURM (bare HPC schedulers
               # don't track memory as consumable), so it would be a no-op here.
               num_gpus_per_node: 0
-            # No launcher_config.resources.cluster or zone: the environment's
-            # cluster (bluevela) and zone (gpu-mid partition) resolve the infra.
+            # The environment's cluster (bluevela) resolves the infra; the
+            # `zone: cpu` above picks the partition.

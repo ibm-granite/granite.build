@@ -11,7 +11,7 @@ standalone server.
 ## Setup
 
 ```bash
-make demo-venv PYTHON=python3.13
+make venv PYTHON=python3.13
 source .venv/bin/activate
 ```
 

@@ -129,8 +129,8 @@ step types not listed under `config.steps` (see
 [Per-step-type config defaults](README.md#per-step-type-config-defaults-configstepstype)). A `command`
 step with no `zone` of its own thus lands on the environment's partition, while `hfpull`/`hfpush` listed
 under `config.steps` take their per-type partition. For a real-cluster example, the SLURM/BlueVela
-integration fixtures under `test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/` target
-BlueVela's `gpu-mid` partition (reached at `login1`) via the `bluevela` environment.
+integration fixtures under `test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/` run on
+BlueVela (reached at `login1`) via the `bluevela` environment, whose default partition is `gpu-mid`.
 
 > **The `bluevela` environment lives in a remote space, not this repo.** Those fixtures resolve
 > `space://environments/skypilot/slurm/bluevela` against a remote space (e.g. `gb-test`), which is
@@ -159,6 +159,7 @@ targets:
           launcher_config:
             resources:
               zone: gpu-high        # override the env's gpu-mid partition
+              accelerators: "H200:1"  # BlueVela GPU partitions need a GPU request (see below)
               # cluster: bluevela   # only if the environment doesn't already set one
 ```
 
@@ -168,7 +169,31 @@ Layer 3 — a plain top-level `zone` in the step `config` (shorter; overridden b
 ```yaml
         config:
           zone: gpu-high            # override the partition
+          launcher_config:
+            resources:
+              accelerators: "H200:1"  # still needed on a BlueVela GPU partition
 ```
+
+> **BlueVela: CPU-only steps must use the `cpu` partition.** BlueVela rejects a job that requests
+> no GPUs on its GPU partitions (`sbatch: error: This job requests no GPUs, so it cannot run in
+> gpu-mid`). Only the build knows whether a step needs a GPU, so a CPU-only step sets `zone: cpu`
+> and clears the environment's `constraint: h200` (which the `cpu` partition doesn't take), the same
+> override the `bluevela` environment applies to its own `hfpull`/`hfpush` steps:
+>
+> ```yaml
+>         config:
+>           zone: cpu
+>           launcher_config:
+>             sbatch_options:
+>               constraint: null
+> ```
+>
+> A step that does use GPUs stays on a GPU partition and requests them with
+> `launcher_config.resources.accelerators` (e.g. `"H200:1"` → `--gres=gpu:H200:1`).
+> `compute_config.num_gpus_per_node` alone is **not** a GPU request on SLURM, so a step that sets
+> only that is still rejected. The CPU-only BlueVela fixtures (`1step`, `2target`, `filemount`,
+> `dpk-pii`, `dpk-tok-image`) use `zone: cpu`; `custom_code` stays on `gpu-mid` with
+> `accelerators: "H200:1"`.
 
 ### Autostop is ignored
 
@@ -256,6 +281,82 @@ launch fails with `NotSupportedError`; the `run:` command then executes directly
 > `sacct -j <job_id> --format=JobID,State,ExitCode,Reason`: the container-setup sub-steps show
 > `FAILED 1:0` while the host-side steps complete. The image must also grant passwordless `sudo` (or run
 > as root).
+
+### `slurm_image_cache` — shared `.sqsh` image cache
+
+Given a registry `image_id`, SkyPilot's SLURM driver passes `registry#path` to Pyxis, which runs a full
+`enroot import` inside the job's allocation and discards the result when the job ends. enroot's own
+cache is node-local and only covers the layer download, so every launch pays the whole import again.
+On BlueVela that is about 22 minutes for a 5 GB eval image, with the GPU idle.
+
+`slurm_image_cache` makes gbserver import each image once into a shared squashfs file and launch from
+that file:
+
+```yaml
+config:
+  slurm_image_cache:
+    share_path: /proj/granite-build/g4os   # files live in <share_path>/enroot/
+    partition: cpu                         # where the import job runs
+    sbatch_options:                        # extra #SBATCH directives for the import job
+      account: grp_granite_dot_build
+      qos: cpu
+    # Optional:
+    # timeout_seconds: 18000               # give up waiting (queueing included) and fall back
+    # poll_interval_seconds: 30
+    # ssh_timeout_seconds: 120
+    # known_hosts:                         # pin the login nodes' host keys (see below)
+    #   - "login1.bluevela.rmf.ibm.com ssh-ed25519 AAAA..."
+    # enabled: false                       # turn it off without deleting the block
+```
+
+Before a SLURM container step launches, gbserver checks over SSH (the `~/.slurm/config` alias) whether
+`<share_path>/enroot/<image>.sqsh` exists and is a flat root filesystem. On a hit, `image_id` becomes
+that path, which the driver hands to Pyxis unchanged, and the container starts in seconds. On a miss,
+gbserver submits one short job on `partition` (the login nodes have no `enroot`) that imports the image,
+waits for it, then launches from the new file. The GPU job is not submitted until the image is ready.
+The import job defaults to 16 CPUs, 64 GB and a 3-hour limit; override them in `sbatch_options` (a
+`null` value drops a default). gbserver waits up to `timeout_seconds` (default 5 hours), counted once it
+holds the image's lock and including the import job's queue time; keep it above the job's `time`, or a
+healthy import that started late is abandoned. An import gbserver gives up on is cancelled only if that
+gbserver submitted it. Allow for the image size: the 20 GB NeMo-RL image took 72 minutes, nearly all of it
+download and extract. For a large image the first launch therefore takes about as long as before, but no
+GPU is allocated while it waits; later launches start in seconds. Its log goes to `<share_path>/enroot/logs/gb-image-import-<hash>-<jobid>.out`.
+
+Concurrent launches of one image import it once:
+
+- targets of one build that use the same image share a single import job;
+- a second gbserver finds a running import of the same file by its job name and waits on it;
+- the job takes `flock` on `<image>.sqsh.lock` and re-checks under it. That is the lock file
+  [SkyPilot's LSF driver](skypilot-lsf.md) uses for the same files, so LSF and SLURM imports
+  serialize too.
+
+The job imports to a job-unique temporary file and renames it into place only after checking that it has
+`/bin/sh`, so a killed or failed import never leaves a truncated or layered `.sqsh` at the final name.
+Unlike the LSF driver it does not flatten a layered image. The layered files the LSF driver flattens come
+from its own `enroot-mksquashovlfs` wrapper, which the import job does not install, and a plain `enroot
+import` writes a flat root filesystem. If one ever came out layered, the job would refuse it, and that
+image would launch from the registry every time; the import job's log says why.
+
+gbserver checks for and imports the image over SSH using the `~/.slurm/config` alias, with its own
+`~/.slurm/gbserver_known_hosts` file. By default a login node's host key is recorded on first contact and
+must match afterwards (`StrictHostKeyChecking=accept-new`), so a fresh gbserver host needs no
+`~/.ssh/known_hosts` entry. To trust only known keys instead, list them in `known_hosts` (lines as
+`ssh-keyscan` prints them); gbserver then writes exactly those to the file and checks strictly. Without
+either, `BatchMode` would refuse an unknown host and every launch would quietly fall back to the registry.
+
+A malformed block (a bad path, partition or `sbatch_options` key or value, a non-positive interval) is
+rejected when the environment loads. Partition names and `sbatch_options` keys and values are
+allowlisted because they become `#SBATCH` lines in the import script.
+
+File names match the LSF driver (`us.icr.io/a/b:tag` → `us.icr.io-a-b-tag.sqsh`). Point `share_path` at
+the LSF environment's `enroot.share_path` and each backend reuses the other's imports.
+
+The cache never fails a launch. If the import fails, times out or the login node is unreachable, gbserver
+logs a warning and launches from the registry reference as before. An `image_id` that is already a
+`.sqsh` path is used as is. Without `slurm_image_cache`, or on any other cloud, nothing changes.
+
+A tag that is re-pushed with new content keeps its old cached file. Delete the `.sqsh` to re-import it,
+or use a new tag (the image builds in this repo already tag by commit).
 
 ### `workdir` (containerized steps)
 

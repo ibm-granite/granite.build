@@ -90,7 +90,7 @@ Issues live in the upstream repo `ibm-granite/granite.build` (the fork has issue
    ```
    cd $WORKTREE_BASE/<branch-name> && make venv && source .venv/bin/activate
    ```
-   If `make venv` fails (e.g., missing `ARTIFACTORY_USER`/`ARTIFACTORY_API_KEY`), warn the user and continue — the worktree is still usable but tests and linting won't work until venv is set up.
+   `make venv` builds the standalone venv. If the work needs IBM-only dependencies (ibm-marked tests), use `make ibm-venv` instead (needs `ARTIFACTORY_USER`/`ARTIFACTORY_API_KEY`). If it fails, warn the user and continue — the worktree is still usable but tests and linting won't work until venv is set up.
 
 9. **All subsequent commands must execute in the worktree directory.** Use `cd $WORKTREE_BASE/<branch-name>` or pass full paths.
 

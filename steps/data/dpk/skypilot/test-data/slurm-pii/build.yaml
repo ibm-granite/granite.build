@@ -61,7 +61,7 @@ granite.build:
               dpk_version: "1.1.8"
               # The dpk step declares `docs` as a named input and reads this
               # target's `docs` binding directly, so no input_path config line
-              # is set here (steps/byoc/skypilot/USAGE.md).
+              # is set here (steps/misc/byoc/skypilot/USAGE.md).
               output: clean
               output_path: /tmp/dpk-pii-output    # matches the `clean` uri above
               args:

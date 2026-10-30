@@ -1,0 +1,9 @@
+# Files gbserver ships verbatim instead of Jinja-rendering them, one glob per line.
+# Additive only: there is no `!` negation. `make space` (and so `make test`) and
+# `make publish-step` both copy this file, so the step renders the same way when
+# tested and when published. Remove a line only if those files must be rendered.
+#
+# Docs: USAGE.md and README.md may show {{ ... }} examples.
+**/*.md
+# Scripts: src/ runs as is; its values arrive as argv from step-template.yaml.
+src/**

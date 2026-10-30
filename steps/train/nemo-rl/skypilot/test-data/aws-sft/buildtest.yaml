@@ -1,0 +1,24 @@
+# YAML-driven spec for test_skypilot_aws_nemo_rl_sft.py (located by the test/ <->
+# test-data/ helper, so this pairing holds in both test modes; see steps/README.md).
+#
+# ONE target on a real EC2 GPU instance: NeMo-RL SFT, short run. Reaching SUCCESS
+# means run_sft.py trained, convert_dcp_to_hf.py produced a non-empty HF dir, and
+# the `model` artifact was registered from the step's marker.
+targets:
+  - train
+target_expectations:
+  - target_name: train
+    # step_count is 1: skypilot/aws sets `inline: true` on its hf assetstore pull,
+    # so the base-model download is injected into the nemo-rl step's setup rather
+    # than queued as a separate step. The env:// output moves no bytes, so it
+    # queues no push step.
+    step_count: 1
+    input_artifact_count: 1     # base_model
+    output_artifact_count: 1    # model (env://, registered inline from the marker)
+space_uri: ../../space
+tests:
+  - runner
+simulate_step_failure: false
+# EC2 cold-start + a LARGE NGC image pull (tens of GB) + inline model download +
+# a short SFT run + DCP->HF conversion. The image pull dominates; generous headroom.
+timeout_minutes: 90

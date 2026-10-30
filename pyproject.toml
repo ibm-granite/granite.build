@@ -30,7 +30,7 @@ classifiers = [
 dependencies = [
     # CLI and web framework
     "click",
-    "fastapi[standard]",
+    "fastapi[standard]==0.144.0",  # Temporary: 0.145 dropped FastAPI(**extra); SkyPilot's API server passes prefix= and fails to start
     "uvicorn",
     "python-multipart",
     # Data and serialization
@@ -59,7 +59,7 @@ dependencies = [
     "regex",
     # Utilities
     "dateparser",
-    "filelock",
+    "filelock>=3.13.0",  # FileLock(is_singleton=True)
     "humanize",
     "openai",
     "packaging",
@@ -83,7 +83,7 @@ standalone = [
     "granite.build[analytics]",
     # gbmcp (the bundled stdio MCP server) is a standalone feature,
     # so ship it by default — `pip install 'granite.build[standalone]'` and
-    # `make standalone-venv` both get the MCP server with no extra step. The
+    # `make venv` both get the MCP server with no extra step. The
     # only deps beyond the analytics overlap are fastmcp + httpx.
     "granite.build[mcp]",
     # Chat assistant — calls gbmcp's tools on the user's behalf. Ship the
@@ -126,7 +126,7 @@ mcp = [
 ]
 # gb-ui analytics service (gb_ui_backend) — routers included directly into gbserver
 analytics = [
-    "fastapi[standard]>=0.115",
+    "fastapi[standard]==0.144.0",  # Temporary: see the fastapi pin in dependencies
     "uvicorn[standard]>=0.30",
     "sqlalchemy[asyncio]>=2.0",
     "asyncpg>=0.29",
@@ -175,7 +175,9 @@ dev = [
     "pre-commit",
     "psutil",
     "pylint",
-    "pytest",
+    # pytest 9.2 breaks xdist 3.8.0's --dist=loadgroup (groups silently ignored).
+    # Lift once a fixed xdist is released.
+    "pytest<9.2",
     "pytest-asyncio",
     "pytest-cov",
     "pytest-timeout",

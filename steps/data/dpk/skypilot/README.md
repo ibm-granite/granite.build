@@ -11,7 +11,7 @@ custom image is built or published for this step.
 
 It is the public-image counterpart of the custom-image
 [eval](../../../eval/eval-example/skypilot/README.md) step, and is closely modelled on
-[byoc](../../../byoc/skypilot/README.md). It is *generated* from the sources in this directory
+[byoc](../../../misc/byoc/skypilot/README.md). It is *generated* from the sources in this directory
 by the shared Makefile conventions — see the framework overview:
 [steps/README.md](../../../README.md).
 
@@ -227,7 +227,7 @@ dpk_config:
 ```
 
 The step takes a **path**, not a binding name — the
-[byoc](../../../byoc/skypilot/USAGE.md) pattern, and byoc's `step-template.yaml` references
+[byoc](../../../misc/byoc/skypilot/USAGE.md) pattern, and byoc's `step-template.yaml` references
 `bindings` zero times for the same reason. Filesystem-backed schemes (`hf://`, `env://`,
 `file://`, `s3://`, `lh://`) are staged by the assetstore before `run`; an `hf://` input is
 downloaded during `setup` automatically.

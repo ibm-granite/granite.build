@@ -72,6 +72,7 @@ from gbserver.api.utils import (
 from gbserver.api.utils import (
     confirm_existing_item_write_access as _real_confirm_existing_item_write_access,
 )
+from gbserver.lineage.uri_normalize import normalize_uri
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.types.artifact import ArtifactType
 
@@ -210,6 +211,8 @@ def test_read_artifact_allows_owner():
             _fake_request(VICTIM_OWNER, f"{VICTIM_OWNER}@example.com"), art.uuid
         )
     assert resp.artifact.uuid == art.uuid
+    # The build lineage panel keys graph nodes by this, so it must be on the read.
+    assert resp.artifact.lineage_uri == normalize_uri(art.uri)
 
 
 def test_read_artifact_allows_non_owner_space_member():
@@ -458,3 +461,70 @@ def test_list_artifact_tags_excludes_other_spaces_for_non_admin():
         _set_alice_access(manager)
         tags = list_artifact_tags(_fake_request(ALICE, f"{ALICE}@example.com"))
     assert tags == ["alpha"]
+
+
+# ------------------------------------------------------------------ lineage_uri
+
+
+def test_listed_artifacts_carry_their_lineage_uri():
+    art = _artifact_in(ALICE_SPACE, ALICE, "alice-model")
+    with (
+        _patched_list_registry([art]),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        _set_alice_access(manager)
+        resp = list_artifacts(_fake_request(ALICE, f"{ALICE}@example.com"))
+    assert resp.artifacts[0].lineage_uri == (
+        f"https://huggingface.co/{ALICE_SPACE}/alice-model"
+    )
+
+
+def test_a_lineage_node_id_finds_its_registry_entry():
+    """``?uri=`` with a graph node's id falls back to the normalized match."""
+    art = _artifact_in(ALICE_SPACE, ALICE, "alice-model")
+    with (
+        _patched_list_registry([art]),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        _set_alice_access(manager)
+        resp = list_artifacts(
+            _fake_request(ALICE, f"{ALICE}@example.com"),
+            uri=f"https://huggingface.co/{ALICE_SPACE}/alice-model",
+            match_lineage_uri=True,
+        )
+    assert [a.uuid for a in resp.artifacts] == [art.uuid]
+
+
+def test_the_normalized_match_is_opt_in():
+    """Without ``match_lineage_uri`` a ``uri`` matches exactly, as gbcli expects."""
+    art = _artifact_in(ALICE_SPACE, ALICE, "alice-model")
+    with (
+        _patched_list_registry([art]),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        _set_alice_access(manager)
+        resp = list_artifacts(
+            _fake_request(ALICE, f"{ALICE}@example.com"),
+            uri=f"https://huggingface.co/{ALICE_SPACE}/alice-model",
+        )
+    assert resp.artifacts == []
+
+
+def test_the_normalized_match_keeps_the_space_scope():
+    """The fallback applies the same space filter as the exact lookup."""
+    bob_art = _artifact_in(BOB_SPACE, "bob", "bob-dataset")
+    with (
+        _patched_list_registry([bob_art]),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        _set_alice_access(manager)
+        resp = list_artifacts(
+            _fake_request(ALICE, f"{ALICE}@example.com"),
+            uri=f"https://huggingface.co/{BOB_SPACE}/bob-dataset",
+            match_lineage_uri=True,
+        )
+    assert resp.artifacts == []

@@ -351,14 +351,14 @@ config:
 
 Every environment that supports secret injection reads the **same** declarative allow-list, so the
 block's *shape* carries across compute backends — place it under the matching per-cloud key
-(`config.k8s`, `config.lsf`, or `config.skypilot`). One caveat: when `secret_name` is **omitted** the
-secret key each backend looks up is *not* identical (K8s lowercases it; LSF/SkyPilot use `env_name`
+(`config.docker`, `config.k8s`, `config.lsf`, or `config.skypilot`). One caveat: when `secret_name` is **omitted** the
+secret key each backend looks up is *not* identical (K8s lowercases it; Docker/LSF/SkyPilot use `env_name`
 **verbatim** — see **Delivery differs by environment** below), so a target that must run on more than
 one backend should set `secret_name` explicitly to match the space secret's actual key:
 
 ```yaml
 config:
-  <k8s|lsf|skypilot>:               # The per-environment key for the target's environment type.
+  <docker|k8s|lsf|skypilot>:        # The per-environment key for the target's environment type.
     secrets:
       secret_names_to_use_as_env_variable:
         - env_name: HF_TOKEN        # Environment variable exposed to the workload.
@@ -371,16 +371,16 @@ with a `ValueError` (the secret *value* is never included in the message).
 
 **Delivery differs by environment:**
 
-- **LSF and SkyPilot** resolve the value in the build server and inject it as a task/job environment
-  variable. When `secret_name` is omitted it defaults to `env_name` **verbatim**.
+- **Docker, LSF and SkyPilot** resolve the value in the build server and inject it as a container,
+  task or job environment variable. When `secret_name` is omitted it defaults to `env_name` **verbatim**.
 - **K8s** never materializes the value in the build server: it passes the secret *name* to Helm as a
   `valueFrom.secretKeyRef` and the kubelet mounts the value into the pod at runtime. The pod env var
-  uses the `env_name` **verbatim** (portable with LSF/SkyPilot). When `secret_name` is omitted the
+  uses the `env_name` **verbatim** (portable with Docker/LSF/SkyPilot). When `secret_name` is omitted the
   Secret **data-key** defaults to the **lowercased** `env_name` — the long-standing K8s convention,
   since the space Secret stores each value under its lowercased key.
 
 K8s additionally supports `secret_names_to_use_as_pull_secret` (image pull secrets), which has no
-analogue on the other backends. See [k8s.md](k8s.md), [lsf.md](lsf.md), and [skypilot.md](skypilot.md)
+analogue on the other backends. See [docker.md](docker.md#secrets), [k8s.md](k8s.md), [lsf.md](lsf.md), and [skypilot.md](skypilot.md)
 for the per-environment specifics, and [Custom code steps](../steps/custom-code-steps.md#secrets-as-environment-variables)
 for a worked example.
 

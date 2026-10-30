@@ -112,6 +112,7 @@ class TestProbeIsCached:
         # get-contexts + /readyz + get pvc once, not five times each.
         assert len(calls.read_text().splitlines()) == 3
 
-    def test_shared_marker_is_the_skypilot_kube_group(self):
+    def test_shared_marker_is_the_skypilot_group(self):
+        """Same group as every skypilot_integration test, so kube never overlaps slurm."""
         assert kube.KUBE_XDIST_GROUP.name == "xdist_group"
-        assert kube.KUBE_XDIST_GROUP.kwargs == {"name": "skypilot_kube"}
+        assert kube.KUBE_XDIST_GROUP.kwargs == {"name": "skypilot"}
