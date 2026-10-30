@@ -17,7 +17,7 @@
 """Turn walked lineage rows into the graph dict the API already speaks.
 
 The wire shape is ``{root_id, nodes, edges, truncated, unexpanded}`` with artifact
-and run nodes and directed edges between them, which ``GET /lineage/graph`` returns
+and run nodes and directed edges between them, which ``POST /lineage/graph`` returns
 as a ``LineageGraphResponse`` for the frontend to render.
 
 The shape conversion is the real work here, because the storage model and the wire
@@ -290,9 +290,10 @@ def _ensure_artifact_node(
     that recorded neither leaves them to the URI-derived fallback rather than
     showing an unnamed node.
 
-    The node carries only its URI in ``metadata``. The producer's build, target run
-    and registry artifact ids are not copied in: the graph is not filtered per
-    space, and those ids are the ones run nodes withhold too.
+    The node carries only its URI in ``metadata`` here. The producer's build,
+    target run and registry artifact ids are added afterwards, only for a caller
+    who may read the producing job's space (see
+    ``DBLineageService._add_authorized_origin_ids``).
 
     Args:
         nodes: the accumulator, keyed by URI.

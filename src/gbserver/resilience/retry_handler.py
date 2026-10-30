@@ -830,8 +830,25 @@ class RetryHandler:
             if state:
                 return f"{prefix} workload is in a {state} state."
 
-        # No parseable JSON (or JSON with no appwrapper/error/state): original
-        # wording, distinguishing "no message" from "message present but not JSON".
+        return self._fallback_failure_message(event)
+
+    def _fallback_failure_message(self: Self, event: BuildEvent) -> str:
+        """Failure wording for an event with no parseable JSON detail.
+
+        Structured detail in ``payload.data["error"]`` (SkyPilot's FAILED
+        ``WORKLOAD_STATUS_EVENT``) wins over any free-text ``msg``; otherwise the
+        original wording, distinguishing "no message" from "message present but
+        not JSON".
+
+        Args:
+            event: BuildEvent from the monitor
+
+        Returns:
+            str: Error message describing the failure
+        """
+        payload_error = (getattr(event.payload, "data", None) or {}).get("error")
+        if payload_error:
+            return f"[RetryHandler launch_id {self.launch_id}] {payload_error}"
         msg = getattr(event.payload, "msg", None) if event.payload else None
         if not msg:
             return f"Workload failed for launch_id {self.launch_id}"

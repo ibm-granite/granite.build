@@ -343,6 +343,80 @@ class TestDockerOverride:
         )
         assert env["GBTEST_MOCK_HF"] == "true"
 
+    _SECRET_CONFIG = {
+        "docker": {
+            "secrets": {
+                "secret_names_to_use_as_env_variable": [
+                    {"env_name": "MY_TOKEN", "secret_name": "tok"}
+                ]
+            }
+        }
+    }
+
+    def test_only_declared_secret_injected(self):
+        env = self._docker()
+        env.secrets = {"tok": "secret-val", "rits-access": "hyphen-named"}
+        out = env.get_launch_env_vars(
+            run_metadata=RUN_META, config=self._SECRET_CONFIG, launch_id="lid"
+        )
+        assert out["MY_TOKEN"] == "secret-val"
+        assert "rits-access" not in out
+        assert "hyphen-named" not in out.values()
+
+    def test_no_declared_secrets_injects_nothing(self):
+        env = self._docker()
+        env.secrets = {"tok": "secret-val"}
+        out = env.get_launch_env_vars(run_metadata=RUN_META, launch_id="lid")
+        assert "secret-val" not in out.values()
+
+    def test_missing_declared_secret_raises(self):
+        env = self._docker()
+        env.secrets = {"other": "v"}
+        with pytest.raises(ValueError, match="tok"):
+            env.get_launch_env_vars(
+                run_metadata=RUN_META, config=self._SECRET_CONFIG, launch_id="lid"
+            )
+
+    def test_docker_env_wins_over_declared_secret(self):
+        env = self._docker()
+        env.secrets = {"tok": "secret-val"}
+        out = env.get_launch_env_vars(
+            run_metadata=RUN_META,
+            config=self._SECRET_CONFIG,
+            docker_config={"env": {"MY_TOKEN": "literal"}},
+            launch_id="lid",
+        )
+        assert out["MY_TOKEN"] == "literal"
+
+    @pytest.mark.asyncio
+    async def test_launch_docker_forwards_declared_secret(self):
+        # launch_docker must hand the step config to the composer, so the
+        # declared secret reaches the container's environment.
+        from unittest.mock import MagicMock
+
+        env = self._docker()
+        env.secrets = {"tok": "secret-val", "other": "undeclared"}
+        env._launched_containers = {}
+        env._env_input_volumes = {}
+        env._extra_volumes = {}
+        client = MagicMock()
+        env._get_docker = MagicMock(return_value=(MagicMock(), client))
+        env._resolve_image = MagicMock(return_value="img:latest")
+        env._pull_image = MagicMock()
+        env._release_monitors = MagicMock()
+
+        await env.launch_docker(
+            launch_id="launchid123",
+            config=self._SECRET_CONFIG,
+            launcher_config={"command": "echo hi"},
+            step={"name": "s"},
+            run_metadata=RUN_META,
+        )
+
+        container_env = client.containers.run.call_args.kwargs["environment"]
+        assert container_env["MY_TOKEN"] == "secret-val"
+        assert "undeclared" not in container_env.values()
+
 
 class TestRunpodOverride:
     def _runpod(self):

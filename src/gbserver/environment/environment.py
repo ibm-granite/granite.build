@@ -1015,10 +1015,10 @@ class Environment(ABC):
         """Declared secret->env-var mappings for this launch (composer hook).
 
         The lowest layer of :meth:`get_launch_env_vars`. Environments that
-        inject secret *values* (LSF, SkyPilot) override this to parse their own
-        ``config.<env>.secrets`` allow-list; the base returns none, so
-        value-less environments (K8s emits ``secretKeyRef`` names; Bash/Docker/
-        RunPod inject no declared secrets) inherit it unchanged.
+        inject secret *values* (LSF, SkyPilot, Docker) override this to parse
+        their own ``config.<env>.secrets`` allow-list; the base returns none, so
+        value-less environments (K8s emits ``secretKeyRef`` names; Bash/RunPod
+        inject no declared secrets) inherit it unchanged.
 
         :param kwargs: the launch context (``run_metadata`` plus whatever the
             caller passed, e.g. ``config``); each override plucks what it needs.
@@ -1120,6 +1120,28 @@ class Environment(ABC):
                 )
             resolved[env_name] = secrets[secret_name]
         return resolved
+
+    def get_launch_secret_values(self: Self, launch_id: str) -> List[str]:
+        """Values of the secrets a launch declared, for redacting its log output.
+
+        Resolves the launch's :meth:`_declared_secret_mappings` (from the kwargs
+        the environment stashed in ``_launch_kwargs`` at launch) against
+        ``self.secrets``. Used to mask those exact values in a failure log tail
+        (:func:`gbserver.utils.redaction.sanitize_log_tail`). Never raises: a
+        launch it can't resolve yields ``[]`` and the pattern-based redaction
+        still applies.
+
+        :param launch_id: the launch whose declared secrets to look up.
+        :returns: the declared secret values (possibly empty).
+        """
+        launch_kwargs = getattr(self, "_launch_kwargs", {}).get(launch_id) or {}
+        try:
+            mappings = self._declared_secret_mappings(**launch_kwargs)
+            resolved = self._resolve_declared_secret_env_vars(mappings, self.secrets)
+        except Exception as e:  # pylint: disable=broad-except
+            logger.debug("no declared secrets to redact for %s: %s", launch_id, e)
+            return []
+        return [v for v in resolved.values() if v]
 
     @staticmethod
     def _declared_secret_env_key_names(
@@ -1515,16 +1537,43 @@ class Environment(ABC):
                 type(self).__name__,
             )
 
+    @staticmethod
+    def _is_cached_uri(uristr: str) -> bool:
+        """Whether ``asset_bindings`` caches pushes and pulls of *uristr*.
+
+        Every URI but ``env://`` is cached. An ``env://`` asset already sits on
+        a reachable filesystem, so the cache saves no transfer; skipping it
+        sends every pull to the store's pull function. A cached producer
+        binding would also hand the consumer the producer's view of the path.
+        """
+        return not uristr.startswith("env://")
+
+    def _caches_pushed_binding(self: Self, uristr: str, binding: Any) -> bool:
+        """Whether :meth:`pushasset` caches the producer *binding* of *uristr*.
+
+        A cached binding is handed as is to later consumers on this instance,
+        so an environment whose producer bindings hold a path only the producer
+        can see overrides this to opt out (Docker: a container path). Defaults
+        to :meth:`_is_cached_uri`.
+        """
+        return Environment._is_cached_uri(uristr)
+
     def pullasset(
         self: Self, task_group: TaskGroup, uri: URI, binding: Optional[Any] = None
     ) -> Task[Tuple[Dict, Optional[BuildTargetStepConfig]]]:
-        """Pull an asset and make it available in the environment for the workload."""
+        """Pull an asset and make it available in the environment for the workload.
+
+        An ``env://`` URI always goes to the store's pull function, never to the
+        ``asset_bindings`` cache (see :meth:`_is_cached_uri`): its pull is
+        no-transfer, and an environment may need to act on every pull of it
+        (Docker mounts the path into the consumer's container).
+        """
 
         async def pullasset_as_binding() -> (
             Tuple[Dict, Optional[BuildTargetStepConfig]]
         ):
             uristr = URI.get_uristr(uri)
-            if uristr in self.asset_bindings:
+            if Environment._is_cached_uri(uristr) and uristr in self.asset_bindings:
                 return self.asset_bindings[uristr], None
             await Environment._thread_local.asset_events[uristr].wait()
             assetstore, assetstoreenv_config = self._get_storeconfig(
@@ -1558,7 +1607,8 @@ class Environment(ABC):
                     assetstore=assetstore,
                     secrets=assetstore.get_secrets(),
                 )
-                self.asset_bindings[uristr] = local_binding
+                if Environment._is_cached_uri(uristr):
+                    self.asset_bindings[uristr] = local_binding
                 return local_binding, targetrun_config
             except Exception as e:
                 raise RuntimeError(
@@ -1645,7 +1695,8 @@ class Environment(ABC):
             else:
                 Environment._thread_local.asset_events[uristr].set()
             await self.event_q.put(event)
-            self.asset_bindings[uristr] = {BINDING_KEY: binding}
+            if self._caches_pushed_binding(uristr, binding):
+                self.asset_bindings[uristr] = {BINDING_KEY: binding}
             # For inline pushes (no separate push step), emit ARTIFACT_PUSHED_EVENT
             # so the artifact transitions from pending to success.
             if not isinstance(result, BuildTargetStepConfig):

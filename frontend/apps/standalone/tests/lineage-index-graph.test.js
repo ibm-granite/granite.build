@@ -1,6 +1,6 @@
 /**
  * Unit tests for the lineage index graph helpers: how a node seeds an expansion
- * through GET /lineage/graph, how deep to ask, and how an expansion merges into
+ * through POST /lineage/graph, how deep to ask, and how an expansion merges into
  * the graph on screen.
  *
  * Usage: node --test tests/lineage-index-graph.test.js
@@ -155,5 +155,95 @@ describe('addsNothing', () => {
   it('renames the on-screen ids too, so a raw id shown earlier still matches', () => {
     const rename = (id) => (id === 'hf://o/m' ? 'uuid-1' : id)
     assert.equal(addsNothing(result(['hf://o/m']), ['hf://o/m'], rename), true)
+  })
+
+  it('does not count a lone run that a group on screen already lists', () => {
+    const group = { id: 'runs:g', type: 'Build', indexNode: { metadata: { jobs_query: { job_ids: ['J1', 'J2'] } } } }
+    const res = { root_id: 'run:J1', nodes: [{ id: 'run:J1', node_type: 'run', name: 'J1', metadata: {} }], edges: [], truncated: false }
+    assert.equal(addsNothing(res, [group]), true)
+    assert.equal(addsNothing(res, ['runs:g']), false)
+  })
+})
+
+describe('groupListingRun', () => {
+  let groupListingRun
+  before(async () => {
+    ;({ groupListingRun } = await import(path.join(ROOT, '../../packages/ui-core/components/LineageGraph/indexGraph.ts')))
+  })
+  const group = { id: 'runs:g', indexNode: { metadata: { jobs_query: { job_ids: ['J1'] } } } }
+
+  it('finds the group a dropped run moves its selection to', () => {
+    assert.equal(groupListingRun([group], 'run:J1'), 'runs:g')
+    assert.equal(groupListingRun([group], 'run:J9'), undefined)
+    assert.equal(groupListingRun([group], 's3://b/k'), undefined)
+  })
+})
+
+describe('renameElkGraph', () => {
+  let renameElkGraph
+  before(async () => {
+    ;({ renameElkGraph } = await import(path.join(ROOT, '../../packages/ui-core/components/LineageGraph/indexGraph.ts')))
+  })
+  const node = (id, type, extra = {}) => ({ id, type, title: id, ...extra })
+
+  it('folds a planned target URI onto the UUID a finished target recorded', () => {
+    // target-a produced the model (UUID); planned target-b consumes it by URI.
+    const graph = {
+      nodes: [node('target-a', 'Build'), node('uuid-1', 'Model'), node('target-b', 'Build', { planned: true }),
+        node('hf://o/m', 'Fileset', { planned: true })],
+      links: [link('target-a', 'uuid-1'), link('hf://o/m', 'target-b')],
+    }
+    const out = renameElkGraph(graph, (id) => (id === 'hf://o/m' ? 'uuid-1' : id))
+    assert.deepEqual(out.nodes.map((n) => [n.id, n.type]), [['target-a', 'Build'], ['uuid-1', 'Model'], ['target-b', 'Build']])
+    assert.deepEqual(out.links.map((l) => [l.sources[0], l.targets[0]]), [
+      ['target-a-output', 'uuid-1-input'],
+      ['uuid-1-output', 'target-b-input'],
+    ])
+  })
+
+  it('keeps a link once when two spellings of it coincide', () => {
+    const graph = { nodes: [node('a', 'Model'), node('b', 'Model'), node('t', 'Build')], links: [link('a', 't'), link('b', 't')] }
+    const out = renameElkGraph(graph, (id) => (id === 'b' ? 'a' : id))
+    assert.equal(out.nodes.length, 2)
+    assert.equal(out.links.length, 1)
+  })
+
+  it('leaves a graph with nothing to rename as it was', () => {
+    const graph = { nodes: [node('a', 'Model'), node('t', 'Build')], links: [link('a', 't')] }
+    const out = renameElkGraph(graph, (id) => id)
+    assert.deepEqual(out.nodes, graph.nodes)
+    assert.deepEqual(out.links.map((l) => [l.sources[0], l.targets[0]]), [['a-output', 't-input']])
+  })
+})
+
+describe('mergeElkGraphs across grouped and ungrouped responses', () => {
+  const art = (id) => ({ id, node_type: 'artifact', name: id })
+  const lone = {
+    nodes: [art('a'), { id: 'run:J1', node_type: 'run', name: 'J1' }, art('b')],
+    edges: [{ source: 'a', target: 'run:J1' }, { source: 'run:J1', target: 'b' }],
+  }
+  const group = {
+    nodes: [art('a'), { id: 'runs:a → b', node_type: 'run', name: 'g', metadata: { run_count: 2, jobs_query: { job_ids: ['J1', 'J2'] } } }, art('b')],
+    edges: [{ source: 'a', target: 'runs:a → b' }, { source: 'runs:a → b', target: 'b' }],
+  }
+  const runIds = (g) => g.nodes.filter((n) => n.id.startsWith('run')).map((n) => n.id)
+
+  it('drops a lone run that a later group lists', () => {
+    const out = mergeElkGraphs(indexGraphToElk(lone), indexGraphToElk(group))
+    assert.deepEqual(runIds(out), ['runs:a → b'])
+    assert.ok(out.links.every((l) => !l.sources[0].startsWith('run:J1') && !l.targets[0].startsWith('run:J1')))
+    assert.equal(out.links.length, 2)
+  })
+
+  it('drops it the other way round too', () => {
+    const out = mergeElkGraphs(indexGraphToElk(group), indexGraphToElk(lone))
+    assert.deepEqual(runIds(out), ['runs:a → b'])
+    assert.equal(out.links.length, 2)
+  })
+
+  it('keeps a run no group lists', () => {
+    const other = { nodes: [art('a'), { id: 'run:J9', node_type: 'run', name: 'J9' }, art('c')], edges: [{ source: 'a', target: 'run:J9' }, { source: 'run:J9', target: 'c' }] }
+    const out = mergeElkGraphs(indexGraphToElk(group), indexGraphToElk(other))
+    assert.deepEqual(runIds(out).sort(), ['run:J9', 'runs:a → b'])
   })
 })

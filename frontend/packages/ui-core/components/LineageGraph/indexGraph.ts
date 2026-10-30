@@ -8,7 +8,7 @@ export interface ElkGraph {
 }
 
 // An ElkNodeEx that came from the lineage index, keeping the wire node so a later
-// click can seed another GET /lineage/graph from it.
+// click can seed another POST /lineage/graph from it.
 export interface IndexElkNode extends ElkNodeEx {
   indexNode?: LineageGraphNode
 }
@@ -23,7 +23,7 @@ export function artifactTypeToNodeType(artifactType: string | null | undefined):
   }
 }
 
-// Seed for expanding a node through GET /lineage/graph. Run nodes are `run:<job_id>`;
+// Seed for expanding a node through POST /lineage/graph. Run nodes are `run:<job_id>`;
 // grouped jobs are `runs:<inputs> → <outputs>` (several endpoints on a side joined by
 // ` + `, an empty side as `∅`; `runs:<uri>` for in-place rewrites). A group that
 // lists its jobs (`metadata.jobs_query.job_ids`) is seeded from all of them, so every
@@ -53,7 +53,7 @@ function groupJobIds(metadata?: Record<string, unknown>): string[] {
   return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string' && id !== '') : []
 }
 
-// The `depth` to ask GET /lineage/graph for so it returns exactly one level past
+// The `depth` to ask POST /lineage/graph for so it returns exactly one level past
 // the `shown` ones. The API counts depth from its seeds, and a job is seeded from
 // every endpoint of that execution -- already one hop out -- so depth d from a run
 // (or a group seeded by its jobs) reaches d + 1 levels, but d from an artifact
@@ -74,7 +74,8 @@ export function indexGraphToElk(
     const runCount = isRun && typeof n.metadata?.run_count === 'number' ? n.metadata.run_count : undefined
     const stackCount = runCount !== undefined && runCount > 1 ? runCount : undefined
     const title = n.name || n.id
-    // Present only on run nodes the caller may read (the server checks the space).
+    // On run nodes and on artifact nodes (their producer's build), only when the
+    // caller may read that job (the server checks the space).
     const buildId = n.metadata?.gb_build_id
     return {
       id: rename(n.id),
@@ -98,7 +99,7 @@ export function indexGraphToElk(
 
 // How many lineage levels of `nodeId` are on screen in one direction, measured on
 // the graph itself so it holds whichever node was expanded to get there. A level
-// is one job hop (artifact -> run -> artifact), i.e. two edges, as GET
+// is one job hop (artifact -> run -> artifact), i.e. two edges, as POST
 // /lineage/graph counts `depth`.
 export function visibleLevels(
   nodeId: string,
@@ -153,22 +154,82 @@ export function mergeElkGraphs(a: ElkGraph, b: ElkGraph): ElkGraph {
     } as IndexElkNode
   })
   const nodeIds = new Set(a.nodes.map((n) => n.id))
-  return {
+  return dropGroupedRuns({
     nodes: [...nodes, ...b.nodes.filter((n) => !nodeIds.has(n.id))],
     links: [...a.links, ...b.links.filter((l) => !linkKeys.has(`${l.sources[0]}|${l.targets[0]}`))],
+  })
+}
+
+// The server groups jobs per response, so one job can arrive as `run:<id>` from a
+// walk that reached it alone (cut by a limit, or before a sibling was indexed) and
+// inside a `runs:` group from another. The group lists its jobs and has the same
+// endpoints, so the lone run node and its links are dropped in its favour.
+function dropGroupedRuns(graph: ElkGraph): ElkGraph {
+  const grouped = groupedRunIds(graph.nodes)
+  if (!grouped.size) return graph
+  const endpoint = (port: string | undefined) => port?.replace(/-(input|output)$/, '') ?? ''
+  return {
+    nodes: graph.nodes.filter((n) => !grouped.has(n.id)),
+    links: graph.links.filter((l) => !grouped.has(endpoint(l.sources[0])) && !grouped.has(endpoint(l.targets[0]))),
   }
 }
 
+// The `run:<id>` ids every `runs:` group in `nodes` lists.
+function groupedRunIds(nodes: ElkNodeEx[]): Set<string> {
+  const grouped = new Set<string>()
+  for (const n of nodes as IndexElkNode[]) {
+    if (n.id.startsWith('runs:')) for (const id of groupJobIds(n.indexNode?.metadata)) grouped.add(`run:${id}`)
+  }
+  return grouped
+}
+
+// `graph` with every node id passed through `rename`, so two ids for one artifact
+// (a planned target's YAML URI and the registry UUID a finished target recorded)
+// draw as one node. The first node under an id wins -- the caller lists the one it
+// renders properly first -- and links that now coincide are kept once.
+export function renameElkGraph(graph: ElkGraph, rename: (id: string) => string): ElkGraph {
+  const nodes = new Map<string, ElkNodeEx>()
+  for (const n of graph.nodes) {
+    const id = rename(n.id)
+    if (!nodes.has(id)) nodes.set(id, id === n.id ? n : { ...n, id })
+  }
+  const links = new Map<string, ElkExtendedEdge>()
+  for (const l of graph.links) {
+    const source = rename(l.sources[0].replace(/-output$/, ''))
+    const target = rename(l.targets[0].replace(/-input$/, ''))
+    const key = `${source}|${target}`
+    if (!links.has(key)) {
+      links.set(key, { ...l, id: `${source}-to-${target}`, sources: [`${source}-output`], targets: [`${target}-input`] })
+    }
+  }
+  return { nodes: [...nodes.values()], links: [...links.values()] }
+}
+
 // Whether an expansion's response added nothing to the graph that was on screen
-// when it was asked (`known`, its node ids). Both sides go through `rename`, so the
-// answer follows a rename that lands after the response: a node that read as new
-// under its raw id stops counting once it folds onto one already shown.
+// when it was asked (`known`, its nodes or their ids). Both sides go through
+// `rename`, so the answer follows a rename that lands after the response: a node
+// that read as new under its raw id stops counting once it folds onto one already
+// shown. A lone run that a group lists is not new either: the merge drops it (see
+// dropGroupedRuns), so it never reaches the screen.
 export function addsNothing(
   result: LineageGraphResult,
-  known: Iterable<string>,
+  known: Iterable<string | ElkNodeEx>,
   rename: (id: string) => string = (id) => id,
 ): boolean {
   if (result.truncated) return false
-  const onScreen = new Set(Array.from(known, rename))
-  return indexGraphToElk(result, rename).nodes.every((n) => onScreen.has(n.id))
+  const knownNodes = Array.from(known, (k) => (typeof k === 'string' ? ({ id: k } as ElkNodeEx) : k))
+  const onScreen = new Set(knownNodes.map((n) => rename(n.id)))
+  const incoming = indexGraphToElk(result, rename).nodes
+  const grouped = groupedRunIds([...knownNodes, ...incoming])
+  return incoming.every((n) => onScreen.has(n.id) || grouped.has(n.id))
+}
+
+// The `runs:` group that lists the lone run `id`, when one in `nodes` does: the
+// node a selection on that run moves to once the merge drops it.
+export function groupListingRun(nodes: ElkNodeEx[], id: string): string | undefined {
+  if (!id.startsWith('run:')) return undefined
+  const jobId = id.slice('run:'.length)
+  return (nodes as IndexElkNode[]).find(
+    (n) => n.id.startsWith('runs:') && groupJobIds(n.indexNode?.metadata).includes(jobId),
+  )?.id
 }

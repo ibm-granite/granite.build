@@ -118,7 +118,7 @@ def _agreed(rows: List, key: str) -> str:
 
 
 # What any caller may see of a job, whatever its space: the fields a lineage trace
-# needs to draw and label a run. ``GET /lineage/graph`` crosses spaces by design,
+# needs to draw and label a run. ``POST /lineage/graph`` crosses spaces by design,
 # and ``GET /lineage/jobs`` only expands a graph node, so both are held to this set.
 # Owner, namespace/space, tags and the origin's ids describe a granite.build job
 # beyond the trace and are returned only behind the space check, by
