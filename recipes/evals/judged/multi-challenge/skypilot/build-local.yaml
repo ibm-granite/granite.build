@@ -6,7 +6,7 @@ granite.build:
   # per-item responses under items/, which the score phase reads) back with scp on the local Bash
   # environment; `multi-challenge` scores it in the CPU image on the local Docker environment.
   # Needs a standalone gbserver (Bash, Docker), `ssh -F ~/$${SCORE_SSH_CONFIG} $${SCORE_REMOTE_HOST}`
-  # working for the gbserver user, and the GRANITE_EVALS_JUDGE_API_KEY gb secret. Shares
+  # working for the gbserver user, and the EVAL_JUDGE_API_KEY gb secret. Shares
   # parameters.yaml with build.yaml.
   retries:
     max_retries: $${MAX_RETRIES}
@@ -82,7 +82,7 @@ granite.build:
             docker:
               secrets:
                 secret_names_to_use_as_env_variable:
-                  - env_name: GRANITE_EVALS_JUDGE_API_KEY
+                  - env_name: EVAL_JUDGE_API_KEY
             compute_config:
               num_cpus_per_node: $${SCORE_CPUS}
               total_memory_per_node: "$${SCORE_MEMORY}Gi"

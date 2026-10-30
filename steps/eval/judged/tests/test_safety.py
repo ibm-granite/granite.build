@@ -226,7 +226,7 @@ def test_fortress_benign_compliance(tmp_path, monkeypatch, env):
 
 
 def test_fortress_generate_then_score(tmp_path, monkeypatch, env):
-    monkeypatch.delenv("GRANITE_EVALS_JUDGE_API_KEY", raising=False)
+    monkeypatch.delenv("EVAL_JUDGE_API_KEY", raising=False)
     gen = make("fortress-adversity", tmp_path, monkeypatch, None, phase="generate", repeats=2)
     out = gen.run("http://p/v1", "s")
     assert out["n"] == 6 and "value" not in out and len(env.policy) == 6

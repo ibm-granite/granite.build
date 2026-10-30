@@ -338,11 +338,11 @@ def test_env_file_roundtrip(env, tmp_path):
 
 
 def test_env_enroot_passes_no_harness_secrets(env, monkeypatch):
-    monkeypatch.setenv("GRANITE_EVALS_JUDGE_API_KEY", "secret")
+    monkeypatch.setenv("EVAL_JUDGE_API_KEY", "secret")
     monkeypatch.setenv("HF_TOKEN", "secret")
     monkeypatch.setenv("ENROOT_DATA_PATH", "/scratch/data")
     got = env._enroot_env()
-    assert "GRANITE_EVALS_JUDGE_API_KEY" not in got and "HF_TOKEN" not in got
+    assert "EVAL_JUDGE_API_KEY" not in got and "HF_TOKEN" not in got
     assert got["ENROOT_DATA_PATH"] == "/scratch/data" and got["NVIDIA_VISIBLE_DEVICES"] == "void"
 
 

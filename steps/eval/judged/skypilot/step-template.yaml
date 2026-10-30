@@ -35,7 +35,7 @@ version: 0.1.0
 #
 # THE JUDGE is a paid OpenAI-compatible endpoint (default aws/claude-sonnet-5 on IBM
 # LiteLLM; some benchmarks use their own published judge panel — see each benchmark's
-# recipe docs). Its key must reach the score job as $GRANITE_EVALS_JUDGE_API_KEY;
+# recipe docs). Its key must reach the score job as $EVAL_JUDGE_API_KEY;
 # `options: judge_model=self` judges with the served model instead where supported
 # (key-less smoke runs; results say judge_is_self). Judge calls go through
 # granite-evals' spend meter ($GRANITE_EVALS_SPEND_LEDGER / $GRANITE_EVALS_SPEND_BUDGET_USD,

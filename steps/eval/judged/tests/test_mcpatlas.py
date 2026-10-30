@@ -429,7 +429,7 @@ def test_podman_needs_env_url():
 
 def test_default_judge_is_metered(tmp_path, monkeypatch):
     monkeypatch.setattr(jg, "DEFAULT_JUDGE_BASE_URL", "https://judge.example.test/v1")  # no built-in endpoint: use a placeholder
-    monkeypatch.setenv("GRANITE_EVALS_JUDGE_API_KEY", "k")
+    monkeypatch.setenv("EVAL_JUDGE_API_KEY", "k")
     seen = []
     monkeypatch.setattr(meter, "metered", lambda url, role: seen.append((url, role)) or "http://127.0.0.1:1/v1")
     j = get("mcpatlas")(RunConfig(model="m", output_dir=tmp_path)).make_judge("http://p/v1", "s")

@@ -30,8 +30,8 @@ version: 0.1.0
 # (schema: granite_evals/results.py).
 #
 # PAID APIS. The user simulator (and retail's NL-assertion judge) default to
-# aws/claude-sonnet-5 on a LiteLLM gateway, keyed by $GRANITE_EVALS_USER_API_KEY /
-# $GRANITE_EVALS_JUDGE_API_KEY in the job env; every call is metered against
+# aws/claude-sonnet-5 on a LiteLLM gateway, keyed by $EVAL_USER_API_KEY /
+# $EVAL_JUDGE_API_KEY in the job env; every call is metered against
 # $GRANITE_EVALS_SPEND_LEDGER / $GRANITE_EVALS_SPEND_BUDGET_USD. `user_model=self judge_model=self`
 # uses the served model instead (smoke runs, no key).
 #

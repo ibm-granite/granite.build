@@ -108,7 +108,7 @@ config:
   docker:
     secrets:
       secret_names_to_use_as_env_variable:
-        - env_name: GRANITE_EVALS_JUDGE_API_KEY   # secret_name defaults to this
+        - env_name: EVAL_JUDGE_API_KEY   # secret_name defaults to this
 ```
 
 The value is visible to anyone who can `docker inspect` the container.

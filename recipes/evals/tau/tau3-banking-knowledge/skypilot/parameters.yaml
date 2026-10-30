@@ -28,7 +28,7 @@ WORKERS: 16
 OPTIONS: ""
 TENSOR_PARALLEL_SIZE: 1
 
-# ─── Judge (paid; key from the GRANITE_EVALS_JUDGE_API_KEY secret) ──────
+# ─── Judge (paid; key from the EVAL_JUDGE_API_KEY secret) ──────
 # OpenAI-compatible endpoint of the judge gateway. No default; set it for your site.
 JUDGE_BASE_URL: ""
 

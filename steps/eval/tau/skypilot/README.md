@@ -53,7 +53,7 @@ declares none.
 
 **Paid APIs.** The user simulator (and, for `tau3-retail`, the NL-assertion judge)
 defaults to `aws/claude-sonnet-5` on the IBM LiteLLM gateway. The job needs
-`GRANITE_EVALS_USER_API_KEY` (and `GRANITE_EVALS_JUDGE_API_KEY` for retail) in its
+`EVAL_USER_API_KEY` (and `EVAL_JUDGE_API_KEY` for retail) in its
 environment, and every call is metered against `GRANITE_EVALS_SPEND_LEDGER` /
 `GRANITE_EVALS_SPEND_BUDGET_USD`; at the budget the meter answers HTTP 402 and the run
 stops scoring. `user_model=self judge_model=self` uses the served model instead (smoke
