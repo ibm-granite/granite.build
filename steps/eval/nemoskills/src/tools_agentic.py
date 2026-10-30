@@ -1,7 +1,8 @@
-"""Benchmarks with tools: HLE (python + web search), CritPt (python), BrowseComp
+"""Benchmarks with tools: HLE (python + web search), CritPt (python), HumanEval
+and MBPP (python; data and grading from ``nemo_skills_codegen.py``), BrowseComp
 and BrowseComp+ (web search + page fetch).
 
-All four are NeMo-Skills runs (``benchmarks/nemo_skills.py``: ns's prepare,
+All six are NeMo-Skills runs (``benchmarks/nemo_skills.py``: ns's prepare,
 generate, judge, metrics, phases, ``answers=gold``) with ns's tool-calling
 generation (``++tool_modules``): the served model calls tools through vLLM's
 tool calling (its own tool parser, ``--tool-call-parser auto``); every call is
@@ -54,6 +55,7 @@ from granite_evals.benchmarks.nemo_skills import (
     _unscored,
     _write_jsonl,
 )
+from granite_evals.benchmarks.nemo_skills_codegen import HumanEval, MBPP
 from granite_evals.registry import register
 
 log = logging.getLogger(__name__)
@@ -388,6 +390,33 @@ def _critpt_code(generation: str) -> str:
 
 def _natural(s: str) -> list:
     return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", s)]
+
+
+# -- HumanEval / MBPP (tools) ---------------------------------------------------------
+
+
+@register
+class HumanEvalTools(HumanEval, ToolBenchmark):
+    """HumanEval with a python tool: ``HumanEval`` (``nemo_skills_codegen.py``)
+    under ``ToolBenchmark``'s tool-calling generation — the model may run code
+    while working out the function, then answers; the final answer's last
+    ```python block is the completion that ``HumanEval``'s harness grades (the
+    python tool's sessions are scratch space, never part of the program). The
+    grading options (``grade_image``, ``grade_network``, ...) are
+    ``CodegenBenchmark``'s; the python tool reads the shared ``sandbox``,
+    ``python_image`` / ``python_packages`` / ``python_network`` ones."""
+
+    id = "human-eval-tools"
+    default_tools = ("python",)
+
+
+@register
+class MbppTools(MBPP, ToolBenchmark):
+    """MBPP with a python tool, exactly ``HumanEvalTools``'s run (class doc) on
+    MBPP's sanitized problems."""
+
+    id = "mbpp-tools"
+    default_tools = ("python",)
 
 
 # -- BrowseComp ------------------------------------------------------------------------
