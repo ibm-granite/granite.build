@@ -1,0 +1,59 @@
+# mbpp on BlueVela (SkyPilot / SLURM), nemoskills family image.
+# Data: https://huggingface.co/datasets/google-research-datasets/mbpp @ 4bb6404fdc6cacfda99d4ac4205087b89d32030c
+# config `sanitized` (the 257 manually-verified problems the MBPP paper evaluates on — the
+# same sanitized set evalplus's MBPP+ builds on; CC-BY-4.0, not gated; pinned in the image's
+# code — fetch it into the HF cache with `make -C steps/eval prefetch HF_HOME=<cache>`; the
+# known-flawed `full` split's 500 problems are reachable with --dataset and a locally
+# prepared jsonl). Scoring runs a port of HumanEval's execution harness (openai/human-eval
+# @ 37c4dd63, MIT) inside an enroot sandbox (python:3.13-bookworm, its network cut).
+#
+# LIMIT is empty: the full benchmark. For a quick functional check, score only the first N
+# examples (3-10 is enough to prove the plumbing):
+#   gb build start -f recipes/evals/nemoskills/mbpp/skypilot/build.yaml --space <space> --param LIMIT=5
+# Override any value with --param KEY=VALUE.
+
+# ─── Model ────────────────────────────────────────────────────────────
+# https://huggingface.co/ibm-granite/granite-4.2-3b (vLLM downloads a hub id into the HF cache).
+MODEL_PATH: "ibm-granite/granite-4.2-3b"
+SERVED_MODEL_NAME: ""
+# Unique per run: re-running the same model with the same RUN_NAME re-resolves the same
+# artifact URIs, so a reused SUCCESS target's downstream (score) never dispatches.
+RUN_NAME: "granite-4.2-3b"
+OUTPUT_ROOT: "/proj/granite-build/g4os/granite/runs"
+# HF cache the container reads and writes (model + datasets). Empty = the image's /opt/hf-cache.
+HF_HOME: ""
+
+# ─── Images (GPU generate + CPU score) ────────────────────────────────────
+# Fill with the tag of a built + pushed family image before the first run (this benchmark's
+# module is new, so existing nemoskills tags predate it):
+#   make -C steps/eval image-nemoskills REGISTRY=us.icr.io/cil15-shared-registry publish-image-nemoskills REGISTRY=...
+#   make -C steps/eval image-cpu-nemoskills REGISTRY=... publish-image-cpu-nemoskills REGISTRY=...
+# (the tag defaults to the building checkout's git short SHA).
+IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills:<tag>"
+IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills-cpu:<tag>"
+
+# ─── Scale ────────────────────────────────────────────────────────────
+LIMIT: ""
+REPEATS: ""
+WORKERS: 32
+# e.g. "answers=gold" (model-free plumbing check; then MODEL_PATH can be "none"),
+# "grade_workers=16", "grade_network=on".
+OPTIONS: ""
+TENSOR_PARALLEL_SIZE: 1
+# Shared enroot squashfs cache for the grading container (python:3.13-bookworm). Empty
+# derives a per-run cache at ${OUTPUT_ROOT}/${RUN_NAME}/enroot-cache, writable by whoever
+# dispatched the run (they own the output dir); set a shared path to reuse imported
+# images across runs.
+SANDBOX_CACHE: ""
+
+# ─── Cluster ──────────────────────────────────────────────────────────
+ENVIRONMENT_URI: "space://environments/skypilot/slurm/ibm-bluevela"
+CLUSTER: "bluevela"
+QUEUE: "gpu-mid"
+GPU_MEMORY: 256
+CPU_QUEUE: "cpu"
+SCORE_CPUS: 8
+SCORE_MEMORY: 64
+MAX_RETRIES: 2
+POLL_INTERVAL_SECONDS: 300
+LOG_RETRIEVAL_INTERVAL_SECONDS: 300
