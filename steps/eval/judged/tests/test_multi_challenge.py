@@ -141,7 +141,7 @@ def test_shipped_responses_gold(tmp_path, monkeypatch, env):
 
 
 def test_generate_then_score_and_limit(tmp_path, monkeypatch, env):
-    monkeypatch.delenv("GRANITE_EVALS_JUDGE_API_KEY", raising=False)
+    monkeypatch.delenv("EVAL_JUDGE_API_KEY", raising=False)
     gen = make(tmp_path, monkeypatch, None, phase="generate", limit=2).run("http://p/v1", "s")
     assert gen["n"] == 2 and sorted(p.name for p in (tmp_path / "items").iterdir()) == ["a1", "b2"]
     env.policy.clear()

@@ -36,7 +36,7 @@ The judge is a paid OpenAI-compatible endpoint, set by `options`: `judge_base_ur
 (default IBM LiteLLM), `judge_model` (default `aws/claude-sonnet-5`; FORTRESS's paper
 panel and the per-benchmark upstream judge prompts are not all reproduced — see each
 benchmark's own prompt in granite-evals), `judge_api_key_env` (default
-`GRANITE_EVALS_JUDGE_API_KEY`: the job needs the key in that variable). `judge_model=self`
+`EVAL_JUDGE_API_KEY`: the job needs the key in that variable). `judge_model=self`
 judges with the served model instead where the benchmark supports it (no key; smoke
 runs only; results say `judge_is_self: true`).
 

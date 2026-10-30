@@ -32,9 +32,9 @@ OPTIONS: ""
 TENSOR_PARALLEL_SIZE: 1
 
 # ─── Paid APIs (user simulator + judge) ────────────────────────────────
-# The generate target declares GRANITE_EVALS_USER_API_KEY (the user simulator,
+# The generate target declares EVAL_USER_API_KEY (the user simulator,
 # default aws/claude-sonnet-5, runs there) and the score target
-# GRANITE_EVALS_JUDGE_API_KEY (one of its tasks is NL-assertion-judged). The gateways are
+# EVAL_JUDGE_API_KEY (one of its tasks is NL-assertion-judged). The gateways are
 # OpenAI-compatible; no default, set them for your site. USER_BASE_URL defaults
 # to the judge gateway; each role is metered separately. OPTIONS=user_model=self
 # drops the user simulator's paid calls (smoke run) but the declared secrets must
