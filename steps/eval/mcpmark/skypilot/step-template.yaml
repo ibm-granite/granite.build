@@ -1,0 +1,206 @@
+name: mcpmark
+version: 0.1.0
+# The granite-evals "mcpmark" image family: MCPMark, one agent run per task
+# against a live MCP service. `benchmark` selects the service; see
+# `granite-evals list` for the current set. As of this writing:
+#   mcpmark-filesystem    30 standard + 10 easy tasks (state auto-downloaded)
+#   mcpmark-postgres      21 standard + 10 easy tasks (per-job postgres 17)
+#   mcpmark-playwright    4 standard tasks (in-image chromium, live web)
+#
+# ONE STEP PER GRANITE_EVALS IMAGE FAMILY. Every steps/eval/*/ template has the same
+# shape and differs only in `name`, the family's image env var, and its defaults.
+# skypilot/test/test_step_template.py holds them to that. Recipes
+# (recipes/evals/mcpmark/...) choose which benchmarks a model family is scored on
+# and set `benchmark` per target.
+#
+# THE CODE LIVES IN THIS REPO. The benchmark runtime is vendored under steps/eval/src
+# (core + this family's modules) and baked into the family's image by
+# the Dockerfile.gpu in this family's directory (see steps/eval/Makefile).
+# The image is chosen at run time from config.image. Nothing is cloned or
+# mounted at launch.
+#
+# DATA. The MCPMark harness and task definitions (Apache-2.0) are baked into the
+# image at a pinned commit (tarball sha256 + tree digest verified by
+# mcpmark/extras.sh). The task STATE payloads (filesystem zips, postgres
+# backups) have an unstated license and are NEVER baked: the harness downloads
+# them at run time from storage.mcpmark.ai, and results.json records digests
+# of what it got. The playwright tasks drive the live public web (expect
+# run-to-run variance; see USAGE.md).
+#
+# WHAT RUNS. `granite-evals run mcpmark-<service>` serves model_path with vLLM
+# inside the job and runs upstream's own pipeline per task: the service's state
+# manager sets up the task state, the MCPMark agent drives the served model
+# against the service's MCP server, and the task's verify.py scores the final
+# state. Writes one results.json (schema: granite_evals/results.py).
+#
+# PHASES. This benchmark scores inside generation, so it runs as one GPU job
+# (phase: all); see the sibling granite-* steps for the generate/score split.
+#
+# CUSTOM, not EVAL: gbcommon's StepType has no EVAL member.
+type: custom
+config:
+  # The benchmark id passed to `granite-evals run`. Required, e.g. "mcpmark-filesystem".
+  # See `granite-evals list` for this family's benchmark ids.
+  benchmark: ""
+  # The granite-evals image for this benchmark family (`make image-mcpmark` in
+  # steps/eval), pinned by its tag; results.json records the versions inside.
+  # Recipes set it once, as the GRANITE_EVALS_IMAGE_MCPMARK parameter.
+  image: ""
+  # The checkpoint to score, as a LOCAL PATH (normally a distill-hf-export `hf_model`
+  # or an hfpull binding). Required.
+  model_path: ""
+  # Name the model is served under; empty = basename of model_path.
+  served_model_name: ""
+  # Relative values resolve against $GB_BUILD_WORKDIR.
+  output_dir: "output"
+  # SMOKE KNOB: score only the first N tasks (sorted by task id, so two smoke
+  # runs are comparable). Empty = the benchmark's full set (30/21/4 standard
+  # tasks; see `granite-evals list`).
+  limit: ""
+  # pass@1[avg-of-k]: independent agent runs per task. Empty = benchmark
+  # default (1); the module refuses anything else (upstream's own --k is what
+  # varies samples, and it is pinned to 1).
+  repeats: ""
+  # Tasks worked on concurrently. Upstream's pipeline runs the tasks of one
+  # service serially and merges whatever is on disk, so the module refuses
+  # anything but 1 here; run the three services as separate targets for
+  # parallelism.
+  workers: "1"
+  # Dataset: empty = the eval-sys/mcpmark checkout pinned in granite-evals
+  # (baked into the image). A LOCAL PATH to an existing MCPMark checkout
+  # overrides it (trusted as-is: no commit or task-count checks).
+  dataset: ""
+  dataset_revision: ""
+  # Space-separated key=value benchmark options passed as --option, e.g.
+  # "task_suite=easy timeout=1800". Full set: task_suite (standard | easy),
+  # timeout (seconds per task, default 3600), compaction_token,
+  # reasoning_effort, max_failed_frac (default 0.05).
+  options: ""
+  # "all" only: this benchmark scores inside generation, so it cannot be split into
+  # a GPU and a CPU job (the key exists because every granite step shares one contract).
+  phase: "all"
+  # vLLM.
+  tensor_parallel_size: "1"
+  gpu_memory_utilization: "0.9"
+  max_model_len: ""
+  # This family's first scope sandboxes nothing in enroot (the services run
+  # in the job container itself: npx/pipx MCP servers, a postgres cluster the
+  # adapter starts). Empty skips the sandbox env block; the key exists because
+  # every granite step shares one contract.
+  sandbox_cache: ""
+  # Empty leaves the image's HF cache default alone.
+  hf_home: ""
+outputs:
+  optional:
+    # phase all | score: the scored results.json.
+    granite_results:
+      type: dataset
+    # phase generate: generation.json, which the score target binds to.
+    granite_generation:
+      type: dataset
+
+# No named inputs: the model checkpoint arrives as the config string
+# model_path, not a binding, and recipes bind ordering-only inputs (the score
+# target's generation, whose name varies by recipe) only to order targets.
+# Nothing is read through bindings; allow_unknown keeps every binding valid.
+inputs:
+  allow_unknown: true
+
+environment_configs:
+  Skypilot:
+    default_launcher: granite
+    launchers:
+      granite:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          image_id: '{{ ("docker:" ~ config.image) if config.image else "" }}'
+          resources: {}
+          run: |
+            set -e
+            set -o pipefail
+            BENCHMARK="{{ config.benchmark }}"
+            echo "=== granite $BENCHMARK on $(hostname) ==="
+            nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
+            # vLLM refuses to start inside an initialised torch.distributed env.
+            unset RANK WORLD_SIZE LOCAL_RANK MASTER_ADDR MASTER_PORT
+            # SLURM's pyxis/enroot injects the NVIDIA driver libraries at launch, after the image
+            # is built, so the image's ld.so cache has no libcuda.so and Triton/torch.compile
+            # fail with "libcuda.so cannot found!". Refreshing the cache is a per-step runtime
+            # job (no image can do it; pyxis bypasses ENTRYPOINT). Harmless where it is not needed.
+            ldconfig 2>/dev/null || true
+            # The image's ENV PATH can be lost on BlueVela: the LSF provider flattens
+            # enroot's layers in reverse order, so enroot's layer 0 (/etc/environment)
+            # ends up under the base image's. The venv path is fixed by the image.
+            export PATH="/opt/granite-evals/.venv/bin:$PATH"
+            command -v granite-evals >/dev/null || { echo "granite: granite-evals not on PATH; is config.image set to a granite-evals image?"; exit 1; }
+            test -n "{{ config.model_path }}" || { echo "granite: config.model_path is required"; exit 1; }
+
+            {% if config.hf_home %}export HF_HOME="{{ config.hf_home }}"; mkdir -p "$HF_HOME"{% endif %}
+
+            {% if config.sandbox_cache %}
+            # Sandboxes: enroot inside this job's container. Image squashfs files go to
+            # the shared cache; the per-sandbox rootfs goes to node-local scratch.
+            export GRANITE_EVALS_SANDBOX=enroot
+            export GRANITE_EVALS_ENROOT_CACHE="{{ config.sandbox_cache }}"
+            SCRATCH="${TMPDIR:-/tmp}/granite-$$"
+            export ENROOT_DATA_PATH="$SCRATCH/enroot-data" ENROOT_CACHE_PATH="$SCRATCH/enroot-cache" ENROOT_RUNTIME_PATH="$SCRATCH/enroot-run" ENROOT_TEMP_PATH="$SCRATCH/enroot-tmp"
+            mkdir -p "$GRANITE_EVALS_ENROOT_CACHE" "$ENROOT_DATA_PATH" "$ENROOT_CACHE_PATH" "$ENROOT_RUNTIME_PATH" "$ENROOT_TEMP_PATH"
+            # Nested enroot bind-mounts this job's cgroup path into each sandbox; SLURM's
+            # step cgroup path carries ../.. segments that do not exist lexically, so the
+            # enroot cgroup mount fails until the resolved source directory exists. Create
+            # it (validated as probe6, SLURM job 432842: REPRO_EXIT=1 -> FIX_EXIT=0).
+            CG=$(awk -F: '/^0::/{print $3}' /proc/self/cgroup)
+            LEX=$(readlink -m "/sys/fs/cgroup/$CG")
+            mkdir -p "$LEX" 2>/dev/null || true
+            trap 'rm -rf "$SCRATCH"' EXIT
+            {% endif %}
+
+            OUTPUT_DIR="{{ config.output_dir }}"
+            case "$OUTPUT_DIR" in /*) ;; *) OUTPUT_DIR="${GB_BUILD_WORKDIR:-$PWD}/$OUTPUT_DIR" ;; esac
+            mkdir -p "$OUTPUT_DIR"
+
+            OPTS=()
+            for kv in {{ config.options }}; do OPTS+=(--option "$kv"); done
+
+            granite-evals run "$BENCHMARK" \
+              --model "{{ config.model_path }}" \
+              --output-dir "$OUTPUT_DIR" \
+              {% if config.served_model_name %}--served-model-name "{{ config.served_model_name }}"{% endif %} \
+              {% if config.limit %}--limit {{ config.limit }}{% endif %} \
+              {% if config.repeats %}--repeats {{ config.repeats }}{% endif %} \
+              --workers {{ config.workers }} \
+              {% if config.dataset %}--dataset "{{ config.dataset }}"{% endif %} \
+              {% if config.dataset_revision %}--dataset-revision "{{ config.dataset_revision }}"{% endif %} \
+              --tensor-parallel-size {{ config.tensor_parallel_size }} \
+              --gpu-memory-utilization "{{ config.gpu_memory_utilization }}" \
+              --phase "{{ config.phase }}" \
+              {% if config.max_model_len %}--max-model-len {{ config.max_model_len }}{% endif %} \
+              "${OPTS[@]}" \
+              2>&1 | tee "$OUTPUT_DIR/granite.log"
+            if [ "{{ config.phase }}" = generate ]; then
+              RESULT_FILE="$OUTPUT_DIR/generation.json"
+              test -s "$RESULT_FILE" || { echo "granite: no $RESULT_FILE"; exit 1; }
+              echo "GB_ARTIFACT_ID:granite_generation GB_ARTIFACT_PATH:${RESULT_FILE}"
+            else
+              RESULT_FILE="$OUTPUT_DIR/results.json"
+              test -s "$RESULT_FILE" || { echo "granite: no $RESULT_FILE"; exit 1; }
+              echo "GB_ARTIFACT_ID:granite_results GB_ARTIFACT_PATH:${RESULT_FILE}"
+            fi
+    monitors:
+      skypilot_monitor:
+        ref: space://monitors/skypilot
+        config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
+          log_retrieval:
+            mode: "{{ config.log_retrieval_mode | default('periodic') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(900) }}"
+          extra_event_configs:
+            - event_type: WORKLOAD_STATUS_EVENT
+              line_regex: "(vLLM ready at|granite-evals: {{ config.benchmark }} =|granite-evals: \\S+ generated)"
+              event_fields:
+                - field_name: status
+                  field_value_template: "RUNNING"
+                - field_name: message
+                  field_regex: ".+"
