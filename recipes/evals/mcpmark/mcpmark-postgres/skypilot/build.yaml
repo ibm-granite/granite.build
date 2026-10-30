@@ -1,0 +1,38 @@
+granite.build:
+  name: eval-mcpmark-postgres
+  # mcpmark-postgres (mcpmark family). One GPU target: verification runs inline
+  # with generation (--phase all), so there is no CPU score target.
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+  targets:
+    mcpmark-postgres:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/mcpmark
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            benchmark: "mcpmark-postgres"
+            image: "$${IMAGE}"
+            model_path: "$${MODEL_PATH}"
+            served_model_name: "$${SERVED_MODEL_NAME}"
+            output_dir: "$${OUTPUT_ROOT}/$${RUN_NAME}/mcpmark-postgres"
+            limit: "$${LIMIT}"
+            repeats: "$${REPEATS}"
+            workers: "$${WORKERS}"
+            options: "$${OPTIONS}"
+            phase: "all"
+            tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+            max_model_len: "$${MAX_MODEL_LEN}"
+            hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H200:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
