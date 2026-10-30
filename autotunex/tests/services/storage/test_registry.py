@@ -123,12 +123,12 @@ def test_huggingface_backend_receives_viewer_settings(
     assert hf._hf_viewer_timeout_seconds == settings.hf_viewer_timeout_seconds
 
 
-def test_huggingface_backend_receives_the_push_org(
+def test_huggingface_backend_receives_the_push_org_and_allowlist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _both_tokens(monkeypatch)
     settings = make_settings(dataset_storage_backend="huggingface").model_copy(
-        update={"hf_namespace": "push-org"}
+        update={"hf_namespace": "push-org", "hf_import_namespaces": ["import-org"]}
     )
 
     backend = get_storage_backend(settings)
@@ -137,6 +137,7 @@ def test_huggingface_backend_receives_the_push_org(
     hf = backend._primary
     assert isinstance(hf, HuggingFaceStorageBackend)
     assert hf._hf_namespace == "push-org"
+    assert hf._hf_import_namespaces == ["import-org"]
 
 
 def test_huggingface_backend_receives_gb_tags(
