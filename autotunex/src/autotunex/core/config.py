@@ -57,10 +57,6 @@ rather than duplicating the literal in the field default and the validator.
 """
 
 
-_DEFAULT_HF_NAMESPACE = "ibm-research"
-"""gbcli's ``hf_organization`` in every GB environment: where an org-less push lands."""
-
-
 def _is_unset(value: str | None) -> bool:
     """Return whether *value* counts as unset: ``None``, empty, or whitespace-only.
 
@@ -332,15 +328,12 @@ class Settings(BaseSettings):
     subprocess environment untouched.
     """
 
-    hf_namespace: str = _DEFAULT_HF_NAMESPACE
+    hf_namespace: str | None = None
     """HF org the HuggingFace backend pushes dataset repos to (``--hf-organization``).
 
-    The default is gbcli's own ``hf_organization`` default, which is where a push
-    without the flag lands anyway. Repos owned by this org are also read with the HF
-    token for preview, alongside ``hf_import_namespaces``: the app's pushes are
-    private, and the owner (not the repo name) decides who may borrow the token. A
-    blank value (``AUTOTUNEX_HF_NAMESPACE=``, which once meant "no prefix") falls
-    back to the default rather than failing startup."""
+    Unset (or blank), the flag is omitted and gbcli pushes to the GB environment's
+    own ``hf_organization``. A dataset's own push is the one repo its preview reads
+    with the HF token; when this is set, that repo must also be in this org."""
 
     hf_preview_enabled: bool = True
     """Enable dataset preview via the HuggingFace dataset viewer.
@@ -899,9 +892,9 @@ class Settings(BaseSettings):
 
     @field_validator("hf_namespace", mode="after")
     @classmethod
-    def _default_a_blank_hf_namespace(cls, value: str) -> str:
-        """Trim ``hf_namespace``, folding a blank value to the default org."""
-        return value.strip() or _DEFAULT_HF_NAMESPACE
+    def _unset_a_blank_hf_namespace(cls, value: str | None) -> str | None:
+        """Trim ``hf_namespace``, folding a blank value to unset."""
+        return (value or "").strip() or None
 
     @field_validator("gb_environment", mode="after")
     @classmethod
