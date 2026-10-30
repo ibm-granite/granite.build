@@ -30,6 +30,7 @@ def _rows(path):
 
 
 def _write(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(r) + "\n" for r in rows))
     return path
 
