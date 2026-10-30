@@ -102,6 +102,13 @@ judged = [
 serve = [
     "vllm==0.27.1",
 ]
+# MCPMark (eval-sys). The extra is empty on purpose: the harness hard-pins
+# litellm==1.80.0 against the nemoskills/tbench camps and its wheel omits
+# pipeline.py (it must run from a checkout), so it cannot live in this venv;
+# mcpmark/extras.sh bakes the pinned commit with its own venv and the module
+# runs it as a subprocess. Kept as an extra so the family stays uniform
+# (image build, Benchmark.extra error messages).
+mcpmark = []
 
 [project.scripts]
 granite-evals = "granite_evals.cli:main"
