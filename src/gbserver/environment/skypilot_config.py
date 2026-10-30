@@ -47,6 +47,8 @@ the environment's secrets, falling back to the literal value. The module is
 pure-filesystem (no ``sky`` import) so it is unit-testable without the SDK.
 """
 
+import base64
+import binascii
 import configparser
 import copy
 import hashlib
@@ -54,6 +56,7 @@ import io
 import json
 import os
 import random
+import re
 import socket
 import threading
 from pathlib import Path
@@ -845,9 +848,11 @@ _KUBE_SUPERSEDED_MAX = 16
 def _start_time(proc: psutil.Process) -> str:
     """``proc``'s start time, as recorded in owner keys.
 
-    Boot-relative where psutil offers it (Linux, macOS): the wall-clock value
-    moves when the system clock is stepped (NTP, a VM resume), which would make
-    a live owner look stale and get its context pruned mid-build.
+    Boot-relative where psutil offers it (Linux): the wall-clock value moves
+    when the system clock is stepped (NTP, a VM resume), which would make a
+    live owner look stale and get its context pruned mid-build. Elsewhere
+    (macOS returns wall-clock time either way) :func:`_owner_is_stale` allows
+    :data:`_START_TIME_TOLERANCE_S` of drift.
     """
     try:
         # pylint: disable-next=protected-access
@@ -858,6 +863,12 @@ def _start_time(proc: psutil.Process) -> str:
 
 
 _PROCESS_TAG: Optional[str] = None
+
+#: Drift allowed between a recorded and a current start time before an owner
+#: counts as a different (later) process. A reused pid starts well after the
+#: original, so this only absorbs small clock steps where the start time is
+#: wall-clock based.
+_START_TIME_TOLERANCE_S = 5.0
 
 
 def kube_process_tag() -> str:
@@ -891,7 +902,8 @@ def _owner_is_stale(owner: str) -> bool:
     if host != socket.gethostname():
         return False
     try:
-        return _start_time(psutil.Process(int(pid))) != started
+        now = float(_start_time(psutil.Process(int(pid))))
+        return abs(now - float(started)) > _START_TIME_TOLERANCE_S
     except (ValueError, psutil.NoSuchProcess, psutil.ZombieProcess):
         return True
     except psutil.Error:
@@ -989,6 +1001,30 @@ _KUBE_CONTEXT_FIELDS = frozenset({"cluster", "user", "namespace"})
 _KUBE_BOOL_FIELDS = frozenset({"insecure-skip-tls-verify", "disable-compression"})
 
 
+def _is_base64(value: str) -> bool:
+    """Whether ``value`` is standard base64, as kubectl requires for ``*-data``."""
+    try:
+        base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return True
+
+
+#: Kube context names may only use these characters: no whitespace, control or
+#: invisible characters that could make two names look alike to a reader, or
+#: compare differently in gbserver and in kubectl/SkyPilot.
+_KUBE_CONTEXT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/+=-]*$")
+
+
+def _check_context_name(name: str) -> None:
+    """Refuse a ``kube_configs`` context name outside :data:`_KUBE_CONTEXT_NAME_RE`."""
+    if not isinstance(name, str) or not _KUBE_CONTEXT_NAME_RE.match(name):
+        raise ValueError(
+            f"kube_configs context name {name!r} may use only letters, digits "
+            "and . _ : @ / + = - (starting with a letter or digit)"
+        )
+
+
 def _check_fields(kind: str, context: str, body: Any, allowed: frozenset) -> None:
     """Refuse a cluster/user/context body with a field outside ``allowed``.
 
@@ -1014,12 +1050,13 @@ def _check_fields(kind: str, context: str, body: Any, allowed: frozenset) -> Non
         k
         for k, v in body.items()
         if not isinstance(v, bool if k in _KUBE_BOOL_FIELDS else str)
+        or (k.endswith("-data") and isinstance(v, str) and not _is_base64(v))
     )
     if wrong:
         raise ValueError(
-            f"kubeconfig context '{context}': {kind} fields {wrong} have values "
-            "of the wrong type (expected strings; true/false for "
-            f"{sorted(_KUBE_BOOL_FIELDS & set(wrong)) or 'flags'})"
+            f"kubeconfig context '{context}': {kind} fields {wrong} have invalid "
+            "values (expected strings, base64 for *-data fields, true/false for "
+            f"{sorted(_KUBE_BOOL_FIELDS)})"
         )
 
 
@@ -1268,13 +1305,25 @@ def _drop_context(doc: Dict, name: str) -> None:
     _without(doc, "users", _KUBE_NAME_PREFIX + name)
 
 
-def _prune_stale_owners(doc: Dict, owners: Dict[str, Set[str]]) -> None:
+#: Owners whose release failed (a lock timeout, an I/O error). Their process
+#: is alive, so pruning never drops them; the next write in this process does.
+_PENDING_RELEASES: Set[str] = set()
+
+
+def _prune_stale_owners(
+    doc: Dict, owners: Dict[str, Set[str]], keep: Optional[str] = None
+) -> None:
     """Drop owners whose gbserver process is gone, and contexts left unowned.
 
+    Also drops owners whose release failed earlier in this process
+    (:data:`_PENDING_RELEASES`), except ``keep`` (an owner merging again).
     See :func:`_owner_is_stale`.
     """
+    if keep is not None:
+        _PENDING_RELEASES.discard(keep)
+    pending = set(_PENDING_RELEASES)
     for name in list(owners):
-        stale = {o for o in owners[name] if _owner_is_stale(o)}
+        stale = {o for o in owners[name] if o in pending or _owner_is_stale(o)}
         if not stale:
             continue
         logger.info(
@@ -1363,6 +1412,7 @@ def _validated_incoming(
     incoming = []
     seen: Set[str] = set()
     for entry in entries:
+        _check_context_name(entry.context)
         if entry.context == _KUBE_PLACEHOLDER or reserved_kube_context(entry.context):
             raise ValueError(
                 f"kube_configs context name '{entry.context}' is reserved "
@@ -1473,7 +1523,9 @@ def _apply_entry(
         superseded = doc[_KUBE_SUPERSEDED_KEY] = {}
     history = superseded.get(name)
     history = history if isinstance(history, list) else []
-    if not identical and current and _definition_hash(incoming) in history:
+    label = kube_owner_label(env_name)
+    same_env = {kube_owner_label(o) for o in current} == {label}
+    if not identical and current and same_env and _definition_hash(incoming) in history:
         logger.info(
             "kube context '%s': environment '%s' has an older definition than "
             "the one in use (its secrets predate a rotation); keeping the newer",
@@ -1482,8 +1534,7 @@ def _apply_entry(
         )
         owners[name] = current | {env_name}
         return
-    label = kube_owner_label(env_name)
-    if current and not identical and {kube_owner_label(o) for o in current} != {label}:
+    if current and not identical and not same_env:
         others = sorted({kube_owner_label(o) for o in current} - {label})
         _raise_collision(
             "kube context",
@@ -1544,7 +1595,7 @@ def merge_kube_configs(
 
     def change(doc: Dict, dest: Path) -> None:
         owners = _kube_owners(doc)
-        _prune_stale_owners(doc, owners)
+        _prune_stale_owners(doc, owners, keep=env_name)
         user = _user_kubeconfig(dest)
         for parts in incoming:
             _check_user_collisions(parts, user, env_name, dest)
@@ -1579,6 +1630,7 @@ def release_kube_configs(
     def change(doc: Dict, dest: Path) -> None:
         owners = _kube_owners(doc)
         _prune_stale_owners(doc, owners)
+        _PENDING_RELEASES.discard(env_name)
         for name in list(owners):
             if contexts is not None and name not in contexts:
                 continue
@@ -1589,7 +1641,12 @@ def release_kube_configs(
         if doc:
             _store_owners(doc, owners)
 
-    _, changed = _update_managed(home, change)
+    try:
+        _, changed = _update_managed(home, change)
+    except Exception:
+        # Retried by the next merge or release in this process.
+        _PENDING_RELEASES.add(env_name)
+        raise
     return changed
 
 

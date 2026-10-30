@@ -65,16 +65,49 @@ from gbserver.environment._skypilot_ssh import (
 # Shared file_mounts builder — keeps the unmanaged and managed launchers in sync
 # (relative-source resolution against the step.yaml dir, bucket sub-path handling).
 from gbserver.environment.skypilot import (
+    _CLOUD_CONFIG_LOCK,
     _abort_shielded_request,
+    _apply_cloud_config,
     _build_skypilot_mounts,
     _get_step_skypilot_config,
     _merged_override_resources,
     _num_nodes_from_configs,
     _resolve_infra_and_zone,
     _run_sky_verb_off_loop,
+    _sky_api_server_is_local,
     _sky_submit_to_thread,
     _warn_unrequested_gpus,
 )
+from gbserver.types.errors import SkypilotConfigCollisionError
+
+
+def _launch_managed_job(env_name: str, *args: Any, **kwargs: Any) -> Any:
+    """``sky.jobs.launch`` for a managed-jobs environment without ``kube_configs`` (blocking).
+
+    The managed-jobs environment brings no ``cloud_config`` or kube contexts of
+    its own, but its request carries this process's ``KUBECONFIG`` and loaded
+    client config like any other. So, under :data:`_CLOUD_CONFIG_LOCK`: load an
+    empty ``cloud_config`` (so it doesn't inherit another environment's pins),
+    and refuse while gbserver holds any environment's kube contexts, since
+    SkyPilot could resolve one of them for it.
+
+    :raises SkypilotConfigCollisionError: While kube contexts are managed.
+    """
+    from gbserver.environment.skypilot_config import managed_kube_contexts
+
+    with _CLOUD_CONFIG_LOCK:
+        if _sky_api_server_is_local():
+            held = sorted(managed_kube_contexts(include_stale=True))
+            if held:
+                raise SkypilotConfigCollisionError(
+                    f"environment '{env_name}' (managed jobs) can't launch while "
+                    f"gbserver holds kube context(s) {held} from other "
+                    "environments' kube_configs: its request would carry them. "
+                    "Retry once those builds finish, or use the Skypilot "
+                    "environment type."
+                )
+        _apply_cloud_config(env_name, None)
+        return sky.jobs.launch(*args, **kwargs)
 
 
 class Skypilot_managed(Environment):
@@ -291,7 +324,12 @@ class Skypilot_managed(Environment):
             # abort the request server-side and cancel the job by name (mirrors
             # the unmanaged launcher's _provision_with_retry).
             launch_fut = asyncio.ensure_future(
-                _sky_submit_to_thread(sky.jobs.launch, task, name=job_name)
+                _sky_submit_to_thread(
+                    _launch_managed_job,
+                    self.config.name if self.config else "skypilot-managed",
+                    task,
+                    name=job_name,
+                )
             )
             try:
                 request_id = await asyncio.shield(launch_fut)

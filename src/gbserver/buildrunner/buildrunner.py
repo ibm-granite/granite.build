@@ -608,6 +608,10 @@ class BuildRunner(AbstractBuildRunner):
             )
             logger.info("for the space name %s using the URI: %s", space_name, s_uri)
             space = Space(uri=s_uri, username=username)
+            # The registered (storage-unique) name, which space.yaml's own
+            # `name:` need not match; used where identity matters (kube_configs
+            # credential ownership).
+            space.registered_name = space_name
         return space
 
     def __is_build_cancelled(self) -> bool:

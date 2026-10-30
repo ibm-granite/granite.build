@@ -67,7 +67,9 @@ ways to supply them:
     secrets were read before the rotation keeps using the newer definition rather than putting the old one
     back. A *different*
     environment sharing the context can't change it until that environment's builds finish. Same-named
-    environments in two spaces never replace each other's credentials. Each owner also records the gbserver
+    environments in two spaces never replace each other's credentials: ownership uses the space's
+    *registered* name, not the `name:` in its own `space.yaml`, and a build whose space can't be identified
+    never shares a context with another build. Each owner also records the gbserver
     process that wrote it: an owner left behind by a gbserver that stopped mid-build is dropped on the next
     write on that host.
   - **No environment's cluster becomes the default.** gbserver's file comes last on `KUBECONFIG`, so your
@@ -90,7 +92,9 @@ ways to supply them:
   - **Static credentials only.** The secret's `user` may hold only `token`, `client-certificate-data`,
     `client-key-data`, or `username`/`password`; its `cluster` only `server`, `certificate-authority-data`
     and TLS options; the context only `cluster`, `user` and `namespace`. Values must be strings (`true`/
-    `false` for `insecure-skip-tls-verify` and `disable-compression`). `exec` and `auth-provider` plugins are
+    `false` for `insecure-skip-tls-verify` and `disable-compression`), and `*-data` fields must be valid
+    base64: kubectl refuses the whole merged `KUBECONFIG` over a single bad value. Context names may use only
+    letters, digits and `. _ : @ / + = -`, starting with a letter or digit. `exec` and `auth-provider` plugins are
     refused: they would make every use of the
     context run a command on the gbserver host, so anyone able to write a space secret could run code
     there. File paths (`client-key`, `client-certificate`, `tokenFile`, `certificate-authority`) are refused
@@ -107,8 +111,8 @@ ways to supply them:
     other name is refused at setup and launch. Another environment's context is on the process's
     `KUBECONFIG`, and SkyPilot resolves a context when the request runs, so a name that isn't defined yet
     could be merged by another environment in between. To use the same cluster, list it under the
-    environment's own `kube_configs` with its own secret. SkyPilot's in-cluster context (when gbserver runs
-    in a pod) and `ssh-*` names are always allowed, and `kube_configs` may not define them. A pin set only
+    environment's own `kube_configs` with its own secret. SkyPilot's in-cluster context name and `ssh-*`
+    names are always allowed (in a pod or not), and `kube_configs` may not define them. A pin set only
     in the host's `~/.sky/config.yaml` is refused only while gbserver holds that context for an environment,
     so a stale host entry doesn't stop every environment.
   - **"All contexts" is refused while other environments' contexts exist:** `allowed_contexts: all` in the
@@ -121,6 +125,9 @@ ways to supply them:
     its own). They read the host's own `~/.sky/config.yaml` too, where the environment's `cloud_config`
     doesn't set a value. They run on every setup and again just before each launch is submitted. With a
     remote API server they're skipped: it uses its own kubeconfig, never gbserver's.
+  - **Managed jobs (`Skypilot_managed`) wait for other environments' contexts.** That environment type has
+    no `kube_configs` or pin checks, so while gbserver holds any environment's contexts its launches are
+    refused (its request would carry them); they work again once those builds finish.
   - **The native Kubernetes environment (`K8s`) never reads gbserver's kubeconfig:** neither its Python
     client nor its `kubectl`, `oc` and `helm` commands.
 

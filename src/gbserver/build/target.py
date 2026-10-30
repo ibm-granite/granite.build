@@ -71,6 +71,18 @@ class BindingInfo:
         return hash(self.binding_id)
 
 
+def _space_identity(space: Any) -> Optional[str]:
+    """The name identifying ``space`` for credential ownership, or ``None``.
+
+    Only the registered name counts: it's unique in space storage and set by
+    the BuildRunner. ``space.yaml``'s own ``name:`` is chosen by whoever writes
+    the space (it may be empty or copy another space's), so it can't be used
+    to tell spaces apart.
+    """
+    name = getattr(space, "registered_name", None)
+    return name if isinstance(name, str) and name else None
+
+
 class Target(BuildEntity):
     """A single target in a build."""
 
@@ -122,7 +134,7 @@ class Target(BuildEntity):
             context=self.context,
             secrets=self.secrets,
             force_fetch=self.force_fetch,
-            space_name=getattr(getattr(self.space, "space_config", None), "name", None),
+            space_name=_space_identity(self.space),
         )
         assert self.dir is not None, "Target.dir is None"
         self.targetsteps = [

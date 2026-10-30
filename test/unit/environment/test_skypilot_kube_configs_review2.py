@@ -373,13 +373,13 @@ class TestValueTypesAndContextFields:
         [{"token": {"a": 1}}, {"token": 123}, {"username": ["u"], "password": "p"}],
     )
     def test_non_string_user_values_refused(self, tmp_path, user):
-        with pytest.raises(ValueError, match="wrong type"):
+        with pytest.raises(ValueError, match="invalid values"):
             _merge(tmp_path, _kubeconfig("remote", user=user))
         assert not sc.kubeconfig_path(tmp_path).exists()
 
     def test_bool_flag_must_be_bool(self, tmp_path):
         cluster = {"server": "https://a", "insecure-skip-tls-verify": "yes"}
-        with pytest.raises(ValueError, match="wrong type"):
+        with pytest.raises(ValueError, match="invalid values"):
             _merge(tmp_path, _kubeconfig("remote", cluster=cluster))
         cluster["insecure-skip-tls-verify"] = True
         assert _merge(tmp_path, _kubeconfig("remote", cluster=cluster))
@@ -1172,22 +1172,19 @@ class TestReview5:
         assert seen == [("gb-b", {"remote"})]  # untracked: still has its context
         assert sc.managed_kube_contexts() == {}  # released at the end
 
-    def test_in_cluster_pin_is_allowed_when_available(self, home, monkeypatch):
-        from gbserver.environment import skypilot as sp
-
-        monkeypatch.setattr(sp, "_in_cluster_context_name", lambda: "in-cluster")
+    @pytest.mark.parametrize("pins", [("in-cluster",), ("in-cluster", "kind-x")])
+    def test_in_cluster_pin_is_always_allowed(self, home, pins):
+        """Portable pins work in a pod or not; no secret may define in-cluster."""
+        _user_owns(home, "kind-x")
         _Env.make(
-            _Env.config(contexts=("in-cluster",), kube=False), {}, "s"
+            _Env.config(contexts=pins, kube=False), {}, "s"
         )._ensure_kube_configs()
 
-    def test_in_cluster_pin_refused_when_not_in_a_pod(self, home, monkeypatch):
-        from gbserver.environment import skypilot as sp
-
-        monkeypatch.setattr(sp, "_in_cluster_context_name", lambda: None)
-        with pytest.raises(SkypilotConfigCollisionError, match="neither your own"):
-            _Env.make(
-                _Env.config(contexts=("in-cluster",), kube=False), {}, "s"
-            )._ensure_kube_configs()
+    def test_custom_in_cluster_name_is_allowed(self, home, monkeypatch):
+        monkeypatch.setenv("SKYPILOT_IN_CLUSTER_CONTEXT_NAME", "pod-ctx")
+        _Env.make(
+            _Env.config(contexts=("pod-ctx",), kube=False), {}, "s"
+        )._ensure_kube_configs()
 
     def test_ssh_pins_are_allowed(self, home):
         _Env.make(
@@ -1267,3 +1264,253 @@ class TestReview5:
 
         src = inspect.getsource(sp)
         assert "pre_submit=self._check_no_foreign_pins" in src
+
+
+class TestSecurityReview:
+    """Independent full-PR security review."""
+
+    def test_unknown_space_never_co_owns(self, home):
+        """Two envs whose space can't be identified must not share a context."""
+        a = _Env.make(_Env.config(), {"kc": _kubeconfig("remote")}, None)
+        b = _Env.make(
+            _Env.config(), {"kc": _kubeconfig("remote", user={"token": "B"})}, None
+        )
+        a._ensure_kube_configs()
+        with pytest.raises(SkypilotConfigCollisionError):
+            b._ensure_kube_configs()  # would have overwritten a's token
+
+    def test_empty_space_name_is_unknown(self, home):
+        a = _Env.make(_Env.config(), {"kc": _kubeconfig("remote")}, "")
+        b = _Env.make(_Env.config(), {"kc": _kubeconfig("remote")}, "")
+        assert sc.kube_owner_label(a._kube_owner()) != sc.kube_owner_label(
+            b._kube_owner()
+        )
+
+    @pytest.mark.parametrize(
+        "forged", ["victim/env-k#x@h:1:1", "victim/env-k", "victim%2Fenv-k"]
+    )
+    def test_space_name_cannot_forge_another_label(self, home, forged):
+        victim = _Env.make(_Env.config(), {"kc": _kubeconfig("remote")}, "victim")
+        attacker = _Env.make(
+            _Env.config(),
+            {"kc": _kubeconfig("remote", user={"token": "evil"})},
+            forged,
+        )
+        assert sc.kube_owner_label(attacker._kube_owner()) != sc.kube_owner_label(
+            victim._kube_owner()
+        )
+        victim._ensure_kube_configs()
+        with pytest.raises(SkypilotConfigCollisionError):
+            attacker._ensure_kube_configs()
+
+    def test_target_uses_the_registered_space_name(self):
+        from gbserver.build.target import _space_identity
+
+        class Space:
+            registered_name = "registered"
+            space_config = type("C", (), {"name": "victim"})()
+
+        assert _space_identity(Space()) == "registered"
+        Space.registered_name = None
+        assert _space_identity(Space()) is None  # never the space.yaml name
+        assert _space_identity(None) is None
+
+    @pytest.mark.parametrize(
+        "field,body",
+        [
+            (
+                "user",
+                {"client-certificate-data": "not base64!!", "client-key-data": "a2V5"},
+            ),
+            ("user", {"client-certificate-data": "Y2VydA==", "client-key-data": "%%%"}),
+            (
+                "cluster",
+                {"server": "https://a", "certificate-authority-data": "not b64"},
+            ),
+        ],
+    )
+    def test_invalid_base64_data_is_refused(self, tmp_path, field, body):
+        """kubectl refuses the whole merged KUBECONFIG over one bad *-data value."""
+        kw = {field: body}
+        with pytest.raises(ValueError, match="invalid values"):
+            _merge(tmp_path, _kubeconfig("remote", **kw))
+        assert not sc.kubeconfig_path(tmp_path).exists()
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "mine ",
+            " mine",
+            "in-cluster​",
+            "gbserver-no-default-context ",
+            "a\tb",
+            "",
+            "-lead",
+            "café",
+        ],
+    )
+    def test_odd_context_names_are_refused(self, tmp_path, name):
+        with pytest.raises(ValueError, match="may use only"):
+            _merge(tmp_path, _kubeconfig(name), context=name)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["remote", "kind-skypilot", "my.ctx:1", "arn:aws:eks:us-east-1:1:cluster/x"],
+    )
+    def test_ordinary_context_names_are_accepted(self, tmp_path, name):
+        assert _merge(tmp_path, _kubeconfig(name), context=name)
+
+
+class TestCorrectnessReview:
+    """Independent full-PR correctness review."""
+
+    def test_revoked_definition_from_another_env_is_refused(self, tmp_path):
+        """The stale-secret shortcut is for the same env only."""
+        tag = sc.kube_process_tag()
+        old = _kubeconfig("prod", user={"token": "old"})
+        new = _kubeconfig("prod", user={"token": "new"})
+        a1, a2 = "s1/envA#1" + tag, "s1/envA#2" + tag
+        _merge(tmp_path, old, owner=a1, context="prod")
+        _merge(tmp_path, old, owner=a2, context="prod")
+        _merge(tmp_path, new, owner=a1, context="prod")  # A rotates
+        with pytest.raises(SkypilotConfigCollisionError, match="s1/envA"):
+            _merge(tmp_path, old, owner="s2/envB#3" + tag, context="prod")
+        assert sc.managed_kube_contexts(tmp_path) == {"prod": {a1, a2}}
+        # A can still rotate.
+        _merge(
+            tmp_path,
+            _kubeconfig("prod", user={"token": "newer"}),
+            owner=a1,
+            context="prod",
+        )
+
+    def test_orphan_reclaim_after_release_has_its_contexts(self, home):
+        """_abort_provision's late teardown runs after the target released."""
+        from unittest.mock import MagicMock
+
+        from gbserver.environment import skypilot as sp
+
+        env = _Env.make(_Env.config(), {"kc": _kubeconfig("remote")}, "s")
+        env._kube_active_setups.add("x")
+        env._ensure_kube_configs()
+        asyncio.run(env._release_kube_configs_if_idle("x"))
+        assert sc.managed_kube_contexts() == {}
+        seen = []
+        fake_sky = MagicMock()
+        fake_sky.down = (
+            lambda name, purge=True: seen.append(set(sc.managed_kube_contexts())) or "r"
+        )
+        fake_sky.get = lambda rid: None
+
+        async def run_abort():
+            async def no_request(*a, on_abort, **k):
+                await on_abort()
+
+            with patch.object(sp, "_abort_shielded_request", no_request):
+                await env._abort_provision(None, "gb-orphan", None)
+
+        with patch.object(sp, "sky", fake_sky):
+            asyncio.run(run_abort())
+        assert seen == [{"remote"}]
+        assert sc.managed_kube_contexts() == {}  # released again afterwards
+
+    def test_failed_release_is_retried_by_the_next_write(self, home):
+        env = _Env.make(_Env.config(), {"kc": _kubeconfig("remote")}, "s")
+        env._kube_active_setups.add("x")
+        env._ensure_kube_configs()
+        real = sc._update_managed
+        with patch.object(sc, "_update_managed", side_effect=TimeoutError("lock")):
+            asyncio.run(env._release_kube_configs_if_idle("x"))
+        assert sc.managed_kube_contexts() == {"remote": {env._kube_owner()}}
+        other = _Env.make(_Env.config(contexts=("o",), kube=False), {}, "t")
+        other.config.config["kube_configs"] = [{"context": "o", "kubeconfig": "okc"}]
+        other.secrets["okc"] = _kubeconfig("o")
+        other._ensure_kube_configs()
+        assert sc.managed_kube_contexts() == {"o": {other._kube_owner()}}
+        assert real is sc._update_managed
+
+    def test_start_time_tolerance_absorbs_small_drift(self):
+        import socket
+
+        tag = sc.kube_process_tag()
+        host, pid, start = tag[1:].split(":")
+        drifted = f"s/e#1@{host}:{pid}:{float(start) + 2.0:.2f}"
+        assert not sc._owner_is_stale(drifted)
+        reused = f"s/e#1@{socket.gethostname()}:{pid}:{float(start) - 3600:.2f}"
+        assert sc._owner_is_stale(reused)
+
+    def test_launch_teardown_cancel_really_releases(self, home):
+        env = _Env.make(_Env.config(), {"kc": _kubeconfig("remote")}, "s")
+        env._ensure_kube_configs()
+
+        async def scenario():
+            started = asyncio.Event()
+            real = env._ensure_kube_configs_async
+
+            async def slow_merge(strict=True):
+                await real(strict)
+                started.set()
+                await asyncio.sleep(10)
+
+            env._ensure_kube_configs_async = slow_merge
+            task = asyncio.create_task(env.launch_skypilot_teardown(config={}))
+            await started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(scenario())
+        assert sc.managed_kube_contexts() == {}
+
+    def test_pin_check_reads_host_config_once(self, home):
+        from gbserver.environment import skypilot as sp
+
+        env = _Env.make(
+            _Env.config(contexts=("remote",)), {"kc": _kubeconfig("remote")}, "s"
+        )
+        env._ensure_kube_configs()
+        with (
+            patch.object(sc, "host_sky_config", wraps=sc.host_sky_config) as h,
+            patch.object(
+                sc, "managed_kube_contexts", wraps=sc.managed_kube_contexts
+            ) as m,
+        ):
+            env._check_no_foreign_pins()
+        assert h.call_count == 1 and m.call_count <= 1
+
+
+class TestManagedJobsIsolation:
+    def test_refused_while_contexts_are_managed(self, home):
+        from unittest.mock import MagicMock
+
+        from gbserver.environment import skypilot_managed as sm
+
+        _Env.make(
+            _Env.config(), {"kc": _kubeconfig("remote")}, "spaceA"
+        )._ensure_kube_configs()
+        fake = MagicMock()
+        with patch.object(sm, "sky", fake), patch.object(sm, "_apply_cloud_config"):
+            with pytest.raises(SkypilotConfigCollisionError, match="managed jobs"):
+                sm._launch_managed_job("m", "task", name="j")
+        fake.jobs.launch.assert_not_called()
+
+    def test_launches_with_its_own_empty_cloud_config(self, home):
+        from unittest.mock import MagicMock
+
+        from gbserver.environment import skypilot as sp
+        from gbserver.environment import skypilot_managed as sm
+
+        fake = MagicMock()
+        applied = []
+
+        def apply(name, cfg):
+            assert sp._CLOUD_CONFIG_LOCK.locked()
+            applied.append((name, cfg))
+
+        with (
+            patch.object(sm, "sky", fake),
+            patch.object(sm, "_apply_cloud_config", apply),
+        ):
+            sm._launch_managed_job("m", "task", name="j")
+        assert applied == [("m", None)]
+        fake.jobs.launch.assert_called_once_with("task", name="j")
