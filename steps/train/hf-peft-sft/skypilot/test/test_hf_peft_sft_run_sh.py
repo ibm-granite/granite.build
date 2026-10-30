@@ -150,6 +150,11 @@ class TestLaunch:
         assert rec["cwd"] == str(node[3])
 
     def test_ddp_multi_gpu(self, node):
+        # The stub must list as many GPUs as are allocated (the visibility check).
+        _exe(
+            node[1] / "nvidia-smi",
+            "".join(f'echo "GPU {i}: NVIDIA A10G (UUID: g{i})"\n' for i in range(4)),
+        )
         _, rec = _run(node, env={"SKYPILOT_NUM_GPUS_PER_NODE": "4"})
         launch = _launch(rec)
         assert "--multi_gpu" in launch
@@ -230,6 +235,30 @@ class TestLaunch:
         proc, rec = _run(node, env={"SKYPILOT_NUM_GPUS_PER_NODE": None})
         assert proc.returncode == 1 and rec is None
         assert "no GPUs" in proc.stderr
+
+    def test_fewer_visible_gpus_than_allocated_fails_before_training(self, node):
+        # SkyPilot says 4 GPUs were allocated, but only 2 are visible (the stub
+        # nvidia-smi lists two): every rank past the visible count would bind an
+        # already-used GPU, and NCCL fails later with "Multiple Ranks are using
+        # the same GPU". Refuse up front with the real cause.
+        proc, rec = _run(node, env={"SKYPILOT_NUM_GPUS_PER_NODE": "4"})
+        assert proc.returncode == 1 and rec is None
+        assert "hf-peft-sft: ERROR" in proc.stderr
+        assert "4 GPU(s) were allocated" in proc.stderr
+        assert "2 are visible" in proc.stderr
+
+    def test_visible_gpus_matching_the_allocation_pass(self, node):
+        proc, rec = _run(node, env={"SKYPILOT_NUM_GPUS_PER_NODE": "2"})
+        assert proc.returncode == 0, proc.stderr
+        assert _opt(_launch(rec), "--num_processes") == "2"
+
+    def test_unreadable_visibility_does_not_block(self, node):
+        # nvidia-smi missing or failing (e.g. a stripped container) must not turn
+        # a working allocation into a refusal: only a positive undercount fails.
+        _exe(node[1] / "nvidia-smi", "exit 9\n")
+        proc, rec = _run(node, env={"SKYPILOT_NUM_GPUS_PER_NODE": "2"})
+        assert proc.returncode == 0, proc.stderr
+        assert _opt(_launch(rec), "--num_processes") == "2"
 
     def test_dataset_cache_in_the_workdir(self, node):
         _, rec = _run(node)
