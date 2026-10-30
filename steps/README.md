@@ -399,7 +399,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `IMAGE_TAG`       | `$(IMAGE_VERSION)`                        | image tag; the version of the step's image, e.g. `oi-v0.3.0-6` |
 | `IMAGE_REF`       | `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)`   | full image reference (derived)   |
 | `PUBLISH_OVERWRITE` | `false`                                 | set exactly `true` to let `publish-image` replace an existing tag (or push without checking) |
-| `TEST_PUBLISHED`  | `false`                                   | set exactly `true` to let `make test` run when `IMAGE_REF` is published as a different image than the local build (see [Two test modes](#two-test-modes)) |
+| `TEST_PUBLISHED`  | `false`                                   | set exactly `true` to skip `make test`'s comparison of the local build with the published `IMAGE_REF`, and its registry query (see [Two test modes](#two-test-modes)) |
 | `QUAY_API_TOKEN`  | *(unset; environment only)*               | quay.io OAuth token (*Create Repositories* scope); `publish-image` creates a new repository public with it |
 | `SPACE_DIR`       | `space`                                   | generated Space directory name   |
 | `SPACE_NAME`      | `public`                                  | `name:` in the generated `space.yaml`. Matches the shared `configurations/spaces/local`, because an `hf://` push derives its HF resource group from the space name (`gbspace-<space>`); a step-named space would look for a group that doesn't exist |
@@ -438,8 +438,15 @@ Example: `make all REGISTRY=quay.io/myorg IMAGE_VERSION=0.1.0`.
   ```
 
 With podman the login is scoped to `$(REGISTRY)` (e.g. `quay.io/my-org`), so it
-leaves your other logins on that host alone; docker logs in to the whole host. The
-overwrite check uses the same credentials when the repository is private.
+leaves your other logins on that host alone; docker logs in to the whole host.
+
+The registry checks (`publish-image`'s overwrite and new-repository checks,
+`publish-step`'s image check) use `REGISTRY_USER`/`REGISTRY_PASSWORD` when set,
+otherwise the login a `podman login` stored in `$REGISTRY_AUTH_FILE` or
+`~/.config/containers/auth.json`. They need one when the repository is private, and on
+quay.io for a step's first publish: quay answers an anonymous check of a repository
+that does not exist yet with 401. A login kept in a credential helper instead of the
+auth file is not read; export `REGISTRY_USER`/`REGISTRY_PASSWORD` then.
 
 ### A custom image-based step's image repository
 
@@ -606,10 +613,14 @@ resolves the step differs (the `space_uri`):
   it first under a new or scratch tag: `make image publish-image
   IMAGE_VERSION=dev-<name>`, then `make test IMAGE_VERSION=dev-<name>`. A dev tag
   cannot be re-pushed either (the overwrite guard), so use a new one per attempt.
-  `make test` refuses to run when `IMAGE_REF` is already published as a **different**
-  image than the one it just built (it compares the local image ID with the published
-  image's config digest), so a local edit can't pass silently against the old image;
-  pass `TEST_PUBLISHED=true` to test the published image on purpose.
+  `make test` **warns**, then runs the tests, when `IMAGE_REF` is already published as
+  a **different** image than the one it just built (it compares the local image ID
+  with the published image's config digest), or when it cannot compare them (not
+  published yet, offline, a private repository), so a local edit doesn't pass
+  silently against the old image. A rebuild rarely reproduces the published image
+  bit for bit, so expect the warning when you test an image you did not publish. The
+  comparison relies on podman image IDs and is skipped with another `DOCKER`. Pass
+  `TEST_PUBLISHED=true` to skip it, and its registry query, entirely.
 * **Mode 2 — post-publish (in `test/steps/`).** `make publish-step` copies the
   per-cluster build tests to `test/steps/<step>/<env>/<cluster>/` — the step dir's
   inner `test/` segment is **flattened away**, so the published tree parallels the

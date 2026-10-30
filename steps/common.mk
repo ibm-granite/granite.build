@@ -139,11 +139,13 @@ REGISTRY_LOGIN = $(if $(filter podman,$(notdir $(firstword $(DOCKER)))),$(REGIST
 # (exactly `true`) to replace the tag on purpose.
 PUBLISH_OVERWRITE ?= false
 
-# `make test` for a custom-image step refuses to run when IMAGE_REF already exists on
-# the registry as a DIFFERENT image than the one it just built: SkyPilot build tests
-# (aws, SLURM, k8s) pull the published image, not the local build, so with a pinned
-# IMAGE_VERSION a Dockerfile edit would pass against the old image. Set
-# TEST_PUBLISHED=true (exactly `true`) to test the published image on purpose.
+# `make test` for a custom-image step WARNS (and still runs the tests) when IMAGE_REF
+# is already published as a DIFFERENT image than the one it just built, or when it
+# cannot compare them: SkyPilot build tests (aws, SLURM, k8s) pull the published
+# image, not the local build, so with a pinned IMAGE_VERSION a Dockerfile edit would
+# otherwise pass silently against the old image. The comparison uses podman image
+# IDs; with another DOCKER it is skipped with a note. TEST_PUBLISHED=true (exactly
+# `true`) skips the check, and its registry query, entirely.
 TEST_PUBLISHED ?= false
 
 # quay.io only: with QUAY_API_TOKEN (an OAuth token with the "Create Repositories"
@@ -409,7 +411,7 @@ ifeq ($(STEP_USES_IMAGE),true)
 						exit 1; \
 					fi; \
 				fi ;; \
-			*) echo "[$(STEP_NAME)] ERROR: could not determine whether repository quay.io/$$ns/$$repo exists (unreachable, or credentials needed: set REGISTRY_USER/REGISTRY_PASSWORD)." >&2; exit 1 ;; \
+			*) echo "[$(STEP_NAME)] ERROR: could not determine whether repository quay.io/$$ns/$$repo exists. quay.io answers an anonymous check of a repository that does not exist yet with 401, so this needs credentials: run 'podman login $(REGISTRY)' (a login kept in a credential helper is not read), or export REGISTRY_USER and REGISTRY_PASSWORD." >&2; exit 1 ;; \
 		esac; \
 	fi
 	@if [ "$(PUBLISH_OVERWRITE)" = "true" ]; then \
@@ -798,22 +800,23 @@ test: space image
 		exit 0; \
 	fi; \
 	if [ "$(STEP_USES_IMAGE)" = "true" ] && [ "$(TEST_PUBLISHED)" != "true" ]; then \
-		published=$$($(TAG_STATUS) --config-digest "$(IMAGE_REF)"); \
-		case "$$published" in \
-			absent) ;; \
-			sha256:*) \
-				local_id=$$($(DOCKER) image inspect --format '{{.Id}}' "$(IMAGE_REF)" 2>/dev/null); \
-				if [ "sha256:$${local_id#sha256:}" != "$$published" ]; then \
-					echo "[$(STEP_NAME)] ERROR: $(IMAGE_REF) is already published as a different image than the one just built." >&2; \
-					echo "[$(STEP_NAME)] SkyPilot build tests pull the PUBLISHED image, so they would not test your local changes." >&2; \
-					echo "[$(STEP_NAME)] Bump IMAGE_VERSION (or use a scratch one, e.g. IMAGE_VERSION=dev-<name>) and run 'make image publish-image' first, or pass TEST_PUBLISHED=true to test the published image on purpose." >&2; \
-					exit 1; \
-				fi ;; \
-			*) \
-				echo "[$(STEP_NAME)] ERROR: could not compare $(IMAGE_REF) with the published image (registry unreachable, a private repository, or a multi-platform index)." >&2; \
-				echo "[$(STEP_NAME)] Fix access and retry, or pass TEST_PUBLISHED=true to test the published image on purpose." >&2; \
-				exit 1 ;; \
-		esac; \
+		if [ "$(notdir $(firstword $(DOCKER)))" != "podman" ]; then \
+			echo "[$(STEP_NAME)] note: not comparing the local build with the published $(IMAGE_REF) (the check relies on podman image IDs; DOCKER=$(DOCKER))."; \
+		else \
+			published=$$($(TAG_STATUS) --config-digest "$(IMAGE_REF)"); \
+			case "$$published" in \
+				absent) ;; \
+				sha256:*) \
+					local_id=$$($(DOCKER) image inspect --format '{{.Id}}' "$(IMAGE_REF)" 2>/dev/null); \
+					if [ "sha256:$${local_id#sha256:}" != "$$published" ]; then \
+						echo "[$(STEP_NAME)] WARNING: $(IMAGE_REF) is already published as a different image than the one just built." >&2; \
+						echo "[$(STEP_NAME)] WARNING: SkyPilot build tests pull the PUBLISHED image, so they will not test your local changes." >&2; \
+						echo "[$(STEP_NAME)] WARNING: to test a change on a cluster, bump IMAGE_VERSION (or use a scratch one, e.g. IMAGE_VERSION=dev-<name>) and 'make image publish-image' first. Pass TEST_PUBLISHED=true to silence this when testing the published image on purpose." >&2; \
+					fi ;; \
+				*) \
+					echo "[$(STEP_NAME)] WARNING: could not compare the local build with the published $(IMAGE_REF) (not published yet, offline, or a private repository). SkyPilot build tests will use whatever the registry serves under that tag." >&2 ;; \
+			esac; \
+		fi; \
 	fi; \
 	if [ ! -f "$(VENV_DIR)/bin/activate" ]; then \
 		echo "[$(STEP_NAME)] ERROR: no virtualenv at $(VENV_DIR)."; \

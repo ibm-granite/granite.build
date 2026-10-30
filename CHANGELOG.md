@@ -35,12 +35,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it also refuses when the check cannot tell. Bump `IMAGE_VERSION`, or pass
   `PUBLISH_OVERWRITE=true` to replace a tag on purpose. The check is the new
   `steps/scripts/registry-tag-status.sh` (`skopeo` when installed, else the registry's v2 API).
-- **`make test` refuses to test an outdated published image (#229).** A custom-image step's
-  SkyPilot build tests pull the published `IMAGE_REF`, not the local build, so with a pinned
-  `IMAGE_VERSION` a Dockerfile edit passed against the old image. `make test` now compares the
-  local image ID with the published image's config digest and stops when they differ; publish
-  the change under a new (or scratch) `IMAGE_VERSION` first, or pass `TEST_PUBLISHED=true` to
-  test the published image on purpose.
+- **`make test` warns when it would test an outdated published image (#229).** A custom-image
+  step's SkyPilot build tests pull the published `IMAGE_REF`, not the local build, so with a
+  pinned `IMAGE_VERSION` a Dockerfile edit passed silently against the old image. `make test` now
+  compares the local image ID with the published image's config digest (podman only) and prints a
+  warning when they differ or can't be compared, then runs the tests. To test a change on a
+  cluster, publish it under a new (or scratch) `IMAGE_VERSION` first; `TEST_PUBLISHED=true` skips
+  the check and its registry query.
+- **The registry checks read a stored `podman login` (#229).** `steps/scripts/registry-tag-status.sh`
+  uses `REGISTRY_USER`/`REGISTRY_PASSWORD` when set, else the `podman login` in
+  `$REGISTRY_AUTH_FILE` or `~/.config/containers/auth.json`, so a step's first publish to quay.io
+  (which answers an anonymous check of a missing repository with 401) works after a plain
+  `podman login`.
 
 ### Changed
 

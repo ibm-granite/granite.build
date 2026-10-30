@@ -24,11 +24,16 @@
 #      yourself if you prefer it (brew/dnf/apt install skopeo);
 #   2. otherwise the registry's v2 API with curl, which is all this script needs
 #      (the manifest, or with --repository the tag list), following a Bearer
-#      token challenge. The token
-#      request is anonymous, or uses REGISTRY_USER and REGISTRY_PASSWORD from the
-#      environment when both are set (a private repo, or a registry such as
-#      quay.io that answers an anonymous probe of a missing repo with 401).
-#      Credentials go to curl as config on stdin, never on its command line.
+#      token challenge. The token request uses, first match wins:
+#        - REGISTRY_USER and REGISTRY_PASSWORD from the environment, when both set;
+#        - else a stored `podman login`: the `auths` entry for the image's
+#          host/path, its namespace or its host, in $REGISTRY_AUTH_FILE or
+#          ~/.config/containers/auth.json ($XDG_RUNTIME_DIR/containers/auth.json
+#          on Linux). Logins kept in a credential helper are not read;
+#        - else anonymous.
+#      Credentials matter for a private repo, and on quay.io, which answers an
+#      anonymous probe of a repository that does not exist yet with 401.
+#      They go to curl as config on stdin, never on its command line.
 # `podman/docker manifest inspect` is not used: podman fails on a single-platform
 # image ("Treating single images as manifest lists is not implemented").
 set -u
@@ -97,6 +102,28 @@ fi
 tmp="$(mktemp -d)" || say unknown
 trap 'rm -rf "$tmp"' EXIT
 
+# "user:password" of a stored podman login for this image, or nothing. Tries the
+# longest auths key first: <host>/<repo path...>, then each shorter prefix, then
+# <host>. The auth value is base64("user:password").
+stored_login() {
+  for f in "${REGISTRY_AUTH_FILE:-}" "${XDG_RUNTIME_DIR:-/nonexistent}/containers/auth.json" \
+           "${HOME:-/nonexistent}/.config/containers/auth.json"; do
+    [ -n "$f" ] && [ -f "$f" ] || continue
+    flat="$(tr -d '\n' < "$f")"
+    key="${first}/${repo}"
+    [ "$host" = "registry-1.docker.io" ] && key="docker.io/${repo}"
+    while :; do
+      b64="$(printf '%s' "$flat" | sed -n "s|.*\"${key}\" *: *{[^}]*\"auth\" *: *\"\([A-Za-z0-9+/=]*\)\".*|\1|p")"
+      if [ -n "$b64" ]; then
+        printf '%s' "$b64" | base64 -d 2>/dev/null || printf '%s' "$b64" | base64 --decode 2>/dev/null
+        return 0
+      fi
+      case "$key" in */*) key="${key%/*}" ;; *) break ;; esac
+    done
+  done
+  return 0
+}
+
 # Ask the registry; $1 is curl config (an Authorization header) for stdin. A HEAD
 # for a manifest, a GET for the tag list (body discarded) or for the manifest
 # itself (--config-digest, body kept).
@@ -126,6 +153,9 @@ if [ "$code" = "401" ]; then
   creds=""
   if [ -n "${REGISTRY_USER:-}" ] && [ -n "${REGISTRY_PASSWORD:-}" ]; then
     creds="user = \"${REGISTRY_USER}:${REGISTRY_PASSWORD}\""
+  else
+    stored="$(stored_login)"
+    [ -n "$stored" ] && creds="user = \"${stored}\""
   fi
   tcode="$(printf '%s' "$creds" | curl -s -o "$tmp/token" -w '%{http_code}' --max-time 30 \
     --config - "${realm}?service=${service}&scope=${scope}" 2>/dev/null)" || say unknown

@@ -326,6 +326,7 @@ class TestNewPublicRepository:
         proc = _publish(step, fakes, QUAY_API_TOKEN=_TOKEN, FAKE_REPO_STATUS="unknown")
         assert proc.returncode != 0
         assert _calls(fakes, "curl") == [] and _calls(fakes) == []
+        assert "podman login" in proc.stderr and "REGISTRY_USER" in proc.stderr
 
     def test_other_registries_never_call_the_quay_api(self, step, fakes):
         mk = step / "Makefile"

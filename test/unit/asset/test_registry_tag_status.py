@@ -89,7 +89,7 @@ def fakes(tmp_path: pathlib.Path) -> pathlib.Path:
     bin_dir.mkdir()
     (bin_dir / "curl").write_text(_FAKE_CURL)
     (bin_dir / "curl").chmod(0o755)
-    for tool in ("sh", "sed", "tr", "cat", "mktemp", "rm", "grep", "printf"):
+    for tool in ("sh", "sed", "tr", "cat", "mktemp", "rm", "grep", "printf", "base64"):
         found = shutil.which(tool)
         if found and not (bin_dir / tool).exists():
             (bin_dir / tool).symlink_to(found)
@@ -205,6 +205,73 @@ class TestSkopeo:
         )
         assert out[:2] == ("absent", 1)
         assert _calls(fakes, "curl")
+
+
+def _auth_file(path: pathlib.Path, key: str, user: str, password: str) -> None:
+    """Write a podman/docker auth file with one ``auths`` entry (base64 user:pw)."""
+    import base64
+    import json
+
+    token = base64.b64encode(f"{user}:{password}".encode()).decode()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"auths": {key: {"auth": token}}}))
+
+
+class TestStoredLogin:
+    """Without REGISTRY_USER/REGISTRY_PASSWORD, a stored `podman login` is used."""
+
+    def _token_auth(self, fakes):
+        f = fakes / "token.auth"
+        return f.read_text().strip() if f.exists() else None
+
+    def test_registry_auth_file_namespace_entry(self, fakes, tmp_path):
+        af = tmp_path / "auth.json"
+        _auth_file(af, "quay.io/org", "org+robot", "s3cr3t")
+        _status(fakes, FAKE_CHALLENGE="1", REGISTRY_AUTH_FILE=str(af))
+        assert self._token_auth(fakes) == "basic:org+robot:s3cr3t"
+
+    def test_host_entry(self, fakes, tmp_path):
+        af = tmp_path / "auth.json"
+        _auth_file(af, "quay.io", "me", "pw")
+        _status(fakes, FAKE_CHALLENGE="1", REGISTRY_AUTH_FILE=str(af))
+        assert self._token_auth(fakes) == "basic:me:pw"
+
+    def test_default_podman_auth_file_under_home(self, fakes):
+        _auth_file(
+            fakes / ".config" / "containers" / "auth.json", "quay.io/org", "u", "p"
+        )
+        _status(fakes, FAKE_CHALLENGE="1")
+        assert self._token_auth(fakes) == "basic:u:p"
+
+    def test_env_credentials_win_over_the_stored_login(self, fakes, tmp_path):
+        af = tmp_path / "auth.json"
+        _auth_file(af, "quay.io/org", "stored", "x")
+        _status(
+            fakes,
+            FAKE_CHALLENGE="1",
+            REGISTRY_AUTH_FILE=str(af),
+            REGISTRY_USER="env",
+            REGISTRY_PASSWORD="y",
+        )
+        assert self._token_auth(fakes) == "basic:env:y"
+
+    def test_another_registry_entry_is_not_used(self, fakes, tmp_path):
+        af = tmp_path / "auth.json"
+        _auth_file(af, "ghcr.io/org", "u", "p")
+        _status(fakes, FAKE_CHALLENGE="1", REGISTRY_AUTH_FILE=str(af))
+        assert self._token_auth(fakes) is None
+
+    def test_another_namespace_on_the_same_host_is_not_used(self, fakes, tmp_path):
+        af = tmp_path / "auth.json"
+        _auth_file(af, "quay.io/other", "u", "p")
+        _status(fakes, FAKE_CHALLENGE="1", REGISTRY_AUTH_FILE=str(af))
+        assert self._token_auth(fakes) is None
+
+    def test_the_stored_password_is_not_on_curls_command_line(self, fakes, tmp_path):
+        af = tmp_path / "auth.json"
+        _auth_file(af, "quay.io/org", "u", "s3cr3t")
+        _status(fakes, FAKE_CHALLENGE="1", REGISTRY_AUTH_FILE=str(af))
+        assert all("s3cr3t" not in c for c in _calls(fakes, "curl"))
 
 
 class TestRepository:

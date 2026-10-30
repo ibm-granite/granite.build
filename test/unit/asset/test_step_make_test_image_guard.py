@@ -12,15 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""`make test` refuses to test a published image that is not the one it just built.
+"""`make test` warns when the published image is not the one it just built.
 
 A custom-image step's SkyPilot build tests (aws, SLURM, k8s) have the remote node
 pull `docker:<IMAGE_REF>` from the registry; the local `make image` build is never
 used. With a pinned IMAGE_VERSION, a Dockerfile edit rebuilds locally under a tag
 that already exists on the registry, so the tests would pass against the OLD image.
 `make test` compares the local image ID with the published image's config digest
-(scripts/registry-tag-status.sh --config-digest) and refuses when they differ
-(#565 review). Runs the real steps/common.mk against a throwaway custom-image step,
+(scripts/registry-tag-status.sh --config-digest) and warns loudly when they differ or
+cannot be compared, then runs the tests (#565 review: a failure blocked steps whose
+image was never published, and anyone testing an image they did not build). The
+comparison relies on podman's image IDs, so another DOCKER skips it with a note. Runs the real steps/common.mk against a throwaway custom-image step,
 with fake `podman` and `registry-tag-status.sh`.
 """
 
@@ -141,22 +143,37 @@ def test_published_image_identical_to_the_local_build_runs_the_tests(step):
     proc = _test(step, FAKE_PUBLISHED=f"sha256:{_LOCAL_ID}")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert _ran(step)
+    assert "WARNING" not in proc.stdout + proc.stderr
 
 
-def test_published_image_differing_from_the_local_build_is_refused(step):
+def test_published_image_differing_from_the_local_build_warns_and_runs(step):
     proc = _test(step, FAKE_PUBLISHED="sha256:" + "0" * 64)
-    assert proc.returncode != 0
-    assert not _ran(step)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _ran(step)
     out = proc.stdout + proc.stderr
-    assert _REF in out
+    assert "WARNING" in out and _REF in out
     assert "IMAGE_VERSION" in out and "TEST_PUBLISHED=true" in out
 
 
-def test_unknown_published_state_is_refused(step):
+def test_unknown_published_state_warns_and_runs(step):
+    # e.g. a step never published (quay answers a missing repo with 401), offline.
     proc = _test(step, FAKE_PUBLISHED="unknown")
-    assert proc.returncode != 0
-    assert not _ran(step)
-    assert "could not compare" in proc.stdout + proc.stderr
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _ran(step)
+    out = proc.stdout + proc.stderr
+    assert "WARNING" in out and "could not compare" in out
+
+
+def test_other_docker_clis_skip_the_comparison(step):
+    # docker (containerd store, buildx attestations) reports other image IDs.
+    root = step.parents[3]
+    shutil.copy(root / "bin" / "podman", root / "bin" / "docker")
+    proc = _test(step, "DOCKER=docker", FAKE_PUBLISHED="sha256:" + "0" * 64)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _ran(step)
+    assert not (root / "bin" / "status.calls").exists()
+    out = proc.stdout + proc.stderr
+    assert "WARNING" not in out and "podman" in out
 
 
 @pytest.mark.parametrize("published", ["sha256:" + "0" * 64, "unknown"])
