@@ -706,7 +706,7 @@ async def test_preview_of_a_refused_own_push_is_empty_not_pending(
         ("hf:///datasets/example-org/not-pushed-by-the-app", False),
         # another allowlisted org's repo that is not this row's own push
         ("hf:///datasets/allowed-org/private_ds", False),
-        # any other owner, even one copying this row's id8 suffix
+        # an owner not on the allowlist, even one copying this row's id8 suffix
         ("hf://huggingface.co/datasets/other-org/finance_0f55c1a6", False),
         ("hf:///datasets/Example-Org/finance_0f55c1a6", False),
     ],
@@ -770,7 +770,7 @@ async def test_preview_of_the_own_push_is_anonymous_when_its_org_is_not_allowlis
 @pytest.mark.parametrize(
     ("artifact_url", "sends_token"),
     [
-        # gbcli picked the org: the own <name>_<id8> repo still needs its owner allowlisted
+        # gbcli picked the org: the own <name>_<id8> repo needs its owner allowlisted
         ("hf://huggingface.co/datasets/env-org/finance_0f55c1a6", True),
         ("hf://huggingface.co/datasets/evil-org/finance_0f55c1a6", False),
         ("hf:///datasets/env-org/finance_9bb5cc58", False),
@@ -802,6 +802,39 @@ async def test_preview_without_a_namespace_matches_the_own_push_by_name(
 
     assert seen
     assert all(("authorization" in r.headers) is sends_token for r in seen)
+
+
+async def test_preview_keeps_the_token_for_a_push_made_under_an_earlier_org(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Changing AUTOTUNEX_HF_NAMESPACE must not cut off previews of earlier pushes.
+
+    The stored locator records the org the push really used; the allowlist, not
+    the current push org, decides whether that owner may get the token.
+    """
+    monkeypatch.setenv(HF_ENV, "hf_tok")
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/splits":
+            return httpx.Response(200, json={"splits": [{"config": "default", "split": "train"}]})
+        return httpx.Response(200, json={"rows": [{"row": {"a": 1}}]})
+
+    async with _viewer_client(handler) as client:
+        await _backend(
+            hf_namespace="new-org",
+            hf_import_namespaces=["example-org", "new-org"],
+            http_client=client,
+        ).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url=VALID_URL,
+            rows=10,
+        )
+
+    assert seen and all("authorization" in r.headers for r in seen)
 
 
 async def test_preview_skips_a_locator_on_another_hf_host(
