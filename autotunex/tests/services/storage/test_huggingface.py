@@ -766,6 +766,30 @@ async def test_preview_without_a_namespace_matches_the_own_push_by_name(
     assert all(("authorization" in r.headers) is sends_token for r in seen)
 
 
+async def test_preview_skips_a_locator_on_another_hf_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The viewer only knows huggingface.co, so a mirror's same-named repo is not read."""
+    monkeypatch.setenv(HF_ENV, "hf_tok")
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"splits": [{"config": "default", "split": "train"}]})
+
+    async with _viewer_client(handler) as client:
+        preview = await _backend(http_client=client).preview(
+            dataset_id=DATASET_ID,
+            name="finance",
+            data_format="jsonl",
+            artifact_url="hf://mirror.example/datasets/example-org/finance_0f55c1a6",
+            rows=10,
+        )
+
+    assert preview == DatasetPreview(train=[], validation=[])
+    assert seen == []
+
+
 async def test_preview_of_the_own_push_reads_anonymously_when_token_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

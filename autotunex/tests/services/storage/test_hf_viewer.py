@@ -44,6 +44,36 @@ def test_repo_id_from_artifact_url(artifact_url: str | None, expected: str | Non
     assert hf_viewer.repo_id_from_artifact_url(artifact_url) == expected
 
 
+@pytest.mark.parametrize(
+    ("artifact_url", "expected"),
+    [
+        # a bare hf://owner/repo/<rev> is HfURI's host form, not owner + revision
+        ("hf://owner/repo/v2", "repo/v2"),
+        ("hf://owner/repo", "owner/repo"),
+    ],
+)
+def test_a_bare_locator_is_owner_repo_only_when_exactly_two_segments(
+    artifact_url: str, expected: str
+) -> None:
+    assert hf_viewer.repo_id_from_artifact_url(artifact_url) == expected
+
+
+@pytest.mark.parametrize(
+    ("artifact_url", "expected"),
+    [
+        ("hf:///datasets/org/ds", "org/ds"),
+        ("hf://huggingface.co/datasets/org/ds/v2/data/train.csv", "org/ds"),
+        ("hf://owner/repo", "owner/repo"),
+        # another host would be previewed against huggingface.co's repo of that name
+        ("hf://mirror.example/datasets/ibm-research/x", None),
+        ("hf://hub.internal/o/r", None),
+        ("hf://owner/repo/v2", None),
+    ],
+)
+def test_default_host_only_refuses_another_host(artifact_url: str, expected: str | None) -> None:
+    assert hf_viewer.repo_id_from_artifact_url(artifact_url, default_host_only=True) == expected
+
+
 def _client(handler: object) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))  # type: ignore[arg-type]
 

@@ -55,7 +55,9 @@ class HFViewerInaccessible(HFViewerUnavailable):
 _INACCESSIBLE_STATUSES = frozenset({401, 403, 404})
 
 
-def repo_id_from_artifact_url(artifact_url: str | None) -> str | None:
+def repo_id_from_artifact_url(
+    artifact_url: str | None, *, default_host_only: bool = False
+) -> str | None:
     """Derive an ``owner/repo`` HuggingFace dataset id from a stored locator.
 
     Only ``hf://`` locators are accepted. The host (``hf://<host>/...``; absent in
@@ -63,10 +65,15 @@ def repo_id_from_artifact_url(artifact_url: str | None) -> str | None:
     skipped, then the next two segments are ``owner/repo``; any revision or path in
     the repo after them is ignored. That is gbcommon's ``HfURI`` layout, parsed here
     rather than imported because granite.build is only an optional extra. One form
-    ``HfURI`` rejects is still read: a bare ``hf://owner/repo``, whose first segment
-    has nothing after it to be the host of, so it is the owner. Returns ``None`` for
-    a missing value, a non-``hf://`` scheme, or fewer than two segments — the caller
-    then skips the viewer.
+    ``HfURI`` rejects is still read: exactly ``hf://owner/repo``, whose second
+    segment has nothing after it, so the first is the owner. With a third segment
+    (``hf://owner/repo/v2``) the first is the host, as ``HfURI`` reads it.
+
+    ``default_host_only`` refuses a locator on any host but ``huggingface.co`` (the
+    dataset viewer only knows that hub's repos), counting the bare two-segment form
+    as the default host. Returns ``None`` for a missing value, a non-``hf://``
+    scheme, a refused host, or fewer than two segments — the caller then skips the
+    viewer.
     """
     if not artifact_url:
         return None
@@ -77,6 +84,8 @@ def repo_id_from_artifact_url(artifact_url: str | None) -> str | None:
     segments = [s for s in rest.split("/") if s]
     has_host = not rest.startswith("/")
     if has_host and segments and (segments[0] == _HF_HOST or len(segments) >= 3):
+        if default_host_only and segments[0] != _HF_HOST:
+            return None
         segments = segments[1:]
     if segments and segments[0] in _HF_TYPE_SEGMENTS:
         segments = segments[1:]
