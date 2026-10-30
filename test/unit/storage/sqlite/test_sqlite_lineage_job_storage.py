@@ -588,19 +588,3 @@ def test_more_than_five_job_records_are_added_in_one_call(storage):
     for record in jobs:
         stored = storage.get_job(record.job_id)
         assert stored is not None and stored.recorded_at
-
-
-def test_a_job_id_stored_before_the_byte_guard_keeps_merging(storage):
-    """A multi-byte job_id within the column's characters but over the index's
-    bytes was storable before the guard counted bytes: it must keep merging, not
-    be rejected on every re-record. A new one is still refused."""
-    from gbserver.lineage.merge import ADDED, REJECTED, UPDATED, upsert_job
-    from gbserver.storage.stored_lineage_row import MAX_JOB_ID_LENGTH
-
-    old_id = "作" * (MAX_JOB_ID_LENGTH // 2)
-    assert len(old_id) <= MAX_JOB_ID_LENGTH < len(old_id.encode("utf-8"))
-    storage.add(job(job_id=old_id, status="RUNNING"))
-    assert upsert_job(storage, job(job_id=old_id, status="SUCCEEDED")) == UPDATED
-    assert storage.get_job(old_id).status == "SUCCEEDED"
-    assert upsert_job(storage, job(job_id="新" * (MAX_JOB_ID_LENGTH // 2))) == REJECTED
-    assert upsert_job(storage, job(job_id="j" * MAX_JOB_ID_LENGTH)) == ADDED

@@ -159,25 +159,6 @@ def normalize_uri(raw: str) -> str:
     return normalized
 
 
-def fits_lineage_index(normalized: str) -> bool:
-    """Whether a normalized URI may be written as a new lineage endpoint.
-
-    Counted in UTF-8 bytes, not characters: the ``(job_id, input, output)``
-    btree entry is capped in bytes, and ~450 CJK characters per side fit the
-    column yet overflow it on every retry. Only for writes -- :func:`normalize_uri`
-    keeps its character limit, so an endpoint indexed before this guard still
-    normalizes to the id its rows carry and stays reachable.
-    """
-    if len(normalized.encode("utf-8")) <= MAX_LINEAGE_URI_LENGTH:
-        return True
-    logger.warning(
-        "Lineage URI exceeds %d UTF-8 bytes, dropping endpoint: %.120r",
-        MAX_LINEAGE_URI_LENGTH,
-        normalized,
-    )
-    return False
-
-
 def _normalize_hf(candidate: str, parsed) -> str:
     """Canonicalize an ``hf://`` URI to its ``https://huggingface.co`` web URL.
 

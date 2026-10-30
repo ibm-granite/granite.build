@@ -94,3 +94,32 @@ def test_compare_and_set_nests_no_retry_under_the_file_lock():
         assert storage.compare_and_set("new", None, {"v": 2}) is False
     assert storage.get_value("k") == {"v": 2}
     assert storage.get_value("new") == {"v": 1}
+
+
+@pytest.mark.skipif(
+    os.environ.get("SKIP_SQL_ADMIN_TESTS", "False").lower() == "true",
+    reason="Don't want to run this in CICD.",
+)
+def test_compare_and_set_keeps_a_legacy_rows_missing_created_time():
+    """A row written before created_time existed reads it as BEGINNING_OF_TIME
+    (as get_by_key does); a CAS update must keep that, not stamp it now."""
+    import json
+
+    from sqlalchemy import text
+
+    from gbserver.storage.storage import BEGINNING_OF_TIME, JSON_COLUMN_NAME
+
+    storage = SqliteStorageFactory().create_kv_pair_storage(
+        table_name=f"t_kv_{uuid_module.uuid4().hex[:8]}"
+    )
+    storage.set_value("k", {"v": 1})
+    blob = json.loads(storage.get_by_key("k").model_dump_json())
+    del blob["created_time"]
+    with storage._engine.begin() as connection:
+        connection.execute(
+            text(f"UPDATE {storage.table_name} SET {JSON_COLUMN_NAME} = :j"),
+            {"j": json.dumps(blob)},
+        )
+    assert storage.get_by_key("k").created_time == BEGINNING_OF_TIME
+    assert storage.compare_and_set("k", {"v": 1}, {"v": 2}) is True
+    assert storage.get_by_key("k").created_time == BEGINNING_OF_TIME

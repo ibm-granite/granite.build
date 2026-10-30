@@ -83,10 +83,6 @@ TERMINAL = ""
 # pass 256 on its own has been observed (a red-teaming dataset whose name repeats
 # as its table name).
 #
-# The guards count UTF-8 bytes, not characters: 256 + 2 x 512 bytes stays under
-# the Postgres btree maximum, whereas the same counts in multi-byte characters do
-# not (``index row size 3240 exceeds btree maximum 2704``).
-#
 # A URI longer than this is DROPPED rather than truncated. The column truncates
 # silently, and two distinct artifacts sharing a long prefix would then collapse
 # into one graph node -- provenance invented where nobody can see it. Losing a node
@@ -97,6 +93,16 @@ MAX_LINEAGE_URI_LENGTH = 512
 # longer value, so a writer drops the record up front (logged) rather than send it
 # to fail; SQLite would accept it, so without this the backends would disagree.
 MAX_JOB_ID_LENGTH = 256
+
+# The (job_id, input, output) unique index caps its entry in bytes, not
+# characters: on Postgres a btree entry over 2704 bytes fails the insert
+# (``index row size 3240 exceeds btree maximum 2704``) -- on every retry, so the
+# indexer would stall on it. The character limits above allow up to ~5 KiB of
+# multi-byte UTF-8, so a new row is also held to this, its three columns' UTF-8
+# bytes with room left for the entry's own overhead. Checked per row, not per
+# column, so the common case -- one long multi-byte side, short others -- still
+# fits, and only when a row is added: a row already stored keeps merging.
+MAX_LINEAGE_INDEX_ROW_BYTES = 2600
 
 
 class JobStore(str, Enum):

@@ -41,7 +41,7 @@ Ported from ``prototype-lineage-py`` (``lineage/decompose.py``, in turn
 
 from typing import Optional
 
-from gbserver.lineage.uri_normalize import fits_lineage_index, normalize_uri
+from gbserver.lineage.uri_normalize import normalize_uri
 
 # Job metadata copied verbatim onto every row emitted from one job. The traversal
 # never reads these; they travel so a row can be explained without a second
@@ -200,9 +200,7 @@ def _endpoint(artifact: Optional[dict]) -> str:
     """
     if not artifact:
         return ""
-    normalized = normalize_uri(_artifact_uri(artifact))
-    # A new row's endpoint must also fit the byte-capped unique index.
-    return normalized if fits_lineage_index(normalized) else ""
+    return normalize_uri(_artifact_uri(artifact))
 
 
 def _job_metadata(job: dict) -> dict:

@@ -1334,9 +1334,9 @@ def _http_error(status):
         (_http_error(502), True),
         (_http_error(503), True),
         (_http_error(504), True),
-        # A 500/501 may be one broken run: it counts, over a longer give-up.
-        (_http_error(500), False),
-        (CommError("HTTP 501", _http_error(501)), False),
+        # Any 5xx is an outage: it must skip nothing.
+        (_http_error(500), True),
+        (CommError("HTTP 501", _http_error(501)), True),
         # A CommError with no status keeps its name-based classification.
         (CommError("connection reset"), True),
         # Postgres ProgramLimitExceeded arrives as an OperationalError.
@@ -1379,25 +1379,27 @@ def test_a_forbidden_wandb_run_is_given_up_on_after_more_attempts():
     assert _checkpoint(storage)["timestamp"] == D2
 
 
-@pytest.mark.parametrize("status", [403, 500, 501])
-def test_ambiguous_statuses_get_the_longer_give_up(status):
-    exc = CommError(f"HTTP {status}", _http_error(status))
+def test_a_403_gets_the_longer_give_up():
+    exc = CommError("HTTP 403", _http_error(403))
     assert idx._give_up_after(exc) == idx._MAX_SLOW_GIVE_UP_ATTEMPTS
     assert idx._give_up_after(CommError("HTTP 404", _http_error(404))) == (
         idx._MAX_JOB_ATTEMPTS
     )
 
 
-def test_a_run_failing_with_500_every_time_is_given_up_on():
-    """A W&B run that 500s on every request must not hold the checkpoint forever."""
+def test_a_w_and_b_500_outage_skips_nothing():
+    """However long W&B 500s, the run is waited out, never given up on."""
     storage = _storage()
     ix, _, sink = _indexer([_run("r1", D1), _run("r2", D2)])
     sink.write_job.side_effect = [_http_error(500)] * (
-        idx._MAX_SLOW_GIVE_UP_ATTEMPTS
-    ) + [None]
-    for _ in range(idx._MAX_SLOW_GIVE_UP_ATTEMPTS):
+        idx._MAX_SLOW_GIVE_UP_ATTEMPTS + 5
+    ) + [None, None]
+    for _ in range(idx._MAX_SLOW_GIVE_UP_ATTEMPTS + 5):
         ix.scan_once(storage)
+    assert _checkpoint(storage) is None or _checkpoint(storage)["timestamp"] != D2
+    ix.scan_once(storage)
     assert _checkpoint(storage)["timestamp"] == D2
+    assert sink.write_job.call_count == idx._MAX_SLOW_GIVE_UP_ATTEMPTS + 7
 
 
 def test_a_handled_http_error_does_not_classify_a_later_failure():
@@ -1429,6 +1431,29 @@ def test_a_handled_http_error_does_not_classify_a_later_failure():
             raise RuntimeError("wrapped") from inner
     except RuntimeError as wrapped:
         assert idx._http_status(wrapped) == 503
+
+
+def test_a_handled_error_does_not_decide_the_name_or_marker_rules():
+    """The class and message rules skip ``__context__`` too, not only the status."""
+
+    def raised_while_handling(handled, exc):
+        try:
+            try:
+                raise handled
+            except Exception:
+                raise exc
+        except Exception as caught:
+            return caught
+
+    # A CommError carried past must not make a bad payload look transient.
+    bad = raised_while_handling(CommError("conn reset"), ValueError("bad payload"))
+    assert idx._is_transient_error(bad) is False
+    # A "does not exist" carried past must not make an outage look permanent.
+    outage = raised_while_handling(
+        ValueError("artifact does not exist"),
+        OperationalError("server closed the connection unexpectedly"),
+    )
+    assert idx._is_transient_error(outage) is True
 
 
 def test_the_checkpoint_is_read_once_per_scan():

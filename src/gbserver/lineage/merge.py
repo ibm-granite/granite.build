@@ -60,6 +60,7 @@ from gbserver.storage.lineage_row_storage import ILineageRowStorage
 from gbserver.storage.stored_lineage_job import StoredLineageJob
 from gbserver.storage.stored_lineage_row import (
     MAX_JOB_ID_LENGTH,
+    MAX_LINEAGE_INDEX_ROW_BYTES,
     TERMINAL,
     StoredLineageRow,
 )
@@ -186,12 +187,10 @@ def upsert_job(
     the row as ``update_fields`` locks it, inside its one transaction, so nothing
     another writer commits in between is lost and no half-merged record is seen.
     """
-    if _job_id_too_long(job.job_id, stored=True):
+    if _job_id_too_long(job.job_id):
         return REJECTED
     existing = storage.get_job(job.job_id)
     if existing is None:
-        if _job_id_too_long(job.job_id):
-            return REJECTED
         try:
             storage.add(job)
             return ADDED
@@ -227,15 +226,15 @@ def upsert_row(storage: ILineageRowStorage, row: StoredLineageRow) -> str:
     leaves a stale terminal next to its real edge; the next write of that edge (an
     ``UNCHANGED`` re-run included) deletes it.
     """
-    if _job_id_too_long(row.job_id, stored=True):
+    if _job_id_too_long(row.job_id):
         return REJECTED
     job_rows = storage.get_rows_by_job(row.job_id)
-    if not job_rows and _job_id_too_long(row.job_id):
-        return REJECTED
     stored = _same_identity(row, job_rows)
     if stored is None:
         if _superseded(row, job_rows):
             return SUPERSEDED
+        if _row_too_large(row):
+            return REJECTED
         stale = [other for other in job_rows if _superseded(other, [row])]
         # The terminal's attributes are a source's view of the same job; keep
         # them, merged before the add so the add is the only write of the row.
@@ -288,25 +287,37 @@ def _delete_stale(storage: ILineageRowStorage, stale: List[StoredLineageRow]) ->
         storage.delete([stored.uuid for stored in stale])
 
 
-def _job_id_too_long(job_id: str, stored: bool = False) -> bool:
-    """Whether ``job_id`` cannot be written.
-
-    A new job_id is counted in UTF-8 bytes, like a new endpoint: it is part of
-    the byte-capped ``(job_id, input, output)`` unique index. One already
-    ``stored`` (written before this guard) is held only to the column's
-    character limit, so its record and rows keep merging rather than being
-    rejected on every re-record.
-    """
-    size = len(job_id or "") if stored else len((job_id or "").encode("utf-8"))
-    if size <= MAX_JOB_ID_LENGTH:
+def _job_id_too_long(job_id: str) -> bool:
+    if len(job_id or "") <= MAX_JOB_ID_LENGTH:
         return False
     logger.warning(
-        "Lineage job_id is %d %s, over the %d the index holds; not stored "
+        "Lineage job_id is %d chars, over the %d the column holds; not stored "
         "(job_id=%.80s...)",
-        size,
-        "chars" if stored else "UTF-8 bytes",
+        len(job_id),
         MAX_JOB_ID_LENGTH,
         job_id,
+    )
+    return True
+
+
+def _row_too_large(row: StoredLineageRow) -> bool:
+    """Whether a new row's unique-index entry would overflow the btree maximum.
+
+    See :data:`MAX_LINEAGE_INDEX_ROW_BYTES`. Deterministic, so the row is dropped
+    (logged) rather than sent to fail on every retry and stall the indexer.
+    """
+    size = sum(
+        len((value or "").encode("utf-8"))
+        for value in (row.job_id, row.input, row.output)
+    )
+    if size <= MAX_LINEAGE_INDEX_ROW_BYTES:
+        return False
+    logger.warning(
+        "Lineage row is %d UTF-8 bytes across job_id, input and output, over the "
+        "%d its unique index holds; not stored (job_id=%.80s...)",
+        size,
+        MAX_LINEAGE_INDEX_ROW_BYTES,
+        row.job_id,
     )
     return True
 
@@ -320,7 +331,7 @@ def rows_to_add(rows: List[StoredLineageRow]) -> List[StoredLineageRow]:
     """
     by_key: Dict[Tuple[str, str, str], StoredLineageRow] = {}
     for row in rows:
-        if _job_id_too_long(row.job_id):
+        if _job_id_too_long(row.job_id) or _row_too_large(row):
             continue
         key = (row.job_id, row.input, row.output)
         stored = by_key.get(key)

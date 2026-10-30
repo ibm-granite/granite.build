@@ -18,7 +18,7 @@
 SQL storage implementation for the generic gb_kv_pairs key-value store.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from sqlalchemy.exc import IntegrityError
 
@@ -26,7 +26,7 @@ from gbserver.storage.kv_pair_storage import (
     BaseKeyValuePairStorage,
     IKeyValuePairStorage,
 )
-from gbserver.storage.sql.sql_storage import BaseSQLItemStorage
+from gbserver.storage.sql.sql_storage import BaseSQLItemStorage, retry_read
 from gbserver.storage.storage import JSON_COLUMN_NAME, UUID_COLUMN_NAME
 from gbserver.storage.stored_kv_pair import StoredKeyValuePair
 
@@ -47,6 +47,9 @@ class SQLKeyValuePairStorage(
         # `SQLKeyValuePairStorage(table_name=...)` call type-checkable.
         kwargs["unique_columns"] = {"key": None}
         super().__init__(**kwargs)
+        # Whether compare_and_set has seen the table exist, so the checkpoint
+        # write does not inspect the schema on every call.
+        self._table_ready = False
 
     def compare_and_set(
         self, key: str, expected: Optional[Dict[str, Any]], value: Dict[str, Any]
@@ -55,8 +58,31 @@ class SQLKeyValuePairStorage(
         one read, so a write by another process in between makes it match nothing.
         An unset key is claimed by insert, which the unique ``key`` index lets only
         one writer win."""
-        self._ensure_table()
-        return self._compare_and_set_without_retry(key, expected, value)
+        tried = False
+
+        def attempt() -> bool:
+            nonlocal tried
+            if not self._table_ready:
+                if not self._ensure_table_without_retry():
+                    return False
+                self._table_ready = True
+            # A retried attempt may follow one whose write committed before it
+            # raised; finding ``value`` already stored then counts as this call's
+            # success.
+            if tried and expected != value:
+                if self._stored_value_without_retry(key) == value:
+                    return True
+            tried = True
+            return self._compare_and_set_without_retry(key, expected, value)
+
+        return self._run_attempts(attempt)
+
+    def _run_attempts(self, attempt: Callable[[], bool]) -> bool:
+        """Retry ``attempt`` like a read (``retry_read``): a dropped connection or a
+        busy database is retried, as the ``get_by_key``/``add`` it replaced were.
+        Each attempt runs only plain statements, so no retry nests inside another.
+        """
+        return retry_read(attempt)()
 
     def _stored_value_without_retry(self, key: str) -> Optional[Dict[str, Any]]:
         """The value under ``key`` in one plain query: no retry, no lock of its own."""
@@ -68,7 +94,9 @@ class SQLKeyValuePairStorage(
                 .filter(getattr(model, "key") == key)
                 .scalar()
             )
-            return None if stored is None else self._convert_json_column(stored)
+            if stored is None:
+                return None
+            return self._convert_row_dict_to_item({JSON_COLUMN_NAME: stored}).value
         finally:
             session.close()
 
@@ -100,7 +128,10 @@ class SQLKeyValuePairStorage(
                     return False
                 return True
             row_uuid, stored = found
-            current = StoredKeyValuePair.model_validate_json(stored)
+            # Through the storage's own deserialization, so a legacy row with no
+            # created_time reads it as get_by_key does (BEGINNING_OF_TIME) and the
+            # update keeps that rather than stamping it now.
+            current = self._convert_row_dict_to_item({JSON_COLUMN_NAME: stored})
             if current.value != expected:
                 return False
             row = self._convert_item_to_row_dict(

@@ -308,13 +308,15 @@ _DETERMINISTIC_ERROR_MARKERS = (
 # rate limiting, or down -- or the credentials are expired or revoked (401), an
 # outage of access that hits every job alike and must not skip the window. Every
 # other 4xx is the request's own fault.
-_TRANSIENT_HTTP_STATUSES = frozenset({401, 408, 425, 429, 502, 503, 504})
-# Statuses that are ambiguous: a 403 is a key that lost access to the whole
-# entity, or one run or project this key may not read; a 500/501 (or any other
-# 5xx not above) is a server down for a while, or one broken run it fails on
-# every time. They count toward the give-up, so one bad run cannot pin the
-# checkpoint forever, but over more attempts than a plain failure, so a short
-# outage is waited out rather than costing the window its lineage.
+_TRANSIENT_HTTP_STATUSES = frozenset({401, 408, 425, 429})
+# Any 5xx is transient too: the server is failing, and an outage must skip
+# nothing. A run that 5xxes every time holds the checkpoint instead, and is
+# logged as an error after _TRANSIENT_ALERT_AFTER scans.
+#
+# A 403 is ambiguous: a key that lost access to the whole entity, or one run or
+# project this key may not read. It counts toward the give-up, so a forbidden run
+# cannot pin the checkpoint forever, but over more attempts than a plain failure,
+# so a short access outage is waited out rather than costing the window its lineage.
 _SLOW_GIVE_UP_HTTP_STATUSES = frozenset({403})
 _MAX_SLOW_GIVE_UP_ATTEMPTS = 20
 # After this many transient failures in a row on the same job the warning becomes
@@ -322,36 +324,45 @@ _MAX_SLOW_GIVE_UP_ATTEMPTS = 20
 _TRANSIENT_ALERT_AFTER = 20
 
 
-def _http_status(exc: BaseException) -> Optional[int]:
-    """The HTTP status behind ``exc``, or ``None``.
+def _causes(exc: BaseException) -> Iterator[BaseException]:
+    """``exc`` and what it was caused by: W&B's wrapped ``.exc``, then ``__cause__``.
 
-    W&B wraps a ``requests.HTTPError`` in a ``CommError`` (its ``exc``), while
-    ``RunArtifacts`` pagination re-raises the raw ``HTTPError``; both carry it on
-    ``.response``. Only what ``exc`` was caused by is followed (``exc`` and
-    ``__cause__``), never ``__context__``: that is an exception already handled
-    when ``exc`` was raised -- a 404 caught and carried past, say -- and must not
-    decide how a later, unrelated failure (a DB outage) is classified.
+    Never ``__context__``: that is an exception already handled when ``exc`` was
+    raised -- a 404 caught and carried past, say -- and must not decide how a
+    later, unrelated failure (a DB outage) is classified. The drivers and wrappers
+    this sees chain their cause explicitly (SQLAlchemy, ``raise ... from``).
     """
     seen: set = set()
     current: Optional[BaseException] = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        status = getattr(getattr(current, "response", None), "status_code", None)
-        if isinstance(status, int):
-            return status
+        yield current
         wrapped = getattr(current, "exc", None)
         current = (
             wrapped
             if isinstance(wrapped, BaseException) and id(wrapped) not in seen
             else current.__cause__
         )
+
+
+def _http_status(exc: BaseException) -> Optional[int]:
+    """The HTTP status behind ``exc`` (see :func:`_causes`), or ``None``.
+
+    W&B wraps a ``requests.HTTPError`` in a ``CommError`` (its ``exc``), while
+    ``RunArtifacts`` pagination re-raises the raw ``HTTPError``; both carry it on
+    ``.response``.
+    """
+    for current in _causes(exc):
+        status = getattr(getattr(current, "response", None), "status_code", None)
+        if isinstance(status, int):
+            return status
     return None
 
 
 def _give_up_after(exc: Optional[BaseException]) -> int:
     """How many counted failures of ``exc``'s kind a job gets before it is skipped."""
     status = _http_status(exc) if exc is not None else None
-    if status is not None and (status in _SLOW_GIVE_UP_HTTP_STATUSES or status >= 500):
+    if status in _SLOW_GIVE_UP_HTTP_STATUSES:
         return _MAX_SLOW_GIVE_UP_ATTEMPTS
     return _MAX_JOB_ATTEMPTS
 
@@ -365,24 +376,20 @@ def _is_transient_error(exc: BaseException) -> bool:
 
     An HTTP status decides first, whatever the exception's class: a ``CommError``
     for a 400/404 is the request's fault and counts toward the give-up, while
-    a raw ``HTTPError`` for a 401/502/503/429 is an outage and is waited out. A
-    403 or a 500/501 is not transient; it gets a longer give-up instead (see
-    ``_give_up_after``).
+    a raw ``HTTPError`` for a 401/429/5xx is an outage and is waited out. A 403
+    is not transient; it gets a longer give-up instead (see ``_give_up_after``).
     """
     status = _http_status(exc)
     if status is not None:
-        return status in _TRANSIENT_HTTP_STATUSES
-    seen: set = set()
-    current: Optional[BaseException] = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if any(m in str(current).lower() for m in _DETERMINISTIC_ERROR_MARKERS):
-            return False
-        current = current.__cause__ or current.__context__
-    seen.clear()
-    current = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
+        return status >= 500 or status in _TRANSIENT_HTTP_STATUSES
+    chain = list(_causes(exc))
+    if any(
+        m in str(current).lower()
+        for current in chain
+        for m in _DETERMINISTIC_ERROR_MARKERS
+    ):
+        return False
+    for current in chain:
         if isinstance(current, (ConnectionError, TimeoutError)):
             return True
         if _TRANSIENT_ERROR_NAMES & {c.__name__ for c in type(current).__mro__}:
@@ -392,7 +399,6 @@ def _is_transient_error(exc: BaseException) -> bool:
         message = str(current).lower()
         if any(marker in message for marker in _TRANSIENT_ERROR_MARKERS):
             return True
-        current = current.__cause__ or current.__context__
     return False
 
 
