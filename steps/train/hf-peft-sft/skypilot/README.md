@@ -209,7 +209,19 @@ A fixable CRITICAL in a locked Python package is fixed by raising its pin (in
 `make lock`, bumping `IMAGE_VERSION`, then rebuilding and rescanning. Check quay's
 own scan of the pushed tag too: its database differs from trivy's.
 
-Results: pending (recorded at publish).
+Results for `peft-v0.21.2-1` (manifest
+`sha256:359dc00d6cc7348ba16ec51755229b33ccd8ad577561aa2bd819a9cbe5c40074`, scanned
+2026-10-30):
+
+- **trivy 0.76.1** (CRITICAL+HIGH): 0 fixable CRITICAL. 14 CRITICAL without a fix, all in
+  Ubuntu's `linux-libc-dev` (kernel UAPI headers from the CUDA devel base, needed by
+  DeepSpeed's JIT build). 377 HIGH, 5 of them fixable. All 5 are in the copies of
+  `msgpack` 1.1.2, `urllib3` 2.7.0 and `setuptools` 70.3.0 vendored inside **pip** in
+  uv's managed CPython (`/opt/uv-python/.../site-packages/pip/_vendor`). The step never
+  runs pip; the training venv has the fixed `msgpack` 1.2.4, `urllib3` 2.8.0 and
+  `setuptools` 84.2.1 from the lock.
+- **quay (Clair)**: 0 Critical, 0 High; 357 Medium, 109 Low, 6 Negligible, none with a
+  fix.
 
 ### Bumping IMAGE_VERSION
 
