@@ -107,6 +107,47 @@ CHART_KEY = "chart"
 HELM_RELEASE_NAME_PREFIX = "gb"
 
 
+def _kubeconfig_without_skypilot_managed() -> Optional[str]:
+    """``KUBECONFIG`` minus gbserver's SkyPilot-managed kubeconfig.
+
+    The Skypilot environment adds ``~/.sky/gbserver-kubeconfig`` (credentials
+    from other environments' ``kube_configs`` secrets) to this process's
+    ``KUBECONFIG``. The native K8s environment must not authenticate with them,
+    so it loads the user's own files only.
+
+    :returns: The filtered ``KUBECONFIG`` value, or ``None`` to use the client's
+        default (``~/.kube/config``) when nothing else remains.
+    """
+    if not os.environ.get("KUBECONFIG"):
+        return None
+    from gbserver.environment.skypilot_config import (
+        _kubeconfig_paths,
+        kubeconfig_path,
+    )
+
+    # The same normalization activate_kubeconfig uses, so both agree on
+    # which entry is the managed file.
+    managed = _kubeconfig_paths(str(kubeconfig_path()))[0]
+    parts = [p for p in _kubeconfig_paths() if p != managed]
+    return os.pathsep.join(parts) or None
+
+
+def _kube_tool_env() -> Dict[str, str]:
+    """This process's environment for kubectl/oc/helm, with ``KUBECONFIG`` filtered.
+
+    The subprocesses would otherwise inherit the SkyPilot-managed kubeconfig
+    (see :func:`_kubeconfig_without_skypilot_managed`) and could resolve a
+    ``--context``/``--kube-context`` to another environment's credentials.
+    """
+    env = dict(os.environ)
+    filtered = _kubeconfig_without_skypilot_managed()
+    if filtered:
+        env["KUBECONFIG"] = filtered
+    else:
+        env.pop("KUBECONFIG", None)
+    return env
+
+
 class AtomicApiClient:
     """A client to interact with the K8s API server"""
 
@@ -140,14 +181,20 @@ class AtomicApiClient:
                         logger.info("loaded the default context from kube_config_dict")
                 else:
                     logger.info("no kube_config_string was provided")
+                    # Never read gbserver's SkyPilot kube_configs file: it holds
+                    # other environments' secret credentials and is on this
+                    # process's KUBECONFIG only for SkyPilot.
+                    user_config = _kubeconfig_without_skypilot_managed()
                     if kube_context:
-                        await config.load_kube_config(context=kube_context)
+                        await config.load_kube_config(
+                            config_file=user_config, context=kube_context
+                        )
                         logger.info(
                             "loaded the context %s from the default K8s config location",
                             kube_context,
                         )
                     else:
-                        await config.load_kube_config()
+                        await config.load_kube_config(config_file=user_config)
                         logger.info(
                             "loaded the default context from the default K8s config location"
                         )
@@ -584,6 +631,7 @@ class K8s(Environment):
                         *cmd,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
+                        env=_kube_tool_env(),
                     )
                 except FileNotFoundError as e:
                     # kubectl does not exist at all → retry with oc
@@ -857,6 +905,7 @@ class K8s(Environment):
                 await launch_command_and_raise_errors(
                     command_list=dry_run_command_list,
                     launch_id=launch_id + "-dry-run",
+                    env=_kube_tool_env(),
                 )
             except Exception as e:
                 raise ValueError("failed to do a helm install dry run") from e
@@ -868,6 +917,7 @@ class K8s(Environment):
                     process, stdout, stderr = await launch_command_and_raise_errors(
                         command_list=command_list,
                         launch_id=launch_id,
+                        env=_kube_tool_env(),
                     )
                     logger.debug("process: %s", process)
                     # ---------------
@@ -898,6 +948,7 @@ class K8s(Environment):
                         process, stdout, stderr = await launch_command_and_raise_errors(
                             command_list=command_list,
                             launch_id=launch_id,
+                            env=_kube_tool_env(),
                         )
                         logger.debug("helm template process: %s", process)
                         # ---------------
@@ -1125,6 +1176,7 @@ class K8s(Environment):
                 process, _, _ = await launch_command_and_raise_errors(
                     command_list=command_list,
                     launch_id=launch_id,
+                    env=_kube_tool_env(),
                 )
                 logger.debug("process: %s", process)
                 break  # success
