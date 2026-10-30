@@ -21,9 +21,15 @@
 #   env SKYPILOT_NUM_GPUS_PER_NODE: GPUs to use; falls back to `nvidia-smi -L`.
 set -euo pipefail
 
+fail() { echo "hf-peft-sft: ERROR $*" >&2; exit 1; }
+
 base_model="" output_id="" output_path="" method="" distributed="" mixed_precision=""
 clearml_mode="" clearml_project="" clearml_task=""
 while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --base-model|--output-id|--output-path|--method|--distributed|--mixed-precision|--clearml-mode|--clearml-project|--clearml-task)
+      [ "$#" -ge 2 ] || fail "$1 needs a value." ;;
+  esac
   case "$1" in
     --base-model)      base_model="$2";      shift 2 ;;
     --output-id)       output_id="$2";       shift 2 ;;
@@ -39,11 +45,9 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-fail() { echo "hf-peft-sft: ERROR $*" >&2; exit 1; }
-
-: "${base_model:?--base-model is required}"
-: "${output_id:?--output-id is required}"
-: "${output_path:?--output-path is required}"
+[ -n "$base_model" ] || fail "--base-model is required."
+[ -n "$output_id" ] || fail "--output-id is required."
+[ -n "$output_path" ] || fail "--output-path is required."
 case $method in lora|qlora|alora) ;; *) fail "--method must be lora, qlora or alora, got '${method}'." ;; esac
 case $distributed in ddp|fsdp|deepspeed) ;; *) fail "--distributed must be ddp, fsdp or deepspeed, got '${distributed}'." ;; esac
 case $mixed_precision in bf16|fp16|no) ;; *) fail "--mixed-precision must be bf16, fp16 or no, got '${mixed_precision}'." ;; esac
@@ -76,8 +80,14 @@ esac
 # --- output locations ------------------------------------------------------------
 # Absolute, because the marker is read off-node. Train into a fresh <out>.partial
 # sibling (same filesystem, so the final move is a rename).
+given_output_path="$output_path"
 case $output_path in /*) ;; *) output_path="$(pwd)/${output_path}" ;; esac
 output_path="${output_path%/}"
+# `/`, `.`, `..` would make out_dir an existing parent (e.g. the workdir), which
+# the post-training `rm -rf "$out_dir"` would delete.
+case ${output_path##*/} in ''|.|..)
+  fail "output path '${given_output_path}' does not name a directory to create; use a path like ./adapter_output or /shared/adapters/run1." ;;
+esac
 mkdir -p "$(dirname "$output_path")"
 out_dir="$(cd "$(dirname "$output_path")" && pwd)/$(basename "$output_path")"
 stage="${out_dir}.partial"
