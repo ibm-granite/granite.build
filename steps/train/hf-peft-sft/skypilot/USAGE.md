@@ -237,13 +237,14 @@ Verified combinations (method × `distributed`):
 
 | | ddp | fsdp | deepspeed |
 |---|---|---|---|
-| lora | render-tested | e2e pending (BlueVela) | render-tested |
-| qlora | e2e (aws) | render-tested | e2e pending (BlueVela) |
+| lora | render-tested | e2e (BlueVela) | render-tested |
+| qlora | e2e (aws) | probe-tested (BlueVela) | e2e (BlueVela) |
 | alora | e2e (aws) | render-tested | render-tested |
 
-`e2e` means a real build on that cluster trained and registered an adapter;
-`e2e pending` means a build test exists for that cluster and will be recorded here
-when it passes; `render-tested` means covered by render and unit tests only.
+`e2e` means a real build on that cluster trained and registered an adapter with
+weights; `probe-tested` means a 2-step run on that cluster's GPUs with the step's
+scripts saved an adapter with weights, outside a build test; `render-tested` means
+covered by render and unit tests only.
 
 ## ClearML tracking
 
