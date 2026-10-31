@@ -41,15 +41,27 @@ if os.environ.get("FAKE_FAIL"):
     sys.exit(3)
 out = argv[argv.index("--output_dir") + 1]
 os.makedirs(out, exist_ok=True)
-for name in ("adapter_config.json", "adapter_model.safetensors"):
-    if os.environ.get("FAKE_OMIT") != name:
-        open(os.path.join(out, name), "w").write("{}")
+if os.environ.get("FAKE_OMIT") != "adapter_config.json":
+    open(os.path.join(out, "adapter_config.json"), "w").write("{}")
+if os.environ.get("FAKE_OMIT") != "adapter_model.safetensors":
+    # A real safetensors header: one LoRA tensor, or none with FAKE_EMPTY_ADAPTER.
+    import struct
+    header = {"__metadata__": {"format": "pt"}}
+    if not os.environ.get("FAKE_EMPTY_ADAPTER"):
+        header["base_model.model.q_proj.lora_A.weight"] = {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}
+    raw = json.dumps(header).encode()
+    body = b"" if os.environ.get("FAKE_EMPTY_ADAPTER") else b"\\0" * 4
+    open(os.path.join(out, "adapter_model.safetensors"), "wb").write(struct.pack("<Q", len(raw)) + raw + body)
 PY
 """
 
 _PY = """#!/usr/bin/env bash
-# venv python stub: answers the version probe.
-echo "0.21.2 1.17.1"
+# venv python stub: answers the peft/trl version probe, and runs anything else
+# (the saved-adapter check) on the host python with the step's src/ on the path.
+case "$*" in
+  *"import peft, trl"*) echo "0.21.2 1.17.1" ;;
+  *) PYTHONPATH="__SRC__" exec python3 "$@" ;;
+esac
 """
 
 
@@ -69,8 +81,9 @@ def node(tmp_path):
     )
     home = tmp_path / "home"
     (home / ".venv" / "bin").mkdir(parents=True)
-    _exe(home / ".venv" / "bin" / "python", _PY)
+    _exe(home / ".venv" / "bin" / "python", _PY.replace("__SRC__", str(_SRC)))
     (home / "accelerate").symlink_to(_SRC / "accelerate")
+    (home / "hf_peft_sft_train.py").symlink_to(_SRC / "hf_peft_sft_train.py")
     work = tmp_path / "work"
     work.mkdir()
     return tmp_path, bin_dir, home, work
@@ -420,6 +433,16 @@ class TestOutput:
         assert proc.returncode == 1
         assert "no adapter" in proc.stderr
         assert _markers(proc) == []
+
+    def test_empty_adapter_means_no_marker(self, node):
+        # FSDP once saved a 40-byte adapter_model.safetensors with no tensors and
+        # the step registered it. Both files exist here; the weights do not.
+        proc, _ = _run(node, env={"FAKE_EMPTY_ADAPTER": "1"})
+        assert proc.returncode == 1
+        assert "hf-peft-sft: ERROR" in proc.stderr
+        assert "has no weights" in proc.stderr
+        assert _markers(proc) == []
+        assert not (node[3] / "adapter_output").exists()
 
     def test_training_failure_propagates(self, node):
         proc, _ = _run(node, env={"FAKE_FAIL": "1"})
