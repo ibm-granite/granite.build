@@ -1,0 +1,25 @@
+# Adapted from huggingface/peft examples/sft/configs/fsdp_config_qlora.yaml
+# (Apache-2.0), moved to FSDP2: peft 0.21.x saves an empty adapter from
+# FSDP1-wrapped models (huggingface/peft#3876). FSDP1-only keys are dropped; full
+# sharding is reshard_after_forward: true. Params are offloaded to CPU, as in
+# peft's QLoRA example.
+# num_processes and mixed_precision are overridden on the accelerate command line.
+compute_environment: LOCAL_MACHINE
+debug: false
+distributed_type: FSDP
+downcast_bf16: 'no'
+fsdp_config:
+  fsdp_version: 2
+  fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP
+  fsdp_cpu_ram_efficient_loading: true
+  fsdp_offload_params: true
+  fsdp_reshard_after_forward: true
+  fsdp_state_dict_type: SHARDED_STATE_DICT
+machine_rank: 0
+main_training_function: main
+mixed_precision: 'no'
+num_machines: 1
+num_processes: 1
+rdzv_backend: static
+same_network: true
+use_cpu: false
