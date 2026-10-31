@@ -111,7 +111,17 @@ A few rules worth knowing when changing the trainer:
   missing is a warning.
 - **Saving.** Under FSDP the state dict type is switched to `FULL_STATE_DICT` before
   `trainer.save_model`, so the adapter is saved whole. `SFTTrainer` saves the
-  tokenizer with the adapter.
+  tokenizer with the adapter. The run script then reads the safetensors header and
+  refuses to register a file with no tensors.
+- **FSDP2, not FSDP1.** With FSDP1, peft 0.21.x (huggingface/peft#3876, a
+  regression from peft #3490) saved a 40-byte adapter with no tensors: FSDP1 wraps
+  each decoder layer, so module names read
+  `...layers.0._fsdp_wrapped_module.self_attn.q_proj`, and peft strips that segment
+  only at the start of a name. The full-state-dict gather was correct (a BlueVela
+  probe saw 420 LoRA keys reach peft; it kept 0). FSDP2 (`fsdp_version: 2`) leaves
+  the names clean, and a CPU check kept all 28 LoRA tensors of a tiny Llama under
+  FSDP2, with gradient checkpointing too. Move back to FSDP1 only after a peft
+  release carries the fix.
 
 ## Image
 
