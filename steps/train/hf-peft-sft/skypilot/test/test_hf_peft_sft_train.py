@@ -172,6 +172,13 @@ def test_step_arg_fields_match_the_dataclass():
     assert len(t.STEP_ARG_FIELDS) == 13
 
 
+def test_step_arg_fields_do_not_collide_with_sftconfig():
+    """main() parses StepArgs and SFTConfig together; a shared name would clash."""
+    trl = pytest.importorskip("trl")
+    sft_fields = {f.name for f in dataclasses.fields(trl.SFTConfig)}
+    assert sft_fields & set(t.STEP_ARG_FIELDS) == set()
+
+
 def _safetensors(path, tensors):
     """Write a minimal safetensors file: 8-byte header length + JSON header."""
     import json

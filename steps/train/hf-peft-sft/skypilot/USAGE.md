@@ -474,8 +474,12 @@ string your model's chat template emits before the assistant turn.
   trains into a fresh staging dir, so a warm-cluster re-run never resumes an earlier
   run.
 - **A gated model or dataset needs `HF_TOKEN`** in the step env (a space secret).
-- **Progress shows in the step status.** The trainer prints
-  `Step: <n>/<total> loss=<x>` at each logging step, and the step's monitor shows
-  the latest line as the step's status message. `args.logging_steps` sets how often.
+- **Progress shows in the step log.** At each logging step the trainer prints a
+  line such as `Step: 3/10 loss=0.7012` (`Step: <n>/<total> loss=<x>`, loss to four
+  decimals; the `/<total>` and `loss=` parts are left out when unknown) to the step
+  log. `args.logging_steps` sets how often.
+- **Arbitrary base-model load kwargs are not supported.** The step loads the base
+  model itself, so `args.model_init_kwargs` has no effect, and a base model that
+  needs `trust_remote_code` cannot be used.
 - **Attention is `sdpa`.** The image has no flash-attn, so the base model loads with
   PyTorch's scaled-dot-product attention.
