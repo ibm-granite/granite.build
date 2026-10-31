@@ -35,8 +35,8 @@ HF_HOME: ""
 #   make -C steps/eval image-cpu-nl2repo REGISTRY=... publish-image-cpu-nl2repo REGISTRY=...
 # (the tag defaults to the building checkout's git short SHA). The family image adds no
 # pip dependency of its own, so any nl2repo image tag is license-clean to redistribute.
-IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-nl2repo:e1b22663"
-IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-nl2repo-cpu:e1b22663"
+IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-nl2repo:6431a78d"
+IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-nl2repo-cpu:6431a78d"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""
