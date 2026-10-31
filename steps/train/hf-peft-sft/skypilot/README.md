@@ -158,8 +158,8 @@ DeepSpeed uses for its JIT ops matches torch's runtime. The base's
 
 Only the driver versions above were measured (2026-10-30). On either cluster the
 image's CUDA 13.2 runtime may rely on CUDA minor-version compatibility. On aws it
-works: the aws build test passed on the 580.159.04 driver (2026-10-30, QLoRA with
-bitsandbytes 4-bit and aLoRA, 3 steps each). On BlueVela it works under Pyxis on the
+works: the aws build test passed on the 580.159.04 driver (2026-10-30 on `-1`, and
+2026-10-31 on `-3`; QLoRA with bitsandbytes 4-bit and aLoRA, 3 steps each). On BlueVela it works under Pyxis on the
 590.48.01 driver (build 611571b7, 2026-10-31, LoRA/FSDP2 and QLoRA/DeepSpeed). If a
 future driver breaks it, the fallback is torch 2.11.0+cu128 on
 `cuda:12.8.1-devel-ubuntu22.04`.
@@ -396,7 +396,7 @@ metadata.
 
 | Result | aws | slurm-bluevela |
 |---|---|---|
-| status | **passed** 2026-10-30, 7m21s for both targets (`peft-v0.21.2-1`) | **passed** 2026-10-31, 14m32s for both targets, build 611571b7 (`peft-v0.21.2-3`, cached `.sqsh`) |
+| status | **passed** 2026-10-31, 6m56s for both targets (`peft-v0.21.2-3`; first passed 2026-10-30 on `-1`) | **passed** 2026-10-31, 14m32s for both targets, build 611571b7 (`peft-v0.21.2-3`, cached `.sqsh`) |
 | loss, steps 1→3 | qlora and alora each logged `Step: 1/3`…`3/3` | lora/fsdp 2.15 → 4.26 → 2.27; qlora/deepspeed `Step: 1/3`…`3/3` |
 | adapter | `adapter` at `/root/sky_workdir/adapter_output` per target | lora/fsdp: 420 tensors, 19.6 MB (read on the node); both registered |
 | markers | `method`, `peft_version` 0.21.2, `trl_version` 1.17.1 | same |
