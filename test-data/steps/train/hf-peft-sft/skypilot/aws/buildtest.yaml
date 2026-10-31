@@ -1,0 +1,37 @@
+# YAML spec for test_skypilot_aws_train_hf_peft_sft.py (found by the test/ <->
+# test-data/ helper, so the pairing holds in both test modes; see steps/README.md).
+targets:
+  - qlora
+  - alora
+target_expectations:
+  - target_name: qlora
+    # skypilot/aws pulls hf:// inputs inline; the env:// output queues no push.
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    expected_steps:
+      - step_uri: space://steps/train/hf-peft-sft
+        config:
+          hf_peft_sft_config:
+            method: qlora
+        metadata_matches:
+          method: "qlora"
+          peft_version: "0\\.21\\.2"
+  - target_name: alora
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    expected_steps:
+      - step_uri: space://steps/train/hf-peft-sft
+        config:
+          hf_peft_sft_config:
+            method: alora
+        metadata_matches:
+          method: "alora"
+          peft_version: "0\\.21\\.2"
+space_uri: ../../../../../../configurations/spaces/local
+tests:
+  - runner
+simulate_step_failure: false
+# Two EC2 cold starts + image pulls + 3-step runs.
+timeout_minutes: 120

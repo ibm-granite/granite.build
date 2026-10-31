@@ -69,6 +69,9 @@ EXPECTED = {
     # Open-Instruct SFT: new, so base_model is required outright; dataset is optional
     # (omit it to train on openinstruct_sft_config.dataset_mixer_list instead).
     f"{_SKY}/train/openinstruct-sft": ({"base_model"}, {"dataset"}),
+    # HF-PEFT SFT: new, so base_model is required outright; dataset is optional
+    # (omit it to train on hf_peft_sft_config.dataset_name instead).
+    f"{_SKY}/train/hf-peft-sft": ({"base_model"}, {"dataset"}),
     # Shipped in v0.3.x: optional during the deprecation window, with the old config
     # key as a fallback.
     f"{_LSF}/sage-eval": (set(), {"model"}),

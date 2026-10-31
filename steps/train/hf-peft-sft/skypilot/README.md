@@ -115,7 +115,7 @@ A few rules worth knowing when changing the trainer:
 
 ## Image
 
-`quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-1`. It holds:
+`quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-2`. It holds:
 
 | Part | Pin |
 |---|---|
@@ -211,23 +211,23 @@ A fixable CRITICAL in a locked Python package is fixed by raising its pin (in
 `make lock`, bumping `IMAGE_VERSION`, then rebuilding and rescanning. Check quay's
 own scan of the pushed tag too: its database differs from trivy's.
 
-Results for `peft-v0.21.2-1` (manifest
-`sha256:359dc00d6cc7348ba16ec51755229b33ccd8ad577561aa2bd819a9cbe5c40074`, scanned
+Results for `peft-v0.21.2-2`, the shipped image (manifest
+`sha256:3466876fdb25802afe81e7c48796f95693a70dbe7796979bde970d2ba9247842`, scanned
 2026-10-30):
 
-- **trivy 0.76.1** (CRITICAL+HIGH): 0 fixable CRITICAL. 14 CRITICAL without a fix, all in
+- **trivy 0.76.1** (CRITICAL+HIGH): nothing fixable. 14 CRITICAL without a fix, all in
   Ubuntu's `linux-libc-dev` (kernel UAPI headers from the CUDA devel base, needed by
-  DeepSpeed's JIT build). 377 HIGH, 5 of them fixable. All 5 are in the copies of
-  `msgpack` 1.1.2, `urllib3` 2.7.0 and `setuptools` 70.3.0 vendored inside **pip** in
-  uv's managed CPython (`/opt/uv-python/.../site-packages/pip/_vendor`). The step never
-  runs pip; the training venv has the fixed `msgpack` 1.2.4, `urllib3` 2.8.0 and
-  `setuptools` 84.2.1 from the lock.
+  DeepSpeed's JIT build); 372 HIGH, none with a fix.
 - **quay (Clair)**: 0 Critical, 0 High; 357 Medium, 109 Low, 6 Negligible, none with a
   fix.
 
+`peft-v0.21.2-1` had 5 more fixable HIGH, all in the `msgpack` 1.1.2, `urllib3` 2.7.0
+and `setuptools` 70.3.0 vendored inside **pip** in uv's managed CPython (never run by
+the step). `-2` removes pip and ensurepip from the managed CPython.
+
 ### Bumping IMAGE_VERSION
 
-The Makefile's `IMAGE_VERSION` is a stable version (`peft-v0.21.2-1`), not the
+The Makefile's `IMAGE_VERSION` is a stable version (`peft-v0.21.2-2`), not the
 per-commit git SHA. The image is large, and BlueVela caches a `.sqsh` per tag
 (each new tag means a fresh cold import), so it must not churn on unrelated commits.
 
@@ -258,7 +258,7 @@ credentials"), then:
 
 ```bash
 make -C steps/train/hf-peft-sft/skypilot image publish-image
-sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-1
+sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-2
 ```
 
 `publish-image` refuses a tag that already exists, so bump `IMAGE_VERSION` (see

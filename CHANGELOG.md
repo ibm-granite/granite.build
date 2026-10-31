@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the granite4-350m recipes that use them are unchanged; moving those recipes over is a
   follow-up, #569 (they need pre-tokenized `--tokenized_data` input, which only the IBM
   fork's `finetune.py` has).
+- **`hf-peft-sft` step (#585)**, `space://steps/train/hf-peft-sft`: LoRA, QLoRA and aLoRA
+  supervised fine-tuning with Hugging Face PEFT 0.21.2 and TRL 1.17.1 `SFTTrainer` on any
+  SkyPilot endpoint, single node, DDP or FSDP / DeepSpeed ZeRO-3 sharding, ClearML tracking
+  (`auto` when `CLEARML_API_*` creds are present). Registers the PEFT adapter (not a merged
+  model). Custom image `quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-2`
+  (torch 2.15.0 / CUDA 13.2) with a fully hashed dependency lock. Build tests on skypilot/aws
+  (QLoRA, aLoRA) and BlueVela SLURM (LoRA/FSDP, QLoRA/DeepSpeed).
 - **`make publish-image` refuses to overwrite an existing image tag (#229).** A tag must keep
   pointing at one image, and SLURM's `slurm_image_cache` keys its `.sqsh` by tag, so a re-pushed
   tag never reached it. `publish-image` now checks the registry first and pushes only a new tag;
