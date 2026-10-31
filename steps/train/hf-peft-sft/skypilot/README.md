@@ -125,7 +125,7 @@ A few rules worth knowing when changing the trainer:
 
 ## Image
 
-`quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-2`. It holds:
+`quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-3`. It holds:
 
 | Part | Pin |
 |---|---|
@@ -221,9 +221,9 @@ A fixable CRITICAL in a locked Python package is fixed by raising its pin (in
 `make lock`, bumping `IMAGE_VERSION`, then rebuilding and rescanning. Check quay's
 own scan of the pushed tag too: its database differs from trivy's.
 
-Results for `peft-v0.21.2-2`, the shipped image (manifest
-`sha256:3466876fdb25802afe81e7c48796f95693a70dbe7796979bde970d2ba9247842`, scanned
-2026-10-30):
+Results for `peft-v0.21.2-3`, the shipped image (manifest
+`sha256:cdae82b13aabf628cb5a4ad2dd04bcecd9ee216cdaa2635a5e52400bfc74afd4`, scanned
+2026-10-31; `-3` changes only `src/` over `-2`, and `-2` scanned the same):
 
 - **trivy 0.76.1** (CRITICAL+HIGH): nothing fixable. 14 CRITICAL without a fix, all in
   Ubuntu's `linux-libc-dev` (kernel UAPI headers from the CUDA devel base, needed by
@@ -237,7 +237,7 @@ the step). `-2` removes pip and ensurepip from the managed CPython.
 
 ### Bumping IMAGE_VERSION
 
-The Makefile's `IMAGE_VERSION` is a stable version (`peft-v0.21.2-2`), not the
+The Makefile's `IMAGE_VERSION` is a stable version (`peft-v0.21.2-3`), not the
 per-commit git SHA. The image is large, and BlueVela caches a `.sqsh` per tag
 (each new tag means a fresh cold import), so it must not churn on unrelated commits.
 
@@ -268,7 +268,7 @@ credentials"), then:
 
 ```bash
 make -C steps/train/hf-peft-sft/skypilot image publish-image
-sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-2
+sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-3
 ```
 
 `publish-image` refuses a tag that already exists, so bump `IMAGE_VERSION` (see
