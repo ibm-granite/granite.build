@@ -1,6 +1,7 @@
 """MCPMark adapter tests with a fake harness (no network, no DB, no browser)."""
 
 import json
+import pwd
 import re
 import subprocess
 from pathlib import Path
@@ -85,8 +86,8 @@ class FakeRunner:
             return outcome()
         return {"execution_result": outcome}
 
-    def __call__(self, argv, *, cwd=None, env=None, check=False, capture_output=False, text=False):
-        self.calls.append({"argv": list(argv), "cwd": cwd, "env": env})
+    def __call__(self, argv, *, cwd=None, env=None, check=False, capture_output=False, text=False, user=None, group=None):
+        self.calls.append({"argv": list(argv), "cwd": cwd, "env": env, "user": user, "group": group})
         if "pipeline" in argv[:3]:
             opt = argv.index
             service_dir = self.service + (
@@ -551,6 +552,44 @@ def test_postgres_cluster_starts_on_a_free_node_locked_port(baked, tmp_path, mon
     assert not data_dir.exists()  # cleaned up
     # The lock is free again.
     assert NodeLock("mcpmark-postgres-15432").try_acquire()
+
+
+def test_pg_privileges_are_a_noop_outside_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(mm.os, "geteuid", lambda: 501)
+    chown = []
+    monkeypatch.setattr(mm.shutil, "chown", lambda p, user=None, group=None: chown.append((p, user, group)))
+    assert mm._pg_privileges(tmp_path) == {}
+    assert chown == []
+
+
+def test_pg_privileges_drop_root_to_the_postgres_user(monkeypatch, tmp_path):
+    monkeypatch.setattr(mm.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        mm.pwd, "getpwnam", lambda name: pwd.struct_passwd(("postgres", "x", 26, 26, "", "/var/lib/postgresql", "/bin/false"))
+    )
+    chown = []
+    monkeypatch.setattr(mm.shutil, "chown", lambda p, user=None, group=None: chown.append((p, user, group)))
+    assert mm._pg_privileges(tmp_path) == {"user": "postgres", "group": 26}
+    assert chown == [(tmp_path, "postgres", 26)]
+
+
+def test_postgres_cluster_commands_carry_the_privilege_drop_when_root(baked, tmp_path, monkeypatch, lock_dir):
+    # The job container on the cluster is root (pyxis --container-remap-root):
+    # every cluster command must run as the unprivileged postgres user.
+    monkeypatch.setattr(mm.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        mm.pwd, "getpwnam", lambda name: pwd.struct_passwd(("postgres", "x", 26, 26, "", "/var/lib/postgresql", "/bin/false"))
+    )
+    monkeypatch.setattr(mm.shutil, "chown", lambda p, user=None, group=None: None)
+    bench = mkbench("postgres", tmp_path)
+    runner = FakeRunner(service="postgres")
+    monkeypatch.setattr(mm.subprocess, "run", runner)
+    with bench._postgres_server():
+        cluster = [c for c in runner.calls if c["argv"][0].startswith(str(mm.PG_BINDIR))]
+    assert cluster
+    for call in cluster:
+        assert call["user"] == "postgres"
+        assert call["group"] == 26
 
 
 def test_postgres_cluster_skips_a_port_another_job_holds(baked, tmp_path, monkeypatch, lock_dir):

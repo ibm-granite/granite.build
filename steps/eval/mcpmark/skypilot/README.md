@@ -85,8 +85,11 @@ declares none. No HF token is needed.
 
 `mcpmark-postgres` starts a private postgres 17 cluster per job (`initdb` into
 node-local scratch, `pg_ctl` on a node-locked port — two jobs on one node never
-share a port) and stops it at the end. `initdb` refuses to run as root, so this
-benchmark needs the job's usual non-root container user. A preflight runs the
+share a port) and stops it at the end. `initdb` refuses to run as root, and the
+job container IS root (pyxis `--container-remap-root`), so the adapter drops
+the cluster's commands to the image's unprivileged `postgres` user (created by
+postgresql-common's postinst) and hands the data directory to that user first.
+A preflight runs the
 `postgres-mcp` server's `--help` (the same `pipx run` the harness uses, served
 by the baked-venv shim) before any task, so a broken install fails the run
 loudly instead of mis-scoring every task.

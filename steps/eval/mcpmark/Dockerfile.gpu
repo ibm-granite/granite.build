@@ -57,7 +57,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxfixes3 libxrandr2 libgbm1 libxcb1 libpango-1.0-0 libcairo2 libasound2 \
     # ... a postgres 17 server + pgvector + client (Debian's own 15 is too old
     # for the pg17 custom-format backups the harness restores; only PGDG's 17
-    # client is installed, so pg_restore cannot come from a different major), ...
+    # client is installed, so pg_restore cannot come from a different major;
+    # postgresql-common's postinst also creates the unprivileged postgres user
+    # the adapter drops its initdb/pg_ctl to -- the job container is root and
+    # initdb refuses root), ...
     && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
         -o /usr/share/keyrings/pgdg.asc \
     && echo "deb [signed-by=/usr/share/keyrings/pgdg.asc] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \

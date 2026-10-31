@@ -69,6 +69,7 @@ import hashlib
 import json
 import logging
 import os
+import pwd
 import shutil
 import subprocess
 import tempfile
@@ -142,6 +143,42 @@ PG_BINDIR = Path("/usr/lib/postgresql/17/bin")
 PG_PORTS = range(15432, 15532)
 """Node-locked port scan for the per-job postgres cluster (the tbench
 fixed-port pattern: two jobs on one node never share a port)."""
+
+
+def _pg_privileges(data: Path) -> dict[str, Any]:
+    """subprocess.run kwargs for the postgres cluster's commands. initdb
+    (and the postgres server itself) refuse to run as root, and the job
+    container on the cluster IS root (pyxis --container-remap-root), so
+    drop them to an unprivileged user when we are root. The family image
+    already carries the ``postgres`` user (postgresql-common's postinst
+    creates it); a root environment without one gets a dedicated
+    ``mcpmark-pg`` user. Outside a root context (tests, laptop runs)
+    nothing changes. Returned as subprocess kwargs -- the argv is not
+    wrapped -- so the commands stay exactly what they are."""
+    if os.geteuid() != 0:
+        return {}
+    pw = None
+    for name in ("postgres", "mcpmark-pg"):
+        try:
+            pw = pwd.getpwnam(name)
+            break
+        except KeyError:
+            continue
+    if pw is None:
+        created = subprocess.run(
+            ["useradd", "--system", "--no-create-home", "mcpmark-pg"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if created.returncode != 0:
+            raise SystemExit(
+                "mcpmark-postgres: initdb refuses to run as root and no unprivileged "
+                f"user could be provisioned for the cluster: {created.stderr.strip()[-300:]}"
+            )
+        pw = pwd.getpwnam("mcpmark-pg")
+    shutil.chown(data, user=pw.pw_name, group=pw.pw_gid)
+    return {"user": pw.pw_name, "group": pw.pw_gid}
 
 
 def tree_digest(root: Path) -> str:
@@ -352,17 +389,21 @@ class Mcpmark(Benchmark):
         """initdb + pg_ctl over node-local scratch on the first free
         node-locked port. The harness's state manager restores the five
         category databases into it on first use and clones/drops a per-task
-        DB, so one job-local server is fully isolated per run."""
+        DB, so one job-local server is fully isolated per run. The cluster's
+        commands run as an unprivileged user when the process is root (the
+        job container is): see _pg_privileges."""
         for port in PG_PORTS:
             lock = NodeLock(f"mcpmark-postgres-{port}")
             if not lock.try_acquire():
                 continue
             log.info("%s: postgres cluster on port %d", self.id, port)
             data = Path(tempfile.mkdtemp(prefix="mcpmark-pg-"))
+            pg = _pg_privileges(data)  # {} unless we are root (the job container is)
             try:
                 self._run_checked(
                     [str(PG_BINDIR / "initdb"), "-D", str(data), "-U", "postgres", "--auth=trust"],
                     f"initdb (port {port})",
+                    **pg,
                 )
                 self._run_checked(
                     [
@@ -377,6 +418,7 @@ class Mcpmark(Benchmark):
                         "start",
                     ],
                     f"pg_ctl start (port {port})",
+                    **pg,
                 )
                 try:
                     yield {
@@ -390,6 +432,7 @@ class Mcpmark(Benchmark):
                         [str(PG_BINDIR / "pg_ctl"), "-D", str(data), "-m", "immediate", "-w", "stop"],
                         f"pg_ctl stop (port {port})",
                         check=False,
+                        **pg,
                     )
             finally:
                 shutil.rmtree(data, ignore_errors=True)
@@ -398,8 +441,15 @@ class Mcpmark(Benchmark):
         raise SystemExit(f"{self.id}: no free postgres port in [{PG_PORTS[0]}, {PG_PORTS[-1]}] on this node")
 
     @staticmethod
-    def _run_checked(argv: list[str], what: str, *, check: bool = True) -> subprocess.CompletedProcess:
-        result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    def _run_checked(
+        argv: list[str],
+        what: str,
+        *,
+        check: bool = True,
+        user: str | None = None,
+        group: int | None = None,
+    ) -> subprocess.CompletedProcess:
+        result = subprocess.run(argv, capture_output=True, text=True, check=False, user=user, group=group)
         if check and result.returncode != 0:
             tail = (result.stderr or result.stdout or "").strip()[-500:]
             raise RuntimeError(f"{what} failed (exit {result.returncode}): {argv}\n{tail}")
