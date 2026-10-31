@@ -124,15 +124,18 @@ log = logging.getLogger(__name__)
 # -- upstream pins -------------------------------------------------------------
 #
 # Upstream has no license and no tags; the commit is the only pin. The
-# enforced integrity check is TASKS_SHA256 over the extracted test_files/
-# tree (see tree_digest); TARBALL_SHA256 is recorded for provenance only, so
-# GitHub regenerating tarball bytes cannot break the fetch.
+# enforced integrity check is TASKS_SHA256 over exactly the tree _extract
+# keeps (see tree_digest): the per-task files under test_files/<task>/.
+# Upstream also ships two root-level files there (task_difficulty.csv and a
+# committed .DS_Store) that the extraction intentionally drops, so they are
+# not covered by the pin. TARBALL_SHA256 is recorded for provenance only,
+# so GitHub regenerating tarball bytes cannot break the fetch.
 
 REPO = "multimodal-art-projection/NL2RepoBench"
 COMMIT = "781a1da1ee41fb8edb0bed22f586d69111610edf"
 TARBALL_URL = f"https://github.com/{REPO}/archive/{COMMIT}.tar.gz"
 TARBALL_SHA256 = "00bef9ac9838e1ca955d2441b436f32abf17ac963bd06076c5b03f62802cbd9e"
-TASKS_SHA256 = "1de36960a0fc944c560dcb012adc4a874c22327d7bfe1de62e3c76afdea0197d"
+TASKS_SHA256 = "079334d88726643466f862b76bbfd98be17f92fbabad91493d5294006a95f1a9"
 N_TASKS = 104
 TASK_FILES = (
     "start.md",

@@ -156,7 +156,7 @@ def test_registered_with_its_pins():
     assert nr.N_TASKS == 104
     assert (
         nr.TASKS_SHA256
-        == "1de36960a0fc944c560dcb012adc4a874c22327d7bfe1de62e3c76afdea0197d"
+        == "079334d88726643466f862b76bbfd98be17f92fbabad91493d5294006a95f1a9"
     )
 
 
