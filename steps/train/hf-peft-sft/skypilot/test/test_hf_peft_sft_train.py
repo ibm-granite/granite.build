@@ -170,3 +170,53 @@ def test_rewrite_base_model():
 def test_step_arg_fields_match_the_dataclass():
     assert tuple(f.name for f in dataclasses.fields(t.StepArgs)) == t.STEP_ARG_FIELDS
     assert len(t.STEP_ARG_FIELDS) == 13
+
+
+def _safetensors(path, tensors):
+    """Write a minimal safetensors file: 8-byte header length + JSON header."""
+    import json
+    import struct
+
+    header = {"__metadata__": {"format": "pt"}}
+    offset = 0
+    for name in tensors:
+        header[name] = {
+            "dtype": "F32",
+            "shape": [1],
+            "data_offsets": [offset, offset + 4],
+        }
+        offset += 4
+    raw = json.dumps(header).encode()
+    path.write_bytes(struct.pack("<Q", len(raw)) + raw + b"\0" * offset)
+
+
+class TestSavedAdapter:
+    def test_counts_tensors_from_the_header(self, tmp_path):
+        p = tmp_path / "adapter_model.safetensors"
+        _safetensors(
+            p,
+            [
+                "base_model.model.q_proj.lora_A.weight",
+                "base_model.model.q_proj.lora_B.weight",
+            ],
+        )
+        assert t.saved_tensor_count(str(p)) == 2
+
+    def test_empty_adapter_is_an_error(self, tmp_path):
+        # The 40-byte file FSDP produced: a header with only __metadata__.
+        p = tmp_path / "adapter_model.safetensors"
+        _safetensors(p, [])
+        with pytest.raises(t.StepError, match="no weights"):
+            t.check_saved_adapter(str(p))
+
+    def test_non_empty_adapter_passes(self, tmp_path):
+        p = tmp_path / "adapter_model.safetensors"
+        _safetensors(p, ["base_model.model.q_proj.lora_A.weight"])
+        t.check_saved_adapter(str(p))
+
+    @pytest.mark.parametrize("content", [b"", b"\x01\x00", b"\xff" * 8 + b"x"])
+    def test_unreadable_file_is_an_error(self, tmp_path, content):
+        p = tmp_path / "adapter_model.safetensors"
+        p.write_bytes(content)
+        with pytest.raises(t.StepError, match="not a readable safetensors"):
+            t.check_saved_adapter(str(p))
