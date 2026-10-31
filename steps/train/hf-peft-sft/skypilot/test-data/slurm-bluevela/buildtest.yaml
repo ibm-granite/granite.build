@@ -4,9 +4,9 @@ targets:
   - qlora-deepspeed
 target_expectations:
   - target_name: lora-fsdp
-    # skypilot/slurm runs each hf:// pull as its own hfpull step. Expected:
-    # hfpull(base_model) + hfpull(dataset) + step. Recalibrate on the first
-    # green run and record the build id here.
+    # skypilot/slurm runs each hf:// pull as its own hfpull step:
+    # hfpull(base_model) + hfpull(dataset) + step. Calibrated on BlueVela,
+    # build 611571b7 (2026-10-31, peft-v0.21.2-3).
     step_count: 3
     input_artifact_count: 2
     output_artifact_count: 1
@@ -20,7 +20,7 @@ target_expectations:
           method: "lora"
           peft_version: "0\\.21\\.2"
   - target_name: qlora-deepspeed
-    step_count: 2               # hfpull(base_model) + step; recalibrate as above
+    step_count: 2               # hfpull(base_model) + step; calibrated as above
     input_artifact_count: 1
     output_artifact_count: 1
     expected_steps:
