@@ -32,7 +32,8 @@
 # postgres 17 + pgvector for mcpmark-postgres (the adapter starts a per-job
 # cluster with initdb/pg_ctl on a node-locked port). Task state (filesystem
 # zips, postgres backups) is NEVER baked: the harness downloads it from
-# storage.mcpmark.ai at run time and results.json records its digests.
+# storage.mcpmark.ai at run time (unzip unpacks the zips) and results.json
+# records its digests.
 # System packages are installed in a throwaway stage and shipped as ONE plain layer.
 # Installing them on top of the base image in place would replace files the base
 # ships (e.g. the /etc/alternatives awk links), leaving overlay whiteouts. An
@@ -44,7 +45,7 @@ ARG ENROOT_VERSION=4.2.1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bash ca-certificates curl git jq gawk parallel pigz squashfs-tools zstd \
-        libcap2-bin procps build-essential \
+        libcap2-bin procps build-essential unzip \
     && arch=$(dpkg --print-architecture) \
     && curl -fsSLO "https://github.com/NVIDIA/enroot/releases/download/v${ENROOT_VERSION}/enroot_${ENROOT_VERSION}-1_${arch}.deb" \
     && apt-get install -y --no-install-recommends ./enroot_${ENROOT_VERSION}-1_${arch}.deb \
