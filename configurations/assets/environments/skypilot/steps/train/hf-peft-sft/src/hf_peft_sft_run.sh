@@ -180,6 +180,14 @@ accelerate launch "${launch[@]}" "${home}/hf_peft_sft_train.py" "${train[@]}" "$
 if [ ! -f "$stage/adapter_config.json" ] || [ ! -f "$stage/adapter_model.safetensors" ]; then
   fail "training finished but ${stage} has no adapter (adapter_config.json + adapter_model.safetensors); nothing registered."
 fi
+# Both files can exist with no weights in them; never register that.
+if ! weights_msg="$("${home}/.venv/bin/python" -c 'import sys; sys.path.insert(0, sys.argv[1]); import hf_peft_sft_train as t
+try:
+    t.check_saved_adapter(sys.argv[2])
+except t.StepError as e:
+    print(e); sys.exit(1)' "$home" "$stage/adapter_model.safetensors" 2>&1)"; then
+  fail "${weights_msg}"
+fi
 rm -rf "$out_dir"
 mv "$stage" "$out_dir"
 read -r peft_v trl_v < <("${home}/.venv/bin/python" -c 'import peft, trl; print(peft.__version__, trl.__version__)' 2>/dev/null || echo "unknown unknown")

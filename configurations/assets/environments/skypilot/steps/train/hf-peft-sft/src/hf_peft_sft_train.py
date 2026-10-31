@@ -187,6 +187,36 @@ def rewrite_base_model(adapter_config: dict, base_model_id: str) -> dict:
     return {**adapter_config, "base_model_name_or_path": base_model_id}
 
 
+def saved_tensor_count(path: str) -> int:
+    """Number of tensors in a safetensors file, from its header (no torch needed)."""
+    import json
+    import struct
+
+    try:
+        with open(path, "rb") as f:
+            (length,) = struct.unpack("<Q", f.read(8))
+            # safetensors caps the header at 100 MB; a larger length is corruption.
+            if length > 100_000_000:
+                raise ValueError(f"header length {length} is out of range")
+            header = json.loads(f.read(length))
+    except (OSError, struct.error, ValueError) as e:
+        raise StepError(f"{path} is not a readable safetensors file ({e}).") from e
+    if not isinstance(header, dict):
+        raise StepError(
+            f"{path} is not a readable safetensors file (header is not a map)."
+        )
+    return sum(1 for k in header if k != "__metadata__")
+
+
+def check_saved_adapter(path: str) -> None:
+    """Refuse an adapter file with no weights, so it is never registered."""
+    if saved_tensor_count(path) == 0:
+        raise StepError(
+            f"the saved adapter {path} has no weights (0 tensors); training ran but "
+            "nothing was saved. Nothing registered."
+        )
+
+
 def fail(msg: str) -> None:
     print(f"hf-peft-sft: ERROR {msg}", file=sys.stderr, flush=True)
     sys.exit(1)

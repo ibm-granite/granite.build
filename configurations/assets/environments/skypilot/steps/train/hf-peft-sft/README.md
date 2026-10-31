@@ -214,7 +214,7 @@ provisioned; a node that still has no GPUs fails before training. There is no
 | `distributed` | Use it when | accelerate config |
 |---|---|---|
 | `ddp` (default) | The base (16-bit, or 4-bit for `qlora`) fits on one GPU. Each GPU holds a full copy and trains on its share of the batch. Works on 1 GPU. | none (`--multi_gpu` when there is more than one GPU) |
-| `fsdp` | The base does not fit on one GPU. FSDP full sharding, wrapped per transformer layer. | [src/accelerate/fsdp.yaml](src/accelerate/fsdp.yaml); for `qlora`, [src/accelerate/fsdp_qlora.yaml](src/accelerate/fsdp_qlora.yaml) (also offloads parameters to CPU) |
+| `fsdp` | The base does not fit on one GPU. FSDP2 full sharding (`reshard_after_forward`), wrapped per transformer layer. | [src/accelerate/fsdp.yaml](src/accelerate/fsdp.yaml); for `qlora`, [src/accelerate/fsdp_qlora.yaml](src/accelerate/fsdp_qlora.yaml) (also offloads parameters to CPU) |
 | `deepspeed` | The base does not fit on one GPU, or you prefer DeepSpeed. ZeRO-3, no offload, for every method. Any DeepSpeed op the run uses JIT-compiles on first use, which can add minutes to the first step. | [src/accelerate/deepspeed_z3.yaml](src/accelerate/deepspeed_z3.yaml) |
 
 The command line always sets `--num_machines 1`, `--num_processes <GPUs>` and
@@ -223,6 +223,15 @@ The command line always sets `--num_machines 1`, `--num_processes <GPUs>` and
 **Sharding needs at least 2 GPUs.** `fsdp` and `deepspeed` with an `accelerators`
 count of 1 fail at step creation; when the count is not in `accelerators` (an
 `instance_type` request), the node refuses before training.
+
+**FSDP is FSDP2, on purpose.** peft 0.21.x saves an empty adapter from an
+FSDP1-wrapped model ([huggingface/peft#3876](https://github.com/huggingface/peft/issues/3876)):
+FSDP1 puts `_fsdp_wrapped_module.` inside the module names and peft's save filter
+then matches no LoRA tensor. FSDP2 keeps the names clean. Do not turn on
+`fsdp_activation_checkpointing` in a custom config either: torch's checkpoint
+wrapper hides the LoRA tensors the same way. The trainer's own
+`gradient_checkpointing` is fine. Whatever the cause, the step refuses to register
+an adapter file with no weights.
 
 Verified combinations (method × `distributed`):
 
