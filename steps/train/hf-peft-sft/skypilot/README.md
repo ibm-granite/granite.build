@@ -159,10 +159,10 @@ DeepSpeed uses for its JIT ops matches torch's runtime. The base's
 Only the driver versions above were measured (2026-10-30). On either cluster the
 image's CUDA 13.2 runtime may rely on CUDA minor-version compatibility. On aws it
 works: the aws build test passed on the 580.159.04 driver (2026-10-30 on `-1`, and
-2026-10-31 on `-3`; QLoRA with bitsandbytes 4-bit and aLoRA, 3 steps each). On BlueVela it works under Pyxis on the
-590.48.01 driver (build 611571b7, 2026-10-31, LoRA/FSDP2 and QLoRA/DeepSpeed). If a
-future driver breaks it, the fallback is torch 2.11.0+cu128 on
-`cuda:12.8.1-devel-ubuntu22.04`.
+2026-10-31 on `-3`; QLoRA with bitsandbytes 4-bit and aLoRA, 3 steps each). On
+BlueVela it works under Pyxis on the 590.48.01 driver (build 611571b7, 2026-10-31,
+LoRA/FSDP2 and QLoRA/DeepSpeed). If a future driver breaks it, the fallback is
+torch 2.11.0+cu128 on `cuda:12.8.1-devel-ubuntu22.04`.
 
 ### Choices in the Dockerfile that look odd, and why
 
