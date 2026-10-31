@@ -9,7 +9,7 @@ targets:
   - redact
 target_expectations:
   # step_count 2: the queued hfpull for the hf:// input plus the dpk step.
-  # skypilot/slurm does not set `inline: true` on its hf assetstore pull (unlike
+  # skypilot/slurm/local does not set `inline: true` on its hf assetstore pull (unlike
   # skypilot/aws), so the download is its own step. The env:// output moves no
   # bytes and queues no push step. CALIBRATE against the first green run.
   - target_name: redact

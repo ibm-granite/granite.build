@@ -15,7 +15,7 @@ def test_render_prints_skeleton(tmp_path, monkeypatch, capsys):
     bp = tmp_path / "build.yaml"
     bp.write_text(
         "granite.build:\n  name: d\n  targets:\n    t1:\n"
-        "      environment_uri: space://environments/skypilot/slurm\n"
+        "      environment_uri: space://environments/skypilot/slurm/local\n"
         "      outputs:\n        o: {uri: 'env:///tmp/x', type: fileset}\n"
         "      steps:\n        - step_uri: space://steps/command\n"
     )

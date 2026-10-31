@@ -95,7 +95,7 @@ outlives the target:
 
 | Endpoint | Output URI for a handoff | `output_path` |
 |---|---|---|
-| `skypilot/slurm`, `skypilot/lsf` | `env:///<shared path>` (e.g. under `/proj` on `ibm-bluevela`) | explicit, matching the `uri` |
+| `skypilot/slurm/*`, `skypilot/lsf/*` | `env:///<shared path>` (e.g. under `/proj` on `ibm-bluevela`) | explicit, matching the `uri` |
 | `skypilot/aws` | `s3://bucket/…` (the S3 assetstore pushes it; the consumer pulls it) | may be left default |
 
 Make the path unique per run (e.g. a `$${PARAM}` or

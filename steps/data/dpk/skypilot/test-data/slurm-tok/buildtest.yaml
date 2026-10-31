@@ -13,7 +13,7 @@ targets:
   - tokenize
 target_expectations:
   # step_count is 2: the queued hfpull for the hf:// input, plus the dpk step
-  # itself. The skypilot/slurm environment does NOT set `inline: true` on its hf
+  # itself. The skypilot/slurm/local environment does NOT set `inline: true` on its hf
   # assetstore pull (unlike skypilot/aws), so the download is a separate step rather
   # than injected into the main step's setup. The env:// output moves no bytes, so it
   # queues no push step. CALIBRATE all three numbers against the first green run.

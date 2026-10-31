@@ -364,7 +364,7 @@ granite.build:
   targets:
 
     tokenize:
-      environment_uri: space://environments/skypilot/slurm
+      environment_uri: space://environments/skypilot/slurm/local
       inputs:
         docs:
           uri: hf:///datasets/my-org/dpk-tokenization-sample
@@ -432,12 +432,12 @@ the default lands in the per-target workdir that is removed when the target fini
               output_path: /shared/dpk/tokens    # must match the uri above
 ```
 
-That example is for `skypilot/slurm` and `skypilot/lsf`, where `/shared` is mounted on every
+That example is for the `skypilot/slurm/*` and `skypilot/lsf/*` environments, where `/shared` is mounted on every
 node. What works depends on the endpoint:
 
 | Endpoint | Output URI for a handoff | `output_path` |
 |---|---|---|
-| `skypilot/slurm`, `skypilot/lsf` | `env:///shared/…` | explicit, matching the `uri` |
+| `skypilot/slurm/*`, `skypilot/lsf/*` | `env:///shared/…` | explicit, matching the `uri` |
 | `skypilot/aws` | `s3://bucket/…` (the S3 assetstore pushes it; the consumer pulls it) | may be left default |
 | `skypilot/kubernetes/local` | `env:///shared/…` (the env's shared volume, mounted in every pod) | explicit, matching the `uri` |
 | `skypilot/kubernetes` | none until its shared storage is enabled — the env ships the PVC wiring commented out | — |

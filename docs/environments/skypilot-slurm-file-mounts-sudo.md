@@ -219,7 +219,7 @@ dpk step.yaml notes this directly: the builtin command step has no asset dir, "w
 is why a template cannot ship files this way.")
 
 **The local Docker SLURM fixture passes for a reason that does not generalize.**
-`configurations/assets/environments/skypilot/slurm/environment.yaml:25` sets
+`configurations/assets/environments/skypilot/slurm/local/environment.yaml:50` sets
 `User: root`, and SkyPilot's `ALIAS_SUDO_TO_EMPTY_FOR_ROOT_CMD`
 (`sky/utils/command_runner.py:113`) rewrites `sudo` to a no-op function for root:
 

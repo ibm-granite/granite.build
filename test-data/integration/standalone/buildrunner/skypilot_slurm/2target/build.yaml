@@ -16,7 +16,7 @@ granite.build:
   #     proving the value flowed through the mem:// store on the slurm backend.
   targets:
     first:
-      environment_uri: space://environments/skypilot/slurm
+      environment_uri: space://environments/skypilot/slurm/local
       outputs:
         mem_output1:
           uri: "mem://mem_output1"
@@ -33,7 +33,7 @@ granite.build:
               num_gpus_per_node: 0
               total_memory_per_node: 1Gi
     second:
-      environment_uri: space://environments/skypilot/slurm
+      environment_uri: space://environments/skypilot/slurm/local
       inputs:
         from_first:
           binding: first.mem_output1

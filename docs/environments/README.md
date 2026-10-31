@@ -159,7 +159,7 @@ of them.
 Steps are resolved relative to the active environment (see
 [step-resolution.md](step-resolution.md)). A **single** `step.yaml` at a shared ancestor of
 several environments' directories — e.g. `environments/skypilot/steps/digit/step.yaml` — is
-discovered by every environment beneath it (`skypilot/kubernetes`, `skypilot/slurm`, …) via the
+discovered by every environment beneath it (`skypilot/kubernetes`, `skypilot/slurm/local`, …) via the
 resolver's ancestor-walk. An env's own `steps/<name>/` still overrides. No configuration needed.
 
 ### Restricting a shared step by sub-type (`subtype` / `subtypes`)

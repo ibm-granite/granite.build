@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""DPK tokenization with in-step validation on skypilot/slurm.
+"""DPK tokenization with in-step validation on skypilot/slurm/local.
 
 One target. ``transform: tokenization2arrow`` is the only DPK detail the build
 gives — the step derives the python module and the pip extra — and

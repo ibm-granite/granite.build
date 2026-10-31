@@ -102,7 +102,7 @@ class TestRelativeFilePath:
             "file:///abs/env",
             "/abs/env",
             "file://host/env",
-            "space://environments/skypilot/slurm",
+            "space://environments/skypilot/slurm/local",
             "git+ssh://github.com/org/repo.git",
             "file:{{ space.variables.ENV }}",
             "",

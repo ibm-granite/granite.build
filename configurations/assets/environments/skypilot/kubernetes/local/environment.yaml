@@ -2,7 +2,7 @@
 # skypilot/kubernetes build tests (and the dpk kube-tok fixture) run against.
 # Bring the cluster and its PVC up with `make kube-setup` (scripts/kube/setup-kind.sh).
 #
-# Same model as skypilot/slurm: every pod mounts one shared volume at /shared,
+# Same model as skypilot/slurm/local: every pod mounts one shared volume at /shared,
 # which is this env's shared_workdir, so
 #   * hf:// inputs are pulled ONCE by a separate hfpull step into /shared/hf_cache
 #     (not inline in the consuming step), and every later pod reads them there;

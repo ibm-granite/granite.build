@@ -189,7 +189,7 @@ granite.build:
   name: fm-tune-slurm
   targets:
     tune:
-      environment_uri: space://environments/skypilot/slurm
+      environment_uri: space://environments/skypilot/slurm/local
       inputs:
         dataset: { uri: file:///shared/datasets/alpaca-mini/ }
         base_model: { uri: hf:///ibm-granite/granite-4.0-h-350m }
@@ -366,7 +366,7 @@ this step's build shape:
 
 ## Running (SkyPilot / Slurm)
 
-Submit the build with `environment_uri: space://environments/skypilot/slurm`.
+Submit the build with `environment_uri: space://environments/skypilot/slurm/local`.
 
 - The step ships `src/` with `file_mounts` and runs `bash ./src/fmtune_run.sh`. Every config
   value is shell-quoted by the step template.

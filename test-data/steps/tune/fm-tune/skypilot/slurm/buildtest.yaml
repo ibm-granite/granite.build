@@ -3,7 +3,7 @@ targets:
   - tune
 target_expectations:
   - target_name: tune
-    # The skypilot/slurm env does NOT set `inline: true` on its hf assetstore
+    # The skypilot/slurm/local env does NOT set `inline: true` on its hf assetstore
     # pull, so each hf:// input queues its own hfpull step (2) plus the fm-tune
     # step (see steps/data/dpk/skypilot/test-data/slurm-tok/buildtest.yaml).
     # The env:// output moves no bytes, so no push step.

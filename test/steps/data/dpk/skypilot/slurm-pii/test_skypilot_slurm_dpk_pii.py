@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""PII redaction on skypilot/slurm, through the same `dpk` step as tokenization.
+"""PII redaction on skypilot/slurm/local, through the same `dpk` step as tokenization.
 
 **This test exists to prove the step is general.** The sibling
 ``test/slurm-tok/test_skypilot_slurm_dpk_tok.py`` already shows tokenization working; this

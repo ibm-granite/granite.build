@@ -5,7 +5,7 @@ granite.build:
   # not GPU training.
   targets:
     tune:
-      environment_uri: space://environments/skypilot/slurm
+      environment_uri: space://environments/skypilot/slurm/local
       inputs:
         dataset:
           uri: hf:///datasets/axolotl-ai-co/alpaca_100_test
