@@ -55,7 +55,8 @@ def space_storage():
         table_name="test_get_by_where_retry"
     )
     storage.add(StoredSpace(name="s1", git_repo_uri="file:///s1"))
-    return storage
+    yield storage
+    storage.delete_table()
 
 
 @pytest.fixture
@@ -74,7 +75,8 @@ def artifact_registry():
                 tags=tags,
             )
         )
-    return registry
+    yield registry
+    registry.delete_table()
 
 
 def _fail_then_succeed(storage, failures):

@@ -179,10 +179,10 @@ class SQLLineageIndexStorageTests(
         ``table_name_prefix`` in a real deployment triggers, and an over-long name
         would make the table creation itself fail.
         """
-        # Long enough that "<table>_job_id_input_output" exceeds 63 chars. Built on
-        # the prefixed table name so the base class's teardown never sees it, and
-        # dropped here.
-        table = (self._get_tested_storage().table_name + "_" + "x" * 63)[:63]
+        # Long enough that "<table>_job_id_input_output" exceeds 63 chars. The prefixed
+        # name is already 63 chars, so swap its tail to get a distinct table that the
+        # base class's teardown never sees, and drop it here.
+        table = self._get_tested_storage().table_name[:-2] + "_x"
         storage = self._get_storage_factory().create_lineage_row_storage(
             table_name=table
         )

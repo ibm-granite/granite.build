@@ -38,10 +38,13 @@ _SINGLETON_GLOBALS = ("__STORAGE", "__STORAGE_FACTORY")
 
 
 def _real_db_tables(db_path: Path) -> set[str]:
+    """Return the table names in the SQLite db at ``db_path``, or an empty set if it doesn't exist."""
     if not db_path.exists():
         return set()
     # Read-only, so the guard itself never touches the developer's db.
-    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+    with closing(
+        sqlite3.connect(db_path.absolute().as_uri() + "?mode=ro", uri=True)
+    ) as conn:
         rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         return {name for (name,) in rows}
 
@@ -85,6 +88,7 @@ def _guard_real_gb_home_db(request):
 
 @pytest.fixture(autouse=True)
 def _isolate_gb_home_dir(tmp_path_factory, monkeypatch):
+    """Point GB_HOME_DIR at a fresh temp dir for each test and restore the storage singletons after it."""
     # Outside the test's own tmp_path: some tests assert exactly what is in it, and
     # some create a "gb_home" there themselves to check it gets created.
     home = tmp_path_factory.mktemp("gb_home_sqlite")
