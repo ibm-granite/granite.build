@@ -39,7 +39,7 @@ from it may be vendored, baked into an image, mirrored or pushed.
   match the pin refuses to run and never replaces a good cache. Nothing from the
   repository is baked, mirrored or pushed by us. `GRANITE_EVALS_NL2REPO_DIR` (or
   `--dataset`) points at an existing `test_files/` tree fetched by other means.
-- **The OpenHands app image (`docker.all-hands.dev/all-hands-ai/openhands:0.56`)
+- **The OpenHands app image (`ghcr.io/all-hands-ai/openhands:0.56`)
   and the per-task GHCR test images
   (`ghcr.io/multimodal-art-projection/nl2repobench/<task>:1.0`) are pulled from
   their upstream registries at run time via enroot** (into `sandbox_cache`) and are
@@ -105,7 +105,7 @@ fetch above.
 |---|---|---|
 | `agent` | `model` | `gold` grades each task image with an untouched workspace (see below). |
 | `tasks` | (all) | Regex on the task name, e.g. `^six$`. |
-| `openhands_image` | `docker.all-hands.dev/all-hands-ai/openhands:0.56` | The agent app image. |
+| `openhands_image` | `ghcr.io/all-hands-ai/openhands:0.56` | The agent app image. |
 | `image_prefix` / `image_tag` | `ghcr.io/multimodal-art-projection/nl2repobench` / `1.0` | The per-task grade images. |
 | `max_iterations` | `500` | OpenHands agent iterations (upstream's setting). |
 | `enable_browsing` | `true` | Upstream's default; OpenHands 0.56's browsing runs a local browser, no API key. |

@@ -145,7 +145,10 @@ TASK_FILES = (
 )
 
 # OpenHands 0.56 (app image) under enroot; the per-task grade images.
-OPENHANDS_IMAGE = "docker.all-hands.dev/all-hands-ai/openhands:0.56"
+# ghcr.io directly: upstream's docker.all-hands.dev was only ever a GHCR
+# proxy and its DNS no longer resolves, so an enroot import of the old
+# URL fails at name resolution.
+OPENHANDS_IMAGE = "ghcr.io/all-hands-ai/openhands:0.56"
 IMAGE_PREFIX = "ghcr.io/multimodal-art-projection/nl2repobench"
 IMAGE_TAG = "1.0"
 
