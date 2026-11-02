@@ -90,7 +90,7 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `workers` | Concurrent tasks (agent sandboxes + requests to vLLM). |
 | `dataset` / `dataset_revision` | Override the pinned task data with a LOCAL PATH to an existing `test_files/` tree (trusted, not digest-checked — the pin's sha256 is then recorded as absent in results.json). |
 | `options` | Space-separated `key=value` benchmark options; see below. |
-| `phase` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`granite_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json`. |
+| `phase` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`granite_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json`. A `generate` phase in which no task generated fails the run (an infrastructure failure, not a score) instead of leaving an empty generation for `score` to grade `0.0`. |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | vLLM. |
 | `sandbox_cache` | Shared squashfs cache for the OpenHands and per-task test images. Every benchmark in this family sandboxes, so recipes always set this. |
 | `hf_home` | Overrides `HF_HOME`. |

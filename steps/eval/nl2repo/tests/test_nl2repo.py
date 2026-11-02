@@ -530,6 +530,28 @@ def test_generate_without_an_endpoint_is_an_error(bench, tmp_path):
         bench._generate(task, tmp_path, "", "m", 0)
 
 
+def test_generate_fails_loudly_when_no_task_generated(tmp_path, monkeypatch):
+    # The first on-cluster model run generated 0/5 tasks (a dead agent-image
+    # registry) and the phase still exited 0; a score phase on that empty
+    # generation would have reported a silent 0.0 as a result.
+    make_task(tmp_path / "tasks")
+    bench = nr.NL2RepoBench(
+        RunConfig(
+            model="m",
+            output_dir=tmp_path / "out",
+            dataset=str(tmp_path / "tasks"),
+            phase="generate",
+        )
+    )
+
+    def boom(task, idir, base_url, served, k):
+        raise RuntimeError("agent sandbox exploded")
+
+    monkeypatch.setattr(bench, "_generate", boom)
+    with pytest.raises(SystemExit, match="0/1 tasks generated"):
+        bench.run("http://llm:8000/v1", "m")
+
+
 def test_gold_workspace_is_start_md_only(bench, tmp_path):
     task = nr.Task(make_task(tmp_path / "tasks", start="# spec\n"))
     ws_tar = tmp_path / "workspace.tar.gz"
@@ -901,11 +923,6 @@ def test_infrastructure_failures_within_the_allowed_fraction_are_reported(
 
 def test_generate_phase_leaves_failed_tasks_for_a_rerun(tmp_path, monkeypatch):
     two_tasks(tmp_path / "tasks")
-
-    def broken(*a, **k):
-        raise ConnectionError("down")
-
-    monkeypatch.setattr(nr, "make_sandbox", broken)
     bench = nr.NL2RepoBench(
         RunConfig(
             model="m",
@@ -914,9 +931,18 @@ def test_generate_phase_leaves_failed_tasks_for_a_rerun(tmp_path, monkeypatch):
             phase="generate",
         )
     )
+    real = bench._generate
+
+    def flaky(task, idir, base_url, served, k):
+        if task.name == "b":
+            raise ConnectionError("down")
+        return real(task, idir, base_url, served, k)
+
+    monkeypatch.setattr(nr, "make_sandbox", SandboxFactory(RUN_OUTPUTS))
+    monkeypatch.setattr(bench, "_generate", flaky)
     out = bench.run("http://llm:8000/v1", "granite-4.2")
-    assert out["n"] == 0  # no SystemExit: rerunning generate retries them
-    assert sorted(out["per_repeat"][0]["failed"]) == ["a", "b"]
+    assert out["n"] == 1  # a PARTIAL failure returns: a rerun retries only "b"
+    assert out["per_repeat"][0]["failed"] == ["b"]
 
 
 # -- run(): gold ------------------------------------------------------------------

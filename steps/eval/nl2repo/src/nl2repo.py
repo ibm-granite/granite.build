@@ -658,6 +658,17 @@ class NL2RepoBench(Benchmark):
                 all(not rs[i]["status"].startswith("error:") for rs in all_reports)
                 for i in range(len(tasks))
             ]
+            if tasks and not any(ok):
+                # 0/N generated is an infrastructure failure, not a result:
+                # without this the phase exits 0 and a score phase on the
+                # empty generation reports a silent 0.0. (A partial failure
+                # still returns normally: the score phase's failure policy
+                # gates it, and a rerun retries only the failed tasks.)
+                raise SystemExit(
+                    f"{self.id}: 0/{len(tasks)} tasks generated -- an "
+                    "infrastructure failure, not a score; the per-task errors "
+                    "above say why. Rerun --phase generate to retry them."
+                )
             return {"n": sum(ok), **out}
         rates = [
             [float(rs[i]["rate"]) for rs in all_reports] for i in range(len(tasks))
