@@ -28,7 +28,7 @@ HF_HOME: ""
 # Fill with the tag of a built + pushed family image before the first run:
 #   make -C steps/eval image-mcpmark REGISTRY=us.icr.io/cil15-shared-registry publish-image-mcpmark REGISTRY=...
 # (the tag defaults to the building checkout's git short SHA).
-IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-mcpmark:60be4d8f"
+IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-mcpmark:8b55a231"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""
