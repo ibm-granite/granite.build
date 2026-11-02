@@ -42,12 +42,12 @@ granite.build:
               secrets:
                 secret_names_to_use_as_env_variable:
                   - env_name: HF_TOKEN
-              launcher_config:
-                resources:
-                  accelerators: "H200:$${TENSOR_PARALLEL_SIZE}"
-                  cluster: "$${CLUSTER}"
-                  zone: "$${QUEUE}"
-                  memory: $${GPU_MEMORY}
+            launcher_config:
+              resources:
+                accelerators: "H200:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
     officeqa-pro:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
@@ -78,9 +78,9 @@ granite.build:
               secrets:
                 secret_names_to_use_as_env_variable:
                   - env_name: HF_TOKEN
-              launcher_config:
-                resources:
-                  cluster: "$${CLUSTER}"
-                  zone: "$${CPU_QUEUE}"
-                  memory: $${SCORE_MEMORY}
-                  cpus: "$${SCORE_CPUS}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${CPU_QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"
