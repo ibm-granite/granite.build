@@ -35,7 +35,7 @@ configurations/assets/environments/skypilot/
 
 Place a step at the level of the family whose members should share it (`skypilot/steps/` for all skypilot envs, `skypilot/lsf/steps/` for just the lsf endpoints).  Keep a per-endpoint override in the env's own `steps/` dir when one endpoint genuinely diverges.
 
-The walk starts at the env's own dir, so a nested env such as `skypilot/slurm/local` checks `slurm/local/steps/`, then `slurm/steps/` (not present today; if added, it would be shared by every SLURM endpoint, e.g. `local` and `ibm-bluevela`), then `skypilot/steps/`.
+The walk starts at the env's own dir, so a nested env such as `skypilot/slurm/local` checks `slurm/local/steps/`, then `slurm/steps/` (not present today; if added, it would be shared by every SLURM endpoint, e.g. `local` and `bluevela`), then `skypilot/steps/`.
 
 ## Restricting a shared step by sub-type (`subtype` / `subtypes`)
 

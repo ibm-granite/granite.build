@@ -30,7 +30,7 @@ configurations/
 │   │   │   │       └── <name>/step.yaml # wins over the shared ../steps copy
 │   │   │   └── slurm/
 │   │   │       ├── local/environment.yaml         # inherits ../../steps
-│   │   │       └── ibm-bluevela/environment.yaml  # inherits ../../steps
+│   │   │       └── bluevela/environment.yaml      # inherits ../../steps
 │   │   └── skypilot-managed/
 │   │       └── kubernetes/environment.yaml
 │   ├── steps/
