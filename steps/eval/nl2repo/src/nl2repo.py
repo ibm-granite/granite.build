@@ -101,6 +101,7 @@ Options: ``agent=model|gold``, ``tasks`` (regex), ``openhands_image``,
 from __future__ import annotations
 
 import base64
+import binascii
 import concurrent.futures
 import functools
 import hashlib
@@ -480,8 +481,26 @@ def llm_key(served_model_name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", served_model_name)
 
 
-def _unb64(text: str) -> bytes:
-    return base64.b64decode("".join(text.split()), validate=True)
+# Staging markers: what a staging command prints between them is the payload,
+# everything outside is image or wrapper noise. The OpenHands image prepends
+# its entrypoint banner ("Starting OpenHands...") to EVERY command's stdout --
+# including a bare `tar | base64`, whose stream then fails to decode while the
+# exit code stays 0. Fencing the payload makes staging immune to that.
+B64_BEGIN = "__nl2repo_staged_begin__"
+B64_END = "__nl2repo_staged_end__"
+_B64_FENCE = re.compile(r"__nl2repo_staged_begin__\n(.*?)__nl2repo_staged_end__", re.DOTALL)
+
+
+def _staged_tar(text: str) -> bytes | None:
+    """The base64 tar fenced by the staging markers in ``text``, decoded;
+    ``None`` when the fence is absent or the payload does not decode."""
+    m = _B64_FENCE.search(text)
+    if m is None:
+        return None
+    try:
+        return base64.b64decode("".join(m.group(1).split()), validate=True)
+    except binascii.Error:
+        return None
 
 
 def _dir_tar_b64(ws: Path) -> str:
@@ -828,8 +847,15 @@ class NL2RepoBench(Benchmark):
             sb.execute(f"mkdir -p {RUN_DIR}/workspace")
             sb.write_file(f"{RUN_DIR}/workspace/start.md", task.start_md)
             sb.write_file(f"{RUN_DIR}/config.toml", config)
+            # The image's entrypoint activates /app/.venv, which carries
+            # OpenHands' dependencies; a bare "python" is the image's system
+            # one, which finds the package (PYTHONPATH=/app) but not its
+            # dependencies (dotenv, ...). VIRTUAL_ENV is baked into the
+            # image; the literal is the fallback for an image without it.
             result = sb.execute(
-                f'cd {RUN_DIR} && python -m openhands.core.main --config-file={RUN_DIR}/config.toml -t "$OH_TASK"',
+                f'cd {RUN_DIR} || exit 1; PY="${{VIRTUAL_ENV:-/app/.venv}}/bin/python"; '
+                f'[ -x "$PY" ] || PY=python; '
+                f'exec "$PY" -m openhands.core.main --config-file={RUN_DIR}/config.toml -t "$OH_TASK"',
                 cwd=RUN_DIR,
                 timeout=self.opt("agent_timeout", AGENT_TIMEOUT_S) or None,
             )
@@ -842,14 +868,16 @@ class NL2RepoBench(Benchmark):
                 "duration_s": round(time.time() - started, 1),
             }
             # The workspace and trajectories live in the sandbox's mounted
-            # /tmp; carry them out as base64 tars over stdout.
+            # /tmp; carry them out as base64 tars over stdout, fenced by the
+            # staging markers (see _staged_tar): the OpenHands image prepends
+            # its startup banner to every command's stdout.
             ws = sb.execute(
-                f"set -o pipefail && tar -czf - -C {RUN_DIR} workspace 2>/dev/null | base64",
+                f"set -o pipefail && echo {B64_BEGIN} && "
+                f"(tar -czf - -C {RUN_DIR} workspace 2>/dev/null | base64) && echo {B64_END}",
                 timeout=STAGE_TIMEOUT_S,
             )
-            if ws.returncode == 0 and ws.output.strip():
-                ws_tar_data = _unb64(ws.output)
-            else:
+            ws_tar_data = _staged_tar(ws.output)
+            if ws_tar_data is None:
                 log.warning(
                     "%s: staging the workspace out failed (exit %d); grading an empty workspace",
                     task.name,
@@ -858,11 +886,12 @@ class NL2RepoBench(Benchmark):
                 ws_tar_data = _empty_workspace_tar()
             trajectory = sb.execute(
                 f"set -o pipefail; if [ -d {RUN_DIR}/trajectories ]; then "
-                f"tar -czf - -C {RUN_DIR} trajectories 2>/dev/null | base64; fi",
+                f"echo {B64_BEGIN} && (tar -czf - -C {RUN_DIR} trajectories 2>/dev/null | base64) "
+                f"&& echo {B64_END}; fi",
                 timeout=STAGE_TIMEOUT_S,
             )
-            if trajectory.returncode == 0 and trajectory.output.strip():
-                (idir / "trajectory.tar.gz").write_bytes(_unb64(trajectory.output))
+            if (traj := _staged_tar(trajectory.output)) is not None:
+                (idir / "trajectory.tar.gz").write_bytes(traj)
         (idir / "workspace.tar.gz").write_bytes(ws_tar_data)
         (idir / "meta.json").write_text(json.dumps(meta, indent=2))
 
