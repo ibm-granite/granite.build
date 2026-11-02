@@ -15,7 +15,7 @@
 """Unit tests for the pure helpers in src/hf_peft_sft_train.py.
 
 The module imports with the standard library only (torch/peft/trl are imported
-inside main()), so these run in the repo venv. PYTHONPATH=src (make test) puts
+inside the private helpers main() calls), so these run in the repo venv. PYTHONPATH=src (make test) puts
 it on the path.
 """
 
@@ -301,10 +301,31 @@ class TestDatasetLoadSpec:
             t.dataset_load_spec(str(d), split, "")
         assert repr(split) in str(e.value)
 
+    @pytest.mark.parametrize(
+        "split",
+        [
+            " train[:2]",
+            "train[:2] ",
+            "\ttrain",
+            "train\n",
+            "train [:2]",
+            "train[:2] + train[5:]",
+        ],
+    )
+    def test_split_with_whitespace_is_an_error(self, tmp_path, split):
+        # datasets' arrow builder refuses each with a raw ValueError.
+        d = _saved_dataset(tmp_path / "ds", ["data-00000-of-00001.arrow"])
+        with pytest.raises(t.StepError, match="whitespace") as e:
+            t.dataset_load_spec(str(d), split, "")
+        assert repr(split) in str(e.value)
+
     def test_slices_of_the_one_split_can_be_combined(self, tmp_path):
         d = _saved_dataset(tmp_path / "ds", ["data-00000-of-00001.arrow"])
         split = "train[:2]+train[5:]"
-        assert t.dataset_load_spec(str(d), split, "")[1]["split"] == split
+        assert t.dataset_load_spec(str(d), split, "")[1] == {
+            "data_files": {"train": [str(d / "data-00000-of-00001.arrow")]},
+            "split": split,
+        }
 
     @pytest.mark.parametrize("split", ["[:2]", "train+test"])
     def test_hf_ids_pass_the_split_through(self, split):

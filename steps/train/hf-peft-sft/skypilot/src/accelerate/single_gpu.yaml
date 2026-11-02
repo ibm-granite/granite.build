@@ -1,7 +1,8 @@
 # DDP on one GPU: a single process, no distributed backend. The step always
 # passes a config file so accelerate never reads a user's
 # ~/.cache/huggingface/accelerate/default_config.yaml.
-# mixed_precision is overridden on the accelerate command line.
+# num_processes and num_machines come from the accelerate command line;
+# mixed_precision is overridden by it.
 compute_environment: LOCAL_MACHINE
 distributed_type: "NO"
 machine_rank: 0

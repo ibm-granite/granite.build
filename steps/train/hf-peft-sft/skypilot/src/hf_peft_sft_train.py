@@ -107,10 +107,16 @@ def _saved_split_name(split: str) -> str:
 
     :param split: The dataset_split spec, e.g. ``train[:1000]``.
     :returns: The split name, e.g. ``train``.
-    :raises StepError: When the spec has no split name, or names more than one
-        split (a saved Dataset has only one).
+    :raises StepError: When the spec has whitespace (datasets' arrow builder
+        refuses it with a raw ValueError), has no split name, or names more
+        than one split (a saved Dataset has only one).
     """
-    names = {sub.split("[", 1)[0].strip() for sub in split.split("+")}
+    if any(c.isspace() for c in split):
+        raise StepError(
+            f"dataset_split {split!r} has whitespace; remove it, e.g. "
+            "'train[:1000]' or 'train[:10]+train[-10:]'."
+        )
+    names = {sub.split("[", 1)[0] for sub in split.split("+")}
     if "" in names:
         raise StepError(
             f"dataset_split {split!r} has no split name; give one before any "

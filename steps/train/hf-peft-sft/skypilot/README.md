@@ -32,7 +32,8 @@ src/                        baked into the image at /opt/hf-peft-sft/
   hf_peft_sft_setup.sh        image sanity check: train script present, training stack imports
   hf_peft_sft_run.sh          GPU count, accelerate config, ClearML on/off, launch, swap, markers
   hf_peft_sft_train.py        StepArgs + SFTConfig parsing, model/LoraConfig, SFTTrainer, save
-  accelerate/                 fsdp.yaml, fsdp_qlora.yaml, deepspeed_z3.yaml (from peft's examples); ddp.yaml, single_gpu.yaml
+  accelerate/                 fsdp.yaml, fsdp_qlora.yaml, deepspeed_z3.yaml (adapted from peft's examples);
+                              ddp.yaml, single_gpu.yaml (step-authored)
 test/                       unit tests at the root; one dir per cluster build test
   test_docs.py
   test_dockerfile.py
@@ -56,8 +57,9 @@ USAGE.md                    user doc; published as the released step's README.md
 README.md                   this file; not published
 ```
 
-The accelerate configs are adapted from peft's `examples/sft/configs/` (Apache-2.0;
-each file says so). There is one DeepSpeed config: ZeRO-3 works for QLoRA as is,
+The fsdp*.yaml and deepspeed_z3.yaml accelerate configs are adapted from peft's
+`examples/sft/configs/` (Apache-2.0; each file says so). ddp.yaml and
+single_gpu.yaml are the step's own. There is one DeepSpeed config: ZeRO-3 works for QLoRA as is,
 because the 4-bit storage dtype is set to bf16 when sharding (see below).
 
 ## Why the shell lives in src/
@@ -80,7 +82,8 @@ GPUs at all, and sharding on one GPU when the build asked for an `instance_type`
 instead of a counted `accelerators` string.
 
 `hf_peft_sft_train.py` imports only the standard library at module level. torch,
-peft, trl, transformers and datasets are imported inside `main()`. So the pure
+peft, trl, transformers and datasets are imported inside the private helpers
+`main()` calls (`_training_args`, `_load_model`, ...). So the pure
 helpers (format detection, the aLoRA invocation check, `use_reentrant`, the model
 and bitsandbytes kwargs, the `Step:` line, the `base_model_name_or_path` rewrite)
 are unit-tested in the repo venv, which has none of those packages.
