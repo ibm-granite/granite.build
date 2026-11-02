@@ -167,9 +167,77 @@ def test_rewrite_base_model():
     assert t.rewrite_base_model(cfg, "") == cfg
 
 
+def _saved_dataset(d, files, write=None):
+    """A fake single-Dataset save_to_disk dir: state.json listing `files`."""
+    import json
+
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "state.json").write_text(
+        json.dumps({"_data_files": [{"filename": f} for f in files]})
+    )
+    for f in files if write is None else write:
+        (d / f).write_bytes(b"")
+    return d
+
+
+class TestDatasetLoadSpec:
+    def test_hf_id_without_config(self):
+        assert t.dataset_load_spec("trl-lib/Capybara", "train", "") == (
+            "trl-lib/Capybara",
+            {"split": "train"},
+        )
+
+    def test_hf_id_with_config_adds_name(self):
+        assert t.dataset_load_spec(
+            "HuggingFaceTB/smoltalk", "train[:100]", "everyday-conversations"
+        ) == (
+            "HuggingFaceTB/smoltalk",
+            {"split": "train[:100]", "name": "everyday-conversations"},
+        )
+
+    def test_dataset_dict_dir_is_loaded_by_path(self, tmp_path):
+        (tmp_path / "dataset_dict.json").write_text('{"splits": ["train"]}')
+        (tmp_path / "state.json").write_text("{}")
+        assert t.dataset_load_spec(str(tmp_path), "train", "c") == (
+            str(tmp_path),
+            {"split": "train", "name": "c"},
+        )
+
+    def test_single_dataset_dir_loads_as_arrow(self, tmp_path):
+        files = ["data-00000-of-00002.arrow", "data-00001-of-00002.arrow"]
+        d = _saved_dataset(tmp_path / "ds", files)
+        assert t.dataset_load_spec(str(d), "train[:10]", "ignored") == (
+            "arrow",
+            {
+                "data_files": {"train": [str(d / f) for f in files]},
+                "split": "train[:10]",
+            },
+        )
+
+    @pytest.mark.parametrize("state", ["{not json", "[]", "{}", '{"_data_files": []}'])
+    def test_bad_state_json_is_an_error(self, tmp_path, state):
+        (tmp_path / "state.json").write_text(state)
+        with pytest.raises(t.StepError, match="state.json"):
+            t.dataset_load_spec(str(tmp_path), "train", "")
+
+    def test_unreadable_state_json_is_an_error(self, tmp_path):
+        (tmp_path / "state.json").mkdir()
+        with pytest.raises(t.StepError, match="state.json"):
+            t.dataset_load_spec(str(tmp_path), "train", "")
+
+    def test_missing_listed_file_is_an_error(self, tmp_path):
+        files = ["data-00000-of-00002.arrow", "data-00001-of-00002.arrow"]
+        d = _saved_dataset(tmp_path / "ds", files, write=files[:1])
+        with pytest.raises(t.StepError, match="data-00001-of-00002.arrow"):
+            t.dataset_load_spec(str(d), "train", "")
+
+
 def test_step_arg_fields_match_the_dataclass():
     assert tuple(f.name for f in dataclasses.fields(t.StepArgs)) == t.STEP_ARG_FIELDS
-    assert len(t.STEP_ARG_FIELDS) == 13
+    assert len(t.STEP_ARG_FIELDS) == 14
+    assert t.STEP_ARG_FIELDS.index("dataset_config") == (
+        t.STEP_ARG_FIELDS.index("dataset_split") + 1
+    )
 
 
 def test_step_arg_fields_do_not_collide_with_sftconfig():

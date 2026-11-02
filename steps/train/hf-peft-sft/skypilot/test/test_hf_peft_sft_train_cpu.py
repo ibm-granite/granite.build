@@ -40,19 +40,32 @@ def model_dir(tmp_path_factory):
     return snapshot_download(_MODEL, cache_dir=str(tmp_path_factory.mktemp("hf")))
 
 
+_ROWS = [
+    {
+        "messages": [
+            {"role": "user", "content": f"q{i}"},
+            {"role": "assistant", "content": f"a{i}"},
+        ]
+    }
+    for i in range(8)
+]
+
+
 @pytest.fixture(scope="module")
 def dataset_dir(tmp_path_factory):
+    """A hub-style dataset dir: a train.jsonl that load_dataset resolves."""
     d = tmp_path_factory.mktemp("ds")
-    rows = [
-        {
-            "messages": [
-                {"role": "user", "content": f"q{i}"},
-                {"role": "assistant", "content": f"a{i}"},
-            ]
-        }
-        for i in range(8)
-    ]
-    (d / "train.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (d / "train.jsonl").write_text("".join(json.dumps(r) + "\n" for r in _ROWS))
+    return d
+
+
+@pytest.fixture(scope="module")
+def saved_dataset_dir(tmp_path_factory):
+    """A single-Dataset save_to_disk dir (state.json + data-*.arrow)."""
+    from datasets import Dataset
+
+    d = tmp_path_factory.mktemp("saved") / "ds"
+    Dataset.from_list(_ROWS).save_to_disk(str(d))
     return d
 
 
@@ -112,6 +125,18 @@ def test_trains_and_saves_an_adapter(tmp_path, model_dir, dataset_dir, method):
     assert (out / "tokenizer_config.json").is_file()
     assert cfg["base_model_name_or_path"] == "org/tiny"
     assert bool(cfg.get("alora_invocation_tokens")) == (method == "alora")
+
+
+def test_trains_on_a_save_to_disk_dataset_with_a_sliced_split(
+    tmp_path, model_dir, saved_dataset_dir
+):
+    proc = _train(
+        model_dir, saved_dataset_dir, tmp_path / "out", "--dataset_split", "train[:6]"
+    )
+    assert proc.returncode == 0, proc.stdout[-3000:] + proc.stderr[-3000:]
+    assert "6 training rows, format messages" in proc.stdout
+    assert "Step: 2/2" in proc.stdout
+    assert (tmp_path / "out" / "adapter_model.safetensors").is_file()
 
 
 def test_wrong_invocation_fails_before_training(tmp_path, model_dir, dataset_dir):

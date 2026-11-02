@@ -42,6 +42,7 @@ class StepArgs:
         default="", metadata={"help": "staged dir or HF id"}
     )
     dataset_split: str = "train"
+    dataset_config: str = ""
     lora_r: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.05
@@ -79,6 +80,49 @@ def detect_format(columns: list[str]) -> str:
         "'messages' column (conversational), 'prompt' + 'completion' columns, or a "
         "'text' column. Reshape the data in an upstream step."
     )
+
+
+def dataset_load_spec(path: str, split: str, config: str) -> tuple[str, dict]:
+    """Return the (builder_or_path, kwargs) for datasets.load_dataset.
+
+    A single-Dataset save_to_disk dir (state.json, no dataset_dict.json) is
+    refused by load_dataset, so it loads through the `arrow` builder from the
+    files state.json lists. Not load_from_disk: that cannot apply split slicing
+    (train[:1000]), which dataset_split promises for either source. A saved
+    Dataset has no configs, so `config` is ignored there. Everything else (HF
+    ids, hub-style dirs, DatasetDict save_to_disk dirs) goes to load_dataset as is.
+    """
+    import json
+    import os
+
+    state = os.path.join(path, "state.json")
+    if not (
+        os.path.isdir(path)
+        and os.path.exists(state)
+        and not os.path.exists(os.path.join(path, "dataset_dict.json"))
+    ):
+        return path, {"split": split, **({"name": config} if config else {})}
+    try:
+        with open(state, encoding="utf-8") as f:
+            entries = json.load(f).get("_data_files")
+    except (OSError, ValueError, AttributeError) as e:
+        raise StepError(
+            f"{state} is not a readable save_to_disk state file ({e})."
+        ) from e
+    if not entries or not isinstance(entries, list):
+        raise StepError(
+            f"{state} lists no _data_files; the save_to_disk dataset is incomplete."
+        )
+    files = []
+    for entry in entries:
+        name = entry.get("filename") if isinstance(entry, dict) else None
+        full = os.path.join(os.path.abspath(path), name) if name else ""
+        if not full or not os.path.isfile(full):
+            raise StepError(
+                f"{state} lists data file {name!r}, which is missing from {path}."
+            )
+        files.append(full)
+    return "arrow", {"data_files": {split.split("[", 1)[0]: files}, "split": split}
 
 
 def contains_subsequence(seq: list[int], sub: list[int]) -> bool:
@@ -265,7 +309,10 @@ def main(argv: list[str] | None = None) -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    dataset = load_dataset(step.dataset_path, split=step.dataset_split)
+    builder, load_kw = dataset_load_spec(
+        step.dataset_path, step.dataset_split, step.dataset_config
+    )
+    dataset = load_dataset(builder, **load_kw)
     fmt = detect_format(list(dataset.column_names))
     print(f"hf-peft-sft: {len(dataset)} training rows, format {fmt}", flush=True)
 

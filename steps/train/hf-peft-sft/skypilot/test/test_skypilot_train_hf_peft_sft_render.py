@@ -304,6 +304,7 @@ class TestValidation:
             "method",
             "lora_r",
             "base_model_id",
+            "dataset_config",
         ],
     )
     def test_step_owned_args_refused(self, key):
@@ -371,6 +372,8 @@ class TestRunArgv:
             "trl-lib/Capybara",
             "--dataset_split",
             "train",
+            "--dataset_config",
+            "",
             "--lora_r",
             "16",
             "--lora_alpha",
@@ -386,6 +389,16 @@ class TestRunArgv:
             _argv("run", _ctx(bindings=_DS, dataset_name=""), "hf_peft_sft_run.sh")
         )
         assert tail[:2] == ["--dataset_path", "/staged/ds"]
+
+    @pytest.mark.parametrize("bindings", [None, _DS])
+    def test_dataset_config_reaches_the_trainer(self, bindings):
+        ctx = _ctx(
+            bindings=bindings,
+            dataset_name="" if bindings else "HuggingFaceTB/smoltalk",
+            dataset_config="everyday-conversations",
+        )
+        tail = _tail(_argv("run", ctx, "hf_peft_sft_run.sh"))
+        assert _opt(tail, "--dataset_config") == "everyday-conversations"
 
     def test_lora_lists_and_alora(self):
         ctx = _ctx(

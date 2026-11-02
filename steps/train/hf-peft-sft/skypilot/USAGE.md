@@ -37,13 +37,14 @@ Inputs are assetstore bindings (portable across endpoints), not `file_mounts`.
 | Name | Kind | Required | Type | Purpose |
 |---|---|---|---|---|
 | `base_model` | input | **yes** | model | The model to adapt. Must be a Hugging Face model directory with a `config.json` at its root. An `hf://` URI or a prior-step model binding. Passed as `--model_name_or_path <path>`. |
-| `dataset` | input | no | dataset | Training data as a staged dataset dir (for example an `hf:///datasets/...` URI). Passed to `load_dataset(<path>, split=<dataset_split>)`. |
+| `dataset` | input | no | dataset | Training data as a staged dataset dir (for example an `hf:///datasets/...` URI). Passed to `load_dataset(<path>, split=<dataset_split>)`; a `datasets` `save_to_disk` dir also works. |
 | `adapter` | output | no | model | The trained PEFT adapter dir. Registered under the name in `hf_peft_sft_config.output` (default `adapter`). |
 
 **Exactly one data source.** Either bind a `dataset` input or set
 `hf_peft_sft_config.dataset_name` (an HF Hub dataset id). Setting both, or neither,
 fails the build at step creation, before any node is provisioned.
-`dataset_split` applies to either source.
+`dataset_split` and `dataset_config` apply to either source. A bound `dataset` may
+also be a `datasets` `save_to_disk` directory, of a single `Dataset` or a `DatasetDict`.
 
 The data must be in one of TRL's standard SFT formats, detected from the columns:
 a `messages` column (conversational, formatted with the model's chat template),
@@ -98,6 +99,7 @@ All fields live under the step's `config.hf_peft_sft_config`.
 | `output_path` | string | `""` | Where the adapter is written and registered from. Empty means `./adapter_output` in the per-target workdir, which teardown removes. See [The adapter output](#the-adapter-output). |
 | `dataset_name` | string | `""` | HF Hub dataset id. Exactly one of this or a bound `dataset` input supplies the training data. |
 | `dataset_split` | string | `train` | The `load_dataset` split spec, for either data source. Slicing works (`train[:1000]`). Must not be empty. |
+| `dataset_config` | string | `""` | The dataset's config (subset) name, passed to `load_dataset` as `name`; needed for datasets that have several, for example `dataset_name: HuggingFaceTB/smoltalk` with `dataset_config: everyday-conversations`. Empty passes none. Ignored for a single-`Dataset` `save_to_disk` dir. |
 | `lora` | map | `{r: 16, alpha: 32, dropout: 0.05, target_modules: all-linear, modules_to_save: []}` | peft `LoraConfig`. `r` (positive integer, the rank), `alpha` (positive integer, `lora_alpha`), `dropout` (number in [0, 1), `lora_dropout`), `target_modules` (`all-linear` or a non-empty list of module names), `modules_to_save` (list of module names trained in full and saved with the adapter, for example `[lm_head]`). Other keys are refused. The step always uses `bias: none` and `task_type: CAUSAL_LM`. |
 | `alora_invocation_string` | string | `""` | Required for `method: alora`, refused otherwise: the text after which the adapter activates. See [Methods](#methods). |
 | `base_model_id` | string | `""` | A portable base id (for example `ibm-granite/granite-3.3-2b-instruct`) written into the adapter's `adapter_config.json` as `base_model_name_or_path`. Empty leaves peft's value, which is the node-local staging dir. |
@@ -153,9 +155,9 @@ place of `_`):
 output_dir, report_to, push_to_hub, hub_model_id, hub_strategy, hub_token,
 hub_private_repo, resume_from_checkpoint, save_strategy, bf16, fp16, fsdp,
 fsdp_config, deepspeed, gradient_checkpointing_kwargs, model_name_or_path, method,
-distributed, mixed_precision, dataset_path, dataset_split, lora_r, lora_alpha,
-lora_dropout, lora_target_modules, lora_modules_to_save, alora_invocation_string,
-base_model_id
+distributed, mixed_precision, dataset_path, dataset_split, dataset_config, lora_r,
+lora_alpha, lora_dropout, lora_target_modules, lora_modules_to_save,
+alora_invocation_string, base_model_id
 ```
 
 Use the `base_model`/`dataset` inputs, `method`, `distributed`, `mixed_precision`,

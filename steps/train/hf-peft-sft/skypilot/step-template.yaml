@@ -20,6 +20,8 @@ config:
     dataset_name: ""
     # load_dataset split spec, for either source; slicing (train[:1000]) works.
     dataset_split: "train"
+    # load_dataset config (subset) name, e.g. for HuggingFaceTB/smoltalk. Empty = none.
+    dataset_config: ""
     # peft LoraConfig. target_modules: all-linear or a list of module names.
     lora:
       r: 16
@@ -99,7 +101,7 @@ environment_configs:
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
             {%- macro validate(c, cc, bound, res) -%}
-            {%- set owned = ["output_dir", "report_to", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "resume_from_checkpoint", "save_strategy", "bf16", "fp16", "fsdp", "fsdp_config", "deepspeed", "gradient_checkpointing_kwargs", "model_name_or_path", "method", "distributed", "mixed_precision", "dataset_path", "dataset_split", "lora_r", "lora_alpha", "lora_dropout", "lora_target_modules", "lora_modules_to_save", "alora_invocation_string", "base_model_id"] -%}
+            {%- set owned = ["output_dir", "report_to", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "resume_from_checkpoint", "save_strategy", "bf16", "fp16", "fsdp", "fsdp_config", "deepspeed", "gradient_checkpointing_kwargs", "model_name_or_path", "method", "distributed", "mixed_precision", "dataset_path", "dataset_split", "dataset_config", "lora_r", "lora_alpha", "lora_dropout", "lora_target_modules", "lora_modules_to_save", "alora_invocation_string", "base_model_id"] -%}
             {%- if c.method not in ["lora", "qlora", "alora"] %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.method must be lora, qlora or alora, got '" ~ c.method ~ "'.") }}{% endif -%}
             {%- if c.distributed not in ["ddp", "fsdp", "deepspeed"] %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.distributed must be ddp, fsdp or deepspeed, got '" ~ c.distributed ~ "'.") }}{% endif -%}
             {%- if c.mixed_precision not in ["bf16", "fp16", "no"] %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.mixed_precision must be bf16, fp16 or no, got '" ~ c.mixed_precision ~ "'.") }}{% endif -%}
@@ -154,7 +156,7 @@ environment_configs:
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
             {%- macro validate(c, cc, bound, res) -%}
-            {%- set owned = ["output_dir", "report_to", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "resume_from_checkpoint", "save_strategy", "bf16", "fp16", "fsdp", "fsdp_config", "deepspeed", "gradient_checkpointing_kwargs", "model_name_or_path", "method", "distributed", "mixed_precision", "dataset_path", "dataset_split", "lora_r", "lora_alpha", "lora_dropout", "lora_target_modules", "lora_modules_to_save", "alora_invocation_string", "base_model_id"] -%}
+            {%- set owned = ["output_dir", "report_to", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "resume_from_checkpoint", "save_strategy", "bf16", "fp16", "fsdp", "fsdp_config", "deepspeed", "gradient_checkpointing_kwargs", "model_name_or_path", "method", "distributed", "mixed_precision", "dataset_path", "dataset_split", "dataset_config", "lora_r", "lora_alpha", "lora_dropout", "lora_target_modules", "lora_modules_to_save", "alora_invocation_string", "base_model_id"] -%}
             {%- if c.method not in ["lora", "qlora", "alora"] %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.method must be lora, qlora or alora, got '" ~ c.method ~ "'.") }}{% endif -%}
             {%- if c.distributed not in ["ddp", "fsdp", "deepspeed"] %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.distributed must be ddp, fsdp or deepspeed, got '" ~ c.distributed ~ "'.") }}{% endif -%}
             {%- if c.mixed_precision not in ["bf16", "fp16", "no"] %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.mixed_precision must be bf16, fp16 or no, got '" ~ c.mixed_precision ~ "'.") }}{% endif -%}
@@ -217,6 +219,7 @@ environment_configs:
               -- \
               '--dataset_path' '{{ q(b.dataset.binding.path if "dataset" in b else c.dataset_name) }}' \
               '--dataset_split' '{{ q(c.dataset_split) }}' \
+              '--dataset_config' '{{ q(c.dataset_config) }}' \
               '--lora_r' '{{ q(l.r) }}' \
               '--lora_alpha' '{{ q(l.alpha) }}' \
               '--lora_dropout' '{{ q(l.dropout) }}' \
