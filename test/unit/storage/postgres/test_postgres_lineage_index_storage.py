@@ -39,6 +39,7 @@ The bodies run here against the local test PostgreSQL and, re-exported by
 test/integration/ibm/storage/sql/test_sql_lineage_index_storage.py, against the hosted one.
 """
 
+import re
 from typing import Optional
 
 import pytest
@@ -183,6 +184,7 @@ class SQLLineageIndexStorageTests(
         # name is already 63 chars, so swap its tail to get a distinct table that the
         # base class's teardown never sees, and drop it here.
         table = self._get_tested_storage().table_name[:-2] + "_x"
+        assert len(f"uq_{table}_job_id_input_output") > 63, table
         storage = self._get_storage_factory().create_lineage_row_storage(
             table_name=table
         )
@@ -200,10 +202,10 @@ class SQLLineageIndexStorageTests(
                 if "UNIQUE" in d.upper() and "(job_id, input, output)" in d
             ]
             assert unique, definitions
-            for definition in definitions:
-                # Every emitted identifier must be within postgres's limit.
-                name = definition.split(" ON ")[0].split()[-1].strip('"')
-                assert len(name) <= 63, name
+            # Postgres silently truncates over-long identifiers, so a length check
+            # can't fail; check the hashed form was emitted instead.
+            name = unique[0].split(" ON ")[0].split()[-1].strip('"')
+            assert re.fullmatch(r"uq_[0-9a-f]{7}_job_id_input_output", name), name
         finally:
             storage.delete_table()
 

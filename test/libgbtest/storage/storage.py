@@ -81,7 +81,7 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
     """
 
     # Fields the database stamps on write, so a stored item never matches the one passed to add().
-    # Sub-classes list them to have test_update ignore them; equality checks also need a
+    # Sub-classes list them to have test_update_fields ignore them; equality checks also need a
     # _verify_equal override (see BaseLineageJobStorageTest).
     _db_stamped_fields: list[str] = []
 
