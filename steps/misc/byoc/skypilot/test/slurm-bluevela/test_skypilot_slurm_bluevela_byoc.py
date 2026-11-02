@@ -31,9 +31,13 @@ Run it with::
 
     make -C steps/misc/byoc/skypilot test TESTS=test/slurm-bluevela
 
-**Real cluster.** Extended-suite only, marked ``ibm``, and skipped unless the
-BlueVela key for the ``granitebuild`` functional ID is at the path the environment
-names. Also skipped in SPS CI, which has no key on the host.
+**Real cluster.** Extended-suite only, marked ``ibm``, and skipped unless
+``~/.ssh/ibm-bluevela.key`` exists on the host — the key the shared environment's
+``BV_SSH_PRIVATE_KEY`` space secret is created from
+(``gb secret create BV_SSH_PRIVATE_KEY --from-file ~/.ssh/ibm-bluevela.key``);
+the environment itself resolves the secret, never an on-host path, so the space
+this test runs in must hold that secret. Also skipped in SPS CI, which has no key
+on the host.
 """
 
 import os
