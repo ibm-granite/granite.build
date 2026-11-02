@@ -63,7 +63,8 @@ ENV FM_TUNE_EXTRAS=full
 # That, and deepspeed's JIT compilation, is why this must be a `-devel` tag.
 #
 # python3.12 specifically, to match the CPU stage. Ubuntu 24.04's system python
-# already IS 3.12, so no third-party PPA is needed.
+# already IS 3.12, so no third-party PPA is needed. python3.12-dev provides
+# Python.h, which the kernels' C++ sources include through torch's headers.
 #
 # build-essential is named explicitly even though the default `-devel` base
 # already ships gcc (verified: apt reports it "already the newest version").
@@ -90,6 +91,7 @@ RUN export DEBIAN_FRONTEND=noninteractive \
     && apt-get install -y --no-install-recommends \
         python3.12 \
         python3.12-venv \
+        python3.12-dev \
         build-essential \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/* \

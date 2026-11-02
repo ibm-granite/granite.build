@@ -127,3 +127,13 @@ def test_every_copy_source_exists_in_the_build_context() -> None:
             continue
         for source in line.split()[1:-1]:
             assert (root / source).exists(), f"{line!r}: {source} is not in the build context"
+
+
+def test_the_cuda_stage_installs_the_python_headers_the_kernels_compile_against() -> None:
+    # flash-attn, mamba-ssm and causal-conv1d include <Python.h> through torch's headers;
+    # without python3.12-dev their C++ step fails with "Python.h: No such file or directory".
+    body = _stage_body(_dockerfile(), "cuda")
+    instructions = [line for line in body.splitlines() if not line.lstrip().startswith("#")]
+    install = "\n".join(instructions).split("apt-get install", 1)[1].split("&& rm -rf", 1)[0]
+
+    assert "python3.12-dev" in install.split()
