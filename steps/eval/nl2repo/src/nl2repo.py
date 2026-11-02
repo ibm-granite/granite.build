@@ -64,6 +64,11 @@ Deviations from upstream (also in ``details.deviations``):
   skips LocalRuntime's jupyter/tmux/browser dependency probe, and tmux --
   which those bash sessions are driven through (libtmux) but the app image
   does not ship -- is installed into the sandbox at task start.
+- Browsing is off by default, at both of OpenHands' switches (the
+  runtime-level ``enable_browser`` and the agent-level ``enable_browsing``):
+  the app image ships no browser binaries, ``enable_browser`` defaults to
+  true upstream, and its action server then dies at startup on the missing
+  Chromium. NL2RepoBench tasks never browse.
 - The task commands run through ``bash -c``, fixing upstream's
   ``shlex.split``-then-exec bug (upstream PR #14): the pinned task data
   contains commands with ``&&``, ``&`` and ``VAR=... cmd`` that upstream's
@@ -204,6 +209,9 @@ DEVIATIONS = (
     "sessions through libtmux, the app image ships no tmux binary, and the skipped "
     "dependency probe would otherwise let it die as an opaque RetryError at "
     "action-server startup",
+    "browsing is off by default at both of OpenHands' switches: enable_browser "
+    "defaults to true upstream and its action server dies at startup on the "
+    "Chromium the app image does not ship, and NL2RepoBench tasks never browse",
     "task commands run through bash -c (upstream shlex.split-then-exec breaks &&, & and "
     "VAR=... commands; upstream PR #14)",
     "command output is captured on non-zero exit too, so pytest summaries are parsed from "
@@ -444,6 +452,9 @@ def render_config(
     iterations, trajectories under ``./trajectories``), with the runtime
     switched to 0.56's ``local`` mode for enroot and the ``[llm.<key>]``
     block upstream renders in place of its ``{{MODULE_CONFIG}}`` placeholder.
+    ``enable_browsing`` drives both of OpenHands' browser switches (the
+    runtime-level ``enable_browser`` and the agent-level tool flag), off by
+    default: the app image ships no browser binaries (see :data:`DEVIATIONS`).
     """
     llm = f"""
 [llm.{llm_key}]
@@ -462,6 +473,10 @@ base_url = {_toml(base_url)}
 runtime = "local"
 max_iterations = {_toml(max_iterations)}
 save_trajectory_path = "./trajectories"
+# Both browser switches together: the app image ships no browser binaries,
+# and OpenHandsConfig defaults enable_browser to true, whose action server
+# then dies at startup on the missing Chromium.
+enable_browser = {_toml(enable_browsing)}
 {llm}
 [agent]
 enable_browsing = {_toml(enable_browsing)}
@@ -820,7 +835,7 @@ class NL2RepoBench(Benchmark):
             model=served,
             base_url=base_url,
             max_iterations=self.opt("max_iterations", 500),
-            enable_browsing=self.opt("enable_browsing", True),
+            enable_browsing=self.opt("enable_browsing", False),
             temperature=(
                 None
                 if "temperature" not in self.config.options
