@@ -62,7 +62,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: model
       steps:
-        - step_uri: space://steps/byoc
+        - step_uri: space://steps/misc/byoc
           config:
             compute_config:
               num_nodes: $${NUM_NODES}
@@ -195,7 +195,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/byoc
+        - step_uri: space://steps/misc/byoc
           config:
             compute_config:
               num_nodes: $${NUM_NODES}
