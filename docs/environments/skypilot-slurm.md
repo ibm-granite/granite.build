@@ -8,8 +8,9 @@
 
 gbserver installs SkyPilot from the granite-build fork
 ([cmadam/skypilot](https://github.com/cmadam/skypilot)), pinned in `pyproject.toml` to the tag
-`gb-sky-v1-stable`. Upstream SkyPilot has no SLURM cloud. The fork adds the SLURM cloud driver —
-containerized steps via the Pyxis SPANK plugin and per-task `sbatch_options`. The tag tracks the
+`gb-sky-v1-stable`. Upstream SkyPilot does ship a SLURM cloud (`sky/clouds/slurm.py`); the fork
+carries fixes on top of it plus the extras this repo's steps rely on — containerized steps via the
+Pyxis SPANK plugin (with `container_mounts`) and per-task `sbatch_options`. The tag tracks the
 fork's SLURM-only line: the LSF cloud driver this repo's clusters used before moving to SLURM is
 not on it, but the fork's LSF line remains installable under its own snapshot tag
 (see [skypilot-lsf.md](skypilot-lsf.md)).
@@ -83,7 +84,10 @@ codepath); if no valid cert is loaded — or the `step` CLI is missing or unreac
 fast with an actionable error telling you to run `step ssh login` yourself and retry. A falsy value
 simply disables the check: the directive is dropped and never rendered (`IdentityStepCert no` is not
 a real ssh option, and `ssh -F` would reject the whole config file over an unknown directive), and
-it does not conflict with an `IdentityKey`/`IdentityFile` on the same host. Do **not** set
+it does not conflict with an `IdentityKey`/`IdentityFile` on the same host. The value must be a YAML
+**boolean** — an unquoted `true`/`false` (or `yes`/`no`): a *quoted* `"no"` is a truthy non-empty
+string and would turn the check **on** instead of off, so a non-boolean `IdentityStepCert` is
+rejected when the environment loads. Do **not** set
 `IdentitiesOnly` on an `IdentityStepCert` host: since no `IdentityFile` is ever added,
 `IdentitiesOnly: "yes"` would tell `ssh` to offer no identities at all, so it would never offer the
 agent-loaded certificate either — gbserver rejects this combination at materialize time.
@@ -167,34 +171,40 @@ the genuine error surfaces, so a true outage is never hidden.
 
 Every non-`Host` directive value is **secret-name-or-literal**: when the value exactly matches a secret
 name in the space using this environment, the secret's value is what gets written to `~/.slurm/config`.
-This is how a public environment asset can name its reachability requirements — `HostName`, `User`, the
-key — without embedding cluster-internal hostnames, accounts, or key material; the space that deploys it
-supplies the values.
+This is how a *private* environment can name its reachability requirements — `HostName`, `User`, the
+key — without embedding cluster-internal hostnames, accounts, or key material in the asset; the space
+that deploys it supplies the values.
 
 `HostName` follows the same rule with one addition: it is resolved *before* login-node selection, so a
 `HostName` secret may hold **several** interchangeable login nodes (comma- or whitespace-separated) and
 all of them become failover candidates (see [Multiple login nodes](#multiple-login-nodes-hostname-list)).
-A value that looks like a secret name (UPPER_SNAKE) but matches no secret is used as a literal, with a
-warning in gbserver's log — an SSH failure right after is the usual symptom of a missing secret.
+For these directives a value that looks like a secret name (UPPER_SNAKE) but matches no secret falls
+back to the literal, with a warning in gbserver's log — an SSH failure right after is the usual symptom
+of a missing secret. `IdentityKey` is stricter, because it names key *contents*: a secret-looking value
+with no matching secret fails the launch immediately instead of writing a garbage key file:
 
-The shipped `ibm-bluevela` environment uses exactly this shape; a space running it defines three
-secrets:
+```text
+SSH host 'bluevela': IdentityKey names secret BV_SSH_PRIVATE_KEY, which is not defined in this space.
+Create it (see docs/environments/skypilot-slurm.md#secrets-in-cluster_ssh_configs) and retry.
+```
+
+The shipped `ibm-bluevela` environment names its login nodes and service account as literals — they
+are not secrets (the asset already names the cluster's `/proj` paths, account, and partitions in the
+clear), so a space running it defines exactly **one** secret:
 
 | Secret | Holds |
 |---|---|
-| `BV_SLURM_LOGIN_NODES` | The candidate login hostnames, comma- or whitespace-separated. |
-| `BV_SLURM_LOGIN_USER` | The account on the login nodes. |
 | `BV_SSH_PRIVATE_KEY` | The SSH private key contents (`IdentityKey`). |
 
-How you set them depends on the secret manager the space's `space.yaml` selects (see
-[Secrets](../../secrets/README.md) for the full backend docs):
+How you set it depends on the secret manager the space's `space.yaml` selects (see
+[Secrets](../../secrets/README.md) for the full backend docs); on a machine that already holds the
+key, `gb secret create BV_SSH_PRIVATE_KEY --from-file ~/.ssh/<key>` is the quickest route:
 
 - **`local`** — a file in the space's secrets dir (default
   `$GB_HOME_DIR/space_secrets/<space name>/`), with the value base64-encoded in `payload` and tagged
-  `labels: [encode:base64]`. For example, `BV_SLURM_LOGIN_USER=granitebuild` is
-  `echo -n 'granitebuild' | base64` → `payload: Z3Jhbml0ZWJ1aWxk`.
+  `labels: [encode:base64]` — for a private key, `base64 < ~/.ssh/<key>` → `payload: <output>`.
 - **`env`** — environment variables with the `GBSERVER_SECRET_` prefix, e.g.
-  `GBSERVER_SECRET_BV_SLURM_LOGIN_NODES` (ideal for CI/CD and containers).
+  `GBSERVER_SECRET_BV_SSH_PRIVATE_KEY` (ideal for CI/CD and containers).
 - **`ibmcloud`** — the secret of the same name in IBM Cloud Secrets Manager (read-only at build time).
 
 ### `cluster` / `zone`
@@ -366,7 +376,9 @@ Notes:
   `gpus-per-node` directive and the `NVIDIA_*` export list Pyxis needs — opt-in
   per environment via `slurm_gpu_sbatch_directives: true` (off by default; the
   ibm-bluevela environment sets it). An explicit `sbatch_options` value still
-  wins per key. See the GPU note under
+  wins per key — but the generated directive is `gpus-per-node`, so overriding
+  the GPU type/count means setting `gpus-per-node` yourself: an explicit `gpus`
+  is a *different* key, and both would be emitted. See the GPU note under
   [No `image_id` on bare-host clusters](#no-image_id-on-bare-host-clusters).
 
 ### No `image_id` on bare-host clusters
