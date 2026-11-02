@@ -400,9 +400,9 @@ metadata.
 
 | Result | aws | slurm-bluevela |
 |---|---|---|
-| status | **passed** 2026-10-31, 6m56s for both targets (`peft-v0.21.2-3`; first passed 2026-10-30 on `-1`) | **passed** 2026-10-31, 14m32s for both targets, build 611571b7 (`peft-v0.21.2-3`, cached `.sqsh`) |
-| loss, steps 1→3 | qlora and alora each logged `Step: 1/3`…`3/3` | lora/fsdp 2.15 → 4.26 → 2.27; qlora/deepspeed `Step: 1/3`…`3/3` |
-| adapter | `adapter` at `/root/sky_workdir/adapter_output` per target | lora/fsdp: 420 tensors, 19.6 MB (read on the node); both registered |
+| status | **passed** 2026-11-02, 7m29s for both targets (`peft-v0.21.2-4`; first passed 2026-10-30 on `-1`) | **passed** 2026-11-02, 18m33s for both targets, build 48212174 (`peft-v0.21.2-4`, cold `.sqsh` import then cached) |
+| loss, steps 1→3 | both targets logged `Step: 1/3`…`3/3` (1.94 → 1.71 → 2.79 and 2.13 → 1.87 → 2.97) | lora/fsdp 2.15 → 4.26 → 2.27 (same as `-3`); qlora/deepspeed 2.39 → 4.54 → 2.52 |
+| adapter | `adapter` at `/root/sky_workdir/adapter_output` per target | both registered (the run script refuses a 0-tensor adapter; on `-3` lora/fsdp read 420 tensors, 19.6 MB on the node) |
 | markers | `method`, `peft_version` 0.21.2, `trl_version` 1.17.1 | same |
 
 Earlier BlueVela runs, and what each one fixed:
@@ -414,6 +414,9 @@ Earlier BlueVela runs, and what each one fixed:
   "Multiple Ranks are using the same GPU". The run script now refuses an undercount.
 - `-2`: lora/fsdp "passed" with a 40-byte, 0-tensor adapter (FSDP1 + peft#3876). The
   run script now refuses an adapter with no weights, and FSDP is FSDP2.
+- `-3` (build 611571b7, 14m32s): green. `-4` adds the review fixes from #596 (step-owned
+  ddp/single-GPU accelerate configs, a free rendezvous port, `dataset_config`, `save_to_disk`
+  datasets, `main()` split) and passed again on both clusters.
 
 #### aws
 
