@@ -246,6 +246,11 @@ BlueVela (reached through its SLURM login nodes) via the `bluevela` environment,
 > `shared_workdir`, and the `cloud_config` workdir mapping described below, and both authenticate
 > to the SLURM login node with the SSH key held in the space's `BV_SSH_PRIVATE_KEY` secret (see
 > [Secrets in `cluster_ssh_configs`](#secrets-in-cluster_ssh_configs)).
+>
+> BlueVela is IBM-internal. Using the `bluevela` environment needs IBM network access and the
+> `granitebuild` key, held in the `BV_SSH_PRIVATE_KEY` space secret. Outside IBM, treat it as a
+> template for your own SLURM cluster, or use the local Docker SLURM environment instead
+> (`make slurm-setup`; see [skypilot-slurm-setup.md](setup/skypilot-slurm-setup.md)).
 
 #### Override the partition (`zone`) per build
 
