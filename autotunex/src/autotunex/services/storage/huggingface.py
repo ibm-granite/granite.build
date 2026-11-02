@@ -136,6 +136,11 @@ class HuggingFaceStorageBackend:
         owner: a stored locator can come from a caller (the api-bridge registers
         whatever a run reports), and one cannot name the random id of a row before
         it exists.
+
+        Invariant this relies on: ``artifact_url`` is only ever written onto a row
+        created in the same request (the api-bridge's ``update_dataset_metadata``,
+        called from ``find_or_create`` and ``POST /api/dataset/register``). A write
+        path that attaches a caller-supplied URL to an existing row would break it.
         """
         return repo_id.rpartition("/")[2].endswith(f"_{str(dataset_id)[:8]}")
 

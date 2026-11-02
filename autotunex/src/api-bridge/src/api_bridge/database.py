@@ -631,6 +631,16 @@ class Database:
             raise HTTPException(status_code=500, detail=f"Internal Server error: \n{e}")
 
     def update_dataset_metadata(self, id: str, user_id: str, metadata: dict[str, Any]):
+        """Attach an artifact (``artifact_url`` among it) to dataset ``id``.
+
+        Invariant: call this only on a row inserted in the same request. The
+        main service sends the HF token to a dataset's own push, the repo whose
+        name ends in that row's id (``_is_own_push`` in
+        ``autotunex.services.storage.huggingface``). That is safe only because
+        no caller can know a row's id before the row exists. An endpoint that
+        writes a caller-supplied ``artifact_url`` onto an existing row would let
+        that caller name a private repo and have it read with the token.
+        """
         try:
             with self._engine.begin() as connection:
                 connection.execute(
