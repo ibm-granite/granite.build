@@ -7,13 +7,18 @@ into StepArgs; every other flag goes to TRL's SFTConfig unchanged. Saves the
 adapter only (adapter_config.json + adapter_model.safetensors + tokenizer).
 
 This module imports only the standard library at top level so its helpers are
-unit-testable without torch; main() imports the training stack.
+unit-testable without torch; the private helpers main() calls import the
+training stack.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import json
+import os
+import struct
 import sys
+from typing import Any
 
 METHODS = ("lora", "qlora", "alora")
 DISTRIBUTED = ("ddp", "fsdp", "deepspeed")
@@ -27,7 +32,12 @@ class StepError(Exception):
 
 
 @dataclasses.dataclass
-class StepArgs:
+class StepArgs:  # pylint: disable=too-many-instance-attributes
+    """The step-owned trainer flags; HfArgumentParser parses them beside SFTConfig.
+
+    Every field is a ``--<name>`` flag. No name may also be an SFTConfig field.
+    """
+
     model_name_or_path: str = dataclasses.field(
         metadata={"help": "staged base model dir"}
     )
@@ -58,7 +68,12 @@ STEP_ARG_FIELDS = tuple(f.name for f in dataclasses.fields(StepArgs))
 
 
 def parse_target_modules(values: list[str]) -> str | list[str]:
-    """`all-linear` stays a string (peft's sentinel); anything else is a list."""
+    """`all-linear` stays a string (peft's sentinel); anything else is a list.
+
+    :param values: The lora.target_modules values.
+    :returns: ``"all-linear"``, or the module names as a list.
+    :raises StepError: When the list is empty.
+    """
     if not values:
         raise StepError("lora.target_modules is empty.")
     if values == ["all-linear"]:
@@ -67,7 +82,12 @@ def parse_target_modules(values: list[str]) -> str | list[str]:
 
 
 def detect_format(columns: list[str]) -> str:
-    """Which TRL SFT dataset format the columns are."""
+    """Which TRL SFT dataset format the columns are.
+
+    :param columns: The dataset's column names.
+    :returns: ``"messages"``, ``"prompt_completion"`` or ``"text"``.
+    :raises StepError: When the columns match no TRL SFT format.
+    """
     cols = set(columns)
     if "messages" in cols:
         return "messages"
@@ -82,6 +102,28 @@ def detect_format(columns: list[str]) -> str:
     )
 
 
+def _saved_split_name(split: str) -> str:
+    """The one split name a single saved Dataset is loaded under.
+
+    :param split: The dataset_split spec, e.g. ``train[:1000]``.
+    :returns: The split name, e.g. ``train``.
+    :raises StepError: When the spec has no split name, or names more than one
+        split (a saved Dataset has only one).
+    """
+    names = {sub.split("[", 1)[0].strip() for sub in split.split("+")}
+    if "" in names:
+        raise StepError(
+            f"dataset_split {split!r} has no split name; give one before any "
+            "slice, e.g. 'train[:1000]'."
+        )
+    if len(names) > 1:
+        raise StepError(
+            f"dataset_split {split!r} names splits {sorted(names)}, but a "
+            "save_to_disk Dataset has only one split; use one name, e.g. 'train'."
+        )
+    return names.pop()
+
+
 def dataset_load_spec(path: str, split: str, config: str) -> tuple[str, dict]:
     """Return the (builder_or_path, kwargs) for datasets.load_dataset.
 
@@ -91,10 +133,15 @@ def dataset_load_spec(path: str, split: str, config: str) -> tuple[str, dict]:
     (train[:1000]), which dataset_split promises for either source. A saved
     Dataset has no configs, so `config` is ignored there. Everything else (HF
     ids, hub-style dirs, DatasetDict save_to_disk dirs) goes to load_dataset as is.
-    """
-    import json
-    import os
 
+    :param path: The staged dataset dir or an HF dataset id.
+    :param split: The split spec, e.g. ``train`` or ``train[:1000]``.
+    :param config: The dataset config name, or ``""`` for none.
+    :returns: The first positional argument and the keyword arguments for
+        load_dataset.
+    :raises StepError: When a save_to_disk dir has a malformed state.json, a
+        listed data file is missing, or the split has no single split name.
+    """
     state = os.path.join(path, "state.json")
     if not (
         os.path.isdir(path)
@@ -116,16 +163,27 @@ def dataset_load_spec(path: str, split: str, config: str) -> tuple[str, dict]:
     files = []
     for entry in entries:
         name = entry.get("filename") if isinstance(entry, dict) else None
-        full = os.path.join(os.path.abspath(path), name) if name else ""
-        if not full or not os.path.isfile(full):
+        if not isinstance(name, str) or not name:
+            raise StepError(
+                f"{state} has a malformed _data_files entry {entry!r}; each entry "
+                "must be a map with a 'filename' string."
+            )
+        full = os.path.join(os.path.abspath(path), name)
+        if not os.path.isfile(full):
             raise StepError(
                 f"{state} lists data file {name!r}, which is missing from {path}."
             )
         files.append(full)
-    return "arrow", {"data_files": {split.split("[", 1)[0]: files}, "split": split}
+    return "arrow", {"data_files": {_saved_split_name(split): files}, "split": split}
 
 
 def contains_subsequence(seq: list[int], sub: list[int]) -> bool:
+    """Whether `sub` occurs contiguously in `seq`; an empty `sub` never does.
+
+    :param seq: The token ids to search.
+    :param sub: The token ids to look for.
+    :returns: True when `sub` is non-empty and occurs in `seq`.
+    """
     n = len(sub)
     return n > 0 and any(seq[i : i + n] == sub for i in range(len(seq) - n + 1))
 
@@ -134,12 +192,14 @@ def check_invocation(rows: list[list[int]], tokens: list[int]) -> list[int]:
     """Indices of rows without the aLoRA invocation; error if none has it.
 
     peft activates an aLoRA adapter only after the invocation tokens; a row
-    without them trains nothing (zero gradient), silently.
+    without them trains nothing (zero gradient), silently. An empty `tokens`
+    is refused earlier, by _alora_tokens().
+
+    :param rows: The first tokenized training rows (input_ids).
+    :param tokens: The non-empty aLoRA invocation token ids.
+    :returns: The indices of the rows that lack the invocation.
+    :raises StepError: When there are rows and none has the invocation.
     """
-    if not tokens:
-        raise StepError(
-            "alora_invocation_string tokenizes to nothing with this tokenizer."
-        )
     missing = [
         i for i, row in enumerate(rows) if not contains_subsequence(list(row), tokens)
     ]
@@ -159,13 +219,18 @@ def use_reentrant(method: str, distributed: str, world_size: int) -> bool:
     The non-DeepSpeed rule follows peft's examples. Under DeepSpeed, TRL's
     SFTTrainer forces use_reentrant=True for PEFT + ZeRO-3 (and warns), so the
     step picks True there rather than have its value silently overridden.
+
+    :param method: The method: lora, qlora or alora.
+    :param distributed: The backend: ddp, fsdp or deepspeed.
+    :param world_size: The total number of training processes.
+    :returns: The gradient checkpointing ``use_reentrant`` value.
     """
     return distributed == "deepspeed" or (
         method == "qlora" and not (distributed == "ddp" and world_size > 1)
     )
 
 
-def lora_kwargs(
+def lora_kwargs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     r: int,
     alpha: int,
     dropout: float,
@@ -173,6 +238,16 @@ def lora_kwargs(
     modules_to_save: list[str] | None,
     alora_tokens: list[int] | None,
 ) -> dict:
+    """The peft.LoraConfig kwargs for a causal-LM adapter with no bias training.
+
+    :param r: The LoRA rank.
+    :param alpha: The LoRA alpha.
+    :param dropout: The LoRA dropout.
+    :param target_modules: ``"all-linear"`` or the module names to adapt.
+    :param modules_to_save: Modules to train fully and save, or None.
+    :param alora_tokens: The aLoRA invocation tokens, or None for LoRA/QLoRA.
+    :returns: The LoraConfig keyword arguments.
+    """
     kw = {
         "task_type": "CAUSAL_LM",
         "r": r,
@@ -189,7 +264,12 @@ def lora_kwargs(
 
 
 def bnb_kwargs(mixed_precision: str, sharded: bool) -> dict:
-    """4-bit nf4 + double quant. Sharded storage must be a float dtype."""
+    """4-bit nf4 + double quant. Sharded storage must be a float dtype.
+
+    :param mixed_precision: The mixed precision: bf16, fp16 or no.
+    :param sharded: Whether FSDP or DeepSpeed shards the quantized weights.
+    :returns: The BitsAndBytesConfig kwargs, with dtypes as strings.
+    """
     compute = "float32" if mixed_precision == "no" else "bfloat16"
     return {
         "load_in_4bit": True,
@@ -203,7 +283,16 @@ def bnb_kwargs(mixed_precision: str, sharded: bool) -> dict:
 def model_kwargs(
     method: str, distributed: str, mixed_precision: str, local_rank: int
 ) -> dict:
-    """from_pretrained kwargs with dtypes as strings (main() maps them to torch)."""
+    """from_pretrained kwargs with dtypes as strings (_load_model() maps them to torch).
+
+    :param method: The method: lora, qlora or alora.
+    :param distributed: The backend: ddp, fsdp or deepspeed.
+    :param mixed_precision: The mixed precision: bf16, fp16 or no.
+    :param local_rank: This process's rank on its node.
+    :returns: ``dtype`` and ``attn_implementation``; for QLoRA also
+        ``quantization``, plus ``device_map`` under DDP or a bf16 ``dtype``
+        when sharded.
+    """
     kw: dict = {"dtype": _DTYPE[mixed_precision], "attn_implementation": "sdpa"}
     if method == "qlora":
         sharded = distributed != "ddp"
@@ -216,7 +305,13 @@ def model_kwargs(
 
 
 def step_line(step: int, max_steps: int, logs: dict) -> str:
-    """The progress line the shared monitor's `Step:\\s\\d+` rule picks up."""
+    """The progress line the shared monitor's `Step:\\s\\d+` rule picks up.
+
+    :param step: The global step.
+    :param max_steps: The total steps; left out of the line when not positive.
+    :param logs: The logged metrics; a numeric ``loss`` is appended.
+    :returns: The progress line.
+    """
     head = (
         f"Step: {step}/{max_steps}" if max_steps and max_steps > 0 else f"Step: {step}"
     )
@@ -225,17 +320,25 @@ def step_line(step: int, max_steps: int, logs: dict) -> str:
 
 
 def rewrite_base_model(adapter_config: dict, base_model_id: str) -> dict:
-    """Record the portable base id instead of the node-local staging path."""
+    """Record the portable base id instead of the node-local staging path.
+
+    :param adapter_config: The saved adapter_config.json contents.
+    :param base_model_id: The portable base model id, or ``""`` to keep the path.
+    :returns: The adapter config, with base_model_name_or_path replaced when
+        `base_model_id` is set.
+    """
     if not base_model_id:
         return adapter_config
     return {**adapter_config, "base_model_name_or_path": base_model_id}
 
 
 def saved_tensor_count(path: str) -> int:
-    """Number of tensors in a safetensors file, from its header (no torch needed)."""
-    import json
-    import struct
+    """Number of tensors in a safetensors file, from its header (no torch needed).
 
+    :param path: The safetensors file.
+    :returns: The number of tensors, not counting ``__metadata__``.
+    :raises StepError: When the file is unreadable or its header is malformed.
+    """
     try:
         with open(path, "rb") as f:
             (length,) = struct.unpack("<Q", f.read(8))
@@ -253,7 +356,11 @@ def saved_tensor_count(path: str) -> int:
 
 
 def check_saved_adapter(path: str) -> None:
-    """Refuse an adapter file with no weights, so it is never registered."""
+    """Refuse an adapter file with no weights, so it is never registered.
+
+    :param path: The saved adapter_model.safetensors.
+    :raises StepError: When the file is unreadable or holds no tensors.
+    """
     if saved_tensor_count(path) == 0:
         raise StepError(
             f"the saved adapter {path} has no weights (0 tensors); training ran but "
@@ -262,11 +369,20 @@ def check_saved_adapter(path: str) -> None:
 
 
 def fail(msg: str) -> None:
+    """Print a user-facing error with the step's prefix and exit with status 1.
+
+    :param msg: The error message, without the ``hf-peft-sft: ERROR`` prefix.
+    """
     print(f"hf-peft-sft: ERROR {msg}", file=sys.stderr, flush=True)
     sys.exit(1)
 
 
-def _training_args(argv: list[str]):
+def _training_args(argv: list[str]) -> tuple[StepArgs, Any]:
+    """Parse the step's own flags into StepArgs and every other flag into SFTConfig.
+
+    :param argv: The trainer's argv, without the program name.
+    :returns: The parsed StepArgs and trl.SFTConfig.
+    """
     from transformers import HfArgumentParser
     from trl import SFTConfig
 
@@ -275,39 +391,54 @@ def _training_args(argv: list[str]):
     return step, cfg
 
 
-def _progress_callback():
+def _progress_callback() -> Any:
+    """Build the TrainerCallback that prints the progress line on world process zero.
+
+    :returns: A transformers.TrainerCallback instance.
+    """
     from transformers import TrainerCallback
 
-    class StepLogCallback(TrainerCallback):
+    class StepLogCallback(TrainerCallback):  # pylint: disable=too-few-public-methods
+        """Print step_line() for every log event that carries a loss."""
+
+        # pylint: disable-next=unused-argument
         def on_log(self, args, state, control, logs=None, **kwargs):
+            """Print the progress line on world process zero.
+
+            :param args: The training arguments (unused).
+            :param state: The trainer state; gives the step, max steps and rank.
+            :param control: The trainer control (unused).
+            :param logs: The logged metrics, if any.
+            """
             if state.is_world_process_zero and logs and "loss" in logs:
                 print(step_line(state.global_step, state.max_steps, logs), flush=True)
 
     return StepLogCallback()
 
 
-def main(argv: list[str] | None = None) -> None:
-    import json
-    import os
+def _load_tokenizer(step: StepArgs) -> Any:
+    """Load the base model's tokenizer; pad with EOS when it has no pad token.
 
-    import torch
-    from datasets import load_dataset
-    from peft import LoraConfig
-    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-    from trl import SFTTrainer
-
-    step, cfg = _training_args(sys.argv[1:] if argv is None else argv)
-    world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-
-    if cfg.gradient_checkpointing:
-        cfg.gradient_checkpointing_kwargs = {
-            "use_reentrant": use_reentrant(step.method, step.distributed, world_size)
-        }
+    :param step: The step arguments; gives the staged base model dir.
+    :returns: The transformers tokenizer.
+    """
+    from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(step.model_name_or_path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    return tokenizer
+
+
+def _load_dataset(step: StepArgs) -> Any:
+    """Load the training split, check its format, and print the row count.
+
+    :param step: The step arguments; gives the dataset path, split and config.
+    :returns: The datasets.Dataset to train on.
+    :raises StepError: When the dataset dir is malformed or the columns match
+        no TRL SFT format.
+    """
+    from datasets import load_dataset
 
     builder, load_kw = dataset_load_spec(
         step.dataset_path, step.dataset_split, step.dataset_config
@@ -315,16 +446,38 @@ def main(argv: list[str] | None = None) -> None:
     dataset = load_dataset(builder, **load_kw)
     fmt = detect_format(list(dataset.column_names))
     print(f"hf-peft-sft: {len(dataset)} training rows, format {fmt}", flush=True)
+    return dataset
 
-    alora_tokens = None
-    if step.method == "alora":
-        alora_tokens = tokenizer.encode(
-            step.alora_invocation_string, add_special_tokens=False
+
+def _alora_tokens(step: StepArgs, tokenizer: Any) -> list[int] | None:
+    """Encode the aLoRA invocation string, for the alora method only.
+
+    :param step: The step arguments; gives the method and invocation string.
+    :param tokenizer: The tokenizer; only its ``encode`` method is used.
+    :returns: The invocation token ids, or None when the method is not alora.
+    :raises StepError: When the invocation string encodes to no tokens.
+    """
+    if step.method != "alora":
+        return None
+    tokens = tokenizer.encode(step.alora_invocation_string, add_special_tokens=False)
+    if not tokens:
+        raise StepError(
+            "alora_invocation_string tokenizes to nothing with this tokenizer."
         )
-        if not alora_tokens:
-            raise StepError(
-                "alora_invocation_string tokenizes to nothing with this tokenizer."
-            )
+    return tokens
+
+
+def _load_model(step: StepArgs, local_rank: int) -> Any:
+    """Load the base model with the dtype, attention and quantization the method needs.
+
+    :param step: The step arguments; gives the model dir, method, distributed
+        backend and mixed precision.
+    :param local_rank: This process's rank on its node; QLoRA under DDP pins
+        the model to that device.
+    :returns: The transformers causal LM.
+    """
+    import torch
+    from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 
     kw = model_kwargs(step.method, step.distributed, step.mixed_precision, local_rank)
     load = {
@@ -338,7 +491,30 @@ def main(argv: list[str] | None = None) -> None:
         load["quantization_config"] = BitsAndBytesConfig(**q)
     if "device_map" in kw:
         load["device_map"] = kw["device_map"]
-    model = AutoModelForCausalLM.from_pretrained(step.model_name_or_path, **load)
+    return AutoModelForCausalLM.from_pretrained(step.model_name_or_path, **load)
+
+
+def _build_trainer(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    step: StepArgs,
+    cfg: Any,
+    model: Any,
+    tokenizer: Any,
+    dataset: Any,
+    alora_tokens: list[int] | None,
+) -> Any:
+    """Build the LoRA config and the TRL SFTTrainer that applies it.
+
+    :param step: The step arguments; gives the LoRA hyperparameters.
+    :param cfg: The trl.SFTConfig.
+    :param model: The base model.
+    :param tokenizer: The tokenizer, passed to the trainer as processing class.
+    :param dataset: The training dataset.
+    :param alora_tokens: The aLoRA invocation tokens, or None for LoRA/QLoRA.
+    :returns: The trl.SFTTrainer.
+    :raises StepError: When lora.target_modules is empty.
+    """
+    from peft import LoraConfig
+    from trl import SFTTrainer
 
     peft_config = LoraConfig(
         **lora_kwargs(
@@ -350,7 +526,7 @@ def main(argv: list[str] | None = None) -> None:
             alora_tokens,
         )
     )
-    trainer = SFTTrainer(
+    return SFTTrainer(
         model=model,
         args=cfg,
         train_dataset=dataset,
@@ -358,19 +534,40 @@ def main(argv: list[str] | None = None) -> None:
         peft_config=peft_config,
         callbacks=[_progress_callback()],
     )
-    if alora_tokens:
-        n = min(INVOCATION_CHECK_ROWS, len(trainer.train_dataset))
-        rows = [trainer.train_dataset[i]["input_ids"] for i in range(n)]
-        missing = check_invocation(rows, alora_tokens)
-        if missing:
-            print(
-                f"hf-peft-sft: WARNING the aLoRA invocation is missing from rows {missing} of "
-                f"the first {n} (truncated at max_length?); those rows train nothing.",
-                flush=True,
-            )
 
-    trainer.train()
 
+def _check_alora(trainer: Any, alora_tokens: list[int] | None) -> None:
+    """Warn about the first tokenized rows that lack the aLoRA invocation.
+
+    Does nothing when there are no invocation tokens (LoRA/QLoRA).
+
+    :param trainer: The SFTTrainer; its train_dataset is already tokenized.
+    :param alora_tokens: The aLoRA invocation tokens, or None.
+    :raises StepError: When none of the checked rows has the invocation.
+    """
+    if not alora_tokens:
+        return
+    n = min(INVOCATION_CHECK_ROWS, len(trainer.train_dataset))
+    rows = [trainer.train_dataset[i]["input_ids"] for i in range(n)]
+    missing = check_invocation(rows, alora_tokens)
+    if missing:
+        print(
+            f"hf-peft-sft: WARNING the aLoRA invocation is missing from rows {missing} of "
+            f"the first {n} (truncated at max_length?); those rows train nothing.",
+            flush=True,
+        )
+
+
+def _save_adapter(trainer: Any, step: StepArgs, cfg: Any) -> None:
+    """Save the adapter, then record the portable base model id in its config.
+
+    Under FSDP the state dict is gathered in full first. Only world process
+    zero rewrites adapter_config.json, and only when base_model_id is set.
+
+    :param trainer: The trained SFTTrainer.
+    :param step: The step arguments; gives base_model_id.
+    :param cfg: The trl.SFTConfig; gives output_dir.
+    """
     if trainer.is_fsdp_enabled:
         trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
     trainer.save_model(cfg.output_dir)
@@ -384,6 +581,32 @@ def main(argv: list[str] | None = None) -> None:
                 rewrite_base_model(adapter_config, step.base_model_id), f, indent=2
             )
         print(f"hf-peft-sft: adapter base recorded as {step.base_model_id}", flush=True)
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Train and save a LoRA, QLoRA or aLoRA adapter.
+
+    :param argv: The trainer's argv without the program name; defaults to
+        ``sys.argv[1:]``.
+    :raises StepError: On a configuration or data error.
+    """
+    step, cfg = _training_args(sys.argv[1:] if argv is None else argv)
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+
+    if cfg.gradient_checkpointing:
+        cfg.gradient_checkpointing_kwargs = {
+            "use_reentrant": use_reentrant(step.method, step.distributed, world_size)
+        }
+
+    tokenizer = _load_tokenizer(step)
+    dataset = _load_dataset(step)
+    alora_tokens = _alora_tokens(step, tokenizer)
+    model = _load_model(step, local_rank)
+    trainer = _build_trainer(step, cfg, model, tokenizer, dataset, alora_tokens)
+    _check_alora(trainer, alora_tokens)
+    trainer.train()
+    _save_adapter(trainer, step, cfg)
 
 
 if __name__ == "__main__":

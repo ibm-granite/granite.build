@@ -63,9 +63,44 @@ class TestInvocation:
         with pytest.raises(t.StepError, match="never appears"):
             t.check_invocation([[3, 4], [5]], [1, 2])
 
-    def test_empty_tokens_is_an_error(self):
-        with pytest.raises(t.StepError, match="tokenizes to nothing"):
-            t.check_invocation([[1]], [])
+
+class _FakeTokenizer:
+    """Just enough tokenizer for _alora_tokens: encode() returns fixed ids."""
+
+    def __init__(self, ids):
+        self.ids = ids
+        self.calls = []
+
+    def encode(self, text, add_special_tokens=True):
+        self.calls.append((text, add_special_tokens))
+        return list(self.ids)
+
+
+def _step(**kw):
+    return t.StepArgs(model_name_or_path="/m", **kw)
+
+
+class TestAloraTokens:
+    def test_encodes_the_invocation_without_special_tokens(self):
+        tok = _FakeTokenizer([5, 6])
+        step = _step(method="alora", alora_invocation_string="<|a|>")
+        assert t._alora_tokens(step, tok) == [5, 6]
+        assert tok.calls == [("<|a|>", False)]
+
+    def test_empty_encoding_is_an_error(self):
+        step = _step(method="alora", alora_invocation_string="x")
+        with pytest.raises(
+            t.StepError,
+            match=r"^alora_invocation_string tokenizes to nothing with this "
+            r"tokenizer\.$",
+        ):
+            t._alora_tokens(step, _FakeTokenizer([]))
+
+    @pytest.mark.parametrize("method", ["lora", "qlora"])
+    def test_other_methods_do_not_encode(self, method):
+        tok = _FakeTokenizer([])
+        assert t._alora_tokens(_step(method=method), tok) is None
+        assert tok.calls == []
 
 
 class TestTargetModules:
@@ -230,6 +265,53 @@ class TestDatasetLoadSpec:
         d = _saved_dataset(tmp_path / "ds", files, write=files[:1])
         with pytest.raises(t.StepError, match="data-00001-of-00002.arrow"):
             t.dataset_load_spec(str(d), "train", "")
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "data-00000-of-00001.arrow",
+            None,
+            ["data-00000-of-00001.arrow"],
+            {"filename": 3},
+            {"filename": None},
+            {"filename": ["data-00000-of-00001.arrow"]},
+            {"other": "data-00000-of-00001.arrow"},
+            {"filename": ""},
+        ],
+    )
+    def test_malformed_data_files_entry_is_an_error(self, tmp_path, entry):
+        import json
+
+        (tmp_path / "data-00000-of-00001.arrow").write_bytes(b"")
+        (tmp_path / "state.json").write_text(json.dumps({"_data_files": [entry]}))
+        with pytest.raises(t.StepError, match="malformed _data_files entry"):
+            t.dataset_load_spec(str(tmp_path), "train", "")
+
+    @pytest.mark.parametrize("split", ["[:2]", "[10%:]", ""])
+    def test_split_without_a_name_is_an_error(self, tmp_path, split):
+        d = _saved_dataset(tmp_path / "ds", ["data-00000-of-00001.arrow"])
+        with pytest.raises(t.StepError, match="no split name") as e:
+            t.dataset_load_spec(str(d), split, "")
+        assert repr(split) in str(e.value)
+
+    @pytest.mark.parametrize("split", ["train+test", "train+test[:5]"])
+    def test_combined_splits_are_an_error(self, tmp_path, split):
+        d = _saved_dataset(tmp_path / "ds", ["data-00000-of-00001.arrow"])
+        with pytest.raises(t.StepError, match="one split") as e:
+            t.dataset_load_spec(str(d), split, "")
+        assert repr(split) in str(e.value)
+
+    def test_slices_of_the_one_split_can_be_combined(self, tmp_path):
+        d = _saved_dataset(tmp_path / "ds", ["data-00000-of-00001.arrow"])
+        split = "train[:2]+train[5:]"
+        assert t.dataset_load_spec(str(d), split, "")[1]["split"] == split
+
+    @pytest.mark.parametrize("split", ["[:2]", "train+test"])
+    def test_hf_ids_pass_the_split_through(self, split):
+        assert t.dataset_load_spec("trl-lib/Capybara", split, "") == (
+            "trl-lib/Capybara",
+            {"split": split},
+        )
 
 
 def test_step_arg_fields_match_the_dataclass():
