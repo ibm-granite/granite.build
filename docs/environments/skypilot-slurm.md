@@ -188,7 +188,7 @@ SSH host 'bluevela': IdentityKey names secret BV_SSH_PRIVATE_KEY, which is not d
 Create it (see docs/environments/skypilot-slurm.md#secrets-in-cluster_ssh_configs) and retry.
 ```
 
-The shipped `ibm-bluevela` environment names its login nodes and service account as literals — they
+The shipped `bluevela` environment names its login nodes and service account as literals — they
 are not secrets (the asset already names the cluster's `/proj` paths, account, and partitions in the
 clear), so a space running it defines exactly **one** secret:
 
@@ -236,14 +236,21 @@ step types not listed under `config.steps` (see
 step with no `zone` of its own thus lands on the environment's partition, while `hfpull`/`hfpush` listed
 under `config.steps` take their per-type partition. For a real-cluster example, the SLURM/BlueVela
 integration fixtures under `test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/` run on
-BlueVela (reached at `login1`) via the `bluevela` environment, whose default partition is `gpu-mid`.
+BlueVela (reached through its SLURM login nodes) via the `bluevela` environment, whose default partition is `gpu-mid`.
 
-> **The `bluevela` environment lives in a remote space, not this repo.** Those fixtures resolve
-> `space://environments/skypilot/slurm/bluevela` against a remote space (e.g. `gb-test`), which is
-> why `bluevela` isn't found anywhere in this tree. That environment sets `cluster: bluevela`,
-> `zone: gpu-mid`, a shared `shared_workdir`, and the `cloud_config` workdir mapping described
-> below, and authenticates to the SLURM login node with an SSH key (an on-host
-> `~/.ssh/ibm-bluevela.key`, or a `BV_SSH_PRIVATE_KEY` secret in the space).
+> **Those fixtures use the `bluevela` environment from a remote space.** They resolve
+> `space://environments/skypilot/slurm/bluevela` against a remote space (e.g. `gb-test`), not
+> against this repo. This repo also has a copy at
+> `configurations/assets/environments/skypilot/slurm/bluevela/environment.yaml`, which the step
+> build tests under `steps/` use. Both set `cluster: bluevela`, `zone: gpu-mid`, a shared
+> `shared_workdir`, and the `cloud_config` workdir mapping described below, and both authenticate
+> to the SLURM login node with the SSH key held in the space's `BV_SSH_PRIVATE_KEY` secret (see
+> [Secrets in `cluster_ssh_configs`](#secrets-in-cluster_ssh_configs)).
+>
+> BlueVela is IBM-internal. Using the `bluevela` environment needs IBM network access and the
+> `granitebuild` key, held in the `BV_SSH_PRIVATE_KEY` space secret. Outside IBM, treat it as a
+> template for your own SLURM cluster, or use the local Docker SLURM environment instead
+> (`make slurm-setup`; see [skypilot-slurm-setup.md](setup/skypilot-slurm-setup.md)).
 
 #### Override the partition (`zone`) per build
 
@@ -375,7 +382,7 @@ Notes:
 - For a containerized GPU step, gbserver can additionally **generate** a typed
   `gpus-per-node` directive and the `NVIDIA_*` export list Pyxis needs — opt-in
   per environment via `slurm_gpu_sbatch_directives: true` (off by default; the
-  ibm-bluevela environment sets it). An explicit `sbatch_options` value still
+  bluevela environment sets it). An explicit `sbatch_options` value still
   wins per key — but the generated directive is `gpus-per-node`, so overriding
   the GPU type/count means setting `gpus-per-node` yourself: an explicit `gpus`
   is a *different* key, and both would be emitted. See the GPU note under
@@ -567,7 +574,7 @@ config:
               mode: rw
 ```
 
-The `ibm-bluevela` environment mounts the whole `/proj` GPFS tree identity — the same mount the LSF
+The `bluevela` environment mounts the whole `/proj` GPFS tree identity — the same mount the LSF
 backend applies unconditionally — so inputs and outputs staged anywhere under `/proj` are visible
 in-container regardless of which group tree holds them, and every node of a multi-node job sees an
 identical layout. That supersedes an earlier, narrower `/proj/granite-build`-only mount and matches

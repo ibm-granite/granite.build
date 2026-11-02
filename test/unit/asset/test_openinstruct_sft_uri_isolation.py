@@ -41,7 +41,7 @@ LEGACY = {
 ENVS = {
     "lsf-bluevela": (SKY / "lsf" / "ibm-bluevela", "lsf"),
     "aws": (SKY / "aws", None),
-    "slurm-bluevela": (SKY / "slurm" / "ibm-bluevela", "slurm"),
+    "slurm-bluevela": (SKY / "slurm" / "bluevela", "slurm"),
     "kubernetes-local": (SKY / "kubernetes" / "local", "kubernetes"),
 }
 _TL_ATTRS = (

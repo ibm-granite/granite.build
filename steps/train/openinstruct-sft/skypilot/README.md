@@ -179,7 +179,7 @@ to the template, `src/`, `USAGE.md` or a build test.
 
 ## BlueVela image cache
 
-The `ibm-bluevela` SLURM environment's `slurm_image_cache` block (#560) caches the
+The `bluevela` SLURM environment's `slurm_image_cache` block (#560) caches the
 step's registry image as `/proj/granite-build/g4os/enroot/<image>.sqsh`. A cold cache
 is filled by a CPU import job before the first GPU job (gbserver waits up to 5 h,
 queueing included); later launches start the container from the `.sqsh` in seconds.
@@ -245,7 +245,7 @@ need the image published first.
 
 | | aws | slurm-bluevela |
 |---|---|---|
-| environment | `skypilot/aws` | `skypilot/slurm/ibm-bluevela` |
+| environment | `skypilot/aws` | `skypilot/slurm/bluevela` |
 | image | quay.io ref, pulled at launch | registry ref, cached as a shared `.sqsh` (`slurm_image_cache`) |
 | GPU | `A10G:1` | `H200:1` (the environment pins `h200`), `memory: "64"` |
 | data | `dataset_mixer_list` (HF id) | bound `dataset` input |

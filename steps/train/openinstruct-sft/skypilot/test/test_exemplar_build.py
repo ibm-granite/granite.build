@@ -124,13 +124,11 @@ def test_bluevela_fixture_matches_the_environment():
     env = yaml.safe_load(
         (
             repo
-            / "configurations/assets/environments/skypilot/slurm/ibm-bluevela/environment.yaml"
+            / "configurations/assets/environments/skypilot/slurm/bluevela/environment.yaml"
         ).read_text()
     )
     target = _target(_load("slurm-bluevela/build.yaml"))
-    assert (
-        target["environment_uri"] == "space://environments/skypilot/slurm/ibm-bluevela"
-    )
+    assert target["environment_uri"] == "space://environments/skypilot/slurm/bluevela"
     acc = _step(target)["config"]["launcher_config"]["resources"]["accelerators"]
     assert acc.split(":")[0].lower() == env["config"]["sbatch_options"]["constraint"]
 

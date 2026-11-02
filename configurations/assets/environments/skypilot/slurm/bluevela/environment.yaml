@@ -1,3 +1,4 @@
+# Reference with: environment_uri: space://environments/skypilot/slurm/bluevela
 name: sky-slurm-bluevela
 type: Skypilot
 subtype: slurm
