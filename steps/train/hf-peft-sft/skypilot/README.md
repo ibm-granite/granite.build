@@ -435,9 +435,13 @@ reuses the published image.
 
 #### slurm-bluevela
 
-Marked `ibm`. Skips unless the BlueVela key for the `granitebuild` functional ID is
-at `~/.ssh/ibm-bluevela.key`, and skips in SPS CI. A cold image cache adds an
-import job before the GPU jobs (see [BlueVela image cache](#bluevela-image-cache)).
+Marked `ibm`. Skips unless `~/.ssh/ibm-bluevela.key` exists on the host, and skips
+in SPS CI. The `ibm-bluevela` environment does not read that path: it authenticates
+with the `BV_SSH_PRIVATE_KEY` space secret (`IdentityKey`, #519), so the space the
+test runs in must hold it
+(`gb secret create BV_SSH_PRIVATE_KEY --from-file ~/.ssh/ibm-bluevela.key`). A cold
+image cache adds an import job before the GPU jobs (see
+[BlueVela image cache](#bluevela-image-cache)).
 
 ```bash
 make -C steps/train/hf-peft-sft/skypilot space

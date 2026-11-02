@@ -20,10 +20,15 @@ stage the inputs onto shared /proj, the image runs under Pyxis from the shared
 .sqsh cache, and each `adapter` artifact plus the method/peft_version metadata
 are recorded.
 
-IBM infrastructure through the local space, so marked `ibm`. Skips without the
-BlueVela granitebuild SSH key, and in SPS CI/CD. The image comes from the
-environment's shared .sqsh cache (slurm_image_cache, #560): a cold cache imports
-it once in a CPU job before the GPU job starts.
+IBM infrastructure through the local space, so marked `ibm`. Skips unless
+``~/.ssh/ibm-bluevela.key`` exists on the host — the key the shared environment's
+``BV_SSH_PRIVATE_KEY`` space secret is created from
+(``gb secret create BV_SSH_PRIVATE_KEY --from-file ~/.ssh/ibm-bluevela.key``);
+the environment resolves the secret, never an on-host path, so the space this
+test runs in must hold that secret. Also skips in SPS CI/CD, which has no key on
+the host. The image comes from the environment's shared .sqsh cache
+(slurm_image_cache, #560): a cold cache imports it once in a CPU job before the
+GPU job starts.
 """
 
 import os
@@ -38,7 +43,8 @@ from libgbtest.constants import extended_testing_only
 
 pytestmark = [pytest.mark.skypilot_integration, pytest.mark.ibm]
 
-# The key the ibm-bluevela SLURM environment reads (cluster_ssh_configs IdentityFile).
+# The key the BV_SSH_PRIVATE_KEY space secret is created from; the environment reads
+# the secret (cluster_ssh_configs IdentityKey, #519), not this path.
 _BLUEVELA_KEY = Path("~/.ssh/ibm-bluevela.key").expanduser()
 
 
