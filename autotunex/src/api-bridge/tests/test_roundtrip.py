@@ -249,6 +249,38 @@ def test_insert_gb_task_roundtrip(db):
     assert task_id is not None
 
 
+def test_insert_gb_task_without_a_status_server_default(db):
+    # A database the AutoTuneX service built before migration 5e1d2c7a9b40 has
+    # only a Python-side default for gb_tasks.status (no DDL DEFAULT), unlike
+    # this bridge metadata. Until every database has run it, the insert must
+    # not rely on the server default.
+    from sqlalchemy import text
+
+    user_id = seed_user(db)
+    config_id = str(db.insert_configuration(_config(user_id)))
+    dataset_id = str(db.insert_dataset(_dataset(user_id)).id)
+    job_id = seed_job(db, user_id, config_id, dataset_id)
+    with db._engine.begin() as conn:
+        conn.execute(text("DROP TABLE gb_tasks"))
+        conn.execute(
+            text(
+                "CREATE TABLE gb_tasks (id VARCHAR(36) NOT NULL PRIMARY KEY,"
+                " job_id VARCHAR(36) NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,"
+                " build_id VARCHAR(36), status VARCHAR(10) NOT NULL, type VARCHAR(8) NOT NULL,"
+                " pr_url TEXT, artifact_id VARCHAR(36), artifact_uri TEXT, build_status JSON,"
+                " started_at VARCHAR(255), updated_at VARCHAR(255), rits_url TEXT)"
+            )
+        )
+
+    task_id = db.insert_gb_task(job_id=job_id, build_id="44444444-4444-4444-4444-444444444444")
+
+    with db._engine.connect() as conn:
+        status = conn.execute(
+            text("SELECT status FROM gb_tasks WHERE id = :id"), {"id": task_id}
+        ).scalar_one()
+    assert status == "PENDING"
+
+
 def test_insert_trial_and_result_roundtrip(db):
     from sqlalchemy import select as sa_select
 
@@ -338,3 +370,135 @@ def test_structure_check_raises_when_table_missing():
     with pytest.raises(HTTPException) as exc:
         empty_db.test_db_connection_and_structure()
     assert exc.value.status_code == 500
+
+
+@pytest.mark.parametrize(
+    "data_format, stored", [("parquet", "parquet"), (None, "jsonl"), ("txt", "jsonl")]
+)
+def test_find_or_create_stores_a_known_data_format(db, data_format, stored):
+    from api_bridge.services.dataset_service import Dataset
+
+    user_id = seed_user(db)
+    new_id = Dataset(db).find_or_create(
+        name="alpaca",
+        artifact_uri="hf:///datasets/o/alpaca",
+        user_id=user_id,
+        data_format=data_format,
+    )
+
+    assert db.get_dataset(dataset_id=new_id, user_id=user_id)["data_format"] == stored
+
+
+def test_find_or_create_leaves_a_reused_dataset_format_alone(db):
+    # A reused row can be shared (SYSTEM_USER) or validated by the main service;
+    # one run's train-file extension must not rewrite it for everyone.
+    from api_bridge.services.dataset_service import Dataset
+
+    user_id = seed_user(db)
+    service = Dataset(db)
+    kwargs = {"name": "alpaca", "artifact_uri": "hf:///datasets/o/alpaca", "user_id": user_id}
+    first_id = service.find_or_create(**kwargs, data_format="csv")
+
+    reused_id = service.find_or_create(**kwargs, data_format="parquet")
+
+    assert reused_id == first_id
+    assert db.get_dataset(dataset_id=reused_id, user_id=user_id)["data_format"] == "csv"
+
+
+def _app_pushed_dataset(db, user_id, name="finance-classification"):
+    """A row as the main service leaves it after a push: ``<name>_<id8>`` on HF."""
+    from api_bridge import models
+
+    created = db.insert_dataset(models.DatasetInfo(user_id=user_id, name=name, description=""))
+    repo = f"ibm-research/{name}_{str(created.id)[:8]}"
+    db.update_dataset_metadata(
+        id=str(created.id),
+        user_id=user_id,
+        metadata={
+            "train_records": 10,
+            "train_file_size": 100,
+            "validation_records": None,
+            "validation_file_size": None,
+            "artifact_id": None,
+            "artifact_url": f"hf://huggingface.co/datasets/{repo}",
+        },
+    )
+    return str(created.id), repo
+
+
+def test_find_or_create_reuses_the_app_pushed_row_for_its_repo(db):
+    # A run trains on the repo the app pushed: the gbserver cache path names it
+    # <name>_<id8> and spells the URI hf:///, but it is still that row's dataset.
+    from api_bridge.services.dataset_service import Dataset
+
+    user_id = seed_user(db)
+    pushed_id, repo = _app_pushed_dataset(db, user_id)
+
+    found = Dataset(db).find_or_create(
+        name=repo.split("/")[1], artifact_uri=f"hf:///datasets/{repo}", user_id=user_id
+    )
+
+    assert found == pushed_id
+    assert len(db.get_datasets(user_id)) == 1
+
+
+def test_find_or_create_does_not_reuse_an_app_row_for_another_repo(db):
+    # Same id8 suffix, another owner: not the repo that row pushed.
+    from api_bridge.services.dataset_service import Dataset
+
+    user_id = seed_user(db)
+    pushed_id, repo = _app_pushed_dataset(db, user_id)
+    other = "other-org/" + repo.split("/")[1]
+
+    found = Dataset(db).find_or_create(
+        name=other.split("/")[1], artifact_uri=f"hf:///datasets/{other}", user_id=user_id
+    )
+
+    assert found != pushed_id
+    assert len(db.get_datasets(user_id)) == 2
+
+
+def test_find_or_create_does_not_reuse_another_users_app_row(db):
+    from api_bridge.services.dataset_service import Dataset
+
+    owner_id = seed_user(db, "owner@example.com")
+    pushed_id, repo = _app_pushed_dataset(db, owner_id)
+    caller_id = seed_user(db, "caller@example.com")
+
+    found = Dataset(db).find_or_create(
+        name=repo.split("/")[1], artifact_uri=f"hf:///datasets/{repo}", user_id=caller_id
+    )
+
+    assert found != pushed_id
+
+
+def test_find_or_create_prefers_the_app_pushed_row_to_an_old_duplicate(db):
+    # Before the bridge reused app-pushed rows, a run on one registered a duplicate
+    # named after the repo. Later runs must attach to the original, whose preview
+    # reads the repo, not to the duplicate.
+    from api_bridge import models
+    from api_bridge.services.dataset_service import Dataset
+
+    user_id = seed_user(db)
+    pushed_id, repo = _app_pushed_dataset(db, user_id)
+    duplicate = db.insert_dataset(
+        models.DatasetInfo(user_id=user_id, name=repo.split("/")[1], description="")
+    )
+    db.update_dataset_metadata(
+        id=str(duplicate.id),
+        user_id=user_id,
+        metadata={
+            "train_records": None,
+            "train_file_size": None,
+            "validation_records": None,
+            "validation_file_size": None,
+            "artifact_id": None,
+            "artifact_url": f"hf:///datasets/{repo}",
+        },
+    )
+
+    found = Dataset(db).find_or_create(
+        name=repo.split("/")[1], artifact_uri=f"hf:///datasets/{repo}", user_id=user_id
+    )
+
+    assert found == pushed_id
