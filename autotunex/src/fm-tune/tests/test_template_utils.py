@@ -15,13 +15,6 @@ def test_hf_cache_path_resolves_to_hf_uri():
     assert name == "example-dataset"
 
 
-def test_local_gbserver_hf_cache_path_resolves_to_hf_uri():
-    path = "/home/user/.cache/gbserver/hf/example-org/example-dataset_9bb5cc58/main/example_validation.jsonl"
-    uri, name = hf_cache_path_to_uri(path)
-    assert uri == "hf:///datasets/example-org/example-dataset"
-    assert name == "example-dataset"
-
-
 def test_unmatched_path_raises_value_error():
     with pytest.raises(ValueError, match="does not match expected"):
         hf_cache_path_to_uri("/some/random/path/train.jsonl")
@@ -88,12 +81,12 @@ def _snapshot(root, rel):
 )
 def test_gbserver_hf_cache_path_resolves_to_hf_uri(tmp_path, snapshot, file, uri, name):
     path = f"{_snapshot(tmp_path, snapshot)}/{file}"
-    assert lakehouse_path_to_uri(path) == (uri, name)
+    assert hf_cache_path_to_uri(path) == (uri, name)
 
 
 def test_cluster_hf_cache_path_in_a_subdir_resolves_to_hf_uri():
     path = "/gb-read-write/hfcache/org/ds/abc123/data/train.parquet"
-    assert lakehouse_path_to_uri(path) == ("hf:///datasets/org/ds", "ds")
+    assert hf_cache_path_to_uri(path) == ("hf:///datasets/org/ds", "ds")
 
 
 @pytest.mark.parametrize(
@@ -108,7 +101,7 @@ def test_cluster_hf_cache_path_in_a_subdir_resolves_to_hf_uri():
 def test_hf_cache_lookalike_without_a_download_does_not_resolve(tmp_path, rel):
     (tmp_path / rel).parent.mkdir(parents=True)
     with pytest.raises(ValueError, match="does not match expected"):
-        lakehouse_path_to_uri(str(tmp_path / rel))
+        hf_cache_path_to_uri(str(tmp_path / rel))
 
 
 @pytest.mark.parametrize(
@@ -121,7 +114,7 @@ def test_hf_cache_lookalike_without_a_download_does_not_resolve(tmp_path, rel):
 )
 def test_non_cache_paths_do_not_resolve(path):
     with pytest.raises(ValueError, match="does not match expected"):
-        lakehouse_path_to_uri(path)
+        hf_cache_path_to_uri(path)
 
 
 @pytest.mark.parametrize(

@@ -39,7 +39,10 @@ def hf_cache_path_to_uri(path: str) -> tuple[str, str]:
 
     Returns:
         Tuple of (uri, name), e.g.
-            ("hf:///datasets/example-org/example-dataset", "example-dataset")
+            ("hf:///datasets/example-org/example-dataset", "example-dataset").
+            A local cache dir's name is kept verbatim, so the second example
+            gives ("hf:///datasets/example-org/example-dataset_9bb5cc58",
+            "example-dataset_9bb5cc58").
     """
     path = path.strip().rstrip("/")
 
