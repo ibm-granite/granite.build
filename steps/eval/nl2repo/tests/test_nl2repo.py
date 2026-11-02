@@ -571,6 +571,35 @@ def test_generate_without_an_endpoint_is_an_error(bench, tmp_path):
         bench._generate(task, tmp_path, "", "m", 0)
 
 
+def test_generate_ensures_tmux_at_sandbox_start(bench, tmp_path, monkeypatch):
+    # 1030l on-cluster: LocalRuntime drives bash through tmux (libtmux), the
+    # app image ships none, and the action server dies at startup with an
+    # opaque tenacity RetryError -- the skipped dependency probe would have
+    # been the only clear signal.
+    task = nr.Task(make_task(tmp_path / "tasks"))
+    idir = tmp_path / "out" / "repeat-0" / "a"
+    idir.mkdir(parents=True)
+    factory = SandboxFactory(RUN_OUTPUTS)
+    monkeypatch.setattr(nr, "make_sandbox", factory)
+    bench._generate(task, idir, "http://llm:8000/v1", "m", 0)
+    sb = factory.sandboxes[0]
+    ensure = sb.commands[0]
+    assert "command -v tmux" in ensure  # no-op when the image has tmux
+    assert "apt-get install -y -qq tmux" in ensure
+    main = [c for c in sb.commands if "openhands.core.main" in c][0]
+    assert sb.commands.index(ensure) < sb.commands.index(main)
+
+
+def test_generate_fails_loudly_when_tmux_cannot_be_installed(
+    bench, tmp_path, monkeypatch
+):
+    task = nr.Task(make_task(tmp_path / "tasks"))
+    factory = SandboxFactory({"apt-get install": ExecResult("E: broken", 100)})
+    monkeypatch.setattr(nr, "make_sandbox", factory)
+    with pytest.raises(RuntimeError, match="tmux unavailable"):
+        bench._generate(task, tmp_path, "http://llm:8000/v1", "m", 0)
+
+
 def test_generate_fails_loudly_when_no_task_generated(tmp_path, monkeypatch):
     # The first on-cluster model run generated 0/5 tasks (a dead agent-image
     # registry) and the phase still exited 0; a score phase on that empty
