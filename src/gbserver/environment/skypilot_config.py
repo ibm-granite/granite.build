@@ -254,8 +254,10 @@ def _materialize_identity_keys(
     :param secrets: Secret name -> value mapping for resolution.
     :param home_path: Home directory to materialize key files under.
     :returns: A new host list with ``IdentityKey`` resolved to ``IdentityFile``.
-    :raises ValueError: If a host sets both ``IdentityKey`` and ``IdentityFile``, or
-        ``IdentityKey`` resolves to empty.
+    :raises ValueError: If a host sets both ``IdentityKey`` and ``IdentityFile``,
+        ``IdentityKey`` resolves to empty, or ``IdentityKey`` names a secret that
+        is not defined in the space (fail fast instead of writing the secret's
+        name into the key file).
     """
     result: List[Dict[str, Any]] = []
     for host in hosts:
@@ -274,14 +276,14 @@ def _materialize_identity_keys(
         raw = host[IDENTITY_KEY_DIRECTIVE]
         raw_str = str(raw) if raw is not None else ""
         if raw_str and raw_str not in secrets and _looks_like_secret_name(raw_str):
-            logger.warning(
-                "%s for host %s has value %r, which looks like a secret name but "
-                "was not found in this environment's secrets; the key file would be "
-                "invalid. Ensure the secret is available in the environment's "
-                "secret store.",
-                IDENTITY_KEY_DIRECTIVE,
-                alias,
-                raw_str,
+            # Fail fast: falling back to the literal would write the secret's
+            # NAME into the key file, and the launch would only fail much
+            # later — and generically — when SSH auth dies behind max_retries.
+            raise ValueError(
+                f"SSH host {alias!r}: {IDENTITY_KEY_DIRECTIVE} names secret "
+                f"{raw_str}, which is not defined in this space. Create it (see "
+                "docs/environments/skypilot-slurm.md#secrets-in-cluster_ssh_configs)"
+                " and retry."
             )
         contents = _resolve(raw, secrets)
         if not contents or not str(contents).strip():

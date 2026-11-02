@@ -462,19 +462,20 @@ class TestIdentityKey:
         with pytest.raises(ValueError):
             self._materialize(tmp_path, {"BV_KEY": ""}, IdentityKey="BV_KEY")
 
-    def test_unresolved_secret_name_warns(self, tmp_path, caplog):
-        import logging
-
-        # No matching secret: IdentityKey falls back to the literal name and is
-        # almost certainly a misconfiguration — warn loudly.
-        with caplog.at_level(logging.WARNING):
+    def test_unresolved_secret_name_raises(self, tmp_path):
+        # No matching secret: IdentityKey names a secret that is not defined
+        # in the space — fail fast with the fix rather than writing the
+        # secret's name into the key file and surfacing as a generic SSH auth
+        # failure much later (hidden behind max_retries).
+        with pytest.raises(ValueError, match="not defined in this space") as exc:
             sc._materialize_identity_keys(
                 [_host("bluevela", IdentityKey="BV_SSH_PRIVATE_KEY")],
                 "lsf",
                 {},
                 tmp_path,
             )
-        assert "looks like a secret name" in caplog.text
+        msg = str(exc.value)
+        assert "bluevela" in msg and "BV_SSH_PRIVATE_KEY" in msg
 
     def test_key_contents_not_logged(self, tmp_path, caplog):
         import logging
