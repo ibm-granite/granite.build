@@ -236,7 +236,7 @@ step types not listed under `config.steps` (see
 step with no `zone` of its own thus lands on the environment's partition, while `hfpull`/`hfpush` listed
 under `config.steps` take their per-type partition. For a real-cluster example, the SLURM/BlueVela
 integration fixtures under `test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/` run on
-BlueVela (reached at `login1`) via the `bluevela` environment, whose default partition is `gpu-mid`.
+BlueVela (reached through its SLURM login nodes) via the `bluevela` environment, whose default partition is `gpu-mid`.
 
 > **Those fixtures use the `bluevela` environment from a remote space.** They resolve
 > `space://environments/skypilot/slurm/bluevela` against a remote space (e.g. `gb-test`), not
