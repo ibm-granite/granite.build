@@ -113,7 +113,7 @@ WORKDIR /app
 # Install AutoTuneX + its exactly-pinned BASE deps only. Every base dependency
 # ships a cp312 manylinux wheel, so no compiler/build-essential layer is needed.
 # No postgres/mysql extras.
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml README.md ./
 COPY src/ ./src/
 RUN pip install --no-cache-dir .
 

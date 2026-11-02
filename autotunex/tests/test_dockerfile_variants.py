@@ -116,3 +116,14 @@ def test_the_cpu_image_never_installs_the_full_extras() -> None:
     # The extras install is guarded on FM_TUNE_EXTRAS != core, which only the CUDA stage changes.
     assert "FM_TUNE_EXTRAS=core" in _stage_body(_dockerfile(), "cpu")
     assert '[ "$FM_TUNE_EXTRAS" != "core" ]' in _fm_tune_install_run()
+
+
+def test_every_copy_source_exists_in_the_build_context() -> None:
+    # The context is autotunex/, so a COPY of a file that only exists at the repo root
+    # (LICENSE, removed from autotunex/ in favour of the root one) fails the build.
+    root = _DOCKERFILE.parent
+    for line in _dockerfile().splitlines():
+        if not line.startswith("COPY ") or "--from=" in line:
+            continue
+        for source in line.split()[1:-1]:
+            assert (root / source).exists(), f"{line!r}: {source} is not in the build context"
