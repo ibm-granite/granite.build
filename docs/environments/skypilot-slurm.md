@@ -132,12 +132,14 @@ under `config.steps` take their per-type partition. For a real-cluster example, 
 integration fixtures under `test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/` run on
 BlueVela (reached at `login1`) via the `bluevela` environment, whose default partition is `gpu-mid`.
 
-> **The `bluevela` environment lives in a remote space, not this repo.** Those fixtures resolve
-> `space://environments/skypilot/slurm/bluevela` against a remote space (e.g. `gb-test`), which is
-> why `bluevela` isn't found anywhere in this tree. That environment sets `cluster: bluevela`,
-> `zone: gpu-mid`, a shared `shared_workdir`, and the `cloud_config` workdir mapping described
-> below, and authenticates to the SLURM login node with an SSH key (an on-host
-> `~/.ssh/ibm-bluevela.key`, or a `BV_SSH_PRIVATE_KEY` secret in the space).
+> **Those fixtures use the `bluevela` environment from a remote space.** They resolve
+> `space://environments/skypilot/slurm/bluevela` against a remote space (e.g. `gb-test`), not
+> against this repo. This repo also has a copy at
+> `configurations/assets/environments/skypilot/slurm/bluevela/environment.yaml`, which the step
+> build tests under `steps/` use. Both set `cluster: bluevela`, `zone: gpu-mid`, a shared
+> `shared_workdir`, and the `cloud_config` workdir mapping described below. Both authenticate to
+> the SLURM login node with an SSH key: the in-repo copy reads an on-host
+> `~/.ssh/ibm-bluevela.key`, and the remote copy uses a `BV_SSH_PRIVATE_KEY` secret in the space.
 
 #### Override the partition (`zone`) per build
 
