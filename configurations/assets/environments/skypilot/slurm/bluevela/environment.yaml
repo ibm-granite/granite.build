@@ -1,9 +1,3 @@
-# IBM BlueVela over SLURM — the SLURM sibling of the LSF environment in
-# environments/skypilot/lsf/ibm-bluevela. Both reach BlueVela as the shared
-# `granitebuild` functional ID; they differ in scheduler and login nodes (login1/2
-# run SLURM, login3-5 run LSF). Settings mirror the SLURM environment that the
-# BlueVela integration fixtures under
-# test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/ run against.
 # Reference with: environment_uri: space://environments/skypilot/slurm/bluevela
 name: sky-slurm-bluevela
 type: Skypilot
