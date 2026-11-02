@@ -57,10 +57,9 @@ case $output_id in *[[:space:]]*|*'"'*) fail "output id contains whitespace or a
 home="${HF_PEFT_SFT_HOME:-/opt/hf-peft-sft}"
 
 # --- GPUs ------------------------------------------------------------------------
-num_gpus="${SKYPILOT_NUM_GPUS_PER_NODE:-}"
-if [ -z "$num_gpus" ]; then
-  num_gpus="$(nvidia-smi -L 2>/dev/null | grep -c '^GPU ' || true)"
-fi
+visible="$(nvidia-smi -L 2>/dev/null | grep -c '^GPU ' || true)"
+case $visible in ''|*[!0-9]*) visible=0 ;; esac
+num_gpus="${SKYPILOT_NUM_GPUS_PER_NODE:-$visible}"
 case $num_gpus in ''|*[!0-9]*) num_gpus=0 ;; esac
 [ "$num_gpus" -ge 1 ] || fail "no GPUs on this node. Request them in the build with launcher_config.resources.accelerators (e.g. \"A10G:1\")."
 # One process per allocated GPU: if this process sees fewer GPUs than were
@@ -68,8 +67,6 @@ case $num_gpus in ''|*[!0-9]*) num_gpus=0 ;; esac
 # later ("Multiple Ranks are using the same GPU"). Refuse with the real cause. A
 # failed or missing nvidia-smi (0 visible) proves nothing, so only an undercount
 # it actually reports is refused.
-visible="$(nvidia-smi -L 2>/dev/null | grep -c '^GPU ' || true)"
-case $visible in ''|*[!0-9]*) visible=0 ;; esac
 if [ "$visible" -ge 1 ] && [ "$visible" -lt "$num_gpus" ]; then
   fail "${num_gpus} GPU(s) were allocated (SKYPILOT_NUM_GPUS_PER_NODE) but only ${visible} are visible to this process (nvidia-smi -L; CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}). The container did not get the whole allocation; rerun, or report the node."
 fi
@@ -78,14 +75,20 @@ if [ "$distributed" != ddp ] && [ "$num_gpus" -lt 2 ]; then
 fi
 
 # --- accelerate config -----------------------------------------------------------
-launch=(--num_machines 1 --num_processes "$num_gpus" --mixed_precision "$mixed_precision")
+# Always a step-owned --config_file: without one, accelerate reads the user's
+# default config in ~/.cache/huggingface/accelerate (shared home dirs on Slurm),
+# which can silently change the launch, even turn DeepSpeed on.
 case $distributed in
-  ddp)       if [ "$num_gpus" -gt 1 ]; then launch=(--multi_gpu "${launch[@]}"); fi ;;
+  ddp)       cfg="single_gpu.yaml"
+             if [ "$num_gpus" -gt 1 ]; then cfg="ddp.yaml"; fi ;;
   fsdp)      cfg="fsdp.yaml"
-             if [ "$method" = qlora ]; then cfg="fsdp_qlora.yaml"; fi
-             launch=(--config_file "${home}/accelerate/${cfg}" "${launch[@]}") ;;
-  deepspeed) launch=(--config_file "${home}/accelerate/deepspeed_z3.yaml" "${launch[@]}") ;;
+             if [ "$method" = qlora ]; then cfg="fsdp_qlora.yaml"; fi ;;
+  deepspeed) cfg="deepspeed_z3.yaml" ;;
 esac
+launch=(--config_file "${home}/accelerate/${cfg}" --num_machines 1 --num_processes "$num_gpus" --mixed_precision "$mixed_precision")
+# Port 0: accelerate picks a free rendezvous port. The default 29500 clashes when
+# two jobs start together on one node (Pyxis containers share the host network).
+if [ "$num_gpus" -gt 1 ]; then launch+=(--main_process_port 0); fi
 
 # --- output locations ------------------------------------------------------------
 # Absolute, because the marker is read off-node. Train into a fresh <out>.partial

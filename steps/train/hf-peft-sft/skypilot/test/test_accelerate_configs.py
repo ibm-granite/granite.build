@@ -81,3 +81,36 @@ def test_deepspeed_config_is_untouched_zero3():
     cfg = _load("deepspeed_z3.yaml")
     assert cfg["distributed_type"] == "DEEPSPEED"
     assert cfg["deepspeed_config"]["zero_stage"] == 3
+
+
+# ddp passes one of these so accelerate never falls back to the user's
+# ~/.cache/huggingface/accelerate/default_config.yaml.
+_DDP = {"ddp.yaml": "MULTI_GPU", "single_gpu.yaml": "NO"}
+
+
+@pytest.mark.parametrize("name,dist", sorted(_DDP.items()))
+def test_ddp_configs_distributed_type(name, dist):
+    cfg = _load(name)
+    # "NO" must stay a string; unquoted, YAML parses it as False.
+    assert isinstance(cfg["distributed_type"], str)
+    assert cfg["distributed_type"] == dist
+    assert cfg["compute_environment"] == "LOCAL_MACHINE"
+    assert cfg["num_machines"] == 1
+    assert cfg["use_cpu"] is False
+
+
+@pytest.mark.parametrize("name", sorted(_DDP))
+def test_ddp_configs_name_no_sharding_keys(name):
+    cfg = _load(name)
+    assert not [k for k in cfg if "fsdp" in k or "deepspeed" in k], sorted(cfg)
+
+
+@pytest.mark.parametrize("name,dist", sorted(_DDP.items()))
+def test_ddp_configs_load_with_accelerate(name, dist):
+    # Not importorskip("accelerate"): with PYTHONPATH=src and no real accelerate
+    # installed, src/accelerate/ imports as an empty namespace package.
+    args = pytest.importorskip("accelerate.commands.config.config_args")
+    cfg = args.load_config_from_file(str(_CONFIGS / name))
+    assert isinstance(cfg, args.ClusterConfig)
+    assert cfg.distributed_type.value == dist
+    assert cfg.fsdp_config == {} and cfg.deepspeed_config == {}

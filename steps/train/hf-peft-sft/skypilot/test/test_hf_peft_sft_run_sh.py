@@ -149,10 +149,15 @@ def _markers(proc):
 
 class TestLaunch:
     def test_ddp_single_gpu(self, node):
+        # A step-owned config even on 1 GPU: without --config_file accelerate
+        # reads the user's ~/.cache/huggingface/accelerate/default_config.yaml.
+        # One process has no rendezvous, so no --main_process_port.
         proc, rec = _run(node)
         assert proc.returncode == 0, proc.stderr
         assert _launch(rec) == [
             "launch",
+            "--config_file",
+            str(node[2] / "accelerate" / "single_gpu.yaml"),
             "--num_machines",
             "1",
             "--num_processes",
@@ -170,9 +175,10 @@ class TestLaunch:
         )
         _, rec = _run(node, env={"SKYPILOT_NUM_GPUS_PER_NODE": "4"})
         launch = _launch(rec)
-        assert "--multi_gpu" in launch
+        assert _opt(launch, "--config_file") == str(node[2] / "accelerate" / "ddp.yaml")
+        assert _opt(launch, "--main_process_port") == "0"
+        assert "--multi_gpu" not in launch
         assert _opt(launch, "--num_processes") == "4"
-        assert "--config_file" not in launch
 
     @pytest.mark.parametrize(
         "method,dist,cfg",
@@ -193,6 +199,7 @@ class TestLaunch:
         )
         launch = _launch(rec)
         assert _opt(launch, "--config_file") == str(node[2] / "accelerate" / cfg)
+        assert _opt(launch, "--main_process_port") == "0"
         assert "--multi_gpu" not in launch
 
     @pytest.mark.parametrize("dist", ["fsdp", "deepspeed"])
@@ -242,6 +249,18 @@ class TestLaunch:
     def test_gpu_count_falls_back_to_nvidia_smi(self, node):
         _, rec = _run(node, env={"SKYPILOT_NUM_GPUS_PER_NODE": None})
         assert _opt(_launch(rec), "--num_processes") == "2"
+
+    def test_nvidia_smi_runs_once_without_skypilot_count(self, node):
+        calls = node[0] / "nvidia-smi.calls"
+        _exe(
+            node[1] / "nvidia-smi",
+            f'echo x >> "{calls}"\n'
+            'echo "GPU 0: NVIDIA A10G (UUID: x)"\necho "GPU 1: NVIDIA A10G (UUID: y)"\n',
+        )
+        proc, rec = _run(node, env={"SKYPILOT_NUM_GPUS_PER_NODE": None})
+        assert proc.returncode == 0, proc.stderr
+        assert _opt(_launch(rec), "--num_processes") == "2"
+        assert calls.read_text().splitlines() == ["x"]
 
     def test_no_gpus_fails_before_training(self, node):
         _exe(node[1] / "nvidia-smi", "exit 9\n")
