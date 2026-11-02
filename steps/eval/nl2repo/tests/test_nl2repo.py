@@ -438,6 +438,7 @@ def test_render_config_has_upstreams_effective_settings():
     assert 'api_key = "EMPTY"' in cfg
     assert 'base_url = "http://llm:8000/v1"' in cfg
     assert "enable_browsing = true" in cfg
+    assert "enable_browser = true" in cfg
     assert "enable_llm_editor = false" in cfg
     assert 'llm_config = "granite_4_2"' in cfg
     assert '[condenser]\ntype = "noop"' in cfg
@@ -462,6 +463,7 @@ def test_render_config_toggles_browsing_and_sampling():
         max_tokens=2048,
     )
     assert "enable_browsing = false" in cfg
+    assert "enable_browser = false" in cfg
     assert "temperature = 0.1" in cfg
     assert "top_p = 0.9" in cfg
     assert "max_output_tokens = 2048" in cfg
@@ -498,6 +500,9 @@ def test_generate_runs_openheads_with_the_task_and_stages_out(
     cfg = sb.files[f"{nr.RUN_DIR}/config.toml"]
     assert 'model = "openai/granite-4.2"' in cfg
     assert 'base_url = "http://llm:8000/v1"' in cfg
+    # Browsing off end to end: the app image ships no browser binaries.
+    assert "enable_browser = false" in cfg
+    assert "enable_browsing = false" in cfg
     main = [c for c in sb.commands if "openhands.core.main" in c][0]
     # The image's venv python (what its entrypoint activates); a bare python
     # is the system one, which finds the package but not its dependencies.

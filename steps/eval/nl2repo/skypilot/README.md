@@ -108,7 +108,7 @@ fetch above.
 | `openhands_image` | `ghcr.io/all-hands-ai/openhands:0.56` | The agent app image. |
 | `image_prefix` / `image_tag` | `ghcr.io/multimodal-art-projection/nl2repobench` / `1.0` | The per-task grade images. |
 | `max_iterations` | `500` | OpenHands agent iterations (upstream's setting). |
-| `enable_browsing` | `true` | Upstream's default; OpenHands 0.56's browsing runs a local browser, no API key. |
+| `enable_browsing` | `false` | Off at both OpenHands switches (runtime `enable_browser` + agent tool): the app image ships no browser binaries, and the upstream default of `true` kills the action server at startup on the missing Chromium. NL2RepoBench tasks never browse. |
 | `temperature` / `top_p` / `max_tokens` | (vLLM defaults) | Sampling for the agent. |
 | `agent_timeout` | `14400` | Wall-clock bound per agent run, seconds; `0` = none. Upstream has none. |
 | `eval_timeout` | `1800` | Wall-clock bound per grade command, seconds. Upstream has none. |
