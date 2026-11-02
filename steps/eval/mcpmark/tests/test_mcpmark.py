@@ -526,6 +526,17 @@ def test_run_skips_tasks_the_harness_already_finished(baked, tmp_path, monkeypat
 # -- the postgres cluster -----------------------------------------------------------
 
 
+def _cluster_argv(argv: list[str]) -> list[str]:
+    """A postgres cluster command's argv with the root privilege prefix
+    (``unshare --user --map-user=... --map-group=... --``) stripped: present
+    when the suite runs as root (the in-image build tests), absent on laptops
+    and CI. Lets the lifecycle assertions below hold both ways."""
+    if argv[:1] == ["unshare"]:
+        assert argv[1] == "--user" and argv[4] == "--"
+        return argv[5:]
+    return argv
+
+
 def test_postgres_cluster_starts_on_a_free_node_locked_port(baked, tmp_path, monkeypatch, lock_dir):
     bench = mkbench("postgres", tmp_path)
     runner = FakeRunner(service="postgres")
@@ -537,7 +548,7 @@ def test_postgres_cluster_starts_on_a_free_node_locked_port(baked, tmp_path, mon
             "POSTGRES_USERNAME": "postgres",
             "POSTGRES_PASSWORD": "mcpmark",
         }
-        argvs = [c["argv"] for c in runner.calls]
+        argvs = [_cluster_argv(c["argv"]) for c in runner.calls]
         initdb = next(a for a in argvs if a[0].endswith("/initdb"))
         assert initdb[:5] == [str(mm.PG_BINDIR / "initdb"), "-D", initdb[2], "-U", "postgres"]
         assert initdb[5:] == ["--auth=trust"]
@@ -547,49 +558,47 @@ def test_postgres_cluster_starts_on_a_free_node_locked_port(baked, tmp_path, mon
         assert "-w" in start
         data_dir = Path(initdb[2])
         assert data_dir.parent != tmp_path  # node-local scratch, not the output dir
-    stop = next(a for a in (c["argv"] for c in runner.calls) if a[0].endswith("/pg_ctl") and a[-1] == "stop")
+    stop = next(a for a in (_cluster_argv(c["argv"]) for c in runner.calls) if a[0].endswith("/pg_ctl") and a[-1] == "stop")
     assert "-m" in stop and stop[stop.index("-m") + 1] == "immediate"
     assert not data_dir.exists()  # cleaned up
     # The lock is free again.
     assert NodeLock("mcpmark-postgres-15432").try_acquire()
 
 
-def test_pg_privileges_are_a_noop_outside_root(monkeypatch, tmp_path):
+def test_pg_privileges_are_a_noop_outside_root(monkeypatch):
     monkeypatch.setattr(mm.os, "geteuid", lambda: 501)
-    chown = []
-    monkeypatch.setattr(mm.shutil, "chown", lambda p, user=None, group=None: chown.append((p, user, group)))
-    assert mm._pg_privileges(tmp_path) == {}
-    assert chown == []
+    assert mm._pg_privileges() == []
 
 
-def test_pg_privileges_drop_root_to_the_postgres_user(monkeypatch, tmp_path):
+def test_pg_privileges_map_root_onto_the_postgres_user(monkeypatch):
+    # The job container on the cluster is root under a single-entry uid map
+    # (pyxis --container-remap-root), where every setuid-based drop is
+    # inert; the drop that works is a nested user namespace mapping our own
+    # uid onto the image's postgres user.
     monkeypatch.setattr(mm.os, "geteuid", lambda: 0)
     monkeypatch.setattr(
         mm.pwd, "getpwnam", lambda name: pwd.struct_passwd(("postgres", "x", 26, 26, "", "/var/lib/postgresql", "/bin/false"))
     )
-    chown = []
-    monkeypatch.setattr(mm.shutil, "chown", lambda p, user=None, group=None: chown.append((p, user, group)))
-    assert mm._pg_privileges(tmp_path) == {"user": "postgres", "group": 26}
-    assert chown == [(tmp_path, "postgres", 26)]
+    monkeypatch.setattr(mm.shutil, "which", lambda name: "/usr/bin/unshare" if name == "unshare" else None)
+    assert mm._pg_privileges() == ["unshare", "--user", "--map-user=26", "--map-group=26", "--"]
 
 
 def test_postgres_cluster_commands_carry_the_privilege_drop_when_root(baked, tmp_path, monkeypatch, lock_dir):
     # The job container on the cluster is root (pyxis --container-remap-root):
-    # every cluster command must run as the unprivileged postgres user.
+    # every cluster command must run under the nested-userns prefix.
     monkeypatch.setattr(mm.os, "geteuid", lambda: 0)
     monkeypatch.setattr(
         mm.pwd, "getpwnam", lambda name: pwd.struct_passwd(("postgres", "x", 26, 26, "", "/var/lib/postgresql", "/bin/false"))
     )
-    monkeypatch.setattr(mm.shutil, "chown", lambda p, user=None, group=None: None)
+    monkeypatch.setattr(mm.shutil, "which", lambda name: "/usr/bin/unshare" if name == "unshare" else None)
     bench = mkbench("postgres", tmp_path)
     runner = FakeRunner(service="postgres")
     monkeypatch.setattr(mm.subprocess, "run", runner)
     with bench._postgres_server():
-        cluster = [c for c in runner.calls if c["argv"][0].startswith(str(mm.PG_BINDIR))]
+        cluster = [c for c in runner.calls if any(str(mm.PG_BINDIR) in a for a in c["argv"])]
     assert cluster
     for call in cluster:
-        assert call["user"] == "postgres"
-        assert call["group"] == 26
+        assert call["argv"][:5] == ["unshare", "--user", "--map-user=26", "--map-group=26", "--"]
 
 
 def test_postgres_cluster_skips_a_port_another_job_holds(baked, tmp_path, monkeypatch, lock_dir):
@@ -600,7 +609,7 @@ def test_postgres_cluster_skips_a_port_another_job_holds(baked, tmp_path, monkey
     monkeypatch.setattr(mm.subprocess, "run", runner)
     with bench._postgres_server() as pg:
         assert pg["POSTGRES_PORT"] == "15433"
-        argvs = [c["argv"] for c in runner.calls]
+        argvs = [_cluster_argv(c["argv"]) for c in runner.calls]
         start = next(a for a in argvs if a[0].endswith("/pg_ctl") and a[-1] == "start")
         assert start[start.index("-o") + 1].startswith("-p 15433 -k ")
     holder.release()
@@ -645,7 +654,7 @@ def test_postgres_run_starts_the_cluster_and_passes_it_to_the_pipeline(baked, tm
     assert pipeline_calls[0]["env"]["OPENAI_BASE_URL"] == "http://llm:8000/v1"
     # The cluster was stopped after the last task.
     assert any(
-        a[-1] == "stop" for a in (c["argv"] for c in runner.calls) if a[0].endswith("/pg_ctl")
+        a[-1] == "stop" for a in (_cluster_argv(c["argv"]) for c in runner.calls) if a[0].endswith("/pg_ctl")
     )
 
 

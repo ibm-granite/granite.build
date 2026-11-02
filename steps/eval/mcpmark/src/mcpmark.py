@@ -145,18 +145,25 @@ PG_PORTS = range(15432, 15532)
 fixed-port pattern: two jobs on one node never share a port)."""
 
 
-def _pg_privileges(data: Path) -> dict[str, Any]:
-    """subprocess.run kwargs for the postgres cluster's commands. initdb
-    (and the postgres server itself) refuse to run as root, and the job
-    container on the cluster IS root (pyxis --container-remap-root), so
-    drop them to an unprivileged user when we are root. The family image
-    already carries the ``postgres`` user (postgresql-common's postinst
-    creates it); a root environment without one gets a dedicated
-    ``mcpmark-pg`` user. Outside a root context (tests, laptop runs)
-    nothing changes. Returned as subprocess kwargs -- the argv is not
-    wrapped -- so the commands stay exactly what they are."""
+def _pg_privileges() -> list[str]:
+    """The command prefix that runs the postgres cluster's commands as an
+    unprivileged user. initdb (and the postgres server itself) refuse to run
+    as root, and the job container on the cluster IS root: pyxis
+    ``--container-remap-root`` runs enroot with a single-entry
+    ``/proc/self/uid_map`` (the submitting user <-> 0), and in that
+    namespace every setuid-based drop -- ``subprocess.run(user=...)``,
+    ``su``, ``setpriv``, ``runuser`` -- is silently inert: the child still
+    runs as uid 0. A *nested* user namespace is the one mechanism that
+    works: namespace root may map its own kernel uid to any inner id, so
+    ``unshare --user --map-user=<uid> --map-group=<gid>`` runs the command
+    as the image's ``postgres`` user. The mapping crosses the boundary both
+    ways -- files the cluster writes land as the submitting user's uid
+    outside the namespace, and the data dir this (outer) root created reads
+    as postgres inside -- so no chown is needed anywhere. Outside a root
+    context (tests, laptop runs) nothing changes. Returned as a command
+    prefix -- the argv is not wrapped beyond it."""
     if os.geteuid() != 0:
-        return {}
+        return []
     pw = None
     for name in ("postgres", "mcpmark-pg"):
         try:
@@ -177,8 +184,12 @@ def _pg_privileges(data: Path) -> dict[str, Any]:
                 f"user could be provisioned for the cluster: {created.stderr.strip()[-300:]}"
             )
         pw = pwd.getpwnam("mcpmark-pg")
-    shutil.chown(data, user=pw.pw_name, group=pw.pw_gid)
-    return {"user": pw.pw_name, "group": pw.pw_gid}
+    if shutil.which("unshare") is None:
+        raise SystemExit(
+            "mcpmark-postgres: initdb refuses to run as root and unshare(1) is not "
+            "available to map an unprivileged user for the cluster"
+        )
+    return ["unshare", "--user", f"--map-user={pw.pw_uid}", f"--map-group={pw.pw_gid}", "--"]
 
 
 def tree_digest(root: Path) -> str:
@@ -398,15 +409,15 @@ class Mcpmark(Benchmark):
                 continue
             log.info("%s: postgres cluster on port %d", self.id, port)
             data = Path(tempfile.mkdtemp(prefix="mcpmark-pg-"))
-            pg = _pg_privileges(data)  # {} unless we are root (the job container is)
+            pg = _pg_privileges()  # [] unless we are root (the job container is)
             try:
                 self._run_checked(
-                    [str(PG_BINDIR / "initdb"), "-D", str(data), "-U", "postgres", "--auth=trust"],
+                    [*pg, str(PG_BINDIR / "initdb"), "-D", str(data), "-U", "postgres", "--auth=trust"],
                     f"initdb (port {port})",
-                    **pg,
                 )
                 self._run_checked(
                     [
+                        *pg,
                         str(PG_BINDIR / "pg_ctl"),
                         "-D",
                         str(data),
@@ -418,7 +429,6 @@ class Mcpmark(Benchmark):
                         "start",
                     ],
                     f"pg_ctl start (port {port})",
-                    **pg,
                 )
                 try:
                     yield {
@@ -429,10 +439,9 @@ class Mcpmark(Benchmark):
                     }
                 finally:
                     self._run_checked(
-                        [str(PG_BINDIR / "pg_ctl"), "-D", str(data), "-m", "immediate", "-w", "stop"],
+                        [*pg, str(PG_BINDIR / "pg_ctl"), "-D", str(data), "-m", "immediate", "-w", "stop"],
                         f"pg_ctl stop (port {port})",
                         check=False,
-                        **pg,
                     )
             finally:
                 shutil.rmtree(data, ignore_errors=True)
@@ -441,15 +450,8 @@ class Mcpmark(Benchmark):
         raise SystemExit(f"{self.id}: no free postgres port in [{PG_PORTS[0]}, {PG_PORTS[-1]}] on this node")
 
     @staticmethod
-    def _run_checked(
-        argv: list[str],
-        what: str,
-        *,
-        check: bool = True,
-        user: str | None = None,
-        group: int | None = None,
-    ) -> subprocess.CompletedProcess:
-        result = subprocess.run(argv, capture_output=True, text=True, check=False, user=user, group=group)
+    def _run_checked(argv: list[str], what: str, *, check: bool = True) -> subprocess.CompletedProcess:
+        result = subprocess.run(argv, capture_output=True, text=True, check=False)
         if check and result.returncode != 0:
             tail = (result.stderr or result.stdout or "").strip()[-500:]
             raise RuntimeError(f"{what} failed (exit {result.returncode}): {argv}\n{tail}")
