@@ -1,0 +1,168 @@
+# fm-tune: run one fm-tune (autotunex/src/fm-tune) tuning job on the SkyPilot env (slurm subtype).
+# Source: steps/tune/fm-tune/skypilot/ — published by `make publish-step`; do not edit the
+# copy under configurations/assets. The run script src/fmtune_run.sh is shared,
+# byte-identical, with steps/tune/fm-tune/bash/. See USAGE.md.
+name: fm-tune
+version: 1.0.0
+type: training
+config:
+  fm_tune_config:
+    source:
+      path: ""                    # local fm-tune checkout (one of path | repo)
+      repo: ""                    # git URL to clone
+      ref: main                   # branch / tag for repo
+      subdir: autotunex/src/fm-tune
+    extra: core                   # pip extra: core | full | mlx
+    model: ""                     # --model_name_or_path when base_model is not bound
+    train_file: ""                # relative to the dataset input
+    validation_file: ""           # relative to the dataset input
+    tuning_algo: lora             # sft | lora | qlora | alora | loha | lokr | vera | none
+    rl_algo: ""                   # dpo | kto | ppo | grpo | dapo; empty = none
+    run_name: fm-tune             # --run_name and --output_model_name
+    autotune: true                # true | false; false adds --no_autotune
+    backend: ""                   # torch | mlx; empty = fm-tune's default
+    seed: ""                      # empty = fm-tune's default (42)
+    config_preset: autotune.yaml  # bundled autotune/configs/<preset> when hpo_config is empty
+    hpo_config: {}                # inline HPO config for --config_file; {} = config_preset
+    config_name: ""               # file name of the inline hpo_config; empty = fm_tune_hpo
+    output_path: ""               # skypilot only; unused on bash
+    extra_args: ""                # appended verbatim to main.py argv
+    python: ""                    # interpreter that creates the venv; empty = injected python
+    autotunex:
+      server_url: ""              # --autotunex_server_url; empty = offline
+      job_id: ""                  # --job_id
+inputs:
+  allow_unknown: true             # recipes may bind extra inputs to order targets
+  required:
+    dataset:
+      type: dataset
+      accept: [uri, binding]
+  optional:
+    base_model:
+      type: model
+      accept: [uri, binding]
+outputs:
+  required:
+    model:
+      type: model
+environment_configs:
+  Skypilot:
+    subtypes:
+      - slurm
+    default_launcher: fm-tune
+    launchers:
+      fm-tune:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # Bare node: the local Slurm cluster has no Pyxis, so no container image.
+          image_id: ""
+          resources: {}
+          file_mounts:
+            src: src
+          # Config-only checks are raise_errors in the validate macro: gbserver
+          # fills this launcher config with the strict renderer when it creates
+          # the step, so they fail before anything is provisioned. Each block is
+          # filled on its own (no shared Jinja scope across YAML keys), so the
+          # macro lives in run:, the block a warm re-run renders too. The macro is
+          # the same text in the bash template (test_fm_tune_script_copies_match.py),
+          # and fmtune_run.sh keeps the same checks for a direct run.
+          run: |
+            {#- q: shell-quote one value; a YAML null renders as empty, like an unset key. #}
+            {%- macro q(v) -%}'{{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}'{%- endmacro %}
+            {%- macro validate(c, base_model_bound) -%}
+            {%- set name_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-" -%}
+            {#- First, so no check below reads an attribute of a non-mapping. A null source or
+                autotunex is rejected, not taken as defaults: the template ships both mappings. #}
+            {%- for key in ["source", "autotunex"] -%}
+            {%- if c[key] is not mapping %}{{ raise_error("fm-tune: fm_tune_config." ~ key ~ " must be a mapping, got '" ~ c[key] ~ "'.") }}{% endif -%}
+            {%- endfor -%}
+            {%- if c.hpo_config is not none and c.hpo_config is not mapping %}{{ raise_error("fm-tune: fm_tune_config.hpo_config must be a mapping or null, got '" ~ c.hpo_config ~ "'.") }}{% endif -%}
+            {#- Then, so a list never reaches the checks below; hpo_config is the one mapping. #}
+            {%- for group, keys in [("", ["extra", "model", "train_file", "validation_file", "tuning_algo", "rl_algo", "run_name", "autotune", "backend", "seed", "config_preset", "config_name", "output_path", "extra_args", "python"]), ("source.", ["path", "repo", "ref", "subdir"]), ("autotunex.", ["server_url", "job_id"])] -%}
+            {%- for key in keys -%}
+            {%- set v = c[key] if not group else c[group[:-1]][key] -%}
+            {%- if v is mapping or (v is iterable and v is not string) %}{{ raise_error("fm-tune: fm_tune_config." ~ group ~ key ~ " must be a scalar (string/number/bool), got a list/mapping; write it as a string") }}{% endif -%}
+            {%- endfor -%}
+            {%- endfor -%}
+            {%- for key in ["train_file", "validation_file"] -%}
+            {%- if not c[key] %}{{ raise_error("fm-tune: fm_tune_config." ~ key ~ " is required; set it to the file's path inside the dataset input.") }}{% endif -%}
+            {%- if (c[key] | string).startswith("/") or ".." in (c[key] | string).split("/") %}{{ raise_error("fm-tune: fm_tune_config." ~ key ~ " must be a relative path inside the dataset input (no leading '/', no '..' component), got '" ~ c[key] ~ "'.") }}{% endif -%}
+            {%- endfor -%}
+            {%- if (c.source.path and c.source.repo) or not (c.source.path or c.source.repo) %}{{ raise_error("fm-tune: set exactly one of fm_tune_config.source.path and fm_tune_config.source.repo.") }}{% endif -%}
+            {%- if ([c.tuning_algo] | reject("none") | join | lower) in ["", "none"] and ([c.rl_algo] | reject("none") | join | lower) in ["", "none"] %}{{ raise_error("fm-tune: tuning_algo and rl_algo cannot both be empty or none; set tuning_algo (e.g. lora) or an online rl_algo (ppo, grpo, dapo).") }}{% endif -%}
+            {%- if ([c.tuning_algo] | reject("none") | join | lower) in ["", "none"] and ([c.rl_algo] | reject("none") | join | lower) in ["dpo", "kto"] %}{{ raise_error("fm-tune: an offline rl_algo (dpo, kto) needs a tuning_algo (e.g. lora or sft).") }}{% endif -%}
+            {%- if not (c.model or base_model_bound) %}{{ raise_error("fm-tune: set fm_tune_config.model or bind the base_model input.") }}{% endif -%}
+            {%- if not c.run_name or (c.run_name | string | list | reject("in", name_chars) | list) %}{{ raise_error("fm-tune: fm_tune_config.run_name must match ^[A-Za-z0-9._-]+$, got '" ~ (c.run_name if c.run_name is not none else "") ~ "'.") }}{% endif -%}
+            {%- if c.config_name and (c.config_name | string | list | reject("in", name_chars) | list) %}{{ raise_error("fm-tune: fm_tune_config.config_name must match ^[A-Za-z0-9._-]+$, got '" ~ c.config_name ~ "'.") }}{% endif -%}
+            {%- if c.autotune is not none and c.autotune != "" and (c.autotune | string | lower) not in ["true", "false"] %}{{ raise_error("fm-tune: fm_tune_config.autotune must be true or false, got '" ~ c.autotune ~ "'.") }}{% endif -%}
+            {%- for key in ["repo", "ref"] -%}
+            {%- if (c.source[key] | string).startswith("-") %}{{ raise_error("fm-tune: fm_tune_config.source." ~ key ~ " must not start with '-' (git would read it as an option).") }}{% endif -%}
+            {%- endfor -%}
+            {%- endmacro -%}
+            {%- set c = config.fm_tune_config %}
+            {{- validate(c, bindings.base_model is defined) }}
+            {#- Counts: a whole number >= 0, as an int, a whole float (YAML 2.0) or a
+                string of digits; null means unset. "" is unset only where gbserver never
+                reads the value (num_gpus_per_node): its num_nodes int("") raises. #}
+            {%- macro bad_count(v) -%}{{ "" if (v is none or (v is number and v is not boolean and v >= 0 and v == (v | int)) or (v is string and v and not (v | list | reject("in", "0123456789") | list))) else "bad" }}{%- endmacro %}
+            {%- for key in ["compute_config", "launcher_config"] if config[key] is defined and config[key] is not none and config[key] is not mapping %}{{ raise_error("fm-tune: config." ~ key ~ " must be a mapping, got '" ~ config[key] ~ "'.") }}{% endfor %}
+            {%- set compute = config.compute_config if (config.compute_config is defined and config.compute_config) else {} %}
+            {%- set launcher = config.launcher_config if (config.launcher_config is defined and config.launcher_config) else {} %}
+            {#- Single node: with more, SkyPilot runs run: on every node and the runs
+                race on the cache and the output. Check every source skypilot.py
+                _num_nodes_from_configs reads (the build's launcher_config wins);
+                compute_config may be absent. #}
+            {%- for where, src in [("compute_config", compute), ("launcher_config", launcher)] %}
+            {%- set n = src.get("num_nodes") %}
+            {%- if bad_count(n) %}{{ raise_error("fm-tune: " ~ where ~ ".num_nodes must be a whole number (got '" ~ n ~ "'); this step needs 1.") }}{% endif %}
+            {%- if n is not none and (n | int) != 1 %}{{ raise_error("fm-tune: " ~ where ~ ".num_nodes must be 1 (got '" ~ n ~ "'); this step is single-node.") }}{% endif %}
+            {%- endfor %}
+            {#- GPUs: gbserver does not request them from compute_config (they flow only
+                via launcher_config.resources; issue #536). The step can't render the
+                request itself: only string values are filled, so resources.accelerators
+                would always be emitted, and "" for CPU-only is read as a blank-named
+                accelerator. So a GPU count without an explicit request fails here
+                instead of silently provisioning a CPU-only node. #}
+            {%- set gpus = compute.get("num_gpus_per_node") %}
+            {%- if gpus != "" and bad_count(gpus) %}{{ raise_error("fm-tune: compute_config.num_gpus_per_node must be a whole number >= 0 (got '" ~ gpus ~ "').") }}{% endif %}
+            {%- set launcher_resources = launcher.get("resources") or {} %}
+            {%- if gpus is not none and gpus != "" and (gpus | int) > 0 and not launcher_resources.get("accelerators") %}{{ raise_error("fm-tune: compute_config.num_gpus_per_node is " ~ gpus ~ ", but gbserver does not request GPUs from compute_config (issue #536). Also set config.launcher_config.resources.accelerators, e.g. \"" ~ (compute.gpu_model if (compute.gpu_model is defined and compute.gpu_model) else "<gpu_model>") ~ ":" ~ (gpus | int) ~ "\"; without it the job gets a CPU-only node.") }}{% endif %}
+            export FMTUNE_DATASET_DIR={{ q(bindings.dataset.binding.path) }}
+            export FMTUNE_BASE_MODEL_DIR={{ q(bindings.base_model.binding.path if bindings.base_model is defined else "") }}
+            export FMTUNE_MODEL={{ q(c.model) }}
+            export FMTUNE_SOURCE_PATH={{ q(c.source.path) }}
+            export FMTUNE_SOURCE_REPO={{ q(c.source.repo) }}
+            export FMTUNE_SOURCE_REF={{ q(c.source.ref) }}
+            export FMTUNE_SOURCE_SUBDIR={{ q(c.source.subdir) }}
+            export FMTUNE_EXTRA={{ q(c.extra) }}
+            export FMTUNE_TRAIN_FILE={{ q(c.train_file) }}
+            export FMTUNE_VALIDATION_FILE={{ q(c.validation_file) }}
+            export FMTUNE_TUNING_ALGO={{ q(c.tuning_algo) }}
+            export FMTUNE_RL_ALGO={{ q(c.rl_algo) }}
+            export FMTUNE_RUN_NAME={{ q(c.run_name) }}
+            export FMTUNE_AUTOTUNE={{ q(c.autotune | string | lower if c.autotune is not none else "") }}
+            export FMTUNE_BACKEND={{ q(c.backend) }}
+            export FMTUNE_SEED={{ q(c.seed) }}
+            export FMTUNE_CONFIG_PRESET={{ q(c.config_preset) }}
+            export FMTUNE_CONFIG_NAME={{ q(c.config_name) }}
+            export FMTUNE_HPO_CONFIG_JSON={{ q(c.hpo_config | json_dumps if c.hpo_config is not none else "") }}
+            export FMTUNE_EXTRA_ARGS={{ q(c.extra_args) }}
+            export FMTUNE_SERVER_URL={{ q(c.autotunex.server_url) }}
+            export FMTUNE_JOB_ID={{ q(c.autotunex.job_id) }}
+            export FMTUNE_PYTHON={{ q(c.python or "python3") }}
+            {%- if c.output_path %}
+            export FMTUNE_OUTPUT_DIR={{ q(c.output_path) }}
+            {%- else %}
+            export FMTUNE_OUTPUT_DIR="$PWD/model"
+            {%- endif %}
+            # Per user, with no shared level: GB_SHARED_WORKDIR is shared by every
+            # user's builds, and a shared parent would be the first user's, at their umask.
+            export FMTUNE_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache-$(id -u)"
+            bash ./src/fmtune_run.sh
+    monitors:
+      skypilot_monitor:
+        ref: space://monitors/skypilot
+        config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(300) }}"

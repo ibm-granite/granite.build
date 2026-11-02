@@ -1,0 +1,11 @@
+# Parameters for build.yaml (gb build ... --param-file parameters.yaml).
+ENVIRONMENT: "skypilot/aws"
+# Public, Apache-2.0. A gated model needs HF_TOKEN in the step env (space secret).
+BASE_MODEL: "hf:///ibm-granite/granite-3.3-2b-base"
+MODEL_URI: "env:///model"
+# 8x A100 80GB (p4de); ZeRO-3 shards the 2B model and optimizer across them.
+ACCELERATORS: "A100-80GB:8"
+DATASET: "allenai/tulu-3-sft-mixture"
+DATASET_SAMPLES: 10000
+CLEARML_PROJECT: "openinstruct-sft"
+POLL_INTERVAL_SECONDS: 300

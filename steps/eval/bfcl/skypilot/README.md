@@ -144,7 +144,7 @@ per-cluster test and fixtures under `test/steps/` and `test-data/steps/`; it als
 [USAGE.md](USAGE.md) to `README.md` beside the published `step.yaml`, so the released step
 ships user-facing docs and this development file stays here. `make check-published` re-renders
 and fails on drift — it substitutes the *already committed* image ref, so it is immune to
-`IMAGE_TAG` churn. **Author under `steps/`; never hand-edit the published asset.**
+`IMAGE_VERSION` churn. **Author under `steps/`; never hand-edit the published asset.**
 
 Note that publishing does not remove the legacy asset at
 `configurations/assets/environments/skypilot/lsf/ibm-bluevela/steps/bfcl-eval/`. This step

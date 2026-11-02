@@ -20,9 +20,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - REST API — FastAPI-based build management at `/api/v1`
 - Pipeline orchestration — multi-step builds defined in `build.yaml`
 - Built-in steps: `gbstep`, `hfpull`, `hfpush`, `lhpull`, `lhpush`, `cosrclone`
+- **`openinstruct-sft` step (#229)**, `space://steps/train/openinstruct-sft`: SFT with upstream
+  Open-Instruct `finetune.py` (v0.3.0, accelerate + DeepSpeed) on any SkyPilot endpoint, single
+  node, with ClearML tracking (`auto` when `CLEARML_API_*` creds are present). Custom image
+  `quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:<version>`. Build tests on
+  skypilot/aws and BlueVela SLURM. On SLURM the image is cached as a shared `.sqsh` by
+  `slurm_image_cache`. The legacy hand-authored `space://steps/openinstruct-sft` assets (LSF, aws)
+  and the granite4-350m recipes that use them are unchanged; moving those recipes over is a
+  follow-up, #569 (they need pre-tokenized `--tokenized_data` input, which only the IBM
+  fork's `finetune.py` has).
+- **`make publish-image` refuses to overwrite an existing image tag (#229).** A tag must keep
+  pointing at one image, and SLURM's `slurm_image_cache` keys its `.sqsh` by tag, so a re-pushed
+  tag never reached it. `publish-image` now checks the registry first and pushes only a new tag;
+  it also refuses when the check cannot tell. Bump `IMAGE_VERSION`, or pass
+  `PUBLISH_OVERWRITE=true` to replace a tag on purpose. The check is the new
+  `steps/scripts/registry-tag-status.sh` (`skopeo` when installed, else the registry's v2 API).
+- **`make test` warns when it would test an outdated published image (#229).** A custom-image
+  step's SkyPilot build tests pull the published `IMAGE_REF`, not the local build, so with a
+  pinned `IMAGE_VERSION` a Dockerfile edit passed silently against the old image. `make test` now
+  compares the local image ID with the published image's config digest (podman only) and prints a
+  warning when they differ or can't be compared, then runs the tests. To test a change on a
+  cluster, publish it under a new (or scratch) `IMAGE_VERSION` first; `TEST_PUBLISHED=true` skips
+  the check and its registry query.
+- **The registry checks read a stored `podman login` (#229).** `steps/scripts/registry-tag-status.sh`
+  uses `REGISTRY_USER`/`REGISTRY_PASSWORD` when set, else the `podman login` in
+  `$REGISTRY_AUTH_FILE` or `~/.config/containers/auth.json`, so a step's first publish to quay.io
+  (which answers an anonymous check of a missing repository with 401) works after a plain
+  `podman login`.
 
 ### Changed
 
+- **With podman, `make publish-image`'s `REGISTRY_USER`/`REGISTRY_PASSWORD` login is scoped to
+  `$(REGISTRY)` instead of the whole registry host (#229),** so it no longer replaces your other
+  logins on that host. docker still logs in per host.
+- **Each custom step image gets its own repository, named after the step's directory (#229).**
+  `steps/common.mk` now pushes `steps/<category>/<name>/<env>` as
+  `$(REGISTRY)/steps/<category>/<name>/<env>:<IMAGE_VERSION>`, e.g.
+  `quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-6`, instead of
+  `$(REGISTRY)/gb-step-<name>:<sha>`. The tag is the new `IMAGE_VERSION` (default: git short
+  SHA); `IMAGE_NAME` and `IMAGE_TAG` can still be overridden, and an invalid repository name is
+  refused. On quay.io, `publish-image` creates a step's new repository **public** through quay's
+  API when `QUAY_API_TOKEN` is set (a push-created repository is private, and SkyPilot pulls
+  anonymously); without the token it refuses a new repository rather than create a private one.
+  Local image names change too, so retag or rebuild local images. No published
+  step changes.
 - **The `dpk` step moved into the `data` category: `space://steps/data/dpk` (#512).** This is
   the first step to move into a category directory under `steps/` (here `steps/data`).
   **Breaking change:** `space://steps/dpk` is no longer supported, so update builds to the
@@ -195,6 +236,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   downloads when `model` is not bound, so it stays as a real default with no warning.
 
 ### Fixed
+
+- **`make publish-step` no longer reports a published single-platform image as missing (#568).**
+  Without `skopeo`, its image check used `podman manifest inspect`, which fails on a
+  single-platform image. It now uses `steps/scripts/registry-tag-status.sh`, the same check as
+  `publish-image`.
 
 - **SkyPilot launch crash on non-identifier secret names.** Whole-bag secret injection
   turned every secret name into a task env-var key, so a name such as `rits-access`
