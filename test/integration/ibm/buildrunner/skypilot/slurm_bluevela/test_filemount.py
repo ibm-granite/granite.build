@@ -27,8 +27,8 @@ resolution against the step.yaml dir AND the enroot/Pyxis container bind-mount o
 the per-run workdir on the BlueVela SLURM path.
 
 The co-located test space takes the ``skypilot/slurm/bluevela`` environment
-from the remote gb-test space (whose copy authenticates with a space secret,
-unlike the in-repo copy's on-host key) via a ``base_uris`` git entry
+from the remote gb-test space (rather than the in-repo copy in
+``configurations/assets``) via a ``base_uris`` git entry
 (and uses the ``ibmcloud`` secret manager so the env's ``BV_SSH_PRIVATE_KEY``
 reference resolves); the builtin ``monitors/skypilot`` is auto-resolved and
 ``assetstores/hf`` resolves from gb-test's own tree.

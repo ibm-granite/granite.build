@@ -188,7 +188,7 @@ SSH host 'bluevela': IdentityKey names secret BV_SSH_PRIVATE_KEY, which is not d
 Create it (see docs/environments/skypilot-slurm.md#secrets-in-cluster_ssh_configs) and retry.
 ```
 
-The shipped `ibm-bluevela` environment names its login nodes and service account as literals — they
+The shipped `bluevela` environment names its login nodes and service account as literals — they
 are not secrets (the asset already names the cluster's `/proj` paths, account, and partitions in the
 clear), so a space running it defines exactly **one** secret:
 
@@ -243,9 +243,9 @@ BlueVela (reached at `login1`) via the `bluevela` environment, whose default par
 > against this repo. This repo also has a copy at
 > `configurations/assets/environments/skypilot/slurm/bluevela/environment.yaml`, which the step
 > build tests under `steps/` use. Both set `cluster: bluevela`, `zone: gpu-mid`, a shared
-> `shared_workdir`, and the `cloud_config` workdir mapping described below. Both authenticate to
-> the SLURM login node with an SSH key: the in-repo copy reads an on-host
-> `~/.ssh/ibm-bluevela.key`, and the remote copy uses a `BV_SSH_PRIVATE_KEY` secret in the space.
+> `shared_workdir`, and the `cloud_config` workdir mapping described below, and both authenticate
+> to the SLURM login node with the SSH key held in the space's `BV_SSH_PRIVATE_KEY` secret (see
+> [Secrets in `cluster_ssh_configs`](#secrets-in-cluster_ssh_configs)).
 
 #### Override the partition (`zone`) per build
 
@@ -377,7 +377,7 @@ Notes:
 - For a containerized GPU step, gbserver can additionally **generate** a typed
   `gpus-per-node` directive and the `NVIDIA_*` export list Pyxis needs — opt-in
   per environment via `slurm_gpu_sbatch_directives: true` (off by default; the
-  ibm-bluevela environment sets it). An explicit `sbatch_options` value still
+  bluevela environment sets it). An explicit `sbatch_options` value still
   wins per key — but the generated directive is `gpus-per-node`, so overriding
   the GPU type/count means setting `gpus-per-node` yourself: an explicit `gpus`
   is a *different* key, and both would be emitted. See the GPU note under
@@ -569,7 +569,7 @@ config:
               mode: rw
 ```
 
-The `ibm-bluevela` environment mounts the whole `/proj` GPFS tree identity — the same mount the LSF
+The `bluevela` environment mounts the whole `/proj` GPFS tree identity — the same mount the LSF
 backend applies unconditionally — so inputs and outputs staged anywhere under `/proj` are visible
 in-container regardless of which group tree holds them, and every node of a multi-node job sees an
 identical layout. That supersedes an earlier, narrower `/proj/granite-build`-only mount and matches
