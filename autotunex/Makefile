@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install install-training audit dev dev-api-bridge docker-api-bridge test test-cov test-subprojects test-fm-tune lint format typecheck check migration migrate migrations-check downgrade clean
+.PHONY: help install install-training audit dev dev-api-bridge docker-api-bridge test test-cov test-subprojects test-fm-tune lint format typecheck check migration migrate migrations-check downgrade publish-image clean
 
 PYTHON ?= python
 PORT ?= 8000
@@ -9,6 +9,13 @@ RUNTIME_IMAGE ?= autotunex-runtime:local
 INSTALL_POSTGRES ?= 0
 GH_USER ?=
 GH_TOKEN ?=
+DOCKER ?= docker
+# The published CUDA image. A tag must keep pointing at one image: bump the suffix
+# for a new build, the prefix with the CUDA / torch pins.
+CUDA_IMAGE_VERSION ?= cu130-torch2.11-1
+CUDA_IMAGE_REF ?= quay.io/granitebuild/autotunex:$(CUDA_IMAGE_VERSION)
+PUBLISH_OVERWRITE ?= false
+TAG_STATUS := ../steps/scripts/registry-tag-status.sh
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -79,6 +86,20 @@ migrations-check:  ## Fail if db/tables/ has drifted from the migrations
 
 downgrade:  ## Roll back one migration
 	alembic downgrade -1
+
+publish-image:  ## Build the CUDA image and push it to CUDA_IMAGE_REF; refuses an existing tag (PUBLISH_OVERWRITE=true to replace)
+	@if [ "$(PUBLISH_OVERWRITE)" = "true" ]; then \
+		echo "PUBLISH_OVERWRITE=true: not checking whether $(CUDA_IMAGE_REF) exists."; \
+	else \
+		status=$$($(TAG_STATUS) "$(CUDA_IMAGE_REF)"); \
+		case "$$status" in \
+			absent) echo "$(CUDA_IMAGE_REF) is a new tag." ;; \
+			present) echo "ERROR: $(CUDA_IMAGE_REF) already exists; bump CUDA_IMAGE_VERSION, or pass PUBLISH_OVERWRITE=true to replace it on purpose." >&2; exit 1 ;; \
+			*) echo "ERROR: could not tell whether $(CUDA_IMAGE_REF) exists. Log in first (podman login quay.io, or export REGISTRY_USER and REGISTRY_PASSWORD)." >&2; exit 1 ;; \
+		esac; \
+	fi
+	$(DOCKER) build --platform linux/amd64 --build-arg DEVICE=cuda -t $(CUDA_IMAGE_REF) .
+	$(DOCKER) push $(CUDA_IMAGE_REF)
 
 clean:  ## Remove caches and build artifacts
 	rm -rf build dist .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage coverage.xml

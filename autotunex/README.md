@@ -121,7 +121,15 @@ this image — installing those extras is a separate build).
 
 The same `Dockerfile` builds against a CUDA base, which lets the in-process
 `local` backend train on an NVIDIA GPU and adds the online-RL extras
-(`fm-tune[full]`: verl/vLLM, flash-attn, deepspeed):
+(`fm-tune[full]`: verl/vLLM, flash-attn, deepspeed). A published build is on
+quay.io, so you do not have to compile it:
+
+```bash
+docker pull quay.io/granitebuild/autotunex:cu130-torch2.11-1
+docker tag quay.io/granitebuild/autotunex:cu130-torch2.11-1 autotunex:cuda
+```
+
+Or build it yourself (slow; see the kernel note below):
 
 ```bash
 docker build -t autotunex:cuda --build-arg DEVICE=cuda .
@@ -142,30 +150,28 @@ or `cuda` — and the value names deliberately match fm-tune's own
 `FMTUNE_DEVICE=cuda|mps|cpu` runtime override, which forces a device when
 autodetection picks the wrong one. `--build-arg CUDA_BASE=...` changes the CUDA
 base, but it must stay a CUDA 13 `-devel` tag on an Ubuntu whose system python is
-3.12: torch 2.11 is built for CUDA 13, and the prebuilt kernel wheels (below) were
-built against it. It is also the escape hatch if Docker Hub rate-limits the
+3.12: torch 2.11 is built for CUDA 13, and the kernels (below) compile against
+it. It is also the escape hatch if Docker Hub rate-limits the
 base-image pull (`toomanyrequests`) — NVIDIA's own registry serves the same tags:
 
 ```bash
 docker build -t autotunex:cuda --build-arg DEVICE=cuda \
-  --build-arg CUDA_BASE=nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu24.04 .
+  --build-arg CUDA_BASE=nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d .
 ```
 
 > **Expect a large image and a long build** — a `-devel` CUDA base (needed for
-> deepspeed's runtime JIT compilation, and for compiling the kernels when the
-> prebuilt wheels are turned off) plus verl/vLLM
+> deepspeed's runtime JIT compilation and for compiling the kernels) plus verl/vLLM
 > is several times the size of the CPU image. Running the result needs an NVIDIA
 > driver that supports CUDA 13 (>= 580). The CPU image itself is unaffected: a plain
 > `docker build .` still produces it, with the identical package set it has today.
 
-> **Prebuilt kernel wheels.** flash-attn, mamba-ssm and causal-conv1d have no
-> official wheel for torch 2.11 + CUDA 13, so the CUDA image installs prebuilt ones
-> from the [`gpu-kernel-wheels`](https://github.com/priyanshu891/gpu-kernel-wheels)
-> release `cu130-torch2.11-cp312`. They are pinned by SHA-256 in
-> `docker/cuda-kernel-wheels.txt`, and pip refuses a file whose hash differs. To
-> compile them from source instead (~15 minutes on 32 cores; lower `MAX_JOBS` on a
-> small builder), build with `--build-arg CUDA_KERNEL_WHEELS=`. To use other wheels,
-> change the URLs and hashes in that file.
+> **Kernels compile from source.** flash-attn, mamba-ssm and causal-conv1d have no
+> official wheel for torch 2.11 + CUDA 13, so the CUDA build compiles them from the
+> versions pinned in `src/fm-tune`'s `[full]` extra. That is the slow part of the
+> build and needs a lot of RAM: lower `MAX_JOBS` in `src/fm-tune/pyproject.toml`
+> (`[tool.uv.extra-build-variables]`) on a small builder. `make publish-image`
+> builds it and pushes it to quay.io under a tag that never changes; bump
+> `CUDA_IMAGE_VERSION` in the `Makefile` for a new image.
 
 > **Training execution.** The default (CPU) image installs the lean
 > `fm-tune[core]` training stack — `torch` plus `ray[tune,default]`,

@@ -12,10 +12,10 @@
 # fm-tune's own runtime override, FMTUNE_DEVICE=cuda|mps|cpu, on purpose.
 # ---------------------------------------------------------------------------
 ARG DEVICE=cpu
-# 13.0.0 on purpose: it is the toolchain the prebuilt kernel wheels in
-# docker/cuda-kernel-wheels.txt were built with (nvcc 13.0.48, see BUILD_INFO.txt in
-# their release). A later 13.0.x should work too, but this keeps the build identical.
-ARG CUDA_BASE=nvidia/cuda:13.0.0-devel-ubuntu24.04
+# Pinned by digest as well as tag, so the tag cannot move under a published image.
+# The digest is the multi-arch index, identical on Docker Hub and nvcr.io; bump
+# both together.
+ARG CUDA_BASE=nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d
 
 # ---------------------------------------------------------------------------
 # Stage 1 — build the SvelteKit SPA
@@ -57,13 +57,10 @@ ENV FM_TUNE_EXTRAS=core
 FROM ${CUDA_BASE} AS cuda
 ENV FM_TUNE_EXTRAS=full
 
-# The base must be CUDA 13: torch 2.11's PyPI wheels are built for CUDA 13.0, and the
-# prebuilt flash-attn, mamba-ssm and causal-conv1d wheels in
-# docker/cuda-kernel-wheels.txt were built against it. If those wheels are
-# disabled (--build-arg CUDA_KERNEL_WHEELS=) the three are compiled from source
-# instead (the official project ships no wheel for torch 2.11 + CUDA 13), which
-# needs a matching nvcc. That, and deepspeed's JIT compilation, is why this must
-# be a `-devel` tag.
+# The base must be CUDA 13: torch 2.11's PyPI wheels are built for CUDA 13.0, and
+# flash-attn, mamba-ssm and causal-conv1d are compiled from source against it (the
+# projects ship no wheel for torch 2.11 + CUDA 13), which needs a matching nvcc.
+# That, and deepspeed's JIT compilation, is why this must be a `-devel` tag.
 #
 # python3.12 specifically, to match the CPU stage. Ubuntu 24.04's system python
 # already IS 3.12, so no third-party PPA is needed.
@@ -128,7 +125,7 @@ RUN pip install --no-cache-dir .
 # importable, which the config-template / dataset-type wizard endpoints need.
 # Quoted so the shell does not glob `[...]`.
 #
-# The three-step order is load-bearing:
+# The two-step order is load-bearing:
 #
 #   1. `[core]` first with pip, so torch==2.11.0 is installed before anything else
 #      can express an opinion about it. NOTE: on linux/amd64 torch==2.11.0
@@ -137,35 +134,20 @@ RUN pip install --no-cache-dir .
 #      to slim the amd64 CPU image is a known, still-deferred optimization. On
 #      linux/arm64 PyPI serves a CPU-only build instead, so that image is smaller
 #      already and the CUDA base does not apply there at all.
-#   2. On CUDA only, the prebuilt flash-attn / mamba-ssm / causal-conv1d wheels
-#      pinned in docker/cuda-kernel-wheels.txt (built for CUDA 13.0 + torch
-#      2.11.0, hash-checked by pip), installed with --no-deps after step 1 so
-#      they bind to the torch already present. This skips ~15 minutes of
-#      compiling. Pass --build-arg CUDA_KERNEL_WHEELS= (empty) to compile them
-#      from source instead; step 3 then does it.
-#   3. `[$FM_TUNE_EXTRAS]` when it is not `core`, installed with uv from inside
-#      src/fm-tune. With the wheels from step 2 in place, uv sees flash-attn,
-#      mamba-ssm and causal-conv1d as already satisfied and only adds
-#      verl/vLLM, deepspeed and the rest. Without them it compiles them, and
-#      their build recipe (torch matched to the runtime env, ninja, MAX_JOBS,
-#      ...) lives in src/fm-tune/pyproject.toml under
+#   2. `[$FM_TUNE_EXTRAS]` when it is not `core`, installed with uv from inside
+#      src/fm-tune. This compiles flash-attn, mamba-ssm and causal-conv1d from the
+#      versions pinned in `[full]`, against the torch from step 1, and adds
+#      verl/vLLM, deepspeed and the rest. Their build recipe (torch matched to the
+#      runtime env, ninja, MAX_JOBS, ...) lives in src/fm-tune/pyproject.toml under
 #      `[tool.uv.extra-build-dependencies]` / `[tool.uv.extra-build-variables]`.
 #      pip does NOT read those tables: an isolated pip build has no torch, so
 #      flash-attn's setup.py would fail to import it. uv reads them only from the
-#      project directory, hence the `cd`.
+#      project directory, hence the `cd`. The compile is the slow part of the
+#      build; users pull the published image (see README.md) instead.
 #
-# On the CPU base both guards are false and this collapses to exactly
+# On the CPU base the guard is false and this collapses to exactly
 # `pip install "./src/fm-tune[core]"` — the same install this image has today.
-#
-# CUDA_KERNEL_WHEELS is an on/off switch, not a path: any non-empty value installs
-# the wheels pinned in the copied file, and empty skips them.
-ARG CUDA_KERNEL_WHEELS=prebuilt
-COPY docker/cuda-kernel-wheels.txt /tmp/cuda-kernel-wheels.txt
 RUN pip install --no-cache-dir "./src/fm-tune[core]" \
-    && if [ "$FM_TUNE_EXTRAS" != "core" ] && [ -n "$CUDA_KERNEL_WHEELS" ]; then \
-         pip install --no-cache-dir --no-deps --require-hashes -r /tmp/cuda-kernel-wheels.txt; \
-       fi \
-    && rm -f /tmp/cuda-kernel-wheels.txt \
     && if [ "$FM_TUNE_EXTRAS" != "core" ]; then \
          pip install --no-cache-dir uv \
          && cd src/fm-tune \
