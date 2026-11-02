@@ -74,22 +74,33 @@ config:
   # entry, remove it first — gbserver refuses to overwrite foreign entries
   # (refuse-on-conflict).
   #
-  # Reachability values are secret NAMES, not literals, so this public asset
-  # carries no cluster-internal details. Define the secrets in the space that
-  # uses this environment — see
-  # docs/environments/skypilot-slurm.md#secrets-in-cluster_ssh_configs for
-  # per-backend instructions:
-  #   BV_SLURM_LOGIN_NODES — the interchangeable candidate login hostnames,
-  #     comma- or whitespace-separated. MULTIPLE LOGIN NODES: gbserver expands
-  #     them into one failover pool, picks one at random per launch, and fails
-  #     over to the next on a transient SSH control-plane error (every
-  #     candidate was confirmed reachable for SLURM under the same identity).
-  #   BV_SLURM_LOGIN_USER — the shared service account on the login nodes.
+  # MULTIPLE LOGIN NODES: `HostName` lists interchangeable candidate login
+  # hostnames under one `Host` block: gbserver picks one at random per launch
+  # and fails over to the next on a transient SSH control-plane error.
+  # login0-login4 all answer sinfo (verified per node 2026-11-02, as
+  # granitebuild with the key the BV_SSH_PRIVATE_KEY secret holds; the
+  # scheduler and the SLURM client install are shared across the login
+  # nodes, so any of them can drive the control plane).
+  #
+  # The login nodes and the service account are literals, not secret names:
+  # this asset already names BlueVela infrastructure in the clear (/proj
+  # paths, the SLURM account, partitions, QOS), so hiding just the hostnames
+  # and the user would buy nothing and cost every space two extra secrets.
+  # The SSH private key is real auth material and stays a secret — define
+  # BV_SSH_PRIVATE_KEY in the space that runs this environment (see
+  # docs/environments/skypilot-slurm.md#secrets-in-cluster_ssh_configs). Any
+  # other directive value may still be given as a secret name if a private
+  # environment wants to keep its hostnames or users out of the asset.
   cluster_ssh_configs:
     slurm:
       - Host: bluevela
-        HostName: BV_SLURM_LOGIN_NODES
-        User: BV_SLURM_LOGIN_USER
+        HostName:
+          - login0.bluevela.rmf.ibm.com
+          - login1.bluevela.rmf.ibm.com
+          - login2.bluevela.rmf.ibm.com
+          - login3.bluevela.rmf.ibm.com
+          - login4.bluevela.rmf.ibm.com
+        User: granitebuild
         # granitebuild's SSH identity is a 1Password-managed key, not a
         # Smallstep cert (confirmed: no `step` CLI and no loaded cert for this
         # account) — IdentityStepCert would fail fast with
