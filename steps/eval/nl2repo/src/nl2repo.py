@@ -61,7 +61,9 @@ Deviations from upstream (also in ``details.deviations``):
   ``SANDBOX_RUNTIME_CONTAINER_IMAGE`` (upstream sets it for the Docker
   runtime) is inert, so it is not set. The agent runs in the app image
   rather than upstream's nikolaik runtime image; ``SKIP_DEPENDENCY_CHECK=1``
-  skips LocalRuntime's jupyter/tmux/browser dependency probe.
+  skips LocalRuntime's jupyter/tmux/browser dependency probe, and tmux --
+  which those bash sessions are driven through (libtmux) but the app image
+  does not ship -- is installed into the sandbox at task start.
 - The task commands run through ``bash -c``, fixing upstream's
   ``shlex.split``-then-exec bug (upstream PR #14): the pinned task data
   contains commands with ``&&``, ``&`` and ``VAR=... cmd`` that upstream's
@@ -189,6 +191,7 @@ PACKAGE_FILES = (
 RUN_DIR = "/tmp/nl2repo-run"
 """Where one generation sandbox keeps its config, workspace and trajectories."""
 WS_B64 = "/tmp/nl2repo-workspace.tar.gz.b64"
+APT_TIMEOUT_S = 300
 STAGE_TIMEOUT_S = 300
 AGENT_TIMEOUT_S = 14_400
 EVAL_TIMEOUT_S = 1800
@@ -197,6 +200,10 @@ WS_MAX_MB = 512
 DEVIATIONS = (
     "enroot + OpenHands 0.56 local (process) runtime instead of upstream's Docker runtime; "
     "the enroot container is the isolation boundary",
+    "tmux is installed into the sandbox at task start: LocalRuntime drives its bash "
+    "sessions through libtmux, the app image ships no tmux binary, and the skipped "
+    "dependency probe would otherwise let it die as an opaque RetryError at "
+    "action-server startup",
     "task commands run through bash -c (upstream shlex.split-then-exec breaks &&, & and "
     "VAR=... commands; upstream PR #14)",
     "command output is captured on non-zero exit too, so pytest summaries are parsed from "
@@ -844,6 +851,26 @@ class NL2RepoBench(Benchmark):
         }
         started = time.time()
         with make_sandbox(image, backend=self.opt("sandbox", ""), env=env) as sb:
+            # LocalRuntime drives its bash sessions through tmux (libtmux),
+            # but the app image ships no tmux binary -- upstream's Docker
+            # runtime pulls a separate runtime image that has one, and the
+            # skipped dependency probe (SKIP_DEPENDENCY_CHECK=1) would be the
+            # only thing to catch that; without it the action server dies at
+            # startup as an opaque tenacity RetryError (1030l). The sandbox
+            # shares the job's network namespace, so install it here instead
+            # of maintaining a derived image; the command -v guard keeps this
+            # a no-op on an image that already carries it.
+            tmux = sb.execute(
+                "command -v tmux >/dev/null 2>&1 || "
+                "(apt-get update -qq && apt-get install -y -qq tmux)",
+                timeout=APT_TIMEOUT_S,
+            )
+            if tmux.returncode != 0:
+                raise RuntimeError(
+                    f"{task.name}: tmux unavailable in the sandbox (exit "
+                    f"{tmux.returncode}); OpenHands' local runtime drives "
+                    "bash through tmux and cannot start without it"
+                )
             sb.execute(f"mkdir -p {RUN_DIR}/workspace")
             sb.write_file(f"{RUN_DIR}/workspace/start.md", task.start_md)
             sb.write_file(f"{RUN_DIR}/config.toml", config)
