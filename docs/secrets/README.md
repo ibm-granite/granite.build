@@ -44,6 +44,9 @@ name**. Examples from `environment.yaml`:
   (see [k8s.md](../environments/k8s.md)).
 - **SkyPilot** — `cluster_ssh_configs`, `cloud_config`, and `aws_credentials` values are secret-name-or-
   literal, resolved by exact name against the space's secrets (see [skypilot.md](../environments/skypilot.md)).
+  A SLURM/LSF `HostName` secret may hold several comma- or whitespace-separated login nodes, all of
+  which become failover candidates (see
+  [skypilot-slurm.md](../environments/skypilot-slurm.md#secrets-in-cluster_ssh_configs)).
 - **LSF** — the SSH private key is named via `login_node_ssh_key` (see [lsf.md](../environments/lsf.md)).
 
 Per-user secrets (when supported) are merged over space secrets by the space at fetch time.
