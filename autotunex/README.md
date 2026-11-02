@@ -121,18 +121,12 @@ this image — installing those extras is a separate build).
 
 The same `Dockerfile` builds against a CUDA base, which lets the in-process
 `local` backend train on an NVIDIA GPU and adds the online-RL extras
-(`fm-tune[full]`: verl/vLLM, flash-attn, deepspeed). A published build is on
-quay.io, so you do not have to compile it:
+(`fm-tune[full]`: verl/vLLM, flash-attn, deepspeed). It starts from a published
+kernel base (below), so the build compiles nothing and takes minutes. The CUDA
+image is linux/amd64 only:
 
 ```bash
-docker pull quay.io/granitebuild/autotunex:cu130-torch2.11-1
-docker tag quay.io/granitebuild/autotunex:cu130-torch2.11-1 autotunex:cuda
-```
-
-Or build it yourself (slow; see the kernel note below):
-
-```bash
-docker build -t autotunex:cuda --build-arg DEVICE=cuda .
+docker build --platform linux/amd64 -t autotunex:cuda --build-arg DEVICE=cuda .
 
 docker run --rm --gpus all -p 8000:8000 -v autotunex-cuda-data:/data autotunex:cuda
 ```
@@ -148,30 +142,35 @@ Or with Compose: `docker compose --profile cuda up --build`.
 `DEVICE` selects a base stage inside the same `Dockerfile` — `cpu` (the default)
 or `cuda` — and the value names deliberately match fm-tune's own
 `FMTUNE_DEVICE=cuda|mps|cpu` runtime override, which forces a device when
-autodetection picks the wrong one. `--build-arg CUDA_BASE=...` changes the CUDA
-base, but it must stay a CUDA 13 `-devel` tag on an Ubuntu whose system python is
-3.12: torch 2.11 is built for CUDA 13, and the kernels (below) compile against
-it. It is also the escape hatch if Docker Hub rate-limits the
-base-image pull (`toomanyrequests`) — NVIDIA's own registry serves the same tags:
+autodetection picks the wrong one. `--build-arg CUDA_KERNEL_BASE=...` points the
+CUDA stage at another kernel base, e.g. one you built yourself (below).
 
-```bash
-docker build -t autotunex:cuda --build-arg DEVICE=cuda \
-  --build-arg CUDA_BASE=nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d .
-```
-
-> **Expect a large image and a long build** — a `-devel` CUDA base (needed for
-> deepspeed's runtime JIT compilation and for compiling the kernels) plus verl/vLLM
-> is several times the size of the CPU image. Running the result needs an NVIDIA
+> **Expect a large image** — a `-devel` CUDA base (needed for deepspeed's runtime
+> JIT compilation) plus verl/vLLM is several times the size of the CPU image. Running the result needs an NVIDIA
 > driver that supports CUDA 13 (>= 580). The CPU image itself is unaffected: a plain
 > `docker build .` still produces it, with the identical package set it has today.
 
-> **Kernels compile from source.** flash-attn, mamba-ssm and causal-conv1d have no
-> official wheel for torch 2.11 + CUDA 13, so the CUDA build compiles them from the
-> versions pinned in `src/fm-tune`'s `[full]` extra. That is the slow part of the
-> build and needs a lot of RAM: lower `MAX_JOBS` in `src/fm-tune/pyproject.toml`
-> (`[tool.uv.extra-build-variables]`) on a small builder. `make publish-image`
-> builds it and pushes it to quay.io under a tag that never changes; bump
-> `CUDA_IMAGE_VERSION` in the `Makefile` for a new image.
+> **The kernel base.** flash-attn, mamba-ssm and causal-conv1d have no official
+> wheel for torch 2.11 + CUDA 13, so they are compiled from source in
+> `docker/cuda-base/Dockerfile`, on NVIDIA's CUDA 13 devel image with torch, at the
+> versions pinned in `src/fm-tune`. That image is published to
+> `quay.io/granitebuild/autotunex-cuda-base` under a tag that never changes, and
+> the CUDA stage above pins it by digest. Rebuild it when torch, CUDA, one of the
+> three kernel pins, or fm-tune's `[tool.uv.extra-build-variables]` (the CUDA arch
+> list) changes: bump `CUDA_BASE_IMAGE_VERSION`, run `make publish-base-image`,
+> and pin the digest it prints in the root `Dockerfile`'s `CUDA_KERNEL_BASE`. The
+> CUDA build refuses a base whose kernel or torch pins no longer match fm-tune's;
+> it cannot tell a changed arch list, so rebuild for that by hand. The quay
+> repository must be Public, since every CUDA build pulls it anonymously. Compiling takes ~35 minutes and needs a
+> lot of RAM (~9 GB per flash-attn job; it ran on 29 CPUs and 256 GB): lower
+> `MAX_JOBS` in `src/fm-tune/pyproject.toml` (`[tool.uv.extra-build-variables]`)
+> on a small builder. To build it locally instead of pulling it:
+>
+> ```bash
+> docker build --platform linux/amd64 -f docker/cuda-base/Dockerfile -t autotunex-cuda-base:local .
+> docker build --platform linux/amd64 -t autotunex:cuda --build-arg DEVICE=cuda \
+>   --build-arg CUDA_KERNEL_BASE=autotunex-cuda-base:local .
+> ```
 
 > **Training execution.** The default (CPU) image installs the lean
 > `fm-tune[core]` training stack — `torch` plus `ray[tune,default]`,

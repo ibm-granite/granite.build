@@ -8,14 +8,17 @@
 #   docker build -t autotunex:cuda --build-arg DEVICE=cuda . # CUDA + [full]
 #
 # DEVICE names one of the two base stages below, not an image reference —
-# override CUDA_BASE for that. The value vocabulary (cpu|cuda) matches
+# override CUDA_KERNEL_BASE for that. The value vocabulary (cpu|cuda) matches
 # fm-tune's own runtime override, FMTUNE_DEVICE=cuda|mps|cpu, on purpose.
 # ---------------------------------------------------------------------------
 ARG DEVICE=cpu
-# Pinned by digest as well as tag, so the tag cannot move under a published image.
-# The digest is the multi-arch index, identical on Docker Hub and nvcr.io; bump
-# both together.
-ARG CUDA_BASE=nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d
+# The CUDA kernel base: the CUDA 13 devel toolchain, python3.12 in /opt/venv, torch,
+# and flash-attn / mamba-ssm / causal-conv1d compiled from source. It is built from
+# docker/cuda-base/Dockerfile (`make publish-base-image`) and pinned by digest, so
+# the tag cannot move under this build. Compiling the kernels takes ~35 minutes;
+# keeping them in that base means an AutoTuneX build does not repeat it.
+# linux/amd64 only, like the base it starts from.
+ARG CUDA_KERNEL_BASE=quay.io/granitebuild/autotunex-cuda-base:cu130-torch2.11-1@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 # ---------------------------------------------------------------------------
 # Stage 1 — build the SvelteKit SPA
@@ -50,54 +53,19 @@ ENV FM_TUNE_EXTRAS=core
 # ---------------------------------------------------------------------------
 # Stage 2b — base: CUDA, for GPU training with the `local` job backend.
 #
+# Everything this stage needs is already in the kernel base (see
+# docker/cuda-base/Dockerfile): the CUDA 13 devel toolchain (deepspeed JIT-compiles
+# its ops at runtime), python3.12 in /opt/venv on PATH, so the runtime stage's
+# pip calls, HEALTHCHECK and CMD work unchanged on both bases, the stock `ubuntu`
+# account removed, so `useradd --uid 1000 appuser` does not collide, and torch
+# plus the three compiled kernels.
+#
 # Nothing here sets NVIDIA_VISIBLE_DEVICES / NVIDIA_DRIVER_CAPABILITIES on
-# purpose: NVIDIA's own images already set them and the runtime stage inherits
-# them, so re-declaring would only invite drift.
+# purpose: NVIDIA's own images already set them and the base inherits them, so
+# re-declaring would only invite drift.
 # ---------------------------------------------------------------------------
-FROM ${CUDA_BASE} AS cuda
+FROM ${CUDA_KERNEL_BASE} AS cuda
 ENV FM_TUNE_EXTRAS=full
-
-# The base must be CUDA 13: torch 2.11's PyPI wheels are built for CUDA 13.0, and
-# flash-attn, mamba-ssm and causal-conv1d are compiled from source against it (the
-# projects ship no wheel for torch 2.11 + CUDA 13), which needs a matching nvcc.
-# That, and deepspeed's JIT compilation, is why this must be a `-devel` tag.
-#
-# python3.12 specifically, to match the CPU stage. Ubuntu 24.04's system python
-# already IS 3.12, so no third-party PPA is needed. python3.12-dev provides
-# Python.h, which the kernels' C++ sources include through torch's headers.
-#
-# build-essential is named explicitly even though the default `-devel` base
-# already ships gcc (verified: apt reports it "already the newest version").
-# deepspeed and verl fall back to an sdist build that needs a host compiler, and
-# CUDA_BASE is overridable — a leaner `-runtime` or `-base` tag would not have
-# one. A no-op on the default base, so it costs nothing to keep.
-#
-# The venv is not cosmetic either: Ubuntu marks its system python PEP 668
-# "externally-managed" and pip refuses to install into it. Putting the venv's
-# bin on PATH also makes bare `python` and `pip` resolve, which is what lets the
-# shared runtime stage's pip calls, HEALTHCHECK and CMD work unchanged on both
-# bases.
-#
-# userdel: Ubuntu 24.04 ships a stock `ubuntu` account at UID 1000, which the
-# runtime stage's `useradd --uid 1000 appuser` would collide with. `-r` exits
-# non-zero when there is no home directory to remove, hence the guard.
-#
-# DEBIAN_FRONTEND is exported rather than set with ENV so it does not persist
-# into the image: without it, tzdata (pulled in by python3.12) opens its
-# interactive geographic-area prompt and only falls through because the build has
-# no tty.
-RUN export DEBIAN_FRONTEND=noninteractive \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
-        python3.12 \
-        python3.12-venv \
-        python3.12-dev \
-        build-essential \
-        ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && python3.12 -m venv /opt/venv \
-    && (userdel -r ubuntu 2>/dev/null || true)
-ENV PATH=/opt/venv/bin:$PATH
 
 # ---------------------------------------------------------------------------
 # Stage 3 — runtime: the AutoTuneX API, serving the SPA in-process. `FROM
@@ -137,23 +105,29 @@ RUN pip install --no-cache-dir .
 #      linux/arm64 PyPI serves a CPU-only build instead, so that image is smaller
 #      already and the CUDA base does not apply there at all.
 #   2. `[$FM_TUNE_EXTRAS]` when it is not `core`, installed with uv from inside
-#      src/fm-tune. This compiles flash-attn, mamba-ssm and causal-conv1d from the
-#      versions pinned in `[full]`, against the torch from step 1, and adds
-#      verl/vLLM, deepspeed and the rest. Their build recipe (torch matched to the
-#      runtime env, ninja, MAX_JOBS, ...) lives in src/fm-tune/pyproject.toml under
-#      `[tool.uv.extra-build-dependencies]` / `[tool.uv.extra-build-variables]`.
-#      pip does NOT read those tables: an isolated pip build has no torch, so
-#      flash-attn's setup.py would fail to import it. uv reads them only from the
-#      project directory, hence the `cd`. The compile is the slow part of the
-#      build; users pull the published image (see README.md) instead.
+#      src/fm-tune. On the CUDA base, flash-attn, mamba-ssm and causal-conv1d are
+#      already installed (compiled in docker/cuda-base/Dockerfile at the same
+#      pins), so uv only adds verl/vLLM, deepspeed and the rest. uv reads
+#      fm-tune's [tool.uv] tables only from the project directory, hence the `cd`.
+#
+# Two guards keep the base and fm-tune's pins in step. `--only-binary` forbids
+# compiling the kernels here, so a moved kernel pin fails at resolution instead
+# of spending ~35 minutes compiling. And torch must still be the one the base
+# compiled the kernels against (AUTOTUNEX_KERNEL_BASE_TORCH): step 1 would
+# otherwise quietly replace it, and kernels built for another torch only fail at
+# import, at runtime. Neither guard sees a changed CUDA arch list or MAX_JOBS in
+# [tool.uv.extra-build-variables]; rebuild the base for those too.
 #
 # On the CPU base the guard is false and this collapses to exactly
 # `pip install "./src/fm-tune[core]"` — the same install this image has today.
 RUN pip install --no-cache-dir "./src/fm-tune[core]" \
     && if [ "$FM_TUNE_EXTRAS" != "core" ]; then \
-         pip install --no-cache-dir uv \
+         python -c "import os, sys, torch; base = os.environ['AUTOTUNEX_KERNEL_BASE_TORCH']; sys.exit(0 if torch.__version__.split('+')[0] == base else f'torch {torch.__version__} differs from the {base} the kernel base was compiled against; rebuild it (make publish-base-image)')" \
+         && pip install --no-cache-dir uv \
          && cd src/fm-tune \
-         && uv pip install --no-cache --python "$(command -v python)" ".[$FM_TUNE_EXTRAS]" \
+         && uv pip install --no-cache --python "$(command -v python)" \
+              --only-binary flash-attn --only-binary mamba-ssm --only-binary causal-conv1d \
+              ".[$FM_TUNE_EXTRAS]" \
          && pip uninstall -y uv; \
        fi
 
