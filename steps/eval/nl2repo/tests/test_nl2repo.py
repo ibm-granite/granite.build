@@ -76,6 +76,16 @@ def make_tarball(files: dict[str, bytes]) -> bytes:
     return tar_bytes({f"{prefix}/{name}": data for name, data in files.items()})
 
 
+# Every command executed in the OpenHands image carries the entrypoint
+# banner on its stdout (probe-verified on-cluster); staging must survive it.
+OH_BANNER = "Starting OpenHands...\nRunning OpenHands as root\n"
+
+
+def fenced(b64_payload: str) -> str:
+    """A realistic staging stream: banner noise around the fenced payload."""
+    return f"{OH_BANNER}{nr.B64_BEGIN}\n{b64_payload}\n{nr.B64_END}\n"
+
+
 STAGED_WS_B64 = b64(
     ws_tar_bytes(
         {
@@ -88,9 +98,9 @@ STAGED_WS_B64 = b64(
 
 RUN_OUTPUTS = {
     "openhands.core.main": ExecResult("agent log\n", 0),
-    "workspace 2>/dev/null | base64": ExecResult(STAGED_WS_B64, 0),
+    "workspace 2>/dev/null | base64": ExecResult(fenced(STAGED_WS_B64), 0),
     "trajectories 2>/dev/null | base64": ExecResult(
-        b64(tar_bytes({"trajectories/t.json": b"{}"})), 0
+        fenced(b64(tar_bytes({"trajectories/t.json": b"{}"}))), 0
     ),
     "tests/a": ExecResult("40 passed", 0),
     "tests/b": ExecResult("25 passed", 0),
@@ -489,6 +499,9 @@ def test_generate_runs_openheads_with_the_task_and_stages_out(
     assert 'model = "openai/granite-4.2"' in cfg
     assert 'base_url = "http://llm:8000/v1"' in cfg
     main = [c for c in sb.commands if "openhands.core.main" in c][0]
+    # The image's venv python (what its entrypoint activates); a bare python
+    # is the system one, which finds the package but not its dependencies.
+    assert 'PY="${VIRTUAL_ENV:-/app/.venv}/bin/python"' in main
     assert f'--config-file={nr.RUN_DIR}/config.toml -t "$OH_TASK"' in main
     assert sb.cwd[sb.commands.index(main)] == nr.RUN_DIR
 
@@ -522,6 +535,34 @@ def test_a_failed_stage_out_still_grades_an_empty_workspace(
     monkeypatch.setattr(nr, "make_sandbox", factory)
     bench._generate(task, idir, "http://llm:8000/v1", "m", 0)
     assert tar_members((idir / "workspace.tar.gz").read_bytes()) == []
+
+
+def test_an_unfenced_stage_out_still_grades_an_empty_workspace(
+    bench, tmp_path, monkeypatch
+):
+    # 1030j on-cluster: the OpenHands image prepends its banner to every
+    # exec, so the staging stream was banner + valid base64 at exit 0 --
+    # undecodable as a whole. No fence, no payload to trust.
+    task = nr.Task(make_task(tmp_path / "tasks"))
+    idir = tmp_path / "out" / "repeat-0" / "a"
+    idir.mkdir(parents=True)
+    factory = SandboxFactory(
+        {
+            "openhands.core.main": ExecResult("log", 0),
+            "workspace 2>/dev/null | base64": ExecResult(
+                f"{OH_BANNER}{STAGED_WS_B64}\n", 0
+            ),
+        }
+    )
+    monkeypatch.setattr(nr, "make_sandbox", factory)
+    bench._generate(task, idir, "http://llm:8000/v1", "m", 0)
+    assert tar_members((idir / "workspace.tar.gz").read_bytes()) == []
+
+
+def test_staged_tar_decodes_only_the_fenced_payload():
+    assert nr._staged_tar(f"noise\n{nr.B64_BEGIN}\n{b64(b'hello')}\n{nr.B64_END}\n") == b"hello"
+    assert nr._staged_tar(f"noise\n{b64(b'hello')}\n") is None  # no fence
+    assert nr._staged_tar(f"{nr.B64_BEGIN}\n!!!not base64!!!\n{nr.B64_END}") is None
 
 
 def test_generate_without_an_endpoint_is_an_error(bench, tmp_path):
