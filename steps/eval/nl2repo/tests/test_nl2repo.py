@@ -576,11 +576,14 @@ def test_generate_without_an_endpoint_is_an_error(bench, tmp_path):
         bench._generate(task, tmp_path, "", "m", 0)
 
 
-def test_generate_ensures_tmux_at_sandbox_start(bench, tmp_path, monkeypatch):
-    # 1030l on-cluster: LocalRuntime drives bash through tmux (libtmux), the
-    # app image ships none, and the action server dies at startup with an
-    # opaque tenacity RetryError -- the skipped dependency probe would have
-    # been the only clear signal.
+def test_generate_brings_up_tmux_and_a_bash_login_shell(
+    bench, tmp_path, monkeypatch
+):
+    # 1030l: no tmux binary -- the action server died at startup. 1030o:
+    # tmux in, but OpenHands starts its bash session with "su root -" and
+    # the app image's root shell is /bin/sh, where the PS1 metadata prompt
+    # never renders -- the init spins until the server connect times out,
+    # thousands of parse failures deep.
     task = nr.Task(make_task(tmp_path / "tasks"))
     idir = tmp_path / "out" / "repeat-0" / "a"
     idir.mkdir(parents=True)
@@ -588,21 +591,22 @@ def test_generate_ensures_tmux_at_sandbox_start(bench, tmp_path, monkeypatch):
     monkeypatch.setattr(nr, "make_sandbox", factory)
     bench._generate(task, idir, "http://llm:8000/v1", "m", 0)
     sb = factory.sandboxes[0]
-    ensure = sb.commands[0]
-    assert "command -v tmux" in ensure  # no-op when the image has tmux
-    assert "apt-get install -y -qq tmux" in ensure
+    bringup = sb.commands[0]
+    assert "command -v tmux" in bringup  # no-op when the image has tmux
+    assert "apt-get install -y -qq tmux" in bringup
+    assert "usermod -s /bin/bash root" in bringup
+    assert "getent passwd root" in bringup  # the end-state check
     main = [c for c in sb.commands if "openhands.core.main" in c][0]
-    assert sb.commands.index(ensure) < sb.commands.index(main)
+    assert sb.commands.index(bringup) < sb.commands.index(main)
 
 
-def test_generate_fails_loudly_when_tmux_cannot_be_installed(
-    bench, tmp_path, monkeypatch
-):
+def test_generate_fails_loudly_when_bringup_fails(bench, tmp_path, monkeypatch):
     task = nr.Task(make_task(tmp_path / "tasks"))
-    factory = SandboxFactory({"apt-get install": ExecResult("E: broken", 100)})
-    monkeypatch.setattr(nr, "make_sandbox", factory)
-    with pytest.raises(RuntimeError, match="tmux unavailable"):
-        bench._generate(task, tmp_path, "http://llm:8000/v1", "m", 0)
+    for needle in ("apt-get install", "getent passwd root"):
+        factory = SandboxFactory({needle: ExecResult("broken", 100)})
+        monkeypatch.setattr(nr, "make_sandbox", factory)
+        with pytest.raises(RuntimeError, match="sandbox bring-up failed"):
+            bench._generate(task, tmp_path, "http://llm:8000/v1", "m", 0)
 
 
 def test_generate_fails_loudly_when_no_task_generated(tmp_path, monkeypatch):

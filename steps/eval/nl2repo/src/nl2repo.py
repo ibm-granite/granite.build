@@ -61,9 +61,11 @@ Deviations from upstream (also in ``details.deviations``):
   ``SANDBOX_RUNTIME_CONTAINER_IMAGE`` (upstream sets it for the Docker
   runtime) is inert, so it is not set. The agent runs in the app image
   rather than upstream's nikolaik runtime image; ``SKIP_DEPENDENCY_CHECK=1``
-  skips LocalRuntime's jupyter/tmux/browser dependency probe, and tmux --
-  which those bash sessions are driven through (libtmux) but the app image
-  does not ship -- is installed into the sandbox at task start.
+  skips LocalRuntime's jupyter/tmux/browser dependency probe, and the
+  sandbox is brought up to what those bash sessions need at task start:
+  tmux (which they are driven through, libtmux) and a bash login shell
+  for root (they start with ``su root -``; the app image's root shell is
+  /bin/sh, under which the PS1 metadata prompt never renders).
 - Browsing is off by default, at both of OpenHands' switches (the
   runtime-level ``enable_browser`` and the agent-level ``enable_browsing``):
   the app image ships no browser binaries, ``enable_browser`` defaults to
@@ -205,10 +207,12 @@ WS_MAX_MB = 512
 DEVIATIONS = (
     "enroot + OpenHands 0.56 local (process) runtime instead of upstream's Docker runtime; "
     "the enroot container is the isolation boundary",
-    "tmux is installed into the sandbox at task start: LocalRuntime drives its bash "
-    "sessions through libtmux, the app image ships no tmux binary, and the skipped "
-    "dependency probe would otherwise let it die as an opaque RetryError at "
-    "action-server startup",
+    "the sandbox is brought up at task start: tmux is installed (LocalRuntime "
+    "drives its bash sessions through libtmux; the app image ships no tmux "
+    "binary) and root's login shell is set to bash (the session starts with "
+    "'su root -'; the app image's root shell is /bin/sh, under which the PS1 "
+    "metadata prompt never renders) -- without either, the session init dies "
+    "as an opaque RetryError",
     "browsing is off by default at both of OpenHands' switches: enable_browser "
     "defaults to true upstream and its action server dies at startup on the "
     "Chromium the app image does not ship, and NL2RepoBench tasks never browse",
@@ -866,25 +870,31 @@ class NL2RepoBench(Benchmark):
         }
         started = time.time()
         with make_sandbox(image, backend=self.opt("sandbox", ""), env=env) as sb:
-            # LocalRuntime drives its bash sessions through tmux (libtmux),
-            # but the app image ships no tmux binary -- upstream's Docker
-            # runtime pulls a separate runtime image that has one, and the
-            # skipped dependency probe (SKIP_DEPENDENCY_CHECK=1) would be the
-            # only thing to catch that; without it the action server dies at
-            # startup as an opaque tenacity RetryError (1030l). The sandbox
-            # shares the job's network namespace, so install it here instead
-            # of maintaining a derived image; the command -v guard keeps this
-            # a no-op on an image that already carries it.
-            tmux = sb.execute(
+            # Bring the sandbox up to what OpenHands 0.56's local runtime
+            # needs but the app image does not ship, and its skipped
+            # dependency probe (SKIP_DEPENDENCY_CHECK=1) would be the only
+            # thing to catch: (a) the tmux binary the bash sessions run
+            # through, and (b) a bash login shell for root -- the session
+            # starts with "su root -", the app image's root is /bin/sh, and
+            # the PS1 metadata prompt never renders under dash, so the
+            # session init spins until the server connect times out as an
+            # opaque tenacity RetryError (1030l, 1030o). Upstream's Docker
+            # runtime image carries both. The sandbox shares the job's
+            # network namespace, so install here instead of maintaining a
+            # derived image; the command -v guard keeps the tmux half a
+            # no-op on an image that already carries it.
+            bringup = sb.execute(
                 "command -v tmux >/dev/null 2>&1 || "
-                "(apt-get update -qq && apt-get install -y -qq tmux)",
+                "(apt-get update -qq && apt-get install -y -qq tmux) && "
+                "usermod -s /bin/bash root && "
+                '[ "$(getent passwd root | cut -d: -f7)" = "/bin/bash" ]',
                 timeout=APT_TIMEOUT_S,
             )
-            if tmux.returncode != 0:
+            if bringup.returncode != 0:
                 raise RuntimeError(
-                    f"{task.name}: tmux unavailable in the sandbox (exit "
-                    f"{tmux.returncode}); OpenHands' local runtime drives "
-                    "bash through tmux and cannot start without it"
+                    f"{task.name}: sandbox bring-up failed (exit "
+                    f"{bringup.returncode}); OpenHands' bash sessions need "
+                    "tmux and a bash login shell for root"
                 )
             sb.execute(f"mkdir -p {RUN_DIR}/workspace")
             sb.write_file(f"{RUN_DIR}/workspace/start.md", task.start_md)
