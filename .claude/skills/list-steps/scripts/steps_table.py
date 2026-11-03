@@ -1,4 +1,4 @@
-"""Generate a Markdown inventory table of the step implementations under steps/.
+"""Generate Markdown inventory tables (one per category) of the step implementations under steps/.
 
 Run from the repo root:  python3 .claude/skills/list-steps/scripts/steps_table.py
 
@@ -152,7 +152,7 @@ def image_for(impl_dir, template):
 
 
 def build_env_label(build_yaml):
-    """Return the environment path a test build targets, e.g. 'skypilot/slurm/local'.
+    """Return the environment path a test build targets, e.g. 'skypilot/slurm'.
 
     Args:
         build_yaml: Path to a test-data/<case>/build.yaml.
@@ -192,10 +192,13 @@ def tested_cases(impl_dir):
 
 
 def env_label(env_path, multi_cluster):
-    """Turn an environment path into a table label ('slurm (local)', 'aws', 'bash').
+    """Turn an environment path into a table label ('slurm (local)', 'slurm (bluevela)', 'aws', 'bash').
+
+    When a subtype is tested on several clusters, each label names its cluster; the base
+    subtype environment (e.g. 'skypilot/slurm') is the local cluster, labelled '(local)'.
 
     Args:
-        env_path: e.g. 'skypilot/slurm/local'.
+        env_path: e.g. 'skypilot/slurm' or 'skypilot/slurm/bluevela'.
         multi_cluster: Subtypes seen with more than one cluster; only these get a '(cluster)'.
 
     Returns:
@@ -205,11 +208,15 @@ def env_label(env_path, multi_cluster):
     if parts[0] != "skypilot" or len(parts) < 2:
         return parts[0]
     sub = parts[1]
-    return f"{sub} ({parts[2]})" if len(parts) > 2 and sub in multi_cluster else sub
+    if sub not in multi_cluster:
+        return sub
+    return f"{sub} ({'/'.join(parts[2:]) or 'local'})"
 
 
 def sample_rank(env_path, case):
-    """Sort key preferring local SLURM, then AWS, then the rest; shorter case names first.
+    """Sort key preferring local SLURM (base 'skypilot/slurm'), then AWS, then the rest.
+
+    Ties go to the shorter case name, then alphabetical.
 
     Args:
         env_path: Environment path of the case.
@@ -218,7 +225,7 @@ def sample_rank(env_path, case):
     Returns:
         A sortable tuple.
     """
-    order = ["skypilot/slurm/local", "skypilot/aws"]
+    order = ["skypilot/slurm", "skypilot/aws"]
     return (order.index(env_path) if env_path in order else len(order), len(case), case)
 
 
@@ -276,8 +283,8 @@ def multi_cluster_subtypes(impls):
     for impl in impls:
         for env_path, _ in impl["cases"].values():
             parts = env_path.split("/")
-            if parts[0] == "skypilot" and len(parts) > 2:
-                clusters.setdefault(parts[1], set()).add(parts[2])
+            if parts[0] == "skypilot" and len(parts) > 1:
+                clusters.setdefault(parts[1], set()).add("/".join(parts[2:]))
     return {sub for sub, names in clusters.items() if len(names) > 1}
 
 
@@ -306,8 +313,7 @@ def render_row(step_path, impls, multi_cluster):
     """
     multi = len(impls) > 1
     envs = list(dict.fromkeys(e for i in impls for e in i["envs"]))
-    tested = list(dict.fromkeys(
-        env_label(env, multi_cluster) for i in impls for env, _ in i["cases"].values()))
+    tested = sorted({env_label(env, multi_cluster) for i in impls for env, _ in i["cases"].values()})
     readmes = [((i["env"] if multi else "README.md"), i["readme"]) for i in impls]
     readme_cell = links(readmes) + ("" if all(i["published"] for i in impls) else " ‡")
     images = list(dict.fromkeys(i["image"] for i in impls))
@@ -316,23 +322,28 @@ def render_row(step_path, impls, multi_cluster):
         if i["cases"]:
             case = min(i["cases"], key=lambda c: sample_rank(i["cases"][c][0], c))
             samples.append((case, i["cases"][case][1]))
-    cells = [category_for(step_path), step_path, ", ".join(envs), ", ".join(tested) or "—",
+    cells = [step_path, ", ".join(envs), ", ".join(tested) or "—",
              readme_cell, ", ".join(images), links(samples)]
     return "| " + " | ".join(cells) + " |"
 
 
 def main():
-    """Print the steps inventory table to stdout."""
+    """Print one steps inventory table per category to stdout, categories in alphabetical order."""
     impls = [collect_impl(p) for p in tracked_templates()]
     by_step = {}
     for impl in impls:
         by_step.setdefault(impl["step_path"], []).append(impl)
     multi_cluster = multi_cluster_subtypes(impls)
-    print("| Category | Step | Environments | Tested Environments | README | Image | Sample build |")
-    print("|---|---|---|---|---|---|---|")
-    for step_path in sorted(by_step, key=lambda s: (category_for(s), s)):
-        print(render_row(step_path, by_step[step_path], multi_cluster))
-    print()
+    by_category = {}
+    for step_path in sorted(by_step):
+        by_category.setdefault(category_for(step_path), []).append(step_path)
+    for category in sorted(by_category):
+        print(f"## {category}\n")
+        print("| Step | Environments | Tested Environments | README | Image | Sample build |")
+        print("|---|---|---|---|---|---|")
+        for step_path in by_category[category]:
+            print(render_row(step_path, by_step[step_path], multi_cluster))
+        print()
     print("‡ Not published to `configurations/`; links the README under `steps/`.")
     print("Image: blank = custom image built from the step's Dockerfile.")
 

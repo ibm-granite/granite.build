@@ -5,7 +5,7 @@ description: Use when asked for an inventory, table, list, or overview of the st
 
 # List steps (inventory table)
 
-Produces one Markdown table of every git-tracked step under `steps/<group>/<name>/<env>/`, one row per step (implementations for several envs, e.g. `tune/fm-tune` bash + skypilot, share a row).
+Produces one Markdown table per category (a `## <Category>` heading over each, categories alphabetical) covering every git-tracked step under `steps/<group>/<name>/<env>/`, one row per step (implementations for several envs, e.g. `tune/fm-tune` bash + skypilot, share a row).
 
 ## Run
 
@@ -15,21 +15,21 @@ From the repo root:
 python3 .claude/skills/list-steps/scripts/steps_table.py
 ```
 
-stdout is the table; stderr carries `NOTE:` lines that need judgment. Show the user the table and relay every NOTE. Add the table to a file (e.g. `steps/README.md`) only if asked.
+stdout is the tables; stderr carries `NOTE:` lines that need judgment. Show the user the tables and relay every NOTE. Add them to a file (e.g. `steps/README.md`) only if asked.
 
 ## Columns (what the script derives)
 
 | Column | Source |
 |---|---|
-| Category | `STEP_CATEGORY` override, else `GROUP_CATEGORY` by top-level group (`tune` → Train); unknown → Other |
+| Category (table heading, not a column) | `STEP_CATEGORY` override, else `GROUP_CATEGORY` by top-level group (`tune` → Train); unknown → Other |
 | Step | `<group>/<name>` |
 | Environments | `subtypes:` under each `environment_configs` entry in `step-template.yaml` (so `lsf`, `slurm` are skypilot subtypes); when absent, the env type lowercased (`skypilot`, `bash`) |
-| Tested Environments | each `test/<case>/test_*.py` paired with `test-data/<case>/build.yaml`'s `environment_uri`; a skypilot subtype tested on >1 cluster shows the cluster, e.g. `slurm (local)`, `slurm (bluevela)` |
+| Tested Environments | each `test/<case>/test_*.py` paired with `test-data/<case>/build.yaml`'s `environment_uri`; labels are sorted; a skypilot subtype tested on >1 cluster shows the cluster, e.g. `slurm (bluevela)`, with the base env (`skypilot/slurm`) shown as `slurm (local)` |
 | README | `configurations/assets/environments/<env>/steps/<step>/README.md`; unpublished steps fall back to `steps/.../README.md` and get `‡`. Link text is `README.md`, or the impl dir name (`bash`, `skypilot`) when a step has several impls |
 | Image | blank only if the impl has a `Dockerfile` (custom image); else the launcher `image_id` (following one `config.X.Y` indirection); `none (bare node)` when empty; `?` plus a NOTE when unresolvable |
 | Sample build | one `test-data/<case>/build.yaml` per impl: local SLURM first, then AWS, then any other; ties go to the shortest case name, then alphabetical |
 
-Rows sort by Category, then the full Step path, so a group can be split across categories (e.g. `distill/hf-export` under Misc). Unit/render tests (`test/test_*.py`) do not count as tested environments.
+Within each table rows sort by the full Step path; a group can be split across tables (e.g. `distill/hf-export` under Misc). Unit/render tests (`test/test_*.py`) do not count as tested environments.
 
 ## When the script needs updating
 
