@@ -101,8 +101,12 @@ def test_gpus_requested_by_the_build(build):
 
 
 def test_step_owned_list_is_parsed():
-    assert len(_STEP_OWNED) == 15, sorted(_STEP_OWNED)
-    assert {"model_name_or_path", "resume_from_checkpoint"} <= _STEP_OWNED
+    assert len(_STEP_OWNED) == 18, sorted(_STEP_OWNED)
+    assert {
+        "model_name_or_path",
+        "resume_from_checkpoint",
+        "no_push_to_hub",
+    } <= _STEP_OWNED
 
 
 @pytest.mark.parametrize("build", BUILDS)
@@ -115,8 +119,10 @@ def test_no_step_owned_args(build):
 
 @pytest.mark.parametrize("build", BUILDS)
 def test_single_node(build):
-    compute = _step(_target(_load(build)))["config"].get("compute_config", {})
-    assert compute.get("num_nodes", 1) == 1
+    config = _step(_target(_load(build)))["config"]
+    assert config.get("compute_config", {}).get("num_nodes", 1) == 1
+    # gbserver lets launcher_config.num_nodes win over compute_config.
+    assert config.get("launcher_config", {}).get("num_nodes", 1) == 1
 
 
 def test_bluevela_fixture_matches_the_environment():
