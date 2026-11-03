@@ -11,7 +11,7 @@ granite.build:
   # 1.7 GB of onnx exports get it OOM-killed. TRL clones the Instruct chat template.
   targets:
     lora-fsdp:
-      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
         base_model:
           uri: hf:///HuggingFaceTB/SmolLM2-135M
@@ -28,7 +28,7 @@ granite.build:
             poll_interval_seconds: 30
             launcher_config:
               resources:
-                # H200 is the only GPU ibm-bluevela schedules (its constraint).
+                # H200 is the only GPU bluevela schedules (its constraint).
                 accelerators: "H200:2"
                 # gbserver drops compute_config memory on slurm; bare GiB string.
                 memory: "128"
@@ -53,7 +53,7 @@ granite.build:
                 logging_steps: 1
                 seed: 123
     qlora-deepspeed:
-      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
         base_model:
           uri: hf:///HuggingFaceTB/SmolLM2-135M

@@ -289,7 +289,7 @@ to the template, `src/`, `USAGE.md` or a build test.
 
 ## BlueVela image cache
 
-The `ibm-bluevela` SLURM environment's `slurm_image_cache` block (#560) caches the
+The `bluevela` SLURM environment's `slurm_image_cache` block (#560) caches the
 step's registry image as `/proj/granite-build/g4os/enroot/<image>.sqsh`. A cold cache
 is filled by a CPU import job before the first GPU job (gbserver waits up to 5 h,
 queueing included); later launches start the container from the `.sqsh` in seconds.
@@ -385,7 +385,7 @@ click's captured file descriptors.
 
 | | aws | slurm-bluevela |
 |---|---|---|
-| environment | `skypilot/aws` | `skypilot/slurm/ibm-bluevela` |
+| environment | `skypilot/aws` | `skypilot/slurm/bluevela` |
 | image | quay.io ref, pulled at launch | registry ref, cached as a shared `.sqsh` (`slurm_image_cache`) |
 | base model | `hf:///HuggingFaceTB/SmolLM2-135M-Instruct` | `hf:///HuggingFaceTB/SmolLM2-135M` with `args.chat_template_path: HuggingFaceTB/SmolLM2-135M-Instruct`. The Instruct repo also ships 1.7 GB of onnx exports, and BlueVela's hfpull (1 GiB cpu-partition cgroup, whole-repo parallel download) is OOM-killed on it; the base repo is 272 MB with the same vocab |
 | target 1 | `qlora`, `ddp`, `A10G:1` | `lora`, `fsdp`, `H200:2`, `memory: "128"` |
@@ -436,7 +436,7 @@ reuses the published image.
 #### slurm-bluevela
 
 Marked `ibm`. Skips unless `~/.ssh/ibm-bluevela.key` exists on the host, and skips
-in SPS CI. The `ibm-bluevela` environment does not read that path: it authenticates
+in SPS CI. The `bluevela` environment does not read that path: it authenticates
 with the `BV_SSH_PRIVATE_KEY` space secret (`IdentityKey`, #519), so the space the
 test runs in must hold it
 (`gb secret create BV_SSH_PRIVATE_KEY --from-file ~/.ssh/ibm-bluevela.key`). A cold
