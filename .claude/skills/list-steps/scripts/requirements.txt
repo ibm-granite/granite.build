@@ -1,0 +1,5 @@
+# Needed only for --format xlsx (BSD-2-Clause). Markdown and pptx use the standard library.
+# Install with hash checking:  pip install --require-hashes -r requirements.txt
+xlsxwriter==3.3.1 \
+    --hash=sha256:8e2c89e59d733fe59e112317218c64fbbc276d90a8c144ebd6f7fa15e7ab184a \
+    --hash=sha256:0867761912cceac76f97ffa76eeda18c623ae9217f601be8512f55b1af4bdb6e

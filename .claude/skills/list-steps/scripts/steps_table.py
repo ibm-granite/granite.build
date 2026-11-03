@@ -1,12 +1,14 @@
-"""Generate Markdown inventory tables (one per category) of the step implementations under steps/.
+"""Generate inventory tables (one per category) of the step implementations under steps/.
 
-Run from the repo root:  python3 .claude/skills/list-steps/scripts/steps_table.py
+Run from the repo root:  python3 .claude/skills/list-steps/scripts/steps_table.py --help
 
 One row per step path (steps/<group>/<name>/), combining all of its environment
 implementations (steps/<group>/<name>/<env>/). Only git-tracked steps are listed.
+Output formats: Markdown (default), Excel (.xlsx) and PowerPoint (.pptx).
 Notes needing human judgment are written to stderr.
 """
 
+import argparse
 import glob
 import os
 import re
@@ -14,6 +16,8 @@ import subprocess
 import sys
 
 import yaml
+
+from cells import Code, Link, part_text
 
 # Top-level steps/ group -> table category. Unlisted groups fall to "Other".
 GROUP_CATEGORY = {"data": "Data", "eval": "Eval", "misc": "Misc", "train": "Train", "tune": "Train"}
@@ -36,6 +40,8 @@ STEP_CATEGORY = {
 
 ENV_URI_PREFIX = "space://environments/"
 BARE = "none (bare node)"
+NONE = "—"
+FORMATS = {"markdown": "md", "xlsx": "xlsx", "pptx": "pptx"}
 
 
 def warn(msg):
@@ -129,17 +135,18 @@ def resolve_image_id(raw, template):
 
 
 def image_for(impl_dir, template):
-    """Return the Image cell for one implementation: public image, bare node, or '' if custom.
+    """Return the Image cell parts for one implementation: public image, bare node, or [] if custom.
 
     Args:
         impl_dir: The implementation directory (steps/<group>/<name>/<env>).
         template: Parsed step-template.yaml.
 
     Returns:
-        Cell text; '' when the step builds its own image from a Dockerfile.
+        List of parts, sorted: Code(image) per resolved image, BARE when a launcher has
+        none, '?' when unresolvable; [] when the step builds its own image from a Dockerfile.
     """
     if os.path.exists(os.path.join(impl_dir, "Dockerfile")):
-        return ""
+        return []
     images = set()
     for env_cfg in (template.get("environment_configs") or {}).values():
         for launcher in ((env_cfg or {}).get("launchers") or {}).values():
@@ -147,8 +154,8 @@ def image_for(impl_dir, template):
             if image is None:
                 warn(f"{impl_dir}: could not resolve image_id; fill the Image cell by hand")
                 image = "?"
-            images.add(f"`{shorten_digest(image)}`" if image and image != "?" else image or BARE)
-    return ", ".join(sorted(images)) or BARE
+            images.add(Code(shorten_digest(image)) if image and image != "?" else image or BARE)
+    return sorted(images, key=part_text) or [BARE]
 
 
 def build_env_label(build_yaml):
@@ -252,7 +259,7 @@ def collect_impl(template_path):
         template_path: steps/<group>/<name>/<env>/step-template.yaml.
 
     Returns:
-        Dict with step_path, env, envs, image, cases, readme, published.
+        Dict with step_path, env, envs, image (cell parts), cases, readme, published.
 
     Raises:
         yaml.YAMLError: If the template does not parse.
@@ -288,20 +295,26 @@ def multi_cluster_subtypes(impls):
     return {sub for sub, names in clusters.items() if len(names) > 1}
 
 
-def links(items):
-    """Render (label, path) pairs as comma-joined Markdown links.
+def joined(parts, empty=NONE):
+    """Interleave parts with ', ' separators.
 
     Args:
-        items: List of (label, path).
+        parts: List of parts (str, Code, Link).
+        empty: Cell to return when parts is empty.
 
     Returns:
-        Comma-joined links, or '—' when empty.
+        List of parts forming one cell.
     """
-    return ", ".join(f"[{label}]({path})" for label, path in items) or "—"
+    if not parts:
+        return [empty] if empty else []
+    out = [parts[0]]
+    for part in parts[1:]:
+        out += [", ", part]
+    return out
 
 
-def render_row(step_path, impls, multi_cluster):
-    """Render one table row for a step from all of its implementations.
+def build_row(step_path, impls, multi_cluster):
+    """Build one table row (a list of cells) for a step from all of its implementations.
 
     Args:
         step_path: '<group>/<name>'.
@@ -309,26 +322,32 @@ def render_row(step_path, impls, multi_cluster):
         multi_cluster: See multi_cluster_subtypes.
 
     Returns:
-        A Markdown table row string.
+        List of cells, one per cells.COLUMNS entry.
     """
     multi = len(impls) > 1
     envs = list(dict.fromkeys(e for i in impls for e in i["envs"]))
     tested = sorted({env_label(env, multi_cluster) for i in impls for env, _ in i["cases"].values()})
-    readmes = [((i["env"] if multi else "README.md"), i["readme"]) for i in impls]
-    readme_cell = links(readmes) + ("" if all(i["published"] for i in impls) else " ‡")
-    images = list(dict.fromkeys(i["image"] for i in impls))
+    readmes = [Link(i["env"] if multi else "README.md", i["readme"]) for i in impls]
+    readme_cell = joined(readmes) + ([] if all(i["published"] for i in impls) else [" ‡"])
+    images = list(dict.fromkeys(part for i in impls for part in i["image"]))
     samples = []
     for i in impls:
         if i["cases"]:
             case = min(i["cases"], key=lambda c: sample_rank(i["cases"][c][0], c))
-            samples.append((case, i["cases"][case][1]))
-    cells = [step_path, ", ".join(envs), ", ".join(tested) or "—",
-             readme_cell, ", ".join(images), links(samples)]
-    return "| " + " | ".join(cells) + " |"
+            samples.append(Link(case, i["cases"][case][1]))
+    return [[step_path], joined(envs), joined(tested), readme_cell,
+            joined(images, empty=""), joined(samples)]
 
 
-def main():
-    """Print one steps inventory table per category to stdout, categories in alphabetical order."""
+def build_tables():
+    """Collect every tracked step and group its rows into one table per category.
+
+    Returns:
+        List of (category, rows), categories alphabetical, rows sorted by step path.
+
+    Raises:
+        subprocess.CalledProcessError: If git fails (not run inside the repo).
+    """
     impls = [collect_impl(p) for p in tracked_templates()]
     by_step = {}
     for impl in impls:
@@ -336,16 +355,92 @@ def main():
     multi_cluster = multi_cluster_subtypes(impls)
     by_category = {}
     for step_path in sorted(by_step):
-        by_category.setdefault(category_for(step_path), []).append(step_path)
-    for category in sorted(by_category):
-        print(f"## {category}\n")
-        print("| Step | Environments | Tested Environments | README | Image | Sample build |")
-        print("|---|---|---|---|---|---|")
-        for step_path in by_category[category]:
-            print(render_row(step_path, by_step[step_path], multi_cluster))
-        print()
-    print("‡ Not published to `configurations/`; links the README under `steps/`.")
-    print("Image: blank = custom image built from the step's Dockerfile.")
+        row = build_row(step_path, by_step[step_path], multi_cluster)
+        by_category.setdefault(category_for(step_path), []).append(row)
+    return sorted(by_category.items())
+
+
+def default_link_base():
+    """Derive a GitHub blob URL prefix for the default branch of the repo's main remote.
+
+    Prefers the 'upstream' remote (the shared repo) over 'origin' (often a fork).
+
+    Returns:
+        e.g. 'https://github.com/ibm-granite/granite.build/blob/main/', or '' when no
+        GitHub remote is found.
+    """
+    for remote in ("upstream", "origin"):
+        res = subprocess.run(["git", "remote", "get-url", remote], capture_output=True, text=True)
+        m = re.match(r"(?:git@github\.com:|https://github\.com/)(.+?)(?:\.git)?$", res.stdout.strip())
+        if m:
+            return f"https://github.com/{m.group(1)}/blob/main/"
+    return ""
+
+
+def parse_args(argv=None):
+    """Parse the command line.
+
+    Args:
+        argv: Argument list (defaults to sys.argv[1:]).
+
+    Returns:
+        argparse.Namespace with formats, output, link_base.
+    """
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("-f", "--format", dest="formats", action="append", choices=FORMATS,
+                        help="output format; repeat for several (default: markdown)")
+    parser.add_argument("-o", "--output", metavar="PATH",
+                        help="output path without extension; the format's extension is added "
+                             "(default: Markdown to stdout, others to ./steps-inventory.<ext>)")
+    parser.add_argument("--link-base", metavar="URL",
+                        help="prefix for repo-relative links (default: relative for Markdown, "
+                             "the GitHub blob URL of the upstream/origin remote for xlsx/pptx)")
+    args = parser.parse_args(argv)
+    args.formats = list(dict.fromkeys(args.formats or ["markdown"]))
+    return args
+
+
+def write_format(fmt, tables, args):
+    """Render the tables in one format to stdout or a file.
+
+    Args:
+        fmt: A FORMATS key.
+        tables: Output of build_tables.
+        args: Parsed command line.
+
+    Raises:
+        ImportError: If an optional renderer dependency (xlsxwriter) is missing.
+    """
+    link_base = args.link_base
+    if link_base is None:
+        link_base = "" if fmt == "markdown" else default_link_base()
+    if fmt == "markdown":
+        import render_md
+        text = render_md.render(tables, link_base)
+        if not args.output:
+            sys.stdout.write(text)
+            return
+        path = f"{args.output}.md"
+        with open(path, "w") as f:
+            f.write(text)
+    else:
+        path = f"{args.output or 'steps-inventory'}.{FORMATS[fmt]}"
+        renderer = __import__(f"render_{fmt}")
+        renderer.write(tables, path, link_base)
+    print(f"wrote {path}", file=sys.stderr)
+
+
+def main():
+    """Build the per-category tables and write them in each requested format."""
+    args = parse_args()
+    tables = build_tables()
+    for fmt in args.formats:
+        try:
+            write_format(fmt, tables, args)
+        except ImportError as e:
+            req = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt")
+            sys.exit(f"{fmt}: missing dependency ({e.name}); install with "
+                     f"pip install --require-hashes -r {req}")
 
 
 if __name__ == "__main__":

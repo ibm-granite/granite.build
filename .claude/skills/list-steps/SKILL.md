@@ -5,17 +5,28 @@ description: Use when asked for an inventory, table, list, or overview of the st
 
 # List steps (inventory table)
 
-Produces one Markdown table per category (a `## <Category>` heading over each, categories alphabetical) covering every git-tracked step under `steps/<group>/<name>/<env>/`, one row per step (implementations for several envs, e.g. `tune/fm-tune` bash + skypilot, share a row).
+Produces one table per category (categories alphabetical) covering every git-tracked step under `steps/<group>/<name>/<env>/`, one row per step (implementations for several envs, e.g. `tune/fm-tune` bash + skypilot, share a row). Output as Markdown, an Excel workbook, and/or a PowerPoint deck.
 
 ## Run
 
 From the repo root:
 
 ```bash
-python3 .claude/skills/list-steps/scripts/steps_table.py
+python3 .claude/skills/list-steps/scripts/steps_table.py                    # Markdown to stdout
+python3 .claude/skills/list-steps/scripts/steps_table.py -f xlsx -f pptx -o /tmp/steps-inventory
 ```
 
-stdout is the tables; stderr carries `NOTE:` lines that need judgment. Show the user the tables and relay every NOTE. Add them to a file (e.g. `steps/README.md`) only if asked.
+| Format (`-f`, repeatable) | Output | Layout |
+|---|---|---|
+| `markdown` (default) | stdout, or `<-o>.md` | `## <Category>` heading over each table, then footnotes |
+| `xlsx` | `<-o>.xlsx` | one sheet per category; frozen header + filters; single links clickable, multi-link cells list URLs in a comment |
+| `pptx` | `<-o>.pptx` | 16:9, one table slide per category titled with it (>10 rows continue on a `(cont.)` slide); links clickable |
+
+`-o` is a path *without* extension (default `./steps-inventory`); ask where to write files rather than dropping them in the repo. Links are repo-relative in Markdown; xlsx/pptx default to the GitHub blob URL of the `upstream` (else `origin`) remote's `main`, since relative links don't work in Office. Override with `--link-base URL` (`--link-base ''` for relative).
+
+`xlsx` needs XlsxWriter (`pptx` and `markdown` are stdlib only). If the script exits with "missing dependency", install the pinned, hash-checked version, preferably in a throwaway venv: `pip install --require-hashes -r .claude/skills/list-steps/scripts/requirements.txt`.
+
+stdout is the Markdown tables; stderr carries `NOTE:` lines that need judgment and `wrote <path>` per file. Show the user the tables (or the file paths) and relay every NOTE. Add tables to a repo file (e.g. `steps/README.md`) only if asked.
 
 ## Columns (what the script derives)
 
@@ -42,3 +53,7 @@ Within each table rows sort by the full Step path; a group can be split across t
 - Listing untracked step directories: the script reads `git ls-files`, so local scratch steps are skipped on purpose.
 - Reporting the platforms test builds use as the Environments column: that column is the template's declared `subtypes`, not what's tested.
 - Calling a registry image "public": the Image column shows any non-Dockerfile image; say so if it's from a private registry (e.g. `us.icr.io/...`).
+
+## Code layout
+
+`scripts/steps_table.py` collects data into a format-neutral model (`scripts/cells.py`: cells are lists of `str` / `Code` / `Link` parts); `render_md.py`, `render_xlsx.py`, `render_pptx.py` each turn that model into one format. A new column or rule changes `steps_table.py` (and `COLUMNS` in `cells.py`; for pptx, `COL_WEIGHTS`) — not the renderers.
