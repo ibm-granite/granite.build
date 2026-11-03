@@ -29,7 +29,9 @@ steps:
 | `image` | `""` (required) | granite-evals bfcl image, pinned by tag. |
 | `model_path` | `""` (required) | Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
-| `output_dir` | `output` | Relative to `$GB_BUILD_WORKDIR`. |
+| `output_dir` | `""` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
+| `output_root` | `""` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`. |
+| `run_name` | basename of `model_path` | Run directory under `output_root`. |
 | `limit` | `""` (all 4,441) | **Smoke knob:** first N entries of every category. Memory entries bring their prerequisite conversations. |
 | `repeats` | `""` (1) | BFCL v4 is a single run. |
 | `workers` | `8` | Concurrent test entries (BFCL `--num-threads`). |

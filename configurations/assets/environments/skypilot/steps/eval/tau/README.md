@@ -37,7 +37,9 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `image` | Required. The granite-evals `tau` image, pinned by tag (`GRANITE_EVALS_IMAGE_TAU`). |
 | `model_path` | Required. Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | Name vLLM serves under. Empty = basename of `model_path`. |
-| `output_dir` | Relative to `$GB_BUILD_WORKDIR`. |
+| `output_dir` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
+| `output_root` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`. |
+| `run_name` | Run directory under `output_root`; empty = basename of `model_path`. |
 | `limit` | **Smoke knob:** score only the first N tasks per domain, in harness order. Empty = the full set. |
 | `repeats` | Trials per task. Empty = benchmark default (1); k > 1 averages pass@1 over k trials and adds pass@k (`details.pass_at_k`). |
 | `workers` | Concurrent simulations. Recipes set `16` for every benchmark in this family. |

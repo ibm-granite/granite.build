@@ -42,8 +42,14 @@ config:
   model_path: ""
   # Name the model is served under; empty = basename of model_path.
   served_model_name: ""
-  # Relative values resolve against $GB_BUILD_WORKDIR.
-  output_dir: "output"
+  # Full output dir as given; relative resolves against $GB_BUILD_WORKDIR. Empty
+  # (the recipes' form): output_root composes it as
+  # $output_root/$run_name/$benchmark, run_name empty = the model_path basename
+  # (like served_model_name). With neither output_dir nor output_root set the
+  # run fails fast.
+  output_dir: ""
+  output_root: ""
+  run_name: ""
   # SMOKE KNOB: score only the first N examples (in the order of the pinned prepared
   # data, so two smoke runs are comparable). Empty = all 300 prompts.
   limit: ""
@@ -59,6 +65,8 @@ config:
   # "temperature=0.6 max_tokens=32768" (unset sampling = the checkpoint's generation_config),
   # "ns.<key>=<value>" (any NeMo-Skills generation override). No answers=gold:
   # IFBench has no reference responses.
+  # The run script word-splits this on whitespace (no quoting), so neither key
+  # nor value text can contain spaces.
   options: ""
   # all | generate | score. "generate" serves the model and saves its outputs
   # (generation.json, the granite_generation artifact); "score" serves nothing and
@@ -113,14 +121,33 @@ environment_configs:
             # fail with "libcuda.so cannot found!". Refreshing the cache is a per-step runtime
             # job (no image can do it; pyxis bypasses ENTRYPOINT). Harmless where it is not needed.
             ldconfig 2>/dev/null || true
-            # The image's ENV PATH can be lost on BlueVela: the LSF provider flattens
-            # enroot's layers in reverse order, so enroot's layer 0 (/etc/environment)
-            # ends up under the base image's. The venv path is fixed by the image.
+            # The image's ENV PATH can be lost when a provider flattens enroot's
+            # layers in reverse order, so enroot's layer 0 (/etc/environment) ends up
+            # under the base image's (seen on LSF; belt-and-braces under SLURM). The
+            # venv path is fixed by the image.
             export PATH="/opt/granite-evals/.venv/bin:$PATH"
             command -v granite-evals >/dev/null || { echo "granite: granite-evals not on PATH; is config.image set to a granite-evals image?"; exit 1; }
             test -n "{{ config.model_path }}" || { echo "granite: config.model_path is required"; exit 1; }
 
             {% if config.hf_home %}export HF_HOME="{{ config.hf_home }}"; mkdir -p "$HF_HOME"{% endif %}
+
+            OUTPUT_DIR="{{ config.output_dir }}"
+            OUTPUT_ROOT="{{ config.output_root }}"
+            RUN_NAME="{{ config.run_name }}"
+            # run_name defaults to the model_path basename (the same defaulting as
+            # served_model_name), so one output_root serves every model.
+            if [ -z "$RUN_NAME" ]; then RUN_NAME="$(basename "{{ config.model_path }}")"; fi
+            # Either a full output_dir, or output_root composed per benchmark; with
+            # neither set, fail here rather than deep inside a harness.
+            if [ -z "$OUTPUT_DIR" ]; then
+                if [ -z "$OUTPUT_ROOT" ]; then
+                    echo "granite: set output_root (the run writes \$OUTPUT_ROOT/\$RUN_NAME/\$BENCHMARK) or output_dir" >&2
+                    exit 1
+                fi
+                OUTPUT_DIR="$OUTPUT_ROOT/$RUN_NAME/$BENCHMARK"
+            fi
+            case "$OUTPUT_DIR" in /*) ;; *) OUTPUT_DIR="${GB_BUILD_WORKDIR:-$PWD}/$OUTPUT_DIR" ;; esac
+            mkdir -p "$OUTPUT_DIR"
 
             {% if config.sandbox_cache %}
             # Sandboxes: enroot inside this job's container. Image squashfs files go to
@@ -139,10 +166,6 @@ environment_configs:
             mkdir -p "$LEX" 2>/dev/null || true
             trap 'rm -rf "$SCRATCH"' EXIT
             {% endif %}
-
-            OUTPUT_DIR="{{ config.output_dir }}"
-            case "$OUTPUT_DIR" in /*) ;; *) OUTPUT_DIR="${GB_BUILD_WORKDIR:-$PWD}/$OUTPUT_DIR" ;; esac
-            mkdir -p "$OUTPUT_DIR"
 
             OPTS=()
             for kv in {{ config.options }}; do OPTS+=(--option "$kv"); done

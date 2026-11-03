@@ -9,12 +9,7 @@
 # Usage:
 #   make space        # render a Space into space/
 #   make publish-step # render into the committed assets tree
-#   make unit-tests   # template contract tests, nothing installed
 
 STEP_NAME := lmeval
 
 include ../../../common.mk
-
-.PHONY: unit-tests
-unit-tests:
-	uv run --no-project --with pytest --with pyyaml --with pydantic pytest test -q

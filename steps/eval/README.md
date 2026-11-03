@@ -41,10 +41,14 @@ pushing it, and re-pinning its tag in the recipe `parameters.yaml` — recipes u
 `recipes/evals/<family>/<benchmark>/skypilot/` choose which benchmarks a model
 family is scored on and own the image pins.
 
-`RUN_NAME` (with `OUTPUT_ROOT`) shapes every artifact path a recipe writes. Make it
-unique per run — e.g. append a date or the build id: re-running the same model with
-the same `RUN_NAME` resolves to the same artifact URIs, and a reused SUCCESS
-target's downstream score target never dispatches.
+`OUTPUT_ROOT` / `RUN_NAME` shape every artifact path a recipe writes:
+`$OUTPUT_ROOT/$RUN_NAME/<benchmark>`. An empty `RUN_NAME` derives it from
+`MODEL_PATH`'s basename — re-running the same model then resolves to the same
+artifact URIs, and a reused SUCCESS target's downstream score target never
+dispatches; make it unique per run (append a date or the build id) to force a
+fresh one. `OUTPUT_ROOT` is required with no default: a dispatch without it, or
+without an explicit step `output_dir`, fails fast rather than writing somewhere
+unexpected.
 
 ## Layout of a family step
 

@@ -48,7 +48,9 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `image` | Required. The granite-evals `nemoskills` image, pinned by tag (`GRANITE_EVALS_IMAGE_NEMOSKILLS`). |
 | `model_path` | Required. Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | Name vLLM serves under. Empty = basename of `model_path`. |
-| `output_dir` | Relative to `$GB_BUILD_WORKDIR`. |
+| `output_dir` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
+| `output_root` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`. |
+| `run_name` | Run directory under `output_root`; empty = basename of `model_path`. |
 | `limit` | **Smoke knob:** score only the first N examples of the pinned/prepared data. Empty = the benchmark's full set. |
 | `repeats` | Independent generations per example (avg-of-k). Empty = benchmark default (1). |
 | `workers` | Concurrent requests to vLLM. Recipes set a per-benchmark default (32 for most; 64 for gpqa/livecodebench-v6/scicode; 128 for mmlu-pro). |

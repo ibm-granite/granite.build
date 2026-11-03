@@ -3,7 +3,7 @@
 #
 # LIMIT is empty: the full benchmark. For a quick functional check, score only the first N
 # examples (3-10 is enough to prove the plumbing):
-#   gb build start -f recipes/evals/judged/strongreject/skypilot/build.yaml --space <space> --param LIMIT=5
+#   gb build start -f recipes/evals/judged/strongreject/skypilot/build.yaml --space <space> --param OUTPUT_ROOT=<root> --param LIMIT=5
 # Override any value with --param KEY=VALUE.
 
 # ─── Model ────────────────────────────────────────────────────────────
@@ -12,8 +12,11 @@ MODEL_PATH: "ibm-granite/granite-4.2-3b"
 SERVED_MODEL_NAME: ""
 # Unique per run: re-running the same model with the same RUN_NAME re-resolves the same
 # artifact URIs, so a reused SUCCESS target's downstream (score) never dispatches.
-RUN_NAME: "granite-4.2-3b"
-OUTPUT_ROOT: "/proj/granite-build/g4os/granite/runs"
+# Empty derives it from MODEL_PATH's basename (the step's own defaulting).
+RUN_NAME: ""
+# Runs land in $OUTPUT_ROOT/$RUN_NAME/<benchmark>. Required, no default: pass
+# --param OUTPUT_ROOT=<root>, somewhere the dispatching user can write.
+OUTPUT_ROOT: ""
 # HF cache the container reads and writes (model + datasets). Empty = the image's /opt/hf-cache.
 HF_HOME: ""
 

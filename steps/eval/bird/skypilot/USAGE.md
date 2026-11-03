@@ -30,7 +30,9 @@ steps:
 | `image` | `""` (required) | granite-evals bird image, pinned by tag. |
 | `model_path` | `""` (required) | Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
-| `output_dir` | `output` | Relative to `$GB_BUILD_WORKDIR`. |
+| `output_dir` | `""` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
+| `output_root` | `""` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`. |
+| `run_name` | basename of `model_path` | Run directory under `output_root`. |
 | `limit` | `""` (all 1,534) | **Smoke knob:** first N questions by `question_id`. |
 | `repeats` | `""` (1) | Independent samples per question (avg-of-k). |
 | `workers` | `32` | Concurrent questions. |

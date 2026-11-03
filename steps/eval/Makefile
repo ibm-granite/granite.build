@@ -28,7 +28,7 @@
 #   make check-pins                               verify the dataset pins against the source
 #
 # The step images are referenced from each family's step-template.yaml as
-# ${REGISTRY}/gb-step-eval-<family>:${IMAGE_TAG}.
+# ${REGISTRY}/gb-step-eval-<family>:${IMAGE_VERSION}.
 
 FAMILIES := bfcl bird ifbench judged lmeval nemoskills swebench tau tbench
 # Families whose benchmarks split into GPU generate + CPU score (--phase); lmeval and tbench score inside generation.
@@ -37,7 +37,7 @@ CPU_FAMILIES := bfcl bird ifbench judged nemoskills swebench tau
 REGISTRY  ?=
 PLATFORM  ?= linux/amd64
 DOCKER    ?= podman
-IMAGE_TAG ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
+IMAGE_VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
 HF_HOME   ?=
 PYTHON    ?= python
 
@@ -46,7 +46,7 @@ PYTHON    ?= python
 help:
 	@echo "Targets: images, publish-images, image-<family>, publish-image-<family>, test-src, prefetch, check-pins"
 	@echo "Families: $(FAMILIES)"
-	@echo "Set REGISTRY (e.g. quay.io/myorg); IMAGE_TAG defaults to the git short SHA ($(IMAGE_TAG))."
+	@echo "Set REGISTRY (e.g. quay.io/myorg); IMAGE_VERSION defaults to the git short SHA ($(IMAGE_VERSION))."
 
 define require_registry
 	@test -n "$(REGISTRY)" || { echo "REGISTRY is not set: make $@ REGISTRY=quay.io/myorg" >&2; exit 1; }
@@ -59,19 +59,19 @@ publish-images: $(addprefix publish-image-,$(FAMILIES)) $(addprefix publish-imag
 
 $(addprefix image-cpu-,$(CPU_FAMILIES)): image-cpu-%:
 	$(require_registry)
-	$(DOCKER) build --platform $(PLATFORM) -f $*/Dockerfile.cpu . -t $(REGISTRY)/gb-step-eval-$*-cpu:$(IMAGE_TAG)
+	$(DOCKER) build --platform $(PLATFORM) -f $*/Dockerfile.cpu . -t $(REGISTRY)/gb-step-eval-$*-cpu:$(IMAGE_VERSION)
 
 $(addprefix publish-image-cpu-,$(CPU_FAMILIES)): publish-image-cpu-%:
 	$(require_registry)
-	$(DOCKER) push $(REGISTRY)/gb-step-eval-$*-cpu:$(IMAGE_TAG)
+	$(DOCKER) push $(REGISTRY)/gb-step-eval-$*-cpu:$(IMAGE_VERSION)
 
 $(addprefix image-,$(FAMILIES)): image-%:
 	$(require_registry)
-	$(DOCKER) build --platform $(PLATFORM) -f $*/Dockerfile.gpu . -t $(REGISTRY)/gb-step-eval-$*:$(IMAGE_TAG)
+	$(DOCKER) build --platform $(PLATFORM) -f $*/Dockerfile.gpu . -t $(REGISTRY)/gb-step-eval-$*:$(IMAGE_VERSION)
 
 $(addprefix publish-image-,$(FAMILIES)): publish-image-%:
 	$(require_registry)
-	$(DOCKER) push $(REGISTRY)/gb-step-eval-$*:$(IMAGE_TAG)
+	$(DOCKER) push $(REGISTRY)/gb-step-eval-$*:$(IMAGE_VERSION)
 
 # The vendored tests import granite_evals, which the images assemble from the shared
 # core plus one family's modules. Do the same in a temp dir, one family at a time.
@@ -82,7 +82,7 @@ test-src:
 	  mkdir -p $$d/src $$d/tests; \
 	  cp -R src/core/granite_evals $$d/src/; cp -R $$f/src/. $$d/src/granite_evals/benchmarks/; \
 	  cp -R src/core/tests/. $$d/tests/; cp -R $$f/tests/. $$d/tests/ 2>/dev/null || true; \
-	  (cd $$d && PYTHONPATH=src $(PYTHON) -m pytest -q -p no:cacheprovider tests); rc=$$?; \
+	  (cd $$d && PYTHONPATH=$$d/src $(PYTHON) -m pytest -q -p no:cacheprovider tests); rc=$$?; \
 	  rm -rf $$d; [ $$rc -eq 0 ] || exit $$rc; \
 	done
 

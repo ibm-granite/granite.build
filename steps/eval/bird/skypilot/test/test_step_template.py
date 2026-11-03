@@ -133,6 +133,20 @@ def test_phase_defaults_to_one_job(step, run_script):
     assert '--phase "{{ config.phase }}"' in run_script
 
 
+def test_output_location_is_composable(step, run_script):
+    # Either a full output_dir, or output_root + run_name composed per benchmark,
+    # run_name defaulting to the model_path basename (the same defaulting as
+    # served_model_name); with neither set the run fails fast. Recipes bind
+    # output_root + run_name.
+    assert step["config"]["output_dir"] == ""
+    assert step["config"]["output_root"] == ""
+    assert step["config"]["run_name"] == ""
+    assert 'OUTPUT_DIR="{{ config.output_dir }}"' in run_script
+    assert 'OUTPUT_ROOT="{{ config.output_root }}"' in run_script
+    assert 'RUN_NAME="{{ config.run_name }}"' in run_script
+    assert 'RUN_NAME="$(basename "{{ config.model_path }}")"' in run_script
+
+
 def test_monitor_honours_recipe_poll_keys(step):
     mon = step["environment_configs"]["Skypilot"]["monitors"]["skypilot_monitor"]
     assert mon["ref"] == "space://monitors/skypilot"

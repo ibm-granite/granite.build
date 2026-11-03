@@ -43,8 +43,14 @@ config:
   model_path: ""
   # Name the model is served under; empty = basename of model_path.
   served_model_name: ""
-  # Relative values resolve against $GB_BUILD_WORKDIR.
-  output_dir: "output"
+  # Full output dir as given; relative resolves against $GB_BUILD_WORKDIR. Empty
+  # (the recipes' form): output_root composes it as
+  # $output_root/$run_name/$benchmark, run_name empty = the model_path basename
+  # (like served_model_name). With neither output_dir nor output_root set the
+  # run fails fast.
+  output_dir: ""
+  output_root: ""
+  run_name: ""
   # SMOKE KNOB: score only the first N instances (sorted by instance_id, so two smoke
   # runs are comparable). Empty = the benchmark's full set (e.g. 500 for
   # swebench-verified; see `granite-evals list` for the others).
@@ -61,6 +67,8 @@ config:
   # Space-separated key=value benchmark options passed as --option, e.g.
   # "step_limit=100 temperature=0.6" or "patch=gold" (grade the reference patches:
   # checks images + sandbox + grading without a model; model_path may be "none").
+  # The run script word-splits this on whitespace (no quoting), so neither key
+  # nor value text can contain spaces.
   options: ""
   # all | generate | score. "generate" serves the model and saves its outputs
   # (generation.json, the granite_generation artifact); "score" serves nothing and
@@ -73,7 +81,9 @@ config:
   max_model_len: ""
   # Where SWE-bench instance images are imported to as squashfs. On a shared
   # filesystem, every job after the first reuses them instead of pulling again.
-  sandbox_cache: "/proj/granite-build/g4os/granite/enroot-cache"
+  # Required (every benchmark in this family sandboxes); recipes derive it per
+  # run under OUTPUT_ROOT.
+  sandbox_cache: ""
   # Empty leaves the image's HF cache default alone.
   hf_home: ""
 outputs:
@@ -116,14 +126,33 @@ environment_configs:
             # fail with "libcuda.so cannot found!". Refreshing the cache is a per-step runtime
             # job (no image can do it; pyxis bypasses ENTRYPOINT). Harmless where it is not needed.
             ldconfig 2>/dev/null || true
-            # The image's ENV PATH can be lost on BlueVela: the LSF provider flattens
-            # enroot's layers in reverse order, so enroot's layer 0 (/etc/environment)
-            # ends up under the base image's. The venv path is fixed by the image.
+            # The image's ENV PATH can be lost when a provider flattens enroot's
+            # layers in reverse order, so enroot's layer 0 (/etc/environment) ends up
+            # under the base image's (seen on LSF; belt-and-braces under SLURM). The
+            # venv path is fixed by the image.
             export PATH="/opt/granite-evals/.venv/bin:$PATH"
             command -v granite-evals >/dev/null || { echo "granite: granite-evals not on PATH; is config.image set to a granite-evals image?"; exit 1; }
             test -n "{{ config.model_path }}" || { echo "granite: config.model_path is required"; exit 1; }
 
             {% if config.hf_home %}export HF_HOME="{{ config.hf_home }}"; mkdir -p "$HF_HOME"{% endif %}
+
+            OUTPUT_DIR="{{ config.output_dir }}"
+            OUTPUT_ROOT="{{ config.output_root }}"
+            RUN_NAME="{{ config.run_name }}"
+            # run_name defaults to the model_path basename (the same defaulting as
+            # served_model_name), so one output_root serves every model.
+            if [ -z "$RUN_NAME" ]; then RUN_NAME="$(basename "{{ config.model_path }}")"; fi
+            # Either a full output_dir, or output_root composed per benchmark; with
+            # neither set, fail here rather than deep inside a harness.
+            if [ -z "$OUTPUT_DIR" ]; then
+                if [ -z "$OUTPUT_ROOT" ]; then
+                    echo "granite: set output_root (the run writes \$OUTPUT_ROOT/\$RUN_NAME/\$BENCHMARK) or output_dir" >&2
+                    exit 1
+                fi
+                OUTPUT_DIR="$OUTPUT_ROOT/$RUN_NAME/$BENCHMARK"
+            fi
+            case "$OUTPUT_DIR" in /*) ;; *) OUTPUT_DIR="${GB_BUILD_WORKDIR:-$PWD}/$OUTPUT_DIR" ;; esac
+            mkdir -p "$OUTPUT_DIR"
 
             {% if config.sandbox_cache %}
             # Sandboxes: enroot inside this job's container. Image squashfs files go to
@@ -142,10 +171,6 @@ environment_configs:
             mkdir -p "$LEX" 2>/dev/null || true
             trap 'rm -rf "$SCRATCH"' EXIT
             {% endif %}
-
-            OUTPUT_DIR="{{ config.output_dir }}"
-            case "$OUTPUT_DIR" in /*) ;; *) OUTPUT_DIR="${GB_BUILD_WORKDIR:-$PWD}/$OUTPUT_DIR" ;; esac
-            mkdir -p "$OUTPUT_DIR"
 
             OPTS=()
             for kv in {{ config.options }}; do OPTS+=(--option "$kv"); done

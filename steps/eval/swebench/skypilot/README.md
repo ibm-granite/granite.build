@@ -34,7 +34,9 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `image` | Required. The granite-evals `swebench` image, pinned by tag (`GRANITE_EVALS_IMAGE_SWEBENCH`). |
 | `model_path` | Required. Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | Name vLLM serves under. Empty = basename of `model_path`. |
-| `output_dir` | Relative to `$GB_BUILD_WORKDIR`. |
+| `output_dir` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
+| `output_root` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`. |
+| `run_name` | Run directory under `output_root`; empty = basename of `model_path`. |
 | `limit` | **Smoke knob:** score only the first N instances by `instance_id`. Empty = the full set. |
 | `repeats` | Independent agent runs per instance (avg-of-k). Empty = benchmark default (1). |
 | `workers` | Concurrent instances (agent sandboxes + requests to vLLM). Recipes set `8` for every benchmark in this family. |
@@ -79,6 +81,7 @@ Per-instance trajectories, patches and test logs are kept next to it under
 
 ## Developing
 
-`make unit-tests` runs the template contract tests. The runtime's own tests live in
-`steps/eval/src` (`make test-src` from `steps/eval/`). Every granite-evals family step
-under `steps/eval/` follows this template; the test checks this.
+The template contract tests live in `test/` (`pytest test` under the repo venv). The
+runtime's own tests live in `steps/eval/src` (`make test-src` from `steps/eval/`).
+Every granite-evals family step under `steps/eval/` follows this template; the test
+checks this.

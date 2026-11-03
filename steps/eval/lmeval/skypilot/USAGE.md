@@ -30,7 +30,9 @@ steps:
 | `image` | `""` (required) | granite-evals lmeval image, pinned by tag (`GRANITE_EVALS_IMAGE_LMEVAL`). |
 | `model_path` | `""` (required) | Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
-| `output_dir` | `output` | Relative to `$GB_BUILD_WORKDIR`. |
+| `output_dir` | `""` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
+| `output_root` | `""` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`. |
+| `run_name` | basename of `model_path` | Run directory under `output_root`. |
 | `limit` | `""` (11 x 588) | **Smoke knob:** first N examples ordered by (question_id, language), so a small N covers every language. |
 | `repeats` | `""` (1) | Repeats of the whole run (each samples afresh at temperature 1.0). |
 | `workers` | `64` | Concurrent requests to vLLM. |
