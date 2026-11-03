@@ -1703,7 +1703,9 @@ class Lsf(Environment):
             assert isinstance(
                 hfpull_stepuri, str
             ), f"invalid hfpull_stepuri: {hfpull_stepuri}"
-        binding_config = {BINDING_KEY: {"path": str(binding_path)}}
+        # The pull keeps the repo layout under binding_path; a path in the repo
+        # is bound where it lands, not at the download root.
+        binding_config = {BINDING_KEY: {"path": str(hfuri.local_path(binding_path))}}
         lsf_dict, workload_dict = self._load_builtin_hf_lsf_section(
             HFPULL_STEP_NAME, hf_metadata
         )
