@@ -95,6 +95,12 @@ def _owned():
     )
 
 
+def _exempt():
+    text = (_STEP_DIR / "step-template.yaml").read_text()
+    found = re.findall(r"set full_flags = \[(.*?)\]", text)
+    return set(re.findall(r'"([a-z_0-9]+)"', found[0])) if found else set()
+
+
 class TestContract:
     def test_identity(self):
         assert _TEMPLATE["name"] == "hf-peft-sft"
@@ -122,6 +128,18 @@ class TestContract:
             mon["config"]["extra_event_configs"][0]["line_regex"],
             train.step_line(3, 9, {"loss": 1.0}),
         )
+
+    def test_step_progress_message_is_the_whole_line(self):
+        # gbserver narrows the log line to the line_regex match before the
+        # field regexes run, so line_regex must span the line for the message
+        # to carry the total and the loss.
+        rule = _TEMPLATE["environment_configs"]["Skypilot"]["monitors"][
+            "skypilot_monitor"
+        ]["config"]["extra_event_configs"][0]
+        line = train.step_line(3, 10, {"loss": 0.70123})
+        matched = re.match(rule["line_regex"], line)[0]
+        field = next(f for f in rule["event_fields"] if f["field_name"] == "message")
+        assert re.search(field["field_regex"], matched)[0] == line
 
     def test_requests_no_gpus_itself(self):
         assert _LAUNCHER["resources"] == {}
@@ -231,9 +249,47 @@ class TestValidation:
     def test_bad_output(self, bad):
         assert "hf_peft_sft_config.output" in _render_error("run", _ctx(output=bad))
 
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize("dist", ["fsdp", "deepspeed"])
+    def test_qlora_sharded_refuses_fp32(self, block, dist):
+        err = _render_error(
+            block, _ctx(method="qlora", distributed=dist, mixed_precision="no")
+        )
+        assert err == (
+            f"hf-peft-sft: method: qlora with distributed: {dist} stores the sharded "
+            "4-bit weights in bf16, so mixed_precision must be bf16 (got 'no'). Use "
+            "mixed_precision: bf16, or distributed: ddp for fp32 compute."
+        )
+
+    def test_qlora_ddp_fp32_is_fine(self):
+        _render("run", _ctx(method="qlora", distributed="ddp", mixed_precision="no"))
+
+    @pytest.mark.parametrize("dist", ["fsdp", "deepspeed"])
+    def test_qlora_sharded_bf16_is_fine(self, dist):
+        _render("run", _ctx(method="qlora", distributed=dist, mixed_precision="bf16"))
+
     def test_multi_node_refused(self):
         assert "num_nodes must be 1" in _render_error(
             "run", _ctx(compute={"num_nodes": 2})
+        )
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_multi_node_launcher_config_refused(self, block):
+        lc = {"resources": {"accelerators": "A10G:2"}, "num_nodes": 2}
+        assert (
+            "hf-peft-sft: launcher_config.num_nodes must be 1 (got '2'); this step is single-node."
+            == _render_error(block, _ctx(launcher_config=lc))
+        )
+
+    def test_single_node_launcher_config_is_fine(self):
+        _render(
+            "run",
+            _ctx(
+                launcher_config={
+                    "resources": {"accelerators": "A10G:2"},
+                    "num_nodes": 1,
+                }
+            ),
         )
 
     @pytest.mark.parametrize("block", ["setup", "run"])
@@ -293,6 +349,27 @@ class TestValidation:
         merged = dict(_DEFAULTS["lora"], **lora) if isinstance(lora, dict) else lora
         assert msg in _render_error("run", _ctx(lora=merged))
 
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
+        "tm", [["all-linear", "lm_head"], ["all-linear"], ["q_proj", "all-linear"]]
+    )
+    def test_all_linear_in_a_list_refused(self, block, tm):
+        err = _render_error(
+            block, _ctx(lora=dict(_DEFAULTS["lora"], target_modules=tm))
+        )
+        assert err == (
+            "hf-peft-sft: hf_peft_sft_config.lora.target_modules: all-linear is a "
+            "peft keyword, not a module name; use target_modules: all-linear on its "
+            "own, or list module names (with lora.modules_to_save for extra "
+            "trainable modules like lm_head)."
+        )
+
+    def test_module_name_list_is_fine(self):
+        _render(
+            "run",
+            _ctx(lora=dict(_DEFAULTS["lora"], target_modules=["q_proj", "v_proj"])),
+        )
+
     @pytest.mark.parametrize(
         "key",
         [
@@ -317,6 +394,43 @@ class TestValidation:
     )
     def test_step_owned_dash_aliases_refused(self, key):
         assert "is set by the step" in _render_error("run", _ctx(args={key: "x"}))
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
+        "key,owned",
+        [
+            ("output_d", "output_dir"),
+            ("push_to", "push_to_hub"),
+            ("report_", "report_to"),
+            ("meth", "method"),
+            ("hub_tok", "hub_token"),
+            ("output-d", "output_dir"),
+        ],
+    )
+    def test_abbreviated_owned_args_refused(self, block, key, owned):
+        assert _render_error(block, _ctx(args={key: "x"})) == (
+            f"hf-peft-sft: hf_peft_sft_config.args.{key} abbreviates the step-owned "
+            f"flag {owned}; abbreviated flags are not accepted."
+        )
+
+    @pytest.mark.parametrize(
+        "key", ["completion_only_loss", "learning_rate", "dataset_text_field"]
+    )
+    def test_non_owned_non_prefix_args_are_fine(self, key):
+        # Real SFTConfig fields (trl 1.17.1) that are not a prefix of an owned
+        # flag; dataset_text_field shares the dataset_ stem with owned flags.
+        _render("run", _ctx(args={key: "x"}))
+
+    @pytest.mark.parametrize(
+        "key", ["gradient_checkpointing", "gradient-checkpointing"]
+    )
+    def test_full_flag_that_prefixes_an_owned_one_is_fine(self, key):
+        # argparse takes an exact match before any prefix, so this is the
+        # SFTConfig flag itself, not an abbreviation of gradient_checkpointing_kwargs.
+        _render("run", _ctx(args={key: False}))
+
+    def test_full_flags_are_not_owned(self):
+        assert _exempt() and not _exempt() & _owned()
 
     def test_mapping_arg_refused(self):
         assert "scalar or a list" in _render_error("run", _ctx(args={"x": {"a": 1}}))

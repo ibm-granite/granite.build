@@ -139,6 +139,35 @@ def test_trains_on_a_save_to_disk_dataset_with_a_sliced_split(
     assert (tmp_path / "out" / "adapter_model.safetensors").is_file()
 
 
+def test_template_full_flags_match_the_parser():
+    """The template's full_flags list is exactly the non-owned trainer flags that
+    are a proper prefix of an owned one; the abbreviation check exempts them."""
+    import re
+
+    import hf_peft_sft_train as train
+    from transformers import HfArgumentParser
+    from trl import SFTConfig
+
+    text = (_TRAIN.parents[1] / "step-template.yaml").read_text()
+
+    def names(var):
+        found = re.findall(r"set " + var + r" = \[(.*?)\]", text)[0]
+        return set(re.findall(r'"([a-z_0-9]+)"', found))
+
+    owned = names("owned")
+    parser = HfArgumentParser((train.StepArgs, SFTConfig))
+    flags = {
+        s[2:].replace("-", "_")
+        for a in parser._actions
+        for s in a.option_strings
+        if s.startswith("--")
+    }
+    expected = {
+        f for f in flags - owned if any(o != f and o.startswith(f) for o in owned)
+    }
+    assert expected == names("full_flags")
+
+
 def test_wrong_invocation_fails_before_training(tmp_path, model_dir, dataset_dir):
     proc = _train(
         model_dir,

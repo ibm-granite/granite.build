@@ -65,7 +65,7 @@ unrendered `{{ ... }}` (a misspelled binding name).
 | `method` | What it trains | Base precision | Pick it when |
 |---|---|---|---|
 | `lora` (default) | A LoRA adapter on the frozen base (peft `LoraConfig`). | `mixed_precision`: bf16 (default), fp16, or fp32 for `no`. | The base fits in GPU memory at 16-bit. The usual choice. |
-| `qlora` | A LoRA adapter on a 4-bit base: nf4 with double quantization (bitsandbytes). | 4-bit weights; compute in bf16 (fp32 for `mixed_precision: no`). `fp16` is refused. | The base does not fit at 16-bit, or you want more batch per GPU. Slower per step than `lora`. |
+| `qlora` | A LoRA adapter on a 4-bit base: nf4 with double quantization (bitsandbytes). | 4-bit weights; compute in bf16 (fp32 for `mixed_precision: no`, with `distributed: ddp` only). `fp16` is refused. | The base does not fit at 16-bit, or you want more batch per GPU. Slower per step than `lora`. |
 | `alora` | An activated LoRA adapter: the adapter only acts on tokens after an invocation string, so the base model's cache for the prompt can be reused. | As `lora`. | You serve the adapter as an on-demand capability (a checker, a rewriter) next to the base model. |
 
 **aLoRA invocation string.** `method: alora` requires `alora_invocation_string`:
@@ -95,15 +95,15 @@ All fields live under the step's `config.hf_peft_sft_config`.
 |---|---|---|---|
 | `method` | string | `lora` | `lora`, `qlora` or `alora`. See [Methods](#methods). |
 | `distributed` | string | `ddp` | `ddp`, `fsdp` or `deepspeed` (ZeRO-3). `fsdp` and `deepspeed` need at least 2 GPUs. See [GPUs and distributed training](#gpus-and-distributed-training). |
-| `output` | string | `adapter` | Name of the declared target output (type `model`) to register: the artifact marker's ID. Must be one word with no double quote. |
+| `output` | string | `adapter` | Name of the declared target output (type `model`) to register: the artifact marker's ID. Must be one word with no double quote. It must equal the name of an output the target declares in build.yaml: the step cannot see the target's outputs at step creation, so a mismatch is only detected after training, when the registered artifact matches no declared output. |
 | `output_path` | string | `""` | Where the adapter is written and registered from. Empty means `./adapter_output` in the per-target workdir, which teardown removes. See [The adapter output](#the-adapter-output). |
 | `dataset_name` | string | `""` | HF Hub dataset id. Exactly one of this or a bound `dataset` input supplies the training data. |
 | `dataset_split` | string | `train` | The `load_dataset` split spec, for either data source. Slicing works (`train[:1000]`). Must not be empty. |
 | `dataset_config` | string | `""` | The dataset's config (subset) name, passed to `load_dataset` as `name`; needed for datasets that have several, for example `dataset_name: HuggingFaceTB/smoltalk` with `dataset_config: everyday-conversations`. Empty passes none. Ignored for a single-`Dataset` `save_to_disk` dir. |
-| `lora` | map | `{r: 16, alpha: 32, dropout: 0.05, target_modules: all-linear, modules_to_save: []}` | peft `LoraConfig`. `r` (positive integer, the rank), `alpha` (positive integer, `lora_alpha`), `dropout` (number in [0, 1), `lora_dropout`), `target_modules` (`all-linear` or a non-empty list of module names), `modules_to_save` (list of module names trained in full and saved with the adapter, for example `[lm_head]`). Other keys are refused. The step always uses `bias: none` and `task_type: CAUSAL_LM`. |
+| `lora` | map | `{r: 16, alpha: 32, dropout: 0.05, target_modules: all-linear, modules_to_save: []}` | peft `LoraConfig`. `r` (positive integer, the rank), `alpha` (positive integer, `lora_alpha`), `dropout` (number in [0, 1), `lora_dropout`), `target_modules` (`all-linear` on its own, or a non-empty list of module names; `all-linear` inside a list is refused), `modules_to_save` (list of module names trained in full and saved with the adapter, for example `[lm_head]`). Other keys are refused. The step always uses `bias: none` and `task_type: CAUSAL_LM`. |
 | `alora_invocation_string` | string | `""` | Required for `method: alora`, refused otherwise: the text after which the adapter activates. See [Methods](#methods). |
 | `base_model_id` | string | `""` | A portable base id (for example `ibm-granite/granite-3.3-2b-instruct`) written into the adapter's `adapter_config.json` as `base_model_name_or_path`. Empty leaves peft's value, which is the node-local staging dir. |
-| `mixed_precision` | string | `bf16` | `bf16`, `fp16` or `no`. Sets `accelerate launch --mixed_precision`, the trainer's `--bf16`/`--fp16`, and the base model's load dtype. `qlora` refuses `fp16`. |
+| `mixed_precision` | string | `bf16` | `bf16`, `fp16` or `no`. Sets `accelerate launch --mixed_precision`, the trainer's `--bf16`/`--fp16`, and the base model's load dtype. `qlora` refuses `fp16`, and with `distributed: fsdp` or `deepspeed` also refuses `no` (the sharded 4-bit weights are stored in bf16). |
 | `args` | map | `{}` | Any other TRL `SFTConfig` field, rendered as `--<key> <value>`. See [Passing SFTConfig flags (args)](#passing-sftconfig-flags-args). |
 | `image_id` | string | the step's published image | The step's image, filled in when the step is generated. Override it with another image or, on SLURM, optionally a `.sqsh` path (SLURM environments with a `slurm_image_cache` cache the registry image themselves). `docker:` is added when missing. |
 | `clearml_enabled` | string | `auto` | `auto` (on iff `CLEARML_API_HOST`, `CLEARML_API_ACCESS_KEY` and `CLEARML_API_SECRET_KEY` are all set in the step env), `true`, or `false`. |
@@ -117,17 +117,20 @@ a message that starts `hf-peft-sft:`. They are:
   values;
 - both data sources, or neither; an empty `dataset_split`;
 - `alora_invocation_string` empty with `method: alora`, or set with another method;
-- `method: qlora` with `mixed_precision: fp16`;
+- `method: qlora` with `mixed_precision: fp16`; `method: qlora` with `distributed: fsdp`
+  or `deepspeed` and `mixed_precision: no`;
 - an empty `output`, or one with whitespace or a double quote;
-- `compute_config.num_nodes` other than 1;
+- `compute_config.num_nodes` or `launcher_config.num_nodes` other than 1;
 - no GPU request: neither `launcher_config.resources.accelerators` nor an
   `instance_type`;
 - `distributed: fsdp` or `deepspeed` with `accelerators` asking for one GPU (`"A10G"`
   or `"A10G:1"`);
 - `lora` not a map, an unknown `lora` key, `lora.r` or `lora.alpha` not a positive
   integer, `lora.dropout` outside [0, 1), `lora.target_modules` neither `all-linear`
-  nor a non-empty list, `lora.modules_to_save` not a list;
-- `args` not a map; a step-owned flag in `args`; a map or empty-list value in `args`;
+  nor a non-empty list, `all-linear` inside a `lora.target_modules` list,
+  `lora.modules_to_save` not a list;
+- `args` not a map; a step-owned flag in `args`, or an abbreviation of one (a key that
+  is a proper prefix of it, such as `output_d`); a map or empty-list value in `args`;
 - `args.packing` or `args.padding_free` true with `method: alora`.
 
 ## Passing SFTConfig flags (args)
@@ -149,7 +152,9 @@ not an expansion. Parameterise the build with `$${PARAM}` instead.
 | map | refused at step creation |
 
 The step sets these flags itself, so they are refused in `args` (also with `-` in
-place of `_`):
+place of `_`, and abbreviated: `output_d` or `push_to` is refused too, since the
+parser would take it as the full flag; `gradient_checkpointing` is its own flag, not
+an abbreviation of `gradient_checkpointing_kwargs`):
 
 ```
 output_dir, report_to, push_to_hub, hub_model_id, hub_strategy, hub_token,
@@ -209,7 +214,8 @@ The step uses all of them. It launches one process per GPU, taking the count fro
 `$SKYPILOT_NUM_GPUS_PER_NODE` (falling back to `nvidia-smi -L`). A build with neither
 `accelerators` nor a GPU `instance_type` fails at step creation, before a node is
 provisioned; a node that still has no GPUs fails before training. There is no
-`gpu_model` or `num_gpus_per_node` key. `compute_config.num_nodes` must be `1`.
+`gpu_model` or `num_gpus_per_node` key. `compute_config.num_nodes` must be `1`, and so
+must `launcher_config.num_nodes` when set.
 
 `distributed` picks how the GPUs share the work:
 
@@ -468,8 +474,9 @@ string your model's chat template emits before the assistant turn.
 
 ## Notes and limitations
 
-- **Single node only.** `compute_config.num_nodes` must be `1`. Any other value
-  fails the build at step creation.
+- **Single node only.** `compute_config.num_nodes` must be `1`, and so must
+  `launcher_config.num_nodes` when set. Any other value fails the build at step
+  creation.
 - **Adapter only.** The step never merges the adapter into the base model. aLoRA
   adapters cannot be merged, and merging into a 4-bit base is lossy. Merge in a
   downstream step if you need a merged LoRA model.
@@ -482,10 +489,10 @@ string your model's chat template emits before the assistant turn.
   line such as `Step: 3/10 loss=0.7012` (`Step: <n>/<total> loss=<x>`, loss to four
   decimals; the `/<total>` and `loss=` parts are left out when unknown) to the step
   log. `args.logging_steps` sets how often. The step's monitor rule also sends a
-  `RUNNING` workload-status event whose `message` is the matched `Step: <n>` (not
-  the rest of the line). gbserver's build runner logs it
-  (`Workload status is RUNNING (Step: 3) for build ...`) and keeps the event in the
-  build's event history. No UI shows it.
+  `RUNNING` workload-status event whose `message` is the whole `Step:` line
+  (`Step: 3/10 loss=0.7012`). gbserver's build runner logs it
+  (`Workload status is RUNNING (Step: 3/10 loss=0.7012) for build ...`) and keeps
+  the event in the build's event history. No UI shows it.
 - **Arbitrary base-model load kwargs are not supported.** The step loads the base
   model itself, so `args.model_init_kwargs` has no effect, and a base model that
   needs `trust_remote_code` cannot be used.
