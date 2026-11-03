@@ -56,12 +56,13 @@ PY
 """
 
 _PY = """#!/usr/bin/env bash
-# venv python stub: answers the peft/trl version probe, and runs anything else
-# (the saved-adapter check) on the host python with the step's src/ on the path.
-case "$*" in
-  *"import peft, trl"*) echo "0.21.2 1.17.1" ;;
-  *) PYTHONPATH="__SRC__" exec python3 "$@" ;;
-esac
+# venv python stub: logs each call, then runs it on the host python with the
+# step's src/ and fake peft/trl modules (versions 0.21.2 / 1.17.1) on the path.
+# FAKE_NO_VERSIONS leaves the fakes out, so `import peft, trl` fails.
+echo x >> "__CALLS__"
+fakes="__FAKES__"
+if [ -n "${FAKE_NO_VERSIONS:-}" ]; then fakes=""; fi
+PYTHONPATH="__SRC__${fakes:+:$fakes}" exec python3 "$@"
 """
 
 
@@ -79,9 +80,18 @@ def node(tmp_path):
         bin_dir / "nvidia-smi",
         'echo "GPU 0: NVIDIA A10G (UUID: x)"\necho "GPU 1: NVIDIA A10G (UUID: y)"\n',
     )
+    fakes = tmp_path / "fakes"
+    fakes.mkdir()
+    (fakes / "peft.py").write_text('__version__ = "0.21.2"\n')
+    (fakes / "trl.py").write_text('__version__ = "1.17.1"\n')
     home = tmp_path / "home"
     (home / ".venv" / "bin").mkdir(parents=True)
-    _exe(home / ".venv" / "bin" / "python", _PY.replace("__SRC__", str(_SRC)))
+    _exe(
+        home / ".venv" / "bin" / "python",
+        _PY.replace("__SRC__", str(_SRC))
+        .replace("__FAKES__", str(fakes))
+        .replace("__CALLS__", str(tmp_path / "python.calls")),
+    )
     (home / "accelerate").symlink_to(_SRC / "accelerate")
     (home / "hf_peft_sft_train.py").symlink_to(_SRC / "hf_peft_sft_train.py")
     work = tmp_path / "work"
@@ -277,7 +287,12 @@ class TestLaunch:
         assert proc.returncode == 1 and rec is None
         assert "hf-peft-sft: ERROR" in proc.stderr
         assert "4 GPU(s) were allocated" in proc.stderr
-        assert "2 are visible" in proc.stderr
+        # nvidia-smi -L lists what the container can access; CUDA_VISIBLE_DEVICES
+        # is shown as a diagnostic only, never as what decided the count.
+        assert "this container can access only 2" in proc.stderr
+        assert "nvidia-smi -L lists 2" in proc.stderr
+        assert "CUDA_VISIBLE_DEVICES=unset" in proc.stderr
+        assert "visible to this process" not in proc.stderr
 
     def test_visible_gpus_matching_the_allocation_pass(self, node):
         proc, rec = _run(node, env={"SKYPILOT_NUM_GPUS_PER_NODE": "2"})
@@ -462,6 +477,30 @@ class TestOutput:
         assert "has no weights" in proc.stderr
         assert _markers(proc) == []
         assert not (node[3] / "adapter_output").exists()
+
+    def test_one_python_call_after_training(self, node):
+        # The adapter check and the version query share one interpreter start.
+        proc, _ = _run(node)
+        assert proc.returncode == 0, proc.stderr
+        assert (node[0] / "python.calls").read_text().splitlines() == ["x"]
+
+    def test_versions_fall_back_to_unknown(self, node):
+        proc, _ = _run(node, env={"FAKE_NO_VERSIONS": "1"})
+        assert proc.returncode == 0, proc.stderr
+        assert _markers(proc)[1:3] == [
+            "GB_STEP_METADATA_KEY:peft_version GB_STEP_METADATA_VALUE:unknown",
+            "GB_STEP_METADATA_KEY:trl_version GB_STEP_METADATA_VALUE:unknown",
+        ]
+        assert (node[3] / "adapter_output" / "adapter_config.json").is_file()
+
+    def test_empty_adapter_keeps_the_previous_adapter(self, node):
+        # The check runs before the swap: a bad new adapter never replaces a good one.
+        proc, _ = _run(node)
+        assert proc.returncode == 0, proc.stderr
+        (node[3] / "adapter_output" / "old.bin").write_text("x")
+        proc, _ = _run(node, env={"FAKE_EMPTY_ADAPTER": "1"})
+        assert proc.returncode == 1
+        assert (node[3] / "adapter_output" / "old.bin").is_file()
 
     def test_training_failure_propagates(self, node):
         proc, _ = _run(node, env={"FAKE_FAIL": "1"})

@@ -350,6 +350,64 @@ def test_step_arg_fields_do_not_collide_with_sftconfig():
     assert sft_fields & set(t.STEP_ARG_FIELDS) == set()
 
 
+class TestTrainingArgs:
+    """_training_args with the real HfArgumentParser: no argparse abbreviation."""
+
+    @pytest.mark.parametrize(
+        "flag,value",
+        [
+            ("--output_d", "/x"),
+            ("--meth", "qlora"),
+            ("--max_ste", "77"),
+            ("--seeed", "-1"),
+        ],
+    )
+    def test_abbreviated_flag_is_a_step_error(self, flag, value):
+        # Under argparse's default allow_abbrev=True, --output_d silently sets
+        # output_dir (and --max_ste, a non-owned abbreviation, sets max_steps);
+        # the trainer must refuse both and name the flag.
+        pytest.importorskip("trl")
+        argv = ["--model_name_or_path", "/m", "--output_dir", "/o", flag, value]
+        with pytest.raises(t.StepError) as e:
+            t._training_args(argv)
+        msg = str(e.value)
+        assert flag in msg
+        assert value not in msg  # flags only, not their values
+        assert "hf_peft_sft_config.args" in msg
+        assert "exact SFTConfig field names" in msg
+
+    def test_flag_with_equals_is_named_without_its_value(self):
+        pytest.importorskip("trl")
+        with pytest.raises(t.StepError) as e:
+            t._training_args(["--model_name_or_path", "/m", "--output_d=/secret"])
+        assert "'--output_d'" in str(e.value)
+        assert "/secret" not in str(e.value)
+
+    def test_unrelated_value_error_is_not_rewritten(self):
+        # A bad value is argparse's own error, not the unused-arguments case.
+        pytest.importorskip("trl")
+        with pytest.raises(SystemExit):
+            t._training_args(["--model_name_or_path", "/m", "--method", "dora"])
+
+    def test_exact_flags_parse(self):
+        pytest.importorskip("trl")
+        step, cfg = t._training_args(
+            [
+                "--model_name_or_path",
+                "/m",
+                "--output_dir",
+                "/o",
+                "--method",
+                "qlora",
+                "--max_steps",
+                "3",
+                "--report_to=none",
+            ]
+        )
+        assert (step.method, cfg.output_dir, cfg.max_steps) == ("qlora", "/o", 3)
+        assert cfg.report_to == []  # transformers maps "none" to no integrations
+
+
 def _safetensors(path, tensors):
     """Write a minimal safetensors file: 8-byte header length + JSON header."""
     import json
