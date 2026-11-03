@@ -78,7 +78,8 @@ def pull_asset_hfstore(
             is derived from the cache dir and URI parts.
 
     Returns:
-        Path to the downloaded snapshot on the local filesystem.
+        Path to the downloaded snapshot on the local filesystem: *dest*, or
+        ``dest/<path_in_repo>`` for a URI with a path in the repo.
 
     Raises:
         AssertionError: If ``uri`` is None or does not resolve to an HfURI.
@@ -102,7 +103,8 @@ def pull_asset_hfstore(
 
     if not hfuri.pull(dest):
         raise RuntimeError(f"HF pull failed for {URI.get_uristr(hfuri)}")
-    return dest
+    # A path in the repo lands at dest/<path_in_repo>, the repo layout kept.
+    return hfuri.local_path(dest)
 
 
 def push_asset_hfstore(

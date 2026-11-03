@@ -14,6 +14,7 @@ config:
     owner: ''
     repo: ''
     revision: ''
+    path_in_repo: ''
     hf:
       type: ''
   compute_config:
