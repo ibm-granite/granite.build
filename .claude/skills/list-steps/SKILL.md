@@ -9,7 +9,7 @@ Produces one table per category (categories alphabetical) of the framework steps
 
 ## Run
 
-From the repo root:
+From anywhere inside the repo (the script switches to the repo root itself; `-o` is resolved against your current directory):
 
 ```bash
 python3 .claude/skills/list-steps/scripts/steps_table.py                    # Markdown to stdout
@@ -20,9 +20,9 @@ python3 .claude/skills/list-steps/scripts/steps_table.py -f xlsx -f pptx -o /tmp
 |---|---|---|
 | `markdown` (default) | stdout, or `<-o>.md` | `## <Category>` heading over each table, `## Non-Framework Steps` last, then footnotes |
 | `xlsx` | `<-o>.xlsx` | one sheet per category plus `Non-Framework Steps`; frozen header + filters; single links clickable, multi-link cells list URLs in a comment |
-| `pptx` | `<-o>.pptx` | 16:9, one table slide per category titled with it, then `Non-Framework Steps` (>10 rows continue on a `(cont.)` slide); links clickable |
+| `pptx` | `<-o>.pptx` | 16:9, one table slide per category titled with it, then `Non-Framework Steps` (rows that would overflow, estimated from wrapped text, continue on a `(cont.)` slide); links clickable |
 
-`-o` is a path *without* extension (default `./steps-inventory`); ask where to write files rather than dropping them in the repo. Links are repo-relative in Markdown; xlsx/pptx default to the GitHub blob URL of the `upstream` (else `origin`) remote's `main`, since relative links don't work in Office. Override with `--link-base URL` (`--link-base ''` for relative).
+`-o` is a path *without* extension (default `./steps-inventory`); ask where to write files rather than dropping them in the repo. Links are repo-relative in Markdown; xlsx/pptx default to the GitHub blob URL of the `upstream` (else `origin`) remote's `main`, since relative links don't work in Office. Override with `--link-base URL` (`--link-base ''` for relative; xlsx then writes link cells as text with the paths in a cell comment, since Excel can't hyperlink a scheme-less path).
 
 `xlsx` needs XlsxWriter (`pptx` and `markdown` are stdlib only). If the script exits with "missing dependency", install the pinned, hash-checked version, preferably in a throwaway venv: `pip install --require-hashes -r .claude/skills/list-steps/scripts/requirements.txt`.
 
@@ -34,10 +34,10 @@ stdout is the Markdown tables; stderr carries `NOTE:` lines that need judgment a
 |---|---|
 | Category (table heading, not a column) | framework steps only: `STEP_CATEGORY` override, else `GROUP_CATEGORY` by top-level group (`tune` → Train); unknown → Other |
 | Step | `<group>/<name>` for framework steps; for non-framework steps, the path below `.../steps/` (e.g. `bfcl-eval`) |
-| Environments | framework steps: one label per `environment_configs` entry in `step-template.yaml`: the environment class lowercased, plus ` - <subtypes>` (comma-separated) when it declares `subtypes:`, e.g. `skypilot - lsf`, `skypilot` (no restriction: any subtype), `bash`; a step with several impls lists each, separated by `; `. Non-framework steps under `configurations/assets/environments/<class>/<sub>/[<cluster>/]steps/` take the subtype from the directory (e.g. `skypilot - lsf (ibm-bluevela)`) unless the step.yaml declares `subtypes:`; `configurations/assets/steps/<class>/` gives `<class>` |
-| Tested Environments | framework steps only (non-framework: `—`): each `test/<case>/test_*.py` paired with `test-data/<case>/build.yaml`'s `environment_uri`; labels are sorted; a skypilot subtype tested on >1 cluster shows the cluster, e.g. `slurm (bluevela)`, with the base env (`skypilot/slurm`) shown as `slurm (local)` |
-| Documentation | README at `configurations/assets/environments/<env>/steps/<step>/README.md`; unpublished steps fall back to `steps/.../README.md` and get `‡`; non-framework steps link the README beside their step.yaml, or `—` if none. Link text is `README.md`, or the impl dir name (`bash`, `skypilot`) when a step has several impls |
-| Image | blank only if the impl has a `Dockerfile` (custom image); else the launcher `image_id`, or `image` for docker/runpod (following one `config.X.Y` indirection); `Helm chart` for a k8s chart launcher; `none (bare node)` when empty; `?` plus a NOTE when unresolvable |
+| Environments | framework steps: one label per `environment_configs` entry in `step-template.yaml`: the environment class lowercased, plus ` - <subtypes>` (comma-separated) when it declares `subtypes:`, e.g. `skypilot - lsf`, `skypilot` (no restriction: any subtype), `bash`; a step with several impls lists each, separated by `; `. Non-framework steps under `configurations/assets/environments/<class>/<sub>/[<cluster>/]steps/` take the subtype from the directory (e.g. `skypilot - lsf (ibm-bluevela)`), since it is the most specific; directories without a subtype use the step.yaml's declared environments, falling back to the directory's class (`configurations/assets/steps/<class>/` gives `<class>`) |
+| Tested Environments | framework steps only (non-framework: `—`): each `test/<case>/test_*.py` paired with every `environment_uri` (quoted or not) in `test-data/<case>/build.yaml`; labels are sorted; a skypilot subtype tested on >1 cluster shows the cluster, e.g. `slurm (bluevela)`, with the base env (`skypilot/slurm`) shown as `slurm (local)` |
+| Documentation | README at `configurations/assets/environments/<env>/steps/<step>/README.md`; unpublished steps fall back to `steps/.../README.md` and get `‡`; `—` when neither exists; non-framework steps link the README beside their step.yaml, or `—` if none. Link text is `README.md`, or the impl dir name (`bash`, `skypilot`) when a step has several impls |
+| Image | blank only if the impl has a `Dockerfile` (custom image), or `custom (Dockerfile)` when it shares a row with impls that don't; else the launcher `image_id`, or `image` for docker/runpod (following one `config.X.Y` indirection); `Helm chart` for a k8s chart launcher; `none (bare node)` when empty; `?` plus a NOTE when unresolvable |
 | Sample build | framework steps only (non-framework: `—`): one `test-data/<case>/build.yaml` per impl: local SLURM first, then AWS, then any other; ties go to the shortest case name, then alphabetical |
 
 Within each table rows sort by the full Step path; a group can be split across tables (e.g. `distill/hf-export` under Misc). Unit/render tests (`test/test_*.py`) do not count as tested environments.

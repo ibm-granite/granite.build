@@ -55,6 +55,7 @@ CONFIG_STEPS_ROOT = "configurations/assets/steps/"
 ENV_URI_PREFIX = "space://environments/"
 BARE = "none (bare node)"
 HELM = "Helm chart"
+CUSTOM = "custom (Dockerfile)"
 NONE = "—"
 NON_FRAMEWORK_TITLE = "Non-Framework Steps"
 FORMATS = {"markdown": "md", "xlsx": "xlsx", "pptx": "pptx"}
@@ -69,6 +70,40 @@ def warn(msg):
     print(f"NOTE: {msg}", file=sys.stderr)
 
 
+def git_output(*args):
+    """Run a git command and return its stdout.
+
+    Args:
+        *args: git arguments, e.g. ('ls-files', 'steps/*').
+
+    Returns:
+        stdout text.
+
+    Raises:
+        subprocess.CalledProcessError: If git fails (e.g. not inside the repo).
+    """
+    return subprocess.run(
+        ["git", *args], check=True, capture_output=True, text=True
+    ).stdout
+
+
+def git_ls_files(pattern):
+    """List git-tracked files matching a pathspec, relative to the repo root.
+
+    Must be called with the repo root as the working directory (see main).
+
+    Args:
+        pattern: Repo-root-relative glob pathspec.
+
+    Returns:
+        Sorted list of repo-relative paths.
+
+    Raises:
+        subprocess.CalledProcessError: If git fails.
+    """
+    return sorted(git_output("ls-files", "--", pattern).splitlines())
+
+
 def tracked_templates():
     """Return git-tracked step-template.yaml paths under steps/<group>/<name>/<env>/.
 
@@ -76,15 +111,10 @@ def tracked_templates():
         Sorted list of repo-relative paths.
 
     Raises:
-        subprocess.CalledProcessError: If git fails (not run inside the repo).
+        subprocess.CalledProcessError: If git fails.
     """
-    out = subprocess.run(
-        ["git", "ls-files", "steps/*/*/*/step-template.yaml"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    return sorted(p for p in out.splitlines() if p.count("/") == 4)
+    paths = git_ls_files("steps/*/*/*/step-template.yaml")
+    return [p for p in paths if p.count("/") == 4]
 
 
 def tracked_config_steps():
@@ -94,15 +124,9 @@ def tracked_config_steps():
         Sorted list of repo-relative paths.
 
     Raises:
-        subprocess.CalledProcessError: If git fails (not run inside the repo).
+        subprocess.CalledProcessError: If git fails.
     """
-    out = subprocess.run(
-        ["git", "ls-files", "configurations/**/step.yaml"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    return sorted(out.splitlines())
+    return git_ls_files("configurations/**/step.yaml")
 
 
 def category_for(step_path):
@@ -192,7 +216,7 @@ def image_for(impl_dir, template):
     images = set()
     for env_cfg in (template.get("environment_configs") or {}).values():
         for launcher in ((env_cfg or {}).get("launchers") or {}).values():
-            config = launcher.get("config") or {}
+            config = (launcher or {}).get("config") or {}
             if "chart" in config:
                 images.add(HELM)
                 continue
@@ -210,21 +234,22 @@ def image_for(impl_dir, template):
     return sorted(images, key=part_text) or [BARE]
 
 
-def build_env_label(build_yaml):
-    """Return the environment path a test build targets, e.g. 'skypilot/slurm'.
+def build_env_paths(build_yaml):
+    """Return every environment path a test build's targets use, e.g. ('skypilot/slurm',).
+
+    Reads `environment_uri:` lines (quoted or not); only space://environments/ URIs count.
 
     Args:
         build_yaml: Path to a test-data/<case>/build.yaml.
 
     Returns:
-        Environment path with the space://environments/ prefix removed, or None.
+        Tuple of distinct environment paths (prefix removed), in file order; empty if none.
     """
     with open(build_yaml, encoding="utf-8") as f:
         text = f.read()
-    for m in re.finditer(r"^\s*environment_uri:\s*(\S+)", text, re.M):
-        if m.group(1).startswith(ENV_URI_PREFIX):
-            return m.group(1)[len(ENV_URI_PREFIX) :]
-    return None
+    uris = re.findall(r"^\s*environment_uri:\s*[\"']?([^\"'\s#]+)", text, re.M)
+    paths = [u[len(ENV_URI_PREFIX) :] for u in uris if u.startswith(ENV_URI_PREFIX)]
+    return tuple(dict.fromkeys(paths))
 
 
 def tested_cases(impl_dir):
@@ -236,19 +261,19 @@ def tested_cases(impl_dir):
         impl_dir: The implementation directory.
 
     Returns:
-        Dict of case name -> (environment path, build.yaml path).
+        Dict of case name -> (tuple of environment paths, build.yaml path).
     """
     cases = {}
     for test_py in sorted(glob.glob(os.path.join(impl_dir, "test", "*", "test_*.py"))):
         case = os.path.basename(os.path.dirname(test_py))
         build = os.path.join(impl_dir, "test-data", case, "build.yaml")
-        env = build_env_label(build) if os.path.exists(build) else None
-        if env is None:
+        envs = build_env_paths(build) if os.path.exists(build) else ()
+        if not envs:
             warn(
                 f"{impl_dir}: test/{case} has no test-data/{case}/build.yaml environment_uri"
             )
             continue
-        cases[case] = (env, build)
+        cases[case] = (envs, build)
     return cases
 
 
@@ -274,20 +299,22 @@ def env_label(env_path, multi_cluster):
     return f"{sub} ({'/'.join(parts[2:]) or 'local'})"
 
 
-def sample_rank(env_path, case):
+def sample_rank(env_paths, case):
     """Sort key preferring local SLURM (base 'skypilot/slurm'), then AWS, then the rest.
 
-    Ties go to the shorter case name, then alphabetical.
+    A case using several environments ranks by its most preferred one. Ties go to the
+    shorter case name, then alphabetical.
 
     Args:
-        env_path: Environment path of the case.
+        env_paths: Environment paths the case's build uses.
         case: Case directory name.
 
     Returns:
         A sortable tuple.
     """
     order = ["skypilot/slurm", "skypilot/aws"]
-    return (order.index(env_path) if env_path in order else len(order), len(case), case)
+    rank = min(order.index(e) if e in order else len(order) for e in env_paths)
+    return (rank, len(case), case)
 
 
 def readme_link(step_path, env):
@@ -298,12 +325,14 @@ def readme_link(step_path, env):
         env: Implementation env dir name (skypilot, bash).
 
     Returns:
-        (path, published) — published is False when only the steps/ README exists.
+        (path, published): published is False when the link falls back to the steps/
+        README; (None, True) when neither README exists.
     """
-    published = f"configurations/assets/environments/{env}/steps/{step_path}/README.md"
+    published = f"{CONFIG_ENV_ROOT}{env}/steps/{step_path}/README.md"
     if os.path.exists(published):
         return published, True
-    return f"steps/{step_path}/{env}/README.md", False
+    source = f"steps/{step_path}/{env}/README.md"
+    return (source, False) if os.path.exists(source) else (None, True)
 
 
 def config_step_location(step_dir):
@@ -336,6 +365,10 @@ def collect_config_impl(step_yaml):
     Args:
         step_yaml: configurations/.../steps/<path>/step.yaml.
 
+    The environment comes from the directory when it names a subtype (it is the most
+    specific, including any cluster); otherwise from the step.yaml's declarations; otherwise
+    from the directory's environment class.
+
     Returns:
         Dict shaped like collect_impl's, with framework False and no test cases.
 
@@ -347,7 +380,7 @@ def collect_config_impl(step_yaml):
     with open(step_yaml, encoding="utf-8") as f:
         step = yaml.safe_load(f)
     declared = declared_environments(step)
-    envs = declared if any(" - " in e for e in declared) or " - " not in env else [env]
+    envs = [env] if " - " in env or not declared else declared
     readme = os.path.join(step_dir, "README.md")
     return {
         "step_path": step_path,
@@ -415,10 +448,10 @@ def multi_cluster_subtypes(impls):
     """
     clusters = {}
     for impl in impls:
-        for env_path, _ in impl["cases"].values():
-            parts = env_path.split("/")
-            if parts[0] == "skypilot" and len(parts) > 1:
-                clusters.setdefault(parts[1], set()).add("/".join(parts[2:]))
+        for env_paths, _ in impl["cases"].values():
+            for parts in (e.split("/") for e in env_paths):
+                if parts[0] == "skypilot" and len(parts) > 1:
+                    clusters.setdefault(parts[1], set()).add("/".join(parts[2:]))
     return {sub for sub, names in clusters.items() if len(names) > 1}
 
 
@@ -440,6 +473,23 @@ def joined(parts, empty=NONE):
     return out
 
 
+def image_cell(impls):
+    """Merge the implementations' images into one Image cell.
+
+    A custom-image implementation contributes [] (rendered blank). When it shares a row
+    with implementations that don't, it shows as CUSTOM instead so it isn't lost.
+
+    Args:
+        impls: collect_impl dicts for one step.
+
+    Returns:
+        List of distinct parts, in implementation order; [] when every impl is custom.
+    """
+    any_listed = any(i["image"] for i in impls)
+    parts = [p for i in impls for p in (i["image"] or ([CUSTOM] if any_listed else []))]
+    return list(dict.fromkeys(parts))
+
+
 def build_row(step_path, impls, multi_cluster):
     """Build one table row (a list of cells) for a step from all of its implementations.
 
@@ -454,7 +504,12 @@ def build_row(step_path, impls, multi_cluster):
     multi = len(impls) > 1
     envs = list(dict.fromkeys(e for i in impls for e in i["envs"]))
     tested = sorted(
-        {env_label(env, multi_cluster) for i in impls for env, _ in i["cases"].values()}
+        {
+            env_label(env, multi_cluster)
+            for i in impls
+            for envs_used, _ in i["cases"].values()
+            for env in envs_used
+        }
     )
     readmes = [
         Link(i["env"] if multi else "README.md", i["readme"])
@@ -464,7 +519,7 @@ def build_row(step_path, impls, multi_cluster):
     readme_cell = joined(readmes) + (
         [] if all(i["published"] for i in impls) else [" ‡"]
     )
-    images = list(dict.fromkeys(part for i in impls for part in i["image"]))
+    images = image_cell(impls)
     samples = []
     for i in impls:
         cases = i["cases"]
@@ -575,6 +630,9 @@ def parse_args(argv=None):
     )
     args = parser.parse_args(argv)
     args.formats = list(dict.fromkeys(args.formats or ["markdown"]))
+    # Resolve now: main() changes to the repo root before writing.
+    args.to_stdout = args.output is None
+    args.output = os.path.abspath(args.output or "steps-inventory")
     return args
 
 
@@ -594,14 +652,14 @@ def write_format(fmt, tables, args):
         link_base = "" if fmt == "markdown" else default_link_base()
     if fmt == "markdown":
         text = render_md.render(tables, link_base)
-        if not args.output:
+        if args.to_stdout:
             sys.stdout.write(text)
             return
         path = f"{args.output}.md"
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
     else:
-        path = f"{args.output or 'steps-inventory'}.{FORMATS[fmt]}"
+        path = f"{args.output}.{FORMATS[fmt]}"
         # Imported on demand: render_xlsx needs xlsxwriter, which only xlsx output requires.
         renderer = importlib.import_module(f"render_{fmt}")
         renderer.write(tables, path, link_base)
@@ -609,8 +667,15 @@ def write_format(fmt, tables, args):
 
 
 def main():
-    """Build the per-category tables and write them in each requested format."""
+    """Build the per-category tables and write them in each requested format.
+
+    Works from any directory inside the repo: paths are resolved from the repo root.
+    """
     args = parse_args()
+    try:
+        os.chdir(git_output("rev-parse", "--show-toplevel").strip())
+    except subprocess.CalledProcessError:
+        sys.exit("steps_table.py: run inside the granite.build git repository")
     tables = build_tables()
     for fmt in args.formats:
         try:

@@ -43,8 +43,23 @@ def add_formats(book):
     }
 
 
+def is_url(target):
+    """Tell whether XlsxWriter can hyperlink a target (it rejects scheme-less paths).
+
+    Args:
+        target: Resolved link target.
+
+    Returns:
+        True for URLs with a scheme (https://, file://, ...).
+    """
+    return "://" in target
+
+
 def write_cell(sheet, pos, cell, formats, link_base):
-    """Write one cell, as a hyperlink when it holds exactly one link.
+    """Write one cell, as a hyperlink when it holds exactly one absolute link.
+
+    Relative links (from `--link-base ''` or a clone without a GitHub remote) can't be
+    Excel hyperlinks, so they are written as text with the paths in a cell comment.
 
     Args:
         sheet: The xlsxwriter Worksheet.
@@ -56,7 +71,7 @@ def write_cell(sheet, pos, cell, formats, link_base):
     row, col = pos
     text = cell_text(cell)
     links = cell_links(cell)
-    if len(links) == 1:
+    if len(links) == 1 and is_url(link_url(links[0].path, link_base)):
         sheet.write_url(
             row, col, link_url(links[0].path, link_base), formats["link"], string=text
         )

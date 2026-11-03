@@ -3,7 +3,8 @@
 
 Written directly as Office Open XML with the standard library (zipfile), so it needs no
 third-party package. The deck is 16:9 with one blank layout; a category with more than
-ROWS_PER_SLIDE rows continues on further slides titled '<Category> (cont.)'. Link parts
+what fits (estimated from wrapped line counts) continues on further slides titled
+'<Category> (cont.)'. Link parts
 become clickable hyperlinks, so pass an absolute link base for links to work.
 """
 
@@ -15,7 +16,8 @@ from cells import COLUMNS, FOOTNOTES, Code, Link, cell_text, link_url
 SLIDE_W, SLIDE_H = 12192000, 6858000  # EMU, 13.333in x 7.5in
 MARGIN = 365760  # 0.4in
 EMU_PER_PT = 12700
-ROWS_PER_SLIDE = 10
+# Pagination budget: the table area holds about this many wrapped text lines of FONT_PT.
+LINES_PER_SLIDE = 22
 COL_WEIGHTS = [18, 17, 15, 15, 22, 13]  # relative column widths, one per cells.COLUMNS
 FONT_PT, TITLE_PT, NOTE_PT = 10, 28, 9
 HEADER_FILL, BORDER, LINK_COLOR = "DDE3EA", "BFBFBF", "0563C1"
@@ -230,20 +232,69 @@ def slide_xml(title, rows, link_base):
     return xml, rels_xml(rels)
 
 
-def paginate(tables):
-    """Split each category's rows into slide-sized chunks.
+def col_chars():
+    """Estimate how many characters fit on one line of each column.
+
+    Returns:
+        List of per-column character capacities (a 10pt glyph averages ~0.55em wide).
+    """
+    width_pt = (SLIDE_W - 2 * MARGIN) / EMU_PER_PT
+    total = sum(COL_WEIGHTS)
+    return [
+        max(1, int(width_pt * w / total / (FONT_PT * 0.55)) - 1) for w in COL_WEIGHTS
+    ]
+
+
+def row_lines(row, capacities):
+    """Estimate how many wrapped lines a row's tallest cell takes.
 
     Args:
-        tables: List of (category, rows).
+        row: List of cells.
+        capacities: Output of col_chars.
+
+    Returns:
+        Line count (at least 1).
+    """
+    return max(
+        max(1, -(-len(cell_text(cell)) // cap)) for cell, cap in zip(row, capacities)
+    )
+
+
+def chunk_rows(rows, capacities):
+    """Split rows into chunks whose estimated wrapped height fits one slide.
+
+    Args:
+        rows: List of rows.
+        capacities: Output of col_chars.
+
+    Returns:
+        List of row lists; at least one (possibly empty) chunk.
+    """
+    chunks, chunk, used = [], [], 1  # 1 = header row
+    for row in rows:
+        lines = row_lines(row, capacities)
+        if chunk and used + lines > LINES_PER_SLIDE:
+            chunks.append(chunk)
+            chunk, used = [], 1
+        chunk.append(row)
+        used += lines
+    return chunks + [chunk]
+
+
+def paginate(tables):
+    """Split each table into slide-sized chunks; continuation slides get ' (cont.)'.
+
+    Args:
+        tables: List of (title, rows).
 
     Returns:
         List of (slide title, rows).
     """
+    capacities = col_chars()
     slides = []
-    for category, rows in tables:
-        for start in range(0, max(len(rows), 1), ROWS_PER_SLIDE):
-            title = category if start == 0 else f"{category} (cont.)"
-            slides.append((title, rows[start : start + ROWS_PER_SLIDE]))
+    for title, rows in tables:
+        for n, chunk in enumerate(chunk_rows(rows, capacities)):
+            slides.append((title if n == 0 else f"{title} (cont.)", chunk))
     return slides
 
 
@@ -274,11 +325,11 @@ def content_types_xml(n_slides):
     )
 
 
-def package_parts(n_slides):
-    """Build the fixed package parts: content types, root rels, presentation, master, layout, theme.
+def presentation_parts(n_slides):
+    """Build the presentation part and its relationships.
 
     Args:
-        n_slides: Number of slides (slide{i}.xml for i in 1..n_slides).
+        n_slides: Number of slides.
 
     Returns:
         Dict of part name -> XML string.
@@ -286,11 +337,11 @@ def package_parts(n_slides):
     slide_ids = "".join(
         f'<p:sldId id="{256 + i}" r:id="rId{10 + i}"/>' for i in range(n_slides)
     )
+    slide_rels = [
+        (f"rId{10 + i}", "slide", f"slides/slide{i + 1}.xml", False)
+        for i in range(n_slides)
+    ]
     return {
-        "[Content_Types].xml": content_types_xml(n_slides),
-        "_rels/.rels": rels_xml(
-            [("rId1", "officeDocument", "ppt/presentation.xml", False)]
-        ),
         "ppt/presentation.xml": (
             f'{XML_DECL}<p:presentation {NS}><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/>'
             f"</p:sldMasterIdLst><p:sldIdLst>{slide_ids}</p:sldIdLst>"
@@ -302,12 +353,19 @@ def package_parts(n_slides):
                 ("rId2", "theme", "theme/theme1.xml", False),
                 ("rId3", "presProps", "presProps.xml", False),
             ]
-            + [
-                (f"rId{10 + i}", "slide", f"slides/slide{i + 1}.xml", False)
-                for i in range(n_slides)
-            ]
+            + slide_rels
         ),
         "ppt/presProps.xml": f"{XML_DECL}<p:presentationPr {NS}/>",
+    }
+
+
+def master_parts():
+    """Build the slide master (white background), its one blank layout, and the theme.
+
+    Returns:
+        Dict of part name -> XML string.
+    """
+    return {
         "ppt/slideMasters/slideMaster1.xml": (
             f'{XML_DECL}<p:sldMaster {NS}><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="FFFFFF"/>'
             f'</a:solidFill><a:effectLst/></p:bgPr></p:bg>{EMPTY_TREE.format("")}</p:cSld><p:clrMap {CLR_MAP}/>'
@@ -327,6 +385,25 @@ def package_parts(n_slides):
             [("rId1", "slideMaster", "../slideMasters/slideMaster1.xml", False)]
         ),
         "ppt/theme/theme1.xml": XML_DECL + THEME,
+    }
+
+
+def package_parts(n_slides):
+    """Build every fixed (non-slide) package part.
+
+    Args:
+        n_slides: Number of slides (slide{i}.xml for i in 1..n_slides).
+
+    Returns:
+        Dict of part name -> XML string, [Content_Types].xml first.
+    """
+    return {
+        "[Content_Types].xml": content_types_xml(n_slides),
+        "_rels/.rels": rels_xml(
+            [("rId1", "officeDocument", "ppt/presentation.xml", False)]
+        ),
+        **presentation_parts(n_slides),
+        **master_parts(),
     }
 
 
