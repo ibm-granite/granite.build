@@ -30,7 +30,7 @@ class Code(NamedTuple):
     text: str
 
 
-COLUMNS = ["Step", "Environments", "Tested Environments", "README", "Image", "Sample build"]
+COLUMNS = ["Step", "Environments", "Tested Environments", "Documentation", "Image", "Sample build"]
 
 FOOTNOTES = [
     ["‡ Not published to ", Code("configurations/"), "; links the README under ", Code("steps/"), "."],

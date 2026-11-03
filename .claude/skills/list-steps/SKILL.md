@@ -1,6 +1,6 @@
 ---
 name: list-steps
-description: Use when asked for an inventory, table, list, or overview of the step implementations in the granite.build repo's steps/ directory — which steps exist, their category, supported or tested environments (skypilot subtypes, slurm, lsf, aws, kubernetes, bash), container image, README, or sample build.yaml.
+description: Use when asked for an inventory, table, list, or overview of the step implementations in the granite.build repo's steps/ directory — which steps exist, their category, supported or tested environments (skypilot subtypes, slurm, lsf, aws, kubernetes, bash), container image, documentation (README), or sample build.yaml.
 ---
 
 # List steps (inventory table)
@@ -36,7 +36,7 @@ stdout is the Markdown tables; stderr carries `NOTE:` lines that need judgment a
 | Step | `<group>/<name>` |
 | Environments | one label per `environment_configs` entry in `step-template.yaml`: the environment class lowercased, plus ` - <subtypes>` (comma-separated) when it declares `subtypes:`, e.g. `skypilot - lsf`, `skypilot` (no restriction: any subtype), `bash`; a step with several impls lists each, separated by `; ` |
 | Tested Environments | each `test/<case>/test_*.py` paired with `test-data/<case>/build.yaml`'s `environment_uri`; labels are sorted; a skypilot subtype tested on >1 cluster shows the cluster, e.g. `slurm (bluevela)`, with the base env (`skypilot/slurm`) shown as `slurm (local)` |
-| README | `configurations/assets/environments/<env>/steps/<step>/README.md`; unpublished steps fall back to `steps/.../README.md` and get `‡`. Link text is `README.md`, or the impl dir name (`bash`, `skypilot`) when a step has several impls |
+| Documentation | README at `configurations/assets/environments/<env>/steps/<step>/README.md`; unpublished steps fall back to `steps/.../README.md` and get `‡`. Link text is `README.md`, or the impl dir name (`bash`, `skypilot`) when a step has several impls |
 | Image | blank only if the impl has a `Dockerfile` (custom image); else the launcher `image_id` (following one `config.X.Y` indirection); `none (bare node)` when empty; `?` plus a NOTE when unresolvable |
 | Sample build | one `test-data/<case>/build.yaml` per impl: local SLURM first, then AWS, then any other; ties go to the shortest case name, then alphabetical |
 
