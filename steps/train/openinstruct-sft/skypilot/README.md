@@ -24,11 +24,14 @@ src/                        baked into the image at /opt/openinstruct-sft/
   openinstruct_sft_guard.sh   on-node checks of the staged base_model/dataset paths
   openinstruct_sft_setup.sh   image sanity check: finetune.py present, training stack imports
   openinstruct_sft_run.sh     GPU count, ClearML on/off, accelerate launch, swap, markers
-patches/finetune_local_model.py   build-time patch applied to upstream finetune.py
+patches/                    build-time patches applied to upstream finetune.py
+  finetune_local_model.py     skip the Hub pre-fetch for a local model dir
+  finetune_no_abbrev.py       turn off argparse's prefix matching (allow_abbrev)
 test/                       unit tests at the root; one dir per cluster build test
   test_dockerfile.py
   test_exemplar_build.py
   test_finetune_local_model_patch.py
+  test_finetune_no_abbrev_patch.py
   test_openinstruct_sft_guard_sh.py
   test_openinstruct_sft_run_sh.py
   test_openinstruct_sft_setup_sh.py
@@ -67,7 +70,7 @@ unrendered-binding detector). `**/*.md` is listed so the docs can show `{{ ... }
 
 ## Image
 
-`quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-6`. It holds:
+`quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-8`. It holds:
 
 | Part | Pin |
 |---|---|
@@ -97,7 +100,18 @@ Choices in the Dockerfile that look odd, and why:
   venv's interpreter is a symlink into it) and the scripts are readable by any uid.
 - **The venv is first on `PATH`.** That also provides the `hf` CLI the aws
   environment's inline `hf download` uses.
-- **finetune.py is patched at build time** (`patches/finetune_local_model.py`): upstream pre-fetches `--model_name_or_path` with `snapshot_download()`, which rejects a local directory, so the pre-fetch is skipped when the path is a local dir (the step always passes the staged `base_model`). The build fails if the upstream line changes.
+- **finetune.py is patched at build time**, by two scripts under `patches/`. The
+  build fails if either upstream line changes.
+  - `finetune_local_model.py`: upstream pre-fetches `--model_name_or_path` with
+    `snapshot_download()`, which rejects a local directory, so the pre-fetch is
+    skipped when the path is a local dir (the step always passes the staged
+    `base_model`).
+  - `finetune_no_abbrev.py`: upstream's `HfArgumentParser` leaves argparse's
+    `allow_abbrev` on, so a unique prefix in a build's `args` (`learning_rat`) silently
+    sets the full flag (`learning_rate`), and a prefix can change meaning when a
+    later pin adds a flag. The parser is built with `allow_abbrev=False`, so a
+    prefix fails the run as an unrecognized argument. Prefixes of the step-owned
+    flags are refused earlier, at render time (see Tests).
 
 **Security trade-off.** The base is Ubuntu, not UBI or a minimal image. SkyPilot
 bootstraps itself by running `apt-get` inside the container, so a UBI/RPM base fails
@@ -131,15 +145,25 @@ upgrading that package on top of `uv sync --frozen` in the install RUN (or remov
 it when SFT does not use it and the fix would move the training stack), then
 rebuilding and rescanning. Check quay's own scan of the pushed tag too: its
 database differs from trivy's (it flagged `Authlib`, `certifi` and `cryptography`
-CRITICALs that trivy did not, fixed in `oi-v0.3.0-5`). Result for `oi-v0.3.0-6`, the
-shipped image (trivy, CRITICAL+HIGH): 0 fixable CRITICAL; 18 CRITICAL without a fix,
-all in Ubuntu's `linux-libc-dev` (kernel UAPI headers, needed by DeepSpeed's JIT
-build); 593 HIGH, 74 of them fixable (64 Python packages, 9 jar, 1 Go binary),
-tracked in #567.
+CRITICALs that trivy did not, fixed in `oi-v0.3.0-5`; and an `Authlib` 1.9.0 one,
+GHSA-8m4g-j4wp-wgcg, that trivy rates HIGH, fixed in `oi-v0.3.0-8`).
+
+Result for `oi-v0.3.0-8`, the shipped image:
+
+- trivy (CRITICAL+HIGH): 0 fixable CRITICAL. 18 CRITICAL have no fix, all in Ubuntu's
+  `linux-libc-dev` (kernel UAPI headers, needed by DeepSpeed's JIT build). 552 HIGH,
+  80 of them fixable (70 Python packages, 9 jar, 1 Go binary), tracked in #567.
+- quay's scan of the tag failed on quay's side (status `failed`, no report), so the
+  venv's 316 Python packages were checked against the OSV database instead, the
+  source quay uses for Python: none has a CRITICAL advisory.
+
+Build a published image with `podman build --no-cache`. A cached build reuses an
+old `apt-get upgrade` layer: a cached `-7` build had a fixable `linux-libc-dev`
+CRITICAL and 44 fixable Ubuntu HIGHs that the no-cache build does not.
 
 ### Bumping IMAGE_VERSION
 
-The Makefile's `IMAGE_VERSION` is a stable version (`oi-v0.3.0-6`), not the
+The Makefile's `IMAGE_VERSION` is a stable version (`oi-v0.3.0-8`), not the
 per-commit git SHA. The image is large, and BlueVela caches a `.sqsh` per tag
 (each new tag means a fresh cold import), so it must not churn on unrelated commits.
 
@@ -163,7 +187,7 @@ credentials"), then:
 
 ```bash
 make -C steps/train/openinstruct-sft/skypilot image publish-image
-sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-6
+sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-8
 ```
 
 `publish-image` refuses a tag that already exists, so bump `IMAGE_VERSION` (see
@@ -222,13 +246,14 @@ The unit tests at `test/`'s root need no cluster or image. They stub `accelerate
 
 | Test | Pins |
 |---|---|
-| `test_dockerfile.py` | every `FROM` digest-pinned; Open-Instruct pinned to a full commit and checked after fetch; `uv sync --frozen` and an exact `clearml==` pin; no `USER` and no `useradd` (runs as root); `OPEN_INSTRUCT_COMMIT` set and no `GIT_COMMIT`; every script the template calls exists in `src/`; the finetune patch runs before `uv sync` |
-| `test_finetune_local_model_patch.py` | the build-time finetune.py patch applies once, refuses an upstream change, refuses a second apply |
-| `test_skypilot_train_openinstruct_sft_render.py` | the template rendered with gbserver's strict renderer: identity and I/O schema, the shared monitor, no GPU request, identical macro copies, the `docker:` prefix (including `.sqsh`), valid bash, every `raise_error` (data source, mixer and splits shape, `output`, `num_nodes`, no GPU request, `deepspeed_config`, `clearml_enabled`, step-owned, map and empty-list `args`), and the guard and run argv (defaults, bound dataset, splits, `args` rendering, ClearML mode, output path) |
+| `test_dockerfile.py` | every `FROM` digest-pinned; Open-Instruct pinned to a full commit and checked after fetch; `uv sync --frozen` and an exact `clearml==` pin; no `USER` and no `useradd` (runs as root); `OPEN_INSTRUCT_COMMIT` set and no `GIT_COMMIT`; every script the template calls exists in `src/`; every file under `patches/` runs, before `uv sync` |
+| `test_finetune_local_model_patch.py` | the build-time pre-fetch patch applies once, refuses an upstream change, refuses a second apply |
+| `test_finetune_no_abbrev_patch.py` | the build-time `allow_abbrev` patch, run on a stand-in of upstream's `__main__`: an abbreviation is expanded before the patch and refused after it, full flags still parse; it refuses an upstream change and a second apply |
+| `test_skypilot_train_openinstruct_sft_render.py` | the template rendered with gbserver's strict renderer: identity and I/O schema, the shared monitor and its `Step:` rule (a real `finetune.py` progress line through gbserver's log parser gives the whole line as the message), no GPU request, identical macro copies, the `docker:` prefix (including `.sqsh`), valid bash, every `raise_error` (data source, mixer and splits shape, `output`, `num_nodes` on `compute_config` and `launcher_config` with `1.0` accepted, no GPU request, `deepspeed_config`, `clearml_enabled`, step-owned flags and their `no_*` forms, abbreviations of step-owned flags, non-bare keys, map and empty-list `args`), flags sharing a step-owned stem still pass, and the guard and run argv (defaults, bound dataset, splits, `args` rendering, ClearML mode, output path) |
 | `test_openinstruct_sft_guard_sh.py` | staged-path checks: empty or unrendered `base_model`, missing dir, no `config.json`, missing dataset, unknown option; valid paths pass silently |
 | `test_openinstruct_sft_setup_sh.py` | the image check: passes on a good image, fails without `finetune.py` or when the training stack does not import |
 | `test_openinstruct_sft_run_sh.py` | the `accelerate launch` argv and cwd, step-owned flags before build args, no-DeepSpeed, GPU count (SkyPilot, `nvidia-smi` fallback, none), ClearML off/on/auto and default names with `WANDB_MODE=disabled`, the staging swap and re-run, refusing a non-model `output_path` or one overlapping `base_model` (same, inside, containing, via a symlink, or at the staging dir), no marker without a model, and the markers last and absolute |
-| `test_exemplar_build.py` | every shipped build.yaml (exemplar and both fixtures) against the contract: step URI, `output` names a model output, exactly one data source, `base_model` bound, GPUs requested, no step-owned `args` (parsed from the template's `owned` list, 15 names), single node, the BlueVela GPU matching the environment's constraint, every exemplar parameter defined |
+| `test_exemplar_build.py` | every shipped build.yaml (exemplar and both fixtures) against the contract: step URI, `output` names a model output, exactly one data source, `base_model` bound, GPUs requested, no step-owned `args` (parsed from the template's `owned` list, 18 names), single node, the BlueVela GPU matching the environment's constraint, every exemplar parameter defined |
 
 Run the unit tests only with `-m "not extended"`, and with AWS credentials unset.
 `make test` and a plain `pytest test` do not deselect `extended`, so with AWS
@@ -291,7 +316,8 @@ reuses the published image.
 
 - **More environments.** Build tests for K8s, SkyPilot-K8s and LSF. Issue #229
   stays open for them.
-- **Multi-node.** The step is single-node only (`num_nodes` must be 1).
+- **Multi-node.** The step is single-node only (`compute_config.num_nodes` and
+  `launcher_config.num_nodes` must be 1).
 - **Non-root image (#566).** Blocked on a SkyPilot fork fix; see Security trade-off.
 - **Fixable HIGH and MEDIUM findings in the image (#567).** See Scanning.
 - **`publish-step`'s image check without skopeo (#568).** It reports a published
