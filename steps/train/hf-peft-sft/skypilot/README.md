@@ -408,8 +408,8 @@ metadata.
 
 | Result | aws | slurm-bluevela |
 |---|---|---|
-| status | **passed** 2026-11-03, 7m56s for both targets (`peft-v0.21.2-6`; first passed 2026-10-30 on `-1`) | **passed** 2026-11-03, 30m03s for both targets, build 1611018c (`peft-v0.21.2-5`; `-6` has the same `src/` and lock, without precompiled bytecode) |
-| loss, steps 1→3 | qlora 1.94 → 1.71 → 2.79, alora 2.13 → 1.87 → 2.97 (same as `-4` and `-5`) | lora/fsdp 2.15 → 4.26 → 2.27, qlora/deepspeed 2.39 → 4.54 → 2.52 (same as `-4`) |
+| status | **passed** 2026-11-03, 7m56s for both targets (`peft-v0.21.2-6`; first passed 2026-10-30 on `-1`) | **passed** 2026-11-03, 20m01s for both targets, build e09542a3 (`peft-v0.21.2-6`, `.sqsh` cache hit) |
+| loss, steps 1→3 | qlora 1.94 → 1.71 → 2.79, alora 2.13 → 1.87 → 2.97 (same as `-4` and `-5`) | lora/fsdp 2.15 → 4.26 → 2.27, qlora/deepspeed 2.39 → 4.54 → 2.52 (same as `-4` and `-5`) |
 | progress | each `Step:` line reaches the build runner as a workload-status message, e.g. `Workload status is RUNNING (Step: 3/3 loss=2.7925)` | same |
 | adapter | `adapter` at `/root/sky_workdir/adapter_output` per target | both registered (the run script refuses a 0-tensor adapter; on `-3` lora/fsdp read 420 tensors, 19.6 MB on the node) |
 | markers | `method`, `peft_version` 0.21.2, `trl_version` 1.17.1 | same |
@@ -430,8 +430,10 @@ Earlier BlueVela runs, and what each one fixed:
   `-4` run had qlora/deepspeed's container see 1 of 2 GPUs; the run script refused it. That
   is a platform issue (#604), node-dependent. `-5` (second review round: abbreviated or
   non-bare `args` refused, multi-node `launcher_config` refused, bytecode at build time)
-  passed on both clusters. `-6` drops the bytecode again (quay's scan of `-5` never ran; see
-  Scanning) and passed on aws.
+  passed on both clusters (BlueVela build 1611018c, 30m03s). `-6` drops the bytecode again
+  (quay's scan of `-5` never ran; see Scanning) and passed on both clusters. Its first
+  BlueVela run (build 33b1d3bf) passed qlora/deepspeed, but lora/fsdp's container saw 1 of
+  2 GPUs (#604) and the run script refused it; the rerun passed both.
 
 #### aws
 
