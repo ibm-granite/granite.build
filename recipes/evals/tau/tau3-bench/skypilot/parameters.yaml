@@ -31,8 +31,15 @@ WORKERS: 16
 OPTIONS: ""
 TENSOR_PARALLEL_SIZE: 1
 
-# ─── Judge (paid; key from the GRANITE_EVALS_JUDGE_API_KEY secret) ──────
-# OpenAI-compatible endpoint of the judge gateway. No default; set it for your site.
+# ─── Paid APIs (user simulator + judge) ────────────────────────────────
+# The generate target declares GRANITE_EVALS_USER_API_KEY (the user simulator,
+# default aws/claude-sonnet-5, runs there) and the score target
+# GRANITE_EVALS_JUDGE_API_KEY (its retail domain's NL assertions are LLM-judged). The gateways are
+# OpenAI-compatible; no default, set them for your site. USER_BASE_URL defaults
+# to the judge gateway; each role is metered separately. OPTIONS=user_model=self
+# drops the user simulator's paid calls (smoke run) but the declared secrets must
+# still exist in the space.
+USER_BASE_URL: ""
 JUDGE_BASE_URL: ""
 
 # ─── Cluster ──────────────────────────────────────────────────────────

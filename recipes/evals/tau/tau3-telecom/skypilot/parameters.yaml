@@ -31,11 +31,17 @@ WORKERS: 16
 OPTIONS: ""
 TENSOR_PARALLEL_SIZE: 1
 
-# ─── Judge (unused: this domain scores rule-based) ──────────────────────
-# LLM judging exists only for the tau NL domains (retail, banking_knowledge);
-# telecom grades with the harness's own DB/action/communicate evaluators, so
-# the score target declares no judge secret. JUDGE_BASE_URL is still threaded
-# into the step options for family-shape consistency but is never read here.
+# ─── Paid APIs (user simulator; this domain scores rule-based) ──────────
+# The generate target declares GRANITE_EVALS_USER_API_KEY: the user simulator
+# (default aws/claude-sonnet-5) runs there. LLM judging exists only for the tau
+# NL domains (retail, banking_knowledge); telecom grades with the harness's own
+# DB/action/communicate evaluators, so the score target declares no judge
+# secret. The gateways are OpenAI-compatible; no default, set them for your
+# site. USER_BASE_URL defaults to the judge gateway (JUDGE_BASE_URL is never
+# read here except as that fallback); each role is metered separately.
+# OPTIONS=user_model=self drops the user simulator's paid calls (smoke run) but
+# the declared secret must still exist in the space.
+USER_BASE_URL: ""
 JUDGE_BASE_URL: ""
 
 # ─── Cluster ──────────────────────────────────────────────────────────
