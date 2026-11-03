@@ -87,17 +87,20 @@ def category_for(step_path):
 
 
 def declared_environments(template):
-    """List environments a template declares: its subtypes, else the env type lowercased.
+    """Label each environment class a template declares, with its subtypes when restricted.
 
     Args:
         template: Parsed step-template.yaml.
 
     Returns:
-        List of environment names (e.g. ['lsf'] or ['skypilot']).
+        List of labels, one per environment_configs entry: the class lowercased, plus
+        ' - <subtype>,<subtype>' when it has a `subtypes:` list (e.g. ['skypilot - lsf'],
+        ['skypilot'], ['bash']).
     """
     envs = []
     for env_type, cfg in (template.get("environment_configs") or {}).items():
-        envs.extend((cfg or {}).get("subtypes") or [env_type.lower()])
+        subtypes = (cfg or {}).get("subtypes") or []
+        envs.append(env_type.lower() + (f" - {','.join(subtypes)}" if subtypes else ""))
     return envs
 
 
@@ -335,7 +338,7 @@ def build_row(step_path, impls, multi_cluster):
         if i["cases"]:
             case = min(i["cases"], key=lambda c: sample_rank(i["cases"][c][0], c))
             samples.append(Link(case, i["cases"][case][1]))
-    return [[step_path], joined(envs), joined(tested), readme_cell,
+    return [[step_path], ["; ".join(envs) or NONE], joined(tested), readme_cell,
             joined(images, empty=""), joined(samples)]
 
 
