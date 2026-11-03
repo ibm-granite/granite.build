@@ -79,6 +79,8 @@ EXPECTED = {
     f"{_LSF}/openinstruct-sft": (set(), {"model"}),
     f"{_LSF}/openinstruct-rl": (set(), {"rm_url", "code_url"}),
     f"{_SKY}/data/dpk": (set(), {"docs"}),
+    # data-designer: a seed dataset is optional (a sampler/LLM-only config needs none).
+    f"{_SKY}/data/data-designer": (set(), {"seed"}),
     f"{_AWS}/openinstruct-sft": (set(), {"model"}),
     f"{_SKY}/digit": (set(), {"digit_input"}),
     "environments/skypilot-managed/kubernetes/steps/digit": (set(), {"digit_input"}),
