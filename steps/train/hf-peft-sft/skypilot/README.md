@@ -128,7 +128,7 @@ A few rules worth knowing when changing the trainer:
 
 ## Image
 
-`quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-5`. It holds:
+`quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-6`. It holds:
 
 | Part | Pin |
 |---|---|
@@ -225,17 +225,24 @@ A fixable CRITICAL in a locked Python package is fixed by raising its pin (in
 `make lock`, bumping `IMAGE_VERSION`, then rebuilding and rescanning. Check quay's
 own scan of the pushed tag too: its database differs from trivy's.
 
-Results for `peft-v0.21.2-5`, the shipped image (manifest
-`sha256:9ae9bb0192f342ffc48a3e3f2d2dc8d90b707af6ed77e6f25a142d31ef774d54`, scanned
-2026-11-03). `-5` changes `src/` and precompiles the venv's bytecode at build time
-(`UV_COMPILE_BYTECODE=1`, +0.3 GB); the package set is the same lock as `-2`:
+Results for `peft-v0.21.2-6`, the shipped image (manifest
+`sha256:b0a100e3e54d5fac8fe32d81a69a70cb659e0321a01eacc0d71d7e027025d1cc`, scanned
+2026-11-03). `-6` is `-5`'s `src/` without precompiled bytecode; the package set is the
+same lock as `-2`:
 
 - **trivy 0.76.1** (CRITICAL+HIGH): nothing fixable. 14 CRITICAL without a fix, all in
   Ubuntu's `linux-libc-dev` (kernel UAPI headers from the CUDA devel base, needed by
   DeepSpeed's JIT build); 371 HIGH, none with a fix.
-- **quay (Clair)** on `-4`: 0 Critical, 0 High; 409 Medium, 109 Low, 6 Negligible, none
-  with a fix (Medium was 357 on `-3`'s scan two days earlier; the layers below `src/`
-  are identical, so the difference is Clair's database).
+- **quay (Clair)**: 0 Critical, 0 High; 409 Medium, 109 Low, 6 Negligible, none with a
+  fix. Scanned 80 s after the push.
+
+**No bytecode in the image.** `peft-v0.21.2-5` shipped it (`UV_COMPILE_BYTECODE=1`):
+13,438 extra `.pyc` in the 3.4 GB venv layer, 43,267 files instead of 29,829. quay's
+security scan of `-5` never left "queued" (6+ hours, no quay incident, and re-tagging the
+same digest did not start it), while `-4`, `-6` and openinstruct-sft's images scanned in
+minutes. So the Dockerfile keeps `UV_COMPILE_BYTECODE=0`: Python compiles each module in
+memory on import (`/opt` is read-only for the Pyxis job user, so nothing is written back).
+Do not turn it back on without checking that quay still scans the image.
 
 `peft-v0.21.2-1` had 5 more fixable HIGH, all in the `msgpack` 1.1.2, `urllib3` 2.7.0
 and `setuptools` 70.3.0 vendored inside **pip** in uv's managed CPython (never run by
@@ -243,7 +250,7 @@ the step). `-2` removes pip and ensurepip from the managed CPython.
 
 ### Bumping IMAGE_VERSION
 
-The Makefile's `IMAGE_VERSION` is a stable version (`peft-v0.21.2-5`), not the
+The Makefile's `IMAGE_VERSION` is a stable version (`peft-v0.21.2-6`), not the
 per-commit git SHA. The image is large, and BlueVela caches a `.sqsh` per tag
 (each new tag means a fresh cold import), so it must not churn on unrelated commits.
 
@@ -274,7 +281,7 @@ credentials"), then:
 
 ```bash
 make -C steps/train/hf-peft-sft/skypilot image publish-image
-sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-5
+sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-6
 ```
 
 `publish-image` refuses a tag that already exists, so bump `IMAGE_VERSION` (see
@@ -401,8 +408,8 @@ metadata.
 
 | Result | aws | slurm-bluevela |
 |---|---|---|
-| status | **passed** 2026-11-03, 8m56s for both targets (`peft-v0.21.2-5`; first passed 2026-10-30 on `-1`) | **passed** 2026-11-03, 30m03s for both targets, build 1611018c (`peft-v0.21.2-5`, cold `.sqsh` import first) |
-| loss, steps 1→3 | qlora 1.94 → 1.71 → 2.79, alora 2.13 → 1.87 → 2.97 (same as `-4`) | lora/fsdp 2.15 → 4.26 → 2.27, qlora/deepspeed 2.39 → 4.54 → 2.52 (same as `-4`) |
+| status | **passed** 2026-11-03, 7m56s for both targets (`peft-v0.21.2-6`; first passed 2026-10-30 on `-1`) | **passed** 2026-11-03, 30m03s for both targets, build 1611018c (`peft-v0.21.2-5`; `-6` has the same `src/` and lock, without precompiled bytecode) |
+| loss, steps 1→3 | qlora 1.94 → 1.71 → 2.79, alora 2.13 → 1.87 → 2.97 (same as `-4` and `-5`) | lora/fsdp 2.15 → 4.26 → 2.27, qlora/deepspeed 2.39 → 4.54 → 2.52 (same as `-4`) |
 | progress | each `Step:` line reaches the build runner as a workload-status message, e.g. `Workload status is RUNNING (Step: 3/3 loss=2.7925)` | same |
 | adapter | `adapter` at `/root/sky_workdir/adapter_output` per target | both registered (the run script refuses a 0-tensor adapter; on `-3` lora/fsdp read 420 tensors, 19.6 MB on the node) |
 | markers | `method`, `peft_version` 0.21.2, `trl_version` 1.17.1 | same |
@@ -423,7 +430,8 @@ Earlier BlueVela runs, and what each one fixed:
   `-4` run had qlora/deepspeed's container see 1 of 2 GPUs; the run script refused it. That
   is a platform issue (#604), node-dependent. `-5` (second review round: abbreviated or
   non-bare `args` refused, multi-node `launcher_config` refused, bytecode at build time)
-  passed on both clusters.
+  passed on both clusters. `-6` drops the bytecode again (quay's scan of `-5` never ran; see
+  Scanning) and passed on aws.
 
 #### aws
 
