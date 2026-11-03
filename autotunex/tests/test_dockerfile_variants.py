@@ -243,3 +243,20 @@ def test_the_kernel_base_installs_the_python_headers_the_kernels_compile_against
     )
 
     assert "python3.12-dev" in install.split()
+
+
+def test_the_kernel_base_installs_the_kernels_runtime_dependencies_from_fm_tunes_lock() -> None:
+    # The kernels compile with --no-deps, so without this `import mamba_ssm` (einops,
+    # transformers) and `import flash_attn` (einops) fail on the base on its own, which is
+    # the image that is published and smoke-tested. Constraining to fm-tune's lock keeps
+    # those dependencies at the versions the app's [full] install would choose anyway.
+    install = _instructions(_base_dockerfile())
+    deps_run = install.split("src/fm-tune/uv.lock /opt/kernel-deps/", 1)[1].split("\nENV ", 1)[0]
+
+    assert "uv export --frozen" in deps_run
+    assert "-c " in deps_run
+    for kernel in _KERNELS:
+        assert f"--only-binary {kernel}" in deps_run, f"{kernel} could be recompiled here"
+    assert "--no-deps" not in deps_run
+    # A separate layer after the compile, so a lock change does not recompile the kernels.
+    assert install.index("--no-deps") < install.index("src/fm-tune/uv.lock /opt/kernel-deps/")

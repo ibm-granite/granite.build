@@ -76,9 +76,8 @@ ENV PATH=/opt/venv/bin:$PATH
 # to import it.
 #
 # torch first, with its dependencies (the nvidia-* CUDA runtime wheels). Then the
-# kernels with --no-deps: their runtime dependencies (einops, transformers, ...)
-# are pinned by fm-tune and arrive when the app build installs [full], so this
-# image does not carry a second, unpinned transformers. torch is named again in
+# kernels with --no-deps, so this layer depends on nothing but the pins below;
+# their runtime dependencies come in the next layer. torch is named again in
 # that second install, already satisfied, because match-runtime resolves the
 # build-time torch from the packages in the install.
 COPY src/fm-tune/pyproject.toml /opt/kernel-build/pyproject.toml
@@ -92,6 +91,23 @@ RUN pip install --no-cache-dir uv \
         "causal-conv1d==1.7.0" \
     && pip uninstall -y uv \
     && rm -rf /opt/kernel-build
+
+# The kernels' runtime dependencies, the ones their packages declare: without
+# them `import flash_attn` and `import mamba_ssm` fail (einops, transformers),
+# and this base is the image that is published and smoke-tested on its own.
+# Constrained to fm-tune's uv.lock, so they are the versions the app build's
+# [full] install would choose anyway, and that install leaves them alone.
+# `--only-binary` keeps a resolution surprise from recompiling a kernel here.
+# A separate layer, so a lock change does not invalidate the compile above.
+COPY src/fm-tune/pyproject.toml src/fm-tune/uv.lock /opt/kernel-deps/
+RUN pip install --no-cache-dir uv \
+    && cd /opt/kernel-deps \
+    && uv export --frozen --no-hashes --no-emit-project --extra full -o constraints.txt \
+    && uv pip install --no-cache --python "$(command -v python)" -c constraints.txt \
+        --only-binary flash-attn --only-binary mamba-ssm --only-binary causal-conv1d \
+        einops packaging ninja triton transformers \
+    && pip uninstall -y uv \
+    && rm -rf /opt/kernel-deps
 
 # What the kernels were compiled against, for the app build to check: it refuses a
 # base whose torch differs from fm-tune's pin (an ABI mismatch would only show up
