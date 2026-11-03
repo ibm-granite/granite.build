@@ -128,7 +128,7 @@ A few rules worth knowing when changing the trainer:
 
 ## Image
 
-`quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-4`. It holds:
+`quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-5`. It holds:
 
 | Part | Pin |
 |---|---|
@@ -225,16 +225,17 @@ A fixable CRITICAL in a locked Python package is fixed by raising its pin (in
 `make lock`, bumping `IMAGE_VERSION`, then rebuilding and rescanning. Check quay's
 own scan of the pushed tag too: its database differs from trivy's.
 
-Results for `peft-v0.21.2-4`, the shipped image (manifest
-`sha256:266853aa95bbaf6ff037be17d4207c822c0b4d976156e76a67aeaa7c6cfe3583`, scanned
-2026-11-02; `-4` changes only `src/` over `-3`, as `-3` did over `-2`):
+Results for `peft-v0.21.2-5`, the shipped image (manifest
+`sha256:9ae9bb0192f342ffc48a3e3f2d2dc8d90b707af6ed77e6f25a142d31ef774d54`, scanned
+2026-11-03). `-5` changes `src/` and precompiles the venv's bytecode at build time
+(`UV_COMPILE_BYTECODE=1`, +0.3 GB); the package set is the same lock as `-2`:
 
 - **trivy 0.76.1** (CRITICAL+HIGH): nothing fixable. 14 CRITICAL without a fix, all in
   Ubuntu's `linux-libc-dev` (kernel UAPI headers from the CUDA devel base, needed by
   DeepSpeed's JIT build); 371 HIGH, none with a fix.
-- **quay (Clair)**: 0 Critical, 0 High; 409 Medium, 109 Low, 6 Negligible, none with a
-  fix (Medium was 357 on `-3`'s scan two days earlier; the layers below `src/` are
-  identical, so the difference is Clair's database).
+- **quay (Clair)** on `-4`: 0 Critical, 0 High; 409 Medium, 109 Low, 6 Negligible, none
+  with a fix (Medium was 357 on `-3`'s scan two days earlier; the layers below `src/`
+  are identical, so the difference is Clair's database).
 
 `peft-v0.21.2-1` had 5 more fixable HIGH, all in the `msgpack` 1.1.2, `urllib3` 2.7.0
 and `setuptools` 70.3.0 vendored inside **pip** in uv's managed CPython (never run by
@@ -242,7 +243,7 @@ the step). `-2` removes pip and ensurepip from the managed CPython.
 
 ### Bumping IMAGE_VERSION
 
-The Makefile's `IMAGE_VERSION` is a stable version (`peft-v0.21.2-4`), not the
+The Makefile's `IMAGE_VERSION` is a stable version (`peft-v0.21.2-5`), not the
 per-commit git SHA. The image is large, and BlueVela caches a `.sqsh` per tag
 (each new tag means a fresh cold import), so it must not churn on unrelated commits.
 
@@ -273,7 +274,7 @@ credentials"), then:
 
 ```bash
 make -C steps/train/hf-peft-sft/skypilot image publish-image
-sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-4
+sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-5
 ```
 
 `publish-image` refuses a tag that already exists, so bump `IMAGE_VERSION` (see
