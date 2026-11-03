@@ -386,14 +386,40 @@ def fail(msg: str) -> None:
 def _training_args(argv: list[str]) -> tuple[StepArgs, Any]:
     """Parse the step's own flags into StepArgs and every other flag into SFTConfig.
 
+    allow_abbrev=False: argparse's default takes a unique prefix as the full
+    flag, so ``--output_d`` would silently set the step-owned output_dir. The
+    words the parser does not use are what parse_args_into_dataclasses would
+    raise its "not used by the HfArgumentParser" ValueError for; they are
+    reported here as a StepError naming the flags (not their values).
+
     :param argv: The trainer's argv, without the program name.
     :returns: The parsed StepArgs and trl.SFTConfig.
+    :raises StepError: When argv has flags (or words) the parser does not use,
+        such as an abbreviation or an unknown name.
     """
     from transformers import HfArgumentParser
     from trl import SFTConfig
 
-    parser = HfArgumentParser((StepArgs, SFTConfig))
-    step, cfg = parser.parse_args_into_dataclasses(args=argv)
+    parser = HfArgumentParser((StepArgs, SFTConfig), allow_abbrev=False)
+    step, cfg, unused = parser.parse_args_into_dataclasses(
+        args=argv, return_remaining_strings=True
+    )
+    if unused:
+        # Flags only: a value (even a negative number) never reaches the message.
+        flags = [
+            w.split("=", 1)[0]
+            for w in unused
+            if w.startswith("--") or (w.startswith("-") and w[1:2].isalpha())
+        ]
+        what = (
+            f"unknown or abbreviated trainer flag(s) {flags}"
+            if flags
+            else f"{len(unused)} stray trainer argument(s) with no flag"
+        )
+        raise StepError(
+            f"{what}; abbreviated flags are not accepted. hf_peft_sft_config.args "
+            "keys must be exact SFTConfig field names (e.g. output_dir, not output_d)."
+        )
     return step, cfg
 
 

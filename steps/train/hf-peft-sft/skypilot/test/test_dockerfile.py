@@ -100,6 +100,15 @@ def test_managed_python_ships_no_pip():
     assert install < removal.start()
 
 
+def test_bytecode_compiled_at_build_time():
+    # /opt is read-only for Pyxis's job user, so .pyc must ship in the image;
+    # otherwise every rank recompiles torch/transformers/trl on import.
+    assert re.findall(r"UV_COMPILE_BYTECODE=(\d)", _DOCKERFILE) == ["1"]
+    assert _DOCKERFILE.index("UV_COMPILE_BYTECODE=1") < _DOCKERFILE.index(
+        "--require-hashes"
+    )
+
+
 def test_runs_as_root_for_skypilot():
     assert not _instructions("USER")
     assert not re.search(r"^RUN useradd", _DOCKERFILE, re.M)

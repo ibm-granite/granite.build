@@ -100,8 +100,12 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            {%- macro validate(c, cc, bound, res) -%}
+            {%- macro validate(c, cc, bound, lc) -%}
             {%- set owned = ["output_dir", "report_to", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "resume_from_checkpoint", "save_strategy", "bf16", "fp16", "fsdp", "fsdp_config", "deepspeed", "gradient_checkpointing_kwargs", "model_name_or_path", "method", "distributed", "mixed_precision", "dataset_path", "dataset_split", "dataset_config", "lora_r", "lora_alpha", "lora_dropout", "lora_target_modules", "lora_modules_to_save", "alora_invocation_string", "base_model_id"] -%}
+            {#- Non-owned trainer flags that are a proper prefix of an owned one: argparse
+                takes an exact match first, so these are not abbreviations. -#}
+            {%- set full_flags = ["gradient_checkpointing"] -%}
+            {%- set res = lc.get("resources") or {} -%}
             {%- if c.method not in ["lora", "qlora", "alora"] %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.method must be lora, qlora or alora, got '" ~ c.method ~ "'.") }}{% endif -%}
             {%- if c.distributed not in ["ddp", "fsdp", "deepspeed"] %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.distributed must be ddp, fsdp or deepspeed, got '" ~ c.distributed ~ "'.") }}{% endif -%}
             {%- if c.mixed_precision not in ["bf16", "fp16", "no"] %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.mixed_precision must be bf16, fp16 or no, got '" ~ c.mixed_precision ~ "'.") }}{% endif -%}
@@ -112,9 +116,15 @@ environment_configs:
             {%- if c.method == "alora" and not c.alora_invocation_string %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.alora_invocation_string is required for method: alora: the text after which the adapter activates, e.g. '<|im_start|>assistant' for ChatML.") }}{% endif -%}
             {%- if c.method != "alora" and c.alora_invocation_string %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.alora_invocation_string is only for method: alora (method is '" ~ c.method ~ "').") }}{% endif -%}
             {%- if c.method == "qlora" and c.mixed_precision == "fp16" %}{{ raise_error("hf-peft-sft: method: qlora computes in bf16; mixed_precision: fp16 is not supported with it (use bf16 or no).") }}{% endif -%}
+            {%- if c.method == "qlora" and c.distributed in ["fsdp", "deepspeed"] and c.mixed_precision == "no" %}{{ raise_error("hf-peft-sft: method: qlora with distributed: " ~ c.distributed ~ " stores the sharded 4-bit weights in bf16, so mixed_precision must be bf16 (got 'no'). Use mixed_precision: bf16, or distributed: ddp for fp32 compute.") }}{% endif -%}
             {%- if not c.output %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.output is required; it names the target's adapter output.") }}{% endif -%}
             {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
-            {%- if (cc.num_nodes | string) != "1" %}{{ raise_error("hf-peft-sft: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
+            {#- A whole float (YAML 1.0) is one node, as gbserver reads it. -#}
+            {%- macro one(v) %}{{ "y" if (v == 1 if v is number else (v | string) == "1") else "" }}{% endmacro -%}
+            {%- if not one(cc.num_nodes) %}{{ raise_error("hf-peft-sft: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
+            {#- gbserver also reads num_nodes from the launcher block, which this step sets
+                none of and users cannot change, and from the build's launcher_config (lc). -#}
+            {%- if lc.get("num_nodes") is not none and not one(lc.get("num_nodes")) %}{{ raise_error("hf-peft-sft: launcher_config.num_nodes must be 1 (got '" ~ lc.get("num_nodes") ~ "'); this step is single-node.") }}{% endif -%}
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("hf-peft-sft: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type).") }}{% endif -%}
             {%- set acc = res.get("accelerators") -%}
             {%- if c.distributed != "ddp" and acc is string and acc -%}
@@ -129,12 +139,16 @@ environment_configs:
             {%- if l.dropout is not number or l.dropout < 0 or l.dropout >= 1 %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.lora.dropout must be a number in [0, 1), got '" ~ l.dropout ~ "'.") }}{% endif -%}
             {%- set tm = l.target_modules -%}
             {%- if not (tm == "all-linear" or (tm is iterable and tm is not string and tm is not mapping and tm | length > 0)) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.lora.target_modules must be all-linear or a non-empty list of module names, got '" ~ tm ~ "'.") }}{% endif -%}
+            {%- if tm is not string and tm is iterable and tm is not mapping and "all-linear" in tm %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.lora.target_modules: all-linear is a peft keyword, not a module name; use target_modules: all-linear on its own, or list module names (with lora.modules_to_save for extra trainable modules like lm_head).") }}{% endif -%}
             {%- set mts = l.get("modules_to_save") -%}
             {%- if mts is not none and (mts is string or mts is not iterable or mts is mapping) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.lora.modules_to_save must be a list of module names, got '" ~ mts ~ "'.") }}{% endif -%}
             {%- if c.args is not mapping %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args must be a mapping of SFTConfig field to value.") }}{% endif -%}
             {%- for k, v in c.args.items() %}
-            {%- set nk = k | string | replace("-", "_") %}
+            {%- set ks = k | string %}
+            {%- if not ks or "=" in ks or ks.startswith("-") or (ks.split() | join("")) != ks %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args key '" ~ ks ~ "' must be a bare SFTConfig field name (no '=', '-' prefix or whitespace).") }}{% endif -%}
+            {%- set nk = ks | replace("-", "_") %}
             {%- if nk in owned %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " is set by the step; use the base_model/dataset inputs, method, distributed, mixed_precision, lora, output_path, base_model_id or clearml_* instead.") }}{% endif -%}
+            {%- for o in owned %}{% if nk != o and nk not in full_flags and o.startswith(nk) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " abbreviates the step-owned flag " ~ o ~ "; abbreviated flags are not accepted.") }}{% endif %}{% endfor -%}
             {%- if v is mapping %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
             {%- if v is iterable and v is not string and v is not mapping and not v %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " is an empty list; the trainer would read the next flag as its value. Remove it, or set it to null to omit it.") }}{% endif -%}
             {%- if c.method == "alora" and nk in ["packing", "padding_free"] and (v | string | lower) in ["true", "1", "yes"] %}{{ raise_error("hf-peft-sft: method: alora cannot train with packing or padding_free (args." ~ k ~ "): peft activates the adapter from the last invocation in each row, so packed rows would train the wrong spans.") }}{% endif -%}
@@ -142,7 +156,7 @@ environment_configs:
             {%- endmacro %}
             {%- set c = config.hf_peft_sft_config %}
             {%- set b = bindings if bindings is defined else {} %}
-            {{- validate(c, config.compute_config, "dataset" in b, (config.get("launcher_config") or {}).get("resources") or {}) }}
+            {{- validate(c, config.compute_config, "dataset" in b, config.get("launcher_config") or {}) }}
             bash /opt/hf-peft-sft/hf_peft_sft_guard.sh \
               --base-model '{{ q(b.base_model.binding.path if "base_model" in b else "") }}' \
               --dataset '{{ q(b.dataset.binding.path if "dataset" in b else "") }}'
@@ -155,8 +169,12 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            {%- macro validate(c, cc, bound, res) -%}
+            {%- macro validate(c, cc, bound, lc) -%}
             {%- set owned = ["output_dir", "report_to", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "resume_from_checkpoint", "save_strategy", "bf16", "fp16", "fsdp", "fsdp_config", "deepspeed", "gradient_checkpointing_kwargs", "model_name_or_path", "method", "distributed", "mixed_precision", "dataset_path", "dataset_split", "dataset_config", "lora_r", "lora_alpha", "lora_dropout", "lora_target_modules", "lora_modules_to_save", "alora_invocation_string", "base_model_id"] -%}
+            {#- Non-owned trainer flags that are a proper prefix of an owned one: argparse
+                takes an exact match first, so these are not abbreviations. -#}
+            {%- set full_flags = ["gradient_checkpointing"] -%}
+            {%- set res = lc.get("resources") or {} -%}
             {%- if c.method not in ["lora", "qlora", "alora"] %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.method must be lora, qlora or alora, got '" ~ c.method ~ "'.") }}{% endif -%}
             {%- if c.distributed not in ["ddp", "fsdp", "deepspeed"] %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.distributed must be ddp, fsdp or deepspeed, got '" ~ c.distributed ~ "'.") }}{% endif -%}
             {%- if c.mixed_precision not in ["bf16", "fp16", "no"] %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.mixed_precision must be bf16, fp16 or no, got '" ~ c.mixed_precision ~ "'.") }}{% endif -%}
@@ -167,9 +185,15 @@ environment_configs:
             {%- if c.method == "alora" and not c.alora_invocation_string %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.alora_invocation_string is required for method: alora: the text after which the adapter activates, e.g. '<|im_start|>assistant' for ChatML.") }}{% endif -%}
             {%- if c.method != "alora" and c.alora_invocation_string %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.alora_invocation_string is only for method: alora (method is '" ~ c.method ~ "').") }}{% endif -%}
             {%- if c.method == "qlora" and c.mixed_precision == "fp16" %}{{ raise_error("hf-peft-sft: method: qlora computes in bf16; mixed_precision: fp16 is not supported with it (use bf16 or no).") }}{% endif -%}
+            {%- if c.method == "qlora" and c.distributed in ["fsdp", "deepspeed"] and c.mixed_precision == "no" %}{{ raise_error("hf-peft-sft: method: qlora with distributed: " ~ c.distributed ~ " stores the sharded 4-bit weights in bf16, so mixed_precision must be bf16 (got 'no'). Use mixed_precision: bf16, or distributed: ddp for fp32 compute.") }}{% endif -%}
             {%- if not c.output %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.output is required; it names the target's adapter output.") }}{% endif -%}
             {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
-            {%- if (cc.num_nodes | string) != "1" %}{{ raise_error("hf-peft-sft: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
+            {#- A whole float (YAML 1.0) is one node, as gbserver reads it. -#}
+            {%- macro one(v) %}{{ "y" if (v == 1 if v is number else (v | string) == "1") else "" }}{% endmacro -%}
+            {%- if not one(cc.num_nodes) %}{{ raise_error("hf-peft-sft: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
+            {#- gbserver also reads num_nodes from the launcher block, which this step sets
+                none of and users cannot change, and from the build's launcher_config (lc). -#}
+            {%- if lc.get("num_nodes") is not none and not one(lc.get("num_nodes")) %}{{ raise_error("hf-peft-sft: launcher_config.num_nodes must be 1 (got '" ~ lc.get("num_nodes") ~ "'); this step is single-node.") }}{% endif -%}
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("hf-peft-sft: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type).") }}{% endif -%}
             {%- set acc = res.get("accelerators") -%}
             {%- if c.distributed != "ddp" and acc is string and acc -%}
@@ -184,12 +208,16 @@ environment_configs:
             {%- if l.dropout is not number or l.dropout < 0 or l.dropout >= 1 %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.lora.dropout must be a number in [0, 1), got '" ~ l.dropout ~ "'.") }}{% endif -%}
             {%- set tm = l.target_modules -%}
             {%- if not (tm == "all-linear" or (tm is iterable and tm is not string and tm is not mapping and tm | length > 0)) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.lora.target_modules must be all-linear or a non-empty list of module names, got '" ~ tm ~ "'.") }}{% endif -%}
+            {%- if tm is not string and tm is iterable and tm is not mapping and "all-linear" in tm %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.lora.target_modules: all-linear is a peft keyword, not a module name; use target_modules: all-linear on its own, or list module names (with lora.modules_to_save for extra trainable modules like lm_head).") }}{% endif -%}
             {%- set mts = l.get("modules_to_save") -%}
             {%- if mts is not none and (mts is string or mts is not iterable or mts is mapping) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.lora.modules_to_save must be a list of module names, got '" ~ mts ~ "'.") }}{% endif -%}
             {%- if c.args is not mapping %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args must be a mapping of SFTConfig field to value.") }}{% endif -%}
             {%- for k, v in c.args.items() %}
-            {%- set nk = k | string | replace("-", "_") %}
+            {%- set ks = k | string %}
+            {%- if not ks or "=" in ks or ks.startswith("-") or (ks.split() | join("")) != ks %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args key '" ~ ks ~ "' must be a bare SFTConfig field name (no '=', '-' prefix or whitespace).") }}{% endif -%}
+            {%- set nk = ks | replace("-", "_") %}
             {%- if nk in owned %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " is set by the step; use the base_model/dataset inputs, method, distributed, mixed_precision, lora, output_path, base_model_id or clearml_* instead.") }}{% endif -%}
+            {%- for o in owned %}{% if nk != o and nk not in full_flags and o.startswith(nk) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " abbreviates the step-owned flag " ~ o ~ "; abbreviated flags are not accepted.") }}{% endif %}{% endfor -%}
             {%- if v is mapping %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
             {%- if v is iterable and v is not string and v is not mapping and not v %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " is an empty list; the trainer would read the next flag as its value. Remove it, or set it to null to omit it.") }}{% endif -%}
             {%- if c.method == "alora" and nk in ["packing", "padding_free"] and (v | string | lower) in ["true", "1", "yes"] %}{{ raise_error("hf-peft-sft: method: alora cannot train with packing or padding_free (args." ~ k ~ "): peft activates the adapter from the last invocation in each row, so packed rows would train the wrong spans.") }}{% endif -%}
@@ -197,7 +225,7 @@ environment_configs:
             {%- endmacro %}
             {%- set c = config.hf_peft_sft_config %}
             {%- set b = bindings if bindings is defined else {} %}
-            {{- validate(c, config.compute_config, "dataset" in b, (config.get("launcher_config") or {}).get("resources") or {}) }}
+            {{- validate(c, config.compute_config, "dataset" in b, config.get("launcher_config") or {}) }}
             {%- set ce = c.clearml_enabled | string | lower %}
             {%- set clearml_mode = "on" if ce in ["true", "on", "1"] else ("off" if ce in ["false", "off", "0"] else "auto") %}
             {%- set l = c.lora %}
@@ -247,7 +275,7 @@ environment_configs:
           # event_configs on a ref would drop the library's artifact rules.
           extra_event_configs:
             - event_type: WORKLOAD_STATUS_EVENT
-              line_regex: "Step:\\s\\d+"
+              line_regex: "Step:\\s\\d+.*"
               event_fields:
                 - field_name: status
                   field_value_template: "RUNNING"

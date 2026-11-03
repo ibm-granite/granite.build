@@ -1,4 +1,4 @@
-# Parameters for build.yaml (gb build ... --param-file parameters.yaml).
+# Parameters for build.yaml (gb build start -f build.yaml --parameters-path parameters.yaml).
 ENVIRONMENT: "skypilot/aws"
 # Public, Apache-2.0. A gated model needs HF_TOKEN in the step env (space secret).
 BASE_MODEL_ID: "ibm-granite/granite-3.3-2b-instruct"

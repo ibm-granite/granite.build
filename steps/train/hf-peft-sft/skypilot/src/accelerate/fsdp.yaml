@@ -3,7 +3,9 @@
 # (huggingface/peft#3876). FSDP1-only keys (backward/forward prefetch,
 # use_orig_params, sync_module_states, sharding_strategy) are dropped; full
 # sharding is reshard_after_forward: true.
-# num_processes and mixed_precision are overridden on the accelerate command line.
+# num_processes is overridden on the accelerate command line.
+# mixed_precision is not set here: it comes from the step's mixed_precision, as
+# --mixed_precision on the accelerate command line (hf_peft_sft_run.sh).
 compute_environment: LOCAL_MACHINE
 debug: false
 distributed_type: FSDP
@@ -17,7 +19,6 @@ fsdp_config:
   fsdp_state_dict_type: SHARDED_STATE_DICT
 machine_rank: 0
 main_training_function: main
-mixed_precision: bf16
 num_machines: 1
 num_processes: 1
 rdzv_backend: static

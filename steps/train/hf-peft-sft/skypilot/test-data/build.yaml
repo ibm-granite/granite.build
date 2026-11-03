@@ -7,9 +7,11 @@
 # `adapter` artifact. ClearML is `auto`: on only when CLEARML_API_HOST,
 # CLEARML_API_ACCESS_KEY and CLEARML_API_SECRET_KEY reach the step env.
 #
-# Render/submit:
-#   gb build render -f build.yaml --param-file parameters.yaml
-#   gb build start  -f build.yaml --param-file parameters.yaml
+# Render (offline; prints the resolved build.yaml), then submit:
+#   gb build describe -f build.yaml --raw --parameters-path parameters.yaml
+#   gb build start    -f build.yaml --parameters-path parameters.yaml --dry-run
+#   gb build start    -f build.yaml --parameters-path parameters.yaml
+# Override one parameter with --param KEY=VALUE.
 #####
 granite.build:
   name: hf-peft-sft

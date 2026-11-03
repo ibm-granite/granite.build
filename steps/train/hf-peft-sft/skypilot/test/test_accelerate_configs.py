@@ -63,18 +63,31 @@ def test_fsdp2_options(name):
     assert fsdp["fsdp_auto_wrap_policy"] == "TRANSFORMER_BASED_WRAP"
     assert fsdp["fsdp_reshard_after_forward"] is True
     assert fsdp["fsdp_state_dict_type"] in ("SHARDED_STATE_DICT", "FULL_STATE_DICT")
-    # torch's checkpoint_wrapper also hides LoRA keys from peft 0.21.x (#3876);
+    # torch's checkpoint_wrapper also hides LoRA keys from peft 0.21.x
+    # (huggingface/peft#3876);
     # the trainer's own gradient checkpointing does not.
     assert not fsdp.get("fsdp_activation_checkpointing", False)
 
 
-def test_qlora_variant_differs_only_in_offload_and_precision():
+def test_qlora_variant_differs_only_in_offload():
     plain, qlora = _load("fsdp.yaml"), _load("fsdp_qlora.yaml")
     assert qlora["fsdp_config"].pop("fsdp_offload_params") is True
     assert plain["fsdp_config"].pop("fsdp_offload_params") is False
-    assert qlora.pop("mixed_precision") == "no"
-    assert plain.pop("mixed_precision") == "bf16"
     assert plain == qlora
+
+
+_ALL = sorted(p.name for p in _CONFIGS.glob("*.yaml"))
+
+
+def test_every_config_is_checked():
+    assert _ALL == sorted([*_FSDP, "deepspeed_z3.yaml", "ddp.yaml", "single_gpu.yaml"])
+
+
+@pytest.mark.parametrize("name", _ALL)
+def test_no_mixed_precision_in_the_config(name):
+    # hf_peft_sft_run.sh always passes --mixed_precision, which wins over the
+    # config file; a value here would never apply and only mislead.
+    assert "mixed_precision" not in _load(name)
 
 
 def test_deepspeed_config_is_untouched_zero3():
@@ -114,3 +127,33 @@ def test_ddp_configs_load_with_accelerate(name, dist):
     assert isinstance(cfg, args.ClusterConfig)
     assert cfg.distributed_type.value == dist
     assert cfg.fsdp_config == {} and cfg.deepspeed_config == {}
+
+
+@pytest.mark.parametrize("name", _ALL)
+@pytest.mark.parametrize("mp", ["bf16", "fp16", "no"])
+def test_every_config_launches_with_the_command_line_precision(name, mp):
+    # accelerate 1.15 loads a config without mixed_precision (as None), and its
+    # launch validation takes --mixed_precision from the command line.
+    # Not importorskip("accelerate"): see above.
+    pytest.importorskip("accelerate.commands.config.config_args")
+    launch = pytest.importorskip("accelerate.commands.launch")
+    cfg = str(_CONFIGS / name)
+    args = launch.launch_command_parser().parse_args(
+        [
+            "--config_file",
+            cfg,
+            "--num_machines",
+            "1",
+            "--num_processes",
+            "2",
+            "--mixed_precision",
+            mp,
+            "--main_process_port",
+            "0",
+            "train.py",
+        ]
+    )
+    args, defaults, mp_from_config = launch._validate_launch_command(args)
+    assert defaults.mixed_precision is None
+    assert args.mixed_precision == mp
+    assert mp_from_config is False

@@ -41,11 +41,13 @@ RUN apt-get update \
 COPY --from=uv /uv /uvx /usr/local/bin/
 
 # Managed Python under /opt, not root's home: the venv's interpreter is a symlink
-# into it, and Pyxis on SLURM runs the job as the submitting user.
+# into it, and Pyxis on SLURM runs the job as the submitting user. Bytecode is
+# compiled at install time: /opt is read-only for that user, so otherwise every
+# rank recompiles torch/transformers/trl/deepspeed on each import.
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python \
     UV_NO_CACHE=1 \
     UV_LINK_MODE=copy \
-    UV_COMPILE_BYTECODE=0
+    UV_COMPILE_BYTECODE=1
 
 # Every package, transitive ones included, comes from the hashed lock. DeepSpeed
 # ships only an sdist; DS_BUILD_OPS=0 builds it without pre-compiling ops (they
@@ -71,5 +73,5 @@ ENV HF_PEFT_SFT_HOME=/opt/hf-peft-sft \
 
 # Root, like the repo's other step images: SkyPilot's docker runtime saves root's
 # environment (HOME=/root) to /etc/profile.d, so a non-root default USER fails
-# provisioning (#566). Pyxis on SLURM still runs the container as the job user.
+# provisioning. Pyxis on SLURM still runs the container as the job user.
 WORKDIR /root

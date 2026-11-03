@@ -27,7 +27,7 @@ IBM infrastructure through the local space, so marked `ibm`. Skips unless
 the environment resolves the secret, never an on-host path, so the space this
 test runs in must hold that secret. Also skips in SPS CI/CD, which has no key on
 the host. The image comes from the environment's shared .sqsh cache
-(slurm_image_cache, #560): a cold cache imports it once in a CPU job before the
+(slurm_image_cache): a cold cache imports it once in a CPU job before the
 GPU job starts.
 """
 
@@ -44,7 +44,7 @@ from libgbtest.constants import extended_testing_only
 pytestmark = [pytest.mark.skypilot_integration, pytest.mark.ibm]
 
 # The key the BV_SSH_PRIVATE_KEY space secret is created from; the environment reads
-# the secret (cluster_ssh_configs IdentityKey, #519), not this path.
+# the secret (cluster_ssh_configs IdentityKey), not this path.
 _BLUEVELA_KEY = Path("~/.ssh/ibm-bluevela.key").expanduser()
 
 

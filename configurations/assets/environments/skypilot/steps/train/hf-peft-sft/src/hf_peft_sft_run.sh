@@ -62,13 +62,15 @@ case $visible in ''|*[!0-9]*) visible=0 ;; esac
 num_gpus="${SKYPILOT_NUM_GPUS_PER_NODE:-$visible}"
 case $num_gpus in ''|*[!0-9]*) num_gpus=0 ;; esac
 [ "$num_gpus" -ge 1 ] || fail "no GPUs on this node. Request them in the build with launcher_config.resources.accelerators (e.g. \"A10G:1\")."
-# One process per allocated GPU: if this process sees fewer GPUs than were
-# allocated, the extra ranks bind a GPU another rank already holds and NCCL fails
-# later ("Multiple Ranks are using the same GPU"). Refuse with the real cause. A
-# failed or missing nvidia-smi (0 visible) proves nothing, so only an undercount
+# One process per allocated GPU: if this container can access fewer GPUs than
+# were allocated, the extra ranks bind a GPU another rank already holds and NCCL
+# fails later ("Multiple Ranks are using the same GPU"). Refuse with the real
+# cause. `nvidia-smi -L` lists the devices the container's cgroup grants; it
+# ignores CUDA_VISIBLE_DEVICES, which the message shows only as a diagnostic. A
+# failed or missing nvidia-smi (0 listed) proves nothing, so only an undercount
 # it actually reports is refused.
 if [ "$visible" -ge 1 ] && [ "$visible" -lt "$num_gpus" ]; then
-  fail "${num_gpus} GPU(s) were allocated (SKYPILOT_NUM_GPUS_PER_NODE) but only ${visible} are visible to this process (nvidia-smi -L; CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}). The container did not get the whole allocation; rerun, or report the node."
+  fail "${num_gpus} GPU(s) were allocated (SKYPILOT_NUM_GPUS_PER_NODE) but this container can access only ${visible} (nvidia-smi -L lists ${visible}; CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}). On SLURM this is ibm-granite/granite.build#604; rerun, or report the node."
 fi
 if [ "$distributed" != ddp ] && [ "$num_gpus" -lt 2 ]; then
   fail "distributed: ${distributed} needs at least 2 GPUs; this node has ${num_gpus}. Use distributed: ddp, or request more GPUs."
@@ -183,17 +185,28 @@ accelerate launch "${launch[@]}" "${home}/hf_peft_sft_train.py" "${train[@]}" "$
 if [ ! -f "$stage/adapter_config.json" ] || [ ! -f "$stage/adapter_model.safetensors" ]; then
   fail "training finished but ${stage} has no adapter (adapter_config.json + adapter_model.safetensors); nothing registered."
 fi
-# Both files can exist with no weights in them; never register that.
-if ! weights_msg="$("${home}/.venv/bin/python" -c 'import sys; sys.path.insert(0, sys.argv[1]); import hf_peft_sft_train as t
+# Both files can exist with no weights in them; never register that. One python
+# start, before the swap: check the adapter, then print the peft/trl versions on
+# a tagged line (`unknown unknown` when they do not import).
+if ! post="$("${home}/.venv/bin/python" -c 'import sys; sys.path.insert(0, sys.argv[1]); import hf_peft_sft_train as t
 try:
     t.check_saved_adapter(sys.argv[2])
 except t.StepError as e:
-    print(e); sys.exit(1)' "$home" "$stage/adapter_model.safetensors" 2>&1)"; then
-  fail "${weights_msg}"
+    print(e); sys.exit(1)
+try:
+    import peft, trl
+    v = (peft.__version__, trl.__version__)
+except Exception:
+    v = ("unknown", "unknown")
+print("hf-peft-sft-versions:", *v)' "$home" "$stage/adapter_model.safetensors" 2>&1)"; then
+  fail "${post}"
 fi
+peft_v=unknown trl_v=unknown
+while read -r tag p t; do
+  if [ "$tag" = hf-peft-sft-versions: ] && [ -n "$t" ]; then peft_v="$p" trl_v="$t"; fi
+done <<<"$post"
 rm -rf "$out_dir"
 mv "$stage" "$out_dir"
-read -r peft_v trl_v < <("${home}/.venv/bin/python" -c 'import peft, trl; print(peft.__version__, trl.__version__)' 2>/dev/null || echo "unknown unknown")
 echo "GB_STEP_METADATA_KEY:method GB_STEP_METADATA_VALUE:${method}"
 echo "GB_STEP_METADATA_KEY:peft_version GB_STEP_METADATA_VALUE:${peft_v}"
 echo "GB_STEP_METADATA_KEY:trl_version GB_STEP_METADATA_VALUE:${trl_v}"

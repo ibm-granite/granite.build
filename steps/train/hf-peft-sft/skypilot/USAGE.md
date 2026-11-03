@@ -104,7 +104,7 @@ All fields live under the step's `config.hf_peft_sft_config`.
 | `alora_invocation_string` | string | `""` | Required for `method: alora`, refused otherwise: the text after which the adapter activates. See [Methods](#methods). |
 | `base_model_id` | string | `""` | A portable base id (for example `ibm-granite/granite-3.3-2b-instruct`) written into the adapter's `adapter_config.json` as `base_model_name_or_path`. Empty leaves peft's value, which is the node-local staging dir. |
 | `mixed_precision` | string | `bf16` | `bf16`, `fp16` or `no`. Sets `accelerate launch --mixed_precision`, the trainer's `--bf16`/`--fp16`, and the base model's load dtype. `qlora` refuses `fp16`, and with `distributed: fsdp` or `deepspeed` also refuses `no` (the sharded 4-bit weights are stored in bf16). |
-| `args` | map | `{}` | Any other TRL `SFTConfig` field, rendered as `--<key> <value>`. See [Passing SFTConfig flags (args)](#passing-sftconfig-flags-args). |
+| `args` | map | `{}` | Any other TRL `SFTConfig` field, rendered as `--<key> <value>`. Keys are exact `SFTConfig` field names; abbreviations are refused. See [Passing SFTConfig flags (args)](#passing-sftconfig-flags-args). |
 | `image_id` | string | the step's published image | The step's image, filled in when the step is generated. Override it with another image or, on SLURM, optionally a `.sqsh` path (SLURM environments with a `slurm_image_cache` cache the registry image themselves). `docker:` is added when missing. |
 | `clearml_enabled` | string | `auto` | `auto` (on iff `CLEARML_API_HOST`, `CLEARML_API_ACCESS_KEY` and `CLEARML_API_SECRET_KEY` are all set in the step env), `true`, or `false`. |
 | `clearml_project` | string | `""` | ClearML project. Empty means `hf-peft-sft`. Used only when ClearML is on. |
@@ -141,9 +141,14 @@ a message that starts `hf-peft-sft:`. They are:
 Each `args` entry becomes `--<key>` followed by its value, after the step's own
 flags. The trainer parses them into TRL's `SFTConfig` (which includes every
 transformers `TrainingArguments` field), so an unknown key fails at the start of
-the run. Every value reaches the trainer as its own argv word, byte for byte, so a
-value with spaces or quotes is never word-split. `$MY_VAR` is therefore a literal,
-not an expansion. Parameterise the build with `$${PARAM}` instead.
+the run. Keys must be exact `SFTConfig` field names, never abbreviations: the
+trainer's parser has argparse's prefix matching off, so `max_step` or
+`learning_rat` fails the run with `hf-peft-sft: ERROR unknown or abbreviated
+trainer flag(s) ...` rather than silently setting a field (an abbreviation of a
+step-owned flag, such as `output_d`, is refused earlier, at step creation). Every
+value reaches the trainer as its own argv word, byte for byte, so a value with
+spaces or quotes is never word-split. `$MY_VAR` is therefore a literal, not an
+expansion. Parameterise the build with `$${PARAM}` instead.
 
 | YAML value | Renders as |
 |---|---|
@@ -448,7 +453,7 @@ GPUs. The `$${...}` values come from a parameter file.
 With parameters such as:
 
 ```yaml
-# Parameters for build.yaml (gb build ... --param-file parameters.yaml).
+# Parameters for build.yaml (gb build start -f build.yaml --parameters-path parameters.yaml).
 ENVIRONMENT: "skypilot/aws"
 # Public, Apache-2.0. A gated model needs HF_TOKEN in the step env (space secret).
 BASE_MODEL_ID: "ibm-granite/granite-3.3-2b-instruct"
