@@ -481,7 +481,11 @@ string your model's chat template emits before the assistant turn.
 - **Progress shows in the step log.** At each logging step the trainer prints a
   line such as `Step: 3/10 loss=0.7012` (`Step: <n>/<total> loss=<x>`, loss to four
   decimals; the `/<total>` and `loss=` parts are left out when unknown) to the step
-  log. `args.logging_steps` sets how often.
+  log. `args.logging_steps` sets how often. The step's monitor rule also sends the
+  line to the build as a `RUNNING` workload-status event. Its `message` is the part
+  of the line the rule matches, `Step: <n>`. gbserver's build runner logs it
+  (`Workload status is RUNNING (Step: 3) for build ...`) and keeps the event in the
+  build's event history. No UI shows it.
 - **Arbitrary base-model load kwargs are not supported.** The step loads the base
   model itself, so `args.model_init_kwargs` has no effect, and a base model that
   needs `trust_remote_code` cannot be used.

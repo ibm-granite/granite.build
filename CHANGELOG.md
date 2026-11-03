@@ -244,6 +244,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Workload-status events now carry the `message` field step monitor rules send (#598).**
+  Before, the `Step:` progress events were dropped and gbserver logged a traceback for each
+  matching line. The build runner now logs the message with the status.
+
 - **`make publish-step` no longer reports a published single-platform image as missing (#568).**
   Without `skopeo`, its image check used `podman manifest inspect`, which fails on a
   single-platform image. It now uses `steps/scripts/registry-tag-status.sh`, the same check as
