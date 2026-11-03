@@ -4,22 +4,26 @@
 > Read [skypilot.md](skypilot.md) first for the compute model and config common to all clouds; this
 > page covers only what is SLURM-specific.
 
-## SkyPilot fork
+## SkyPilot patches
 
-gbserver installs SkyPilot from the granite-build fork
-([cmadam/skypilot](https://github.com/cmadam/skypilot)), pinned in `pyproject.toml` to the tag
-`gb-sky-v1-stable`. Upstream SkyPilot does ship a SLURM cloud (`sky/clouds/slurm.py`); the fork
-carries fixes on top of it plus the extras this repo's steps rely on — containerized steps via the
-Pyxis SPANK plugin (with `container_mounts`) and per-task `sbatch_options`. The tag tracks the
-fork's SLURM-only line: the LSF cloud driver this repo's clusters used before moving to SLURM is
-not on it, but the fork's LSF line remains installable under its own snapshot tag
-(see [skypilot-lsf.md](skypilot-lsf.md)).
+gbserver installs the PyPI SkyPilot release pinned in `pyproject.toml` (`skypilot==0.14.2`).
+SLURM fixes we need that are not yet in that release live in
+[`src/gbserver/utils/sky_patches.py`](../../src/gbserver/utils/sky_patches.py) and are applied
+inside the SkyPilot API server, which is where provisioning runs:
 
-`gb-sky-v1-stable` is a moving tag: it is re-pointed to the recommended commit of the fork's
-SLURM-only line as the fork advances, and a breaking change gets a new tag. Fresh installs pick up
-the current target; an existing clone keeps the old one until you run
-`git fetch --tags --force` — and rebuild the venv, since the Makefile only reinstalls when
-`pyproject.toml` changes.
+- gbserver registers `sky_patches.SkyPatchesPlugin` in `~/.sky/plugins.yaml` (or
+  `$SKYPILOT_SERVER_PLUGINS_CONFIG`) before it starts the API server, and SkyPilot installs the
+  plugin in its main, uvicorn and executor processes.
+- An API server started before the plugin was registered is reported as an error at launch. Run
+  `sky api stop` and gbserver starts it again with the patches.
+- `sky_patches` refuses any SkyPilot version other than the pin, and each source edit must match
+  exactly once, so an upgrade fails at server start instead of silently dropping a fix. To upgrade,
+  bump both pins, then drop the fixes the new release already has and re-anchor the rest.
+
+Optional knobs the patches add: `SKYPILOT_API_SERVER_WORKER_MAX_TASKS` (requests per API-server
+worker before it is recycled; default 100, `0` disables), and a host rsync for container images
+without rsync or apt-get, mounted through `slurm.container_mounts` as
+`/opt/sky-host-tools/rsync: /usr/bin/rsync`.
 
 ## Compute environment
 
@@ -374,8 +378,8 @@ Notes:
 - `time` requests a ceiling; it **cannot exceed** the partition's `MaxTime` —
   SLURM rejects a job whose `--time` is above the partition limit, so keep it at
   or below what the partition (or admin) allows.
-- It is a **SLURM-only** knob (maps to per-task `sbatch_options` in SkyPilot's
-  fork). On lsf/aws/kubernetes it is a no-op (a WARNING is logged if set); for
+- It is a **SLURM-only** knob (maps to SkyPilot's per-task SLURM
+  `sbatch_options`). On lsf/aws/kubernetes it is a no-op (a WARNING is logged if set); for
   LSF set the runlimit at the environment level via
   `cloud_config.lsf...bsub_options.W` (minutes) — see
   [skypilot-lsf.md](skypilot-lsf.md).
@@ -510,9 +514,7 @@ or use a new tag (the image builds in this repo already tag by commit).
 A containerized step (`command_config.image` set) runs its `run:` inside an enroot container whose
 filesystem is **not** the compute node's. The SkyPilot SLURM backend bind-mounts only three host paths
 into that container — the account home, the ccache dir, and the SkyPilot **`workdir`**
-([`sky/provision/slurm/instance.py`](https://github.com/cmadam/skypilot/blob/5f18669dc9985f0649147dbcc6bb79d89aeb428d/sky/provision/slurm/instance.py)
-in the granite-build SkyPilot fork pinned by `pyproject.toml`
-builds `--container-mounts` as `home:home`, `ccache:ccache`, and `workdir:workdir`, the last only when
+(SkyPilot's `sky/provision/slurm/instance.py` builds `--container-mounts` as `home:home`, `ccache:ccache`, and `workdir:workdir`, the last only when
 `workdir` is set and differs from home). It does **not** identity-mount `/proj` (that is the LSF
 backend, not this one). So unless `shared_workdir` falls under a mounted path, the per-run
 `$GB_BUILD_WORKDIR` does not exist inside the container: the launcher's `cd "$GB_BUILD_WORKDIR"`
@@ -587,7 +589,7 @@ underlying filesystem coexist.
 Multi-node is requested per step with `compute_config.num_nodes` (a step/build
 `launcher_config.num_nodes` also works; a `num_nodes` under `resources` is ignored with a warning).
 The launcher maps it to `sky.Task.num_nodes`, from which the provisioner derives `--nodes`, and the
-fork's SLURM executor (`sky/skylet/executor/slurm.py`) runs one task per node
+SkyPilot SLURM executor (`sky/skylet/executor/slurm.py`) runs one task per node
 (`--ntasks-per-node=1`, `--kill-on-bad-exit`) while re-asserting `SKYPILOT_NODE_RANK` and
 `SKYPILOT_NODE_IPS` on each node at run time — the rank/rendezvous inputs torchrun-based steps
 (e.g. the distill `gold` step) consume for `--node_rank`/`--nnodes`. No PMIx or hostfile plumbing is

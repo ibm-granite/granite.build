@@ -97,12 +97,12 @@ class TestSkypilotSlurmDataDesignerRitsResume(AbstractYamlBuildRunnerTest):
         Cancelling the BUILD alone does not stop the work on the node (measured
         2026-10-20, twice): gbserver marks it CANCELLED and runs ``sky.down``, yet the
         SLURM job ran to completion — every row group was written after "Torn down", and
-        sacct recorded the job COMPLETED, not CANCELLED. The cause is in the pinned
-        SkyPilot fork, which lacks an upstream SkyPilot fix (see
+        sacct recorded the job COMPLETED, not CANCELLED: the SkyPilot then pinned lacked
+        the teardown fix in skypilot-org/skypilot PR 10296 (see
         https://github.com/ibm-granite/granite.build/issues/533). So after requesting
         the build cancellation the test also ``scancel``s the step's SLURM job, which is
-        what a preemption or node failure does to a real run anyway. Drop the scancel
-        once that issue is fixed.
+        what a preemption or node failure does to a real run anyway. The current pin
+        includes that fix; drop the scancel once a run confirms it.
 
         ``GBTEST_DD_BUILD_CANCEL_ONLY=true`` skips the scancel, so the build's own
         cancellation must stop the job — the check for a SkyPilot carrying the fix.

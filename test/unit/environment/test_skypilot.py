@@ -979,7 +979,7 @@ class TestSkypilotComputeConfigResources:
         assert env._resources_from_compute_config({}) == {}
         # On slurm/lsf the memory floor is dropped (bare HPC schedulers often
         # don't track memory as a consumable resource), and cpus stays a bare
-        # int (the "+" form crashes the fork's LSF cloud).
+        # int (the "+" form crashes SkyPilot's LSF cloud).
         for hpc_cloud in ("slurm", "lsf"):
             assert env._resources_from_compute_config(
                 {"num_cpus_per_node": 3, "total_memory_per_node": "2Gi"},
@@ -999,7 +999,7 @@ class TestSkypilotComputeConfigResources:
         does not contain any instances satisfying the request" failure the
         memory floor hit. Emitting ``"3+"`` lets SkyPilot pick the smallest
         instance with at least that many vCPUs. slurm/lsf keep the bare int (the
-        ``"+"`` form crashes the fork's LSF cloud).
+        ``"+"`` form crashes SkyPilot's LSF cloud).
         """
         from gbserver.environment.skypilot import Skypilot
 
