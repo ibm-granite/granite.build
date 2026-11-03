@@ -933,3 +933,115 @@ async def test_a_login_by_a_caller_with_no_users_row_still_completes(
 
     assert response.status_code == HTTPStatus.FOUND
     assert "session" in response.cookies
+
+
+# --- /auth/login?return_to= -------------------------------------------------
+
+GB_UI_ORIGIN = "https://dashboard.invalid"
+
+
+async def _login_and_callback(client: AsyncClient, **params: str) -> httpx.Response:
+    """Run ``/auth/login`` with ``params``, then ``/auth/callback``; return the callback."""
+    login = await client.get("/auth/login", params=params, follow_redirects=False)
+    state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
+    return await client.get(
+        "/auth/callback", params={"code": "auth-code", "state": state}, follow_redirects=False
+    )
+
+
+async def test_callback_redirects_to_public_base_url_when_no_return_to_was_given(
+    bff_client: AsyncClient,
+) -> None:
+    response = await _login_and_callback(bff_client)
+
+    assert response.status_code == HTTPStatus.FOUND
+    assert response.headers["location"] == PUBLIC_BASE_URL
+
+
+@pytest.mark.parametrize("return_to", [f"{GB_UI_ORIGIN}/dashboard", "https://["])
+async def test_return_to_is_ignored_when_no_origin_is_allowlisted(
+    bff_client: AsyncClient, return_to: str
+) -> None:
+    """The allowlist is ``cors_allow_origins``; empty (the default) allows nothing."""
+    response = await _login_and_callback(bff_client, return_to=return_to)
+
+    assert response.status_code == HTTPStatus.FOUND
+    assert response.headers["location"] == PUBLIC_BASE_URL
+
+
+class TestReturnToWithAnAllowlistedOrigin:
+    @pytest.fixture
+    def settings(self) -> Settings:
+        return make_settings(
+            auth_providers=["session"],
+            oidc_issuer=ISSUER,
+            oidc_jwks_uri="https://unused.invalid/jwks",
+            oidc_audience=AUDIENCE,
+            oidc_client_id=AUDIENCE,
+            oidc_client_secret=CLIENT_SECRET,
+            oidc_authorization_endpoint=AUTHORIZATION_ENDPOINT,
+            oidc_token_endpoint=TOKEN_ENDPOINT,
+            public_base_url=PUBLIC_BASE_URL,
+            session_secret=SESSION_SECRET,
+            cors_allow_origins=[GB_UI_ORIGIN],
+        )
+
+    @pytest.mark.parametrize(
+        "return_to",
+        [
+            GB_UI_ORIGIN,
+            f"{GB_UI_ORIGIN}/dashboard/autotunex?tab=jobs#top",
+        ],
+    )
+    async def test_callback_redirects_to_an_allowlisted_return_to(
+        self, bff_client: AsyncClient, return_to: str
+    ) -> None:
+        response = await _login_and_callback(bff_client, return_to=return_to)
+
+        assert response.status_code == HTTPStatus.FOUND
+        assert response.headers["location"] == return_to
+        assert "session" in response.cookies
+
+    @pytest.mark.parametrize(
+        "return_to",
+        [
+            "https://evil.invalid/dashboard",
+            # Allowlisted origin as a prefix of a different host.
+            "https://dashboard.invalid.evil.invalid/",
+            # Allowlisted host as userinfo; the real host is evil.invalid.
+            "https://dashboard.invalid@evil.invalid/",
+            "http://dashboard.invalid/",
+            "https://dashboard.invalid:8443/",
+            "//evil.invalid/",
+            "/dashboard",
+            "javascript:alert(1)",
+            "",
+            # `urlsplit` raises on these; they must fall back, not 500.
+            "https://[",
+            "https://dashboard.invalid]/",
+            "https://dashboard\uff0finvalid/",
+            # Allowlisted origin, but non-ASCII or over the length cap.
+            f"{GB_UI_ORIGIN}/caf\u00e9",
+            f"{GB_UI_ORIGIN}/" + "a" * 1024,
+        ],
+    )
+    async def test_callback_ignores_a_return_to_outside_the_allowlist(
+        self, bff_client: AsyncClient, return_to: str
+    ) -> None:
+        response = await _login_and_callback(bff_client, return_to=return_to)
+
+        assert response.status_code == HTTPStatus.FOUND
+        assert response.headers["location"] == PUBLIC_BASE_URL
+
+    async def test_a_rejected_return_to_is_logged_without_its_value(
+        self, bff_client: AsyncClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING):
+            await bff_client.get(
+                "/auth/login",
+                params={"return_to": "https://evil.invalid/x"},
+                follow_redirects=False,
+            )
+
+        assert "return_to" in caplog.text
+        assert "evil.invalid" not in caplog.text

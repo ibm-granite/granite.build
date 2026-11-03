@@ -233,8 +233,8 @@ The flow uses these endpoints, plus two impersonation endpoints documented below
 
 | Endpoint            | Method | Purpose                                                                  |
 | ------------------- | ------ | ------------------------------------------------------------------------ |
-| `/auth/login`       | GET    | Starts an authorization-code + PKCE (`S256`) flow; redirects to the IdP. |
-| `/auth/callback`    | GET    | Exchanges the code server-side, mints the httpOnly session cookie, then redirects (`302`) to `AUTOTUNEX_PUBLIC_BASE_URL`. |
+| `/auth/login`       | GET    | Starts an authorization-code + PKCE (`S256`) flow; redirects to the IdP. Takes an optional `return_to` (see [Returning to a cross-origin UI](#returning-to-a-cross-origin-ui)). |
+| `/auth/callback`    | GET    | Exchanges the code server-side, mints the httpOnly session cookie, then redirects (`302`) to the login's accepted `return_to`, else `AUTOTUNEX_PUBLIC_BASE_URL`. |
 | `/auth/me`          | GET    | Reports the current principal (the `Principal` body below). Also served at `/api/v1/auth/me`. |
 | `/auth/logout`      | POST   | Clears the session cookie and the `autotunex_assume` impersonation overlay (and returns the IdP logout endpoint, if set); requires authentication. |
 
@@ -341,6 +341,26 @@ The allowlist must **never contain `"*"`**: combined with the credentialed CORS 
 BFF requires, a wildcard origin would let the service echo back any request's
 `Origin` with the session cookie attached, defeating the allowlist entirely.
 Startup refuses a `"*"` entry outright.
+
+### Returning to a cross-origin UI
+
+A UI on another origin sends a signed-out user to
+`/auth/login?return_to=<absolute URL>` so they land back on that UI after
+logging in. `return_to` is honoured only when its origin (`scheme://host[:port]`)
+**exactly** matches an entry in `AUTOTUNEX_CORS_ALLOW_ORIGINS`, and it is ASCII
+(percent-encoded, as a browser builds it) and at most 1024 characters. Anything
+else, including a relative URL, a URL with userinfo (`https://allowed@evil`) and
+one that does not parse, falls back to `AUTOTUNEX_PUBLIC_BASE_URL` and is logged
+at WARNING without the value. With the default empty allowlist, `return_to` is
+always ignored. Write allowlist entries as bare origins (no trailing slash, no
+path), since the match is exact.
+
+The accepted URL travels inside the signed `oauth_flow` cookie, so
+`/auth/callback` never reads a redirect target from the request.
+
+```
+https://autotunex.example.com/auth/login?return_to=https%3A%2F%2Fui.example.com%2Fdashboard
+```
 
 ### Design decisions
 

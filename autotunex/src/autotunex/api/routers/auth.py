@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from typing import Annotated
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from uuid import UUID
 
 import httpx
@@ -78,6 +78,12 @@ _SESSION_COOKIE = "session"
 _ASSUME_COOKIE = "autotunex_assume"
 _FLOW_TTL = timedelta(minutes=5)
 _FLOW_ALGORITHM = "HS256"
+# Bounds the flow cookie: an oversized return_to would push it past the
+# browser's ~4 KB cookie limit, the cookie would be dropped, and /callback
+# would 401 for a reason the caller cannot see. return_to must also be ASCII
+# (a browser-built URL is percent-encoded), so even if JSON escaping doubled
+# every character, base64 would bring the claim to ~2.7 KB.
+_RETURN_TO_MAX_LENGTH = 1024
 
 
 def _code_challenge(verifier: str) -> str:
@@ -206,8 +212,40 @@ def _clear_cookie(response: Response, key: str, settings: Settings) -> None:
     )
 
 
+def _allowed_return_to(return_to: str | None, settings: Settings) -> str | None:
+    """Return ``return_to`` normalized if its origin is allowlisted, else ``None``.
+
+    The allowlist is ``cors_allow_origins``: the origins already trusted to make
+    credentialed calls are the ones a login may land back on. The URL's origin
+    (``scheme://`` plus the whole netloc) must equal an entry exactly, so a
+    lookalike host, another scheme or port, a relative or scheme-relative URL,
+    and a URL carrying userinfo (``https://allowed@evil``, whose netloc is not
+    ``allowed``) all fall back to ``public_base_url``, as do a non-ASCII value,
+    one over the length cap, and one ``urlsplit`` cannot parse. Rejection is
+    logged without the value, which is caller-supplied.
+    """
+    if not return_to:
+        return None
+    try:
+        if len(return_to) > _RETURN_TO_MAX_LENGTH or not return_to.isascii():
+            raise ValueError
+        # `urlsplit` raises ValueError on input such as `https://[`; the
+        # message embeds the netloc, so it is never logged.
+        parts = urlsplit(return_to)
+        if f"{parts.scheme}://{parts.netloc}" not in settings.cors_allow_origins:
+            raise ValueError
+    except ValueError:
+        logger.warning(
+            "Ignoring /auth/login's return_to: its origin is not in "
+            "AUTOTUNEX_CORS_ALLOW_ORIGINS, or it is malformed or too long. The "
+            "login will land on AUTOTUNEX_PUBLIC_BASE_URL instead."
+        )
+        return None
+    return parts.geturl()
+
+
 @router.get("/login", summary="Start the W3ID login flow")
-async def login(settings: SettingsDep) -> RedirectResponse:
+async def login(settings: SettingsDep, return_to: str | None = None) -> RedirectResponse:
     """Redirect to W3ID's authorization endpoint with state and a PKCE (S256) challenge.
 
     ``redirect_uri`` is built from ``settings.public_base_url`` only, never
@@ -215,13 +253,26 @@ async def login(settings: SettingsDep) -> RedirectResponse:
     attacker-controlled, and building the redirect target from them would let
     a poisoned value send the authorization code to a host of the attacker's
     choosing.
+
+    ``return_to`` is where ``/callback`` sends the browser once the session
+    is minted, if its origin is in ``cors_allow_origins`` (see
+    :func:`_allowed_return_to`); otherwise ``public_base_url``. It travels in
+    the signed flow cookie, so ``/callback`` never reads it from the request.
     """
     bff = _require_login_settings(settings)
     state = secrets.token_urlsafe(32)
     verifier = secrets.token_urlsafe(64)
     now = datetime.now(UTC)
+    flow_claims: dict[str, object] = {
+        "state": state,
+        "verifier": verifier,
+        "exp": int((now + _FLOW_TTL).timestamp()),
+    }
+    allowed_return_to = _allowed_return_to(return_to, settings)
+    if allowed_return_to is not None:
+        flow_claims["return_to"] = allowed_return_to
     flow_token = jwt.encode(
-        {"state": state, "verifier": verifier, "exp": int((now + _FLOW_TTL).timestamp())},
+        flow_claims,
         bff.secret,
         algorithm=_FLOW_ALGORITHM,
     )
@@ -449,7 +500,10 @@ async def callback(
         email=email, secret=bff.secret, ttl_hours=settings.session_ttl_hours
     )
 
-    response = RedirectResponse(bff.base_url, status_code=HTTPStatus.FOUND)
+    # Validated by /login before it was signed into the flow cookie.
+    flow_return_to = flow_claims.get("return_to")
+    landing = flow_return_to if isinstance(flow_return_to, str) else bff.base_url
+    response = RedirectResponse(landing, status_code=HTTPStatus.FOUND)
     _clear_cookie(response, _FLOW_COOKIE, settings)
     response.set_cookie(
         _SESSION_COOKIE,
