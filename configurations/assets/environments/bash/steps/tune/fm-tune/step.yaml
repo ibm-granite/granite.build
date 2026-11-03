@@ -1,0 +1,137 @@
+# fm-tune: run one fm-tune (autotunex/src/fm-tune) tuning job on the bash env.
+# Source: steps/tune/fm-tune/bash/ — published by `make publish-step`; do not edit the
+# copy under configurations/assets. The run script src/fmtune_run.sh is shared,
+# byte-identical, with steps/tune/fm-tune/skypilot/. See USAGE.md.
+name: fm-tune
+version: 1.0.0
+type: training
+config:
+  bash:
+    # Turn off the bash wrapper's scan of the output dir's subdirs: it prints a
+    # GB_ARTIFACT marker before checking the exit code, so it fired on failure
+    # (build a2313afe). fmtune_run.sh registers `model` itself, on success only.
+    skip_finding_output_artifacts: true
+  fm_tune_config:
+    source:
+      path: ""                    # local fm-tune checkout (one of path | repo)
+      repo: ""                    # git URL to clone
+      ref: main                   # branch / tag for repo
+      subdir: autotunex/src/fm-tune
+    extra: core                   # pip extra: core | full | mlx
+    model: ""                     # --model_name_or_path when base_model is not bound
+    train_file: ""                # relative to the dataset input
+    validation_file: ""           # relative to the dataset input
+    tuning_algo: lora             # sft | lora | qlora | alora | loha | lokr | vera | none
+    rl_algo: ""                   # dpo | kto | ppo | grpo | dapo; empty = none
+    run_name: fm-tune             # --run_name and --output_model_name
+    autotune: true                # true | false; false adds --no_autotune
+    backend: ""                   # torch | mlx; empty = fm-tune's default
+    seed: ""                      # empty = fm-tune's default (42)
+    config_preset: autotune.yaml  # bundled autotune/configs/<preset> when hpo_config is empty
+    hpo_config: {}                # inline HPO config for --config_file; {} = config_preset
+    config_name: ""               # file name of the inline hpo_config; empty = fm_tune_hpo
+    output_path: ""               # skypilot only; unused on bash
+    extra_args: ""                # appended verbatim to main.py argv
+    python: ""                    # interpreter that creates the venv; empty = injected python
+    autotunex:
+      server_url: ""              # --autotunex_server_url; empty = offline
+      job_id: ""                  # --job_id
+inputs:
+  allow_unknown: true             # recipes may bind extra inputs to order targets
+  required:
+    dataset:
+      type: dataset
+      accept: [uri, binding]
+  optional:
+    base_model:
+      type: model
+      accept: [uri, binding]
+outputs:
+  required:
+    model:
+      type: model
+environment_configs:
+  Bash:
+    launchers:
+      fm-tune:
+        type: nohup
+        monitors:
+          - log_monitor
+        config:
+          # Resolves under ${LLMB_BASH_ASSET_DIR}/bash_scripts/fm-tune/, so ../../
+          # lands on the shipped src/ (llmb_bash_jobsub.sh:20-22).
+          script_path: ../../src/fmtune_run.sh
+          # Config-only checks. gbserver fills every string in this launcher
+          # config with the strict renderer when it creates the step, so a
+          # raise_error here fails the step before anything is launched. Each
+          # string is filled on its own, so the checks get a key of their own;
+          # it renders to "" and nothing reads it. The validate macro is the same
+          # text in the skypilot template (test_fm_tune_script_copies_match.py),
+          # and fmtune_run.sh keeps the same checks for a direct run.
+          validate: |-
+            {%- macro validate(c, base_model_bound) -%}
+            {%- set name_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-" -%}
+            {#- First, so no check below reads an attribute of a non-mapping. A null source or
+                autotunex is rejected, not taken as defaults: the template ships both mappings. #}
+            {%- for key in ["source", "autotunex"] -%}
+            {%- if c[key] is not mapping %}{{ raise_error("fm-tune: fm_tune_config." ~ key ~ " must be a mapping, got '" ~ c[key] ~ "'.") }}{% endif -%}
+            {%- endfor -%}
+            {%- if c.hpo_config is not none and c.hpo_config is not mapping %}{{ raise_error("fm-tune: fm_tune_config.hpo_config must be a mapping or null, got '" ~ c.hpo_config ~ "'.") }}{% endif -%}
+            {#- Then, so a list never reaches the checks below; hpo_config is the one mapping. #}
+            {%- for group, keys in [("", ["extra", "model", "train_file", "validation_file", "tuning_algo", "rl_algo", "run_name", "autotune", "backend", "seed", "config_preset", "config_name", "output_path", "extra_args", "python"]), ("source.", ["path", "repo", "ref", "subdir"]), ("autotunex.", ["server_url", "job_id"])] -%}
+            {%- for key in keys -%}
+            {%- set v = c[key] if not group else c[group[:-1]][key] -%}
+            {%- if v is mapping or (v is iterable and v is not string) %}{{ raise_error("fm-tune: fm_tune_config." ~ group ~ key ~ " must be a scalar (string/number/bool), got a list/mapping; write it as a string") }}{% endif -%}
+            {%- endfor -%}
+            {%- endfor -%}
+            {%- for key in ["train_file", "validation_file"] -%}
+            {%- if not c[key] %}{{ raise_error("fm-tune: fm_tune_config." ~ key ~ " is required; set it to the file's path inside the dataset input.") }}{% endif -%}
+            {%- if (c[key] | string).startswith("/") or ".." in (c[key] | string).split("/") %}{{ raise_error("fm-tune: fm_tune_config." ~ key ~ " must be a relative path inside the dataset input (no leading '/', no '..' component), got '" ~ c[key] ~ "'.") }}{% endif -%}
+            {%- endfor -%}
+            {%- if (c.source.path and c.source.repo) or not (c.source.path or c.source.repo) %}{{ raise_error("fm-tune: set exactly one of fm_tune_config.source.path and fm_tune_config.source.repo.") }}{% endif -%}
+            {%- if ([c.tuning_algo] | reject("none") | join | lower) in ["", "none"] and ([c.rl_algo] | reject("none") | join | lower) in ["", "none"] %}{{ raise_error("fm-tune: tuning_algo and rl_algo cannot both be empty or none; set tuning_algo (e.g. lora) or an online rl_algo (ppo, grpo, dapo).") }}{% endif -%}
+            {%- if ([c.tuning_algo] | reject("none") | join | lower) in ["", "none"] and ([c.rl_algo] | reject("none") | join | lower) in ["dpo", "kto"] %}{{ raise_error("fm-tune: an offline rl_algo (dpo, kto) needs a tuning_algo (e.g. lora or sft).") }}{% endif -%}
+            {%- if not (c.model or base_model_bound) %}{{ raise_error("fm-tune: set fm_tune_config.model or bind the base_model input.") }}{% endif -%}
+            {%- if not c.run_name or (c.run_name | string | list | reject("in", name_chars) | list) %}{{ raise_error("fm-tune: fm_tune_config.run_name must match ^[A-Za-z0-9._-]+$, got '" ~ (c.run_name if c.run_name is not none else "") ~ "'.") }}{% endif -%}
+            {%- if c.config_name and (c.config_name | string | list | reject("in", name_chars) | list) %}{{ raise_error("fm-tune: fm_tune_config.config_name must match ^[A-Za-z0-9._-]+$, got '" ~ c.config_name ~ "'.") }}{% endif -%}
+            {%- if c.autotune is not none and c.autotune != "" and (c.autotune | string | lower) not in ["true", "false"] %}{{ raise_error("fm-tune: fm_tune_config.autotune must be true or false, got '" ~ c.autotune ~ "'.") }}{% endif -%}
+            {%- for key in ["repo", "ref"] -%}
+            {%- if (c.source[key] | string).startswith("-") %}{{ raise_error("fm-tune: fm_tune_config.source." ~ key ~ " must not start with '-' (git would read it as an option).") }}{% endif -%}
+            {%- endfor -%}
+            {%- endmacro -%}
+            {{- validate(config.fm_tune_config, bindings.base_model is defined) -}}
+          # `[v] | reject('none') | join` renders a YAML null as "" (like an unset
+          # key) and any other scalar as its string; the validate key rejects a
+          # list or mapping before these are used.
+          env:
+            FMTUNE_DATASET_DIR: "{{ bindings.dataset.binding.path }}"
+            FMTUNE_BASE_MODEL_DIR: "{{ bindings.base_model.binding.path if bindings.base_model is defined else '' }}"
+            FMTUNE_MODEL: "{{ [config.fm_tune_config.model] | reject('none') | join }}"
+            FMTUNE_SOURCE_PATH: "{{ [config.fm_tune_config.source.path] | reject('none') | join }}"
+            FMTUNE_SOURCE_REPO: "{{ [config.fm_tune_config.source.repo] | reject('none') | join }}"
+            FMTUNE_SOURCE_REF: "{{ [config.fm_tune_config.source.ref] | reject('none') | join }}"
+            FMTUNE_SOURCE_SUBDIR: "{{ [config.fm_tune_config.source.subdir] | reject('none') | join }}"
+            FMTUNE_EXTRA: "{{ [config.fm_tune_config.extra] | reject('none') | join }}"
+            FMTUNE_TRAIN_FILE: "{{ [config.fm_tune_config.train_file] | reject('none') | join }}"
+            FMTUNE_VALIDATION_FILE: "{{ [config.fm_tune_config.validation_file] | reject('none') | join }}"
+            FMTUNE_TUNING_ALGO: "{{ [config.fm_tune_config.tuning_algo] | reject('none') | join }}"
+            FMTUNE_RL_ALGO: "{{ [config.fm_tune_config.rl_algo] | reject('none') | join }}"
+            FMTUNE_RUN_NAME: "{{ [config.fm_tune_config.run_name] | reject('none') | join }}"
+            FMTUNE_AUTOTUNE: "{{ [config.fm_tune_config.autotune] | reject('none') | join | lower }}"
+            FMTUNE_BACKEND: "{{ [config.fm_tune_config.backend] | reject('none') | join }}"
+            FMTUNE_SEED: "{{ [config.fm_tune_config.seed] | reject('none') | join }}"
+            FMTUNE_CONFIG_PRESET: "{{ [config.fm_tune_config.config_preset] | reject('none') | join }}"
+            FMTUNE_CONFIG_NAME: "{{ [config.fm_tune_config.config_name] | reject('none') | join }}"
+            FMTUNE_HPO_CONFIG_JSON: "{{ '' if config.fm_tune_config.hpo_config is none else config.fm_tune_config.hpo_config | json_dumps }}"
+            # Launcher env is passed to the script unexpanded, so these can't
+            # name ${LLMB_BASH_OUTPUT_DIR}; fmtune_run.sh defaults them from the
+            # LLMB_BASH_* builtins (output -> $LLMB_BASH_OUTPUT_DIR/model).
+            FMTUNE_OUTPUT_DIR: ""
+            FMTUNE_CACHE_DIR: ""
+            FMTUNE_PYTHON: "{{ [config.fm_tune_config.python] | reject('none') | join }}"
+            FMTUNE_EXTRA_ARGS: "{{ [config.fm_tune_config.extra_args] | reject('none') | join }}"
+            FMTUNE_SERVER_URL: "{{ [config.fm_tune_config.autotunex.server_url] | reject('none') | join }}"
+            FMTUNE_JOB_ID: "{{ [config.fm_tune_config.autotunex.job_id] | reject('none') | join }}"
+    monitors:
+      log_monitor:
+        ref: space://monitors/bash

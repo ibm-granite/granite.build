@@ -1,0 +1,25 @@
+# YAML spec for test_skypilot_slurm_bluevela_train_openinstruct_sft.py.
+targets:
+  - train
+target_expectations:
+  - target_name: train
+    # skypilot/slurm runs each hf:// pull as its own hfpull step (no inline pull).
+    step_count: 3               # hfpull(base_model) + hfpull(dataset) + step (calibrated on BlueVela, build 5cf7d460)
+    input_artifact_count: 2     # base_model, dataset
+    output_artifact_count: 1    # model (env://, from the step's marker)
+    expected_steps:
+      - step_uri: space://steps/train/openinstruct-sft
+        config:
+          openinstruct_sft_config:
+            clearml_enabled: true
+            deepspeed_config: ""
+        metadata_matches:
+          open_instruct_commit: "[0-9a-f]{40}"
+space_uri: ../../space
+tests:
+  - runner
+simulate_step_failure: false
+# A cold image cache imports the image in a CPU job first (this 11 GB image took
+# 9 minutes; queueing varies), then gpu-mid queueing, two hfpull jobs and a
+# short run. A warm cache starts the container in seconds.
+timeout_minutes: 240

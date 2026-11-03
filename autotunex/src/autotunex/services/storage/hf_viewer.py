@@ -25,6 +25,7 @@ logger = get_logger(__name__)
 
 _HF_SCHEME = "hf://"
 _HF_HOST = "huggingface.co"
+_HF_TYPE_SEGMENTS = frozenset({"models", "datasets", "spaces", "buckets"})  # gbcommon HfType
 _VIEWER_ROW_CAP = 100  # the viewer rejects length > 100 with a 422
 
 
@@ -38,25 +39,59 @@ class HFViewerUnavailable(Exception):  # noqa: N818 (name is a fixed cross-task 
     """
 
 
-def repo_id_from_artifact_url(artifact_url: str | None) -> str | None:
+class HFViewerInaccessible(HFViewerUnavailable):
+    """The viewer refused the repo: HTTP 401, 403 or 404 on ``/splits`` or ``/rows``.
+
+    The repo is private, gated, or missing for the credentials sent, so (unlike
+    "still precomputing") retrying with the same credentials will not help. A 404
+    is final too: a repo the viewer has not indexed yet gets a 500
+    (``ResponseNotReady``, as it starts a backfill), while a 404 is
+    ``ResponseNotFound`` (the entry "will never be created"), ``RenamedDatasetError``
+    (a renamed or wrong-case repo), or a refused tokened read (dataset-viewer
+    ``libapi``, ``try_backfill_dataset_then_raise``).
+    """
+
+
+_INACCESSIBLE_STATUSES = frozenset({401, 403, 404})
+
+
+def repo_id_from_artifact_url(
+    artifact_url: str | None, *, default_host_only: bool = False
+) -> str | None:
     """Derive an ``owner/repo`` HuggingFace dataset id from a stored locator.
 
-    Only ``hf://`` locators are accepted. A leading ``huggingface.co`` host and an
-    intervening ``datasets`` segment are tolerated; the last two path segments are
-    taken as ``owner/repo``. Returns ``None`` for a missing value, a non-``hf://``
-    scheme, or fewer than two segments — the caller then skips the viewer.
+    Only ``hf://`` locators are accepted. The host (``hf://<host>/...``; absent in
+    ``hf:///...``) and a repo-type segment (``datasets``, ``models``, ...) are
+    skipped, then the next two segments are ``owner/repo``; any revision or path in
+    the repo after them is ignored. That is gbcommon's ``HfURI`` layout, parsed here
+    rather than imported because granite.build is only an optional extra. One form
+    ``HfURI`` rejects is still read: exactly ``hf://owner/repo``, whose second
+    segment has nothing after it, so the first is the owner. With a third segment
+    (``hf://owner/repo/v2``) the first is the host, as ``HfURI`` reads it.
+
+    ``default_host_only`` refuses a locator on any host but ``huggingface.co`` (the
+    dataset viewer only knows that hub's repos), counting the bare two-segment form
+    as the default host. Returns ``None`` for a missing value, a non-``hf://``
+    scheme, a refused host, or fewer than two segments — the caller then skips the
+    viewer.
     """
     if not artifact_url:
         return None
     url = artifact_url.strip()
     if not url.startswith(_HF_SCHEME):
         return None
-    segments = [s for s in url[len(_HF_SCHEME) :].split("/") if s]
-    if segments and segments[0] == _HF_HOST:
+    rest = url[len(_HF_SCHEME) :]
+    segments = [s for s in rest.split("/") if s]
+    has_host = not rest.startswith("/")
+    if has_host and segments and (segments[0] == _HF_HOST or len(segments) >= 3):
+        if default_host_only and segments[0] != _HF_HOST:
+            return None
+        segments = segments[1:]
+    if segments and segments[0] in _HF_TYPE_SEGMENTS:
         segments = segments[1:]
     if len(segments) < 2:
         return None
-    return "/".join(segments[-2:])
+    return "/".join(segments[:2])
 
 
 async def discover_config(
@@ -76,7 +111,8 @@ async def discover_config(
     but reading it back means a repo whose push produced a differently-named
     subset still previews instead of failing permanently on ``/rows``.
 
-    Raises :class:`HFViewerUnavailable` on a transport error, a non-200 status, a
+    Raises :class:`HFViewerInaccessible` on HTTP 401/403/404, and
+    :class:`HFViewerUnavailable` on a transport error, any other non-200 status, a
     malformed body, or an empty/absent ``splits`` list — the last of which is the
     viewer's "still precomputing / not ready yet" signal, and the caller degrades
     it to a not-ready preview rather than fetching rows that cannot exist yet.
@@ -90,6 +126,8 @@ async def discover_config(
     except httpx.HTTPError as exc:
         raise HFViewerUnavailable(f"{repo_id}#splits: transport error: {exc}") from exc
 
+    if response.status_code in _INACCESSIBLE_STATUSES:
+        raise HFViewerInaccessible(f"{repo_id}#splits: HTTP {response.status_code}")
     if response.status_code != 200:
         raise HFViewerUnavailable(f"{repo_id}#splits: HTTP {response.status_code}")
     try:
@@ -130,8 +168,9 @@ async def fetch_rows(
     Calls ``GET {base_url}/rows``. ``length`` is clamped to the viewer's 100-row
     page cap. A bearer token is sent only when one is provided (public datasets
     need none; the app's pushed repos are private, so one is required in
-    practice). Raises :class:`HFViewerUnavailable` on any failure — including a
-    200 whose body carries no usable rows.
+    practice). Raises :class:`HFViewerInaccessible` on HTTP 401/403/404, and
+    :class:`HFViewerUnavailable` on any other failure — including a 200 whose body
+    carries no usable rows.
     """
     params: dict[str, str | int] = {
         "dataset": repo_id,
@@ -147,6 +186,8 @@ async def fetch_rows(
     except httpx.HTTPError as exc:
         raise HFViewerUnavailable(f"{where}: transport error: {exc}") from exc
 
+    if response.status_code in _INACCESSIBLE_STATUSES:
+        raise HFViewerInaccessible(f"{where}: HTTP {response.status_code}")
     if response.status_code != 200:
         raise HFViewerUnavailable(f"{where}: HTTP {response.status_code}")
     try:

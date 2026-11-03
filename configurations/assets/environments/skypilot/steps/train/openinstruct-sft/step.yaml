@@ -1,0 +1,183 @@
+name: openinstruct-sft
+version: 1.0.0
+type: exec
+config:
+  openinstruct_sft_config:
+    # Name of the declared target output (type model) to register: the artifact
+    # marker's ID.
+    output: "model"
+    # Where the trained HF model is written and registered from. Empty =
+    # ./model_output in the per-target workdir, which teardown removes: when a
+    # downstream target reads the model, set shared storage here and use the same
+    # path in the output's env:/// uri.
+    output_path: ""
+    # HF dataset id -> fraction (<= 1.0) or sample count, rendered as
+    # --dataset_mixer_list <id> <value> ... . Exactly one of this or a bound
+    # `dataset` input supplies the training data.
+    dataset_mixer_list: {}
+    dataset_mixer_list_splits: ["train"]
+    # A file under the image's /opt/open-instruct/configs/ds_configs/. Empty =
+    # plain accelerate (no DeepSpeed).
+    deepspeed_config: "stage3_no_offloading_accelerate.conf"
+    mixed_precision: "bf16"
+    # Any other finetune.py flag, rendered as --<key> <value>: a list becomes
+    # repeated values, a bool true/false, null is omitted. Flags the step sets
+    # itself (model, output dir, data, tracking, hub push, beaker) are refused.
+    args: {}
+    # The step's image, filled in by `make space` / `make publish-step`. Override it
+    # with another image or, on SLURM, optionally a .sqsh path (SLURM environments
+    # with slurm_image_cache cache the registry image automatically); `docker:` is
+    # added when missing (SkyPilot's SLURM provisioner hands a .sqsh to Pyxis as is).
+    image_id: "docker:quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-6"
+    # ClearML tracking: auto (on iff CLEARML_API_HOST, CLEARML_API_ACCESS_KEY and
+    # CLEARML_API_SECRET_KEY are all set in the step env), true, or false.
+    clearml_enabled: "auto"
+    clearml_project: ""
+    clearml_task_name: ""
+  compute_config:
+    # Single node only (validated). GPUs are requested by the build through
+    # launcher_config.resources.accelerators; the step reads the count from
+    # $SKYPILOT_NUM_GPUS_PER_NODE.
+    num_nodes: 1
+
+# I/O schema, validated against the build.yaml target at build time.
+# allow_unknown stays true so a recipe can bind extra inputs to order targets.
+inputs:
+  allow_unknown: true
+  required:
+    # The base model to fine-tune: an HF model dir, staged on the node.
+    base_model:
+      type: model
+      accept: [uri, binding]
+  optional:
+    # Training data as a staged dataset dir (e.g. an hf:/// dataset). Omit it to
+    # train on openinstruct_sft_config.dataset_mixer_list instead.
+    dataset:
+      type: dataset
+      accept: [uri, binding]
+outputs:
+  allow_unknown: true
+  optional:
+    # Registered under openinstruct_sft_config.output (default `model`).
+    model:
+      type: model
+
+environment_configs:
+  Skypilot:
+    default_launcher: openinstruct_sft
+    launchers:
+      openinstruct_sft:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # Not shell-escaped: SkyPilot gets it as a python value.
+          image_id: '{{ config.openinstruct_sft_config.image_id if (config.openinstruct_sft_config.image_id | string).startswith("docker:") else "docker:" ~ config.openinstruct_sft_config.image_id }}'
+          # GPUs come from the build's launcher_config.resources.accelerators.
+          resources: {}
+          # The launcher PREPENDS the inline `hf download` of hf:// inputs (aws) to
+          # this block, so config-only checks are the `validate` macro's
+          # raise_error()s, which fail the strict launcher fill at step creation,
+          # before provisioning. The guard script checks only the staged paths.
+          setup: |
+            set -euo pipefail
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            {%- macro validate(c, cc, bound, res) -%}
+            {%- set owned = ["model_name_or_path", "output_dir", "dataset_name", "dataset_mixer", "dataset_mixer_list", "dataset_mixer_list_splits", "with_tracking", "report_to", "wandb_entity", "push_to_hub", "try_launch_beaker_eval_jobs", "try_auto_save_to_beaker", "do_not_randomize_output_dir", "resume_from_checkpoint", "dataset_local_cache_dir"] -%}
+            {%- if c.dataset_mixer_list is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list must map an HF dataset id to a fraction or count, e.g. {allenai/tulu-3-sft-personas-algebra: 1.0}.") }}{% endif -%}
+            {%- if c.dataset_mixer_list_splits is string or c.dataset_mixer_list_splits is not iterable or not c.dataset_mixer_list_splits %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list_splits must be a non-empty list of split names, e.g. [train].") }}{% endif -%}
+            {%- if bound and c.dataset_mixer_list %}{{ raise_error("openinstruct-sft: both the `dataset` input and openinstruct_sft_config.dataset_mixer_list are set; use one.") }}{% endif -%}
+            {%- if not bound and not c.dataset_mixer_list %}{{ raise_error("openinstruct-sft: no training data: bind the `dataset` input or set openinstruct_sft_config.dataset_mixer_list.") }}{% endif -%}
+            {%- if not c.output %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.output is required; it names the target's model output.") }}{% endif -%}
+            {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
+            {%- if (cc.num_nodes | string) != "1" %}{{ raise_error("openinstruct-sft: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
+            {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("openinstruct-sft: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type). compute_config.num_gpus_per_node is not a SkyPilot GPU request.") }}{% endif -%}
+            {%- if "/" in (c.deepspeed_config | string) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.deepspeed_config must be a file name under the image's configs/ds_configs/, got '" ~ c.deepspeed_config ~ "'.") }}{% endif -%}
+            {%- if (c.clearml_enabled | string | lower) not in ["auto", "true", "false", "on", "off", "1", "0"] %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.clearml_enabled must be auto, true or false, got '" ~ c.clearml_enabled ~ "'.") }}{% endif -%}
+            {%- if c.args is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args must be a mapping of finetune.py flag to value.") }}{% endif -%}
+            {%- for k, v in c.args.items() %}
+            {%- if (k | string | replace("-", "_")) in owned %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is set by the step; use the base_model/dataset inputs, output_path, dataset_mixer_list(_splits) or clearml_* instead.") }}{% endif -%}
+            {%- if v is mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
+            {%- if v is iterable and v is not string and v is not mapping and not v %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is an empty list; finetune.py would read the next flag as its value. Remove it, or set it to null to omit it.") }}{% endif -%}
+            {%- endfor -%}
+            {%- endmacro %}
+            {%- set c = config.openinstruct_sft_config %}
+            {%- set b = bindings if bindings is defined else {} %}
+            {{- validate(c, config.compute_config, "dataset" in b, (config.get("launcher_config") or {}).get("resources") or {}) }}
+            bash /opt/openinstruct-sft/openinstruct_sft_guard.sh \
+              --base-model '{{ q(b.base_model.binding.path if "base_model" in b else "") }}' \
+              --dataset '{{ q(b.dataset.binding.path if "dataset" in b else "") }}'
+            bash /opt/openinstruct-sft/openinstruct_sft_setup.sh
+          # Each block is filled on its own (no shared Jinja scope across YAML
+          # keys), so the macros repeat; run validates too, since a warm-cluster
+          # re-run renders it without setup.
+          run: |
+            set -euo pipefail
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            {%- macro validate(c, cc, bound, res) -%}
+            {%- set owned = ["model_name_or_path", "output_dir", "dataset_name", "dataset_mixer", "dataset_mixer_list", "dataset_mixer_list_splits", "with_tracking", "report_to", "wandb_entity", "push_to_hub", "try_launch_beaker_eval_jobs", "try_auto_save_to_beaker", "do_not_randomize_output_dir", "resume_from_checkpoint", "dataset_local_cache_dir"] -%}
+            {%- if c.dataset_mixer_list is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list must map an HF dataset id to a fraction or count, e.g. {allenai/tulu-3-sft-personas-algebra: 1.0}.") }}{% endif -%}
+            {%- if c.dataset_mixer_list_splits is string or c.dataset_mixer_list_splits is not iterable or not c.dataset_mixer_list_splits %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list_splits must be a non-empty list of split names, e.g. [train].") }}{% endif -%}
+            {%- if bound and c.dataset_mixer_list %}{{ raise_error("openinstruct-sft: both the `dataset` input and openinstruct_sft_config.dataset_mixer_list are set; use one.") }}{% endif -%}
+            {%- if not bound and not c.dataset_mixer_list %}{{ raise_error("openinstruct-sft: no training data: bind the `dataset` input or set openinstruct_sft_config.dataset_mixer_list.") }}{% endif -%}
+            {%- if not c.output %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.output is required; it names the target's model output.") }}{% endif -%}
+            {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
+            {%- if (cc.num_nodes | string) != "1" %}{{ raise_error("openinstruct-sft: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
+            {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("openinstruct-sft: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type). compute_config.num_gpus_per_node is not a SkyPilot GPU request.") }}{% endif -%}
+            {%- if "/" in (c.deepspeed_config | string) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.deepspeed_config must be a file name under the image's configs/ds_configs/, got '" ~ c.deepspeed_config ~ "'.") }}{% endif -%}
+            {%- if (c.clearml_enabled | string | lower) not in ["auto", "true", "false", "on", "off", "1", "0"] %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.clearml_enabled must be auto, true or false, got '" ~ c.clearml_enabled ~ "'.") }}{% endif -%}
+            {%- if c.args is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args must be a mapping of finetune.py flag to value.") }}{% endif -%}
+            {%- for k, v in c.args.items() %}
+            {%- if (k | string | replace("-", "_")) in owned %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is set by the step; use the base_model/dataset inputs, output_path, dataset_mixer_list(_splits) or clearml_* instead.") }}{% endif -%}
+            {%- if v is mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
+            {%- if v is iterable and v is not string and v is not mapping and not v %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is an empty list; finetune.py would read the next flag as its value. Remove it, or set it to null to omit it.") }}{% endif -%}
+            {%- endfor -%}
+            {%- endmacro %}
+            {%- set c = config.openinstruct_sft_config %}
+            {%- set b = bindings if bindings is defined else {} %}
+            {{- validate(c, config.compute_config, "dataset" in b, (config.get("launcher_config") or {}).get("resources") or {}) }}
+            {%- set ce = c.clearml_enabled | string | lower %}
+            {%- set clearml_mode = "on" if ce in ["true", "on", "1"] else ("off" if ce in ["false", "off", "0"] else "auto") %}
+            bash /opt/openinstruct-sft/openinstruct_sft_guard.sh \
+              --base-model '{{ q(b.base_model.binding.path if "base_model" in b else "") }}' \
+              --dataset '{{ q(b.dataset.binding.path if "dataset" in b else "") }}'
+            bash /opt/openinstruct-sft/openinstruct_sft_run.sh \
+              --base-model '{{ q(b.base_model.binding.path if "base_model" in b else "") }}' \
+              --output-id '{{ q(c.output) }}' \
+              --output-path '{{ q(c.output_path if c.output_path else "./model_output") }}' \
+              --mixed-precision '{{ q(c.mixed_precision) }}' \
+              --deepspeed-config '{{ q(c.deepspeed_config) }}' \
+              --clearml-mode '{{ clearml_mode }}' \
+              --clearml-project '{{ q(c.clearml_project) }}' \
+              --clearml-task '{{ q(c.clearml_task_name) }}' \
+              -- \
+              {%- if "dataset" in b %}
+              '--dataset_mixer_list' '{{ q(b.dataset.binding.path) }}' '1.0' \
+              {%- else %}
+              '--dataset_mixer_list' {% for k, v in c.dataset_mixer_list.items() %}'{{ q(k) }}' '{{ q(v) }}' {% endfor %}\
+              {%- endif %}
+              '--dataset_mixer_list_splits' {% for s in c.dataset_mixer_list_splits %}'{{ q(s) }}' {% endfor %}\
+              {% for k, v in c.args.items() %}{% if v is not none %}'--{{ q(k) }}' {% if v is sameas true or v is sameas false %}'{{ v | lower }}' {% elif v is iterable and v is not string %}{% for x in v %}'{{ q(x) }}' {% endfor %}{% else %}'{{ q(v) }}' {% endif %}{% endif %}{% endfor %}
+    monitors:
+      skypilot_monitor:
+        # Artifact + metadata markers come from the shared library. Training logs
+        # are retrieved periodically so the Step: status line shows mid-run.
+        ref: space://monitors/skypilot
+        config:
+          log_retrieval:
+            mode: "{{ config.log_retrieval_mode | default('periodic') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(300) }}"
+          # extra_event_configs, not event_configs: an overlay that sets
+          # event_configs on a ref would drop the library's artifact rules.
+          extra_event_configs:
+            - event_type: WORKLOAD_STATUS_EVENT
+              line_regex: "Step:\\s\\d+"
+              event_fields:
+                - field_name: status
+                  field_value_template: "RUNNING"
+                - field_name: message
+                  field_regex: "Step:.+"

@@ -41,6 +41,15 @@ class SkypilotConfigCollisionError(Exception):
     """
 
 
+class StepCertExpiredError(Exception):
+    """Raised when an ``IdentityStepCert`` host has no valid Smallstep SSH cert loaded.
+
+    gbserver never triggers ``step ssh login`` itself (it requires interactive
+    browser/OIDC auth), so this is a check-only, fail-fast signal: the user must
+    refresh their certificate themselves before the build can proceed.
+    """
+
+
 ERR_CONNECTION_RESET_BY_PEER = "Connection reset by peer"
 
 

@@ -20,9 +20,9 @@
 #                 already-committed image ref, so it is immune to the image-tag
 #                 SHA and flags only genuine content drift); exit 1 on drift
 #   all           end-to-end: image + publish-image + space (image steps),
-#                 or just space (non-image steps)
+#                 or just space (non-custom-image steps)
 #   test          render the Space (via `space`) and build the image locally
-#                 (via `image`; no-op/no publish for non-image steps), then run
+#                 (via `image`; no-op/no publish for non-custom-image steps), then run
 #                 the step's Python tests in $(TEST_DIR)/ (adjacent to src/,
 #                 organised in per-cluster subdirs; not bundled)
 #   test-setup    OPTIONAL per-step hook: stand up any infrastructure the step's
@@ -59,8 +59,11 @@
 #   DOCKER      container tool          (default: podman)
 #   DOCKERFILE  Dockerfile to detect/build (default: Dockerfile)
 #   PLATFORM    target build platform   (default: linux/amd64)
-#   IMAGE_NAME  image repository name   (default: gb-step-$(STEP_NAME))
-#   IMAGE_TAG   image tag               (default: git short SHA, else "latest")
+#   IMAGE_NAME     image repository          (default: steps/<step path>/<env>, one per step)
+#   IMAGE_VERSION  version part of the tag   (default: git short SHA, else "latest")
+#   IMAGE_TAG      image tag                 (default: $(IMAGE_VERSION))
+#   QUAY_API_TOKEN quay.io OAuth token in the ENVIRONMENT; publish-image creates a new
+#                  repository public with it (default: unset, no API call)
 #   STEP_ENV    step's environment segment      (default: this Makefile's dir name)
 #   PUBLISH_STEP_DIR  where `publish-step` renders the step (default: the env-nested
 #                     assets path configurations/assets/environments/<env>/steps/<path>)
@@ -109,26 +112,60 @@ $(error REGISTRY is not set. Define it in the including Makefile (e.g. 'REGISTRY
 endif
 endif
 
-IMAGE_NAME ?= gb-step-$(STEP_NAME)
-# Defaults to the git short SHA (else "latest") so iterative builds get a unique,
-# traceable tag without ceremony. Override per release, e.g. IMAGE_TAG=0.1.0.
-IMAGE_TAG  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
+# Every custom step image gets its own repository, named after the step's
+# directory, and the tag is the version (#229): steps/train/openinstruct-sft/skypilot
+# builds $(REGISTRY)/steps/train/openinstruct-sft/skypilot:<IMAGE_VERSION>. Override
+# IMAGE_NAME for another repository, or IMAGE_TAG to set the whole tag yourself.
+# `?=` keeps them recursive: STEP_PATH and STEP_ENV are assigned further down
+# this file.
+IMAGE_NAME    ?= steps/$(STEP_PATH)/$(STEP_ENV)
+# The version part of the tag. Defaults to the git short SHA (else "latest") so
+# iterative builds get a unique, traceable tag; a step pins a release in its
+# Makefile, e.g. IMAGE_VERSION ?= 0.1.0.
+IMAGE_VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
+IMAGE_TAG     ?= $(IMAGE_VERSION)
 
 # Registry host (e.g. quay.io) parsed from REGISTRY (quay.io/my-org) — this is
-# what `docker/podman login` authenticates against. Used only by publish-image's
+# what `docker login` authenticates against. Used only by publish-image's
 # optional non-interactive login below.
 REGISTRY_HOST := $(firstword $(subst /, ,$(REGISTRY)))
+# podman can scope a login to the namespace (quay.io/my-org), which leaves the
+# user's other logins on that host alone; docker logs in per host only.
+REGISTRY_LOGIN = $(if $(filter podman,$(notdir $(firstword $(DOCKER)))),$(REGISTRY),$(REGISTRY_HOST))
+
+# publish-image refuses to push a tag that already exists on the registry: a tag
+# pins an image (and SLURM's image cache keys its .sqsh by tag, so a re-pushed
+# tag never reaches it). Bump IMAGE_VERSION instead, or set PUBLISH_OVERWRITE=true
+# (exactly `true`) to replace the tag on purpose.
+PUBLISH_OVERWRITE ?= false
+
+# `make test` for a custom-image step WARNS (and still runs the tests) when IMAGE_REF
+# is already published as a DIFFERENT image than the one it just built, or when it
+# cannot compare them: SkyPilot build tests (aws, SLURM, k8s) pull the published
+# image, not the local build, so with a pinned IMAGE_VERSION a Dockerfile edit would
+# otherwise pass silently against the old image. The comparison uses podman image
+# IDs; with another DOCKER it is skipped with a note. TEST_PUBLISHED=true (exactly
+# `true`) skips the check, and its registry query, entirely.
+TEST_PUBLISHED ?= false
+
+# quay.io only: with QUAY_API_TOKEN (an OAuth token with the "Create Repositories"
+# scope) in the ENVIRONMENT, publish-image creates a repository that does not exist
+# yet as PUBLIC through quay's API before the first push. A repository created by
+# a push is private, and SkyPilot pulls the image anonymously. Without the token,
+# publish-image refuses a new repository rather than create a private one; create
+# it as Public in the quay UI first, then publish.
+QUAY_API ?= https://quay.io/api/v1
 
 # IMAGE_REF is the fully qualified image reference (e.g. quay.io/org/img:tag)
 # that `make space` substitutes into the template's ${IMAGE_REF} token. The
-# template wraps it as SkyPilot `docker:${IMAGE_REF}`. It is empty for non-image
+# template wraps it as SkyPilot `docker:${IMAGE_REF}`. It is empty for non-custom-image
 # steps, whose templates carry no ${IMAGE_REF} token and select their image via
 # runtime Jinja instead. Both the image/publish-image recipes and the render use
 # this same value, so there is one source of truth.
 ifeq ($(STEP_USES_IMAGE),true)
-IMAGE_REF := $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
+IMAGE_REF = $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
 else
-IMAGE_REF :=
+IMAGE_REF =
 endif
 
 # Name of the generated Space directory, created as ./$(SPACE_DIR) next to the
@@ -189,6 +226,9 @@ VENV_DIR ?= $(REPO_ROOT)/.venv
 # Makefile pulls it in, so `lastword` names it regardless of the caller's cwd.
 COMMON_MK_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
 README        := $(COMMON_MK_DIR)README.md
+# Prints present / absent / unknown for an image ref (exit 0 / 1 / 2); used by
+# publish-image's overwrite guard and publish-step's image check.
+TAG_STATUS    := sh $(COMMON_MK_DIR)scripts/registry-tag-status.sh
 
 # Relative file:// base_uri written into the generated space.yaml so space://
 # URIs (environments, monitors, other steps) resolve into the shared assets
@@ -285,7 +325,7 @@ REMOTE_SPACE_URI_RE := $(SPACE_URI_VALUE_RE)([a-zA-Z][a-zA-Z0-9+.-]*://|[a-zA-Z0
 # the registry — a step.yaml/build test referencing an unpublished image is broken
 # (the Mode-2 skypilot test's remote node cannot pull it). Set PUBLISH_REQUIRE_IMAGE=false
 # to bypass (offline publish, or the check-published re-render below). No effect on
-# non-image steps, whose IMAGE_REF is empty (see require-image-published).
+# non-custom-image steps, whose IMAGE_REF is empty (see require-image-published).
 PUBLISH_REQUIRE_IMAGE ?= true
 
 # STEP_PUBLISHABLE gates `publish-step` (see the includer variables above).
@@ -321,29 +361,78 @@ help:
 	@echo "  clean          remove the generated Space $(SPACE_DIR)/"
 	@echo "  help           show this message"
 	@echo
-	@echo "Common overrides: make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0"
+	@echo "Common overrides: make all REGISTRY=quay.io/myorg IMAGE_VERSION=0.1.0"
 	@echo "Full documentation: $(README)"
 
 # ---- Image build / publish (custom image steps only) ------------------------------
 
 image:
 ifeq ($(STEP_USES_IMAGE),true)
+	$(call require-image-tag)
 	$(DOCKER) build --platform $(PLATFORM) -f $(DOCKERFILE) . -t $(IMAGE_REF)
 else
 	@echo "[$(STEP_NAME)] no $(DOCKERFILE) found; no custom image to build."
 endif
 
-# By default this assumes you have already authenticated to the registry out of
-# band (`podman login $(REGISTRY_HOST)` / `docker login`), so no credentials live
-# in this Makefile. For non-interactive use (CI), export REGISTRY_USER and
+# By default this assumes you have already logged in to the registry out of
+# band (`podman login $(REGISTRY)` / `docker login`), so no credentials live in
+# this Makefile. For non-interactive use (CI), export REGISTRY_USER and
 # REGISTRY_PASSWORD (a robot-account token) in the ENVIRONMENT — not as make
-# variables — and publish-image logs in first, piping the secret via
-# --password-stdin so it never appears in `ps`, make's echo, or shell history.
+# variables — and publish-image logs in to $(REGISTRY_LOGIN) first, piping the
+# secret via --password-stdin so it never appears in `ps`, make's echo, or shell
+# history.
+#
+# Then it refuses to overwrite a tag (see PUBLISH_OVERWRITE): it pushes only
+# when the registry reports the tag absent. A tag it cannot check (network,
+# auth, an unexpected answer) is refused too, so a broken check never turns
+# into a silent overwrite.
+#
+# On quay.io it first makes sure the step's repository exists and is public
+# (see QUAY_API_TOKEN above): a repository the registry reports absent is
+# created public through quay's API when the token is set, and refused (before
+# any push) otherwise. The token reaches curl as config on stdin, never on its argv.
 publish-image:
 ifeq ($(STEP_USES_IMAGE),true)
+	$(call require-image-tag)
 	@if [ -n "$${REGISTRY_USER:-}" ] && [ -n "$${REGISTRY_PASSWORD:-}" ]; then \
-		echo "[$(STEP_NAME)] logging in to $(REGISTRY_HOST) as $$REGISTRY_USER"; \
-		printf '%s' "$$REGISTRY_PASSWORD" | $(DOCKER) login "$(REGISTRY_HOST)" -u "$$REGISTRY_USER" --password-stdin; \
+		echo "[$(STEP_NAME)] logging in to $(REGISTRY_LOGIN) as $$REGISTRY_USER"; \
+		printf '%s' "$$REGISTRY_PASSWORD" | $(DOCKER) login "$(REGISTRY_LOGIN)" -u "$$REGISTRY_USER" --password-stdin; \
+	fi
+	@if [ "$(REGISTRY_HOST)" = "quay.io" ]; then \
+		ns='$(word 2,$(subst /, ,$(REGISTRY)))'; \
+		repo='$(patsubst $(REGISTRY_HOST)/%,%,$(REGISTRY))/$(IMAGE_NAME)'; repo="$${repo#*/}"; \
+		rstatus=$$($(TAG_STATUS) --repository "$(IMAGE_REF)"); \
+		case "$$rstatus" in \
+			present) ;; \
+			absent) \
+				if [ -z "$${QUAY_API_TOKEN:-}" ]; then \
+					echo "[$(STEP_NAME)] ERROR: quay.io repository $$ns/$$repo does not exist yet, and a push would create it PRIVATE (SkyPilot pulls anonymously). Set QUAY_API_TOKEN to have publish-image create it public, or create it as Public in the quay UI first." >&2; \
+					exit 1; \
+				else \
+					body=$$(mktemp) || exit 1; \
+					printf '{"namespace":"%s","repository":"%s","visibility":"public","description":"granite.build step image (%s)","repo_kind":"image"}' "$$ns" "$$repo" "$$repo" > "$$body"; \
+					code=$$(printf 'header = "Authorization: Bearer %s"\n' "$$QUAY_API_TOKEN" | curl -s -g -o /dev/null -w '%{http_code}' --max-time 30 --config - \
+						-X POST -H 'Content-Type: application/json' --data-binary "@$$body" --url "$(QUAY_API)/repository"); \
+					rm -f "$$body"; \
+					if [ "$$code" = "201" ]; then \
+						echo "[$(STEP_NAME)] created public repository quay.io/$$ns/$$repo"; \
+					else \
+						echo "[$(STEP_NAME)] ERROR: could not create public repository quay.io/$$ns/$$repo (HTTP $$code). Check QUAY_API_TOKEN's scopes (Create Repositories), or create it in the quay UI." >&2; \
+						exit 1; \
+					fi; \
+				fi ;; \
+			*) echo "[$(STEP_NAME)] ERROR: could not determine whether repository quay.io/$$ns/$$repo exists. quay.io answers an anonymous check of a repository that does not exist yet with 401, so this needs credentials: run 'podman login $(REGISTRY)' (a login kept in a credential helper is not read), or export REGISTRY_USER and REGISTRY_PASSWORD." >&2; exit 1 ;; \
+		esac; \
+	fi
+	@if [ "$(PUBLISH_OVERWRITE)" = "true" ]; then \
+		echo "[$(STEP_NAME)] PUBLISH_OVERWRITE=true: pushing $(IMAGE_REF) without checking for an existing tag."; \
+	else \
+		status=$$($(TAG_STATUS) "$(IMAGE_REF)"); \
+		case "$$status" in \
+			absent) echo "[$(STEP_NAME)] $(IMAGE_REF) is a new tag." ;; \
+			present) echo "[$(STEP_NAME)] ERROR: $(IMAGE_REF) already exists on the registry; a tag must keep pointing at one image. Bump IMAGE_VERSION, or pass PUBLISH_OVERWRITE=true to replace it on purpose." >&2; exit 1 ;; \
+			*) echo "[$(STEP_NAME)] ERROR: could not determine whether $(IMAGE_REF) already exists (registry unreachable, or it refused the check). Fix access and retry, or pass PUBLISH_OVERWRITE=true to push without the check." >&2; exit 1 ;; \
+		esac; \
 	fi
 	$(DOCKER) push $(IMAGE_REF)
 else
@@ -353,7 +442,7 @@ endif
 # ---- Rendering helper -------------------------------------------------------
 
 # render-step-template — render step-template.yaml to the file named by $(1),
-# substituting ONLY the literal ${IMAGE_REF} token (empty for non-image steps).
+# substituting ONLY the literal ${IMAGE_REF} token (empty for non-custom-image steps).
 # Everything else passes through verbatim: runtime Jinja ({{ ... }}) and shell
 # expansions (${VAR}, $(cmd)) in run:/setup: blocks. Uses sed (POSIX, always
 # present) rather than envsubst, so no gettext install is required. The image
@@ -394,6 +483,23 @@ define require-gbignore
 		exit 1; }
 endef
 
+# require-image-tag — fail before building/pushing when the derived tag is not a
+# valid OCI tag (at most 128 chars of [A-Za-z0-9_.-], not starting with . or -).
+define require-image-tag
+	@tag='$(IMAGE_TAG)'; \
+	if [ "$${#tag}" -gt 128 ] || ! printf '%s' "$$tag" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]*$$'; then \
+		echo "[$(STEP_NAME)] ERROR: image tag '$$tag' is not a valid OCI tag (max 128 chars of [A-Za-z0-9_.-])." >&2; \
+		echo "[$(STEP_NAME)] Shorten IMAGE_VERSION, or set IMAGE_TAG in this step's Makefile." >&2; \
+		exit 1; \
+	fi; \
+	name='$(IMAGE_NAME)'; \
+	if ! printf '%s' "$$name" | grep -Eq '^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$$'; then \
+		echo "[$(STEP_NAME)] ERROR: image repository '$$name' is not a valid repository name (lowercase [a-z0-9], components separated by '/', '.', '_' or '-' only between characters)." >&2; \
+		echo "[$(STEP_NAME)] Rename the step directory, or set IMAGE_NAME in this step's Makefile." >&2; \
+		exit 1; \
+	fi
+endef
+
 # guard-publish-paths — fail fast before `publish-step` runs any rm -rf. The publish
 # destinations are absolute paths built from STEP_PATH/STEP_ENV; a stray empty
 # override (e.g. `make publish-step STEP_ENV=`) or a mis-derived STEP_PATH would
@@ -426,26 +532,26 @@ endef
 
 # require-image-published — for custom-image steps, fail publish-step unless the step's
 # IMAGE_REF is present on its registry, so a step's step.yaml + build tests are only
-# published once the image they reference is pullable. No-op for non-image steps (empty
-# IMAGE_REF) and when PUBLISH_REQUIRE_IMAGE is not "true". Queries the registry manifest
-# only (no layer pull): prefers skopeo (registry-native, independent of $(DOCKER)),
-# falling back to `$(DOCKER) manifest inspect`. A public image needs no credentials.
+# published once the image they reference is pullable. No-op for non-custom-image steps (empty
+# IMAGE_REF) and when PUBLISH_REQUIRE_IMAGE is not "true". Asks the registry for the
+# manifest only, no layer pull (scripts/registry-tag-status.sh: skopeo when installed, else
+# the registry's v2 API). Not `$(DOCKER) manifest inspect`, which fails on a
+# single-platform image under podman (#568). A public image needs no credentials.
 define require-image-published
 	@if [ -n "$(IMAGE_REF)" ] && [ "$(PUBLISH_REQUIRE_IMAGE)" = "true" ]; then \
 		echo "[$(STEP_NAME)] verifying image is published: $(IMAGE_REF)"; \
-		if command -v skopeo >/dev/null 2>&1; then \
-			skopeo inspect --raw "docker://$(IMAGE_REF)" >/dev/null 2>&1 || { \
+		status=$$($(TAG_STATUS) "$(IMAGE_REF)"); \
+		case "$$status" in \
+			present) echo "[$(STEP_NAME)] image present on registry." ;; \
+			absent) \
 				echo "[publish-step] refusing: image '$(IMAGE_REF)' not found on its registry."; \
 				echo "[publish-step] run 'make publish-image' (and ensure the repo is public) before 'make publish-step', or pass PUBLISH_REQUIRE_IMAGE=false to override."; \
-				exit 1; }; \
-		elif $(DOCKER) manifest inspect "$(IMAGE_REF)" >/dev/null 2>&1; then \
-			:; \
-		else \
-			echo "[publish-step] refusing: image '$(IMAGE_REF)' not found on its registry (via '$(DOCKER) manifest inspect'; install skopeo for a more reliable check)."; \
-			echo "[publish-step] run 'make publish-image' first, or pass PUBLISH_REQUIRE_IMAGE=false to override."; \
-			exit 1; \
-		fi; \
-		echo "[$(STEP_NAME)] image present on registry."; \
+				exit 1 ;; \
+			*) \
+				echo "[publish-step] refusing: could not check whether '$(IMAGE_REF)' is on its registry (unreachable, or a private repo)."; \
+				echo "[publish-step] retry, or pass PUBLISH_REQUIRE_IMAGE=false to override."; \
+				exit 1 ;; \
+		esac; \
 	fi
 endef
 
@@ -569,7 +675,7 @@ publish-step:
 # immune to the image-tag SHA: for image steps it re-renders with the SAME image
 # reference already committed (extracted from the published step.yaml via
 # IMAGE_REF), so only genuine content drift — an edited template/src/test that
-# was never re-published — is reported, not the per-commit IMAGE_TAG churn (see
+# was never re-published — is reported, not the per-commit IMAGE_VERSION churn (see
 # the "keep the published image tag and your local build in sync" note under "Two
 # test modes" in steps/README.md). It also passes PUBLISH_REQUIRE_IMAGE=false to
 # the re-render so drift-checking stays offline (it never queries the registry — the
@@ -704,6 +810,25 @@ test: space image
 	@if [ ! -d "$(TEST_DIR)" ] || [ -z "$$(ls -A $(TEST_DIR) 2>/dev/null)" ]; then \
 		echo "[$(STEP_NAME)] no tests in $(TEST_DIR)/; nothing to run."; \
 		exit 0; \
+	fi; \
+	if [ "$(STEP_USES_IMAGE)" = "true" ] && [ "$(TEST_PUBLISHED)" != "true" ]; then \
+		if [ "$(notdir $(firstword $(DOCKER)))" != "podman" ]; then \
+			echo "[$(STEP_NAME)] note: not comparing the local build with the published $(IMAGE_REF) (the check relies on podman image IDs; DOCKER=$(DOCKER))."; \
+		else \
+			published=$$($(TAG_STATUS) --config-digest "$(IMAGE_REF)"); \
+			case "$$published" in \
+				absent) ;; \
+				sha256:*) \
+					local_id=$$($(DOCKER) image inspect --format '{{.Id}}' "$(IMAGE_REF)" 2>/dev/null); \
+					if [ "sha256:$${local_id#sha256:}" != "$$published" ]; then \
+						echo "[$(STEP_NAME)] WARNING: $(IMAGE_REF) is already published as a different image than the one just built." >&2; \
+						echo "[$(STEP_NAME)] WARNING: SkyPilot build tests pull the PUBLISHED image, so they will not test your local changes." >&2; \
+						echo "[$(STEP_NAME)] WARNING: to test a change on a cluster, bump IMAGE_VERSION (or use a scratch one, e.g. IMAGE_VERSION=dev-<name>) and 'make image publish-image' first. Pass TEST_PUBLISHED=true to silence this when testing the published image on purpose." >&2; \
+					fi ;; \
+				*) \
+					echo "[$(STEP_NAME)] WARNING: could not compare the local build with the published $(IMAGE_REF) (not published yet, offline, or a private repository). SkyPilot build tests will use whatever the registry serves under that tag." >&2 ;; \
+			esac; \
+		fi; \
 	fi; \
 	if [ ! -f "$(VENV_DIR)/bin/activate" ]; then \
 		echo "[$(STEP_NAME)] ERROR: no virtualenv at $(VENV_DIR)."; \

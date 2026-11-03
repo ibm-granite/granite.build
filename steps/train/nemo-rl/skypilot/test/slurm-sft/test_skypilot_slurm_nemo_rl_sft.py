@@ -16,7 +16,7 @@
 
 The SLURM counterpart of ``test/aws-sft``: the same short SFT run on a tiny base
 model, on BlueVela's gpu-mid partition via
-``space://environments/skypilot/slurm/ibm-bluevela``. Reaching SUCCESS proves the
+``space://environments/skypilot/slurm/bluevela``. Reaching SUCCESS proves the
 step's SLURM path: the base model is staged by a separate hfpull step onto the
 shared /proj filesystem, the NeMo-RL image runs as a Pyxis/enroot container from
 the environment's shared ``.sqsh`` image cache (#560), ``examples/run_sft.py`` trains, ``convert_dcp_to_hf.py``
@@ -24,9 +24,13 @@ produces a non-empty HF dir, and the ``model`` artifact is registered from the
 step's marker.
 
 **Real cluster — never runs by accident.** It is extended-suite only, marked
-``ibm`` (it needs IBM infrastructure), and skips unless the BlueVela key for the
-``granitebuild`` functional ID is present at the path the environment names. It
-also skips in SPS CI, which has no key on the host.
+``ibm`` (it needs IBM infrastructure), and skips unless
+``~/.ssh/ibm-bluevela.key`` exists on the host — the key the shared
+environment's ``BV_SSH_PRIVATE_KEY`` space secret is created from
+(``gb secret create BV_SSH_PRIVATE_KEY --from-file ~/.ssh/ibm-bluevela.key``);
+the environment resolves the secret, never an on-host path, so the space this
+test runs in must hold that secret. It also skips in SPS CI, which has no key
+on the host.
 
 Fixtures (build.yaml/buildtest.yaml) live in the ``test-data/`` dir mirroring this
 file, resolved by the repo's ``test/`` <-> ``test-data/`` helper so the pairing
@@ -45,7 +49,7 @@ from libgbtest.constants import extended_testing_only
 
 pytestmark = [pytest.mark.skypilot_integration, pytest.mark.ibm]
 
-# The key the ibm-bluevela SLURM environment reads (cluster_ssh_configs IdentityFile).
+# The key the bluevela SLURM environment reads (cluster_ssh_configs IdentityFile).
 _BLUEVELA_KEY = Path("~/.ssh/ibm-bluevela.key").expanduser()
 
 

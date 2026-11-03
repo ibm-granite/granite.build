@@ -23,7 +23,7 @@ simulate_step_failure: false
 # container start from the cached 20 GB .sqsh, a short SFT run and DCP->HF
 # conversion. Queueing is the dominant unknown; retune after a few green runs.
 #
-# The image comes from ibm-bluevela's slurm_image_cache (#560). This budget
+# The image comes from bluevela's slurm_image_cache (#560). This budget
 # assumes a cache HIT, which is the normal case: the shared cache keeps one .sqsh
 # per image digest. On a MISS (first run after the step's pinned image changes)
 # gbserver first runs a ~72 min cpu-partition import before it submits the GPU

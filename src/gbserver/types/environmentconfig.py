@@ -53,7 +53,15 @@ class ClusterSshConfigs(Config):
     at random per launch (spreading load) and, if a transient SSH control-plane error
     stalls provisioning, fails over to the next candidate on retry. The chosen
     hostname is rendered as a normal scalar ``HostName`` directive, so all candidates
-    share this entry's ``User``/``Port``/``IdentityFile``/etc.
+    share this entry's ``User``/``Port``/``IdentityFile``/etc. A ``HostName`` item
+    may also name a secret (resolved before candidate selection); such a secret may
+    hold one login node or several comma-/whitespace-separated ones, all of which
+    become failover candidates.
+
+    ``IdentityStepCert`` (the step-certificate check toggle) must be a YAML
+    *boolean* — an unquoted ``true``/``false`` (or ``yes``/``no``). A quoted
+    ``"no"`` is a truthy non-empty string and would enable the check instead of
+    disabling it, so any non-boolean value is rejected at load time.
 
     Attributes:
         slurm: Host entries rendered into ``~/.slurm/config``.
@@ -62,6 +70,29 @@ class ClusterSshConfigs(Config):
 
     slurm: Optional[List[Dict[str, Any]]] = None
     lsf: Optional[List[Dict[str, Any]]] = None
+
+    @model_validator(mode="after")
+    def _validate_identity_step_cert_bool(self) -> "ClusterSshConfigs":
+        """Reject a non-boolean ``IdentityStepCert`` when the environment loads.
+
+        In YAML an unquoted ``yes``/``no``/``true``/``false`` parses as a bool,
+        but a quoted ``"no"`` is a truthy non-empty *string* — it would
+        silently enable the step-cert check instead of disabling it. Reject
+        anything that is not a boolean or unset, the same treatment
+        ``slurm_gpu_sbatch_directives`` gets on ``EnvironmentConfig``.
+        """
+        for cloud in ("slurm", "lsf"):
+            for host in getattr(self, cloud) or []:
+                value = host.get("IdentityStepCert")
+                if value is None or isinstance(value, bool):
+                    continue
+                raise ValueError(
+                    f"cluster_ssh_configs.{cloud} host {host.get('Host')!r}: "
+                    "IdentityStepCert must be a YAML boolean (true/false, "
+                    f"unquoted), got {value!r}; a quoted 'no' is a truthy "
+                    "string and would enable the check instead of disabling it"
+                )
+        return self
 
 
 class AwsCredentialProfile(Config):
@@ -194,6 +225,22 @@ class EnvironmentConfig(Config):
             from gbserver.environment._slurm_image_cache import parse_cache_config
 
             parse_cache_config(raw)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_slurm_gpu_sbatch_directives(self) -> "EnvironmentConfig":
+        """Reject a non-boolean ``slurm_gpu_sbatch_directives`` at load time.
+
+        The key is optional (off by default; the ibm-bluevela environment sets
+        it true), but when set it must be a bool — a typo like ``flase`` would
+        otherwise silently never opt the environment in.
+        """
+        raw = (self.config or {}).get("slurm_gpu_sbatch_directives")
+        if raw is not None and not isinstance(raw, bool):
+            raise ValueError(
+                "slurm_gpu_sbatch_directives must be a boolean (true/false), "
+                f"got {raw!r}"
+            )
         return self
 
     @model_validator(mode="after")

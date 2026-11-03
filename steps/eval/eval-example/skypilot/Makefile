@@ -15,7 +15,7 @@
 #   make help           # list targets; points to the shared steps/README.md
 #
 # Override the image coordinates as needed, e.g.:
-#   make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0
+#   make all REGISTRY=quay.io/myorg IMAGE_VERSION=0.1.0
 
 STEP_NAME := eval-example
 # This step is an exemplar (a template for custom-image steps), not a released step,
@@ -24,11 +24,11 @@ STEP_NAME := eval-example
 override STEP_PUBLISHABLE := false
 # PLACEHOLDER registry — replace `quay.io/your-org` with your own namespace
 # before publishing, or override per invocation:
-#   make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0
+#   make all REGISTRY=quay.io/myorg IMAGE_VERSION=0.1.0
 # This `?=` default satisfies common.mk's image-step REGISTRY guard so offline
 # targets (make space / make image) work out of the box; but `make publish-image`
 # WILL push to this bogus registry and fail auth unless you set a real one.
-# IMAGE_TAG defaults to the git short SHA if not set.
+# IMAGE_VERSION defaults to the git short SHA if not set.
 REGISTRY ?= quay.io/your-org
 
 include ../../../common.mk
