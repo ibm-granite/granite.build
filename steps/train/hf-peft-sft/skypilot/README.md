@@ -401,8 +401,9 @@ metadata.
 
 | Result | aws | slurm-bluevela |
 |---|---|---|
-| status | **passed** 2026-11-02, 7m29s for both targets (`peft-v0.21.2-4`; first passed 2026-10-30 on `-1`) | **passed** 2026-11-02, 18m33s for both targets, build 48212174 (`peft-v0.21.2-4`, cold `.sqsh` import then cached) |
-| loss, steps 1→3 | both targets logged `Step: 1/3`…`3/3` (1.94 → 1.71 → 2.79 and 2.13 → 1.87 → 2.97) | lora/fsdp 2.15 → 4.26 → 2.27 (same as `-3`); qlora/deepspeed 2.39 → 4.54 → 2.52 |
+| status | **passed** 2026-11-03, 8m56s for both targets (`peft-v0.21.2-5`; first passed 2026-10-30 on `-1`) | **passed** 2026-11-03, 30m03s for both targets, build 1611018c (`peft-v0.21.2-5`, cold `.sqsh` import first) |
+| loss, steps 1→3 | qlora 1.94 → 1.71 → 2.79, alora 2.13 → 1.87 → 2.97 (same as `-4`) | lora/fsdp 2.15 → 4.26 → 2.27, qlora/deepspeed 2.39 → 4.54 → 2.52 (same as `-4`) |
+| progress | each `Step:` line reaches the build runner as a workload-status message, e.g. `Workload status is RUNNING (Step: 3/3 loss=2.7925)` | same |
 | adapter | `adapter` at `/root/sky_workdir/adapter_output` per target | both registered (the run script refuses a 0-tensor adapter; on `-3` lora/fsdp read 420 tensors, 19.6 MB on the node) |
 | markers | `method`, `peft_version` 0.21.2, `trl_version` 1.17.1 | same |
 
@@ -417,7 +418,12 @@ Earlier BlueVela runs, and what each one fixed:
   run script now refuses an adapter with no weights, and FSDP is FSDP2.
 - `-3` (build 611571b7, 14m32s): green. `-4` adds the review fixes from #596 (step-owned
   ddp/single-GPU accelerate configs, a free rendezvous port, `dataset_config`, `save_to_disk`
-  datasets, `main()` split) and passed again on both clusters.
+  datasets, `main()` split) and passed again on both clusters (build 48212174).
+- After #519 (the `bluevela` environment's new SLURM GPU directives and SkyPilot fork), one
+  `-4` run had qlora/deepspeed's container see 1 of 2 GPUs; the run script refused it. That
+  is a platform issue (#604), node-dependent. `-5` (second review round: abbreviated or
+  non-bare `args` refused, multi-node `launcher_config` refused, bytecode at build time)
+  passed on both clusters.
 
 #### aws
 
