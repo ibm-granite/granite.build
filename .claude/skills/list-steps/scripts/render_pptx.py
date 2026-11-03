@@ -1,3 +1,4 @@
+# pylint: disable=line-too-long  # Office Open XML literals read best unbroken.
 """Render the steps inventory tables as a PowerPoint deck: one table slide per category.
 
 Written directly as Office Open XML with the standard library (zipfile), so it needs no
@@ -29,8 +30,10 @@ PKG_REL = "http://schemas.openxmlformats.org/package/2006/relationships"
 CT_PML = "application/vnd.openxmlformats-officedocument.presentationml"
 XML_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
 
-EMPTY_TREE = ('<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/>'
-              '</p:nvGrpSpPr><p:grpSpPr/>{}</p:spTree>')
+EMPTY_TREE = (
+    '<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/>'
+    "</p:nvGrpSpPr><p:grpSpPr/>{}</p:spTree>"
+)
 
 THEME = f"""<a:theme xmlns:a="{NS_A}" name="Office"><a:themeElements>
 <a:clrScheme name="Office"><a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1>
@@ -47,9 +50,11 @@ THEME = f"""<a:theme xmlns:a="{NS_A}" name="Office"><a:themeElements>
 <a:bgFillStyleLst>{'<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>' * 3}</a:bgFillStyleLst></a:fmtScheme>
 </a:themeElements></a:theme>"""
 
-CLR_MAP = ('bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" '
-           'accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" '
-           'hlink="hlink" folHlink="folHlink"')
+CLR_MAP = (
+    'bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" '
+    'accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" '
+    'hlink="hlink" folHlink="folHlink"'
+)
 
 
 def rels_xml(rels):
@@ -64,7 +69,8 @@ def rels_xml(rels):
     items = "".join(
         f'<Relationship Id="{rid}" Type="{REL}/{kind}" Target={quoteattr(target)}'
         f'{" TargetMode=" + quoteattr("External") if external else ""}/>'
-        for rid, kind, target, external in rels)
+        for rid, kind, target, external in rels
+    )
     return f'{XML_DECL}<Relationships xmlns="{PKG_REL}">{items}</Relationships>'
 
 
@@ -107,7 +113,9 @@ def para_xml(parts, size_pt, rels, link_base, bold=False):
     Returns:
         An <a:p> XML string.
     """
-    runs = "".join(run_xml(p, size_pt, rels, link_base, bold) for p in parts if cell_text([p]))
+    runs = "".join(
+        run_xml(p, size_pt, rels, link_base, bold) for p in parts if cell_text([p])
+    )
     return f'<a:p>{runs}<a:endParaRPr lang="en-US" sz="{size_pt * 100}"/></a:p>'
 
 
@@ -124,11 +132,17 @@ def cell_xml(parts, rels, link_base, header=False):
         An <a:tc> XML string.
     """
     line = f'<a:solidFill><a:srgbClr val="{BORDER}"/></a:solidFill>'
-    borders = "".join(f'<a:{side} w="6350">{line}</a:{side}>' for side in ("lnL", "lnR", "lnT", "lnB"))
-    fill = f'<a:solidFill><a:srgbClr val="{HEADER_FILL}"/></a:solidFill>' if header else ""
+    borders = "".join(
+        f'<a:{side} w="6350">{line}</a:{side}>' for side in ("lnL", "lnR", "lnT", "lnB")
+    )
+    fill = (
+        f'<a:solidFill><a:srgbClr val="{HEADER_FILL}"/></a:solidFill>' if header else ""
+    )
     body = para_xml(parts, FONT_PT, rels, link_base, bold=header)
-    return (f'<a:tc><a:txBody><a:bodyPr/><a:lstStyle/>{body}</a:txBody>'
-            f'<a:tcPr marL="45720" marR="45720" marT="27432" marB="27432">{borders}{fill}</a:tcPr></a:tc>')
+    return (
+        f"<a:tc><a:txBody><a:bodyPr/><a:lstStyle/>{body}</a:txBody>"
+        f'<a:tcPr marL="45720" marR="45720" marT="27432" marB="27432">{borders}{fill}</a:tcPr></a:tc>'
+    )
 
 
 def table_xml(rows, rels, link_base, top):
@@ -148,14 +162,20 @@ def table_xml(rows, rels, link_base, top):
     grid = "".join(f'<a:gridCol w="{width * w // total}"/>' for w in COL_WEIGHTS)
     row_h = FONT_PT * EMU_PER_PT * 2
     header = "".join(cell_xml([name], rels, link_base, header=True) for name in COLUMNS)
-    body = "".join(f'<a:tr h="{row_h}">' + "".join(cell_xml(c, rels, link_base) for c in row) + "</a:tr>"
-                   for row in rows)
-    return (f'<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="3" name="Table"/><p:cNvGraphicFramePr>'
-            f'<a:graphicFrameLocks noGrp="1"/></p:cNvGraphicFramePr><p:nvPr/></p:nvGraphicFramePr>'
-            f'<p:xfrm><a:off x="{MARGIN}" y="{top}"/><a:ext cx="{width}" cy="{row_h * (len(rows) + 1)}"/></p:xfrm>'
-            f'<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table">'
-            f'<a:tbl><a:tblPr firstRow="1"/><a:tblGrid>{grid}</a:tblGrid><a:tr h="{row_h}">{header}</a:tr>'
-            f'{body}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>')
+    body = "".join(
+        f'<a:tr h="{row_h}">'
+        + "".join(cell_xml(c, rels, link_base) for c in row)
+        + "</a:tr>"
+        for row in rows
+    )
+    return (
+        f'<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="3" name="Table"/><p:cNvGraphicFramePr>'
+        f'<a:graphicFrameLocks noGrp="1"/></p:cNvGraphicFramePr><p:nvPr/></p:nvGraphicFramePr>'
+        f'<p:xfrm><a:off x="{MARGIN}" y="{top}"/><a:ext cx="{width}" cy="{row_h * (len(rows) + 1)}"/></p:xfrm>'
+        f'<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table">'
+        f'<a:tbl><a:tblPr firstRow="1"/><a:tblGrid>{grid}</a:tblGrid><a:tr h="{row_h}">{header}</a:tr>'
+        f"{body}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>"
+    )
 
 
 def textbox_xml(shape_id, name, paras, top, height):
@@ -171,11 +191,13 @@ def textbox_xml(shape_id, name, paras, top, height):
     Returns:
         A <p:sp> XML string.
     """
-    return (f'<p:sp><p:nvSpPr><p:cNvPr id="{shape_id}" name="{name}"/><p:cNvSpPr txBox="1"/><p:nvPr/>'
-            f'</p:nvSpPr><p:spPr><a:xfrm><a:off x="{MARGIN}" y="{top}"/>'
-            f'<a:ext cx="{SLIDE_W - 2 * MARGIN}" cy="{height}"/></a:xfrm><a:prstGeom prst="rect">'
-            f'<a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr wrap="square"/><a:lstStyle/>'
-            f'{paras}</p:txBody></p:sp>')
+    return (
+        f'<p:sp><p:nvSpPr><p:cNvPr id="{shape_id}" name="{name}"/><p:cNvSpPr txBox="1"/><p:nvPr/>'
+        f'</p:nvSpPr><p:spPr><a:xfrm><a:off x="{MARGIN}" y="{top}"/>'
+        f'<a:ext cx="{SLIDE_W - 2 * MARGIN}" cy="{height}"/></a:xfrm><a:prstGeom prst="rect">'
+        f'<a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr wrap="square"/><a:lstStyle/>'
+        f"{paras}</p:txBody></p:sp>"
+    )
 
 
 def slide_xml(title, rows, link_base):
@@ -190,9 +212,16 @@ def slide_xml(title, rows, link_base):
         (slide XML, slide .rels XML).
     """
     rels = [("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml", False)]
-    title_box = textbox_xml(2, "Title", para_xml([title], TITLE_PT, rels, link_base, bold=True),
-                            MARGIN // 2, TITLE_PT * EMU_PER_PT * 2)
-    table = table_xml(rows, rels, link_base, MARGIN // 2 + TITLE_PT * EMU_PER_PT * 2 + MARGIN // 2)
+    title_box = textbox_xml(
+        2,
+        "Title",
+        para_xml([title], TITLE_PT, rels, link_base, bold=True),
+        MARGIN // 2,
+        TITLE_PT * EMU_PER_PT * 2,
+    )
+    table = table_xml(
+        rows, rels, link_base, MARGIN // 2 + TITLE_PT * EMU_PER_PT * 2 + MARGIN // 2
+    )
     notes = "".join(para_xml(n, NOTE_PT, rels, link_base) for n in FOOTNOTES)
     note_h = NOTE_PT * EMU_PER_PT * 2 * len(FOOTNOTES)
     note_box = textbox_xml(4, "Notes", notes, SLIDE_H - MARGIN - note_h, note_h)
@@ -214,7 +243,7 @@ def paginate(tables):
     for category, rows in tables:
         for start in range(0, max(len(rows), 1), ROWS_PER_SLIDE):
             title = category if start == 0 else f"{category} (cont.)"
-            slides.append((title, rows[start:start + ROWS_PER_SLIDE]))
+            slides.append((title, rows[start : start + ROWS_PER_SLIDE]))
     return slides
 
 
@@ -227,8 +256,10 @@ def content_types_xml(n_slides):
     Returns:
         XML string.
     """
-    overrides = "".join(f'<Override PartName="/ppt/slides/slide{i + 1}.xml" ContentType="{CT_PML}.slide+xml"/>'
-                        for i in range(n_slides))
+    overrides = "".join(
+        f'<Override PartName="/ppt/slides/slide{i + 1}.xml" ContentType="{CT_PML}.slide+xml"/>'
+        for i in range(n_slides)
+    )
     return (
         f'{XML_DECL}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
         '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
@@ -239,7 +270,8 @@ def content_types_xml(n_slides):
         f'<Override PartName="/ppt/presProps.xml" ContentType="{CT_PML}.presProps+xml"/>'
         '<Override PartName="/ppt/theme/theme1.xml" '
         'ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>'
-        f'{overrides}</Types>')
+        f"{overrides}</Types>"
+    )
 
 
 def package_parts(n_slides):
@@ -251,32 +283,49 @@ def package_parts(n_slides):
     Returns:
         Dict of part name -> XML string.
     """
-    slide_ids = "".join(f'<p:sldId id="{256 + i}" r:id="rId{10 + i}"/>' for i in range(n_slides))
+    slide_ids = "".join(
+        f'<p:sldId id="{256 + i}" r:id="rId{10 + i}"/>' for i in range(n_slides)
+    )
     return {
         "[Content_Types].xml": content_types_xml(n_slides),
-        "_rels/.rels": rels_xml([("rId1", "officeDocument", "ppt/presentation.xml", False)]),
+        "_rels/.rels": rels_xml(
+            [("rId1", "officeDocument", "ppt/presentation.xml", False)]
+        ),
         "ppt/presentation.xml": (
             f'{XML_DECL}<p:presentation {NS}><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/>'
-            f'</p:sldMasterIdLst><p:sldIdLst>{slide_ids}</p:sldIdLst>'
-            f'<p:sldSz cx="{SLIDE_W}" cy="{SLIDE_H}"/><p:notesSz cx="6858000" cy="9144000"/></p:presentation>'),
+            f"</p:sldMasterIdLst><p:sldIdLst>{slide_ids}</p:sldIdLst>"
+            f'<p:sldSz cx="{SLIDE_W}" cy="{SLIDE_H}"/><p:notesSz cx="6858000" cy="9144000"/></p:presentation>'
+        ),
         "ppt/_rels/presentation.xml.rels": rels_xml(
-            [("rId1", "slideMaster", "slideMasters/slideMaster1.xml", False),
-             ("rId2", "theme", "theme/theme1.xml", False),
-             ("rId3", "presProps", "presProps.xml", False)]
-            + [(f"rId{10 + i}", "slide", f"slides/slide{i + 1}.xml", False) for i in range(n_slides)]),
+            [
+                ("rId1", "slideMaster", "slideMasters/slideMaster1.xml", False),
+                ("rId2", "theme", "theme/theme1.xml", False),
+                ("rId3", "presProps", "presProps.xml", False),
+            ]
+            + [
+                (f"rId{10 + i}", "slide", f"slides/slide{i + 1}.xml", False)
+                for i in range(n_slides)
+            ]
+        ),
         "ppt/presProps.xml": f"{XML_DECL}<p:presentationPr {NS}/>",
         "ppt/slideMasters/slideMaster1.xml": (
             f'{XML_DECL}<p:sldMaster {NS}><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="FFFFFF"/>'
             f'</a:solidFill><a:effectLst/></p:bgPr></p:bg>{EMPTY_TREE.format("")}</p:cSld><p:clrMap {CLR_MAP}/>'
-            '<p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst></p:sldMaster>'),
+            '<p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst></p:sldMaster>'
+        ),
         "ppt/slideMasters/_rels/slideMaster1.xml.rels": rels_xml(
-            [("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml", False),
-             ("rId2", "theme", "../theme/theme1.xml", False)]),
+            [
+                ("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml", False),
+                ("rId2", "theme", "../theme/theme1.xml", False),
+            ]
+        ),
         "ppt/slideLayouts/slideLayout1.xml": (
             f'{XML_DECL}<p:sldLayout {NS} type="blank" preserve="1"><p:cSld name="Blank">'
-            f'{EMPTY_TREE.format("")}</p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>'),
+            f'{EMPTY_TREE.format("")}</p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>'
+        ),
         "ppt/slideLayouts/_rels/slideLayout1.xml.rels": rels_xml(
-            [("rId1", "slideMaster", "../slideMasters/slideMaster1.xml", False)]),
+            [("rId1", "slideMaster", "../slideMasters/slideMaster1.xml", False)]
+        ),
         "ppt/theme/theme1.xml": XML_DECL + THEME,
     }
 
@@ -295,8 +344,10 @@ def write(tables, path, link_base):
     slides = paginate(tables)
     parts = package_parts(len(slides))
     for i, (title, rows) in enumerate(slides, start=1):
-        parts[f"ppt/slides/slide{i}.xml"], parts[f"ppt/slides/_rels/slide{i}.xml.rels"] = (
-            slide_xml(title, rows, link_base))
+        (
+            parts[f"ppt/slides/slide{i}.xml"],
+            parts[f"ppt/slides/_rels/slide{i}.xml.rels"],
+        ) = slide_xml(title, rows, link_base)
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("[Content_Types].xml", parts.pop("[Content_Types].xml"))
         for name, xml in parts.items():

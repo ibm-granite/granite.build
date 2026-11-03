@@ -30,7 +30,11 @@ def md_cells(cells, link_base):
     Returns:
         A '| ... |' row.
     """
-    return "| " + " | ".join("".join(md_part(p, link_base) for p in c) for c in cells) + " |"
+    return (
+        "| "
+        + " | ".join("".join(md_part(p, link_base) for p in c) for c in cells)
+        + " |"
+    )
 
 
 def render(tables, link_base=""):
@@ -45,8 +49,12 @@ def render(tables, link_base=""):
     """
     lines = []
     for category, rows in tables:
-        lines += [f"## {category}", "", "| " + " | ".join(COLUMNS) + " |",
-                  "|" + "---|" * len(COLUMNS)]
+        lines += [
+            f"## {category}",
+            "",
+            "| " + " | ".join(COLUMNS) + " |",
+            "|" + "---|" * len(COLUMNS),
+        ]
         lines += [md_cells(row, link_base) for row in rows]
         lines.append("")
     lines += ["".join(md_part(p, link_base) for p in note) for note in FOOTNOTES]

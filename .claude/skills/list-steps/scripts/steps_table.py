@@ -10,6 +10,7 @@ Notes needing human judgment are written to stderr.
 
 import argparse
 import glob
+import importlib
 import os
 import re
 import subprocess
@@ -17,10 +18,21 @@ import sys
 
 import yaml
 
-from cells import Code, Link, part_text
+# Sibling modules; run as a script, the script's own directory is on sys.path.
+# isort: off
+import render_md  # pylint: disable=wrong-import-order
+from cells import Code, Link, part_text  # pylint: disable=wrong-import-order
+
+# isort: on
 
 # Top-level steps/ group -> table category. Unlisted groups fall to "Other".
-GROUP_CATEGORY = {"data": "Data", "eval": "Eval", "misc": "Misc", "train": "Train", "tune": "Train"}
+GROUP_CATEGORY = {
+    "data": "Data",
+    "eval": "Eval",
+    "misc": "Misc",
+    "train": "Train",
+    "tune": "Train",
+}
 
 # Per-step overrides for groups (like distill/) whose steps span categories.
 STEP_CATEGORY = {
@@ -68,7 +80,9 @@ def tracked_templates():
     """
     out = subprocess.run(
         ["git", "ls-files", "steps/*/*/*/step-template.yaml"],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout
     return sorted(p for p in out.splitlines() if p.count("/") == 4)
 
@@ -84,7 +98,9 @@ def tracked_config_steps():
     """
     out = subprocess.run(
         ["git", "ls-files", "configurations/**/step.yaml"],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout
     return sorted(out.splitlines())
 
@@ -151,7 +167,9 @@ def resolve_image_id(raw, template):
         m = re.search(r"config\.(\w+)\.(\w+)", raw)
         if not m:
             return None
-        raw = str(((template.get("config") or {}).get(m.group(1)) or {}).get(m.group(2)) or "")
+        raw = str(
+            ((template.get("config") or {}).get(m.group(1)) or {}).get(m.group(2)) or ""
+        )
     if "${" in raw:
         return None
     return raw.removeprefix("docker:")
@@ -178,11 +196,17 @@ def image_for(impl_dir, template):
             if "chart" in config:
                 images.add(HELM)
                 continue
-            image = resolve_image_id(config.get("image_id") or config.get("image"), template)
+            image = resolve_image_id(
+                config.get("image_id") or config.get("image"), template
+            )
             if image is None:
-                warn(f"{impl_dir}: could not resolve image_id; fill the Image cell by hand")
+                warn(
+                    f"{impl_dir}: could not resolve image_id; fill the Image cell by hand"
+                )
                 image = "?"
-            images.add(Code(shorten_digest(image)) if image and image != "?" else image or BARE)
+            images.add(
+                Code(shorten_digest(image)) if image and image != "?" else image or BARE
+            )
     return sorted(images, key=part_text) or [BARE]
 
 
@@ -195,11 +219,11 @@ def build_env_label(build_yaml):
     Returns:
         Environment path with the space://environments/ prefix removed, or None.
     """
-    with open(build_yaml) as f:
+    with open(build_yaml, encoding="utf-8") as f:
         text = f.read()
     for m in re.finditer(r"^\s*environment_uri:\s*(\S+)", text, re.M):
         if m.group(1).startswith(ENV_URI_PREFIX):
-            return m.group(1)[len(ENV_URI_PREFIX):]
+            return m.group(1)[len(ENV_URI_PREFIX) :]
     return None
 
 
@@ -220,14 +244,16 @@ def tested_cases(impl_dir):
         build = os.path.join(impl_dir, "test-data", case, "build.yaml")
         env = build_env_label(build) if os.path.exists(build) else None
         if env is None:
-            warn(f"{impl_dir}: test/{case} has no test-data/{case}/build.yaml environment_uri")
+            warn(
+                f"{impl_dir}: test/{case} has no test-data/{case}/build.yaml environment_uri"
+            )
             continue
         cases[case] = (env, build)
     return cases
 
 
 def env_label(env_path, multi_cluster):
-    """Turn an environment path into a table label ('slurm (local)', 'slurm (bluevela)', 'aws', 'bash').
+    """Turn an environment path into a table label, e.g. 'slurm (local)', 'aws', 'bash'.
 
     When a subtype is tested on several clusters, each label names its cluster; the base
     subtype environment (e.g. 'skypilot/slurm') is the local cluster, labelled '(local)'.
@@ -294,9 +320,9 @@ def config_step_location(step_dir):
         (step path, environment label), e.g. ('bfcl-eval', 'skypilot - lsf (ibm-bluevela)').
     """
     if step_dir.startswith(CONFIG_STEPS_ROOT):
-        env_class, _, step_path = step_dir[len(CONFIG_STEPS_ROOT):].partition("/")
+        env_class, _, step_path = step_dir[len(CONFIG_STEPS_ROOT) :].partition("/")
         return step_path, env_class
-    env_dir, _, step_path = step_dir[len(CONFIG_ENV_ROOT):].partition("/steps/")
+    env_dir, _, step_path = step_dir[len(CONFIG_ENV_ROOT) :].partition("/steps/")
     env_class, *rest = env_dir.split("/")
     if not rest:
         return step_path, env_class
@@ -318,15 +344,20 @@ def collect_config_impl(step_yaml):
     """
     step_dir = os.path.dirname(step_yaml)
     step_path, env = config_step_location(step_dir)
-    with open(step_yaml) as f:
+    with open(step_yaml, encoding="utf-8") as f:
         step = yaml.safe_load(f)
     declared = declared_environments(step)
     envs = declared if any(" - " in e for e in declared) or " - " not in env else [env]
     readme = os.path.join(step_dir, "README.md")
     return {
-        "step_path": step_path, "env": env, "envs": envs, "image": image_for(step_dir, step),
-        "cases": {}, "readme": readme if os.path.exists(readme) else None,
-        "published": True, "framework": False,
+        "step_path": step_path,
+        "env": env,
+        "envs": envs,
+        "image": image_for(step_dir, step),
+        "cases": {},
+        "readme": readme if os.path.exists(readme) else None,
+        "published": True,
+        "framework": False,
     }
 
 
@@ -357,14 +388,19 @@ def collect_impl(template_path):
     """
     impl_dir = os.path.dirname(template_path)
     _, group, name, env = impl_dir.split("/")
-    with open(template_path) as f:
+    with open(template_path, encoding="utf-8") as f:
         template = yaml.safe_load(f)
     step_path = f"{group}/{name}"
     readme, published = readme_link(step_path, env)
     return {
-        "step_path": step_path, "env": env, "envs": declared_environments(template),
-        "image": image_for(impl_dir, template), "cases": tested_cases(impl_dir),
-        "readme": readme, "published": published, "framework": True,
+        "step_path": step_path,
+        "env": env,
+        "envs": declared_environments(template),
+        "image": image_for(impl_dir, template),
+        "cases": tested_cases(impl_dir),
+        "readme": readme,
+        "published": published,
+        "framework": True,
     }
 
 
@@ -417,17 +453,32 @@ def build_row(step_path, impls, multi_cluster):
     """
     multi = len(impls) > 1
     envs = list(dict.fromkeys(e for i in impls for e in i["envs"]))
-    tested = sorted({env_label(env, multi_cluster) for i in impls for env, _ in i["cases"].values()})
-    readmes = [Link(i["env"] if multi else "README.md", i["readme"]) for i in impls if i["readme"]]
-    readme_cell = joined(readmes) + ([] if all(i["published"] for i in impls) else [" ‡"])
+    tested = sorted(
+        {env_label(env, multi_cluster) for i in impls for env, _ in i["cases"].values()}
+    )
+    readmes = [
+        Link(i["env"] if multi else "README.md", i["readme"])
+        for i in impls
+        if i["readme"]
+    ]
+    readme_cell = joined(readmes) + (
+        [] if all(i["published"] for i in impls) else [" ‡"]
+    )
     images = list(dict.fromkeys(part for i in impls for part in i["image"]))
     samples = []
     for i in impls:
-        if i["cases"]:
-            case = min(i["cases"], key=lambda c: sample_rank(i["cases"][c][0], c))
-            samples.append(Link(case, i["cases"][case][1]))
-    return [[step_path], ["; ".join(envs) or NONE], joined(tested), readme_cell,
-            joined(images, empty=""), joined(samples)]
+        cases = i["cases"]
+        if cases:
+            case = min(cases, key=lambda c, cases=cases: sample_rank(cases[c][0], c))
+            samples.append(Link(case, cases[case][1]))
+    return [
+        [step_path],
+        ["; ".join(envs) or NONE],
+        joined(tested),
+        readme_cell,
+        joined(images, empty=""),
+        joined(samples),
+    ]
 
 
 def build_tables():
@@ -446,8 +497,11 @@ def build_tables():
     """
     impls = [collect_impl(p) for p in tracked_templates()]
     published = {published_dir(i) for i in impls}
-    impls += [collect_config_impl(p) for p in tracked_config_steps()
-              if os.path.dirname(p) not in published]
+    impls += [
+        collect_config_impl(p)
+        for p in tracked_config_steps()
+        if os.path.dirname(p) not in published
+    ]
     by_step = {}
     for impl in impls:
         by_step.setdefault((impl["step_path"], impl["framework"]), []).append(impl)
@@ -473,8 +527,16 @@ def default_link_base():
         GitHub remote is found.
     """
     for remote in ("upstream", "origin"):
-        res = subprocess.run(["git", "remote", "get-url", remote], capture_output=True, text=True)
-        m = re.match(r"(?:git@github\.com:|https://github\.com/)(.+?)(?:\.git)?$", res.stdout.strip())
+        res = subprocess.run(
+            ["git", "remote", "get-url", remote],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        m = re.match(
+            r"(?:git@github\.com:|https://github\.com/)(.+?)(?:\.git)?$",
+            res.stdout.strip(),
+        )
         if m:
             return f"https://github.com/{m.group(1)}/blob/main/"
     return ""
@@ -490,14 +552,27 @@ def parse_args(argv=None):
         argparse.Namespace with formats, output, link_base.
     """
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("-f", "--format", dest="formats", action="append", choices=FORMATS,
-                        help="output format; repeat for several (default: markdown)")
-    parser.add_argument("-o", "--output", metavar="PATH",
-                        help="output path without extension; the format's extension is added "
-                             "(default: Markdown to stdout, others to ./steps-inventory.<ext>)")
-    parser.add_argument("--link-base", metavar="URL",
-                        help="prefix for repo-relative links (default: relative for Markdown, "
-                             "the GitHub blob URL of the upstream/origin remote for xlsx/pptx)")
+    parser.add_argument(
+        "-f",
+        "--format",
+        dest="formats",
+        action="append",
+        choices=FORMATS,
+        help="output format; repeat for several (default: markdown)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        metavar="PATH",
+        help="output path without extension; the format's extension is added "
+        "(default: Markdown to stdout, others to ./steps-inventory.<ext>)",
+    )
+    parser.add_argument(
+        "--link-base",
+        metavar="URL",
+        help="prefix for repo-relative links (default: relative for Markdown, "
+        "the GitHub blob URL of the upstream/origin remote for xlsx/pptx)",
+    )
     args = parser.parse_args(argv)
     args.formats = list(dict.fromkeys(args.formats or ["markdown"]))
     return args
@@ -518,17 +593,17 @@ def write_format(fmt, tables, args):
     if link_base is None:
         link_base = "" if fmt == "markdown" else default_link_base()
     if fmt == "markdown":
-        import render_md
         text = render_md.render(tables, link_base)
         if not args.output:
             sys.stdout.write(text)
             return
         path = f"{args.output}.md"
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(text)
     else:
         path = f"{args.output or 'steps-inventory'}.{FORMATS[fmt]}"
-        renderer = __import__(f"render_{fmt}")
+        # Imported on demand: render_xlsx needs xlsxwriter, which only xlsx output requires.
+        renderer = importlib.import_module(f"render_{fmt}")
         renderer.write(tables, path, link_base)
     print(f"wrote {path}", file=sys.stderr)
 
@@ -541,9 +616,13 @@ def main():
         try:
             write_format(fmt, tables, args)
         except ImportError as e:
-            req = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt")
-            sys.exit(f"{fmt}: missing dependency ({e.name}); install with "
-                     f"pip install --require-hashes -r {req}")
+            req = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "requirements.txt"
+            )
+            sys.exit(
+                f"{fmt}: missing dependency ({e.name}); install with "
+                f"pip install --require-hashes -r {req}"
+            )
 
 
 if __name__ == "__main__":
