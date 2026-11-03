@@ -443,7 +443,7 @@ GPUs. The `$${...}` values come from a parameter file.
                 gradient_accumulation_steps: 4
                 learning_rate: 2.0e-04
                 lr_scheduler_type: cosine
-                warmup_ratio: 0.03
+                warmup_steps: 0.03   # a float in (0, 1) is a fraction of the steps
                 num_train_epochs: 1
                 gradient_checkpointing: true
                 logging_steps: 10

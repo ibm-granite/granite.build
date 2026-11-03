@@ -58,10 +58,12 @@ PY
 _PY = """#!/usr/bin/env bash
 # venv python stub: logs each call, then runs it on the host python with the
 # step's src/ and fake peft/trl modules (versions 0.21.2 / 1.17.1) on the path.
-# FAKE_NO_VERSIONS leaves the fakes out, so `import peft, trl` fails.
+# FAKE_NO_VERSIONS leaves the fakes out, so `import peft, trl` fails;
+# FAKE_CRASH_VERSIONS uses a peft that aborts the interpreter (a native crash).
 echo x >> "__CALLS__"
 fakes="__FAKES__"
 if [ -n "${FAKE_NO_VERSIONS:-}" ]; then fakes=""; fi
+if [ -n "${FAKE_CRASH_VERSIONS:-}" ]; then fakes="__FAKES___crash"; fi
 PYTHONPATH="__SRC__${fakes:+:$fakes}" exec python3 "$@"
 """
 
@@ -84,6 +86,10 @@ def node(tmp_path):
     fakes.mkdir()
     (fakes / "peft.py").write_text('__version__ = "0.21.2"\n')
     (fakes / "trl.py").write_text('__version__ = "1.17.1"\n')
+    crash = tmp_path / "fakes_crash"
+    crash.mkdir()
+    (crash / "peft.py").write_text("import os\nos.abort()\n")
+    (crash / "trl.py").write_text('__version__ = "1.17.1"\n')
     home = tmp_path / "home"
     (home / ".venv" / "bin").mkdir(parents=True)
     _exe(
@@ -492,6 +498,26 @@ class TestOutput:
             "GB_STEP_METADATA_KEY:trl_version GB_STEP_METADATA_VALUE:unknown",
         ]
         assert (node[3] / "adapter_output" / "adapter_config.json").is_file()
+
+    def test_a_crash_importing_peft_does_not_refuse_a_good_adapter(self, node):
+        # The old separate probe's `|| echo "unknown unknown"` covered a native
+        # crash in `import peft, trl`; the merged call must too.
+        proc, _ = _run(node, env={"FAKE_CRASH_VERSIONS": "1"})
+        assert proc.returncode == 0, proc.stderr
+        assert _markers(proc)[1:3] == [
+            "GB_STEP_METADATA_KEY:peft_version GB_STEP_METADATA_VALUE:unknown",
+            "GB_STEP_METADATA_KEY:trl_version GB_STEP_METADATA_VALUE:unknown",
+        ]
+        assert (node[3] / "adapter_output" / "adapter_model.safetensors").is_file()
+        assert (node[0] / "python.calls").read_text().splitlines() == ["x"]
+
+    def test_empty_adapter_still_fails_with_crashing_versions(self, node):
+        proc, _ = _run(
+            node, env={"FAKE_EMPTY_ADAPTER": "1", "FAKE_CRASH_VERSIONS": "1"}
+        )
+        assert proc.returncode == 1
+        assert "hf-peft-sft: ERROR" in proc.stderr and "has no weights" in proc.stderr
+        assert _markers(proc) == []
 
     def test_empty_adapter_keeps_the_previous_adapter(self, node):
         # The check runs before the swap: a bad new adapter never replaces a good one.

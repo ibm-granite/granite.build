@@ -417,8 +417,8 @@ def _training_args(argv: list[str]) -> tuple[StepArgs, Any]:
             else f"{len(unused)} stray trainer argument(s) with no flag"
         )
         raise StepError(
-            f"{what}; abbreviated flags are not accepted. hf_peft_sft_config.args "
-            "keys must be exact SFTConfig field names (e.g. output_dir, not output_d)."
+            f"{what}; every hf_peft_sft_config.args key must be an exact SFTConfig "
+            "field name (no abbreviations)."
         )
     return step, cfg
 

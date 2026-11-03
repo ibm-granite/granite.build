@@ -373,8 +373,21 @@ class TestTrainingArgs:
         msg = str(e.value)
         assert flag in msg
         assert value not in msg  # flags only, not their values
-        assert "hf_peft_sft_config.args" in msg
-        assert "exact SFTConfig field names" in msg
+        assert msg.endswith(
+            "; every hf_peft_sft_config.args key must be an exact SFTConfig field "
+            "name (no abbreviations)."
+        )
+
+    def test_unknown_key_is_not_called_an_abbreviation(self):
+        # warmup_ratio is no prefix of anything: the message must fit it too.
+        pytest.importorskip("trl")
+        with pytest.raises(t.StepError) as e:
+            t._training_args(["--model_name_or_path", "/m", "--warmup_ratio", "0.1"])
+        assert str(e.value) == (
+            "unknown or abbreviated trainer flag(s) ['--warmup_ratio']; every "
+            "hf_peft_sft_config.args key must be an exact SFTConfig field name "
+            "(no abbreviations)."
+        )
 
     def test_flag_with_equals_is_named_without_its_value(self):
         pytest.importorskip("trl")
@@ -383,11 +396,21 @@ class TestTrainingArgs:
         assert "'--output_d'" in str(e.value)
         assert "/secret" not in str(e.value)
 
-    def test_unrelated_value_error_is_not_rewritten(self):
-        # A bad value is argparse's own error, not the unused-arguments case.
+    def test_bad_choice_is_argparses_own_exit(self):
+        # A bad value is argparse's own error (exit 2), not the unused-arguments case.
         pytest.importorskip("trl")
         with pytest.raises(SystemExit):
             t._training_args(["--model_name_or_path", "/m", "--method", "dora"])
+
+    def test_sftconfig_post_init_value_error_propagates_unrewritten(self):
+        # Only unused argv words become a StepError; SFTConfig's own checks keep
+        # their ValueError and message.
+        pytest.importorskip("trl")
+        argv = ["--model_name_or_path", "/m", "--output_dir", "/o"]
+        with pytest.raises(ValueError, match="fp16 and bf16") as e:
+            t._training_args(argv + ["--bf16", "true", "--fp16", "true"])
+        assert not isinstance(e.value, t.StepError)
+        assert "hf_peft_sft_config.args" not in str(e.value)
 
     def test_exact_flags_parse(self):
         pytest.importorskip("trl")
@@ -456,3 +479,80 @@ class TestSavedAdapter:
         p.write_bytes(content)
         with pytest.raises(t.StepError, match="not a readable safetensors"):
             t.check_saved_adapter(str(p))
+
+
+_STEP_DIR = __import__("pathlib").Path(__file__).resolve().parents[1]
+_SHIPPED_BUILDS = ["build.yaml", "aws/build.yaml", "slurm-bluevela/build.yaml"]
+
+
+def _args_maps(node):
+    """Every hf_peft_sft_config.args map anywhere in a parsed YAML document."""
+    if isinstance(node, dict):
+        cfg = node.get("hf_peft_sft_config")
+        if isinstance(cfg, dict) and isinstance(cfg.get("args"), dict):
+            yield cfg["args"]
+        for v in node.values():
+            yield from _args_maps(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _args_maps(v)
+
+
+def _argv_like_the_template(args):
+    """args -> argv words as step-template.yaml renders them (null omitted,
+    bools lowercased, lists as repeated values)."""
+    out = []
+    for k, v in args.items():
+        if v is None:
+            continue
+        out.append(f"--{k}")
+        if isinstance(v, bool):
+            out.append(str(v).lower())
+        elif isinstance(v, list):
+            out += [str(x) for x in v]
+        else:
+            out.append(str(v))
+    return out
+
+
+def _shipped_args():
+    """(where, args) for each shipped build fixture and each USAGE.md yaml block."""
+    import textwrap
+
+    import yaml
+
+    params = yaml.safe_load((_STEP_DIR / "test-data" / "parameters.yaml").read_text())
+    found = []
+    for name in _SHIPPED_BUILDS:
+        text = (_STEP_DIR / "test-data" / name).read_text()
+        text = re.sub(r"\$\$\{([A-Z0-9_]+)\}", lambda m: str(params[m[1]]), text)
+        found += [(name, a) for a in _args_maps(yaml.safe_load(text))]
+    usage = (_STEP_DIR / "USAGE.md").read_text()
+    for i, block in enumerate(re.findall(r"```yaml\n(.*?)```", usage, re.S)):
+        try:
+            doc = yaml.safe_load(textwrap.dedent(block).replace("$${", "${"))
+        except yaml.YAMLError:
+            continue
+        found += [(f"USAGE.md yaml block {i}", a) for a in _args_maps(doc)]
+    return found
+
+
+def test_shipped_args_examples_are_found():
+    where = [w for w, _ in _shipped_args()]
+    assert sum(w.startswith("USAGE.md") for w in where) >= 2, where
+    assert "build.yaml" in where
+
+
+def test_shipped_args_parse_with_the_real_trainer_parser():
+    """Every args map a user may copy (exemplar, cluster fixtures, USAGE.md)
+    parses through _training_args: a key that is not an exact SFTConfig field
+    (e.g. warmup_ratio, gone in transformers 5) fails the run, and a dry run
+    never reaches the trainer to show it."""
+    pytest.importorskip("trl")
+    base = ["--model_name_or_path", "/m", "--output_dir", "/o", "--use_cpu", "true"]
+    for where, args in _shipped_args():
+        argv = base + _argv_like_the_template(args)
+        try:
+            t._training_args(argv)
+        except t.StepError as e:
+            pytest.fail(f"{where}: {e}")

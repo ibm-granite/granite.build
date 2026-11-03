@@ -186,25 +186,28 @@ if [ ! -f "$stage/adapter_config.json" ] || [ ! -f "$stage/adapter_model.safeten
   fail "training finished but ${stage} has no adapter (adapter_config.json + adapter_model.safetensors); nothing registered."
 fi
 # Both files can exist with no weights in them; never register that. One python
-# start, before the swap: check the adapter, then print the peft/trl versions on
-# a tagged line (`unknown unknown` when they do not import).
-if ! post="$("${home}/.venv/bin/python" -c 'import sys; sys.path.insert(0, sys.argv[1]); import hf_peft_sft_train as t
+# start, before the swap: check the adapter and print a flushed ok tag, then
+# print the peft/trl versions on a tagged line. Only the ok tag decides: once
+# the adapter passed, nothing in the version import (an exception, or a native
+# crash no except clause catches) can refuse it; the versions fall back to
+# `unknown unknown`. No ok tag (the check failed, or python never ran) refuses.
+post="$("${home}/.venv/bin/python" -c 'import sys; sys.path.insert(0, sys.argv[1]); import hf_peft_sft_train as t
 try:
     t.check_saved_adapter(sys.argv[2])
 except t.StepError as e:
     print(e); sys.exit(1)
+print("hf-peft-sft-adapter: ok", flush=True)
 try:
     import peft, trl
-    v = (peft.__version__, trl.__version__)
+    print("hf-peft-sft-versions:", peft.__version__, trl.__version__)
 except Exception:
-    v = ("unknown", "unknown")
-print("hf-peft-sft-versions:", *v)' "$home" "$stage/adapter_model.safetensors" 2>&1)"; then
-  fail "${post}"
-fi
-peft_v=unknown trl_v=unknown
+    pass' "$home" "$stage/adapter_model.safetensors" 2>&1)" || true
+adapter_ok=0 peft_v=unknown trl_v=unknown
 while read -r tag p t; do
+  if [ "$tag" = hf-peft-sft-adapter: ] && [ "$p" = ok ]; then adapter_ok=1; fi
   if [ "$tag" = hf-peft-sft-versions: ] && [ -n "$t" ]; then peft_v="$p" trl_v="$t"; fi
 done <<<"$post"
+[ "$adapter_ok" = 1 ] || fail "${post}"
 rm -rf "$out_dir"
 mv "$stage" "$out_dir"
 echo "GB_STEP_METADATA_KEY:method GB_STEP_METADATA_VALUE:${method}"
