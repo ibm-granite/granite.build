@@ -1,0 +1,90 @@
+# Copyright 2026 Granite.Build Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# granite-evals image for the `nemoskills` benchmark family: NeMo-Skills benchmarks (aime25, gpqa, hle, ruler, scicode, browsecomp, ...).
+#
+# One image per benchmark family, because the upstream harnesses' own dependencies
+# conflict with one another (see [tool.uv] conflicts in src/core/pyproject.toml).
+# Build context is steps/eval/ (see the Makefile):
+#   podman build --platform linux/amd64 -f nemoskills/Dockerfile.cpu . -t <registry>/gb-step-eval-nemoskills-cpu:<tag>
+#
+# CPU sibling of the GPU image for `--phase score` (grading, no model served):
+# no vLLM. The image carries the shared granite_evals core
+# (src/core) overlaid with this family's benchmark modules (nemoskills/src), the
+# family's pinned harness (the `nemoskills` extra) and the enroot CLI for benchmarks
+# that sandbox each task in a container. Nothing is cloned or mounted at launch;
+# datasets come from the mounted HF cache (see scripts/prefetch_datasets.py).
+# System packages are installed in a throwaway stage and shipped as ONE plain layer.
+# Installing them on top of the base image in place would replace files the base ships
+# (e.g. the /etc/alternatives awk links), leaving overlay whiteouts. An unprivileged
+# unsquashfs (Pyxis) cannot create those, so the container would not start on SLURM.
+FROM python:3.12-slim-bookworm AS sysdeps
+
+ARG ENROOT_VERSION=4.2.1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash ca-certificates curl git jq gawk parallel pigz squashfs-tools zstd \
+        libcap2-bin procps build-essential \
+    && arch=$(dpkg --print-architecture) \
+    && curl -fsSLO "https://github.com/NVIDIA/enroot/releases/download/v${ENROOT_VERSION}/enroot_${ENROOT_VERSION}-1_${arch}.deb" \
+    && apt-get install -y --no-install-recommends ./enroot_${ENROOT_VERSION}-1_${arch}.deb \
+    && rm -f ./enroot_*.deb && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:0.12.20@sha256:100047e74f30778ab704942321a09750d6158739573ff58bf3924085cc6cd2d8 /uv /usr/local/bin/uv
+
+FROM scratch
+COPY --from=sysdeps / /
+# What the python base image would have set.
+ENV PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
+    LANG=C.UTF-8
+
+ENV EVALS_HOME=/opt/granite-evals
+WORKDIR ${EVALS_HOME}
+ENV UV_PROJECT_ENVIRONMENT=${EVALS_HOME}/.venv \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    VIRTUAL_ENV=${EVALS_HOME}/.venv \
+    PATH=${EVALS_HOME}/.venv/bin:$PATH
+
+# One sync with every extra, in a single layer. A later sync that re-resolved a package
+# would replace files from this layer and leave overlay whiteouts (see above). Dependencies
+# come first so code edits don't reinstall them. --chmod: the build host's checkout may be
+# unreadable to other users, which COPY would preserve.
+COPY --chmod=755 src/core/pyproject.toml src/core/uv.lock ./
+
+# Family-specific system setup (nemoskills/extras.sh), bind-mounted so nothing is left
+# behind in a layer. UV_NO_CONFIG: the scripts run from WORKDIR, and uv would otherwise
+# apply this project's [tool.uv] settings to any separate env they build.
+RUN --mount=type=bind,source=nemoskills/extras.sh,target=/tmp/extras/nemoskills.sh \
+    --mount=type=bind,source=nemoskills/comet-requirements.txt,target=/tmp/extras/comet-requirements.txt \
+    UV_NO_CONFIG=1 bash -euxo pipefail /tmp/extras/nemoskills.sh \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN uv sync --locked --no-install-project --no-dev --extra nemoskills
+# The shared core first, then the family's modules merged into the same package.
+COPY --chmod=755 src/core/granite_evals ./src/granite_evals
+COPY --chmod=755 nemoskills/src ./src/granite_evals/benchmarks
+COPY --chmod=755 src/core/tests ./tests
+COPY --chmod=755 nemoskills/tests ./tests
+RUN uv sync --locked --no-dev --extra nemoskills \
+    && uv run --no-sync --with pytest pytest -q -p no:cacheprovider --basetemp=/opt/granite-evals/.pytest-tmp tests \
+    && granite-evals list \
+    && rm -rf /opt/granite-evals/.pytest-tmp /tmp/pytest-of-root
+
+ENV GRANITE_EVALS_SANDBOX=enroot
+# The HF cache's fixed in-container mount point; the environment bind-mounts its
+# cache here (or overrides HF_HOME).
+ENV HF_HOME=/opt/hf-cache
+ENTRYPOINT []
+CMD ["granite-evals", "--help"]
