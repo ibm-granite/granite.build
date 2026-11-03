@@ -119,10 +119,12 @@ environment_configs:
             {%- if c.method == "qlora" and c.distributed in ["fsdp", "deepspeed"] and c.mixed_precision == "no" %}{{ raise_error("hf-peft-sft: method: qlora with distributed: " ~ c.distributed ~ " stores the sharded 4-bit weights in bf16, so mixed_precision must be bf16 (got 'no'). Use mixed_precision: bf16, or distributed: ddp for fp32 compute.") }}{% endif -%}
             {%- if not c.output %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.output is required; it names the target's adapter output.") }}{% endif -%}
             {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
-            {%- if (cc.num_nodes | string) != "1" %}{{ raise_error("hf-peft-sft: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
+            {#- A whole float (YAML 1.0) is one node, as gbserver reads it. -#}
+            {%- macro one(v) %}{{ "y" if (v == 1 if v is number else (v | string) == "1") else "" }}{% endmacro -%}
+            {%- if not one(cc.num_nodes) %}{{ raise_error("hf-peft-sft: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
             {#- gbserver also reads num_nodes from the launcher block, which this step sets
                 none of and users cannot change, and from the build's launcher_config (lc). -#}
-            {%- if lc.get("num_nodes") is not none and (lc.get("num_nodes") | string) != "1" %}{{ raise_error("hf-peft-sft: launcher_config.num_nodes must be 1 (got '" ~ lc.get("num_nodes") ~ "'); this step is single-node.") }}{% endif -%}
+            {%- if lc.get("num_nodes") is not none and not one(lc.get("num_nodes")) %}{{ raise_error("hf-peft-sft: launcher_config.num_nodes must be 1 (got '" ~ lc.get("num_nodes") ~ "'); this step is single-node.") }}{% endif -%}
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("hf-peft-sft: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type).") }}{% endif -%}
             {%- set acc = res.get("accelerators") -%}
             {%- if c.distributed != "ddp" and acc is string and acc -%}
@@ -142,7 +144,9 @@ environment_configs:
             {%- if mts is not none and (mts is string or mts is not iterable or mts is mapping) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.lora.modules_to_save must be a list of module names, got '" ~ mts ~ "'.") }}{% endif -%}
             {%- if c.args is not mapping %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args must be a mapping of SFTConfig field to value.") }}{% endif -%}
             {%- for k, v in c.args.items() %}
-            {%- set nk = k | string | replace("-", "_") %}
+            {%- set ks = k | string %}
+            {%- if not ks or "=" in ks or ks.startswith("-") or (ks.split() | join("")) != ks %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args key '" ~ ks ~ "' must be a bare SFTConfig field name (no '=', '-' prefix or whitespace).") }}{% endif -%}
+            {%- set nk = ks | replace("-", "_") %}
             {%- if nk in owned %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " is set by the step; use the base_model/dataset inputs, method, distributed, mixed_precision, lora, output_path, base_model_id or clearml_* instead.") }}{% endif -%}
             {%- for o in owned %}{% if nk != o and nk not in full_flags and o.startswith(nk) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " abbreviates the step-owned flag " ~ o ~ "; abbreviated flags are not accepted.") }}{% endif %}{% endfor -%}
             {%- if v is mapping %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
@@ -184,10 +188,12 @@ environment_configs:
             {%- if c.method == "qlora" and c.distributed in ["fsdp", "deepspeed"] and c.mixed_precision == "no" %}{{ raise_error("hf-peft-sft: method: qlora with distributed: " ~ c.distributed ~ " stores the sharded 4-bit weights in bf16, so mixed_precision must be bf16 (got 'no'). Use mixed_precision: bf16, or distributed: ddp for fp32 compute.") }}{% endif -%}
             {%- if not c.output %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.output is required; it names the target's adapter output.") }}{% endif -%}
             {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
-            {%- if (cc.num_nodes | string) != "1" %}{{ raise_error("hf-peft-sft: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
+            {#- A whole float (YAML 1.0) is one node, as gbserver reads it. -#}
+            {%- macro one(v) %}{{ "y" if (v == 1 if v is number else (v | string) == "1") else "" }}{% endmacro -%}
+            {%- if not one(cc.num_nodes) %}{{ raise_error("hf-peft-sft: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
             {#- gbserver also reads num_nodes from the launcher block, which this step sets
                 none of and users cannot change, and from the build's launcher_config (lc). -#}
-            {%- if lc.get("num_nodes") is not none and (lc.get("num_nodes") | string) != "1" %}{{ raise_error("hf-peft-sft: launcher_config.num_nodes must be 1 (got '" ~ lc.get("num_nodes") ~ "'); this step is single-node.") }}{% endif -%}
+            {%- if lc.get("num_nodes") is not none and not one(lc.get("num_nodes")) %}{{ raise_error("hf-peft-sft: launcher_config.num_nodes must be 1 (got '" ~ lc.get("num_nodes") ~ "'); this step is single-node.") }}{% endif -%}
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("hf-peft-sft: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type).") }}{% endif -%}
             {%- set acc = res.get("accelerators") -%}
             {%- if c.distributed != "ddp" and acc is string and acc -%}
@@ -207,7 +213,9 @@ environment_configs:
             {%- if mts is not none and (mts is string or mts is not iterable or mts is mapping) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.lora.modules_to_save must be a list of module names, got '" ~ mts ~ "'.") }}{% endif -%}
             {%- if c.args is not mapping %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args must be a mapping of SFTConfig field to value.") }}{% endif -%}
             {%- for k, v in c.args.items() %}
-            {%- set nk = k | string | replace("-", "_") %}
+            {%- set ks = k | string %}
+            {%- if not ks or "=" in ks or ks.startswith("-") or (ks.split() | join("")) != ks %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args key '" ~ ks ~ "' must be a bare SFTConfig field name (no '=', '-' prefix or whitespace).") }}{% endif -%}
+            {%- set nk = ks | replace("-", "_") %}
             {%- if nk in owned %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " is set by the step; use the base_model/dataset inputs, method, distributed, mixed_precision, lora, output_path, base_model_id or clearml_* instead.") }}{% endif -%}
             {%- for o in owned %}{% if nk != o and nk not in full_flags and o.startswith(nk) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " abbreviates the step-owned flag " ~ o ~ "; abbreviated flags are not accepted.") }}{% endif %}{% endfor -%}
             {%- if v is mapping %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " must be a scalar or a list.") }}{% endif -%}

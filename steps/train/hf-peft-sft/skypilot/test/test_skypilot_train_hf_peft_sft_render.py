@@ -281,6 +281,32 @@ class TestValidation:
             == _render_error(block, _ctx(launcher_config=lc))
         )
 
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize("layer", ["compute", "launcher"])
+    @pytest.mark.parametrize("n", [1, 1.0, "1"])
+    def test_whole_one_num_nodes_is_fine(self, block, layer, n):
+        # gbserver's _num_nodes_from_configs accepts a whole float (YAML 1.0).
+        if layer == "compute":
+            ctx = _ctx(compute={"num_nodes": n})
+        else:
+            ctx = _ctx(
+                launcher_config={
+                    "resources": {"accelerators": "A10G:2"},
+                    "num_nodes": n,
+                }
+            )
+        _render(block, ctx)
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_whole_float_two_num_nodes_refused(self, block):
+        assert "compute_config.num_nodes must be 1 (got '2.0')" in _render_error(
+            block, _ctx(compute={"num_nodes": 2.0})
+        )
+        lc = {"resources": {"accelerators": "A10G:2"}, "num_nodes": 2.0}
+        assert "launcher_config.num_nodes must be 1 (got '2.0')" in _render_error(
+            block, _ctx(launcher_config=lc)
+        )
+
     def test_single_node_launcher_config_is_fine(self):
         _render(
             "run",
@@ -431,6 +457,22 @@ class TestValidation:
 
     def test_full_flags_are_not_owned(self):
         assert _exempt() and not _exempt() & _owned()
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
+        "key", ["report_to=wandb", "--report_to", "-x", "report to", "", "a\tb"]
+    )
+    def test_non_bare_args_key_refused(self, block, key):
+        # '--report_to=wandb' would set report_to even with allow_abbrev=False.
+        assert _render_error(block, _ctx(args={key: "--use_cpu"})) == (
+            f"hf-peft-sft: hf_peft_sft_config.args key '{key}' must be a bare "
+            "SFTConfig field name (no '=', '-' prefix or whitespace)."
+        )
+
+    @pytest.mark.parametrize("key", ["max_steps", "max-steps", "learning_rate"])
+    def test_bare_args_key_renders(self, key):
+        tail = _tail(_argv("run", _ctx(args={key: 3}), "hf_peft_sft_run.sh"))
+        assert tail[-2:] == [f"--{key}", "3"]
 
     def test_mapping_arg_refused(self):
         assert "scalar or a list" in _render_error("run", _ctx(args={"x": {"a": 1}}))

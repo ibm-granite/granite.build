@@ -107,11 +107,12 @@ class TestWorkloadStatusPayloadMessage:
     @pytest.mark.parametrize(
         "line_regex, expected_message",
         [
-            # The rule the steps ship today. get_events_from_log_line narrows the
-            # line to the line_regex match before field regexes run, so the
-            # message is only the matched "Step: <n>" part.
+            # The narrow rule openinstruct-sft (and others) still ship.
+            # get_events_from_log_line narrows the line to the line_regex match
+            # before field regexes run, so the message is only "Step: <n>".
             ("Step:\\s\\d+", "Step: 3"),
-            # A line_regex that spans the line carries the whole progress text.
+            # The wide rule hf-peft-sft ships: it spans the line, so the message
+            # carries the whole progress text.
             ("Step:\\s\\d+.*", _STEP_LINE),
         ],
     )

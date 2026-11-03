@@ -120,7 +120,8 @@ a message that starts `hf-peft-sft:`. They are:
 - `method: qlora` with `mixed_precision: fp16`; `method: qlora` with `distributed: fsdp`
   or `deepspeed` and `mixed_precision: no`;
 - an empty `output`, or one with whitespace or a double quote;
-- `compute_config.num_nodes` or `launcher_config.num_nodes` other than 1;
+- `compute_config.num_nodes` or `launcher_config.num_nodes` other than 1 (`1.0` counts
+  as 1);
 - no GPU request: neither `launcher_config.resources.accelerators` nor an
   `instance_type`;
 - `distributed: fsdp` or `deepspeed` with `accelerators` asking for one GPU (`"A10G"`
@@ -129,8 +130,10 @@ a message that starts `hf-peft-sft:`. They are:
   integer, `lora.dropout` outside [0, 1), `lora.target_modules` neither `all-linear`
   nor a non-empty list, `all-linear` inside a `lora.target_modules` list,
   `lora.modules_to_save` not a list;
-- `args` not a map; a step-owned flag in `args`, or an abbreviation of one (a key that
-  is a proper prefix of it, such as `output_d`); a map or empty-list value in `args`;
+- `args` not a map; an `args` key that is not a bare field name (empty, or with `=`,
+  a leading `-` or whitespace); a step-owned flag in `args`, or an abbreviation of
+  one (a key that is a proper prefix of it, such as `output_d`); a map or empty-list
+  value in `args`;
 - `args.packing` or `args.padding_free` true with `method: alora`.
 
 ## Passing SFTConfig flags (args)
