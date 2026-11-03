@@ -1,6 +1,6 @@
 """Format-neutral table model shared by the steps inventory renderers.
 
-A table is (category, rows); a row is a list of cells, one per COLUMNS entry; a cell is a
+A table is (title, rows) — a category, or the non-framework table; a row is a list of cells, one per COLUMNS entry; a cell is a
 list of parts, each a plain str, a Code span, or a Link to a repo-relative path. Renderers
 (Markdown, xlsx, pptx) decide how each part looks.
 """
@@ -34,6 +34,8 @@ COLUMNS = ["Step", "Environments", "Tested Environments", "Documentation", "Imag
 
 FOOTNOTES = [
     ["‡ Not published to ", Code("configurations/"), "; links the README under ", Code("steps/"), "."],
+    ["Non-Framework Steps: exist only as a ", Code("step.yaml"), " under ", Code("configurations/"),
+     ", with no ", Code("steps/"), " source or build tests."],
     ["Image: blank = custom image built from the step's Dockerfile."],
 ]
 

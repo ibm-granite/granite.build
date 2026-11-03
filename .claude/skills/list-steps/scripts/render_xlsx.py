@@ -11,7 +11,7 @@ import xlsxwriter
 from cells import COLUMNS, FOOTNOTES, Code, cell_links, cell_text, link_url
 
 # Approximate column widths in characters; Excel has no auto-fit on write.
-WIDTHS = [26, 16, 30, 24, 52, 24]
+WIDTHS = [30, 34, 30, 30, 52, 24]
 MAX_SHEET_NAME = 31  # Excel's limit
 
 

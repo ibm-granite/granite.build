@@ -38,9 +38,13 @@ STEP_CATEGORY = {
     "distill/tokenizer-align": "Train",
 }
 
+CONFIG_ENV_ROOT = "configurations/assets/environments/"
+CONFIG_STEPS_ROOT = "configurations/assets/steps/"
 ENV_URI_PREFIX = "space://environments/"
 BARE = "none (bare node)"
+HELM = "Helm chart"
 NONE = "—"
+NON_FRAMEWORK_TITLE = "Non-Framework Steps"
 FORMATS = {"markdown": "md", "xlsx": "xlsx", "pptx": "pptx"}
 
 
@@ -67,6 +71,22 @@ def tracked_templates():
         check=True, capture_output=True, text=True,
     ).stdout
     return sorted(p for p in out.splitlines() if p.count("/") == 4)
+
+
+def tracked_config_steps():
+    """Return git-tracked step.yaml paths anywhere under configurations/.
+
+    Returns:
+        Sorted list of repo-relative paths.
+
+    Raises:
+        subprocess.CalledProcessError: If git fails (not run inside the repo).
+    """
+    out = subprocess.run(
+        ["git", "ls-files", "configurations/**/step.yaml"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    return sorted(out.splitlines())
 
 
 def category_for(step_path):
@@ -145,15 +165,20 @@ def image_for(impl_dir, template):
         template: Parsed step-template.yaml.
 
     Returns:
-        List of parts, sorted: Code(image) per resolved image, BARE when a launcher has
-        none, '?' when unresolvable; [] when the step builds its own image from a Dockerfile.
+        List of parts, sorted: Code(image) per resolved image (launcher image_id, or image
+        for docker/runpod), HELM for a Helm-chart launcher, BARE when a launcher has none,
+        '?' when unresolvable; [] when the step builds its own image from a Dockerfile.
     """
     if os.path.exists(os.path.join(impl_dir, "Dockerfile")):
         return []
     images = set()
     for env_cfg in (template.get("environment_configs") or {}).values():
         for launcher in ((env_cfg or {}).get("launchers") or {}).values():
-            image = resolve_image_id((launcher.get("config") or {}).get("image_id"), template)
+            config = launcher.get("config") or {}
+            if "chart" in config:
+                images.add(HELM)
+                continue
+            image = resolve_image_id(config.get("image_id") or config.get("image"), template)
             if image is None:
                 warn(f"{impl_dir}: could not resolve image_id; fill the Image cell by hand")
                 image = "?"
@@ -255,6 +280,68 @@ def readme_link(step_path, env):
     return f"steps/{step_path}/{env}/README.md", False
 
 
+def config_step_location(step_dir):
+    """Split a configurations/ step directory into its step path and environment label.
+
+    Steps under configurations/assets/environments/<class>/[<sub>/[<cluster>/]]steps/<path>
+    are visible only in that environment, so the directory implies the subtype. Steps under
+    configurations/assets/steps/<class>/<path> nest the class first.
+
+    Args:
+        step_dir: Directory holding the step.yaml.
+
+    Returns:
+        (step path, environment label), e.g. ('bfcl-eval', 'skypilot - lsf (ibm-bluevela)').
+    """
+    if step_dir.startswith(CONFIG_STEPS_ROOT):
+        env_class, _, step_path = step_dir[len(CONFIG_STEPS_ROOT):].partition("/")
+        return step_path, env_class
+    env_dir, _, step_path = step_dir[len(CONFIG_ENV_ROOT):].partition("/steps/")
+    env_class, *rest = env_dir.split("/")
+    if not rest:
+        return step_path, env_class
+    cluster = f" ({'/'.join(rest[1:])})" if len(rest) > 1 else ""
+    return step_path, f"{env_class} - {rest[0]}{cluster}"
+
+
+def collect_config_impl(step_yaml):
+    """Gather table facts for a step that exists only under configurations/.
+
+    Args:
+        step_yaml: configurations/.../steps/<path>/step.yaml.
+
+    Returns:
+        Dict shaped like collect_impl's, with framework False and no test cases.
+
+    Raises:
+        yaml.YAMLError: If the step.yaml does not parse.
+    """
+    step_dir = os.path.dirname(step_yaml)
+    step_path, env = config_step_location(step_dir)
+    with open(step_yaml) as f:
+        step = yaml.safe_load(f)
+    declared = declared_environments(step)
+    envs = declared if any(" - " in e for e in declared) or " - " not in env else [env]
+    readme = os.path.join(step_dir, "README.md")
+    return {
+        "step_path": step_path, "env": env, "envs": envs, "image": image_for(step_dir, step),
+        "cases": {}, "readme": readme if os.path.exists(readme) else None,
+        "published": True, "framework": False,
+    }
+
+
+def published_dir(impl):
+    """Return the configurations/ directory a framework implementation publishes to.
+
+    Args:
+        impl: A collect_impl dict.
+
+    Returns:
+        Repo-relative directory path.
+    """
+    return f"{CONFIG_ENV_ROOT}{impl['env']}/steps/{impl['step_path']}"
+
+
 def collect_impl(template_path):
     """Gather the per-implementation facts the table needs.
 
@@ -262,7 +349,8 @@ def collect_impl(template_path):
         template_path: steps/<group>/<name>/<env>/step-template.yaml.
 
     Returns:
-        Dict with step_path, env, envs, image (cell parts), cases, readme, published.
+        Dict with step_path, env, envs, image (cell parts), cases, readme, published,
+        framework (True: built from the steps/ tree).
 
     Raises:
         yaml.YAMLError: If the template does not parse.
@@ -276,7 +364,7 @@ def collect_impl(template_path):
     return {
         "step_path": step_path, "env": env, "envs": declared_environments(template),
         "image": image_for(impl_dir, template), "cases": tested_cases(impl_dir),
-        "readme": readme, "published": published,
+        "readme": readme, "published": published, "framework": True,
     }
 
 
@@ -330,7 +418,7 @@ def build_row(step_path, impls, multi_cluster):
     multi = len(impls) > 1
     envs = list(dict.fromkeys(e for i in impls for e in i["envs"]))
     tested = sorted({env_label(env, multi_cluster) for i in impls for env, _ in i["cases"].values()})
-    readmes = [Link(i["env"] if multi else "README.md", i["readme"]) for i in impls]
+    readmes = [Link(i["env"] if multi else "README.md", i["readme"]) for i in impls if i["readme"]]
     readme_cell = joined(readmes) + ([] if all(i["published"] for i in impls) else [" ‡"])
     images = list(dict.fromkeys(part for i in impls for part in i["image"]))
     samples = []
@@ -343,24 +431,36 @@ def build_row(step_path, impls, multi_cluster):
 
 
 def build_tables():
-    """Collect every tracked step and group its rows into one table per category.
+    """Collect every tracked step: framework steps by category, then the non-framework steps.
+
+    Framework steps (steps/ tree) get one table per category. Non-framework steps (a
+    configurations/ step.yaml that no framework step publishes) all go in one final table
+    titled NON_FRAMEWORK_TITLE, uncategorised.
 
     Returns:
-        List of (category, rows), categories alphabetical, rows sorted by step path.
+        List of (title, rows): categories alphabetical, then NON_FRAMEWORK_TITLE if any;
+        rows sorted by step path.
 
     Raises:
         subprocess.CalledProcessError: If git fails (not run inside the repo).
     """
     impls = [collect_impl(p) for p in tracked_templates()]
+    published = {published_dir(i) for i in impls}
+    impls += [collect_config_impl(p) for p in tracked_config_steps()
+              if os.path.dirname(p) not in published]
     by_step = {}
     for impl in impls:
-        by_step.setdefault(impl["step_path"], []).append(impl)
+        by_step.setdefault((impl["step_path"], impl["framework"]), []).append(impl)
     multi_cluster = multi_cluster_subtypes(impls)
-    by_category = {}
-    for step_path in sorted(by_step):
-        row = build_row(step_path, by_step[step_path], multi_cluster)
-        by_category.setdefault(category_for(step_path), []).append(row)
-    return sorted(by_category.items())
+    by_category, non_framework = {}, []
+    for step_path, framework in sorted(by_step):
+        row = build_row(step_path, by_step[(step_path, framework)], multi_cluster)
+        if framework:
+            by_category.setdefault(category_for(step_path), []).append(row)
+        else:
+            non_framework.append(row)
+    tables = sorted(by_category.items())
+    return tables + ([(NON_FRAMEWORK_TITLE, non_framework)] if non_framework else [])
 
 
 def default_link_base():
