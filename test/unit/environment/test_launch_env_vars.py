@@ -636,6 +636,14 @@ class TestK8sOverride:
         string_values = [(f"k8s.env.{k}.value", v) for k, v in env.items()]
         assert ("k8s.env.GB_BUILD_ID.value", "real-build") in string_values
 
+    def test_label_helm_values_sanitize_username(self):
+        from gbserver.environment.k8s import K8s
+
+        assert K8s._label_helm_values({"username": "abc@us.ibm.com"}) == [
+            ("run_metadata.username", "abc_us.ibm.com")
+        ]
+        assert K8s._label_helm_values({}) == [("run_metadata.username", "none")]
+
     def test_run_metadata_var_wins_over_gbtest(self, monkeypatch):
         # K8s inherits the base method; a GBTEST-sourced GB_BUILD_ID must still
         # lose to the run_metadata-derived one (patched in the environment module
