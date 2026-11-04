@@ -140,11 +140,10 @@ CLUSTER: "bluevela"
 # Where every target runs, under granitebuild's SLURM identity (not hew's
 # personal one): granitebuild is in the proj_granite-build group that owns the
 # TEACHER_MODEL_URI/STUDENT_MODEL_URI/DATASET_URI/CHAT_TEMPLATE_URI paths
-# above, which hew's identity cannot reach (see
-# configurations/assets/environments/skypilot/slurm/ibm-bluevela-hew/environment.yaml's
-# header comment). Slower scheduling than hew's personal identity, but no
-# asset relocation needed to reuse the LSF recipe's exact pair/corpus/template.
-ENVIRONMENT_URI: "space://environments/skypilot/slurm/ibm-bluevela"
+# above, which a personal identity outside that group cannot reach. Slower
+# scheduling than a personal identity, but no asset relocation needed to reuse
+# the LSF recipe's exact pair/corpus/template.
+ENVIRONMENT_URI: "space://environments/skypilot/slurm/bluevela"
 # SkyPilot's `zone` is the SLURM partition name for this cloud (--partition).
 # gpu-mid is the environment's own default (H200, confirmed via `sinfo`) and
 # what every target below inherits unless overridden; gpu-low is a real,

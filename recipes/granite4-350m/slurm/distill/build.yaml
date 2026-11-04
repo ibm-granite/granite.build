@@ -76,7 +76,7 @@ granite.build:
         # something already on a filesystem this environment can reach (the
         # pull is then a no-op), "hf:///org/repo" to pull fresh from the Hub,
         # or "s3://bucket/key" / "cos://bucket/key" for object storage — see
-        # ibm-bluevela's SLURM environment.yaml assetstores block for what's
+        # the bluevela SLURM environment.yaml's assetstores block for what's
         # wired in. Whichever scheme wins, the step reads the RESOLVED binding
         # path itself, never the URI — align_config carries no path for them.
         teacher:
