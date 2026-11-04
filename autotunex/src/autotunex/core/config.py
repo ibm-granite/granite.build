@@ -10,6 +10,7 @@ import shutil
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -81,6 +82,33 @@ def _secret_value(value: SecretStr | None) -> str | None:
     reopened for every ``SecretStr`` field.
     """
     return None if value is None else value.get_secret_value()
+
+
+def canonical_origin(url: str) -> str | None:
+    """Return ``url``'s origin as a browser serializes it, or ``None`` if it has none.
+
+    That is ``http(s)://host[:port]`` with the host lowercased and a default
+    port dropped, which is the form of a browser's ``Origin`` header. ``None``
+    covers anything that is not an absolute http(s) URL with a host, a URL that
+    does not parse (``https://[``, a port over 65535), and a URL carrying
+    userinfo, which a browser never puts in an origin.
+    """
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    host = parts.hostname
+    if parts.scheme not in ("http", "https") or not host:
+        return None
+    if parts.username is not None or parts.password is not None:
+        return None
+    if ":" in host:
+        host = f"[{host}]"
+    origin = f"{parts.scheme}://{host}"
+    if port is not None and port != (443 if parts.scheme == "https" else 80):
+        origin += f":{port}"
+    return origin
 
 
 def _default_auth_providers() -> list[AuthProviderName]:
@@ -809,6 +837,9 @@ class Settings(BaseSettings):
     backend-for-frontend requires, a wildcard origin would let
     ``CORSMiddleware`` echo back any request's ``Origin`` header with the
     session cookie attached — see the validator below for the mechanism.
+
+    Each entry must be a bare origin (see :func:`canonical_origin`). It is also
+    the allowlist for ``/auth/login``'s ``return_to``.
     """
 
     @property
@@ -1010,6 +1041,14 @@ class Settings(BaseSettings):
                 "requires, Starlette's CORSMiddleware echoes back any request's "
                 "Origin header with the session cookie attached, which defeats "
                 "the allowlist entirely."
+            )
+        malformed = [entry for entry in self.cors_allow_origins if canonical_origin(entry) != entry]
+        if malformed:
+            raise ValueError(
+                "cors_allow_origins entries must be bare origins, written as a browser "
+                "sends them: http(s)://host[:port] with a lowercase host, no default "
+                "port and no path or trailing slash. Any other spelling matches "
+                f"nothing. Got {malformed!r}."
             )
         if self.session_cookie_same_site == "none" and not self.cors_allow_origins:
             raise ValueError(

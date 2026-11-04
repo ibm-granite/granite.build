@@ -346,17 +346,37 @@ Startup refuses a `"*"` entry outright.
 
 A UI on another origin sends a signed-out user to
 `/auth/login?return_to=<absolute URL>` so they land back on that UI after
-logging in. `return_to` is honoured only when its origin (`scheme://host[:port]`)
-**exactly** matches an entry in `AUTOTUNEX_CORS_ALLOW_ORIGINS`, and it is ASCII
-(percent-encoded, as a browser builds it) and at most 1024 characters. Anything
-else, including a relative URL, a URL with userinfo (`https://allowed@evil`) and
-one that does not parse, falls back to `AUTOTUNEX_PUBLIC_BASE_URL` and is logged
-at WARNING without the value. With the default empty allowlist, `return_to` is
-always ignored. Write allowlist entries as bare origins (no trailing slash, no
-path), since the match is exact.
+logging in. `return_to` is honoured only when its origin, as a browser
+serializes it (`scheme://host[:port]`, host lowercased, default port dropped),
+matches an entry in `AUTOTUNEX_CORS_ALLOW_ORIGINS`, and it is ASCII
+(percent-encoded, as a browser builds it) and at most 1024 characters.
+
+Anything else, including a relative URL, a URL with userinfo
+(`https://allowed@evil`) and one that does not parse, falls back to
+`AUTOTUNEX_PUBLIC_BASE_URL` and is logged at WARNING without the value. An empty
+`return_to=` is treated as absent. With the default empty allowlist, `return_to`
+is always ignored, and that is logged only at DEBUG.
+
+Allowlist entries must be bare origins written the way a browser sends them:
+`https://ui.example.com`, not `https://ui.example.com/`, `https://UI.example.com`
+or `https://ui.example.com:443`. Startup refuses an entry with a path, a trailing
+slash, an uppercase host, a default port or userinfo, because it would match
+neither a CORS `Origin` header nor a `return_to`. Write an internationalized host
+in its ASCII (punycode) form, as a browser sends it.
+
+Being on another **origin** is not the same as being on another **site**. The
+default `AUTOTUNEX_SESSION_COOKIE_SAME_SITE=lax` is enough for a UI on the same
+registrable domain as this service (`ui.example.com` calling `api.example.com`).
+A UI on a different site (`ui.example.org`) also needs
+`AUTOTUNEX_SESSION_COOKIE_SAME_SITE=none`. Without it the login completes and
+lands back on the UI, but the browser withholds the cookie from the UI's
+credentialed calls, so every call 401s and the UI sends the user to log in again
+in a loop.
 
 The accepted URL travels inside the signed `oauth_flow` cookie, so
-`/auth/callback` never reads a redirect target from the request.
+`/auth/callback` never reads a redirect target from the request. `/auth/callback`
+checks it against the allowlist again, so removing an origin also stops logins
+that were already in progress.
 
 ```
 https://autotunex.example.com/auth/login?return_to=https%3A%2F%2Fui.example.com%2Fdashboard

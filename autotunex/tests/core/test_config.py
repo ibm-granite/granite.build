@@ -483,6 +483,46 @@ def test_cors_allow_origins_rejects_a_wildcard() -> None:
         Settings(_env_file=None, environment="test", cors_allow_origins=["*"])
 
 
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://ui.example.com/",
+        "https://ui.example.com/app",
+        "https://UI.example.com",
+        "HTTPS://ui.example.com",
+        "https://ui.example.com:443",
+        "http://ui.example.com:80",
+        "https://ui.example.com?x=1",
+        "https://ui.example.com#x",
+        "https://user@ui.example.com",
+        "ui.example.com",
+        "ftp://ui.example.com",
+        "https://[",
+        "https://",
+    ],
+)
+def test_cors_allow_origins_rejects_an_entry_that_is_not_a_bare_origin(origin: str) -> None:
+    """CORS and the login ``return_to`` both match an entry exactly against an origin.
+
+    A browser's ``Origin`` header is always ``scheme://host[:port]`` with the
+    host lowercased and a default port dropped. An entry in any other shape
+    (a trailing slash, say) matches nothing, so startup refuses it instead of
+    letting every cross-origin call fail with nothing to explain why.
+    """
+    with pytest.raises(ValidationError, match="cors_allow_origins"):
+        Settings(_env_file=None, environment="test", cors_allow_origins=[origin])
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["https://ui.example.com", "https://ui.example.com:8443", "http://localhost:5173"],
+)
+def test_cors_allow_origins_accepts_a_bare_origin(origin: str) -> None:
+    settings = Settings(_env_file=None, environment="test", cors_allow_origins=[origin])
+
+    assert settings.cors_allow_origins == [origin]
+
+
 def test_cross_site_cookies_require_an_explicit_cors_allowlist() -> None:
     kwargs = dict(_SESSION_KWARGS)
     kwargs["session_cookie_same_site"] = "none"
