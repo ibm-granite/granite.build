@@ -15,7 +15,7 @@
 STEP_NAME := hf-export
 REGISTRY ?= us.icr.io/cil15-shared-registry
 IMAGE_NAME ?= gb-step-hf-export
-IMAGE_VERSION ?= 0.1.0
+IMAGE_VERSION ?= a20c8f39
 UV_LOCK ?= uvx --from uv==0.13.6 uv
 
 include ../../../common.mk

@@ -55,7 +55,7 @@ All fields in the first two tables live under the step's `config.gen_smoke_confi
 The step declares no named inputs (`inputs: {allow_unknown: true}`): its rungs are a
 variable-length list, so there is no fixed set of names to declare. It reads the model
 directories named in `rungs`, each of which must be a complete local HF export — the
-`hf_model` output of the `space://steps/distill/hf-export` step. A recipe declares one input
+`hf_model` output of the `space://steps/generic/hf-export` step. A recipe declares one input
 per export on the target (`binding: export-<N>.hf_model`) and lists the same directories in
 `rungs`. Binding the export targets as inputs makes gen-smoke wait for every checkpoint it
 reads.
@@ -89,7 +89,7 @@ Declare `repetition_report` on the target (typically `uri: "env://{{ binding.pat
 ## Example build.yaml
 
 One `gen-smoke` target for a two-rung ladder. `export-500` and `export-1000` are targets
-running the `space://steps/distill/hf-export` step; they are elided here.
+running the `space://steps/generic/hf-export` step; they are elided here.
 
 ```yaml
 granite.build:
@@ -153,7 +153,7 @@ all of them.
 - The step runs with `HF_HUB_OFFLINE=1`. Each `<hf_model_dir>` must be a complete local
   export.
 - Needs one GPU, which the build supplies, and no trainer source. It runs in
-  `docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:e9501415` (whose venv carries
+  `docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:a20c8f39` (whose venv carries
   torch and transformers), on SkyPilot's LSF backend only (`subtypes: [lsf]`).
 - One run covers the whole ladder rather than one per rung: for a 350m model, loading
   several checkpoints serially on one GPU is still minutes.

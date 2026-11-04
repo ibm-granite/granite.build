@@ -141,7 +141,7 @@ Declare `eval_metrics` on the target (typically `uri: "env://{{ binding.path }}"
 
 A t=0 baseline and a post-training measurement against the same teacher and corpus.
 `align`, `corpus` and `export` are targets running the `space://steps/distill/tokenizer-align`,
-`space://steps/distill/corpus-prep` and `space://steps/distill/hf-export` steps; they are
+`space://steps/distill/corpus-prep` and `space://steps/generic/hf-export` steps; they are
 elided here.
 
 ```yaml
@@ -293,7 +293,7 @@ no output *and* no error.
 
 ### Where the artifact marker lives
 
-Unlike the `space://steps/distill/corpus-prep` and `space://steps/distill/hf-export` steps, the
+Unlike the `space://steps/distill/corpus-prep` and `space://steps/generic/hf-export` steps, the
 marker is printed by **`src/run-eval.sh`**, not by the template. The script calls
 `publish_artifacts()` on both the success path **and** the already-measured SKIP path, because a
 resumed recipe whose eval says "already done" and then publishes nothing has broken whatever
@@ -334,7 +334,7 @@ Worth applying to any result before believing it:
 ### Runtime
 
 - **Type** `custom`; **environment** SkyPilot, LSF only (`subtypes: [lsf]`).
-- **Image** `docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:e9501415`, prebuilt; this
+- **Image** `docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:a20c8f39`, prebuilt; this
   step builds none.
 - **GPU required** — two models' forward passes. Accelerators come from the build.yaml, so one
   step serves a 3B-teacher smoke run and a 30B-teacher reference run.
