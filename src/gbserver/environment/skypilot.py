@@ -2062,7 +2062,8 @@ def _inline_hf_download_cmd(pull_info: Dict[str, Any]) -> str:
     ``pullasset_hfstore`` refuses one containing ``$``.
 
     :param pull_info: A binding's ``_hfpull`` dict (``repo``, ``path``, and the
-        optional ``revision`` and ``type``).
+        optional ``revision``, ``type`` and ``path_in_repo``; with a path in the
+        repo only it is downloaded, as ``HfURI.pull`` does).
     :returns: The shell command line.
     """
     cmd = (
@@ -2073,6 +2074,10 @@ def _inline_hf_download_cmd(pull_info: Dict[str, Any]) -> str:
         cmd += f" --revision {shlex.quote(str(pull_info['revision']))}"
     if pull_info.get("type"):
         cmd += f" --repo-type {shlex.quote(str(pull_info['type']))}"
+    path_in_repo = str(pull_info.get("path_in_repo") or "").strip("/")
+    if path_in_repo:
+        for pattern in (path_in_repo, f"{path_in_repo}/*"):
+            cmd += f" --include {shlex.quote(pattern)}"
     return cmd
 
 
@@ -5500,7 +5505,9 @@ class Skypilot(Environment):
         )
 
         hf_token = assetstore.resolve_token(hfuri) or ""
-        binding_config = {"binding": {"path": str(binding_path)}}
+        # The pull keeps the repo layout under binding_path; a path in the repo
+        # is bound where it lands, not at the download root.
+        binding_config = {"binding": {"path": str(hfuri.local_path(binding_path))}}
 
         # Inline mode: stash download metadata for injection into the main
         # step's setup script rather than launching a separate cluster.
@@ -5528,6 +5535,7 @@ class Skypilot(Environment):
                 "repo": f"{hfuri.get_owner()}/{hfuri.get_repo()}",
                 "revision": hfuri.get_revision(),
                 "type": hfuri.get_hf_type() or "model",
+                "path_in_repo": hfuri.get_path_in_repo(),
                 "uri": str(hfuri),
                 "hf_token": hf_token,
             }

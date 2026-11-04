@@ -52,6 +52,12 @@ builds refer to them via `space://assetstores/<name>` URIs resolved through the 
 
 Notes:
 
+- **HuggingFace (`hf://`)** pulls the whole repo unless the URI names a path in it after an explicit
+  revision: `hf:///datasets/org/repo/main/data/train` downloads only `data/train` (a file or a
+  directory). The repo layout is kept under the download dir, and the input is bound at the path
+  itself, so a step sees the named directory, not the repo root. A path that matches nothing in the
+  repo fails the pull. A dataset repo needs the `datasets/` type segment
+  (`hf:///datasets/org/repo/...`); without it the URI names a model repo.
 - **Env-local (`env://`)** models an artifact that already lives on a filesystem the worker can see, so
   the store resolves the path directly and transfers nothing. Common on bare-metal HPC backends (e.g.
   LSF/SLURM with shared GPFS), but supported by **all** environment classes and registered

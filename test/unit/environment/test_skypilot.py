@@ -787,7 +787,7 @@ class TestLaunchSkypilot:
     async def test_compute_config_memory_only(self, skypilot_env):
         """num_gpus_per_node: 0 with only memory set => cpus unset, memory applied.
 
-        Mirrors the skypilot/slurm 1step-image test build.yaml.
+        Mirrors the skypilot/slurm/local 1step-image test build.yaml.
         """
         kwargs = await self._launch_and_capture_resources(
             skypilot_env,

@@ -2276,7 +2276,9 @@ class K8s(Environment):
         )
 
         # Binding config for container
-        binding_config = {BINDING_KEY: {"path": str(Path(binding_path))}}
+        # The pull keeps the repo layout under binding_path; a path in the repo
+        # is bound where it lands, not at the download root.
+        binding_config = {BINDING_KEY: {"path": str(hf_uri.local_path(binding_path))}}
         hfpull_stepuri = storeload_config.config.get("step_uri", "space://steps/hfpull")
 
         pull_step_config = BuildTargetStepConfig(

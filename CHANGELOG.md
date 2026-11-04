@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supervised fine-tuning with Hugging Face PEFT 0.21.2 and TRL 1.17.1 `SFTTrainer` on any
   SkyPilot endpoint, single node, DDP or FSDP / DeepSpeed ZeRO-3 sharding, ClearML tracking
   (`auto` when `CLEARML_API_*` creds are present). Registers the PEFT adapter (not a merged
-  model). Custom image `quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-5`
+  model). Custom image `quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-6`
   (torch 2.15.0 / CUDA 13.2) with a fully hashed dependency lock. Build tests on skypilot/aws
   (QLoRA, aLoRA) and BlueVela SLURM (LoRA/FSDP, QLoRA/DeepSpeed).
 - **`make publish-image` refuses to overwrite an existing image tag (#229).** A tag must keep
@@ -54,6 +54,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `$REGISTRY_AUTH_FILE` or `~/.config/containers/auth.json`, so a step's first publish to quay.io
   (which answers an anonymous check of a missing repository with 401) works after a plain
   `podman login`.
+
+- **granite-evals** — benchmark evaluation suite: 41 benchmarks across 9 harness families
+  (bfcl, bird, ifbench, judged, lmeval, nemoskills, swebench, tau, tbench), one image and
+  one sourced step per family under `steps/eval/`, with dispatch recipes under
+  `recipes/evals/` that split GPU generate from CPU score. No benchmark data is committed:
+  dataset pins live in `steps/eval/VENDORED.md` and are fetched at run or image-build
+  time (#460).
 
 ### Changed
 
@@ -248,6 +255,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Before, the `Step:` progress events were dropped and gbserver logged a traceback for each
   matching line. These events are now stored and published once per matching log line, and the
   build runner logs the message with the status.
+- **The `hf-peft-sft` image ships no precompiled bytecode again (`peft-v0.21.2-6`).** With it
+  (`peft-v0.21.2-5`, 13,438 extra `.pyc` in the venv layer) quay's security scan never left
+  "queued"; `-6` scans in about a minute.
 
 - **`make publish-step` no longer reports a published single-platform image as missing (#568).**
   Without `skopeo`, its image check used `podman manifest inspect`, which fails on a

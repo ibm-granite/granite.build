@@ -72,6 +72,17 @@ EXPECTED = {
     # HF-PEFT SFT: new, so base_model is required outright; dataset is optional
     # (omit it to train on hf_peft_sft_config.dataset_name instead).
     f"{_SKY}/train/hf-peft-sft": ({"base_model"}, {"dataset"}),
+    # Granite-evals benchmark families: model_path is a config string and recipes
+    # bind only ordering-only inputs (names vary by recipe), so no named inputs.
+    f"{_SKY}/eval/bfcl": (set(), set()),
+    f"{_SKY}/eval/bird": (set(), set()),
+    f"{_SKY}/eval/ifbench": (set(), set()),
+    f"{_SKY}/eval/judged": (set(), set()),
+    f"{_SKY}/eval/lmeval": (set(), set()),
+    f"{_SKY}/eval/nemoskills": (set(), set()),
+    f"{_SKY}/eval/swebench": (set(), set()),
+    f"{_SKY}/eval/tau": (set(), set()),
+    f"{_SKY}/eval/tbench": (set(), set()),
     # Shipped in v0.3.x: optional during the deprecation window, with the old config
     # key as a fallback.
     f"{_LSF}/sage-eval": (set(), {"model"}),
@@ -79,6 +90,8 @@ EXPECTED = {
     f"{_LSF}/openinstruct-sft": (set(), {"model"}),
     f"{_LSF}/openinstruct-rl": (set(), {"rm_url", "code_url"}),
     f"{_SKY}/data/dpk": (set(), {"docs"}),
+    # data-designer: a seed dataset is optional (a sampler/LLM-only config needs none).
+    f"{_SKY}/data/data-designer": (set(), {"seed"}),
     f"{_AWS}/openinstruct-sft": (set(), {"model"}),
     f"{_SKY}/digit": (set(), {"digit_input"}),
     "environments/skypilot-managed/kubernetes/steps/digit": (set(), {"digit_input"}),

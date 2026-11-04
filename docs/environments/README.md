@@ -159,7 +159,7 @@ of them.
 Steps are resolved relative to the active environment (see
 [step-resolution.md](step-resolution.md)). A **single** `step.yaml` at a shared ancestor of
 several environments' directories — e.g. `environments/skypilot/steps/digit/step.yaml` — is
-served to every environment beneath it (`skypilot/kubernetes`, `skypilot/slurm`, …), because a
+served to every environment beneath it (`skypilot/kubernetes`, `skypilot/slurm/local`, …), because a
 `steps/` folder serves the environments at or below the folder that holds it. An env's own
 `steps/<name>/` still overrides (the deeper folder wins). No configuration needed.
 

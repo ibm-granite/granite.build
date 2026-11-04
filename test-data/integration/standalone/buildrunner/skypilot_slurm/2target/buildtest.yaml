@@ -21,7 +21,7 @@ target_expectations:
     step_count: 1
     input_artifact_count: 1
     output_artifact_count: 1
-# Shared standalone space so space:// URIs (skypilot/slurm environment + bash
+# Shared standalone space so space:// URIs (skypilot/slurm/local environment + bash
 # step) resolve without cloning. Relative to this YAML's directory.
 space_uri: ../../../../../../configurations/spaces/local
 simulate_step_failure: false

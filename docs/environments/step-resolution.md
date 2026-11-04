@@ -38,10 +38,13 @@ configurations/assets/environments/skypilot/
 │   └── steps/
 │       └── digit/step.yaml      # OPTIONAL override — wins over ../steps/digit
 └── slurm/
-    └── environment.yaml         # also resolves ../steps/digit
+    └── local/
+        └── environment.yaml     # also resolves ../../steps/digit
 ```
 
 Place a step at the level of the family whose members should share it (`skypilot/steps/` for all skypilot envs, `skypilot/lsf/steps/` for just the lsf endpoints).  Keep a per-endpoint override in the env's own `steps/` dir when one endpoint genuinely diverges.
+
+The walk starts at the env's own dir, so a nested env such as `skypilot/slurm/local` checks `slurm/local/steps/`, then `slurm/steps/` (not present today; if added, it would be shared by every SLURM endpoint, e.g. `local` and `bluevela`), then `skypilot/steps/`.
 
 ## Restricting a shared step by sub-type (`subtype` / `subtypes`)
 
@@ -58,7 +61,7 @@ environment_configs:
     ...
 ```
 
-So a single `skypilot/steps/digit` is resolved by `skypilot/kubernetes` and `skypilot/slurm` but is unresolvable for `skypilot/aws` and `skypilot/lsf/...`.  The filter is applied wherever a copy is found (space root, env-class match, and the env-agnostic fallback), so a copy excluded by sub-type is never a candidate, whichever base it is in.
+So a single `skypilot/steps/digit` is resolved by `skypilot/kubernetes` and `skypilot/slurm/local` but is unresolvable for `skypilot/aws` and `skypilot/lsf/...`.  The filter is applied wherever a copy is found (space root, env-class match, and the env-agnostic fallback), so a copy excluded by sub-type is never a candidate, whichever base it is in.
 
 ## Env-class matching against existing `environment_configs`
 

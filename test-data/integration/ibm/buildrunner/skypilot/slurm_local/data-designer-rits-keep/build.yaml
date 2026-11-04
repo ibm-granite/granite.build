@@ -14,7 +14,7 @@ granite.build:
   targets:
 
     generate:
-      environment_uri: space://environments/skypilot/slurm
+      environment_uri: space://environments/skypilot/slurm/local
       outputs:
         questions:
           # Matches output_path below — the step cannot derive one from the other.

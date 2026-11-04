@@ -54,6 +54,8 @@ def mock_hfuri():
     uri.get_revision.return_value = "main"
     uri.get_host.return_value = "huggingface.co"
     uri.hash.return_value = "abc123hash"
+    # No path in the repo: the content is bound at the download root.
+    uri.local_path.side_effect = lambda dest: dest
     uri.__str__ = lambda self: "hf://models/myorg/myrepo"
     return uri
 
