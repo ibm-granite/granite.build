@@ -189,7 +189,7 @@ granite.build:
   name: fm-tune-slurm
   targets:
     tune:
-      environment_uri: space://environments/skypilot/slurm
+      environment_uri: space://environments/skypilot/slurm/local
       inputs:
         dataset: { uri: file:///shared/datasets/alpaca-mini/ }
         base_model: { uri: hf:///ibm-granite/granite-4.0-h-350m }

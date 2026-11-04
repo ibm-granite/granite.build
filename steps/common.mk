@@ -182,7 +182,7 @@ SPACE_DIR  ?= space
 # gbspace-<step> group that does not exist. Override it to push to another group.
 SPACE_NAME ?= public
 # When non-empty, a variables.DEFAULT_ENVIRONMENT entry is written into the
-# generated space.yaml (e.g. DEFAULT_ENVIRONMENT=skypilot/slurm). Empty by
+# generated space.yaml (e.g. DEFAULT_ENVIRONMENT=skypilot/slurm/local). Empty by
 # default — builds that set environment_uri explicitly do not need it.
 DEFAULT_ENVIRONMENT ?=
 SRC_DIR  = src
