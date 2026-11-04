@@ -100,11 +100,11 @@ def test_managed_python_ships_no_pip():
     assert install < removal.start()
 
 
-def test_bytecode_compiled_at_build_time():
-    # /opt is read-only for Pyxis's job user, so .pyc must ship in the image;
-    # otherwise every rank recompiles torch/transformers/trl on import.
-    assert re.findall(r"UV_COMPILE_BYTECODE=(\d)", _DOCKERFILE) == ["1"]
-    assert _DOCKERFILE.index("UV_COMPILE_BYTECODE=1") < _DOCKERFILE.index(
+def test_no_bytecode_at_build_time():
+    # The image ships no .pyc: with them (peft-v0.21.2-5) quay's security scan
+    # never left "queued". Set once, before the hashed install, so it applies to it.
+    assert re.findall(r"UV_COMPILE_BYTECODE=(\d)", _DOCKERFILE) == ["0"]
+    assert _DOCKERFILE.index("UV_COMPILE_BYTECODE=0") < _DOCKERFILE.index(
         "--require-hashes"
     )
 
