@@ -240,9 +240,15 @@ granite.build:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             launcher_config:
               resources:
-                # SkyPilot picks the instance: H200:8 is p5e/p5en.48xlarge,
-                # H100:1 is p5.4xlarge. The region comes from the environment.
+                # SkyPilot picks the cheapest instance with these GPUs (H200:8 is
+                # p5e/p5en.48xlarge, L40S:1 is g6e.xlarge) unless INSTANCE_TYPE
+                # names one. The region comes from the environment.
                 accelerators: "$${ACCELERATORS}"
+<% if INSTANCE_TYPE %>
+                # Another size with the same GPUs, when the cheapest one has no
+                # capacity: AWS stocks each instance type separately.
+                instance_type: "$${INSTANCE_TYPE}"
+<% endif %>
               envs:
                 PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
             compute_config:

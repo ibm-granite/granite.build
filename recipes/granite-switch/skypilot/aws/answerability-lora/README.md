@@ -90,20 +90,26 @@ batch 4 × 1 × 8 = 32) becomes 8 GPUs with `GRAD_ACCUM=4`:
 | `H200:8` (default) | `4` | p5en.48xlarge | ~63 | Same 141 GB GPUs as BlueVela, so aLoRA (no gradient checkpointing) fits as it did there. |
 | `H100:8` | `4` | p5.48xlarge | ~55 | 80 GB GPUs. LoRA fits; aLoRA at 8,192 tokens without gradient checkpointing is untested. |
 | `H100:1` | (smoke) | p5.4xlarge | ~7 | For a smoke run. |
+| `L40S:1` | (smoke) | g6e.xlarge | ~1.9 | For a smoke run; 48 GB, so not for the full run. |
 
 Prices are SkyPilot's catalog prices for `us-east-1`. The hf-peft-sft step
 saves no checkpoints, so a spot instance that is reclaimed restarts training
 from the start; the recipe uses on-demand instances.
 
-p5-family capacity is often short. When there is none, gbserver retries the
-launch with backoff for about 2 hours (the environment's `retry`) before
-the build fails.
+GPU capacity in `us-east-1` is often short. When there is none, gbserver
+retries the launch with backoff for about 2 hours (the environment's `retry`)
+before the build fails. SkyPilot only asks for the cheapest instance type with
+the requested GPUs, and AWS stocks each type separately, so when that one has
+none, set `INSTANCE_TYPE` to a larger size with the same GPUs (for `L40S:1`,
+`g6e.2xlarge` or `g6e.4xlarge`; for `H200:8`, `p5e.48xlarge` or
+`p5en.48xlarge`).
 
 A smoke run, to try the plumbing on one GPU before the full run:
 
 ```bash
 gb build start -f build.yaml --param RUN_ID=smoke1 \
-  --param ACCELERATORS=H100:1 --param DATASET_SPLIT='train[:64]' --param MAX_STEPS=4
+  --param ACCELERATORS=L40S:1 --param INSTANCE_TYPE=g6e.2xlarge \
+  --param DATASET_SPLIT='train[:64]' --param MAX_STEPS=4
 ```
 
 ## Parameters
@@ -120,6 +126,7 @@ What differs:
 | `DATA_ROOT` | `/mnt/gb-shared/granite-switch/answerability-lora/data` | Where `prepare` writes, on the EFS. As on SLURM, it does not include the method, so builds running at the same time need different `RUN_ID`s. |
 | `ADAPTER_ROOT` | `/mnt/gb-shared/granite-switch/answerability-lora/adapters` | Where the adapter is written, on the EFS, under `answerability-$METHOD/$RUN_ID`. |
 | `ACCELERATORS` | `H200:8` | See [GPUs](#gpus). |
+| `INSTANCE_TYPE` | empty | An EC2 instance type with the `ACCELERATORS` GPUs, for when SkyPilot's pick has no capacity. Empty lets SkyPilot pick. |
 | `GRAD_ACCUM` | `4` | `gradient_accumulation_steps`. Keep GPUs × 1 × `GRAD_ACCUM` = 32 for runs comparable with BlueVela's. |
 | `PREP_IMAGE` | the hf-peft-sft `peft-v0.21.2-6` image | `prepare` runs in the step image, for its pyarrow and transformers. |
 | `PREP_CPUS` / `PREP_MEMORY` | `4` / `16` | The minimum vCPUs and GB of memory of the `prepare` instance. |

@@ -54,6 +54,11 @@ ADAPTER_ROOT: "/mnt/gb-shared/granite-switch/answerability-lora/adapters"
 # GPU. Same GPUs as the BlueVela runs, so aLoRA (no gradient checkpointing)
 # fits as it did there. AWS has no 4-GPU H100/H200 instance.
 ACCELERATORS: "H200:8"
+# Empty: SkyPilot picks the cheapest instance with ACCELERATORS. Set an EC2
+# instance type with those GPUs to try another size when that one has no
+# capacity (for L40S:1, g6e.2xlarge or g6e.4xlarge; for H200:8, p5e.48xlarge
+# or p5en.48xlarge).
+INSTANCE_TYPE: ""
 # Effective batch = GPUs x 1 x GRAD_ACCUM; keep it at 32 when changing GPUs
 # (H200:8 -> 4, H100:1 -> 32; a smoke run can leave it as is).
 GRAD_ACCUM: 4
