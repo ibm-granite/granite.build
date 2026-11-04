@@ -19,7 +19,7 @@ You're authoring a `build.yaml`, picking environments, and submitting builds wit
 - [Monitoring and artifact events](steps/monitoring-and-artifact-events.md) — how a step captures its outputs by parsing workload logs
 - [HuggingFace push](builds/hf-push.md) — `hf://` URIs and `store_push`
 - [Bring your own step](steps/bring-your-own-step.md) — custom code from a Git repo
-- [Custom code steps](steps/custom-code-steps.md) — inline commands without step definitions
+- [Custom code steps (Kubernetes)](steps/custom-code-steps.md) — inline commands without step definitions on the `gbstep` step
 - [Bring your own image](steps/bring-your-own-image.md) — custom container images
 - [FAQ](help/faq.md) — common questions and troubleshooting
 - [Glossary](glossary.md) — key terms and abbreviations

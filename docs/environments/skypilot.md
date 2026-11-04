@@ -325,7 +325,8 @@ explicitly (`<cloud>/<cluster>[/<zone>]`). Prefer numeric/`"N+"` strings for `cp
 `cpus: "1+"` **breaks on the LSF cloud** (it parses the value as a float without stripping `+`), so
 cloud-agnostic steps leave `resources` empty and let the build.yaml supply them.
 
-> `compute_config` is read only partially by this launcher (unlike K8s/LSF) — see the dedicated note below.
+> `compute_config` maps onto these fields; a step's `resources: {}` does not block it. See
+> [How `compute_config` maps to SkyPilot](#how-compute_config-maps-to-skypilot).
 
 #### `config` overrides (`docker`, `sbatch_options`)
 
@@ -550,17 +551,23 @@ The exact contents of each block are cloud-specific — see the per-cloud pages:
 `cloud_config`); [AWS](skypilot-aws.md) uses `aws_credentials`; [Kubernetes](skypilot-kubernetes.md)
 uses neither.
 
-## `compute_config` is only partially honored by the Skypilot launcher
+## How `compute_config` maps to SkyPilot
 
-Three keys are read:
+gbserver applies `compute_config` underneath the merged `resources` (step.yaml
+`resources`, then build.yaml `config.launcher_config.resources`; last wins). A step.yaml with
+`resources: {}` therefore still gets your `compute_config` values:
 
 | Key | Effect |
 |---|---|
 | `num_nodes` | Becomes `sky.Task(num_nodes=...)`. Overridable by `launcher_config.num_nodes`. |
-| `num_cpus_per_node` | A low-precedence `cpus` floor on `sky.Resources`. |
-| `total_memory_per_node` | A low-precedence `memory` floor (skipped on slurm/lsf). |
+| `num_cpus_per_node` | Becomes `sky.Resources.cpus` unless `resources.cpus` is set. On SLURM this is `--cpus-per-task`. |
+| `total_memory_per_node` | Becomes `sky.Resources.memory` on cloud catalogs; **skipped on slurm**. Use `resources.memory` there. |
+| `num_gpus_per_node` | **Not read.** Use `resources.accelerators`. |
 
-`num_gpus_per_node` is **not** read. Request GPUs with `resources.accelerators` (in the step.yaml or
+For SLURM, see [Sizing a SkyPilot SLURM step](skypilot-slurm-sizing.md), which
+also covers how to check with `sacct`.
+
+Request GPUs with `resources.accelerators` (in the step.yaml or
 the build.yaml), e.g. `accelerators: "H100:8"`. A step that needs the count at runtime can read
 `SKYPILOT_NUM_GPUS_PER_NODE`, which SkyPilot exports from that request, so the count is stated once.
 If `num_gpus_per_node > 0` is set with neither `resources.accelerators` nor `resources.instance_type`,

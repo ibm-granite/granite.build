@@ -32,7 +32,7 @@ Everything is in **`references/`** next to this `SKILL.md` (the index below list
 **Authoring builds**
 - `references/builds/build-yaml-reference.md` — **authoritative `build.yaml` schema** (targets, steps, inputs/outputs, URIs, all fields/options).
 - `references/builds/README.md` — build features overview; `references/builds/hf-push.md` — push artifacts to HuggingFace; `references/builds/event-notifications.md`.
-- `references/steps/bring-your-own-step.md`, `references/steps/custom-code-steps.md`, `references/steps/bring-your-own-image.md` — author/use custom steps (examples lean k8s/docker; the `commands`/`files_to_create` features are k8s/LSF only). `references/steps/README.md` — steps overview.
+- `references/steps/bring-your-own-step.md`, `references/steps/custom-code-steps.md`, `references/steps/bring-your-own-image.md` — author/use custom steps (examples lean k8s/docker; `custom-code-steps.md` is the Kubernetes `gbstep` feature set, not SkyPilot). `references/steps/README.md` — steps overview.
 
 **Using the system**
 - `references/getting-started.md` — end-to-end walkthrough.
@@ -49,7 +49,7 @@ Everything is in **`references/`** next to this `SKILL.md` (the index below list
 
 **Environments / config / secrets / troubleshooting**
 - `references/help/troubleshooting.md` — **diagnosing failures** (server or build).
-- `references/environments/bash.md` — the **standalone bash backend** (most relevant here); also `docker.md`, `k8s.md`, `lsf.md`, `runpod.md`, `skypilot*.md`, `step-resolution.md`, and `setup/`.
+- `references/environments/bash.md` — the **standalone bash backend** (most relevant here); also `docker.md`, `k8s.md`, `lsf.md`, `runpod.md`, `skypilot*.md`, `step-resolution.md`, and `setup/`. **Sizing a SLURM step** (CPUs, memory, GPUs, nodes → `#SBATCH`): `references/environments/skypilot-slurm-sizing.md`.
 - `references/configuration/` — `config-files.md`, `environment-variables.md`, `gb-environment.md`.
 - `references/secrets/` — `local-secrets-manager.md`, `env-secrets-manager.md`, `ibmcloud-secrets-manager.md`; `references/rest-api/multi-provider-authentication.md`.
 

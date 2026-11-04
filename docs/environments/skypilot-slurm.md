@@ -594,6 +594,11 @@ the mount set BlueVela ops validated for multi-node NCCL training (`container_mo
 in their reference sbatch script). Nested overlap with `workdir` is fine: bind mounts of the same
 underlying filesystem coexist.
 
+### Sizing a step: CPUs, memory, GPUs, nodes
+
+See [Sizing a SkyPilot SLURM step](skypilot-slurm-sizing.md): what each `compute_config` and
+`resources` key becomes in `#SBATCH`, common mistakes, and how to check with `sacct`.
+
 ### Multi-node jobs and NCCL
 
 Multi-node is requested per step with `compute_config.num_nodes` (a step/build
