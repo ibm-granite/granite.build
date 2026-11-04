@@ -37,6 +37,16 @@ logger = get_logger(__name__)
 # ``step.yaml``.
 _IndexedStep = Tuple[Tuple[str, ...], Path]
 
+
+class _PinnedStepExcluded(Exception):
+    """The URI's step name is pinned, but no copy of it serves the active env.
+
+    Raised by :meth:`SpaceURI._resolve_step_by_base_order` so the env-agnostic
+    fallback is skipped: it would otherwise serve a shorter step with the rest
+    of the name as a sub-file (``distill`` + ``foo`` for ``distill/foo``).
+    """
+
+
 #: Env-class partition dirs that may sit between ``steps/`` and a step's name
 #: (the builtins' ``steps/<env-class>/<name>/``, gb-test's ``steps/skypilot/dpk``),
 #: lowercased.  Only these are skipped when matching a name; a category folder
@@ -97,7 +107,10 @@ class SpaceURI(URI):
         # the deepest owning dir, fewest ``environment_configs`` keys, then path.
         # See _resolve_step_by_base_order.
         if uri_suffix.startswith(STEPS_PREFIX):
-            chosen = SpaceURI._resolve_step_by_base_order(uri_suffix)
+            try:
+                chosen = SpaceURI._resolve_step_by_base_order(uri_suffix)
+            except _PinnedStepExcluded:
+                raise ValueError(f"Unresolvable space uri : {uristr}") from None
             if chosen is not None:
                 # The chosen copy is final: a ``<rest>`` it lacks (or that
                 # escapes it) is unresolvable, never taken from another copy.
@@ -655,6 +668,10 @@ class SpaceURI(URI):
             ``(step_dir, rest)`` for the chosen copy (the caller resolves
             ``rest`` within it), or ``None`` when no base holds a candidate (the
             caller then falls back).
+
+        Raises:
+            _PinnedStepExcluded: The pinned name names a step, but no copy of
+                it serves the active env; the URI is then unresolvable.
         """
         after = SpaceURI._steps_suffix(uri_suffix)
         if after is None:
@@ -682,7 +699,9 @@ class SpaceURI(URI):
             matches = SpaceURI._env_class_matches(base_path, name, ctx)
             if matches:
                 return min(matches)[3].parent, rest
-        return None
+        # The name is pinned but excluded for this env: the fallback must not
+        # serve a shorter step with the rest of the name as a sub-file.
+        raise _PinnedStepExcluded(name)
 
     @staticmethod
     def _step_lookup() -> "_StepLookup":

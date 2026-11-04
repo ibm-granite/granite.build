@@ -1350,6 +1350,32 @@ class TestNestedStepIdentity:
     to the env gate, so identity is deterministic.
     """
 
+    @pytest.mark.parametrize("outer_in_space", [True, False])
+    def test_excluded_pinned_name_is_not_demoted_by_the_fallback(
+        self, tmp_path, outer_in_space
+    ):
+        """``distill/foo`` names a K8s-only step, so with Skypilot active the URI
+        is unresolvable.  The env-agnostic fallback must not serve ``distill``
+        with ``foo`` as a sub-file instead, whether ``distill`` is in the space
+        or in the later base."""
+        space_root = tmp_path / "space"
+        space_root.mkdir()
+        later = tmp_path / "later"
+        outer = _write_step(
+            (space_root if outer_in_space else later) / "steps" / "distill",
+            env_classes=["Skypilot"],
+        )
+        (outer / "foo").mkdir()
+        (outer / "foo" / "file.txt").write_text("x\n")
+        _write_step(later / "steps" / "distill" / "foo", env_classes=["K8s"])
+        env_dir = tmp_path / "env"
+        env_dir.mkdir()
+        _set_bases(space_root, later)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/distill/foo")
+
     def test_space_root_nested_step(self, tmp_path):
         """Space root: a nested step the space itself ships resolves off base_uris[0]."""
         space_root = tmp_path / "space"
