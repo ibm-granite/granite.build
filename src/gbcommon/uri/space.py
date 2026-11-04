@@ -276,13 +276,15 @@ class SpaceURI(URI):
     @staticmethod
     def _enclosing_base_boundary(
         env_path: Path, base_paths: Iterable[Optional[Path]]
-    ) -> Path:
-        """Return the deepest base directory enclosing ``env_path``.
+    ) -> Optional[Path]:
+        """Return the deepest base directory enclosing ``env_path``, or ``None``.
 
         The env dir's path relative to this boundary is what a ``steps/`` dir's
-        owner is compared with (``_StepLookup.env_rel``).  Falls back to
-        ``env_path`` itself when no base encloses it; the env's path is then
-        taken from its ``environments`` segment (:meth:`_env_rel_from_boundary`).
+        owner is compared with (``_StepLookup.env_rel``).  A base that *is* the
+        env dir encloses it (the boundary is then ``env_path`` itself).  When no
+        base encloses it this returns ``None``: the env dir is then searched as
+        an extra base, and its path is taken from its ``environments`` segment
+        (:meth:`_env_rel_from_boundary`).
 
         Args:
             env_path: Absolute, resolved path of the active env's directory.
@@ -292,9 +294,9 @@ class SpaceURI(URI):
                 bounded correctly.
 
         Returns:
-            The boundary directory.
+            The boundary directory, or ``None`` when no base encloses the env.
         """
-        boundary = env_path
+        boundary: Optional[Path] = None
         best_len = -1
         for base_path in base_paths:
             if base_path is None:
@@ -709,9 +711,9 @@ class SpaceURI(URI):
             if env_path is not None
             else None
         )
-        # The boundary is the env dir itself only when no base encloses it: then
-        # search that dir as its own base, right after the space's own dir.
-        if env_path is not None and boundary == env_path:
+        # No base encloses the env dir: search it as its own base, right after
+        # the space's own dir.  An env dir that is itself a base keeps its place.
+        if env_path is not None and boundary is None:
             bases.insert(min(1, len(bases)), (env_path.as_uri(), env_path))
         return _StepLookup(
             env_class=getattr(tl, "current_env_class_name", None),
@@ -719,18 +721,20 @@ class SpaceURI(URI):
             env_path=env_path,
             env_rel=(
                 SpaceURI._env_rel_from_boundary(env_path, boundary)
-                if env_path is not None and boundary is not None
+                if env_path is not None
                 else None
             ),
             bases=tuple(bases),
         )
 
     @staticmethod
-    def _env_rel_from_boundary(env_path: Path, boundary: Path) -> Tuple[str, ...]:
+    def _env_rel_from_boundary(
+        env_path: Path, boundary: Optional[Path]
+    ) -> Tuple[str, ...]:
         """Return the env dir's path parts relative to its enclosing base.
 
-        When no base encloses the env (``boundary`` is the env dir itself, e.g.
-        a ``#subdirectory=`` env in a git repo not listed in base_uris), the
+        When no base encloses the env (``boundary`` is ``None``, e.g. a
+        ``#subdirectory=`` env in a git repo not listed in base_uris), the
         path from its last ``environments`` segment is used instead, so a
         family's ``steps/`` in a listed base still serves it
         (:meth:`_steps_dir_admits_env`).
@@ -738,14 +742,14 @@ class SpaceURI(URI):
         Args:
             env_path: Absolute, resolved path of the active env's directory.
             boundary: The deepest base enclosing it
-                (:meth:`_enclosing_base_boundary`), or ``env_path`` when none does.
+                (:meth:`_enclosing_base_boundary`), or ``None`` when none does.
 
         Returns:
             The env dir's parts relative to ``boundary``, or from its last
             ``environments`` segment on when no base encloses it (``()`` when
             its path has no such segment).
         """
-        if boundary != env_path:
+        if boundary is not None:
             return env_path.relative_to(boundary).parts
         if "environments" not in env_path.parts:
             return ()

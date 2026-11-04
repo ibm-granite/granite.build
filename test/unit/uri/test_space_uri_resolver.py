@@ -653,6 +653,20 @@ class TestEnvFolderOwnership:
             with pytest.raises(ValueError, match="Unresolvable space uri"):
                 _resolve("space://steps/hello")
 
+    def test_env_dir_that_is_a_base_keeps_its_place(self, tmp_path):
+        """An env dir that is itself a listed base is not added again ahead of
+        the bases before it, so an earlier base's copy still wins."""
+        space_root = tmp_path / "space"
+        space_root.mkdir()
+        assets = tmp_path / "assets"
+        earlier = _write_step(assets / "steps" / "hello", env_classes=["Bash"])
+        env_repo = tmp_path / "envrepo"
+        _write_step(env_repo / "steps" / "hello", env_classes=["Bash"])
+        _set_bases(space_root, assets, env_repo)
+
+        with SpaceURI.with_current_env(_make_env("Bash", env_repo)):
+            assert _resolved_dir(_resolve("space://steps/hello")).samefile(earlier)
+
     def test_outside_env_dir_outranks_listed_bases(self, tmp_path):
         """An outside env dir ranks right after the space dir: its own copy beats
         a listed base's copy, while the space's own copy still beats it."""
