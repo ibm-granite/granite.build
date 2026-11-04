@@ -55,6 +55,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (which answers an anonymous check of a missing repository with 401) works after a plain
   `podman login`.
 
+- **granite-evals** — benchmark evaluation suite: 41 benchmarks across 9 harness families
+  (bfcl, bird, ifbench, judged, lmeval, nemoskills, swebench, tau, tbench), one image and
+  one sourced step per family under `steps/eval/`, with dispatch recipes under
+  `recipes/evals/` that split GPU generate from CPU score. No benchmark data is committed:
+  dataset pins live in `steps/eval/VENDORED.md` and are fetched at run or image-build
+  time (#460).
+
 ### Changed
 
 - **With podman, `make publish-image`'s `REGISTRY_USER`/`REGISTRY_PASSWORD` login is scoped to
