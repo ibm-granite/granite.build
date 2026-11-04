@@ -36,7 +36,8 @@ granite.build:
             # Fast completion detection for the test (base skypilot default 300s).
             poll_interval_seconds: 5
             # num_cpus_per_node -> --cpus-per-task, even though the step's own
-            # resources is {}. num_gpus_per_node is only exported as GB_NUM_GPUS.
+            # resources is {}. num_gpus_per_node only reaches the workload's env
+            # (the step's envs), not SLURM.
             compute_config:
               num_nodes: 1
               num_gpus_per_node: 1

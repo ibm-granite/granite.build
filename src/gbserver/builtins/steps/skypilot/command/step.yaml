@@ -8,8 +8,8 @@ config:
     # scheme (e.g. quay.io/org/img:tag) — the launcher below composes image_id
     # as ("docker:" ~ image), so including "docker:" here doubles it into an
     # unpullable "docker:docker:...". Empty => run on the bare launcher node.
-    # Must be a Debian/Ubuntu (apt-based) image on SLURM/LSF; see
-    # docs/environments/skypilot-slurm.md and skypilot-lsf.md.
+    # Must be a Debian/Ubuntu (apt-based) image on SLURM; see
+    # docs/environments/skypilot-slurm.md.
     image: ""
 
 environment_configs:

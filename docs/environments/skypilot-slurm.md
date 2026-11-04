@@ -3,6 +3,11 @@
 > **Audience:** operators configuring a `Skypilot` environment whose `default_cloud` is `slurm`.
 > Read [skypilot.md](skypilot.md) first for the compute model and config common to all clouds; this
 > page covers only what is SLURM-specific.
+>
+> **Sizing a step:** `compute_config.num_cpus_per_node` becomes `--cpus-per-task` even when the
+> step's `resources` is `{}`; GPUs come only from `resources.accelerators` and memory only from
+> `resources.memory`. Details and how to check with `sacct`:
+> [Sizing a SkyPilot SLURM step](skypilot-slurm-sizing.md).
 
 ## SkyPilot patches
 

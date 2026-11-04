@@ -10,7 +10,7 @@ Set these in the build.yaml step's `config`. The allocation SLURM grants is per 
 | What you want | Set this | What SLURM gets |
 |---|---|---|
 | CPUs | `compute_config.num_cpus_per_node: 64` (or `launcher_config.resources.cpus: "64"`) | `#SBATCH --cpus-per-task=64` |
-| GPUs | `launcher_config.resources.accelerators: "H100:8"` | `--gres=gpu:H100:8` |
+| GPUs | `launcher_config.resources.accelerators: "H100:8"` | 8 GPUs via `--gres` (`gpu:<type>:8`; `sacct` shows the cluster's own GRES type name) |
 | Memory | `launcher_config.resources.memory: "512"` (bare GiB, quoted) | `--mem=524288M` (512 GiB) |
 | Nodes | `compute_config.num_nodes: 2` | `--nodes=2` |
 
@@ -25,8 +25,10 @@ Set these in the build.yaml step's `config`. The allocation SLURM grants is per 
 - **`envs` does not size anything.** A step's `envs` (e.g. `GB_NUM_GPUS`, `GB_NUM_NODES`) only
   tells the workload what it got.
 - **Not set at all?** SkyPilot's SLURM defaults apply: 2 CPUs with no GPU, 4 per GPU otherwise
-  (32 for `H100:8`). Without `resources.memory`, the job gets the partition's default memory,
-  often a few GB and too small for a model load, so set it for real workloads.
+  (32 for `H100:8`). Memory then follows the CPU count: 1 GiB per CPU without GPUs, 4 GiB per CPU
+  with them (a cluster that doesn't track memory gets no `--mem`). A CPU-only job with no
+  settings therefore gets 2 GiB, too small for a model load, so set `resources.memory` for real
+  workloads.
 - **`num_gpus_per_node` and `total_memory_per_node` are not read on SLURM.** GPUs come only from
   `accelerators`; memory only from `resources.memory`. gbserver warns when `num_gpus_per_node > 0`
   has no `accelerators`. The step then runs without a GPU and can still report success.
@@ -52,9 +54,8 @@ config:
 
 ## Common mistakes
 
-
-- `total_memory_per_node: 512Gi` alone does nothing here, and the job gets the partition's
-  default memory. Use `resources.memory: "512"`.
+- `total_memory_per_node: 512Gi` alone does nothing here; memory falls back to the per-CPU
+  default (64 CPUs with `H100:8` gives 256 GiB). Use `resources.memory: "512"`.
 - `num_gpus_per_node: 8` alone gives no GPUs. Use `accelerators: "H100:8"`.
 - A redundant `resources.cpus` next to `num_cpus_per_node`, justified by "the step has
   `resources: {}`". It's harmless, but the two can drift, and `resources.cpus` silently wins.
