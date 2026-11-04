@@ -435,7 +435,17 @@ def _patch_misc() -> None:
     mounting_utils.get_s3_mount_install_cmd = get_s3_mount_install_cmd
 
     # Recycle guaranteed API-server workers after N requests (0 disables).
-    max_tasks = int(os.environ.get(_WORKER_MAX_TASKS_ENV, _DEFAULT_WORKER_MAX_TASKS))
+    raw = os.environ.get(_WORKER_MAX_TASKS_ENV, str(_DEFAULT_WORKER_MAX_TASKS))
+    try:
+        max_tasks = int(raw)
+    except ValueError:
+        logger.warning(
+            "Ignoring invalid %s=%r; using %d.",
+            _WORKER_MAX_TASKS_ENV,
+            raw,
+            _DEFAULT_WORKER_MAX_TASKS,
+        )
+        max_tasks = _DEFAULT_WORKER_MAX_TASKS
     orig_pool_init = process.PoolExecutor.__init__
 
     @functools.wraps(orig_pool_init)
