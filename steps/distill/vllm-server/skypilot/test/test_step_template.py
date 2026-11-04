@@ -208,6 +208,14 @@ class TestVllmWorkarounds:
         assert step["config"]["vllm_config"]["data_parallel_size"] == ""
         assert 'DP="$GPUS"' in run_script
 
+    def test_the_gpu_count_comes_from_what_skypilot_sets(self, run_script):
+        """SKYPILOT_NUM_GPUS_PER_NODE is set on every backend; NUM_GPUS_PER_NODE is
+        set by nothing at all. Reading only the latter made a 1-GPU allocation start
+        8 data-parallel ranks, which vLLM then failed to place ("Error setting
+        CUDA_VISIBLE_DEVICES: local range: [5, 6) base value: '0'" — smoke build
+        04be7abd, target vllm-server)."""
+        assert 'GPUS="${SKYPILOT_NUM_GPUS_PER_NODE:-${NUM_GPUS_PER_NODE:-8}}"' in run_script
+
 
 def _section(run_script, begin, end=None):
     """One section of the run block, cut at its own comment headers."""

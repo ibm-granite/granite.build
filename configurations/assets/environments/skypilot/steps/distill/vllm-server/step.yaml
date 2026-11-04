@@ -199,7 +199,11 @@ environment_configs:
               fi
             fi
 
-            GPUS="${NUM_GPUS_PER_NODE:-8}"
+            # SKYPILOT_NUM_GPUS_PER_NODE is what SkyPilot sets on every backend.
+            # NUM_GPUS_PER_NODE is not set by anything; reading only it made a
+            # 1-GPU server start 8 data-parallel ranks and crash in vLLM's
+            # CUDA_VISIBLE_DEVICES split.
+            GPUS="${SKYPILOT_NUM_GPUS_PER_NODE:-${NUM_GPUS_PER_NODE:-8}}"
             PORT="{{ config.vllm_config.port }}"
             DP="{{ config.vllm_config.data_parallel_size }}"
             [ -n "$DP" ] || DP="$GPUS"
