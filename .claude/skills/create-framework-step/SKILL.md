@@ -189,7 +189,11 @@ End with this report. Build the placeholder lines from `grep -rn FIXME steps/<pa
       make -C steps/<path>/<env> test-setup-kube        # once, if kube was selected
       make -C steps/<path>/<env> image publish-image    # custom image only (needs REGISTRY + login)
       make -C steps/<path>/<env> test                   # render test + build tests (custom image: builds it first)
+      make -C steps/<path>/<env> test TESTS=test/<cluster>   # just one cluster's build tests
       ```
+
+      `TESTS` takes pytest paths or node ids relative to the step env dir, and
+      `PYTEST_ARGS` takes extra pytest options (e.g. `-k`, `-x`).
 
       `make test` sets `GB_ENVIRONMENT=STANDALONE` and
       `GBTEST_STANDALONE_ENVIRONMENT=STAGING` unless you set them, so `hf://` pushes go

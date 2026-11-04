@@ -31,6 +31,12 @@ from typing import Any, Dict, Mapping
 # Maximum length of a Kubernetes label value (also within cloud tag limits).
 _MAX_LABEL_VALUE_LEN = 63
 
+# Per-value cap in the SLURM comment; fits a full step uri.
+_MAX_COMMENT_VALUE_LEN = 256
+
+# Dropped from comment values; sbatch's directive parser treats them specially.
+_COMMENT_QUOTES = frozenset("\"'")
+
 
 def normalize_run_metadata(run_metadata: Any) -> Dict:
     """Coerce a launcher's ``run_metadata`` kwarg into a plain dict.
@@ -70,14 +76,45 @@ class _MetaField:
 
 # Order here is the order fields render into the comment string. Add a line to
 # roll a new field out to both channels (labels + SLURM comment) at once.
+# System-assigned fields precede the free-form names, for stable positions.
 _METADATA_FIELDS = (
     _MetaField("build_id", "build_id", "gb-build-id"),
+    # gb_env and space_name aren't in run_metadata; tracking_metadata() adds them.
+    _MetaField("gb_env", "gb_env", "gb-env"),
+    _MetaField("space_name", "space", "gb-space"),
+    _MetaField("username", "username", "gb-username"),
     _MetaField("build_config_name", "build_name", "gb-build-name"),
     _MetaField("target_name", "target", "gb-target-name"),
     _MetaField("targetstep_uri", "step_uri", "gb-step-uri"),
     _MetaField("targetrun_id", "target_id", "gb-target-id"),
     _MetaField("targetsteprun_id", "step_id", "gb-step-id"),
 )
+
+
+def tracking_metadata(run_metadata: Mapping, launch_kwargs: Mapping) -> Dict:
+    """Return a copy of ``run_metadata`` with ``gb_env`` and ``space_name`` added.
+
+    A copy, since ``run_metadata`` is also splatted into ``EntityRunMetadata``.
+    Both come from the step config: ``gb_environment`` and ``space.name`` (from
+    space.yaml). Added only with a ``build_id``, so build-less launches stay
+    untagged.
+
+    Args:
+        run_metadata: The step's run metadata mapping.
+        launch_kwargs: The launcher's kwargs (the step's full config).
+
+    Returns:
+        The copy, with the extra fields when it has a build_id.
+    """
+    if not _field_value(run_metadata, "build_id"):
+        return dict(run_metadata)
+    space = launch_kwargs.get("space")
+    space_name = space.get("name") if isinstance(space, Mapping) else None
+    return {
+        **run_metadata,
+        "gb_env": launch_kwargs.get("gb_environment") or "",
+        "space_name": space_name or "",
+    }
 
 
 def _field_value(run_metadata: Mapping, run_key: str) -> str:
@@ -112,9 +149,9 @@ def _label_value(value: str) -> str:
 
 
 def _comment_value(value: str) -> str:
-    """Coerce a raw value into a single delimiter-safe comment token.
+    """Coerce a raw value into a single bounded, delimiter-safe comment token.
 
-    Two hazards are neutralized so a value can never break out of its slot in
+    Four hazards are neutralized so a value can never break out of its slot in
     the ``key=value;key=value`` comment:
 
     * **Whitespace/newlines** are collapsed to ``_``. SkyPilot emits the SLURM
@@ -125,6 +162,10 @@ def _comment_value(value: str) -> str:
       render as ``build_name=a;target=evil``, and a ``;``-splitting consumer
       would parse ``target=evil`` as a fabricated extra field (and lose the
       original value).
+    * **Quotes** (``"``, ``'``) are dropped: sbatch's directive parser treats
+      them specially, so one could truncate or swallow later fields.
+    * **Length and control chars**: non-printables are dropped and the value
+      is capped at ``_MAX_COMMENT_VALUE_LEN``.
 
     Internal ``:``/``/`` are preserved so a full step uri (e.g.
     ``space://steps/foo``) survives intact.
@@ -133,10 +174,14 @@ def _comment_value(value: str) -> str:
         value: The raw field value.
 
     Returns:
-        The value with whitespace collapsed to ``_`` and ``;``/``=`` replaced.
+        The sanitized, capped token.
     """
     collapsed = re.sub(r"\s+", "_", value)
-    return collapsed.replace(";", ",").replace("=", "-")
+    printable = "".join(
+        c for c in collapsed if c.isprintable() and c not in _COMMENT_QUOTES
+    )
+    token = printable.replace(";", ",").replace("=", "-")
+    return token[:_MAX_COMMENT_VALUE_LEN]
 
 
 def task_metadata_labels(run_metadata: Mapping) -> Dict[str, str]:

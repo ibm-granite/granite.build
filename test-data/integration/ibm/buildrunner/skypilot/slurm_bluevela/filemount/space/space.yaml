@@ -1,8 +1,9 @@
 # Test-local space for the Skypilot/BlueVela-SLURM file_mounts build test.
 #
 # Unlike the sibling bluevela-LSF/standalone-slurm filemount spaces (which chain
-# to the local configurations/assets), the `skypilot/slurm/bluevela` environment
-# lives ONLY in the remote gb-test space. So this space:
+# to the local configurations/assets), this space takes the
+# `skypilot/slurm/bluevela` environment from the remote gb-test space (rather
+# than the in-repo copy in configurations/assets). So this space:
 #   * carries the test-specific `steps/filemount-check` step in its own tree
 #     (the space's own dir is the first base_uri — see build/space.py — so
 #     `space://steps/filemount-check` resolves here), and

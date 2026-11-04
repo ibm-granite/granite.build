@@ -64,13 +64,29 @@ def reject_host_file_uri(uri: Optional[str], field: str) -> None:
         ValueError: If the server is not STANDALONE and the URI is, or may render
             to, a ``file:`` URI.
     """
-    if not is_standalone() and _may_be_file_uri(uri, FILE_SCHEME):
+    if not is_standalone() and may_be_file_uri(uri, FILE_SCHEME):
         raise ValueError(
             f"{field} '{uri}': file: URIs are only allowed on a standalone server"
         )
 
 
-def _may_be_file_uri(uri: Optional[str], default_scheme: str) -> bool:
+#: The tags that open Jinja syntax (expression, statement, comment).
+_JINJA_TAGS = ("{{", "{%", "{#")
+
+
+def has_jinja_syntax(text: str) -> bool:
+    """Return True if ``text`` contains any Jinja tag (``{{``, ``{%`` or ``{#``).
+
+    Args:
+        text: The string to check, e.g. a build.yaml URI.
+
+    Returns:
+        bool: True if a Jinja tag appears anywhere in ``text``.
+    """
+    return any(tag in text for tag in _JINJA_TAGS)
+
+
+def may_be_file_uri(uri: Optional[str], default_scheme: str) -> bool:
     """Return True if a build.yaml URI is, or may render to, a ``file:`` URI.
 
     Args:
@@ -88,7 +104,7 @@ def _may_be_file_uri(uri: Optional[str], default_scheme: str) -> bool:
     if not uri:
         return False
     prefix = re.split(r"[:/]", uri, maxsplit=1)[0]
-    if any(tag in prefix for tag in ("{{", "{%", "{#")):
+    if has_jinja_syntax(prefix):
         return True
     return urlparse(uri, default_scheme).scheme == FILE_SCHEME
 
@@ -477,22 +493,22 @@ class BuildConfig(Config):
         for target_name, target in self.targets.items():
             prefix = f"Target `{target_name}`"
             # environment_uri/step_uri are resolved with a "file" default scheme.
-            if _may_be_file_uri(target.environment_uri, FILE_SCHEME):
+            if may_be_file_uri(target.environment_uri, FILE_SCHEME):
                 errors.add(
                     f"{prefix} environment_uri '{target.environment_uri}': {hint}"
                 )
             for i, step in enumerate(target.steps):
                 uri = step.step_uri or ""
                 if uri != CODE_GBSERVER_BUILTINS_STEPS_GBSTEP_URI and (
-                    _may_be_file_uri(uri, FILE_SCHEME)
+                    may_be_file_uri(uri, FILE_SCHEME)
                 ):
                     errors.add(f"{prefix} Step `{i}` step_uri '{uri}': {hint}")
             # Inputs/outputs go through URI.get_uri, whose default scheme is git.
             for name, target_input in (target.inputs or {}).items():
-                if _may_be_file_uri(target_input.uri, "git"):
+                if may_be_file_uri(target_input.uri, "git"):
                     errors.add(f"{prefix} Input `{name}` '{target_input.uri}': {hint}")
             for name, target_output in (target.outputs or {}).items():
-                if _may_be_file_uri(target_output.uri, "git"):
+                if may_be_file_uri(target_output.uri, "git"):
                     errors.add(
                         f"{prefix} Output `{name}` '{target_output.uri}': {hint}"
                     )

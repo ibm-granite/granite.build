@@ -1,7 +1,6 @@
 "use client";
 
 import { Suspense, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
 import { InlineLoading, InlineNotification, SkeletonText, Tag } from "@carbon/react";
 import styles from "./page.module.scss";
 import { useQuery } from "@tanstack/react-query";
@@ -14,6 +13,7 @@ import {
 import { BuildStatusBadge } from "@granite-build/ui-core/components/BuildStatusBadge";
 import { PageHeader } from "@granite-build/ui-core/components/PageHeader";
 import { BuildDetails } from "./BuildDetails";
+import { useRouteId } from "@granite-build/ui-core/hooks/useRouteId";
 
 const ACTIVE_STATUSES = new Set(["running", "submitted", "pending"]);
 
@@ -49,30 +49,7 @@ function BuildDetailFallback() {
 }
 
 function BuildDetailContent() {
-  // The real id lives in the ?id= query param, not location.hash — a hash read
-  // in a mount-only effect breaks when navigating from one build's page to
-  // another without an intervening route change, since both are the same "_"
-  // route to Next's router and a one-time hash read never sees the new id.
-  // useSearchParams() is reactive, but it isn't enough by itself: Next's router
-  // patches window.history, so our own cosmetic replaceState below (stripping
-  // the query param once we've adopted the id) makes useSearchParams() briefly
-  // report no id again. Latching the id into state — only ever overwritten by
-  // a new *non-empty* param value — survives that revert.
-  const searchParams = useSearchParams();
-  const paramId = searchParams.get('id');
-  const [buildId, setBuildId] = useState(paramId ?? '');
-
-  useEffect(() => {
-    if (paramId && paramId !== buildId) {
-      setBuildId(paramId);
-    }
-  }, [paramId, buildId]);
-
-  useEffect(() => {
-    if (buildId) {
-      window.history.replaceState(null, '', `/dashboard/builds/${buildId}/`);
-    }
-  }, [buildId]);
+  const buildId = useRouteId('/dashboard/builds');
 
   const refetchInterval = (data: unknown) => {
     const b = data as { status?: string } | undefined;

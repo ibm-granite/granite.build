@@ -1,0 +1,33 @@
+# YAML-driven spec for test_skypilot_kube_data_designer_ollama.py (located by the
+# test/ <-> test-data/ helper, so this pairing holds in both test modes; see
+# steps/README.md).
+#
+# ONE target: a 4-row generation against granite4:350m served on the node, with
+# min_records: 4, so SUCCESS means every row came back from the local model.
+targets:
+  - generate
+target_expectations:
+  - target_name: generate
+    # No inputs, so no pull step; the env:// output moves no bytes, so no push step.
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 1    # questions (env://, registered inline from the marker)
+    expected_steps:
+      - step_uri: space://steps/data/data-designer
+        metadata:
+          records_generated: "4"
+          resumed_records: "0"
+        config:
+          data_designer_config:
+            output: questions
+            num_records: 4
+            local_model:
+              runtime: ollama
+              model: granite4:350m
+space_uri: ../../space
+tests:
+  - runner
+simulate_step_failure: false
+# Pod bring-up, the data-designer install, and on a cold cache the Ollama download
+# (~1.5 GB streamed, ~50 MB kept) and the model pull (~0.7 GB), then 4 CPU generations.
+timeout_minutes: 30

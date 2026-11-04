@@ -16,7 +16,7 @@
 
 """Serve artifact lineage out of the local index instead of W&B.
 
-``GET /lineage/graph`` delegates to :meth:`DBLineageService.query_graph`, which
+``POST /lineage/graph`` delegates to :meth:`DBLineageService.query_graph`, which
 answers from the lineage table, so a deployment with no W&B still has lineage.
 
 Only the graph is implemented here. The event-emission and tag-search methods of
@@ -426,13 +426,12 @@ class DBLineageService(LineageService):
         job_id: str,
         authorize_build: Callable[[Any], None],
         admin_storage: Any = None,
-        wandb_runs: Optional[Callable[[str], List[Any]]] = None,
         authorize_entry: Optional[Callable[[Dict], bool]] = None,
     ) -> Optional[Dict]:
         """One job's listing entry plus its full content, or ``None`` if unknown.
 
-        The listing reads the index alone; this follows the rows' ``job_store`` to
-        the job's own store -- see :mod:`gbserver.lineage.job_detail`. One job at a
+        The listing reads the index alone; this reads a granite.build job's build
+        and target run from this server -- see :mod:`gbserver.lineage.job_detail`. One job at a
         time on purpose: the side panel asks for it when a run is opened, never for
         a whole page.
         """
@@ -449,7 +448,6 @@ class DBLineageService(LineageService):
             rows,
             admin_storage,
             authorize_build,
-            wandb_runs=wandb_runs,
             authorize_entry=authorize_entry,
         )
 

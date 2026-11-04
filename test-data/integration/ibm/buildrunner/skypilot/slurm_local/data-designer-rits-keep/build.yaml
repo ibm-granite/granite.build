@@ -1,0 +1,68 @@
+granite.build:
+  name: skypilot-slurm-data-designer-rits-keep
+  # The slurm-rits generation with its output KEPT, so the rows can be inspected after
+  # the build. The difference is one field: an explicit output_path on the cluster's
+  # shared filesystem. The step's default (./output) lives in the per-run workdir
+  # (${shared_workdir}/builds/<build_id>/runs/<targetrun_id>), which teardown_skypilot
+  # rm -rf's when the target finishes; /shared/data-designer-test/... is outside it.
+  #
+  # Also checkpoints every 2 rows (run_config.buffer_size: 2), so the run leaves 3 row
+  # groups — the layout resume continues from — rather than one.
+  #
+  # The path is fixed rather than per-run, and resume is `never`: the test empties it
+  # before submitting, so a SUCCESS here is this run's data and never a leftover.
+  targets:
+
+    generate:
+      environment_uri: space://environments/skypilot/slurm
+      outputs:
+        questions:
+          # Matches output_path below — the step cannot derive one from the other.
+          uri: "env:///shared/data-designer-test/slurm-rits-keep"
+          type: dataset
+      steps:
+        - step_uri: space://steps/data/data-designer
+          config:
+            poll_interval_seconds: 5
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: RITS_API_KEY
+                    secret_name: RITS_API_KEY
+            data_designer_config:
+              output: questions
+              output_path: /shared/data-designer-test/slurm-rits-keep
+              num_records: 6
+              min_records: 6
+              resume: never
+              export_format: jsonl
+              run_config:
+                buffer_size: 2
+              model_providers:
+                - name: rits
+                  endpoint: https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/granite-4-1-8b/v1
+                  extra_headers_from_env:
+                    RITS_API_KEY: RITS_API_KEY
+              config:
+                model_configs:
+                  - alias: text
+                    model: ibm-granite/granite-4.1-8b
+                    provider: rits
+                    inference_parameters:
+                      temperature: 0.7
+                      max_tokens: 128
+                      max_parallel_requests: 2
+                columns:
+                  - name: topic
+                    column_type: sampler
+                    sampler_type: category
+                    params:
+                      values: [astronomy, cooking, geology]
+                  - name: question
+                    column_type: llm-text
+                    model_alias: text
+                    prompt: "{% raw %}Write one short trivia question about {{ topic }}. Output only the question.{% endraw %}"
+            compute_config:
+              num_cpus_per_node: 2
+              num_gpus_per_node: 0
+              total_memory_per_node: 4Gi

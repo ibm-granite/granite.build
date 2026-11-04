@@ -26,7 +26,9 @@ import base64
 import io
 import os
 import random
+import shutil
 import socket
+import tempfile
 import threading
 import time
 import zipfile
@@ -35,6 +37,12 @@ from unittest.mock import patch
 
 import pytest
 import requests
+from libgbtest.utils import AbstractSingletonStorageUsingTest
+
+from gbserver.storage.singleton_storage import reset_admin_storage
+from gbserver.storage.sql.engine_cache import get_singleton_engine_cache
+from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
+from gbserver.storage.storage_factory import StorageFactory
 
 TEST_DATA_DIR = Path(__file__).parent.parent.parent.parent / "test-data"
 STANDALONE_BUILD_DIR = TEST_DATA_DIR / "e2e" / "standalone" / "standalone-quickstart"
@@ -75,28 +83,58 @@ def _shutdown_standalone_server(
             the key ``"server"`` with the ``uvicorn.Server`` instance.
         server_thread: the thread running ``_run_standalone``.
         timeout: seconds to wait for the server thread to exit.
+
+    Raises:
+        AssertionError: if the thread is still alive after ``timeout``. Teardown then
+            resets the singleton and restores GB_HOME_DIR, so a still-running
+            BuildWatcher would rebuild unprefixed storage in the real
+            ~/.granite.build; the test must fail rather than leave that behind.
     """
     server = server_holder.get("server")
     if server is not None:
         server.should_exit = True
     server_thread.join(timeout=timeout)
+    assert (
+        not server_thread.is_alive()
+    ), f"standalone server thread did not stop within {timeout}s"
 
 
-class TestStandaloneRestApiE2E:
-    """End-to-end tests for the standalone REST API server."""
+class TestStandaloneRestApiE2E(AbstractSingletonStorageUsingTest):
+    """End-to-end tests for the standalone REST API server.
+
+    Based on AbstractSingletonStorageUsingTest so each test gets its own prefixed
+    SQLite admin tables, set up before the server starts and the singleton reset
+    after. Follows test_build_runner_cli.py: SQLite forced, GB_HOME_DIR isolated to
+    a temp dir, and the whole temp db discarded in teardown.
+    """
+
+    @classmethod
+    def _get_storage_factory(cls) -> StorageFactory:
+        """Force SQLite, whatever the session's default factory is."""
+        return SqliteStorageFactory()
+
+    def setup_method(self, method):
+        """Isolate GB_HOME_DIR before the base class builds the prefixed storage."""
+        self._prev_gb_home = os.environ.get("GB_HOME_DIR")
+        self._gb_home = tempfile.mkdtemp(prefix="gb_standalone_rest_e2e_")
+        os.environ["GB_HOME_DIR"] = self._gb_home
+        super().setup_method(method)
+
+    def teardown_method(self, method):
+        """Discard the isolated db and restore GB_HOME_DIR (not the base per-table drop,
+        which can hang on a SQLite db the server thread wrote to)."""
+        get_singleton_engine_cache().dispose_all()
+        self.storage = None
+        reset_admin_storage()
+        if self._prev_gb_home is None:
+            os.environ.pop("GB_HOME_DIR", None)
+        else:
+            os.environ["GB_HOME_DIR"] = self._prev_gb_home
+        shutil.rmtree(self._gb_home, ignore_errors=True)
 
     def test_submit_and_query_build(self):
         """Start the standalone server, submit a build, and query its status."""
         from gbserver.commands.command_standalone import _run_standalone
-        from gbserver.storage import singleton_storage
-        from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
-
-        # Use a unique table prefix to avoid collisions with other tests.
-        table_prefix = f"rest_e2e_{random.randint(1, 100000)}_"
-
-        # Reset singleton storage to SQLite with a unique prefix.
-        singleton_storage.set_storage_factory(SqliteStorageFactory())
-        storage = singleton_storage.set_storage_prefix(table_prefix)
 
         port = _get_free_port()
         api_key = f"test-key-{random.randint(1, 100000)}"
@@ -203,21 +241,8 @@ class TestStandaloneRestApiE2E:
 
         finally:
             # Stop the server first so its BuildWatcher is stopped (not leaked)
-            # before we drop the tables it polls.
+            # before teardown_method discards the db it polls.
             _shutdown_standalone_server(server_holder, server_thread)
-            # Clean up: delete test tables.
-            for store in [
-                storage.build_storage,
-                storage.target_storage,
-                storage.step_storage,
-                storage.space_storage,
-                storage.artifact_registry,
-                storage.event_storage,
-            ]:
-                try:
-                    store.delete_table()
-                except Exception:
-                    pass
 
     def test_no_apikey_spaces_for_user(self):
         """Verify spaces_for_user works WITHOUT GBSERVER_API_KEY (real standalone scenario).
@@ -227,13 +252,6 @@ class TestStandaloneRestApiE2E:
         without setting GBSERVER_API_KEY, and gbcli sends an empty Bearer token.
         """
         from gbserver.commands.command_standalone import _run_standalone
-        from gbserver.storage import singleton_storage
-        from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
-
-        table_prefix = f"nokey_e2e_{random.randint(1, 100000)}_"
-
-        singleton_storage.set_storage_factory(SqliteStorageFactory())
-        storage = singleton_storage.set_storage_prefix(table_prefix)
 
         port = _get_free_port()
 
@@ -339,18 +357,5 @@ class TestStandaloneRestApiE2E:
 
         finally:
             # Stop the server first so its BuildWatcher is stopped (not leaked)
-            # before we drop the tables it polls.
+            # before teardown_method discards the db it polls.
             _shutdown_standalone_server(server_holder, server_thread)
-            # Clean up: delete test tables.
-            for store in [
-                storage.build_storage,
-                storage.target_storage,
-                storage.step_storage,
-                storage.space_storage,
-                storage.artifact_registry,
-                storage.event_storage,
-            ]:
-                try:
-                    store.delete_table()
-                except Exception:
-                    pass

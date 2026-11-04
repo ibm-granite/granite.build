@@ -142,6 +142,7 @@ async def test_pushasset_renders_unique_hash_once():
         pushasset_types={"file": _handler},
         event_q=asyncio.Queue(),
         asset_bindings={},
+        _caches_pushed_binding=lambda uristr, binding: True,
     )
     Environment._thread_local.asset_events = {}
     uri = await Environment.pushasset(

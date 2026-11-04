@@ -1,0 +1,70 @@
+granite.build:
+  name: skypilot-slurm-data-designer-rits-resume
+  # Resume across builds. The test submits this build TWICE against one fixed
+  # output_path on the shared filesystem:
+  #
+  #   1. cancelled part-way, once at least two row groups are checkpointed;
+  #   2. re-submitted unchanged, which must CONTINUE from those row groups —
+  #      resume: if_possible + an unchanged config — rather than start over.
+  #
+  # Sized so the cancel lands mid-run: 200 rows (~75s at the ~2.7 rows/s measured on
+  # this cluster), one row group of 2 at a time, one request at a time. 40 rows took
+  # 15s and finished before the cancellation reached the node (2026-10-20).
+  #
+  # output_path is outside the per-run workdir (which teardown removes), or there
+  # would be nothing to resume from in the second build.
+  targets:
+
+    generate:
+      environment_uri: space://environments/skypilot/slurm
+      outputs:
+        questions:
+          uri: "env:///shared/data-designer-test/slurm-rits-resume"
+          type: dataset
+      steps:
+        - step_uri: space://steps/data/data-designer
+          config:
+            poll_interval_seconds: 5
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - env_name: RITS_API_KEY
+                    secret_name: RITS_API_KEY
+            data_designer_config:
+              output: questions
+              output_path: /shared/data-designer-test/slurm-rits-resume
+              num_records: 200
+              min_records: 200
+              resume: if_possible
+              export_format: jsonl
+              run_config:
+                buffer_size: 2
+                max_concurrent_row_groups: 1
+              model_providers:
+                - name: rits
+                  endpoint: https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/granite-4-1-8b/v1
+                  extra_headers_from_env:
+                    RITS_API_KEY: RITS_API_KEY
+              config:
+                model_configs:
+                  - alias: text
+                    model: ibm-granite/granite-4.1-8b
+                    provider: rits
+                    inference_parameters:
+                      temperature: 0.7
+                      max_tokens: 128
+                      max_parallel_requests: 1
+                columns:
+                  - name: topic
+                    column_type: sampler
+                    sampler_type: category
+                    params:
+                      values: [astronomy, cooking, geology]
+                  - name: question
+                    column_type: llm-text
+                    model_alias: text
+                    prompt: "{% raw %}Write one short trivia question about {{ topic }}. Output only the question.{% endraw %}"
+            compute_config:
+              num_cpus_per_node: 2
+              num_gpus_per_node: 0
+              total_memory_per_node: 4Gi

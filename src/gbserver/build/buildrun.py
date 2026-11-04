@@ -27,7 +27,7 @@ from dataclasses import asdict
 from typing import Any, Coroutine, Dict, List, Optional, Self, Set
 
 from gbcommon.uri.uri import URI
-from gbserver.build.build import Build
+from gbserver.build.build import Build, unanchor_file_uri
 from gbserver.build.run import Run, RunFailed
 from gbserver.build.target import BindingInfo, Target
 from gbserver.build.targetrun import TargetRun
@@ -250,12 +250,21 @@ class BuildRun(Run):
         environment URI, step URIs, step configs, and resolved input URIs.
         This hash encodes "the exact work this target performs" and is stored
         in gb_targets for skip detection across builds.
+
+        Env and step URIs found relative to the build.yaml were anchored to the
+        build's per-run copy (see ``build._anchor_relative_file_uris``); they are
+        hashed as written, since that path changes with every build.
         """
         target_config = target.config
         assert isinstance(target_config, BuildTargetConfig)
-        env_uri = target_config.environment_uri or ""
-        step_uris = [s.step_uri or "" for s in target_config.steps]
-        step_configs = [s.model_dump_json() for s in target_config.steps]
+        build_dir = self.entity.dir
+        env_uri = unanchor_file_uri(target_config.environment_uri, build_dir) or ""
+        steps = [
+            s.model_copy(update={"step_uri": unanchor_file_uri(s.step_uri, build_dir)})
+            for s in target_config.steps
+        ]
+        step_uris = [s.step_uri or "" for s in steps]
+        step_configs = [s.model_dump_json() for s in steps]
         input_uris = sorted(uri for bi in target.inputs_status for uri in bi.uris)
         hash_input = (
             env_uri

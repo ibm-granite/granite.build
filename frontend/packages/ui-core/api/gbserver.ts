@@ -202,7 +202,7 @@ function adaptTargetRun(raw: Record<string, unknown>): BuildTargetRun {
 // backend's own rules here: `datasets/` → DATASET, `buckets/` → BUCKET,
 // `spaces/` → FILESET (no dedicated Space type), everything else on HF
 // (including a bare org/name) → MODEL.
-function inferArtifactTypeFromUri(uri: string): import('../types').ArtifactType | null {
+export function inferArtifactTypeFromUri(uri: string): import('../types').ArtifactType | null {
   if (!uri) return null
   // Only HF URIs carry this convention (mirroring the backend's parse_hf_uri,
   // which requires an hf:// prefix). Without the scope guard a plain
@@ -599,7 +599,7 @@ export async function getArtifactModelCard(artifactId: string): Promise<string> 
   return data.content ?? ''
 }
 
-// ── Full lineage graph (GET /lineage/graph) ─────────────────────────────────────
+// ── Full lineage graph (POST /lineage/graph) ────────────────────────────────────
 
 export interface LineageGraphNode {
   id: string
@@ -661,7 +661,7 @@ export async function getLineageJobs(params: {
   uri?: string
   job_id?: string
   // With `uri`: only the jobs that read `uri` and wrote `output` -- the runs behind
-  // a grouped node of GET /lineage/graph (metadata.jobs_query).
+  // a grouped node of POST /lineage/graph (metadata.jobs_query).
   output?: string
   // With `uri`: the side of its row that is empty -- 'input' lists the jobs that wrote
   // `uri` from nothing recorded, 'output' those that read it and recorded no output.
@@ -682,23 +682,25 @@ export async function getLineageJobs(params: {
 
 // ── One lineage job with its full content (GET /lineage/jobs/{job_id}) ─────────
 
-// A job from the listing plus what its own store holds: the lineage job table,
-// this server's build and target run, or W&B (`job_store`). `build` and `target`
-// are raw, in the shape GET /builds/{id}/status uses; `detail` holds the large
-// payloads (step configs redacted). When the store could not answer,
-// `detail_available` is false and `detail_error` says why.
+// A job from the listing plus what this server holds for it: the build and target
+// run its rows name, whichever store (`job_store`) indexed it, else the lineage job
+// table's payloads. `build` and `target` are raw, in the shape
+// GET /builds/{id}/status uses; `detail` holds the large payloads (step configs
+// redacted). When neither answered, `detail_available` is false and
+// `detail_error` says why.
 export interface LineageJobDetail extends LineageJobEntry {
   job_store: 'lineage_job' | 'targets' | 'wandb' | 'other' | string
   detail: Record<string, unknown>
   build_id: string | null
   build: Build | null
   target: BuildTargetRun | null
-  origin_url: string
   detail_available: boolean
   detail_error: string | null
   // True when the detail was withheld because the caller may not read the job or
   // its build, as opposed to the store failing to answer.
   detail_denied?: boolean
+  // The target run the index recorded, when this server could not read it.
+  target_run_uuid?: string | null
 }
 
 export async function getLineageJobDetail(jobId: string): Promise<LineageJobDetail> {
@@ -715,9 +717,8 @@ export async function getLineageGraph(params: {
   uri?: string
   job_id?: string
   // Seed from exactly these jobs -- the runs behind a grouped node
-  // (metadata.jobs_query.job_ids). Sent in a POST body: in a query string a few
-  // hundred ids overrun proxy URL limits (414), and splitting them across requests
-  // would group the runs per request instead of across the whole set.
+  // (metadata.jobs_query.job_ids). All in one request: splitting them would group
+  // the runs per request instead of across the whole set.
   job_ids?: string[]
   direction?: string
   depth?: number
@@ -725,19 +726,11 @@ export async function getLineageGraph(params: {
   // false returns one node per job.
   group_runs?: boolean
 }): Promise<LineageGraphResult> {
-  if (params.job_ids?.length) {
-    const { depth, ...rest } = params
-    const { data } = await client.post<LineageGraphResult>(
-      '/lineage/graph',
-      { ...rest, max_depth: depth },
-      { timeout: 45_000 },
-    )
-    return data
-  }
-  const { data } = await client.get<LineageGraphResult>('/lineage/graph', {
-    params,
-    paramsSerializer: { indexes: null },
-    timeout: 45_000,
-  })
+  const { depth, ...rest } = params
+  const { data } = await client.post<LineageGraphResult>(
+    '/lineage/graph',
+    { ...rest, max_depth: depth },
+    { timeout: 45_000 },
+  )
   return data
 }

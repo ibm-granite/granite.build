@@ -54,6 +54,7 @@ from gbserver.environment._skypilot_metadata import (
     apply_slurm_comment_override,
     normalize_run_metadata,
     task_metadata_labels,
+    tracking_metadata,
 )
 from gbserver.environment._skypilot_ssh import (
     execute_on_host_via_ssh as _execute_on_host_via_ssh,
@@ -68,9 +69,12 @@ from gbserver.environment.skypilot import (
     _abort_shielded_request,
     _build_skypilot_mounts,
     _get_step_skypilot_config,
+    _merged_override_resources,
     _num_nodes_from_configs,
+    _resolve_infra_and_zone,
     _run_sky_verb_off_loop,
     _sky_submit_to_thread,
+    _warn_unrequested_gpus,
 )
 
 
@@ -168,18 +172,26 @@ class Skypilot_managed(Environment):
             run_metadata = normalize_run_metadata(kwargs.get("run_metadata"))
 
             job_name = self._job_name_for(launch_id)
-            cloud = (
-                launcher_config.get("resources", {}).get("cloud") or self._get_cloud()
-            )
 
-            # Build sky.Resources
-            res_config = launcher_config.get("resources", {})
+            # Same resources layering as the unmanaged launcher (shared helpers):
+            # the step launcher's resources, then build.yaml's
+            # config.launcher_config.resources (last wins). cloud, infra and zone
+            # come from the merged layers too, so a build-level cloud/infra routes
+            # the request. This launcher has no retry_workload, so each launch is
+            # a first attempt and warns once.
+            res_config = _merged_override_resources(launcher_config, config)
+            cloud = res_config.get("cloud") or self._get_cloud()
+            env_cfg = self.config.config if self.config else {}
+            infra, zone = _resolve_infra_and_zone(cloud, res_config, config, env_cfg)
+            _warn_unrequested_gpus(config.get("compute_config") or {}, res_config)
 
             # Build cluster config overrides (docker run_options, etc.)
+            # `or {}` per layer, as above: a present-but-null YAML key gives None.
+            build_launcher_config = config.get("launcher_config") or {}
             cluster_config_overrides = {}
             docker_config = {
-                **launcher_config.get("docker", {}),
-                **config.get("launcher_config", {}).get("docker", {}),
+                **(launcher_config.get("docker") or {}),
+                **(build_launcher_config.get("docker") or {}),
             }
             if docker_config:
                 cluster_config_overrides["docker"] = docker_config
@@ -187,22 +199,26 @@ class Skypilot_managed(Environment):
             # Attach build-tracking metadata as a SLURM --comment (searchable via
             # sjob/squeue/sacct). Safe to set unconditionally: only the SLURM
             # backend reads it; the slurm section is inert on k8s/cloud/LSF.
-            apply_slurm_comment_override(cluster_config_overrides, run_metadata)
+            tracked = tracking_metadata(run_metadata, kwargs)
+            apply_slurm_comment_override(cluster_config_overrides, tracked)
 
-            image_id = config.get("launcher_config", {}).get(
+            image_id = build_launcher_config.get("image_id") or launcher_config.get(
                 "image_id"
-            ) or launcher_config.get("image_id")
+            )
 
             resources = sky.Resources(
-                infra=cloud,
+                infra=infra,
                 accelerators=res_config.get("accelerators"),
+                instance_type=res_config.get("instance_type"),
                 cpus=res_config.get("cpus"),
                 memory=res_config.get("memory"),
                 disk_size=res_config.get("disk_size"),
+                use_spot=res_config.get("use_spot"),
+                zone=zone,
                 image_id=image_id,
                 # Build-tracking labels. SkyPilot applies these on k8s (pod
                 # labels) and cloud (instance tags); ignored on SLURM/LSF.
-                labels=task_metadata_labels(run_metadata) or None,
+                labels=task_metadata_labels(tracked) or None,
                 _cluster_config_overrides=cluster_config_overrides or None,
             )
 

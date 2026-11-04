@@ -528,6 +528,7 @@ async def bootstrap(
         name=request.dataset.name,
         artifact_uri=request.dataset.artifact_uri,
         user_id=user_id,
+        data_format=request.dataset.data_format,
     )
     tuning_cfg = base_models.TuningConfig(
         id=request.job_id,

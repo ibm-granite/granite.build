@@ -33,7 +33,7 @@ let isLaterAttempt
 
 before(async () => {
   ;({ stepDrawerSummary, parseTimestamp } = await import(
-    path.join(ROOT, 'app/dashboard/builds/[buildId]/stepDrawerSummary.ts')
+    path.join(ROOT, '../../packages/ui-core/components/StepDrawer/stepDrawerSummary.ts')
   ))
   ;({ attemptOrder, isLaterAttempt } = await import(
     path.join(ROOT, '../../packages/ui-core/api/targetAttempts.ts')

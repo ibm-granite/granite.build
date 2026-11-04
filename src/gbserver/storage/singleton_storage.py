@@ -83,9 +83,13 @@ __STORAGE_FACTORY: Optional[StorageFactory] = None
 def set_storage_factory(factory: StorageFactory):
     """Set the storage factory to use.
     Primarily used by testing to test different storage implementations.
+    Eagerly rebuilds cached admin storage from the new factory, keeping its table
+    prefix. Call before other threads use storage.
     """
     global __STORAGE_FACTORY
     __STORAGE_FACTORY = factory
+    if __STORAGE is not None:
+        set_storage_prefix(__STORAGE.table_name_prefix)
 
 
 def get_storage_factory() -> StorageFactory:

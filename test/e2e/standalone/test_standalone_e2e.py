@@ -22,17 +22,55 @@ and optionally the full BuildRunner + SQLite storage path.
 """
 
 import asyncio
-import random
+import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
+from libgbtest.utils import AbstractSingletonStorageUsingTest
+
+from gbserver.storage.singleton_storage import reset_admin_storage
+from gbserver.storage.sql.engine_cache import get_singleton_engine_cache
+from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
+from gbserver.storage.storage_factory import StorageFactory
 
 TEST_DATA_DIR = Path(__file__).parent.parent.parent.parent / "test-data"
 STANDALONE_BUILD_DIR = TEST_DATA_DIR / "e2e" / "standalone" / "standalone-quickstart"
 
 
-class TestStandaloneE2E:
-    """Standalone end-to-end build tests — no cloud dependencies required."""
+class TestStandaloneE2E(AbstractSingletonStorageUsingTest):
+    """Standalone end-to-end build tests — no cloud dependencies required.
+
+    Based on AbstractSingletonStorageUsingTest so each test gets its own prefixed
+    SQLite admin tables and the singleton is reset after. Follows
+    test_build_runner_cli.py: SQLite forced, GB_HOME_DIR isolated to a temp dir, and
+    the whole temp db discarded in teardown.
+    """
+
+    @classmethod
+    def _get_storage_factory(cls) -> StorageFactory:
+        """Force SQLite, whatever the session's default factory is."""
+        return SqliteStorageFactory()
+
+    def setup_method(self, method):
+        """Isolate GB_HOME_DIR before the base class builds the prefixed storage."""
+        self._prev_gb_home = os.environ.get("GB_HOME_DIR")
+        self._gb_home = tempfile.mkdtemp(prefix="gb_standalone_e2e_")
+        os.environ["GB_HOME_DIR"] = self._gb_home
+        super().setup_method(method)
+
+    def teardown_method(self, method):
+        """Discard the isolated db and restore GB_HOME_DIR (not the base per-table drop,
+        which can hang on a SQLite db a build runner wrote to)."""
+        get_singleton_engine_cache().dispose_all()
+        self.storage = None
+        reset_admin_storage()
+        if self._prev_gb_home is None:
+            os.environ.pop("GB_HOME_DIR", None)
+        else:
+            os.environ["GB_HOME_DIR"] = self._prev_gb_home
+        shutil.rmtree(self._gb_home, ignore_errors=True)
 
     def test_sample_build_dir_exists(self):
         """Verify the sample standalone build directory exists with expected files."""
@@ -91,93 +129,70 @@ class TestStandaloneE2E:
         + BuildRunner event processing + Space with env secret manager.
         No GitHub PRs, no cloud messaging, no lakehouse.
         """
-        from gbserver.storage import singleton_storage
-        from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
         from gbserver.storage.stored_build import StoredBuild
         from gbserver.storage.stored_space import StoredSpace
         from gbserver.types.status import Status
 
-        # Set up SQLite storage with a unique table prefix to avoid collisions
-        table_prefix = f"e2e_test_{random.randint(1, 100000)}_"
-        singleton_storage.set_storage_factory(SqliteStorageFactory())
-        storage = singleton_storage.set_storage_prefix(table_prefix)
+        storage = self.storage  # prefixed SQLite storage from setup_method
 
         # The space URI uses a file:// scheme pointing to the standalone build dir
         space_uri = f"file://{STANDALONE_BUILD_DIR}"
 
-        try:
-            # Register the standalone space in storage
-            stored_space = StoredSpace(
-                name="standalone",
-                git_repo_uri=space_uri,
-                lakehouse_namespace="",
-            )
-            storage.space_storage.add(stored_space)
+        # Register the standalone space in storage
+        stored_space = StoredSpace(
+            name="standalone",
+            git_repo_uri=space_uri,
+            lakehouse_namespace="",
+        )
+        storage.space_storage.add(stored_space)
 
-            # Create a StoredBuild from the sample build.yaml
-            build_yaml_path = STANDALONE_BUILD_DIR / "build.yaml"
-            stored_build = StoredBuild.create(
-                name="standalone-quickstart-e2e",
-                space_name="standalone",
-                source_uri="",
-                username="standalone-test",
-                build_yaml_path=build_yaml_path,
-                status=Status.PENDING,
-            )
+        # Create a StoredBuild from the sample build.yaml
+        build_yaml_path = STANDALONE_BUILD_DIR / "build.yaml"
+        stored_build = StoredBuild.create(
+            name="standalone-quickstart-e2e",
+            space_name="standalone",
+            source_uri="",
+            username="standalone-test",
+            build_yaml_path=build_yaml_path,
+            status=Status.PENDING,
+        )
 
-            # Run via BuildRunner with space_uri (no PR creation, no GitHub token needed)
-            from gbserver.buildrunner.buildrunner import BuildRunner
+        # Run via BuildRunner with space_uri (no PR creation, no GitHub token needed)
+        from gbserver.buildrunner.buildrunner import BuildRunner
 
-            runner = BuildRunner(
-                build=stored_build,
-                gh_token="",
-                space_uri=space_uri,
-                workspace_dir=Path("/tmp/gbserver-standalone-test"),
-                monitoring_interval=1,
-                create_pr=False,
-            )
-            runner.start_and_wait()
+        runner = BuildRunner(
+            build=stored_build,
+            gh_token="",
+            space_uri=space_uri,
+            workspace_dir=Path("/tmp/gbserver-standalone-test"),
+            monitoring_interval=1,
+            create_pr=False,
+        )
+        runner.start_and_wait()
 
-            # Verify the build completed successfully in storage
-            finished_build = storage.build_storage.get_by_uuid(stored_build.uuid)
+        # Verify the build completed successfully in storage
+        finished_build = storage.build_storage.get_by_uuid(stored_build.uuid)
+        assert (
+            finished_build is not None
+        ), f"Build {stored_build.uuid} not found in storage"
+        assert (
+            finished_build.status == Status.SUCCESS
+        ), f"Build status is {finished_build.status}, expected SUCCESS"
+
+        # Verify target was created and completed
+        targets = storage.target_storage.get_by_where({"build_id": stored_build.uuid})
+        assert len(targets) == 1, f"Expected 1 target, got {len(targets)}"
+        assert (
+            targets[0].name == "helloworld"
+        ), f"Target name is '{targets[0].name}', expected 'helloworld'"
+        assert (
+            targets[0].status == Status.SUCCESS
+        ), f"Target status is {targets[0].status}, expected SUCCESS"
+
+        # Verify steps were created
+        steps = storage.step_storage.get_by_where({"target_id": targets[0].uuid})
+        assert len(steps) >= 1, f"Expected at least 1 step, got {len(steps)}"
+        for step in steps:
             assert (
-                finished_build is not None
-            ), f"Build {stored_build.uuid} not found in storage"
-            assert (
-                finished_build.status == Status.SUCCESS
-            ), f"Build status is {finished_build.status}, expected SUCCESS"
-
-            # Verify target was created and completed
-            targets = storage.target_storage.get_by_where(
-                {"build_id": stored_build.uuid}
-            )
-            assert len(targets) == 1, f"Expected 1 target, got {len(targets)}"
-            assert (
-                targets[0].name == "helloworld"
-            ), f"Target name is '{targets[0].name}', expected 'helloworld'"
-            assert (
-                targets[0].status == Status.SUCCESS
-            ), f"Target status is {targets[0].status}, expected SUCCESS"
-
-            # Verify steps were created
-            steps = storage.step_storage.get_by_where({"target_id": targets[0].uuid})
-            assert len(steps) >= 1, f"Expected at least 1 step, got {len(steps)}"
-            for step in steps:
-                assert (
-                    step.status == Status.SUCCESS
-                ), f"Step status is {step.status}, expected SUCCESS"
-
-        finally:
-            # Clean up: delete test tables
-            for store in [
-                storage.build_storage,
-                storage.target_storage,
-                storage.step_storage,
-                storage.space_storage,
-                storage.artifact_registry,
-                storage.event_storage,
-            ]:
-                try:
-                    store.delete_table()
-                except Exception:
-                    pass
+                step.status == Status.SUCCESS
+            ), f"Step status is {step.status}, expected SUCCESS"

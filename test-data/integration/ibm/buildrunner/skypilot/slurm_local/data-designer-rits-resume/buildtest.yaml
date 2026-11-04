@@ -1,0 +1,35 @@
+# YAML-driven spec for test/integration/ibm/buildrunner/skypilot/slurm_local/test_data_designer_rits_resume.py.
+#
+# The test runs this build twice (see its build.yaml). The expectations below are for
+# the SECOND, completed run: the cancelled first run is checked by the harness's own
+# cancellation verification (build CANCELLED, target SUCCESS or CANCELLED).
+#
+# resumed_records is what the step records for rows it found already checkpointed
+# and kept. Any positive number means the second build continued rather than
+# restarting; the exact value depends on when the cancellation landed.
+targets:
+  - generate
+target_expectations:
+  - target_name: generate
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 1
+    expected_steps:
+      - step_uri: space://steps/data/data-designer
+        metadata:
+          records_generated: "200"
+        metadata_matches:
+          resumed_records: "^[1-9][0-9]*$"
+        config:
+          data_designer_config:
+            output: questions
+            resume: if_possible
+# The step is not published yet, so resolve it from its locally rendered Space
+# (make -C steps/data/data-designer/skypilot space). Switch to the shared
+# configurations/spaces/local Space once the step is published.
+space_uri: ../../../../../../../steps/data/data-designer/skypilot/space
+tests:
+  - runner
+simulate_step_failure: false
+# Per build; the test runs two.
+timeout_minutes: 30

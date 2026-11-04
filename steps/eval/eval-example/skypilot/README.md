@@ -50,9 +50,9 @@ Eval-specific notes:
 
 - `REGISTRY` ships as a **placeholder** (`quay.io/your-org`) so the offline
   targets work out of the box; replace it in the `Makefile`, or override per
-  release, e.g. `make all REGISTRY=quay.io/myorg IMAGE_TAG=0.1.0`.
+  release, e.g. `make all REGISTRY=quay.io/myorg IMAGE_VERSION=0.1.0`.
   `make publish-image` against the placeholder will fail auth — set a real
-  registry first. `IMAGE_TAG` defaults to the git short SHA.
+  registry first. `IMAGE_VERSION` defaults to the git short SHA.
 - At `make space` time the image reference
   `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)` is substituted into the Skypilot
   launcher's `image_id: "docker:${IMAGE_REF}"`.

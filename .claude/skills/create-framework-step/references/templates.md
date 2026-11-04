@@ -29,6 +29,7 @@ STEP_NAME := <name>
 # Custom image only. FIXME: the registry and namespace the image is pushed to.
 # `?=` so `make ... REGISTRY=quay.io/<org>` can still override it.
 REGISTRY ?= quay.io/FIXME
+# The image is pushed as $(REGISTRY)/steps/<category>/<name>/<env>:<version> (one repo per step, mirroring this dir).
 
 # Only for a step that must never be published, such as an exemplar or template
 # (see steps/eval/eval-example). A new step is publishable by default, so normally
@@ -388,7 +389,9 @@ pytestmark = pytest.mark.skypilot_integration      # IBM space/cluster: pytest.m
 @pytest.mark.skipif(not <gate>(), reason="<infra> not reachable (run: make test-setup)")
 # kube instead: @KUBE_XDIST_GROUP above, and
 #   @pytest.mark.skipif(not kind_cluster_reachable(), reason=kind_skip_reason())
-# BlueVela instead: @pytest.mark.xdist_group(name="buildtest_bv") + the RUNNING_IN_CICD skip
+# lsf-bluevela instead: @pytest.mark.xdist_group(name="buildtest_bv") + the RUNNING_IN_CICD skip
+# slurm-bluevela: the RUNNING_IN_CICD skip only. It keeps skypilot_integration, which
+#   forbids any other xdist_group (UsageError under --dist=loadgroup).
 # HfPushCleanupMixin first: it names each hf:// output per run, checks it landed on the
 # Hub, and deletes it afterwards. Drop it when the step has no outputs.
 class Test<Env><Cluster><Name>(HfPushCleanupMixin, AbstractYamlBuildRunnerTest):

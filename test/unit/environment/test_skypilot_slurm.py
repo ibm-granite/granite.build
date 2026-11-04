@@ -14,6 +14,7 @@ from libgbtest.environments.skypilot_mocks import (
     _make_env,
     _mock_sky,
 )
+from tenacity import wait_none
 
 from gbserver.environment.skypilot import (
     Skypilot,
@@ -540,6 +541,8 @@ class TestSkypilotRetry:
                 run_metadata={"build_id": "b-1"},
                 retry_enabled=True,
                 retry_transparently=False,
+                space={"name": "public"},
+                gb_environment="STAGING",
             )
 
         stashed = slurm_env._launch_kwargs["retry-1"]
@@ -548,6 +551,9 @@ class TestSkypilotRetry:
         assert stashed["run_metadata"] == {"build_id": "b-1"}
         assert stashed["retry_enabled"] is True
         assert stashed["retry_transparently"] is False
+        # A relaunch keeps the comment's gb_env and space.
+        assert stashed["space"] == {"name": "public"}
+        assert stashed["gb_environment"] == "STAGING"
 
     def test_get_default_retry_strategies_returns_any_failure(self, slurm_env):
         """Skypilot ships AnyFailureRetryStrategy as the sole default."""
@@ -602,6 +608,34 @@ class TestSkypilotRetry:
             "resources": {},
         }
         assert retry_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_relaunch_sees_the_retry_attempt(self, slurm_env):
+        """The relaunch must read the new attempt number, though the REAL
+        cleanup_skypilot (run here with sky mocked) clears it first.
+        _launch_skypilot_inner keys the fresh cluster name and the once-per-step
+        GPU warning (attempt == 0) on it; read as 0, a retry would reuse the
+        draining cluster's name and warn again (#542 review)."""
+        slurm_env._launch_kwargs["retry-3"] = {"launcher_config": {}, "config": {}}
+        slurm_env._cluster_names["retry-3"] = "gb-retry-3"
+        slurm_env._relaunch_attempts["retry-3"] = 0
+        seen_attempt: list = []
+
+        async def fake_launch(launch_id, **_):
+            seen_attempt.append(slurm_env._relaunch_attempts.get(launch_id, 0))
+
+        mock_sky = MagicMock()
+        mock_sky.down = MagicMock(return_value="req-down")
+        mock_sky.get = MagicMock(return_value=None)
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            patch.object(slurm_env, "launch_skypilot", fake_launch),
+        ):
+            await slurm_env.retry_workload(launch_id="retry-3", retry_count=1)
+
+        mock_sky.down.assert_called_once()  # the real cleanup ran
+        assert seen_attempt == [1]
 
     def test_cluster_name_for_suffixes_only_on_relaunch(self, slurm_env):
         """_cluster_name_for is unchanged on the initial launch (attempt 0) and
@@ -685,14 +719,16 @@ class TestProvisionRetry:
 
     @staticmethod
     def _patches(mock_sky, attempts=4):
-        """Common patch set: mocked sky, HAS_SKYPILOT, and 0-backoff so the
-        tenacity wait is instant. Constants are imported inside
+        """Common patch set: mocked sky, HAS_SKYPILOT, and a no-op tenacity wait.
+        The backoff cap is floored at 1800s, so patching it can't skip the 30s
+        first wait; replace the wait instead. Constants are imported inside
         _provision_with_retry, so patch them at their definition module."""
         return (
             patch("gbserver.environment.skypilot.sky", mock_sky),
             patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
             patch(
-                "gbserver.types.constants.GBSERVER_SKYPILOT_PROVISION_BACKOFF_MAX", 0
+                "gbserver.environment.skypilot.wait_exponential",
+                return_value=wait_none(),
             ),
             patch(
                 "gbserver.types.constants.GBSERVER_SKYPILOT_PROVISION_MAX_ATTEMPTS",
@@ -709,8 +745,8 @@ class TestProvisionRetry:
             Exception("Failed to acquire resources in normal for {Slurm(cpus=1+)}"),
             (1, MagicMock()),
         ]
-        s, h, bmax, batt = self._patches(mock_sky)
-        with s, h, bmax, batt:
+        s, h, wait, batt = self._patches(mock_sky)
+        with s, h, wait, batt:
             slurm_env._get_launch_ready_event("prov-1")
             await slurm_env.launch_skypilot(
                 launch_id="prov-1",
@@ -729,8 +765,8 @@ class TestProvisionRetry:
         attempt — never retried, never masked, no teardown."""
         mock_sky = _mock_sky()
         mock_sky.stream_and_get.side_effect = Exception("Image not found: badimage")
-        s, h, bmax, batt = self._patches(mock_sky)
-        with s, h, bmax, batt:
+        s, h, wait, batt = self._patches(mock_sky)
+        with s, h, wait, batt:
             slurm_env._get_launch_ready_event("prov-2")
             with pytest.raises(Exception, match="Image not found"):
                 await slurm_env.launch_skypilot(
@@ -750,8 +786,8 @@ class TestProvisionRetry:
         mock_sky.stream_and_get.side_effect = Exception(
             "Failed to provision all possible launchable resources"
         )
-        s, h, bmax, batt = self._patches(mock_sky, attempts=2)
-        with s, h, bmax, batt:
+        s, h, wait, batt = self._patches(mock_sky, attempts=2)
+        with s, h, wait, batt:
             slurm_env._get_launch_ready_event("prov-3")
             with pytest.raises(Exception, match="Failed to provision"):
                 await slurm_env.launch_skypilot(
@@ -789,8 +825,8 @@ class TestProvisionRetry:
             Exception("Connection timed out"),  # generic wording, HPC-only tuple
             (1, MagicMock()),
         ]
-        s, h, bmax, batt = self._patches(mock_sky)
-        with s, h, bmax, batt:
+        s, h, wait, batt = self._patches(mock_sky)
+        with s, h, wait, batt:
             k8s_default_env._get_launch_ready_event("prov-override")
             await k8s_default_env.launch_skypilot(
                 launch_id="prov-override",
@@ -819,8 +855,8 @@ class TestProvisionRetry:
         )
         mock_sky = _mock_sky()
         mock_sky.stream_and_get.side_effect = Exception("Connection timed out")
-        s, h, bmax, batt = self._patches(mock_sky)
-        with s, h, bmax, batt:
+        s, h, wait, batt = self._patches(mock_sky)
+        with s, h, wait, batt:
             k8s_env._get_launch_ready_event("prov-k8s")
             with pytest.raises(Exception, match="Connection timed out"):
                 await k8s_env.launch_skypilot(
@@ -898,11 +934,11 @@ class TestProvisionRetry:
 
         mock_sky = _mock_sky()
         mock_sky.stream_and_get.side_effect = [first_error, (1, MagicMock())]
-        s, h, bmax, batt = self._patches(mock_sky)
+        s, h, wait, batt = self._patches(mock_sky)
         with (
             s,
             h,
-            bmax,
+            wait,
             batt,
             patch(
                 "gbserver.environment.skypilot_config._merge_selected_hosts", _record

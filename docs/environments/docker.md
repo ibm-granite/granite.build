@@ -95,6 +95,24 @@ config:
 launcher vars are standardized on the `GB_` prefix; for backwards compatibility the legacy
 `LLMB_DOCKER_*` twins are injected alongside them with the same values.
 
+## Secrets
+
+Declare the space secrets a step needs under `config.docker.secrets`; each is resolved in the build
+server and passed to the container as an environment variable. Only declared secrets are injected,
+as on LSF, SkyPilot and K8s (unlike [bash](bash.md), which exports every space secret), and a
+declared secret missing from the space fails the launch. `secret_name` defaults to `env_name`
+verbatim. A `config.docker.env` or launcher `env` entry of the same name wins over the secret.
+
+```yaml
+config:
+  docker:
+    secrets:
+      secret_names_to_use_as_env_variable:
+        - env_name: GRANITE_EVALS_JUDGE_API_KEY   # secret_name defaults to this
+```
+
+The value is visible to anyone who can `docker inspect` the container.
+
 ## Resources
 
 The launcher reads the generic [`compute_config`](README.md#stepyaml-config--common-fields-read-by-environments)
@@ -112,15 +130,51 @@ and translates it to Docker container limits:
   env vars. Wire a resolved binding into the container explicitly, e.g. via `launcher_config.env` using
   `{{ bindings.<name>.binding.path }}`. HuggingFace inputs loaded via the `hf` asset store are
   bind-mounted read-only under `/gb-hf-models/...` (the whole `models--org--repo` dir is mounted so HF
-  cache symlinks resolve), and the in-container path is supplied as the binding.
-- **Workspace.** The step's asset directory is bind-mounted at `/gb-workspace` (read-write); write
-  outputs there.
+  cache symlinks resolve), and the in-container path is supplied as the binding. `env://` inputs (a
+  path another target left on this host) are bind-mounted read-only under `/gb-env-inputs/<n>` (a
+  file's parent directory, or the directory itself), and the binding is the in-container path. The
+  mount goes only into the containers of the target that takes the input. The mount source is
+  always the input's host path, including an `env://` output an earlier Docker target wrote in its
+  own workspace. Because a file input mounts its **whole parent directory** (so the step can read
+  the file's siblings), the mount source (with symlinks resolved; that resolved directory is what
+  gets mounted) is checked first. The Docker daemon mounts as root, so the source is refused with an
+  error, naming the rule, when:
+  - the gbserver user cannot read it;
+  - it contains the gbserver user's home directory (`/`, `/home`, `~`);
+  - it is, contains or lies in a system or container-state directory (`/etc`, `/proc`, `/sys`,
+    `/dev`, `/boot`, `/run`, `/var/run`, `/root`, `/var/lib/docker`, `/var/lib/containers`,
+    `/var/log`; so all of `/var` is refused too);
+  - it is, contains or lies in the GB home directory, or lies in a hidden directory of the home
+    directory (`~/.ssh`, `~/.aws`, ...).
+
+  The last rule has an exception for directories gbserver wrote step outputs to: a subdirectory of
+  `<GB home>/workdir` (where a [bash](bash.md) target writes by default, e.g.
+  `~/.granite.build/workdir/llm-build-<id>/...`), or a directory in the workspace of an earlier
+  Docker launch of the same build. So a Docker target can read the `env://` output of a bash or
+  Docker target, while the rest of the GB home (secrets, the database), `workdir` itself, and the
+  build watcher's PR clones stay out of reach. Put the input in its own directory (e.g.
+  `~/run1/generation.json`, not `~/generation.json`).
+- **Workspace.** Each launch's own asset directory is bind-mounted at `/gb-workspace` (read-write)
+  in that launch's container only; write outputs there.
 - **Outputs.** Register artifacts with the standard `GB_ARTIFACT_ID:<id> GB_ARTIFACT_PATH:<path>`
   log line (or the `GB_ARTIFACT_STATE:<value>` form for `mem://` outputs; the legacy `LLMB_` prefix is
   still accepted). Docker steps reference the shared `space://monitors/docker` monitor, which carries
   both rules; they are **unanchored** (docker streams raw stdout).
   See [Monitoring and artifact events](../steps/monitoring-and-artifact-events.md).
-  On push, container paths under `/gb-workspace` are translated back to their host path automatically.
+  On push, container paths under `/gb-workspace` are translated back to the host workspace of the
+  launch that produced them, so an `env://{{ binding.path }}` output written there is registered at
+  its host path, and `file://` and `hf://` outputs are copied or uploaded from it. An `env://`
+  output that re-emits an input (a path under `/gb-env-inputs` or `/gb-hf-models`) is registered at
+  that input's host path. A literal `env://` URI naming a container path (e.g.
+  `env:///gb-workspace/outputs/x`) is refused; use `env://{{ binding.path }}`.
+  An `env://` output stays resolvable only while that workspace exists. It lives in a temporary
+  directory under the build runner's workspace directory (`--workspace-dir`, the build watcher's
+  `workspace_dir`, or `GBSERVER_DEFAULT_ROOT_WORKSPACE_DIR`), which gbserver **deletes when it
+  exits**, or under the system temp dir (e.g. `/tmp`) for a build started without one, such as
+  `gbserver build`. Copy an output to a `file://` URI to keep it past a restart.
+- **Docker → Docker hand-offs.** Use `env://` for an output another Docker target reads. A
+  `file://` output written in `/gb-workspace` is copied to its URI, but a Docker target cannot pull
+  it back (there is no Docker `file://` pull), so that hand-off fails with an error.
 
 ## See also
 

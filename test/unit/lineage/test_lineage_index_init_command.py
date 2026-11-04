@@ -4,6 +4,7 @@ Drives the real indexer seeding (W&B source, whose API is a mock) against an
 in-memory kv store, so every path asserts on what actually lands in gb_kv_pairs.
 """
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -36,6 +37,11 @@ class _KV:
         return True
 
 
+# pytest's live logging (log_cli in pyproject.toml) writes into the stream
+# CliRunner swaps in and closes, so a command that logs fails with "I/O operation
+# on closed file". Logging is muted for the invocation; no test asserts on logs.
+
+
 @pytest.fixture(name="env")
 def env_fixture():
     storage = SimpleNamespace(kv_pair_storage=_KV(), lineage_row_storage=MagicMock())
@@ -52,7 +58,11 @@ def env_fixture():
 
 
 def _run(*args):
-    return CliRunner().invoke(command_lineage_index_init.cli, list(args))
+    logging.disable(logging.CRITICAL)
+    try:
+        return CliRunner().invoke(command_lineage_index_init.cli, list(args))
+    finally:
+        logging.disable(logging.NOTSET)
 
 
 @pytest.mark.parametrize(

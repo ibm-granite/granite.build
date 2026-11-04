@@ -1,0 +1,24 @@
+# Spec for test_bash_bash_tune_fm_tune.py (see steps/README.md "Two test modes").
+targets:
+  - tune
+target_expectations:
+  - target_name: tune
+    # The bash env pulls hf:// inline (its hf assetstore handlers return a
+    # binding directly; see test-data/integration/standalone/buildrunner/bash/
+    # 1step/buildtest.yaml, step_count 1 with an hf input), so no hfpull steps
+    # are queued: just the fm-tune step.
+    step_count: 1              # fm-tune only; hf pulls are inline (build 66b91b4d)
+    input_artifact_count: 2
+    output_artifact_count: 1
+    expected_steps:
+      - step_uri: space://steps/tune/fm-tune
+        config:
+          fm_tune_config:
+            tuning_algo: lora
+            autotune: false
+space_uri: ../../../../../../configurations/spaces/local
+tests:
+  - runner
+simulate_step_failure: false
+# First run builds the [core] venv (torch, transformers, ray): budget for it.
+timeout_minutes: 45

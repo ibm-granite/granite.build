@@ -15,6 +15,20 @@ class TestStepDockerConfig:
         assert config.env == {}
         assert config.registry_auth is None
         assert config.pull_policy == "if-not-present"
+        assert config.secrets.secret_names_to_use_as_env_variable == []
+
+    def test_secrets_are_typed(self):
+        from gbserver.types.environment.docker import StepDockerConfig
+
+        config = StepDockerConfig(
+            secrets={
+                "secret_names_to_use_as_env_variable": [
+                    {"env_name": "MY_TOKEN", "secret_name": "tok"}
+                ]
+            }
+        )
+        (mapping,) = config.secrets.secret_names_to_use_as_env_variable
+        assert (mapping.env_name, mapping.secret_name) == ("MY_TOKEN", "tok")
 
     def test_from_dict(self):
         from gbserver.types.environment.docker import StepDockerConfig

@@ -45,3 +45,151 @@ def test_resolve_dataset_uri_hf_cache_still_resolves():
     uri, name = resolve_dataset_uri(path)
     assert uri == "hf:///datasets/ibm-research/finance-test"
     assert name == "finance-test"
+
+
+def _snapshot(root, rel):
+    """A dir laid out like an HF download: it holds a .cache/huggingface folder."""
+    path = root / rel
+    (path / ".cache" / "huggingface").mkdir(parents=True)
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "snapshot, file, uri, name",
+    [
+        # bash: an app-pushed <name>_<id8> repo, file at the revision root; the suffix
+        # is part of the repo name, so it stays in the URI
+        (
+            ".cache/gbserver/hf/ibm-research/finance-classification_9bb5cc58/main",
+            "finance-classification_validation.jsonl",
+            "hf:///datasets/ibm-research/finance-classification_9bb5cc58",
+            "finance-classification_9bb5cc58",
+        ),
+        # a repo name ending in hex-like digits is not truncated
+        (
+            ".cache/gbserver/hf/acme/news_20240101/main",
+            "data/train.parquet",
+            "hf:///datasets/acme/news_20240101",
+            "news_20240101",
+        ),
+        # gbserver's own <owner>/<repo>/<revision> layout, file in a subdir
+        (
+            ".cache/gbserver/hf/axolotl-ai-co/alpaca_100_test/main",
+            "data/train-00000-of-00001.parquet",
+            "hf:///datasets/axolotl-ai-co/alpaca_100_test",
+            "alpaca_100_test",
+        ),
+        # SkyPilot/Slurm: the default <shared_workdir>/hf_cache, same layout
+        (
+            "shared/hf_cache/axolotl-ai-co/alpaca_100_test/main",
+            "data/train.parquet",
+            "hf:///datasets/axolotl-ai-co/alpaca_100_test",
+            "alpaca_100_test",
+        ),
+        ("shared/hf_cache/org/ds/main", "train.jsonl", "hf:///datasets/org/ds", "ds"),
+    ],
+)
+def test_gbserver_hf_cache_path_resolves_to_hf_uri(tmp_path, snapshot, file, uri, name):
+    path = f"{_snapshot(tmp_path, snapshot)}/{file}"
+    assert lakehouse_path_to_uri(path) == (uri, name)
+
+
+def test_cluster_hf_cache_path_in_a_subdir_resolves_to_hf_uri():
+    path = "/gb-read-write/hfcache/org/ds/abc123/data/train.parquet"
+    assert lakehouse_path_to_uri(path) == ("hf:///datasets/org/ds", "ds")
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        # a dir merely named hf_cache, with no HF download in the "revision" dir: an
+        # experiment tree, and an HF hub cache under HF_HOME=.../hf_cache
+        "home/u/hf_cache/my/exp/run1/train.jsonl",
+        "x/hf_cache/hub/datasets--o--r/snapshots/abc/train.jsonl",
+    ],
+)
+def test_hf_cache_lookalike_without_a_download_does_not_resolve(tmp_path, rel):
+    (tmp_path / rel).parent.mkdir(parents=True)
+    with pytest.raises(ValueError, match="does not match expected"):
+        lakehouse_path_to_uri(str(tmp_path / rel))
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # hf_cache only as a whole path segment, and only with a revision dir
+        "/shared/my_hf_cache/org/ds/main/train.jsonl",
+        "/shared/hf_cache/org/train.jsonl",
+    ],
+)
+def test_non_cache_paths_do_not_resolve(path):
+    with pytest.raises(ValueError, match="does not match expected"):
+        lakehouse_path_to_uri(path)
+
+
+@pytest.mark.parametrize(
+    "rel, name",
+    [
+        # bash: gbserver's local cache, <owner>/<repo>/<revision>
+        (
+            ".cache/gbserver/hf/hf-internal-testing/tiny-random-LlamaForCausalLM/main",
+            "hf-internal-testing/tiny-random-LlamaForCausalLM",
+        ),
+        # SkyPilot/Slurm: the default <shared_workdir>/hf_cache
+        ("shared/hf_cache/ibm-granite/granite-4.0-h-350m/main", "ibm-granite/granite-4.0-h-350m"),
+        # a pinned revision is dropped: owner/repo@rev is no valid HF id, and a job has
+        # no revision field to carry it
+        ("shared/hf_cache/ibm-granite/granite-4.0-h-350m/v2", "ibm-granite/granite-4.0-h-350m"),
+    ],
+)
+def test_model_display_name_of_a_snapshot(tmp_path, rel, name):
+    from autotune.template_utils import model_display_name
+
+    path = _snapshot(tmp_path, rel)
+    assert model_display_name(path) == name
+    assert model_display_name(path + "/") == name
+
+
+def test_model_display_name_keeps_a_checkpoint_under_hf_cache(tmp_path):
+    # Same shape as a snapshot, but not an HF download: it must stay a path.
+    from autotune.template_utils import model_display_name
+
+    path = tmp_path / "data" / "hf_cache" / "runs" / "ckpt" / "final"
+    path.mkdir(parents=True)
+    assert model_display_name(str(path)) == str(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # a plain HF id, a non-cache dir, and a dataset-style path deeper than the revision
+        "ibm-granite/granite-4.0-h-350m",
+        "/models/my-model",
+        "/shared/hf_cache/o/r/main/sub",
+        # hf_cache only as a whole path segment
+        "/data/my_hf_cache/runs/ckpt/final",
+    ],
+)
+def test_model_display_name_passes_other_values_through(path):
+    from autotune.template_utils import model_display_name
+
+    assert model_display_name(path) == path
+
+
+@pytest.mark.parametrize(
+    "path, fmt",
+    [
+        ("/c/data/train-00000-of-00001.parquet", "parquet"),
+        ("finance_train.JSONL", "jsonl"),
+        ("/c/train.csv", "csv"),
+        # aliases mapped the way the main service's upload path maps them
+        ("/c/train.pq", "parquet"),
+        ("/c/train.json", "jsonl"),
+        ("/c/train.txt", None),
+        ("/c/train", None),
+    ],
+)
+def test_data_format_from_path(path, fmt):
+    from autotune.template_utils import data_format_from_path
+
+    assert data_format_from_path(path) == fmt

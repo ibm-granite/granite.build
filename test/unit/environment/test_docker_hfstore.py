@@ -149,23 +149,23 @@ async def test_pullasset_hfstore_multiple_models_accumulate(docker_env, tmp_path
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_host_path_translates_workspace_path(docker_env, tmp_path):
-    """Container paths under /gb-workspace resolve to the host asset dir."""
+def test_resolve_host_path_translates_mounted_path(docker_env, tmp_path):
+    """Container paths under a registered mount resolve to the host dir."""
     docker_env._extra_volumes[str(tmp_path / "assets")] = {
-        "bind": "/gb-workspace",
-        "mode": "rw",
+        "bind": "/gb-env-inputs/0",
+        "mode": "ro",
     }
-    result = docker_env._resolve_host_path("/gb-workspace/outputs/model")
+    result = docker_env._resolve_host_path("/gb-env-inputs/0/outputs/model")
     assert result == str(tmp_path / "assets") + "/outputs/model"
 
 
 def test_resolve_host_path_exact_mount_match(docker_env, tmp_path):
     """An exact mount point (no suffix) resolves to the host directory."""
     docker_env._extra_volumes[str(tmp_path / "assets")] = {
-        "bind": "/gb-workspace",
-        "mode": "rw",
+        "bind": "/gb-env-inputs/0",
+        "mode": "ro",
     }
-    result = docker_env._resolve_host_path("/gb-workspace")
+    result = docker_env._resolve_host_path("/gb-env-inputs/0")
     assert result == str(tmp_path / "assets")
 
 
@@ -217,11 +217,10 @@ async def test_pushasset_hfstore_translates_container_path(
     output_dir.mkdir(parents=True)
     (output_dir / "model.bin").write_bytes(b"weights")
 
-    # Simulate the workspace mount registered by launch_docker
-    docker_env._extra_volumes[str(tmp_path / "assets")] = {
-        "bind": "/gb-workspace",
-        "mode": "rw",
-    }
+    # Simulate the workspace launch_docker records for the producing launch
+    from gbserver.types.buildevent import EntityRunMetadata
+
+    docker_env._workspaces_by_targetsteprun["tsr1"] = str(tmp_path / "assets")
 
     container_binding = {"path": "/gb-workspace/outputs/model.bin"}
     uri = HfURI.from_parts(owner="org", repo="my-model", hf_type=HfType.MODEL)
@@ -231,6 +230,7 @@ async def test_pushasset_hfstore_translates_container_path(
             binding=container_binding,
             uri=uri,
             assetstore=push_assetstore,
+            run_metadata=EntityRunMetadata(targetsteprun_id="tsr1"),
         )
 
     # HfURI.push must receive the host-side path, not the container path
@@ -712,3 +712,42 @@ async def test_push_asset_hfstore_uses_the_resolved_space_name(tmp_path):
         push_asset_hfstore(src=str(src), binding_id="out", uri=uri, assetstore=store)
 
     assert mock_resolve.call_args.kwargs["space_name"] == "my-team-space"
+
+
+@pytest.mark.asyncio
+async def test_pushasset_hfstore_unknown_launch_raises(docker_env, push_assetstore):
+    """A /gb-workspace path with no recorded producing launch is not guessed."""
+    uri = HfURI.from_parts(owner="org", repo="my-model", hf_type=HfType.MODEL)
+    docker_env._workspaces_by_targetsteprun["other"] = "/somewhere"
+    with pytest.raises(LookupError, match="targetsteprun_id"):
+        await docker_env.pushasset_hfstore(
+            binding={"path": "/gb-workspace/outputs/model.bin"},
+            uri=uri,
+            assetstore=push_assetstore,
+        )
+
+
+@pytest.mark.asyncio
+async def test_pushasset_hfstore_resolves_workspace_of_producing_launch(
+    docker_env, push_assetstore, tmp_path
+):
+    """A /gb-workspace path resolves through the producing targetsteprun."""
+    from gbserver.types.buildevent import EntityRunMetadata
+
+    for name in ("wsA", "wsB"):
+        (tmp_path / name / "outputs").mkdir(parents=True)
+        (tmp_path / name / "outputs" / "model.bin").write_bytes(b"w")
+        docker_env._workspaces_by_targetsteprun[f"tsr-{name}"] = str(tmp_path / name)
+    uri = HfURI.from_parts(owner="org", repo="my-model", hf_type=HfType.MODEL)
+
+    with patch.object(HfURI, "push", return_value=True) as mock_push:
+        await docker_env.pushasset_hfstore(
+            binding={"path": "/gb-workspace/outputs/model.bin"},
+            uri=uri,
+            assetstore=push_assetstore,
+            run_metadata=EntityRunMetadata(targetsteprun_id="tsr-wsA"),
+        )
+
+    assert str(mock_push.call_args[0][0]) == str(
+        tmp_path / "wsA" / "outputs" / "model.bin"
+    )

@@ -223,24 +223,100 @@ class TestArgAssembly:
             "logger.wandb_enabled=true"
         )
 
-    def test_injects_cluster_gpus_per_node_when_given(self, tmp_path):
+    def test_injects_cluster_gpus_per_node_from_skypilot(self, tmp_path):
         # sft.yaml defaults cluster.gpus_per_node=1, so without this the step
-        # would train on a single GPU even on a multi-GPU node. It is a FORCED
-        # override (after "$@"), so it wins over any user override, keeping the
-        # node's GPU count and NeMo-RL's cluster view in lockstep.
+        # would train on a single GPU even on a multi-GPU node. SkyPilot exports
+        # the node's GPU count (from the build's resources.accelerators) as
+        # SKYPILOT_NUM_GPUS_PER_NODE. It is a FORCED override (after "$@"), so it
+        # wins over any user override and stays in lockstep with the node.
         proc, runs, _ = _run(
             tmp_path,
-            ["--base-model", "/staged/base", "--num-gpus-per-node", "4"],
+            ["--base-model", "/staged/base", "--", "cluster.gpus_per_node=1"],
+            env_extra={"SKYPILOT_NUM_GPUS_PER_NODE": "4"},
         )
         assert proc.returncode == 0, proc.stderr
         ov = _hydra_overrides(_train_argv(runs))
-        assert "cluster.gpus_per_node=4" in ov
+        assert ov[-1] == "cluster.gpus_per_node=4"
 
-    def test_omits_cluster_gpus_per_node_when_absent(self, tmp_path):
-        proc, runs, _ = _run(tmp_path, ["--base-model", "/staged/base"])
+    @pytest.mark.parametrize("env_extra", [None, {"SKYPILOT_NUM_GPUS_PER_NODE": "0"}])
+    def test_omits_cluster_gpus_per_node_without_gpus(self, tmp_path, env_extra):
+        # Unset (outside SkyPilot) or 0 (a node with no GPU): nothing to pin.
+        proc, runs, _ = _run(
+            tmp_path, ["--base-model", "/staged/base"], env_extra=env_extra
+        )
         assert proc.returncode == 0, proc.stderr
         ov = _hydra_overrides(_train_argv(runs))
         assert not any(o.startswith("cluster.gpus_per_node=") for o in ov)
+
+    def test_explicit_gpus_per_node_wins_over_skypilot(self, tmp_path):
+        # nemo_rl_config.gpus_per_node lets a build state the count itself, e.g.
+        # to train on fewer GPUs than the node has.
+        proc, runs, _ = _run(
+            tmp_path,
+            ["--base-model", "/staged/base", "--gpus-per-node", "2"],
+            env_extra={"SKYPILOT_NUM_GPUS_PER_NODE": "8"},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert _hydra_overrides(_train_argv(runs))[-1] == "cluster.gpus_per_node=2"
+
+    @pytest.mark.parametrize("count", ["4.0", "4.00", "4.000", "04"])
+    def test_whole_float_count_is_accepted(self, tmp_path, count):
+        # The LSF executor exports the count with str(), which can give "4.0";
+        # any all-zero fraction is still a whole number (#542 review).
+        proc, runs, _ = _run(
+            tmp_path,
+            ["--base-model", "/staged/base"],
+            env_extra={"SKYPILOT_NUM_GPUS_PER_NODE": count},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert _hydra_overrides(_train_argv(runs))[-1] == "cluster.gpus_per_node=4"
+
+    @pytest.mark.parametrize("explicit", ["four", "None", "2.5"])
+    def test_invalid_explicit_count_falls_back_to_skypilot(self, tmp_path, explicit):
+        # A bad explicit count must not throw away the count SkyPilot allocated
+        # and leave NeMo-RL on sft.yaml's 1 GPU (#542 review).
+        proc, runs, _ = _run(
+            tmp_path,
+            ["--base-model", "/staged/base", "--gpus-per-node", explicit],
+            env_extra={"SKYPILOT_NUM_GPUS_PER_NODE": "8"},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "not a whole number" in proc.stderr
+        assert _hydra_overrides(_train_argv(runs))[-1] == "cluster.gpus_per_node=8"
+
+    @pytest.mark.parametrize("zero", ["0", "0.0", "00"])
+    def test_explicit_zero_falls_back_to_skypilot(self, tmp_path, zero):
+        # NeMo-RL cannot train on 0 GPUs, and pinning nothing left sft.yaml's
+        # 1 GPU on a multi-GPU node with no message (#542 review).
+        proc, runs, _ = _run(
+            tmp_path,
+            ["--base-model", "/staged/base", "--gpus-per-node", zero],
+            env_extra={"SKYPILOT_NUM_GPUS_PER_NODE": "8"},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "is 0" in proc.stderr
+        assert _hydra_overrides(_train_argv(runs))[-1] == "cluster.gpus_per_node=8"
+
+    @pytest.mark.parametrize(
+        "argv_extra,env_extra",
+        [
+            ([], {"SKYPILOT_NUM_GPUS_PER_NODE": "two"}),
+            ([], {"SKYPILOT_NUM_GPUS_PER_NODE": "2.5"}),
+            (["--gpus-per-node", "four"], {}),
+        ],
+    )
+    def test_invalid_count_is_logged_not_hidden(self, tmp_path, argv_extra, env_extra):
+        # A bad count must not silently fall back to sft.yaml's 1 GPU.
+        proc, runs, _ = _run(
+            tmp_path,
+            ["--base-model", "/staged/base"] + argv_extra,
+            env_extra=env_extra,
+        )
+        assert "not a whole number" in proc.stderr
+        assert not any(
+            o.startswith("cluster.gpus_per_node=")
+            for o in _hydra_overrides(_train_argv(runs))
+        )
 
     def test_injects_dataset_under_configured_key(self, tmp_path):
         proc, runs, _ = _run(

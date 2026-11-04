@@ -27,6 +27,7 @@ All assert against ``result.output`` (combined stdout+stderr): CliRunner mixes t
 streams by default on Click 8.1.x, where accessing ``result.stderr`` raises.
 """
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -59,7 +60,12 @@ class _StubbedCommand:
             yield
 
     def _invoke(self, *argv):
-        return CliRunner().invoke(command_lineage_watch.cli, list(argv))
+        # Muted: pytest's live logging writes into the stream CliRunner closes.
+        logging.disable(logging.CRITICAL)
+        try:
+            return CliRunner().invoke(command_lineage_watch.cli, list(argv))
+        finally:
+            logging.disable(logging.NOTSET)
 
 
 class TestEmptyAnchorRejected(_StubbedCommand):

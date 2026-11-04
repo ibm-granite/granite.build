@@ -223,16 +223,17 @@ class LineageJobEntry(BaseModel):
 
 
 class LineageJobDetail(LineageJobEntry):
-    """One job with its full content, fetched from the store its index rows name.
+    """One job with its full content, read from this server only.
 
-    ``job_store`` says where that was: ``gb_lineage_job``, ``gb_targets``, ``wandb`` or
-    ``other``. ``detail`` holds the large payloads (step configs redacted); ``build``
-    and ``target`` are the granite.build build and target run, in the shape
-    ``GET /builds/{id}/status`` uses, when this server has them. When the store could
-    not answer, ``detail_available`` is false and ``detail_error`` says why -- the
-    index fields above are still there. ``detail_denied`` is true when the caller
-    may not read the job's space-gated content, so a client can tell "denied" from
-    "unavailable".
+    ``job_store`` says which writer indexed it: ``gb_lineage_job``, ``gb_targets``,
+    ``wandb`` or ``other``. Whatever the store, a job whose rows name a build is read
+    from that build: ``build`` and ``target`` are the build and target run, in the
+    shape ``GET /builds/{id}/status`` uses. A lineage-table job with no build gets
+    ``detail``, that table's large payloads (step configs redacted). When neither
+    answers, ``detail_available`` is false and ``detail_error`` says why -- the index
+    fields above are still there, with ``build_id``/``target_run_uuid`` as the index
+    recorded them. ``detail_denied`` is true when the caller may not read the job's
+    space-gated content, so a client can tell "denied" from "unavailable".
     """
 
     job_store: str = ""
@@ -240,10 +241,10 @@ class LineageJobDetail(LineageJobEntry):
     build_id: Optional[str] = None
     build: Optional[Dict[str, Any]] = None
     target: Optional[Dict[str, Any]] = None
-    origin_url: str = ""
     detail_available: bool = False
     detail_error: Optional[str] = None
     detail_denied: bool = False
+    target_run_uuid: Optional[str] = None
 
 
 class LineageJobsResponse(BaseModel):

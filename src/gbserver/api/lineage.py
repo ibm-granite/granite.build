@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict
 
 from gbserver.api.build_files_paths import authorize_build_read_access
 from gbserver.api.utils import has_space_member_access, is_super_admin
@@ -241,7 +241,7 @@ def ingest_lineage_event(event: OpenLineageEvent):
     event, and nothing ties its namespace, owner or tags to the caller. Under the
     ``wandb`` provider the event becomes a W&B run, and the W&B lineage indexer
     reads every run of the project, so an injected event shows up in the global
-    ``GET /lineage/graph`` trace (which is not filtered per space by design). It
+    ``POST /lineage/graph`` trace (which is not filtered per space by design). It
     cannot reach space-gated detail: ``GET /lineage/jobs/{id}`` checks the
     caller's access before returning owner, namespace or tags.
     """
@@ -257,7 +257,7 @@ def search_lineage_events(request: Request, body: TagSearchRequest):
     **Deprecated.** Kept only for existing external callers (dmg-ng); nothing in
     granite.build (frontend, gbcli, gbmcp) calls it. New callers should resolve
     lineage through the index routes: ``GET /lineage/jobs`` to list jobs (by
-    ``tag`` for what this route answered) and ``GET /lineage/graph?job_ids=...``
+    ``tag`` for what this route answered) and ``POST /lineage/graph`` with ``job_ids``
     for their lineage. It will be removed once
     those callers have migrated.
 
@@ -331,52 +331,17 @@ def search_lineage_events(request: Request, body: TagSearchRequest):
     )
 
 
-# A GET with filters is what a UI wants for a shareable, bookmarkable lineage view,
-# and every filter here maps to an indexed text column, so there is no shape a
-# caller can ask for that forces a scan. The POST form below exists only for
-# ``job_ids``: a grouped node of a few hundred runs overruns proxy URL limits in a
-# query string.
-@lineage_api.get("/graph", tags=["lineage-index"])
-def query_lineage_graph_get(
-    request: Request,
-    uri: Optional[str] = None,
-    job_id: Optional[str] = None,
-    job_ids: Annotated[Optional[list[str]], Query()] = None,
-    direction: str = "both",
-    depth: int = 10,
-    max_nodes_per_level: Optional[int] = None,
-    group_runs: bool = True,
-) -> LineageGraphResponse:
-    """Query the lineage graph by URI, by job(s), or both; one of them is required.
-
-    The HTTP surface for :func:`query_lineage_graph`; see it for the semantics.
-    ``job_ids`` is repeated (``?job_ids=a&job_ids=b``).
-    """
-    try:
-        body = LineageQueryRequest(
-            uri=uri,
-            job_id=job_id,
-            job_ids=job_ids,
-            direction=direction,
-            max_depth=depth,
-            max_nodes_per_level=max_nodes_per_level,
-            group_runs=group_runs,
-        )
-    except ValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=exc.errors(include_url=False, include_context=False),
-        ) from exc
-    return query_lineage_graph(request, body)
-
-
+# A POST, not a GET: ``job_ids`` -- a grouped node of a few hundred runs -- overruns
+# proxy URL limits in a query string, and one route keeps a single shape to document.
 @lineage_api.post("/graph", tags=["lineage-index"])
 def query_lineage_graph_post(
     request: Request, body: LineageQueryRequest
 ) -> LineageGraphResponse:
-    """The GET form with the query in a body, for a ``job_ids`` list too long for
-    a URL. One walk over every id, so the runs are grouped across the whole set and
-    the per-level cap and ``job_ids`` limit apply to the expansion as a whole.
+    """Query the lineage graph by URI, by job(s), or both; one of them is required.
+
+    The HTTP surface for :func:`query_lineage_graph`; see it for the semantics. One
+    walk over every ``job_ids`` entry, so the runs are grouped across the whole set
+    and the per-level cap and ``job_ids`` limit apply to the expansion as a whole.
     """
     return query_lineage_graph(request, body)
 
@@ -606,14 +571,14 @@ def list_lineage_jobs(
 
 @lineage_api.get("/jobs/{job_id:path}", tags=["lineage-index"])
 def get_lineage_job_detail(request: Request, job_id: str) -> LineageJobDetail:
-    """One job execution with its full content, from wherever it is stored.
+    """One job execution with its full content, read from this server's builds.
 
-    The listing (``GET /jobs``) carries only what the index rows hold. This follows
-    the rows' ``job_store`` to the job's own store -- the lineage job table, this
-    server's builds and target runs, or W&B -- and returns one shape for all of them.
+    The listing (``GET /jobs``) carries only what the index rows hold. When the rows
+    name a granite.build build, its build, target run and steps are read from the
+    gb DB, whatever store indexed the job; no external system (W&B) is contacted.
 
-    404 only when the index has no such job. A store that cannot answer (build not
-    on this server, run deleted, no read access to the build) still returns 200,
+    404 only when the index has no such job. A job that cannot be read further (no
+    build recorded, build or target not on this server, no read access) still returns 200,
     with ``detail_available`` false and ``detail_error`` saying why. A build's step
     configs and target run are returned only to callers who may read that build.
     """
@@ -636,7 +601,7 @@ def _can_read_job(request: Request, entry: dict) -> bool:
     The one access rule for a granite.build job beyond the global trace: space
     membership off the job's owner and ``space_name`` (the namespace's first
     segment). ``GET /lineage/jobs/{id}`` gates its detail on it and
-    ``GET /lineage/graph`` gates the build and target-run ids of a run node on it,
+    ``POST /lineage/graph`` gates the build and target-run ids of a run node on it,
     through this one function so the two cannot drift. A job with no namespace (an
     import) fails closed.
     """

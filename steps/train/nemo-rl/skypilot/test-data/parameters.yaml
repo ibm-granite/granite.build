@@ -31,12 +31,10 @@ MAX_STEPS: 20
 CLEARML_PROJECT: "nemo-rl-sft"
 
 # --- Compute -----------------------------------------------------------------
-# Single-node, multi-GPU. The step requests "<GPU_MODEL>:<NUM_GPUS_PER_NODE>" as
-# the SkyPilot accelerators request and pins NeMo-RL's cluster.gpus_per_node to
-# NUM_GPUS_PER_NODE. GPU_MODEL is REQUIRED — set it to the accelerator type your
-# endpoint offers (e.g. A100, H100, A10G).
-NUM_GPUS_PER_NODE: 8
-GPU_MODEL: "A100"
+# Single-node, multi-GPU. The SkyPilot accelerators request, "<type>:<count>",
+# using a type your endpoint offers (e.g. A100, H100, A10G). The step pins
+# NeMo-RL's cluster.gpus_per_node to the count.
+ACCELERATORS: "A100:8"
 
 # How often to poll for job completion. The skypilot monitor default is 300s.
 POLL_INTERVAL_SECONDS: 30

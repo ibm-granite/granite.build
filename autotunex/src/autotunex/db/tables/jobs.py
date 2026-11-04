@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, Boolean, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Enum, ForeignKey, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from autotunex.db.base import Base
@@ -52,10 +52,15 @@ class JobTable(Base):
     user_id: Mapped[str] = mapped_column(
         String(255), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
+    # The server defaults back the api-bridge's Core inserts, which never see the
+    # Python-side ones (Alembic 5e1d2c7a9b40). The status DDL value is the member name.
     status: Mapped[RunStatus] = mapped_column(
-        Enum(RunStatus, name="run_status"), nullable=False, default=RunStatus.PENDING
+        Enum(RunStatus, name="run_status"),
+        nullable=False,
+        default=RunStatus.PENDING,
+        server_default=RunStatus.PENDING.name,
     )
-    seed: Mapped[int | None] = mapped_column(Integer, default=42)
+    seed: Mapped[int | None] = mapped_column(Integer, default=42, server_default=text("42"))
     config_id: Mapped[UUID] = mapped_column(
         Uuid36, ForeignKey("configurations.id", ondelete="RESTRICT"), nullable=False
     )

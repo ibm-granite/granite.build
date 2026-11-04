@@ -1,7 +1,6 @@
 'use client'
 
-import { Suspense, useEffect, useState } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { Suspense } from 'react'
 import { InlineNotification, SkeletonText } from '@carbon/react'
 import { useQuery } from '@tanstack/react-query'
 import { getJob } from '@granite-build/ui-core/api/autotunex'
@@ -10,6 +9,7 @@ import { PageHeader } from '@granite-build/ui-core/components/PageHeader'
 import { TuningStatusBadge } from '@granite-build/ui-core/components/autotunex/tunings/TuningStatusBadge'
 import { TuningDetailTabs } from './TuningDetailTabs'
 import styles from './page.module.scss'
+import { useRouteId } from '@granite-build/ui-core/hooks/useRouteId'
 
 const ACTIVE_STATUSES = new Set(['running', 'pending'])
 
@@ -47,30 +47,7 @@ function TuningDetailFallback() {
 }
 
 function TuningDetailContent() {
-  // The real id lives in the ?id= query param, not location.hash — a hash read
-  // in a mount-only effect breaks when navigating from one tuning's page to
-  // another without an intervening route change, since both are the same "_"
-  // route to Next's router and a one-time hash read never sees the new id.
-  // useSearchParams() is reactive, but it isn't enough by itself: Next's router
-  // patches window.history, so our own cosmetic replaceState below (stripping
-  // the query param once we've adopted the id) makes useSearchParams() briefly
-  // report no id again. Latching the id into state — only ever overwritten by
-  // a new *non-empty* param value — survives that revert.
-  const searchParams = useSearchParams()
-  const paramId = searchParams.get('id')
-  const [tuningId, setTuningId] = useState(paramId ?? '')
-
-  useEffect(() => {
-    if (paramId && paramId !== tuningId) {
-      setTuningId(paramId)
-    }
-  }, [paramId, tuningId])
-
-  useEffect(() => {
-    if (tuningId) {
-      window.history.replaceState(null, '', `/dashboard/autotunex/${tuningId}/`)
-    }
-  }, [tuningId])
+  const tuningId = useRouteId('/dashboard/autotunex')
 
   // The same cached AutoTuneX admin check the tunings list uses. Admins get
   // `scope=all` so they can drill into tunings they don't own.

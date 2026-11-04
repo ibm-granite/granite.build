@@ -22,6 +22,7 @@ import { Document } from "@carbon/icons-react";
 import { BuildStatusBadge } from "./BuildStatusBadge";
 import { useRoutes } from "../config/routes";
 import { getArtifact, getBuildStepLog } from "../api/gbserver";
+import { isUUID } from "../lib/uuid";
 import type { Artifact, BuildTargetRun, BuildStatus } from "../types";
 
 interface Props {
@@ -31,12 +32,6 @@ interface Props {
 interface LogTarget {
   path: string;
   name: string;
-}
-
-function isUUID(s: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-    s,
-  );
 }
 
 /** Middle-truncate long IDs/URIs so they stay on one line; the full value is shown on hover and copied intact. */
