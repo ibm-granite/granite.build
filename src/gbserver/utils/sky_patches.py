@@ -39,13 +39,15 @@ from typing import Any, Callable, Optional
 
 import sky
 import yaml
-from sky import exceptions
+from sky import exceptions, skypilot_config
 from sky.backends import cloud_vm_ray_backend, task_codegen, wheel_utils
+from sky.clouds import aws
 from sky.data import mounting_utils
 from sky.provision.slurm import instance as slurm_instance
 from sky.server import common as server_common
 from sky.server import plugins as sky_plugins
 from sky.server.requests import process
+from sky.utils import schemas
 
 logger = logging.getLogger(__name__)
 
@@ -412,6 +414,36 @@ def _patch_backend() -> None:
     )
 
 
+def _patch_aws_host_image() -> None:
+    # `docker.host_image_id` sets the host AMI of a docker-image AWS cluster
+    # (e.g. when the default GPU AMI ships a broken driver). Declared in the
+    # schema and registered through register_task_overrideable_config_key, so
+    # the server's strict override validation accepts it.
+    _rewrite(
+        schemas,
+        "get_config_schema",
+        (
+            "        'properties': {\n            'run_options': {",
+            "        'properties': {\n"
+            "            'host_image_id': {'type': 'string'},\n"
+            "            'run_options': {",
+        ),
+    )
+    skypilot_config.register_task_overrideable_config_key(("docker", "host_image_id"))
+    _rewrite(
+        aws.AWS,
+        "make_deploy_resources_variables",
+        (
+            "            image_id_to_use = resources.get_cloud_image_id()\n",
+            "            host_image_id = skypilot_config.get_nested(\n"
+            "                ('docker', 'host_image_id'), None,\n"
+            "                override_configs=resources.cluster_config_overrides)\n"
+            "            image_id_to_use = ({None: host_image_id} if host_image_id\n"
+            "                               else resources.get_cloud_image_id())\n",
+        ),
+    )
+
+
 def _patch_misc() -> None:
     # Concurrent launches read the per-hash wheel outside the wheel lock;
     # shutil.copy rewrites it in place, so one could ship a 0-byte wheel.
@@ -478,6 +510,7 @@ def apply() -> None:
         )
     _patch_slurm_provision()
     _patch_backend()
+    _patch_aws_host_image()
     _patch_misc()
 
 
