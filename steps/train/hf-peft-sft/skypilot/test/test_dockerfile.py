@@ -109,6 +109,17 @@ def test_no_bytecode_at_build_time():
     )
 
 
+def test_bytecode_is_written_at_runtime():
+    # Without shipped .pyc, the job's writable container caches bytecode on first
+    # import, so setup's import check warms it for the training ranks. Turning that
+    # off would make every process compile in memory on every launch (#626).
+    sources = [_DOCKERFILE, (_STEP_DIR / "step-template.yaml").read_text()]
+    sources += [p.read_text() for p in sorted((_STEP_DIR / "src").glob("*.sh"))]
+    for text in sources:
+        assert "PYTHONDONTWRITEBYTECODE" not in text
+        assert not re.search(r"(?<![\w-])-B\b", text)
+
+
 def test_runs_as_root_for_skypilot():
     assert not _instructions("USER")
     assert not re.search(r"^RUN useradd", _DOCKERFILE, re.M)

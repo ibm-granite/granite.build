@@ -42,10 +42,8 @@ COPY --from=uv /uv /uvx /usr/local/bin/
 
 # Managed Python under /opt, not root's home: the venv's interpreter is a symlink
 # into it, and Pyxis on SLURM runs the job as the submitting user. No bytecode at
-# install time: peft-v0.21.2-5 shipped it (13,438 extra .pyc in the 3.4 GB venv
-# layer), and quay's security scan of that image never left "queued", while the
-# same lock without .pyc scans in minutes. Python compiles in memory on import
-# instead (/opt is read-only for the Pyxis job user, so nothing is written back).
+# install time: quay's scanner stalls on it (see README, Scanning). The job's
+# container is writable, so Python writes it on first import instead.
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python \
     UV_NO_CACHE=1 \
     UV_LINK_MODE=copy \

@@ -258,9 +258,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Before, the `Step:` progress events were dropped and gbserver logged a traceback for each
   matching line. These events are now stored and published once per matching log line, and the
   build runner logs the message with the status.
-- **The `hf-peft-sft` image ships no precompiled bytecode again (`peft-v0.21.2-6`).** With it
-  (`peft-v0.21.2-5`, 13,438 extra `.pyc` in the venv layer) quay's security scan never left
-  "queued"; `-6` scans in about a minute.
 
 - **`make publish-step` no longer reports a published single-platform image as missing (#568).**
   Without `skopeo`, its image check used `podman manifest inspect`, which fails on a
