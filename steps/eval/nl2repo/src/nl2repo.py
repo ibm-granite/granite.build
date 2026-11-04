@@ -907,7 +907,15 @@ class NL2RepoBench(Benchmark):
             result = sb.execute(
                 f'cd {RUN_DIR} || exit 1; PY="${{VIRTUAL_ENV:-/app/.venv}}/bin/python"; '
                 f'[ -x "$PY" ] || PY=python; '
-                f'exec "$PY" -m openhands.core.main --config-file={RUN_DIR}/config.toml -t "$OH_TASK"',
+                # The image's ENV points the local-runtime client at
+                # host.docker.internal (a Docker-in-Docker convention). This
+                # sandbox shares the host network namespace, where that name
+                # does not resolve, while the runtime server binds 127.0.0.1.
+                # OpenHands applies the environment over config.toml
+                # (load_from_env), so the override must be an exported
+                # variable in the client's own shell, not a config key.
+                f'SANDBOX_LOCAL_RUNTIME_URL=http://127.0.0.1 exec "$PY" '
+                f'-m openhands.core.main --config-file={RUN_DIR}/config.toml -t "$OH_TASK"',
                 cwd=RUN_DIR,
                 timeout=self.opt("agent_timeout", AGENT_TIMEOUT_S) or None,
             )
