@@ -1,0 +1,80 @@
+# SkyPilot on AWS EC2, with a shared EFS filesystem, for this recipe only.
+#
+# The shipped space://environments/skypilot/aws has no shared filesystem: each
+# step runs on its own EC2 instance and keeps nothing after it ends. This recipe
+# needs one: `prepare` writes the dataset that `train` reads, and the adapter
+# must outlive the train instance. So this copy of that environment adds:
+#
+#   * shared_filesystem: a pre-provisioned EFS, mounted at /mnt/gb-shared on
+#     every step's instance (and inside its container);
+#   * hf pulls as their own steps, cached on the EFS (`config: {}`), so the
+#     17.6 GB base model is downloaded once and reused by both targets and by
+#     later runs;
+#   * every step pinned to us-east-1, the only region the EFS has mount targets in.
+#
+# build.yaml selects this file with environment_uri: file:. (a standalone
+# gbserver only). See README.md.
+name: skypilot-aws-gb-shared
+type: Skypilot
+subtype: aws
+config:
+  default_cloud: aws
+  idle_minutes_to_autostop: 5
+  # p5-family capacity is often short. A launch that finds none is retried with
+  # backoff (30 s, doubling, capped at provision_backoff_max), up to max_retries
+  # attempts: about 2 h of trying before the build fails. max_retries also caps
+  # re-runs of a step whose workload failed after it started (hfpull's are on
+  # by default), each delay_seconds after the failure.
+  retry:
+    max_retries: 12
+    provision_backoff_max: 900
+    delay_seconds: 600
+  # Credentials: secret NAMES resolved by the space's secret manager, written to
+  # a non-default profile in ~/.aws/credentials (as in the shipped environment).
+  aws_credentials:
+    - profile: gb-skypilot
+      aws_access_key_id: GB_AWS_ACCESS_KEY_ID
+      aws_secret_access_key: GB_AWS_SECRET_ACCESS_KEY
+  cloud_config:
+    workspaces:
+      default:
+        aws:
+          profile: gb-skypilot
+  # The EFS. Another AWS account: replace file_system_id and region with your
+  # own filesystem's; it needs a mount target in every AZ of the region, a
+  # security group allowing NFS (TCP 2049) from the workers, and its root
+  # chmod'd 1777 (docs/environments/skypilot-aws.md, "Runbook: provision a
+  # shared EFS filesystem").
+  #
+  # tls: true encrypts NFS traffic only where amazon-efs-utils (mount.efs) is
+  # installed. The hf-peft-sft image and the bare workers lack it, so their
+  # mounts fall back to plain NFSv4 inside the VPC, with a warning in the step
+  # log. Data at rest is encrypted by the filesystem.
+  shared_workdir: /mnt/gb-shared/gbroot
+  shared_filesystem:
+    provider: efs
+    mount_point: /mnt/gb-shared
+    efs:
+      file_system_id: fs-REPLACE-ME
+      region: us-east-1
+      tls: true
+  # Pin each step type the build runs to the EFS region. hfpull is the hidden
+  # step queued for every hf:// input; it takes no launcher_config from
+  # build.yaml, so the pin has to live here.
+  steps:
+    hfpull:
+      launcher_config: { resources: { infra: aws/us-east-1 } }
+    command:
+      launcher_config: { resources: { infra: aws/us-east-1 } }
+    hf-peft-sft:
+      launcher_config: { resources: { infra: aws/us-east-1 } }
+assetstores:
+  # No cache_path and no inline: hfpull runs as its own step and caches to
+  # ${shared_workdir}/hf_cache on the EFS.
+  - store_uri: space://assetstores/hf
+    pull:
+      - mode: default
+        config: {}
+    push:
+      - mode: default
+        config: {}
