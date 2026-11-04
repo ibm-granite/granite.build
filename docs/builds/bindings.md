@@ -216,7 +216,7 @@ Rules:
   copies `{{ bindings.<name>.binding.path }}` into a config key for the step to read turns a
   misnamed binding into literal text that only fails on the cluster. A declared input that
   isn't bound fails validation up front.
-- **Don't read `$LLMB_*_INPUT_<NAME>`.** Only the bash and LSF launchers export it.
+- **Don't read `$LLMB_*_INPUT_<NAME>`.** Only the bash launcher exports it.
 
 More detail, including how to rename an input that has already shipped:
 [Steps — Declaring inputs](../steps/README.md#declaring-inputs).
@@ -236,7 +236,7 @@ echo "GB_ARTIFACT_ID:server_url GB_ARTIFACT_STATE:http://${ADDR}:${PORT}"
 
 - The ID after `GB_ARTIFACT_ID:` must equal an output name declared on the target in
   build.yaml.
-- The shared `bash`, `skypilot`, `docker`, and `lsf` monitors (`ref: space://monitors/<name>`)
+- The shared `bash`, `skypilot`, and `docker` monitors (`ref: space://monitors/<name>`)
   recognise both `PATH` and `STATE` markers. The k8s and runpod monitors don't recognise
   `STATE` yet. The legacy `LLMB_` prefix is still accepted.
 - On SLURM via SkyPilot, each step runs on its own node, so write outputs to paths relative to

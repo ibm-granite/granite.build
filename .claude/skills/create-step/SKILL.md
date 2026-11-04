@@ -93,7 +93,7 @@ environment_configs:
 - Omit `config.script_path` → the launcher runs `bash_scripts/<step-name>/command.sh`.
 - Set `config.script_path: run.py` → it runs `bash_scripts/<step-name>/run.py`.
 
-> **CRITICAL:** do **not** reference the builtin `gbstep` on the bash backend — it declares launchers only for `k8s`/`Lsf` and dies with `KeyError: 'helm'`. Author your own `Bash`/`nohup` launcher as above.
+> **CRITICAL:** do **not** reference the builtin `gbstep` on the bash backend — it is a Kubernetes step (its launcher is `helm`) and dies with `KeyError: 'helm'`. Author your own `Bash`/`nohup` launcher as above.
 
 ### The script owns its runtime
 
@@ -130,14 +130,13 @@ exec "$VENV/bin/python" "$SCRIPT_DIR/run.py"
 |---|---|---|---|---|
 | bash (local) | `Bash` | `nohup` | script builds its own **venv** at runtime | auto-exported as `$LLMB_BASH_INPUT_*` |
 | docker | `Docker` | `docker` | the container **image** (deps prebaked; no venv) | wire manually: `docker.env: LLMB_BASH_INPUT_X: {value: "{{ bindings.x.binding.path }}"}` |
-| LSF | `Lsf` | `bsub` | a cluster **module / python env** | staged to the remote host |
-| skypilot (aws/k8s/slurm/lsf) | `Skypilot` | `skypilot` | a **conda env in the cluster image** + a `setup:` block; needs cluster resources | via `run:`/`setup:` blocks |
+| skypilot (aws/k8s/slurm) | `Skypilot` | `skypilot` | a **conda env in the cluster image** + a `setup:` block; needs cluster resources | via `run:`/`setup:` blocks |
 | runpod | `Runpod` | `runpod` | the container **image** | via the image/command |
 
 Consequences to keep in mind:
-- **Each step available in a space is specific to a specific environment** — e.g. the on-disk `command`/`hello`/`inference` steps under `environments/bash/steps/` are the **bash** copies; `docker`/`lsf`/`skypilot` have their own copies. A step resolves only for an environment whose type it declares.
-- The launcher `type` and monitor `type` are **not interchangeable** — `nohup` exists only on bash, `docker` only on docker, `bsub` only on LSF, `helm` only on k8s. Referencing a launcher the active env doesn't implement fails at launch (this is the `gbstep`→`helm` bug on bash).
-- **Building a venv is a bash-ism.** On docker/skypilot/lsf the deps come from a prebuilt image/conda/module, and building a fresh venv would shadow (or omit) them — so those blocks run the script directly against the provided interpreter.
+- **Each step available in a space is specific to a specific environment** — e.g. the on-disk `command`/`hello`/`inference` steps under `environments/bash/steps/` are the **bash** copies; `docker`/`skypilot` have their own copies. A step resolves only for an environment whose type it declares.
+- The launcher `type` and monitor `type` are **not interchangeable** — `nohup` exists only on bash, `docker` only on docker, `helm` only on k8s. Referencing a launcher the active env doesn't implement fails at launch (this is the `gbstep`→`helm` bug on bash).
+- **Building a venv is a bash-ism.** On docker/skypilot the deps come from a prebuilt image/conda env, and building a fresh venv would shadow (or omit) them — so those blocks run the script directly against the provided interpreter.
 - To make one step run on multiple environments, author a block per env in the same `step.yaml`, sharing the script but supplying each env's launcher + deps source. For the bash-only standalone default, a single `Bash` block is enough.
 
 ## Reference it from the build, then run

@@ -16,7 +16,7 @@ The system has a few distinct planes:
   pending builds and dispatches a **BuildRunner** per build; the runner walks the target graph. The
   [`gb` and `gbserver` CLIs](../cli/README.md) drive and run the server.
 - **Execution** — each target runs on an [environment](../environments/README.md) (bash, Docker,
-  Kubernetes, LSF, RunPod, SkyPilot).
+  Kubernetes, RunPod, SkyPilot).
 - **Persistence** — build/target/step/artifact metadata is stored in a SQL database.
 - **Messaging** — build events are published for real-time subscribers.
 

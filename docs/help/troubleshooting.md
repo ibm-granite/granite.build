@@ -89,8 +89,8 @@ step's `retry_enabled` flag. Both must be true. See
 [`step-retry-configuration.md`](../builds/step-retry-configuration.md) for
 the priority chain (build.yaml override → step.yaml default → env-var gate).
 
-Currently only K8s (helm) and LSF (bsub) environments support step-level
-retry. Other environments will silently skip retry attempts.
+Currently only the K8s (helm) and SkyPilot (`Skypilot`, not
+`Skypilot_managed`) environments support step-level retry. Other environments will silently skip retry attempts.
 
 ## Standalone mode 401s on remote requests
 

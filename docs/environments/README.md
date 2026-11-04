@@ -24,30 +24,28 @@ Every compute endpoint gbserver can run a step on, and the page that documents i
 | Local OS process | `Bash` | direct | [bash.md](bash.md) |
 | Local container (Docker / Podman) | `Docker` | direct | [docker.md](docker.md) |
 | Kubernetes / OpenShift | `K8s` | direct (Helm + AppWrapper) | [k8s.md](k8s.md) |
-| IBM LSF cluster | `Lsf` | direct (`bsub` over SSH) | [lsf.md](lsf.md) |
 | RunPod GPU pods | `Runpod` | direct (RunPod API) | [runpod.md](runpod.md) |
 | **SkyPilot** (multi-cloud) | `Skypilot` | per-step `sky.launch()` | [skypilot.md](skypilot.md) |
 | &nbsp;&nbsp;↳ SLURM | `Skypilot` | `default_cloud: slurm` | [skypilot-slurm.md](skypilot-slurm.md), [sizing a step](skypilot-slurm-sizing.md) |
-| &nbsp;&nbsp;↳ LSF | `Skypilot` | `default_cloud: lsf` | [skypilot-lsf.md](skypilot-lsf.md) |
 | &nbsp;&nbsp;↳ Kubernetes | `Skypilot` | `default_cloud: kubernetes` | [skypilot-kubernetes.md](skypilot-kubernetes.md) |
 | &nbsp;&nbsp;↳ AWS | `Skypilot` | `default_cloud: aws` | [skypilot-aws.md](skypilot-aws.md) |
 
-Some target compute is reachable **two ways**. LSF can be driven natively ([lsf.md](lsf.md), gbserver
-submits `bsub` itself) or through SkyPilot ([skypilot-lsf.md](skypilot-lsf.md), SkyPilot's LSF
-provisioner submits the job). Kubernetes likewise runs natively via Helm/AppWrapper ([k8s.md](k8s.md))
-or through SkyPilot ([skypilot-kubernetes.md](skypilot-kubernetes.md)). Pick the native type when you
-want gbserver's first-class lifecycle (AppWrapper retries, RabbitMQ event streaming for K8s; SSH
-workspace management for LSF); pick SkyPilot when you want one environment definition that can target
-several clouds with a uniform launcher.
+> **LSF is retired.** The native `Lsf` environment and SkyPilot's `lsf` cloud are no longer
+> supported; move LSF builds to SkyPilot on SLURM (see [lsf.md](lsf.md)).
 
-SkyPilot can in principle target additional clouds (GCP, Azure, Lambda, …); only the four above are
+Kubernetes is reachable **two ways**: natively via Helm/AppWrapper ([k8s.md](k8s.md)) or through
+SkyPilot ([skypilot-kubernetes.md](skypilot-kubernetes.md)). Pick the native type when you want
+gbserver's first-class lifecycle (AppWrapper retries, RabbitMQ event streaming); pick SkyPilot when you
+want one environment definition that can target several clouds with a uniform launcher.
+
+SkyPilot can in principle target additional clouds (GCP, Azure, Lambda, …); only the three above are
 documented in depth here.
 
 ## How environments work
 
 The base class is [`Environment`](../../src/gbserver/environment/environment.py); each type is a
 subclass in [`src/gbserver/environment/`](../../src/gbserver/environment/) (`bash.py`, `docker.py`,
-`k8s.py`, `lsf.py`, `runpod.py`, `skypilot.py`). Types are discovered dynamically: the filename,
+`k8s.py`, `runpod.py`, `skypilot.py`). Types are discovered dynamically: the filename,
 capitalized, is the class name and the `type:` value (`bash.py` → `Bash`). See
 [architecture/environment-classes.md](../architecture/environment-classes.md) for the internals.
 
@@ -60,7 +58,7 @@ environment type.
 
 ```yaml
 name: <string>          # Human-readable name (informational).
-type: <string>          # Environment class to instantiate: Bash, Docker, K8s, Lsf, Runpod, Skypilot.
+type: <string>          # Environment class to instantiate: Bash, Docker, K8s, Runpod, Skypilot.
 subtype: <string>       # Optional: distinguishes envs of the same type (see below).
 config:                 # Environment-type-specific config — see the per-type page.
   ...
@@ -83,7 +81,7 @@ type's `config:` block.
 
 `config:` may carry an optional `steps:` map that sets **per-step-type defaults** for top-level step
 `config` keys. This lets a single environment steer different step types differently — without editing
-any `build.yaml` — for **any** environment class (Bash, Docker, K8s, Lsf, Skypilot, …); it is not
+any `build.yaml` — for **any** environment class (Bash, Docker, K8s, Skypilot, …); it is not
 specific to one type.
 
 Each key under `steps:` is a **step-type slug** — the *last path segment* of the step URI. So
@@ -94,7 +92,7 @@ type.
 > **Slugs resolve within this environment.** A slug names a step type **relative to the environment
 > this `environment.yaml` belongs to** — it is not a global identifier. The same last-path-segment
 > slug can name different step implementations in different environment families (e.g. `hfpull`
-> exists under `builtins/steps/{k8s,lsf,skypilot}/`, and step names such as `hello`/`sage-eval` recur
+> exists under both `builtins/steps/k8s/` and `builtins/steps/skypilot/`, and step names such as `hello`/`sage-eval` recur
 > across families). Because `config.steps` is scoped to one environment, such reuse is unambiguous
 > here: a slug matches only the step of that type resolved for *this* environment, so a multi-backend
 > space's like-named steps in other environments are never affected by this map.
@@ -169,7 +167,7 @@ endpoints are class `Skypilot`, differing only by `config.default_cloud`), the c
 say *which* of them may use a shared step. A **sub-type** provides that discriminator:
 
 - An `environment.yaml` may declare an optional `subtype` (any free-form string — no predefined
-  set; the skypilot endpoints use `kubernetes`/`slurm`/`aws`/`lsf` by convention).
+  set; the skypilot endpoints use `kubernetes`/`slurm`/`aws` by convention).
 - A step's `environment_configs.<Class>` may declare an optional `subtypes` list. **Empty (the
   default) = universal** — the step matches any environment of that class (this is how builtins
   and general shared steps keep resolving everywhere). A **non-empty** list restricts the step to
@@ -182,7 +180,7 @@ Example — one shared `digit` usable only by the kubernetes and slurm endpoints
 # environments/skypilot/steps/digit/step.yaml
 environment_configs:
   Skypilot:
-    subtypes: [kubernetes, slurm]   # aws / lsf endpoints are excluded
+    subtypes: [kubernetes, slurm]   # aws endpoints are excluded
     ...
 ```
 
@@ -217,7 +215,7 @@ documented on each per-type page.
 
 ```yaml
 environment_configs:
-  K8s:                          # or Bash, Docker, Lsf, Runpod, Skypilot. Case-insensitive match.
+  K8s:                          # or Bash, Docker, Runpod, Skypilot. Case-insensitive match.
     default_launcher: <name>    # Optional: launcher used when the step names none.
     launchers:
       <launcher_name>:
@@ -251,7 +249,7 @@ for the overlay rules (`extra_event_configs`, same-type constraint).
 
 `event_configs` live under a monitor's `config` and turn matching log lines into `BuildEvent`s
 (artifact registration, status, messages). The schema is shared across the environment types whose
-monitors tail logs (Bash, Docker, K8s, Lsf, Skypilot).
+monitors tail logs (Bash, Docker, K8s, Skypilot).
 
 ```yaml
 event_configs:
@@ -325,7 +323,7 @@ author's guide to both variants and the `GB_`/`LLMB_` prefix policy.
 ## `step.yaml` `config:` — common fields read by environments
 
 The `config:` section of `step.yaml` (and per-step `config` overrides in `build.yaml`) carries fields
-environments read at launch time. These are common; type-specific blocks (`k8s.*`, `lsf.*`,
+environments read at launch time. These are common; type-specific blocks (`k8s.*`,
 `docker.*`, launcher `resources`, …) are documented on each page.
 
 ```yaml
@@ -335,12 +333,12 @@ config:
   retry_transparently_default: true # Deduplicate NEWARTIFACT events across retries. Default: true.
 
   compute_config:                   # Generic resource hints, translated into backend resource specs.
-    num_nodes: 1                    # SkyPilot reads num_nodes, num_cpus_per_node and
-    num_gpus_per_node: 0            # total_memory_per_node; it takes accelerators from the
-    num_cpus_per_node: 0            # launcher's resources instead of num_gpus_per_node.
-    total_memory_per_node: ""        # See skypilot.md.
+    num_nodes: 1                    # SkyPilot: num_nodes and num_cpus_per_node always apply;
+    num_gpus_per_node: 0            # GPUs come from resources.accelerators, and memory on
+    num_cpus_per_node: 0            # SLURM from resources.memory. See skypilot.md and
+    total_memory_per_node: ""        # skypilot-slurm-sizing.md.
 
-  workload:                         # Used by Lsf (and bash-style steps) to derive workspace/log paths.
+  workload:                         # Used by bash-style steps to derive workspace/log paths.
     path: ""
     args: ""
     workspace_dir: ""
@@ -351,14 +349,14 @@ config:
 
 Every environment that supports secret injection reads the **same** declarative allow-list, so the
 block's *shape* carries across compute backends — place it under the matching per-cloud key
-(`config.docker`, `config.k8s`, `config.lsf`, or `config.skypilot`). One caveat: when `secret_name` is **omitted** the
-secret key each backend looks up is *not* identical (K8s lowercases it; Docker/LSF/SkyPilot use `env_name`
+(`config.docker`, `config.k8s`, or `config.skypilot`). One caveat: when `secret_name` is **omitted** the
+secret key each backend looks up is *not* identical (K8s lowercases it; Docker/SkyPilot use `env_name`
 **verbatim** — see **Delivery differs by environment** below), so a target that must run on more than
 one backend should set `secret_name` explicitly to match the space secret's actual key:
 
 ```yaml
 config:
-  <docker|k8s|lsf|skypilot>:        # The per-environment key for the target's environment type.
+  <docker|k8s|skypilot>:        # The per-environment key for the target's environment type.
     secrets:
       secret_names_to_use_as_env_variable:
         - env_name: HF_TOKEN        # Environment variable exposed to the workload.
@@ -371,16 +369,16 @@ with a `ValueError` (the secret *value* is never included in the message).
 
 **Delivery differs by environment:**
 
-- **Docker, LSF and SkyPilot** resolve the value in the build server and inject it as a container,
+- **Docker and SkyPilot** resolve the value in the build server and inject it as a container,
   task or job environment variable. When `secret_name` is omitted it defaults to `env_name` **verbatim**.
 - **K8s** never materializes the value in the build server: it passes the secret *name* to Helm as a
   `valueFrom.secretKeyRef` and the kubelet mounts the value into the pod at runtime. The pod env var
-  uses the `env_name` **verbatim** (portable with Docker/LSF/SkyPilot). When `secret_name` is omitted the
+  uses the `env_name` **verbatim** (portable with Docker/SkyPilot). When `secret_name` is omitted the
   Secret **data-key** defaults to the **lowercased** `env_name` — the long-standing K8s convention,
   since the space Secret stores each value under its lowercased key.
 
 K8s additionally supports `secret_names_to_use_as_pull_secret` (image pull secrets), which has no
-analogue on the other backends. See [docker.md](docker.md#secrets), [k8s.md](k8s.md), [lsf.md](lsf.md), and [skypilot.md](skypilot.md)
+analogue on the other backends. See [docker.md](docker.md#secrets), [k8s.md](k8s.md), and [skypilot.md](skypilot.md)
 for the per-environment specifics, and [Custom code steps](../steps/custom-code-steps.md#secrets-as-environment-variables)
 for a worked example.
 

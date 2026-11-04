@@ -33,7 +33,7 @@ configurations/assets/environments/skypilot/
         └── environment.yaml     # also resolves ../../steps/digit
 ```
 
-Place a step at the level of the family whose members should share it (`skypilot/steps/` for all skypilot envs, `skypilot/lsf/steps/` for just the lsf endpoints).  Keep a per-endpoint override in the env's own `steps/` dir when one endpoint genuinely diverges.
+Place a step at the level of the family whose members should share it (`skypilot/steps/` for all skypilot envs, `skypilot/slurm/steps/` for just the SLURM endpoints).  Keep a per-endpoint override in the env's own `steps/` dir when one endpoint genuinely diverges.
 
 The walk starts at the env's own dir, so a nested env such as `skypilot/slurm/local` checks `slurm/local/steps/`, then `slurm/steps/` (not present today; if added, it would be shared by every SLURM endpoint, e.g. `local` and `bluevela`), then `skypilot/steps/`.
 
@@ -41,35 +41,34 @@ The walk starts at the env's own dir, so a nested env such as `skypilot/slurm/lo
 
 The ancestor-walk shares a step with **every** environment under its directory, and env-class-match (below) matches **every** environment of the same class.  When environments differ only in compute endpoint they often share one class (all skypilot endpoints are class `Skypilot`), so neither mechanism can, on its own, restrict a shared step to a subset of them.  An optional **sub-type** provides that discriminator:
 
-- An `environment.yaml` may declare an optional `subtype` — any free-form string (no predefined set; the skypilot endpoints use `kubernetes`/`slurm`/`aws`/`lsf` by convention, mirroring `config.default_cloud`).
+- An `environment.yaml` may declare an optional `subtype` — any free-form string (no predefined set; the skypilot endpoints use `kubernetes`/`slurm`/`aws` by convention, mirroring `config.default_cloud`).
 - A step's `environment_configs.<Class>` may declare an optional `subtypes` list.  **Empty (the default) = universal**, matching any env of that class (so builtins and general shared steps keep resolving everywhere).  A **non-empty** list restricts the step to environments whose `subtype` is one of the listed values (exact string match); an env with no `subtype` does not match such a step.
 
 ```yaml
 # environments/skypilot/steps/digit/step.yaml — shared by kubernetes + slurm only
 environment_configs:
   Skypilot:
-    subtypes: [kubernetes, slurm]   # aws / lsf endpoints are excluded
+    subtypes: [kubernetes, slurm]   # aws endpoints are excluded
     ...
 ```
 
-So a single `skypilot/steps/digit` is resolved by `skypilot/kubernetes` and `skypilot/slurm/local` but is unresolvable for `skypilot/aws` and `skypilot/lsf/...`.  The filter is applied by **all three** tiers (ancestor-walk, env-class-match, and the env-agnostic fallback), so the restriction holds regardless of which tier finds the file: a candidate excluded by sub-type is skipped (the walk keeps ascending; class-match ignores it; the fallback rejects it).
+So a single `skypilot/steps/digit` is resolved by `skypilot/kubernetes` and `skypilot/slurm/local` but is unresolvable for `skypilot/aws`.  The filter is applied by **all three** tiers (ancestor-walk, env-class-match, and the env-agnostic fallback), so the restriction holds regardless of which tier finds the file: a candidate excluded by sub-type is skipped (the walk keeps ascending; class-match ignores it; the fallback rejects it).
 
 ## Env-class matching against existing `environment_configs`
 
-The resolver can also pick a step variant based on the env's class name (`Bash`, `Docker`, `K8s`, `Lsf`, `Runpod`, `Skypilot`, ...) by reading each candidate `step.yaml`'s existing `environment_configs` keys.  No new field on `step.yaml` is required.
+The resolver can also pick a step variant based on the env's class name (`Bash`, `Docker`, `K8s`, `Runpod`, `Skypilot`, ...) by reading each candidate `step.yaml`'s existing `environment_configs` keys.  No new field on `step.yaml` is required.
 
 The resolver scans recursively under each base_uri for any file at `<...>/<name>/step.yaml`, parses each one, and selects the candidate whose `environment_configs` contains the active env's class name.  The class-name match is **case-insensitive** (env class `K8s` matches an `environment_configs` key `k8s`).  Subdirectory naming is **conventional only** — the match is by file content, so step variants can live anywhere (the convention is `<base>/steps/<env-class-lowercase>/<name>/`):
 
 ```
 src/gbserver/builtins/steps/
-├── s3push/step.yaml          # multi-env catch-all (environment_configs: K8s, Lsf, Skypilot, ...)
+├── s3push/step.yaml          # multi-env catch-all (environment_configs: K8s, Skypilot, ...)
 ├── k8s/s3push/step.yaml      # only environment_configs.K8s
-├── lsf/s3push/step.yaml      # only environment_configs.Lsf
 ├── skypilot/s3push/step.yaml # only environment_configs.Skypilot
 └── ...
 ```
 
-When the active env class is `K8s`, the resolver picks `steps/k8s/s3push/step.yaml`.  When `Lsf`, it picks `steps/lsf/s3push/step.yaml`.  When the env class is one not represented by a single-env split file, it falls back to the multi-env catch-all.  Among multiple matches, the candidate with FEWER `environment_configs` keys wins — i.e. the most env-specific file beats a multi-env file that happens to list the same env.  Lexicographic path is the secondary tie-break.
+When the active env class is `K8s`, the resolver picks `steps/k8s/s3push/step.yaml`.  When `Skypilot`, it picks `steps/skypilot/s3push/step.yaml`.  When the env class is one not represented by a single-env split file, it falls back to the multi-env catch-all.  Among multiple matches, the candidate with FEWER `environment_configs` keys wins — i.e. the most env-specific file beats a multi-env file that happens to list the same env.  Lexicographic path is the secondary tie-break.
 
 ## Resolution order
 

@@ -10,8 +10,7 @@ The **Skypilot** environment fronts several compute backends through the
 [SkyPilot](https://docs.skypilot.co/) SDK. For each step it provisions a fresh SkyPilot cluster via
 `sky.launch()`, runs the step's `run:` command on it, downloads the job log, then tears the cluster
 down on cleanup. One environment definition can therefore target very different clusters — a
-Kubernetes namespace, an AWS account, a SLURM partition, or an LSF queue — with a uniform launcher
-shape.
+Kubernetes namespace, an AWS account, or a SLURM partition — with a uniform launcher shape.
 
 The implementation is [`Skypilot`](../../src/gbserver/environment/skypilot.py). A managed-jobs variant,
 `Skypilot_managed` ([skypilot_managed.py](../../src/gbserver/environment/skypilot_managed.py)), runs the
@@ -25,12 +24,11 @@ own provisioning, credentials, and resource story:
 | `default_cloud` | Backend | Page |
 |-----------------|---------|------|
 | `slurm` | SLURM cluster (SSH-provisioned) | [skypilot-slurm.md](skypilot-slurm.md) |
-| `lsf` | IBM LSF cluster (SSH-provisioned) | [skypilot-lsf.md](skypilot-lsf.md) |
 | `kubernetes` (alias `k8s`) | Existing Kubernetes cluster | [skypilot-kubernetes.md](skypilot-kubernetes.md) |
 | `aws` | AWS (EC2 provisioning) | [skypilot-aws.md](skypilot-aws.md) |
 
 SkyPilot supports further clouds (GCP, Azure, Lambda, RunPod, …) that gbserver passes straight through
-as the `infra` argument; only the four above are documented here. To try SLURM locally, see
+as the `infra` argument; only the three above are documented here. To try SLURM locally, see
 [skypilot-slurm-setup.md](setup/skypilot-slurm-setup.md).
 
 ## `environment.yaml` — config common to all clouds
@@ -47,22 +45,20 @@ config:
   idle_minutes_to_autostop: 10      # Stop the cluster after N idle minutes. Default: 10. 0 = ASAP,
                                     # null = disable. Per-step cleanup already runs `sky down` after
                                     # each step, so this is a safety net for crashed processes.
-                                    # SLURM and LSF do not support autostop — gbserver ignores this
-                                    # value when the resolved cloud is `slurm` or `lsf`.
+                                    # SLURM does not support autostop — gbserver ignores this
+                                    # value when the resolved cloud is `slurm`.
 
   cluster: <name>                   # Optional. SLURM convenience field composed into
                                     # infra=slurm/<cluster>. Other clouds: use resources.infra instead.
 
-  zone: <zone>                      # Optional. Forwarded to sky.Resources(zone=...). Overloaded
-                                    # per-cloud: for LSF it maps to the queue name (normal,
-                                    # preemptable, ...).
+  zone: <zone>                      # Optional. Forwarded to sky.Resources(zone=...).
 
   shared_workdir: <path>            # Optional. A filesystem mounted on every worker the env launches
                                     # against, used as the base dir for gbserver-managed cross-step
                                     # caches (HF cache) and exported as GB_SHARED_WORKDIR. See below.
 
   # Inline SkyPilot config — three optional, mostly cloud-specific blocks (see "Inline config"):
-  cluster_ssh_configs: { ... }      # SSH reachability for slurm/lsf. See skypilot-slurm/-lsf pages.
+  cluster_ssh_configs: { ... }      # SSH reachability for slurm. See skypilot-slurm page.
   cloud_config: { ... }             # Behavioral SkyPilot config, deep-merged into ~/.sky/config.yaml.
   aws_credentials: [ ... ]          # AWS credential profiles. See skypilot-aws page.
 
@@ -95,16 +91,14 @@ admin provisions — gbserver does not create or mount it. When set, `shared_wor
   share SkyPilot's default `~/sky_workdir` — either way the two phases start in the same directory). It
   is created lazily before the first step and `rm -rf`'d at target-run teardown; retries get a fresh
   dir;
-- keeps each launch's output in `job.log` under the native-LSF layout,
+- keeps each launch's output in `job.log` at
   `${shared_workdir}/llm-build-<build_id>/target-<target>/target-run-<id>/step-<step>/step-run-<id>/launch-<launch_id>/outputs/job.log`
-  (exported as `GB_JOB_LOG_DIR`), so on bluevela, where `shared_workdir` equals the LSF
-  `workspace.remote_dir`, SkyPilot and LSF job logs sit side by side and whatever collects LSF logs
-  sees both. The launcher tees both `setup` and `run` stdout/stderr into it (setup first; node rank
-  N>0 writes `job.rankN.log`). Like native LSF, a `job.log.metadata` file beside it carries the
+  (exported as `GB_JOB_LOG_DIR`). The launcher tees both `setup` and `run` stdout/stderr into it
+  (setup first; node rank N>0 writes `job.rankN.log`). A `job.log.metadata` file beside it carries the
   build-id labels (`kubernetes.labels.granite-dot-build/build-id`) that log shipping uses, so
   `gb build log` can find the build. It is outside the per-run workdir, so teardown leaves it in place on
-  success and failure — like LSF's, nothing reaps it. Unlike the per-run workdir, retries do **not** get
-  a fresh log: a relaunch keeps its `launch_id`, so (as on native LSF) every attempt appends to the same
+  success and failure — nothing reaps it. Unlike the per-run workdir, retries do **not** get
+  a fresh log: a relaunch keeps its `launch_id`, so every attempt appends to the same
   `job.log`. Each phase starts with a marker line,
   `=== granite.build: attempt <N> (setup|run) at <UTC time> ===`, so you can tell the attempts apart.
   When a job fails, the failure message names this file and includes the last lines of SkyPilot's own log
@@ -130,9 +124,6 @@ How the shared filesystem is exposed to a container differs by backend:
 - **SLURM** — the enroot container mounts only the account home, ccache, and the SkyPilot `workdir`;
   set `workdir` to an ancestor of `shared_workdir`. See
   [skypilot-slurm.md](skypilot-slurm.md#workdir-containerized-steps).
-- **LSF** — the shared-FS roots (`/proj`, `/opt/share`) are bind-mounted *identity* into the container
-  automatically, so a `shared_workdir` under one of them just works. See
-  [skypilot-lsf.md](skypilot-lsf.md#file_mounts-inside-enroot-containers).
 - **Kubernetes** — the step image *is* the pod, so a PVC attached as a pod volume is already the
   container's filesystem (no host/container split). See
   [skypilot-kubernetes.md](skypilot-kubernetes.md#shared_workdir).
@@ -224,14 +215,14 @@ environment_configs:
             infra: <infra-string> # Optional. Full infra spec, e.g. "slurm/cluster/partition".
                                   # If unset and `cluster` is set, gbserver builds "<cloud>/<cluster>[/<zone>]".
             cluster: <name>       # Optional. Combined with cloud to produce infra.
-            zone: <zone>          # Optional. Cloud zone (LSF: queue name).
+            zone: <zone>          # Optional. Cloud zone.
 
           # ---- sky config overrides (SkyPilot's task-level `config:`) ----
           docker:                 # Optional. Deep-merged into sky.Resources._cluster_config_overrides.
             run_options:          # The `docker` and (SLURM-only) `sbatch_options` sections are passed
               - "--shm-size=8g"   # through per-step; other SkyPilot config belongs in env `cloud_config`.
           sbatch_options:         # Optional, SLURM-only. #SBATCH directives (no `--`), forwarded verbatim.
-            time: "4:00:00"       # e.g. --time=4:00:00, --qos=high. No-op on aws/k8s/lsf (WARNING).
+            time: "4:00:00"       # e.g. --time=4:00:00, --qos=high. No-op on aws/k8s (WARNING).
             qos: high             # NOTE: SkyPilot-managed keys (gres, mem, cpus-per-task, partition,
                                   # nodes, ...) are silently dropped — use resources.accelerators etc.
                                   # See skypilot-slurm.md#sbatch_options--slurm-sbatch-directives.
@@ -254,7 +245,7 @@ environment_configs:
               ./start-sidecar.sh  # is logged + surfaced as a MESSAGE_EVENT but does not fail the step.
 
           idle_minutes_to_autostop: 10         # Optional. Per-step override of the env-level value.
-                                               # Ignored on slurm/lsf (they don't support autostop).
+                                               # Ignored on slurm (no autostop support).
     monitors:
       skypilot_monitor:
         ref: space://monitors/skypilot   # shared monitor (GB_ARTIFACT_* rules, 300s default poll)
@@ -321,8 +312,7 @@ bodies run under `set -eu` (see **Failure semantics** below).
 Maps onto [`sky.Resources`](https://docs.skypilot.co/en/latest/reference/api.html#sky.Resources).
 gbserver passes through only `cloud`, `cpus`, `memory`, `accelerators`, `disk_size`, `instance_type`,
 `use_spot`, `infra`, `cluster`, and `zone`. `infra` is assembled from `cluster`/`zone` when not given
-explicitly (`<cloud>/<cluster>[/<zone>]`). Prefer numeric/`"N+"` strings for `cpus`/`memory`; note
-`cpus: "1+"` **breaks on the LSF cloud** (it parses the value as a float without stripping `+`), so
+explicitly (`<cloud>/<cluster>[/<zone>]`). Prefer numeric/`"N+"` strings for `cpus`/`memory`;
 cloud-agnostic steps leave `resources` empty and let the build.yaml supply them.
 
 > `compute_config` maps onto these fields; a step's `resources: {}` does not block it. See
@@ -339,7 +329,7 @@ SkyPilot tasks accept a top-level `config:` block that overrides `~/.sky/config.
 - **`sbatch_options`** (**SLURM-only**) — a map of SLURM `#SBATCH` directive names (no `--`) forwarded
   verbatim to the job (`time`, `gres`, `qos`, `account`, …). Merged **per key** across env
   (`environment.yaml` `config.sbatch_options`) → step.yaml → build.yaml (highest last). A no-op on
-  aws/kubernetes/lsf (a WARNING is logged). See
+  aws/kubernetes (a WARNING is logged). See
   [skypilot-slurm.md](skypilot-slurm.md#sbatch_options--slurm-sbatch-directives).
 
 Broader SkyPilot config (kubernetes, aws, nvidia, etc.) is not per-step — set it once at the env level
@@ -407,11 +397,11 @@ relative destinations fall back to SkyPilot's default (`~/sky_workdir/…`).
   `config.launcher_config.envs`; the auto-injected `GB_*` vars (below) always win.
 - `post_launch_task.run` — commands run on the host over SSH *after* the job starts (e.g. launching an
   evaluator sidecar). A failure is logged and emitted as a `MESSAGE_EVENT` but does not fail the step.
-- `idle_minutes_to_autostop` — per-step override of the env-level autostop; ignored on `slurm`/`lsf`.
+- `idle_minutes_to_autostop` — per-step override of the env-level autostop; ignored on `slurm`.
 
 ### Step `config` blocks read by SkyPilot
 
-Mirroring `config.lsf` / `config.k8s`, a step declares its SkyPilot secrets under `config.skypilot`:
+Mirroring `config.k8s`, a step declares its SkyPilot secrets under `config.skypilot`:
 
 ```yaml
 config:
@@ -422,7 +412,7 @@ config:
           secret_name: my_secret    # Space/user secret to read; falls back to env_name.
 ```
 
-Only the secrets listed here are injected as task env vars — **least-privilege**, matching LSF and
+Only the secrets listed here are injected as task env vars — **least-privilege**, matching
 K8s. The full space/user secret bag is **not** dumped into the task (an earlier behavior). A declared
 secret that is absent from the resolved secret bag fails the launch fast with a `ValueError` (the
 secret *value* is never included in the message). This applies to both the unmanaged `Skypilot`
@@ -458,23 +448,14 @@ dual-accept the legacy `LLMB_` prefix) to the job log. These config keys shape i
   fixtures override it *down* (e.g. `5`). Written as `{{ config.poll_interval_seconds | default(300) }}`,
   so a `build.yaml` step `config:` sets it without touching the monitor.
 - **`log_retrieval.mode`** — when the job log is pulled and parsed for artifact events (below).
-- **`poll_failure_grace_seconds`** / **`poll_failure_max_seconds`** — how long failing status polls
+- **`poll_failure_grace_seconds`** — how long failing status polls
   are tolerated before the cluster is declared gone (FAILED, handed to the retry handler). The grace
-  defaults to **900s** on SLURM/LSF, whose polls ride an SSH login node, and to **0** elsewhere (where
+  defaults to **900s** on SLURM, whose polls ride an SSH login node, and to **0** elsewhere (where
   a lost cluster is usually a real preemption). At least three polls must fail either way. Off
-  SLURM/LSF a "does not exist" poll is final at once. On LSF, once the grace is over the monitor asks
-  `bjobs` directly (at most every 5 min): a job LSF reports as gone is final, one it reports alive (or
-  cannot be asked about) is kept until the ceiling (default **7200s**). At the ceiling the job is
-  `bkill`-ed before the retry; if the `bkill` fails too, the step fails **without** a retry so two
-  allocations are never held. Values must be finite, non-negative numbers (a boolean is rejected);
-  anything else falls back to the default.
-  - A ceiling of **0** (or any value at or below the grace) means "`bkill` as soon as the grace is
-    over", with no `bjobs` check in between.
-  - A `bkill` LSF accepts does not always free the allocation at once: a job in `UNKWN` (its
-    execution host unreachable) moves to `ZOMBI` and keeps its hosts until LSF reaches them again, so
-    the retry can briefly overlap it.
-  - SLURM has no counterpart yet: after the grace a SLURM cluster is declared gone and handed to the
-    retry handler without an `scancel`, so an allocation SkyPilot lost track of is not killed.
+  SLURM a "does not exist" poll is final at once. Values must be finite, non-negative numbers (a
+  boolean is rejected); anything else falls back to the default.
+  - After the grace a SLURM cluster is declared gone and handed to the retry handler without an
+    `scancel`, so an allocation SkyPilot lost track of is not killed.
 
 #### Log retrieval modes
 
@@ -507,7 +488,7 @@ pre-provisioning SkyPilot config files on the gbserver host, gbserver materializ
 (in `setup_skypilot` and again just before `sky.launch`, via
 [skypilot_config.py](../../src/gbserver/environment/skypilot_config.py)).
 
-- **Where each lands.** `cluster_ssh_configs` writes the slurm/lsf reachability files SkyPilot reads
+- **Where each lands.** `cluster_ssh_configs` writes the slurm reachability files SkyPilot reads
   (`~/.<cloud>/config`); `cloud_config` is deep-merged into `~/.sky/config.yaml`; `aws_credentials`
   writes `~/.aws/credentials` (mode 0600).
 - **`cloud_config` edits take effect on the next build.** After the merge gbserver reloads its
@@ -526,8 +507,7 @@ pre-provisioning SkyPilot config files on the gbserver host, gbserver materializ
   every `aws_credentials` value is looked up by exact name in the environment's secrets; a match is
   substituted, otherwise the literal is used. Keep credentials and sensitive hostnames as secret
   *names* so a git-tracked asset carries no secret material.
-- **Content-aware merge.** Different clusters (distinct `Host` aliases) and AWS profiles coexist, and a
-  SLURM env and an LSF env run concurrently (separate files). An *identical* pre-existing entry is a
+- **Content-aware merge.** Different clusters (distinct `Host` aliases) and AWS profiles coexist. An *identical* pre-existing entry is a
   no-op; a *foreign* (non-gbserver) entry for the same alias always conflicts
   (`SkypilotConfigCollisionError`) — gbserver never overwrites user-owned entries.
 - **Last-writer-wins (SSH `Host` blocks).** A *differing* gbserver-managed block for the same alias is
@@ -547,8 +527,7 @@ pre-provisioning SkyPilot config files on the gbserver host, gbserver materializ
   unconditional); production never clears sockets. It is not an environment-config key.
 
 The exact contents of each block are cloud-specific — see the per-cloud pages:
-[SLURM](skypilot-slurm.md) and [LSF](skypilot-lsf.md) use `cluster_ssh_configs` (and LSF often
-`cloud_config`); [AWS](skypilot-aws.md) uses `aws_credentials`; [Kubernetes](skypilot-kubernetes.md)
+[SLURM](skypilot-slurm.md) uses `cluster_ssh_configs`; [AWS](skypilot-aws.md) uses `aws_credentials`; [Kubernetes](skypilot-kubernetes.md)
 uses neither.
 
 ## How `compute_config` maps to SkyPilot
@@ -580,12 +559,12 @@ GPUs in total. `Skypilot_managed` uses the same helpers: it layers `resources` (
 Do not put `num_nodes` under `resources`: it is a `sky.Task` field, not a `sky.Resources` one, so
 SkyPilot discards it silently. gbserver warns when it sees one, and the run proceeds single-node.
 
-The K8s-only `gb.step_contents_in_env`, `k8s.*`, and `lsf.*` blocks are ignored — step-asset code is
+The K8s-only `gb.step_contents_in_env` and `k8s.*` blocks are ignored — step-asset code is
 not copied into the pod; if the `run:` script needs files, use `file_mounts` or fetch them in
 `setup:` / `run:`.
 
 ## See also
 
-- Cloud pages: [SLURM](skypilot-slurm.md) · [LSF](skypilot-lsf.md) · [Kubernetes](skypilot-kubernetes.md) · [AWS](skypilot-aws.md)
+- Cloud pages: [SLURM](skypilot-slurm.md) · [Kubernetes](skypilot-kubernetes.md) · [AWS](skypilot-aws.md)
 - [Local SLURM setup](setup/skypilot-slurm-setup.md) — Docker SLURM + local S3 for local testing
 - [Environments overview](README.md) and the shared [event_configs schema](README.md#event_configs--log-line-parsing-rules)
