@@ -367,6 +367,28 @@ class TestBaseOrder:
 
         assert "gone" not in index and "other" in index
 
+    def test_lookup_sees_steps_added_and_removed_after_an_earlier_lookup(
+        self, tmp_path
+    ):
+        """Each lookup reads the base as it is now: a step added below
+        ``steps/<class>/`` after an earlier lookup is found, and a removed one
+        is gone, without a new ``set_baseuris``."""
+        base = tmp_path / "assets"
+        old = _write_step(base / "steps" / "k8s" / "old", env_classes=["K8s"])
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("K8s"):
+            assert _resolved_dir(_resolve("space://steps/old")).samefile(old)
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/new")
+
+            new = _write_step(base / "steps" / "k8s" / "new", env_classes=["K8s"])
+            shutil.rmtree(old)
+
+            assert _resolved_dir(_resolve("space://steps/new")).samefile(new)
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/old")
+
     def test_family_steps_match_across_repo_layouts(self, tmp_path):
         """A family's steps under ``configurations/assets/environments/...`` in
         one repo serve that family's env loaded from a repo laid out as

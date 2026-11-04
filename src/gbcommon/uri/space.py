@@ -16,7 +16,7 @@
 
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Self, Tuple
 from urllib.parse import ParseResult, unquote, urlparse
@@ -69,6 +69,9 @@ class _StepLookup:
             has none); ``None`` when no env dir is known.
         bases: ``(base_uri, local_path)`` pairs to search, in priority order;
             ``local_path`` is ``None`` for a base that can't be read locally.
+        step_indexes: Each base's step index (:meth:`SpaceURI._step_index`),
+            built on first use and kept only for this lookup, so every lookup
+            sees the base as it is now.
     """
 
     env_class: Optional[str]
@@ -76,6 +79,9 @@ class _StepLookup:
     env_path: Optional[Path]
     env_rel: Optional[Tuple[str, ...]]
     bases: Tuple[Tuple[str, Optional[Path]], ...]
+    step_indexes: Dict[Path, Dict[str, List[_IndexedStep]]] = field(
+        default_factory=dict
+    )
 
 
 class SpaceURI(URI):
@@ -872,7 +878,10 @@ class SpaceURI(URI):
         if base_path is None or not base_path.exists():
             return
         rel = SpaceURI._env_rel_in(base_path, ctx.env_path, ctx.env_rel)
-        for owner, cand in SpaceURI._step_index(base_path).get(name, ()):
+        index = ctx.step_indexes.get(base_path)
+        if index is None:
+            index = ctx.step_indexes[base_path] = SpaceURI._step_index(base_path)
+        for owner, cand in index.get(name, ()):
             if SpaceURI._steps_dir_admits_env(owner, rel):
                 yield owner, cand
 
@@ -885,12 +894,10 @@ class SpaceURI(URI):
         skipping env-class partition dirs (:meth:`_index_names`): e.g.
         ``steps/skypilot/command`` is indexed as ``skypilot/command`` and
         ``command``, while ``steps/train/openinstruct-sft`` is only indexed as
-        ``train/openinstruct-sft``.  Built once per base and reused while the base is
-        unchanged (keyed by the base path and :meth:`_tree_stamp`; cleared by
-        :meth:`set_baseuris`), so the name pin, the candidate search and every
-        sub-file URI share one walk.  A forced git re-clone into the same path,
-        or a scoped change of base_uris, gives a new key, so a stale index is
-        never reused.
+        ``train/openinstruct-sft``.  Built once per base per lookup
+        (:attr:`_StepLookup.step_indexes`), so the name pin, the candidate
+        search and a sub-file URI share one walk, and no lookup sees a stale
+        index after the tree changes.
 
         Args:
             base_path: The base's local directory.
@@ -900,10 +907,6 @@ class SpaceURI(URI):
             order.  ``owner`` is the folder that holds the step's ``steps/`` dir
             (``()`` for the base's top level), computed here once.
         """
-        cache = SpaceURI._thread_local.__dict__.setdefault("step_index", {})
-        key = (str(base_path), SpaceURI._tree_stamp(base_path))
-        if key in cache:
-            return cache[key]
         index: Dict[str, List[_IndexedStep]] = {}
         steps = STEPS_PREFIX.rstrip("/")
         # The glob anchors on a ``steps`` segment, so every hit has one; the
@@ -916,7 +919,6 @@ class SpaceURI(URI):
             owner, below = parts[:at], parts[at + 1 :]
             for name in SpaceURI._index_names(below):
                 index.setdefault(name, []).append((owner, found))
-        cache[key] = index
         return index
 
     @staticmethod
@@ -940,28 +942,6 @@ class SpaceURI(URI):
                 break
             names.append("/".join(below[i:]))
         return names
-
-    @staticmethod
-    def _tree_stamp(base_path: Path) -> Tuple[float, ...]:
-        """Return a cheap change stamp for a base's step folders.
-
-        The modification times of the base dir and its top-level ``steps`` and
-        ``environments`` dirs change when the tree is re-cloned or a top-level
-        entry is added or removed, without walking the whole base.
-
-        Args:
-            base_path: The base's local directory.
-
-        Returns:
-            A tuple of mtimes (``-1`` for a path that can't be stat'ed).
-        """
-        stamps = []
-        for path in (base_path, base_path / "steps", base_path / "environments"):
-            try:
-                stamps.append(path.stat().st_mtime_ns / 1e9)
-            except OSError:
-                stamps.append(-1.0)
-        return tuple(stamps)
 
     @staticmethod
     def _env_rel_in(
@@ -1223,8 +1203,6 @@ class SpaceURI(URI):
     def set_baseuris(cls, base_uris: List[str], space_secrets: dict):
         cls._thread_local.space_secrets = space_secrets
         cls._thread_local.base_uris = base_uris
-        # New bases (a new space): drop the per-base step index.
-        cls._thread_local.step_index = {}
 
     @classmethod
     @contextmanager
