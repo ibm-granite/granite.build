@@ -1,10 +1,9 @@
 # Environment Classes
 
-This document covers the `Environment` abstract base class and its two primary implementations: `Lsf` and `K8s`.
+This document covers the `Environment` abstract base class and its `K8s` implementation.
 
 **Source files:**
 - `src/gbserver/environment/environment.py` — `Environment` base
-- `src/gbserver/environment/lsf.py` — `Lsf`
 - `src/gbserver/environment/k8s.py` — `K8s`
 
 ---
@@ -26,7 +25,7 @@ Multiple launches can occur between a single setup/teardown pair.
 
 #### Suffix-Based Dispatch
 
-Methods are discovered by prefix using `get_fns_with_prefix()`. The suffixes (e.g. `helm`, `bsub`) are referenced in `environment.yaml` and `step.yaml` to select which methods to call:
+Methods are discovered by prefix using `get_fns_with_prefix()`. The suffixes (e.g. `helm`, `nohup`) are referenced in `environment.yaml` and `step.yaml` to select which methods to call:
 
 | Prefix | Called via | Purpose |
 |--------|-----------|---------|
@@ -130,121 +129,6 @@ def get_step_env_config(self, config: dict) -> StepEnvConfig:
 ```
 
 Subclasses must implement this to extract their environment-specific section from a step's config dict.
-
----
-
-## `Lsf` — Load Sharing Facility
-
-`Lsf` runs workloads on HPC clusters managed by IBM Spectrum LSF. Jobs are submitted using `bsub`, optionally via SSH.
-
-**Suffix used:** `bsub`
-- `setup_bsub` / `teardown_bsub`
-- `launch_bsub` / `cleanup_bsub`
-- `monitor_bsub_monitor`
-
-### Configuration (`environment.yaml`)
-
-```yaml
-type: Lsf
-workspace:
-  local_dir: /tmp/lsf_workspace     # local staging dir (non-SSH mode)
-  remote_dir: /remote/workspace      # remote dir on the cluster
-
-authentication:
-  use_ssh: true
-  ssh_port: 22
-  ssh_max_sessions: 10
-  login_nodes:
-    - login1.cluster.example.com
-    - login2.cluster.example.com
-  login_node_username: myuser
-  login_node_ssh_key: my_ssh_key_secret   # secret name in space secrets
-  ssh_host_key_verification: true
-  ssh_timeout: 5
-```
-
-### Lifecycle
-
-#### `setup_bsub(setup_id, space_secrets, ...)`
-
-1. Retrieves the SSH private key from `space_secrets` and writes it to a temporary file (`chmod 600`).
-2. Opens a persistent `SshTunnel` (multiplexed SSH connection with port forwarding) to the first reachable login node.
-3. Returns the key file path and space secrets in the setup config, which is forwarded to subsequent `launch_bsub` calls.
-
-#### `launch_bsub(launch_id, targetsteprun_asset_dir, ...)`
-
-1. Reads `step.yaml` config for job details. If an existing `jobid` is specified, adopts it passively without submitting.
-2. Copies the step asset directory to the cluster:
-   - **SSH mode**: prepares the job submission script locally (template variable replacement), then `rsync`s everything to the remote `workspace_remote_dir` via the `SshTunnel`.
-   - **Non-SSH mode**: copies locally to `workspace_local_dir`, applies variable replacement in place.
-3. Runs the `llmb_lsf_jobsub.sh` script (directly or via SSH tunnel) to call `bsub`.
-4. Parses the `Job <JOBID> is submitted` output and records the job ID.
-5. Calls `release_monitors(launch_id)`.
-
-Template variables injected into `llmb_lsf_jobsub.sh`:
-- `LLMB_LSF_REPLACE_THIS_LAUNCH_ID` → `launch_id`
-- `LLMB_LSF_REPLACE_THIS_ASSET_DIR` → path to the copied step assets
-
-#### `monitor_bsub_monitor(launch_id, event_q, ...)`
-
-Runs `LSFBsubMonitor` and `LogFileMonitor` concurrently within an optional `RetryHandler` context:
-
-```
-while True:
-    asyncio.gather(
-        LSFBsubMonitor.monitor(),   # polls bjobs, sets stop_event on completion/failure
-        LogFileMonitor.monitor(),   # tails job.log, emits artifact events
-    )
-    if retry_complete_event.is_set():
-        continue   # RetryHandler triggered; loop for next attempt
-    break
-```
-
-The log file is streamed either directly from the filesystem (non-SSH) or via `SshTunnel` (SSH mode).
-
-Default retry strategy: `LsfTransientErrorRetryStrategy` — detects transient LSF errors (e.g. `TERM_RUNLIMIT`, scheduler failures) and retriggers `retry_workload`.
-
-#### `retry_workload(launch_id, ...)`
-
-1. Signals `LSFBsubMonitor` to exit cleanly by setting the stop event.
-2. Calls `cleanup_bsub` → `bkill <jobid>`.
-3. Clears the stop event.
-4. Re-calls `launch_bsub` with the original kwargs.
-5. Sets `_lsf_retry_complete_events[launch_id]` to signal `monitor_bsub_monitor` to loop.
-
-#### `cleanup_bsub(launch_id, ...)`
-
-Calls `bkill <jobid>` (via SSH tunnel or local subprocess). Skips jobs that were pre-existing (passively adopted).
-
-#### `teardown_bsub(setup_id)`
-
-1. Deletes all `_pending_cleanup_dirs` (remote via `SshTunnel` or local via `shutil.rmtree`).
-2. Closes the `SshTunnel`.
-3. Deletes the temporary SSH key file.
-
-### SSH Login Node Management
-
-- Login nodes are checked for reachability at launch time (`_get_reachable_ssh_node()`).
-- Unreachable nodes are tracked in `unreachable_ssh_nodes` and skipped (with a full reset if all become unreachable).
-- Connections are multiplexed through `SshTunnel` (one persistent connection per setup), avoiding repeated SSH handshakes.
-
-### Asset Stores
-
-The `Lsf` environment implements these `pullasset_*`/`pushasset_*` methods. For the store types
-themselves (URI schemes, secrets, configuration), see [Asset stores](../asset-stores/README.md).
-
-| Method | Store type | Mode |
-|--------|-----------|------|
-| `pullasset_lhstore` | Lakehouse | `dmf_pull` — injects a `lhpull` built-in step |
-| `pushasset_lhstore` | Lakehouse | Injects a `lhpush` built-in step |
-| `pullasset_cosstore` | IBM COS | `cos_pull` — injects a `cosrclone` built-in step |
-| `pushasset_cosstore` | IBM COS | Injects a `cosrclone` built-in step |
-
-`Lsf` also supports `env://` (`pullasset_envstore` / `pushasset_envstore`), but those are
-[inherited from the base class](#built-in-asset-stores-env-mem) rather than defined here — as they are
-for every environment.
-
-For Lakehouse and COS stores, loading/pushing is delegated to built-in steps that run as additional LSF jobs in the pipeline.
 
 ---
 
