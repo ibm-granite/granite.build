@@ -150,6 +150,14 @@ dependencies = [
     # Pinned exactly, like the other trl-adjacent packages, because it is reached through a
     # private guard rather than an API this step chose.
     "weave==0.53.12",
+    # A transitive dependency, pinned because 4.70.0 (what the lock resolved) breaks the
+    # Mamba2 kernel fetch: huggingface_hub's snapshot_download hands thread_map a
+    # generator, and tqdm 4.70's _min_map_len then calls min() on an empty sequence, so
+    # `install_kernel("kernels-community/mamba-ssm")` raises "min() iterable argument is
+    # empty" on a cold cache. causal-conv1d and flash-attn2 download fine, which is why
+    # only the sft and logit-precompute steps (the GOLD_PREFETCH_KERNELS=1 launchers)
+    # failed. Measured in the a20c8f39 image: 4.70.0 fails, 4.67.1 downloads the kernel.
+    "tqdm==4.67.1",
 ]
 
 [dependency-groups]
