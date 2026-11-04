@@ -49,6 +49,8 @@ outputs:
 
 environment_configs:
   Skypilot:
+    subtypes:
+      - lsf
     default_launcher: sft
     launchers:
       sft:

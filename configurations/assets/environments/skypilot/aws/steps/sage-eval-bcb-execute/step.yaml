@@ -31,6 +31,8 @@ outputs:
 
 environment_configs:
   Skypilot:
+    subtypes:
+      - aws
     default_launcher: sage-eval-bcb-execute
     launchers:
       sage-eval-bcb-execute:

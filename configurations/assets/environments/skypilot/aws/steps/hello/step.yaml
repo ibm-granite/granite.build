@@ -8,6 +8,8 @@ inputs:
 
 environment_configs:
   Skypilot:
+    subtypes:
+      - aws
     default_launcher: hello
     launchers:
       hello:

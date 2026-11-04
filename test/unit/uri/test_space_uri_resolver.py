@@ -609,6 +609,20 @@ class TestEnvFolderOwnership:
             with pytest.raises(ValueError, match="Unresolvable space uri"):
                 _resolve("space://steps/parent_only")
 
+    def test_env_own_step_ignores_its_subtypes(self, tmp_path):
+        """For an env with no sub-type, a copy in its own ``steps/`` (scoped by
+        location) is used even though it lists ``subtypes``."""
+        base = tmp_path / "assets"
+        env_dir = base / "environments" / "skypilot" / "aws"
+        own = _write_step(env_dir / "steps" / "hello", ["Skypilot"])
+        data = yaml.safe_load((own / "step.yaml").read_text())
+        data["environment_configs"]["Skypilot"] = {"subtypes": ["aws"]}
+        (own / "step.yaml").write_text(yaml.safe_dump(data))
+        _set_bases(base)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            assert _resolved_dir(_resolve("space://steps/hello")).samefile(own)
+
     def test_unlisted_repo_env_gets_its_family_step(self, tmp_path):
         """An env in a repo no base encloses (a ``#subdirectory=`` git env not in
         base_uris) is matched from its ``environments`` segment, so its family's
@@ -1031,14 +1045,26 @@ class TestEnvClassMatch:
         """Among equally-specific matches, the lexicographically smaller path
         wins (deterministic tie-break)."""
         base = tmp_path / "base"
-        first = _write_step(base / "steps" / "aaa" / "dup", env_classes=["K8s"])
-        _write_step(base / "steps" / "bbb" / "dup", env_classes=["K8s"])
+        first = _write_step(base / "steps" / "docker" / "dup", env_classes=["K8s"])
+        _write_step(base / "steps" / "k8s" / "dup", env_classes=["K8s"])
         _set_bases(base)
 
         with SpaceURI.with_current_env_class_name("K8s"):
             resolved = _resolve("space://steps/dup")
 
         assert _resolved_dir(resolved).samefile(first)
+
+    def test_category_folder_is_part_of_the_name(self, tmp_path):
+        """Only env-class partition folders may be skipped: a step under a
+        category folder (``steps/train/x``) needs the category in its URI."""
+        base = tmp_path / "base"
+        step = _write_step(base / "steps" / "train" / "x", env_classes=["K8s"])
+        _set_bases(base)
+
+        with SpaceURI.with_current_env_class_name("K8s"):
+            assert _resolved_dir(_resolve("space://steps/train/x")).samefile(step)
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/x")
 
     def test_no_class_match_when_class_absent(self, tmp_path):
         """A candidate that does not list the active env class is ignored;
@@ -1463,7 +1489,7 @@ class TestNestedStepIdentity:
         """
         base = tmp_path / "base"
         real = _write_step(
-            base / "steps" / "assets" / "digit", env_classes=["Skypilot"]
+            base / "steps" / "skypilot" / "digit", env_classes=["Skypilot"]
         )
         sub = real / "helm-charts"  # plain sub-asset dir, NO step.yaml
         sub.mkdir()

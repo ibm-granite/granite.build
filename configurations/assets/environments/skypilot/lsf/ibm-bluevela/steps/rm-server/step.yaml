@@ -26,6 +26,8 @@ outputs:
 
 environment_configs:
   Skypilot:
+    subtypes:
+      - lsf
     default_launcher: rm-server
     launchers:
       rm-server:

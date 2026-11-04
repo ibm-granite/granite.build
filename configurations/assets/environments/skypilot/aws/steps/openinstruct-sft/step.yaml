@@ -55,6 +55,8 @@ outputs:
       type: model
 environment_configs:
   Skypilot:
+    subtypes:
+      - aws
     default_launcher: openinstruct-sft
     launchers:
       openinstruct-sft:

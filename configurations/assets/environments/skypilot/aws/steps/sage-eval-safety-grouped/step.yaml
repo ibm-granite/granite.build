@@ -29,6 +29,8 @@ outputs:
 
 environment_configs:
   Skypilot:
+    subtypes:
+      - aws
     default_launcher: sage-eval-safety-grouped
     launchers:
       sage-eval-safety-grouped:

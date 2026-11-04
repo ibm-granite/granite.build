@@ -39,6 +39,8 @@ outputs:
 
 environment_configs:
   Skypilot:
+    subtypes:
+      - lsf
     default_launcher: sage-eval
     launchers:
       sage-eval:

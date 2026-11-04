@@ -28,6 +28,8 @@ outputs:
 
 environment_configs:
   Skypilot:
+    subtypes:
+      - lsf
     default_launcher: code-server
     launchers:
       code-server:

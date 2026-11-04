@@ -51,7 +51,7 @@ The walk starts at the env's own dir, so a nested env such as `skypilot/slurm/lo
 A family `steps/` folder shares a step with **every** environment under it, and env-class-match (below) matches **every** environment of the same class.  When environments differ only in compute endpoint they often share one class (all skypilot endpoints are class `Skypilot`), so neither mechanism can, on its own, restrict a shared step to a subset of them.  An optional **sub-type** provides that discriminator:
 
 - An `environment.yaml` may declare an optional `subtype` — any free-form string (no predefined set; the skypilot endpoints use `kubernetes`/`slurm`/`aws`/`lsf` by convention, mirroring `config.default_cloud`).
-- A step's `environment_configs.<Class>` may declare an optional `subtypes` list.  **Empty (the default) = universal**, matching any env of that class (so builtins and general shared steps keep resolving everywhere).  A **non-empty** list restricts the step to environments whose `subtype` is one of the listed values (exact string match); an env with no `subtype` does not match such a step.
+- A step's `environment_configs.<Class>` may declare an optional `subtypes` list.  **Empty (the default) = universal**, matching any env of that class (so builtins and general shared steps keep resolving everywhere).  A **non-empty** list restricts the step to environments whose `subtype` is one of the listed values (exact string match); an env with no `subtype` does not match such a step, except a step in that env's own `<env-dir>/steps/`, which its location already scopes to the env.  So the env-owned steps under `skypilot/aws/steps/` (`subtypes: [aws]`) and `skypilot/lsf/ibm-bluevela/steps/` (`subtypes: [lsf]`) serve only their own environment, and are still found when it runs with no `subtype`.
 
 ```yaml
 # environments/skypilot/steps/digit/step.yaml — shared by kubernetes + slurm only
@@ -67,7 +67,7 @@ So a single `skypilot/steps/digit` is resolved by `skypilot/kubernetes` and `sky
 
 The resolver can also pick a step variant based on the env's class name (`Bash`, `Docker`, `K8s`, `Lsf`, `Runpod`, `Skypilot`, ...) by reading each candidate `step.yaml`'s existing `environment_configs` keys.  No new field on `step.yaml` is required.
 
-The resolver scans recursively under each base for any file at `<base>/steps/**/<name>/step.yaml`, parses each one, and keeps the candidates whose `environment_configs` contain the active env's class name.  The class-name match is **case-insensitive** (env class `K8s` matches an `environment_configs` key `k8s`).  Subdirectory naming is **conventional only** — the match is by file content, so step variants can live anywhere (the builtins use `steps/<env-class-lowercase>/<name>/`):
+The resolver scans each base for `<base>/steps/<name>/step.yaml`, also allowing an env-class folder between `steps/` and the name ([Step names](#step-names-the-env-class-folder-may-be-left-out)), parses each one, and keeps the candidates whose `environment_configs` contain the active env's class name.  The class-name match is **case-insensitive** (env class `K8s` matches an `environment_configs` key `k8s`).  The builtins keep one variant per env class in such a folder, `steps/<env-class-lowercase>/<name>/`:
 
 ```
 src/gbserver/builtins/steps/
@@ -79,14 +79,29 @@ src/gbserver/builtins/steps/
 
 When the active env class is `K8s`, the resolver picks `steps/k8s/s3push/step.yaml`; when `Lsf`, `steps/lsf/s3push/step.yaml`.  Bases are scanned in order and the first base with a match wins.  Within that base, the deepest owning folder wins (above); then the candidate with FEWER `environment_configs` keys (the most env-specific file beats a multi-env file that also lists the env); then lexicographic path.
 
+## Step names: the env-class folder may be left out
+
+A step's name is its folder path below `steps/`: `<base>/steps/train/openinstruct-sft/` is `space://steps/train/openinstruct-sft`.  The one folder a URI may leave out is an **env-class folder** directly under `steps/`, one of `bash`, `docker`, `k8s`, `lsf`, `runpod`, `skypilot` or `skypilot_managed`.  Any other folder, such as a category (`train/`, `data/`, `distill/`), is part of the name and must be in the URI.
+
+| Step's folder | URIs that match it |
+|---|---|
+| `src/gbserver/builtins/steps/skypilot/command/` | `space://steps/skypilot/command`, `space://steps/command` |
+| `<base>/steps/skypilot/dpk/` | `space://steps/skypilot/dpk`, `space://steps/dpk` |
+| `…/environments/skypilot/steps/train/openinstruct-sft/` | `space://steps/train/openinstruct-sft` only |
+| `…/environments/skypilot/steps/data/dpk/` | `space://steps/data/dpk` only |
+
+The env-class folder can be left out because the builtins keep one copy of a step per env class (`steps/skypilot/command`, `steps/bash/command`, …): builds write `space://steps/command`, and the active env's class picks the copy (see [Env-class matching](#env-class-matching-against-existing-environment_configs)).  No other folder can be left out, so a URI always names the step it means: `space://steps/openinstruct-sft` never reaches the unrelated `train/openinstruct-sft`.  On an environment with no copy named exactly `openinstruct-sft` (e.g. `skypilot/slurm`), that URI is unresolvable.
+
+The env-class folder names are fixed in the resolver (`_ENV_PARTITION_DIRS` in `src/gbcommon/uri/space.py`), so a new environment class that keeps per-class step copies needs adding there.
+
 ## Resolution order
 
 For `space://steps/<name>` and an env of class `K8s` loaded from `<env-dir>`:
 
-The bases are, in order: the space's own dir (`base_uris[0]`), the space's `base_uris` as listed, then the builtins (`src/gbserver/builtins`).  If `<env-dir>` is outside every base (an environment loaded from an absolute `file://` path, or from a git repo not listed in `base_uris`), it's searched as an extra base right after the space's own dir, ahead of the listed bases; only `<env-dir>` itself is added, not its parent folders.  Its family's shared steps in a listed base still serve it: its path is compared from its last `environments` segment, so `<gb-test>/environments/skypilot/slurm/bluevela` is served by `configurations/assets/environments/skypilot/steps/<name>`.  A copy is a candidate only when it serves the active env: class `K8s` (case-insensitively), the `subtypes` restriction, and a `steps/` folder that is top-level or owned by `<env-dir>` or one of its parents.  The resolver tries each base in that order and returns the first candidate it finds there:
+The bases are, in order: the space's own dir (`base_uris[0]`), the space's `base_uris` as listed, then the builtins (`src/gbserver/builtins`).  If `<env-dir>` is outside every base (an environment loaded from an absolute `file://` path, or from a git repo not listed in `base_uris`), it's searched as an extra base right after the space's own dir, ahead of the listed bases; only `<env-dir>` itself is added, not its parent folders.  Its family's shared steps in a listed base still serve it: its path is compared from its last `environments` segment, so `<other-repo>/environments/skypilot/slurm/bluevela` is served by `configurations/assets/environments/skypilot/steps/<name>`.  A copy is a candidate only when it serves the active env: class `K8s` (case-insensitively), the `subtypes` restriction, and a `steps/` folder that is top-level or owned by `<env-dir>` or one of its parents.  The resolver tries each base in that order and returns the first candidate it finds there:
 
 1. In the space's own dir: its root `steps/<name>/step.yaml` (when an env is active).
-2. In any base: the recursive glob `<base>/steps/**/<name>/step.yaml` — deepest owning folder first, then most env-specific, then by path.
+2. In any base: `<base>/steps/<name>/step.yaml`, with an optional env-class folder before `<name>` ([Step names](#step-names-the-env-class-folder-may-be-left-out)) — deepest owning folder first, then most env-specific, then by path.
 
 So a base listed earlier always outranks a later one, and a base listed in `space.yaml` can replace a builtin step for the environments it serves.  If no base has a candidate:
 

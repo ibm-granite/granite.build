@@ -169,13 +169,13 @@ llm.build:
       outputs:
         checkpoint: { uri: file:workspace/checkpoint }
       steps:
-        - step_uri: space://steps/sft
+        - step_uri: space://steps/distill/sft
     evaluate:
       environment_uri: space://environments/docker
       inputs:
         model: { binding: fine-tune.checkpoint }
       steps:
-        - step_uri: space://steps/eval
+        - step_uri: space://steps/distill/eval
 ```
 
 For the full schema, see [`docs/builds/build-yaml-reference.md`](docs/builds/build-yaml-reference.md).

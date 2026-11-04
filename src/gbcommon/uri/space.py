@@ -37,6 +37,14 @@ logger = get_logger(__name__)
 # ``step.yaml``.
 _IndexedStep = Tuple[Tuple[str, ...], Path]
 
+#: Env-class partition dirs that may sit between ``steps/`` and a step's name
+#: (the builtins' ``steps/<env-class>/<name>/``, gb-test's ``steps/skypilot/dpk``),
+#: lowercased.  Only these are skipped when matching a name; a category folder
+#: (``steps/train/openinstruct-sft``) is part of the name and must be in the URI.
+_ENV_PARTITION_DIRS = frozenset(
+    {"bash", "docker", "k8s", "lsf", "runpod", "skypilot", "skypilot_managed"}
+)
+
 
 @dataclass(frozen=True)
 class _StepLookup:
@@ -850,11 +858,11 @@ class SpaceURI(URI):
         """Return every step in a base, keyed by each name it can be asked for.
 
         Walks the base once for ``steps/**/step.yaml`` and keys each file by
-        every name a ``steps/**/<name>/step.yaml`` glob would match it under:
-        each trailing run of folders below a ``steps`` segment, since ``**`` can
-        skip env-partition dirs between ``steps/`` and the name (e.g.
+        its path below the ``steps`` segment and by the shorter names left after
+        skipping env-class partition dirs (:meth:`_index_names`): e.g.
         ``steps/skypilot/command`` is indexed as ``skypilot/command`` and
-        ``command``).  Built once per base and reused while the base is
+        ``command``, while ``steps/train/openinstruct-sft`` is only indexed as
+        ``train/openinstruct-sft``.  Built once per base and reused while the base is
         unchanged (keyed by the base path and :meth:`_tree_stamp`; cleared by
         :meth:`set_baseuris`), so the name pin, the candidate search and every
         sub-file URI share one walk.  A forced git re-clone into the same path,
@@ -883,10 +891,32 @@ class SpaceURI(URI):
             parts = found.parent.relative_to(base_path).parts
             at = parts.index(steps)
             owner, below = parts[:at], parts[at + 1 :]
-            for name in {"/".join(below[i:]) for i in range(len(below))}:
+            for name in SpaceURI._index_names(below):
                 index.setdefault(name, []).append((owner, found))
         cache[key] = index
         return index
+
+    @staticmethod
+    def _index_names(below: Tuple[str, ...]) -> List[str]:
+        """Return the names a step at ``steps/<below...>/`` can be asked for.
+
+        Its full path below ``steps/``, plus each shorter tail left after
+        dropping only env-class partition dirs (:data:`_ENV_PARTITION_DIRS`):
+        ``skypilot/command`` is also ``command``, but ``train/openinstruct-sft``
+        is only ``train/openinstruct-sft``.
+
+        Args:
+            below: The step dir's path parts below its ``steps`` segment.
+
+        Returns:
+            The names, longest first.
+        """
+        names = ["/".join(below)]
+        for i in range(1, len(below)):
+            if below[i - 1].lower() not in _ENV_PARTITION_DIRS:
+                break
+            names.append("/".join(below[i:]))
+        return names
 
     @staticmethod
     def _tree_stamp(base_path: Path) -> Tuple[float, ...]:
@@ -1011,6 +1041,29 @@ class SpaceURI(URI):
         return parts[last:]
 
     @staticmethod
+    def _owned_by_env(
+        base_path: Optional[Path], owner: Tuple[str, ...], ctx: "_StepLookup"
+    ) -> bool:
+        """Return whether a ``steps/`` dir with this ``owner`` is the env's own.
+
+        That is ``<env-dir>/steps/`` itself, in a base that encloses the env
+        dir (including the env dir searched as its own base), not a family's
+        or the base's top-level ``steps/``.
+
+        Args:
+            base_path: The base's local directory, or ``None``.
+            owner: The folder holding the copy's ``steps/`` dir, relative to
+                ``base_path`` (``()`` for the base's top level).
+            ctx: The lookup's env context (:meth:`_step_lookup`).
+
+        Returns:
+            ``True`` when ``base_path/owner`` is the active env's directory.
+        """
+        if base_path is None or ctx.env_path is None:
+            return False
+        return base_path.resolve().joinpath(*owner) == ctx.env_path
+
+    @staticmethod
     def _env_class_matches(
         base_path: Optional[Path], name: str, ctx: "_StepLookup"
     ) -> List:
@@ -1028,6 +1081,12 @@ class SpaceURI(URI):
         env-partition dirs between ``steps/`` and the name — builtin steps live
         at ``steps/<env-class>/<name>/`` and this glob is what resolves them (it
         reads their per-class ``environment_configs``).
+
+        A copy in the active env's own ``<env-dir>/steps/`` is already scoped
+        to that env by its location, so for an env with no sub-type it needs
+        only the class (its ``subtypes`` could never match).  An env that has a
+        sub-type is still excluded by its own copy's ``subtypes`` when they
+        don't list it.
 
         Class-presence is by key, not value: a present-but-null entry
         (``{Skypilot:}``) is still declared for the active class and is kept,
@@ -1055,9 +1114,16 @@ class SpaceURI(URI):
             # directory lookups' admit-if-unreadable: the glob must rank by
             # the step's own classes, which an unreadable file doesn't give.
             data = SpaceURI._load_step_yaml(cand)
-            if data is None or not SpaceURI._env_ok(
-                data, ctx.env_class, ctx.env_subtype
+            if data is None:
+                continue
+            if ctx.env_subtype is None and SpaceURI._owned_by_env(
+                base_path, owner, ctx
             ):
+                # The env's own steps/ is scoped to it by location, so an env
+                # with no sub-type needs only the class; subtypes can't match.
+                if not SpaceURI._env_class_present(data, ctx.env_class):
+                    continue
+            elif not SpaceURI._env_ok(data, ctx.env_class, ctx.env_subtype):
                 continue
             env_keys = list((data.get("environment_configs") or {}).keys())
             # Known env: deepest owner first (env's own over family over top).
