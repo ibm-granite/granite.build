@@ -665,7 +665,10 @@ class SpaceURI(URI):
         (:meth:`_longest_step_in_bases`) before the env gate, so an env-excluded
         nested step (``distill/foo``) is never demoted to ``distill`` + sub-asset
         ``foo``.  The pin (a search of every base) runs only once a base reaches
-        the glob, so a space-root hit costs no base search.
+        the glob, so a space-root hit skips the name pin and every base's
+        step-index walk.  Each lookup still sets up every base's local path
+        (:meth:`_step_lookup`), which is cheap: a ``file://`` path, or a git
+        base's already-cloned copy from the clone cache.
 
         Args:
             uri_suffix: The scheme-stripped ``steps/<name>[/<rest>]`` suffix.
