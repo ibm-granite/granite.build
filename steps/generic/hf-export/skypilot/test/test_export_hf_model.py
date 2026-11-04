@@ -1,29 +1,18 @@
-"""
-PORTED, not authored here. Upstream source of truth:
-  repo   github.ibm.com/Herbert-Woisetschlaeger/gb-steps-collection-post-training
-  path   steps/distill-hf-export/test/test_export_hf_model.py
-  commit 70c1550a171aa8e09a9ad9047a5bf763c39e8579
+"""Unit tests for the generic hf-export step.
 
-Four divergences. The first is behavioural, the rest are about path resolution:
-  - the `normalise_tokenizer_json` tests (and `_ckpt`'s `tokenizer_json` argument) cover a
-    divergence this repo carries: clearing the trainer's live truncation state out of the
-    published tokenizer.json. See the DIVERGENCE note in src/export_hf_model.py. Drop
-    these when the fix lands upstream.
-  - upstream's sys.path.insert is removed; conftest.py resolves both the step's own src/
-    and the upstream package (from GB_DISTILL_CODE_DIR). Upstream's version inserted only
-    parents[1]/src while export_hf_model imports the shared package at MODULE scope, so
-    this suite ERRORED ON COLLECTION when run alone and passed only when a sibling suite
-    had already patched sys.path. The conftest fixes that.
-  - REAL_TEMPLATE now resolves to test-data/, where the real chat template is vendored.
-    Upstream reached for parents[3]/templates/, which does not exist from inside
-    granite.build. The template is vendored rather than stubbed because these tests assert
-    against the REAL one on purpose — a stub would assert nothing about the property the
-    thinking-policy rewrite has to preserve.
-
-Keep this a near-verbatim copy so re-syncing upstream stays a three-way merge.
-"""
-
-"""Unit tests for distill-hf-export.
+Ported from the distillation collection's suite (steps/distill-hf-export/test/ in
+github.ibm.com/Herbert-Woisetschlaeger/gb-steps-collection-post-training, commit
+70c1550a), with these changes:
+  - the `normalise_tokenizer_json` tests (and `_ckpt`'s `tokenizer_json` argument) cover
+    a behaviour added here: clearing the trainer's live truncation state out of the
+    published tokenizer.json. See the header note in src/export_hf_model.py.
+  - conftest.py puts the step's own src/ on sys.path, which carries both the script and
+    its resume gate (src/hf_export_state/). The original suite inserted only src/ while
+    the script imported the distillation package at module scope, so it errored on
+    collection when run alone.
+  - REAL_TEMPLATE resolves to test-data/, where the real chat template is vendored. The
+    tests assert against the REAL one on purpose: a stub would assert nothing about the
+    property the thinking-policy rewrite has to preserve.
 
 These import only stdlib + the module under test: `verify()` defers its transformers
 import into the function body precisely so select/classify/normalise/export stay testable

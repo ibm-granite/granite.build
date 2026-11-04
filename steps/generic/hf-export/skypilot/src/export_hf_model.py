@@ -1,27 +1,26 @@
 #
-# PORTED, not authored here. Upstream source of truth:
-#   path   steps/distill-hf-export/src/export_hf_model.py
+# Generic step: packages one checkpoint-N of ANY HF Trainer / accelerate run. It was
+# ported from the distillation collection (steps/distill-hf-export/src/export_hf_model.py
+# in github.com/laminair/gb-steps-distillation), which is why the examples below name
+# GOLD runs, but nothing here depends on how the checkpoint was trained.
 #
-# Verbatim apart from `black`/`isort` reflow, which CI requires repo-wide, and ONE
-# behaviour divergence recorded below. Keep it otherwise verbatim so re-syncing upstream
-# stays a three-way merge.
+# Two behaviours were added on top of that port:
 #
-# DIVERGENCE: `normalise_tokenizer_json` + its wiring in `export`, which clear the
-# trainer's live truncation/padding state out of the published `tokenizer.json`. Upstream
-# copies that file verbatim, so every model it publishes carries the trainer's last
-# truncation budget (`max_length: 466` on build df8512e0's stage-1 export). See
-# STRIP_TOKENIZER_JSON_RUNTIME_KEYS for why that is not cosmetic. This belongs upstream;
-# until it lands there, the divergence lives here and the three-way merge has to keep it.
+# `normalise_tokenizer_json` + its wiring in `export`, which clear the trainer's live
+# truncation/padding state out of the published `tokenizer.json`. Copied verbatim, every
+# published model would carry the trainer's last truncation budget (`max_length: 466` on
+# build df8512e0's stage-1 export). See STRIP_TOKENIZER_JSON_RUNTIME_KEYS for why that is
+# not cosmetic.
 #
-# DIVERGENCE: `tokenizer_pin_problems` + its call in `verify`, which assert that the
-# published tokenizer, loaded the way a consumer loads it, segments exactly as its own
-# tokenizer.json does. See TOKENIZER_PIN_PROBES. Same status as the one above.
+# `tokenizer_pin_problems` + its call in `verify`, which assert that the published
+# tokenizer, loaded the way a consumer loads it, segments exactly as its own
+# tokenizer.json does. See TOKENIZER_PIN_PROBES.
 #
-# It imports gb_steps_post_training.distillation at MODULE scope, which is delivered at
-# RUN time from the checkout named by code_config (see step-template.yaml). That is why
-# the tests for this file are gated on GB_DISTILL_CODE_DIR — see test/conftest.py.
+# The resume gate (`hf_export_state`, next to this file) is owned by this step. Its
+# marker format matches the distillation collection's step_state, so an export written
+# by the earlier space://steps/distill/hf-export is recognised and skipped, not redone.
 #
-"""Turn a GOLD training output directory into a publishable HF model directory.
+"""Turn a training output directory into a publishable HF model directory.
 
 This step is a SELECTOR/PRUNER, not a format converter. That is a verified property, not
 an assumption: the DeepSpeed config used by `distill-gold-train` sets
@@ -72,11 +71,11 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-# The shared step-completion contract, vendored into this step's image (see Dockerfile). A hard
+# The step-completion contract, shipped next to this file (hf_export_state/). A hard
 # import and not a try/except: a missing gate would silently turn resume off for this step, and a
 # step that re-exports a 700 MB directory every time it is asked is the cheaper failure to notice
 # than one that skips work it should have done.
-from gb_steps_post_training.distillation import export_state, step_state
+from hf_export_state import export_state, step_state
 
 # Files that make up a published model. An explicit KEEP list rather than a DROP list:
 # with a DROP list, anything a future transformers/TRL release starts writing would be
@@ -1082,7 +1081,7 @@ def main(argv: list[str] | None = None) -> int:
             f"  marked : {step_state.MARKER_NAME} written ({len(manifest['kept']) + 1} outputs)"
         )
     except ExportError as exc:
-        print(f"FATAL [distill-hf-export]: {exc}", file=sys.stderr)
+        print(f"FATAL [hf-export]: {exc}", file=sys.stderr)
         return 2
     # No LLMB_ARTIFACT_ID line here: the step-template's launcher already emits it, and this
     # script printing it too meant ONE run announced the same id TWICE. Artifact emission

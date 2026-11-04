@@ -44,7 +44,7 @@ STEPS = {
     "distill/sft": _LSF_ENV,
     "distill/gold": _LSF_ENV,
     "distill/eval": _LSF_ENV,
-    "distill/hf-export": _LSF_ENV,
+    "generic/hf-export": _LSF_ENV,
     "distill/logit-precompute": _LSF_ENV,
     "distill/vllm-server": _LSF_ENV,
     "inference": _BASH_ENV,

@@ -1,0 +1,10 @@
+# Direct dependencies of the hf-export step. The hashed, platform-pinned lock is
+# requirements.lock, recompiled with `make lock`; the Dockerfile installs only that.
+#
+# Pinned to what the distillation CPU image (steps/distill/images/cpu/uv.lock) ran this
+# step with, so moving it to its own image changes no behaviour. No torch: export
+# only copies files, and verify loads config and tokenizer, never the weights.
+transformers==5.20.2
+tokenizers==0.23.3
+safetensors==0.8.0
+huggingface-hub==2.2.0

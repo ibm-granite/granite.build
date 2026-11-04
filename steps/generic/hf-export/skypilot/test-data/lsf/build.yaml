@@ -1,6 +1,6 @@
 granite.build:
-  name: distill-hf-export-smoke
-  # Smoke build for the distill-hf-export step on BlueVela (SkyPilot / LSF).
+  name: hf-export-smoke
+  # Smoke build for the generic hf-export step on BlueVela (SkyPilot / LSF).
   #
   # Single-target on purpose, and possible here for a reason the corpus-prep fixture could
   # not rely on: this step's input is a TRAINER OUTPUT DIR, and real ones already exist on
@@ -28,7 +28,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: model
       steps:
-        - step_uri: space://steps/distill/hf-export
+        - step_uri: space://steps/generic/hf-export
           config:
             poll_interval_seconds: 20
             log_retrieval_interval_seconds: 20

@@ -146,6 +146,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Step drawer timestamps (#470).** `parseTimestamp` reads a zoneless ISO timestamp as
   UTC, so displayed times shift for users outside UTC.
 
+- **`hf-export` moved to the new `generic` step category: `space://steps/distill/hf-export`
+  is now `space://steps/generic/hf-export`.** Breaking: the old URI is gone, so a recipe
+  must change its `step_uri`. Config, inputs (`train_output`, `expected_tokenizer`) and the
+  `hf_model` output are unchanged, and an export made by the old step is recognised and
+  skipped, not redone. The step no longer runs on the distillation CPU image: it has its own
+  CPU image, `gb-step-hf-export` (no torch), and imports nothing from `steps/distill`, so
+  any recipe that trains with HF Trainer or accelerate can use it. The shipped recipes use
+  the new URI.
+- **The distill GPU steps refuse a GPU undercount instead of rewriting
+  `CUDA_VISIBLE_DEVICES` (#604).** `gold`, `sft`, `logit-precompute`, `eval`, `vllm-server`
+  and `gen-smoke` compare `SKYPILOT_NUM_GPUS_PER_NODE` with `nvidia-smi -L` and fail fast,
+  naming #604, when the container can access fewer GPUs than were allocated, as hf-peft-sft
+  does.
+
 - **Published steps declare named inputs and read them from bindings (#453).** Every
   `step.yaml` under `configurations/assets/` now has an `inputs:` block. A target that
   doesn't bind a required input now fails build validation before anything is queued.

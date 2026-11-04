@@ -14,7 +14,8 @@
 #
 # Shared CPU image for the distillation steps that do text/data processing
 # only, no GPU (corpus-pin-check, corpus-prep, corpus-sources,
-# tokenizer-align, hf-export). See steps/distill/images/gpu/Dockerfile for the GPU
+# tokenizer-align). hf-export moved to steps/generic/ with its own image.
+# See steps/distill/images/gpu/Dockerfile for the GPU
 # sibling and the shared rationale (one image per resource class, not one
 # per step -- checked directly against each step's own pyproject.toml, not
 # assumed).
@@ -23,7 +24,7 @@
 # nvcr.io/nvidia/cuda for a CPU-only image would cost multiple GB for
 # nothing these steps use. Dependency manifest below (pyproject.toml +
 # uv.lock, next to this Dockerfile) is the UNION of corpus-prep's,
-# tokenizer-align's, and hf-export's own declared ranges -- see
+# tokenizer-align's, and (before it moved) hf-export's own declared ranges -- see
 # pyproject.toml's header for exactly which step contributes which
 # dependency. torch is pulled from PyPI's dedicated CPU-only wheel index
 # (see pyproject.toml's [tool.uv.sources]), not the default index's cu12x
@@ -70,7 +71,6 @@ COPY corpus-pin-check/skypilot/src ${DISTILL_HOME}/steps/corpus-pin-check
 COPY corpus-sources/skypilot/src ${DISTILL_HOME}/steps/corpus-sources
 COPY corpus-prep/skypilot/src ${DISTILL_HOME}/steps/corpus-prep
 COPY tokenizer-align/skypilot/src ${DISTILL_HOME}/steps/tokenizer-align
-COPY hf-export/skypilot/src ${DISTILL_HOME}/steps/hf-export
 
 # The HF cache's fixed in-container mount point (see the GPU image).
 ENV HF_HOME=/opt/hf-cache

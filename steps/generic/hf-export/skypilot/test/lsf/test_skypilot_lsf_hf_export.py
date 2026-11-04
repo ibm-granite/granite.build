@@ -14,12 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Integration test: distill-hf-export runs end to end on Skypilot/LSF.
+"""Integration test: the generic hf-export step runs end to end on Skypilot/LSF.
 
 A **step-level** test, beside the step's Makefile in a per-cluster subdir with its
 fixtures in the matching ``test-data/lsf/``. Run it from the step directory::
 
-    GB_STEP_BLUEVELA_BUILD=1 make -C steps/distill/hf-export/skypilot test
+    GB_STEP_BLUEVELA_BUILD=1 make -C steps/generic/hf-export/skypilot test
 
 What it proves that the offline tests cannot. test_step_template.py covers the config
 contract and the flag surface, and the 31 ported unit tests cover classification and the
@@ -59,7 +59,7 @@ _BV_KEY = os.environ.get("BV_SSH_KEY", "~/.ssh/ibm-bluevela.key")
 # ported test_export_hf_model.py when a checkout is present) cover the step's
 # contracts and always run; this one is deliberate:
 #
-#     GB_STEP_BLUEVELA_BUILD=1 make -C steps/distill/hf-export/skypilot test
+#     GB_STEP_BLUEVELA_BUILD=1 make -C steps/generic/hf-export/skypilot test
 #
 # The repository suites gate it by marker instead (`-m "not ibm"`), so this does
 # not change how CI selects it.
@@ -141,15 +141,15 @@ def _bluevela_reachable() -> bool:
     reason="BlueVela login node not reachable over SSH (needs "
     f"{_BV_KEY} and network access to {_BV_HOST})",
 )
-class TestSkypilotLsfDistillHfExport(AbstractYamlBuildRunnerTest):
-    """GOLD distillation across two BlueVela nodes, via enroot."""
+class TestSkypilotLsfHfExport(AbstractYamlBuildRunnerTest):
+    """Export one checkpoint of a real trainer output dir on BlueVela, via enroot."""
 
     def _get_yaml_spec_dir(self) -> Path:
         # Fixtures resolve through the repo's test/ <-> test-data/ helper, which
         # keys off the first `test/` segment so this works from both homes of the
         # file (see steps/README.md, "Two test modes"):
-        #   Mode 1 (authoring)  steps/distill/hf-export/skypilot/test/lsf/
-        #       -> steps/distill/hf-export/skypilot/test-data/lsf/   (co-located)
-        #   Mode 2 (published)  test/steps/distill/hf-export/skypilot/lsf/
-        #       -> test-data/steps/distill/hf-export/skypilot/lsf/   (parallel tree)
+        #   Mode 1 (authoring)  steps/generic/hf-export/skypilot/test/lsf/
+        #       -> steps/generic/hf-export/skypilot/test-data/lsf/   (co-located)
+        #   Mode 2 (published)  test/steps/generic/hf-export/skypilot/lsf/
+        #       -> test-data/steps/generic/hf-export/skypilot/lsf/   (parallel tree)
         return get_test_data_dir_for(__file__)

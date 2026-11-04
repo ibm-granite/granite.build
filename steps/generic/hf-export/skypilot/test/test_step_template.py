@@ -1,10 +1,4 @@
-"""Contract tests for step-template.yaml.
-
-Scope note: the source-delivery half of this template is spliced VERBATIM from
-distill-tokenizer-align, and that step's test_source_contract.py asserts every ported
-step's copy is byte-identical to it, while its own test_step_template.py asserts the
-region is correct. So this file asserts only what is specific to THIS step.
-"""
+"""Contract tests for the generic hf-export step-template.yaml."""
 
 import re
 import subprocess
@@ -68,7 +62,7 @@ class TestRunScriptIsValidShell:
 
 
 class TestLauncher:
-    def test_lsf_only(self, step):
+    def test_runs_on_both_hpc_subtypes(self, step):
         assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf", "slurm"]
 
     def test_uses_image_id_not_image(self, launcher):
@@ -78,12 +72,18 @@ class TestLauncher:
         assert "image_id" in launcher
         assert "image" not in launcher
 
-    def test_runs_in_a_prebuilt_registry_image(self, launcher):
-        assert launcher["image_id"].startswith("docker:")
-        assert "IMAGE_REF" not in launcher["image_id"]
+    def test_runs_in_its_own_image(self, launcher):
+        """Filled in from the Makefile's image by `make space` / `make publish-step`."""
+        assert launcher["image_id"] == "docker:${IMAGE_REF}"
+        assert (_HERE / "Dockerfile").is_file()
 
-    def test_no_dockerfile_so_common_mk_treats_it_as_non_image(self):
-        assert not (_HERE / "Dockerfile").exists()
+    def test_nothing_from_the_distillation_collection(self, launcher, run_script):
+        """A generic step: no distill image, no $DISTILL_HOME, no vendored package."""
+        assert "distillation" not in launcher["image_id"]
+        assert "DISTILL_HOME" not in run_script
+        assert not re.search(
+            r"^\s*(from|import) gb_steps_post_training", _EXPORT.read_text(), re.M
+        )
 
     def test_no_accelerator_is_pinned(self, launcher):
         """CPU-only by design: pruning and copying files needs no GPU. Resources come
@@ -222,5 +222,41 @@ class TestVendoredTemplate:
 
 class TestSlurmExecutorEnv:
     def test_the_stripped_env_is_restored(self, launcher):
-        assert launcher["envs"]["PYTHONPATH"] == "/opt/distill/src"
-        assert launcher["envs"]["VIRTUAL_ENV"] == "/stage/.venv"
+        """The SLURM executor drops both; they must match the image's ENV lines."""
+        dockerfile = (_HERE / "Dockerfile").read_text()
+        assert launcher["envs"]["PYTHONPATH"] == "/opt/hf-export"
+        assert launcher["envs"]["VIRTUAL_ENV"] == "/opt/hf-export/.venv"
+        assert "PYTHONPATH=/opt/hf-export " in dockerfile
+        assert "VIRTUAL_ENV=/opt/hf-export/.venv " in dockerfile
+
+    def test_the_script_runs_from_where_the_image_puts_it(self, run_script):
+        dockerfile = (_HERE / "Dockerfile").read_text()
+        assert 'python "$HOME_DIR/export_hf_model.py"' in run_script
+        assert "COPY src/ /opt/hf-export/" in dockerfile
+        assert "HF_EXPORT_HOME=/opt/hf-export " in dockerfile
+
+
+class TestResumeCompatibility:
+    def test_the_marker_step_name_is_unchanged(self):
+        """step_state REFUSES a marker written under another step name, so renaming it
+        would turn every export made by space://steps/distill/hf-export into a refusal.
+        """
+        from hf_export_state import export_state
+
+        assert export_state.STEP_NAME == "distill-hf-export"
+
+    def test_the_gate_matches_the_distillation_copy(self):
+        """Same marker format as the copy the distillation steps still use."""
+        from hf_export_state import step_state
+
+        distill = (
+            _HERE.parents[2]
+            / "distill"
+            / "src"
+            / "gb_steps_post_training"
+            / "distillation"
+            / "step_state.py"
+        )
+        src = distill.read_text()
+        assert f"SCHEMA = {step_state.SCHEMA}" in src
+        assert f'MARKER_NAME = "{step_state.MARKER_NAME}"' in src

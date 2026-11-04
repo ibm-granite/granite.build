@@ -1,23 +1,29 @@
-# hf-export (SkyPilot / LSF)
+# hf-export (SkyPilot / SLURM and LSF)
 
-Packages one `checkpoint-N` from a distillation run into a self-contained, downloadable
-HuggingFace model directory. It selects the checkpoint, prunes resume state, normalises
-the tokenizer and model config for publishing, and asserts the result loads. It is not a
-weight converter, needs no GPU, and runs in a prebuilt image on SkyPilot's LSF backend
-only.
+Packages one `checkpoint-N` of an HF Trainer or accelerate training run (SFT,
+distillation, or anything else that writes `checkpoint-N/` directories) into a
+self-contained, downloadable HuggingFace model directory. It selects the checkpoint, prunes
+resume state, normalises the tokenizer and model config for publishing, and asserts the
+result loads. It is not a weight converter, needs no GPU, and runs in its own small CPU
+image on SkyPilot's SLURM and LSF backends.
 
-> **Developing or testing this step?** See `steps/distill/hf-export/skypilot/README.md` in
+> **Moved from `space://steps/distill/hf-export`.** The step is the same, with the same
+> config and the same inputs and outputs; only the URI and the image changed. A recipe
+> switches by changing `step_uri`. An `hf_model` directory exported by the old step is
+> recognised by the new one and skipped, not redone.
+
+> **Developing or testing this step?** See `steps/generic/hf-export/skypilot/README.md` in
 > the granite.build repository for how the step is generated, tested, and published —
 > including the end-to-end test that needs a BlueVela allocation.
 
 ## Referencing the step
 
 Point your build's Space at one that provides the step, then reference it by the stable
-`space://steps/distill/hf-export` URI:
+`space://steps/generic/hf-export` URI:
 
 ```yaml
 steps:
-  - step_uri: space://steps/distill/hf-export
+  - step_uri: space://steps/generic/hf-export
 ```
 
 ## Config contract (`export_config`)
@@ -42,31 +48,13 @@ checkpoint.
 
 The optional `expected_tokenizer` input (see [Inputs](#inputs)) replaces
 `expect_tokenizer_from`: a tokenizer directory the export must agree with, token id for
-token id — normally the `retagged_student` output of the `space://steps/distill/tokenizer-align`
-step. Unbound skips the check.
+token id — the tokenizer the run trained with (in a distillation recipe, the
+`retagged_student` output of the `space://steps/distill/tokenizer-align` step). Unbound
+skips the check.
 
 > **Bind `expected_tokenizer` rather than leaving it unbound.** It is the only check in the
 > pipeline that catches a checkpoint trained against a different tokenizer than the recipe
 > believes, which no amount of "does it load" can detect.
-
-### Source delivery (`code_config`)
-
-The step imports the shared distillation package from a source checkout resolved at run
-time. `code_config` is identical in every ported distillation step and is documented once —
-see "Source delivery" in the `space://steps/distill/tokenizer-align` step's README. The
-defaults clone a public repository at a pinned commit, so a recipe normally sets nothing
-here.
-
-| Field | Type | Purpose |
-|---|---|---|
-| `code_dir` | string | Existing checkout to use instead of cloning. Default: `""` (clone). |
-| `expect_ref` | string | Commit `code_dir` must be at; a mismatch fails the step. Default: `a5d59bc45524a8d75706e20d44ae1a254f273f23`. |
-| `repo` | string | Repository cloned when `code_dir` is empty. Default: `https://github.com/laminair/gb-steps-distillation.git`. |
-| `ref` | string | Branch, tag or commit checked out after the clone. Default: the same commit as `expect_ref`. |
-| `workdir` | string | Clone destination, relative to the working directory. Default: `distill-code`. |
-| `token_secret` | string | Name of a space secret holding a read credential for a private `repo`. Default: `""` (public clone). |
-| `python` | string | Interpreter that runs the workload. Default: `/stage/.venv/bin/python`. |
-| `setup_command` | string | Bash run after the source resolves and before the workload. Default: `""` (skipped). |
 
 ### Top-level step config
 
@@ -85,8 +73,8 @@ The step declares its inputs, read as `{{ bindings.<name>.binding.path }}`:
 
 | Input | Required | Type | Typical source |
 |---|---|---|---|
-| `train_output` | yes | model | the trainer target's `checkpoint` (`space://steps/distill/gold` or `sft`) |
-| `expected_tokenizer` | no | model | `align.retagged_student`; unbound skips the cross-check |
+| `train_output` | yes | model | the trainer target's output directory, e.g. the `checkpoint` output of `space://steps/distill/gold` or `sft` |
+| `expected_tokenizer` | no | model | the tokenizer the run trained with, e.g. `align.retagged_student`; unbound skips the cross-check |
 
 Binding `expected_tokenizer` means the cross-check cannot name a tokenizer this build did
 not produce. `export_config.checkpoint` stays a config key: it is the NAME of the
@@ -111,7 +99,8 @@ GB_ARTIFACT_ID:hf_model GB_ARTIFACT_PATH:<absolute dest>
 ```
 
 Declare `hf_model` on the target (typically `uri: "env://{{ binding.path }}"`,
-`type: model`). Consumers are the `space://steps/distill/eval` step (`student`), the
+`type: model`). Any step that loads an HF model directory can consume it; in this repo
+those include the `space://steps/distill/eval` step (`student`), the
 `space://steps/distill/gen-smoke` step (one rung per export) and `space://steps/bfcl-eval`
 (`model_path`).
 
@@ -123,18 +112,17 @@ Declare `hf_model` on the target (typically `uri: "env://{{ binding.path }}"`,
 - The resolved `train_output` and `expected_tokenizer` input paths, and `checkpoint`, are
   passed to the script unchanged. Use absolute paths; bindings already resolve to absolute
   paths.
-- The source is cloned into `$WORK/<code_config.workdir>` (default `distill-code/`), or taken
-  from `code_config.code_dir`, and `$CODE_DIR/src` is prepended to `PYTHONPATH`.
-- The step's `src/` directory is mounted at `./src`; the workload is
-  `<code_config.python> ./src/export_hf_model.py`.
+- Nothing is cloned or mounted: `export_hf_model.py` and its resume gate are baked into
+  the image at `$HF_EXPORT_HOME` (`/opt/hf-export`), and the workload is
+  `python $HF_EXPORT_HOME/export_hf_model.py` from the image's venv.
 - `HF_HUB_OFFLINE=1` and `HF_HOME=/opt/hf-cache`: a missing local file fails here rather than
   silently fetching.
 
 ## Example build.yaml
 
-The `export` target after the trainer. `align` and `train` are targets running the
-`space://steps/distill/tokenizer-align` and `space://steps/distill/gold` steps; they are
-elided here.
+The `export` target after a trainer, here from a distillation recipe on BlueVela SLURM.
+`align` and `train` are targets running the `space://steps/distill/tokenizer-align` and
+`space://steps/distill/gold` steps; they are elided here.
 
 ```yaml
 granite.build:
@@ -144,7 +132,7 @@ granite.build:
     # align, corpus, train: elided.
 
     export:
-      environment_uri: space://environments/skypilot/lsf/ibm-bluevela
+      environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
         train_output:
           binding: train.checkpoint
@@ -156,7 +144,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: model
       steps:
-        - step_uri: space://steps/distill/hf-export
+        - step_uri: space://steps/generic/hf-export
           config:
             compute_config:
               num_nodes: 1
@@ -164,7 +152,7 @@ granite.build:
             launcher_config:
               resources:
                 cluster: "bluevela"
-                zone: "normal"
+                zone: "cpu"
                 memory: 64
             export_config:
               dest: "/proj/run/hf_model"
@@ -176,9 +164,11 @@ granite.build:
 
 ### What it is, and what it deliberately is not
 
-**It is not a weight converter.** The trainer's accelerate config sets
-`zero3_save_16bit_model: true`, so every `checkpoint-N/` already contains HF-native
-`model.safetensors` **at its root**, beside the DeepSpeed `global_step*/` shard tree. Anyone
+**It is not a weight converter.** It needs HF-native `model.safetensors` (or sharded
+`model-*.safetensors`) **at the checkpoint root**, which HF Trainer writes for a plain or
+FSDP run, and for DeepSpeed ZeRO-3 when `zero3_save_16bit_model: true` is set (the
+distillation trainers set it). Any DeepSpeed `global_step*/` shard tree beside it is left
+behind. Anyone
 expecting `zero_to_fp32.py` to be invoked here will not find it: that tree is **pruned, not
 converted**.
 
@@ -188,7 +178,7 @@ It has five jobs, each of which exists because the trainer cannot do it:
 |---|---|
 | **SELECT** which `checkpoint-N` is the release | The trainer saves every `save_steps` and has no notion of "the one we ship". Eval may well prefer an earlier checkpoint over the last. |
 | **PRUNE** resume state | `global_step*/`, optimizer, scheduler and RNG state are needed *during* a run and are noise in a release — and publishing them invites someone to resume from a release. ~4.7 G → ~679 M measured. |
-| **NORMALISE** `padding_side`, strip `local_files_only`/`is_local` | The trainer sets `left` because it **generates** during on-policy rollout. Correct for a trainer, wrong for a published model, where left padding silently corrupts batched non-generative use. |
+| **NORMALISE** `padding_side`, strip `local_files_only`/`is_local` | A trainer that **generates** (e.g. on-policy distillation) sets `left`. Correct for a trainer, wrong for a published model, where left padding silently corrupts batched non-generative use. |
 | **REWRITE** a `tokenizer_class` of `TokenizersBackend` to `PreTrainedTokenizerFast` | transformers 5 records its fast-tokenizer backend under a name transformers 4 cannot resolve, so a v4 consumer raises `ValueError: Tokenizer class TokenizersBackend does not exist` before reading a token. These steps run transformers 5.8.0, so every published model carried the pin — `bfcl-eval`, a v4 image, died on it (build 30a99c4b). `PreTrainedTokenizerFast` exists in both generations and loads `tokenizer.json` directly, so the spelling changes and the tokenizer does not. Only that one name is rewritten; any other class is left alone. |
 | **ASSERT** the result loads | A directory missing one file it needs looks fine until a user downloads it. |
 
@@ -222,14 +212,15 @@ checkpoint over the last.
   whether `padding_side` is the culprit. Whichever value is chosen, the change (or its absence)
   is recorded in `export_manifest.json`, so a published model can be traced back to what was
   done.
-- `chat_template_thinking` is **not** the `think_policy` of the
-  `space://steps/distill/corpus-prep` step, which decides whether reasoning traces stay in the
-  training data. This key touches no data, only which generation prompt a consumer gets. `keep`
+- `chat_template_thinking` applies to Granite-style chat templates with an
+  `enable_thinking` switch. It is **not** a training-data policy such as the `think_policy` of
+  the `space://steps/distill/corpus-prep` step, which decides whether reasoning traces stay in
+  the training data. This key touches no data, only which generation prompt a consumer gets. `keep`
   copies `chat_template.jinja` verbatim and is the default, because which prompt a published
   model hands out is a decision about the artifact, and this step's job is to make it explicit
   and recorded, not to make it. `default-off` flips the default prompt to
   `<|im_start|>assistant\n<think></think>` instead of `<|im_start|>assistant\n<think>\n`; it is
-  right for a student distilled on a corpus with no think traces, whose weights were never
+  right for a model trained on data with no think traces, whose weights were never
   conditioned on the newline the reasoning prompt ends with.
 
 ### `allow_unknown` and distributed checkpoints
@@ -241,8 +232,9 @@ change, not an incident.
 
 In practice, a checkpoint from a **multi-GPU** training run fails that check: HF Trainer writes
 one `rng_state_<rank>.pth` per rank, while the classifier's known-prune list carries only the
-single-process `rng_state.pth`. The distillation recipes therefore set `allow_unknown: true`;
-`export_manifest.json` still records exactly what was dropped.
+single-process `rng_state.pth`. Recipes exporting a multi-GPU run (the distillation recipes
+do) therefore set `allow_unknown: true`; `export_manifest.json` still records exactly what was
+dropped.
 
 ### Resume
 
@@ -251,18 +243,21 @@ expectation (source checkpoint, kept files and policy flags), the step prints
 `nothing to do` and still emits the `hf_model` marker. If `dest` holds an export made under a
 different expectation, the step refuses and fails rather than overwrite it. An existing export
 whose `config.json` no longer meets the current normalisation rules is re-exported rather than
-skipped. The completion record is written only after `verify` passes.
+skipped. The completion record is written only after `verify` passes. Exports made by the
+earlier `space://steps/distill/hf-export` are read the same way: the record format and its step
+name are unchanged.
 
-### Why the export is required before eval
+### Why the export comes before eval
 
-`bfcl-eval` needs an **HF-native model directory** loadable by vLLM, not a raw `checkpoint-N`
+An evaluator such as `bfcl-eval` needs an **HF-native model directory** loadable by vLLM, not a raw `checkpoint-N`
 carrying DeepSpeed state. So `export` is not optional decoration between training and
 capability evaluation — it is what makes the checkpoint loadable by anything but the trainer.
 
 ### Runtime
 
-- **Type** `data_processing`; **environment** SkyPilot, LSF only (`subtypes: [lsf]`).
-- **Image** `docker:us.icr.io/cil15-shared-registry/gb-step-distillation-cpu:91ea4880`, prebuilt; this
-  step builds none.
+- **Type** `data_processing`; **environment** SkyPilot, SLURM and LSF (`subtypes: [lsf, slurm]`).
+- **Image** `us.icr.io/cil15-shared-registry/gb-step-hf-export`, this step's own CPU image
+  (the version is pinned in `step.yaml`), built from the Dockerfile next to the step: Python 3.12 with `transformers`, `tokenizers`,
+  `safetensors` and `huggingface-hub`, hash-locked in `requirements.lock`. No torch.
 - **No GPU**, by design — if this step appears to need one, something has been misdiagnosed.
   CPUs and memory come from the build.yaml.

@@ -133,7 +133,7 @@ generates the skeleton of a new step in this framework. In Claude Code, run
 It asks two rounds of questions, skipping any your request already answers:
 
 1. **What the step is:** its name, its category, and comma-separated lists of input
-   and output names. The category is `eval`, `train`, `tune`, `data`, or one you
+   and output names. The category is `eval`, `train`, `tune`, `data`, `generic`, or one you
    type, and it becomes the directory under `steps/`: the step lands at
    `steps/<category>/<name>/<env>/` and is referenced as
    `space://steps/<category>/<name>` (see [Nested steps](#nested-steps)).
@@ -285,6 +285,12 @@ then:
 The same layout groups steps by category: `steps/eval/eval-example/skypilot` is the
 `eval-example` step in the `eval` category (`STEP_PATH = eval/eval-example`, URI
 `space://steps/eval/eval-example`).
+
+The `generic` category holds steps that are not tied to one training method or
+collection, so any recipe can use them. `steps/generic/hf-export/skypilot` packages one
+`checkpoint-N` of any HF Trainer / accelerate run into a publishable HF model directory
+(URI `space://steps/generic/hf-export`). A generic step owns its code and its image and
+imports nothing from another category's `src/`.
 
 The resolver binds that URI by **longest matching prefix**: the step name is the
 longest `steps/`-relative prefix of the URI whose directory holds a `step.yaml`, and

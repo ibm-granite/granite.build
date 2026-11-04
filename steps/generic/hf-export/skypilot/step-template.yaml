@@ -1,12 +1,14 @@
 name: hf-export
 version: 1.0.0
-# Packages ONE checkpoint-N from a distillation run into a self-contained, downloadable
-# HuggingFace model directory.
+# Packages ONE checkpoint-N of an HF Trainer / accelerate run (SFT, distillation,
+# anything that writes checkpoint-N/ directories) into a self-contained, downloadable
+# HuggingFace model directory. Generic: it reads only the checkpoint tree, so any
+# recipe can use it, whatever trained the model.
 #
-# WHY THIS STEP EXISTS, given the trainer already writes safetensors. The trainer's
-# accelerate config sets zero3_save_16bit_model: true, so every checkpoint-N/ already
-# contains HF-native model.safetensors AT ITS ROOT, beside the DeepSpeed global_step*/
-# shard tree. This is NOT a weight converter — nothing here runs zero_to_fp32.py; that
+# WHY THIS STEP EXISTS, given the trainer already writes safetensors. With a ZeRO-3
+# accelerate config that sets zero3_save_16bit_model: true (or no DeepSpeed at all),
+# every checkpoint-N/ already contains HF-native model.safetensors AT ITS ROOT, beside
+# any DeepSpeed global_step*/ shard tree. This is NOT a weight converter — nothing here runs zero_to_fp32.py; that
 # tree is pruned, not converted. The step has exactly four jobs, each of which exists
 # because the trainer cannot do it:
 #
@@ -15,13 +17,13 @@ version: 1.0.0
 #   PRUNE     the DeepSpeed global_step*/ tree, optimizer, scheduler and RNG state.
 #             ~4.7G -> ~679M measured upstream. That is resume state, not model, and
 #             publishing it invites someone to resume from a release.
-#   NORMALISE padding_side. The trainer sets 'left' because it GENERATES during on-policy
-#             rollout; correct for a trainer, wrong for a published model, where left
+#   NORMALISE padding_side. A trainer that generates (e.g. on-policy distillation) sets
+#             'left'; correct for a trainer, wrong for a published model, where left
 #             padding silently corrupts batched non-generative use. Also strips
 #             local_files_only / is_local, load-time kwargs transformers persisted into
 #             tokenizer_config.json by mistake.
 #   ASSERT    that the result actually loads, offline, and optionally that its token ids
-#             still agree with the retagged student.
+#             still agree with a reference tokenizer.
 #
 # It deliberately does NOT graft a tokenizer from elsewhere: if the trainer's tokenizer
 # disagrees with the corpus the run trained on, that is a defect to fail on, not to paper
@@ -59,16 +61,18 @@ config:
     # must classify this file" — a one-line change, not an incident.
     allow_unknown: false
 
-    # keep | default-off. NOT distill-corpus-prep's think_policy, which decides whether
-    # reasoning traces stay in the TRAINING DATA. This key touches no data: it decides
+    # keep | default-off. Not a training-data policy (e.g. distill/corpus-prep's
+    # think_policy, which decides whether reasoning traces stay in the data). This key
+    # touches no data: it decides
     # what generation prompt a consumer gets from
     # apply_chat_template(..., add_generation_prompt=True).
     #   keep         copy chat_template.jinja verbatim. The DEFAULT, because which prompt
     #                a published model hands out is a decision about the artifact, and
     #                this step's job is to make it explicit and recorded, not to make it.
-    #   default-off  flip the default to '<|im_start|>assistant\n<think></think>' instead
-    #                of '<|im_start|>assistant\n<think>\n'. The right value for a student
-    #                distilled on a corpus with NO think traces, whose weights were never
+    #   default-off  for Granite-style chat templates with an enable_thinking switch:
+    #                flip the default to '<|im_start|>assistant\n<think></think>' instead
+    #                of '<|im_start|>assistant\n<think>\n'. The right value for a model
+    #                trained on data with NO think traces, whose weights were never
     #                conditioned on the newline the reasoning prompt ends with.
     chat_template_thinking: "keep"
 
@@ -92,7 +96,8 @@ inputs:
       accept: [uri, binding]
   optional:
     # A tokenizer directory the export's tokenizer must agree with, token id for token
-    # id — normally distill-tokenizer-align's `retagged_student`. This is the check that
+    # id — the tokenizer the run trained with (in a distillation recipe,
+    # distill/tokenizer-align's `retagged_student`). This is the check that
     # catches a checkpoint trained against a different tokenizer than the recipe
     # believes, which no amount of "does it load" can detect. Unbound skips it.
     expected_tokenizer:
@@ -119,7 +124,9 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-cpu:91ea4880"
+          # This step's own image (Dockerfile next to this file), filled in by
+          # `make space` / `make publish-step`.
+          image_id: "docker:${IMAGE_REF}"
           # CPU-only BY DESIGN. If this step ever appears to need a GPU, something has
           # been misdiagnosed. cpus/memory come from the build.yaml like every other
           # ported step, rather than being pinned here.
@@ -127,35 +134,31 @@ environment_configs:
           envs:
             # The SLURM executor runs the task under `env -u PYTHONPATH` and without
             # VIRTUAL_ENV, so the image's ENV values for both are gone at run time.
-            PYTHONPATH: /opt/distill/src
-            VIRTUAL_ENV: /stage/.venv
+            PYTHONPATH: /opt/hf-export
+            VIRTUAL_ENV: /opt/hf-export/.venv
             HF_HUB_OFFLINE: "1"
           run: |
-            echo "=== distill-hf-export on $(hostname) ==="
+            echo "=== hf-export on $(hostname) ==="
 
             # The inputs used to be config keys. A recipe that still sets one would
             # otherwise be ignored silently, so refuse it.
             {% for key in ("train_output_dir", "expect_tokenizer_from") if config.export_config[key] is defined %}
-            echo "distill-hf-export: FATAL: export_config.{{ key }} is no longer read; bind the target input instead (see this step's README)" >&2
+            echo "hf-export: FATAL: export_config.{{ key }} is no longer read; bind the target input instead (see this step's README)" >&2
             exit 1
             {% endfor %}
 
-            # --- distill source: baked into the image, nothing cloned or mounted ---
-            # DISTILL_HOME, the venv (VIRTUAL_ENV) and PYTHONPATH are all set by the image's
-            # own ENV lines. The interpreter is asked of uv rather than hardcoded.
-            PYBIN="python"
-            CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"
+            # The script and its resume gate are baked into this step's image under
+            # HF_EXPORT_HOME; nothing is cloned or mounted. `python` is the image venv's,
+            # first on PATH.
+            HOME_DIR="${HF_EXPORT_HOME:?HF_EXPORT_HOME is set by the image}"
             WORK="${GB_BUILD_WORKDIR:-$PWD}"
-            echo "GB_STEP_METADATA_KEY:distill_code_source GB_STEP_METADATA_VALUE:baked-image"
-            echo "GB_STEP_METADATA_KEY:distill_code_commit GB_STEP_METADATA_VALUE:a5d59bc45524a8d75706e20d44ae1a254f273f23"
-            # --- distill source: END ---
 
             # Absolutise before the marker: the monitor hands this path to the env:// store,
             # possibly from another host, and a relative env: URI is rejected at config load.
             DEST="{{ config.export_config.dest }}"
             case "$DEST" in /*) ;; *) DEST="$WORK/$DEST" ;; esac
 
-            "$PYBIN" "$DISTILL_HOME/steps/hf-export/export_hf_model.py" \
+            python "$HOME_DIR/export_hf_model.py" \
               --train-output-dir "{{ bindings.train_output.binding.path }}" \
               --dest "$DEST" \
               --checkpoint "{{ config.export_config.checkpoint }}" \

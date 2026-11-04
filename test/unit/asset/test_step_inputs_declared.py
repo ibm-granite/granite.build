@@ -54,7 +54,7 @@ EXPECTED = {
     f"{_SKY}/distill/sft": ({"student", "corpus"}, set()),
     f"{_SKY}/distill/gold": ({"student", "teacher", "corpus"}, {"vllm"}),
     f"{_SKY}/distill/eval": ({"student"}, {"teacher"}),
-    f"{_SKY}/distill/hf-export": ({"train_output"}, {"expected_tokenizer"}),
+    f"{_SKY}/generic/hf-export": ({"train_output"}, {"expected_tokenizer"}),
     f"{_SKY}/distill/logit-precompute": (
         {"corpus", "teacher", "teacher_tokenizer"},
         set(),
