@@ -44,7 +44,7 @@ creation next to a source that saw what X was made from.
 """
 
 import copy
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy.exc import IntegrityError
 
@@ -60,6 +60,7 @@ from gbserver.storage.lineage_row_storage import ILineageRowStorage
 from gbserver.storage.stored_lineage_job import StoredLineageJob
 from gbserver.storage.stored_lineage_row import (
     MAX_JOB_ID_LENGTH,
+    MAX_LINEAGE_INDEX_ROW_BYTES,
     TERMINAL,
     StoredLineageRow,
 )
@@ -172,8 +173,20 @@ def merge_job(existing: StoredLineageJob, incoming: StoredLineageJob) -> Dict[st
     return fields
 
 
-def upsert_job(storage: ILineageJobStorage, job: StoredLineageJob) -> str:
-    """Add ``job``, or merge it into the record already stored under its ``job_id``."""
+def upsert_job(
+    storage: ILineageJobStorage,
+    job: StoredLineageJob,
+    extra_fields: Optional[
+        Callable[[StoredLineageJob, Dict[str, Any]], Dict[str, Any]]
+    ] = None,
+) -> str:
+    """Add ``job``, or merge it into the record already stored under its ``job_id``.
+
+    ``extra_fields(stored, merged_fields)`` returns more fields to write with the
+    merge (a caller's own rules, e.g. the db sink's entry). Both are computed from
+    the row as ``update_fields`` locks it, inside its one transaction, so nothing
+    another writer commits in between is lost and no half-merged record is seen.
+    """
     if _job_id_too_long(job.job_id):
         return REJECTED
     existing = storage.get_job(job.job_id)
@@ -186,10 +199,39 @@ def upsert_job(storage: ILineageJobStorage, job: StoredLineageJob) -> str:
             existing = storage.get_job(job.job_id)
             if existing is None:
                 raise
-    fields = merge_job(existing, job)
-    if not fields:
+    # Nothing to change on the record as read: no locked write at all, as before
+    # the merge moved into update_fields. A writer landing after this read is
+    # merged by its own upsert, which sees this job's fields already stored.
+    unlocked = merge_job(existing, job)
+    if extra_fields is not None:
+        unlocked.update(extra_fields(existing, dict(unlocked)))
+    if not unlocked:
         return UNCHANGED
-    storage.update_fields(existing.uuid, fields)
+    fields: Dict[str, Any] = {}
+    failure: List[BaseException] = []
+
+    def compute(locked: StoredLineageJob) -> bool:
+        # Filled in place: update_fields applies ``fields`` after this returns.
+        fields.clear()
+        try:
+            fields.update(merge_job(locked, job))
+            if extra_fields is not None:
+                fields.update(extra_fields(locked, dict(fields)))
+        except Exception as exc:
+            # update_fields wraps a callback's error in a generic ValueError;
+            # kept here so the caller sees, and classifies, the merge's own.
+            failure.append(exc)
+            raise
+        return bool(fields)
+
+    try:
+        updated = storage.update_fields(existing.uuid, fields, should_update=compute)
+    except Exception:
+        if failure:
+            raise failure[0]
+        raise
+    if updated is None:
+        return UNCHANGED
     return UPDATED
 
 
@@ -212,6 +254,8 @@ def upsert_row(storage: ILineageRowStorage, row: StoredLineageRow) -> str:
     if stored is None:
         if _superseded(row, job_rows):
             return SUPERSEDED
+        if _row_too_large(row):
+            return REJECTED
         stale = [other for other in job_rows if _superseded(other, [row])]
         # The terminal's attributes are a source's view of the same job; keep
         # them, merged before the add so the add is the only write of the row.
@@ -277,6 +321,28 @@ def _job_id_too_long(job_id: str) -> bool:
     return True
 
 
+def _row_too_large(row: StoredLineageRow) -> bool:
+    """Whether a new row's unique-index entry would overflow the btree maximum.
+
+    See :data:`MAX_LINEAGE_INDEX_ROW_BYTES`. Deterministic, so the row is dropped
+    (logged) rather than sent to fail on every retry and stall the indexer.
+    """
+    size = sum(
+        len((value or "").encode("utf-8"))
+        for value in (row.job_id, row.input, row.output)
+    )
+    if size <= MAX_LINEAGE_INDEX_ROW_BYTES:
+        return False
+    logger.warning(
+        "Lineage row is %d UTF-8 bytes across job_id, input and output, over the "
+        "%d its unique index holds; not stored (job_id=%.80s...)",
+        size,
+        MAX_LINEAGE_INDEX_ROW_BYTES,
+        row.job_id,
+    )
+    return True
+
+
 def rows_to_add(rows: List[StoredLineageRow]) -> List[StoredLineageRow]:
     """The rows of jobs with nothing stored yet, deduplicated for one bulk add.
 
@@ -286,7 +352,7 @@ def rows_to_add(rows: List[StoredLineageRow]) -> List[StoredLineageRow]:
     """
     by_key: Dict[Tuple[str, str, str], StoredLineageRow] = {}
     for row in rows:
-        if _job_id_too_long(row.job_id):
+        if _job_id_too_long(row.job_id) or _row_too_large(row):
             continue
         key = (row.job_id, row.input, row.output)
         stored = by_key.get(key)

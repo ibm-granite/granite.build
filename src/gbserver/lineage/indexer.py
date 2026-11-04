@@ -237,14 +237,19 @@ def create_indexer(
 
 
 def _build_tags(storage: SingletonAdminStorage, build_id: str) -> List[str]:
-    """The build's user tags, or none when it cannot be read.
+    """The build's user tags, or none when the build cannot be read.
 
-    Tolerant on purpose: the tags label a row, so losing them must not cost the
-    whole execution its place in the index.
+    Tolerant of the build itself (gone, malformed): the tags label a row, so
+    losing them must not cost the whole execution its place in the index. Not of
+    an outage: that is re-raised so the job is retried next scan, rather than
+    indexed now without its tags and never revisited.
     """
     try:
         build = storage.build_storage.get_by_uuid(build_id)
-    except Exception:
+    except Exception as exc:
+        if _is_transient_error(exc):
+            raise
+        logger.warning("Could not read build %s for its tags: %s", build_id, exc)
         return []
     tags = getattr(build, "tags", None)
     return list(tags) if isinstance(tags, list) else []
@@ -272,9 +277,16 @@ _TRANSIENT_ERROR_NAMES = frozenset(
         "DisconnectionError",
         "TimeoutError",
         "ConnectionError",
-        "CommError",
+        # requests' base class, for its connection errors and timeouts (not the
+        # builtins'). An HTTPError is one too, but carries a status, which
+        # decides first.
+        "RequestException",
     }
 )
+# Not "CommError": W&B wraps every failure in one, a GraphQL error returned with
+# a 200 (a run or artifact not found, permission denied) included, so its class
+# says nothing. What it wraps (``.exc``) decides: a status, or a requests
+# connection error or timeout, is read through it; anything else is the job's.
 _TRANSIENT_ERROR_MARKERS = (
     "database is locked",
     "could not connect",
@@ -294,10 +306,84 @@ _DETERMINISTIC_ERROR_MARKERS = (
     "does not exist",
     "value too long",
     "statement timeout",
+    # Postgres ProgramLimitExceeded (an index entry over the btree maximum)
+    # arrives as an OperationalError, but the same row fails the same way forever.
+    "index row size",
+    "exceeds btree",
 )
+# HTTP statuses (W&B) that a later retry can get past: the server is overloaded,
+# rate limiting, or down -- or the credentials are expired or revoked (401), an
+# outage of access that hits every job alike and must not skip the window. Every
+# other 4xx is the request's own fault.
+_TRANSIENT_HTTP_STATUSES = frozenset({401, 408, 425, 429})
+# Any 5xx is transient too: the server is failing, and an outage must skip
+# nothing. A run that 5xxes every time holds the checkpoint instead, and is
+# logged as an error after _TRANSIENT_ALERT_AFTER scans.
+#
+# A 403 is ambiguous: a key that lost access to the whole entity, or one run or
+# project this key may not read. It counts toward the give-up, so a forbidden run
+# cannot pin the checkpoint forever, but over more attempts than a plain failure,
+# so a short access outage is waited out rather than costing the window its lineage.
+_SLOW_GIVE_UP_HTTP_STATUSES = frozenset({403})
+_MAX_SLOW_GIVE_UP_ATTEMPTS = 20
 # After this many transient failures in a row on the same job the warning becomes
 # an error: still not counted (an outage must skip nothing), but no longer quiet.
 _TRANSIENT_ALERT_AFTER = 20
+
+
+def _causes(exc: BaseException, implicit: bool = True) -> Iterator[BaseException]:
+    """``exc`` and what it was caused by: W&B's wrapped ``.exc``, ``__cause__``,
+    and (``implicit``) ``__context__`` where the link is an implicit re-raise.
+
+    ``__context__`` is an exception already handled when ``exc`` was raised. It
+    is followed when ``exc`` has no explicit cause and does not suppress it
+    (``raise X`` inside ``except``, a wrapper that forgot ``from``) -- the same
+    rule Python's traceback uses -- so an outage a wrapper re-raises implicitly
+    is still seen. :func:`_is_transient_error` reads its own signal first, so a
+    context only decides when the outer exception says nothing either way.
+    """
+    seen: set = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        wrapped = getattr(current, "exc", None)
+        if isinstance(wrapped, BaseException) and id(wrapped) not in seen:
+            current = wrapped
+        elif current.__cause__ is not None:
+            current = current.__cause__
+        elif implicit and not current.__suppress_context__:
+            current = current.__context__
+        else:
+            current = None
+
+
+def _http_status(exc: BaseException) -> Optional[int]:
+    """The HTTP status ``exc`` carries itself or by explicit cause, or ``None``.
+
+    W&B wraps a ``requests.HTTPError`` in a ``CommError`` (its ``exc``), while
+    ``RunArtifacts`` pagination re-raises the raw ``HTTPError``; both carry it on
+    ``.response``. Not through ``__context__``: a status handled earlier must not
+    set the give-up bound of an unrelated failure (see :func:`_give_up_after`).
+    """
+    for current in _causes(exc, implicit=False):
+        status = _own_status(current)
+        if status is not None:
+            return status
+    return None
+
+
+def _own_status(current: BaseException) -> Optional[int]:
+    status = getattr(getattr(current, "response", None), "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _give_up_after(exc: Optional[BaseException]) -> int:
+    """How many counted failures of ``exc``'s kind a job gets before it is skipped."""
+    status = _http_status(exc) if exc is not None else None
+    if status in _SLOW_GIVE_UP_HTTP_STATUSES:
+        return _MAX_SLOW_GIVE_UP_ATTEMPTS
+    return _MAX_JOB_ATTEMPTS
 
 
 def _is_transient_error(exc: BaseException) -> bool:
@@ -306,28 +392,32 @@ def _is_transient_error(exc: BaseException) -> bool:
     Unlike ``is_permanent_sink_failure``, unrecognized errors are *not* transient
     here: a job that keeps failing for its own reasons must eventually be skipped,
     or it would pin the checkpoint forever.
+
+    An HTTP status decides first, whatever the exception's class: a ``CommError``
+    for a 400/404 is the request's fault and counts toward the give-up, while
+    a raw ``HTTPError`` for a 401/429/5xx is an outage and is waited out. A 403
+    is not transient; it gets a longer give-up instead (see ``_give_up_after``).
     """
-    seen: set = set()
-    current: Optional[BaseException] = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if any(m in str(current).lower() for m in _DETERMINISTIC_ERROR_MARKERS):
+    # Link by link, outermost first: the first link that reads either way
+    # decides, so a handled exception deeper in the chain cannot overrule what
+    # the failure itself says. At each link the HTTP status it carries (itself,
+    # its wrapped ``.exc``, its cause) decides first, whatever its class says --
+    # for the first link, the same status _give_up_after reads.
+    for current in _causes(exc):
+        status = _http_status(current)
+        if status is not None:
+            return status >= 500 or status in _TRANSIENT_HTTP_STATUSES
+        message = str(current).lower()
+        if any(m in message for m in _DETERMINISTIC_ERROR_MARKERS):
             return False
-        current = current.__cause__ or current.__context__
-    seen.clear()
-    current = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
         if isinstance(current, (ConnectionError, TimeoutError)):
             return True
         if _TRANSIENT_ERROR_NAMES & {c.__name__ for c in type(current).__mro__}:
             return True
         if getattr(current, "connection_invalidated", False):
             return True
-        message = str(current).lower()
         if any(marker in message for marker in _TRANSIENT_ERROR_MARKERS):
             return True
-        current = current.__cause__ or current.__context__
     return False
 
 
@@ -449,12 +539,13 @@ class JobLineageIndexer:
         self._transient_streak.pop(item_id, None)
         attempts = self._failed_attempts.get(item_id, 0) + 1
         self._failed_attempts[item_id] = attempts
-        if attempts < _MAX_JOB_ATTEMPTS:
+        limit = _give_up_after(exc)
+        if attempts < limit:
             logger.exception(
                 "Failed to index job %s (attempt %d/%d); retrying next scan.",
                 item_id,
                 attempts,
-                _MAX_JOB_ATTEMPTS,
+                limit,
             )
             return False
         logger.exception(
@@ -680,17 +771,21 @@ class JobLineageIndexer:
                 self._missing_checkpoint_logged = True
             return 0
         self._missing_checkpoint_logged = False
-        if checkpoint is not None and self._is_from_beginning(checkpoint):
-            # A full read, never a SQL filter on the sentinel date.
-            checkpoint = None
-        self._expected_checkpoint = self.read_checkpoint(storage)
+        # The one read the scan works from: a second read here would let a
+        # ``--force`` re-seed landing between the two be taken as this scan's own
+        # starting point, and then overwritten by it.
+        self._expected_checkpoint = checkpoint
         self._checkpoint_moved = False
+        if checkpoint is not None and self._is_from_beginning(checkpoint):
+            # A full read, never a SQL filter on the sentinel date. Only the
+            # timestamp filter is dropped: done_ahead still applies.
+            checkpoint = {**checkpoint, "timestamp": None}
         mark: Optional[Tuple[datetime, List[str]]] = (
             (
                 self._parse_job_ts(checkpoint["timestamp"]),
                 list(checkpoint.get("item_ids") or []),
             )
-            if checkpoint
+            if checkpoint and checkpoint["timestamp"]
             else None
         )
         indexed = 0
@@ -744,7 +839,7 @@ class JobLineageIndexer:
         done_ahead: Dict[str, str] = dict((checkpoint or {}).get("done_ahead") or {})
         held = False
         changed = False
-        for job in self._jobs_since(storage, checkpoint and checkpoint["timestamp"]):
+        for job in self._jobs_since(storage, (checkpoint or {}).get("timestamp")):
             if self.stop_event.is_set() or self._checkpoint_moved:
                 break
             item_id = self._item_id(job)
@@ -1051,6 +1146,8 @@ class TargetLineageIndexer(JobLineageIndexer):
                 exc,
             )
             return False
+        # Read once, before any write: an outage here fails the job whole.
+        tags = _build_tags(storage, job.build_id)
         indexed = False
         for event in events:
             indexed |= self._rows.index_job_entry(
@@ -1059,7 +1156,7 @@ class TargetLineageIndexer(JobLineageIndexer):
                 target_run_uuid=job.uuid,
                 # The build's own tags are the user's; they are not in the job
                 # entry, which the shared builder shapes for W&B.
-                extra_tags=_build_tags(storage, job.build_id),
+                extra_tags=tags,
                 job_store=JobStore.TARGETS,
             )
         return indexed
@@ -1208,7 +1305,7 @@ class LineageJobIndexer(JobLineageIndexer):
         """
         indexed = 0
         pairs: List[Tuple[Tuple[datetime, str, str], StoredLineageJob]] = []
-        for job in self._jobs_since(storage, checkpoint and checkpoint["timestamp"]):
+        for job in self._jobs_since(storage, (checkpoint or {}).get("timestamp")):
             instant = _parse_ts(job.recorded_at)
             if mark is not None and (
                 instant < mark[0] or (instant == mark[0] and job.job_id in mark[1])

@@ -130,3 +130,13 @@ def test_an_over_long_job_id_is_rejected_before_the_db(storage):
     job_id = "x" * (MAX_JOB_ID_LENGTH + 1)
     assert upsert_job(storage, StoredLineageJob(job_id=job_id)) == REJECTED
     assert storage.get_job(job_id) is None
+
+
+def test_more_than_five_job_records_are_added_in_one_call(storage):
+    """Past five items the add used bulk_save_objects, which cannot bind the
+    database-stamped recorded_at expression, so every bulk add failed."""
+    jobs = [StoredLineageJob(job_id=f"bulk-{i}") for i in range(7)]
+    storage.add(jobs)
+    for record in jobs:
+        stored = storage.get_job(record.job_id)
+        assert stored is not None and stored.recorded_at

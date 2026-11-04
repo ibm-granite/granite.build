@@ -94,6 +94,16 @@ MAX_LINEAGE_URI_LENGTH = 512
 # to fail; SQLite would accept it, so without this the backends would disagree.
 MAX_JOB_ID_LENGTH = 256
 
+# The (job_id, input, output) unique index caps its entry in bytes, not
+# characters: on Postgres a btree entry over 2704 bytes fails the insert
+# (``index row size 3240 exceeds btree maximum 2704``) -- on every retry, so the
+# indexer would stall on it. The character limits above allow up to ~5 KiB of
+# multi-byte UTF-8, so a new row is also held to this, its three columns' UTF-8
+# bytes with room left for the entry's own overhead. Checked per row, not per
+# column, so the common case -- one long multi-byte side, short others -- still
+# fits, and only when a row is added: a row already stored keeps merging.
+MAX_LINEAGE_INDEX_ROW_BYTES = 2600
+
 
 class JobStore(str, Enum):
     """Where a row's full job data lives; the index itself only carries labels.

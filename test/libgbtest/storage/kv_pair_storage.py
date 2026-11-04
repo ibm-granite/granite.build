@@ -141,16 +141,17 @@ class TestKeyValuePairValueMethods(AbstractSingletonStorageUsingTest):
         storage = self.storage.kv_pair_storage
         storage.set_value("k1", {"v": 1})
         cls = type(storage)
-        real = cls.get_by_key
+        real = cls._convert_item_to_row_dict
         calls = []
 
-        def read_then_another_writer(this, key):
-            item = real(this, key)
-            if not calls:
-                calls.append(key)
-                this.set_value(key, {"v": "reseeded"})
-            return item
+        # The update's row is built after the read: another writer landing there
+        # is exactly the race the compare guards against.
+        def another_writer_then_build(this, item):
+            if not calls and getattr(item, "value", None) == {"v": 2}:
+                calls.append(item)
+                this.set_value("k1", {"v": "reseeded"})
+            return real(this, item)
 
-        with patch.object(cls, "get_by_key", read_then_another_writer):
+        with patch.object(cls, "_convert_item_to_row_dict", another_writer_then_build):
             assert storage.compare_and_set("k1", {"v": 1}, {"v": 2}) is False
         assert storage.get_value("k1") == {"v": "reseeded"}

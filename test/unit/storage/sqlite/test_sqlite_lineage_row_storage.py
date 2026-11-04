@@ -33,6 +33,7 @@ from gbserver.lineage.attributes import build_attributes
 from gbserver.storage.lineage_row_storage import DOWNSTREAM, UPSTREAM, GroupedEdge
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 from gbserver.storage.stored_lineage_row import (
+    MAX_LINEAGE_URI_LENGTH,
     TERMINAL,
     JobStore,
     StoredLineageRow,
@@ -656,3 +657,36 @@ def test_add_replacing_deletes_nothing_when_the_add_conflicts(storage):
     with pytest.raises(IntegrityError):
         storage.add_replacing(row(job_id="J"), [terminal.uuid])
     assert len(storage.get_rows_by_job("J")) == 2
+
+
+def test_a_row_over_the_index_byte_cap_is_dropped_but_a_stored_one_keeps_merging(
+    storage,
+):
+    """~450 CJK characters per side fit the columns but overflow the Postgres
+    btree entry (``index row size 3240 exceeds btree maximum 2704``) on every
+    retry. A new such row is refused; one long multi-byte side still fits; and a
+    row already stored keeps merging, so nothing indexed before is cut off."""
+    from gbserver.lineage.merge import (
+        ADDED,
+        REJECTED,
+        UNCHANGED,
+        UPDATED,
+        rows_to_add,
+        upsert_row,
+    )
+
+    prefix = "https://huggingface.co/org/"
+    wide = prefix + "模" * 450
+    assert len(wide) <= MAX_LINEAGE_URI_LENGTH
+    assert upsert_row(storage, row(job_id="J1", input=wide, output=wide + "x")) == (
+        REJECTED
+    )
+    assert storage.get_rows_by_job("J1") == []
+    assert rows_to_add([row(job_id="J1", input=wide, output=wide + "x")]) == []
+    assert upsert_row(storage, row(job_id="J2", input=wide)) == ADDED
+
+    # Stored before the guard existed: written past upsert_row.
+    legacy = row(job_id="J3", input=wide, output=wide + "x")
+    storage.add(legacy)
+    again = row(job_id="J3", input=wide, output=wide + "x")
+    assert upsert_row(storage, again) in (UNCHANGED, UPDATED)

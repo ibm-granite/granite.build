@@ -53,7 +53,7 @@ from gbserver.lineage.attributes import (
 )
 from gbserver.lineage.decompose import LineageDecomposeError, to_lineage_rows
 from gbserver.lineage.jobstats import ILineageStore
-from gbserver.lineage.merge import ADDED, REJECTED, upsert_job
+from gbserver.lineage.merge import REJECTED, upsert_job
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.lineage_job_storage import ILineageJobStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage
@@ -406,31 +406,31 @@ class DBLineageStore(ILineageStore):
         if entry is not None:
             job.attributes[ENTRY_ATTRIBUTE] = entry
         job.tags = sorted(set(tags or []))
-        result = upsert_job(storage, job)
+
+        def entry_fields(stored: StoredLineageJob, merged_fields: dict) -> dict:
+            if entry is None:
+                return {}
+            fields: dict = {}
+            # On top of the merge's attributes, so the one write carries both.
+            attributes = dict(merged_fields.get("attributes", stored.attributes) or {})
+            stored_entry = (stored.attributes or {}).get(ENTRY_ATTRIBUTE)
+            merged = _merge_entry(stored_entry, entry)
+            if merged != stored_entry:
+                attributes[ENTRY_ATTRIBUTE] = merged
+                fields["attributes"] = attributes
+            # Tags accumulate with the events they came from: a second entry for
+            # the same execution can carry tags the first did not, and a search
+            # must find the job by either.
+            all_tags = sorted(set(stored.tags or []) | set(job.tags))
+            if all_tags != sorted(set(stored.tags or [])):
+                fields["tags"] = all_tags
+            return fields
+
+        # One transaction for the merge and the entry: update_fields stamps
+        # recorded_at in it, so the indexer re-reads the merged record.
+        result = upsert_job(storage, job, extra_fields=entry_fields)
         if result == REJECTED:
             self._rejected_job_ids.add(job.job_id)
-            return
-        if result == ADDED or entry is None:
-            return
-        stored = storage.get_job(job.job_id)
-        if stored is None:
-            return
-        merged = _merge_entry((stored.attributes or {}).get(ENTRY_ATTRIBUTE), entry)
-        fields: dict = {}
-        if merged != (stored.attributes or {}).get(ENTRY_ATTRIBUTE):
-            attributes = dict(stored.attributes or {})
-            attributes[ENTRY_ATTRIBUTE] = merged
-            fields["attributes"] = attributes
-        # Tags accumulate with the events they came from: a second entry for
-        # the same execution can carry tags the first did not, and a search
-        # must find the job by either.
-        all_tags = sorted(set(stored.tags or []) | set(job.tags))
-        if all_tags != sorted(set(stored.tags or [])):
-            fields["tags"] = all_tags
-        if fields:
-            # update_fields stamps recorded_at in the same transaction (as
-            # upsert_job's did), so the indexer re-reads the merged record.
-            storage.update_fields(stored.uuid, fields)
 
     # -- Building (delegated, so both sinks agree on what lineage is) --------
 
