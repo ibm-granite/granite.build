@@ -25,30 +25,6 @@ from cells import Code, Link, part_text  # pylint: disable=wrong-import-order
 
 # isort: on
 
-# Top-level steps/ group -> table category. Unlisted groups fall to "Other".
-GROUP_CATEGORY = {
-    "data": "Data",
-    "eval": "Eval",
-    "misc": "Misc",
-    "train": "Train",
-    "tune": "Train",
-}
-
-# Per-step overrides for groups (like distill/) whose steps span categories.
-STEP_CATEGORY = {
-    "distill/corpus-pin-check": "Data",
-    "distill/corpus-prep": "Data",
-    "distill/corpus-sources": "Data",
-    "distill/logit-precompute": "Data",
-    "distill/eval": "Eval",
-    "distill/gen-smoke": "Eval",
-    "distill/probe": "Eval",
-    "distill/hf-export": "Misc",
-    "distill/vllm-server": "Other",
-    "distill/gold": "Train",
-    "distill/sft": "Train",
-    "distill/tokenizer-align": "Train",
-}
 
 CONFIG_ENV_ROOT = "configurations/assets/environments/"
 CONFIG_STEPS_ROOT = "configurations/assets/steps/"
@@ -113,7 +89,10 @@ def tracked_templates():
     Raises:
         subprocess.CalledProcessError: If git fails.
     """
-    paths = git_ls_files("steps/*/*/*/step-template.yaml")
+    paths = git_ls_files("steps/**/step-template.yaml")
+    for path in paths:
+        if path.count("/") != 4:
+            warn(f"{path}: not at steps/<group>/<name>/<env>/; skipped")
     return [p for p in paths if p.count("/") == 4]
 
 
@@ -130,20 +109,15 @@ def tracked_config_steps():
 
 
 def category_for(step_path):
-    """Map a step path (e.g. 'distill/gold') to its table category.
+    """Map a step path to its table category: its top-level steps/ folder, title-cased.
 
     Args:
-        step_path: '<group>/<name>' relative to steps/.
+        step_path: '<group>/<name>' relative to steps/ (e.g. 'distill/gold').
 
     Returns:
-        One of Data, Eval, Misc, Train, Other.
+        The category, e.g. 'Distill'.
     """
-    if step_path in STEP_CATEGORY:
-        return STEP_CATEGORY[step_path]
-    group = step_path.split("/")[0]
-    if group not in GROUP_CATEGORY:
-        warn(f"{step_path}: no category mapping; using Other — add it to STEP_CATEGORY")
-    return GROUP_CATEGORY.get(group, "Other")
+    return step_path.split("/")[0].replace("-", " ").title()
 
 
 def declared_environments(template):

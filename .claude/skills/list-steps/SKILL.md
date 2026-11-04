@@ -24,7 +24,7 @@ python3 .claude/skills/list-steps/scripts/steps_table.py -f xlsx -f pptx -o /tmp
 
 `-o` is a path *without* extension (default `./steps-inventory`); ask where to write files rather than dropping them in the repo. Links are repo-relative in Markdown; xlsx/pptx default to the GitHub blob URL of the `upstream` (else `origin`) remote's `main`, since relative links don't work in Office. Override with `--link-base URL` (`--link-base ''` for relative; xlsx then writes link cells as text with the paths in a cell comment, since Excel can't hyperlink a scheme-less path).
 
-`xlsx` needs XlsxWriter (`pptx` and `markdown` are stdlib only). If the script exits with "missing dependency", install the pinned, hash-checked version, preferably in a throwaway venv: `pip install --require-hashes -r .claude/skills/list-steps/scripts/requirements.txt`.
+The script needs PyYAML (already in the repo's `.venv`); `xlsx` additionally needs XlsxWriter (`pptx` and `markdown` otherwise use the standard library). Outside the repo venv, or if the script exits with a missing-dependency error, install the pinned, hash-checked versions, preferably in a throwaway venv: `pip install --require-hashes -r .claude/skills/list-steps/scripts/requirements.txt`.
 
 stdout is the Markdown tables; stderr carries `NOTE:` lines that need judgment and `wrote <path>` per file. Show the user the tables (or the file paths) and relay every NOTE. Add tables to a repo file (e.g. `steps/README.md`) only if asked.
 
@@ -32,7 +32,7 @@ stdout is the Markdown tables; stderr carries `NOTE:` lines that need judgment a
 
 | Column | Source |
 |---|---|
-| Category (table heading, not a column) | framework steps only: `STEP_CATEGORY` override, else `GROUP_CATEGORY` by top-level group (`tune` → Train); unknown → Other |
+| Category (table heading, not a column) | framework steps only: the top-level `steps/` folder, title-cased (`steps/distill/*` → Distill, `steps/tune/*` → Tune). No mapping table: every folder is its own category |
 | Step | `<group>/<name>` for framework steps; for non-framework steps, the path below `.../steps/` (e.g. `bfcl-eval`) |
 | Environments | framework steps: one label per `environment_configs` entry in `step-template.yaml`: the environment class lowercased, plus ` - <subtypes>` (comma-separated) when it declares `subtypes:`, e.g. `skypilot - lsf`, `skypilot` (no restriction: any subtype), `bash`; a step with several impls lists each, separated by `; `. Non-framework steps under `configurations/assets/environments/<class>/<sub>/[<cluster>/]steps/` take the subtype from the directory (e.g. `skypilot - lsf (ibm-bluevela)`), since it is the most specific; directories without a subtype use the step.yaml's declared environments, falling back to the directory's class (`configurations/assets/steps/<class>/` gives `<class>`) |
 | Tested Environments | framework steps only (non-framework: `—`): each `test/<case>/test_*.py` paired with every `environment_uri` (quoted or not) in `test-data/<case>/build.yaml`; labels are sorted; a skypilot subtype tested on >1 cluster shows the cluster, e.g. `slurm (bluevela)`, with the base env (`skypilot/slurm`) shown as `slurm (local)` |
@@ -40,11 +40,12 @@ stdout is the Markdown tables; stderr carries `NOTE:` lines that need judgment a
 | Image | blank only if the impl has a `Dockerfile` (custom image), or `custom (Dockerfile)` when it shares a row with impls that don't; else the launcher `image_id`, or `image` for docker/runpod (following one `config.X.Y` indirection); `Helm chart` for a k8s chart launcher; `none (bare node)` when empty; `?` plus a NOTE when unresolvable |
 | Sample build | framework steps only (non-framework: `—`): one `test-data/<case>/build.yaml` per impl: local SLURM first, then AWS, then any other; ties go to the shortest case name, then alphabetical |
 
-Within each table rows sort by the full Step path; a group can be split across tables (e.g. `distill/hf-export` under Misc). Unit/render tests (`test/test_*.py`) do not count as tested environments.
+Within each table rows sort by the full Step path. Unit/render tests (`test/test_*.py`) do not count as tested environments.
 
 ## When the script needs updating
 
-- **NOTE "no category mapping"**: a new group, or a new mixed-category step (like `distill/*`). Ask the user for the category, then add it to `STEP_CATEGORY` / `GROUP_CATEGORY`.
+- **New top-level `steps/` folder**: it becomes its own table automatically; nothing to update.
+- **NOTE "not at steps/<group>/<name>/<env>/; skipped"**: a `step-template.yaml` at another depth is misplaced; tell the user, it is missing from the inventory.
 - **NOTE "could not resolve image_id"**: the template builds the image ref some new way; fill the cell by hand and extend `resolve_image_id`.
 - **NOTE "no ... environment_uri"**: a test case without a matching build, or one using `file:` envs; check it by hand.
 
