@@ -36,6 +36,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model). Custom image `quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-5`
   (torch 2.15.0 / CUDA 13.2) with a fully hashed dependency lock. Build tests on skypilot/aws
   (QLoRA, aLoRA) and BlueVela SLURM (LoRA/FSDP, QLoRA/DeepSpeed).
+- **`mergekit` step (#238)**, `space://steps/merge/mergekit`, in a new `merge` category: one
+  MergeKit (`mergekit-yaml`, v0.1.5, LGPL-3.0) merge on any SkyPilot endpoint, single node, on
+  the CPU unless GPUs are requested. Public image: `setup` installs `mergekit==<mergekit_version>`
+  with uv, as data-designer does, or `mk_image` provides it. `merge_config` is MergeKit's
+  own recipe, passed through unchanged except that a model reference naming a bound input
+  (`model_1`–`model_4`, `base_model`) gets the staged path. Hugging Face ids and node paths
+  pass through, so MergeKit fetches them itself. An inline Jinja `chat_template` needs
+  `{% raw %}`, because gbserver renders config strings. `args` takes further
+  `mergekit-yaml` flags. Config errors fail at step creation. Because MergeKit reports a
+  failed tokenizer copy as success, the step checks the merged output (tensors, tokenizer,
+  requested chat template) before registering it. Build tests on local SLURM and local
+  kind run MergeKit's `gradient-slerp` example on SmolLM2-135M + -Instruct, and
+  `make test-mergekit` runs the real-MergeKit tests in a separate venv.
 - **`make publish-image` refuses to overwrite an existing image tag (#229).** A tag must keep
   pointing at one image, and SLURM's `slurm_image_cache` keys its `.sqsh` by tag, so a re-pushed
   tag never reached it. `publish-image` now checks the registry first and pushes only a new tag;
