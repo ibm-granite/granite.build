@@ -36,7 +36,9 @@ from gbcli.utils.buildutil import apply_parameters
 from gbserver.utils.template import fill_objtemplate, fill_template
 
 _REPO = pathlib.Path(__file__).resolve().parents[3]
-_RECIPE = _REPO / "recipes" / "granite-switch" / "slurm" / "answerability-lora"
+_RECIPE = (
+    _REPO / "recipes" / "granite-switch" / "skypilot" / "slurm" / "answerability-lora"
+)
 _STEP = _REPO / "steps" / "train" / "hf-peft-sft" / "skypilot"
 _TEMPLATE = yaml.safe_load((_STEP / "step-template.yaml").read_text())
 _LAUNCHER = _TEMPLATE["environment_configs"]["Skypilot"]["launchers"]["hf_peft_sft"][
