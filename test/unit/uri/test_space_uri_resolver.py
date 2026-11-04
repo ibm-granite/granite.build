@@ -609,6 +609,36 @@ class TestEnvFolderOwnership:
             with pytest.raises(ValueError, match="Unresolvable space uri"):
                 _resolve("space://steps/parent_only")
 
+    def test_unlisted_repo_env_gets_its_family_step(self, tmp_path):
+        """An env in a repo no base encloses (a ``#subdirectory=`` git env not in
+        base_uris) is matched from its ``environments`` segment, so its family's
+        ``steps/`` in a listed base still serves it."""
+        assets = tmp_path / "assets"
+        family = _write_step(
+            assets / "environments" / "skypilot" / "steps" / "hello", ["Skypilot"]
+        )
+        env_dir = tmp_path / "gb-test" / "environments" / "skypilot" / "slurm" / "bv"
+        env_dir.mkdir(parents=True)
+        _set_bases(assets)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            assert _resolved_dir(_resolve("space://steps/hello")).samefile(family)
+
+    def test_unlisted_repo_env_skips_a_sibling_env_step(self, tmp_path):
+        """That match still keeps a sibling env's own ``steps/`` out."""
+        assets = tmp_path / "assets"
+        _write_step(
+            assets / "environments" / "skypilot" / "aws" / "steps" / "hello",
+            ["Skypilot"],
+        )
+        env_dir = tmp_path / "gb-test" / "environments" / "skypilot" / "slurm" / "bv"
+        env_dir.mkdir(parents=True)
+        _set_bases(assets)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/hello")
+
     def test_outside_env_dir_outranks_listed_bases(self, tmp_path):
         """An outside env dir ranks right after the space dir: its own copy beats
         a listed base's copy, while the space's own copy still beats it."""

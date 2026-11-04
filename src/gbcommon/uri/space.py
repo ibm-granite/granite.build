@@ -46,8 +46,9 @@ class _StepLookup:
         env_class: Active env class name, or ``None``.
         env_subtype: Active env sub-type, or ``None``.
         env_path: The active env's resolved local dir, or ``None`` when unknown.
-        env_rel: The env dir's path in its innermost base (``()`` when no base
-            encloses it), or ``None`` when no env dir is known.
+        env_rel: The env dir's path in its innermost base or, when no base
+            encloses it, from its last ``environments`` segment on (``()`` if it
+            has none); ``None`` when no env dir is known.
         bases: ``(base_uri, local_path)`` pairs to search, in priority order;
             ``local_path`` is ``None`` for a base that can't be read locally.
     """
@@ -272,7 +273,8 @@ class SpaceURI(URI):
 
         The env dir's path relative to this boundary is what a ``steps/`` dir's
         owner is compared with (``_StepLookup.env_rel``).  Falls back to
-        ``env_path`` itself when no base encloses it.
+        ``env_path`` itself when no base encloses it; the env's path is then
+        taken from its ``environments`` segment (:meth:`_env_rel_from_boundary`).
 
         Args:
             env_path: Absolute, resolved path of the active env's directory.
@@ -708,12 +710,38 @@ class SpaceURI(URI):
             env_subtype=getattr(tl, "current_env_subtype", None),
             env_path=env_path,
             env_rel=(
-                env_path.relative_to(boundary).parts
+                SpaceURI._env_rel_from_boundary(env_path, boundary)
                 if env_path is not None and boundary is not None
                 else None
             ),
             bases=tuple(bases),
         )
+
+    @staticmethod
+    def _env_rel_from_boundary(env_path: Path, boundary: Path) -> Tuple[str, ...]:
+        """Return the env dir's path parts relative to its enclosing base.
+
+        When no base encloses the env (``boundary`` is the env dir itself, e.g.
+        a ``#subdirectory=`` env in a git repo not listed in base_uris), the
+        path from its last ``environments`` segment is used instead, so a
+        family's ``steps/`` in a listed base still serves it
+        (:meth:`_steps_dir_admits_env`).
+
+        Args:
+            env_path: Absolute, resolved path of the active env's directory.
+            boundary: The deepest base enclosing it
+                (:meth:`_enclosing_base_boundary`), or ``env_path`` when none does.
+
+        Returns:
+            The env dir's parts relative to ``boundary``, or from its last
+            ``environments`` segment on when no base encloses it (``()`` when
+            its path has no such segment).
+        """
+        if boundary != env_path:
+            return env_path.relative_to(boundary).parts
+        if "environments" not in env_path.parts:
+            return ()
+        return SpaceURI._from_environments(env_path.parts)
 
     @staticmethod
     def _active_env_path() -> Optional[Path]:
