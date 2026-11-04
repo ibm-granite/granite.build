@@ -214,7 +214,10 @@ class TestVllmWorkarounds:
         8 data-parallel ranks, which vLLM then failed to place ("Error setting
         CUDA_VISIBLE_DEVICES: local range: [5, 6) base value: '0'" — smoke build
         04be7abd, target vllm-server)."""
-        assert 'GPUS="${SKYPILOT_NUM_GPUS_PER_NODE:-${NUM_GPUS_PER_NODE:-8}}"' in run_script
+        assert (
+            'GPUS="${SKYPILOT_NUM_GPUS_PER_NODE:-${NUM_GPUS_PER_NODE:-8}}"'
+            in run_script
+        )
 
 
 def _section(run_script, begin, end=None):
