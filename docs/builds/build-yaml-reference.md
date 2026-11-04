@@ -225,12 +225,12 @@ steps:
 size the compute it allocates. It's a free-form dict — fields depend on the
 environment, not on a fixed schema.
 
-| Field                    | Used by                  | Notes |
-|--------------------------|--------------------------|-------|
-| `num_nodes`              | k8s, runpod, skypilot      | Number of nodes. |
-| `num_gpus_per_node`      | k8s, runpod                | GPUs per node. |
-| `num_cpus_per_node`      | docker, k8s, skypilot      | CPU cores per node. |
-| `total_memory_per_node`  | docker, k8s, skypilot      | Memory per node, e.g. `"4Gi"`, `"32Gi"`. |
+| Field                    | Used by                   | Notes |
+|--------------------------|---------------------------|-------|
+| `num_nodes`              | k8s, runpod, skypilot     | Number of nodes. |
+| `num_gpus_per_node`      | docker, k8s, runpod       | GPUs per node. SkyPilot ignores it; use `resources.accelerators`. |
+| `num_cpus_per_node`      | docker, k8s, skypilot     | CPU cores per node. |
+| `total_memory_per_node`  | docker, k8s, skypilot     | Memory per node, e.g. `"4Gi"`, `"32Gi"`. Not on SkyPilot SLURM; use `resources.memory`. |
 
 For **skypilot** the launch path consumes `num_cpus_per_node` and
 `total_memory_per_node`, folding them into `sky.Resources` as a low-precedence

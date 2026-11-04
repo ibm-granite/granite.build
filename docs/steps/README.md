@@ -35,7 +35,7 @@ direct reference from a `build.yaml` have a focused reference page (linked below
 
 | Step | Description | Environments | Reference |
 |------|-------------|--------------|-----------|
-| `gbstep` | Base step runner. Default when `step_uri` is omitted. Supports `setup_command`, `start_command`, and `cleanup_command`. | All (Bash, Docker, K8s, RunPod, Skypilot, Skypilot-managed) | — |
+| `gbstep` | Base step runner. Default when `step_uri` is omitted. Supports `setup_command`, `start_command`, and `cleanup_command`. | K8s | — |
 | `command` | Run a shell command; its exit status is the step's status. Docker/Skypilot can run it inside a container image via `command_config.image` (BYOI); Bash always runs on the bare node. | Bash, Docker, Skypilot | [`command`](command.md) |
 
 > The data-staging utility steps `hfpull`/`hfpush` (HuggingFace), `s3pull`/`s3push`
@@ -182,7 +182,7 @@ Three approaches for running custom code:
 | Approach | When to use |
 |----------|-------------|
 | [Bring Your Own Step (BYOS)](bring-your-own-step.md) | Your code lives in a Git repo; you provide setup/start commands. |
-| [Custom code steps](custom-code-steps.md) | You want inline commands without a separate step definition. |
+| [Custom code steps](custom-code-steps.md) | Kubernetes: you want inline commands without a separate step definition (on SkyPilot, use [`command`](command.md)). |
 | [Bring Your Own Image (BYOI)](bring-your-own-image.md) | You have a pre-built container image. |
 
 ## Secrets as environment variables

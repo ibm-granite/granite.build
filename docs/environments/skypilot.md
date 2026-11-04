@@ -16,6 +16,9 @@ The implementation is [`Skypilot`](../../src/gbserver/environment/skypilot.py). 
 `Skypilot_managed` ([skypilot_managed.py](../../src/gbserver/environment/skypilot_managed.py)), runs the
 job under SkyPilot's managed-jobs controller; it inherits this configuration.
 
+> **Sizing a step:** see [How `compute_config` maps to SkyPilot](#how-compute_config-maps-to-skypilot),
+> and for SLURM [Sizing a SkyPilot SLURM step](skypilot-slurm-sizing.md).
+
 ### Clouds
 
 Select the backend with `config.default_cloud` (a step may override it per launch). Each cloud has its

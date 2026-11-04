@@ -333,10 +333,10 @@ config:
   retry_transparently_default: true # Deduplicate NEWARTIFACT events across retries. Default: true.
 
   compute_config:                   # Generic resource hints, translated into backend resource specs.
-    num_nodes: 1                    # SkyPilot: num_nodes and num_cpus_per_node always apply;
-    num_gpus_per_node: 0            # GPUs come from resources.accelerators, and memory on
-    num_cpus_per_node: 0            # SLURM from resources.memory. See skypilot.md and
-    total_memory_per_node: ""        # skypilot-slurm-sizing.md.
+    num_nodes: 1                    # SkyPilot reads these differently (num_gpus_per_node is
+    num_gpus_per_node: 0            # ignored). See skypilot.md#how-compute_config-maps-to-skypilot
+    num_cpus_per_node: 0            # and skypilot-slurm-sizing.md.
+    total_memory_per_node: ""
 
   workload:                         # Used by bash-style steps to derive workspace/log paths.
     path: ""

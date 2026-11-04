@@ -174,6 +174,7 @@ granite.build:
 ```
 
 Notes:
+- **Sizing on SkyPilot SLURM** (the bash example above needs none): `compute_config.num_cpus_per_node` → `--cpus-per-task` even though the step's `resources` is `{}`, so don't also add `resources.cpus`. GPUs only via `launcher_config.resources.accelerators` (e.g. `"H100:8"`), memory only via `launcher_config.resources.memory` (bare GiB, e.g. `"512"`); `num_gpus_per_node` and `total_memory_per_node` are ignored there. See `docs/environments/skypilot-slurm-sizing.md`.
 - **Inputs** carry exactly one of `uri:` (fixed location: `hf:///…`, `file:…`) or `binding:` (wire to another target's output for multi-target workloads).
   - **A `file:` input MUST use an absolute path** — `file:///abs/path/`. A *relative* `file:foo/` resolves against the build's **runtime working dir, not your project dir**, so the input can **silently resolve to nothing** (e.g. an `adapter`/`dataset` that never loads) while the build still reports **SUCCESS**. When the file is produced by another target in the *same* build, prefer a `binding:` (no path at all); use an absolute `file:///…` URI to point at a fixed location from a *previous* build. (Confirm it actually loaded in `build_job_log` — a missing `file:` input is a `WARNING … ignoring`, not a failure.)
 - **Produced outputs** declare a `uri:`/`base_uri:` push destination; the command registers them via the `GB_ARTIFACT_ID` line.

@@ -132,7 +132,7 @@ environments; place it under the matching per-cloud section — `config.k8s` or
 
 **Delivery differs by environment:**
 
-- **SkyPilot** resolves the secret value in the build server and inject it as a task
+- **SkyPilot** resolves the secret value in the build server and injects it as a task
   environment variable. The value is looked up in the space secret bag under `secret_name` (or the
   `env_name` **verbatim** when `secret_name` is omitted).
 - **K8s** never materializes the value in the build server: it hands the secret *name* to Helm as a

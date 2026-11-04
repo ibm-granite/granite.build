@@ -63,8 +63,6 @@ DOC_TOPICS: dict[str, str] = {
     "configuration": "configuration/README.md",
     "spaces": "spaces/README.md",
     "environments": "environments/README.md",
-    "skypilot": "environments/skypilot.md",
-    "skypilot_slurm": "environments/skypilot-slurm.md",
     "compute_sizing_slurm": "environments/skypilot-slurm-sizing.md",
     "step_resolution": "environments/step-resolution.md",
     "asset_stores": "asset-stores/README.md",

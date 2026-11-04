@@ -30,9 +30,7 @@ steps:
 | `image` | string | optional (**Docker / Skypilot only**) | Container image to run the command inside. Empty (default) ⇒ run on the **bare launcher node**. Not supported on the Bash environment. |
 
 `compute_config` is also honored where the environment uses it (see the matrix
-below). On Skypilot, the step's `resources: {}` does not block it:
-`compute_config.num_cpus_per_node` still sets the CPU request, and GPUs and (on SLURM) memory
-come from `config.launcher_config.resources`. See
+below). On Skypilot the step's `resources: {}` does not block it; see
 [How `compute_config` maps to SkyPilot](../environments/skypilot.md#how-compute_config-maps-to-skypilot)
 and [Sizing a SkyPilot SLURM step](../environments/skypilot-slurm-sizing.md).
 
