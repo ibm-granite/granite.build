@@ -874,7 +874,8 @@ class SpaceURI(URI):
 
         Yields:
             ``(owner, step_yaml)`` tuples: the folder that owns the copy's
-            ``steps/`` dir (``()`` for the base's top level) and its
+            ``steps/`` dir (``()`` for the base's top level, or for another
+            listed base's top level; see :meth:`_owner_in_bases`) and its
             ``step.yaml``, in sorted path order.  Nothing is yielded when the
             base can't be read locally.
         """
@@ -885,8 +886,38 @@ class SpaceURI(URI):
         if index is None:
             index = ctx.step_indexes[base_path] = SpaceURI._step_index(base_path)
         for owner, cand in index.get(name, ()):
+            owner = SpaceURI._owner_in_bases(base_path, owner, ctx)
             if SpaceURI._steps_dir_admits_env(owner, rel):
                 yield owner, cand
+
+    @staticmethod
+    def _owner_in_bases(
+        base_path: Path, owner: Tuple[str, ...], ctx: "_StepLookup"
+    ) -> Tuple[str, ...]:
+        """Return ``owner``, or ``()`` when it is another listed base's top level.
+
+        With nested bases (``[<repo>, <repo>/configurations/assets]``) the outer
+        base sees the inner base's top-level ``steps/`` with owner
+        ``('configurations', 'assets')``.  That folder serves every env when
+        searched from the inner base, so it is treated the same from the outer
+        one, and the two bases agree about the same file.
+
+        Args:
+            base_path: The base being searched.
+            owner: The folder holding the copy's ``steps/`` dir, relative to
+                ``base_path``.
+            ctx: The lookup's bases (:meth:`_step_lookup`).
+
+        Returns:
+            ``()`` when ``base_path/owner`` is a listed base, else ``owner``.
+        """
+        if not owner:
+            return owner
+        folder = base_path.resolve().joinpath(*owner)
+        for _, other in ctx.bases:
+            if other is not None and other.resolve() == folder:
+                return ()
+        return owner
 
     @staticmethod
     def _step_index(base_path: Path) -> Dict[str, List[_IndexedStep]]:

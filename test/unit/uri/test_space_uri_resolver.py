@@ -661,6 +661,22 @@ class TestEnvFolderOwnership:
         with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
             assert _resolved_dir(_resolve("space://steps/x")).samefile(own)
 
+    def test_nested_base_top_level_steps_serve_from_the_outer_base(self, tmp_path):
+        """With ``[<repo>, other, <repo>/configurations/assets]``, the inner
+        base's top-level ``steps/`` serves the env from the outer base too, so
+        the outer base's copy still beats the later ``other`` base."""
+        repo = tmp_path / "repo"
+        inner = repo / "configurations" / "assets"
+        mine = _write_step(inner / "steps" / "k8s" / "digit", env_classes=["K8s"])
+        other = tmp_path / "other"
+        _write_step(other / "steps" / "k8s" / "digit", env_classes=["K8s"])
+        env_dir = inner / "environments" / "k8s" / "local"
+        env_dir.mkdir(parents=True)
+        _set_bases(repo, other, inner)
+
+        with SpaceURI.with_current_env(_make_env("K8s", env_dir)):
+            assert _resolved_dir(_resolve("space://steps/digit")).samefile(mine)
+
     def test_unlisted_repo_env_gets_its_family_step(self, tmp_path):
         """An env in a repo no base encloses (a ``#subdirectory=`` git env not in
         base_uris) is matched from its ``environments`` segment, so its family's
