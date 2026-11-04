@@ -30,8 +30,11 @@ steps:
 | `image` | string | optional (**Docker / Skypilot only**) | Container image to run the command inside. Empty (default) ⇒ run on the **bare launcher node**. Not supported on the Bash environment. |
 
 `compute_config` is also honored where the environment uses it (see the matrix
-below); on Skypilot, resource requests are otherwise supplied via
-`config.launcher_config.resources`.
+below). On Skypilot, the step's `resources: {}` does not block it:
+`compute_config.num_cpus_per_node` still sets the CPU request, and GPUs and (on SLURM) memory
+come from `config.launcher_config.resources`. See
+[How `compute_config` maps to SkyPilot](../environments/skypilot.md#how-compute_config-maps-to-skypilot)
+and [Sizing a SkyPilot SLURM step](../environments/skypilot-slurm-sizing.md).
 
 ## Environment support
 
@@ -42,7 +45,7 @@ differences:
 |---|---|---|---|---|
 | **Bash** | no | `nohup` | [`space://monitors/bash`](../../src/gbserver/builtins/monitors/bash/monitor.yaml) | Always runs on the bare node; the command is exec'd so its exit status is the step's status. |
 | **Docker** | yes | `docker` | [`space://monitors/docker`](../../src/gbserver/builtins/monitors/docker/monitor.yaml) | Runs `bash -c '<command>'` inside `image`. Defaults: `num_gpus_per_node: 0`, `total_memory_per_node: 4Gi`. |
-| **Skypilot** | yes | `skypilot` | [`space://monitors/skypilot`](../../src/gbserver/builtins/monitors/skypilot/monitor.yaml) | Empty `image` runs on the bare launcher node (no Pyxis SPANK plugin required, e.g. the local Docker SLURM cluster); a non-empty value renders to `docker:<image>`. Resources are left cloud-agnostic. |
+| **Skypilot** | yes | `skypilot` | [`space://monitors/skypilot`](../../src/gbserver/builtins/monitors/skypilot/monitor.yaml) | Empty `image` runs on the bare launcher node (no Pyxis SPANK plugin required, e.g. the local Docker SLURM cluster); a non-empty value renders to `docker:<image>`. `resources: {}` in the step; `compute_config` and the build's `launcher_config.resources` size it. |
 
 ## Running inside a container image (the BYOI pattern)
 

@@ -27,7 +27,7 @@ Every compute endpoint gbserver can run a step on, and the page that documents i
 | IBM LSF cluster | `Lsf` | direct (`bsub` over SSH) | [lsf.md](lsf.md) |
 | RunPod GPU pods | `Runpod` | direct (RunPod API) | [runpod.md](runpod.md) |
 | **SkyPilot** (multi-cloud) | `Skypilot` | per-step `sky.launch()` | [skypilot.md](skypilot.md) |
-| &nbsp;&nbsp;↳ SLURM | `Skypilot` | `default_cloud: slurm` | [skypilot-slurm.md](skypilot-slurm.md) |
+| &nbsp;&nbsp;↳ SLURM | `Skypilot` | `default_cloud: slurm` | [skypilot-slurm.md](skypilot-slurm.md), [sizing a step](skypilot-slurm-sizing.md) |
 | &nbsp;&nbsp;↳ LSF | `Skypilot` | `default_cloud: lsf` | [skypilot-lsf.md](skypilot-lsf.md) |
 | &nbsp;&nbsp;↳ Kubernetes | `Skypilot` | `default_cloud: kubernetes` | [skypilot-kubernetes.md](skypilot-kubernetes.md) |
 | &nbsp;&nbsp;↳ AWS | `Skypilot` | `default_cloud: aws` | [skypilot-aws.md](skypilot-aws.md) |
