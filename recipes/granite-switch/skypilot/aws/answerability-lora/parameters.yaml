@@ -5,8 +5,8 @@
 # new value per run: a re-run with the same RUN_ID replaces that run's outputs.
 RUN_ID: "it1-r1"
 
-# The EFS-backed aws environment beside this file (a standalone gbserver only).
-ENVIRONMENT_URI: "file:."
+# SkyPilot on AWS with the gb-shared EFS (configurations/assets/environments/skypilot/aws/gb-shared).
+ENVIRONMENT_URI: "space://environments/skypilot/aws/gb-shared"
 
 # ── Model ────────────────────────────────────────────────────────────────────
 # Public, ungated, ~17.6 GB of safetensors (no onnx). Staged by an hfpull step

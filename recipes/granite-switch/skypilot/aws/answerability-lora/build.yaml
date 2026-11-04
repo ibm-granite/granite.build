@@ -1,6 +1,6 @@
 #####
 # Answerability LoRA adapter on granite-4.2-8b, trained with the hf-peft-sft
-# step on AWS EC2 GPUs, with a shared EFS filesystem (environment.yaml).
+# step on AWS EC2 GPUs, with a shared EFS filesystem (skypilot/aws/gb-shared).
 #
 # The AWS port of ../../slurm/answerability-lora: the same two targets and the
 # same prepare script, wired by one artifact:
@@ -52,7 +52,7 @@ granite.build:
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             launcher_config:
-              # The region comes from environment.yaml (the EFS's region).
+              # The region comes from the environment (the EFS's region).
               resources:
                 # A CPU instance at least this size (SkyPilot's "N+" minimum).
                 cpus: "$${PREP_CPUS}+"
@@ -241,7 +241,7 @@ granite.build:
             launcher_config:
               resources:
                 # SkyPilot picks the instance: H200:8 is p5e/p5en.48xlarge,
-                # H100:1 is p5.4xlarge. The region comes from environment.yaml.
+                # H100:1 is p5.4xlarge. The region comes from the environment.
                 accelerators: "$${ACCELERATORS}"
               envs:
                 PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"

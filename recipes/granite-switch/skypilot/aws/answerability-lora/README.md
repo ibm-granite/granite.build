@@ -63,10 +63,12 @@ The account needs a P-instance vCPU quota of at least 192 in `us-east-1`
 
 ### The EFS filesystem
 
-[`environment.yaml`](environment.yaml) mounts the EFS `fs-REPLACE-ME`
-in `us-east-1` at `/mnt/gb-shared`. From another AWS account, replace
-`file_system_id` (and `region`, if it is not `us-east-1`) with your own
-filesystem's. It needs:
+The build runs in `space://environments/skypilot/aws/gb-shared`
+([`environment.yaml`](../../../../../configurations/assets/environments/skypilot/aws/gb-shared/environment.yaml)),
+which mounts the EFS `fs-REPLACE-ME` in `us-east-1` at `/mnt/gb-shared`.
+From another AWS account, copy that environment into your space with your own
+filesystem's `file_system_id` (and `region`, if it is not `us-east-1`), and
+point `ENVIRONMENT_URI` at it. The filesystem needs:
 
 - a mount target in every availability zone of the region, since SkyPilot may
   place a step in any of them;
@@ -76,9 +78,6 @@ filesystem's. It needs:
 
 The [runbook in the AWS environment docs](../../../../../docs/environments/skypilot-aws.md#runbook-provision-a-shared-efs-filesystem)
 provisions one.
-
-`environment.yaml` is selected with `ENVIRONMENT_URI: "file:."`, which only a
-standalone gbserver accepts.
 
 ## GPUs
 
@@ -97,7 +96,7 @@ saves no checkpoints, so a spot instance that is reclaimed restarts training
 from the start; the recipe uses on-demand instances.
 
 p5-family capacity is often short. When there is none, gbserver retries the
-launch with backoff for about 2 hours (`retry` in `environment.yaml`) before
+launch with backoff for about 2 hours (the environment's `retry`) before
 the build fails.
 
 A smoke run, to try the plumbing on one GPU before the full run:
@@ -117,7 +116,7 @@ What differs:
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `ENVIRONMENT_URI` | `file:.` | The EFS-backed environment beside `build.yaml`. |
+| `ENVIRONMENT_URI` | `space://environments/skypilot/aws/gb-shared` | SkyPilot on AWS with the `gb-shared` EFS. |
 | `DATA_ROOT` | `/mnt/gb-shared/granite-switch/answerability-lora/data` | Where `prepare` writes, on the EFS. As on SLURM, it does not include the method, so builds running at the same time need different `RUN_ID`s. |
 | `ADAPTER_ROOT` | `/mnt/gb-shared/granite-switch/answerability-lora/adapters` | Where the adapter is written, on the EFS, under `answerability-$METHOD/$RUN_ID`. |
 | `ACCELERATORS` | `H200:8` | See [GPUs](#gpus). |
@@ -145,4 +144,3 @@ an instance that mounts the EFS, or add an `hf://` or `s3://` output to the
   [access point](../../../../../docs/environments/skypilot-aws.md#per-space-isolation-with-efs-access-points-recommended-for-multi-tenant-byo)
   per space for isolation. That needs `mount.efs` in every step image, so it
   is not done here.
-- **Standalone only**, because of `ENVIRONMENT_URI: "file:."`.

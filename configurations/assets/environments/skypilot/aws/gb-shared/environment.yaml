@@ -1,19 +1,19 @@
-# SkyPilot on AWS EC2, with a shared EFS filesystem, for this recipe only.
+# space://environments/skypilot/aws/gb-shared: SkyPilot on AWS EC2, with the
+# pre-provisioned `gb-shared` EFS filesystem shared by every step.
 #
-# The shipped space://environments/skypilot/aws has no shared filesystem: each
-# step runs on its own EC2 instance and keeps nothing after it ends. This recipe
-# needs one: `prepare` writes the dataset that `train` reads, and the adapter
-# must outlive the train instance. So this copy of that environment adds:
+# space://environments/skypilot/aws (the directory above) has no shared
+# filesystem: each step runs on its own EC2 instance and keeps nothing after it
+# ends. A multi-target build that passes data between targets, or that must keep
+# an output after its instance is gone, needs one. This copy of that environment
+# adds:
 #
-#   * shared_filesystem: a pre-provisioned EFS, mounted at /mnt/gb-shared on
-#     every step's instance (and inside its container);
-#   * hf pulls as their own steps, cached on the EFS (`config: {}`), so the
-#     17.6 GB base model is downloaded once and reused by both targets and by
-#     later runs;
+#   * shared_filesystem: the EFS, mounted at /mnt/gb-shared on every step's
+#     instance (and inside its container);
+#   * hf pulls as their own steps, cached on the EFS (`config: {}`), so a model
+#     is downloaded once and reused by later targets and builds;
 #   * every step pinned to us-east-1, the only region the EFS has mount targets in.
 #
-# build.yaml selects this file with environment_uri: file:. (a standalone
-# gbserver only). See README.md.
+# Used by recipes/granite-switch/skypilot/aws/answerability-lora.
 name: skypilot-aws-gb-shared
 type: Skypilot
 subtype: aws
@@ -58,9 +58,10 @@ config:
       file_system_id: fs-REPLACE-ME
       region: us-east-1
       tls: true
-  # Pin each step type the build runs to the EFS region. hfpull is the hidden
-  # step queued for every hf:// input; it takes no launcher_config from
-  # build.yaml, so the pin has to live here.
+  # Pin each step type to the EFS region. hfpull is the hidden step queued for
+  # every hf:// input; it takes no launcher_config from build.yaml, so the pin
+  # has to live here. A build running another step type here must pin it too
+  # (launcher_config.resources.infra: aws/us-east-1), or add it to this list.
   steps:
     hfpull:
       launcher_config: { resources: { infra: aws/us-east-1 } }
