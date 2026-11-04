@@ -623,6 +623,22 @@ class TestEnvFolderOwnership:
         with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
             assert _resolved_dir(_resolve("space://steps/hello")).samefile(own)
 
+    def test_own_copy_beats_a_family_copy_under_a_deeper_prefix(self, tmp_path):
+        """Depth is measured from the ``environments`` segment, so a family copy
+        under a longer prefix (``test-data/old/environments/...``) doesn't
+        outrank the env's own copy in the same base."""
+        base = tmp_path / "assets"
+        env_dir = base / "environments" / "skypilot" / "aws"
+        own = _write_step(env_dir / "steps" / "x", ["Skypilot"])
+        _write_step(
+            base / "test-data" / "old" / "environments" / "skypilot" / "steps" / "x",
+            ["Skypilot"],
+        )
+        _set_bases(base)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            assert _resolved_dir(_resolve("space://steps/x")).samefile(own)
+
     def test_unlisted_repo_env_gets_its_family_step(self, tmp_path):
         """An env in a repo no base encloses (a ``#subdirectory=`` git env not in
         base_uris) is matched from its ``environments`` segment, so its family's

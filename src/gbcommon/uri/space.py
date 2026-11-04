@@ -1106,8 +1106,9 @@ class SpaceURI(URI):
 
         Returns:
             ``(rank, specificity, path-str, path)`` tuples, so the smallest
-            ranks first.  ``rank`` is the owning ``steps/`` folder's depth,
-            negated when the env dir is known (deeper = closer to the env wins)
+            ranks first.  ``rank`` is the owning ``steps/`` folder's depth from
+            its last ``environments`` segment (as :meth:`_steps_dir_admits_env`
+            compares it), negated when the env dir is known (deeper = closer to the env wins)
             and as-is when it isn't (shared folders win over any one env's);
             specificity is the env_configs key count (fewer = more
             env-specific).  Possibly empty.
@@ -1132,7 +1133,11 @@ class SpaceURI(URI):
             env_keys = list((data.get("environment_configs") or {}).keys())
             # Known env: deepest owner first (env's own over family over top).
             # Unknown env: shallowest first (top-level, then shared families).
-            rank = len(owner) if ctx.env_path is None else -len(owner)
+            # Depth is measured as admission compares it, from the owner's last
+            # ``environments`` segment, so a prefix (``test-data/old/``) above
+            # a family folder can't make it outrank the env's own copy.
+            depth = len(SpaceURI._from_environments(owner))
+            rank = depth if ctx.env_path is None else -depth
             matches.append((rank, len(env_keys), str(cand), cand))
         return matches
 
