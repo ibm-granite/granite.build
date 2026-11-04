@@ -78,31 +78,25 @@ environment_configs:
             case "$OUT_DIR" in /*) ;; *) OUT_DIR="$WORK/$OUT_DIR" ;; esac
             mkdir -p "$OUT_DIR"
 
-            # GPU visibility normalization -- same guard as distill/gold and
-            # distill/eval (see gold's step-template for the full analysis):
-            # inside a pyxis/enroot container only the allocated GPUs are
-            # mounted and CUDA renumbers them 0..N-1, so a CUDA_VISIBLE_DEVICES
-            # mask written against a different view of the node is invalid
-            # here, and torch silently drops every entry from the first
-            # out-of-range ordinal on -- the smoke generation then silently
-            # runs on fewer GPUs than requested. Only rewrite when the value
-            # cannot be valid in this container: empty, or a numeric ordinal
-            # at or beyond the mounted-GPU count (UUID/MIG entries are valid
-            # as-is; a shorter subset mask is a legitimate partial bind).
-            # Unset is safe because the mounted /dev/nvidia* set IS the
-            # allocation.
-            echo "gen-smoke: container CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-<unset>}'"
-            if [ "${CUDA_VISIBLE_DEVICES+set}" = set ]; then
-              # The || true differs from the other steps' guard on purpose:
-              # this script runs set -euo pipefail, and ls/grep exit nonzero
-              # on no match -- wc's count (0) and the empty MAX_ORD are the
-              # answers we want, not failures.
-              N_GPU="$(ls /dev/nvidia[0-9]* 2>/dev/null | wc -l || true)"
-              MAX_ORD="$(printf '%s\n' "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | tr -d '[:space:]' | grep -xE '[0-9]+' | sort -n | tail -n 1 || true)"
-              if [ "$N_GPU" -gt 0 ] && { [ -z "$CUDA_VISIBLE_DEVICES" ] || { [ -n "$MAX_ORD" ] && [ "$MAX_ORD" -ge "$N_GPU" ]; }; }; then
-                echo "gen-smoke: CUDA_VISIBLE_DEVICES='$CUDA_VISIBLE_DEVICES' is invalid inside the container ($N_GPU GPU(s) mounted, ordinals 0..$((N_GPU-1))); unsetting so CUDA exposes the mounted -- allocated -- set"
-                unset CUDA_VISIBLE_DEVICES
-              fi
+            # GPU allocation check (ibm-granite/granite.build#604). On Slurm 25.11.x an
+            # --overlap job step -- SkyPilot's container keeper is one -- can be granted
+            # fewer of the job's GPUs than the job holds (SchedMD bug 24862, fixed in
+            # 26.05.3), and the container keeps the keeper's device set. Ranks past the
+            # visible count would then bind a GPU another rank already holds and fail
+            # later, far from the cause. Refuse here instead. `nvidia-smi -L` lists what
+            # the container's device cgroup grants and ignores CUDA_VISIBLE_DEVICES; a
+            # failed or missing nvidia-smi (0 listed) proves nothing, so only an
+            # undercount it reports is refused. Nothing is rewritten or worked around:
+            # the check holds whether the fix lands in Slurm or in SkyPilot.
+            GPU_WANT="${SKYPILOT_NUM_GPUS_PER_NODE:-0}"
+            case $GPU_WANT in ''|*[!0-9]*) GPU_WANT=0 ;; esac
+            GPU_SEEN="$(nvidia-smi -L 2>/dev/null | grep -c '^GPU ' || true)"
+            case $GPU_SEEN in ''|*[!0-9]*) GPU_SEEN=0 ;; esac
+            GPU_DEVS="$(ls /dev/nvidia[0-9]* 2>/dev/null | tr '\n' ' ' || true)"
+            echo "gen-smoke: gpu check: allocated=$GPU_WANT visible=$GPU_SEEN CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-<unset>}' SLURM_JOB_GPUS='${SLURM_JOB_GPUS:-}' SLURM_STEP_GPUS='${SLURM_STEP_GPUS:-}' devices='$GPU_DEVS'"
+            if [ "$GPU_SEEN" -ge 1 ] && [ "$GPU_SEEN" -lt "$GPU_WANT" ]; then
+              echo "gen-smoke: FATAL: $GPU_WANT GPU(s) were allocated (SKYPILOT_NUM_GPUS_PER_NODE) but this container can access only $GPU_SEEN (nvidia-smi -L). On SLURM this is ibm-granite/granite.build#604; rerun, or report the node." >&2
+              exit 1
             fi
             RUNGS=()
             {% for rung in config.gen_smoke_config.rungs %}
