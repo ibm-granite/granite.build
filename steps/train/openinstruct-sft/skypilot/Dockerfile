@@ -82,8 +82,9 @@ RUN uv run --no-project --python 3.12 python /tmp/finetune_local_model.py open_i
 # quay's scanner; see README.md "Scanning"). vllm is REMOVED, not upgraded: the fixed vllm needs
 # torch 2.11, which would replace the locked torch 2.10 + flash-attn training
 # stack, and nothing finetune.py imports needs vllm (it serves RL/generation).
-# The rest are upgraded to the first fixed release. litellm leaves upstream's
-# <1.75.2 pin; finetune.py imports it only through optional helpers.
+# The rest are upgraded to the first fixed release, except Authlib: 1.9.3, the
+# latest, which has no advisories (the first fixed one is 1.9.1). litellm leaves
+# upstream's <1.75.2 pin; finetune.py imports it only through optional helpers.
 # wandb is upgraded past upstream's ==0.23.1 pin for its bundled wandb-core Go
 # binary; the step runs it with WANDB_MODE=disabled (see README.md).
 RUN uv sync --frozen \

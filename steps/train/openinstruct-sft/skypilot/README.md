@@ -79,7 +79,7 @@ unrendered-binding detector). `**/*.md` is listed so the docs can show `{{ ... }
 | Open-Instruct | allenai/open-instruct tag v0.3.0, commit `26de99604002d6a7b25a2c5f2ee880e388a21dca` (Apache-2.0), at `/opt/open-instruct`. The build fetches exactly that commit and fails if `HEAD` differs. |
 | Training stack | `uv sync --frozen` from Open-Instruct's own `uv.lock` into `/opt/open-instruct/.venv`. |
 | clearml | `clearml==2.1.12`, installed into the same venv. |
-| Security patches | On top of the frozen lock, in the same install RUN: `vllm` uninstalled (the fixed release needs torch 2.11; SFT does not use it); `pillow`, `nltk`, `litellm`, `PyJWT`, `Authlib`, `fastmcp`, `anyio`, `GitPython`, `certifi`, `cryptography`, `wandb` upgraded to their first fixed releases (versions pinned in the Dockerfile and `test/test_dockerfile.py`). `litellm` and `wandb` therefore leave upstream's pins. The NVIDIA Nsight Compute profiler is purged from the CUDA base. |
+| Security patches | On top of the frozen lock, in the same install RUN: `vllm` uninstalled (the fixed release needs torch 2.11; SFT does not use it); `pillow`, `nltk`, `litellm`, `PyJWT`, `Authlib`, `fastmcp`, `anyio`, `GitPython`, `certifi`, `cryptography`, `wandb` upgraded to their first fixed releases, except `Authlib`: 1.9.3, the latest, which has no advisories (the first fixed one is 1.9.1). Versions are pinned in the Dockerfile and `test/test_dockerfile.py`. `litellm` and `wandb` therefore leave upstream's pins. The NVIDIA Nsight Compute profiler is purged from the CUDA base. |
 | Step scripts | `src/` at `/opt/openinstruct-sft/`. |
 
 Why `finetune.py`: it is deprecated upstream in favour of `olmo_core_finetune.py`,
