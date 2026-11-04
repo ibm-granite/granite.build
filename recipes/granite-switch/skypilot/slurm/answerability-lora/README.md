@@ -2,7 +2,7 @@
 
 Trains an answerability adapter on `ibm-granite/granite-4.2-8b`, either a
 regular LoRA (`METHOD=lora`, the default) or an activated LoRA
-(`METHOD=alora`, see [aLoRA](#alora)), with the [`hf-peft-sft`](../../../../steps/train/hf-peft-sft/skypilot/USAGE.md)
+(`METHOD=alora`, see [aLoRA](#alora)), with the [`hf-peft-sft`](../../../../../steps/train/hf-peft-sft/skypilot/USAGE.md)
 step, on IBM BlueVela over SLURM. It registers the **adapter**, not a merged
 model, as the `adapter` artifact.
 
