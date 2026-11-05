@@ -163,8 +163,15 @@ class TestLauncher:
         the most expensive place to discover it (build 75fa47d2).
         """
         assert "/stage/" not in run_script
-        assert 'PYBIN="python"' in run_script
+        assert 'PYBIN="$(command -v python)"' in run_script
         assert "export ACCELERATE=" in run_script
+        # dirname of a bare "python" is ".", which made the launch die rc=127 on
+        # "./accelerate: No such file or directory" (smoke build 74ceb755) once
+        # PYBIN stopped being an absolute venv path. The absolutified PYBIN must
+        # precede the export that derives from it.
+        assert run_script.index('PYBIN="$(command -v python)"') < run_script.index(
+            "export ACCELERATE="
+        )
         # The bare call is what makes both necessary; if upstream ever qualifies it, this
         # test should be revisited rather than silently kept.
         assert 'ACCELERATE="${ACCELERATE:-accelerate}"' in sft_sh

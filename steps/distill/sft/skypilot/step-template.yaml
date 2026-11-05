@@ -233,7 +233,12 @@ environment_configs:
             # --- distill source: baked into the image, nothing cloned or mounted ---
             # DISTILL_HOME, the venv (VIRTUAL_ENV) and PYTHONPATH are all set by the image's
             # own ENV lines. The interpreter is asked of uv rather than hardcoded.
-            PYBIN="python"
+            # Absolute, not a bare "python": the ACCELERATE export below takes
+            # dirname "$PYBIN", and dirname of a bare name is "." — which made the
+            # trainer launch die rc=127 on "./accelerate: No such file or
+            # directory" (smoke builds 04be7abd/74ceb755) once the steps moved to
+            # baked images and stopped hardcoding the venv path.
+            PYBIN="$(command -v python)"
             CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"
             WORK="${GB_BUILD_WORKDIR:-$PWD}"
             echo "GB_STEP_METADATA_KEY:distill_code_source GB_STEP_METADATA_VALUE:baked-image"

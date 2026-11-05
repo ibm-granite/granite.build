@@ -101,8 +101,14 @@ class TestLauncherFactsLearnedElsewhere:
 
     def test_the_venv_is_on_path_for_the_bare_accelerate(self, run_script, pc_sh):
         assert "/stage/" not in run_script
-        assert 'PYBIN="python"' in run_script
+        assert 'PYBIN="$(command -v python)"' in run_script
         assert "export ACCELERATE=" in run_script
+        # dirname of a bare "python" is ".", which made the launch die rc=127 on
+        # "./accelerate: No such file or directory" (smoke build 74ceb755). The
+        # absolutified PYBIN must precede the export that derives from it.
+        assert run_script.index('PYBIN="$(command -v python)"') < run_script.index(
+            "export ACCELERATE="
+        )
         assert 'ACCELERATE="${ACCELERATE:-accelerate}"' in pc_sh
 
     def test_missing_hub_kernels_are_fetched_in_job(self, launcher):
