@@ -905,7 +905,17 @@ class NL2RepoBench(Benchmark):
             # dependencies (dotenv, ...). VIRTUAL_ENV is baked into the
             # image; the literal is the fallback for an image without it.
             result = sb.execute(
-                f'cd {RUN_DIR} || exit 1; PY="${{VIRTUAL_ENV:-/app/.venv}}/bin/python"; '
+                f'cd {RUN_DIR} || exit 1; '
+                # enroot's shadow hook restores the node's /etc/passwd at
+                # every `enroot start`, so the bring-up's usermod is undone
+                # before this command runs. On nodes whose root shell is
+                # /bin/sh, the runtime's `su root -` then gives dash, which
+                # has no `alias` builtin (the init commands fail their
+                # exit-code assert and kill the server) and renders no PS1
+                # (the output poll never completes). Set the shell inside
+                # THIS start, the one the runtime's bash sessions live in.
+                f'usermod -s /bin/bash root || true; '
+                f'PY="${{VIRTUAL_ENV:-/app/.venv}}/bin/python"; '
                 f'[ -x "$PY" ] || PY=python; '
                 # The image's ENV points the local-runtime client at
                 # host.docker.internal (a Docker-in-Docker convention). This
