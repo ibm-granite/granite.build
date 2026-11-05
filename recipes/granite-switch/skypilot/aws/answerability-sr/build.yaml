@@ -2,8 +2,10 @@
 # answerability-sr — train and evaluate a Shadow Residual (SR) answerability
 # adapter on AWS EC2 GPUs, with a shared EFS filesystem (skypilot/aws/gb-shared).
 #
-# The AWS port of ../../lsf-bluevela/answerability-sr: the same two targets, the same
-# generated SR config and the same image, wired by one artifact:
+# The AWS port of ../../lsf-bluevela/answerability-sr: the same two targets and
+# the same generated SR config, wired by one artifact. Unlike the LSF recipe,
+# both targets run on the bare EC2 instance by default (IMAGE is empty; see
+# parameters.yaml):
 #
 #   train ──(adapter)──> eval
 #

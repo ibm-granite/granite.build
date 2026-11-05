@@ -22,7 +22,9 @@ config:
   idle_minutes_to_autostop: 5
   # GPU capacity is often short. A launch that finds none is retried with
   # backoff (30 s, doubling, capped at provision_backoff_max), up to max_retries
-  # attempts: about 2 h of trying before the build fails.
+  # attempts: about 2 h of trying before the build fails. max_retries also caps
+  # re-runs of a step whose workload failed after it started (hfpull's are on
+  # by default); re-run n waits 60 s x 2^n, capped at delay_seconds.
   retry:
     max_retries: 12
     provision_backoff_max: 900
@@ -47,10 +49,13 @@ config:
       file_system_id: fs-REPLACE-ME
       region: us-west-2
       tls: true
-  # Pin each step type to the EFS region (hfpull, the hidden step queued for
-  # every hf:// input, takes no launcher_config from build.yaml).
+  # Pin each step type to the EFS region (hfpull and hfpush, the hidden steps
+  # queued for every hf:// input and output, take no launcher_config from
+  # build.yaml).
   steps:
     hfpull:
+      launcher_config: { resources: { infra: aws/us-west-2 } }
+    hfpush:
       launcher_config: { resources: { infra: aws/us-west-2 } }
     command:
       launcher_config: { resources: { infra: aws/us-west-2 } }

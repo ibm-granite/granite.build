@@ -156,8 +156,10 @@ They apply to every train in the build. What differs:
 Each adapter is on the EFS, at
 `/mnt/gb-shared/granite-switch/answerability-lora/adapters/answerability-<method>/<RUN_ID>`.
 The build does not copy it anywhere else. To use it outside AWS, copy it from
-an instance that mounts the EFS, or add an `hf://` or `s3://` output to the
-`train-<method>` target.
+an instance that mounts the EFS, or add an `hf://` output to the
+`train-<method>` target (the environment pins its hidden `hfpush` step to the
+EFS region). `s3://` outputs do not work on SkyPilot yet: the built-in s3push
+step's default path does not resolve there.
 
 ## Limits
 

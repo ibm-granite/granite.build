@@ -106,15 +106,17 @@ your id in a **personal space** outside the repo:
 ```bash
 S=~/.granite.build/local-space
 REPO=<path to your granite.build checkout>
-mkdir -p "$S/overlay/environments/skypilot-local/aws-gb-shared"
+T=gb-shared          # the template: gb-shared (us-east-1) or gb-shared-usw2 (us-west-2)
+mkdir -p "$S/overlay/environments/skypilot-local/aws-$T"
 chmod 700 "$S"
 
-# The environment, with your EFS id (use the gb-shared-usw2 template for us-west-2).
+# The environment, with your EFS id.
 . ~/.granite.build/local-env/gb-shared-<region>.ids
-sed -e "s/fs-REPLACE-ME/$FS/" -e 's/^name: skypilot-aws-gb-shared$/name: skypilot-local-aws-gb-shared/' \
-  "$REPO/configurations/assets/environments/skypilot/aws/gb-shared/environment.yaml" \
-  > "$S/overlay/environments/skypilot-local/aws-gb-shared/environment.yaml"
-chmod 600 "$S/overlay/environments/skypilot-local/aws-gb-shared/environment.yaml"
+sed -e "s/fs-REPLACE-ME/$FS/" -e "s/^name: skypilot-aws-$T\$/name: skypilot-local-aws-$T/" \
+  "$REPO/configurations/assets/environments/skypilot/aws/$T/environment.yaml" \
+  > "$S/overlay/environments/skypilot-local/aws-$T/environment.yaml"
+chmod 600 "$S/overlay/environments/skypilot-local/aws-$T/environment.yaml"
+grep -nE '^name:|file_system_id:' "$S/overlay/environments/skypilot-local/aws-$T/environment.yaml"
 
 # The space: your overlay first, then the repo's assets for everything else.
 cat > "$S/space.yaml" <<EOF
@@ -153,7 +155,8 @@ gb build start -f build.yaml --skip-version-check \
   --param DATASET_SPLIT='train[50:66]' --param MAX_STEPS=4
 ```
 
-Each recipe's README has its own smoke run and full-run parameters. Without
+For the us-west-2 copy, the URI ends in `aws-gb-shared-usw2`. Each recipe's
+README has its own smoke run and full-run parameters. Without
 the `ENVIRONMENT_URI` override, a build uses the shipped template, whose
 placeholder id cannot be mounted.
 
