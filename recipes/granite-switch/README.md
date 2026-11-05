@@ -16,6 +16,10 @@ Recipes are grouped by the SkyPilot cluster they run on, as
 | [`skypilot/aws/answerability-lora`](skypilot/aws/answerability-lora/README.md) | The same LoRA and/or aLoRA adapters, trained on AWS EC2 GPUs with a shared EFS filesystem. |
 | [`skypilot/aws/answerability-sr`](skypilot/aws/answerability-sr/README.md) | The same Shadow Residual adapter, trained and scored on AWS EC2 GPUs with a shared EFS filesystem. |
 
+The AWS recipes need a one-time setup in your own AWS account (credentials, an
+EFS filesystem, and a private environment copy holding its id): see
+[Running the granite-switch recipes on AWS](skypilot/aws/README.md).
+
 More adapter-library recipes will be published here. Pick the `build.yaml` of
 the recipe you want and run:
 

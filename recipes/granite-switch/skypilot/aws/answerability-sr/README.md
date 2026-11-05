@@ -45,15 +45,20 @@ report.
 
 ## Prerequisites
 
-The same as [the LoRA recipe on AWS](../answerability-lora/README.md#prerequisites):
-the `HF_TOKEN`, `GB_AWS_ACCESS_KEY_ID` and `GB_AWS_SECRET_ACCESS_KEY` secrets,
-the P-instance quota, and an EFS in your own copy of the
-`skypilot/aws/gb-shared` (us-east-1) or `skypilot/aws/gb-shared-usw2`
-(us-west-2) template, set as `ENVIRONMENT_URI` (see
-[The EFS filesystem](../answerability-lora/README.md#the-efs-filesystem)).
-`HF_TOKEN` needs read access to
-the private `ibm-research/touma` repo; see
+The one-time AWS setup is shared by the recipes in this folder and is in
+[Running the granite-switch recipes on AWS](../README.md): your AWS key and
+GPU quota, an EFS in your region, where to store the EFS id and the
+credentials under `~/.granite.build/`, and the private copy of the
+environment you point `ENVIRONMENT_URI` at
+(`--param ENVIRONMENT_URI=space://environments/skypilot-local/aws-gb-shared`).
+For this recipe specifically, `HF_TOKEN` needs read access to the private
+`ibm-research/touma` repo; see
 [the LSF recipe](../../lsf-bluevela/answerability-sr/README.md#the-one-prerequisite-an-hf_token-secret).
+
+**GPU memory:** SR holds two hidden-state streams, so an 8B base does not fit
+on a 24 GB L4 even at `MAX_LENGTH=2048`. A run on g6.4xlarge (1×L4) cloned,
+installed and built the SR base, then ran out of memory on the first backward
+pass. Use a GPU with at least 48 GB (L40S, A100-80GB, H100, H200).
 
 ## GPUs
 

@@ -72,57 +72,31 @@ build before it is submitted, with
 
 ## Prerequisites
 
-### Secrets
+The one-time AWS setup is shared by the recipes in this folder and is in
+[Running the granite-switch recipes on AWS](../README.md): your AWS key and
+GPU quota, an EFS in your region, where to store the EFS id and the
+credentials under `~/.granite.build/`, and the private copy of the
+environment you point `ENVIRONMENT_URI` at. For this recipe specifically:
 
-Register these once in the space you build in:
-
-| Secret | What |
-|---|---|
-| `HF_TOKEN` | A read token for an account with access to the private `ibm-research/touma` dataset repo. See [the SLURM recipe](../../slurm-bluevela/answerability-lora/README.md#the-one-prerequisite-an-hf_token-secret). |
-| `GB_AWS_ACCESS_KEY_ID`, `GB_AWS_SECRET_ACCESS_KEY` | The AWS key the instances are launched with. gbserver writes them to the `gb-skypilot` profile of `~/.aws/credentials` (see [the AWS environment docs](../../../../../docs/environments/skypilot-aws.md#credentials-aws_credentials)). |
-
-```bash
-gb secret create HF_TOKEN --personal --value "$HF_TOKEN" --skip-version-check
-gb secret create GB_AWS_ACCESS_KEY_ID --personal --value "$AWS_ACCESS_KEY_ID" --skip-version-check
-gb secret create GB_AWS_SECRET_ACCESS_KEY --personal --value "$AWS_SECRET_ACCESS_KEY" --skip-version-check
-```
-
-The account needs a P-instance vCPU quota of at least 192 in `us-east-1`
-(one 48xlarge) for the default `H200:8`.
+- `HF_TOKEN` needs read access to the private `ibm-research/touma` dataset
+  repo; see [the SLURM recipe](../../slurm-bluevela/answerability-lora/README.md#the-one-prerequisite-an-hf_token-secret).
+- The default `H200:8` needs a P-instance vCPU quota of at least 192 (one
+  48xlarge) in your region.
 
 ### The EFS filesystem
 
-The build runs in an environment that mounts an EFS at `/mnt/gb-shared` on
-every step. The repo ships two templates, with `file_system_id: fs-REPLACE-ME`:
-
-| Template | Region |
-|---|---|
-| [`skypilot/aws/gb-shared`](../../../../../configurations/assets/environments/skypilot/aws/gb-shared/environment.yaml) | `us-east-1` |
-| [`skypilot/aws/gb-shared-usw2`](../../../../../configurations/assets/environments/skypilot/aws/gb-shared-usw2/environment.yaml) | `us-west-2` |
-
+Every step mounts an EFS at `/mnt/gb-shared`. The repo ships environment
+templates for `us-east-1` (`skypilot/aws/gb-shared`) and `us-west-2`
+(`skypilot/aws/gb-shared-usw2`) with `file_system_id: fs-REPLACE-ME`.
 `ENVIRONMENT_URI` defaults to the `us-east-1` template, which cannot mount
-anything as shipped. Before the first run, give the build your own copy:
+anything as shipped, so run with your own copy:
 
-1. Copy the template for your region into a space you control, under a name
-   that does not shadow a shipped environment, for example
-   `environments/skypilot-local/aws-gb-shared/environment.yaml`, and set
-   `file_system_id` (and `region`, if you moved it) to your EFS.
-2. Make that space's directory the first of its `base_uris`, ahead of the
-   repo's `configurations/assets`, and start gbserver on it
-   (`gbserver standalone --space-dir <that space>`).
-3. Run with `--param ENVIRONMENT_URI=space://environments/skypilot-local/aws-gb-shared`.
+```bash
+--param ENVIRONMENT_URI=space://environments/skypilot-local/aws-gb-shared
+```
 
-Keep that space out of git: the EFS id is an internal resource id. The
-filesystem needs:
-
-- a mount target in every availability zone of the region, since SkyPilot may
-  place a step in any of them;
-- a security group on the mount targets allowing NFS (TCP 2049) from the
-  workers (for example from the default VPC's CIDR);
-- its root `chmod 1777`, so the non-root steps can create their directories.
-
-The [runbook in the AWS environment docs](../../../../../docs/environments/skypilot-aws.md#runbook-provision-a-shared-efs-filesystem)
-provisions one.
+[Setup steps 2 and 4](../README.md#2-create-the-efs-once-per-region) create the
+EFS and that copy.
 
 ## GPUs
 
