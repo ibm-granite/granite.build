@@ -5,10 +5,13 @@
 # /proj/data-eng/llmb-read-write/builds/ (llm-build-<uuid>) and the per-run
 # workdirs in /proj/data-eng/llmb-read-write/builds/builds/ (<uuid>).
 #
-# Job logs are kept on purpose, and a cancelled or killed build leaves its
-# per-run workdir behind, so both pile up. The script looks only at the
-# directories directly inside DIR, exactly as given, and removes one only when
-# all of these hold:
+# Both pile up. Job logs are kept on purpose. Teardown removes only each target
+# run's builds/<uuid>/runs/<run_id>/, so every build leaves at least an empty
+# builds/<uuid>/runs/ behind (only the EFS shared-filesystem provider also
+# removes those parents). A build that is cancelled or killed before teardown,
+# or whose teardown fails (that failure is logged and ignored), leaves its whole
+# per-run workdir. The script looks only at the directories directly inside
+# DIR, exactly as given, and removes one only when all of these hold:
 #   * its name contains a UUID anywhere, with any prefix or suffix (e.g.
 #     87caf891-2393-4a16-895a-f50bf316fd65 or llm-build-87caf891-...)
 #   * it is owned by the current user, so other users' entries are never touched
@@ -41,7 +44,7 @@ ME=$(id -un)
 # usage
 # Print the header comment as help text.
 usage() {
-  sed -n '2,32p' "$0"
+  sed -n '2,35p' "$0"
 }
 
 # die MESSAGE
