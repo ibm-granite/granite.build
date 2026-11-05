@@ -13,15 +13,22 @@ It ships **without data**: you bring a dataset in the format below (see
 task (does a set of documents answer the user's question?); see
 [What to expect](#what-to-expect) before relying on them for another.
 
+First run the one-time AWS setup in [Running the granite-switch recipes on
+AWS](../README.md): it ends with `setup-local-space.sh`, which writes your
+environment copy and a params file holding its `ENVIRONMENT_URI`; add
+`SOURCE_DATA_URI` there. Then:
+
 ```bash
-gb build start -f build.yaml --param RUN_ID=<unique> --param SOURCE_DATA_URI=<your data>
-gb build start -f build.yaml --param RUN_ID=<unique> --param SOURCE_DATA_URI=<your data> \
-  --param METHODS=alora,lora                                                  # both
+P="$(sed 's/^/--param /' ~/.granite.build/local-env/granite-switch.params)"
+gb build start -f build.yaml $P --param RUN_ID=<unique>                          # LoRA
+gb build start -f build.yaml $P --param RUN_ID=<unique> --param METHODS=alora,lora   # both
 ```
 
-`parameters.yaml` beside `build.yaml` is picked up automatically. Without
-`SOURCE_DATA_URI` the build fails before it is submitted, with
-`'SOURCE_DATA_URI' is undefined`.
+`parameters.yaml` beside `build.yaml` is picked up automatically. The build
+fails before it is submitted, naming what is missing, without
+`SOURCE_DATA_URI` (`'SOURCE_DATA_URI' is undefined`) or with the shipped
+environment template
+(`'ENVIRONMENT_URI_is_a_template__run_recipes_granite_switch_skypilot_aws_setup_local_space_sh' is undefined`).
 
 ## How it runs
 
@@ -174,14 +181,11 @@ Every step mounts an EFS at `/mnt/gb-shared`. The repo ships environment
 templates for `us-east-1` (`skypilot/aws/gb-shared`) and `us-west-2`
 (`skypilot/aws/gb-shared-usw2`) with `file_system_id: fs-REPLACE-ME`.
 `ENVIRONMENT_URI` defaults to the `us-east-1` template, which cannot mount
-anything as shipped, so run with your own copy:
-
-```bash
---param ENVIRONMENT_URI=space://environments/skypilot-local/aws-gb-shared
-```
-
+anything as shipped, so the build refuses to render with it.
 [Setup steps 2 and 4](../README.md#2-create-the-efs-once-per-region) create the
-EFS and that copy.
+EFS and your copy; `setup-local-space.sh` writes the copy's `ENVIRONMENT_URI`
+(`space://environments/skypilot-local/aws-gb-shared`, or
+`...-usw2` for us-west-2) into your params file.
 
 ## GPUs
 
@@ -212,7 +216,7 @@ GPUs, and AWS stocks each type separately, so when that one has none, set
 A smoke run, to try the plumbing on one GPU before the full run:
 
 ```bash
-gb build start -f build.yaml --param RUN_ID=smoke1 --param SOURCE_DATA_URI=<your data> \
+gb build start -f build.yaml $(sed 's/^/--param /' ~/.granite.build/local-env/granite-switch.params) --param RUN_ID=smoke1 \
   --param ACCELERATORS=L40S:1 --param INSTANCE_TYPE=g6e.2xlarge \
   --param DATASET_SPLIT='train[:64]' --param MAX_STEPS=4
 ```
@@ -224,7 +228,7 @@ They apply to every train in the build.
 | Parameter | Default | Meaning |
 |---|---|---|
 | `RUN_ID` | `it1-r1` | Names the build (`answerability-<methods>-<RUN_ID>`), the dataset dir, the adapter dirs and the ClearML tasks. Use a new one per run: re-using one replaces that run's outputs. |
-| `ENVIRONMENT_URI` | `space://environments/skypilot/aws/gb-shared` | The us-east-1 EFS template, with a placeholder `file_system_id`. Point it at your own copy; see [The EFS filesystem](#the-efs-filesystem). |
+| `ENVIRONMENT_URI` | `space://environments/skypilot/aws/gb-shared` | The us-east-1 EFS template, with a placeholder `file_system_id`; the build refuses it. `setup-local-space.sh` writes your copy's URI into your params file; see [The EFS filesystem](#the-efs-filesystem). |
 | `SOURCE_DATA_URI` | none (required) | Your parquet directory; see [Your data](#your-data). |
 | `DATASET_SPLIT` | `train` | `load_dataset` split; slicing works (`train[:64]` for a smoke run). |
 | `MAX_LENGTH` | `8192` | Tokens per row: `prepare` drops longer rows, and the train uses it as `max_length`. |

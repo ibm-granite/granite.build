@@ -36,7 +36,7 @@ _FILES = sorted(
     )
     for p in d.rglob("*")
     if p.is_file()
-    and p.suffix in (".yaml", ".md")
+    and p.suffix in (".yaml", ".md", ".sh")
     and (p.parent.name.startswith("gb-shared") or "recipes" in p.parts)
 )
 # Private data, code and clusters; AWS resource ids other than the placeholder.

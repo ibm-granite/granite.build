@@ -26,6 +26,12 @@
 #
 #   gb build start -f build.yaml --param RUN_ID=r1 --param DATA_URI=<root>
 ######
+<% if ENVIRONMENT_URI.startswith("space://environments/skypilot/aws/gb-shared") %>
+# The shipped templates hold a placeholder EFS id, so the build would only fail
+# once an instance tries to mount it. Point ENVIRONMENT_URI at your own copy.
+# An undefined name fails the render (StrictUndefined) and names the problem.
+$${ ENVIRONMENT_URI_is_a_template__run_recipes_granite_switch_skypilot_aws_setup_local_space_sh }
+<% endif %>
 granite.build:
   name: answerability-sr-$${RUN_ID}
   targets:

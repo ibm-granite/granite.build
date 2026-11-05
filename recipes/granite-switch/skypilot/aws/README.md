@@ -10,7 +10,8 @@ The recipes in this folder train on AWS EC2 GPUs through SkyPilot:
 Each target, and each `hf://` download, runs on its own EC2 instance. The
 instances share data through an **EFS filesystem** that you provision once in
 your own AWS account. This page covers the one-time setup: your credentials,
-an EFS, and a private copy of the environment that holds your EFS id.
+an EFS, and a private copy of the environment that holds your EFS id, which
+[`setup-local-space.sh`](setup-local-space.sh) writes (step 4).
 
 Nothing in this setup goes into git. Credentials and resource ids live under
 `~/.granite.build/` on the machine that runs gbserver (`$GB_HOME_DIR` if you
@@ -102,85 +103,67 @@ not typed on the command line or kept in shell history.
 ## 4. Make a private copy of the environment
 
 `environment.yaml` is plain YAML, not a template, so the EFS id has to be in an
-environment file. The shipped templates hold `fs-REPLACE-ME`. Put a copy with
-your id in a **personal space** outside the repo:
+environment file. The shipped templates hold `fs-REPLACE-ME`, and the recipes
+refuse to render with them:
+
+```
+'ENVIRONMENT_URI_is_a_template__run_recipes_granite_switch_skypilot_aws_setup_local_space_sh' is undefined
+```
+
+Run the setup script once per region, from your checkout:
 
 ```bash
-S=~/.granite.build/local-space
-REPO=<path to your granite.build checkout>
-T=gb-shared          # the template: gb-shared (us-east-1) or gb-shared-usw2 (us-west-2)
-mkdir -p "$S/overlay/environments/skypilot-local/aws-$T"
-chmod 700 "$S"
+recipes/granite-switch/skypilot/aws/setup-local-space.sh <region>
+```
 
-# The environment, with your EFS id.
-. ~/.granite.build/local-env/gb-shared-<region>.ids
-sed -e "s/fs-REPLACE-ME/$FS/" -e "s/^name: skypilot-aws-$T\$/name: skypilot-local-aws-$T/" \
-  "$REPO/configurations/assets/environments/skypilot/aws/$T/environment.yaml" \
-  > "$S/overlay/environments/skypilot-local/aws-$T/environment.yaml"
-chmod 600 "$S/overlay/environments/skypilot-local/aws-$T/environment.yaml"
-grep -nE '^name:|file_system_id:' "$S/overlay/environments/skypilot-local/aws-$T/environment.yaml"
+It reads `FS` from your `.ids` file (step 2) and writes, outside the repo and
+readable only by you:
 
-# The space: your overlay first, then the repo's assets for everything else.
-cat > "$S/space.yaml" <<EOF
-name: public
-secret_manager:
-  type: local
-  config: {}
-base_uris:
-  - file://$S/overlay
-  - file://$REPO/configurations/assets
+| File | What |
+|---|---|
+| `~/.granite.build/local-space/overlay/environments/skypilot-local/aws-gb-shared*/environment.yaml` | The template for your region with your EFS id. Named under `skypilot-local/`, so it never shadows a shipped environment. A region other than `us-east-1` / `us-west-2` starts from the `us-east-1` template with the region replaced. |
+| `~/.granite.build/local-space/space.yaml` | A standalone space named `public` (so it reads the `space_secrets/public/` secrets): the overlay first, then this checkout's `configurations/assets`. An existing one that already lists the overlay is kept. |
+| `~/.granite.build/local-env/granite-switch.params` | `ENVIRONMENT_URI=space://environments/skypilot-local/<name>`. Other lines in the file are kept. |
+
+It reads no secret and calls no AWS API; it is safe to re-run, and
+`ENVIRONMENT_URI` points at the region set up last. It ends by printing what
+is left to do. The repo's `.gitignore` also excludes
+`environments/skypilot-local/`, in case a copy lands in a checkout.
+
+## 5. Add your data, start gbserver and run
+
+The recipes ship without data. Add yours to the same params file, one
+`KEY=VALUE` per line, so that private repo names stay out of your shell
+history and out of the checkout:
+
+```bash
+cat >> ~/.granite.build/local-env/granite-switch.params <<'EOF'
+SOURCE_DATA_URI=hf:///datasets/<org>/<repo>/<revision>/<dir>
+DATA_URI=hf:///datasets/<org>/<repo>
 EOF
 ```
 
-- Use a name under `skypilot-local/` for your copy, not the template's own
-  name, so it never shadows a shipped environment. The repo's `.gitignore`
-  also excludes `environments/skypilot-local/`, in case a copy lands in a
-  checkout.
-- If you chose a region other than the two templates', also change the
-  template's `region:` and every `infra: aws/<region>` line in your copy.
-- The space is named `public` so it reads the same `space_secrets/public/`
-  secrets as the default standalone space.
+`SOURCE_DATA_URI` is for `answerability-lora` and `DATA_URI` for
+`answerability-sr`; each recipe's README gives the format. One file serves
+both: a recipe ignores `--param` keys it does not use. Values must not contain
+spaces.
 
-## 5. Start gbserver on that space and run
+Then start gbserver on the space, and expand the file into `--param` flags:
 
 ```bash
 gbserver standalone --space-dir ~/.granite.build/local-space   # 127.0.0.1:8080
-```
 
-Then run a recipe with `ENVIRONMENT_URI` pointing at your copy:
-
-```bash
-cd answerability-lora
+cd recipes/granite-switch/skypilot/aws/answerability-lora
 gb build start -f build.yaml --skip-version-check \
-  --param ENVIRONMENT_URI=space://environments/skypilot-local/aws-gb-shared \
-  --param SOURCE_DATA_URI=<your data> \
+  $(sed 's/^/--param /' ~/.granite.build/local-env/granite-switch.params) \
   --param RUN_ID=smoke1 --param ACCELERATORS=L4:1 --param INSTANCE_TYPE=g6.4xlarge \
   --param DATASET_SPLIT='train[:16]' --param MAX_STEPS=4
 ```
 
-To keep your data's URIs (a private repo name, say) out of your shell history
-and out of any file in the checkout, put them in a file next to your `.ids`
-files, one `KEY=VALUE` per line, and expand it into `--param` flags:
-
-```bash
-umask 077
-cat > ~/.granite.build/local-env/granite-switch-data.params <<'EOF'
-SOURCE_DATA_URI=hf:///datasets/<org>/<repo>/<revision>/<dir>
-DATA_URI=hf:///datasets/<org>/<repo>
-EOF
-gb build start -f build.yaml --skip-version-check \
-  $(sed 's/^/--param /' ~/.granite.build/local-env/granite-switch-data.params) \
-  --param ENVIRONMENT_URI=space://environments/skypilot-local/aws-gb-shared ...
-```
-
-One file serves both recipes: a recipe ignores `--param` keys it does not use.
-Values must not contain spaces. Don't use `--parameters-path` for this: it
-replaces the recipe's `parameters.yaml` rather than adding to it.
-
-For the us-west-2 copy, the URI ends in `aws-gb-shared-usw2`. Each recipe's
-README has its own smoke run and full-run parameters. Without
-the `ENVIRONMENT_URI` override, a build uses the shipped template, whose
-placeholder id cannot be mounted.
+A `--param` given later on the command line wins, so add any override after
+the file's. Don't use `--parameters-path` for the file: it replaces the
+recipe's `parameters.yaml` rather than adding to it. Each recipe's README has
+its own smoke run and full-run parameters.
 
 ## Costs and cleanup
 

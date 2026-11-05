@@ -7,13 +7,19 @@ EC2 GPUs through SkyPilot, with the build's data moving between instances
 through a shared EFS filesystem. It ships **without data**: you bring
 training and eval sets in the formats below (see [Your data](#your-data)).
 
+First run the one-time AWS setup in [Running the granite-switch recipes on
+AWS](../README.md): it ends with `setup-local-space.sh`, which writes your
+environment copy and a params file holding its `ENVIRONMENT_URI`; add
+`DATA_URI` there. Then:
+
 ```bash
-gb build start -f build.yaml --param RUN_ID=<unique> --param DATA_URI=<your data root>
+gb build start -f build.yaml $(sed 's/^/--param /' ~/.granite.build/local-env/granite-switch.params) --param RUN_ID=<unique>
 ```
 
-`parameters.yaml` beside `build.yaml` is picked up automatically. Without
-`DATA_URI` the build fails before it is submitted, with
-`'DATA_URI' is undefined`.
+`parameters.yaml` beside `build.yaml` is picked up automatically. The build
+fails before it is submitted, naming what is missing, without `DATA_URI`
+(`'DATA_URI' is undefined`) or with the shipped environment template
+(`'ENVIRONMENT_URI_is_a_template__run_recipes_granite_switch_skypilot_aws_setup_local_space_sh' is undefined`).
 
 SR runs two hidden-state streams per decoder layer: a frozen base stream that
 stays bit-exact with the unadapted model, and a trainable stream carrying the
@@ -162,9 +168,8 @@ The one-time AWS setup is shared by the recipes in this folder and is in
 [Running the granite-switch recipes on AWS](../README.md): your AWS key and
 GPU quota, an EFS in your region, where to store the EFS id and the
 credentials under `~/.granite.build/`, and the private copy of the
-environment you point `ENVIRONMENT_URI` at
-(`--param ENVIRONMENT_URI=space://environments/skypilot-local/aws-gb-shared`).
-For this recipe specifically, your data in the [formats above](#your-data),
+environment, which `setup-local-space.sh` writes along with a params file
+holding its `ENVIRONMENT_URI`. For this recipe specifically, your data in the [formats above](#your-data),
 and an `HF_TOKEN` secret if it is in a private Hugging Face repo.
 
 **GPU memory:** SR holds two hidden-state streams, so an 8B base does not fit
@@ -194,7 +199,7 @@ run. FSDP (shadow-residual's `fsdp_4gpu.yaml`) is not wired in.
 A smoke run, to try the plumbing before a full run:
 
 ```bash
-gb build start -f build.yaml --param RUN_ID=sr-smoke1 --param DATA_URI=<your data root> \
+gb build start -f build.yaml $(sed 's/^/--param /' ~/.granite.build/local-env/granite-switch.params) --param RUN_ID=sr-smoke1 \
   --param MAX_STEPS=4 --param EVAL_DATASET_SIZE=20
 ```
 
@@ -207,7 +212,7 @@ ones you are most likely to set:
 |---|---|---|
 | `RUN_ID` | `sr-r1` | Names the build, the adapter dir and the report dir. |
 | `DATA_URI` / `TRAIN_DATA_SUBDIR` / `EVAL_DATA_SUBDIR` | none / `train` / `eval` | Your data; see [Your data](#your-data). |
-| `ENVIRONMENT_URI` | `space://environments/skypilot/aws/gb-shared` | The us-east-1 EFS template, with a placeholder `file_system_id`. Point it at your own copy; see [The EFS filesystem](../answerability-lora/README.md#the-efs-filesystem). |
+| `ENVIRONMENT_URI` | `space://environments/skypilot/aws/gb-shared` | The us-east-1 EFS template, with a placeholder `file_system_id`; the build refuses it. `setup-local-space.sh` writes your copy's URI into your params file; see [The EFS filesystem](../answerability-lora/README.md#the-efs-filesystem). |
 | `SR_REPO` / `SR_REF` | the public shadow-residual repo / `main` | The `byoc` step clones it without authentication, so it must be public. Pin `SR_REF` to a tag or SHA for runs you will compare. |
 | `MAX_STEPS` / `NUM_EPOCHS` | `0` / `3` | A positive `MAX_STEPS` caps training. |
 | `ADAPTER_ROOT` / `REPORT_ROOT` | `/mnt/gb-shared/granite-switch/answerability-sr/{adapters,reports}` | Where the adapter and the report are written, on the EFS, under `$RUN_ID`. |

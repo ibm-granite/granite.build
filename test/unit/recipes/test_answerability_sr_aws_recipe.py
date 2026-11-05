@@ -66,7 +66,9 @@ exit 0
 """
 
 
-# The recipe ships without data; a test supplies a stand-in.
+# The recipe ships without data and refuses the shipped environment template; a
+# test supplies stand-ins, as setup-local-space.sh and the user would.
+_LOCAL_ENV = "space://environments/skypilot-local/aws-gb-shared"
 _DATA = "DATA_URI=hf:///datasets/org/repo"
 
 
@@ -81,7 +83,8 @@ def _render(tmp_path, *params):
 
 
 def _build(tmp_path, *params):
-    return yaml.safe_load(_render(tmp_path, _DATA, *params))["granite.build"]
+    rendered = _render(tmp_path, f"ENVIRONMENT_URI={_LOCAL_ENV}", _DATA, *params)
+    return yaml.safe_load(rendered)["granite.build"]
 
 
 def _step(target):
@@ -143,20 +146,27 @@ def _run(tmp_path, target_name, *params):
 
 def test_the_data_has_no_default(tmp_path):
     with pytest.raises(Exception, match="DATA_URI"):
-        _render(tmp_path)
+        _render(tmp_path, f"ENVIRONMENT_URI={_LOCAL_ENV}")
     build = _build(tmp_path)
     data = _DATA.split("=", 1)[1]
     assert build["targets"]["train"]["inputs"]["train_data"]["uri"] == data
     assert build["targets"]["eval"]["inputs"]["eval_data"]["uri"] == data
 
 
-def test_both_targets_run_in_the_gb_shared_aws_environment(tmp_path):
+@pytest.mark.parametrize("template", ["gb-shared", "gb-shared-usw2"])
+def test_the_shipped_environment_templates_are_refused(tmp_path, template):
+    uri = f"space://environments/skypilot/aws/{template}"
+    with pytest.raises(
+        Exception, match="run_recipes_granite_switch_skypilot_aws_setup"
+    ):
+        _render(tmp_path, f"ENVIRONMENT_URI={uri}", _DATA)
+
+
+def test_both_targets_run_in_the_given_environment(tmp_path):
     build = _build(tmp_path)
     assert list(build["targets"]) == ["train", "eval"]
     for target in build["targets"].values():
-        assert (
-            target["environment_uri"] == "space://environments/skypilot/aws/gb-shared"
-        )
+        assert target["environment_uri"] == _LOCAL_ENV
 
 
 def test_no_lsf_only_resources_remain(tmp_path):

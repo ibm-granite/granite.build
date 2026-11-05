@@ -29,6 +29,11 @@
 # An undefined name fails the render (StrictUndefined) and names the problem.
 $${ METHODS_must_be_distinct_entries_of_lora_or_alora }
 <% endif %>
+<% if ENVIRONMENT_URI.startswith("space://environments/skypilot/aws/gb-shared") %>
+# The shipped templates hold a placeholder EFS id, so the build would only fail
+# once an instance tries to mount it. Point ENVIRONMENT_URI at your own copy.
+$${ ENVIRONMENT_URI_is_a_template__run_recipes_granite_switch_skypilot_aws_setup_local_space_sh }
+<% endif %>
 granite.build:
   name: answerability-$${methods | join("-")}-$${RUN_ID}
 

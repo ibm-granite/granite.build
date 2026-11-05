@@ -10,10 +10,10 @@ RUN_ID: "sr-r1"
 # SkyPilot on AWS with a shared EFS; the environment also pins the byoc step to
 # the EFS region. The default is the us-east-1 TEMPLATE
 # (configurations/assets/environments/skypilot/aws/gb-shared), whose
-# file_system_id is a placeholder: point this at your own copy with your EFS
-# id, e.g. space://environments/skypilot-local/aws-gb-shared (see the LoRA
-# recipe's README, "The EFS filesystem"). skypilot/aws/gb-shared-usw2 is the
-# us-west-2 template.
+# file_system_id is a placeholder, so the build refuses to render with it. Run
+# ../setup-local-space.sh <region> once: it writes your own copy and puts its
+# ENVIRONMENT_URI (e.g. space://environments/skypilot-local/aws-gb-shared) in
+# ~/.granite.build/local-env/granite-switch.params (../README.md, step 4).
 ENVIRONMENT_URI: "space://environments/skypilot/aws/gb-shared"
 
 # Container image both targets run in. Empty runs the step on the bare EC2
