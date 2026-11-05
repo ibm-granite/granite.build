@@ -1,38 +1,43 @@
 #!/usr/bin/env bash
-# Remove old granite.build build directories, whose names contain the build id
-# (a UUID), from a directory on a SkyPilot environment's shared filesystem. On
-# BlueVela that covers both the job-log directories in
-# /proj/data-eng/llmb-read-write/builds/ (llm-build-<uuid>) and the per-run
-# workdirs in /proj/data-eng/llmb-read-write/builds/builds/ (<uuid>).
-#
-# Both pile up. Job logs are kept on purpose. Teardown removes only each target
-# run's builds/<uuid>/runs/<run_id>/, so every build leaves at least an empty
-# builds/<uuid>/runs/ behind (only the EFS shared-filesystem provider also
-# removes those parents). A build that is cancelled or killed before teardown,
-# or whose teardown fails (that failure is logged and ignored), leaves its whole
-# per-run workdir. The script looks only at the directories directly inside
-# DIR, exactly as given, and removes one only when all of these hold:
-#   * its name contains a UUID anywhere, with any prefix or suffix (e.g.
-#     87caf891-2393-4a16-895a-f50bf316fd65 or llm-build-87caf891-...)
-#   * it is owned by the current user, so other users' entries are never touched
-#   * nothing anywhere in its tree was modified in the last DAYS days
-# A directory whose name contains no UUID is reported as ignored. A matching
-# directory kept because of its owner or age is only counted.
-# Nothing is deleted unless --delete is given; the default is a dry run.
-#
-# Usage:
-#   scripts/cleanup-build-dir.sh DAYS DIR            # dry run
-#   scripts/cleanup-build-dir.sh --delete DAYS DIR   # really delete
-#
-#   DAYS  minimum age in days (an integer, at least 1)
-#   DIR   the directory to clean (required), e.g.
-#         /proj/data-eng/llmb-read-write/builds or .../builds/builds
-#
-# Run it on a login node as the account that ran the builds (e.g. granitebuild).
-# Age is checked over the whole tree, not just the top directory, so a build
-# that is still running, or was restarted under the same build id with
-# `gb build restart` (which adds new runs inside an old directory), is kept.
-# A tree that can't be read in full is kept too.
+usage() {
+  cat <<'EOF'
+Remove old granite.build build directories, whose names contain the build id
+(a UUID), from a directory on a SkyPilot environment's shared filesystem. On
+BlueVela that covers both the job-log directories in
+/proj/data-eng/llmb-read-write/builds/ (llm-build-<uuid>) and the per-run
+workdirs in /proj/data-eng/llmb-read-write/builds/builds/ (<uuid>).
+
+Both pile up. Job logs are kept on purpose. Teardown removes only each target
+run's builds/<uuid>/runs/<run_id>/, so every build leaves at least an empty
+builds/<uuid>/runs/ behind (only the EFS shared-filesystem provider also
+removes those parents). A build that is cancelled or killed before teardown,
+or whose teardown fails (that failure is logged and ignored), leaves its whole
+per-run workdir. The script looks only at the directories directly inside
+DIR, exactly as given, and removes one only when all of these hold:
+  * its name contains a UUID anywhere, with any prefix or suffix (e.g.
+    87caf891-2393-4a16-895a-f50bf316fd65 or llm-build-87caf891-...)
+  * it is owned by the current user, so other users' entries are never touched
+  * nothing anywhere in its tree was modified in the last DAYS days
+A directory whose name contains no UUID is reported as ignored. A matching
+directory kept because of its owner or age is only counted.
+Nothing is deleted unless --delete is given; the default is a dry run.
+
+Usage:
+  scripts/cleanup-build-dir.sh DAYS DIR            # dry run
+  scripts/cleanup-build-dir.sh --delete DAYS DIR   # really delete
+
+  DAYS  minimum age in days (an integer, at least 1)
+  DIR   the directory to clean (required), e.g.
+        /proj/data-eng/llmb-read-write/builds or .../builds/builds
+
+Run it on a login node as the account that ran the builds (e.g. granitebuild).
+Age is checked over the whole tree, not just the top directory, so a build
+that is still running, or was restarted under the same build id with
+`gb build restart` (which adds new runs inside an old directory), is kept.
+A tree that can't be read in full is kept too.
+EOF
+}
+
 set -euo pipefail
 
 # A build id: a UUID in its usual 8-4-4-4-12 hex form, anywhere in the name.
@@ -40,12 +45,6 @@ set -euo pipefail
 UUID_RE='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 DELETE=false
 ME=$(id -un)
-
-# usage
-# Print the header comment as help text.
-usage() {
-  sed -n '2,35p' "$0"
-}
 
 # die MESSAGE
 # Print MESSAGE to stderr and exit with status 2.
