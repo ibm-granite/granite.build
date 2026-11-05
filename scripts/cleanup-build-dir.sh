@@ -2,10 +2,10 @@
 usage() {
   cat <<'EOF'
 Remove old granite.build build directories, whose names contain the build id
-(a UUID), from a directory on a SkyPilot environment's shared filesystem. On
-BlueVela that covers both the job-log directories in
-/proj/data-eng/llmb-read-write/builds/ (llm-build-<uuid>) and the per-run
-workdirs in /proj/data-eng/llmb-read-write/builds/builds/ (<uuid>).
+(a UUID), from a directory on a SkyPilot environment's shared filesystem.
+That covers both the job-log directories in <shared_workdir>/
+(llm-build-<uuid>) and the per-run workdirs in <shared_workdir>/builds/
+(<uuid>), where <shared_workdir> is the environment's shared_workdir setting.
 
 Both pile up. Job logs are kept on purpose. Teardown removes only each target
 run's builds/<uuid>/runs/<run_id>/, so every build leaves at least an empty
@@ -27,10 +27,13 @@ Usage:
   scripts/cleanup-build-dir.sh --delete DAYS DIR   # really delete
 
   DAYS  minimum age in days (an integer, at least 1)
-  DIR   the directory to clean (required), e.g.
-        /proj/data-eng/llmb-read-write/builds or .../builds/builds
+  DIR   the directory to clean (required): <shared_workdir> for the job
+        logs, or <shared_workdir>/builds for the per-run workdirs. On
+        BlueVela, for example, <shared_workdir> is
+        /proj/data-eng/llmb-read-write/builds.
 
-Run it on a login node as the account that ran the builds (e.g. granitebuild).
+Run it on a login node as the account that ran the builds (the build
+service account).
 Age is checked over the whole tree, not just the top directory, so a build
 that is still running, or was restarted under the same build id with
 `gb build restart` (which adds new runs inside an old directory), is kept.
