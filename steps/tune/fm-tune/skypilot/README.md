@@ -66,7 +66,7 @@ USAGE.md             user docs; published as the released step's README.md
   training). It is `@extended_testing_only` and `skypilot_integration`, and it skips unless
   the cluster is reachable. Bring the cluster up once with `make test-setup` (the repo-root
   `slurm-setup`), then run `make -C steps/tune/fm-tune/skypilot test`. It needs a venv with
-  the `thirdparty` extra (the SkyPilot fork).
+  the `thirdparty` extra (SkyPilot).
 
 `make test` and `pytest` on the `test/` directory both collect the build test. Name test files
 to run only the Mode-1 tests. See the [RAM warning](../README.md#ram-warning) and

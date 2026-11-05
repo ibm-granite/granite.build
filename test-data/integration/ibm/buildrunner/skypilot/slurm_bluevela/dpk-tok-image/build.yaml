@@ -7,9 +7,7 @@ granite.build:
   #
   # WHY IMAGE MODE HERE. The bare-node path is currently BROKEN on this environment:
   # a bare step's file_mounts are wrapped with `sudo mkdir` on the host as
-  # `granitebuild`, which has no passwordless sudo (see
-  # docs/environments/skypilot-slurm-file-mounts-sudo.md, and the failing sibling
-  # test_dpk_pii.py). A containerized step runs its file_mounts INSIDE the enroot
+  # `granitebuild`, which has no passwordless sudo (see the sibling test_dpk_pii.py). A containerized step runs its file_mounts INSIDE the enroot
   # container as root, where SkyPilot aliases `sudo` to a no-op, so the wrap succeeds.
   #
   # THESE TWO FIXTURES ARE COMPLEMENTARY — do not "fix" the failing one by copying

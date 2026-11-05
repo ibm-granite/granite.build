@@ -426,7 +426,7 @@ Earlier BlueVela runs, and what each one fixed:
 - `-3` (build 611571b7, 14m32s): green. `-4` adds the review fixes from #596 (step-owned
   ddp/single-GPU accelerate configs, a free rendezvous port, `dataset_config`, `save_to_disk`
   datasets, `main()` split) and passed again on both clusters (build 48212174).
-- After #519 (the `bluevela` environment's new SLURM GPU directives and SkyPilot fork), one
+- After #519 (the `bluevela` environment's new SLURM GPU directives and SkyPilot build), one
   `-4` run had qlora/deepspeed's container see 1 of 2 GPUs; the run script refused it. That
   is a platform issue (#604), node-dependent. `-5` (second review round: abbreviated or
   non-bare `args` refused, multi-node `launcher_config` refused, bytecode at build time)
@@ -473,4 +473,4 @@ cd steps/train/hf-peft-sft/skypilot && PYTEST_ADDOPTS=-s GB_ENVIRONMENT=STANDALO
 - **More environments.** Build tests for K8s, SkyPilot-K8s and LSF.
 - **Multi-node.** The step is single-node only (`num_nodes` must be 1).
 - **flash-attn in the image.** Needs a wheel for the torch/CUDA pair.
-- **Non-root image (#566).** Blocked on a SkyPilot fork fix; see Security trade-off.
+- **Non-root image (#566).** Blocked on a SkyPilot fix; see Security trade-off.
