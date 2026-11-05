@@ -108,7 +108,6 @@ thirdparty = [
 ibm = [
     "aio-pika",
     "aiormq",
-    "aspera==v1.1.6",
     "asyncssh",
     "daft",
     "dmf-lib==1.10.2",
