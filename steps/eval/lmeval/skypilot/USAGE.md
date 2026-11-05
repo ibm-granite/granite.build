@@ -32,7 +32,9 @@ ar, cs, it, ko and zh. Dutch is on Granite's list but MMLU-ProX has no Dutch. Th
 `languages=` changes it.
 
 Generation uses the Granite 4.2 card's thinking-mode settings: temperature 1.0, top_p
-0.95, 8192 max tokens, thinking on, and the task's stop strings. NeMo Evaluator's
+0.95, thinking on, and the task's stop strings, with a 32768-token budget (the
+card's 8192 runs out mid-thought on every request for granite-4.2-3b; `max_tokens=8192`
+restores it). NeMo Evaluator's
 lm-eval chat protocol (2048 tokens, near-greedy) truncates nearly every thinking trace;
 `max_tokens=2048 temperature=0.0000001 top_p=0.9999999` reproduces it. The options
 above override these settings, and `results.json` records the generation kwargs each
@@ -69,6 +71,10 @@ repeat), both averaged over languages the same way.
 | `dataset` / `dataset_revision` | `""` | Override the data pinned in granite-evals for the selected benchmark (`li-lab/MMLU-ProX-Lite` or `CohereLabs/include-base-44`). |
 | `options` | `""` | Space-separated `key=value` benchmark options. Both: `answers=gold`, `max_retries`, `request_timeout`, `languages`. mmlu-prox-lite: `languages` takes `ibm`, `all` or a comma list; `temperature`, `top_p`, `max_tokens`, `stop` (`task`, `none` or a comma list of up to 4 percent-encoded strings, e.g. `stop=%3C/s%3E,Q:`), `thinking=off`. include-44: `languages` takes a comma list of the language slugs. |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
+| `tool_call_parser` / `reasoning_parser` | `auto` / `auto` | vLLM parsers; `auto` detects them from the checkpoint, `""` disables one. |
+| `vllm_args` | `""` | Space-separated extra `vllm serve` arguments, each passed as `--vllm-arg`. |
+| `base_url` | `""` | An existing OpenAI-compatible endpoint; skips starting vLLM (`served_model_name` must name the model there). |
+| `seed` | `0` | Seed for the benchmark's own sampling. |
 | `sandbox_cache` | `""` | Unused: these benchmarks run no sandbox. |
 | `hf_home` | `""` | Overrides `HF_HOME`. |
 

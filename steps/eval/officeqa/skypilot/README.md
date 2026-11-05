@@ -52,7 +52,9 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `image` | `""` (required) | granite-evals officeqa image, pinned by tag (`GRANITE_EVALS_IMAGE_OFFICEQA`). |
 | `model_path` | `""` (required) | Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
-| `output_dir` | `output` | Relative to `$GB_BUILD_WORKDIR`. |
+| `output_dir` | `""` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
+| `output_root` | `""` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`. |
+| `run_name` | basename of `model_path` | Run directory under `output_root`. |
 | `limit` | `""` (all) | **Smoke knob:** first N questions by uid. |
 | `repeats` | `""` (1) | Independent samples per question (avg-of-k). |
 | `workers` | `16` | Concurrent questions (requests to vLLM + context builds). |
@@ -60,6 +62,10 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `options` | `""` | Space-separated `key=value` options; see below. |
 | `phase` | `"all"` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`granite_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json`. The score phase fetches only the two CSVs, not the corpus. |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
+| `tool_call_parser` / `reasoning_parser` | `auto` / `auto` | vLLM parsers; `auto` detects them from the checkpoint, `""` disables one. |
+| `vllm_args` | `""` | Space-separated extra `vllm serve` arguments, each passed as `--vllm-arg`. |
+| `base_url` | `""` | An existing OpenAI-compatible endpoint; skips starting vLLM (`served_model_name` must name the model there). |
+| `seed` | `0` | Seed for the benchmark's own sampling. |
 | `sandbox_cache` | `""` | Unused: this benchmark runs no sandbox. |
 | `hf_home` | `""` | Overrides `HF_HOME`, and with it the gated dataset cache (prefetch it with `steps/eval/scripts/prefetch_datasets.py` to avoid re-downloading the corpus per run). |
 

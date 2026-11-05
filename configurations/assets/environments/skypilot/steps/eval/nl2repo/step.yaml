@@ -52,8 +52,14 @@ config:
   model_path: ""
   # Name the model is served under; empty = basename of model_path.
   served_model_name: ""
-  # Relative values resolve against $GB_BUILD_WORKDIR.
-  output_dir: "output"
+  # Full output dir as given; relative resolves against $GB_BUILD_WORKDIR. Empty
+  # (the recipes' form): output_root composes it as
+  # $output_root/$run_name/$benchmark, run_name empty = the model_path basename
+  # (like served_model_name). With neither output_dir nor output_root set the
+  # run fails fast.
+  output_dir: ""
+  output_root: ""
+  run_name: ""
   # SMOKE KNOB: score only the first N tasks (sorted by task name, so two smoke
   # runs are comparable). Empty = the benchmark's full set (104 tasks for nl2repo;
   # see `granite-evals list`).
@@ -84,6 +90,19 @@ config:
   tensor_parallel_size: "1"
   gpu_memory_utilization: "0.9"
   max_model_len: ""
+  # vLLM tool-call and reasoning parsers; "auto" detects them from the
+  # checkpoint (its chat template / shipped *_parser.py), "" disables one.
+  tool_call_parser: "auto"
+  reasoning_parser: "auto"
+  # Space-separated extra `vllm serve` arguments, each passed as --vllm-arg
+  # (e.g. "--enable-prefix-caching --max-num-seqs=64"). Values containing
+  # spaces are not supported, as in `options`.
+  vllm_args: ""
+  # An existing OpenAI-compatible endpoint (e.g. http://host:8000/v1): skips
+  # starting vLLM in the job; served_model_name must name the model there.
+  base_url: ""
+  # Seed for the benchmark's own sampling (shuffles, subsets).
+  seed: "0"
   # Where the OpenHands and per-task test images are imported to as squashfs. On a
   # shared filesystem, every job after the first reuses them instead of pulling again.
   sandbox_cache: "/proj/granite-build/g4os/granite/enroot-cache"
@@ -138,6 +157,24 @@ environment_configs:
 
             {% if config.hf_home %}export HF_HOME="{{ config.hf_home }}"; mkdir -p "$HF_HOME"{% endif %}
 
+            OUTPUT_DIR="{{ config.output_dir }}"
+            OUTPUT_ROOT="{{ config.output_root }}"
+            RUN_NAME="{{ config.run_name }}"
+            # run_name defaults to the model_path basename (the same defaulting as
+            # served_model_name), so one output_root serves every model.
+            if [ -z "$RUN_NAME" ]; then RUN_NAME="$(basename "{{ config.model_path }}")"; fi
+            # Either a full output_dir, or output_root composed per benchmark; with
+            # neither set, fail here rather than deep inside a harness.
+            if [ -z "$OUTPUT_DIR" ]; then
+                if [ -z "$OUTPUT_ROOT" ]; then
+                    echo "granite: set output_root (the run writes \$OUTPUT_ROOT/\$RUN_NAME/\$BENCHMARK) or output_dir" >&2
+                    exit 1
+                fi
+                OUTPUT_DIR="$OUTPUT_ROOT/$RUN_NAME/$BENCHMARK"
+            fi
+            case "$OUTPUT_DIR" in /*) ;; *) OUTPUT_DIR="${GB_BUILD_WORKDIR:-$PWD}/$OUTPUT_DIR" ;; esac
+            mkdir -p "$OUTPUT_DIR"
+
             {% if config.sandbox_cache %}
             # Sandboxes: enroot inside this job's container. Image squashfs files go to
             # the shared cache; the per-sandbox rootfs goes to node-local scratch.
@@ -156,12 +193,10 @@ environment_configs:
             trap 'rm -rf "$SCRATCH"' EXIT
             {% endif %}
 
-            OUTPUT_DIR="{{ config.output_dir }}"
-            case "$OUTPUT_DIR" in /*) ;; *) OUTPUT_DIR="${GB_BUILD_WORKDIR:-$PWD}/$OUTPUT_DIR" ;; esac
-            mkdir -p "$OUTPUT_DIR"
-
             OPTS=()
             for kv in {{ config.options }}; do OPTS+=(--option "$kv"); done
+            VLLM_ARGS=()
+            for a in {{ config.vllm_args }}; do VLLM_ARGS+=(--vllm-arg="$a"); done
 
             granite-evals run "$BENCHMARK" \
               --model "{{ config.model_path }}" \
@@ -176,6 +211,11 @@ environment_configs:
               --gpu-memory-utilization "{{ config.gpu_memory_utilization }}" \
               --phase "{{ config.phase }}" \
               {% if config.max_model_len %}--max-model-len {{ config.max_model_len }}{% endif %} \
+              --tool-call-parser "{{ config.tool_call_parser }}" \
+              --reasoning-parser "{{ config.reasoning_parser }}" \
+              {% if config.base_url %}--base-url "{{ config.base_url }}"{% endif %} \
+              --seed {{ config.seed }} \
+              "${VLLM_ARGS[@]}" \
               "${OPTS[@]}" \
               2>&1 | tee "$OUTPUT_DIR/granite.log"
             if [ "{{ config.phase }}" = generate ]; then
