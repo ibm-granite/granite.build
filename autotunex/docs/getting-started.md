@@ -72,7 +72,7 @@ curl -s http://127.0.0.1:8000/health
 ```
 
 ```json
-{ "status": "ok", "service": "AutoTuneX API", "version": "0.4.0" }
+{ "status": "ok", "service": "AutoTuneX API", "version": "0.4.1" }
 ```
 
 `/health/live` is an alias of it; `/health/ready` checks the database and
