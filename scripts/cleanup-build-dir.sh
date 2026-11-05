@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-# Remove old granite.build job-log directories (llm-build-<build_id>) from a
-# directory on a SkyPilot environment's shared filesystem (on BlueVela,
-# /proj/data-eng/llmb-read-write/builds/).
+# Remove old granite.build build directories, whose names contain the build id
+# (a UUID), from a directory on a SkyPilot environment's shared filesystem. On
+# BlueVela that covers both the job-log directories in
+# /proj/data-eng/llmb-read-write/builds/ (llm-build-<uuid>) and the per-run
+# workdirs in /proj/data-eng/llmb-read-write/builds/builds/ (<uuid>).
 #
-# gbserver keeps each build's job logs in <shared_workdir>/llm-build-<build_id>/,
-# and teardown leaves them there on purpose, so they pile up. The script looks
-# only at the directories directly inside DIR, exactly as given, and removes one
-# only when all of these hold:
-#   * its name starts with llm-build-
+# Job logs are kept on purpose, and a cancelled or killed build leaves its
+# per-run workdir behind, so both pile up. The script looks only at the
+# directories directly inside DIR, exactly as given, and removes one only when
+# all of these hold:
+#   * its name contains a UUID anywhere, with any prefix or suffix (e.g.
+#     87caf891-2393-4a16-895a-f50bf316fd65 or llm-build-87caf891-...)
 #   * it is owned by the current user, so other users' entries are never touched
 #   * it was last modified more than DAYS days ago
-# A directory whose name doesn't start with llm-build- is reported as ignored.
-# An llm-build- directory kept because of its owner or age is only counted.
+# A directory whose name contains no UUID is reported as ignored. A matching
+# directory kept because of its owner or age is only counted.
 # Nothing is deleted unless --delete is given; the default is a dry run.
 #
 # Usage:
@@ -20,7 +23,7 @@
 #
 #   DAYS  minimum age in days (an integer, at least 1)
 #   DIR   the directory to clean (required), e.g.
-#         /proj/data-eng/llmb-read-write/builds
+#         /proj/data-eng/llmb-read-write/builds or .../builds/builds
 #
 # Run it on a login node as the account that ran the builds (e.g. granitebuild).
 # Pick DAYS longer than your longest build: a directory's modification time only
@@ -28,14 +31,16 @@
 # writing only deeper down can look old while it is still running.
 set -euo pipefail
 
-PREFIX="llm-build-"
+# A build id: a UUID in its usual 8-4-4-4-12 hex form, anywhere in the name.
+# Not anchored, so a prefix or suffix (llm-build-<uuid>, <uuid>-old) still matches.
+UUID_RE='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 DELETE=false
 ME=$(id -un)
 
 # usage
 # Print the header comment as help text.
 usage() {
-  sed -n '2,28p' "$0"
+  sed -n '2,31p' "$0"
 }
 
 # die MESSAGE
@@ -59,7 +64,7 @@ owned_by_me() {
 
 # is_candidate PATH DAYS
 # Succeed when PATH should be removed: owned by the current user and older than
-# DAYS days. The caller has already checked the name prefix.
+# DAYS days. The caller has already checked that the name contains a UUID.
 is_candidate() {
   owned_by_me "$1" && older_than "$1" "$2"
 }
@@ -79,14 +84,14 @@ remove_one() {
 }
 
 # clean DIR DAYS
-# Remove each candidate directly inside DIR, report each directory without the
-# prefix, and count the llm-build- ones kept for owner or age; then print a
-# summary. Returns 1 if any removal failed.
+# Remove each candidate directly inside DIR, report each directory whose name
+# contains no UUID, and count the matching ones kept for owner or age; then
+# print a summary. Returns 1 if any removal failed.
 clean() {
   local dir=$1 days=$2 path removed=0 ignored=0 kept=0 failed=0
   while IFS= read -r path; do
-    if [[ "${path##*/}" != "$PREFIX"* ]]; then
-      echo "ignored: $path (name does not start with $PREFIX)"
+    if [[ ! "${path##*/}" =~ $UUID_RE ]]; then
+      echo "ignored: $path (name contains no build UUID)"
       ignored=$((ignored + 1))
     elif ! is_candidate "$path" "$days"; then
       kept=$((kept + 1))
@@ -128,7 +133,7 @@ parse_args() {
 
 main() {
   parse_args "$@"
-  echo "searching: $DIR/$PREFIX*  older than: $DAYS days  user: $ME  delete: $DELETE"
+  echo "searching: $DIR/*<uuid>*  older than: $DAYS days  user: $ME  delete: $DELETE"
   clean "$DIR" "$DAYS"
 }
 
