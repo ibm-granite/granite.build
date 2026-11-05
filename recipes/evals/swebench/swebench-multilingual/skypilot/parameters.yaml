@@ -22,8 +22,8 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
-IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-swebench:de4d8818"
-IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-swebench-cpu:de4d8818"
+IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-swebench:633d6e4a"
+IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-swebench-cpu:633d6e4a"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""
