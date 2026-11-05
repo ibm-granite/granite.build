@@ -83,15 +83,34 @@ export default function GraphNode({ node, onClick, onMouseHover, selectedNode, s
     isSelected ? styles.nodeWrapperSelected : '',
     isHighlighted ? styles.nodeWrapperHighlighted : '',
     node.planned ? styles.nodeWrapperPlanned : '',
-    node.stackCount ? styles.nodeWrapperStacked : '',
   ].filter(Boolean).join(' ')
 
+  // Safari (WebKit) ignores ancestor SVG transforms for foreignObject content
+  // that creates its own stacking context (position, transform, isolation,
+  // z-index, opacity), painting it at the SVG origin. So the stack layers are
+  // plain SVG rects, and the planned-node opacity sits on the foreignObject.
   return (
+    <>
+      {node.stackCount && (
+        <g transform={`translate(${x}, ${y})`} aria-hidden>
+          {[10, 5].map((offset) => (
+            <rect
+              key={offset}
+              className={styles.stackLayer}
+              x={2 + offset}
+              y={-offset}
+              width={(width ?? 0) * 0.99}
+              height={height}
+            />
+          ))}
+        </g>
+      )}
     <foreignObject
       transform={`translate(${x}, ${y})`}
       height={height}
       width={width}
       className={styles.foreignObjectOverflow}
+      opacity={node.planned ? 0.6 : undefined}
     >
       <div
         className={nodeWrapperClass}
@@ -100,13 +119,6 @@ export default function GraphNode({ node, onClick, onMouseHover, selectedNode, s
           ? { '--node-selected-bg': isHighlighted ? bgColor.replace(/[\d.]+\)$/, '0.35)') : bgColor } as React.CSSProperties
           : undefined}
       >
-        {/* A grouped node: the cards of the other jobs peek out behind it. */}
-        {node.stackCount && (
-          <>
-            <div className={`${styles.stackLayer} ${styles.stackLayerBack}`} aria-hidden />
-            <div className={styles.stackLayer} aria-hidden />
-          </>
-        )}
         <CardNode
           color={color}
           onClick={() => onClick && onClick(node)}
@@ -145,5 +157,6 @@ export default function GraphNode({ node, onClick, onMouseHover, selectedNode, s
         </CardNode>
       </div>
     </foreignObject>
+    </>
   )
 }
