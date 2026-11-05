@@ -25,13 +25,19 @@ config it shares with the SLURM recipe are covered by
 test_answerability_lora_recipe.py.
 """
 
+import json
 import pathlib
+import subprocess
+import sys
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 import yaml
 
 from gbcli.services.service_build import get_params_from_file
 from gbcli.utils.buildutil import apply_parameters
+from gbserver.utils.template import fill_template
 
 _REPO = pathlib.Path(__file__).resolve().parents[3]
 _RECIPE = (
@@ -222,3 +228,63 @@ def test_environment_pins_every_step_type_to_the_efs_region():
     # hf pulls are their own steps, cached on the EFS: no inline, no local cache.
     (hf,) = [s for s in env["assetstores"] if s["store_uri"].endswith("/hf")]
     assert hf["pull"][0]["config"] == {}
+
+
+# ── the README's example row ─────────────────────────────────────────────────
+
+# A stand-in for transformers' tokenizer, as in test_answerability_lora_recipe:
+# prepare only needs a token count per row.
+_FAKE_TRANSFORMERS = """
+class _Tok:
+    def apply_chat_template(self, messages, tokenize=True):
+        return [0] * sum(4 + len(m["content"].split()) for m in messages)
+
+
+class AutoTokenizer:
+    @staticmethod
+    def from_pretrained(path):
+        return _Tok()
+"""
+
+
+def _readme_example():
+    """The JSON row in README.md, "Your data"."""
+    text = (_RECIPE / "README.md").read_text()
+    section = text[text.index("## Your data") : text.index("### What `prepare` does")]
+    block = section.split("```json\n", 1)[1].split("```", 1)[0]
+    return json.loads(block)
+
+
+def test_the_readme_example_row_passes_prepare(tmp_path):
+    row = _readme_example()
+    src = tmp_path / "src"
+    src.mkdir()
+    for split in ("train", "test"):
+        pq.write_table(pa.Table.from_pylist([row]), src / f"{split}.parquet")
+    stub = tmp_path / "stub"
+    stub.mkdir()
+    (stub / "transformers.py").write_text(_FAKE_TRANSFORMERS)
+    step = _build(tmp_path, f"DATA_ROOT={tmp_path / 'data'}", "RUN_ID=r1")
+    command = fill_template(
+        step["targets"]["prepare"]["steps"][0]["config"]["command_config"]["command"],
+        {
+            "bindings": {
+                "source": {"binding": {"path": str(src)}},
+                "base_model": {"binding": {"path": str(tmp_path / "model")}},
+            }
+        },
+        strict=True,
+    )
+    launcher = (
+        "import sys; "
+        f"sys.path.insert(0, {str(stub)!r}); "
+        "sys.argv = sys.argv[1:]; "
+        "exec(compile(sys.stdin.read(), 'prepare', 'exec'), dict(__name__='__main__'))"
+    )
+    command = command.replace('"$PY" -I -', f'"{sys.executable}" -I -c "{launcher}" _')
+    proc = subprocess.run(
+        ["bash", "-c", command], capture_output=True, text=True, check=False
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = pq.read_table(tmp_path / "data" / "r1" / "data" / "train.parquet")
+    assert out.to_pylist() == [row]

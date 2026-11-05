@@ -287,3 +287,29 @@ def test_environment_pins_byoc_to_the_efs_region():
     region = config["shared_filesystem"]["efs"]["region"]
     infra = config["steps"]["byoc"]["launcher_config"]["resources"]["infra"]
     assert infra == f"aws/{region}"
+
+
+def _readme_examples():
+    """The two JSON rows in README.md, "Your data": train first, then eval."""
+    text = (_RECIPE / "README.md").read_text()
+    section = text[text.index("## Your data") : text.index("### The base model")]
+    blocks = [b.split("```", 1)[0] for b in section.split("```json\n")[1:]]
+    return [json.loads(b) for b in blocks]
+
+
+def test_the_readme_training_row_has_the_shape_sr_train_reads():
+    train, _ = _readme_examples()
+    roles = [m["role"] for m in train["messages"]]
+    # The label is the assistant turn; the loss mask starts after the marker.
+    assert roles[-2:] == ["user", "assistant"]
+    assert set(train) <= {"messages", "documents", "tools"}
+    assert all(isinstance(d, (str, dict)) for d in train["documents"])
+
+
+def test_the_readme_eval_row_has_the_shape_answerability_eval_reads():
+    _, row = _readme_examples()
+    by_role = {m["role"]: m["content"] for m in row["messages"]}
+    assert by_role["answerability"] in ("answerable", "unanswerable")
+    assert isinstance(by_role["documents"], list)
+    assert all(isinstance(d, str) for d in by_role["documents"])
+    assert row["messages"][0]["role"] == "user"

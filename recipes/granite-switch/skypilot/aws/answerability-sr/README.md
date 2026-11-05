@@ -67,22 +67,50 @@ the subdirectories inside it:
 | `EVAL_DATA_SUBDIR` | `eval` | `gold.jsonl`, `rag.jsonl`, `unanswerable_v2.{a,b,c}.jsonl`, `collection.txt`, `setting.txt` |
 
 **Training rows** (`train.jsonl`, `test.jsonl`) are shadow-residual's chat
-format, one JSON object per line, with the label as the assistant turn:
+format: one JSON object per line, with the label as the assistant turn and
+the retrieved documents in an optional top-level `documents` list (shown
+over several lines here; in the file each row is one line):
 
 ```json
-{"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "<label>"}],
- "documents": [...]}
+{"messages": [
+   {"role": "user", "content": "When was the Eiffel Tower built?"},
+   {"role": "assistant", "content": "\"unanswerable\""}],
+ "documents": [{"text": "The Eiffel Tower is 330 m tall."}]}
 ```
 
-`documents` (and `tools`) are optional and passed as they are to the chat
-template, which renders them.
+A document is a string or a `{"text": ...}` (or `{"content": ...}`) object.
+For Granite 4.2, whose chat template ignores `documents=`, shadow-residual
+inserts them as a tool message after the last user turn. The supervised span
+of the row above is `"unanswerable"<|im_end|>\n`: everything after
+`ASSISTANT_MARKER`. An optional `tools` list is passed to the chat template
+as is.
 
-**Eval rows** are the format `answerability_eval.py` reads (see its module
-docstring): a `messages` list with the user turn, optional prior turns, a
-`documents` turn whose content is a list of strings, and an `answerability`
-turn whose content is `answerable` or `unanswerable`. `collection.txt` and
-`setting.txt` are Python lists, one entry per sample: the collection name and
-the setting (`gold`/`rag`/`a`/`b`/`c`).
+**Eval rows** are the format `answerability_eval.py` reads. The documents go
+**inside** `messages` here, as a `documents` turn whose content is a list of
+strings, and the gold label is an `answerability` turn:
+
+```json
+{"messages": [
+   {"role": "user", "content": "How tall is the Eiffel Tower?"},
+   {"role": "documents", "content": ["The Eiffel Tower is 330 m tall."]},
+   {"role": "answerability", "content": "answerable"}]}
+```
+
+Earlier `user` / `assistant` turns may come before the last question. The
+label must be `answerable` or `unanswerable`: the eval reads the first word
+the model writes after `</think>`, strips quotes, and counts anything else as
+`others`. The five `.jsonl` files are read in the order of the table above,
+and two Python-literal lists hold one entry per row across them, in that
+order:
+
+```
+collection.txt   ['my-collection', 'my-collection', ...]
+setting.txt      ['gold', 'gold', ..., 'rag', ..., 'a', ...]
+```
+
+`setting` is the subset a row belongs to (`gold`, `rag`, `a`, `b`, `c`), and
+the report breaks scores down by it. A file that is missing is skipped with a
+warning; an empty one contributes no rows.
 
 The train command checks that `train.jsonl` and `test.jsonl` exist, so a wrong
 subdirectory fails in seconds. For an `hf://` repo the pull downloads the

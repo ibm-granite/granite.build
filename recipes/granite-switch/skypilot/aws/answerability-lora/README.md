@@ -59,7 +59,37 @@ conversational prompt/completion format:
 | Column | Holds |
 |---|---|
 | `prompt` | a list of `{"role": ..., "content": ...}` messages that **ends in a user turn** |
-| `completion` | **one** assistant message, e.g. `[{"role": "assistant", "content": "<label>"}]` |
+| `completion` | **one** assistant message: the label |
+
+One row, shown as JSON (in the parquet file each column is a list of
+`{content, role}` structs). Here the documents are part of the user turn; the
+hf-peft-sft step has no separate `documents` column:
+
+```json
+{
+  "prompt": [
+    {"role": "system", "content": "Decide whether the documents contain an answer to the user's last question."},
+    {"role": "user", "content": "Document 1: The Eiffel Tower is 330 m tall.\n\nQuestion: When was the Eiffel Tower built?"}
+  ],
+  "completion": [
+    {"role": "assistant", "content": "\"unanswerable\""}
+  ]
+}
+```
+
+Granite 4.2's chat template renders this row as
+`...<|im_start|>assistant\n<think></think>"unanswerable"<|im_end|>\n`, and the
+loss falls on `</think>"unanswerable"<|im_end|>\n` (see
+[What is trained](#what-is-trained)). The system turn is optional. Use the
+same label strings in every row, quotes included if you use them: the adapter
+learns the exact text.
+
+To write a split from Python rows like the one above:
+
+```python
+import pyarrow as pa, pyarrow.parquet as pq
+pq.write_table(pa.Table.from_pylist(rows), "train.parquet")
+```
 
 Other columns are dropped. For an `hf://` dataset repo, put the directory in
 the URI after the revision, so that only it is downloaded:
