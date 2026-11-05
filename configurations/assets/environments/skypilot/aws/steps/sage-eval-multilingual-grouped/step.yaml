@@ -116,7 +116,9 @@ environment_configs:
                 echo "$(date)" > ${OUTPUT_PATH}/${eval_name}.done
                 echo "[$(date)] DONE: ${eval_name}"
               else
-                echo "[$(date)] FAILED: ${eval_name} (exit code: $?)"
+                # First statement: $(date) below would reset $? to 0.
+                rc=$?
+                echo "[$(date)] FAILED: ${eval_name} (exit code: ${rc})"
                 FAIL_COUNT=$((FAIL_COUNT + 1))
                 FAILED_NAMES="${FAILED_NAMES} ${eval_name}"
               fi
