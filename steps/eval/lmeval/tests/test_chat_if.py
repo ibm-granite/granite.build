@@ -147,10 +147,11 @@ def _kw(tmp_path, **options):
 
 
 def test_gen_kwargs_default_to_the_granite_card_and_the_task_stops(tmp_path):
-    # Granite 4.2 card, thinking mode: temperature 1.0, top_p 0.95, 8192 tokens;
+    # Granite 4.2 card sampling, thinking mode: temperature 1.0, top_p 0.95, with a
+    # 32768-token budget (the card's 8192 runs out mid-thought on this benchmark);
     # no until (the task's own stops), no chat_template_kwargs (thinking on).
     # No do_sample: lm-eval's cache skips do_sample=True requests (resume).
-    assert _kw(tmp_path) == {"temperature": 1.0, "top_p": 0.95, "max_gen_toks": 8192}
+    assert _kw(tmp_path) == {"temperature": 1.0, "top_p": 0.95, "max_gen_toks": 32768}
     assert _kw(tmp_path, temperature="0.6", top_p="0.9", max_tokens="16384", thinking="off") == {
         "temperature": 0.6,
         "top_p": 0.9,
@@ -211,7 +212,7 @@ def test_chat_payload_sends_the_card_sampling_and_stops(tmp_path):
         return LocalChatCompletion._create_payload(SimpleNamespace(_max_gen_toks=256, model="m"), msgs, gen_kwargs=gk, seed=1, eos="<|end_of_text|>")
 
     p = payload()
-    assert (p["temperature"], p["top_p"], p["max_tokens"]) == (1.0, 0.95, 8192)
+    assert (p["temperature"], p["top_p"], p["max_tokens"]) == (1.0, 0.95, 32768)
     assert p["stop"] == ["</s>", "Q:", "问题：", "<|im_end|>"]
     assert "chat_template_kwargs" not in p and "do_sample" not in p
     assert payload(stop="none")["stop"] == ["<|end_of_text|>"]
@@ -331,11 +332,11 @@ def test_requests_carry_the_generation_kwargs_and_results_record_them(tmp_path, 
     out = _bench(tmp_path, dataset_dir, limit=4, **({"stop": stop} if stop else {})).run("http://x/v1", "m")
     de = [gk for ctx, gk in zip(FakeChatLM.calls, FakeChatLM.gen_kwargs) if "[de]" in ctx]
     assert de and all(gk["until"] == until for gk in de)
-    assert all((gk["temperature"], gk["top_p"], gk["max_gen_toks"]) == (1.0, 0.95, 8192) for gk in FakeChatLM.gen_kwargs)
+    assert all((gk["temperature"], gk["top_p"], gk["max_gen_toks"]) == (1.0, 0.95, 32768) for gk in FakeChatLM.gen_kwargs)
     gk = out["generation_kwargs"]
     assert set(gk) == set(LANGS)
     assert gk["de"]["until"] == until and gk["en"]["until"] == (until and ["</s>", "Q:", "Question:", "<|im_end|>"])
-    assert gk["de"]["max_gen_toks"] == 8192 and gk["de"]["top_p"] == 0.95
+    assert gk["de"]["max_gen_toks"] == 32768 and gk["de"]["top_p"] == 0.95
     assert out["stop"] == ("task" if stop is None else [])
     assert json.dumps(out)  # results.json-serialisable
     assert all(not gk.get("do_sample") for gk in FakeChatLM.gen_kwargs)  # cacheable, so resumable
