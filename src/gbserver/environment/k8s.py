@@ -722,7 +722,11 @@ class K8s(Environment):
 
     @staticmethod
     def _label_helm_values(run_metadata: Dict) -> List[Tuple[str, str]]:
-        """Chart label values; usernames may be emails (invalid as labels)."""
+        """Sanitized ``run_metadata.username`` override for the chart.
+
+        ibmid usernames are emails, invalid as label values. Applies chart-wide,
+        not only to the label.
+        """
         username = sanitize_k8s_label_value(
             run_metadata.get("username") or "", fallback="none"
         )

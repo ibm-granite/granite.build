@@ -251,6 +251,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **K8s steps no longer fail for email usernames (ibmid auth).** The gbstep chart rendered
+  `run_metadata.username` verbatim as a label, so the API server rejected the AppWrapper.
+  `launch_helm` now passes a sanitized username (`user@x.com` -> `user_x.com`) chart-wide.
 - **Workload-status events now carry the `message` field step monitor rules send (#598).**
   Before, the `Step:` progress events were dropped and gbserver logged a traceback for each
   matching line. These events are now stored and published once per matching log line, and the

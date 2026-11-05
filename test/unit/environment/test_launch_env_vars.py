@@ -636,13 +636,49 @@ class TestK8sOverride:
         string_values = [(f"k8s.env.{k}.value", v) for k, v in env.items()]
         assert ("k8s.env.GB_BUILD_ID.value", "real-build") in string_values
 
-    def test_label_helm_values_sanitize_username(self):
-        from gbserver.environment.k8s import K8s
+    @pytest.mark.parametrize(
+        "run_metadata, expected",
+        [
+            ({"username": "abc@us.ibm.com"}, "abc_us.ibm.com"),
+            ({}, "none"),
+            (None, "none"),
+        ],
+    )
+    def test_launch_helm_sets_sanitized_username(
+        self, tmp_path, run_metadata, expected
+    ):
+        from unittest.mock import AsyncMock, MagicMock, patch
 
-        assert K8s._label_helm_values({"username": "abc@us.ibm.com"}) == [
-            ("run_metadata.username", "abc_us.ibm.com")
-        ]
-        assert K8s._label_helm_values({}) == [("run_metadata.username", "none")]
+        k8s = self._k8s()
+        k8s.kube_config = None
+        k8s.kube_context = None
+        k8s._launched_releases = {}
+        k8s._launch_params = {}
+        k8s._get_launch_ready_event = MagicMock()
+        k8s._send_message = MagicMock()
+        with (
+            patch(
+                "gbserver.environment.k8s.launch_command_and_raise_errors",
+                new_callable=AsyncMock,
+                return_value=(MagicMock(), "", ""),
+            ) as mock_cmd,
+            patch("gbserver.environment.k8s.is_helm_v4_or_higher", return_value=False),
+        ):
+            asyncio.run(
+                k8s.launch_helm(
+                    launch_id="launch-1",
+                    targetsteprun_asset_dir=tmp_path,
+                    launcher_config={"chart": "chart"},
+                    config={"gb": {"step_contents_in_env": False}},
+                    run_metadata=run_metadata,
+                )
+            )
+        # Dry run and install both carry the override as a string value.
+        assert mock_cmd.await_count == 2
+        for call in mock_cmd.await_args_list:
+            cmd = call.kwargs["command_list"]
+            i = cmd.index(f"run_metadata.username={expected}")
+            assert cmd[i - 1] == "--set-string"
 
     def test_run_metadata_var_wins_over_gbtest(self, monkeypatch):
         # K8s inherits the base method; a GBTEST-sourced GB_BUILD_ID must still
