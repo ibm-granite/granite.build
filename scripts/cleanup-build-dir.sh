@@ -12,7 +12,7 @@
 #   * its name contains a UUID anywhere, with any prefix or suffix (e.g.
 #     87caf891-2393-4a16-895a-f50bf316fd65 or llm-build-87caf891-...)
 #   * it is owned by the current user, so other users' entries are never touched
-#   * it was last modified more than DAYS days ago
+#   * nothing anywhere in its tree was modified in the last DAYS days
 # A directory whose name contains no UUID is reported as ignored. A matching
 # directory kept because of its owner or age is only counted.
 # Nothing is deleted unless --delete is given; the default is a dry run.
@@ -26,9 +26,10 @@
 #         /proj/data-eng/llmb-read-write/builds or .../builds/builds
 #
 # Run it on a login node as the account that ran the builds (e.g. granitebuild).
-# Pick DAYS longer than your longest build: a directory's modification time only
-# changes when an entry directly inside it is added or removed, so a long build
-# writing only deeper down can look old while it is still running.
+# Age is checked over the whole tree, not just the top directory, so a build
+# that is still running, or was restarted under the same build id with
+# `gb build restart` (which adds new runs inside an old directory), is kept.
+# A tree that can't be read in full is kept too.
 set -euo pipefail
 
 # A build id: a UUID in its usual 8-4-4-4-12 hex form, anywhere in the name.
@@ -40,7 +41,7 @@ ME=$(id -un)
 # usage
 # Print the header comment as help text.
 usage() {
-  sed -n '2,31p' "$0"
+  sed -n '2,32p' "$0"
 }
 
 # die MESSAGE
@@ -51,9 +52,12 @@ die() {
 }
 
 # older_than PATH DAYS
-# Succeed when PATH was last modified more than DAYS days ago.
+# Succeed when nothing in PATH's tree was modified in the last DAYS days.
+# Fails (keeps the directory) if find can't read part of the tree.
 older_than() {
-  [[ -n "$(find "$1" -maxdepth 0 -mtime "+$(($2 - 1))" -print)" ]]
+  local newer
+  newer=$(find "$1" -mtime "-$2" -print -quit 2>/dev/null) || return 1
+  [[ -z "$newer" ]]
 }
 
 # owned_by_me PATH
@@ -101,7 +105,7 @@ clean() {
       failed=$((failed + 1))
     fi
   done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d -print | sort)
-  local tail="ignored $ignored, kept $kept (other owner or newer than $days days)"
+  local tail="ignored $ignored, kept $kept (other owner, or something in it newer than $days days)"
   if $DELETE; then
     echo "removed $removed, $tail, failed $failed"
   else
