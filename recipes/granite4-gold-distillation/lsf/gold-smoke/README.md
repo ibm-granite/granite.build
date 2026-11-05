@@ -50,7 +50,7 @@ still fail here.
 
 The tokenizer family does not track the version number, so the pairs have to be
 grouped by hand. See
-[Choosing a student/teacher pair](../../../../steps/distill/gold/skypilot/USAGE.md#choosing-a-studentteacher-pair)
+[Choosing a student/teacher pair](../../../../steps/train/distill/logit-distill/skypilot/USAGE.md#choosing-a-studentteacher-pair)
 in the step's `USAGE.md` for the survey and the grouping command.
 
 ## Lineage

@@ -348,7 +348,7 @@ class TestTheUnanchoredObjective:
 
 class TestTheTrainerPin:
     """train-gold and vllm-server both get their trainer baked into the shared GPU
-    image (steps/distill/src/, pinned a5d59bc4 -- see steps/distill/src/VENDORED.md),
+    image (steps/train/distill/src/, pinned a5d59bc4 -- see steps/train/distill/src/VENDORED.md),
     not cloned from a recipe-configurable checkout, so there is no CODE_DIR/
     CODE_EXPECT_REF parameter and no code_config to override here at all.
 
@@ -386,7 +386,9 @@ class TestTheTrainerPin:
     def test_the_fold_in_is_recorded_in_the_vendor_docs(self):
         """Otherwise the fold-in has no provenance trail at all: where the fields came
         from, and why they are safe to rely on unconditionally now."""
-        vendored_md = _RECIPE.parents[3] / "steps" / "distill" / "src" / "VENDORED.md"
+        vendored_md = (
+            _RECIPE.parents[3] / "steps" / "train" / "distill" / "src" / "VENDORED.md"
+        )
         assert vendored_md.is_file()
         text = vendored_md.read_text(encoding="utf-8")
         assert (
@@ -511,7 +513,7 @@ class TestGenSmoke:
 
     def test_it_runs_the_gen_smoke_step(self, off):
         step = _targets(off)["gen-smoke"]["steps"][0]
-        assert step["step_uri"] == "space://steps/distill/gen-smoke"
+        assert step["step_uri"] == "space://steps/train/distill/repetition-check"
 
     def test_the_interpreter_actually_receives_every_rung(self, tmp_path):
         """Executes the assembly instead of parsing it. `bash -n` cannot see this
@@ -532,7 +534,7 @@ class TestGenSmoke:
         )
         stub.chmod(0o755)
         script, step_dir = render_run(
-            "distill/gen-smoke",
+            "train/distill/repetition-check",
             _config(rendered, "gen-smoke"),
             gen_smoke_config={},
         )
@@ -542,14 +544,14 @@ class TestGenSmoke:
             cwd=step_dir,
             text=True,
             capture_output=True,
-            env=image_env("distill/gen-smoke", tmp_path, python=str(stub)),
+            env=image_env("train/distill/repetition-check", tmp_path, python=str(stub)),
         )
 
         assert result.returncode == 0, result.stderr
         argv = json.loads(argv_log.read_text(encoding="utf-8"))
         rungs = _params()["CKPT_LADDER"].split(",")
         assert argv[0] == str(
-            tmp_path / "distill-home/steps/gen-smoke/gen_smoke.py"
+            tmp_path / "distill-home/steps/repetition-check/gen_smoke.py"
         ), f"interpreter got {argv}"
         assert len(argv) == 5 + len(rungs), f"interpreter got {argv}"
         assert argv[1].endswith("/gen-smoke/repetition.json")
@@ -810,7 +812,7 @@ class TestThePinCheckScript:
 
     def test_it_runs_the_pin_check_step(self, pinned):
         step = _targets(pinned)["corpus-pin-check"]["steps"][0]
-        assert step["step_uri"] == "space://steps/distill/corpus-pin-check"
+        assert step["step_uri"] == "space://steps/train/distill/data-validate"
 
     def test_it_checks_everything_that_defines_the_corpus(self, pinned):
         cfg = _config(pinned, "corpus-pin-check")["pin_check_config"]
@@ -836,7 +838,7 @@ class TestThePinCheckScript:
         tok = tmp_path / "retagged_student"
         tok.mkdir(exist_ok=True)
         script, step_dir = render_run(
-            "distill/corpus-pin-check",
+            "train/distill/data-validate",
             _config(pinned, "corpus-pin-check"),
             bindings={"tokenizer": str(tok)},
             pin_check_config={
@@ -849,7 +851,7 @@ class TestThePinCheckScript:
             cwd=step_dir,
             text=True,
             capture_output=True,
-            env=image_env("distill/corpus-pin-check", tmp_path),
+            env=image_env("train/distill/data-validate", tmp_path),
         )
 
     @staticmethod

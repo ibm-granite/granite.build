@@ -55,7 +55,7 @@ granite.build:
         cluster_name:
           uri: "mem://gold-onpolicy-vllm-cluster"
       steps:
-        - step_uri: space://steps/distill/vllm-server
+        - step_uri: space://steps/train/distill/student-rollout-generator
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -110,7 +110,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: model
       steps:
-        - step_uri: space://steps/distill/gold
+        - step_uri: space://steps/train/distill/logit-distill
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}

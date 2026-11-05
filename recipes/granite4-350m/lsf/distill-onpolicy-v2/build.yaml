@@ -133,7 +133,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/distill/corpus-sources
+        - step_uri: space://steps/train/distill/data-mixture
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -186,7 +186,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: model
       steps:
-        - step_uri: space://steps/distill/tokenizer-align
+        - step_uri: space://steps/train/distill/tokenizer-align
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -239,7 +239,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/distill/corpus-prep
+        - step_uri: space://steps/train/distill/data-prep
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -325,7 +325,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: fileset
       steps:
-        - step_uri: space://steps/distill/corpus-pin-check
+        - step_uri: space://steps/train/distill/data-validate
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -379,7 +379,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: model
       steps:
-        - step_uri: space://steps/distill/sft
+        - step_uri: space://steps/train/distill/student-sft
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -455,7 +455,7 @@ granite.build:
         cluster_name:
           uri: "mem://distill-onpolicy-v2-vllm-cluster"
       steps:
-        - step_uri: space://steps/distill/vllm-server
+        - step_uri: space://steps/train/distill/student-rollout-generator
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -531,7 +531,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: model
       steps:
-        - step_uri: space://steps/distill/gold
+        - step_uri: space://steps/train/distill/logit-distill
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -649,7 +649,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: model
       steps:
-        - step_uri: space://steps/generic/hf-export
+        - step_uri: space://steps/misc/hf-export
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -723,7 +723,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: fileset
       steps:
-        - step_uri: space://steps/distill/eval
+        - step_uri: space://steps/train/distill/teacher-divergence
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -801,7 +801,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: fileset
       steps:
-        - step_uri: space://steps/distill/eval
+        - step_uri: space://steps/train/distill/teacher-divergence
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -861,7 +861,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: fileset
       steps:
-        - step_uri: space://steps/distill/gen-smoke
+        - step_uri: space://steps/train/distill/repetition-check
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}

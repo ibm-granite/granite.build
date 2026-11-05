@@ -58,13 +58,13 @@ SEED: 42
 INCLUDE_SFT: false
 
 # ─── Image and trainer code ───────────────────────────────────────────
-# Every GPU step defaults to the shared GPU image (steps/distill/images/gpu/) and every
-# CPU step to the shared CPU image (steps/distill/images/cpu/) -- no per-recipe override
+# Every GPU step defaults to the shared GPU image (steps/train/distill/images/gpu/) and every
+# CPU step to the shared CPU image (steps/train/distill/images/cpu/) -- no per-recipe override
 # needed. The GOLD trainer (gb_steps_post_training.distillation.gold and friends)
-# is baked into the GPU image from steps/distill/src/ (see
-# steps/distill/src/VENDORED.md), so a source bump is one edit there, not one per
+# is baked into the GPU image from steps/train/distill/src/ (see
+# steps/train/distill/src/VENDORED.md), so a source bump is one edit there, not one per
 # recipe or per step.
-DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
+DS_CONFIG: "configs/deepspeed/accelerate_deepspeed_zero3.yaml"
 
 # ─── The pair, the data, and the chat template ────────────────────────
 # Each *_URI below carries a FULL uri, not a bare path — the scheme picks
@@ -130,7 +130,7 @@ DATASET_URI: "env:///proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_200
 #
 # The markers emit nothing, so the rendered output is byte-identical to the
 # unmarked template. That is asserted, not assumed:
-# steps/distill/tokenizer-align/skypilot/test/test_granite_role_template.py renders
+# steps/train/distill/tokenizer-align/skypilot/test/test_granite_role_template.py renders
 # both over nine conversation shapes and diffs them.
 #
 # BEFORE THE FIRST RUN: diff this against /proj/granite-build/g4os/chat_template.jinja,

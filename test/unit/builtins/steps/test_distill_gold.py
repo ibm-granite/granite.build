@@ -29,7 +29,8 @@ from gbserver.utils.template import fill_objtemplate, fill_template
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 GOLD_STEP_DIR = (
-    REPO_ROOT / "configurations/assets/environments/skypilot/steps/distill/gold"
+    REPO_ROOT
+    / "configurations/assets/environments/skypilot/steps/train/distill/logit-distill"
 )
 RENDERER = GOLD_STEP_DIR / "src/render_gold_config.py"
 

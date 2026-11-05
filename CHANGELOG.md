@@ -146,14 +146,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Step drawer timestamps (#470).** `parseTimestamp` reads a zoneless ISO timestamp as
   UTC, so displayed times shift for users outside UTC.
 
-- **`hf-export` moved to the new `generic` step category: `space://steps/distill/hf-export`
-  is now `space://steps/generic/hf-export`.** Breaking: the old URI is gone, so a recipe
-  must change its `step_uri`. Config, inputs (`train_output`, `expected_tokenizer`) and the
-  `hf_model` output are unchanged, and an export made by the old step is recognised and
-  skipped, not redone. The step no longer runs on the distillation CPU image: it has its own
-  CPU image, `gb-step-hf-export` (no torch), and imports nothing from `steps/distill`, so
-  any recipe that trains with HF Trainer or accelerate can use it. The shipped recipes use
-  the new URI.
+- **The distillation steps moved to `steps/train/distill/` and were renamed so each name
+  says what the step does.** Breaking: every `space://steps/distill/<step>` URI shipped in
+  v0.3.8 is gone. Config, inputs and outputs are unchanged, so migrating a recipe means
+  changing its `step_uri` to the new name below; the shipped recipes use the new URIs. Resume markers keep
+  their recorded step names, so outputs written before the move are still skipped, not redone.
+
+  | Was | Now `space://steps/train/distill/…` |
+  |---|---|
+  | `distill/corpus-sources` | `data-mixture` |
+  | `distill/corpus-prep` | `data-prep` |
+  | `distill/corpus-pin-check` | `data-validate` |
+  | `distill/tokenizer-align` | `tokenizer-align` |
+  | `distill/sft` | `student-sft` |
+  | `distill/gold` | `logit-distill` (GOLD, ULD, AKL, DistiLLM-2-style objectives) |
+  | `distill/logit-precompute` | `teacher-logits` |
+  | `distill/vllm-server` | `student-rollout-generator` |
+  | `distill/eval` | `teacher-divergence` (not to be confused with the `steps/eval/` category) |
+  | `distill/gen-smoke` | `repetition-check` |
+  | `distill/probe` | `preflight-check` |
+
+  The shared Accelerate/DeepSpeed launch config moved inside the GPU image from
+  `steps/distill-gold-train/configs/` to `configs/`; recipes that set `DS_CONFIG` use
+  `configs/deepspeed/accelerate_deepspeed_zero3.yaml`.
+- **`hf-export` moved to `steps/misc/hf-export` with its own image.** Breaking:
+  `space://steps/distill/hf-export` is now `space://steps/misc/hf-export`. Config, inputs
+  (`train_output`, `expected_tokenizer`) and the `hf_model` output are unchanged, and an
+  export made by the old step is recognised and skipped, not redone. The step no longer runs
+  on the distillation CPU image: it has its own CPU image, `gb-step-hf-export` (no torch), and
+  imports nothing from the distillation collection, so any recipe that trains with HF Trainer
+  or accelerate can use it.
 - **The distill GPU steps refuse a GPU undercount instead of rewriting
   `CUDA_VISIBLE_DEVICES` (#604).** `gold`, `sft`, `logit-precompute`, `eval`, `vllm-server`
   and `gen-smoke` compare `SKYPILOT_NUM_GPUS_PER_NODE` with `nvidia-smi -L` and fail fast,

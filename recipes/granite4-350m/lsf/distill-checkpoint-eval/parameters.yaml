@@ -123,11 +123,11 @@ INCLUDE_SFT: false
 # /proj/granite-build/g4os/gb-steps-distillation-gb carrying
 # patches/ce_anchor_and_entropy_guard.diff, because CE_COEF and the entropy guard
 # needed trainer fields the step's default public pin did not define. That patch is
-# now folded in permanently (steps/distill/src/VENDORED.md), baked into the shared
+# now folded in permanently (steps/train/distill/src/VENDORED.md), baked into the shared
 # GPU image every GOLD recipe already uses, and gold itself no longer has a
 # code_config field to override at all -- so CE_COEF and the entropy guard below work
 # out of the box, with nothing to point anywhere.
-DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
+DS_CONFIG: "configs/deepspeed/accelerate_deepspeed_zero3.yaml"
 # The five ported steps read their own code from a separate pinned checkout,
 # declared by each step's code_config (code_dir plus expect_ref) rather than
 # here — so a source bump is one edit in the step, not one per recipe.
@@ -213,7 +213,7 @@ SHUFFLE_SEED: 42
 #
 # The markers emit nothing, so the rendered output is byte-identical to the
 # unmarked template. That is asserted, not assumed:
-# steps/distill/tokenizer-align/skypilot/test/test_granite_role_template.py renders
+# steps/train/distill/tokenizer-align/skypilot/test/test_granite_role_template.py renders
 # both over nine conversation shapes and diffs them.
 #
 # BEFORE THE FIRST RUN: diff this against /proj/granite-build/g4os/chat_template.jinja,

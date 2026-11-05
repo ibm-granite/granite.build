@@ -521,7 +521,7 @@ def test_gen_smoke_reports_without_gating(built):
     every rung is priced by full-eval regardless, and failing here would only remove
     evidence. It still measures and still writes the table: that is the deliverable."""
     step = _targets(built)["gen-smoke"]["steps"][0]
-    assert step["step_uri"] == "space://steps/distill/gen-smoke"
+    assert step["step_uri"] == "space://steps/train/distill/repetition-check"
     assert step["config"]["gen_smoke_config"]["gate_final_rung"] is False
 
 
@@ -541,7 +541,7 @@ def test_gen_smoke_hands_the_interpreter_every_rung(built, tmp_path):
     )
     stub.chmod(0o755)
     script, step_dir = render_run(
-        "distill/gen-smoke",
+        "train/distill/repetition-check",
         _config(built, "gen-smoke"),
         gen_smoke_config={"output_dir": str(tmp_path / "gs")},
     )
@@ -552,7 +552,7 @@ def test_gen_smoke_hands_the_interpreter_every_rung(built, tmp_path):
         capture_output=True,
         text=True,
         check=False,
-        env=image_env("distill/gen-smoke", tmp_path, python=str(stub)),
+        env=image_env("train/distill/repetition-check", tmp_path, python=str(stub)),
     )
 
     assert result.returncode == 0, result.stderr
@@ -583,7 +583,7 @@ def test_the_objective_is_unanchored():
     df8512e0's: pure divergence, lmbda 0, no CE anchor. Keeping it that way at zero is what
     keeps this the SAME objective df8512e0 ran -- the CE-anchor/entropy-guard fields are
     now unconditionally available on the trainer (folded into
-    steps/distill/src/gb_steps_post_training/distillation/, see VENDORED.md), so setting
+    steps/train/distill/src/gb_steps_post_training/distillation/, see VENDORED.md), so setting
     any one of them is just a --param now, not a patched-checkout dependency -- but doing
     so would change the objective under measurement, which is why this recipe leaves them
     at zero.

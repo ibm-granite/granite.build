@@ -204,7 +204,7 @@ and nothing else changed, and both halves of that claim are now checked:
   the template the SFT mixture was actually tokenized with — returned
   `9524df67b77a7b25...` on 2026-09-22, byte-identical to the vendored
   `granite_4_role_base.jinja`. The hash is pinned in
-  `steps/distill/tokenizer-align/skypilot/test/test_granite_role_template.py`, so
+  `steps/train/distill/tokenizer-align/skypilot/test/test_granite_role_template.py`, so
   re-vendoring from a different granite release fails a test instead of silently
   changing what the marked template is derived from.
 * **The markers change no rendered byte.** Asserted over nine conversation shapes,

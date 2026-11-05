@@ -78,7 +78,7 @@ def gen_smoke_module():
     """
     spec = importlib.util.spec_from_file_location(
         "published_gen_smoke",
-        _ASSETS / "distill" / "gen-smoke" / "src" / "gen_smoke.py",
+        _ASSETS / "train" / "distill" / "repetition-check" / "src" / "gen_smoke.py",
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

@@ -1,0 +1,231 @@
+name: teacher-divergence
+version: 1.0.0
+# Measures HOW FAR THE STUDENT'S next-token distribution is from the TEACHER'S on a
+# held-out corpus, and writes the result as an artifact. This is the read on whether
+# distillation transferred anything, and unlike a capability benchmark it needs no labels.
+#
+# WHY THIS EXISTS WHEN WE ALREADY HAVE bfcl-eval. BFCL scores tool-calling against ground
+# truth — "is the student right?". It structurally cannot answer "did the student move
+# toward the TEACHER?", because that is a distance between two models' distributions on the
+# same inputs, not a property of one model's outputs. A recipe wires BOTH: bfcl-eval for
+# capability, this for transfer. They are not substitutes in either direction, and a recipe
+# wires space://steps/bfcl-eval directly rather than having this step wrap it.
+#
+# CUSTOM, because measuring is not processing data, generating data, training or tuning.
+# There is no EVAL member in gbcommon's StepType enum; `type` is a free string, so it would
+# be easy to invent one, and the sibling steps' rule applies — do not.
+type: custom
+config:
+  # ─── Evaluation ───────────────────────────────────────────────────────────────
+  eval_config:
+    # The student and the teacher are target INPUTS, not config keys — see `inputs:`
+    # below.
+    #
+    # distill-corpus-prep's corpus — ITS EVAL SPLIT, not the split the student trained on.
+    # Measured on training data, a divergence reports how well the student memorised the
+    # teacher's outputs on seen inputs: the one thing distillation is guaranteed to
+    # improve, and therefore the least informative thing to check.
+    corpus: ""
+
+    # Relative values resolve against $GB_BUILD_WORKDIR.
+    output_dir: "eval"
+
+    # jsd | kld | rkld | entropy, comma-separated. All four are reductions over the SAME
+    # pair of logit tensors, so listing four costs ONE forward pass over the corpus.
+    #   jsd     symmetric, bounded by ln2, and the arm's own training objective. The
+    #           headline number.
+    #   kld     forward KL: penalises the student for missing teacher mass (mode-covering).
+    #   rkld    reverse KL: penalises mass where the teacher has none (mode-seeking).
+    #           Reported alongside kld because which one moved says WHICH WAY the student is
+    #           wrong, and a single symmetric number cannot.
+    #   entropy the student alone. The only metric computable with no teacher, and the one
+    #           that catches a collapsed student whose divergence happens to look fine.
+    metrics: "jsd,kld,rkld,entropy"
+
+    # A divergence mean stabilises well before a corpus is exhausted, and each sample is a
+    # forward pass through the teacher, so this is a cost knob with a real ceiling on its
+    # usefulness. SAMPLED with --seed rather than taken as a prefix: corpora are often
+    # sorted by source or length, so a prefix measures one slice and the mean moves when
+    # this number changes.
+    max_samples: 256
+    seed: 42
+
+    # SHOULD MATCH THE TRAINING RUN'S max_length, and this is the least cosmetic key here.
+    # Too small a value damages the measurement in two ways, one loud and one SILENT:
+    #   - a record whose PROMPT alone exceeds max_length is dropped outright;
+    #   - a record whose prompt fits but whose answer does not is scored on a PREFIX of
+    #     that answer — and this one leaves no trace in n_samples, so a clean-looking jsd
+    #     can be a mean over half-read completions.
+    # Only long conversations are hit by either, so a too-small value reports a
+    # length-biased estimate as the divergence. max_incomplete_fraction is the refusal
+    # threshold over both cases combined; set it to 1.0 to measure a short slice on purpose.
+    max_length: 4096
+    max_incomplete_fraction: 0.25
+
+    batch_size: 4
+    # bfloat16 matches training. float32 doubles memory for a metric whose differences are
+    # far larger than bf16's error, but it is there for a suspicious result.
+    dtype: "bfloat16"
+
+    # Compute even when the two tokenizers disagree on token ids. Default false and it
+    # should stay false: index i denotes a different token to each model, so the arithmetic
+    # SUCCEEDS and measures nothing. Kept as a knob only because a deliberate
+    # cross-tokenizer experiment may want the number anyway.
+    allow_tokenizer_mismatch: false
+
+# I/O schema, validated against the build.yaml target at build time: a target that
+# does not bind a required input fails validation before anything is queued. The
+# run script reads each one as {{ bindings.<name>.binding.path }}. allow_unknown
+# stays true so a recipe can bind extra inputs purely to order targets.
+#
+# Paths, not HF repo ids: the student is a checkpoint this pipeline produced and the
+# teacher for this pairing is not publicly fetchable.
+inputs:
+  allow_unknown: true
+  required:
+    # distill-hf-export's `hf_model` for a post-training measurement, or
+    # distill-tokenizer-align's `retagged_student` for the t=0 baseline that makes the
+    # post-training number mean something. A divergence with no baseline is a number
+    # without a direction.
+    student:
+      type: model
+      accept: [uri, binding]
+  optional:
+    # OPTIONAL, and the absence is meaningful rather than sloppy: with no teacher only
+    # single-model metrics (entropy) are computable, and asking for jsd without one is
+    # REFUSED rather than defaulted. Normally the same teacher the trainer used, so the
+    # divergence is measured against the model that actually taught.
+    teacher:
+      type: model
+      accept: [uri, binding]
+
+# FILESET, not DATASET: this directory holds metrics.json and per_sample.jsonl, which are a
+# measurement OF a model, not data anything trains on. Both are real members of
+# gbcommon.types.artifact.ArtifactType, so the distinction costs nothing to get right — and
+# an undeclared output would be worse than a mistyped one, because the resolver drops a
+# NEWARTIFACT event whose id is not declared here and the target then completes with no
+# output AND no error.
+outputs:
+  required:
+    eval_metrics:
+      type: fileset
+
+environment_configs:
+  Skypilot:
+    subtypes:
+      - lsf
+      - slurm
+    default_launcher: eval
+    launchers:
+      eval:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-distillation-gpu:c1470ea1"
+          # REAL GPU WORK, unlike the three ported steps before it: two models' forward
+          # passes over the corpus. Accelerators come from the build.yaml so one step
+          # serves a 3B-teacher smoke run and a 30B-teacher reference run.
+          resources: {}
+          envs:
+            # The SLURM executor runs the task under `env -u PYTHONPATH` and without
+            # VIRTUAL_ENV, so the image's ENV values for both are gone at run time.
+            PYTHONPATH: /opt/distill/src
+            VIRTUAL_ENV: /stage/.venv
+            # NO HF_HUB_OFFLINE here, unlike the three tokenizer-only ported steps —
+            # and that is measured, not stylistic. This step loads MODELS, and granite
+            # 4.x is hybrid Mamba: at load time the `kernels` package resolves
+            # kernels-community/causal-conv1d through the Hub API, so offline mode
+            # fails with OfflineModeIsEnabled *after* the load has started (build
+            # 15267e81). distill-gold — the step that demonstrably loads a granite 4.x
+            # student and a 30B teacher on this same image — sets HF_HOME and leaves
+            # the Hub reachable, so that is the proven configuration and this matches
+            # it. distill-logit-precompute will need the same, for the same reason.
+            #
+            # align, corpus-prep and hf-export keep HF_HUB_OFFLINE=1 because they touch
+            # only tokenizers and configs, where "a missing local file fails here
+            # rather than silently fetching" is a property worth having.
+          run: |
+            echo "=== distill-eval on $(hostname) ==="
+
+            # The models used to be config keys. A recipe that still sets one would
+            # otherwise be ignored silently, so refuse it.
+            {% for key in ("student_model", "teacher_model") if config.eval_config[key] is defined %}
+            echo "distill-eval: FATAL: eval_config.{{ key }} is no longer read; bind the target input instead (see this step's README)" >&2
+            exit 1
+            {% endfor %}
+            # `teacher` is optional, so a target still binding the old input name would
+            # pass validation as an extra input and silently score without a teacher.
+            {% if bindings is defined and "teacher_model" in bindings %}
+            echo "distill-eval: FATAL: the 'teacher_model' input was renamed to 'teacher'; bind 'teacher' instead" >&2
+            exit 1
+            {% endif %}
+
+            # --- distill source: baked into the image, nothing cloned or mounted ---
+            # DISTILL_HOME, the venv (VIRTUAL_ENV) and PYTHONPATH are all set by the image's
+            # own ENV lines. The interpreter is asked of uv rather than hardcoded.
+            PYBIN="python"
+            CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"
+            WORK="${GB_BUILD_WORKDIR:-$PWD}"
+            echo "GB_STEP_METADATA_KEY:distill_code_source GB_STEP_METADATA_VALUE:baked-image"
+            echo "GB_STEP_METADATA_KEY:distill_code_commit GB_STEP_METADATA_VALUE:a5d59bc45524a8d75706e20d44ae1a254f273f23"
+            # --- distill source: END ---
+
+            # GPU allocation check (ibm-granite/granite.build#604). On Slurm 25.11.x an
+            # --overlap job step -- SkyPilot's container keeper is one -- can be granted
+            # fewer of the job's GPUs than the job holds (SchedMD bug 24862, fixed in
+            # 26.05.3), and the container keeps the keeper's device set. Ranks past the
+            # visible count would then bind a GPU another rank already holds and fail
+            # later, far from the cause. Refuse here instead. `nvidia-smi -L` lists what
+            # the container's device cgroup grants and ignores CUDA_VISIBLE_DEVICES; a
+            # failed or missing nvidia-smi (0 listed) proves nothing, so only an
+            # undercount it reports is refused. Nothing is rewritten or worked around:
+            # the check holds whether the fix lands in Slurm or in SkyPilot.
+            GPU_WANT="${SKYPILOT_NUM_GPUS_PER_NODE:-0}"
+            case $GPU_WANT in ''|*[!0-9]*) GPU_WANT=0 ;; esac
+            GPU_SEEN="$(nvidia-smi -L 2>/dev/null | grep -c '^GPU ' || true)"
+            case $GPU_SEEN in ''|*[!0-9]*) GPU_SEEN=0 ;; esac
+            GPU_DEVS="$(ls /dev/nvidia[0-9]* 2>/dev/null | tr '\n' ' ' || true)"
+            echo "distill-eval: gpu check: allocated=$GPU_WANT visible=$GPU_SEEN CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-<unset>}' SLURM_JOB_GPUS='${SLURM_JOB_GPUS:-}' SLURM_STEP_GPUS='${SLURM_STEP_GPUS:-}' devices='$GPU_DEVS'"
+            if [ "$GPU_SEEN" -ge 1 ] && [ "$GPU_SEEN" -lt "$GPU_WANT" ]; then
+              echo "distill-eval: FATAL: $GPU_WANT GPU(s) were allocated (SKYPILOT_NUM_GPUS_PER_NODE) but this container can access only $GPU_SEEN (nvidia-smi -L). On SLURM this is ibm-granite/granite.build#604; rerun, or report the node." >&2
+              exit 1
+            fi
+
+            # Absolutised here rather than in the script, because the SCRIPT prints the
+            # artifact marker (see below) and the monitor hands that path to the env://
+            # store, possibly from another host.
+            OUT_DIR="{{ config.eval_config.output_dir }}"
+            case "$OUT_DIR" in /*) ;; *) OUT_DIR="$WORK/$OUT_DIR" ;; esac
+
+            # NO ARTIFACT MARKER HERE, deliberately. run-eval.sh prints it from its own
+            # publish_artifacts(), which it calls on BOTH the success path and the
+            # already-measured SKIP path — a resumed recipe whose eval says "already done"
+            # and then publishes nothing has broken whatever reads eval_metrics. Upstream's
+            # template echoed it a SECOND time after the script returned, which would
+            # register two NEWARTIFACT events for one id.
+            PYBIN="$PYBIN" bash "$DISTILL_HOME/steps/teacher-divergence/run-eval.sh" \
+              --student-model "{{ bindings.student.binding.path }}" \
+              --teacher-model "{{ bindings.teacher.binding.path if bindings.teacher is defined else "" }}" \
+              --corpus "{{ config.eval_config.corpus }}" \
+              --out-dir "$OUT_DIR" \
+              --metrics "{{ config.eval_config.metrics }}" \
+              --max-samples {{ config.eval_config.max_samples }} \
+              --max-length {{ config.eval_config.max_length }} \
+              --max-incomplete-fraction {{ config.eval_config.max_incomplete_fraction }} \
+              --batch-size {{ config.eval_config.batch_size }} \
+              --seed {{ config.eval_config.seed }} \
+              --dtype "{{ config.eval_config.dtype }}" \
+              {% if config.eval_config.allow_tokenizer_mismatch %}--allow-tokenizer-mismatch{% else %}--no-allow-tokenizer-mismatch{% endif %}
+    monitors:
+      skypilot_monitor:
+        # Artifact/binding convention from the shipped library, overridden to `periodic`
+        # retrieval for the same reason distill-gold overrides it: a teacher forward pass
+        # over 256 samples is not a seconds-long job, and the default on_completion mode
+        # surfaces nothing until the end — so a stalled run looks identical to a slow one.
+        ref: space://monitors/skypilot
+        config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(300) }}"
+          log_retrieval:
+            mode: "{{ config.log_retrieval_mode | default('periodic') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(300) }}"

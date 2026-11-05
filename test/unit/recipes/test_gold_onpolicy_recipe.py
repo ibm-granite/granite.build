@@ -51,8 +51,9 @@ _GOLD_STEP = (
     / "environments"
     / "skypilot"
     / "steps"
+    / "train"
     / "distill"
-    / "gold"
+    / "logit-distill"
 )
 
 # apply_parameters' delimiters: variable_start_string="$${", variable_end_string="}".
@@ -110,9 +111,12 @@ def test_three_targets_in_the_expected_roles(targets):
     assert set(targets) == {"vllm-server", "train", "teardown"}
     assert (
         targets["vllm-server"]["steps"][0]["step_uri"]
-        == "space://steps/distill/vllm-server"
+        == "space://steps/train/distill/student-rollout-generator"
     )
-    assert targets["train"]["steps"][0]["step_uri"] == "space://steps/distill/gold"
+    assert (
+        targets["train"]["steps"][0]["step_uri"]
+        == "space://steps/train/distill/logit-distill"
+    )
     assert (
         targets["teardown"]["steps"][0]["step_uri"] == "space://steps/skypilot-teardown"
     )
@@ -264,7 +268,7 @@ def test_both_targets_share_one_trainer_checkout_and_image(targets, params):
 
     Neither target's build.yaml overrides image_id or carries a code_config any
     more: both gold and vllm-server get their trainer source baked into the same
-    shared GPU image (steps/distill/src/, see steps/distill/src/VENDORED.md)
+    shared GPU image (steps/train/distill/src/, see steps/train/distill/src/VENDORED.md)
     rather than cloning a configurable checkout, so there is nothing left for this
     recipe to override and nothing for the two targets to disagree on.
     """

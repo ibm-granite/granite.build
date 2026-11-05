@@ -45,24 +45,33 @@ _AWS = "environments/skypilot/aws/steps"
 # the listed exceptions: each such step.yaml says why in a comment above `inputs:`.
 EXPECTED = {
     # Distillation: not in any tag yet, so the inputs are required outright.
-    f"{_SKY}/distill/tokenizer-align": (
+    f"{_SKY}/train/distill/tokenizer-align": (
         {"teacher", "student"},
         {"chat_template"},
     ),
-    f"{_SKY}/distill/corpus-prep": ({"source_dataset", "tokenizer"}, set()),
-    f"{_SKY}/distill/corpus-pin-check": ({"tokenizer"}, set()),
-    f"{_SKY}/distill/sft": ({"student", "corpus"}, set()),
-    f"{_SKY}/distill/gold": ({"student", "teacher", "corpus"}, {"vllm"}),
-    f"{_SKY}/distill/eval": ({"student"}, {"teacher"}),
-    f"{_SKY}/generic/hf-export": ({"train_output"}, {"expected_tokenizer"}),
-    f"{_SKY}/distill/logit-precompute": (
+    f"{_SKY}/train/distill/data-prep": ({"source_dataset", "tokenizer"}, set()),
+    f"{_SKY}/train/distill/data-validate": ({"tokenizer"}, set()),
+    f"{_SKY}/train/distill/student-sft": ({"student", "corpus"}, set()),
+    f"{_SKY}/train/distill/logit-distill": ({"student", "teacher", "corpus"}, {"vllm"}),
+    f"{_SKY}/train/distill/teacher-divergence": ({"student"}, {"teacher"}),
+    f"{_SKY}/misc/hf-export": ({"train_output"}, {"expected_tokenizer"}),
+    f"{_SKY}/train/distill/teacher-logits": (
         {"corpus", "teacher", "teacher_tokenizer"},
         set(),
     ),
-    f"{_SKY}/distill/vllm-server": ({"model"}, set()),
-    f"{_SKY}/distill/corpus-sources": (set(), set()),  # variable-length sources list
-    f"{_SKY}/distill/gen-smoke": (set(), set()),  # variable-length rungs list
-    f"{_SKY}/distill/probe": (set(), set()),  # diagnostic, literal paths
+    f"{_SKY}/train/distill/student-rollout-generator": ({"model"}, set()),
+    f"{_SKY}/train/distill/data-mixture": (
+        set(),
+        set(),
+    ),  # variable-length sources list
+    f"{_SKY}/train/distill/repetition-check": (
+        set(),
+        set(),
+    ),  # variable-length rungs list
+    f"{_SKY}/train/distill/preflight-check": (
+        set(),
+        set(),
+    ),  # diagnostic, literal paths
     # NeMo-RL training: new, so base_model is required outright; dataset is optional
     # (omit it to use the NeMo-RL config's built-in dataset).
     f"{_SKY}/train/nemo-rl": ({"base_model"}, {"dataset"}),

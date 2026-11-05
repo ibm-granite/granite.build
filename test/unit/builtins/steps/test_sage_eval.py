@@ -38,7 +38,7 @@ STEPS = [
 OTHER_TMPDIR_STEPS = {
     # Sets TMPDIR to its own VLLM_RPC_BASE_PATH, /tmp/vllm-<user>-<LSF job id>.
     ENVIRONMENTS
-    / "skypilot/steps/distill/vllm-server/step.yaml": "short by construction",
+    / "skypilot/steps/train/distill/student-rollout-generator/step.yaml": "short by construction",
 }
 # Where steps live: environment assets, the builtin steps, and the samples.
 STEP_ROOTS = [ENVIRONMENTS, REPO_ROOT / "src/gbserver/builtins", REPO_ROOT / "samples"]

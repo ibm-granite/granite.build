@@ -225,8 +225,9 @@ class TestTheGenerationFloor:
             / "environments"
             / "skypilot"
             / "steps"
+            / "train"
             / "distill"
-            / "vllm-server"
+            / "student-rollout-generator"
             / "step.yaml"
         ).read_text(encoding="utf-8")
         assert "GOLD_MIN_TOKENS" in step
@@ -294,7 +295,7 @@ class TestItIsStage1V2PlusOnPolicy:
         different sources would pair a patched trainer with an unpatched sampler -- and
         the symptom is not a crash, it is a floor that never applies and completions the
         teacher scores as rollouts. Both steps now get their source from the SAME baked
-        shared GPU image (steps/distill/src/, see VENDORED.md) rather than either cloning
+        shared GPU image (steps/train/distill/src/, see VENDORED.md) rather than either cloning
         a configurable checkout, so there is no longer a pair of pins that COULD disagree
         -- this asserts neither step has a code_config to disagree with in the first
         place."""
@@ -366,7 +367,7 @@ class TestGenSmoke:
 
     def test_it_runs_the_gen_smoke_step(self, on):
         step = _targets(on)["gen-smoke"]["steps"][0]
-        assert step["step_uri"] == "space://steps/distill/gen-smoke"
+        assert step["step_uri"] == "space://steps/train/distill/repetition-check"
 
     def test_the_interpreter_actually_receives_every_rung(self, tmp_path):
         """Executes the assembly instead of parsing it. `bash -n` cannot see this
@@ -386,7 +387,7 @@ class TestGenSmoke:
         )
         stub.chmod(0o755)
         script, step_dir = render_run(
-            "distill/gen-smoke",
+            "train/distill/repetition-check",
             _config(rendered, "gen-smoke"),
             gen_smoke_config={},
         )
@@ -396,14 +397,14 @@ class TestGenSmoke:
             cwd=step_dir,
             text=True,
             capture_output=True,
-            env=image_env("distill/gen-smoke", tmp_path, python=str(stub)),
+            env=image_env("train/distill/repetition-check", tmp_path, python=str(stub)),
         )
 
         assert result.returncode == 0, result.stderr
         argv = json.loads(argv_log.read_text(encoding="utf-8"))
         rungs = _params()["CKPT_LADDER"].split(",")
         assert argv[0] == str(
-            tmp_path / "distill-home/steps/gen-smoke/gen_smoke.py"
+            tmp_path / "distill-home/steps/repetition-check/gen_smoke.py"
         ), f"interpreter got {argv}"
         assert len(argv) == 5 + len(rungs), f"interpreter got {argv}"
         assert argv[4] == "true", "the on-policy arm gates on its final rung"

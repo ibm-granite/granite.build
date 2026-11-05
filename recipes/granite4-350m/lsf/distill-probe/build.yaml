@@ -12,7 +12,7 @@
 #                  per byte?
 #
 # Every target runs the distill-probe step, which holds the probes and the reasoning
-# behind each (steps/distill/probe/skypilot/src/distill_probe.py). Nothing is
+# behind each (steps/train/distill/preflight-check/skypilot/src/distill_probe.py). Nothing is
 # produced; the answer is the PROBE VERDICT line in the log.
 #
 # Run:
@@ -33,7 +33,7 @@ granite.build:
     load-student:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       steps:
-        - step_uri: space://steps/distill/probe
+        - step_uri: space://steps/train/distill/preflight-check
           config:
             poll_interval_seconds: 30
             log_retrieval_interval_seconds: 30
@@ -54,7 +54,7 @@ granite.build:
     tokenizer:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       steps:
-        - step_uri: space://steps/distill/probe
+        - step_uri: space://steps/train/distill/preflight-check
           config:
             poll_interval_seconds: 30
             log_retrieval_interval_seconds: 30
@@ -76,7 +76,7 @@ granite.build:
     tokenizer-fit:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       steps:
-        - step_uri: space://steps/distill/probe
+        - step_uri: space://steps/train/distill/preflight-check
           config:
             poll_interval_seconds: 30
             log_retrieval_interval_seconds: 30

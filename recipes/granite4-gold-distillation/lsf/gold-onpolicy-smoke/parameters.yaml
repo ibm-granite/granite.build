@@ -20,7 +20,7 @@ RUN_NAME: "gold-onpolicy-smoke"
 # step) still clones gb-steps-distillation at job-launch time -- but both pull the
 # SAME pinned commit (a5d59bc4), so a server built from different code than the
 # trainer expects is not a failure mode this recipe can produce.
-DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
+DS_CONFIG: "configs/deepspeed/accelerate_deepspeed_zero3.yaml"
 
 # ─── Model pair and data ──────────────────────────────────────────────
 # The same three artifacts as gold-sweep-*, all verified readable from the

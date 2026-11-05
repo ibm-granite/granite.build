@@ -14,16 +14,16 @@ from pathlib import Path
 import pytest
 import yaml
 
-_STEPS = Path(__file__).resolve().parents[3] / "steps" / "distill"
+_STEPS = Path(__file__).resolve().parents[3] / "steps" / "train" / "distill"
 
 # step -> (launcher key, echo prefix)
 _GPU_STEPS = {
-    "gold": ("gold", "distill-gold"),
-    "eval": ("eval", "distill-eval"),
-    "sft": ("train", "distill-sft"),
-    "logit-precompute": ("precompute", "distill-logit-precompute"),
-    "vllm-server": ("vllm", "distill-vllm-server"),
-    "gen-smoke": ("gen_smoke", "gen-smoke"),
+    "logit-distill": ("gold", "distill-gold"),
+    "teacher-divergence": ("eval", "distill-eval"),
+    "student-sft": ("train", "distill-sft"),
+    "teacher-logits": ("precompute", "distill-logit-precompute"),
+    "student-rollout-generator": ("vllm", "distill-vllm-server"),
+    "repetition-check": ("gen_smoke", "gen-smoke"),
 }
 
 

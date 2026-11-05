@@ -21,7 +21,7 @@ RUN_NAME: "gold-sweep-smoke"
 # ─── Trainer code and image ───────────────────────────────────────────
 # Identical to gold-sweep-100: a smoke run against a different trainer commit or a
 # different image would not gate anything.
-DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
+DS_CONFIG: "configs/deepspeed/accelerate_deepspeed_zero3.yaml"
 
 # ─── Model pair and data ──────────────────────────────────────────────
 # Identical to gold-sweep-100, and that is the main thing this recipe gates: these are

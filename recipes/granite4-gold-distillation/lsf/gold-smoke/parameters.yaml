@@ -10,11 +10,11 @@
 RUN_NAME: "gold-smoke"
 
 # ─── Trainer code and image ───────────────────────────────────────────
-# The GOLD trainer is baked into the shared GPU image (steps/distill/src/, pinned
-# a5d59bc4 -- see steps/distill/src/VENDORED.md) -- nothing to set here.
+# The GOLD trainer is baked into the shared GPU image (steps/train/distill/src/, pinned
+# a5d59bc4 -- see steps/train/distill/src/VENDORED.md) -- nothing to set here.
 # accelerate + DeepSpeed ZeRO-3 config, resolved relative to $CODE_DIR
 # (/opt/gb-steps-distillation, baked into the image).
-DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero3.yaml"
+DS_CONFIG: "configs/deepspeed/accelerate_deepspeed_zero3.yaml"
 
 # ─── Model pair and data ──────────────────────────────────────────────
 # The REFERENCE pair, deliberately not something smaller. GOLD compares student and
@@ -28,7 +28,7 @@ DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero
 # nothing and the loss would be computed over the wrong span — silently. Shrinking
 # context and data is safe; shrinking the pair is not. For how to group the overlays
 # by tokenizer — not discoverable from the names — see
-# ../../../../steps/distill/gold/skypilot/USAGE.md#choosing-a-studentteacher-pair.
+# ../../../../steps/train/distill/logit-distill/skypilot/USAGE.md#choosing-a-studentteacher-pair.
 TEACHER_MODEL: "/proj/granite-build/g4os/kd-sandbox/teacher_overlays/granite-4.2-30b"
 STUDENT_MODEL: "/proj/granite-build/g4os/kd-sandbox/student_overlays/granite-4.1-3b-base-hub"
 # A 2000-row head slice of the reference dataset
