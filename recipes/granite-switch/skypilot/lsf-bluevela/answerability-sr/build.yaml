@@ -24,7 +24,7 @@
 #
 # Run (parameters.yaml is picked up automatically because it sits next to this
 # file):
-#   gb build start -f recipes/granite-switch/skypilot/lsf/answerability-sr/build.yaml \
+#   gb build start -f recipes/granite-switch/skypilot/lsf-bluevela/answerability-sr/build.yaml \
 #     --space <your-space>
 ######
 granite.build:

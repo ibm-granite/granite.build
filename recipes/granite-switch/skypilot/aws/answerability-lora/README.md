@@ -1,6 +1,6 @@
 # Answerability LoRA / aLoRA adapter (hf-peft-sft, AWS EC2)
 
-The AWS version of [`../../slurm/answerability-lora`](../../slurm/answerability-lora/README.md).
+The AWS version of [`../../slurm-bluevela/answerability-lora`](../../slurm-bluevela/answerability-lora/README.md).
 It trains the same answerability adapter on `ibm-granite/granite-4.2-8b`, a
 regular LoRA, an activated LoRA (aLoRA), or both in one build (see
 [Methods](#methods)), with the [`hf-peft-sft`](../../../../../steps/train/hf-peft-sft/skypilot/USAGE.md)
@@ -17,9 +17,9 @@ gb build start -f build.yaml --param RUN_ID=<unique> --param METHODS=alora,lora 
 
 The data, the `prepare` conversion, what is trained, and aLoRA are the same as
 in the SLURM recipe, and its README documents them:
-[The data](../../slurm/answerability-lora/README.md#the-data),
-[What is trained](../../slurm/answerability-lora/README.md#what-is-trained),
-[aLoRA](../../slurm/answerability-lora/README.md#alora). This README covers
+[The data](../../slurm-bluevela/answerability-lora/README.md#the-data),
+[What is trained](../../slurm-bluevela/answerability-lora/README.md#what-is-trained),
+[aLoRA](../../slurm-bluevela/answerability-lora/README.md#alora). This README covers
 what differs on AWS.
 
 ## How it runs
@@ -58,7 +58,7 @@ pays for two 8-GPU instances at once.
 | Train | `gradient_checkpointing` | Notes |
 |---|---|---|
 | `train-lora` | on | |
-| `train-alora` | off | Recomputing activations loses peft's aLoRA offsets and zeroes the gradients (peft #2826), so aLoRA needs more GPU memory: fits on H200 (141 GB); on 80 GB GPUs, untested at 8,192 tokens. Invocation: `ALORA_INVOCATION_STRING` ([why this one](../../slurm/answerability-lora/README.md#alora)). |
+| `train-alora` | off | Recomputing activations loses peft's aLoRA offsets and zeroes the gradients (peft #2826), so aLoRA needs more GPU memory: fits on H200 (141 GB); on 80 GB GPUs, untested at 8,192 tokens. Invocation: `ALORA_INVOCATION_STRING` ([why this one](../../slurm-bluevela/answerability-lora/README.md#alora)). |
 
 Put the method most likely to fail first (aLoRA, for its memory), so that a
 failure shows up before the other train has spent its GPU hours. If a train
@@ -78,7 +78,7 @@ Register these once in the space you build in:
 
 | Secret | What |
 |---|---|
-| `HF_TOKEN` | A read token for an account with access to the private `ibm-research/touma` dataset repo. See [the SLURM recipe](../../slurm/answerability-lora/README.md#the-one-prerequisite-an-hf_token-secret). |
+| `HF_TOKEN` | A read token for an account with access to the private `ibm-research/touma` dataset repo. See [the SLURM recipe](../../slurm-bluevela/answerability-lora/README.md#the-one-prerequisite-an-hf_token-secret). |
 | `GB_AWS_ACCESS_KEY_ID`, `GB_AWS_SECRET_ACCESS_KEY` | The AWS key the instances are launched with. gbserver writes them to the `gb-skypilot` profile of `~/.aws/credentials` (see [the AWS environment docs](../../../../../docs/environments/skypilot-aws.md#credentials-aws_credentials)). |
 
 ```bash
@@ -146,7 +146,7 @@ gb build start -f build.yaml --param RUN_ID=smoke1 \
 The parameters shared with the SLURM recipe (`SOURCE_DATA_URI`,
 `DATASET_SPLIT`, `MAX_LENGTH`, `ALORA_INVOCATION_STRING`, `LORA_R`,
 `LORA_ALPHA`, `LEARNING_RATE`, `NUM_TRAIN_EPOCHS`, `MAX_STEPS`, `CLEARML`)
-mean the same here; see [its table](../../slurm/answerability-lora/README.md#parameters).
+mean the same here; see [its table](../../slurm-bluevela/answerability-lora/README.md#parameters).
 They apply to every train in the build. What differs:
 
 | Parameter | Default | Meaning |

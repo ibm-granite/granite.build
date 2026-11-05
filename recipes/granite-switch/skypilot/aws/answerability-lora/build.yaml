@@ -3,7 +3,7 @@
 # hf-peft-sft step on AWS EC2 GPUs, with a shared EFS filesystem
 # (skypilot/aws/gb-shared).
 #
-# The AWS port of ../../slurm/answerability-lora: the same prepare script, and
+# The AWS port of ../../slurm-bluevela/answerability-lora: the same prepare script, and
 # one train target per entry of METHODS (comma-separated, in order):
 #
 #   prepare ──(dataset)──> train-<m1> ──(order)──> train-<m2> ...

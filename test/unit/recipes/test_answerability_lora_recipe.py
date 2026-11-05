@@ -37,7 +37,12 @@ from gbserver.utils.template import fill_objtemplate, fill_template
 
 _REPO = pathlib.Path(__file__).resolve().parents[3]
 _RECIPE = (
-    _REPO / "recipes" / "granite-switch" / "skypilot" / "slurm" / "answerability-lora"
+    _REPO
+    / "recipes"
+    / "granite-switch"
+    / "skypilot"
+    / "slurm-bluevela"
+    / "answerability-lora"
 )
 _STEP = _REPO / "steps" / "train" / "hf-peft-sft" / "skypilot"
 _TEMPLATE = yaml.safe_load((_STEP / "step-template.yaml").read_text())

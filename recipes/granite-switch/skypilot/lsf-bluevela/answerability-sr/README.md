@@ -117,13 +117,13 @@ registers when started as in the top-level
 
     gbserver standalone --space-dir configurations/spaces/local
 
-    gb build start -f recipes/granite-switch/skypilot/lsf/answerability-sr/build.yaml \
+    gb build start -f recipes/granite-switch/skypilot/lsf-bluevela/answerability-sr/build.yaml \
       --space public
 
 Explicitly, or with a different parameter set:
 
-    gb build start -f recipes/granite-switch/skypilot/lsf/answerability-sr/build.yaml \
-      --parameters-path recipes/granite-switch/skypilot/lsf/answerability-sr/parameters.yaml \
+    gb build start -f recipes/granite-switch/skypilot/lsf-bluevela/answerability-sr/build.yaml \
+      --parameters-path recipes/granite-switch/skypilot/lsf-bluevela/answerability-sr/parameters.yaml \
       --space public
 
 The configuration is rank 16, alpha 32, dropout 0.05, lr 5e-5 cosine with 0.05

@@ -1,6 +1,6 @@
 # Shadow Residual answerability adapter (AWS EC2)
 
-The AWS version of [`../../lsf/answerability-sr`](../../lsf/answerability-sr/README.md).
+The AWS version of [`../../lsf-bluevela/answerability-sr`](../../lsf-bluevela/answerability-sr/README.md).
 It trains the same [Shadow Residual](https://github.com/generative-computing/shadow-residual)
 (SR) answerability adapter on `ibm-granite/granite-4.2-8b` and scores it, on
 EC2 GPUs through SkyPilot, with the build's data moving between instances
@@ -15,9 +15,9 @@ gb build start -f build.yaml --param RUN_ID=<unique>
 The data, the generated SR config, the load-bearing parameters, the expected
 scores and how to check that a run did real work are the same as in the LSF
 recipe, and its README documents them:
-[Data](../../lsf/answerability-sr/README.md#data),
-[load-bearing parameters](../../lsf/answerability-sr/README.md#the-parameters-that-are-load-bearing-in-a-non-obvious-way),
-[Checking the run did real work](../../lsf/answerability-sr/README.md#checking-the-run-did-real-work).
+[Data](../../lsf-bluevela/answerability-sr/README.md#data),
+[load-bearing parameters](../../lsf-bluevela/answerability-sr/README.md#the-parameters-that-are-load-bearing-in-a-non-obvious-way),
+[Checking the run did real work](../../lsf-bluevela/answerability-sr/README.md#checking-the-run-did-real-work).
 This README covers what differs on AWS.
 
 ## How it runs
@@ -50,7 +50,7 @@ the `HF_TOKEN`, `GB_AWS_ACCESS_KEY_ID` and `GB_AWS_SECRET_ACCESS_KEY` secrets,
 the P-instance quota, and the `gb-shared` EFS (or your own, in a copy of
 `space://environments/skypilot/aws/gb-shared`). `HF_TOKEN` needs read access to
 the private `ibm-research/touma` repo; see
-[the LSF recipe](../../lsf/answerability-sr/README.md#the-one-prerequisite-an-hf_token-secret).
+[the LSF recipe](../../lsf-bluevela/answerability-sr/README.md#the-one-prerequisite-an-hf_token-secret).
 
 ## GPUs
 
@@ -83,7 +83,7 @@ gb build start -f build.yaml --param RUN_ID=sr-smoke1 \
 
 The parameters shared with the LSF recipe (data, adapter geometry, tokenizer
 markers, optimizer, batch, runtime and eval knobs) mean the same here; see
-[its parameters.yaml](../../lsf/answerability-sr/parameters.yaml). What
+[its parameters.yaml](../../lsf-bluevela/answerability-sr/parameters.yaml). What
 differs:
 
 | Parameter | Default | Meaning |
@@ -108,5 +108,5 @@ instance, which sets the host memory.
 - **EFS traffic is not encrypted in transit**, and the EFS root is
   world-writable; see [the LoRA recipe on AWS](../answerability-lora/README.md#limits).
 - Everything under the LSF recipe's
-  [What this recipe does not do](../../lsf/answerability-sr/README.md#what-this-recipe-does-not-do),
+  [What this recipe does not do](../../lsf-bluevela/answerability-sr/README.md#what-this-recipe-does-not-do),
   except that multi-GPU training is now available through DDP (untested).
