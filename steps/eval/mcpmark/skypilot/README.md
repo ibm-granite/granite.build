@@ -57,7 +57,9 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `image` | Required. The granite-evals `mcpmark` image, pinned by tag (`GRANITE_EVALS_IMAGE_MCPMARK`). |
 | `model_path` | Required. Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | Name vLLM serves under. Empty = basename of `model_path`. |
-| `output_dir` | Relative to `$GB_BUILD_WORKDIR`. |
+| `output_dir` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
+| `output_root` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`. |
+| `run_name` | Run directory under `output_root`; empty = basename of `model_path`. |
 | `limit` | **Smoke knob:** score only the first N tasks by sorted id, so two smoke runs are comparable. Empty = the full set. |
 | `repeats` | Must stay empty (1): one agent run per task; the module refuses otherwise (upstream's own `--k` is what varies samples, and it is pinned to 1). |
 | `workers` | Must stay `1`: upstream's pipeline runs one service's tasks serially. Run the three services as separate targets for parallelism. |
@@ -65,6 +67,10 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `options` | Space-separated `key=value` benchmark options; see below. |
 | `phase` | `all` only: scoring happens inside generation (the key exists because every granite step shares one contract). |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | vLLM. |
+| `tool_call_parser` / `reasoning_parser` | vLLM parsers (default `auto`: detected from the checkpoint; `""` disables one). |
+| `vllm_args` | Space-separated extra `vllm serve` arguments, each passed as `--vllm-arg`. |
+| `base_url` | An existing OpenAI-compatible endpoint; skips starting vLLM (`served_model_name` must name the model there). |
+| `seed` | Seed for the benchmark's own sampling (default `0`). |
 | `sandbox_cache` | Unused by this family (no enroot sandboxes; the MCP services run in the job container itself); kept for the shared config contract. |
 | `hf_home` | Overrides `HF_HOME`. |
 

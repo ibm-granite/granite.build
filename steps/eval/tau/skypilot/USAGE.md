@@ -47,6 +47,10 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `options` | Space-separated `key=value` benchmark options: `user_model`, `user_base_url`, `user_api_key_env`, `user_reasoning_effort`, `judge_*` (same, retail only), `temperature`, `top_p`, `max_tokens`, `enable_thinking`, `max_steps`, `max_errors`, `tasks` (regex), `task_split`, `retrieval_config`, `agent=gold`. |
 | `phase` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`granite_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json`. |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | vLLM. |
+| `tool_call_parser` / `reasoning_parser` | vLLM parsers (default `auto`: detected from the checkpoint; `""` disables one). |
+| `vllm_args` | Space-separated extra `vllm serve` arguments, each passed as `--vllm-arg`. |
+| `base_url` | An existing OpenAI-compatible endpoint; skips starting vLLM (`served_model_name` must name the model there). |
+| `seed` | Seed for the benchmark's own sampling (default `0`). |
 | `sandbox_cache` | Unused by this family (no sandboxes); kept for the shared config contract. |
 | `hf_home` | Overrides `HF_HOME`. |
 

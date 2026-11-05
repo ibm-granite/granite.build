@@ -84,7 +84,9 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `image` | Required. The granite-evals `nl2repo` image, pinned by tag (`GRANITE_EVALS_IMAGE_NL2REPO`). |
 | `model_path` | Required. Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | Name vLLM serves under. Empty = basename of `model_path`. |
-| `output_dir` | Relative to `$GB_BUILD_WORKDIR`. |
+| `output_dir` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
+| `output_root` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`. |
+| `run_name` | Run directory under `output_root`; empty = basename of `model_path`. |
 | `limit` | **Smoke knob:** score only the first N tasks by name. Empty = the full 104. |
 | `repeats` | Independent agent runs per task (avg-of-k). Empty = benchmark default (1). |
 | `workers` | Concurrent tasks (agent sandboxes + requests to vLLM). |
@@ -92,6 +94,10 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `options` | Space-separated `key=value` benchmark options; see below. |
 | `phase` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`granite_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json`. A `generate` phase in which no task generated fails the run (an infrastructure failure, not a score) instead of leaving an empty generation for `score` to grade `0.0`. |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | vLLM. |
+| `tool_call_parser` / `reasoning_parser` | vLLM parsers (default `auto`: detected from the checkpoint; `""` disables one). |
+| `vllm_args` | Space-separated extra `vllm serve` arguments, each passed as `--vllm-arg`. |
+| `base_url` | An existing OpenAI-compatible endpoint; skips starting vLLM (`served_model_name` must name the model there). |
+| `seed` | Seed for the benchmark's own sampling (default `0`). |
 | `sandbox_cache` | Shared squashfs cache for the OpenHands and per-task test images. Every benchmark in this family sandboxes, so recipes always set this. |
 | `hf_home` | Overrides `HF_HOME`. |
 

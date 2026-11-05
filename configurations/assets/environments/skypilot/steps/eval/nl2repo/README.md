@@ -39,7 +39,7 @@ from it may be vendored, baked into an image, mirrored or pushed.
   match the pin refuses to run and never replaces a good cache. Nothing from the
   repository is baked, mirrored or pushed by us. `GRANITE_EVALS_NL2REPO_DIR` (or
   `--dataset`) points at an existing `test_files/` tree fetched by other means.
-- **The OpenHands app image (`docker.all-hands.dev/all-hands-ai/openhands:0.56`)
+- **The OpenHands app image (`ghcr.io/all-hands-ai/openhands:0.56`)
   and the per-task GHCR test images
   (`ghcr.io/multimodal-art-projection/nl2repobench/<task>:1.0`) are pulled from
   their upstream registries at run time via enroot** (into `sandbox_cache`) and are
@@ -84,14 +84,20 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `image` | Required. The granite-evals `nl2repo` image, pinned by tag (`GRANITE_EVALS_IMAGE_NL2REPO`). |
 | `model_path` | Required. Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | Name vLLM serves under. Empty = basename of `model_path`. |
-| `output_dir` | Relative to `$GB_BUILD_WORKDIR`. |
+| `output_dir` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
+| `output_root` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`. |
+| `run_name` | Run directory under `output_root`; empty = basename of `model_path`. |
 | `limit` | **Smoke knob:** score only the first N tasks by name. Empty = the full 104. |
 | `repeats` | Independent agent runs per task (avg-of-k). Empty = benchmark default (1). |
 | `workers` | Concurrent tasks (agent sandboxes + requests to vLLM). |
 | `dataset` / `dataset_revision` | Override the pinned task data with a LOCAL PATH to an existing `test_files/` tree (trusted, not digest-checked — the pin's sha256 is then recorded as absent in results.json). |
 | `options` | Space-separated `key=value` benchmark options; see below. |
-| `phase` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`granite_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json`. |
+| `phase` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`granite_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json`. A `generate` phase in which no task generated fails the run (an infrastructure failure, not a score) instead of leaving an empty generation for `score` to grade `0.0`. |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | vLLM. |
+| `tool_call_parser` / `reasoning_parser` | vLLM parsers (default `auto`: detected from the checkpoint; `""` disables one). |
+| `vllm_args` | Space-separated extra `vllm serve` arguments, each passed as `--vllm-arg`. |
+| `base_url` | An existing OpenAI-compatible endpoint; skips starting vLLM (`served_model_name` must name the model there). |
+| `seed` | Seed for the benchmark's own sampling (default `0`). |
 | `sandbox_cache` | Shared squashfs cache for the OpenHands and per-task test images. Every benchmark in this family sandboxes, so recipes always set this. |
 | `hf_home` | Overrides `HF_HOME`. |
 
@@ -105,10 +111,10 @@ fetch above.
 |---|---|---|
 | `agent` | `model` | `gold` grades each task image with an untouched workspace (see below). |
 | `tasks` | (all) | Regex on the task name, e.g. `^six$`. |
-| `openhands_image` | `docker.all-hands.dev/all-hands-ai/openhands:0.56` | The agent app image. |
+| `openhands_image` | `ghcr.io/all-hands-ai/openhands:0.56` | The agent app image. |
 | `image_prefix` / `image_tag` | `ghcr.io/multimodal-art-projection/nl2repobench` / `1.0` | The per-task grade images. |
 | `max_iterations` | `500` | OpenHands agent iterations (upstream's setting). |
-| `enable_browsing` | `true` | Upstream's default; OpenHands 0.56's browsing runs a local browser, no API key. |
+| `enable_browsing` | `false` | Off at both OpenHands switches (runtime `enable_browser` + agent tool): the app image ships no browser binaries, and the upstream default of `true` kills the action server at startup on the missing Chromium. NL2RepoBench tasks never browse. |
 | `temperature` / `top_p` / `max_tokens` | (vLLM defaults) | Sampling for the agent. |
 | `agent_timeout` | `14400` | Wall-clock bound per agent run, seconds; `0` = none. Upstream has none. |
 | `eval_timeout` | `1800` | Wall-clock bound per grade command, seconds. Upstream has none. |
