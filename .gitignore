@@ -246,3 +246,7 @@ src/gbserver/static/ui/
 # here but untracked.
 data/jobs/
 scripts/lineage_backup/
+
+# Personal environment copies holding real resource ids (EFS, SG); keep them
+# in an uncommitted local space, never in the repo.
+**/environments/skypilot-local/

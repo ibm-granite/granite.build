@@ -47,8 +47,11 @@ report.
 
 The same as [the LoRA recipe on AWS](../answerability-lora/README.md#prerequisites):
 the `HF_TOKEN`, `GB_AWS_ACCESS_KEY_ID` and `GB_AWS_SECRET_ACCESS_KEY` secrets,
-the P-instance quota, and the `gb-shared` EFS (or your own, in a copy of
-`space://environments/skypilot/aws/gb-shared`). `HF_TOKEN` needs read access to
+the P-instance quota, and an EFS in your own copy of the
+`skypilot/aws/gb-shared` (us-east-1) or `skypilot/aws/gb-shared-usw2`
+(us-west-2) template, set as `ENVIRONMENT_URI` (see
+[The EFS filesystem](../answerability-lora/README.md#the-efs-filesystem)).
+`HF_TOKEN` needs read access to
 the private `ibm-research/touma` repo; see
 [the LSF recipe](../../lsf-bluevela/answerability-sr/README.md#the-one-prerequisite-an-hf_token-secret).
 
@@ -89,7 +92,7 @@ differs:
 | Parameter | Default | Meaning |
 |---|---|---|
 | `RUN_ID` | `sr-r1` | Names the build, the adapter dir and the report dir. New here: the LSF recipe keeps its outputs in the per-run workdir. |
-| `ENVIRONMENT_URI` | `space://environments/skypilot/aws/gb-shared` | SkyPilot on AWS with the `gb-shared` EFS. |
+| `ENVIRONMENT_URI` | `space://environments/skypilot/aws/gb-shared` | The us-east-1 EFS template, with a placeholder `file_system_id`. Point it at your own copy; see [The EFS filesystem](../answerability-lora/README.md#the-efs-filesystem). |
 | `ADAPTER_ROOT` / `REPORT_ROOT` | `/mnt/gb-shared/granite-switch/answerability-sr/{adapters,reports}` | Where the adapter and the report are written, on the EFS, under `$RUN_ID`. |
 | `ACCELERATORS` / `INSTANCE_TYPE` | `H100:1` / empty | The train's GPUs, and optionally its instance type. |
 | `SR_NUM_PROCESSES` | `1` | Training processes; see [GPUs](#gpus). |
@@ -102,9 +105,17 @@ instance, which sets the host memory.
 
 ## Limits
 
-- **The image is from Docker Hub** (`pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime`,
-  as in the LSF recipe). shadow-residual pins `transformers<5.10` and
-  `peft==0.19.1`, so it cannot share the hf-peft-sft image.
+- **No container image for now (`IMAGE: ""`).** The `byoc` step `git clone`s
+  the repo before `setup_command` runs, and the `pytorch/pytorch` images the
+  LSF recipe uses have no `git`, so with that image the step fails at setup
+  with `bash: git: command not found`
+  ([#529](https://github.com/ibm-granite/granite.build/issues/529)). With an
+  empty `IMAGE` the step runs on the bare EC2 instance, which has `git`, and
+  `setup_command`'s `pip install '.[train]'` brings torch from PyPI (a few
+  minutes per target). Once `byoc` installs `git` itself, set
+  `IMAGE=pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime` again. shadow-residual
+  pins `transformers<5.10` and `peft==0.19.1`, so it cannot share the
+  hf-peft-sft image either way.
 - **EFS traffic is not encrypted in transit**, and the EFS root is
   world-writable; see [the LoRA recipe on AWS](../answerability-lora/README.md#limits).
 - Everything under the LSF recipe's

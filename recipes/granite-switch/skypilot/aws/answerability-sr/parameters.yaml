@@ -7,17 +7,24 @@
 RUN_ID: "sr-r1"
 
 # ── Environment ──────────────────────────────────────────────────────────────
-# SkyPilot on AWS with the gb-shared EFS
-# (configurations/assets/environments/skypilot/aws/gb-shared), which also pins
-# the byoc step to the EFS region.
+# SkyPilot on AWS with a shared EFS; the environment also pins the byoc step to
+# the EFS region. The default is the us-east-1 TEMPLATE
+# (configurations/assets/environments/skypilot/aws/gb-shared), whose
+# file_system_id is a placeholder: point this at your own copy with your EFS
+# id, e.g. space://environments/skypilot-local/aws-gb-shared (see the LoRA
+# recipe's README, "The EFS filesystem"). skypilot/aws/gb-shared-usw2 is the
+# us-west-2 template.
 ENVIRONMENT_URI: "space://environments/skypilot/aws/gb-shared"
 
-# Public container image both targets run in. Pinned (not :latest) so a run is
-# reproducible. torch 2.6 + CUDA 12.4 is the pairing the shadow-residual repo
-# documents for its own GPU runs, and python 3.11 sits inside the package's
-# requires-python (>=3.10,<3.14). The step renders this as SkyPilot
-# `docker:<image>`; on AWS it runs under Docker on the EC2 instance.
-IMAGE: "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime"
+# Container image both targets run in. Empty runs the step on the bare EC2
+# instance, and that is the default for now: the byoc step `git clone`s the
+# repo before setup_command runs, and the pytorch/pytorch images have no git,
+# so with an image the step fails at setup with `git: command not found`
+# (issue #529). The bare instance has git, and setup_command's pip install
+# brings torch from PyPI. Once byoc installs git itself, go back to the
+# pinned image the LSF recipe uses:
+#   IMAGE: "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime"
+IMAGE: ""
 
 # ── Code under test ──────────────────────────────────────────────────────────
 # The byoc step does an UNAUTHENTICATED `git clone`, so this must be a public

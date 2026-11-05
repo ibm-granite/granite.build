@@ -1,5 +1,12 @@
-# space://environments/skypilot/aws/gb-shared: SkyPilot on AWS EC2, with the
-# pre-provisioned `gb-shared` EFS filesystem shared by every step.
+# space://environments/skypilot/aws/gb-shared: SkyPilot on AWS EC2 in
+# us-east-1, with a pre-provisioned EFS filesystem shared by every step.
+#
+# The committed file_system_id is a PLACEHOLDER: this file is the template.
+# To run, put a copy with your EFS id under another name in a space you
+# control (for example an uncommitted local space whose base_uris lists its
+# own dir ahead of configurations/assets), and point the recipe's
+# ENVIRONMENT_URI at that name. See skypilot/aws/gb-shared-usw2 for the
+# us-west-2 twin.
 #
 # space://environments/skypilot/aws (the directory above) has no shared
 # filesystem: each step runs on its own EC2 instance and keeps nothing after it

@@ -1,0 +1,68 @@
+# space://environments/skypilot/aws/gb-shared-usw2: SkyPilot on AWS EC2 in
+# us-west-2, with a pre-provisioned EFS filesystem shared by every step.
+#
+# The us-west-2 twin of skypilot/aws/gb-shared (us-east-1): the same EFS
+# mount, EFS-cached hf pulls and per-step region pins, in us-west-2. Use it
+# when GPU capacity is in us-west-2, for example an EC2 Capacity Block
+# reserved there.
+#
+# The committed file_system_id is a PLACEHOLDER: this file is the template.
+# To run, put a copy with your us-west-2 EFS id under another name in a space
+# you control (for example an uncommitted local space whose base_uris lists
+# its own dir ahead of configurations/assets), and point the recipe's
+# ENVIRONMENT_URI at that name. The EFS needs a mount target in every us-west-2
+# AZ, a security group allowing NFS (TCP 2049) from the workers, and its root
+# chmod'd 1777 (docs/environments/skypilot-aws.md, "Runbook: provision a
+# shared EFS filesystem").
+name: skypilot-aws-gb-shared-usw2
+type: Skypilot
+subtype: aws
+config:
+  default_cloud: aws
+  idle_minutes_to_autostop: 5
+  # GPU capacity is often short. A launch that finds none is retried with
+  # backoff (30 s, doubling, capped at provision_backoff_max), up to max_retries
+  # attempts: about 2 h of trying before the build fails.
+  retry:
+    max_retries: 12
+    provision_backoff_max: 900
+    delay_seconds: 600
+  aws_credentials:
+    - profile: gb-skypilot
+      aws_access_key_id: GB_AWS_ACCESS_KEY_ID
+      aws_secret_access_key: GB_AWS_SECRET_ACCESS_KEY
+  cloud_config:
+    workspaces:
+      default:
+        aws:
+          profile: gb-skypilot
+  # tls: true encrypts NFS traffic only where amazon-efs-utils (mount.efs) is
+  # installed; elsewhere the mount falls back to plain NFSv4 inside the VPC,
+  # with a warning in the step log. Data at rest is encrypted by the filesystem.
+  shared_workdir: /mnt/gb-shared/gbroot
+  shared_filesystem:
+    provider: efs
+    mount_point: /mnt/gb-shared
+    efs:
+      file_system_id: fs-REPLACE-ME
+      region: us-west-2
+      tls: true
+  # Pin each step type to the EFS region (hfpull, the hidden step queued for
+  # every hf:// input, takes no launcher_config from build.yaml).
+  steps:
+    hfpull:
+      launcher_config: { resources: { infra: aws/us-west-2 } }
+    command:
+      launcher_config: { resources: { infra: aws/us-west-2 } }
+    hf-peft-sft:
+      launcher_config: { resources: { infra: aws/us-west-2 } }
+    byoc:
+      launcher_config: { resources: { infra: aws/us-west-2 } }
+assetstores:
+  - store_uri: space://assetstores/hf
+    pull:
+      - mode: default
+        config: {}
+    push:
+      - mode: default
+        config: {}

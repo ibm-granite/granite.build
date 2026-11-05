@@ -92,12 +92,28 @@ The account needs a P-instance vCPU quota of at least 192 in `us-east-1`
 
 ### The EFS filesystem
 
-The build runs in `space://environments/skypilot/aws/gb-shared`
-([`environment.yaml`](../../../../../configurations/assets/environments/skypilot/aws/gb-shared/environment.yaml)),
-which mounts the EFS `fs-REPLACE-ME` in `us-east-1` at `/mnt/gb-shared`.
-From another AWS account, copy that environment into your space with your own
-filesystem's `file_system_id` (and `region`, if it is not `us-east-1`), and
-point `ENVIRONMENT_URI` at it. The filesystem needs:
+The build runs in an environment that mounts an EFS at `/mnt/gb-shared` on
+every step. The repo ships two templates, with `file_system_id: fs-REPLACE-ME`:
+
+| Template | Region |
+|---|---|
+| [`skypilot/aws/gb-shared`](../../../../../configurations/assets/environments/skypilot/aws/gb-shared/environment.yaml) | `us-east-1` |
+| [`skypilot/aws/gb-shared-usw2`](../../../../../configurations/assets/environments/skypilot/aws/gb-shared-usw2/environment.yaml) | `us-west-2` |
+
+`ENVIRONMENT_URI` defaults to the `us-east-1` template, which cannot mount
+anything as shipped. Before the first run, give the build your own copy:
+
+1. Copy the template for your region into a space you control, under a name
+   that does not shadow a shipped environment, for example
+   `environments/skypilot-local/aws-gb-shared/environment.yaml`, and set
+   `file_system_id` (and `region`, if you moved it) to your EFS.
+2. Make that space's directory the first of its `base_uris`, ahead of the
+   repo's `configurations/assets`, and start gbserver on it
+   (`gbserver standalone --space-dir <that space>`).
+3. Run with `--param ENVIRONMENT_URI=space://environments/skypilot-local/aws-gb-shared`.
+
+Keep that space out of git: the EFS id is an internal resource id. The
+filesystem needs:
 
 - a mount target in every availability zone of the region, since SkyPilot may
   place a step in any of them;
@@ -152,7 +168,7 @@ They apply to every train in the build. What differs:
 | Parameter | Default | Meaning |
 |---|---|---|
 | `METHODS` | `lora` | Replaces the SLURM recipe's `METHOD`: a comma-separated list of `lora` / `alora`, trained in that order. See [Methods](#methods). Also names the build (`answerability-<methods>-<RUN_ID>`). |
-| `ENVIRONMENT_URI` | `space://environments/skypilot/aws/gb-shared` | SkyPilot on AWS with the `gb-shared` EFS. |
+| `ENVIRONMENT_URI` | `space://environments/skypilot/aws/gb-shared` | The us-east-1 EFS template, with a placeholder `file_system_id`. Point it at your own copy; see [The EFS filesystem](#the-efs-filesystem). |
 | `DATA_ROOT` | `/mnt/gb-shared/granite-switch/answerability-lora/data` | Where `prepare` writes, on the EFS. It does not include the method (every train in a build reads it), so builds running at the same time need different `RUN_ID`s. |
 | `ADAPTER_ROOT` | `/mnt/gb-shared/granite-switch/answerability-lora/adapters` | Where each adapter is written, on the EFS, under `answerability-<method>/$RUN_ID`. |
 | `ACCELERATORS` | `H200:8` | See [GPUs](#gpus). |
