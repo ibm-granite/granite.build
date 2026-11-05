@@ -46,6 +46,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from gbcommon.types.constants import get_gb_home_dir
 from gbcommon.types.gbenvconfig import is_standalone
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
@@ -782,8 +783,10 @@ def _ensure_skypilot_api_running():
     etc.) propagate so they're not masked by an unconditional ``api_start``.
     """
     _require_skypilot()
-    # SkyPilot fixes load as a server plugin, and only at server startup.
-    sky_patches.ensure_plugin_config()
+    # SkyPilot fixes load as a server plugin, and only at server startup. None
+    # only when tests stub out an uninstalled SkyPilot.
+    if sky_patches is not None:
+        sky_patches.ensure_plugin_config(get_gb_home_dir())
     try:
         info = sky.api_info()
     except (ConnectionError, OSError, RuntimeError) as e:
@@ -795,7 +798,7 @@ def _ensure_skypilot_api_running():
             "SkyPilot API server status=%s — starting it now", info.status.value
         )
         sky.api_start()
-    elif not sky_patches.server_has_patches():
+    elif sky_patches is not None and not sky_patches.server_has_patches():
         # Not restarted here: that would abort other builds' in-flight requests.
         raise RuntimeError(
             "The SkyPilot API server was started without gbserver's sky_patches "
@@ -2318,8 +2321,8 @@ def _check_multinode_supported(cloud: str, num_nodes: int) -> None:
         f"num_nodes={num_nodes} requested on the lsf cloud, but the installed "
         "SkyPilot predates LSF multi-node support (sky.skylet.executor.lsf is "
         "missing). Such a run would allocate every node and then execute the "
-        "task once, on one node, reporting success. Pin a SkyPilot build with "
-        "LSF multi-node support (>= gb-sky-v2-multinode)."
+        "task once, on one node, reporting success. Install a SkyPilot build "
+        "with LSF multi-node support."
     )
 
 

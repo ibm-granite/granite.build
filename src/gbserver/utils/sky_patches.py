@@ -29,6 +29,7 @@ licensed under the Apache License, Version 2.0.
 """
 
 import functools
+import importlib.metadata
 import inspect
 import logging
 import os
@@ -227,6 +228,8 @@ def _patch_slurm_provision() -> None:
             "        'configuring': status_lib.ClusterStatus.INIT,\n",
         ),
     )
+    # Node cleanup is skipped for duplicates; the stale-container removal
+    # above clears their enroot containers on the next launch.
     # A leaked same-named allocation (e.g. a launch that failed before its job
     # id was recorded) made teardown assert and cancel nothing. Cancel them all
     # with a plain scancel; their EXIT traps still run.
@@ -503,6 +506,16 @@ def replace_file_atomically(src: Any, dst_dir: Any) -> None:
 @functools.cache
 def apply() -> None:
     """Apply every fix once per process. Raises if SkyPilot is not the pin."""
+    # The fork also reports the pinned version, so pip leaves it installed.
+    direct_url = importlib.metadata.distribution("skypilot").read_text(
+        "direct_url.json"
+    )
+    if direct_url and '"vcs_info"' in direct_url:
+        raise RuntimeError(
+            "SkyPilot is installed from a git checkout, not the PyPI release. "
+            "Run `pip install --force-reinstall --no-deps "
+            f"skypilot=={PINNED_SKYPILOT_VERSION}`, then `sky api stop`."
+        )
     if sky.__version__ != PINNED_SKYPILOT_VERSION:
         raise RuntimeError(
             f"sky_patches targets SkyPilot {PINNED_SKYPILOT_VERSION}, found "
@@ -514,24 +527,25 @@ def apply() -> None:
     _patch_misc()
 
 
-def ensure_plugin_config() -> None:
-    """Register ``SkyPatchesPlugin`` in the plugins config the API server reads.
+def ensure_plugin_config(gb_home: str) -> None:
+    """Point the API server gbserver starts at a plugins config under ``gb_home``.
 
-    Idempotent; keeps any other configured plugins. The API server loads
-    plugins only at startup, so call this before starting it.
+    Sets ``SKYPILOT_SERVER_PLUGINS_CONFIG`` (inherited by the spawned server), so
+    servers started outside gbserver never load ``SkyPatchesPlugin``. Keeps any
+    other plugins in that file. Call before starting the server, which loads
+    plugins only at startup.
     """
-    path = os.path.expanduser(
-        os.environ.get(_PLUGINS_CONFIG_ENV, "~/.sky/plugins.yaml")
-    )
+    path = os.path.join(gb_home, "sky_plugins.yaml")
+    os.environ[_PLUGINS_CONFIG_ENV] = path
     config: dict[str, Any] = {}
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
             config = yaml.safe_load(f) or {}
     plugins = config.setdefault("plugins", [])
-    if any(p.get("class") == _PLUGIN_CLASS for p in plugins):
+    if any(isinstance(p, dict) and p.get("class") == _PLUGIN_CLASS for p in plugins):
         return
     plugins.append({"class": _PLUGIN_CLASS})
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(gb_home, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f)
 
@@ -541,7 +555,8 @@ def server_has_patches() -> bool:
     response = server_common.make_authenticated_request(
         "GET", "/api/plugins", retry=False
     )
-    response.raise_for_status()
+    if not response.ok:  # an old server without /api/plugins
+        return False
     return any(
         p.get("name") == _PLUGIN_NAME for p in response.json().get("plugins", [])
     )

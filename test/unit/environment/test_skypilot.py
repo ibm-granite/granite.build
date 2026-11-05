@@ -2981,7 +2981,7 @@ class TestMultinodeSupportPreflight:
             "gbserver.environment.skypilot.importlib.util.find_spec",
             return_value=None,
         ):
-            with pytest.raises(RuntimeError, match="gb-sky-v2-multinode"):
+            with pytest.raises(RuntimeError, match="LSF multi-node support"):
                 _check_multinode_supported("lsf", 2)
 
     def test_raises_when_the_executor_package_is_missing(self):
@@ -2993,7 +2993,7 @@ class TestMultinodeSupportPreflight:
             "gbserver.environment.skypilot.importlib.util.find_spec",
             side_effect=ModuleNotFoundError("No module named 'sky.skylet.executor'"),
         ):
-            with pytest.raises(RuntimeError, match="gb-sky-v2-multinode"):
+            with pytest.raises(RuntimeError, match="LSF multi-node support"):
                 _check_multinode_supported("lsf", 2)
 
     @pytest.mark.parametrize("cloud", ["k8s", "aws", "slurm", ""])

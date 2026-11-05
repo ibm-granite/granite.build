@@ -11,14 +11,24 @@ SLURM fixes we need that are not yet in that release live in
 [`src/gbserver/utils/sky_patches.py`](../../src/gbserver/utils/sky_patches.py) and are applied
 inside the SkyPilot API server, which is where provisioning runs:
 
-- gbserver registers `sky_patches.SkyPatchesPlugin` in `~/.sky/plugins.yaml` (or
-  `$SKYPILOT_SERVER_PLUGINS_CONFIG`) before it starts the API server, and SkyPilot installs the
-  plugin in its main, uvicorn and executor processes.
+- gbserver registers `sky_patches.SkyPatchesPlugin` in `sky_plugins.yaml` under its home directory
+  (`$GB_HOME_DIR`, default `~/.granite.build`) and points the API server it starts there through
+  `SKYPILOT_SERVER_PLUGINS_CONFIG`. SkyPilot installs the plugin in its main, uvicorn and executor
+  processes. API servers started outside gbserver don't load it.
 - An API server started before the plugin was registered is reported as an error at launch. Run
   `sky api stop` and gbserver starts it again with the patches.
 - `sky_patches` refuses any SkyPilot version other than the pin, and each source edit must match
   exactly once, so an upgrade fails at server start instead of silently dropping a fix. To upgrade,
   bump both pins, then drop the fixes the new release already has and re-anchor the rest.
+
+**Moving off the SkyPilot fork.** An existing venv keeps a git-installed SkyPilot, because it
+reports the same version. Before starting gbserver:
+
+- `pip install --force-reinstall --no-deps skypilot==0.14.2`, then `sky api stop`. gbserver refuses
+  a git-installed SkyPilot with this hint.
+- Remove any `lsf:` section, and `lsf` in `allowed_clouds`, from `~/.sky/config.yaml`. 0.14.2 has no
+  LSF cloud, so loading such a config fails with `Found unsupported field 'lsf'`.
+- `sky down` any LSF clusters, or move `~/.sky/state.db` aside: 0.14.2 cannot read their records.
 
 Optional knobs the patches add: `SKYPILOT_API_SERVER_WORKER_MAX_TASKS` (requests per API-server
 worker before it is recycled; default 100, `0` disables), and a host rsync for container images

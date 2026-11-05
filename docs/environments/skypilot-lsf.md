@@ -234,8 +234,8 @@ launching, since those launchers set their own per-process values.
 **Version requirement.** LSF multi-node needs a SkyPilot build with the driver-side LSF task executor
 (`sky.skylet.executor.lsf`). An older build accepts `num_nodes`, allocates every node, and then runs
 the task once with `SKYPILOT_NUM_NODES=1` — reporting success. gbserver checks for the executor and
-fails at launch rather than letting that happen, so a `num_nodes > 1` LSF build requires the pinned
-SkyPilot to be at least `gb-sky-v2-multinode`.
+fails at launch rather than letting that happen, so a `num_nodes > 1` LSF build requires a SkyPilot
+build with that executor.
 
 ## Example `environment.yaml` (LSF)
 
