@@ -1,26 +1,35 @@
 #####
-# Answerability LoRA adapter on granite-4.2-8b, trained with the hf-peft-sft
-# step on AWS EC2 GPUs, with a shared EFS filesystem (skypilot/aws/gb-shared).
+# Answerability LoRA and/or aLoRA adapters on granite-4.2-8b, trained with the
+# hf-peft-sft step on AWS EC2 GPUs, with a shared EFS filesystem
+# (skypilot/aws/gb-shared).
 #
-# The AWS port of ../../slurm/answerability-lora: the same two targets and the
-# same prepare script, wired by one artifact:
+# The AWS port of ../../slurm/answerability-lora: the same prepare script, and
+# one train target per entry of METHODS (comma-separated, in order):
 #
-#   prepare ──(dataset)──> train
+#   prepare ──(dataset)──> train-<m1> ──(order)──> train-<m2> ...
 #
 # `prepare` pulls the answerability parquet from the private HF dataset repo
 # ibm-research/touma (only that directory: the hf:// URI names a path in the
 # repo), keeps its prompt/completion columns, and writes them to the EFS.
-# `train` stages the base model (hfpull), binds that dataset, trains a LoRA
-# adapter with TRL's SFTTrainer (loss on the completion only), and registers
-# the ADAPTER as the `adapter` artifact.
+# Each `train-<method>` stages the base model (hfpull), binds that dataset,
+# trains a LoRA or aLoRA adapter with TRL's SFTTrainer (loss on the completion
+# only), and registers the ADAPTER as its `adapter` artifact. A later train
+# also binds the previous one's adapter, only so the trains run one after
+# another (one GPU instance at a time).
 #
 # Each target, and each hf:// pull, runs on its own EC2 instance; the EFS is
 # what they share. See README.md for the secrets this needs.
 #
 #   gb build start -f build.yaml --param RUN_ID=r1
+#   gb build start -f build.yaml --param RUN_ID=r2 --param METHODS=alora,lora
 #####
+<% set methods = METHODS.split(",") | map("trim") | reject("equalto", "") | list %>
+<% if not methods or methods | reject("in", ["lora", "alora"]) | list or methods | unique | list | length != methods | length %>
+# An undefined name fails the render (StrictUndefined) and names the problem.
+$${ METHODS_must_be_distinct_entries_of_lora_or_alora }
+<% endif %>
 granite.build:
-  name: answerability-$${METHOD}-$${RUN_ID}
+  name: answerability-$${methods | join("-")}-$${RUN_ID}
 
   targets:
 
@@ -214,10 +223,11 @@ granite.build:
                 PY
                 echo "GB_ARTIFACT_ID:dataset GB_ARTIFACT_PATH:$OUT"
 
+<% for METHOD in methods %>
     ##########################################################################
-    # train — LoRA adapter with hf-peft-sft (DDP, 8x H200 by default)
+    # train-$${METHOD} — $${METHOD} adapter with hf-peft-sft (DDP, 8x H200 by default)
     ##########################################################################
-    train:
+    train-$${METHOD}:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
         base_model:
@@ -228,6 +238,13 @@ granite.build:
         # lineage edge from the HF source to the adapter.
         dataset:
           binding: prepare.dataset
+<% if not loop.first %>
+        # Not read by the step: binding the previous method's adapter only makes
+        # this train wait for that one, so the trains share one GPU instance in
+        # turn instead of running at the same time.
+        after:
+          binding: train-$${loop.previtem}.adapter
+<% endif %>
       outputs:
         # Written to the EFS so it survives teardown; must match
         # hf_peft_sft_config.output_path below.
@@ -307,3 +324,4 @@ granite.build:
                 dataloader_num_workers: 4
                 logging_steps: 10
                 seed: 0
+<% endfor %>

@@ -34,10 +34,10 @@ DATASET_SPLIT: "train"
 MAX_LENGTH: 8192
 
 # ── Method ───────────────────────────────────────────────────────────────────
-# lora: a regular LoRA adapter. alora: an activated LoRA (see the SLURM
-# recipe's README, "aLoRA").
-METHOD: "lora"
-# Only for METHOD=alora. Granite 4.2's ChatML assistant marker, without a
+# Comma-separated, in order: lora, alora, or both (e.g. "alora,lora"). One
+# train target per entry, run one after another; see README.md, "Methods".
+METHODS: "lora"
+# Only for an alora entry in METHODS. Granite 4.2's ChatML assistant marker, without a
 # trailing newline: gbserver's template fill drops one. Tokens [100256, 78191].
 ALORA_INVOCATION_STRING: "<|im_start|>assistant"
 LORA_R: 16
@@ -45,7 +45,7 @@ LORA_ALPHA: 32
 LEARNING_RATE: 5.0e-05
 
 # ── Output ───────────────────────────────────────────────────────────────────
-# Adapters land in $ADAPTER_ROOT/answerability-$METHOD/$RUN_ID on the EFS, so
+# Adapters land in $ADAPTER_ROOT/answerability-<method>/$RUN_ID on the EFS, so
 # LoRA and aLoRA runs never share a directory.
 ADAPTER_ROOT: "/mnt/gb-shared/granite-switch/answerability-lora/adapters"
 
