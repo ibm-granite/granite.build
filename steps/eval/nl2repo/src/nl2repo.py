@@ -465,6 +465,15 @@ def render_config(
 model = "openai/{model}"
 api_key = "EMPTY"
 base_url = {_toml(base_url)}
+# Unknown OpenAI-compatible models default to OpenHands' MOCK function
+# calling: tools go into the prompt and the XML converter rejects a tool
+# call that omits optional schema fields ("Missing required parameters ...
+# security_risk"), so granite's commands never execute and the agent
+# finishes with an untouched workspace. The server runs with
+# --tool-call-parser (granite 4.2 parses as qwen3_coder), so use native
+# tool calling: the parsed calls reach the lenient action builder, which
+# fills security_risk itself when the model omits it.
+native_tool_calling = true
 """
     if temperature is not None:
         llm += f"temperature = {_toml(temperature)}\n"
