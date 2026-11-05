@@ -70,7 +70,7 @@ def _build(tmp_path, *params):
     file_params = get_params_from_file(str(_RECIPE / "parameters.yaml"))
     text = apply_parameters(
         (_RECIPE / "build.yaml").read_text(),
-        [p for p in params],
+        list(params),
         file_params,
         str(tmp_path),
     )
