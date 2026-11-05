@@ -21,8 +21,8 @@ ENVIRONMENT_URI: "space://environments/skypilot/aws/gb-shared"
 # repo before setup_command runs, and the pytorch/pytorch images have no git,
 # so with an image the step fails at setup with `git: command not found`
 # (issue #529). The bare instance has git, and setup_command's pip install
-# brings torch from PyPI. Once byoc installs git itself, go back to the
-# pinned image the LSF recipe uses:
+# brings torch from PyPI. Once byoc installs git itself, use a pinned PyTorch
+# CUDA image:
 #   IMAGE: "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime"
 IMAGE: ""
 
@@ -42,8 +42,8 @@ SR_REF: "main"
 # it was trained on" is recorded rather than asserted. A base that silently
 # differs is the one error this recipe cannot catch from its own output.
 #
-# Public on the Hub, so this pull needs no credential — the HF_TOKEN secret the
-# data requires would also cover a gated model if you repoint this.
+# Public on the Hub, so this pull needs no credential — an HF_TOKEN secret
+# would also cover a gated model if you repoint this.
 BASE_MODEL_URI: "hf:///ibm-granite/granite-4.2-8b"
 
 # The Hub id naming the SAME weights as BASE_MODEL_URI — keep the two in sync.
@@ -53,43 +53,34 @@ BASE_MODEL_URI: "hf:///ibm-granite/granite-4.2-8b"
 BASE_MODEL_ID: "ibm-granite/granite-4.2-8b"
 
 # ── Data ─────────────────────────────────────────────────────────────────────
-# Both datasets live in ONE Hugging Face dataset repo, and DATA_URI names that
-# repo — not a directory inside it. granite.build resolves the URI to a local
-# directory on the cluster before either step runs, so the code never sees a
-# URI: it is handed the repo root, and build.yaml appends the two subdirs
-# below. A full URI, so the scheme picks the transport (see the gb-shared
-# environment.yaml assetstores block for what is wired in; hf:// pulls cache
-# on the EFS):
+# DATA_URI has no default: bring your own data and pass it with --param
+# (README.md, "Your data"). Both datasets live under ONE root, and DATA_URI
+# names that root — for a Hugging Face dataset repo, the repo, not a
+# directory inside it. granite.build resolves the URI to a local directory on
+# the cluster before either step runs, so the code never sees a URI: it is
+# handed the root, and build.yaml appends the two subdirs below. The scheme
+# picks the transport (hf:// pulls cache on the EFS):
 #   hf:///datasets/<org>/<repo>   pulled from the Hub (three slashes: the host
 #                                 defaults to huggingface.co — "hf://datasets/..."
 #                                 parses "datasets" as the HOST and pulls from
-#                                 nowhere)
-#   env://<absolute path>         already on the cluster's filesystem; the pull is a no-op
-#   s3://<bucket>/<key>           object storage
-#
-# ibm-research/touma is PRIVATE, so the pull needs an HF_TOKEN secret with
-# read access to the ibm-research org registered in the space granite.build
-# runs the build in. Nothing is passed on the command line and the token never
-# reaches the recipe.
-DATA_URI: "hf:///datasets/ibm-research/touma"
+#                                 nowhere). A private repo needs an HF_TOKEN
+#                                 secret; the token never reaches the recipe.
+#   env://<absolute path>         already on the EFS; the pull is a no-op
+#   DATA_URI: "hf:///datasets/<org>/<repo>"
 
 # Subdirectory of DATA_URI holding train.jsonl + test.jsonl in
-# shadow-residual's {"messages": [...]} JSONL format — the export produced by
-# intrinsics_training's granite_4.2_8b_jsonl_export.yaml. Neither the raw
-# classification JSONL (../raw) nor the tokenized parquet
-# (../parquet_granite4.2_8b) beside it is readable by sr-train.
-TRAIN_DATA_SUBDIR: "training_data/answerability/jsonl/granite-4.2-8b"
+# shadow-residual's {"messages": [...]} JSONL format (test.jsonl is the
+# validation set).
+TRAIN_DATA_SUBDIR: "train"
 
-# Subdirectory holding the eval set, used as-is. The layout
-# answerability_eval.py expects — gold.jsonl, rag.jsonl,
-# unanswerable_v2.{a,b,c}.jsonl plus collection.txt and setting.txt — is
-# exactly what this directory holds, so there is nothing to prepare on the
-# eval side.
-EVAL_DATA_SUBDIR: "eval_data/answerability"
+# Subdirectory holding the eval set, in the layout answerability_eval.py
+# expects: gold.jsonl, rag.jsonl, unanswerable_v2.{a,b,c}.jsonl plus
+# collection.txt and setting.txt (README.md, "Your data").
+EVAL_DATA_SUBDIR: "eval"
 
 # ── Adapter geometry ─────────────────────────────────────────────────────────
-# rank 16 / alpha 32 / dropout 0.05, from intrinsics_training's
-# configs/answerability/shadow_residual/sr_sharedkv_4.2_8b.yaml.
+# rank 16 / alpha 32 / dropout 0.05, the shared-KV SR configuration for an 8B
+# Granite 4.2 base.
 #
 # k_proj and v_proj are deliberately absent and must stay absent: SR computes
 # K/V once from the frozen base stream and shares it, so a K/V LoRA delta has
@@ -134,11 +125,10 @@ PER_DEVICE_TRAIN: 1
 GRADIENT_ACCUMULATION: 8
 PER_DEVICE_EVAL: 4
 MAX_LENGTH: 8192
-# true, where intrinsics_training ran false. Its config was forced off by the
-# aLoRA gating that version used; the current stock-PEFT SR has no gating and
-# its dual-stream decoder forward is pure, so recompute is exact — checkpointing
-# costs time, not correctness. On by default because SR holds two hidden-state
-# streams, roughly doubling activation memory for an 8B at 8192 context.
+# On by default because SR holds two hidden-state streams, roughly doubling
+# activation memory for an 8B at 8192 context. The stock-PEFT SR's dual-stream
+# decoder forward is pure, so recompute is exact — checkpointing costs time,
+# not correctness.
 GRADIENT_CHECKPOINTING: true
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
@@ -169,17 +159,17 @@ ADAPTER_ROOT: "/mnt/gb-shared/granite-switch/answerability-sr/adapters"
 REPORT_ROOT: "/mnt/gb-shared/granite-switch/answerability-sr/reports"
 
 # ── Compute ──────────────────────────────────────────────────────────────────
-# 1 GPU is what intrinsics_training used for this exact config and model size
-# (1x H100 on BlueVela). On AWS, H100:1 is p5.4xlarge; SkyPilot picks the
+# 1 GPU, the setup these hyperparameters were set with (needs at least 48 GB:
+# see README.md, "GPUs"). H100:1 is p5.4xlarge; SkyPilot picks the
 # instance from ACCELERATORS unless INSTANCE_TYPE names one (another size with
 # the same GPUs, when the cheapest one has no capacity).
 ACCELERATORS: "H100:1"
 INSTANCE_TYPE: ""
-# Training processes. 1 runs `sr-train` as on BlueVela. >1 runs the same trainer
+# Training processes. 1 runs `sr-train` on one GPU. >1 runs the same trainer
 # under `accelerate launch --multi_gpu` (DDP, one process per GPU), and must
 # equal the GPU count in ACCELERATORS. With DDP the effective batch is
 # SR_NUM_PROCESSES x PER_DEVICE_TRAIN x GRADIENT_ACCUMULATION: on H200:8, set
-# GRADIENT_ACCUMULATION=1 to keep the BlueVela batch of 8.
+# GRADIENT_ACCUMULATION=1 to keep the effective batch of 8.
 SR_NUM_PROCESSES: 1
 
 # Eval is a single-GPU generation pass over the eval set; it needs no more

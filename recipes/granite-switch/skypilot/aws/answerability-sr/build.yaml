@@ -2,10 +2,9 @@
 # answerability-sr — train and evaluate a Shadow Residual (SR) answerability
 # adapter on AWS EC2 GPUs, with a shared EFS filesystem (skypilot/aws/gb-shared).
 #
-# The AWS port of ../../lsf-bluevela/answerability-sr: the same two targets and
-# the same generated SR config, wired by one artifact. Unlike the LSF recipe,
-# both targets run on the bare EC2 instance by default (IMAGE is empty; see
-# parameters.yaml):
+# A template: it ships without data (DATA_URI has no default; see README.md).
+# Two targets, wired by one artifact; both run on the bare EC2 instance by
+# default (IMAGE is empty; see parameters.yaml):
 #
 #   train ──(adapter)──> eval
 #
@@ -23,9 +22,9 @@
 # adapter from there.
 #
 # Values come from parameters.yaml beside this file; the comments explaining WHY
-# each value is what it is live there (and in ../../lsf-bluevela/answerability-sr).
+# each value is what it is live there and in README.md.
 #
-#   gb build start -f build.yaml --param RUN_ID=r1
+#   gb build start -f build.yaml --param RUN_ID=r1 --param DATA_URI=<root>
 ######
 granite.build:
   name: answerability-sr-$${RUN_ID}
@@ -37,9 +36,9 @@ granite.build:
     train:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
-        # DATA_URI names the dataset REPO, not the directory inside it. The
-        # pull materializes the whole repo on the cluster and hands this step a
-        # local path to its ROOT, so the command appends TRAIN_DATA_SUBDIR
+        # DATA_URI names the dataset ROOT (for hf://, the repo), not the
+        # directory inside it. The pull materializes it on the cluster and
+        # hands this step a local path to it, so the command appends TRAIN_DATA_SUBDIR
         # itself. Declaring it as an input rather than hardcoding a path is
         # what puts the dataset in `gb build status` and in the lineage record,
         # so the trainer's arguments and the lineage cannot disagree.

@@ -19,8 +19,9 @@
 The recipe and its parameters are rendered the way `gb build start` renders
 them, and the result is checked for what the AWS port changes: the EFS-backed
 environment, the paths on the EFS, and one train target per METHODS entry,
-chained so the trains run one after another. The prepare script and the
-hf-peft-sft config it shares with the SLURM recipe are covered by
+chained so the trains run one after another; and that the template names no
+data, so a run must bring its own. The prepare script and the hf-peft-sft
+config it shares with the SLURM recipe are covered by
 test_answerability_lora_recipe.py.
 """
 
@@ -48,19 +49,26 @@ _ENV = (
 _EFS_ROOT = "/mnt/gb-shared/"
 
 
+# The recipe ships without data; a test supplies a stand-in.
+_DATA = "SOURCE_DATA_URI=hf:///datasets/org/repo/main/answerability"
+
+
 def _params(*params):
     return [f"{k}={v}" for k, v in (p.split("=", 1) for p in params)]
 
 
-def _build(tmp_path, *params):
+def _render(tmp_path, *params):
     file_params = get_params_from_file(str(_RECIPE / "parameters.yaml"))
-    text = apply_parameters(
+    return apply_parameters(
         (_RECIPE / "build.yaml").read_text(),
         _params(*params),
         file_params,
         str(tmp_path),
     )
-    return yaml.safe_load(text)["granite.build"]
+
+
+def _build(tmp_path, *params):
+    return yaml.safe_load(_render(tmp_path, _DATA, *params))["granite.build"]
 
 
 def _trains(build):
@@ -71,6 +79,13 @@ def _hps(target):
     (step,) = target["steps"]
     assert step["step_uri"] == "space://steps/train/hf-peft-sft"
     return step["config"]["hf_peft_sft_config"]
+
+
+def test_the_data_has_no_default(tmp_path):
+    with pytest.raises(Exception, match="SOURCE_DATA_URI"):
+        _render(tmp_path)
+    prepare = _build(tmp_path)["targets"]["prepare"]
+    assert prepare["inputs"]["source"]["uri"] == _DATA.split("=", 1)[1]
 
 
 def test_runs_in_the_gb_shared_aws_environment(tmp_path):
@@ -191,7 +206,7 @@ def test_environment_pins_every_step_type_to_the_efs_region():
     assert config["shared_workdir"].startswith(
         config["shared_filesystem"]["mount_point"]
     )
-    for step in ("hfpull", "command", "hf-peft-sft"):
+    for step in ("hfpull", "hfpush", "command", "hf-peft-sft"):
         infra = config["steps"][step]["launcher_config"]["resources"]["infra"]
         assert infra == f"aws/{region}"
     # hf pulls are their own steps, cached on the EFS: no inline, no local cache.

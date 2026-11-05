@@ -3,14 +3,14 @@
 # hf-peft-sft step on AWS EC2 GPUs, with a shared EFS filesystem
 # (skypilot/aws/gb-shared).
 #
-# The AWS port of ../../slurm-bluevela/answerability-lora: the same prepare script, and
-# one train target per entry of METHODS (comma-separated, in order):
+# One prepare target, and one train target per entry of METHODS
+# (comma-separated, in order):
 #
 #   prepare ──(dataset)──> train-<m1> ──(order)──> train-<m2> ...
 #
-# `prepare` pulls the answerability parquet from the private HF dataset repo
-# ibm-research/touma (only that directory: the hf:// URI names a path in the
-# repo), keeps its prompt/completion columns, and writes them to the EFS.
+# `prepare` pulls your parquet dir (SOURCE_DATA_URI, no default; for an hf://
+# URI only that directory of the repo), keeps its prompt/completion columns,
+# drops rows that cannot be trained on, and writes the result to the EFS.
 # Each `train-<method>` stages the base model (hfpull), binds that dataset,
 # trains a LoRA or aLoRA adapter with TRL's SFTTrainer (loss on the completion
 # only), and registers the ADAPTER as its `adapter` artifact. A later train
@@ -20,8 +20,9 @@
 # Each target, and each hf:// pull, runs on its own EC2 instance; the EFS is
 # what they share. See README.md for the secrets this needs.
 #
-#   gb build start -f build.yaml --param RUN_ID=r1
-#   gb build start -f build.yaml --param RUN_ID=r2 --param METHODS=alora,lora
+#   gb build start -f build.yaml --param RUN_ID=r1 --param SOURCE_DATA_URI=<dir>
+#   gb build start -f build.yaml --param RUN_ID=r2 --param SOURCE_DATA_URI=<dir> \
+#     --param METHODS=alora,lora
 #####
 <% set methods = METHODS.split(",") | map("trim") | reject("equalto", "") | list %>
 <% if not methods or methods | reject("in", ["lora", "alora"]) | list or methods | unique | list | length != methods | length %>
@@ -39,8 +40,8 @@ granite.build:
     prepare:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
-        # Only training_data/answerability/parquet_granite4.2_8b is downloaded,
-        # into the shared hf cache, and bound at that directory.
+        # For an hf:// URI, only the directory it names is downloaded, into
+        # the shared hf cache, and bound at that directory.
         source:
           uri: "$${SOURCE_DATA_URI}"
           type: dataset
@@ -310,7 +311,8 @@ granite.build:
                 # prepare already dropped longer rows, so nothing is truncated.
                 max_length: $${MAX_LENGTH}
                 per_device_train_batch_size: 1
-                # Effective batch = GPUs x 1 x this: 8 x 1 x 4 = 32, as on BlueVela.
+                # Effective batch = GPUs x 1 x this: 8 x 1 x 4 = 32, the batch
+                # the other hyperparameters were set with.
                 gradient_accumulation_steps: $${GRAD_ACCUM}
                 learning_rate: $${LEARNING_RATE}
                 lr_scheduler_type: cosine

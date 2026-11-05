@@ -25,8 +25,10 @@ set it).
   - GPU quota in that region: *Running On-Demand G and VT instances* for
     L4/L40S, *Running On-Demand P instances* for H100/H200 (192 vCPUs for one
     8-GPU p5 instance). Check under Service Quotas → Amazon EC2.
-- **A Hugging Face token** with read access to the datasets the recipe pulls
-  (the recipes' README says which, and whether they are private).
+- **Your data.** The recipes are templates and ship without data; each
+  recipe's README gives the format it needs and the parameter that names it.
+- **A Hugging Face token**, if your data (or a gated model) is in a private
+  Hugging Face repo.
 - **granite.build installed** with a standalone gbserver
   ([Getting started](../../../../docs/getting-started.md)), and the AWS CLI.
 
@@ -151,9 +153,29 @@ Then run a recipe with `ENVIRONMENT_URI` pointing at your copy:
 cd answerability-lora
 gb build start -f build.yaml --skip-version-check \
   --param ENVIRONMENT_URI=space://environments/skypilot-local/aws-gb-shared \
+  --param SOURCE_DATA_URI=<your data> \
   --param RUN_ID=smoke1 --param ACCELERATORS=L4:1 --param INSTANCE_TYPE=g6.4xlarge \
-  --param DATASET_SPLIT='train[50:66]' --param MAX_STEPS=4
+  --param DATASET_SPLIT='train[:16]' --param MAX_STEPS=4
 ```
+
+To keep your data's URIs (a private repo name, say) out of your shell history
+and out of any file in the checkout, put them in a file next to your `.ids`
+files, one `KEY=VALUE` per line, and expand it into `--param` flags:
+
+```bash
+umask 077
+cat > ~/.granite.build/local-env/granite-switch-data.params <<'EOF'
+SOURCE_DATA_URI=hf:///datasets/<org>/<repo>/<revision>/<dir>
+DATA_URI=hf:///datasets/<org>/<repo>
+EOF
+gb build start -f build.yaml --skip-version-check \
+  $(sed 's/^/--param /' ~/.granite.build/local-env/granite-switch-data.params) \
+  --param ENVIRONMENT_URI=space://environments/skypilot-local/aws-gb-shared ...
+```
+
+One file serves both recipes: a recipe ignores `--param` keys it does not use.
+Values must not contain spaces. Don't use `--parameters-path` for this: it
+replaces the recipe's `parameters.yaml` rather than adding to it.
 
 For the us-west-2 copy, the URI ends in `aws-gb-shared-usw2`. Each recipe's
 README has its own smoke run and full-run parameters. Without

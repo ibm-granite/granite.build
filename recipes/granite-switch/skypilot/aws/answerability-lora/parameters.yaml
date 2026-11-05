@@ -20,12 +20,13 @@ BASE_MODEL_URI: "hf:///ibm-granite/granite-4.2-8b"
 BASE_MODEL_ID: "ibm-granite/granite-4.2-8b"
 
 # ── Data ─────────────────────────────────────────────────────────────────────
-# The answerability parquet in the private HF dataset repo ibm-research/touma.
-# The path after the revision limits the pull to that directory; the prepare
-# target keeps its prompt/completion columns. Needs an HF_TOKEN secret with
-# read access to ibm-research (README.md). Replace `main` with a commit hash
-# to pin the data.
-SOURCE_DATA_URI: "hf:///datasets/ibm-research/touma/main/training_data/answerability/parquet_granite4.2_8b"
+# SOURCE_DATA_URI has no default: bring your own data and pass it with
+# --param (README.md, "Your data"). It names a directory holding train.parquet
+# and test.parquet with `prompt` and `completion` message-list columns. For a
+# Hugging Face dataset repo, the path after the revision limits the pull to
+# that directory; use a commit hash as the revision to pin the data, and
+# register an HF_TOKEN secret if the repo is private:
+#   SOURCE_DATA_URI: "hf:///datasets/<org>/<repo>/<revision>/<dir>"
 # prepare writes the converted dataset to $DATA_ROOT/$RUN_ID on the EFS,
 # outside the per-run workdirs gbserver removes at teardown.
 DATA_ROOT: "/mnt/gb-shared/granite-switch/answerability-lora/data"
@@ -34,7 +35,7 @@ DATASET_SPLIT: "train"
 
 # Rows longer than this many tokens (prompt + completion, with the base
 # model's chat template) are dropped by prepare; train uses it as max_length.
-# 853 train rows exceed 8192 (up to 14,472 tokens).
+# prepare fails if more than 10% of a split is longer.
 MAX_LENGTH: 8192
 
 # ── Method ───────────────────────────────────────────────────────────────────
@@ -55,8 +56,8 @@ ADAPTER_ROOT: "/mnt/gb-shared/granite-switch/answerability-lora/adapters"
 
 # ── Compute ──────────────────────────────────────────────────────────────────
 # 8x H200 141 GB (p5e/p5en.48xlarge), DDP: one bf16 copy of the 8B base per
-# GPU. Same GPUs as the BlueVela runs, so aLoRA (no gradient checkpointing)
-# fits as it did there. AWS has no 4-GPU H100/H200 instance.
+# GPU. aLoRA runs without gradient checkpointing, and has fit on H200 at 8,192
+# tokens. AWS has no 4-GPU H100/H200 instance.
 ACCELERATORS: "H200:8"
 # Empty: SkyPilot picks the cheapest instance with ACCELERATORS. Set an EC2
 # instance type with those GPUs to try another size when that one has no

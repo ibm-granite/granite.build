@@ -66,15 +66,22 @@ exit 0
 """
 
 
-def _build(tmp_path, *params):
+# The recipe ships without data; a test supplies a stand-in.
+_DATA = "DATA_URI=hf:///datasets/org/repo"
+
+
+def _render(tmp_path, *params):
     file_params = get_params_from_file(str(_RECIPE / "parameters.yaml"))
-    text = apply_parameters(
+    return apply_parameters(
         (_RECIPE / "build.yaml").read_text(),
         list(params),
         file_params,
         str(tmp_path),
     )
-    return yaml.safe_load(text)["granite.build"]
+
+
+def _build(tmp_path, *params):
+    return yaml.safe_load(_render(tmp_path, _DATA, *params))["granite.build"]
 
 
 def _step(target):
@@ -89,11 +96,11 @@ def _run(tmp_path, target_name, *params):
     cmd = _step(build["targets"][target_name])["byoc_config"]["command"]
     efs = tmp_path / "efs"
     repo = tmp_path / "repo"
-    jsonl = repo / "training_data/answerability/jsonl/granite-4.2-8b"
+    jsonl = repo / "train"
     jsonl.mkdir(parents=True)
     for f in ("train.jsonl", "test.jsonl"):
         (jsonl / f).write_text("")
-    (repo / "eval_data/answerability").mkdir(parents=True)
+    (repo / "eval").mkdir(parents=True)
     base = tmp_path / "base"
     base.mkdir()
     (base / "config.json").write_text("{}")
@@ -132,6 +139,15 @@ def _run(tmp_path, target_name, *params):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     calls = [line.split("\0") for line in log.read_text().splitlines()]
     return calls, efs, proc.stdout
+
+
+def test_the_data_has_no_default(tmp_path):
+    with pytest.raises(Exception, match="DATA_URI"):
+        _render(tmp_path)
+    build = _build(tmp_path)
+    data = _DATA.split("=", 1)[1]
+    assert build["targets"]["train"]["inputs"]["train_data"]["uri"] == data
+    assert build["targets"]["eval"]["inputs"]["eval_data"]["uri"] == data
 
 
 def test_both_targets_run_in_the_gb_shared_aws_environment(tmp_path):
