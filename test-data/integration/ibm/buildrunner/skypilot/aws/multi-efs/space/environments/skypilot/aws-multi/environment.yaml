@@ -1,3 +1,10 @@
+# skypilot/aws environment with two shared filesystems: a BYO EFS and an
+# ephemeral one gbserver provisions per build (#422).
+#
+# Ships a PLACEHOLDER file_system_id (fs-0abc123, as the shared-fs fixtures do),
+# so no real resource id is committed. To run against AWS, use a copy with your
+# own pre-provisioned EFS id (docs/environments/skypilot-aws.md, "Runbook:
+# provision a shared EFS filesystem").
 name: skypilot-aws-multi
 type: Skypilot
 subtype: aws
@@ -13,7 +20,7 @@ config:
     - provider: efs
       mount_point: /mnt/gb-shared
       efs:
-        file_system_id: fs-03bbdc96a5fdcb873
+        file_system_id: fs-0abc123
         region: us-east-1
     - provider: efs
       mount_point: /mnt/gb-scratch
