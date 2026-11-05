@@ -1,12 +1,8 @@
-# steps/train/distill/
+# Logit Distillation Steps
 
-Knowledge distillation for Granite models: a teacher model's next-token distribution is
-transferred to a smaller student. The steps run on SkyPilot (SLURM and LSF) from two shared
+Knowledge distillation: a teacher model's next-token distribution is
+transferred to a smaller student. The steps run on SkyPilot (SLURM; with legacy support of LSF that will no longer be maintained) from two shared
 images; nothing is cloned or mounted at job launch.
-
-Ready-made pipelines live under [`recipes/granite4-350m/`](../../../recipes/granite4-350m)
-(`slurm/distill` is the shortest complete one) and
-[`recipes/granite4-gold-distillation/`](../../../recipes/granite4-gold-distillation).
 
 ## Pipeline order
 
@@ -60,7 +56,7 @@ the container sees fewer GPUs than were allocated, and log the GPU view either w
 | Path | What it is |
 |---|---|
 | `images/gpu/`, `images/cpu/` | The two shared images every step runs on: Dockerfiles, locked dependencies, and the Accelerate/DeepSpeed ZeRO-3 config the trainers launch with. See [`images/gpu/README.md`](images/gpu/README.md) to build and push. |
-| `src/` | The vendored trainer package (`gb_steps_post_training`), baked into both images. Provenance and local patches: [`src/VENDORED.md`](src/VENDORED.md). |
+| `src/` | The trainer package (baked into both docker images). Provenance and local patches: [`src/VENDORED.md`](src/VENDORED.md). |
 | `<step>/skypilot/` | One step: `step-template.yaml` (the source of truth), `USAGE.md`, its launcher scripts under `src/`, and its tests. |
 
 ## Restarts
