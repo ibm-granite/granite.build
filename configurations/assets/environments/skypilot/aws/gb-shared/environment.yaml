@@ -13,7 +13,7 @@
 #     is downloaded once and reused by later targets and builds;
 #   * every step pinned to us-east-1, the only region the EFS has mount targets in.
 #
-# Used by recipes/granite-switch/skypilot/aws/answerability-lora.
+# Used by recipes/granite-switch/skypilot/aws/answerability-{lora,sr}.
 name: skypilot-aws-gb-shared
 type: Skypilot
 subtype: aws
@@ -68,6 +68,8 @@ config:
     command:
       launcher_config: { resources: { infra: aws/us-east-1 } }
     hf-peft-sft:
+      launcher_config: { resources: { infra: aws/us-east-1 } }
+    byoc:
       launcher_config: { resources: { infra: aws/us-east-1 } }
 assetstores:
   # No cache_path and no inline: hfpull runs as its own step and caches to

@@ -12,7 +12,8 @@ Recipes are grouped by the environment they run on:
 |---|---|
 | [`skypilot/lsf/answerability-sr`](skypilot/lsf/answerability-sr/README.md) | A Shadow Residual answerability adapter on `granite-4.2-8b`, trained and then scored against the answerability eval set (IBM BlueVela, LSF). |
 | [`skypilot/slurm/answerability-lora`](skypilot/slurm/answerability-lora/README.md) | An answerability LoRA or aLoRA adapter on `granite-4.2-8b`, trained with the `hf-peft-sft` step (IBM BlueVela, SLURM). |
-| [`skypilot/aws/answerability-lora`](skypilot/aws/answerability-lora/README.md) | The same LoRA or aLoRA adapter, trained on AWS EC2 GPUs with a shared EFS filesystem. |
+| [`skypilot/aws/answerability-lora`](skypilot/aws/answerability-lora/README.md) | The same LoRA and/or aLoRA adapters, trained on AWS EC2 GPUs with a shared EFS filesystem. |
+| [`skypilot/aws/answerability-sr`](skypilot/aws/answerability-sr/README.md) | The same Shadow Residual adapter, trained and scored on AWS EC2 GPUs with a shared EFS filesystem. |
 
 More adapter-library recipes will be published here. Pick the `build.yaml` of
 the recipe you want and run:
