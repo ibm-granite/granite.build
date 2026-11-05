@@ -1,7 +1,7 @@
-# Granite 4.0 350M — LSF (BlueVela) recipes
+# Granite 4.0 350M — LSF (IBM infrastructure) recipes
 
 Build recipes for SFT training and evaluation of the Granite 4.0 350M
-model on the BlueVela LSF cluster via the SkyPilot LSF backend.
+model on the IBM LSF cluster via the SkyPilot LSF backend.
 
 ## Recipes
 
@@ -69,10 +69,10 @@ It is also the only recipe here that evaluates mid-run: `train-gold` declares on
 13-hour epoch instead of queueing behind it.
 
 
-## Defaults are BlueVela-specific
+## Defaults are IBM-specific
 
 The `parameters.yaml` files in this directory carry default values for
-paths, queues, and resources that are specific to the BlueVela cluster
+paths, queues, and resources that are specific to the IBM cluster
 and the granite-build project layout — for example:
 
 ```yaml
@@ -82,7 +82,7 @@ QUEUE: "normal"
 ACCELERATORS: "H100:1"
 ```
 
-These are placeholders for a working BlueVela deployment. To run on a
+These are placeholders for a working IBM deployment. To run on a
 different LSF cluster, override every infrastructure-specific parameter
 on the command line:
 

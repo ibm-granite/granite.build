@@ -8,7 +8,7 @@ already proved end to end, at the fully-generated end of the loss spectrum.
 ## Where this sits relative to its siblings
 
 - `gold-smoke` (this family) proved the pair (`granite-4.2-30b` teacher, `granite-4.1-3b`
-  student) off-policy (`lmbda 0.0`), to completion, on real BlueVela hardware — loss 0.282,
+  student) off-policy (`lmbda 0.0`), to completion, on real IBM hardware — loss 0.282,
   checkpoint saved.
 - `gold-onpolicy-smoke` (this family) proved the **shape** — vLLM as a separate target,
   synced over NCCL across two LSF allocations (build `9973e766`, all 362 parameter tensors,

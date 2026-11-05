@@ -1,6 +1,6 @@
 # GOLD distillation smoke recipe
 
-A minutes-long 2-node GOLD run on BlueVela (LSF via SkyPilot), before committing
+A minutes-long 2-node GOLD run on IBM infrastructure (LSF via SkyPilot), before committing
 to the full multi-hour run. It exercises the `distill-gold` step's plumbing — the
 2-node allocation, per-node rank assignment, config rendering inside the container
 against the `/proj` checkout, and checkpoint publication — not the science.

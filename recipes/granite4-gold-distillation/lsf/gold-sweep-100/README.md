@@ -1,6 +1,6 @@
 # GOLD 100-step off-policy sweep arm
 
-The λ=0.0 arm of the published 100-step GOLD sweep, on BlueVela (LSF via SkyPilot):
+The λ=0.0 arm of the published 100-step GOLD sweep, on IBM infrastructure (LSF via SkyPilot):
 100 optimizer steps over the full 802,027-row corpus at effective batch 192, on one
 8×H100 node. Roughly 1.9 h and ~15 GPU-h.
 

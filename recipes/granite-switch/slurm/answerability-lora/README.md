@@ -1,9 +1,9 @@
-# Answerability LoRA / aLoRA adapter (hf-peft-sft, BlueVela SLURM)
+# Answerability LoRA / aLoRA adapter (hf-peft-sft on Skypilot)
 
 Trains an answerability adapter on `ibm-granite/granite-4.2-8b`, either a
 regular LoRA (`METHOD=lora`, the default) or an activated LoRA
 (`METHOD=alora`, see [aLoRA](#alora)), with the [`hf-peft-sft`](../../../../steps/train/hf-peft-sft/skypilot/USAGE.md)
-step, on IBM BlueVela over SLURM. It registers the **adapter**, not a merged
+step, on IBM-provisioned Skypilot/SLURM compute infrastructure. It registers the **adapter**, not a merged
 model, as the `adapter` artifact.
 
 ```bash
@@ -208,9 +208,8 @@ gb build start -f build.yaml --param-file parameters.yaml \
 
 ## Findings from iteration 1
 
-Runs on IBM BlueVela (SLURM), gbserver standalone, before hf-peft-sft was
-merged (#596) and with the `peft-v0.21.2-4` image; the environment was then
-named `skypilot/slurm/ibm-bluevela` (now `skypilot/slurm/bluevela`, #590). Training loss here is only a plumbing check: the
+Runs on IBM Skypilot/Slurm with `gbserver standalone`.
+Training loss here is only a plumbing check: the
 completion is one label plus `</think>` and `<|im_end|>`, so loss falls to
 near zero quickly and says nothing about held-out accuracy. No evaluation has
 been run yet.

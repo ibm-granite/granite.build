@@ -1,6 +1,6 @@
 # Identity-RL smoke recipe
 
-A minutes-long smoke test of the end-to-end Identity RL plumbing on BlueVela
+A minutes-long smoke test of the end-to-end Identity RL plumbing on IBM infrastructure 
 (LSF via SkyPilot), before committing to the full run. Mirrors `ifrl-smoke`,
 but for the identity workflow (gbansible `run_rl_bluevela_identity.sh`).
 

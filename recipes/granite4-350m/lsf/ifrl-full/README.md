@@ -1,6 +1,6 @@
 # IFRL full recipe
 
-The complete ~1-day Instruction-Following RL run on BlueVela (LSF via SkyPilot).
+The complete ~1-day Instruction-Following RL run on IBM infrastructure (LSF via SkyPilot).
 This is the gbserver reproduction of the gbansible `run_rl_bluevela_if.sh`
 script — same servers, same GRPO configuration, full training length. The
 `ifrl-smoke` recipe is the minutes-long plumbing test for the same workflow;

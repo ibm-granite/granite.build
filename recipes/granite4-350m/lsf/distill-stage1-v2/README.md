@@ -173,7 +173,7 @@ own `code_config`: an unauthenticated clone of
 [`github.com/laminair/gb-steps-distillation`](https://github.com/laminair/gb-steps-distillation)
 at `a5d59bc4`. That is strictly better provenance than a `/proj` checkout — the clone path
 is at `code_config.ref` by construction and cannot drift — and it is what makes this recipe
-runnable anywhere that can reach github.com rather than on BlueVela alone.
+runnable anywhere that can reach github.com rather than on IBM infrastructure alone.
 
 `CODE_EXPECT_REF` is empty because `expect_ref` is only consulted on the `CODE_DIR` path. It
 is the value to fill in the moment a `CODE_DIR` *is* set, because that is when a checkout

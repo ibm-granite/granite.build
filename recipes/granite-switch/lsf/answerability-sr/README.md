@@ -107,7 +107,7 @@ for `ibm-granite/granite-4.2-8b` is public and needs no credential.
 
 ## Run
 
-For testing the recipe, we are using an IBM BlueVela environment; to run
+For testing the recipe, we are using an IBM compute environment; to run
 elsewhere, see the comment on `ENVIRONMENT_URI` in
 [`parameters.yaml`](parameters.yaml).
 

@@ -136,7 +136,7 @@ per-step ids match the generated `checkpoint_<step>` training outputs.
 
 ## Verification status (issue #45)
 
-Confirmed against real BlueVela grpo_fast runs:
+Confirmed against real IBM grpo_fast runs:
 
 - **Checkpoint dir naming.** grpo_fast writes HF checkpoints as `output_dir/step_<N>`
   (confirmed: `step_10`, `step_20`), which the watcher globs directly.

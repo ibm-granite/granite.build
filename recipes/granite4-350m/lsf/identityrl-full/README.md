@@ -1,6 +1,6 @@
 # Identity-RL full recipe
 
-The complete Identity RL run on BlueVela (LSF via SkyPilot). This is the
+The complete Identity RL run on IBM infrastructure using LSF via SkyPilot. This is the
 gbserver reproduction of the gbansible `run_rl_bluevela_identity.sh` script —
 RM server, same GRPO configuration, full training length. The
 `identityrl-smoke` recipe is the minutes-long plumbing test for the same
