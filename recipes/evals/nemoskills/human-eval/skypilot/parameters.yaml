@@ -27,8 +27,8 @@ HF_HOME: ""
 #   make -C steps/eval image-nemoskills REGISTRY=us.icr.io/cil15-shared-registry publish-image-nemoskills REGISTRY=...
 #   make -C steps/eval image-cpu-nemoskills REGISTRY=... publish-image-cpu-nemoskills REGISTRY=...
 # (the tag defaults to the building checkout's git short SHA).
-IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills:7bb34d4a"
-IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills-cpu:7bb34d4a"
+IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills:633d6e4a"
+IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills-cpu:633d6e4a"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""
