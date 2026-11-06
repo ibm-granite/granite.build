@@ -487,13 +487,13 @@ class Build(BuildEntity):
                     f"{err_prefix} the env URI {target.environment_uri} is invalid: {e}"
                 )
                 errors.add(err=err)
-            # Read the env's `type`, dir, and sub-type so all step resolution
-            # tiers (ancestor-walk, env-class-match with the sub-type filter) run
-            # during validation.  The validator runs before any TargetStep is
-            # instantiated, so without this scope the thread-local has no env
-            # context and `space://steps/<name>` URIs whose only on-disk variants
-            # live in the env dir tree or env-keyed subdirs would be reported as
-            # unresolvable.
+            # Read the env's `type`, dir, and sub-type so step resolution (the
+            # env-folder ownership check, env-class match and sub-type filter)
+            # runs during validation as it does at build time.  The validator
+            # runs before any TargetStep is instantiated, so without this scope
+            # the thread-local has no env context and `space://steps/<name>` URIs
+            # whose only on-disk variants live in the env dir tree or env-keyed
+            # subdirs would be reported as unresolvable.
             env_class_name, env_subtype = self._read_env_types(target_env_uri)
             env_dir_uri = self.__env_dir_uri(target_env_uri)
             logger.info("checking the steps of the target: %s %s", target_name, target)
@@ -604,8 +604,9 @@ class Build(BuildEntity):
     def __env_dir_uri(target_env_uri: Optional[URI]) -> Optional[str]:
         """Return a ``file://`` URI for the resolved env directory, or ``None``.
 
-        Feeds ``SpaceURI``'s Tier 1 ancestor-walk during validation so
-        env-co-located and ancestor steps resolve.  Builds on
+        Feeds ``SpaceURI``'s env-folder ownership check during validation, so
+        steps in the env's own or its ancestors' ``steps/`` folders resolve.
+        Builds on
         :meth:`__env_dir_path`, so a git-backed env resolves to its reused local
         clone; returns ``None`` only when the env URI is unavailable or can't be
         materialized locally.
