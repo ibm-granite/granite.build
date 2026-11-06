@@ -1,6 +1,7 @@
 name: lmeval
 version: 0.1.0
-# Granite benchmark: MMLU-ProX lite (IBM), exact match (custom-extract).
+# Granite benchmarks: MMLU-ProX lite (IBM), exact match (custom-extract), and
+# INCLUDE-44, accuracy.
 #
 # ONE STEP PER GRANITE_EVALS IMAGE FAMILY. `benchmark` selects which
 # benchmark in this family to run; every steps/eval/*/ template has the same shape
@@ -15,13 +16,17 @@ version: 0.1.0
 # The image is chosen at run time from config.image. Nothing is cloned or
 # mounted at launch.
 #
-# WHAT RUNS. `granite-evals run mmlu-prox-lite` serves model_path with vLLM inside the
-# job and runs lm-evaluation-harness's own mmlu_prox_lite_<lang>_<subject> tasks
-# (5-shot CoT, custom-extract regex, exact_match) against it in chat mode
-# (local-chat-completions, apply_chat_template, fewshot_as_multiturn), over the 11
-# Granite languages MMLU-ProX has, on li-lab/MMLU-ProX-Lite at a pinned commit.
-# The value is the mean over languages. Writes one results.json
-# (schema: granite_evals/results.py).
+# WHAT RUNS. `granite-evals run <benchmark>` serves model_path with vLLM inside the
+# job and runs lm-evaluation-harness's own tasks against it. mmlu-prox-lite runs the
+# mmlu_prox_lite_<lang>_<subject> tasks (5-shot CoT, custom-extract regex,
+# exact_match) in chat mode (local-chat-completions, apply_chat_template,
+# fewshot_as_multiturn), over the 11 Granite languages MMLU-ProX has, on
+# li-lab/MMLU-ProX-Lite at a pinned commit. include-44 runs the
+# include_base_44_<lang>_<domain> tasks (CohereLabs/include-base-44 at a pinned
+# commit, 44 languages x 11 domains) in the harness's base mode — one
+# loglikelihood request per option letter, acc = the argmax letter. Each writes
+# one results.json (schema: granite_evals/results.py) whose value is the mean
+# over languages.
 #
 # PHASES. This benchmark scores inside generation, so it runs as one GPU job
 # (phase: all); see the sibling granite-* steps for the generate/score split.
@@ -64,7 +69,7 @@ config:
   # Space-separated key=value benchmark options passed as --option, e.g.
   # "languages=all" (or a comma list; default: the 11 Granite languages),
   # "temperature=0.6 top_p=0.95 max_tokens=16384" (default: the Granite 4.2 card's
-  # thinking-mode 1.0 / 0.95 / 8192),
+  # thinking-mode 1.0 / 0.95, with a 32768-token budget; max_tokens=8192 is the card's),
   # "stop=none" or "stop=%3C/s%3E,Q:" (percent-encoded, comma-separated, at most 4;
   # default "task": the task's own stop strings),
   # "thinking=off" (chat_template_kwargs.enable_thinking=false),
@@ -80,6 +85,19 @@ config:
   tensor_parallel_size: "1"
   gpu_memory_utilization: "0.9"
   max_model_len: ""
+  # vLLM tool-call and reasoning parsers; "auto" detects them from the
+  # checkpoint (its chat template / shipped *_parser.py), "" disables one.
+  tool_call_parser: "auto"
+  reasoning_parser: "auto"
+  # Space-separated extra `vllm serve` arguments, each passed as --vllm-arg
+  # (e.g. "--enable-prefix-caching --max-num-seqs=64"). Values containing
+  # spaces are not supported, as in `options`.
+  vllm_args: ""
+  # An existing OpenAI-compatible endpoint (e.g. http://host:8000/v1): skips
+  # starting vLLM in the job; served_model_name must name the model there.
+  base_url: ""
+  # Seed for the benchmark's own sampling (shuffles, subsets).
+  seed: "0"
   # Shared enroot squashfs cache, only for benchmarks that sandbox. This one doesn't.
   sandbox_cache: ""
   # Empty leaves the image's HF cache default alone.
@@ -172,6 +190,8 @@ environment_configs:
 
             OPTS=()
             for kv in {{ config.options }}; do OPTS+=(--option "$kv"); done
+            VLLM_ARGS=()
+            for a in {{ config.vllm_args }}; do VLLM_ARGS+=(--vllm-arg="$a"); done
 
             granite-evals run "$BENCHMARK" \
               --model "{{ config.model_path }}" \
@@ -186,6 +206,11 @@ environment_configs:
               --gpu-memory-utilization "{{ config.gpu_memory_utilization }}" \
               --phase "{{ config.phase }}" \
               {% if config.max_model_len %}--max-model-len {{ config.max_model_len }}{% endif %} \
+              --tool-call-parser "{{ config.tool_call_parser }}" \
+              --reasoning-parser "{{ config.reasoning_parser }}" \
+              {% if config.base_url %}--base-url "{{ config.base_url }}"{% endif %} \
+              --seed {{ config.seed }} \
+              "${VLLM_ARGS[@]}" \
               "${OPTS[@]}" \
               2>&1 | tee "$OUTPUT_DIR/granite.log"
             if [ "{{ config.phase }}" = generate ]; then

@@ -33,6 +33,10 @@ steps:
 | `options` | `""` | Space-separated `key=value` benchmark options: `temperature`, `top_p`, `max_tokens`, `max_turns`, `timeout_multiplier`, `max_retries`, `tasks` (regex), `exclude` (comma list, or `none`), `agent=oracle`. |
 | `phase` | `"all"` | Only `all`: this benchmark scores inside generation, so it runs as one GPU job |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
+| `tool_call_parser` / `reasoning_parser` | `auto` / `auto` | vLLM parsers; `auto` detects them from the checkpoint, `""` disables one. |
+| `vllm_args` | `""` | Space-separated extra `vllm serve` arguments, each passed as `--vllm-arg`. |
+| `base_url` | `""` | An existing OpenAI-compatible endpoint; skips starting vLLM (`served_model_name` must name the model there). |
+| `seed` | `0` | Seed for the benchmark's own sampling. |
 | `sandbox_cache` | `""` | Shared squashfs cache for task images; every benchmark in this family sandboxes, so recipes always set this. |
 | `hf_home` | `""` | Overrides `HF_HOME`. |
 

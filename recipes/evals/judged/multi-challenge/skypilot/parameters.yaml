@@ -21,8 +21,8 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
-IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-judged:de4d8818"
-IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-judged-cpu:de4d8818"
+IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-judged:633d6e4a"
+IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-judged-cpu:633d6e4a"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""
@@ -31,7 +31,7 @@ WORKERS: 16
 OPTIONS: ""
 TENSOR_PARALLEL_SIZE: 1
 
-# ─── Judge (paid; key from the GRANITE_EVALS_JUDGE_API_KEY secret) ──────
+# ─── Judge (paid; key from the EVAL_JUDGE_API_KEY secret) ──────
 # OpenAI-compatible endpoint of the judge gateway. No default; set it for your site.
 JUDGE_BASE_URL: ""
 # build-local.yaml and score-local.yaml: the judge model on that gateway. Empty = granite-evals' default judge.

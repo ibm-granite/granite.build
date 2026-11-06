@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# granite-evals image for the `lmeval` benchmark family: lm-evaluation-harness benchmarks (mmlu-prox-lite).
+# granite-evals image for the `lmeval` benchmark family: lm-evaluation-harness benchmarks (mmlu-prox-lite, include-44).
 #
 # One image per benchmark family, because the upstream harnesses' own dependencies
 # conflict with one another (see [tool.uv] conflicts in src/core/pyproject.toml).

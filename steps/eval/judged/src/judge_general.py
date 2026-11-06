@@ -72,7 +72,7 @@ log = logging.getLogger(__name__)
 
 DEFAULT_JUDGE_BASE_URL = ""  # set --option judge_base_url=<OpenAI-compatible judge endpoint>
 DEFAULT_JUDGE_MODEL = "aws/claude-sonnet-5"
-DEFAULT_JUDGE_KEY_ENV = "GRANITE_EVALS_JUDGE_API_KEY"
+DEFAULT_JUDGE_KEY_ENV = "EVAL_JUDGE_API_KEY"
 # USD per million tokens, for the cost estimate in details.judge_usage
 # (Claude Sonnet 5: $2 in / $10 out, cache reads ~90% off, cache writes +25%).
 PRICE_IN, PRICE_OUT, CACHE_READ_FACTOR, CACHE_WRITE_FACTOR = 2.0, 10.0, 0.1, 1.25

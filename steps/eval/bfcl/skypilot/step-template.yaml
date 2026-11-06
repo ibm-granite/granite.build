@@ -73,6 +73,19 @@ config:
   tensor_parallel_size: "1"
   gpu_memory_utilization: "0.9"
   max_model_len: ""
+  # vLLM tool-call and reasoning parsers; "auto" detects them from the
+  # checkpoint (its chat template / shipped *_parser.py), "" disables one.
+  tool_call_parser: "auto"
+  reasoning_parser: "auto"
+  # Space-separated extra `vllm serve` arguments, each passed as --vllm-arg
+  # (e.g. "--enable-prefix-caching --max-num-seqs=64"). Values containing
+  # spaces are not supported, as in `options`.
+  vllm_args: ""
+  # An existing OpenAI-compatible endpoint (e.g. http://host:8000/v1): skips
+  # starting vLLM in the job; served_model_name must name the model there.
+  base_url: ""
+  # Seed for the benchmark's own sampling (shuffles, subsets).
+  seed: "0"
   # Unused by BFCL (no sandboxes); kept so every granite step has one config contract.
   sandbox_cache: ""
   # Empty leaves the image's HF cache default alone.
@@ -165,6 +178,8 @@ environment_configs:
 
             OPTS=()
             for kv in {{ config.options }}; do OPTS+=(--option "$kv"); done
+            VLLM_ARGS=()
+            for a in {{ config.vllm_args }}; do VLLM_ARGS+=(--vllm-arg="$a"); done
 
             granite-evals run "$BENCHMARK" \
               --model "{{ config.model_path }}" \
@@ -179,6 +194,11 @@ environment_configs:
               --gpu-memory-utilization "{{ config.gpu_memory_utilization }}" \
               --phase "{{ config.phase }}" \
               {% if config.max_model_len %}--max-model-len {{ config.max_model_len }}{% endif %} \
+              --tool-call-parser "{{ config.tool_call_parser }}" \
+              --reasoning-parser "{{ config.reasoning_parser }}" \
+              {% if config.base_url %}--base-url "{{ config.base_url }}"{% endif %} \
+              --seed {{ config.seed }} \
+              "${VLLM_ARGS[@]}" \
               "${OPTS[@]}" \
               2>&1 | tee "$OUTPUT_DIR/granite.log"
             if [ "{{ config.phase }}" = generate ]; then

@@ -1,4 +1,4 @@
-"""Extended NeMo-Skills benchmarks: HLE, AA-Omniscience, CritPt, AA-LCR, WMT24++.
+"""Extended NeMo-Skills benchmarks: HLE, IMO AnswerBench, AA-Omniscience, CritPt, AA-LCR, WMT24++, FLORES-200.
 
 All run through the shared ``NemoSkillsBenchmark`` (``nemo_skills.py``): ns's own
 prepare, prompts, generation loop, judges/evaluators and metrics at the pinned ns
@@ -12,7 +12,7 @@ What is common here:
 * Only post-thinking text is scored. vLLM's reasoning parser puts the thinking in
   ``reasoning_content``; a ``<think>`` or ``</think>`` left in a scored
   ``generation`` (no reasoning parser) fails the run, as for RULER.
-* LLM judges (hle, omniscience, aa-lcr) are ns's judge prompts, temperature 0,
+* LLM judges (hle, imo-answerbench, omniscience, aa-lcr) are ns's judge prompts, temperature 0,
   through the spend meter, all currently using the shared judge default
   (``aws/claude-sonnet-5`` on the configured LiteLLM gateway), as for arena-hard-v2.
   hle and omniscience each have a documented confirmed-official judge that
@@ -35,6 +35,14 @@ HLE (``hle``)
     now; the model card's official judge is Azure/gpt-4o-ncf, not
     activated by default (the HLE leaderboard's own
     default is o3-mini-2025-01-31; see ``official_judge``).
+
+IMO AnswerBench (``imo-answerbench``)
+    Google DeepMind's IMO AnswerBench v2 (400 olympiad short-answer problems,
+    the superhuman repo's answerbench_v2.csv), ns's generic/math prompt; ns's
+    ``judge/imo_answerbench`` judge (``\boxed{Correct/Incorrect}``) over the
+    generation, ns metric ``judge_correct``. Judge: the shared default
+    (``aws/claude-sonnet-5``) for now; ns's default is gemini-2.5-pro (see
+    ``official_judge``).
 
 AA-Omniscience (``omniscience``, ``omniscience-hallucination``)
     ``ArtificialAnalysis/AA-Omniscience-Public`` (600 questions), ns's ``text``
@@ -83,10 +91,20 @@ WMT24++ (``wmt24pp``)
     dir). ns's ``bleu`` (sacrebleu, ja-mecab for Japanese) is always reported too;
     ``--option score_metric=bleu`` makes it the value and skips COMET (no GPU).
     Values are fractions (ns's COMET x 100 and BLEU, both x 0.01).
+
+FLORES-200 (``flores200``)
+    ``openlanguagedata/flores_plus`` devtest, exactly wmt24pp's pipeline (ns's
+    segment-translation prompt, XCOMET-XXL as ns runs it, ``en->xx`` comet as
+    the value, ``score_metric=bleu`` for sacrebleu only). Languages are BCP-47
+    codes, mapped to the corpus's alpha3_Script configs (``flores_config``:
+    langcodes' likely form, ``FLORES_SPECIAL`` where it differs). Defaults are
+    Granite 4.x's languages minus English (ar cs de es fr it ja ko nl pt zh),
+    ``--option languages=`` to choose.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -96,10 +114,14 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from granite_evals.benchmarks.nemo_skills import (
+    NS_COMMIT,
     NemoSkillsBenchmark,
     _GoldServer,
     _read_jsonl,
+    _sha256,
     _write_jsonl,
     log,
 )
@@ -120,6 +142,55 @@ WMT_DATASET = "google/wmt24pp"
 WMT_REVISION = "fd7405c06494bc66a57b25f55d217a72f96e60dc"
 WMT_LANGUAGES = ("de_DE", "es_MX", "fr_FR", "it_IT", "ja_JP")
 """ns's prepare default."""
+IMO_URL = "https://raw.githubusercontent.com/google-deepmind/superhuman/326a740a6877d5ec098035c534d2fbd931fe83ee/imobench/answerbench_v2.csv"
+"""IMO AnswerBench v2, at the commit ns's prepare pins in its URL."""
+IMO_SHA256 = "275877a9d988d85278fad3a5f8a41d7f83393a60bf259531ec0a5161e6b21cf9"
+IMO_N = 400
+FLORES_DATASET = "openlanguagedata/flores_plus"
+FLORES_REVISION = "1147e2dc59f37fbb5c22fd8478770de02cd399f9"
+FLORES_LANGUAGES = ("ar", "cs", "de", "es", "fr", "it", "ja", "ko", "nl", "pt", "zh")
+"""Granite 4.x languages minus English; FLORES-200 covers all (nl included)."""
+FLORES_SPECIAL = {
+    "ar": "arb_Arab",
+    "ko": "kor_Hang",
+    "zh": "cmn_Hans",
+    "zh-Hans": "cmn_Hans",
+    "zh-Hant": "cmn_Hant",
+}
+"""Codes whose langcodes likely form is not the corpus's config: Standard
+Arabic (arb_Arab, not the ara macrolanguage), Korean in Hangul (kor_Hang, not
+the likely Kore), Mandarin Chinese (cmn_Hans/cmn_Hant, not the zho
+macrolanguage)."""
+
+
+def flores_config(code: str) -> str:
+    """A BCP-47 code as the corpus's ``alpha3_Script`` config: langcodes'
+    likely form, ``FLORES_SPECIAL`` where it differs."""
+    if code in FLORES_SPECIAL:
+        return FLORES_SPECIAL[code]
+    import langcodes
+
+    lang = langcodes.Language.get(code).fill_likely_values()
+    return f"{lang.to_alpha3()}_{lang.script}"
+
+
+def _flores_rows(code: str, en: list[dict], tgt: list[dict]) -> list[dict]:
+    """ns's wmt24pp row shape (its prepare.py) for one language: FLORES's
+    parallel devtest zipped, ``text`` as source and reference."""
+    import langcodes
+
+    name = langcodes.Language.get(code).display_name()
+    return [
+        {
+            "source": s["text"],
+            "reference": t["text"],
+            "source_language": "en",
+            "target_language": code,
+            "source_lang_name": "English",
+            "target_lang_name": name,
+        }
+        for s, t in zip(en, tgt, strict=True)
+    ]
 
 COMET_PYTHON = "/opt/comet/bin/python"
 """The image's COMET env (docker/extras/nemoskills.sh)."""
@@ -218,6 +289,79 @@ class HLE(_Judged):
         from nemo_skills.evaluation.metrics.utils import is_correct_judgement
 
         return is_correct_judgement(judgement, return_none=True) is not None
+
+    def gold_generation(self, row: dict) -> str:
+        return f"Explanation: this is the reference answer.\nAnswer: {row[self.gold_answer_key]}\nConfidence: 100%"
+
+
+# -- IMO AnswerBench -----------------------------------------------------------------
+
+
+def _imo_rows(csv_path: Path) -> list[dict]:
+    """ns's imo-answerbench prepare transform: the CSV's rows as ns rows."""
+    import csv
+
+    with csv_path.open(newline="", encoding="utf-8") as f:
+        return [
+            {
+                "problem_id": row["Problem ID"],
+                "problem": row["Problem"],
+                "expected_answer": row["Short Answer"],
+                "category": row["Category"],
+                "subcategory": row["Subcategory"],
+                "source": row["Source"],
+            }
+            for row in csv.DictReader(f)
+        ]
+
+
+@register
+class ImoAnswerBench(_Judged):
+    id = "imo-answerbench"
+    metric = "pass@1 judge_correct"
+    ns_benchmark = "imo-answerbench"
+    ns_metric = "judge_correct"
+    dataset = IMO_URL
+    dataset_revision = f"sha256:{IMO_SHA256}"
+    official_judge = "gemini-2.5-pro (NeMo-Skills JUDGE_PIPELINE_ARGS default)"
+
+    def judge_valid(self, judgement: str) -> bool:
+        # ns's MathMetrics IMO AnswerBench branch: \boxed{Correct/Incorrect}.
+        from nemo_skills.evaluation.metrics.utils import is_correct_judgement
+
+        return is_correct_judgement(judgement, return_none=True) is not None
+
+    def prepare_data(self) -> tuple[Path, dict[str, Any]]:
+        """ns's imo-answerbench prepare (a urlopen of the CSV) with the URL
+        pinned: the CSV downloaded and hashed, ns's transform applied,
+        test.jsonl written."""
+        src = self.config.dataset
+        if src and Path(src).exists():
+            return super().prepare_data()  # an already prepared jsonl
+        ddir = self.config.output_dir / "ns-data" / "imo-answerbench"
+        ddir.mkdir(parents=True, exist_ok=True)
+        raw = ddir / "answerbench_v2.csv"
+        if not raw.exists() or _sha256(raw) != IMO_SHA256:
+            url = src or IMO_URL
+            log.info("%s: downloading %s", self.id, url)
+            r = httpx.get(url, follow_redirects=True, timeout=300)
+            r.raise_for_status()
+            digest = hashlib.sha256(r.content).hexdigest()
+            if digest != IMO_SHA256:
+                raise RuntimeError(f"{url}: sha256 {digest}, expected {IMO_SHA256}")
+            raw.write_bytes(r.content)
+        rows = _imo_rows(raw)
+        if len(rows) != IMO_N:
+            raise RuntimeError(f"{raw}: {len(rows)} rows, expected {IMO_N}")
+        out = ddir / "test.jsonl"
+        _write_jsonl(out, rows)
+        return out, {
+            "source": "ns imo-answerbench prepare (urlopen + DictReader), URL pinned",
+            "url": IMO_URL,
+            "raw_sha256": IMO_SHA256,
+            "ns_commit": NS_COMMIT,
+            "sha256": _sha256(out),
+        }
 
     def gold_generation(self, row: dict) -> str:
         return f"Explanation: this is the reference answer.\nAnswer: {row[self.gold_answer_key]}\nConfidence: 100%"
@@ -578,3 +722,67 @@ class WMTGoldServer(_GoldServer):
         ]
         best = max(hits, key=lambda r: len(r["source"]), default=None)
         return "" if best is None else best["reference"]
+
+
+# -- FLORES-200 ----------------------------------------------------------------------
+
+
+@register
+class FLORES200(WMT24pp):
+    """FLORES-200 (``openlanguagedata/flores_plus``, devtest), wmt24pp's
+    pipeline end to end (module doc): ns's segment-translation prompt, XCOMET
+    scoring, ``en->xx`` comet the value. The languages are BCP-47 codes, each
+    mapped to the corpus's alpha3_Script config (``flores_config``)."""
+
+    id = "flores200"
+    metric = "en→xx comet"
+    ns_benchmark = "flores200"
+    dataset = FLORES_DATASET
+    dataset_revision = FLORES_REVISION
+
+    def ns_module(self):  # type: ignore[override]
+        """ns's wmt24pp module: FLORES-200 is its pipeline (module doc), so its
+        settings apply — segment-translation prompt, translation metrics."""
+        import importlib
+
+        return importlib.import_module("nemo_skills.dataset.wmt24pp")
+
+    def languages(self) -> tuple[str, ...]:
+        langs = tuple(x for x in str(self.opt("languages", ",".join(FLORES_LANGUAGES))).replace(" ", ",").split(",") if x)
+        bad = [x for x in langs if not re.fullmatch(r"[a-z]{2,3}(-[A-Za-z0-9]{2,8})*", x)]
+        if bad or not langs:
+            raise SystemExit(f"{self.id}: languages are BCP-47 codes like pt,zh,fr-CA; got {bad or langs}")
+        return langs
+
+    def prepare_data(self) -> tuple[Path, dict[str, Any]]:
+        """ns's wmt24pp prepare (a config per language, zipped against the
+        English split) with the corpus swapped: FLORES-200's parallel devtest
+        as ns translation rows, from the pinned HF revision."""
+        src = self.config.dataset
+        if src and Path(src).exists():
+            return super().prepare_data()  # an already prepared jsonl/dir
+        dataset, revision = self.dataset_source()
+        langs = self.languages()
+        ddir = self.config.output_dir / "ns-data" / "flores200"
+        out, prov_path = ddir / "test.jsonl", ddir / "granite-provenance.json"
+        key = {"dataset": dataset, "revision": revision, "languages": list(langs)}
+        if not (out.exists() and prov_path.exists() and json.loads(prov_path.read_text()).get("key") == key):
+            from granite_evals import data
+
+            en = data.load_split(dataset, revision=revision, split="devtest", name="eng_Latn")
+            rows = []
+            for code in langs:
+                tgt = data.load_split(dataset, revision=revision, split="devtest", name=flores_config(code))
+                rows += _flores_rows(code, en, tgt)
+            ddir.mkdir(parents=True, exist_ok=True)
+            _write_jsonl(out, rows)
+            prov = {
+                "source": "ns wmt24pp prepare (per-language zip), corpus FLORES-200 devtest",
+                "dataset": dataset,
+                "revision": revision,
+                "languages": list(langs),
+                "rows": len(rows),
+                "sha256": _sha256(out),
+            }
+            prov_path.write_text(json.dumps({"key": key, "prov": prov}, indent=2))
+        return out, json.loads(prov_path.read_text())["prov"]
