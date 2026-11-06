@@ -159,7 +159,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Non-root runtime user. SkyPilot requires passwordless sudo for its in-container
-# setup (docs/environments/skypilot-lsf.md); that is the only privilege granted.
+# setup; that is the only privilege granted.
 RUN useradd -m -u 1001 appuser \
  && echo 'appuser ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/appuser \
  && chmod 0440 /etc/sudoers.d/appuser
@@ -389,7 +389,6 @@ pytestmark = pytest.mark.skypilot_integration      # IBM space/cluster: pytest.m
 @pytest.mark.skipif(not <gate>(), reason="<infra> not reachable (run: make test-setup)")
 # kube instead: @KUBE_XDIST_GROUP above, and
 #   @pytest.mark.skipif(not kind_cluster_reachable(), reason=kind_skip_reason())
-# lsf-bluevela instead: @pytest.mark.xdist_group(name="buildtest_bv") + the RUNNING_IN_CICD skip
 # slurm-bluevela: the RUNNING_IN_CICD skip only. It keeps skypilot_integration, which
 #   forbids any other xdist_group (UsageError under --dist=loadgroup).
 # HfPushCleanupMixin first: it names each hf:// output per run, checks it landed on the

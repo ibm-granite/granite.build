@@ -225,12 +225,12 @@ steps:
 size the compute it allocates. It's a free-form dict — fields depend on the
 environment, not on a fixed schema.
 
-| Field                    | Used by                  | Notes |
-|--------------------------|--------------------------|-------|
-| `num_nodes`              | k8s, lsf, runpod, skypilot  | Number of nodes. |
-| `num_gpus_per_node`      | k8s, lsf, runpod           | GPUs per node. |
-| `num_cpus_per_node`      | docker, k8s, skypilot      | CPU cores per node. |
-| `total_memory_per_node`  | docker, k8s, skypilot      | Memory per node, e.g. `"4Gi"`, `"32Gi"`. |
+| Field                    | Used by                   | Notes |
+|--------------------------|---------------------------|-------|
+| `num_nodes`              | k8s, runpod, skypilot     | Number of nodes. |
+| `num_gpus_per_node`      | docker, k8s, runpod       | GPUs per node. SkyPilot ignores it; use `resources.accelerators`. |
+| `num_cpus_per_node`      | docker, k8s, skypilot     | CPU cores per node. |
+| `total_memory_per_node`  | docker, k8s, skypilot     | Memory per node, e.g. `"4Gi"`, `"32Gi"`. Not on SkyPilot SLURM; use `resources.memory`. |
 
 For **skypilot** the launch path consumes `num_cpus_per_node` and
 `total_memory_per_node`, folding them into `sky.Resources` as a low-precedence
@@ -247,14 +247,8 @@ in build.yaml), which wins over `compute_config`. Do **not** place it under
 `sky.Resources` one, so SkyPilot drops it there without an error. gbserver logs a
 warning if it finds one, but the run proceeds single-node.
 
-For **lsf**, an unset `num_gpus_per_node` defaults to **1** GPU, unlike k8s which
-defaults to `0`. A non-GPU step (e.g. a pull/push step) must therefore set
-`num_gpus_per_node: 0` explicitly; otherwise the `bsub` job requests a GPU and
-waits for one to free up instead of being scheduled immediately on the normal
-queue.
-
-Per-environment specifics (k8s `affinity`, skypilot `cluster`/`zone`, lsf
-`queue`, etc.) are documented in the per-type
+Per-environment specifics (k8s `affinity`, skypilot `cluster`/`zone`,
+etc.) are documented in the per-type
 [environment pages](../environments/README.md).
 
 ### Kubernetes `env` quoting

@@ -15,7 +15,7 @@ You do **not** author a step directory (`step.yaml` + `bash_scripts/`) for the c
 
 Granite.build is **workload-agnostic**: training, inference, data-gen, and evaluation are all "a command that runs." What changes between workloads is the command string and the settings in build.yaml — not the structure.
 
-> **Scope — this skill covers ONLY the inline `command` + heredoc approach, and delegates everything more complex to `create-step`.** The heredoc approach is **bash-specific** (it relies on the bash environment's runtime contract — see below) and is **not portable across environments**: Docker/LSF/skypilot provision Python + dependencies and wire inputs differently. For the standalone-bash default it's the simplest, fastest path. The moment you need a *reusable, packaged, or owned-code* step — its own `step.yaml` + `bash_scripts/`, referenced from the build by a **`file://`** URI — stop and use the **`create-step`** skill. This skill does not describe step authoring at all; it routes you to an existing step (below) or hands the case off to `create-step`.
+> **Scope — this skill covers ONLY the inline `command` + heredoc approach, and delegates everything more complex to `create-step`.** The heredoc approach is **bash-specific** (it relies on the bash environment's runtime contract — see below) and is **not portable across environments**: Docker/skypilot provision Python + dependencies and wire inputs differently. For the standalone-bash default it's the simplest, fastest path. The moment you need a *reusable, packaged, or owned-code* step — its own `step.yaml` + `bash_scripts/`, referenced from the build by a **`file://`** URI — stop and use the **`create-step`** skill. This skill does not describe step authoring at all; it routes you to an existing step (below) or hands the case off to `create-step`.
 
 ## First: is there already a step for your workload? (prefer it over inline)
 
@@ -174,6 +174,7 @@ granite.build:
 ```
 
 Notes:
+- **Sizing on SkyPilot SLURM** (the bash example above needs none): `compute_config.num_cpus_per_node` → `--cpus-per-task` even though the step's `resources` is `{}`, so don't also add `resources.cpus`. GPUs only via `launcher_config.resources.accelerators` (e.g. `"H100:8"`), memory only via `launcher_config.resources.memory` (bare GiB, e.g. `"512"`); `num_gpus_per_node` and `total_memory_per_node` are ignored there. Other SkyPilot clouds: `docs/environments/skypilot-sizing.md`.
 - **Inputs** carry exactly one of `uri:` (fixed location: `hf:///…`, `file:…`) or `binding:` (wire to another target's output for multi-target workloads).
   - **A `file:` input MUST use an absolute path** — `file:///abs/path/`. A *relative* `file:foo/` resolves against the build's **runtime working dir, not your project dir**, so the input can **silently resolve to nothing** (e.g. an `adapter`/`dataset` that never loads) while the build still reports **SUCCESS**. When the file is produced by another target in the *same* build, prefer a `binding:` (no path at all); use an absolute `file:///…` URI to point at a fixed location from a *previous* build. (Confirm it actually loaded in `build_job_log` — a missing `file:` input is a `WARNING … ignoring`, not a failure.)
 - **Produced outputs** declare a `uri:`/`base_uri:` push destination; the command registers them via the `GB_ARTIFACT_ID` line.
@@ -231,4 +232,4 @@ Fetch it via MCP with `build_job_log(build_id)` — it returns that `job.log`'s 
 
 ## When unsure
 
-Invoke **`gb-docs`** for the authoritative schema/CLI/troubleshooting docs. If the docs and this skill disagree on a documented field, trust the docs — but note the docs are k8s/LSF-centric, and several documented conveniences (`config.workload.commands`, `gb.files_to_create`) are **k8s/LSF-only and do not apply to the bash backend**. For bash behavior, the source of truth is this skill's `references/steps.md` plus a working build's `job.log` (via `build_job_log`).
+Invoke **`gb-docs`** for the authoritative schema/CLI/troubleshooting docs. If the docs and this skill disagree on a documented field, trust the docs — but note the docs are k8s-centric, and several documented conveniences (`config.workload.commands`, `gb.files_to_create`) belong to the Kubernetes `gbstep` step and **do not apply to the bash backend**. For bash behavior, the source of truth is this skill's `references/steps.md` plus a working build's `job.log` (via `build_job_log`).

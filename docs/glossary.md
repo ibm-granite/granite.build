@@ -13,7 +13,7 @@ Quick reference for terms used throughout Granite.Build documentation.
 | **Binding** | A reference connecting one target's input to another target's output: `binding: upstream_target.output_name`. |
 | **Template** | A reusable `build.yaml` pattern for common workflows (e.g. data generation + tuning + evaluation). |
 | **Space** | A workspace providing isolation for teams or projects. Contains environments, steps, secrets, and build history. |
-| **Environment** | A compute backend where steps execute. Defined in `environment.yaml`. Types: bash, docker, kubernetes, LSF, SkyPilot, RunPod. |
+| **Environment** | A compute backend where steps execute. Defined in `environment.yaml`. Types: bash, docker, kubernetes, SkyPilot, RunPod. |
 | **Step URI** | A reference to a step definition. Schemes: `space://steps/<name>`, `file://`, `git+ssh://`. |
 
 ## Jinja templating

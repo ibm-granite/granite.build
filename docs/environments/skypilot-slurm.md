@@ -3,6 +3,11 @@
 > **Audience:** operators configuring a `Skypilot` environment whose `default_cloud` is `slurm`.
 > Read [skypilot.md](skypilot.md) first for the compute model and config common to all clouds; this
 > page covers only what is SLURM-specific.
+>
+> **Sizing a step:** `compute_config.num_cpus_per_node` becomes `--cpus-per-task` even when the
+> step's `resources` is `{}`; GPUs come only from `resources.accelerators` and memory only from
+> `resources.memory`. Details and how to check with `sacct`:
+> [Sizing a SkyPilot step](skypilot-sizing.md#slurm).
 
 ## SkyPilot patches
 
@@ -164,11 +169,10 @@ the genuine error surfaces, so a true outage is never hidden.
 
 > **Failover is launch-time only.** The rotation happens *while provisioning*. Once a cluster is up,
 > SkyPilot has pinned the chosen login node into the cluster handle, so its status polling, log
-> streaming, and teardown all stay on that node — unlike the native-LSF SSH tunnel (see
-> [lsf.md](lsf.md)), which re-selects a reachable node per operation. If the pinned node fails
+> streaming, and teardown all stay on that node. If the pinned node fails
 > *after* provisioning, that operation fails against it; the next *launch* re-selects (and, being
 > sticky, prefers the node already written unless it is rotated off). When the infra names no cluster
-> (a bare `slurm`/`lsf` infra) but the environment declares exactly one host for that cloud, that host
+> (a bare `slurm` infra) but the environment declares exactly one host for that cloud, that host
 > is the unambiguous launch target, so its candidates still fail over.
 
 > **Re-keying caveat (test-only `GBTEST_SKY_SSH_RESET`).** Even after `~/.slurm/config` self-heals,
@@ -242,8 +246,8 @@ whichever layer is most convenient:
 4. `cluster` / `zone` in this `environment.yaml` `config`.
 
 This precedence is implemented in `Skypilot._resolve_infra_and_zone` and applies to the HPC
-clouds (`slurm` and `lsf` — see [skypilot-lsf.md](skypilot-lsf.md); non-HPC clouds consult only
-the step launcher's `resources`). Because the resolver ends by falling back to the environment's own
+cloud `slurm` (non-HPC clouds consult only the step launcher's `resources`). Because the resolver
+ends by falling back to the environment's own
 `config.cluster` / `config.zone`, this env-wide default is **enforced for every step** — including
 step types not listed under `config.steps` (see
 [Per-step-type config defaults](README.md#per-step-type-config-defaults-configstepstype)). A `command`
@@ -364,7 +368,7 @@ Values use SLURM's own formats — e.g. `time` accepts bare minutes (`240`),
 > |---|---|
 > | `gres` | `launcher_config.resources.accelerators` — typed `"H100:2"` → `--gres=gpu:H100:2`, or untyped `":2"` → `--gres=gpu:2`. Always quote the value (a YAML int like `2` errors, and a bare `"2"` is read as *type* `2`, count 1 → `--gres=gpu:2:1`). |
 > | `cpus-per-task` | `compute_config.num_cpus_per_node`, or `resources.cpus` |
-> | `mem` | `resources.memory` (the `compute_config.total_memory_per_node` floor is intentionally skipped on slurm/lsf, so set an explicit `resources.memory`) |
+> | `mem` | `resources.memory` (the `compute_config.total_memory_per_node` floor is intentionally skipped on slurm, so set an explicit `resources.memory`) |
 > | `partition` | the `infra` string / `zone` (`"slurm/<cluster>/<partition>"`) — see [`cluster` / `zone`](#cluster--zone) |
 > | `nodes` | `compute_config.num_nodes` — plumbed to `sky.Task.num_nodes`, from which the provisioner generates `--nodes` (see [Multi-node jobs and NCCL](#multi-node-jobs-and-nccl)) |
 >
@@ -389,10 +393,7 @@ Notes:
   SLURM rejects a job whose `--time` is above the partition limit, so keep it at
   or below what the partition (or admin) allows.
 - It is a **SLURM-only** knob (maps to SkyPilot's per-task SLURM
-  `sbatch_options`). On lsf/aws/kubernetes it is a no-op (a WARNING is logged if set); for
-  LSF set the runlimit at the environment level via
-  `cloud_config.lsf...bsub_options.W` (minutes) — see
-  [skypilot-lsf.md](skypilot-lsf.md).
+  `sbatch_options`). On aws/kubernetes it is a no-op (a WARNING is logged if set).
 - For a containerized GPU step, gbserver can additionally **generate** a typed
   `gpus-per-node` directive and the `NVIDIA_*` export list Pyxis needs — opt-in
   per environment via `slurm_gpu_sbatch_directives: true` (off by default; the
@@ -487,15 +488,12 @@ Concurrent launches of one image import it once:
 
 - targets of one build that use the same image share a single import job;
 - a second gbserver finds a running import of the same file by its job name and waits on it;
-- the job takes `flock` on `<image>.sqsh.lock` and re-checks under it. That is the lock file
-  [SkyPilot's LSF driver](skypilot-lsf.md) uses for the same files, so LSF and SLURM imports
-  serialize too.
+- the job takes `flock` on `<image>.sqsh.lock` and re-checks under it.
 
 The job imports to a job-unique temporary file and renames it into place only after checking that it has
 `/bin/sh`, so a killed or failed import never leaves a truncated or layered `.sqsh` at the final name.
-Unlike the LSF driver it does not flatten a layered image. The layered files the LSF driver flattens come
-from its own `enroot-mksquashovlfs` wrapper, which the import job does not install, and a plain `enroot
-import` writes a flat root filesystem. If one ever came out layered, the job would refuse it, and that
+It does not flatten a layered image: a plain `enroot import` writes a flat root filesystem. If one
+ever came out layered, the job would refuse it, and that
 image would launch from the registry every time; the import job's log says why.
 
 gbserver checks for and imports the image over SSH using the `~/.slurm/config` alias, with its own
@@ -509,8 +507,7 @@ A malformed block (a bad path, partition or `sbatch_options` key or value, a non
 rejected when the environment loads. Partition names and `sbatch_options` keys and values are
 allowlisted because they become `#SBATCH` lines in the import script.
 
-File names match the LSF driver (`us.icr.io/a/b:tag` → `us.icr.io-a-b-tag.sqsh`). Point `share_path` at
-the LSF environment's `enroot.share_path` and each backend reuses the other's imports.
+File names are derived from the image reference (`quay.io/a/b:tag` → `quay.io-a-b-tag.sqsh`).
 
 The cache never fails a launch. If the import fails, times out or the login node is unreachable, gbserver
 logs a warning and launches from the registry reference as before. An `image_id` that is already a
@@ -525,8 +522,8 @@ A containerized step (`command_config.image` set) runs its `run:` inside an enro
 filesystem is **not** the compute node's. The SkyPilot SLURM backend bind-mounts only three host paths
 into that container — the account home, the ccache dir, and the SkyPilot **`workdir`**
 (SkyPilot's `sky/provision/slurm/instance.py` builds `--container-mounts` as `home:home`, `ccache:ccache`, and `workdir:workdir`, the last only when
-`workdir` is set and differs from home). It does **not** identity-mount `/proj` (that is the LSF
-backend, not this one). So unless `shared_workdir` falls under a mounted path, the per-run
+`workdir` is set and differs from home). It does **not** identity-mount `/proj`. So unless `shared_workdir` falls under a
+mounted path, the per-run
 `$GB_BUILD_WORKDIR` does not exist inside the container: the launcher's `cd "$GB_BUILD_WORKDIR"`
 `mkdir`s it in the container's ephemeral writable overlay, the step writes its output there, the overlay
 is discarded at teardown, and the separate bare `hfpush` step then fails with `out does not exist` (or
@@ -561,9 +558,6 @@ Constraints and notes:
   only required once a step runs in a container.
 - **Side effect:** SkyPilot relocates its cluster home to `<workdir>/.sky_clusters/<cluster>`. This is
   benign and does not collide with gbserver's `<shared_workdir>/builds/...` run tree.
-- This mirrors LSF's `cloud_config.lsf.cluster_configs.<cluster>.workdir`, but LSF does **not** require
-  the ancestor relationship because its backend identity-mounts all of `/proj` (see
-  [skypilot-lsf.md](skypilot-lsf.md#file_mounts-inside-enroot-containers)).
 
 ### `container_mounts` (extra container bind mounts)
 
@@ -586,13 +580,18 @@ config:
               mode: rw
 ```
 
-The `bluevela` environment mounts the whole `/proj` GPFS tree identity — the same mount the LSF
-backend applies unconditionally — so inputs and outputs staged anywhere under `/proj` are visible
+The `bluevela` environment mounts the whole `/proj` GPFS tree identity, so inputs and outputs
+staged anywhere under `/proj` are visible
 in-container regardless of which group tree holds them, and every node of a multi-node job sees an
 identical layout. That supersedes an earlier, narrower `/proj/granite-build`-only mount and matches
 the mount set BlueVela ops validated for multi-node NCCL training (`container_mounts=/proj:/proj`
 in their reference sbatch script). Nested overlap with `workdir` is fine: bind mounts of the same
 underlying filesystem coexist.
+
+### Sizing a step: CPUs, memory, GPUs, nodes
+
+See [Sizing a SkyPilot step](skypilot-sizing.md#slurm): what each `compute_config` and
+`resources` key becomes in `#SBATCH`, common mistakes, and how to check with `sacct`.
 
 ### Multi-node jobs and NCCL
 
@@ -692,4 +691,3 @@ environment_configs:
 
 - [SkyPilot overview](skypilot.md) — compute model, launcher fields, inline-config rules
 - [Local SLURM setup](setup/skypilot-slurm-setup.md) — bring up a Docker SLURM cluster + local S3 store
-- [SkyPilot on LSF](skypilot-lsf.md) — the other SSH-provisioned HPC backend

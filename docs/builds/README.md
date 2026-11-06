@@ -30,7 +30,7 @@ granite.build:                 # alias: llm.build — both keys are accepted
 - **Target** — a named unit of work (a pipeline stage like `download`, `fine-tune`, `evaluate`). Each
   target names an environment, declares inputs and outputs, and runs one or more steps.
 - **Step** — the unit of execution inside a target. A target runs its steps in sequence.
-- **Environment** — the compute backend a target runs on (bash, Docker, Kubernetes, LSF, RunPod,
+- **Environment** — the compute backend a target runs on (bash, Docker, Kubernetes, RunPod,
   SkyPilot).
 - **Artifact** — an input or output of a target, referenced by URI.
 - **Binding** — a reference connecting one target's input to another target's output, forming the
@@ -71,7 +71,7 @@ The same step can run on very different backends depending on the target's envir
 resolves `space://environments/<name>` through the active space (see [spaces](../spaces/README.md)).
 
 See [environments](../environments/README.md) for the compute-endpoint map and the per-type
-`environment.yaml` reference (bash, Docker, Kubernetes, LSF, RunPod, and SkyPilot's clouds).
+`environment.yaml` reference (bash, Docker, Kubernetes, RunPod, and SkyPilot's clouds).
 
 ## Artifacts: inputs and outputs
 

@@ -35,7 +35,7 @@ direct reference from a `build.yaml` have a focused reference page (linked below
 
 | Step | Description | Environments | Reference |
 |------|-------------|--------------|-----------|
-| `gbstep` | Base step runner. Default when `step_uri` is omitted. Supports `setup_command`, `start_command`, and `cleanup_command`. | All (Bash, Docker, K8s, LSF, RunPod, Skypilot, Skypilot-managed) | — |
+| `gbstep` | Base step runner. Default when `step_uri` is omitted. Supports `setup_command`, `start_command`, and `cleanup_command`. | K8s | — |
 | `command` | Run a shell command; its exit status is the step's status. Docker/Skypilot can run it inside a container image via `command_config.image` (BYOI); Bash always runs on the bare node. | Bash, Docker, Skypilot | [`command`](command.md) |
 
 > The data-staging utility steps `hfpull`/`hfpush` (HuggingFace), `s3pull`/`s3push`
@@ -99,7 +99,7 @@ config:
 | `monitors` | How gbserver detects step completion and captures outputs by parsing workload logs. See [Monitoring and artifact events](monitoring-and-artifact-events.md). |
 | `config` | Default configuration (overridable by the build.yaml `step.config`). |
 
-Each launcher type matches an environment backend (bash, docker, k8s, lsf,
+Each launcher type matches an environment backend (bash, docker, k8s,
 skypilot, runpod). A step can support multiple environments by declaring
 multiple launchers.
 
@@ -138,7 +138,7 @@ name the step declares:
 
 - **Launcher config is rendered strictly.** An unbound optional input raises an error, it
   doesn't render as empty, so always guard it. Treat "not bound" as "not provided".
-- **Don't use `$LLMB_*_INPUT_<NAME>`.** Only the bash and LSF launchers export it, so a
+- **Don't use `$LLMB_*_INPUT_<NAME>`.** Only the bash launcher exports it, so a
   step that reads it doesn't work in other environments.
 - **Required inputs are safe to reference directly.** Validation guarantees that the
   target binds them.
@@ -182,18 +182,18 @@ Three approaches for running custom code:
 | Approach | When to use |
 |----------|-------------|
 | [Bring Your Own Step (BYOS)](bring-your-own-step.md) | Your code lives in a Git repo; you provide setup/start commands. |
-| [Custom code steps](custom-code-steps.md) | You want inline commands without a separate step definition. |
+| [Custom code steps](custom-code-steps.md) | Kubernetes: you want inline commands without a separate step definition (on SkyPilot, use [`command`](command.md)). |
 | [Bring Your Own Image (BYOI)](bring-your-own-image.md) | You have a pre-built container image. |
 
 ## Secrets as environment variables
 
 A step declares which space secrets to expose to its workload as environment variables via the
 `secrets.secret_names_to_use_as_env_variable` allow-list under the matching per-environment `config`
-key (`config.k8s`, `config.lsf`, or `config.skypilot`):
+key (`config.k8s` or `config.skypilot`):
 
 ```yaml
 config:
-  <k8s|lsf|skypilot>:
+  <k8s|skypilot>:
     secrets:
       secret_names_to_use_as_env_variable:
         - env_name: HF_TOKEN        # Environment variable exposed to the workload.
@@ -201,7 +201,7 @@ config:
 ```
 
 The block is the **same** across environments and injects **only** the secrets the step declares
-(least-privilege). Delivery differs by backend — LSF/SkyPilot resolve the value into the task env
+(least-privilege). Delivery differs by backend — SkyPilot resolves the value into the task env
 var, while K8s hands the secret *name* to the kubelet via `secretKeyRef`, exposing each secret under
 its verbatim `env_name` (the Secret data-key defaults to the lowercased `env_name`). See
 [Custom code steps → Secrets as environment variables](custom-code-steps.md#secrets-as-environment-variables)
