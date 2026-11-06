@@ -35,8 +35,6 @@ outputs:
 
 environment_configs:
   Skypilot:
-    subtypes:
-      - aws
     default_launcher: bfcl
     launchers:
       bfcl:

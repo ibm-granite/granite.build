@@ -22,8 +22,6 @@ outputs:
 
 environment_configs:
   Skypilot:
-    subtypes:
-      - lsf
     default_launcher: bcb-server
     launchers:
       bcb-server:

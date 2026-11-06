@@ -39,8 +39,6 @@ outputs:
 
 environment_configs:
   Skypilot:
-    subtypes:
-      - lsf
     default_launcher: combined-export
     launchers:
       combined-export:

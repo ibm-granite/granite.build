@@ -631,9 +631,10 @@ class TestEnvFolderOwnership:
             with pytest.raises(ValueError, match="Unresolvable space uri"):
                 _resolve("space://steps/parent_only")
 
-    def test_env_own_step_ignores_its_subtypes(self, tmp_path):
-        """For an env with no sub-type, a copy in its own ``steps/`` (scoped by
-        location) is used even though it lists ``subtypes``."""
+    def test_env_own_step_still_honors_its_subtypes(self, tmp_path):
+        """A copy in the env's own ``steps/`` gets no exemption from its
+        ``subtypes``: an env with no sub-type doesn't match ``subtypes: [aws]``,
+        so the copy isn't used and, with nothing else, the URI is unresolvable."""
         base = tmp_path / "assets"
         env_dir = base / "environments" / "skypilot" / "aws"
         own = _write_step(env_dir / "steps" / "hello", ["Skypilot"])
@@ -641,6 +642,57 @@ class TestEnvFolderOwnership:
         data["environment_configs"]["Skypilot"] = {"subtypes": ["aws"]}
         (own / "step.yaml").write_text(yaml.safe_dump(data))
         _set_bases(base)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            with pytest.raises(ValueError, match="Unresolvable space uri"):
+                _resolve("space://steps/hello")
+
+    def test_family_dir_listed_as_base_keeps_the_family_match(self, tmp_path):
+        """A base at the family dir (``repoA/environments/skypilot``) doesn't
+        strip the env's ``environments/<family>`` prefix, so the family's steps
+        in another repo still serve it."""
+        space_root = tmp_path / "space"
+        space_root.mkdir()
+        family_dir = tmp_path / "repoA" / "environments" / "skypilot"
+        env_dir = family_dir / "slurm"
+        env_dir.mkdir(parents=True)
+        repo_b = tmp_path / "repoB"
+        family = _write_step(
+            repo_b / "environments" / "skypilot" / "steps" / "x", ["Skypilot"]
+        )
+        _set_bases(space_root, family_dir, repo_b)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            assert _resolved_dir(_resolve("space://steps/x")).samefile(family)
+
+    def test_env_dir_listed_as_base_keeps_the_family_match(self, tmp_path):
+        """With the env dir itself listed as a base, the family's steps in
+        another repo still serve it."""
+        space_root = tmp_path / "space"
+        space_root.mkdir()
+        env_dir = tmp_path / "repoA" / "environments" / "skypilot" / "slurm"
+        env_dir.mkdir(parents=True)
+        repo_b = tmp_path / "repoB"
+        family = _write_step(
+            repo_b / "environments" / "skypilot" / "steps" / "x", ["Skypilot"]
+        )
+        _set_bases(space_root, env_dir, repo_b)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            assert _resolved_dir(_resolve("space://steps/x")).samefile(family)
+
+    def test_env_dir_listed_as_base_keeps_its_own_copy_first(self, tmp_path):
+        """An env dir listed as a base under an outer base isn't collapsed to a
+        top-level folder there, so its own copy still beats the family's."""
+        space_root = tmp_path / "space"
+        space_root.mkdir()
+        repo = tmp_path / "repo"
+        env_dir = repo / "environments" / "skypilot" / "aws"
+        own = _write_step(env_dir / "steps" / "hello", ["Skypilot"])
+        _write_step(
+            repo / "environments" / "skypilot" / "steps" / "hello", ["Skypilot"]
+        )
+        _set_bases(space_root, repo, env_dir)
 
         with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
             assert _resolved_dir(_resolve("space://steps/hello")).samefile(own)

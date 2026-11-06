@@ -759,13 +759,15 @@ class SpaceURI(URI):
     def _env_rel_from_boundary(
         env_path: Path, boundary: Optional[Path]
     ) -> Tuple[str, ...]:
-        """Return the env dir's path parts relative to its enclosing base.
+        """Return the env dir's path parts that a ``steps/`` owner is compared with.
 
-        When no base encloses the env (``boundary`` is ``None``, e.g. a
-        ``#subdirectory=`` env in a git repo not listed in base_uris), the
-        path from its last ``environments`` segment is used instead, so a
-        family's ``steps/`` in a listed base still serves it
-        (:meth:`_steps_dir_admits_env`).
+        When the env's path has an ``environments`` segment, its parts from the
+        last one on are used, whatever base encloses it: a base at or below that
+        segment (``<repo>/environments/skypilot``, or the env dir itself) would
+        otherwise strip the ``environments/<family>`` prefix, and a family's
+        ``steps/`` in another base would no longer match it
+        (:meth:`_steps_dir_admits_env`).  Without that segment, the path is
+        relative to the enclosing base (``()`` when no base encloses it).
 
         Args:
             env_path: Absolute, resolved path of the active env's directory.
@@ -773,15 +775,14 @@ class SpaceURI(URI):
                 (:meth:`_enclosing_base_boundary`), or ``None`` when none does.
 
         Returns:
-            The env dir's parts relative to ``boundary``, or from its last
-            ``environments`` segment on when no base encloses it (``()`` when
-            its path has no such segment).
+            The env dir's parts from its last ``environments`` segment on, or,
+            without one, relative to ``boundary`` (``()`` when it is ``None``).
         """
+        if "environments" in env_path.parts:
+            return SpaceURI._from_environments(env_path.parts)
         if boundary is not None:
             return env_path.relative_to(boundary).parts
-        if "environments" not in env_path.parts:
-            return ()
-        return SpaceURI._from_environments(env_path.parts)
+        return ()
 
     @staticmethod
     def _active_env_path() -> Optional[Path]:
@@ -894,13 +895,18 @@ class SpaceURI(URI):
     def _owner_in_bases(
         base_path: Path, owner: Tuple[str, ...], ctx: "_StepLookup"
     ) -> Tuple[str, ...]:
-        """Return ``owner``, or ``()`` when it is another listed base's top level.
+        """Return ``owner``, or ``()`` when it is a nested asset root's top level.
 
         With nested bases (``[<repo>, <repo>/configurations/assets]``) the outer
         base sees the inner base's top-level ``steps/`` with owner
         ``('configurations', 'assets')``.  That folder serves every env when
         searched from the inner base, so it is treated the same from the outer
         one, and the two bases agree about the same file.
+
+        Only an owner with no ``environments`` segment is collapsed.  A listed
+        base at or below one (an env dir, or a family dir, listed as a base)
+        keeps its owner, so its ``steps/`` is still ranked and admitted as that
+        env's or family's own, not as a top-level folder.
 
         Args:
             base_path: The base being searched.
@@ -909,9 +915,10 @@ class SpaceURI(URI):
             ctx: The lookup's bases (:meth:`_step_lookup`).
 
         Returns:
-            ``()`` when ``base_path/owner`` is a listed base, else ``owner``.
+            ``()`` when ``base_path/owner`` is a listed base and ``owner`` has
+            no ``environments`` segment, else ``owner``.
         """
-        if not owner:
+        if not owner or "environments" in owner:
             return owner
         folder = base_path.resolve().joinpath(*owner)
         for _, other in ctx.bases:
@@ -989,6 +996,8 @@ class SpaceURI(URI):
         ``configurations/assets/environments/skypilot/steps/`` serves the env.
         Otherwise (another repo) the path from the env's innermost base is used,
         so a family's steps in one repo serve that family's env from another.
+        An env path with an ``environments`` segment is compared from that
+        segment from every base (``env_rel``), so it is returned unchanged.
 
         Args:
             base_path: The base's local directory.
@@ -1000,7 +1009,8 @@ class SpaceURI(URI):
             encloses it, otherwise ``env_rel`` unchanged (``None`` when no env
             dir is known).
         """
-        if env_path is None:
+        if env_path is None or "environments" in env_path.parts:
+            # Compared from the environments segment, the same from every base.
             return env_rel
         root = base_path.resolve()
         if env_path == root or root in env_path.parents:
@@ -1078,29 +1088,6 @@ class SpaceURI(URI):
         return parts[last:]
 
     @staticmethod
-    def _owned_by_env(
-        base_path: Optional[Path], owner: Tuple[str, ...], ctx: "_StepLookup"
-    ) -> bool:
-        """Return whether a ``steps/`` dir with this ``owner`` is the env's own.
-
-        That is ``<env-dir>/steps/`` itself, in a base that encloses the env
-        dir (including the env dir searched as its own base), not a family's
-        or the base's top-level ``steps/``.
-
-        Args:
-            base_path: The base's local directory, or ``None``.
-            owner: The folder holding the copy's ``steps/`` dir, relative to
-                ``base_path`` (``()`` for the base's top level).
-            ctx: The lookup's env context (:meth:`_step_lookup`).
-
-        Returns:
-            ``True`` when ``base_path/owner`` is the active env's directory.
-        """
-        if base_path is None or ctx.env_path is None:
-            return False
-        return base_path.resolve().joinpath(*owner) == ctx.env_path
-
-    @staticmethod
     def _env_class_matches(
         base_path: Optional[Path], name: str, ctx: "_StepLookup"
     ) -> List:
@@ -1118,12 +1105,6 @@ class SpaceURI(URI):
         env-partition dirs between ``steps/`` and the name — builtin steps live
         at ``steps/<env-class>/<name>/`` and this glob is what resolves them (it
         reads their per-class ``environment_configs``).
-
-        A copy in the active env's own ``<env-dir>/steps/`` is already scoped
-        to that env by its location, so for an env with no sub-type it needs
-        only the class (its ``subtypes`` could never match).  An env that has a
-        sub-type is still excluded by its own copy's ``subtypes`` when they
-        don't list it.
 
         Class-presence is by key, not value: a present-but-null entry
         (``{Skypilot:}``) is still declared for the active class and is kept,
@@ -1154,14 +1135,7 @@ class SpaceURI(URI):
             data = SpaceURI._load_step_yaml(cand)
             if data is None:
                 continue
-            if ctx.env_subtype is None and SpaceURI._owned_by_env(
-                base_path, owner, ctx
-            ):
-                # The env's own steps/ is scoped to it by location, so an env
-                # with no sub-type needs only the class; subtypes can't match.
-                if not SpaceURI._env_class_present(data, ctx.env_class):
-                    continue
-            elif not SpaceURI._env_ok(data, ctx.env_class, ctx.env_subtype):
+            if not SpaceURI._env_ok(data, ctx.env_class, ctx.env_subtype):
                 continue
             env_keys = list((data.get("environment_configs") or {}).keys())
             # Known env: deepest owner first (env's own over family over top).
