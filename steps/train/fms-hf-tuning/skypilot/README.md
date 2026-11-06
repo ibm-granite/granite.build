@@ -125,7 +125,7 @@ in the lock: PyPI has only the sdist, which takes hours to compile. The `abiTRUE
 build matches torch 2.8's `_GLIBCXX_USE_CXX11_ABI` (True). fms-hf-tuning turns
 `use_flash_attn` on by default.
 
-The test build of `fms-v3.2.2-1` is 8.5 GB. `.dockerignore` keeps local
+The test build of `fms-v3.2.2-2` is 8.5 GB. `.dockerignore` keeps local
 `__pycache__` out of `COPY src/` (the first test build shipped it).
 
 **Apple Silicon.** Under podman's qemu x86 emulation, `import datasets` (pyarrow)
@@ -182,9 +182,11 @@ Results for `fms-v3.2.2-1` (manifest
   2.8.3 (CVE-2026-31253).
 - **quay (Clair)**: queued at publish time; record the counts here once it finishes.
 
+`fms-v3.2.2-2` changes only src/ (run.sh: scratch-dir overlap refusal, accelerate exit-code message); same lock and base, so the same package findings apply; rescanned before publishing.
+
 ### Bumping IMAGE_VERSION
 
-`IMAGE_VERSION` is stable (`fms-v3.2.2-1`), not the git SHA: BlueVela caches a
+`IMAGE_VERSION` is stable (`fms-v3.2.2-2`), not the git SHA: BlueVela caches a
 `.sqsh` per tag. Bump the suffix when the Dockerfile, `requirements.lock` or `src/`
 changes; the prefix with the fms-hf-tuning pin (for example `fms-v3.3.0-1`). After
 editing `requirements.in`, run `make lock` and commit both files. On an fms-hf-tuning
@@ -199,7 +201,7 @@ public), then:
 
 ```bash
 make -C steps/train/fms-hf-tuning/skypilot image publish-image
-sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/fms-hf-tuning/skypilot:fms-v3.2.2-1
+sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/fms-hf-tuning/skypilot:fms-v3.2.2-2
 ```
 
 `present` means it pulls anonymously. `make publish-step` refuses until the image

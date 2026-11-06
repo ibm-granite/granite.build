@@ -43,15 +43,15 @@ Inputs are assetstore bindings (portable across endpoints), not `file_mounts`.
 | `dataset` | input | no | dataset | Training data as a staged dataset dir or file (for example an `hf:///datasets/...` URI). It is fms-hf-tuning's `training_data_path`, read with `datasets.load_dataset` (a hub-style dir of jsonl/parquet/arrow files, or one such file). A `save_to_disk` dir does not load. |
 | `model` | output | no | model | The tuned model (`peft_method: none`) or adapter (`lora`, `alora`). Registered under the name in `fms_hf_tuning_config.output` (default `model`). |
 
-**Exactly one data source**, from three:
+**Training data** comes from one of three sources:
 
-- bind a `dataset` input;
-- set `fms_hf_tuning_config.dataset_name`, an HF Hub dataset id;
 - set `fms_hf_tuning_config.data_config`, fms-hf-tuning's
   [data config](https://github.com/foundation-model-stack/fms-hf-tuning/blob/main/docs/advanced-data-preprocessing.md)
-  as a mapping. Its `data_paths` name the data; they may read bound inputs with
-  `{{ bindings.<input>.binding.path }}`. Bind such inputs under any name other
-  than `dataset`, or as `dataset` itself.
+  as a mapping. Its `data_paths` name the data, and may read any bound input with
+  `{{ bindings.<input>.binding.path }}`, including one bound as `dataset`. A bound
+  `dataset` is then not used as a separate source;
+- without `data_config`, exactly one of: bind a `dataset` input, or set
+  `fms_hf_tuning_config.dataset_name`, an HF Hub dataset id.
 
 `data_config` with `dataset_name` is refused; without `data_config`, both or
 neither of `dataset` and `dataset_name` is refused. These fail the build at step

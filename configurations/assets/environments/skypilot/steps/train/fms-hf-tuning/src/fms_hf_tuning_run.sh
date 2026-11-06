@@ -88,6 +88,10 @@ launch=(--config_file "${home}/accelerate/${cfg}" --num_machines 1 --num_process
 if [ "$num_gpus" -gt 1 ]; then launch+=(--main_process_port 0); fi
 
 # --- output locations ------------------------------------------------------------
+# Scratch, job files and caches in the (writable) step workdir: /opt is
+# read-only for Pyxis's job user.
+work="$(pwd)"
+scratch="${work}/fms_hf_tuning_scratch"
 given_output_path="$output_path"
 case $output_path in /*) ;; *) output_path="$(pwd)/${output_path}" ;; esac
 output_path="${output_path%/}"
@@ -120,6 +124,12 @@ for p in "$out_dir" "$stage"; do
     fail "output path ${p} overlaps the base_model ${base_model}; replacing it would delete the input. Point output_path at a different directory."
   fi
 done
+scratch_phys="$(physical "$scratch")"
+for p in "$out_dir" "$stage"; do
+  if overlaps "$(physical "$p")" "$scratch_phys"; then
+    fail "output path ${p} overlaps the step's scratch dir ${scratch}, which is deleted after training. Point output_path at a different directory."
+  fi
+done
 if [ -e "$out_dir" ] && [ ! -d "$out_dir" ]; then
   fail "output path ${out_dir} exists and is not a directory."
 fi
@@ -128,11 +138,6 @@ if [ -d "$out_dir" ] && [ -n "$(ls -A "$out_dir")" ] \
   fail "output path ${out_dir} is non-empty and not a previous model (no config.json or adapter_config.json); point output_path at a new or empty directory."
 fi
 rm -rf "$stage"
-
-# Scratch, job files and caches in the (writable) step workdir: /opt is
-# read-only for Pyxis's job user.
-work="$(pwd)"
-scratch="${work}/fms_hf_tuning_scratch"
 rm -rf "$scratch"
 export HF_DATASETS_CACHE="${work}/hf_cache/datasets"
 export HF_HUB_DISABLE_TELEMETRY=1
@@ -171,18 +176,17 @@ echo "fms-hf-tuning: peft_method ${peft_method} on ${num_gpus} GPU(s), distribut
 rc=0
 SFT_TRAINER_CONFIG_JSON_PATH="$job" TERMINATION_LOG_FILE="$errlog" \
   accelerate launch "${launch[@]}" "${home}/fms_hf_tuning_entry.py" || rc=$?
+# accelerate launch collapses the child's exit code (fms-hf-tuning's 1/203) to
+# 1, so report its own code and the termination log rather than a meaning.
 if [ "$rc" -ne 0 ]; then
-  case $rc in
-    1)   kind="an input error (USER_ERROR_EXIT_CODE 1)" ;;
-    203) kind="an internal error (INTERNAL_ERROR_EXIT_CODE 203)" ;;
-    *)   kind="exit code ${rc}" ;;
-  esac
   if [ -s "$errlog" ]; then
     echo "fms-hf-tuning: fms-hf-tuning's termination log:" >&2
     cat "$errlog" >&2
     echo >&2
+    fail "training failed (accelerate launch exit ${rc}); see fms-hf-tuning's termination log above; nothing registered."
   fi
-  fail "training failed with ${kind}; nothing registered."
+  echo "fms-hf-tuning: no termination log was written by fms-hf-tuning." >&2
+  fail "training failed (accelerate launch exit ${rc}); see the training log above; nothing registered."
 fi
 
 # --- check, swap, register -------------------------------------------------------
