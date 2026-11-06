@@ -15,7 +15,7 @@ DOCKER ?= docker
 # bump the suffix for a new build, the prefix with the CUDA / torch pins, then pin
 # the new digest in the root Dockerfile's CUDA_KERNEL_BASE.
 CUDA_BASE_IMAGE_VERSION ?= cu130-torch2.11-1
-CUDA_BASE_IMAGE_REF ?= quay.io/granitebuild/autotunex-cuda-base:$(CUDA_BASE_IMAGE_VERSION)
+CUDA_BASE_IMAGE_REF ?= quay.io/granitebuild/autotunex/cuda-base:$(CUDA_BASE_IMAGE_VERSION)
 PUBLISH_OVERWRITE ?= false
 TAG_STATUS := ../steps/scripts/registry-tag-status.sh
 

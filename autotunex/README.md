@@ -154,7 +154,7 @@ CUDA stage at another kernel base, e.g. one you built yourself (below).
 > wheel for torch 2.11 + CUDA 13, so they are compiled from source in
 > `docker/cuda-base/Dockerfile`, on NVIDIA's CUDA 13 devel image with torch, at the
 > versions pinned in `src/fm-tune`. That image is published to
-> `quay.io/granitebuild/autotunex-cuda-base` under a tag that never changes, and
+> `quay.io/granitebuild/autotunex/cuda-base` under a tag that never changes, and
 > the CUDA stage above pins it by digest. Rebuild it when torch, CUDA, one of the
 > three kernel pins, or fm-tune's `[tool.uv.extra-build-variables]` (the CUDA arch
 > list) changes: bump `CUDA_BASE_IMAGE_VERSION`, run `make publish-base-image`,

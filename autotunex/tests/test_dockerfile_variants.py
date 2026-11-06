@@ -110,7 +110,7 @@ def test_the_cuda_stage_starts_from_the_digest_pinned_kernel_base() -> None:
 
     assert match is not None
     assert re.fullmatch(
-        r"quay\.io/granitebuild/autotunex-cuda-base:\S+@sha256:[0-9a-f]{64}", match.group(1)
+        r"quay\.io/granitebuild/autotunex/cuda-base:\S+@sha256:[0-9a-f]{64}", match.group(1)
     )
     assert re.search(r"^FROM \$\{CUDA_KERNEL_BASE\} AS cuda$", _dockerfile(), re.MULTILINE)
 

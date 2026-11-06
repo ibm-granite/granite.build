@@ -18,7 +18,7 @@ ARG DEVICE=cpu
 # the tag cannot move under this build. Compiling the kernels takes ~35 minutes;
 # keeping them in that base means an AutoTuneX build does not repeat it.
 # linux/amd64 only, like the base it starts from.
-ARG CUDA_KERNEL_BASE=quay.io/granitebuild/autotunex-cuda-base:cu130-torch2.11-1@sha256:0000000000000000000000000000000000000000000000000000000000000000
+ARG CUDA_KERNEL_BASE=quay.io/granitebuild/autotunex/cuda-base:cu130-torch2.11-1@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 # ---------------------------------------------------------------------------
 # Stage 1 — build the SvelteKit SPA
