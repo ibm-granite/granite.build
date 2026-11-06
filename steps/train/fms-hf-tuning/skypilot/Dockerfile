@@ -65,6 +65,15 @@ RUN uv venv --python 3.12 /opt/fms-hf-tuning/.venv \
  && rm -rf /opt/uv-python/*/lib/python3.12/site-packages/pip /opt/uv-python/*/lib/python3.12/site-packages/pip-*.dist-info /opt/uv-python/*/lib/python3.12/ensurepip \
  && chmod -R a+rX /opt/fms-hf-tuning /opt/uv-python
 
+# Security patch on the locked transformers 4.55.4 (fms-hf-tuning caps it there):
+# backport of the CVE-2026-5241 fix (LightGlue nested trust_remote_code; quay rates
+# it Critical). The patch fails the build if its target lines ever change. See
+# README.md "Scanning".
+COPY patches/lightglue_no_remote_code.py /tmp/lightglue_no_remote_code.py
+RUN /opt/fms-hf-tuning/.venv/bin/python /tmp/lightglue_no_remote_code.py \
+      /opt/fms-hf-tuning/.venv/lib/python3.12/site-packages/transformers/models/lightglue \
+ && rm /tmp/lightglue_no_remote_code.py
+
 # The step's scripts and accelerate configs, called by step.yaml at /opt/fms-hf-tuning/.
 COPY src/ /opt/fms-hf-tuning/
 RUN find /opt/fms-hf-tuning -maxdepth 2 -not -path '/opt/fms-hf-tuning/.venv*' -exec chmod a+rX {} +
