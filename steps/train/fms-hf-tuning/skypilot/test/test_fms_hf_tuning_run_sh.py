@@ -41,7 +41,8 @@ keys = ("SFT_TRAINER_CONFIG_JSON_PATH", "TERMINATION_LOG_FILE", "CLEARML_LOG_MOD
 with open(os.environ["ACC_LOG"], "w") as f:
     json.dump({"argv": argv, "cwd": os.getcwd(), "env": {k: os.environ.get(k) for k in keys}}, f)
 if os.environ.get("FAKE_FAIL"):
-    open(os.environ["TERMINATION_LOG_FILE"], "a").write("Exception raised during training. bad input")
+    if not os.environ.get("FAKE_NO_TERMLOG"):
+        open(os.environ["TERMINATION_LOG_FILE"], "a").write("Exception raised during training. bad input")
     sys.exit(int(os.environ["FAKE_FAIL"]))
 job = json.load(open(os.environ["SFT_TRAINER_CONFIG_JSON_PATH"]))
 out = job["save_model_dir"]
@@ -282,13 +283,14 @@ class TestClearml:
         assert _acc(node)["env"]["CLEARML_LOG_MODEL"] == "false"
 
     def test_names_and_log_model_override(self, node):
-        _run(
+        proc = _run(
             node,
             clearml_mode="on",
             clearml_project="p",
             clearml_task="t",
             env={"CLEARML_LOG_MODEL": "true"},
         )
+        assert proc.returncode == 0, proc.stderr
         j = _job(node)
         assert (j["clearml_project"], j["clearml_task"]) == ("p", "t")
         assert _acc(node)["env"]["CLEARML_LOG_MODEL"] == "true"
@@ -299,9 +301,13 @@ class TestClearml:
             "CLEARML_API_ACCESS_KEY": "a",
             "CLEARML_API_SECRET_KEY": "s",
         }
-        _run(node, clearml_mode="auto", env=creds)
+        proc = _run(node, clearml_mode="auto", env=creds)
+        assert proc.returncode == 0, proc.stderr
         assert _job(node)["trackers"] == ["clearml"]
-        _run(node, clearml_mode="auto", env=dict(creds, CLEARML_API_SECRET_KEY=None))
+        proc = _run(
+            node, clearml_mode="auto", env=dict(creds, CLEARML_API_SECRET_KEY=None)
+        )
+        assert proc.returncode == 0, proc.stderr
         assert "trackers" not in _job(node)
 
 
@@ -384,17 +390,42 @@ class TestOutput:
         proc = _run(node, output_path=str(link))
         assert proc.returncode == 1 and "overlaps the base_model" in proc.stderr
 
+    @pytest.mark.parametrize(
+        "path", ["./fms_hf_tuning_scratch", "./fms_hf_tuning_scratch/sub"]
+    )
+    def test_output_overlapping_scratch_refused(self, node, path):
+        scratch = node[3] / "fms_hf_tuning_scratch"
+        scratch.mkdir()
+        # A previous-model lookalike, so the non-model check doesn't refuse first.
+        (scratch / "config.json").write_text('{"keep": 1}')
+        proc = _run(node, output_path=path)
+        assert proc.returncode == 1
+        assert "overlaps the step's scratch dir" in proc.stderr
+        assert _markers(proc) == []
+        assert not (node[0] / "acc.json").exists()
+        assert (scratch / "config.json").read_text() == '{"keep": 1}'
+        assert (node[4] / "config.json").is_file()
+
 
 class TestFailures:
-    @pytest.mark.parametrize(
-        "code,kind",
-        [("1", "input error"), ("203", "internal error"), ("7", "exit code 7")],
-    )
-    def test_training_failure(self, node, code, kind):
+    @pytest.mark.parametrize("code", ["1", "203", "7"])
+    def test_training_failure(self, node, code):
         proc = _run(node, env={"FAKE_FAIL": code})
         assert proc.returncode == 1
         assert "termination log" in proc.stderr and "bad input" in proc.stderr
-        assert kind in proc.stderr and "nothing registered" in proc.stderr
+        assert f"training failed (accelerate launch exit {code})" in proc.stderr
+        assert "see fms-hf-tuning's termination log above" in proc.stderr
+        assert "input error" not in proc.stderr
+        assert "nothing registered" in proc.stderr
+        assert _markers(proc) == []
+
+    def test_training_failure_without_termination_log(self, node):
+        proc = _run(node, env={"FAKE_FAIL": "1", "FAKE_NO_TERMLOG": "1"})
+        assert proc.returncode == 1
+        assert "no termination log was written" in proc.stderr
+        assert "training failed (accelerate launch exit 1)" in proc.stderr
+        assert "see the training log above" in proc.stderr
+        assert "nothing registered" in proc.stderr
         assert _markers(proc) == []
 
     @pytest.mark.parametrize(

@@ -61,8 +61,10 @@ USAGE.md                    user docs, published as the step's README.md
 5. **Training.** `accelerate launch --config_file <step config> fms_hf_tuning_entry.py`
    with `SFT_TRAINER_CONFIG_JSON_PATH` pointing at the job and
    `TERMINATION_LOG_FILE` at `fms_hf_tuning_error.log`. On failure the run script
-   prints that log and the meaning of upstream's exit code (1 is an input error,
-   203 an internal one).
+   prints that log (or says none was written) and accelerate's exit code.
+   `accelerate launch` turns every child failure into exit 1, so upstream's
+   1 (input error) / 203 (internal error) codes don't reach the script; the
+   termination log is what tells them apart.
 6. **Register.** `fms_hf_tuning_job.py check-output` refuses missing files or 0
    tensors (from the safetensors headers, no torch needed) and rewrites an
    adapter's `base_model_name_or_path`. A malformed index or adapter_config JSON,
