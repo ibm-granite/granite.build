@@ -1,0 +1,217 @@
+name: fms-hf-tuning
+version: 1.0.0
+type: exec
+config:
+  fms_hf_tuning_config:
+    # none (full fine-tune) | lora | alora (activated LoRA). LoRA/aLoRA settings
+    # (r, lora_alpha, target_modules, alora_invocation_string, ...) go in args
+    # under fms-hf-tuning's own names.
+    peft_method: "none"
+    # ddp (one model copy per GPU) | fsdp (fms-hf-tuning's FSDP1 defaults; needs
+    # at least 2 GPUs).
+    distributed: "ddp"
+    # Name of the declared target output (type model) to register: the artifact
+    # marker's ID.
+    output: "model"
+    # Where the model is written and registered from. Empty = ./model_output in
+    # the per-target workdir, which teardown removes: when a downstream target
+    # reads the model, set shared storage here and use the same path in the
+    # output's env:/// uri.
+    output_path: ""
+    # HF Hub dataset id (fms-hf-tuning's training_data_path). Exactly one of
+    # this, a bound `dataset` input, or data_config.
+    dataset_name: ""
+    # fms-hf-tuning's data config (datasets, data_handlers, sampling, splits) as
+    # a mapping; written to a file and passed as data_config_path. Its
+    # data_paths may use {{ bindings.<input>.binding.path }}. {} = unset.
+    data_config: {}
+    # Adapters only: portable base id written into adapter_config.json's
+    # base_model_name_or_path (otherwise it records the node-local staging dir).
+    base_model_id: ""
+    # Any other fms-hf-tuning argument (its JSON config keys), checked against
+    # fms-hf-tuning's own parser before training. Keys the step sets are refused.
+    args: {}
+    # The step's image, filled in by `make space` / `make publish-step`. Override
+    # it with another image or, on SLURM, a .sqsh path; `docker:` is added when
+    # missing.
+    image_id: "docker:${IMAGE_REF}"
+    # ClearML tracking: auto (on iff CLEARML_API_HOST, CLEARML_API_ACCESS_KEY and
+    # CLEARML_API_SECRET_KEY are all set in the step env), true, or false.
+    clearml_enabled: "auto"
+    clearml_project: ""
+    clearml_task_name: ""
+  compute_config:
+    # Single node only (validated). GPUs come from the build's
+    # launcher_config.resources.accelerators; the step reads the count from
+    # $SKYPILOT_NUM_GPUS_PER_NODE.
+    num_nodes: 1
+
+# I/O schema, validated against the build.yaml target at build time.
+# allow_unknown stays true so a recipe can bind extra inputs (e.g. for
+# data_config's data_paths) or order targets.
+inputs:
+  allow_unknown: true
+  required:
+    # The model to tune: an HF model dir, staged on the node.
+    base_model:
+      type: model
+      accept: [uri, binding]
+  optional:
+    # Training data as a staged dataset dir or file (e.g. an hf:/// dataset).
+    # Omit it to train on dataset_name or data_config instead.
+    dataset:
+      type: dataset
+      accept: [uri, binding]
+outputs:
+  allow_unknown: true
+  optional:
+    # The tuned model (peft_method: none) or adapter (lora/alora), registered
+    # under fms_hf_tuning_config.output.
+    model:
+      type: model
+
+environment_configs:
+  Skypilot:
+    default_launcher: fms_hf_tuning
+    launchers:
+      fms_hf_tuning:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # Not shell-escaped: SkyPilot gets it as a python value.
+          image_id: '{{ config.fms_hf_tuning_config.image_id if (config.fms_hf_tuning_config.image_id | string).startswith("docker:") else "docker:" ~ config.fms_hf_tuning_config.image_id }}'
+          # GPUs come from the build's launcher_config.resources.accelerators.
+          resources: {}
+          # The launcher PREPENDS the inline `hf download` of hf:// inputs (aws) to
+          # this block, so config-only checks are the `validate` macro's
+          # raise_error()s, which fail the strict launcher fill at step creation,
+          # before provisioning. The guard script checks only the staged paths.
+          setup: |
+            set -euo pipefail
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            {%- macro validate(c, cc, bound, lc) -%}
+            {%- set owned = ["model_name_or_path", "tokenizer_name_or_path", "output_dir", "save_model_dir", "training_data_path", "validation_data_path", "data_config_path", "peft_method", "quantization_method", "trackers", "report_to", "experiment", "clearml_project", "clearml_task", "run_uri_export_path", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "resume_from_checkpoint", "accelerate_launch_args", "fsdp", "fsdp_config", "deepspeed", "log_level_replica", "do_dataprocessing_only"] -%}
+            {%- set res = lc.get("resources") or {} -%}
+            {%- if c.peft_method not in ["none", "lora", "alora"] %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.peft_method must be none, lora or alora, got '" ~ c.peft_method ~ "'.") }}{% endif -%}
+            {%- if c.distributed not in ["ddp", "fsdp"] %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.distributed must be ddp or fsdp, got '" ~ c.distributed ~ "'.") }}{% endif -%}
+            {%- if (c.clearml_enabled | string | lower) not in ["auto", "true", "false", "on", "off", "1", "0"] %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.clearml_enabled must be auto, true or false, got '" ~ c.clearml_enabled ~ "'.") }}{% endif -%}
+            {%- if c.args is not mapping %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.args must be a mapping of fms-hf-tuning argument to value.") }}{% endif -%}
+            {%- if c.data_config is not mapping %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.data_config must be a mapping (fms-hf-tuning's data config), or {} to leave it unset.") }}{% endif -%}
+            {#- data_config may read any bound input (its data_paths), so a bound
+                `dataset` counts as a source only without data_config. -#}
+            {%- if c.data_config and c.dataset_name %}{{ raise_error("fms-hf-tuning: set fms_hf_tuning_config.data_config or fms_hf_tuning_config.dataset_name, not both; list the dataset in data_config's data_paths instead.") }}{% endif -%}
+            {%- if not c.data_config and bound and c.dataset_name %}{{ raise_error("fms-hf-tuning: both the `dataset` input and fms_hf_tuning_config.dataset_name are set; use one.") }}{% endif -%}
+            {%- if not c.data_config and not bound and not c.dataset_name %}{{ raise_error("fms-hf-tuning: no training data: bind the `dataset` input, or set fms_hf_tuning_config.dataset_name or fms_hf_tuning_config.data_config.") }}{% endif -%}
+            {%- if c.peft_method == "alora" and not c.args.get("alora_invocation_string") %}{{ raise_error("fms-hf-tuning: peft_method: alora needs args.alora_invocation_string, the text after which the adapter activates (e.g. '<|im_start|>assistant' for ChatML).") }}{% endif -%}
+            {%- if c.peft_method != "alora" and c.args.get("alora_invocation_string") is not none %}{{ raise_error("fms-hf-tuning: args.alora_invocation_string is only for peft_method: alora (peft_method is '" ~ c.peft_method ~ "').") }}{% endif -%}
+            {%- if c.peft_method == "none" and c.base_model_id %}{{ raise_error("fms-hf-tuning: base_model_id rewrites an adapter's base_model_name_or_path; it does not apply to peft_method: none.") }}{% endif -%}
+            {%- if not c.output %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.output is required; it names the target's model output.") }}{% endif -%}
+            {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
+            {%- macro one(v) %}{{ "y" if (v == 1 if v is number else (v | string) == "1") else "" }}{% endmacro -%}
+            {%- if not one(cc.num_nodes) %}{{ raise_error("fms-hf-tuning: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
+            {%- if lc.get("num_nodes") is not none and not one(lc.get("num_nodes")) %}{{ raise_error("fms-hf-tuning: launcher_config.num_nodes must be 1 (got '" ~ lc.get("num_nodes") ~ "'); this step is single-node.") }}{% endif -%}
+            {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("fms-hf-tuning: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type).") }}{% endif -%}
+            {%- set acc = res.get("accelerators") -%}
+            {%- if c.distributed == "fsdp" and acc is string and acc -%}
+            {%- set parts = acc.split(":") -%}
+            {%- if ((parts[1] if parts | length > 1 else "1") | trim) == "1" %}{{ raise_error("fms-hf-tuning: distributed: fsdp needs at least 2 GPUs, but launcher_config.resources.accelerators is '" ~ acc ~ "'. Use distributed: ddp, or request more GPUs (e.g. \"H200:2\").") }}{% endif -%}
+            {%- endif -%}
+            {%- for k, v in c.args.items() %}
+            {%- set ks = k | string %}
+            {%- if not ks or "=" in ks or ks.startswith("-") or (ks.split() | join("")) != ks %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.args key '" ~ ks ~ "' must be a bare fms-hf-tuning argument name (no '=', '-' prefix or whitespace).") }}{% endif -%}
+            {%- if (ks | replace("-", "_")) in owned %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.args." ~ ks ~ " is set by the step; use the base_model/dataset inputs, dataset_name, data_config, peft_method, distributed, output_path or clearml_* instead.") }}{% endif -%}
+            {%- if c.peft_method == "alora" and ks in ["packing", "padding_free"] and (v | string | lower) in ["true", "1", "yes"] %}{{ raise_error("fms-hf-tuning: peft_method: alora cannot train with packing or padding_free (args." ~ ks ~ "): the adapter activates from the last invocation in each row, so packed rows would train the wrong spans.") }}{% endif -%}
+            {%- endfor -%}
+            {%- endmacro %}
+            {%- set c = config.fms_hf_tuning_config %}
+            {%- set b = bindings if bindings is defined else {} %}
+            {{- validate(c, config.compute_config, "dataset" in b, config.get("launcher_config") or {}) }}
+            bash /opt/fms-hf-tuning/fms_hf_tuning_guard.sh \
+              --base-model '{{ q(b.base_model.binding.path if "base_model" in b else "") }}' \
+              --dataset '{{ q(b.dataset.binding.path if "dataset" in b else "") }}'
+            bash /opt/fms-hf-tuning/fms_hf_tuning_setup.sh
+          # Each block is filled on its own (no shared Jinja scope across YAML
+          # keys), so the macros repeat; run validates too, since a warm-cluster
+          # re-run renders it without setup.
+          run: |
+            set -euo pipefail
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            {%- macro validate(c, cc, bound, lc) -%}
+            {%- set owned = ["model_name_or_path", "tokenizer_name_or_path", "output_dir", "save_model_dir", "training_data_path", "validation_data_path", "data_config_path", "peft_method", "quantization_method", "trackers", "report_to", "experiment", "clearml_project", "clearml_task", "run_uri_export_path", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "resume_from_checkpoint", "accelerate_launch_args", "fsdp", "fsdp_config", "deepspeed", "log_level_replica", "do_dataprocessing_only"] -%}
+            {%- set res = lc.get("resources") or {} -%}
+            {%- if c.peft_method not in ["none", "lora", "alora"] %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.peft_method must be none, lora or alora, got '" ~ c.peft_method ~ "'.") }}{% endif -%}
+            {%- if c.distributed not in ["ddp", "fsdp"] %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.distributed must be ddp or fsdp, got '" ~ c.distributed ~ "'.") }}{% endif -%}
+            {%- if (c.clearml_enabled | string | lower) not in ["auto", "true", "false", "on", "off", "1", "0"] %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.clearml_enabled must be auto, true or false, got '" ~ c.clearml_enabled ~ "'.") }}{% endif -%}
+            {%- if c.args is not mapping %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.args must be a mapping of fms-hf-tuning argument to value.") }}{% endif -%}
+            {%- if c.data_config is not mapping %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.data_config must be a mapping (fms-hf-tuning's data config), or {} to leave it unset.") }}{% endif -%}
+            {#- data_config may read any bound input (its data_paths), so a bound
+                `dataset` counts as a source only without data_config. -#}
+            {%- if c.data_config and c.dataset_name %}{{ raise_error("fms-hf-tuning: set fms_hf_tuning_config.data_config or fms_hf_tuning_config.dataset_name, not both; list the dataset in data_config's data_paths instead.") }}{% endif -%}
+            {%- if not c.data_config and bound and c.dataset_name %}{{ raise_error("fms-hf-tuning: both the `dataset` input and fms_hf_tuning_config.dataset_name are set; use one.") }}{% endif -%}
+            {%- if not c.data_config and not bound and not c.dataset_name %}{{ raise_error("fms-hf-tuning: no training data: bind the `dataset` input, or set fms_hf_tuning_config.dataset_name or fms_hf_tuning_config.data_config.") }}{% endif -%}
+            {%- if c.peft_method == "alora" and not c.args.get("alora_invocation_string") %}{{ raise_error("fms-hf-tuning: peft_method: alora needs args.alora_invocation_string, the text after which the adapter activates (e.g. '<|im_start|>assistant' for ChatML).") }}{% endif -%}
+            {%- if c.peft_method != "alora" and c.args.get("alora_invocation_string") is not none %}{{ raise_error("fms-hf-tuning: args.alora_invocation_string is only for peft_method: alora (peft_method is '" ~ c.peft_method ~ "').") }}{% endif -%}
+            {%- if c.peft_method == "none" and c.base_model_id %}{{ raise_error("fms-hf-tuning: base_model_id rewrites an adapter's base_model_name_or_path; it does not apply to peft_method: none.") }}{% endif -%}
+            {%- if not c.output %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.output is required; it names the target's model output.") }}{% endif -%}
+            {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
+            {%- macro one(v) %}{{ "y" if (v == 1 if v is number else (v | string) == "1") else "" }}{% endmacro -%}
+            {%- if not one(cc.num_nodes) %}{{ raise_error("fms-hf-tuning: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
+            {%- if lc.get("num_nodes") is not none and not one(lc.get("num_nodes")) %}{{ raise_error("fms-hf-tuning: launcher_config.num_nodes must be 1 (got '" ~ lc.get("num_nodes") ~ "'); this step is single-node.") }}{% endif -%}
+            {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("fms-hf-tuning: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type).") }}{% endif -%}
+            {%- set acc = res.get("accelerators") -%}
+            {%- if c.distributed == "fsdp" and acc is string and acc -%}
+            {%- set parts = acc.split(":") -%}
+            {%- if ((parts[1] if parts | length > 1 else "1") | trim) == "1" %}{{ raise_error("fms-hf-tuning: distributed: fsdp needs at least 2 GPUs, but launcher_config.resources.accelerators is '" ~ acc ~ "'. Use distributed: ddp, or request more GPUs (e.g. \"H200:2\").") }}{% endif -%}
+            {%- endif -%}
+            {%- for k, v in c.args.items() %}
+            {%- set ks = k | string %}
+            {%- if not ks or "=" in ks or ks.startswith("-") or (ks.split() | join("")) != ks %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.args key '" ~ ks ~ "' must be a bare fms-hf-tuning argument name (no '=', '-' prefix or whitespace).") }}{% endif -%}
+            {%- if (ks | replace("-", "_")) in owned %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.args." ~ ks ~ " is set by the step; use the base_model/dataset inputs, dataset_name, data_config, peft_method, distributed, output_path or clearml_* instead.") }}{% endif -%}
+            {%- if c.peft_method == "alora" and ks in ["packing", "padding_free"] and (v | string | lower) in ["true", "1", "yes"] %}{{ raise_error("fms-hf-tuning: peft_method: alora cannot train with packing or padding_free (args." ~ ks ~ "): the adapter activates from the last invocation in each row, so packed rows would train the wrong spans.") }}{% endif -%}
+            {%- endfor -%}
+            {%- endmacro %}
+            {%- set c = config.fms_hf_tuning_config %}
+            {%- set b = bindings if bindings is defined else {} %}
+            {{- validate(c, config.compute_config, "dataset" in b, config.get("launcher_config") or {}) }}
+            {%- set ce = c.clearml_enabled | string | lower %}
+            {%- set clearml_mode = "on" if ce in ["true", "on", "1"] else ("off" if ce in ["false", "off", "0"] else "auto") %}
+            bash /opt/fms-hf-tuning/fms_hf_tuning_guard.sh \
+              --base-model '{{ q(b.base_model.binding.path if "base_model" in b else "") }}' \
+              --dataset '{{ q(b.dataset.binding.path if "dataset" in b else "") }}'
+            bash /opt/fms-hf-tuning/fms_hf_tuning_run.sh \
+              --base-model '{{ q(b.base_model.binding.path if "base_model" in b else "") }}' \
+              --output-id '{{ q(c.output) }}' \
+              --output-path '{{ q(c.output_path if c.output_path else "./model_output") }}' \
+              --peft-method '{{ q(c.peft_method) }}' \
+              --distributed '{{ q(c.distributed) }}' \
+              --data-path '{{ q("" if c.data_config else (b.dataset.binding.path if "dataset" in b else c.dataset_name)) }}' \
+              --data-config-b64 '{{ c.data_config | json_dumps | b64encode }}' \
+              --args-b64 '{{ c.args | json_dumps | b64encode }}' \
+              --base-model-id '{{ q(c.base_model_id) }}' \
+              --clearml-mode '{{ clearml_mode }}' \
+              --clearml-project '{{ q(c.clearml_project) }}' \
+              --clearml-task '{{ q(c.clearml_task_name) }}'
+    monitors:
+      skypilot_monitor:
+        # Artifact + metadata markers come from the shared library. Training logs
+        # are retrieved periodically so the Step: status line shows mid-run.
+        ref: space://monitors/skypilot
+        config:
+          log_retrieval:
+            mode: "{{ config.log_retrieval_mode | default('periodic') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(300) }}"
+          # extra_event_configs, not event_configs: an overlay that sets
+          # event_configs on a ref would drop the library's artifact rules.
+          extra_event_configs:
+            - event_type: WORKLOAD_STATUS_EVENT
+              line_regex: "Step:\\s\\d+.*"
+              event_fields:
+                - field_name: status
+                  field_value_template: "RUNNING"
+                - field_name: message
+                  field_regex: "Step:.+"
