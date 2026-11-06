@@ -140,6 +140,8 @@ class Space:
         """Create the instance."""
         self.uristr = URI.get_uristr(uri)
         self.secrets = {}
+        # Set by the BuildRunner to the space's registered (unique) name.
+        self.registered_name: Optional[str] = None
         uriobj = URI.get_uri(uri=uri, default_scheme="file")
         # A fresh, private checkout dir we own. pull() copies the space into it
         # (FileURI.pull -> sync_or_copy copies a local space folder in; git/hf/etc.

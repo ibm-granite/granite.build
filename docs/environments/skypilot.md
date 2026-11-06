@@ -65,6 +65,7 @@ config:
   cluster_ssh_configs: { ... }      # SSH reachability for slurm/lsf. See skypilot-slurm/-lsf pages.
   cloud_config: { ... }             # Behavioral SkyPilot config, deep-merged into ~/.sky/config.yaml.
   aws_credentials: [ ... ]          # AWS credential profiles. See skypilot-aws page.
+  kube_configs: [ ... ]             # Kubernetes credentials from space secrets. See skypilot-kubernetes page.
 
 assetstores:
   - store_uri: space://assetstores/hf
