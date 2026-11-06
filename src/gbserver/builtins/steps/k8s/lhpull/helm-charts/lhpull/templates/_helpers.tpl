@@ -46,14 +46,22 @@ mkdir -p "${LHPULL_DIR}" || exit 1
 # ------------------------------------------------------------
 
 echo "creating/opening the LOCK_FILE: ${LOCK_FILE}"
-exec 9>"${LOCK_FILE}" || exit 1
+# The cache is shared across pods whose UID can differ, so it must be group-writable.
+# Name the owner and mode on failure: a bare "Permission denied" hides that.
+if ! exec 9>"${LOCK_FILE}"; then
+  echo "ERROR: cannot open ${LOCK_FILE} for writing (running as uid=$(id -u) gid=$(id -g))."
+  stat -c '  %u:%g %A %n' "${LHPULL_DIR}" "${LOCK_FILE}" 2>/dev/null
+  echo "The shared cache directory must be group-writable (chmod -R g+rwX)."
+  exit 1
+fi
 
 echo "[$(date)] Waiting to acquire lhpull lock..."
 flock 9
 echo "[$(date)] Acquired lhpull lock"
 
-# Mark that this pod is actively running lhpull
-echo "RUNNING pid=$$ host=$(hostname) at $(date)" | tee -a "${STATE_FILE}"
+# BASHPID, not $$: Kubernetes collapses $$ to a literal $ in the container command.
+# HOSTNAME, not hostname: ubi10-minimal images do not ship the hostname binary.
+echo "RUNNING pid=${BASHPID} host=${HOSTNAME} at $(date)" | tee -a "${STATE_FILE}"
 
 {{- if eq $config.lh.type "table" }}
 
@@ -88,12 +96,12 @@ MY_RETURN_CODE=1
 {{- end }}
 
 if [[ "${MY_RETURN_CODE}" != '0' ]]; then
-  echo "FAILED pid=$$ host=$(hostname) at $(date)" | tee -a "${STATE_FILE}"
+  echo "FAILED pid=${BASHPID} host=${HOSTNAME} at $(date)" | tee -a "${STATE_FILE}"
   echo "lhpull failed with exit code ${MY_RETURN_CODE} at $(date)"
   exit "${MY_RETURN_CODE}"
 fi
 
-echo "SUCCESS pid=$$ host=$(hostname) at $(date)" | tee -a "${STATE_FILE}"
+echo "SUCCESS pid=${BASHPID} host=${HOSTNAME} at $(date)" | tee -a "${STATE_FILE}"
 echo "lhpull completed successfully at $(date)"
 echo 'Pulled URI: {{ $config.uri }} for binding {{ $config.binding_id }}'
 
