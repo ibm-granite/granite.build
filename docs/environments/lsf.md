@@ -6,7 +6,7 @@ LSF environment should move to **SkyPilot on SLURM**:
 - Set `environment_uri` to a SkyPilot SLURM environment in your space, e.g.
   `space://environments/skypilot/slurm/<cluster>`.
 - Move `config.lsf.*` settings to their SkyPilot equivalents: CPUs, GPUs, memory and nodes as in
-  [Sizing a SkyPilot SLURM step](skypilot-slurm-sizing.md); wall-clock limits and other scheduler
+  [Sizing a SkyPilot step](skypilot-sizing.md#slurm); wall-clock limits and other scheduler
   directives via [`sbatch_options`](skypilot-slurm.md#sbatch_options--slurm-sbatch-directives);
   secrets under `config.skypilot.secrets`.
 
