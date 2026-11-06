@@ -48,6 +48,12 @@ function SkeletonNode({ direction }: { direction: 'left' | 'right' }) {
   )
 }
 
+// Card placement inside the foreignObject, shared by the card and its stack layers.
+const CARD_INSET_X = 2
+const CARD_WIDTH_FRACTION = 0.99
+// How far each stack layer peeks out up and to the right, back layer first.
+const STACK_OFFSETS = [10, 5]
+
 export default function GraphNode({ node, onClick, onMouseHover, selectedNode, showBuildInfo }: NodeItemProps) {
   const { x, y, height, width, type, title } = node
 
@@ -85,78 +91,96 @@ export default function GraphNode({ node, onClick, onMouseHover, selectedNode, s
     node.planned ? styles.nodeWrapperPlanned : '',
   ].filter(Boolean).join(' ')
 
-  // Safari (WebKit) ignores ancestor SVG transforms for foreignObject content
-  // that creates its own stacking context (position, transform, isolation,
-  // z-index, opacity), painting it at the SVG origin. So the stack layers are
-  // plain SVG rects, and the planned-node opacity sits on the foreignObject.
+  // The card's horizontal placement inside the foreignObject. The stack layers
+  // are drawn from the same numbers, so they line up with the card.
+  const cardWidth = (width ?? 0) * CARD_WIDTH_FRACTION
+  const cardRight = CARD_INSET_X + cardWidth
+
+  // Safari (WebKit) paints foreignObject content at the SVG origin, ignoring
+  // ancestor SVG transforms, when the foreignObject's direct child creates a
+  // stacking context (position + z-index, transform, isolation, opacity).
+  // Deeper elements are fine. So the stack layers are plain SVG, and the
+  // planned-node opacity sits on the foreignObject itself.
   return (
     <>
-      {node.stackCount && (
+      {(node.stackCount ?? 0) > 1 && height !== undefined && (
         <g transform={`translate(${x}, ${y})`} aria-hidden>
-          {[10, 5].map((offset) => (
-            <rect
-              key={offset}
-              className={styles.stackLayer}
-              x={2 + offset}
-              y={-offset}
-              width={(width ?? 0) * 0.99}
-              height={height}
-            />
-          ))}
+          {STACK_OFFSETS.map((offset) => {
+            // Only the part of the layer outside the card: an L along its top
+            // and right. Drawing the whole rect would put its left and bottom
+            // edges under the card, visible when the card is translucent.
+            const left = CARD_INSET_X + offset
+            const right = cardRight + offset
+            const top = -offset
+            const bottom = height - offset
+            return (
+              <g key={offset}>
+                <path
+                  className={styles.stackLayerFill}
+                  d={`M${left},${top} H${right} V${bottom} H${cardRight} V0 H${left} Z`}
+                />
+                <path className={styles.stackLayerEdge} d={`M${left},${top} H${right} V${bottom}`} />
+              </g>
+            )
+          })}
         </g>
       )}
-    <foreignObject
-      transform={`translate(${x}, ${y})`}
-      height={height}
-      width={width}
-      className={styles.foreignObjectOverflow}
-      opacity={node.planned ? 0.6 : undefined}
-    >
-      <div
-        className={nodeWrapperClass}
-        style={isSelected || isHighlighted
-          // The root keeps a stronger tint of its type color than a plain selection.
-          ? { '--node-selected-bg': isHighlighted ? bgColor.replace(/[\d.]+\)$/, '0.35)') : bgColor } as React.CSSProperties
-          : undefined}
+      <foreignObject
+        transform={`translate(${x}, ${y})`}
+        height={height}
+        width={width}
+        className={styles.foreignObjectOverflow}
+        opacity={node.planned ? 0.6 : undefined}
       >
-        <CardNode
-          color={color}
-          onClick={() => onClick && onClick(node)}
-          onMouseEnter={() => onMouseHover && onMouseHover(node)}
-          onMouseLeave={() => onMouseHover && onMouseHover(null)}
+        <div
+          className={nodeWrapperClass}
+          style={{
+            marginLeft: CARD_INSET_X,
+            width: `${CARD_WIDTH_FRACTION * 100}%`,
+            // The root keeps a stronger tint of its type color than a plain selection.
+            ...(isSelected || isHighlighted
+              ? { '--node-selected-bg': isHighlighted ? bgColor.replace(/[\d.]+\)$/, '0.35)') : bgColor }
+              : {}),
+          } as React.CSSProperties}
         >
-          {icon && (
-            <CardNodeColumn className={styles.iconColumn}>
-              {icon}
-            </CardNodeColumn>
-          )}
-          <CardNodeColumn className={styles.titleColumn}>
-            <CardNodeTitle
-              style={{
-                fontSize: '14px',
-                fontWeight: 600,
-                lineHeight: '18px',
-                color: node.planned ? 'var(--cds-text-secondary)' : 'var(--cds-text-primary)',
-                fontStyle: node.planned ? 'italic' : undefined,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {title}
-            </CardNodeTitle>
-            {subtitle && (
-              <CardNodeSubtitle
-                style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                title={buildInfo ? node.buildId : undefined}
-              >
-                {buildInfo ? `${subtitle} · ${buildInfo}` : subtitle}
-              </CardNodeSubtitle>
+          <CardNode
+            color={color}
+            onClick={() => onClick && onClick(node)}
+            onMouseEnter={() => onMouseHover && onMouseHover(node)}
+            onMouseLeave={() => onMouseHover && onMouseHover(null)}
+          >
+            {icon && (
+              <CardNodeColumn className={styles.iconColumn}>
+                {icon}
+              </CardNodeColumn>
             )}
-          </CardNodeColumn>
-        </CardNode>
-      </div>
-    </foreignObject>
+            <CardNodeColumn className={styles.titleColumn}>
+              <CardNodeTitle
+                style={{
+                  fontSize: '14px',
+                  fontWeight: 600,
+                  lineHeight: '18px',
+                  color: node.planned ? 'var(--cds-text-secondary)' : 'var(--cds-text-primary)',
+                  fontStyle: node.planned ? 'italic' : undefined,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {title}
+              </CardNodeTitle>
+              {subtitle && (
+                <CardNodeSubtitle
+                  style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  title={buildInfo ? node.buildId : undefined}
+                >
+                  {buildInfo ? `${subtitle} · ${buildInfo}` : subtitle}
+                </CardNodeSubtitle>
+              )}
+            </CardNodeColumn>
+          </CardNode>
+        </div>
+      </foreignObject>
     </>
   )
 }

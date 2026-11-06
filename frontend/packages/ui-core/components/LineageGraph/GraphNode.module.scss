@@ -26,9 +26,8 @@
 }
 
 .nodeWrapper {
-  width: 99%;
+  // width and margin-left are set inline from GraphNode.tsx, shared with the stack layers.
   height: 100%;
-  margin-left: 2px;
   :global(.cds--cc--card-node) {
     background-color: var(--cds-layer-02, #e8e8e8) !important;
   }
@@ -87,8 +86,13 @@
 
 // Two outlined cards offset up and right behind a grouped run node, like a
 // stack. SVG rects, not HTML inside the foreignObject: see GraphNode.tsx.
-.stackLayer {
+.stackLayerFill {
   fill: var(--cds-layer-02, #e8e8e8);
+  pointer-events: none;
+}
+
+.stackLayerEdge {
+  fill: none;
   stroke: var(--cds-border-strong-01, #8d8d8d);
   stroke-width: 1;
   pointer-events: none;
