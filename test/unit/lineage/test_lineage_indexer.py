@@ -24,6 +24,10 @@ from gbserver.lineage import indexer as idx
 from gbserver.storage.stored_lineage_row import JobStore
 from gbserver.storage.stored_target_run import StoredTargetRun
 
+# The registry resolves nothing, so lineage_view keeps every uuid as-is: these
+# tests are about the scan, not mem:// filtering (see test_mem_artifacts).
+_NO_ARTIFACTS = SimpleNamespace(get_by_uuid=lambda uuid: None)
+
 
 @pytest.fixture(autouse=True)
 def _standalone_by_default():
@@ -54,7 +58,7 @@ class _KV:
 
 
 def _storage():
-    return SimpleNamespace(kv_pair_storage=_KV())
+    return SimpleNamespace(kv_pair_storage=_KV(), artifact_registry=_NO_ARTIFACTS)
 
 
 def _artifact(uri, type="dataset"):
@@ -592,7 +596,7 @@ def _listed_keys_read():
 
 # Every target built by _target, by uuid: the scan lists keys, then loads the
 # targets by uuid, which _load_targets_from_registry serves from here.
-_TARGETS = {}
+_TARGETS: dict[str, StoredTargetRun] = {}
 
 
 @pytest.fixture(autouse=True)
@@ -623,9 +627,11 @@ def _target_indexer(targets, indexed=()):
     """Targets are served newest-finished first, as the DB page would."""
     sink = MagicMock()
     # The builder is pure; one event per target is enough to drive the loop.
-    sink.create_jobstats_for_target.side_effect = lambda storage, target, build=None: (
-        [{"job_id": target.uuid}],
-        {},
+    sink.create_jobstats_for_target.side_effect = (
+        lambda storage, target, build=None, view=None: (
+            [{"job_id": target.uuid}],
+            {},
+        )
     )
     # "Already indexed" is a question about the index, which the rows collaborator
     # owns. Under this source gb_targets IS the job store, so there is no job

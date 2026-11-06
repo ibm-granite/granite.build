@@ -19,20 +19,20 @@ run in CI without a cluster, PostgreSQL, or wandb credentials.
 
 They verify the two nested selections — builds from the checkpoint forward
 (``select_builds_from_checkpoint``) and one build's successful targets
-(``select_recordable_targets``) — that ``reconcile_build`` records the unrecorded
+(``select_recordable_views``) — that ``reconcile_build`` records the unrecorded
 ones through the single leaf and reports per-build confirmation, and that a failed
 dedup query fails CLOSED: nothing recorded, the failure surfaced, and the build
 never reported confirmed.
 """
 
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 from unittest.mock import MagicMock
 
 import pytest
 
 from gbserver.lineage.lineage_reconciler import (
     UTC_MIN,
-    as_aware,
     expected_run_count,
     get_most_recent_build,
     is_permanent_sink_failure,
@@ -40,7 +40,7 @@ from gbserver.lineage.lineage_reconciler import (
     record_selected_targets,
     record_target_lineage,
     select_builds_from_checkpoint,
-    select_recordable_targets,
+    select_recordable_views,
 )
 from gbserver.lineage.lineage_seeding import (
     BACKFILL_BUILD_ID,
@@ -65,14 +65,14 @@ def _target(
     build_id: str,
     uuid: str,
     status: Status = Status.SUCCESS,
-    finished_at: datetime = None,
-    input_artifacts: dict[str, str] = None,
-    output_artifacts: dict[str, list[str]] = None,
+    finished_at: Optional[datetime] = None,
+    input_artifacts: Optional[dict[str, str]] = None,
+    output_artifacts: Optional[dict[str, list[str]]] = None,
     retry_of_target_id: str = "",
     name: str = "",
 ) -> StoredTargetRun:
     # Default the target name to the uuid so distinct runs get distinct names;
-    # select_recordable_targets deduplicates SUCCESS runs *per target name*, so a
+    # select_recordable_views deduplicates SUCCESS runs *per target name*, so a
     # shared/empty name would wrongly collapse unrelated runs. Pass name
     # explicitly to model two runs of the *same* target.
     return StoredTargetRun(
@@ -189,9 +189,9 @@ class _StubStore:
 
     def __init__(
         self,
-        already_recorded: set[str] = None,
-        fail: set[str] = None,
-        query_error: Exception = None,
+        already_recorded: Optional[set[str]] = None,
+        fail: Optional[set[str]] = None,
+        query_error: Optional[Exception] = None,
     ):
         self._recorded = set(already_recorded or set())
         self._fail = set(fail or set())
@@ -201,7 +201,9 @@ class _StubStore:
         # tests can assert it derived per-target run counts from the targets.
         self.last_expected_counts: dict[str, int] | None = None
 
-    def add_jobstats_for_build_target(self, storage, build_id, target_id):
+    def add_jobstats_for_build_target(
+        self, storage, build_id, target_id, view=None
+    ):  # pylint: disable=unused-argument
         if target_id in self._fail:
             raise RuntimeError("boom")
         self.recorded_calls.append((build_id, target_id))
@@ -210,7 +212,7 @@ class _StubStore:
     def filter_unrecorded(
         self,
         target_ids: set[str],
-        expected_counts: dict[str, int] = None,
+        expected_counts: Optional[dict[str, int]] = None,
         on_query_error=None,
     ) -> set[str]:
         self.last_expected_counts = expected_counts
@@ -402,7 +404,7 @@ class TestSelectRecordableTargets:
             ]
         )
 
-        found = select_recordable_targets(storage, build_id="b1")
+        found = [t for t, _ in select_recordable_views(storage, build_id="b1")]
 
         assert [t.uuid for t in found] == ["t1"]
 
@@ -415,7 +417,7 @@ class TestSelectRecordableTargets:
             ]
         )
 
-        found = select_recordable_targets(storage, build_id="b1")
+        found = [t for t, _ in select_recordable_views(storage, build_id="b1")]
 
         assert [t.uuid for t in found] == ["t1"]
 
@@ -437,7 +439,7 @@ class TestSelectRecordableTargets:
             ]
         )
 
-        found = select_recordable_targets(storage, build_id="b1")
+        found = [t for t, _ in select_recordable_views(storage, build_id="b1")]
 
         assert [t.uuid for t in found] == ["t1"]
 
@@ -465,7 +467,7 @@ class TestSelectRecordableTargets:
             ]
         )
 
-        found = select_recordable_targets(storage, build_id="b1")
+        found = [t for t, _ in select_recordable_views(storage, build_id="b1")]
 
         assert len(found) == _SCAN_PAGE_SIZE + 1
 
@@ -479,7 +481,7 @@ class TestSelectRecordableTargets:
             ]
         )
 
-        found = select_recordable_targets(storage, build_id="b1")
+        found = [t for t, _ in select_recordable_views(storage, build_id="b1")]
 
         assert [t.uuid for t in found] == ["t1"]
 
@@ -496,7 +498,7 @@ class TestSelectRecordableTargets:
             ]
         )
 
-        found = select_recordable_targets(storage, build_id="b1")
+        found = [t for t, _ in select_recordable_views(storage, build_id="b1")]
 
         assert [t.uuid for t in found] == ["t1"]
 
@@ -508,7 +510,7 @@ class TestSelectRecordableTargets:
             ]
         )
 
-        found = select_recordable_targets(storage, build_id="b1")
+        found = [t for t, _ in select_recordable_views(storage, build_id="b1")]
 
         assert [t.uuid for t in found] == ["t1"]
 
@@ -544,7 +546,7 @@ class TestSelectRecordableTargets:
             ]
         )
 
-        found = select_recordable_targets(storage, build_id="b1")
+        found = [t for t, _ in select_recordable_views(storage, build_id="b1")]
 
         # The superseded run is dropped; the other target is untouched.
         assert sorted(t.uuid for t in found) == ["t-new", "t-other"]
@@ -834,11 +836,11 @@ class TestRecordTargetLineage:
 class TestExpectedRunCount:
     def test_counts_all_output_artifacts_across_lists(self):
         t = _target("b1", "t1", output_artifacts={"a": ["o1"], "b": ["o2", "o3"]})
-        assert expected_run_count(t) == 3
+        assert expected_run_count(MagicMock(), t) == 3
 
     def test_no_outputs_expects_one_run(self):
         t = _target("b1", "t1", input_artifacts={"data": "in-1"})
-        assert expected_run_count(t) == 1
+        assert expected_run_count(MagicMock(), t) == 1
 
     def test_empty_output_lists_with_inputs_expects_one_run(self):
         """An output name holding no artifacts is not an output.
@@ -854,7 +856,7 @@ class TestExpectedRunCount:
             input_artifacts={"data": "in-1"},
             output_artifacts={"model": []},
         )
-        assert expected_run_count(t) == 1
+        assert expected_run_count(MagicMock(), t) == 1
 
 
 class TestRecordSelectedTargets:
