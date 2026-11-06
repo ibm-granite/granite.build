@@ -1,0 +1,26 @@
+# fms-hf-tuning's own FSDP defaults, from foundation-model-stack/fms-hf-tuning
+# v3.2.2 fixtures/accelerate_fsdp_defaults.yaml (Apache-2.0), which upstream's
+# launcher uses for every multi-GPU run. FSDP1 (accelerate 1.15.0 reads it as
+# fsdp_version 1), FULL_SHARD, FULL_STATE_DICT. Upstream's comments are dropped.
+# num_processes is overridden on the accelerate command line.
+# FSDP1 + peft: huggingface/peft#3876 saves an empty adapter under FSDP1 on peft
+# 0.21; this stack has peft 0.19.1. fms_hf_tuning_job.py check-output refuses a
+# 0-tensor adapter either way, and the BlueVela lora-fsdp build test decides.
+compute_environment: LOCAL_MACHINE
+distributed_type: FSDP
+fsdp_config:
+  fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP
+  fsdp_backward_prefetch: BACKWARD_PRE
+  fsdp_backward_prefetch_policy: BACKWARD_PRE
+  fsdp_forward_prefetch: false
+  fsdp_offload_params: false
+  fsdp_sharding_strategy: 1
+  fsdp_state_dict_type: FULL_STATE_DICT
+  fsdp_cpu_ram_efficient_loading: true
+  fsdp_sync_module_states: true
+mixed_precision: 'no'
+machine_rank: 0
+num_machines: 1
+num_processes: 1
+rdzv_backend: static
+same_network: true
