@@ -22,7 +22,36 @@ steps:
 | `base_model` | input | `model` | no | Base for base-relative methods (`ties`, `dare_*`, `task_arithmetic`, `slerp`, ...) |
 | `model` | output | `model` | yes | The merged model directory |
 
+## Configuration (`config.mergekit_config`)
+
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `merge_config` | mapping | `{}` | The MergeKit recipe (required). Set precision here with `dtype` and `out_dtype`. |
+| `args` | mapping | `{}` | Extra `mergekit-yaml` flags without dashes: `true` → `--k`, `false` → `--no-k`, `null` → omitted, other → `--k 'v'`; an empty value is refused. Not allowed, because the step owns them: `transformers-cache`, `lora-merge-cache`, `cuda`, `device`, `gpu-rich`, `allow-crimes`, `trust-remote-code`, `copy-tokenizer`, `lazy-unpickle` (use the named keys) and `safe-serialization` (the step checks the output's `.safetensors` files). `-v` has no long form, so it can't be set. |
+| `copy_tokenizer` | bool | `true` | `--copy-tokenizer` (MergeKit's default). When true, or when the recipe builds a tokenizer, the merged model must have one, or the step fails rather than register it without one. |
+| `lazy_unpickle` | bool | `true` | `--lazy-unpickle`: load pickled `.bin` checkpoints lazily (MergeKit defaults it off). No effect on `.safetensors` inputs, which MergeKit always memory-maps. |
+| `allow_crimes` | bool | `false` | `--allow-crimes`: allow mixing architectures |
+| `trust_remote_code` | bool | `false` | `--trust-remote-code`: run a model repo's own code |
+| `output_path` | string | `""` (`./model`) | Where the merged model is written. Set it to a shared path, matching the output's `env:///` uri, when another target reads the model. |
+| `mergekit_version` | string | `"0.1.5"` | MergeKit release installed with uv |
+| `pip_index_url` | string | `https://pypi.org/simple` | Package index for the install |
+| `mk_image` | string | `""` | A container image that already has `mergekit-yaml` and `python3` with PyYAML; skips the install. Not usable on the local Docker SLURM cluster (no Pyxis). |
+
+`config.compute_config` sizes the node (see [Memory](#memory)). `config.skypilot.secrets`
+passes secrets such as `HF_TOKEN` to the merge as environment variables.
+
 ## Naming models in the recipe
+
+A model is given to the step once, as a target input. The target's `inputs` say *which*
+models the build stages; the recipe says *how* they are merged (which is the base, which
+layers come from which model, the weights), so it names each of them too, by its **input
+name**: `model: model_1`. The step swaps in the input's staged path before MergeKit runs.
+
+Use the input name rather than `{{ bindings.model_1.binding.path }}`. The bindings form
+works for a bound input (it renders to the staged path, which the step counts as naming
+that input), but for one the target doesn't bind it arrives as literal `{{ ... }}` text,
+which the step refuses. With input names, a recipe copied from MergeKit's docs keeps its
+shape, and the step checks every name against the target's bindings (below).
 
 Every model reference in `merge_config` keeps MergeKit's syntax: `<model>`,
 `<model>@<revision>`, `<model>+<lora>`. `<model>` and `<lora>` can each be:
@@ -35,9 +64,19 @@ Every model reference in `merge_config` keeps MergeKit's syntax: `<model>`,
   provisioned. Any other reference (the mapping form, a slice's `base_model`,
   `tokenizer_source`, `tokenizer`, or a `modules` recipe) is refused on the node, before
   MergeKit runs.
+
+  Every bound input must also be named in the recipe, in one of its model references. A
+  bound input the recipe never names, most often a typo such as `model: model1` for
+  `model_1`, is refused, rather than the merge going ahead without it (and the typo going
+  to the Hub as a repo id). Usually that is caught when the step starts; a name that
+  appears in the recipe only outside a model reference (e.g. inside a Hub id, as in
+  `org/model_1-x`) is caught on the node. The reference fields are MergeKit 0.1.5's: with
+  a newer `mergekit_version`, an input named only in a field 0.1.5 doesn't have counts as
+  unused.
 - **A Hugging Face repo id** or a path on the node. Passed through untouched: MergeKit
   downloads it itself, exactly as with `mergekit-yaml` on its own. Such models are not build
-  inputs and are not in lineage. A gated repo needs `HF_TOKEN` (see `skypilot.secrets` below).
+  inputs and are not in lineage. A gated repo needs `HF_TOKEN` (see `skypilot.secrets` in
+  [Configuration](#configuration-configmergekit_config)).
 
 MergeKit's mapping form of a reference (`{model: ..., lora: ..., override_architecture:
 ...}`) is substituted too. Where `model` or `lora` is a string, MergeKit splits it on `@`
@@ -61,8 +100,11 @@ merge_config:
   dtype: bfloat16
 ```
 
-One exception: **an inline Jinja `chat_template`**. gbserver renders every string in a
-step's config as Jinja before the step runs. That drops its `{% ... %}` blocks, so an
+## Inline chat templates
+
+One exception to passing the recipe through unchanged: **an inline Jinja
+`chat_template`**. gbserver renders every string in a step's config as Jinja before the
+step runs. That drops its `{% ... %}` blocks, so an
 unwrapped template arrives empty or as stray fragments such as
 `{{ bos_token }}{{ eos_token }}`. MergeKit would accept some of those and ship a broken
 template. So wrap an inline template in `{% raw %}...{% endraw %}` in the build.yaml.
@@ -78,7 +120,14 @@ Anything else is refused before the merge runs, including a template made only o
 `{{ }}` expressions, which after the fill can't be told apart from a mangled one. The
 error lists the valid names.
 
-Behind these checks, the step also checks the result, because MergeKit doesn't always
+```yaml
+merge_config:
+  chat_template: "{% raw %}{% for message in messages %}{{ message['role'] }}: {{ message['content'] }}\n{% endfor %}{% endraw %}"
+```
+
+## Output checks
+
+The step checks the merged model before registering it, because MergeKit doesn't always
 report a tokenizer problem as a failure:
 - **Copying** a tokenizer (`copy_tokenizer: true`) happens inside a `try` that logs
   "Failed to copy tokenizer. The merge was still successful" on any error: a template
@@ -92,35 +141,13 @@ report a tokenizer problem as a failure:
 So the step fails, and registers nothing, when:
 - MergeKit logs "Failed to copy tokenizer", whichever files had been copied by then;
 - a tokenizer was copied or built, but the output has no `tokenizer_config.json` plus a
-  `tokenizer.json` or `tokenizer.model`;
+  vocabulary file (`tokenizer.json`, or a slow tokenizer's own file such as
+  `tokenizer.model`, `vocab.json` or `vocab.txt`);
 - `chat_template` is set, on any tokenizer path, but the output has no chat template.
 
 It also refuses `chat_template` with `copy_tokenizer: false` up front, unless the recipe
 sets `tokenizer_source` or a `tokenizer` block. Without either, MergeKit has no tokenizer
 to put the template in: it only warns and drops it.
-
-```yaml
-merge_config:
-  chat_template: "{% raw %}{% for message in messages %}{{ message['role'] }}: {{ message['content'] }}\n{% endfor %}{% endraw %}"
-```
-
-## Configuration (`config.mergekit_config`)
-
-| Key | Type | Default | Purpose |
-|---|---|---|---|
-| `merge_config` | mapping | `{}` | The MergeKit recipe (required). Set precision here with `dtype` and `out_dtype`. |
-| `args` | mapping | `{}` | Extra `mergekit-yaml` flags without dashes: `true` → `--k`, `false` → `--no-k`, `null` → omitted, other → `--k 'v'`; an empty value is refused. Not allowed, because the step owns them: `transformers-cache`, `lora-merge-cache`, `cuda`, `device`, `gpu-rich`, `allow-crimes`, `trust-remote-code`, `copy-tokenizer`, `lazy-unpickle` (use the named keys) and `safe-serialization` (the step checks the output's `.safetensors` files). `-v` has no long form, so it can't be set. |
-| `copy_tokenizer` | bool | `true` | `--copy-tokenizer` (MergeKit's default). When true, or when the recipe builds a tokenizer, the merged model must have one, or the step fails rather than register it without one. |
-| `lazy_unpickle` | bool | `true` | `--lazy-unpickle`: load pickled `.bin` checkpoints lazily (MergeKit defaults it off). No effect on `.safetensors` inputs, which MergeKit always memory-maps. |
-| `allow_crimes` | bool | `false` | `--allow-crimes`: allow mixing architectures |
-| `trust_remote_code` | bool | `false` | `--trust-remote-code`: run a model repo's own code |
-| `output_path` | string | `""` (`./model`) | Where the merged model is written. Set it to a shared path, matching the output's `env:///` uri, when another target reads the model. |
-| `mergekit_version` | string | `"0.1.5"` | MergeKit release installed with uv |
-| `pip_index_url` | string | `https://pypi.org/simple` | Package index for the install |
-| `mk_image` | string | `""` | A container image that already has `mergekit-yaml` and `python3` with PyYAML; skips the install. Not usable on the local Docker SLURM cluster (no Pyxis). |
-
-`config.compute_config` sizes the node (see [Memory](#memory)). `config.skypilot.secrets`
-passes secrets such as `HF_TOKEN` to the merge as environment variables.
 
 ## Worked example
 
@@ -176,16 +203,26 @@ Two measurements with mergekit 0.1.5 on a CPU: a peak of 1.25 GB for the example
 
 ## Limits
 
-- **Hugging Face ids in the recipe are not cached between builds.** MergeKit downloads
-  them into the run's workdir, which is removed at teardown, so every build downloads
-  them again. For a large model, bind it as an input instead (`hf:///...`): the input
-  is staged once by the environment's hfpull, and is tracked in lineage too.
+- **Hugging Face ids in the recipe are cached on the environment's shared root**
+  (`$GB_SHARED_WORKDIR/.mergekit-hf-cache`, as for the uv cache), so a cluster with a
+  shared workdir (local SLURM and kind) downloads each once. Where there is no shared
+  workdir (aws), the cache is the run's own workdir and every build downloads them again.
+  Either way they are not build inputs and not in lineage; to track a model, bind it as
+  an input (`hf:///...`). The shared cache is never pruned, and is created with the
+  first user's umask: on a workdir several users share (e.g. a team project directory),
+  make it group-writable, or a second user's download fails with a permission error.
 - **The model card doesn't list staged inputs as base models.** MergeKit writes a
   `README.md` model card into the output, and lists Hugging Face ids in its `base_model:`
   front matter. A model bound as a step input reaches MergeKit as a node path, so it isn't
   listed, and the `mergekit_config.yml` that MergeKit writes beside it records the node
-  path. The build's own lineage still records every input. If the merged model is pushed to the Hub, edit the
-  card's `base_model:` first.
+  path. The build's own lineage still records every input. If the merged model is pushed
+  to the Hub, edit the card's `base_model:` first.
+- **A retry re-registers, not re-merges.** If an attempt finished the merge and moved it
+  into place but the job was then lost, gbserver's step retry (which relaunches the same
+  step run) registers that output: a `.<output name>.mergekit-done` record beside it names
+  the step run. Any other run still refuses an existing output, including a retry of the
+  whole build, which creates new step runs: give it a new `output_path`, or remove the
+  old output first.
 - **A killed job leaves its staging dir.** The merge is written to a
   `.mergekit-stage.*` directory beside `output_path` and moved into place only on
   success. A normal failure removes it, but a job killed outright (SIGKILL, a preempted

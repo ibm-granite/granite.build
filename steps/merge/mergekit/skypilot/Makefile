@@ -41,9 +41,11 @@ MERGEKIT_TEST_VENV ?= $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/granite-build/merge
 test-mergekit:
 	@command -v uv >/dev/null || { echo "[$(STEP_NAME)] test-mergekit needs uv (https://docs.astral.sh/uv/)"; exit 1; }
 	@[ -x "$(MERGEKIT_TEST_VENV)/bin/mergekit-yaml" ] || { \
-		uv venv -q --clear --python 3.12 "$(MERGEKIT_TEST_VENV)" && \
+		rm -rf "$(MERGEKIT_TEST_VENV)" && uv venv -q --python 3.12 "$(MERGEKIT_TEST_VENV)" && \
 		uv pip install -q --python "$(MERGEKIT_TEST_VENV)/bin/python" \
 			"mergekit==$(MERGEKIT_TEST_VERSION)" pytest pyyaml; }
 	PATH="$(MERGEKIT_TEST_VENV)/bin:$$PATH" PYTHONPATH=$(SRC_DIR) \
 		"$(MERGEKIT_TEST_VENV)/bin/python" -m pytest --noconftest -p no:cacheprovider $(PYTEST_ARGS) \
-		$(TEST_DIR)/test_mergekit_prepare.py $(TEST_DIR)/test_mergekit_run_sh.py $(TEST_DIR)/test_mergekit_setup_sh.py
+		$(TEST_DIR)/test_mergekit_prepare.py $(TEST_DIR)/test_mergekit_prepare_checks.py \
+		$(TEST_DIR)/test_mergekit_run_sh.py $(TEST_DIR)/test_mergekit_run_sh_retry.py \
+		$(TEST_DIR)/test_mergekit_setup_sh.py

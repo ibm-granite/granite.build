@@ -36,8 +36,8 @@ config:
     # in order: true -> --<key>, false -> --no-<key> (MergeKit's on/off flags),
     # null -> omitted, any other value -> --<key> '<value>'; an empty value is refused.
     # E.g.  args: {out-shard-size: 1B, random-seed: 42, write-model-card: false}
-    # Refused here, because the step owns them: transformers-cache and
-    # lora-merge-cache (always under the run's workdir); cuda, device and gpu-rich (set
+    # Refused here, because the step owns them: transformers-cache (a Hub cache on the
+    # environment's shared root) and lora-merge-cache (under the run's workdir); cuda, device and gpu-rich (set
     # from the GPUs allocated); allow-crimes, trust-remote-code, copy-tokenizer and
     # lazy-unpickle (the named keys below); safe-serialization (the step checks the
     # output's .safetensors files). `-v` (verbosity) has no long form, so it can't be
@@ -167,6 +167,8 @@ environment_configs:
             {%- if mc is not mapping or not mc %}{{ raise_error("mergekit: mergekit_config.merge_config is required: the MergeKit recipe (merge_method, models or slices, ...).") }}{% endif -%}
             {%- if mc.merge_method is not defined or mc.merge_method is not string or not mc.merge_method %}{{ raise_error("mergekit: merge_config.merge_method is required, as a non-empty string.") }}{% endif -%}
             {%- if pinned and mc.merge_method not in methods %}{{ raise_error("mergekit: merge_config.merge_method must be one of " ~ (methods | join(", ")) ~ "; got '" ~ mc.merge_method ~ "'.") }}{% endif -%}
+            {%- for k in ["models", "slices"] if mc[k] is defined and mc[k] and (mc[k] is mapping or mc[k] is string or mc[k] is not iterable) %}{{ raise_error("mergekit: merge_config." ~ k ~ " must be a list.") }}{% endfor -%}
+            {%- if mc.modules is defined and mc.modules and mc.modules is not mapping %}{{ raise_error("mergekit: merge_config.modules must be a mapping of module name to module.") }}{% endif -%}
             {%- if ([mc.models is defined and mc.models, mc.slices is defined and mc.slices, mc.modules is defined and mc.modules] | select | list | length) != 1 %}{{ raise_error("mergekit: merge_config must have exactly one of models, slices or modules (MergeKit's own rule).") }}{% endif -%}
             {%- if c.args is not mapping %}{{ raise_error("mergekit: mergekit_config.args must be a mapping of mergekit-yaml flags, e.g. {out-shard-size: 1B}.") }}{% endif -%}
             {%- for k in c.args if (k | string) in owned %}{{ raise_error("mergekit: mergekit_config.args." ~ k ~ " is set by the step; use the named mergekit_config key where there is one (allow_crimes, trust_remote_code, copy_tokenizer, lazy_unpickle).") }}{% endfor -%}
@@ -207,12 +209,30 @@ environment_configs:
             {%- for sl in (mc.slices if mc.slices is defined and mc.slices is iterable and mc.slices is not string else []) if sl is mapping %}
             {%- for src in (sl.sources if sl.sources is defined and sl.sources is iterable and sl.sources is not string else []) if src is mapping and src.model is defined and src.model is string %}{% set _ = refs.append(src.model) %}{% endfor %}
             {%- endfor %}
+            {%- for ref in refs if "{{" in ref %}{{ raise_error("mergekit: merge_config has a model reference gbserver could not fill: '" ~ ref ~ "'. A {{ bindings.<name>.binding.path }} reference arrives like this when that input is not bound. Bind the input, or name it by its input name (e.g. model: model_1), which the step checks.") }}{% endfor %}
             {%- for ref in refs %}
             {%- for part in ref.split("+") %}
             {%- set name = part.split("@")[0] %}
             {%- if name in input_names and bindings[name] is not defined %}{{ raise_error("mergekit: merge_config names input " ~ name ~ ", but it is not bound. Bind it under the target's inputs, or name the model by its Hugging Face id or path instead.") }}{% endif %}
             {%- endfor %}
             {%- endfor %}
+            {#- A bound input the recipe never names is most often a typo (model1 for
+                model_1), which MergeKit would fetch as a Hub id. Refused here only when no
+                string VALUE anywhere in the recipe names it (keys such as base_model: don't
+                count): as a reference's <model> or <lora> part, or as its staged path (what
+                the bindings form renders to). Every reference field is such a value, so this
+                never refuses what mergekit_prepare.py accepts; prepare checks the reference
+                fields themselves on the node. #}
+            {%- macro _values(v, out) -%}
+            {%- if v is string %}{% set _ = out.append(v) %}
+            {%- elif v is mapping %}{% for k in v %}{{ _values(v[k], out) }}{% endfor %}
+            {%- elif v is iterable %}{% for x in v %}{{ _values(x, out) }}{% endfor %}
+            {%- endif -%}
+            {%- endmacro %}
+            {%- set values = [] %}{{ _values(mc, values) }}
+            {%- set used = [] %}
+            {%- for v in values %}{% for part in v.split("+") %}{% set _ = used.append(part.split("@")[0]) %}{% endfor %}{% endfor %}
+            {%- for name in input_names if bindings[name] is defined and name not in used and bindings[name].binding.path not in used %}{{ raise_error("mergekit: input " ~ name ~ " is bound, but merge_config never names it. Name each bound input in the recipe (e.g. model: " ~ name ~ "), or remove it from the target's inputs.") }}{% endfor %}
             {#- Single node: with more, SkyPilot runs run: on every node and the runs race
                 on the output. Both sources gbserver reads num_nodes from. #}
             {%- set compute = config.compute_config if (config.compute_config is defined and config.compute_config is mapping) else {} %}
@@ -239,7 +259,8 @@ environment_configs:
               --lazy-unpickle '{{ q(c.lazy_unpickle | string | lower) }}' \
               --allow-crimes '{{ q(c.allow_crimes | string | lower) }}' \
               --trust-remote-code '{{ q(c.trust_remote_code | string | lower) }}' \
-              --output-model '{{ q(c.output_path or "./model") }}'
+              --output-model '{{ q(c.output_path or "./model") }}' \
+              --run-id '{{ q(run_metadata.targetsteprun_id if run_metadata is defined else "") }}'
     monitors:
       skypilot_monitor:
         ref: space://monitors/skypilot

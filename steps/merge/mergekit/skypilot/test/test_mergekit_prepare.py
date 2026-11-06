@@ -19,12 +19,14 @@ mergekit and are skipped when it isn't installed; the rest need only PyYAML.
 """
 
 import copy
-import json
 import pathlib
 
 import mergekit_prepare as mp
 import pytest
 import yaml
+from mergekit_test_helpers import (  # pylint: disable=unused-import
+    _main,
+)
 
 BOUND = {"model_1": "/staged/m1", "base_model": "/staged/base"}
 
@@ -345,33 +347,6 @@ def test_args_flag_names_are_real_mergekit_options():
 # --- main ----------------------------------------------------------------------------
 
 
-def _main(tmp_path, merge_config, args=None, **flags):
-    recipe = tmp_path / "merge.yaml"
-    argv = [
-        "--merge-config-json",
-        json.dumps(merge_config),
-        "--args-json",
-        json.dumps(args or {}),
-        "--recipe-out",
-        str(recipe),
-        "--expect-out",
-        str(tmp_path / "expect"),
-        "--input-model_1",
-        "/staged/m1",
-        "--input-base_model",
-        "/staged/base",
-    ]
-    defaults = {
-        "copy-tokenizer": "true",
-        "lazy-unpickle": "true",
-        "allow-crimes": "false",
-        "trust-remote-code": "false",
-    }
-    for k, v in {**defaults, **flags}.items():
-        argv += [f"--{k}", v]
-    return mp.main(argv), recipe
-
-
 def test_main_writes_recipe_and_prints_flags(tmp_path, capsys):
     rc, recipe = _main(
         tmp_path,
@@ -544,7 +519,7 @@ def test_chat_template_names_fallback_says_so(monkeypatch, capsys):
 
     monkeypatch.setattr(builtins, "__import__", no_mergekit)
     assert mp.chat_template_names() == ["auto", *mp.FALLBACK_TEMPLATE_NAMES]
-    assert "not importable" in capsys.readouterr().err
+    assert "can't be read here (ImportError" in capsys.readouterr().err
 
 
 def test_chat_template_name_passes_through(tmp_path):

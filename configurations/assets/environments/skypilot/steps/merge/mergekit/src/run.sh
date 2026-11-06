@@ -17,10 +17,13 @@
 #          --merge-config-json <json> --args-json <json> \
 #          --copy-tokenizer true|false --lazy-unpickle true|false \
 #          --allow-crimes true|false --trust-remote-code true|false \
-#          --output-model <path>
+#          --output-model <path> [--run-id <id>]
 #
 #   --venv       ./venv from setup.sh, or "" when mk_image provides mergekit-yaml.
 #   --input-*    staged path of a bound input, "" when that input is not bound.
+#   --run-id     the target step run's id, the same on every retry of it (optional):
+#                lets a retry register an output an earlier attempt of the same run
+#                already moved into place, instead of refusing it as existing.
 #   Every other option is required; the step-template passes all of them.
 set -euo pipefail
 
@@ -41,6 +44,7 @@ lazy_unpickle=""
 allow_crimes=""
 trust_remote_code=""
 output=""
+run_id=""
 inputs=()   # pairs: name path
 
 while [ "$#" -gt 0 ]; do
@@ -54,6 +58,7 @@ while [ "$#" -gt 0 ]; do
     --allow-crimes)       allow_crimes="$2";       shift 2 ;;
     --trust-remote-code)  trust_remote_code="$2";  shift 2 ;;
     --output-model)       output="$2";             shift 2 ;;
+    --run-id)             run_id="$2";             shift 2 ;;
     *) fail "unknown argument '$1'." ;;
   esac
 done
@@ -126,6 +131,18 @@ done
 # staged model INTO the link's target while the marker named the link itself.
 [ ! -L "$output" ] || fail "output path is a symlink: '$output'." \
   "set output_path to a real directory, or to a path that does not exist yet."
+# A retry of a run whose earlier attempt finished the merge and moved it into place (the
+# job was then lost, e.g. its node went away before the markers were read): register
+# that output again rather than refuse it. The record is written beside the output, not
+# in it (a push of the model dir must not carry it), before the output is moved into
+# place, and names this run; any other run still gets the "already exists" refusal.
+done_record="$(dirname "$output")/.$(basename "$output").mergekit-done"
+if [ -n "$run_id" ] && [ -f "$output/config.json" ] && [ -f "$done_record" ] \
+   && [ "$(head -n 1 "$done_record")" = "run $run_id" ]; then
+  echo "mergekit: '$output' was written by an earlier attempt of this run; registering it."
+  tail -n +2 "$done_record"
+  exit 0
+fi
 if [ -e "$output" ]; then
   if [ ! -d "$output" ] || [ -n "$(ls -A "$output" 2>/dev/null || echo x)" ]; then
     fail "output path already exists and is not an empty directory: '$output'." \
@@ -136,7 +153,15 @@ mkdir -p "$(dirname "$output")"
 
 # --- recipe and flags -----------------------------------------------------------------
 work="$PWD/.mergekit"
-mkdir -p "$work/hf-cache" "$work/lora-cache"
+# Hub downloads (models a recipe names by Hub id) are cached on the environment's
+# shared root, as setup.sh's uv cache is, so they download once per cluster.
+# huggingface_hub locks its own files, though not reliably on every network filesystem;
+# and the dir is created at this user's umask, so on a workdir shared between users it
+# may need to be made group-writable. The LoRA merge cache stays per run: MergeKit reuses
+# any dir already at a merged adapter's path, so a shared one could hand one run
+# another's partial merge.
+hf_cache="${GB_SHARED_WORKDIR:-$PWD}/.mergekit-hf-cache"
+mkdir -p "$work" "$hf_cache" "$work/lora-cache"
 recipe="$work/merge.yaml"
 expect_file="$work/expect"
 flags_text="$("$py" "$here/mergekit_prepare.py" \
@@ -192,7 +217,7 @@ rm -rf "$mk_log"
 exec 3>&1
 set +e
 mergekit-yaml "$recipe" "$stage" \
-  --transformers-cache "$work/hf-cache" \
+  --transformers-cache "$hf_cache" \
   --lora-merge-cache "$work/lora-cache" \
   "${device[@]+"${device[@]}"}" \
   "${flags[@]+"${flags[@]}"}" \
@@ -239,9 +264,15 @@ case $grep_rc in
   1) ;;
   *) fail "could not read MergeKit's log '$mk_log' (grep exit $grep_rc), so the output can't be checked." ;;
 esac
+# A tokenizer is tokenizer_config.json plus its vocabulary: tokenizer.json (fast), or a
+# slow tokenizer's own file, which is all MergeKit's reserialize path (save_pretrained)
+# writes for one with no fast version.
+has_vocab=""
+for f in tokenizer.json tokenizer.model spiece.model sentencepiece.bpe.model vocab.json vocab.txt tokenizer.tiktoken; do
+  [ -f "$stage/$f" ] && { has_vocab=x; break; }
+done
 if [ -n "$want_tokenizer" ]; then
-  if [ ! -f "$stage/tokenizer_config.json" ] \
-     || { [ ! -f "$stage/tokenizer.json" ] && [ ! -f "$stage/tokenizer.model" ]; }; then
+  if [ ! -f "$stage/tokenizer_config.json" ] || [ -z "$has_vocab" ]; then
     fail "the merge wrote no tokenizer, though one was expected (copy_tokenizer, or a tokenizer_source / tokenizer block)." \
          "MergeKit logs the cause above; a common one is a chat_template it rejects." \
          "Set copy_tokenizer: false (and no tokenizer_source / tokenizer) to register the model without a tokenizer."
@@ -255,20 +286,29 @@ fi
 
 # An empty output dir (checked above) is removed so the mv renames onto it; if it is
 # still there (it gained files since, or rmdir failed), mv would nest the stage inside.
+method="$("$py" -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["merge_method"])' "$recipe")"
+version="$("$py" -c 'from importlib.metadata import version; print(version("mergekit"))' 2>/dev/null || echo unknown)"
+markers="GB_STEP_METADATA_KEY:merge_method GB_STEP_METADATA_VALUE:$method
+GB_STEP_METADATA_KEY:mergekit_version GB_STEP_METADATA_VALUE:$version
+GB_STEP_METADATA_KEY:tensor_count GB_STEP_METADATA_VALUE:$tensor_count
+GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:$output"
 if [ -d "$output" ]; then rmdir "$output" 2>/dev/null || fail "could not replace the empty output dir: '$output'."; fi
+# The record for a retry (above), just before the move: if the job dies between the two,
+# the retry finds no output and merges again.
+if [ -n "$run_id" ]; then
+  printf 'run %s\n%s\n' "$run_id" "$markers" > "$done_record" \
+    || fail "could not write '$done_record'."
+fi
 mv "$stage" "$output"
 if [ ! -f "$output/config.json" ]; then
   # mv nested the stage inside $output (it reappeared after the rmdir): remove the nested
-  # copy, which the EXIT trap (the stage wrapper) no longer covers.
+  # copy, which the EXIT trap (the stage wrapper) no longer covers, and the record, which
+  # would otherwise let a retry register whatever is at $output.
   rm -rf "${output:?}/$(basename "$stage")"
+  rm -f "$done_record"
   fail "the merged model did not land at '$output'."
 fi
 rm -rf "$stage_root"
 trap - EXIT
 
-method="$("$py" -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["merge_method"])' "$recipe")"
-version="$("$py" -c 'from importlib.metadata import version; print(version("mergekit"))' 2>/dev/null || echo unknown)"
-echo "GB_STEP_METADATA_KEY:merge_method GB_STEP_METADATA_VALUE:$method"
-echo "GB_STEP_METADATA_KEY:mergekit_version GB_STEP_METADATA_VALUE:$version"
-echo "GB_STEP_METADATA_KEY:tensor_count GB_STEP_METADATA_VALUE:$tensor_count"
-echo "GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:$output"
+echo "$markers"

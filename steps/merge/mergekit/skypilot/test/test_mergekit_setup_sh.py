@@ -32,23 +32,25 @@ pytestmark = pytest.mark.skipif(
     shutil.which("bash") is None, reason="bash not available"
 )
 
-# pip (for the uv bootstrap) and uv: record argv, and for `uv venv` refuse an existing
-# dir unless --clear is given, and a non-venv dir (no pyvenv.cfg) unless --force too, as
-# uv 0.13 does; create pyvenv.cfg and bin/activate so setup.sh can source it.
+# pip (for the uv bootstrap) and uv: record argv. The stub `uv venv` behaves like an
+# older uv that a node may already have (`pip install uv` doesn't upgrade it): it rejects
+# --clear and --force (added in uv 0.8 and 0.12) and refuses a path that exists. It
+# creates pyvenv.cfg and bin/activate so setup.sh can source it.
 _UV = """#!/usr/bin/env bash
 echo "uv $*" >> "$STUB_LOG"
 if [ "$1" = venv ]; then
-  shift; clear=""; force=""; dir=""
+  shift; dir=""
   while [ $# -gt 0 ]; do
-    case $1 in --clear) clear=1 ;; --force) force=1 ;; --python) shift ;; *) dir=$1 ;; esac; shift
+    case $1 in
+      --clear|--force) echo "error: unexpected argument '$1' found" >&2; exit 2 ;;
+      --python) shift ;;
+      *) dir=$1 ;;
+    esac; shift
   done
-  if [ -e "$dir" ] && [ -z "$clear" ]; then
+  if [ -e "$dir" ]; then
     echo "error: A virtual environment already exists at: $dir" >&2; exit 2
   fi
-  if [ -e "$dir" ] && [ ! -f "$dir/pyvenv.cfg" ] && [ -z "$force" ]; then
-    echo "error: uv will not clear a directory that is not a virtual environment" >&2; exit 2
-  fi
-  rm -rf "$dir"; mkdir -p "$dir/bin"; : > "$dir/bin/activate"; : > "$dir/pyvenv.cfg"
+  mkdir -p "$dir/bin"; : > "$dir/bin/activate"; : > "$dir/pyvenv.cfg"
 fi
 exit 0
 """

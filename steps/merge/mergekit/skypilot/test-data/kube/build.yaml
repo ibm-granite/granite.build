@@ -7,10 +7,13 @@ granite.build:
   # Max with mergekit 0.1.5: 2-4 s, 1.25 GB peak RSS, 259 MB output, and the merged
   # model still answers "The capital of France is" with " Paris.".
   #
-  # Both models come in as step inputs (one hfpull each) and the recipe names them by
-  # input name, so the run exercises the substitution in slices[].sources[].model and
-  # base_model. The merged model goes to the cluster's shared filesystem (/shared,
-  # the env's gb-shared volume), as dpk's kube fixtures do.
+  # Both models come in as step inputs (one hfpull each). The recipe then names them by
+  # input name (`model: base_model`), not `{{ bindings... }}`: the inputs say which models
+  # are staged, the recipe says how they're merged, and the step swaps each name for the
+  # staged path (see USAGE, "Naming models in the recipe"). So the run exercises the
+  # substitution in slices[].sources[].model and base_model. The merged model goes to the
+  # cluster's shared filesystem (/shared, the env's gb-shared volume), as dpk's kube
+  # fixtures do.
   #
   # Memory: no launcher_config.resources.memory here. On the local kind cluster,
   # the step's compute_config.total_memory_per_node (4Gi) is the pod's request, which

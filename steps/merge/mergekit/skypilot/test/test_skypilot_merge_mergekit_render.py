@@ -76,12 +76,21 @@ def _config(over=None, compute=None, launcher=None) -> dict:
     return config
 
 
-def _render(block="run", over=None, bindings=None, compute=None, launcher=None) -> str:
+def _render(
+    block="run",
+    over=None,
+    bindings=None,
+    compute=None,
+    launcher=None,
+    run_metadata=None,
+) -> str:
     """Render one launcher block strictly."""
     ctx = {
         "config": _config(over, compute, launcher),
         "bindings": _BINDINGS if bindings is None else bindings,
     }
+    if run_metadata is not None:
+        ctx["run_metadata"] = run_metadata
     return fill_template(_LAUNCHER[block], ctx, strict=True)
 
 
@@ -175,6 +184,13 @@ def test_run_passes_config_as_json_and_flags(tmp_path):
     assert _value(argv, "--allow-crimes") == "false"
     assert _value(argv, "--trust-remote-code") == "false"
     assert _value(argv, "--venv") == "./venv"
+
+
+def test_run_passes_the_target_step_run_id(tmp_path):
+    """run.sh gets the run id that stays the same across retries of one step run."""
+    argv = _argv("run", tmp_path, run_metadata={"targetsteprun_id": "tsr-abc"})
+    assert _value(argv, "--run-id") == "tsr-abc"
+    assert _value(_argv("run", tmp_path), "--run-id") == ""
 
 
 def test_run_output_path_defaults_to_model(tmp_path):
@@ -429,6 +445,95 @@ _BOTH = [
         # unbound required model_1 would fail on the launcher's own bindings lookup).
         "unbound optional model_2",
         {"models": [{"model": "model_1"}, {"model": "model_2"}], "slices": None},
+        {},
+        None,
+        False,
+    ),
+    (
+        # The review's typo: a bound model_1 the recipe never names.
+        "bound model_1 named model1",
+        {
+            "models": [{"model": "model1"}, {"model": "base_model"}],
+            "slices": None,
+        },
+        {},
+        None,
+        False,
+    ),
+    (
+        "bound base_model unused",
+        {"models": [{"model": "model_1"}], "slices": None, "base_model": None},
+        {},
+        None,
+        False,
+    ),
+    (
+        # Used only in a mapping-form reference: render can't see the reference, so it
+        # must not refuse; prepare sees it and accepts.
+        "base_model used only in mapping form",
+        {
+            "models": [{"model": "model_1"}, {"model": {"model": "base_model"}}],
+            "slices": None,
+            "base_model": None,
+        },
+        {},
+        None,
+        True,
+    ),
+    (
+        # S1: a base_model KEY whose value is a Hub id doesn't make the bound base_model
+        # input used. Render must refuse too, not leave it to the node.
+        "bound base_model, key holds a Hub id",
+        {
+            "models": [{"model": "model_1"}],
+            "slices": None,
+            "base_model": "Qwen/Qwen2.5-0.5B",
+        },
+        {},
+        None,
+        False,
+    ),
+    (
+        # S2: the bindings form, as gbserver's fill renders it for bound inputs.
+        "bindings form, bound",
+        {
+            "models": [
+                {"model": "/staged/model_1 it's"},
+                {"model": "/staged/base_model"},
+            ],
+            "slices": None,
+            "base_model": None,
+        },
+        {},
+        None,
+        True,
+    ),
+    (
+        # ...and as the fill leaves it for an unbound one.
+        "bindings form, unbound",
+        {
+            "models": [
+                {"model": "model_1"},
+                {"model": "base_model"},
+                {"model": "{{ model_2.binding.path }}"},
+            ],
+            "slices": None,
+            "base_model": None,
+        },
+        {},
+        None,
+        False,
+    ),
+    (
+        "mapping-valued models",
+        {"models": {"model": "model_1"}, "slices": None},
+        {},
+        None,
+        False,
+    ),
+    (
+        "list-valued modules",
+        {"modules": [{"models": [{"model": "model_1"}]}], "slices": None},
         {},
         None,
         False,

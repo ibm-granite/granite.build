@@ -28,6 +28,12 @@ Python under `GB_SHARED_WORKDIR`. Setting `mk_image` skips the install.
     itself.
   - An input name that is used but not bound is refused. Otherwise MergeKit would try to
     fetch it as a Hub repo, and fail only after provisioning.
+  - A bound input the recipe never names is refused too: it is most often a typo
+    (`model1` for `model_1`) that would also go to the Hub, or merge without that input.
+  - Input names rather than `{{ bindings.<name>.binding.path }}`. A bound one renders to
+    the staged path, which counts as naming the input; an unbound one reaches the node
+    as literal `{{ ... }}` text (the non-strict config fill keeps unknown expressions),
+    which is refused at render time and on the node.
   - A staged path containing `@` or `+` is refused, since MergeKit would mis-parse it.
 - **Inline `chat_template`:** gbserver's non-strict config fill (`targetsteprun.py`,
   `fill_objtemplate`) drops `{% %}` blocks and writes unknown `{{ var }}` back as text,
@@ -47,6 +53,20 @@ Python under `GB_SHARED_WORKDIR`. Setting `mk_image` skips the install.
 - **Staging:** MergeKit writes into `<output parent>/.mergekit-stage.*/<output name>`,
   which is renamed onto the output only once every check passes. MergeKit therefore sees
   the real output name, which it uses as the title of the model card it writes.
+- **Retries:** gbserver's step retry (`RetryHandler` → `retry_workload`) relaunches the
+  same step run with the already-rendered launcher config, so the same `output_path` and
+  `--run-id` (`run_metadata.targetsteprun_id`). A build-level retry creates new step
+  runs, so it still gets the "already exists" refusal. Before the move, `run.sh` writes
+  `.<output name>.mergekit-done` beside the output (not in it, so a push of the model
+  doesn't carry it) with the step run's id and the markers. A retry of that run that
+  finds the output re-emits them instead of failing on the existing output; any other
+  run still refuses it.
+- **Caches:** the uv cache, the managed Python and MergeKit's Hub download cache
+  (`.mergekit-hf-cache`) are under `${GB_SHARED_WORKDIR:-$PWD}`, so a shared workdir
+  downloads each once per cluster. They are created at the first user's umask and never
+  pruned; a workdir shared between users needs them group-writable. The LoRA merge cache
+  stays per run: MergeKit reuses any directory already at a merged adapter's path, so a
+  shared one could serve one run another's partial merge.
 - **Fixture output** is `env:///shared/...` because `HfPushCleanupMixin` only handles
   dataset repos.
 
@@ -56,7 +76,8 @@ Python under `GB_SHARED_WORKDIR`. Setting `mk_image` skips the install.
 config fails before the merge node is provisioned. The target's hfpull steps run first,
 so they still download. The macro checks:
 
-- `merge_config` is present, and has exactly one of `models`, `slices` and `modules`.
+- `merge_config` is present, and has exactly one of `models`, `slices` and `modules`
+  (lists, and a mapping for `modules`).
 - `merge_method` is a non-empty string, and one of MergeKit 0.1.5's registered methods.
   `test_merge_method_list_matches_mergekit_registry` keeps the list in sync. The same
   goes for the chat-template names. Both are checked only when the step installs 0.1.5
@@ -69,12 +90,19 @@ so they still download. The macro checks:
 - `chat_template` passes the rule above, and has a tokenizer to go in: `copy_tokenizer`,
   or a `tokenizer_source` or `tokenizer` block.
 - Every input name used in a string reference in `base_model`, `models[]` or
-  `slices[].sources[]` is bound.
+  `slices[].sources[]` is bound, no such reference is an unfilled `{{ ... }}`, and every
+  bound input is named by some string value in the recipe (as a reference's `<model>` or
+  `<lora>` part, or by its staged path). Keys don't count, so a `base_model:` key alone
+  doesn't make a bound `base_model` used. For references written as input names or in
+  the bindings form, every reference field is a string value, so this doesn't refuse
+  what prepare accepts (a hand-written path that differs from the binding only by a
+  trailing `/` or a symlink is the exception). Prepare checks the reference fields
+  themselves, and also catches a name that appears only outside them.
 - `num_nodes` is 1, and a GPU count comes with a GPU request (`accelerators` or
   `instance_type`, #536). Both use gbserver's own rules for these values.
 
-`mergekit_prepare.py` repeats the recipe-shape, `args`, `chat_template` and
-unbound-input checks on the node, for a direct run. It also covers what only the node
+`mergekit_prepare.py` repeats the recipe-shape, `args`, `chat_template` and binding
+checks on the node, for a direct run. It also covers what only the node
 can see: the installed mergekit's methods and template names, and mapping-form
 references. `test_render_and_prepare_agree` runs one table of cases through both and
 checks they agree. The `num_nodes`, GPU and `mergekit_version` checks are render-only,
@@ -90,6 +118,11 @@ reports some failures as success:
   `try`, so a failure there fails the merge.
 - `chat_template: auto` sets no template at all when none of the input models has one.
 
+A tokenizer is `tokenizer_config.json` plus a vocabulary file: `tokenizer.json`, or a slow
+tokenizer's own (`tokenizer.model`, `spiece.model`, `sentencepiece.bpe.model`,
+`vocab.json`, `vocab.txt`, `tokenizer.tiktoken`), since MergeKit's reserialize path
+(`save_pretrained`) writes only those for a tokenizer with no fast version.
+
 `mergekit_prepare.py` decides once what the output must contain, and writes it to
 `.mergekit/expect`: `tokenizer` when MergeKit copies or builds one, and `chat_template`
 when one is requested. `run.sh` then checks the output against that, on every path. The
@@ -104,8 +137,9 @@ output must also have a `config.json` and more than 0 tensors.
 | `src/mergekit_prepare.py` | Input-name substitution, `args` to flags, the node-side config checks, and the `expect` file. Standard library plus PyYAML, so it runs in the venv or an `mk_image` |
 | `src/run.sh` | Path checks, the merge into the staging dir, the output checks, the move into place, and the markers |
 | `test/test_skypilot_merge_mergekit_render.py` | Render and `validate` tests with gbserver's strict renderer, and the render/prepare agreement table |
-| `test/test_mergekit_prepare.py` | Substitution, flag rendering and config checks |
-| `test/test_mergekit_run_sh.py` | `run.sh` against a stub `mergekit-yaml`; real-MergeKit tests (see below) |
+| `test/test_mergekit_prepare.py`, `test/test_mergekit_prepare_checks.py` | Substitution, flag rendering and config checks (the second: recipe shape and bindings) |
+| `test/test_mergekit_run_sh.py`, `test/test_mergekit_run_sh_retry.py` | `run.sh` against a stub `mergekit-yaml`, and real-MergeKit tests (see below); the second: retries, the shared Hub cache, slow-tokenizer files |
+| `test/mergekit_test_helpers.py` | The stub `run.sh` harness and the `main()` runner the test files share (a module, not a `conftest.py`, so `make test-mergekit` loads it with `--noconftest`) |
 | `test/test_mergekit_setup_sh.py` | `setup.sh` with stub `pip`/`uv`, including a second run in the same workdir (a SkyPilot retry), plus one real-`uv` run |
 | `test/slurm/`, `test-data/slurm/` | Build test on the local Docker SLURM cluster (`make test-setup`) |
 | `test/kube/`, `test-data/kube/` | Build test on the local kind cluster (`make test-setup-kube`) |

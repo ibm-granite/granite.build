@@ -5,10 +5,11 @@
 # `setup:` block and shipped to the node by `file_mounts: {src: src}`.
 #
 # The same install as the data-designer step's dd_setup.sh (and dpk's dpk_setup.sh),
-# which carry the full rationale: SkyPilot syncs file mounts before `setup`, uv is
-# bootstrapped with pip because a bare launcher node does not have it,
-# `--break-system-packages` is needed on PEP 668 interpreters, and UV_CACHE_DIR is
-# anchored at the environment's shared root so the cache is reused across runs. That
+# except that it removes an existing venv first (below). Those carry the full rationale:
+# SkyPilot syncs file mounts before `setup`, uv is bootstrapped with pip because a bare
+# launcher node does not have it, `--break-system-packages` is needed on PEP 668
+# interpreters, and UV_CACHE_DIR is anchored at the environment's shared root so the
+# cache is reused across runs. That
 # matters more here than for data-designer: mergekit pulls torch, and on Linux PyPI's
 # torch pulls the CUDA wheels with it (about 2 GB). With a shared workdir (local SLURM
 # and kind: /shared) that is once per cluster; where GB_SHARED_WORKDIR is unset (aws)
@@ -51,11 +52,13 @@ export UV_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.uv-cache"
 # picking the newest CPython (where torch may have no wheel yet) when the node has no
 # suitable interpreter. uv downloads a managed CPython once into the shared cache then.
 export UV_PYTHON_INSTALL_DIR="${GB_SHARED_WORKDIR:-$PWD}/.uv-python"
-# --clear: a retry (SkyPilot relaunches in the same workdir) or a re-run finds the venv
-# from the last attempt, which `uv venv` otherwise refuses. Starting it fresh also drops
-# a half-finished install; the shared uv cache makes the reinstall cheap. --force: also
-# when an attempt was killed before uv wrote pyvenv.cfg, which --clear alone refuses.
-uv venv --clear --force --python 3.12 "$venv"
+# Removed first: a retry or a re-run in the same workdir finds the last attempt's venv,
+# possibly half-made, which `uv venv` refuses. rm rather than `uv venv --clear --force`:
+# `pip install uv` keeps a uv already on the node, and those flags need uv 0.8 / 0.12.
+# Starting fresh also drops a half-finished install; the shared uv cache makes the
+# reinstall cheap.
+rm -rf -- "$venv"
+uv venv --python 3.12 "$venv"
 # shellcheck source=/dev/null
 . "$venv/bin/activate"
 

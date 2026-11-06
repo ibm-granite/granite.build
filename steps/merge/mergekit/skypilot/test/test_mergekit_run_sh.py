@@ -30,138 +30,21 @@ import sys
 
 import pytest
 import yaml
-
-_SRC = pathlib.Path(__file__).resolve().parents[1] / "src"
-_RUN = _SRC / "run.sh"
+from mergekit_test_helpers import (  # pylint: disable=unused-import
+    _RECIPE,
+    _markers,
+    _model,
+    _real_env,
+    _refused,
+    _run,
+    _run_argv,
+    _stub_argv,
+    env_fixture,
+)
 
 pytestmark = pytest.mark.skipif(
     shutil.which("bash") is None, reason="bash not available"
 )
-
-_RECIPE = {
-    "merge_method": "linear",
-    "models": [
-        {"model": "model_1", "parameters": {"weight": 0.5}},
-        {"model": "base_model", "parameters": {"weight": 0.5}},
-    ],
-}
-
-# Records argv, then writes what a merge writes, unless told to fail or write nothing.
-_STUB = """#!/usr/bin/env bash
-printf '%s\\n' "$@" > "$STUB_ARGV"
-[ -n "${STUB_STDERR:-}" ] && echo "$STUB_STDERR" >&2
-[ -n "${STUB_STDOUT:-}" ] && echo "$STUB_STDOUT"
-[ -n "${STUB_FD3_PROBE:-}" ] && { [ -e /dev/fd/3 ] && echo fd3-open >&2 || echo fd3-closed >&2; }
-[ -n "${STUB_FAIL:-}" ] && { echo "stub: merge failed" >&2; exit 3; }
-out="$2"
-[ -n "${STUB_EMPTY:-}" ] && { echo '{}' > "$out/config.json"; exit 0; }
-"$STUB_PYTHON" - "$out" <<'PY'
-import json, struct, sys
-hdr = json.dumps({"w": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}).encode()
-with open(sys.argv[1] + "/model.safetensors", "wb") as f:
-    f.write(struct.pack("<Q", len(hdr)) + hdr + b"\\0\\0\\0\\0")
-open(sys.argv[1] + "/config.json", "w").write("{}")
-PY
-# A tokenizer, as a successful --copy-tokenizer leaves one, unless told not to (MergeKit
-# swallows tokenizer errors); a chat template only when asked for.
-if [ -z "${STUB_NO_TOKENIZER:-}" ]; then
-  [ -z "${STUB_NO_TOK_CONFIG:-}" ] && echo '{}' > "$out/tokenizer_config.json"
-  if [ -n "${STUB_SPM:-}" ]; then echo x > "$out/tokenizer.model"; else echo '{}' > "$out/tokenizer.json"; fi
-  [ -n "${STUB_TEMPLATE:-}" ] && printf '%s' "$STUB_TEMPLATE" > "$out/chat_template.jinja"
-fi
-exit 0
-"""
-
-
-def _real_env() -> dict:
-    """The env for tests that run real mergekit-yaml: this interpreter's bin dir first.
-
-    So the mergekit-yaml and python run.sh finds are the ones whose mergekit these tests
-    imported, not another install earlier on PATH (a pipx mergekit, a system python).
-    """
-    return {
-        **os.environ,
-        "PATH": f"{pathlib.Path(sys.executable).parent}:{os.environ['PATH']}",
-        "PYTHONPATH": str(_SRC),
-    }
-
-
-def _model(path: pathlib.Path) -> str:
-    path.mkdir(parents=True)
-    (path / "config.json").write_text("{}")
-    return str(path)
-
-
-@pytest.fixture(name="env")
-def env_fixture(tmp_path):
-    """A workdir, two staged models, and a PATH whose mergekit-yaml is the stub."""
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    stub = bindir / "mergekit-yaml"
-    stub.write_text(_STUB)
-    stub.chmod(0o755)
-    work = tmp_path / "work"
-    work.mkdir()
-    # run.sh calls `python`: put the test interpreter's own bin dir next on PATH (not a
-    # symlink to it, which would lose its venv's site-packages and so PyYAML).
-    pybin = pathlib.Path(sys.executable).parent
-    return {
-        "tmp": tmp_path,
-        "work": work,
-        "m1": _model(tmp_path / "staged" / "m1"),
-        "base": _model(tmp_path / "staged" / "base"),
-        "argv_file": tmp_path / "argv.txt",
-        "env": {
-            **os.environ,
-            "PATH": f"{bindir}:{pybin}:{os.environ['PATH']}",
-            "STUB_ARGV": str(tmp_path / "argv.txt"),
-            "STUB_PYTHON": sys.executable,
-            "PYTHONPATH": str(_SRC),
-        },
-    }
-
-
-def _run_argv(env, output="./out/model", recipe=None, args=None, **over) -> list[str]:
-    """run.sh's argv (without the leading ``bash``), with defaults for every option."""
-    opts = {
-        "venv": "",
-        "input-model_1": env["m1"],
-        "input-model_2": "",
-        "input-model_3": "",
-        "input-model_4": "",
-        "input-base_model": env["base"],
-        "merge-config-json": json.dumps(_RECIPE if recipe is None else recipe),
-        "args-json": json.dumps(args or {}),
-        "copy-tokenizer": "true",
-        "lazy-unpickle": "true",
-        "allow-crimes": "false",
-        "trust-remote-code": "false",
-        "output-model": output,
-        **over,
-    }
-    argv = [str(_RUN)]
-    for k, v in opts.items():
-        argv += [f"--{k}", v]
-    return argv
-
-
-def _run(env, output="./out/model", recipe=None, args=None, extra_env=None, **over):
-    return subprocess.run(
-        ["bash", *_run_argv(env, output, recipe, args, **over)],
-        cwd=env["work"],
-        env={**env["env"], **(extra_env or {})},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-
-def _markers(proc) -> list[str]:
-    return [ln for ln in proc.stdout.splitlines() if ln.startswith("GB_")]
-
-
-def _stub_argv(env) -> list[str]:
-    return env["argv_file"].read_text().splitlines()
 
 
 # --- happy path ---------------------------------------------------------------------
@@ -215,7 +98,7 @@ def test_mergekit_argv(env):
     assert staged.name == "model"
     assert argv[2:] == [
         "--transformers-cache",
-        str(work / "hf-cache"),
+        str(env["work"] / ".mergekit-hf-cache"),  # GB_SHARED_WORKDIR unset: the workdir
         "--lora-merge-cache",
         str(work / "lora-cache"),
         "--copy-tokenizer",
@@ -246,12 +129,6 @@ def test_empty_output_dir_is_reused(env):
 
 
 # --- refusals: nothing registered, nothing left behind --------------------------------
-
-
-def _refused(proc, message):
-    assert proc.returncode != 0
-    assert message in proc.stderr, proc.stderr
-    assert not any(ln.startswith("GB_ARTIFACT") for ln in proc.stdout.splitlines())
 
 
 def test_merge_failure(env):
