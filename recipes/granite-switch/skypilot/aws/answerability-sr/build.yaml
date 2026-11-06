@@ -88,7 +88,15 @@ granite.build:
               # stops existing. tensorboard is not a shadow-residual dependency
               # but REPORT_TO defaults to it, so it is installed here rather
               # than discovered missing after the model has loaded.
-              setup_command: "cd code && pip install --no-cache-dir '.[train]' tensorboard"
+              #
+              # 8-GPU p5/p5e/p5en instances join their GPUs through NVSwitch,
+              # which needs NVIDIA Fabric Manager running before CUDA can
+              # initialize: without it nvidia-smi lists every GPU while torch
+              # sees none (CUDA error 802, "system not yet initialized"), and
+              # sr-train fails at "Your setup doesn't support bf16/gpu". Start
+              # it when the unit exists and is stopped; elsewhere this is a
+              # no-op. Then fail setup, not training, if torch sees no GPU.
+              setup_command: "if systemctl list-unit-files nvidia-fabricmanager.service >/dev/null 2>&1 && ! systemctl is-active --quiet nvidia-fabricmanager; then echo 'byoc: starting nvidia-fabricmanager'; sudo systemctl start nvidia-fabricmanager; fi; cd code && pip install --no-cache-dir '.[train]' tensorboard && python -c 'import sys, torch; ok = torch.cuda.is_available(); print(\"torch\", torch.__version__, \"cuda\", torch.version.cuda, \"gpus\", torch.cuda.device_count() if ok else 0); sys.exit(0 if ok else \"torch sees no GPU: check the driver and nvidia-fabricmanager\")'"
               # One folded line on purpose. The step injects this verbatim into
               # its own `run:` block, so a multi-line value would break that
               # block's indentation.
@@ -222,7 +230,9 @@ granite.build:
               repo: "$${SR_REPO}"
               ref: "$${SR_REF}"
               workdir: "code"
-              setup_command: "cd code && pip install --no-cache-dir '.[train]' tensorboard"
+              # As in train: start Fabric Manager on NVSwitch instances, and
+              # fail setup if torch sees no GPU.
+              setup_command: "if systemctl list-unit-files nvidia-fabricmanager.service >/dev/null 2>&1 && ! systemctl is-active --quiet nvidia-fabricmanager; then echo 'byoc: starting nvidia-fabricmanager'; sudo systemctl start nvidia-fabricmanager; fi; cd code && pip install --no-cache-dir '.[train]' tensorboard && python -c 'import sys, torch; ok = torch.cuda.is_available(); print(\"torch\", torch.__version__, \"cuda\", torch.version.cuda, \"gpus\", torch.cuda.device_count() if ok else 0); sys.exit(0 if ok else \"torch sees no GPU: check the driver and nvidia-fabricmanager\")'"
               command: >-
                 set -e;
                 OUT="$${REPORT_ROOT}/$${RUN_ID}";
