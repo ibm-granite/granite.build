@@ -83,6 +83,12 @@ class TestStrings:
         copy = dockerfile.index("COPY patches/lightglue_no_remote_code.py")
         assert install < copy
         assert "lightglue_no_remote_code.py" in dockerfile[copy:]
+        # The image ships no bytecode (#616): a .pth imports _distutils_hack at
+        # startup, so the patch run must not write any.
+        assert (
+            "/opt/fms-hf-tuning/.venv/bin/python -B /tmp/lightglue_no_remote_code.py"
+            in dockerfile
+        )
 
 
 def _exploit(site_packages: pathlib.Path, work: pathlib.Path) -> bool:

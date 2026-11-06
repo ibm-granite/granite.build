@@ -70,7 +70,9 @@ RUN uv venv --python 3.12 /opt/fms-hf-tuning/.venv \
 # it Critical). The patch fails the build if its target lines ever change. See
 # README.md "Scanning".
 COPY patches/lightglue_no_remote_code.py /tmp/lightglue_no_remote_code.py
-RUN /opt/fms-hf-tuning/.venv/bin/python /tmp/lightglue_no_remote_code.py \
+# -B: no bytecode, even for setuptools' _distutils_hack, which a .pth imports at
+# startup (the image ships no .pyc, #616).
+RUN /opt/fms-hf-tuning/.venv/bin/python -B /tmp/lightglue_no_remote_code.py \
       /opt/fms-hf-tuning/.venv/lib/python3.12/site-packages/transformers/models/lightglue \
  && rm /tmp/lightglue_no_remote_code.py
 
