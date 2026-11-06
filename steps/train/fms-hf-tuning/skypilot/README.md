@@ -125,8 +125,8 @@ in the lock: PyPI has only the sdist, which takes hours to compile. The `abiTRUE
 build matches torch 2.8's `_GLIBCXX_USE_CXX11_ABI` (True). fms-hf-tuning turns
 `use_flash_attn` on by default.
 
-The test build of `fms-v3.2.2-2` is 8.5 GB. `.dockerignore` keeps local
-`__pycache__` out of `COPY src/` (the first test build shipped it).
+`fms-v3.2.2-2` is 8.5 GB locally (4.7 GB compressed on quay). `.dockerignore` keeps
+local `__pycache__` out of `COPY src/` (the first test build shipped it).
 
 **Apple Silicon.** Under podman's qemu x86 emulation, `import datasets` (pyarrow)
 hangs and `import flash_attn` segfaults; the same versions import natively on arm64
@@ -180,9 +180,25 @@ Results for `fms-v3.2.2-1` (manifest
 
   The other 2 have no fix yet: transformers 4.55.4 (CVE-2026-80047) and flash_attn
   2.8.3 (CVE-2026-31253).
-- **quay (Clair)**: queued at publish time; record the counts here once it finishes.
+- **quay (Clair)**: 1 Critical, 20 High (114 Medium, 29 Low, 2 Negligible). Clair
+  counts each advisory ID (GHSA and PYSEC aliases separately), so it lists more than
+  trivy for the same three packages, and it marks all of them fixable. The Critical
+  and High are only in the same three capped packages:
+  - **transformers 4.55.4**: 13 High, and the Critical (PYSEC-2026-2290, fixed after
+    5.2.0);
+  - **torch 2.8.0**: 5 High (fixed in 2.9.0 / 2.10.0);
+  - **fsspec 2026.2.0**: 2 High (fixed in 2026.6.0).
 
-`fms-v3.2.2-2` changes only src/ (run.sh: scratch-dir overlap refusal, accelerate exit-code message); same lock and base, so the same package findings apply; rescanned before publishing.
+  None is fixable in this image for the reasons in the table above. The Critical is
+  the reason this exception is recorded: lifting it needs an fms-hf-tuning release
+  that allows transformers 5.
+
+`fms-v3.2.2-2` (manifest
+`sha256:3b4acd1122961016323663ee280245ca3723f5e8c7f4bd4ee019e242f84c0fbe`, published
+2026-11-06) changes only `src/` (run.sh: the scratch-dir overlap refusal and the
+accelerate exit-code message), on the same lock and base. trivy 0.76.2 gives the same
+result as `-1`: 0 CRITICAL, 7 HIGH, the same packages and CVEs. quay's scan of `-2` was
+queued at publish time; the package set is identical to `-1`.
 
 ### Bumping IMAGE_VERSION
 
