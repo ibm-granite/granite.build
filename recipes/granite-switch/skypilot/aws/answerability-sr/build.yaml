@@ -95,8 +95,17 @@ granite.build:
               # sees none (CUDA error 802, "system not yet initialized"), and
               # sr-train fails at "Your setup doesn't support bf16/gpu". Start
               # it when the unit exists and is stopped; elsewhere this is a
-              # no-op. Then fail setup, not training, if torch sees no GPU.
-              setup_command: "if systemctl list-unit-files nvidia-fabricmanager.service >/dev/null 2>&1 && ! systemctl is-active --quiet nvidia-fabricmanager; then echo 'byoc: starting nvidia-fabricmanager'; sudo systemctl start nvidia-fabricmanager; fi; cd code && pip install --no-cache-dir '.[train]' tensorboard && python -c 'import sys, torch; ok = torch.cuda.is_available(); print(\"torch\", torch.__version__, \"cuda\", torch.version.cuda, \"gpus\", torch.cuda.device_count() if ok else 0); sys.exit(0 if ok else \"torch sees no GPU: check the driver and nvidia-fabricmanager\")'"
+              # no-op.
+              #
+              # torch loads pip's cuDNN, but cuDNN loads its sub-libraries by
+              # name, and a GPU image that puts its own CUDA dirs (with an
+              # older cuDNN) on LD_LIBRARY_PATH makes it mix two versions: the
+              # first attention call fails with CUDNN_STATUS_SUBLIBRARY_VERSION_
+              # MISMATCH. So pip's cuDNN dir goes first on LD_LIBRARY_PATH,
+              # here and in the command. Setup then runs one bf16 attention
+              # forward and backward, so a broken GPU stack fails here, not
+              # after the base model has loaded.
+              setup_command: "if systemctl list-unit-files nvidia-fabricmanager.service >/dev/null 2>&1 && ! systemctl is-active --quiet nvidia-fabricmanager; then echo 'byoc: starting nvidia-fabricmanager'; sudo systemctl start nvidia-fabricmanager; fi; cd code && pip install --no-cache-dir '.[train]' tensorboard && export LD_LIBRARY_PATH=\"$(python -c 'import nvidia.cudnn as m; print(list(m.__path__)[0])' 2>/dev/null)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"; python -c 'import sys, torch; ok = torch.cuda.is_available(); print(\"torch\", torch.__version__, \"cuda\", torch.version.cuda, \"cudnn\", torch.backends.cudnn.version(), \"gpus\", torch.cuda.device_count() if ok else 0); ok or sys.exit(\"torch sees no GPU: check the driver and nvidia-fabricmanager\"); q = torch.randn(1, 8, 256, 128, device=\"cuda\", dtype=torch.bfloat16, requires_grad=True); torch.nn.functional.scaled_dot_product_attention(q, q, q, is_causal=True).float().sum().backward(); torch.cuda.synchronize(); print(\"bf16 attention fwd+bwd ok\")'"
               # One folded line on purpose. The step injects this verbatim into
               # its own `run:` block, so a multi-line value would break that
               # block's indentation.
@@ -108,6 +117,7 @@ granite.build:
                 TRAIN_DIR="{{ bindings.train_data.binding.path }}/$${TRAIN_DATA_SUBDIR}";
                 BASE="{{ bindings.base_model.binding.path }}";
                 export PYTHONUNBUFFERED=1;
+                export LD_LIBRARY_PATH="$(python -c 'import nvidia.cudnn as m; print(list(m.__path__)[0])' 2>/dev/null)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}";
                 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True;
                 echo "=== inputs ===";
                 id -un; nvidia-smi -L || true;
@@ -230,9 +240,9 @@ granite.build:
               repo: "$${SR_REPO}"
               ref: "$${SR_REF}"
               workdir: "code"
-              # As in train: start Fabric Manager on NVSwitch instances, and
-              # fail setup if torch sees no GPU.
-              setup_command: "if systemctl list-unit-files nvidia-fabricmanager.service >/dev/null 2>&1 && ! systemctl is-active --quiet nvidia-fabricmanager; then echo 'byoc: starting nvidia-fabricmanager'; sudo systemctl start nvidia-fabricmanager; fi; cd code && pip install --no-cache-dir '.[train]' tensorboard && python -c 'import sys, torch; ok = torch.cuda.is_available(); print(\"torch\", torch.__version__, \"cuda\", torch.version.cuda, \"gpus\", torch.cuda.device_count() if ok else 0); sys.exit(0 if ok else \"torch sees no GPU: check the driver and nvidia-fabricmanager\")'"
+              # As in train: Fabric Manager, pip's cuDNN first on
+              # LD_LIBRARY_PATH, and a bf16 attention check.
+              setup_command: "if systemctl list-unit-files nvidia-fabricmanager.service >/dev/null 2>&1 && ! systemctl is-active --quiet nvidia-fabricmanager; then echo 'byoc: starting nvidia-fabricmanager'; sudo systemctl start nvidia-fabricmanager; fi; cd code && pip install --no-cache-dir '.[train]' tensorboard && export LD_LIBRARY_PATH=\"$(python -c 'import nvidia.cudnn as m; print(list(m.__path__)[0])' 2>/dev/null)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"; python -c 'import sys, torch; ok = torch.cuda.is_available(); print(\"torch\", torch.__version__, \"cuda\", torch.version.cuda, \"cudnn\", torch.backends.cudnn.version(), \"gpus\", torch.cuda.device_count() if ok else 0); ok or sys.exit(\"torch sees no GPU: check the driver and nvidia-fabricmanager\"); q = torch.randn(1, 8, 256, 128, device=\"cuda\", dtype=torch.bfloat16, requires_grad=True); torch.nn.functional.scaled_dot_product_attention(q, q, q, is_causal=True).float().sum().backward(); torch.cuda.synchronize(); print(\"bf16 attention fwd+bwd ok\")'"
               command: >-
                 set -e;
                 OUT="$${REPORT_ROOT}/$${RUN_ID}";
@@ -240,6 +250,7 @@ granite.build:
                 EVAL_DIR="{{ bindings.eval_data.binding.path }}/$${EVAL_DATA_SUBDIR}";
                 BASE="{{ bindings.base_model.binding.path }}";
                 export PYTHONUNBUFFERED=1;
+                export LD_LIBRARY_PATH="$(python -c 'import nvidia.cudnn as m; print(list(m.__path__)[0])' 2>/dev/null)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}";
                 echo "=== inputs ===";
                 id -un; nvidia-smi -L || true;
                 ls -la "$ADAPTER" || true;
