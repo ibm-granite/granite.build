@@ -230,9 +230,29 @@ the payload runs.
   pass-through remains.
 - trivy 0.76.2 reports the same 0 CRITICAL / 7 HIGH, because it matches on the
   version.
-- quay rated `-2` 1 Critical / 20 High, identical to `-1`; its scan of `-3` was
-  queued at publish time.
-- `-1` and `-2` carry the unpatched code.
+- quay rates `-3` 1 Critical / 20 High (114 Medium, 29 Low, 2 Negligible), the same as
+  `-1` and `-2`. The Critical is PYSEC-2026-2290: a version-matched false positive,
+  recorded below.
+- `-1` and `-2` carried the unpatched code. Both tags were **deleted from quay** on
+  2026-11-06; `-3` is the only published tag.
+
+#### Reviewed false positive: PYSEC-2026-2290 / CVE-2026-5241 in `fms-v3.2.2-3`
+
+quay's Critical on `fms-v3.2.2-3` is a reviewed false positive. Keep this record
+until fms-hf-tuning allows transformers 5 (foundation-model-stack/fms-hf-tuning#687)
+and the image moves to a fixed release.
+
+| | |
+|---|---|
+| Finding | PYSEC-2026-2290, alias CVE-2026-5241 / GHSA-fgcw-684q-jj6r. Critical in quay (Clair), High in trivy |
+| Package | transformers 4.55.4 (installed from the hashed lock; fms-hf-tuning 3.2.2 caps `transformers<=4.55.4`) |
+| Why it is reported | Clair and trivy match on the installed package's name and version. The patch edits two source files in that package and leaves its version metadata at 4.55.4, so every advisory for 4.55.4 is still listed |
+| Vulnerable code | `models/lightglue/configuration_lightglue.py`: the nested `AutoConfig.from_pretrained(..., trust_remote_code=self.trust_remote_code)` for a keypoint detector type outside `CONFIG_MAPPING`; `models/lightglue/modeling_lightglue.py`: `from_config(..., trust_remote_code=config.trust_remote_code)` |
+| Remediation | `patches/lightglue_no_remote_code.py`, a backport of huggingface/transformers 676559d5 ("[LightGlue] Remove remote code execution", #45122), applied by the Dockerfile right after the hashed install. It fails the image build if either target is not found exactly once |
+| Evidence | (1) Inside the published `-3` image, neither `trust_remote_code` pass-through remains in the two files. (2) `test/test_lightglue_patch.py` loads a crafted LightGlue repo the way fms-hf-tuning loads `base_model` (`AutoModelForCausalLM.from_pretrained`, no `trust_remote_code`), against a copy of the real 4.55.4: the repo's Python runs unpatched, and does not run patched |
+| Scope | Only this advisory. The other transformers, torch and fsspec findings are real and unpatched, held back by fms-hf-tuning's caps (the tables above) |
+| Re-check on | any change to `requirements.lock`, the base image, or the patch. A transformers bump that moves the target lines fails the build. A move to transformers 5.x removes the patch and this record |
+| Reviewed | 2026-11-06, for `fms-v3.2.2-3` (`sha256:fc696a40d415559b3752981b169ac1dbf8f01fc192f2e8dd44f55f7e3e04d414`) |
 
 ### Bumping IMAGE_VERSION
 
