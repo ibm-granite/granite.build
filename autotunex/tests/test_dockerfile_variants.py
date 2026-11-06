@@ -143,7 +143,8 @@ def test_the_kernel_base_is_a_digest_pinned_cuda_13_devel_image() -> None:
 
     assert match is not None
     assert re.fullmatch(
-        r"nvidia/cuda:13\.\d+\.\d+-devel-ubuntu24\.04@sha256:[0-9a-f]{64}", match.group(1)
+        r"docker\.io/nvidia/cuda:13\.\d+\.\d+-devel-ubuntu24\.04@sha256:[0-9a-f]{64}",
+        match.group(1),
     )
 
 

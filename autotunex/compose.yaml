@@ -59,6 +59,8 @@ services:
     # Behind a profile, like `aio`, so a bare `up` never pulls the multi-GB CUDA
     # base or tries to reserve a GPU on a machine that has none.
     profiles: ["cuda"]
+    # The CUDA wheels and kernels are amd64-only, so on Apple silicon (arm64) this
+    # build runs under emulation and is much slower.
     platform: linux/amd64
     build:
       context: .

@@ -142,7 +142,8 @@ causal-conv1d = [
 # sm80 + sm90 (A100 + H100), the combination fm-tune is tested on; add "100" for
 # Blackwell. FLASH_ATTENTION_FORCE_BUILD skips setup.py's attempt to download a
 # prebuilt wheel that does not exist for this torch/CUDA pair. MAX_JOBS caps
-# parallel nvcc jobs (each needs several GB of RAM); override it in the shell.
+# parallel nvcc jobs (each needs several GB of RAM); to change it, edit it here:
+# these values override the environment, and docker build passes none through.
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTN_CUDA_ARCHS = "80;90", FLASH_ATTENTION_FORCE_BUILD = "TRUE", MAX_JOBS = "16" }
 # The mamba-ssm / causal-conv1d setup.py hard-code their arch list (sm75-sm121 on

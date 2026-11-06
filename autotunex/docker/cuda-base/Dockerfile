@@ -26,7 +26,7 @@
 # both together. It must stay a CUDA 13 `-devel` tag: torch 2.11's PyPI wheels are
 # built for CUDA 13.0, the kernels compile with its nvcc, and deepspeed JIT-compiles
 # its ops at runtime in the image built on top.
-ARG CUDA_BASE=nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d
+ARG CUDA_BASE=docker.io/nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d
 FROM ${CUDA_BASE}
 
 # python3.12 specifically, to match the CPU stage of the root Dockerfile. Ubuntu
@@ -81,7 +81,7 @@ ENV PATH=/opt/venv/bin:$PATH
 # that second install, already satisfied, because match-runtime resolves the
 # build-time torch from the packages in the install.
 COPY src/fm-tune/pyproject.toml /opt/kernel-build/pyproject.toml
-RUN pip install --no-cache-dir uv \
+RUN pip install --no-cache-dir uv==0.13.7 \
     && cd /opt/kernel-build \
     && uv pip install --no-cache --python "$(command -v python)" "torch==2.11.0" \
     && uv pip install --no-cache --python "$(command -v python)" --no-deps \
@@ -100,7 +100,7 @@ RUN pip install --no-cache-dir uv \
 # `--only-binary` keeps a resolution surprise from recompiling a kernel here.
 # A separate layer, so a lock change does not invalidate the compile above.
 COPY src/fm-tune/pyproject.toml src/fm-tune/uv.lock /opt/kernel-deps/
-RUN pip install --no-cache-dir uv \
+RUN pip install --no-cache-dir uv==0.13.7 \
     && cd /opt/kernel-deps \
     && uv export --frozen --no-hashes --no-emit-project --extra full -o constraints.txt \
     && uv pip install --no-cache --python "$(command -v python)" -c constraints.txt \

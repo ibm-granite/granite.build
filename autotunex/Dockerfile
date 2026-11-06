@@ -123,7 +123,7 @@ RUN pip install --no-cache-dir .
 RUN pip install --no-cache-dir "./src/fm-tune[core]" \
     && if [ "$FM_TUNE_EXTRAS" != "core" ]; then \
          python -c "import os, sys, torch; base = os.environ['AUTOTUNEX_KERNEL_BASE_TORCH']; sys.exit(0 if torch.__version__.split('+')[0] == base else f'torch {torch.__version__} differs from the {base} the kernel base was compiled against; rebuild it (make publish-base-image)')" \
-         && pip install --no-cache-dir uv \
+         && pip install --no-cache-dir uv==0.13.7 \
          && cd src/fm-tune \
          && uv pip install --no-cache --python "$(command -v python)" \
               --only-binary flash-attn --only-binary mamba-ssm --only-binary causal-conv1d \

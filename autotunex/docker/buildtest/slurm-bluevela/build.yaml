@@ -12,7 +12,7 @@ granite.build:
   #   gbtest autotunex/docker/buildtest/slurm-bluevela/buildtest.yaml -f <copy>
   targets:
     smoke:
-      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      environment_uri: space://environments/skypilot/slurm/bluevela
       steps:
         - step_uri: space://steps/misc/byoc
           config:
