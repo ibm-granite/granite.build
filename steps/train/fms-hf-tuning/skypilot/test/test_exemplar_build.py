@@ -25,6 +25,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from gbserver.utils.template import fill_objtemplate, fill_template
+
 _HERE = Path(__file__).resolve().parent
 _DATA = _HERE.parent / "test-data"
 _TEMPLATE_TEXT = (_HERE.parent / "step-template.yaml").read_text()
@@ -200,3 +202,65 @@ def test_every_referenced_param_is_defined():
     referenced = set(_PARAM_RE.findall((_DATA / "build.yaml").read_text()))
     missing = referenced - set(yaml.safe_load((_DATA / "parameters.yaml").read_text()))
     assert not missing, sorted(missing)
+
+
+_LAUNCHER = yaml.safe_load(_TEMPLATE_TEXT)["environment_configs"]["Skypilot"][
+    "launchers"
+]["fms_hf_tuning"]["config"]
+_COMPUTE_DEFAULT = yaml.safe_load(_TEMPLATE_TEXT)["config"]["compute_config"]
+
+
+def _substituted_targets(name):
+    # The targets as a user gets them: $${NAME} replaced by parameters.yaml.
+    text = (_DATA / name).read_text()
+    params = yaml.safe_load((_DATA / "parameters.yaml").read_text())
+    text = _PARAM_RE.sub(lambda m: str(params[m.group(1)]), text)
+    return list(yaml.safe_load(text)["granite.build"]["targets"].values())
+
+
+def _bindings(target):
+    return {n: {"binding": {"path": f"/staged/{n}"}} for n in target["inputs"]}
+
+
+def _inner_filled(target):
+    # gbserver's non-strict inner config fill, run before the launcher fill.
+    bindings = _bindings(target)
+    config = fill_objtemplate(
+        _step(target)["config"], {"bindings": bindings}, strict=False
+    )
+    return config, bindings
+
+
+@pytest.mark.parametrize("build,i", _cases())
+@pytest.mark.parametrize("block", ["setup", "run"])
+def test_every_target_passes_the_templates_validation(build, i, block):
+    config, bindings = _inner_filled(_substituted_targets(build)[i])
+    cfg = {
+        **_DEFAULTS,
+        **config["fms_hf_tuning_config"],
+        "image_id": "docker:quay.io/x/img:t",
+    }
+    ctx = {
+        "config": {
+            "fms_hf_tuning_config": cfg,
+            "compute_config": config.get("compute_config", _COMPUTE_DEFAULT),
+            "launcher_config": config["launcher_config"],
+        },
+        "bindings": bindings,
+    }
+    try:
+        fill_template(_LAUNCHER[block], ctx, strict=True)
+    except RuntimeError as exc:
+        pytest.fail(f"{build} target {i} {block}: {exc.__cause__}")
+
+
+def test_inner_fill_renders_raw_templates_and_bindings():
+    for target in _targets("slurm-bluevela/build.yaml"):
+        config, _ = _inner_filled(target)
+        tmpl = config["fms_hf_tuning_config"]["args"]["chat_template"]
+        assert "{% raw %}" not in tmpl
+        assert tmpl.startswith("{% for message in messages %}")
+    build = yaml.safe_load((_DATA / "slurm-bluevela/build.yaml").read_text())
+    full, _ = _inner_filled(build["granite.build"]["targets"]["full-fsdp"])
+    paths = full["fms_hf_tuning_config"]["data_config"]["datasets"][0]["data_paths"]
+    assert paths == ["/staged/capybara"]
