@@ -223,6 +223,17 @@ the payload runs.
 - Scanners match on the package version, so trivy and quay still report
   CVE-2026-5241 against transformers 4.55.4. That finding is patched, not open.
 
+`fms-v3.2.2-3` (manifest
+`sha256:fc696a40d415559b3752981b169ac1dbf8f01fc192f2e8dd44f55f7e3e04d414`, published
+2026-11-06) adds only that patch layer, on the same lock, base and `src/` as `-2`.
+- The patched lines were checked inside the built image: neither `trust_remote_code`
+  pass-through remains.
+- trivy 0.76.2 reports the same 0 CRITICAL / 7 HIGH, because it matches on the
+  version.
+- quay rated `-2` 1 Critical / 20 High, identical to `-1`; its scan of `-3` was
+  queued at publish time.
+- `-1` and `-2` carry the unpatched code.
+
 ### Bumping IMAGE_VERSION
 
 `IMAGE_VERSION` is stable (`fms-v3.2.2-3`), not the git SHA: BlueVela caches a
