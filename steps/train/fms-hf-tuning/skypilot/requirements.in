@@ -1,0 +1,10 @@
+# Direct pins for the fms-hf-tuning image (spec: latest fms-hf-tuning release as
+# of 2026-11-04). `make lock` compiles requirements.lock (full closure, hashed).
+# fms-hf-tuning 3.2.2 caps torch<2.9, transformers<=4.55.4, trl/peft 0.19.x and
+# datasets 4.x; the resolver picks the newest allowed (torch 2.8.0, CUDA 12.8).
+fms-hf-tuning==3.2.2
+# Prebuilt wheel matching torch 2.8 / CUDA 12 / cp312 / x86_64 and torch's C++
+# ABI (_GLIBCXX_USE_CXX11_ABI is True); PyPI ships only the sdist.
+flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
+# Latest; upstream's [clearml] extra pins 2.0.0. Fall back to it if the tracker breaks.
+clearml==2.1.12
