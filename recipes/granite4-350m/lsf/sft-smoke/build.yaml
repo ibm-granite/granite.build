@@ -74,7 +74,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: model
       steps:
-        - step_uri: space://steps/distill/tokenizer-align
+        - step_uri: space://steps/train/distill/tokenizer-align
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -82,7 +82,6 @@ granite.build:
               num_nodes: 1
               num_cpus_per_node: $${CPU_ONLY_CPUS}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -111,7 +110,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: dataset
       steps:
-        - step_uri: space://steps/distill/corpus-prep
+        - step_uri: space://steps/train/distill/data-prep
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -119,7 +118,6 @@ granite.build:
               num_nodes: 1
               num_cpus_per_node: $${CPU_ONLY_CPUS}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 cluster: "$${CLUSTER}"
                 zone: "$${QUEUE}"
@@ -154,7 +152,7 @@ granite.build:
           uri: "env://{{ binding.path }}"
           type: model
       steps:
-        - step_uri: space://steps/distill/sft
+        - step_uri: space://steps/train/distill/student-sft
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
@@ -162,7 +160,6 @@ granite.build:
               num_nodes: 1
               num_gpus_per_node: $${SFT_NUM_GPUS}
             launcher_config:
-              image_id: "$${IMAGE_ID}"
               resources:
                 accelerators: "H100:$${SFT_NUM_GPUS}"
                 cluster: "$${CLUSTER}"

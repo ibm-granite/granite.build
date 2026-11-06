@@ -176,7 +176,7 @@ outputs:
 | `allow_unknown` | inputs, outputs | Default `true`. With `false`, any target input/output not named under `required` or `optional` is an error. |
 
 A real example is
-[`steps/distill/vllm-server/skypilot/step-template.yaml`](../../steps/distill/vllm-server/skypilot/step-template.yaml):
+[`steps/train/distill/student-rollout-generator/skypilot/step-template.yaml`](../../steps/train/distill/student-rollout-generator/skypilot/step-template.yaml):
 it requires a `model` input and optionally produces `vllm_url` and `cluster_name` as `mem://`
 values.
 

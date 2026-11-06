@@ -38,15 +38,15 @@ _BASH_ENV = "space://environments/bash"
 
 # step path (under space://steps/) -> the environment it is resolved in
 STEPS = {
-    "distill/tokenizer-align": _LSF_ENV,
-    "distill/corpus-prep": _LSF_ENV,
-    "distill/corpus-pin-check": _LSF_ENV,
-    "distill/sft": _LSF_ENV,
-    "distill/gold": _LSF_ENV,
-    "distill/eval": _LSF_ENV,
-    "distill/hf-export": _LSF_ENV,
-    "distill/logit-precompute": _LSF_ENV,
-    "distill/vllm-server": _LSF_ENV,
+    "train/distill/tokenizer-align": _LSF_ENV,
+    "train/distill/data-prep": _LSF_ENV,
+    "train/distill/data-validate": _LSF_ENV,
+    "train/distill/student-sft": _LSF_ENV,
+    "train/distill/logit-distill": _LSF_ENV,
+    "train/distill/teacher-divergence": _LSF_ENV,
+    "misc/hf-export": _LSF_ENV,
+    "train/distill/teacher-logits": _LSF_ENV,
+    "train/distill/student-rollout-generator": _LSF_ENV,
     "inference": _BASH_ENV,
     "inference-lora": _BASH_ENV,
     "lora-finetune": _BASH_ENV,
@@ -123,7 +123,7 @@ def test_a_missing_required_input_fails_validation(tmp_path, monkeypatch, step):
 
 
 def _gold_beside(tmp_path, monkeypatch, gold_inputs: dict, producer: tuple):
-    """distill/gold with its required inputs as uris, overridden by `gold_inputs`,
+    """train/distill/logit-distill with its required inputs as uris, overridden by `gold_inputs`,
     beside a `producer` (name, step, outputs) target whose output a binding can name."""
     from gbserver.build.build import Build
     from gbserver.build.space import Space
@@ -133,8 +133,8 @@ def _gold_beside(tmp_path, monkeypatch, gold_inputs: dict, producer: tuple):
     build_dir.mkdir()
     gold = {
         "environment_uri": _LSF_ENV,
-        "inputs": {**_bound("distill/gold", _LSF_ENV), **gold_inputs},
-        "steps": [{"step_uri": "space://steps/distill/gold"}],
+        "inputs": {**_bound("train/distill/logit-distill", _LSF_ENV), **gold_inputs},
+        "steps": [{"step_uri": "space://steps/train/distill/logit-distill"}],
     }
     name, step, outputs = producer
     produced = {
@@ -162,12 +162,12 @@ def _gold_beside(tmp_path, monkeypatch, gold_inputs: dict, producer: tuple):
 
 _VLLM_SERVER = (
     "server",
-    "distill/vllm-server",
+    "train/distill/student-rollout-generator",
     {"vllm_url": {"uri": "mem://vllm-url"}},
 )
 _CORPUS_PREP = (
     "prep",
-    "distill/corpus-prep",
+    "train/distill/data-prep",
     {"corpus": {"uri": "mem://corpus", "type": "dataset"}},
 )
 

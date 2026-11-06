@@ -118,7 +118,7 @@ otherwise reject the config on every node of an allocation already held.
 git clone https://github.com/laminair/gb-steps-distillation.git $CODE_DIR
 git -C $CODE_DIR checkout a5d59bc45524a8d75706e20d44ae1a254f273f23
 ( cd $CODE_DIR/src/gb_steps_post_training/distillation &&
-  patch -p2 -F3 < <this repo>/steps/distill/gold/skypilot/patches/ce_anchor_and_entropy_guard.diff )
+  patch -p2 -F3 < <this repo>/steps/train/distill/logit-distill/skypilot/patches/ce_anchor_and_entropy_guard.diff )
 git -C $CODE_DIR commit -am "ce anchor and entropy guard"
 
 # Then one arm per coefficient. RUN_NAME MUST differ per arm, and CORPUS_DIR pins the
@@ -180,7 +180,7 @@ is the value to fill in the moment a `CODE_DIR` *is* set, because that is when a
 becomes mutable state again — and it brings the dirty-tree check with it.
 
 The patch that builds a re-armed checkout still ships with the repo:
-[`steps/distill/gold/skypilot/patches/ce_anchor_and_entropy_guard.diff`](../../../../steps/distill/gold/skypilot/patches/ce_anchor_and_entropy_guard.diff).
+[`steps/train/distill/logit-distill/skypilot/patches/ce_anchor_and_entropy_guard.diff`](../../../../steps/train/distill/logit-distill/skypilot/patches/ce_anchor_and_entropy_guard.diff).
 
 ## What to read, in this order
 

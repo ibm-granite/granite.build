@@ -2,7 +2,7 @@
 
 Three cheap questions that gate the whole granite4-350m distillation family. About
 two minutes each, nothing trained, nothing produced — the answers are in the log.
-Every target runs the [`distill-probe`](../../../../steps/distill/probe/skypilot/README.md)
+Every target runs the [`distill-probe`](../../../../steps/train/distill/preflight-check/skypilot/README.md)
 step, which holds the probes themselves.
 
 **Run this before [`distill-smoke`](../distill-smoke/README.md), and that before

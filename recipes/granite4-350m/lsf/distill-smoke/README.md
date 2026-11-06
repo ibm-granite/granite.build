@@ -169,7 +169,7 @@ instruction-tuned, which makes it a poor teacher for an SFT corpus.
 markers. There is no such template in this repo's upstream checkout or on the cluster
 — the only marked one is ChatML — so it is authored here:
 
-    steps/distill/tokenizer-align/skypilot/test-data/granite_4_role_generation.jinja
+    steps/train/distill/tokenizer-align/skypilot/test-data/granite_4_role_generation.jinja
 
 It is **granite-4.0-350m's own** chat template with generation markers added around the
 assistant span and nothing else changed. Derived from the *student's* template rather
@@ -180,7 +180,7 @@ every prompt relative to the SFT run whose eval row is the baseline.
 
 The markers emit nothing, so rendered output is byte-identical to the unmarked
 template. That is asserted rather than assumed:
-`steps/distill/tokenizer-align/skypilot/test/test_granite_role_template.py` renders both
+`steps/train/distill/tokenizer-align/skypilot/test/test_granite_role_template.py` renders both
 over nine conversation shapes — including the default-system-message branch, tool calls
 and documents — and diffs them.
 
@@ -188,7 +188,7 @@ Copy it into place:
 
 ```bash
 mkdir -p /proj/granite-build/g4os/chat_templates
-cp steps/distill/tokenizer-align/skypilot/test-data/granite_4_role_generation.jinja \
+cp steps/train/distill/tokenizer-align/skypilot/test-data/granite_4_role_generation.jinja \
    /proj/granite-build/g4os/chat_templates/
 ```
 
@@ -200,7 +200,7 @@ prompt:
 
 ```bash
 diff /proj/granite-build/g4os/chat_template.jinja \
-     steps/distill/tokenizer-align/skypilot/test-data/granite_4_role_base.jinja \
+     steps/train/distill/tokenizer-align/skypilot/test-data/granite_4_role_base.jinja \
   && echo "SAME — the vendored base is the SFT template"
 grep -c 'generation' /proj/granite-build/g4os/chat_template.jinja
 ```

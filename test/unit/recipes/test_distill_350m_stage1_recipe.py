@@ -127,7 +127,7 @@ class TestSources:
 
     def test_it_runs_the_corpus_sources_step(self, off):
         step = _targets(off)["sources"]["steps"][0]
-        assert step["step_uri"] == "space://steps/distill/corpus-sources"
+        assert step["step_uri"] == "space://steps/train/distill/data-mixture"
 
     def test_it_passes_the_three_splits_in_lineage_order(self, off):
         """Order names the per-split RNG streams, so it is part of the selection."""

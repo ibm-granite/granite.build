@@ -364,7 +364,6 @@ def test_smoke_and_real_arm_share_every_behavioural_parameter(tmp_path):
     """
     behavioural = (
         "DS_CONFIG",
-        "IMAGE_ID",
         "TEACHER_MODEL",
         "STUDENT_MODEL",
         "TRAINING_DATASET",

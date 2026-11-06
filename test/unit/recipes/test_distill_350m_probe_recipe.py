@@ -17,7 +17,7 @@
 """Unit tests for the distill-probe recipe.
 
 Every target runs the ``distill-probe`` step; the probes and the tests of their logic
-live with the step (steps/distill/probe/skypilot). What the recipe owns is the
+live with the step (steps/train/distill/preflight-check/skypilot). What the recipe owns is the
 wiring -- which probe each target asks for, against which checkpoint -- so each target's
 config is rendered through the PUBLISHED step template and run against a stand-in
 interpreter that records its argv.
@@ -32,7 +32,7 @@ import subprocess
 
 import pytest
 import yaml
-from unit.recipes.published_step import render_run
+from unit.recipes.published_step import image_env, render_run
 
 _BUILD = (
     pathlib.Path(__file__).resolve().parents[3]
@@ -85,7 +85,7 @@ def test_no_probe_declares_an_output(build):
 def test_every_target_runs_the_probe_step(build, name):
     """No inline scripts: the recipe passes configuration, the step holds the code."""
     step = _step(build, name)
-    assert step["step_uri"] == "space://steps/distill/probe"
+    assert step["step_uri"] == "space://steps/train/distill/preflight-check"
     assert "command_config" not in step["config"]
 
 
@@ -116,18 +116,27 @@ def test_each_target_asks_its_own_probe_of_the_same_checkpoint(build, name, tmp_
     )
     stub.chmod(0o755)
     script, step_dir = render_run(
-        "distill/probe",
+        "train/distill/preflight-check",
         _step(build, name)["config"],
-        probe_config={"python": str(stub)},
+        probe_config={},
     )
 
     result = subprocess.run(
-        ["bash", "-c", script], cwd=step_dir, text=True, capture_output=True
+        ["bash", "-c", script],
+        cwd=step_dir,
+        text=True,
+        capture_output=True,
+        env=image_env("train/distill/preflight-check", tmp_path, python=str(stub)),
     )
 
     assert result.returncode == 0, result.stderr
     argv = json.loads(argv_log.read_text(encoding="utf-8"))
-    assert argv[:4] == ["./src/distill_probe.py", name, "--checkpoint", _CHECKPOINT]
+    assert argv[:4] == [
+        str(tmp_path / "distill-home/steps/preflight-check/distill_probe.py"),
+        name,
+        "--checkpoint",
+        _CHECKPOINT,
+    ]
     if name == "tokenizer-fit":
         assert argv[4:] == [
             "--corpus",
