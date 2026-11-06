@@ -179,8 +179,10 @@ torch 2.11.0+cu128 on `cuda:12.8.1-devel-ubuntu22.04`.
   That is why the base is `devel` and why its CUDA minor matches torch's.
 - **A CUDA 13.2 runtime on 580/590 drivers.** See [The torch/CUDA pair](#the-torchcuda-pair):
   it may rely on minor-version compatibility. Confirmed on aws (580) and BlueVela (590).
-- **chmod in two layers.** Pyxis on SLURM runs the container as the job user, not
-  root. The venv and uv's managed Python (`/opt/uv-python`, not root's home, since
+- **chmod in two layers.** SkyPilot runs the job as root in the container (on SLURM
+  through Pyxis's `--container-remap-root`), but the image must also work under a
+  runtime that runs it as an unprivileged user without remapping. The venv and uv's
+  managed Python (`/opt/uv-python`, not root's home, since
   the venv's interpreter is a symlink into it) get `chmod -R a+rX` in the install
   layer itself. `src/` is copied after it and made readable with a `find -maxdepth 2`
   that skips `.venv`. A later recursive chmod over `/opt/hf-peft-sft` would copy the
@@ -204,9 +206,10 @@ mitigations:
   default `USER` does not work under SkyPilot's docker runtime: SkyPilot sets the
   container up as root and saves root's environment (`HOME=/root`) to
   `/etc/profile.d`, so the non-root user logs in with `HOME=/root` and provisioning
-  fails. The VM exists for one job and is torn down after; Pyxis on SLURM still runs
-  the container as the job user. Restoring a non-root user needs a SkyPilot fix
-  (#566);
+  fails. The VM exists for one job and is torn down after. On SLURM, Pyxis remaps the
+  job to uid 0 inside the container (`--container-remap-root`), but on the host it is
+  still the submitting user, with that user's file access, not root's. Restoring a
+  non-root user needs a SkyPilot fix (#566);
 - files under `/opt` are readable by any uid but writable only by root;
 - the image is scanned for vulnerabilities before `make publish-image` (below).
 
@@ -240,9 +243,26 @@ same lock as `-2`:
 13,438 extra `.pyc` in the 3.4 GB venv layer, 43,267 files instead of 29,829. quay's
 security scan of `-5` never left "queued" (6+ hours, no quay incident, and re-tagging the
 same digest did not start it), while `-4`, `-6` and openinstruct-sft's images scanned in
-minutes. So the Dockerfile keeps `UV_COMPILE_BYTECODE=0`: Python compiles each module in
-memory on import (`/opt` is read-only for the Pyxis job user, so nothing is written back).
-Do not turn it back on without checking that quay still scans the image.
+minutes. So the Dockerfile keeps `UV_COMPILE_BYTECODE=0`. Do not turn it back on without
+checking that quay still scans the image.
+
+That costs one compile per launch, not one per rank. The job's container is writable: on
+SLURM, SkyPilot creates the Pyxis container with `--container-writable` and
+`--container-remap-root`, so the job is root inside it. The image sets no `USER`
+(`test_runs_as_root_for_skypilot`), so it runs as root elsewhere too. In a local root
+container, the first `import torch` wrote 898 `.pyc`; this was not measured on aws. Python
+therefore writes `__pycache__` into `/opt` on first import, and the next step in the same
+container reuses it.
+
+The setup phase's import check (`import accelerate, bitsandbytes, clearml, datasets,
+deepspeed, peft, torch, transformers, trl`, top-level only) compiles nearly all of what
+training needs. On BlueVela (job 851864, 2026-11-06, `-6`, 4 CPUs) it took 16.2 s and
+wrote 4,477 `.pyc`. The training script's own imports (`AutoModelForCausalLM`,
+`BitsAndBytesConfig`, `SFTTrainer`, `LoraConfig`, `load_dataset`, ...) then took 6.0 s and
+wrote 88 more, against 5.7 s fully warm. With bytecode writing off, the full import took
+13.4 s every time (job 767378, 2026-11-04). A `PYTHONPYCACHEPREFIX` adds nothing (4.8 s
+warm, 23.9 s cold on GPFS), so the step sets none. Do not set `PYTHONDONTWRITEBYTECODE`
+or `python -B` either: every process would then compile in memory.
 
 `peft-v0.21.2-1` had 5 more fixable HIGH, all in the `msgpack` 1.1.2, `urllib3` 2.7.0
 and `setuptools` 70.3.0 vendored inside **pip** in uv's managed CPython (never run by
@@ -255,7 +275,12 @@ per-commit git SHA. The image is large, and BlueVela caches a `.sqsh` per tag
 (each new tag means a fresh cold import), so it must not churn on unrelated commits.
 
 - Bump the suffix (`-1` to `-2`) when the Dockerfile, `requirements.lock` or `src/`
-  changes.
+  changes. A change to comments only does not need a bump: the published image keeps the
+  old comment text, and the step runs the same. #626 changed only comments in `src/` and
+  the Dockerfile, and kept `-6`. A local `make image` then no longer matches the
+  published tag (the `COPY src/` layer differs), so under podman `make test` warns that
+  the tag "is already published as a different image" until the next bump. Run it with
+  `TEST_PUBLISHED=true` to skip that comparison.
 - Bump the prefix with the peft pin (for example `peft-v0.22.0-1`).
 
 After any edit to `requirements.in`, run `make lock` to recompile
