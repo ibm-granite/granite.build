@@ -127,6 +127,16 @@ def test_strict_check_refuses(args, needle):
     assert needle in str(exc.value)
 
 
+def test_default_true_bools_are_converted():
+    # A default-True bool also has a `--no_<field>` store_false twin with the
+    # same dest; the typed action must be the one used.
+    assert job.coerce_args(
+        get_parser(), {"use_flash_attn": "false", "remove_unused_columns": "true"}
+    ) == {"use_flash_attn": False, "remove_unused_columns": True}
+    with pytest.raises(job.StepError, match="is not a valid value"):
+        job.coerce_args(get_parser(), {"remove_unused_columns": "maybe"})
+
+
 def _fixture_args():
     found = []
     for path in sorted((_STEP / "test-data").rglob("build.yaml")):

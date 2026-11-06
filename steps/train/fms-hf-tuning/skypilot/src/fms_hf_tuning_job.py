@@ -122,7 +122,11 @@ def coerce_args(parser: argparse.ArgumentParser, args: dict) -> dict:
     :raises StepError: On an unknown key, a list for a single-value argument,
         or a value the argument's type or choices reject.
     """
-    actions = {a.dest: a for a in parser._actions}  # pylint: disable=protected-access
+    # Keep the first action per dest: a default-True bool is followed by an
+    # untyped `--no_<field>` store_false twin with the same dest.
+    actions: dict[str, argparse.Action] = {}
+    for a in parser._actions:  # pylint: disable=protected-access
+        actions.setdefault(a.dest, a)
     out = {}
     for key, value in args.items():
         act = actions.get(key)
@@ -248,8 +252,18 @@ def check_output(out_dir: str, peft_method: str) -> int:
             )
         index = os.path.join(out_dir, "model.safetensors.index.json")
         if os.path.isfile(index):
-            with open(index, encoding="utf-8") as f:
-                weight_map = json.load(f).get("weight_map") or {}
+            try:
+                with open(index, encoding="utf-8") as f:
+                    data = json.load(f)
+            except (OSError, ValueError) as e:
+                raise StepError(f"{index} is not readable JSON ({e}).") from e
+            if not isinstance(data, dict):
+                raise StepError(f"{index} is not a JSON mapping.")
+            weight_map = data.get("weight_map")
+            if weight_map is None:
+                weight_map = {}
+            if not isinstance(weight_map, dict):
+                raise StepError(f"{index}: weight_map is not a mapping.")
             for shard in sorted(set(weight_map.values())):
                 if not os.path.isfile(os.path.join(out_dir, shard)):
                     raise StepError(
@@ -285,11 +299,27 @@ def check_output(out_dir: str, peft_method: str) -> int:
 def rewrite_base_model(out_dir: str, base_model_id: str) -> None:
     """Record a portable base id in adapter_config.json (it holds the staged path)."""
     path = os.path.join(out_dir, "adapter_config.json")
-    with open(path, encoding="utf-8") as f:
-        cfg = json.load(f)
+    try:
+        with open(path, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError) as e:
+        raise StepError(f"{path} is not readable JSON ({e}).") from e
+    if not isinstance(cfg, dict):
+        raise StepError(f"{path} is not a JSON mapping.")
     cfg["base_model_name_or_path"] = base_model_id
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+    except OSError as e:
+        raise StepError(f"cannot write {path} ({e}).") from e
+
+
+def _write_json(path: str, obj: Any) -> None:
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(obj, f, indent=2)
+    except OSError as e:
+        raise StepError(f"cannot write {path} ({e}).") from e
 
 
 def _version(dist: str) -> str:
@@ -338,8 +368,7 @@ def main(argv: list[str] | None = None) -> None:
                 raise StepError("args and data_config must be mappings.")
             dc_path = ""
             if data_config:
-                with open(ns.data_config_out, "w", encoding="utf-8") as f:
-                    json.dump(data_config, f, indent=2)
+                _write_json(ns.data_config_out, data_config)
                 dc_path = os.path.abspath(ns.data_config_out)
             elif not ns.data_path:
                 raise StepError("no training data path and no data_config.")
@@ -356,8 +385,7 @@ def main(argv: list[str] | None = None) -> None:
                 clearml_task=ns.clearml_task,
             )
             job = strict_check(job)
-            with open(ns.job_out, "w", encoding="utf-8") as f:
-                json.dump(job, f, indent=2)
+            _write_json(ns.job_out, job)
         else:
             count = check_output(ns.out_dir, ns.peft_method)
             if ns.base_model_id and ns.peft_method != "none":

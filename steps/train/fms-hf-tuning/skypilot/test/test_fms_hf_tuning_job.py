@@ -48,6 +48,12 @@ def parser():
     p.add_argument("--lr_scheduler_type", type=str, choices=["linear", "cosine"])
     p.add_argument("--response_template", type=str)
     p.add_argument("--gradient_checkpointing_kwargs", type=str)
+    # A default-True bool, as HfArgumentParser adds it: the typed action, then a
+    # `--no_<field>` store_false twin with the same dest and no type.
+    p.add_argument(
+        "--use_flash_attn", type=_str2bool, nargs="?", const=True, default=True
+    )
+    p.add_argument("--no_use_flash_attn", action="store_false", dest="use_flash_attn")
     return p
 
 
@@ -101,6 +107,14 @@ class TestCoerce:
             "max_steps": None,
         }
 
+    def test_default_true_bool_is_converted(self, parser):
+        assert job.coerce_args(parser, {"use_flash_attn": "false"}) == {
+            "use_flash_attn": False
+        }
+        assert job.coerce_args(parser, {"use_flash_attn": False}) == {
+            "use_flash_attn": False
+        }
+
     def test_text_is_kept_byte_for_byte(self, parser):
         text = '\n### Answer: it\'s "q" {{ x }} ü'
         assert job.coerce_args(parser, {"response_template": text}) == {
@@ -118,6 +132,10 @@ class TestCoerce:
             ),
             ({"max_steps": 1.5}, "args.max_steps: 1.5 is not a valid value"),
             ({"packing": "maybe"}, "args.packing: 'maybe' is not a valid value"),
+            (
+                {"use_flash_attn": "maybe"},
+                "args.use_flash_attn: 'maybe' is not a valid value",
+            ),
             ({"lr_scheduler_type": "nope"}, "is not one of linear, cosine"),
             ({"max_steps": [1, 2]}, "args.max_steps takes one value, got a list"),
             ({"target_modules": []}, "args.target_modules is an empty list"),
@@ -266,6 +284,13 @@ class TestCheckOutput:
         with pytest.raises(job.StepError, match="no weights"):
             job.check_output(str(tmp_path), "none")
 
+    @pytest.mark.parametrize("text", ["{not json", "[]", '{"weight_map": []}'])
+    def test_bad_index_refused(self, tmp_path, text):
+        (tmp_path / "config.json").write_text("{}")
+        (tmp_path / "model.safetensors.index.json").write_text(text)
+        with pytest.raises(job.StepError, match="model.safetensors.index.json"):
+            job.check_output(str(tmp_path), "none")
+
     def test_unreadable_safetensors(self, tmp_path):
         (tmp_path / "adapter_config.json").write_text("{}")
         (tmp_path / "adapter_model.safetensors").write_bytes(b"\xff" * 4)
@@ -280,6 +305,13 @@ def test_rewrite_base_model(tmp_path):
     job.rewrite_base_model(str(tmp_path), "org/model")
     cfg = json.loads((tmp_path / "adapter_config.json").read_text())
     assert cfg == {"base_model_name_or_path": "org/model", "r": 8}
+
+
+@pytest.mark.parametrize("text", ["{not json", "[]"])
+def test_rewrite_base_model_bad_config_refused(tmp_path, text):
+    (tmp_path / "adapter_config.json").write_text(text)
+    with pytest.raises(job.StepError, match="adapter_config.json"):
+        job.rewrite_base_model(str(tmp_path), "org/model")
 
 
 def test_decode_b64_json():
@@ -310,6 +342,82 @@ class TestCli:
             job.main(["check-output", str(tmp_path), "none"])
         assert exc.value.code == 1
         assert capsys.readouterr().err.startswith("fms-hf-tuning: ERROR ")
+
+    def test_build_unwritable_job_out_exits_1(self, tmp_path, capsys, monkeypatch):
+        # Skip the upstream parse (the repo venv has no fms-hf-tuning); the
+        # failure under test is the job JSON write.
+        monkeypatch.setattr(job, "strict_check", lambda j: j)
+        e = base64.b64encode(b"{}").decode()
+        with pytest.raises(SystemExit) as exc:
+            job.main(
+                [
+                    "build",
+                    "--args-b64",
+                    e,
+                    "--data-config-b64",
+                    e,
+                    "--data-path",
+                    "/ds",
+                    "--base-model",
+                    "/m",
+                    "--peft-method",
+                    "none",
+                    "--output-dir",
+                    "/o",
+                    "--save-model-dir",
+                    "/s",
+                    "--clearml",
+                    "off",
+                    "--clearml-project",
+                    "",
+                    "--clearml-task",
+                    "",
+                    "--job-out",
+                    str(tmp_path / "missing" / "j.json"),
+                    "--data-config-out",
+                    str(tmp_path / "dc.json"),
+                ]
+            )
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert err.startswith("fms-hf-tuning: ERROR ") and "j.json" in err
+
+    def test_build_unwritable_data_config_out_exits_1(self, tmp_path, capsys):
+        e = base64.b64encode(b"{}").decode()
+        dc = base64.b64encode(b'{"datasets": []}').decode()
+        with pytest.raises(SystemExit) as exc:
+            job.main(
+                [
+                    "build",
+                    "--args-b64",
+                    e,
+                    "--data-config-b64",
+                    dc,
+                    "--data-path",
+                    "",
+                    "--base-model",
+                    "/m",
+                    "--peft-method",
+                    "none",
+                    "--output-dir",
+                    "/o",
+                    "--save-model-dir",
+                    "/s",
+                    "--clearml",
+                    "off",
+                    "--clearml-project",
+                    "",
+                    "--clearml-task",
+                    "",
+                    "--job-out",
+                    str(tmp_path / "j.json"),
+                    "--data-config-out",
+                    str(tmp_path / "missing" / "dc.json"),
+                ]
+            )
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert err.startswith("fms-hf-tuning: ERROR ") and "dc.json" in err
 
     def test_build_without_any_data_exits_1(self, tmp_path, capsys):
         e = base64.b64encode(b"{}").decode()
