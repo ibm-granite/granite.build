@@ -141,6 +141,12 @@ environment_configs:
             # oe-eval auto-detects cached predictions and skips generation
             bash /workspace/sage/sage/cluster/gb/scripts/${GB_SCRIPT} \
               2>&1 | tee /tmp/${EVAL_NAME}-execute.log
+            # The pipeline's own status is tee's; fail the step with the eval's.
+            rc=${PIPESTATUS[0]}
+            if [[ $rc -ne 0 ]]; then
+              echo "[$(date)] FAILED: ${EVAL_NAME} execution (exit code: ${rc})"
+              exit $rc
+            fi
 
             echo "$(date)" > ${OUTPUT_PATH}/${EVAL_NAME}.done
             echo "[$(date)] Execution phase complete: ${EVAL_NAME}"
