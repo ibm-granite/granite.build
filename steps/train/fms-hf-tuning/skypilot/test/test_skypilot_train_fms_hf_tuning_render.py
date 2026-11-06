@@ -380,6 +380,15 @@ class TestArgv:
         assert _opt(a, "--clearml-project") == "p"
         assert _opt(a, "--clearml-task") == "t"
 
+    def test_null_values_render_empty(self):
+        ctx = _ctx(peft_method="lora", base_model_id=None, clearml_project=None)
+        text = _render("run", ctx)
+        assert "--base-model-id ''" in text and "--clearml-project ''" in text
+        assert "None" not in text
+        a = _argv("run", ctx, "fms_hf_tuning_run.sh")
+        assert _opt(a, "--base-model-id") == ""
+        assert _opt(a, "--clearml-project") == ""
+
     def test_rendered_blocks_are_valid_bash(self):
         for block in ("setup", "run"):
             proc = subprocess.run(

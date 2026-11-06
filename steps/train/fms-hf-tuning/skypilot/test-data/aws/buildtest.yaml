@@ -16,6 +16,7 @@ target_expectations:
             peft_method: none
         metadata_matches:
           peft_method: "none"
+          distributed: "ddp"
           fms_hf_tuning_version: "3\\.2\\.2"
   - target_name: alora
     step_count: 1
@@ -28,6 +29,7 @@ target_expectations:
             peft_method: alora
         metadata_matches:
           peft_method: "alora"
+          distributed: "ddp"
           fms_hf_tuning_version: "3\\.2\\.2"
 space_uri: ../../space
 tests:
