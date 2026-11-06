@@ -5,7 +5,7 @@ step definitions. These are features of the Kubernetes `gbstep` step.
 
 > **On SkyPilot (SLURM, AWS, Kubernetes via SkyPilot)** use the built-in `command` step or
 > `custom_code_skypilot` instead; see [Steps](README.md). To size those steps (CPUs, memory,
-> GPUs), see [Sizing a SkyPilot SLURM step](../environments/skypilot-slurm-sizing.md).
+> GPUs), see [Sizing a SkyPilot step](../environments/skypilot-sizing.md).
 
 > **Audience:** users who want to run arbitrary commands as build steps with
 > minimal boilerplate.

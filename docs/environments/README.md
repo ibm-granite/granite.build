@@ -25,8 +25,8 @@ Every compute endpoint gbserver can run a step on, and the page that documents i
 | Local container (Docker / Podman) | `Docker` | direct | [docker.md](docker.md) |
 | Kubernetes / OpenShift | `K8s` | direct (Helm + AppWrapper) | [k8s.md](k8s.md) |
 | RunPod GPU pods | `Runpod` | direct (RunPod API) | [runpod.md](runpod.md) |
-| **SkyPilot** (multi-cloud) | `Skypilot` | per-step `sky.launch()` | [skypilot.md](skypilot.md) |
-| &nbsp;&nbsp;↳ SLURM | `Skypilot` | `default_cloud: slurm` | [skypilot-slurm.md](skypilot-slurm.md), [sizing a step](skypilot-slurm-sizing.md) |
+| **SkyPilot** (multi-cloud) | `Skypilot` | per-step `sky.launch()` | [skypilot.md](skypilot.md), [sizing a step](skypilot-sizing.md) |
+| &nbsp;&nbsp;↳ SLURM | `Skypilot` | `default_cloud: slurm` | [skypilot-slurm.md](skypilot-slurm.md) |
 | &nbsp;&nbsp;↳ Kubernetes | `Skypilot` | `default_cloud: kubernetes` | [skypilot-kubernetes.md](skypilot-kubernetes.md) |
 | &nbsp;&nbsp;↳ AWS | `Skypilot` | `default_cloud: aws` | [skypilot-aws.md](skypilot-aws.md) |
 
@@ -335,7 +335,7 @@ config:
   compute_config:                   # Generic resource hints, translated into backend resource specs.
     num_nodes: 1                    # SkyPilot reads these differently (num_gpus_per_node is
     num_gpus_per_node: 0            # ignored). See skypilot.md#how-compute_config-maps-to-skypilot
-    num_cpus_per_node: 0            # and skypilot-slurm-sizing.md.
+    num_cpus_per_node: 0            # and skypilot-sizing.md.
     total_memory_per_node: ""
 
   workload:                         # Used by bash-style steps to derive workspace/log paths.

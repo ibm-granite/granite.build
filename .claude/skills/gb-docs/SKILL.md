@@ -49,7 +49,7 @@ Everything is in **`references/`** next to this `SKILL.md` (the index below list
 
 **Environments / config / secrets / troubleshooting**
 - `references/help/troubleshooting.md` — **diagnosing failures** (server or build).
-- `references/environments/bash.md` — the **standalone bash backend** (most relevant here); also `docker.md`, `k8s.md`, `runpod.md`, `skypilot*.md`, `step-resolution.md`, and `setup/`. **Sizing a SLURM step** (CPUs, memory, GPUs, nodes → `#SBATCH`): `references/environments/skypilot-slurm-sizing.md`.
+- `references/environments/bash.md` — the **standalone bash backend** (most relevant here); also `docker.md`, `k8s.md`, `runpod.md`, `skypilot*.md`, `step-resolution.md`, and `setup/`. **Sizing a SkyPilot step** (CPUs, memory, GPUs, nodes; SLURM `#SBATCH`, Kubernetes, AWS): `references/environments/skypilot-sizing.md`.
 - `references/configuration/` — `config-files.md`, `environment-variables.md`, `gb-environment.md`.
 - `references/secrets/` — `local-secrets-manager.md`, `env-secrets-manager.md`, `ibmcloud-secrets-manager.md`; `references/rest-api/multi-provider-authentication.md`.
 

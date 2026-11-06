@@ -16,8 +16,7 @@ The implementation is [`Skypilot`](../../src/gbserver/environment/skypilot.py). 
 `Skypilot_managed` ([skypilot_managed.py](../../src/gbserver/environment/skypilot_managed.py)), runs the
 job under SkyPilot's managed-jobs controller; it inherits this configuration.
 
-> **Sizing a step:** see [How `compute_config` maps to SkyPilot](#how-compute_config-maps-to-skypilot),
-> and for SLURM [Sizing a SkyPilot SLURM step](skypilot-slurm-sizing.md).
+> **Sizing a step:** see [Sizing a SkyPilot step](skypilot-sizing.md) (SLURM, Kubernetes, AWS).
 
 ### Clouds
 
@@ -546,8 +545,8 @@ gbserver applies `compute_config` underneath the merged `resources` (step.yaml
 | `total_memory_per_node` | Becomes `sky.Resources.memory` on cloud catalogs; **skipped on slurm**. Use `resources.memory` there. |
 | `num_gpus_per_node` | **Not read.** Use `resources.accelerators`. |
 
-For SLURM, see [Sizing a SkyPilot SLURM step](skypilot-slurm-sizing.md), which
-also covers how to check with `sacct`.
+Per-cloud conversions, defaults and how to check a SLURM job with `sacct` are in
+[Sizing a SkyPilot step](skypilot-sizing.md).
 
 Request GPUs with `resources.accelerators` (in the step.yaml or
 the build.yaml), e.g. `accelerators: "H100:8"`. A step that needs the count at runtime can read

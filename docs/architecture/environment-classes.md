@@ -1,10 +1,18 @@
 # Environment Classes
 
-This document covers the `Environment` abstract base class and its `K8s` implementation.
+This document covers the `Environment` abstract base class and its implementations.
 
 **Source files:**
 - `src/gbserver/environment/environment.py` — `Environment` base
 - `src/gbserver/environment/k8s.py` — `K8s`
+- `src/gbserver/environment/skypilot.py` — `Skypilot`
+- `src/gbserver/environment/skypilot_managed.py` — `Skypilot_managed`
+- `src/gbserver/environment/docker.py` — `Docker`
+- `src/gbserver/environment/bash.py` — `Bash`
+- `src/gbserver/environment/runpod.py` — `Runpod`
+
+`K8s` is described in detail below. For the others, see their pages under
+[docs/environments/](../environments/README.md).
 
 ---
 

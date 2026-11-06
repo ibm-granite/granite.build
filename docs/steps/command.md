@@ -32,7 +32,7 @@ steps:
 `compute_config` is also honored where the environment uses it (see the matrix
 below). On Skypilot the step's `resources: {}` does not block it; see
 [How `compute_config` maps to SkyPilot](../environments/skypilot.md#how-compute_config-maps-to-skypilot)
-and [Sizing a SkyPilot SLURM step](../environments/skypilot-slurm-sizing.md).
+and [Sizing a SkyPilot step](../environments/skypilot-sizing.md).
 
 ## Environment support
 

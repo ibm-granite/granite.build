@@ -7,7 +7,7 @@
 > **Sizing a step:** `compute_config.num_cpus_per_node` becomes `--cpus-per-task` even when the
 > step's `resources` is `{}`; GPUs come only from `resources.accelerators` and memory only from
 > `resources.memory`. Details and how to check with `sacct`:
-> [Sizing a SkyPilot SLURM step](skypilot-slurm-sizing.md).
+> [Sizing a SkyPilot step](skypilot-sizing.md#slurm).
 
 ## SkyPilot patches
 
@@ -507,7 +507,7 @@ A malformed block (a bad path, partition or `sbatch_options` key or value, a non
 rejected when the environment loads. Partition names and `sbatch_options` keys and values are
 allowlisted because they become `#SBATCH` lines in the import script.
 
-File names are derived from the image reference (`us.icr.io/a/b:tag` → `us.icr.io-a-b-tag.sqsh`).
+File names are derived from the image reference (`quay.io/a/b:tag` → `quay.io-a-b-tag.sqsh`).
 
 The cache never fails a launch. If the import fails, times out or the login node is unreachable, gbserver
 logs a warning and launches from the registry reference as before. An `image_id` that is already a
@@ -590,7 +590,7 @@ underlying filesystem coexist.
 
 ### Sizing a step: CPUs, memory, GPUs, nodes
 
-See [Sizing a SkyPilot SLURM step](skypilot-slurm-sizing.md): what each `compute_config` and
+See [Sizing a SkyPilot step](skypilot-sizing.md#slurm): what each `compute_config` and
 `resources` key becomes in `#SBATCH`, common mistakes, and how to check with `sacct`.
 
 ### Multi-node jobs and NCCL
