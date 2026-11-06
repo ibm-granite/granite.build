@@ -179,8 +179,10 @@ torch 2.11.0+cu128 on `cuda:12.8.1-devel-ubuntu22.04`.
   That is why the base is `devel` and why its CUDA minor matches torch's.
 - **A CUDA 13.2 runtime on 580/590 drivers.** See [The torch/CUDA pair](#the-torchcuda-pair):
   it may rely on minor-version compatibility. Confirmed on aws (580) and BlueVela (590).
-- **chmod in two layers.** Pyxis on SLURM runs the container as the job user, not
-  root. The venv and uv's managed Python (`/opt/uv-python`, not root's home, since
+- **chmod in two layers.** SkyPilot runs the job as root in the container (on SLURM
+  through Pyxis's `--container-remap-root`), but the image must also work under a
+  runtime that runs it as an unprivileged user without remapping. The venv and uv's
+  managed Python (`/opt/uv-python`, not root's home, since
   the venv's interpreter is a symlink into it) get `chmod -R a+rX` in the install
   layer itself. `src/` is copied after it and made readable with a `find -maxdepth 2`
   that skips `.venv`. A later recursive chmod over `/opt/hf-peft-sft` would copy the
@@ -204,9 +206,10 @@ mitigations:
   default `USER` does not work under SkyPilot's docker runtime: SkyPilot sets the
   container up as root and saves root's environment (`HOME=/root`) to
   `/etc/profile.d`, so the non-root user logs in with `HOME=/root` and provisioning
-  fails. The VM exists for one job and is torn down after; Pyxis on SLURM still runs
-  the container as the job user. Restoring a non-root user needs a SkyPilot fix
-  (#566);
+  fails. The VM exists for one job and is torn down after. On SLURM, Pyxis remaps the
+  job to uid 0 inside the container (`--container-remap-root`), but on the host it is
+  still the submitting user, with that user's file access, not root's. Restoring a
+  non-root user needs a SkyPilot fix (#566);
 - files under `/opt` are readable by any uid but writable only by root;
 - the image is scanned for vulnerabilities before `make publish-image` (below).
 
@@ -274,7 +277,10 @@ per-commit git SHA. The image is large, and BlueVela caches a `.sqsh` per tag
 - Bump the suffix (`-1` to `-2`) when the Dockerfile, `requirements.lock` or `src/`
   changes. A change to comments only does not need a bump: the published image keeps the
   old comment text, and the step runs the same. #626 changed only comments in `src/` and
-  the Dockerfile, and kept `-6`.
+  the Dockerfile, and kept `-6`. A local `make image` then no longer matches the
+  published tag (the `COPY src/` layer differs), so under podman `make test` warns that
+  the tag "is already published as a different image" until the next bump. Run it with
+  `TEST_PUBLISHED=true` to skip that comparison.
 - Bump the prefix with the peft pin (for example `peft-v0.22.0-1`).
 
 After any edit to `requirements.in`, run `make lock` to recompile

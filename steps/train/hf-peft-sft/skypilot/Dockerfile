@@ -74,5 +74,6 @@ ENV HF_PEFT_SFT_HOME=/opt/hf-peft-sft \
 
 # Root, like the repo's other step images: SkyPilot's docker runtime saves root's
 # environment (HOME=/root) to /etc/profile.d, so a non-root default USER fails
-# provisioning. Pyxis on SLURM still runs the container as the job user.
+# provisioning. Pyxis on SLURM remaps the job to root inside the container
+# (--container-remap-root); on the host it is still the submitting user.
 WORKDIR /root
