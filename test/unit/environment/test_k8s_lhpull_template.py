@@ -50,35 +50,58 @@ def test_no_hostname_binary():
     assert not offenders, offenders
 
 
-def _run_guard(tmp_path: Path, writable: bool) -> subprocess.CompletedProcess:
+def test_bashpid_read_outside_pipeline():
+    """BASHPID inside `echo ... | tee` would name the pipeline subshell, not lhpull."""
+    offenders = [ln for ln in _shell_lines() if "BASHPID" in ln and "|" in ln]
+    assert not offenders, offenders
+    assert any(ln.strip() == 'MY_PID="${BASHPID}"' for ln in _shell_lines())
+
+
+def _gnu_stat() -> bool:
+    probe = subprocess.run(
+        ["stat", "-c", "%u", "/"], capture_output=True, text=True, check=False
+    )
+    return probe.returncode == 0
+
+
+def _run_guard(tmp_path: Path, unwritable: str = "") -> subprocess.CompletedProcess:
+    """Run the guard; *unwritable* names a file ("lock" or "state") to make read-only."""
     lhpull_dir = tmp_path / "cache"
     lhpull_dir.mkdir()
-    lock = lhpull_dir / ".llmbpull.lock"
-    lock.touch()
-    if not writable:
-        lock.chmod(0o444)
+    files = {
+        "lock": lhpull_dir / ".llmbpull.lock",
+        "state": lhpull_dir / ".llmbpull.state",
+    }
+    for f in files.values():
+        f.touch()
+    if unwritable:
+        files[unwritable].chmod(0o444)
     script = (
-        f'LHPULL_DIR="{lhpull_dir}"\nLOCK_FILE="{lock}"\n'
-        f"{_lock_guard()}\necho LOCK_OPENED"
+        f'LHPULL_DIR="{lhpull_dir}"\nLOCK_FILE="{files["lock"]}"\n'
+        f'STATE_FILE="{files["state"]}"\n{_lock_guard()}\necho GUARD_PASSED'
     )
     return subprocess.run(
         ["bash", "-c", script], capture_output=True, text=True, check=False
     )
 
 
-def test_lock_guard_opens_writable_lock(tmp_path):
-    result = _run_guard(tmp_path, writable=True)
+def test_guard_passes_when_writable(tmp_path):
+    result = _run_guard(tmp_path)
     assert result.returncode == 0, result.stderr
-    assert "LOCK_OPENED" in result.stdout
+    assert "GUARD_PASSED" in result.stdout
 
 
-def test_lock_guard_explains_permission_failure(tmp_path):
-    """An unwritable lock fails the step and names the uid and the file modes."""
+@pytest.mark.parametrize("unwritable", ["lock", "state"])
+def test_guard_explains_permission_failure(tmp_path, unwritable):
+    """An unwritable lock or state file fails the step, naming the uid and modes."""
     if os.geteuid() == 0:
         pytest.skip("root ignores file modes, so the open cannot fail")
-    result = _run_guard(tmp_path, writable=False)
+    result = _run_guard(tmp_path, unwritable)
     assert result.returncode == 1
-    assert "LOCK_OPENED" not in result.stdout
-    assert "ERROR: cannot open" in result.stdout
+    assert "GUARD_PASSED" not in result.stdout
+    assert "ERROR: cannot write to" in result.stdout
     assert "uid=" in result.stdout
     assert "group-writable" in result.stdout
+    if _gnu_stat():
+        # owner:group and mode per path, e.g. "  1000:0 -r--r--r-- .../.llmbpull.lock"
+        assert re.search(r"^  \d+:\d+ -r--r--r-- .*llmbpull", result.stdout, re.M)
