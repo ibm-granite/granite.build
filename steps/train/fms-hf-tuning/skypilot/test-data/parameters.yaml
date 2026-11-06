@@ -1,0 +1,10 @@
+# Parameters for build.yaml (gb build start -f build.yaml --parameters-path parameters.yaml).
+ENVIRONMENT: "skypilot/aws"
+# Public, Apache-2.0. A gated model needs HF_TOKEN in the step env (space secret).
+BASE_MODEL_ID: "ibm-granite/granite-3.3-2b-instruct"
+MODEL_URI: "env:///model"
+# 8x A100 80GB (p4de): FSDP across the node.
+ACCELERATORS: "A100-80GB:8"
+DATASET: "trl-lib/Capybara"
+CLEARML_PROJECT: "fms-hf-tuning"
+POLL_INTERVAL_SECONDS: 300

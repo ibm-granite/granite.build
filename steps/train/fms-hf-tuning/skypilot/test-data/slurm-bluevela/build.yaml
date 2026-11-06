@@ -1,0 +1,111 @@
+granite.build:
+  name: skypilot-slurm-bluevela-fms-hf-tuning
+  # fms-hf-tuning on IBM BlueVela over SLURM: both targets FSDP (fms-hf-tuning's
+  # FSDP1 defaults) on two H200s. SUCCESS proves: hfpull steps stage inputs onto
+  # shared /proj, the image runs under Pyxis from the shared .sqsh cache, LoRA
+  # trains under FSDP1 on a BOUND dataset and saves a NON-EMPTY adapter (the
+  # step refuses a 0-tensor one: huggingface/peft#3876), full fine-tuning trains
+  # under FSDP from a data_config whose data_paths read the bound input, ClearML
+  # tracks in offline mode, and each `model` artifact is registered.
+  #
+  # The base model is SmolLM2-135M, not -Instruct as on aws: BlueVela's hfpull
+  # runs in a 1 GiB cpu-partition cgroup and pulls the whole repo, and the
+  # Instruct repo's 1.7 GB of onnx exports get it OOM-killed (#597). The base
+  # repo has no chat template, so args.chat_template passes SmolLM2-Instruct's
+  # ChatML template inline ({% raw %} keeps gbserver from rendering it).
+  targets:
+    lora-fsdp:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      inputs:
+        base_model:
+          uri: hf:///HuggingFaceTB/SmolLM2-135M
+        # SLURM-SPECIFIC: data as a bound, staged dataset dir.
+        dataset:
+          uri: hf:///datasets/trl-lib/Capybara
+      outputs:
+        model:
+          uri: "env:///model"
+          type: model
+      steps:
+        - step_uri: space://steps/train/fms-hf-tuning
+          config:
+            poll_interval_seconds: 30
+            launcher_config:
+              resources:
+                # H200 is the only GPU bluevela schedules (its constraint).
+                accelerators: "H200:2"
+                # gbserver drops compute_config memory on slurm; bare GiB string.
+                memory: "128"
+              envs:
+                CLEARML_OFFLINE_MODE: "1"
+            fms_hf_tuning_config:
+              peft_method: lora
+              distributed: fsdp
+              base_model_id: HuggingFaceTB/SmolLM2-135M
+              clearml_enabled: true
+              clearml_project: gbtest-fms-hf-tuning
+              args:
+                chat_template: "{% raw %}{% for message in messages %}{% if loop.first and messages[0]['role'] != 'system' %}{{ '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|im_end|>\n' }}{% endif %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}{% endraw %}"
+                r: 8
+                lora_alpha: 16
+                target_modules: all-linear
+                dataset_conversation_field: messages
+                instruction_template: "<|im_start|>user"
+                response_template: "<|im_start|>assistant"
+                max_seq_length: 1024
+                max_steps: 3
+                per_device_train_batch_size: 1
+                gradient_accumulation_steps: 1
+                logging_steps: 1
+                seed: 123
+    full-fsdp:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      inputs:
+        base_model:
+          uri: hf:///HuggingFaceTB/SmolLM2-135M
+        # Read through data_config's data_paths, not as the `dataset` input.
+        capybara:
+          uri: hf:///datasets/trl-lib/Capybara
+      outputs:
+        model:
+          uri: "env:///model"
+          type: model
+      steps:
+        - step_uri: space://steps/train/fms-hf-tuning
+          config:
+            poll_interval_seconds: 30
+            launcher_config:
+              resources:
+                accelerators: "H200:2"
+                memory: "128"
+              envs:
+                CLEARML_OFFLINE_MODE: "1"
+            fms_hf_tuning_config:
+              peft_method: none
+              distributed: fsdp
+              clearml_enabled: true
+              clearml_project: gbtest-fms-hf-tuning
+              # fms-hf-tuning's data config: one dataset, tokenized with the
+              # chat template and masked to the assistant turns.
+              data_config:
+                dataprocessor:
+                  type: default
+                datasets:
+                  - name: capybara
+                    data_paths:
+                      - "{{ bindings.capybara.binding.path }}"
+                    data_handlers:
+                      - name: tokenize_and_apply_chat_template_with_masking
+                        arguments:
+                          remove_columns: all
+                          fn_kwargs:
+                            conversation_column_name: messages
+              args:
+                chat_template: "{% raw %}{% for message in messages %}{% if loop.first and messages[0]['role'] != 'system' %}{{ '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|im_end|>\n' }}{% endif %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}{% endraw %}"
+                max_seq_length: 1024
+                max_steps: 3
+                per_device_train_batch_size: 1
+                gradient_accumulation_steps: 1
+                learning_rate: 1.0e-05
+                logging_steps: 1
+                seed: 123
