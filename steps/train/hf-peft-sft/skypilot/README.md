@@ -245,14 +245,21 @@ checking that quay still scans the image.
 
 That costs one compile per launch, not one per rank. The job's container is writable: on
 SLURM, SkyPilot creates the Pyxis container with `--container-writable` and
-`--container-remap-root`, so the job is root inside it, and on aws it runs as root. Python
-therefore writes `__pycache__` into `/opt` on first import, and the setup phase's import
-check does most of that before training starts. On BlueVela (job 767378, 2026-11-04, `-6`,
-4 CPUs), importing the training stack took 14.5 s the first time and 4.7 s after, including
-in the next step in the same container. With bytecode writing off it took 13.4 s every time.
-A `PYTHONPYCACHEPREFIX` adds nothing (4.8 s warm; 23.9 s cold on GPFS), so the step sets
-none. Do not set `PYTHONDONTWRITEBYTECODE` either: every process would then compile in
-memory.
+`--container-remap-root`, so the job is root inside it. The image sets no `USER`
+(`test_runs_as_root_for_skypilot`), so it runs as root elsewhere too. In a local root
+container, the first `import torch` wrote 898 `.pyc`; this was not measured on aws. Python
+therefore writes `__pycache__` into `/opt` on first import, and the next step in the same
+container reuses it.
+
+The setup phase's import check (`import accelerate, bitsandbytes, clearml, datasets,
+deepspeed, peft, torch, transformers, trl`, top-level only) compiles nearly all of what
+training needs. On BlueVela (job 851864, 2026-11-06, `-6`, 4 CPUs) it took 16.2 s and
+wrote 4,477 `.pyc`. The training script's own imports (`AutoModelForCausalLM`,
+`BitsAndBytesConfig`, `SFTTrainer`, `LoraConfig`, `load_dataset`, ...) then took 6.0 s and
+wrote 88 more, against 5.7 s fully warm. With bytecode writing off, the full import took
+13.4 s every time (job 767378, 2026-11-04). A `PYTHONPYCACHEPREFIX` adds nothing (4.8 s
+warm, 23.9 s cold on GPFS), so the step sets none. Do not set `PYTHONDONTWRITEBYTECODE`
+or `python -B` either: every process would then compile in memory.
 
 `peft-v0.21.2-1` had 5 more fixable HIGH, all in the `msgpack` 1.1.2, `urllib3` 2.7.0
 and `setuptools` 70.3.0 vendored inside **pip** in uv's managed CPython (never run by
@@ -265,7 +272,9 @@ per-commit git SHA. The image is large, and BlueVela caches a `.sqsh` per tag
 (each new tag means a fresh cold import), so it must not churn on unrelated commits.
 
 - Bump the suffix (`-1` to `-2`) when the Dockerfile, `requirements.lock` or `src/`
-  changes.
+  changes. A change to comments only does not need a bump: the published image keeps the
+  old comment text, and the step runs the same. #626 changed only comments in `src/` and
+  the Dockerfile, and kept `-6`.
 - Bump the prefix with the peft pin (for example `peft-v0.22.0-1`).
 
 After any edit to `requirements.in`, run `make lock` to recompile

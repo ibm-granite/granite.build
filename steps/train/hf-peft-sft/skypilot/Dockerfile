@@ -41,9 +41,10 @@ RUN apt-get update \
 COPY --from=uv /uv /uvx /usr/local/bin/
 
 # Managed Python under /opt, not root's home: the venv's interpreter is a symlink
-# into it, and Pyxis on SLURM runs the job as the submitting user. No bytecode at
-# install time: quay's scanner stalls on it (see README, Scanning). The job's
-# container is writable, so Python writes it on first import instead.
+# into it, and /opt (a+rX) works whatever user and $HOME the container runtime
+# gives the job. No bytecode at install time: quay's scanner stalls on it (see
+# README, Scanning). SkyPilot runs the job as root in a writable container (Pyxis:
+# --container-remap-root --container-writable), so Python writes it on first import.
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python \
     UV_NO_CACHE=1 \
     UV_LINK_MODE=copy \

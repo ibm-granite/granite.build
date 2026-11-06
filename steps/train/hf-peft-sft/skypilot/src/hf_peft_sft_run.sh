@@ -137,7 +137,8 @@ if [ -d "$out_dir" ] && [ -n "$(ls -A "$out_dir")" ] && [ ! -f "$out_dir/adapter
 fi
 rm -rf "$stage"
 
-# Caches in the (writable) step workdir: /opt is read-only for Pyxis's job user.
+# The datasets cache goes in the step workdir, which belongs to the run, not in
+# the image's $HOME/.cache.
 export HF_DATASETS_CACHE="$(pwd)/hf_cache/datasets"
 export HF_HUB_DISABLE_TELEMETRY=1
 
