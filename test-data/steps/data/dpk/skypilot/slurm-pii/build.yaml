@@ -53,7 +53,7 @@ granite.build:
           uri: "env:///tmp/dpk-pii-output"
           type: dataset
       steps:
-        - step_uri: space://steps/dpk
+        - step_uri: space://steps/data/dpk
           config:
             poll_interval_seconds: 5
             dpk_config:

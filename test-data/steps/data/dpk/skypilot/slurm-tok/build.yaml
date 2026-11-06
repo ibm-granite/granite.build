@@ -71,7 +71,7 @@ granite.build:
           uri: "env:///tokens"
           type: dataset
       steps:
-        - step_uri: space://steps/dpk
+        - step_uri: space://steps/data/dpk
           config:
             # Fast completion detection (the skypilot monitor's own default is
             # 300s, which would dominate wall-clock for this quick job).
