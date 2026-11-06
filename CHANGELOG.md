@@ -49,6 +49,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requested chat template) before registering it. Build tests on local SLURM and local
   kind run MergeKit's `gradient-slerp` example on SmolLM2-135M + -Instruct, and
   `make test-mergekit` runs the real-MergeKit tests in a separate venv.
+- **`fms-hf-tuning` step (#231)**, `space://steps/train/fms-hf-tuning`: full fine-tuning, LoRA and
+  aLoRA with foundation-model-stack/fms-hf-tuning 3.2.2 (`tuning.sft_trainer`) on any SkyPilot
+  endpoint, single node, DDP or FSDP (fms-hf-tuning's FSDP1 defaults), ClearML tracking (`auto`
+  when `CLEARML_API_*` creds are present). Training data from a bound dataset, an HF id, or an
+  fms-hf-tuning `data_config`; `args` is fms-hf-tuning's JSON config, checked against its own
+  parser before any GPU time. Registers the full model or the adapter. Custom image
+  `quay.io/granitebuild/steps/train/fms-hf-tuning/skypilot:fms-v3.2.2-1` (torch 2.8.0 / CUDA 12.8,
+  transformers 4.55.4, flash-attn 2.8.3) with a fully hashed lock. Build tests on skypilot/aws
+  (full, aLoRA) and BlueVela SLURM (LoRA/FSDP, full/FSDP with `data_config`). K8s, SkyPilot-K8s
+  and LSF are follow-ups.
 - **`make publish-image` refuses to overwrite an existing image tag (#229).** A tag must keep
   pointing at one image, and SLURM's `slurm_image_cache` keys its `.sqsh` by tag, so a re-pushed
   tag never reached it. `publish-image` now checks the registry first and pushes only a new tag;
