@@ -162,8 +162,23 @@ Scan every image before `make publish-image`, as for hf-peft-sft:
 4. Record the CRITICAL and HIGH counts here and in the PR, separating findings in
    packages held back by fms-hf-tuning's caps.
 
-Results for `fms-v3.2.2-1`: _fill in from Task 7 Step 7 and the quay scan after
-publishing._
+Results for `fms-v3.2.2-1` (manifest
+`sha256:b683b78bf5a4e0d2b6af71af3f143953f25c3b84a9e47439e574cb7175e6b293`, scanned
+2026-11-06):
+
+- **trivy 0.76.2** (CRITICAL+HIGH): 0 CRITICAL; 7 HIGH, all in Python packages and
+  none in the Ubuntu layer. 5 have a fix, and every one is held back by an upstream
+  cap, so none is fixable in this image:
+
+  | package | installed | fixed in | CVEs | held back by |
+  |---|---|---|---|---|
+  | transformers | 4.55.4 | 5.3.0 / 5.5.0 / 5.10.0 | CVE-2026-4372, CVE-2026-5241, CVE-2026-9856 | fms-hf-tuning `transformers<=4.55.4` |
+  | torch | 2.8.0 | 2.10.0 | CVE-2026-24747 | fms-hf-tuning `torch<2.9` |
+  | fsspec | 2026.2.0 | 2026.6.0 | CVE-2026-104851 | datasets 4.8.5 `fsspec<=2026.2.0` (fms-hf-tuning `datasets<5`) |
+
+  The other 2 have no fix yet: transformers 4.55.4 (CVE-2026-80047) and flash_attn
+  2.8.3 (CVE-2026-31253).
+- **quay (Clair)**: queued at publish time; record the counts here once it finishes.
 
 ### Bumping IMAGE_VERSION
 
