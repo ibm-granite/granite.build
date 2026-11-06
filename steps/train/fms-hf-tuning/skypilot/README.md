@@ -28,7 +28,9 @@ comes from #596.
 ```
 step-template.yaml          the step: config defaults, step-creation validation, launcher blocks
 Makefile                    STEP_NAME, REGISTRY, IMAGE_VERSION, `make lock`; includes steps/common.mk
-Dockerfile, .dockerignore   the image: CUDA 12.8 base, uv, the hashed lock, src/
+Dockerfile, .dockerignore   the image: CUDA 12.8 base, uv, the hashed lock, the patch, src/
+patches/                    image build only (not published)
+  lightglue_no_remote_code.py   CVE-2026-5241 backport on transformers 4.55.4
 requirements.in             direct pins (fms-hf-tuning, the flash-attn wheel, clearml)
 requirements.lock           full closure with hashes, compiled by `make lock`
 .gbignore                   files gbserver ships without Jinja-rendering (docs, src/)
@@ -125,8 +127,9 @@ in the lock: PyPI has only the sdist, which takes hours to compile. The `abiTRUE
 build matches torch 2.8's `_GLIBCXX_USE_CXX11_ABI` (True). fms-hf-tuning turns
 `use_flash_attn` on by default.
 
-`fms-v3.2.2-2` is 8.5 GB locally (4.7 GB compressed on quay). `.dockerignore` keeps
-local `__pycache__` out of `COPY src/` (the first test build shipped it).
+The image is 8.5 GB locally (4.7 GB compressed on quay; measured on `fms-v3.2.2-2`).
+`.dockerignore` keeps local `__pycache__` out of `COPY src/` (the first test build
+shipped it).
 
 **Apple Silicon.** Under podman's qemu x86 emulation, `import datasets` (pyarrow)
 hangs and `import flash_attn` segfaults; the same versions import natively on arm64
@@ -174,7 +177,7 @@ Results for `fms-v3.2.2-1` (manifest
 
   | package | installed | fixed in | CVEs | held back by |
   |---|---|---|---|---|
-  | transformers | 4.55.4 | 5.3.0 / 5.5.0 / 5.10.0 | CVE-2026-4372, CVE-2026-5241, CVE-2026-9856 | fms-hf-tuning `transformers<=4.55.4` |
+  | transformers | 4.55.4 | 5.3.0 / 5.5.0 / 5.10.0 | CVE-2026-4372, CVE-2026-5241 (patched from `-3`, below), CVE-2026-9856 | fms-hf-tuning `transformers<=4.55.4` |
   | torch | 2.8.0 | 2.10.0 | CVE-2026-24747 | fms-hf-tuning `torch<2.9` |
   | fsspec | 2026.2.0 | 2026.6.0 | CVE-2026-104851 | datasets 4.8.5 `fsspec<=2026.2.0` (fms-hf-tuning `datasets<5`) |
 
@@ -189,20 +192,40 @@ Results for `fms-v3.2.2-1` (manifest
   - **torch 2.8.0**: 5 High (fixed in 2.9.0 / 2.10.0);
   - **fsspec 2026.2.0**: 2 High (fixed in 2026.6.0).
 
-  None is fixable in this image for the reasons in the table above. The Critical is
-  the reason this exception is recorded: lifting it needs an fms-hf-tuning release
-  that allows transformers 5.
+  None of these can be upgraded away in this image, for the reasons in the table
+  above. The Critical is the same advisory trivy rates High, CVE-2026-5241: from
+  `-3` it is **patched in place** (below).
 
 `fms-v3.2.2-2` (manifest
 `sha256:3b4acd1122961016323663ee280245ca3723f5e8c7f4bd4ee019e242f84c0fbe`, published
 2026-11-06) changes only `src/` (run.sh: the scratch-dir overlap refusal and the
 accelerate exit-code message), on the same lock and base. trivy 0.76.2 gives the same
-result as `-1`: 0 CRITICAL, 7 HIGH, the same packages and CVEs. quay's scan of `-2` was
-queued at publish time; the package set is identical to `-1`.
+result as `-1`: 0 CRITICAL, 7 HIGH, the same packages and CVEs.
+
+**The CVE-2026-5241 backport (from `fms-v3.2.2-3`).** This is the quay Critical
+(GHSA-fgcw-684q-jj6r, PYSEC-2026-2290). transformers' LightGlueConfig takes
+`trust_remote_code` from the model's own `config.json` and passes it to a nested
+`AutoConfig.from_pretrained` for a keypoint detector that is not a built-in type. So
+loading an attacker-controlled `base_model` runs its Python, even though
+fms-hf-tuning never sets `trust_remote_code`; a local check against 4.55.4 confirmed
+the payload runs.
+- The fixed transformers releases are 5.x, which fms-hf-tuning's cap excludes.
+- So the Dockerfile applies `patches/lightglue_no_remote_code.py`, a backport of
+  upstream's fix (huggingface/transformers 676559d5, "[LightGlue] Remove remote code
+  execution"), after the hashed install.
+- After the patch the keypoint detector config always comes from `CONFIG_MAPPING`
+  (an unknown type raises `KeyError`), and the detector model never gets
+  `trust_remote_code`. LightGlue is a keypoint matcher, so nothing the step trains
+  uses it.
+- The patch fails the build if its target lines change.
+- `test/test_lightglue_patch.py` runs the exploit against a copy of the real 4.55.4:
+  the payload runs unpatched and not patched.
+- Scanners match on the package version, so trivy and quay still report
+  CVE-2026-5241 against transformers 4.55.4. That finding is patched, not open.
 
 ### Bumping IMAGE_VERSION
 
-`IMAGE_VERSION` is stable (`fms-v3.2.2-2`), not the git SHA: BlueVela caches a
+`IMAGE_VERSION` is stable (`fms-v3.2.2-3`), not the git SHA: BlueVela caches a
 `.sqsh` per tag. Bump the suffix when the Dockerfile, `requirements.lock` or `src/`
 changes; the prefix with the fms-hf-tuning pin (for example `fms-v3.3.0-1`). After
 editing `requirements.in`, run `make lock` and commit both files. On an fms-hf-tuning
@@ -217,7 +240,7 @@ public), then:
 
 ```bash
 make -C steps/train/fms-hf-tuning/skypilot image publish-image
-sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/fms-hf-tuning/skypilot:fms-v3.2.2-2
+sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/fms-hf-tuning/skypilot:fms-v3.2.2-3
 ```
 
 `present` means it pulls anonymously. `make publish-step` refuses until the image
@@ -255,6 +278,7 @@ The unit tests at `test/`'s root need no cluster, GPU or image:
 | `test_fms_hf_tuning_entry.py` | `step_line`, the `train` wrapper, rank-0 printing, upstream's `additional_callbacks`, and a 2-step CPU run (full + LoRA) through the wrapper (the last three need `tuning`) |
 | `test_fms_hf_tuning_guard_sh.py`, `test_fms_hf_tuning_setup_sh.py` | staged-path checks; the image check (files present, stack imported, `nvidia-smi` optional) |
 | `test_accelerate_configs.py`, `test_fms_hf_tuning_run_sh.py` | the three configs (accelerate parses them: needs `accelerate.commands`); the run script with stubs: launch argv per mode and GPU count, #604, the job, ClearML, output safety, the swap, failures and markers |
+| `test_lightglue_patch.py` | the CVE-2026-5241 backport: every target replaced, a missing or duplicated target refused, applied after the hashed install; and (CPU venv) a crafted LightGlue repo runs its payload against a copy of real transformers 4.55.4 unpatched, and not once patched |
 | `test_dockerfile.py`, `test_docs.py`, `test_exemplar_build.py` | the image recipe; USAGE.md vs the template; every shipped build.yaml vs the contract, and every shipped target rendered through the template's `setup:`/`run:` blocks under gbserver's strict renderer (after the inner fill of `{% raw %}` and bindings, which is checked too) |
 
 Run them with `-m "not extended"` and AWS credentials unset:
@@ -274,7 +298,7 @@ uvx --from uv==0.13.6 uv venv -q --python 3.12 /tmp/fms-cpu-venv
 VIRTUAL_ENV=/tmp/fms-cpu-venv uvx --from uv==0.13.6 uv pip install fms-hf-tuning==3.2.2 clearml==2.1.12 pytest
 PYTHONPATH=src /tmp/fms-cpu-venv/bin/python -m pytest -c /dev/null --noconftest \
   test/test_fms_hf_tuning_job.py test/test_fms_hf_tuning_job_upstream.py \
-  test/test_fms_hf_tuning_entry.py test/test_accelerate_configs.py
+  test/test_fms_hf_tuning_entry.py test/test_accelerate_configs.py test/test_lightglue_patch.py
 ```
 
 (`--noconftest`: `steps/conftest.py` loads the repo-wide conftest, which needs

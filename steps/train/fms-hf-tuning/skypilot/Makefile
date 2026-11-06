@@ -11,7 +11,7 @@ REGISTRY ?= quay.io/granitebuild
 # Stable tag, not the git SHA: BlueVela caches a .sqsh per tag. Bump the suffix
 # when the Dockerfile, requirements.lock or src/ changes; the prefix with
 # fms-hf-tuning.
-IMAGE_VERSION ?= fms-v3.2.2-2
+IMAGE_VERSION ?= fms-v3.2.2-3
 
 # Pinned uv for the lock, same version as the image's uv stage.
 UV_LOCK ?= uvx --from uv==0.13.6 uv
