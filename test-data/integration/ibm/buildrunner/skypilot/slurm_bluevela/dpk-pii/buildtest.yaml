@@ -16,7 +16,7 @@ target_expectations:
   # read-scoped HF_TOKEN.
   #
   # Verified against green runs on 2026-09-28 (builds b6459799, deda8eac), which
-  # depend on the SkyPilot fork fix described in test_dpk_pii.py.
+  # depend on the SkyPilot file-mount fix described in test_dpk_pii.py.
   - target_name: redact
     step_count: 2              # hfpull(docs) + dpk
     input_artifact_count: 1    # docs
@@ -55,8 +55,7 @@ tests:
 # No simulated failure: the step fails the build on a DPK non-zero exit, so
 # SUCCESS is a real signal that the transform ran.
 simulate_step_failure: false
-# REQUIRES the SlurmCommandRunner wrap-exemption fix in the pinned SkyPilot
-# fork; without it this fails in SkyPilot's file-mount stage (`sudo mkdir -p
+# REQUIRES the Slurm file-mount wrap-exemption fix in sky_patches.py; without it this fails in SkyPilot's file-mount stage (`sudo mkdir -p
 # /proj/...` needs a password on the compute node). See test_dpk_pii.py.
 # 60 minutes, rather than the 20-30 the sibling bluevela fixtures use. The
 # [pii-redactor] extra resolves to 125 packages including torch, flair, and

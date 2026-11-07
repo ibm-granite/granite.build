@@ -37,7 +37,7 @@ Inputs are assetstore bindings (portable across endpoints), not `file_mounts`.
 | Name | Kind | Required | Type | Purpose |
 |---|---|---|---|---|
 | `base_model` | input | **yes** | model | The model to adapt. Must be a Hugging Face model directory with a `config.json` at its root. An `hf://` URI or a prior-step model binding. Passed as `--model_name_or_path <path>`. |
-| `dataset` | input | no | dataset | Training data as a staged dataset dir (for example an `hf:///datasets/...` URI). Passed to `load_dataset(<path>, split=<dataset_split>)`; a `datasets` `save_to_disk` dir also works. |
+| `dataset` | input | no | dataset | Training data as a staged dataset dir (for example an `hf:///datasets/...` URI; `hf:///datasets/<org>/<repo>/<revision>/<dir>` stages and binds just that directory). Passed to `load_dataset(<path>, split=<dataset_split>)`; a `datasets` `save_to_disk` dir also works. |
 | `adapter` | output | no | model | The trained PEFT adapter dir. Registered under the name in `hf_peft_sft_config.output` (default `adapter`). |
 
 **Exactly one data source.** Either bind a `dataset` input or set

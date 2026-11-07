@@ -146,7 +146,7 @@ config:
           # under tmpdir and must sit on storage shared by ALL login nodes behind
           # the HostName candidates: a node-local path gives each login node its
           # own divergent skylet state. $HOME is GPFS-shared across the login
-          # nodes (the fork expands $VARs with the remote login user's
+          # nodes (SkyPilot expands $VARs with the remote login user's
           # environment). /opt/nvme is a compute-node path — it does not exist on
           # any login node, and /opt is root-owned, so it cannot be created
           # there either.

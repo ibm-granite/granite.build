@@ -301,7 +301,7 @@ class TestPyxisGpuSbatchDirectives:
 
     @pytest.mark.asyncio
     async def test_gpus_directive_is_per_node_so_multinode_stays_consistent(self):
-        # The fork's SLURM backend emits --gres=gpu:<type>:<count> PER NODE
+        # SkyPilot's SLURM backend emits --gres=gpu:<type>:<count> PER NODE
         # from the same resource spec, while SLURM's --gpus counts across the
         # whole job — the two would contradict each other on a multi-node
         # step (num_nodes > 1), e.g. TP=16 over 2 nodes. The generated

@@ -230,10 +230,10 @@ GB_ENVIRONMENT=STANDALONE GBTEST_MODE=live \
 replaces the repo's pinned duckdb, fsspec, pyarrow and opentelemetry. Run it with a
 separate venv: `<venv>/bin/python -m pytest -c /dev/null --noconftest <file>`.
 
-**Cancellation and the resume test.** Cancelling a SkyPilot SLURM build doesn't stop its
-task with the currently pinned SkyPilot fork
-(https://github.com/ibm-granite/granite.build/issues/533). The fix is in
-https://github.com/cmadam/skypilot/pull/5. Until that lands, the resume test also
+**Cancellation and the resume test.** Cancelling a SkyPilot SLURM build didn't stop its
+task with the previously pinned SkyPilot
+(https://github.com/ibm-granite/granite.build/issues/533). The current pin includes the
+upstream fix (skypilot-org/skypilot PR 10296); until a run confirms it, the resume test also
 `scancel`s the step's SLURM job after requesting cancellation. With
 `GBTEST_DD_BUILD_CANCEL_ONLY=true` it relies on the build cancellation alone, which
 passes only against a SkyPilot carrying the fix. The fix was verified that way on
