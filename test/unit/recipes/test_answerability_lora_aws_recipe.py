@@ -53,6 +53,18 @@ _ENV = (
     / "environment-template.yaml"
 )
 _EFS_ROOT = "/mnt/gb-shared/"
+# The published hf-peft-sft step that space://steps/train/hf-peft-sft resolves to.
+_STEP = (
+    _REPO
+    / "configurations"
+    / "assets"
+    / "environments"
+    / "skypilot"
+    / "steps"
+    / "train"
+    / "hf-peft-sft"
+    / "step.yaml"
+)
 
 
 # The recipe ships without data; a test supplies a stand-in, as the user would.
@@ -186,6 +198,19 @@ def test_no_slurm_only_settings_remain(tmp_path):
     assert "zone" not in config
     assert "sbatch_options" not in config["launcher_config"]
     assert config["launcher_config"]["resources"] == {"cpus": "4+", "memory": "16+"}
+
+
+def test_prepare_runs_in_the_image_the_trains_run_in(tmp_path):
+    """prepare borrows the hf-peft-sft image for its venv and counts tokens with
+    its transformers, to drop the rows train would truncate. A different image
+    could count differently, so PREP_IMAGE must follow the step's image."""
+    step = yaml.safe_load(_STEP.read_text())["config"]["hf_peft_sft_config"]
+    build = _build(tmp_path, "METHODS=alora,lora")
+    prepare = build["targets"]["prepare"]["steps"][0]["config"]
+    image = prepare["command_config"]["image"]
+    for target in _trains(build).values():
+        train_image = _hps(target).get("image_id", step["image_id"])
+        assert image == train_image.removeprefix("docker:")
 
 
 def test_instance_type_only_when_set(tmp_path):
