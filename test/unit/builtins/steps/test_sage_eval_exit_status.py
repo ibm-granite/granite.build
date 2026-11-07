@@ -1,21 +1,6 @@
 """The AWS sage-eval steps must report a failed eval as a failure (#488).
 
-The sage-eval step runs the eval as ``bash <script> 2>&1 | tee /tmp/sage-eval.log``.
-Without ``set -o pipefail`` the pipeline's status was tee's, so under ``set -e`` a
-failing eval script never stopped the step, and the step went on to emit any results
-file under the experiment as SUCCESS. Its fallback search compared against the tee
-log with ``-newer``; tee writes the log until the eval ends, so no file the eval wrote
-was newer than it. The fallback now compares against a marker touched before the eval.
-
-The sage-eval-bcb steps run the same pipeline without ``set -e``, so the eval's status
-was ignored: the step wrote ``.done`` and emitted any results or predictions file it
-found. They now check the eval's status right after the pipeline.
-
-The grouped steps printed ``FAILED: <eval> (exit code: $?)`` after a ``$(date)`` in
-the same word, which resets ``$?``, so the message always said 0.
-
-These tests cut the real blocks out of each step.yaml and run them in bash, with the
-eval script replaced by a stub.
+Each test cuts a block out of a step.yaml and runs it in bash with a stub eval.
 """
 
 import os
@@ -24,7 +9,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
+
+from .sage_eval_steps import one_script, shell_options
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 ENVS = REPO_ROOT / "configurations/assets/environments/skypilot"
@@ -47,46 +33,52 @@ GROUPED_STEPS = [
 ]
 
 SCRIPTS_DIR = "/workspace/sage/sage/cluster/gb/scripts/"
+# The line each bcb step runs its eval with.
+BCB_EVAL_CALL = f"bash {SCRIPTS_DIR}${{GB_SCRIPT}} \\"
 EXPERIMENT = "exp-ckpt_1000"
 STALE = 0
 ARTIFACT = re.compile(r"GB_ARTIFACT_ID:sage_eval_results GB_ARTIFACT_PATH:(.+)")
 
 
-def _strings(node):
-    if isinstance(node, str):
-        yield node
-    elif isinstance(node, dict):
-        for v in node.values():
-            yield from _strings(v)
-    elif isinstance(node, list):
-        for v in node:
-            yield from _strings(v)
-
-
 def _run_script(step: str) -> str:
-    """The step's run script: the one string that emits sage_eval_results."""
-    cfg = yaml.safe_load((ENVS / step / "step.yaml").read_text(encoding="utf-8"))
-    (run,) = [s for s in _strings(cfg) if "GB_ARTIFACT_ID:sage_eval_results" in s]
-    return run
+    """Return a sage-eval or grouped step's run script.
 
+    Args:
+        step: A step path under ``ENVS``.
 
-def _shell_options(script: str) -> str:
-    """The ``set`` lines at the top of a run script, before any other command."""
-    options = []
-    for line in script.splitlines():
-        if re.match(r"\s*set\s+[-+]", line):
-            options.append(line.strip())
-        elif line.strip() and not line.strip().startswith("#"):
-            break
-    return "\n".join(options)
+    Returns:
+        The one script in the step that emits ``sage_eval_results``.
+    """
+    return one_script(ENVS / step / "step.yaml", "GB_ARTIFACT_ID:sage_eval_results")
 
 
 def _indent(line: str) -> int:
+    """Return the number of leading whitespace characters in ``line``.
+
+    Args:
+        line: One line of a script.
+
+    Returns:
+        The indentation width.
+    """
     return len(line) - len(line.lstrip())
 
 
 def _if_block(lines: list[str], start: int, opener: str) -> tuple[int, int]:
-    """Indexes of the first ``opener`` line at or after ``start`` and of its ``fi``."""
+    """Find an ``if`` block in a script.
+
+    Args:
+        lines: The script's lines.
+        start: The index to start looking from.
+        opener: A substring of the block's ``if`` line.
+
+    Returns:
+        The indexes of the first ``opener`` line at or after ``start``, and of the
+        ``fi`` at the same indentation that closes it.
+
+    Raises:
+        StopIteration: If no line contains ``opener``, or the block has no ``fi``.
+    """
     head = next(i for i in range(start, len(lines)) if opener in lines[i])
     end = next(
         i
@@ -105,7 +97,7 @@ def _eval_and_emit_block(step: str) -> str:
     _, end = _if_block(lines, start, 'if [ -n "$RESULT_FILE" ]')
     block = "\n".join(lines[start : end + 1])
     assert "{{" not in block and "{%" not in block, block
-    return f"{_shell_options(script)}\n{block}"
+    return f"{shell_options(script)}\n{block}"
 
 
 def _run_sage_eval(step: str, tmp_path: Path, stub: str):
@@ -159,6 +151,7 @@ def test_a_failing_eval_script_fails_the_step(step, tmp_path):
 
 @pytest.mark.parametrize("step", SAGE_EVAL_STEPS)
 def test_a_passing_eval_emits_its_result(step, tmp_path):
+    """A passing eval emits the results file it wrote under the experiment."""
     stub = f'mkdir -p "$OUTPUT_BASE_PATH/{EXPERIMENT}/ifeval"\n'
     stub += f'echo {{}} > "$OUTPUT_BASE_PATH/{EXPERIMENT}/ifeval/metrics-all.jsonl"\n'
     result, out, emitted = _run_sage_eval(step, tmp_path, stub)
@@ -179,7 +172,20 @@ def test_the_fallback_finds_a_file_written_by_this_eval(step, tmp_path):
 
 
 @pytest.mark.parametrize("step", SAGE_EVAL_STEPS)
+def test_the_fallback_ignores_a_new_file_from_another_experiment(step, tmp_path):
+    """A rung running in parallel under the same output dir writes a matching file
+    during this eval; the fallback must not emit it as this rung's result."""
+    stub = 'mkdir -p "$OUTPUT_BASE_PATH/exp-ckpt_2000/code-eval"\n'
+    stub += 'echo a,b > "$OUTPUT_BASE_PATH/exp-ckpt_2000/code-eval/summary.csv"\n'
+    stub += "echo 'eval finished'\n"
+    result, _, emitted = _run_sage_eval(step, tmp_path, stub)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert emitted is None
+
+
+@pytest.mark.parametrize("step", SAGE_EVAL_STEPS)
 def test_the_fallback_ignores_a_file_older_than_the_eval(step, tmp_path):
+    """A matching file from before the eval is not emitted, so the step fails."""
     out = tmp_path / "out"
     old = out / EXPERIMENT / "code-eval/old.csv"
     old.parent.mkdir(parents=True)
@@ -197,20 +203,18 @@ def _failure_branch(step: str) -> str:
     lines = script.splitlines()
     start, end = _if_block(lines, 0, f"if bash {SCRIPTS_DIR}")
     block = "\n".join(lines[start : end + 1])
-    return f"{_shell_options(script)}\n{block}"
+    return f"{shell_options(script)}\n{block}"
 
 
 def _bcb_eval_block(step: str) -> str:
-    """A bcb step's run-script lines from the eval call to the end of the script."""
-    cfg = yaml.safe_load((ENVS / step / "step.yaml").read_text(encoding="utf-8"))
-    launcher = cfg["environment_configs"]["Skypilot"]["default_launcher"]
-    run = cfg["environment_configs"]["Skypilot"]["launchers"][launcher]["config"]["run"]
+    """A bcb step's run-script lines from the eval call to the end of the script.
+
+    The run script is the one script in the step that calls the eval, found by
+    content like the other steps' scripts.
+    """
+    run = one_script(ENVS / step / "step.yaml", BCB_EVAL_CALL)
     lines = run.splitlines()
-    start = next(
-        i
-        for i, l in enumerate(lines)
-        if l.strip() == f"bash {SCRIPTS_DIR}${{GB_SCRIPT}} \\"
-    )
+    start = next(i for i, l in enumerate(lines) if l.strip() == BCB_EVAL_CALL)
     block = "\n".join(lines[start:])
     assert "{{" not in block and "{%" not in block, block
     return block
@@ -255,6 +259,7 @@ def test_a_failing_bcb_eval_fails_the_step(step, tmp_path):
 
 @pytest.mark.parametrize("step", BCB_STEPS)
 def test_a_passing_bcb_eval_emits_its_output(step, tmp_path):
+    """A passing eval emits the results or predictions file it wrote."""
     rel, artifact_id = BCB_STEPS[step]
     stub = f'mkdir -p "$OUTPUT_PATH/{Path(rel).parent}"\necho {{}} > "$OUTPUT_PATH/{rel}"\n'
     result, output = _run_bcb(step, tmp_path, stub)
@@ -266,6 +271,8 @@ def test_a_passing_bcb_eval_emits_its_output(step, tmp_path):
 
 @pytest.mark.parametrize("step", GROUPED_STEPS)
 def test_a_grouped_step_prints_the_evals_exit_code(step, tmp_path):
+    """A failed eval in a group is reported with its own exit code, counted as a
+    failure, and gets no .done marker."""
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     (scripts / "stub.sh").write_text("exit 7\n")

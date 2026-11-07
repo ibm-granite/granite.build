@@ -25,7 +25,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
+
+from .sage_eval_steps import one_script, shell_options
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 ENVIRONMENTS = REPO_ROOT / "configurations/assets/environments"
@@ -58,25 +59,6 @@ LONGEST_SOCKET_NAME = "420bb520-b3a8-41b9-b2f3-cf3dd3b25e7c"
 NVME_TEST = '[ -d "/opt/nvme" ]'
 
 
-def _scripts(node):
-    """Yield every string in a parsed step.yaml that sets TMPDIR.
-
-    Args:
-        node: A parsed YAML node (dict, list or scalar).
-
-    Yields:
-        Each string value, at any depth, with a line assigning TMPDIR.
-    """
-    if isinstance(node, dict):
-        for value in node.values():
-            yield from _scripts(value)
-    elif isinstance(node, list):
-        for value in node:
-            yield from _scripts(value)
-    elif isinstance(node, str) and SETS_TMPDIR.search(node):
-        yield node
-
-
 def _run_script(path):
     """Return the one run script in ``path`` that sets TMPDIR.
 
@@ -86,9 +68,7 @@ def _run_script(path):
     Returns:
         The script text.
     """
-    scripts = list(_scripts(yaml.safe_load(path.read_text(encoding="utf-8"))))
-    assert len(scripts) == 1, f"{path}: expected one script setting TMPDIR"
-    return scripts[0]
+    return one_script(path, SETS_TMPDIR)
 
 
 def _tmpdir_setup(script, root):
@@ -114,24 +94,6 @@ def _tmpdir_setup(script, root):
     setup = setup.replace(NVME_TEST, '[ "$NVME" = 1 ]')
     # In one pass, so the root (itself under /tmp in pytest) is not rewritten.
     return re.sub(r"/opt/nvme|/tmp/", lambda m: f"{root}{m.group()}", setup)
-
-
-def _shell_options(script):
-    """Return the ``set`` lines at the top of a run script, before any command.
-
-    Args:
-        script: A run script from :func:`_run_script`.
-
-    Returns:
-        Those lines, so a snippet runs with the step's own options and no others.
-    """
-    options = []
-    for line in script.splitlines():
-        if re.match(r"\s*set\s+[-+]", line):
-            options.append(line.strip())
-        elif line.strip() and not line.strip().startswith("#"):
-            break
-    return "\n".join(options)
 
 
 def _run_setup(path, nvme, root, after):
@@ -161,7 +123,7 @@ def _run_setup(path, nvme, root, after):
     script = _run_script(path)
     setup = _tmpdir_setup(script, root)
     return subprocess.run(
-        ["bash", "-c", f"{_shell_options(script)}\n{setup}\n{after}"],
+        ["bash", "-c", f"{shell_options(script)}\n{setup}\n{after}"],
         env=env,
         capture_output=True,
         text=True,
