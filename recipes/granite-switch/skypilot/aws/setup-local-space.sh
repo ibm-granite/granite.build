@@ -7,7 +7,9 @@
 # (README.md, step 2) and writes, all outside the repo:
 #
 #   $GB_HOME/local-space/overlay/environments/skypilot-local/<name>/environment.yaml
-#       the shipped environment template for <region>, with your EFS id
+#       environment-template.yaml (next to this script) with your EFS id and
+#       region; <name> is aws-gb-shared for us-east-1, aws-gb-shared-usw2 for
+#       us-west-2, aws-gb-shared-<region> otherwise
 #   $GB_HOME/local-space/space.yaml
 #       a standalone space: that overlay first, then this checkout's
 #       configurations/assets (an existing one that lists the overlay is kept)
@@ -35,10 +37,10 @@ REPO="$(cd "$HERE/../../../.." && pwd)"
 GB_HOME="${GB_HOME_DIR:-$HOME/.granite.build}"
 
 # The ids file: gb-shared-<region>.ids, else the one *.ids file whose REGION= is
-# <region>, whatever its name.
+# <region>, whatever its name; the value may be quoted, as FS's may.
 IDS="$GB_HOME/local-env/gb-shared-$REGION.ids"
 if [ ! -f "$IDS" ]; then
-  MATCHES="$(grep -lx "REGION=$REGION" "$GB_HOME"/local-env/*.ids 2>/dev/null || true)"
+  MATCHES="$(grep -lE "^REGION=[\"']?$REGION[\"']?[[:space:]]*\$" "$GB_HOME"/local-env/*.ids 2>/dev/null || true)"
   case "$(printf '%s' "$MATCHES" | grep -c .)" in
     0) die "no ids file for $REGION in $GB_HOME/local-env: create the EFS and record its ids first (README.md, step 2)" ;;
     1) IDS="$MATCHES" ;;
@@ -49,14 +51,14 @@ FS="$(sed -n 's/^FS=//p' "$IDS" | tail -n 1 | tr -d "\"' ")"
 [[ "$FS" =~ ^fs-[0-9a-f]{8,17}$ ]] ||
   die "$IDS: FS=${FS:-<missing>} is not an EFS file system id (fs-<hex>)"
 
-# The shipped template for the region, and the region it is written for. Any
-# other region starts from the us-east-1 one.
+# One template for every region; the environment's name says which region its
+# EFS is in (us-east-1 keeps the plain name the recipes default to).
 case "$REGION" in
-  us-east-1) TEMPLATE=gb-shared FROM=us-east-1 NAME=aws-gb-shared ;;
-  us-west-2) TEMPLATE=gb-shared-usw2 FROM=us-west-2 NAME=aws-gb-shared-usw2 ;;
-  *) TEMPLATE=gb-shared FROM=us-east-1 NAME="aws-gb-shared-$REGION" ;;
+  us-east-1) NAME=aws-gb-shared ;;
+  us-west-2) NAME=aws-gb-shared-usw2 ;;
+  *) NAME="aws-gb-shared-$REGION" ;;
 esac
-SRC="$REPO/configurations/assets/environments/skypilot/aws/$TEMPLATE/environment.yaml"
+SRC="$HERE/environment-template.yaml"
 [ -f "$SRC" ] || die "$SRC not found: run this script from a granite.build checkout"
 grep -q 'file_system_id: fs-REPLACE-ME$' "$SRC" || die "$SRC has no fs-REPLACE-ME placeholder"
 
@@ -70,14 +72,14 @@ chmod 700 "$GB_HOME/local-env" "$S"
 TMP="$(mktemp "$DEST_DIR/.environment.yaml.XXXXXX")"
 {
   echo "# Written by recipes/granite-switch/skypilot/aws/setup-local-space.sh from"
-  echo "# skypilot/aws/$TEMPLATE for $REGION. Holds your EFS id: keep it out of git."
+  echo "# environment-template.yaml for $REGION. Holds your EFS id: keep it out of git."
   sed -e "s/fs-REPLACE-ME/$FS/" \
     -e "s/^name: .*/name: skypilot-local-$NAME/" \
-    -e "s/$FROM/$REGION/g" "$SRC"
+    -e "s/REGION-REPLACE-ME/$REGION/g" "$SRC"
 } >"$TMP"
-grep -q "file_system_id: $FS\$" "$TMP" || {
+grep -q "file_system_id: $FS\$" "$TMP" && ! grep -q "REPLACE-ME" "$TMP" || {
   rm -f "$TMP"
-  die "could not write the EFS id into $DEST"
+  die "could not fill in the EFS id and region in $DEST"
 }
 chmod 600 "$TMP"
 mv "$TMP" "$DEST"

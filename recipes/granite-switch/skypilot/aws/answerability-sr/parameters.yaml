@@ -7,14 +7,15 @@
 RUN_ID: "sr-r1"
 
 # ── Environment ──────────────────────────────────────────────────────────────
-# SkyPilot on AWS with a shared EFS; the environment also pins the byoc step to
-# the EFS region. The default is the us-east-1 TEMPLATE
-# (configurations/assets/environments/skypilot/aws/gb-shared), whose
-# file_system_id is a placeholder, so the build refuses to render with it. Run
-# ../setup-local-space.sh <region> once: it writes your own copy and puts its
-# ENVIRONMENT_URI (e.g. space://environments/skypilot-local/aws-gb-shared) in
+# SkyPilot on AWS with a shared EFS (it also pins the byoc step to the EFS
+# region): the environment ../setup-local-space.sh writes into your own space
+# under ~/.granite.build from ../environment-template.yaml, with your EFS id.
+# This default is the name it uses for us-east-1; for us-west-2 it is
+# .../aws-gb-shared-usw2, and the script records the right one in
 # ~/.granite.build/local-env/granite-switch.params (../README.md, step 4).
-ENVIRONMENT_URI: "space://environments/skypilot/aws/gb-shared"
+# Without that setup the build fails before it is submitted, as gbserver finds
+# no environment by this name.
+ENVIRONMENT_URI: "space://environments/skypilot-local/aws-gb-shared"
 
 # Container image both targets run in. Empty runs the step on the bare EC2
 # instance, and that is the default for now: the byoc step `git clone`s the

@@ -1,33 +1,29 @@
-# space://environments/skypilot/aws/gb-shared: SkyPilot on AWS EC2 in
-# us-east-1, with a pre-provisioned EFS filesystem shared by every step.
+# Environment template for the granite-switch recipes on AWS: SkyPilot on EC2
+# with a pre-provisioned EFS filesystem shared by every step.
 #
-# The committed file_system_id is a PLACEHOLDER: this file is the template.
-# To run, put a copy with your EFS id under another name in a space you
-# control (for example an uncommitted local space whose base_uris lists its
-# own dir ahead of configurations/assets), and point the recipe's
-# ENVIRONMENT_URI at that name. See skypilot/aws/gb-shared-usw2 for the
-# us-west-2 twin.
+# Not an environment by itself: it is not in any space, and `fs-REPLACE-ME` /
+# `REGION-REPLACE-ME` are placeholders. `setup-local-space.sh <region>` (next to
+# this file) fills them in with your EFS id and region and writes the result to
+# your own space under ~/.granite.build, as
+# space://environments/skypilot-local/aws-gb-shared[-<region>], the recipes'
+# ENVIRONMENT_URI (README.md, step 4).
 #
-# space://environments/skypilot/aws (the directory above) has no shared
-# filesystem: each step runs on its own EC2 instance and keeps nothing after it
-# ends. A multi-target build that passes data between targets, or that must keep
-# an output after its instance is gone, needs one. This copy of that environment
-# adds:
+# What it adds to a plain SkyPilot-on-AWS environment:
 #
 #   * shared_filesystem: the EFS, mounted at /mnt/gb-shared on every step's
-#     instance (and inside its container);
+#     instance (and inside its container), so data passes between targets
+#     that run on different instances;
 #   * hf pulls as their own steps, cached on the EFS (`config: {}`), so a model
 #     is downloaded once and reused by later targets and builds;
-#   * every step pinned to us-east-1, the only region the EFS has mount targets in.
-#
-# Used by recipes/granite-switch/skypilot/aws/answerability-{lora,sr}.
-name: skypilot-aws-gb-shared
+#   * every step type pinned to the EFS region, the only region it has mount
+#     targets in.
+name: skypilot-local-aws-gb-shared
 type: Skypilot
 subtype: aws
 config:
   default_cloud: aws
   idle_minutes_to_autostop: 5
-  # p5-family capacity is often short. A launch that finds none is retried with
+  # GPU capacity is often short. A launch that finds none is retried with
   # backoff (30 s, doubling, capped at provision_backoff_max), up to max_retries
   # attempts: about 2 h of trying before the build fails. max_retries also caps
   # re-runs of a step whose workload failed after it started (hfpull's are on
@@ -47,11 +43,10 @@ config:
       default:
         aws:
           profile: gb-skypilot
-  # The EFS. Another AWS account: replace file_system_id and region with your
-  # own filesystem's; it needs a mount target in every AZ of the region, a
-  # security group allowing NFS (TCP 2049) from the workers, and its root
-  # chmod'd 1777 (docs/environments/skypilot-aws.md, "Runbook: provision a
-  # shared EFS filesystem").
+  # The EFS needs a mount target in every AZ of the region, a security group
+  # allowing NFS (TCP 2049) from the workers, and its root chmod'd 1777
+  # (docs/environments/skypilot-aws.md, "Runbook: provision a shared EFS
+  # filesystem").
   #
   # tls: true encrypts NFS traffic only where amazon-efs-utils (mount.efs) is
   # installed. The hf-peft-sft image and the bare workers lack it, so their
@@ -63,24 +58,24 @@ config:
     mount_point: /mnt/gb-shared
     efs:
       file_system_id: fs-REPLACE-ME
-      region: us-east-1
+      region: REGION-REPLACE-ME
       tls: true
   # Pin each step type to the EFS region. hfpull and hfpush are the hidden
   # steps queued for every hf:// input and output; they take no launcher_config
   # from build.yaml, so the pin has to live here. A build running another step
-  # type here must pin it too (launcher_config.resources.infra: aws/us-east-1),
-  # or add it to this list.
+  # type here must pin it too (launcher_config.resources.infra:
+  # aws/<region>), or add it to this list.
   steps:
     hfpull:
-      launcher_config: { resources: { infra: aws/us-east-1 } }
+      launcher_config: { resources: { infra: aws/REGION-REPLACE-ME } }
     hfpush:
-      launcher_config: { resources: { infra: aws/us-east-1 } }
+      launcher_config: { resources: { infra: aws/REGION-REPLACE-ME } }
     command:
-      launcher_config: { resources: { infra: aws/us-east-1 } }
+      launcher_config: { resources: { infra: aws/REGION-REPLACE-ME } }
     hf-peft-sft:
-      launcher_config: { resources: { infra: aws/us-east-1 } }
+      launcher_config: { resources: { infra: aws/REGION-REPLACE-ME } }
     byoc:
-      launcher_config: { resources: { infra: aws/us-east-1 } }
+      launcher_config: { resources: { infra: aws/REGION-REPLACE-ME } }
 assetstores:
   # No cache_path and no inline: hfpull runs as its own step and caches to
   # ${shared_workdir}/hf_cache on the EFS.

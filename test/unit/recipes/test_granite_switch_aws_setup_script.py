@@ -17,8 +17,8 @@
 """recipes/granite-switch/skypilot/aws/setup-local-space.sh, run against a
 throwaway GB_HOME_DIR.
 
-The script turns the shipped environment template into a private copy with the
-user's EFS id, writes the standalone space that serves it, and records its
+The script turns environment-template.yaml (next to it) into a private copy
+with the user's EFS id and region, writes the standalone space that serves it, and records its
 ENVIRONMENT_URI in a params file the recipes read. The copy must validate as an
 environment, and the recipes must render with that URI.
 """
@@ -40,15 +40,17 @@ _SCRIPT = _AWS / "setup-local-space.sh"
 _FS = "fs-0123456789abcdef0"
 
 
-def _home(tmp_path, region, fs=_FS, name=None):
+def _home(tmp_path, region, fs=_FS, name=None, quote=""):
+    """A GB_HOME_DIR holding one ids file for region, as README.md step 2 writes."""
     env = tmp_path / "gbhome" / "local-env"
     env.mkdir(parents=True, exist_ok=True)
     ids = env / (name or f"gb-shared-{region}.ids")
-    ids.write_text(f"REGION={region}\nVPC=vpc-x\nSG=sg-x\nFS={fs}\n")
+    ids.write_text(f"REGION={quote}{region}{quote}\nVPC=vpc-x\nSG=sg-x\nFS={fs}\n")
     return tmp_path / "gbhome"
 
 
 def _run(home, region):
+    """Run the script for region with only home as GB_HOME_DIR and HOME."""
     return subprocess.run(
         ["bash", str(_SCRIPT), region],
         env={"GB_HOME_DIR": str(home), "PATH": "/usr/bin:/bin", "HOME": str(home)},
@@ -59,11 +61,13 @@ def _run(home, region):
 
 
 def _params(home):
+    """The params file the script wrote, as a dict."""
     lines = (home / "local-env" / "granite-switch.params").read_text().splitlines()
     return dict(line.split("=", 1) for line in lines if line)
 
 
 def _env(home, name):
+    """The environment copy the script writes for environment name."""
     path = home / "local-space/overlay/environments/skypilot-local" / name
     return path / "environment.yaml"
 
@@ -84,6 +88,7 @@ def test_writes_the_environment_space_and_params(tmp_path, region, name):
     assert data["name"] == f"skypilot-local-{name}"
     assert config["shared_filesystem"]["efs"]["file_system_id"] == _FS
     assert config["shared_filesystem"]["efs"]["region"] == region
+    assert "REPLACE-ME" not in env_file.read_text()
     for step in config["steps"].values():
         assert step["launcher_config"]["resources"]["infra"] == f"aws/{region}"
     assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
@@ -101,11 +106,11 @@ def test_writes_the_environment_space_and_params(tmp_path, region, name):
     assert "gbserver standalone --space-dir" in proc.stdout
 
 
-def test_another_region_starts_from_the_us_east_1_template(tmp_path):
+def test_another_region_gets_its_own_name_from_the_same_template(tmp_path):
     home = _home(tmp_path, "eu-west-1")
     assert _run(home, "eu-west-1").returncode == 0
     text = _env(home, "aws-gb-shared-eu-west-1").read_text()
-    assert "us-east-1" not in text
+    assert "REPLACE-ME" not in text
     config = yaml.safe_load(text)["config"]
     assert config["shared_filesystem"]["efs"]["region"] == "eu-west-1"
     assert {
@@ -118,6 +123,28 @@ def test_finds_an_ids_file_by_its_region_line(tmp_path):
     proc = _run(home, "us-east-1")
     assert proc.returncode == 0, proc.stderr
     assert "gb-shared-use1.ids" in proc.stdout
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_finds_an_ids_file_whose_region_is_quoted(tmp_path, quote):
+    home = _home(tmp_path, "us-west-2", name="mine.ids", quote=quote)
+    proc = _run(home, "us-west-2")
+    assert proc.returncode == 0, proc.stderr
+    config = yaml.safe_load(_env(home, "aws-gb-shared-usw2").read_text())["config"]
+    assert config["shared_filesystem"]["efs"]["region"] == "us-west-2"
+
+
+def test_the_template_has_only_placeholders_for_the_ids():
+    text = (_AWS / "environment-template.yaml").read_text()
+    config = yaml.safe_load(text)["config"]
+    assert config["shared_filesystem"]["efs"] == {
+        "file_system_id": "fs-REPLACE-ME",
+        "region": "REGION-REPLACE-ME",
+        "tls": True,
+    }
+    assert {
+        s["launcher_config"]["resources"]["infra"] for s in config["steps"].values()
+    } == {"aws/REGION-REPLACE-ME"}
 
 
 def test_a_rerun_keeps_other_params_and_moves_the_uri(tmp_path):

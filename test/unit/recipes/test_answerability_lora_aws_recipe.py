@@ -43,48 +43,49 @@ _REPO = pathlib.Path(__file__).resolve().parents[3]
 _RECIPE = (
     _REPO / "recipes" / "granite-switch" / "skypilot" / "aws" / "answerability-lora"
 )
+# setup-local-space.sh fills in its EFS id and region for the user's own space.
 _ENV = (
     _REPO
-    / "configurations"
-    / "assets"
-    / "environments"
+    / "recipes"
+    / "granite-switch"
     / "skypilot"
     / "aws"
-    / "gb-shared"
+    / "environment-template.yaml"
 )
 _EFS_ROOT = "/mnt/gb-shared/"
 
 
-# The recipe ships without data and refuses the shipped environment template; a
-# test supplies stand-ins, as setup-local-space.sh and the user would.
+# The recipe ships without data; a test supplies a stand-in, as the user would.
+# The default environment is the one setup-local-space.sh writes for us-east-1.
 _LOCAL_ENV = "space://environments/skypilot-local/aws-gb-shared"
 _DATA = "SOURCE_DATA_URI=hf:///datasets/org/repo/main/answerability"
 
 
-def _params(*params):
-    return [f"{k}={v}" for k, v in (p.split("=", 1) for p in params)]
-
-
 def _render(tmp_path, *params):
+    """build.yaml rendered as `gb build start` does: --param KEY=VALUE over
+    parameters.yaml."""
     file_params = get_params_from_file(str(_RECIPE / "parameters.yaml"))
     return apply_parameters(
         (_RECIPE / "build.yaml").read_text(),
-        _params(*params),
+        list(params),
         file_params,
         str(tmp_path),
     )
 
 
 def _build(tmp_path, *params):
-    rendered = _render(tmp_path, f"ENVIRONMENT_URI={_LOCAL_ENV}", _DATA, *params)
+    """The rendered `granite.build` mapping, with stand-in data."""
+    rendered = _render(tmp_path, _DATA, *params)
     return yaml.safe_load(rendered)["granite.build"]
 
 
 def _trains(build):
+    """The train-<method> targets, by name, in order."""
     return {n: t for n, t in build["targets"].items() if n.startswith("train-")}
 
 
 def _hps(target):
+    """A train target's hf_peft_sft_config; it must be one hf-peft-sft step."""
     (step,) = target["steps"]
     assert step["step_uri"] == "space://steps/train/hf-peft-sft"
     return step["config"]["hf_peft_sft_config"]
@@ -92,24 +93,22 @@ def _hps(target):
 
 def test_the_data_has_no_default(tmp_path):
     with pytest.raises(Exception, match="SOURCE_DATA_URI"):
-        _render(tmp_path, f"ENVIRONMENT_URI={_LOCAL_ENV}")
+        _render(tmp_path)
     prepare = _build(tmp_path)["targets"]["prepare"]
     assert prepare["inputs"]["source"]["uri"] == _DATA.split("=", 1)[1]
 
 
-@pytest.mark.parametrize("template", ["gb-shared", "gb-shared-usw2"])
-def test_the_shipped_environment_templates_are_refused(tmp_path, template):
-    uri = f"space://environments/skypilot/aws/{template}"
-    with pytest.raises(
-        Exception, match="run_recipes_granite_switch_skypilot_aws_setup"
-    ):
-        _render(tmp_path, f"ENVIRONMENT_URI={uri}", _DATA)
-
-
-def test_every_target_runs_in_the_given_environment(tmp_path):
+def test_every_target_runs_in_the_local_environment_by_default(tmp_path):
     build = _build(tmp_path, "METHODS=alora,lora")
     for target in build["targets"].values():
         assert target["environment_uri"] == _LOCAL_ENV
+
+
+def test_every_target_runs_in_the_given_environment(tmp_path):
+    uri = "space://environments/skypilot-local/aws-gb-shared-usw2"
+    build = _build(tmp_path, "METHODS=alora,lora", f"ENVIRONMENT_URI={uri}")
+    for target in build["targets"].values():
+        assert target["environment_uri"] == uri
 
 
 def test_default_is_one_lora_train(tmp_path):
@@ -216,7 +215,7 @@ def test_effective_batch_is_32_by_default(tmp_path):
 
 
 def test_environment_pins_every_step_type_to_the_efs_region():
-    env = yaml.safe_load((_ENV / "environment.yaml").read_text())
+    env = yaml.safe_load(_ENV.read_text())
     config = env["config"]
     region = config["shared_filesystem"]["efs"]["region"]
     assert config["shared_workdir"].startswith(

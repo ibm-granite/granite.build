@@ -1,6 +1,7 @@
 ######
 # answerability-sr — train and evaluate a Shadow Residual (SR) answerability
-# adapter on AWS EC2 GPUs, with a shared EFS filesystem (skypilot/aws/gb-shared).
+# adapter on AWS EC2 GPUs, with a shared EFS filesystem (an environment
+# written by ../setup-local-space.sh).
 #
 # A template: it ships without data (DATA_URI has no default; see README.md).
 # Two targets, wired by one artifact; both run on the bare EC2 instance by
@@ -32,12 +33,6 @@
 # plain name may pass: letters, digits, `.`, `_`, `-`; not `.`, `..` or a
 # leading `-`. An undefined name fails the render (StrictUndefined).
 $${ RUN_ID_must_be_letters_digits_dot_underscore_dash_and_not_dot_or_dotdot }
-<% endif %>
-<% if ENVIRONMENT_URI.startswith("space://environments/skypilot/aws/gb-shared") %>
-# The shipped templates hold a placeholder EFS id, so the build would only fail
-# once an instance tries to mount it. Point ENVIRONMENT_URI at your own copy.
-# An undefined name fails the render (StrictUndefined) and names the problem.
-$${ ENVIRONMENT_URI_is_a_template__run_recipes_granite_switch_skypilot_aws_setup_local_space_sh }
 <% endif %>
 granite.build:
   name: answerability-sr-$${RUN_ID}

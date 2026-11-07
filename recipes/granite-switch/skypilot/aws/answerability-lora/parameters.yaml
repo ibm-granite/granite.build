@@ -5,13 +5,14 @@
 # new value per run: a re-run with the same RUN_ID replaces that run's outputs.
 RUN_ID: "it1-r1"
 
-# SkyPilot on AWS with a shared EFS. The default is the us-east-1 TEMPLATE
-# (configurations/assets/environments/skypilot/aws/gb-shared), whose
-# file_system_id is a placeholder, so the build refuses to render with it. Run
-# ../setup-local-space.sh <region> once: it writes your own copy and puts its
-# ENVIRONMENT_URI (e.g. space://environments/skypilot-local/aws-gb-shared) in
-# ~/.granite.build/local-env/granite-switch.params (../README.md, step 4).
-ENVIRONMENT_URI: "space://environments/skypilot/aws/gb-shared"
+# SkyPilot on AWS with a shared EFS: the environment ../setup-local-space.sh
+# writes into your own space under ~/.granite.build from
+# ../environment-template.yaml, with your EFS id. This default is the name it
+# uses for us-east-1; for us-west-2 it is .../aws-gb-shared-usw2, and the script
+# records the right one in ~/.granite.build/local-env/granite-switch.params
+# (../README.md, step 4). Without that setup the build fails before it is
+# submitted, as gbserver finds no environment by this name.
+ENVIRONMENT_URI: "space://environments/skypilot-local/aws-gb-shared"
 
 # ── Model ────────────────────────────────────────────────────────────────────
 # Public, ungated, ~17.6 GB of safetensors (no onnx). Staged by an hfpull step

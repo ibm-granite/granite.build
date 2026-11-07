@@ -18,8 +18,8 @@ gb build start -f build.yaml $(sed 's/^/--param /' ~/.granite.build/local-env/gr
 
 `parameters.yaml` beside `build.yaml` is picked up automatically. The build
 fails before it is submitted, naming what is missing, without `DATA_URI`
-(`'DATA_URI' is undefined`) or with the shipped environment template
-(`'ENVIRONMENT_URI_is_a_template__run_recipes_granite_switch_skypilot_aws_setup_local_space_sh' is undefined`).
+(`'DATA_URI' is undefined`) or without the environment the setup writes
+(`Unresolvable space uri : space://environments/skypilot-local/aws-gb-shared`).
 
 SR runs two hidden-state streams per decoder layer: a frozen base stream that
 stays bit-exact with the unadapted model, and a trainable stream carrying the
@@ -197,8 +197,9 @@ The one-time AWS setup is shared by the recipes in this folder and is in
 GPU quota, an EFS in your region, where to store the EFS id and the
 credentials under `~/.granite.build/`, and the private copy of the
 environment, which `setup-local-space.sh` writes along with a params file
-holding its `ENVIRONMENT_URI`. For this recipe specifically, your data in the [formats above](#your-data),
-and an `HF_TOKEN` secret if it is in a private Hugging Face repo.
+holding its `ENVIRONMENT_URI`. For this recipe specifically, your data in the
+[formats above](#your-data), and an `HF_TOKEN` secret if it is in a private
+Hugging Face repo.
 
 **GPU memory:** SR holds two hidden-state streams, so an 8B base does not fit
 on a 24 GB L4 even at `MAX_LENGTH=2048`. A run on g6.4xlarge (1×L4) cloned,
@@ -240,7 +241,7 @@ ones you are most likely to set:
 |---|---|---|
 | `RUN_ID` | `sr-r1` | Names the build, the adapter dir and the report dir. |
 | `DATA_URI` / `TRAIN_DATA_SUBDIR` / `EVAL_DATA_SUBDIR` | none / `train` / `eval` | Your data; see [Your data](#your-data). |
-| `ENVIRONMENT_URI` | `space://environments/skypilot/aws/gb-shared` | The us-east-1 EFS template, with a placeholder `file_system_id`; the build refuses it. `setup-local-space.sh` writes your copy's URI into your params file; see [The EFS filesystem](../answerability-lora/README.md#the-efs-filesystem). |
+| `ENVIRONMENT_URI` | `space://environments/skypilot-local/aws-gb-shared` | Your copy of the EFS environment, as `setup-local-space.sh` names it for us-east-1; it records the one for your region in your params file. See [The EFS filesystem](../answerability-lora/README.md#the-efs-filesystem). |
 | `SR_REPO` / `SR_REF` | the public shadow-residual repo / `main` | The `byoc` step clones it without authentication, so it must be public. Pin `SR_REF` to a tag or SHA for runs you will compare. |
 | `MAX_STEPS` / `NUM_EPOCHS` | `0` / `3` | A positive `MAX_STEPS` caps training. |
 | `ADAPTER_ROOT` / `REPORT_ROOT` | `/mnt/gb-shared/granite-switch/answerability-sr/{adapters,reports}` | Where the adapter and the report are written, on the EFS, under `$RUN_ID`. |

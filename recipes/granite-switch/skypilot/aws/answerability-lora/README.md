@@ -26,9 +26,9 @@ gb build start -f build.yaml $P --param RUN_ID=<unique> --param METHODS=alora,lo
 
 `parameters.yaml` beside `build.yaml` is picked up automatically. The build
 fails before it is submitted, naming what is missing, without
-`SOURCE_DATA_URI` (`'SOURCE_DATA_URI' is undefined`) or with the shipped
-environment template
-(`'ENVIRONMENT_URI_is_a_template__run_recipes_granite_switch_skypilot_aws_setup_local_space_sh' is undefined`).
+`SOURCE_DATA_URI` (`'SOURCE_DATA_URI' is undefined`) or without the
+environment the setup writes
+(`Unresolvable space uri : space://environments/skypilot-local/aws-gb-shared`).
 
 ## How it runs
 
@@ -207,15 +207,15 @@ environment you point `ENVIRONMENT_URI` at. For this recipe specifically:
 
 ### The EFS filesystem
 
-Every step mounts an EFS at `/mnt/gb-shared`. The repo ships environment
-templates for `us-east-1` (`skypilot/aws/gb-shared`) and `us-west-2`
-(`skypilot/aws/gb-shared-usw2`) with `file_system_id: fs-REPLACE-ME`.
-`ENVIRONMENT_URI` defaults to the `us-east-1` template, which cannot mount
-anything as shipped, so the build refuses to render with it.
+Every step mounts an EFS at `/mnt/gb-shared`. The repo ships one environment
+template, [`../environment-template.yaml`](../environment-template.yaml), with
+placeholders for the EFS id and region; it is in no space.
 [Setup steps 2 and 4](../README.md#2-create-the-efs-once-per-region) create the
-EFS and your copy; `setup-local-space.sh` writes the copy's `ENVIRONMENT_URI`
-(`space://environments/skypilot-local/aws-gb-shared`, or
-`...-usw2` for us-west-2) into your params file.
+EFS and write your copy into your own space. `ENVIRONMENT_URI` defaults to the
+name that copy gets for us-east-1,
+`space://environments/skypilot-local/aws-gb-shared`; for us-west-2 it is
+`...-usw2`, and `setup-local-space.sh` records the right one in your params
+file.
 
 ## GPUs
 
@@ -258,7 +258,7 @@ They apply to every train in the build.
 | Parameter | Default | Meaning |
 |---|---|---|
 | `RUN_ID` | `it1-r1` | Names the build (`answerability-<methods>-<RUN_ID>`), the dataset dir, the adapter dirs and the ClearML tasks. Use a new one per run: re-using one replaces that run's outputs. |
-| `ENVIRONMENT_URI` | `space://environments/skypilot/aws/gb-shared` | The us-east-1 EFS template, with a placeholder `file_system_id`; the build refuses it. `setup-local-space.sh` writes your copy's URI into your params file; see [The EFS filesystem](#the-efs-filesystem). |
+| `ENVIRONMENT_URI` | `space://environments/skypilot-local/aws-gb-shared` | Your copy of the EFS environment, as `setup-local-space.sh` names it for us-east-1; it records the one for your region in your params file. See [The EFS filesystem](#the-efs-filesystem). |
 | `SOURCE_DATA_URI` | none (required) | Your parquet directory; see [Your data](#your-data). |
 | `DATASET_SPLIT` | `train` | `load_dataset` split; slicing works (`train[:64]` for a smoke run). |
 | `MAX_LENGTH` | `8192` | Tokens per row: `prepare` drops longer rows, and the train uses it as `max_length`. |

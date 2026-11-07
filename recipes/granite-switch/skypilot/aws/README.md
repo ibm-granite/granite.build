@@ -35,13 +35,15 @@ set it).
 
 ## 1. Pick a region
 
-The EFS lives in one region, and every step must run there. The repo ships an
-environment template for two regions; any other region works the same way.
+The EFS lives in one region, and every step must run there. One environment
+template, [`environment-template.yaml`](environment-template.yaml), serves every
+region; step 4 fills in your region and EFS id, and names the result:
 
-| Template | Region |
+| Region | Environment the recipes use (`ENVIRONMENT_URI`) |
 |---|---|
-| [`skypilot/aws/gb-shared`](../../../../configurations/assets/environments/skypilot/aws/gb-shared/environment.yaml) | `us-east-1` |
-| [`skypilot/aws/gb-shared-usw2`](../../../../configurations/assets/environments/skypilot/aws/gb-shared-usw2/environment.yaml) | `us-west-2` |
+| `us-east-1` | `space://environments/skypilot-local/aws-gb-shared` (the recipes' default) |
+| `us-west-2` | `space://environments/skypilot-local/aws-gb-shared-usw2` |
+| any other | `space://environments/skypilot-local/aws-gb-shared-<region>` |
 
 Pick the region where you have GPU quota and capacity. GPU capacity varies by
 region and changes by the hour: when testing these recipes, single-L4
@@ -103,11 +105,13 @@ not typed on the command line or kept in shell history.
 ## 4. Make a private copy of the environment
 
 `environment.yaml` is plain YAML, not a template, so the EFS id has to be in an
-environment file. The shipped templates hold `fs-REPLACE-ME`, and the recipes
-refuse to render with them:
+environment file. The template holds the placeholders `fs-REPLACE-ME` and
+`REGION-REPLACE-ME` and is in no space, so the recipes cannot use it as is.
+Until you run this step, a build fails before it is submitted, as gbserver
+finds no environment at the recipes' `ENVIRONMENT_URI`:
 
 ```
-'ENVIRONMENT_URI_is_a_template__run_recipes_granite_switch_skypilot_aws_setup_local_space_sh' is undefined
+Unresolvable space uri : space://environments/skypilot-local/aws-gb-shared
 ```
 
 Run the setup script once per region, from your checkout:
@@ -121,14 +125,13 @@ readable only by you:
 
 | File | What |
 |---|---|
-| `~/.granite.build/local-space/overlay/environments/skypilot-local/aws-gb-shared*/environment.yaml` | The template for your region with your EFS id. Named under `skypilot-local/`, so it never shadows a shipped environment. A region other than `us-east-1` / `us-west-2` starts from the `us-east-1` template with the region replaced. |
+| `~/.granite.build/local-space/overlay/environments/skypilot-local/aws-gb-shared*/environment.yaml` | The template with your EFS id and region, named for the region as in step 1. Under `skypilot-local/`, so it never shadows a shipped environment. |
 | `~/.granite.build/local-space/space.yaml` | A standalone space named `public` (so it reads the `space_secrets/public/` secrets): the overlay first, then this checkout's `configurations/assets`. An existing one that already lists the overlay is kept. |
 | `~/.granite.build/local-env/granite-switch.params` | `ENVIRONMENT_URI=space://environments/skypilot-local/<name>`. Other lines in the file are kept. |
 
 It reads no secret and calls no AWS API; it is safe to re-run, and
 `ENVIRONMENT_URI` points at the region set up last. It ends by printing what
-is left to do. The repo's `.gitignore` also excludes
-`environments/skypilot-local/`, in case a copy lands in a checkout.
+is left to do.
 
 ## 5. Add your data, start gbserver and run
 
