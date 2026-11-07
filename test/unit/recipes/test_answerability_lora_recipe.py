@@ -163,6 +163,24 @@ def test_prepare_writes_to_shared_storage_on_the_cpu_partition(tmp_path):
     assert int(resources["memory"]) <= 8 * int(resources["cpus"])
 
 
+def test_prepare_runs_in_the_image_the_train_runs_in(tmp_path):
+    """prepare borrows the hf-peft-sft image for its venv, counts tokens with
+    its transformers to drop the rows train would truncate, and shares the
+    node's image cache with train. So PREP_IMAGE must follow the image of the
+    published step (configurations/), which train runs unless it overrides it."""
+    published = (
+        _REPO / "configurations/assets/environments/skypilot/steps/train/hf-peft-sft"
+    )
+    step = yaml.safe_load((published / "step.yaml").read_text())
+    build = _build(tmp_path)
+    image = build["targets"]["prepare"]["steps"][0]["config"]["command_config"]["image"]
+    train = _step_config(build["targets"]["train"])["hf_peft_sft_config"]
+    train_image = train.get(
+        "image_id", step["config"]["hf_peft_sft_config"]["image_id"]
+    )
+    assert image == train_image.removeprefix("docker:")
+
+
 def test_output_path_matches_the_output_uri(tmp_path):
     target = _target(tmp_path, "RUN_ID=abc")
     cfg = _step_config(target)["hf_peft_sft_config"]
