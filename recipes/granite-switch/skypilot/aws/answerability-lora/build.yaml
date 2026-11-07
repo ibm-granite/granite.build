@@ -29,6 +29,13 @@
 # An undefined name fails the render (StrictUndefined) and names the problem.
 $${ METHODS_must_be_distinct_entries_of_lora_or_alora }
 <% endif %>
+<% set _rid = RUN_ID | string %>
+<% if not _rid or _rid in [".", ".."] or _rid.startswith("-") or _rid | list | reject("in", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-") | list %>
+# RUN_ID names directories the targets clear and replace (`rm -rf`), so only a
+# plain name may pass: letters, digits, `.`, `_`, `-`; not `.`, `..` or a
+# leading `-`. An undefined name fails the render (StrictUndefined).
+$${ RUN_ID_must_be_letters_digits_dot_underscore_dash_and_not_dot_or_dotdot }
+<% endif %>
 <% if ENVIRONMENT_URI.startswith("space://environments/skypilot/aws/gb-shared") %>
 # The shipped templates hold a placeholder EFS id, so the build would only fail
 # once an instance tries to mount it. Point ENVIRONMENT_URI at your own copy.
@@ -89,6 +96,22 @@ granite.build:
                 MODEL="{{ bindings.base_model.binding.path }}"
                 OUT="$${DATA_ROOT}/$${RUN_ID}"
                 PY=/opt/hf-peft-sft/.venv/bin/python
+                # This step runs as root; the SR recipe runs as a non-root user
+                # and writes beside it under the same root, and the EFS does not
+                # remap root. So every level of both roots under the mount is
+                # 1777 (sticky), as gbserver's per-run tree is. That includes the
+                # levels above ADAPTER_ROOT, which hf-peft-sft would otherwise
+                # create as root 0755.
+                MNT="/mnt/gb-shared/"
+                for ROOT in "$${DATA_ROOT}" "$${ADAPTER_ROOT}"; do
+                  case "$ROOT" in "$MNT"?*) ;; *) continue ;; esac
+                  D="${MNT%/}"
+                  for P in $(echo "${ROOT#"$MNT"}" | tr "/" " "); do
+                    D="$D/$P"
+                    mkdir -p "$D"
+                    chmod 1777 "$D" 2>/dev/null || true
+                  done
+                done
                 echo "prepare: $SRC -> $OUT"
                 mkdir -p "$OUT"
                 "$PY" -I - "$SRC" "$OUT" "$${SOURCE_DATA_URI}" "$MODEL" "$${MAX_LENGTH}" <<'PY'

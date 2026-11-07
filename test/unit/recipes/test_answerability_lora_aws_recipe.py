@@ -264,7 +264,12 @@ def test_the_readme_example_row_passes_prepare(tmp_path):
     stub = tmp_path / "stub"
     stub.mkdir()
     (stub / "transformers.py").write_text(_FAKE_TRANSFORMERS)
-    step = _build(tmp_path, f"DATA_ROOT={tmp_path / 'data'}", "RUN_ID=r1")
+    step = _build(
+        tmp_path,
+        f"DATA_ROOT={tmp_path / 'data'}",
+        f"ADAPTER_ROOT={tmp_path / 'adapters'}",
+        "RUN_ID=r1",
+    )
     command = fill_template(
         step["targets"]["prepare"]["steps"][0]["config"]["command_config"]["command"],
         {
@@ -288,3 +293,47 @@ def test_the_readme_example_row_passes_prepare(tmp_path):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     out = pq.read_table(tmp_path / "data" / "r1" / "data" / "train.parquet")
     assert out.to_pylist() == [row]
+
+
+@pytest.mark.parametrize(
+    "run_id", ["", ".", "..", "../..", "x/../../../..", "a/b", "a b", "-rf", "r1;rm"]
+)
+def test_an_unsafe_run_id_fails_the_render(tmp_path, run_id):
+    """RUN_ID names the dataset and adapter dirs that are replaced in place."""
+    with pytest.raises(Exception, match="RUN_ID_must_be"):
+        _build(tmp_path, f"RUN_ID={run_id}")
+
+
+@pytest.mark.parametrize("run_id", ["r1", "aws-full-3", "smoke_1.b", "123"])
+def test_a_plain_run_id_renders(tmp_path, run_id):
+    build = _build(tmp_path, f"RUN_ID={run_id}")
+    assert build["targets"]["prepare"]["outputs"]["dataset"]["uri"].endswith(
+        f"/{run_id}"
+    )
+
+
+def test_prepare_creates_the_shared_dirs_world_writable(tmp_path):
+    """prepare runs as root in the hf-peft-sft container; the SR recipe runs
+    as a non-root user and writes beside it under the same root. So prepare
+    leaves every level it creates under the EFS mount 1777 (sticky), as
+    gbserver's per-run tree is, including the levels above ADAPTER_ROOT that
+    hf-peft-sft would otherwise create as root 0755."""
+    efs = tmp_path / "efs"
+    build = _build(tmp_path, "RUN_ID=r1")
+    cmd = build["targets"]["prepare"]["steps"][0]["config"]["command_config"]["command"]
+    walk = cmd[cmd.index("MNT=") : cmd.index('echo "prepare:')]
+    walk = walk.replace(_EFS_ROOT, f"{efs}/")
+    proc = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + walk],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    for rel in (
+        "granite-switch",
+        "granite-switch/answerability-lora",
+        "granite-switch/answerability-lora/data",
+        "granite-switch/answerability-lora/adapters",
+    ):
+        assert (efs / rel).stat().st_mode & 0o7777 == 0o1777, rel

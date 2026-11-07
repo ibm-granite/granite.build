@@ -26,6 +26,13 @@
 #
 #   gb build start -f build.yaml --param RUN_ID=r1 --param DATA_URI=<root>
 ######
+<% set _rid = RUN_ID | string %>
+<% if not _rid or _rid in [".", ".."] or _rid.startswith("-") or _rid | list | reject("in", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-") | list %>
+# RUN_ID names directories the targets clear and replace (`rm -rf`), so only a
+# plain name may pass: letters, digits, `.`, `_`, `-`; not `.`, `..` or a
+# leading `-`. An undefined name fails the render (StrictUndefined).
+$${ RUN_ID_must_be_letters_digits_dot_underscore_dash_and_not_dot_or_dotdot }
+<% endif %>
 <% if ENVIRONMENT_URI.startswith("space://environments/skypilot/aws/gb-shared") %>
 # The shipped templates hold a placeholder EFS id, so the build would only fail
 # once an instance tries to mount it. Point ENVIRONMENT_URI at your own copy.
@@ -113,6 +120,7 @@ granite.build:
                 set -e;
                 WORKROOT="$(pwd)";
                 OUT="$${ADAPTER_ROOT}/$${RUN_ID}";
+                ROOT="$${ADAPTER_ROOT}";
                 CFG="$WORKROOT/sr_answerability.yaml";
                 TRAIN_DIR="{{ bindings.train_data.binding.path }}/$${TRAIN_DATA_SUBDIR}";
                 BASE="{{ bindings.base_model.binding.path }}";
@@ -126,7 +134,8 @@ granite.build:
                 for f in "$TRAIN_DIR/train.jsonl" "$TRAIN_DIR/test.jsonl"; do
                 test -f "$f" || { echo "ERROR: missing $f — TRAIN_DATA_SUBDIR must hold the messages-JSONL export; see README.md"; exit 1; };
                 done;
-                case "$OUT" in "$${ADAPTER_ROOT}"/?*) ;; *) echo "ERROR: RUN_ID is empty; refusing to clear $OUT"; exit 1;; esac;
+                case "$OUT" in "$${ADAPTER_ROOT}"/*/*|*/..|*/.|*/../*|*/./*) echo "ERROR: unsafe RUN_ID; refusing to clear $OUT"; exit 1;; "$${ADAPTER_ROOT}"/?*) ;; *) echo "ERROR: RUN_ID is empty; refusing to clear $OUT"; exit 1;; esac;
+                M="/mnt/gb-shared/"; case "$ROOT" in "$M"?*) ;; *) M="";; esac; D="${M%/}"; for P in $( [ -n "$M" ] && echo "${ROOT#$M}" | tr "/" " "); do D="$D/$P"; if [ ! -d "$D" ]; then mkdir -p "$D" 2>/dev/null || { echo "ERROR: cannot create $D: $(dirname "$D") is not writable by $(id -un) (a run as another user, e.g. root in a container, created it). Fix once, from any instance that mounts the EFS: sudo chmod 1777 $(dirname "$D")"; exit 1; }; chmod 1777 "$D" 2>/dev/null || true; fi; done; [ -w "$ROOT" ] || { mkdir -p "$ROOT" 2>/dev/null || true; }; [ -w "$ROOT" ] || { echo "ERROR: $ROOT is not writable by $(id -un) (a run as another user, e.g. root in a container, created it). Fix once, from any instance that mounts the EFS: sudo chmod 1777 $ROOT"; exit 1; };
                 rm -rf "$OUT"; mkdir -p "$OUT";
                 printf '%s\n'
                 'model:'
@@ -246,6 +255,7 @@ granite.build:
               command: >-
                 set -e;
                 OUT="$${REPORT_ROOT}/$${RUN_ID}";
+                ROOT="$${REPORT_ROOT}";
                 ADAPTER="{{ bindings.adapter.binding.path }}";
                 EVAL_DIR="{{ bindings.eval_data.binding.path }}/$${EVAL_DATA_SUBDIR}";
                 BASE="{{ bindings.base_model.binding.path }}";
@@ -256,7 +266,8 @@ granite.build:
                 ls -la "$ADAPTER" || true;
                 ls -la "$EVAL_DIR" || true;
                 test -f "$ADAPTER/adapter_config.json" || { echo "ERROR: no adapter_config.json under $ADAPTER"; exit 1; };
-                case "$OUT" in "$${REPORT_ROOT}"/?*) ;; *) echo "ERROR: RUN_ID is empty; refusing to clear $OUT"; exit 1;; esac;
+                case "$OUT" in "$${REPORT_ROOT}"/*/*|*/..|*/.|*/../*|*/./*) echo "ERROR: unsafe RUN_ID; refusing to clear $OUT"; exit 1;; "$${REPORT_ROOT}"/?*) ;; *) echo "ERROR: RUN_ID is empty; refusing to clear $OUT"; exit 1;; esac;
+                M="/mnt/gb-shared/"; case "$ROOT" in "$M"?*) ;; *) M="";; esac; D="${M%/}"; for P in $( [ -n "$M" ] && echo "${ROOT#$M}" | tr "/" " "); do D="$D/$P"; if [ ! -d "$D" ]; then mkdir -p "$D" 2>/dev/null || { echo "ERROR: cannot create $D: $(dirname "$D") is not writable by $(id -un) (a run as another user, e.g. root in a container, created it). Fix once, from any instance that mounts the EFS: sudo chmod 1777 $(dirname "$D")"; exit 1; }; chmod 1777 "$D" 2>/dev/null || true; fi; done; [ -w "$ROOT" ] || { mkdir -p "$ROOT" 2>/dev/null || true; }; [ -w "$ROOT" ] || { echo "ERROR: $ROOT is not writable by $(id -un) (a run as another user, e.g. root in a container, created it). Fix once, from any instance that mounts the EFS: sudo chmod 1777 $ROOT"; exit 1; };
                 rm -rf "$OUT"; mkdir -p "$OUT";
                 cd code;
                 echo "=== evaluating ===";

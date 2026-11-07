@@ -25,6 +25,7 @@ the train wrote.
 """
 
 import json
+import os
 import pathlib
 import subprocess
 
@@ -265,11 +266,25 @@ def test_a_rerun_replaces_the_previous_adapter(tmp_path):
 
 
 @pytest.mark.parametrize("target", ["train", "eval"])
-def test_an_empty_run_id_never_clears_the_whole_root(tmp_path, target):
-    build = _build(tmp_path, "RUN_ID=")
+@pytest.mark.parametrize(
+    "run_id,message",
+    [
+        ("", "RUN_ID is empty"),
+        ("../..", "unsafe RUN_ID"),
+        ("x/../../..", "unsafe RUN_ID"),
+        ("..", "unsafe RUN_ID"),
+        ("a/b", "unsafe RUN_ID"),
+    ],
+)
+def test_the_shell_guard_never_clears_outside_the_run_dir(
+    tmp_path, target, run_id, message
+):
+    """The render-time check rejects these first; the guard before `rm -rf` is
+    the second line of defence, so it is run on its own with the RUN_ID
+    swapped back in after rendering."""
+    build = _build(tmp_path, "RUN_ID=rid")
     cmd = _step(build["targets"][target])["byoc_config"]["command"]
-    # The OUT assignment and the guard before the `rm -rf`, on their own.
-    out = cmd[cmd.index('OUT="') :].split(";", 1)[0]
+    out = cmd[cmd.index('OUT="') :].split(";", 1)[0].replace("/rid", f"/{run_id}")
     guard = cmd[cmd.index('case "$OUT"') :].split("esac;", 1)[0] + "esac"
     proc = subprocess.run(
         ["bash", "-c", f"set -e; {out}; {guard}; echo cleared"],
@@ -278,8 +293,24 @@ def test_an_empty_run_id_never_clears_the_whole_root(tmp_path, target):
         check=False,
     )
     assert proc.returncode != 0
-    assert "RUN_ID is empty" in proc.stdout
+    assert message in proc.stdout
     assert "cleared" not in proc.stdout
+
+
+@pytest.mark.parametrize("target", ["train", "eval"])
+def test_the_shell_guard_passes_a_plain_run_id(tmp_path, target):
+    build = _build(tmp_path, "RUN_ID=rid")
+    cmd = _step(build["targets"][target])["byoc_config"]["command"]
+    out = cmd[cmd.index('OUT="') :].split(";", 1)[0]
+    guard = cmd[cmd.index('case "$OUT"') :].split("esac;", 1)[0] + "esac"
+    proc = subprocess.run(
+        ["bash", "-c", f"set -e; {out}; {guard}; echo cleared"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "cleared" in proc.stdout
 
 
 def test_environment_pins_byoc_to_the_efs_region():
@@ -313,3 +344,60 @@ def test_the_readme_eval_row_has_the_shape_answerability_eval_reads():
     assert isinstance(by_role["documents"], list)
     assert all(isinstance(d, str) for d in by_role["documents"])
     assert row["messages"][0]["role"] == "user"
+
+
+@pytest.mark.parametrize(
+    "run_id", ["", ".", "..", "../..", "x/../../../..", "a/b", "a b", "-rf", "r1;rm"]
+)
+def test_an_unsafe_run_id_fails_the_render(tmp_path, run_id):
+    """RUN_ID names a dir the targets `rm -rf`: only a plain name may pass."""
+    with pytest.raises(Exception, match="RUN_ID_must_be"):
+        _build(tmp_path, f"RUN_ID={run_id}")
+
+
+@pytest.mark.parametrize("run_id", ["r1", "sr-full-1", "smoke_h200.c", "123"])
+def test_a_plain_run_id_renders(tmp_path, run_id):
+    build = _build(tmp_path, f"RUN_ID={run_id}")
+    assert build["name"] == f"answerability-sr-{run_id}"
+
+
+def test_train_creates_its_dirs_world_writable_for_other_uids(tmp_path):
+    """The lora recipe's steps run as root in a container and SR's as a
+    non-root user on the bare instance; the EFS does not remap root. So each
+    level a recipe creates on the EFS is 1777 (sticky), as gbserver's per-run
+    tree is, and the other recipe can still add its own dirs beside it."""
+    _, efs, _ = _run(tmp_path, "train", "RUN_ID=t1")
+    for rel in (
+        "granite-switch",
+        "granite-switch/answerability-sr",
+        "granite-switch/answerability-sr/adapters",
+    ):
+        assert (efs / rel).stat().st_mode & 0o7777 == 0o1777, rel
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_train_fails_early_when_a_parent_is_not_writable(tmp_path):
+    """A parent left read-only for this uid by an earlier (root) run fails
+    before training, naming the fix."""
+    locked = tmp_path / "efs" / "granite-switch"
+    locked.mkdir(parents=True)
+    locked.chmod(0o555)
+    try:
+        build = _build(tmp_path, "RUN_ID=t1")
+        cmd = _step(build["targets"]["train"])["byoc_config"]["command"]
+        # OUT and ROOT, then the RUN_ID guard, the 1777 walk and the mkdir —
+        # without the input checks in between, which need real inputs.
+        assigns = cmd[cmd.index('OUT="') : cmd.index("CFG=")]
+        walk = cmd[cmd.index('case "$OUT"') : cmd.index("printf '%s\\n'")]
+        snippet = (assigns + walk).replace(_EFS, f"{tmp_path / 'efs'}/")
+        proc = subprocess.run(
+            ["bash", "-c", "set -e; " + snippet + " echo GOT_PAST_THE_WALK"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        locked.chmod(0o755)
+    assert proc.returncode != 0
+    assert "sudo chmod 1777" in proc.stdout
+    assert "GOT_PAST_THE_WALK" not in proc.stdout
