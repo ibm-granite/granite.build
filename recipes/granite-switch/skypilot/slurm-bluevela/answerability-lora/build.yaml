@@ -101,6 +101,7 @@ granite.build:
 
 
                 def sha256(path):
+                    """Hex SHA-256 of the file at path, read in 1 MiB chunks."""
                     h = hashlib.sha256()
                     with path.open("rb") as f:
                         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -152,6 +153,7 @@ granite.build:
 
 
                 def drop(table, rows):
+                    """table without the rows at the given positions, in order."""
                     gone = set(rows)
                     return table.take([i for i in range(table.num_rows) if i not in gone])
 
@@ -179,7 +181,8 @@ granite.build:
                                      f"have a prompt not ending in a user turn (over {MAX_DROPPED:.0%})")
                     # Source row numbers of the rows kept so far, so every drop is
                     # recorded by its row in the source parquet.
-                    index = [i for i in range(table.num_rows) if i not in set(r for r, _ in bad)]
+                    gone = set(r for r, _ in bad)
+                    index = [i for i in range(table.num_rows) if i not in gone]
                     if bad:
                         kept = drop(kept, [r for r, _ in bad])
                     long_rows = [(index[i], n) for i, n in too_long(kept, tok, max_length)]
