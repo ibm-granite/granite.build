@@ -34,6 +34,7 @@ which registers the ``space``/``file`` URI handlers used here.
 import shutil
 from pathlib import Path
 from typing import Iterable, Optional
+from unittest import mock
 
 import pytest
 import yaml
@@ -1465,6 +1466,54 @@ class TestNestedStepIdentity:
         with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
             with pytest.raises(ValueError, match="Unresolvable space uri"):
                 _resolve("space://steps/distill/foo")
+
+    def test_excluded_pinned_name_still_falls_back_to_an_unreadable_base(
+        self, tmp_path
+    ):
+        """A K8s-only ``foo`` in a local base pins the name, but a later base
+        that can't be read locally (an http base, or a failed git clone) still
+        serves ``steps/foo`` through the fallback, as before the pin existed."""
+        space_root = tmp_path / "space"
+        space_root.mkdir()
+        local = tmp_path / "local"
+        _write_step(local / "steps" / "foo", env_classes=["K8s"])
+        remote = tmp_path / "remote"
+        _write_step(remote / "steps" / "foo", env_classes=["Skypilot"])
+        env_dir = tmp_path / "env"
+        env_dir.mkdir()
+        _set_bases(space_root, local, remote)
+        real = SpaceURI._uri_to_local_path
+
+        def unreadable_remote(uri):
+            return None if "remote" in str(uri) else real(uri)
+
+        with mock.patch.object(
+            SpaceURI, "_uri_to_local_path", side_effect=unreadable_remote
+        ):
+            with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+                resolved = _resolve("space://steps/foo")
+
+        assert _resolved_dir(resolved).samefile(remote / "steps" / "foo")
+
+    def test_excluded_pinned_name_still_falls_back_to_an_unparsed_step(self, tmp_path):
+        """A K8s-only ``foo`` pins the name, and a later base's ``foo`` has a
+        ``step.yaml`` the ordered search can't parse; the fallback still admits
+        that same-name hit."""
+        space_root = tmp_path / "space"
+        space_root.mkdir()
+        local = tmp_path / "local"
+        _write_step(local / "steps" / "foo", env_classes=["K8s"])
+        other = tmp_path / "other"
+        (other / "steps" / "foo").mkdir(parents=True)
+        (other / "steps" / "foo" / "step.yaml").write_text("{ not: valid: yaml ::")
+        env_dir = tmp_path / "env"
+        env_dir.mkdir()
+        _set_bases(space_root, local, other)
+
+        with SpaceURI.with_current_env(_make_env("Skypilot", env_dir)):
+            resolved = _resolve("space://steps/foo")
+
+        assert _resolved_dir(resolved).samefile(other / "steps" / "foo")
 
     def test_space_root_nested_step(self, tmp_path):
         """Space root: a nested step the space itself ships resolves off base_uris[0]."""

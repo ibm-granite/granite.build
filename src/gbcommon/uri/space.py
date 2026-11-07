@@ -41,10 +41,23 @@ _IndexedStep = Tuple[Tuple[str, ...], Path]
 class _PinnedStepExcluded(Exception):
     """The URI's step name is pinned, but no copy of it serves the active env.
 
-    Raised by :meth:`SpaceURI._resolve_step_by_base_order` so the env-agnostic
-    fallback is skipped: it would otherwise serve a shorter step with the rest
-    of the name as a sub-file (``distill`` + ``foo`` for ``distill/foo``).
+    Raised by :meth:`SpaceURI._resolve_step_by_base_order` with the pinned name.
+    The env-agnostic fallback then refuses only a hit that would demote it to
+    a shorter step with the rest of the name as a sub-file (``distill`` +
+    ``foo`` for ``distill/foo``); a hit for the same name is still admitted.
+
+    Attributes:
+        name: The pinned step name (e.g. ``distill/foo``).
     """
+
+    def __init__(self, name: str) -> None:
+        """Record the pinned step name.
+
+        Args:
+            name: The pinned step name.
+        """
+        super().__init__(name)
+        self.name = name
 
 
 #: Env-class partition dirs that may sit between ``steps/`` and a step's name
@@ -112,11 +125,13 @@ class SpaceURI(URI):
         # between them. Within one base: the space's root ``steps/<name>``, then
         # the deepest owning dir, fewest ``environment_configs`` keys, then path.
         # See _resolve_step_by_base_order.
+        pinned: Optional[str] = None
         if uri_suffix.startswith(STEPS_PREFIX):
             try:
                 chosen = SpaceURI._resolve_step_by_base_order(uri_suffix)
-            except _PinnedStepExcluded:
-                raise ValueError(f"Unresolvable space uri : {uristr}") from None
+            except _PinnedStepExcluded as excluded:
+                # Fall back, but never to a shorter name than the pinned one.
+                chosen, pinned = None, excluded.name
             if chosen is not None:
                 # The chosen copy is final: a ``<rest>`` it lacks (or that
                 # escapes it) is unresolvable, never taken from another copy.
@@ -142,7 +157,7 @@ class SpaceURI(URI):
             resolved.append_path(uri_suffix)
             if not resolved.exists():
                 continue
-            if after is None or SpaceURI._fallback_steps_ok(base_uri, after):
+            if after is None or SpaceURI._fallback_steps_ok(base_uri, after, pinned):
                 return resolved  # type: ignore[return-value]
         raise ValueError(f"Unresolvable space uri : {uristr}")
 
@@ -539,7 +554,24 @@ class SpaceURI(URI):
         return data is None or SpaceURI._env_ok(data, env_class, env_subtype)
 
     @staticmethod
-    def _fallback_steps_ok(base_uri: str, after: str) -> bool:
+    def _demotes(steps_root: Path, step_dir: Path, pinned: str) -> bool:
+        """Return whether ``step_dir`` names a shorter step than ``pinned``.
+
+        Args:
+            steps_root: The base's ``steps/`` directory.
+            step_dir: The step dir the fallback chose under ``steps_root``.
+            pinned: The step name the ordered search pinned.
+
+        Returns:
+            ``True`` when ``step_dir``'s name has fewer segments than ``pinned``.
+        """
+        chosen = step_dir.relative_to(steps_root).parts
+        return len(chosen) < len(pinned.split("/"))
+
+    @staticmethod
+    def _fallback_steps_ok(
+        base_uri: str, after: str, pinned: Optional[str] = None
+    ) -> bool:
         """Vet an env-agnostic fallback ``steps/<after>`` hit against ``base_uri``.
 
         The caller has already confirmed the target exists via the resolved
@@ -566,15 +598,24 @@ class SpaceURI(URI):
         can't be materialized locally is admitted, preserving pre-sub-type
         behavior.
 
+        When the ordered search pinned a name that no copy serves (``pinned``),
+        a hit that names a *shorter* step is refused, so ``distill/foo`` is
+        never served as ``distill`` + sub-file ``foo``.  A hit for the pinned
+        name itself is still admitted, e.g. from a base that can't be read
+        locally, or one whose ``step.yaml`` the ordered search couldn't parse.
+
         Args:
             base_uri: The base URI the target resolved against.
             after: The URI suffix with the leading ``steps/`` stripped
                 (e.g. ``digit`` or ``distill/foo/helm-charts``).
+            pinned: The step name the ordered search pinned but found no
+                serving copy of, or ``None``.
 
         Returns:
             ``True`` when the hit is admitted; ``False`` when ``rest`` escapes
-            the step dir or the ``environment_configs`` restriction (class or
-            sub-type) excludes the env.
+            the step dir, the hit demotes ``pinned`` to a shorter name, or the
+            ``environment_configs`` restriction (class or sub-type) excludes
+            the env.
         """
         root = SpaceURI._uri_to_local_path(base_uri)
         if root is None:
@@ -589,6 +630,8 @@ class SpaceURI(URI):
             # under steps/ is admitted by the env gate on a missing step.yaml).
             name, _, rest = after.partition("/")
             step_dir = steps_root / name
+        if pinned is not None and SpaceURI._demotes(steps_root, step_dir, pinned):
+            return False
         if rest:
             base = step_dir.resolve()
             resolved = (step_dir / rest).resolve()
@@ -680,7 +723,8 @@ class SpaceURI(URI):
 
         Raises:
             _PinnedStepExcluded: The pinned name names a step, but no copy of
-                it serves the active env; the URI is then unresolvable.
+                it serves the active env.  The caller then falls back, refusing
+                any hit that would demote that name to a shorter one.
         """
         after = SpaceURI._steps_suffix(uri_suffix)
         if after is None:
