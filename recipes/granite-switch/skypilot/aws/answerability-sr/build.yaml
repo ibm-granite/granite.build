@@ -108,6 +108,10 @@ granite.build:
               # forward and backward, so a broken GPU stack fails here, not
               # after the base model has loaded.
               setup_command: "if systemctl list-unit-files nvidia-fabricmanager.service >/dev/null 2>&1 && ! systemctl is-active --quiet nvidia-fabricmanager; then echo 'byoc: starting nvidia-fabricmanager'; sudo systemctl start nvidia-fabricmanager; fi; cd code && pip install --no-cache-dir '.[train]' tensorboard && export LD_LIBRARY_PATH=\"$(python -c 'import nvidia.cudnn as m; print(list(m.__path__)[0])' 2>/dev/null)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"; python -c 'import sys, torch; ok = torch.cuda.is_available(); print(\"torch\", torch.__version__, \"cuda\", torch.version.cuda, \"cudnn\", torch.backends.cudnn.version(), \"gpus\", torch.cuda.device_count() if ok else 0); ok or sys.exit(\"torch sees no GPU: check the driver and nvidia-fabricmanager\"); q = torch.randn(1, 8, 256, 128, device=\"cuda\", dtype=torch.bfloat16, requires_grad=True); torch.nn.functional.scaled_dot_product_attention(q, q, q, is_causal=True).float().sum().backward(); torch.cuda.synchronize(); print(\"bf16 attention fwd+bwd ok\")'"
+              # The SR config the printf below writes is a copy of the one in
+              # ../../lsf-bluevela/answerability-sr/build.yaml: change both
+              # (test_granite_switch_recipe_copies.py checks they match; #650 is
+              # to keep one copy).
               # One folded line on purpose. The step injects this verbatim into
               # its own `run:` block, so a multi-line value would break that
               # block's indentation.

@@ -73,6 +73,9 @@ granite.build:
               # a row, so the label at the end would be cut off and TRL would
               # drop the row anyway, without saying which. The script must
               # contain no Jinja delimiters: the step renders it.
+              # The Python below is a copy of the one in ../../aws/answerability-lora/
+              # build.yaml: change both (test_granite_switch_recipe_copies.py checks
+              # they match; #650 is to keep one copy).
               command: |
                 set -euo pipefail
                 SRC="{{ bindings.source.binding.path }}"
