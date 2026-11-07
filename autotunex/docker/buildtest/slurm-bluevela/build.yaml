@@ -28,7 +28,7 @@ granite.build:
               image: "quay.io/priyanshu891/autotunex-cuda-base:test-7a3d4101@sha256:e218d14a3aea482a7c56e3b9d628bd1e58b10e86e077a079f3560993638fc099"
               # The smoke test comes from the commit under review.
               repo: "https://github.com/priyanshu891/granite.build.git"
-              ref: "7a3d4101975cde3aae1906d06fd4610e887e4235"
+              ref: "a25d9eb654cad73a2aafb5cd8e17a4b1f9ad6fda"
               workdir: "code"
               command: >-
                 python code/autotunex/docker/smoke_test.py
