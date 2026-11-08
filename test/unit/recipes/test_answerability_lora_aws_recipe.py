@@ -1,0 +1,363 @@
+#!/usr/bin/env python3
+
+# Copyright LLM.build Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Unit tests for the granite-switch answerability-lora recipe on AWS.
+
+The recipe and its parameters are rendered the way `gb build start` renders
+them, and the result is checked for what the AWS port changes: the EFS-backed
+environment, the paths on the EFS, and one train target per METHODS entry,
+chained so the trains run one after another; and that the template names no
+data, so a run must bring its own. The prepare script and the hf-peft-sft
+config it shares with the SLURM recipe are covered by
+test_answerability_lora_recipe.py.
+"""
+
+import json
+import pathlib
+import subprocess
+import sys
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+import yaml
+
+from gbcli.services.service_build import get_params_from_file
+from gbcli.utils.buildutil import apply_parameters
+from gbserver.utils.template import fill_template
+
+_REPO = pathlib.Path(__file__).resolve().parents[3]
+_RECIPE = (
+    _REPO / "recipes" / "granite-switch" / "skypilot" / "aws" / "answerability-lora"
+)
+# setup-local-space.sh fills in its EFS id and region for the user's own space.
+_ENV = (
+    _REPO
+    / "recipes"
+    / "granite-switch"
+    / "skypilot"
+    / "aws"
+    / "environment-template.yaml"
+)
+_EFS_ROOT = "/mnt/gb-shared/"
+# The published hf-peft-sft step that space://steps/train/hf-peft-sft resolves to.
+_STEP = (
+    _REPO
+    / "configurations"
+    / "assets"
+    / "environments"
+    / "skypilot"
+    / "steps"
+    / "train"
+    / "hf-peft-sft"
+    / "step.yaml"
+)
+
+
+# The recipe ships without data; a test supplies a stand-in, as the user would.
+# The default environment is the one setup-local-space.sh writes for us-east-1.
+_LOCAL_ENV = "space://environments/skypilot-local/aws-gb-shared"
+_DATA = "SOURCE_DATA_URI=hf:///datasets/org/repo/main/answerability"
+
+
+def _render(tmp_path, *params):
+    """build.yaml rendered as `gb build start` does: --param KEY=VALUE over
+    parameters.yaml."""
+    file_params = get_params_from_file(str(_RECIPE / "parameters.yaml"))
+    return apply_parameters(
+        (_RECIPE / "build.yaml").read_text(),
+        list(params),
+        file_params,
+        str(tmp_path),
+    )
+
+
+def _build(tmp_path, *params):
+    """The rendered `granite.build` mapping, with stand-in data."""
+    rendered = _render(tmp_path, _DATA, *params)
+    return yaml.safe_load(rendered)["granite.build"]
+
+
+def _trains(build):
+    """The train-<method> targets, by name, in order."""
+    return {n: t for n, t in build["targets"].items() if n.startswith("train-")}
+
+
+def _hps(target):
+    """A train target's hf_peft_sft_config; it must be one hf-peft-sft step."""
+    (step,) = target["steps"]
+    assert step["step_uri"] == "space://steps/train/hf-peft-sft"
+    return step["config"]["hf_peft_sft_config"]
+
+
+def test_the_data_has_no_default(tmp_path):
+    with pytest.raises(Exception, match="SOURCE_DATA_URI"):
+        _render(tmp_path)
+    prepare = _build(tmp_path)["targets"]["prepare"]
+    assert prepare["inputs"]["source"]["uri"] == _DATA.split("=", 1)[1]
+
+
+def test_every_target_runs_in_the_local_environment_by_default(tmp_path):
+    build = _build(tmp_path, "METHODS=alora,lora")
+    for target in build["targets"].values():
+        assert target["environment_uri"] == _LOCAL_ENV
+
+
+def test_every_target_runs_in_the_given_environment(tmp_path):
+    uri = "space://environments/skypilot-local/aws-gb-shared-usw2"
+    build = _build(tmp_path, "METHODS=alora,lora", f"ENVIRONMENT_URI={uri}")
+    for target in build["targets"].values():
+        assert target["environment_uri"] == uri
+
+
+def test_default_is_one_lora_train(tmp_path):
+    build = _build(tmp_path)
+    assert list(build["targets"]) == ["prepare", "train-lora"]
+    assert build["name"] == "answerability-lora-it1-r1"
+    assert _hps(build["targets"]["train-lora"])["method"] == "lora"
+
+
+@pytest.mark.parametrize("methods", [["alora", "lora"], ["lora", "alora"]])
+def test_methods_make_one_train_each_in_order(tmp_path, methods):
+    build = _build(tmp_path, f"METHODS={','.join(methods)}", "RUN_ID=r9")
+    assert list(build["targets"]) == ["prepare"] + [f"train-{m}" for m in methods]
+    assert build["name"] == f"answerability-{'-'.join(methods)}-r9"
+    for m in methods:
+        assert _hps(build["targets"][f"train-{m}"])["method"] == m
+
+
+def test_each_train_waits_for_the_one_before(tmp_path):
+    build = _build(tmp_path, "METHODS=alora,lora")
+    first, second = build["targets"]["train-alora"], build["targets"]["train-lora"]
+    assert "after" not in first["inputs"]
+    assert second["inputs"]["after"] == {"binding": "train-alora.adapter"}
+
+
+def test_every_train_reads_the_one_prepared_dataset(tmp_path):
+    build = _build(tmp_path, "METHODS=alora,lora")
+    for target in _trains(build).values():
+        assert target["inputs"]["dataset"] == {"binding": "prepare.dataset"}
+
+
+def test_methods_tolerate_spaces(tmp_path):
+    build = _build(tmp_path, "METHODS= alora , lora ")
+    assert list(_trains(build)) == ["train-alora", "train-lora"]
+
+
+@pytest.mark.parametrize("methods", ["lora,bogus", "lora,lora", ",", ""])
+def test_bad_methods_fail_the_render(tmp_path, methods):
+    with pytest.raises(
+        Exception, match="METHODS_must_be_distinct_entries_of_lora_or_alora"
+    ):
+        _build(tmp_path, f"METHODS={methods}")
+
+
+def test_alora_settings_stay_per_train(tmp_path):
+    build = _build(tmp_path, "METHODS=alora,lora")
+    alora = _hps(build["targets"]["train-alora"])
+    lora = _hps(build["targets"]["train-lora"])
+    assert alora["alora_invocation_string"] == "<|im_start|>assistant"
+    assert alora["args"]["gradient_checkpointing"] is False
+    assert "alora_invocation_string" not in lora
+    assert lora["args"]["gradient_checkpointing"] is True
+
+
+def test_each_adapter_has_its_own_dir_on_the_efs(tmp_path):
+    build = _build(tmp_path, "METHODS=alora,lora", "RUN_ID=r9")
+    for m in ("alora", "lora"):
+        target = build["targets"][f"train-{m}"]
+        path = _hps(target)["output_path"]
+        assert path.startswith(_EFS_ROOT)
+        assert path.endswith(f"/answerability-{m}/r9")
+        assert target["outputs"]["adapter"]["uri"] == f"env://{path}"
+        assert _hps(target)["clearml_task_name"] == f"answerability-{m}-r9"
+
+
+def test_prepare_writes_the_dataset_to_the_efs(tmp_path):
+    prepare = _build(tmp_path, "RUN_ID=r9")["targets"]["prepare"]
+    uri = prepare["outputs"]["dataset"]["uri"]
+    assert uri.startswith(f"env://{_EFS_ROOT}") and uri.endswith("/r9")
+
+
+def test_no_slurm_only_settings_remain(tmp_path):
+    prepare = _build(tmp_path)["targets"]["prepare"]
+    config = prepare["steps"][0]["config"]
+    assert "zone" not in config
+    assert "sbatch_options" not in config["launcher_config"]
+    assert config["launcher_config"]["resources"] == {"cpus": "4+", "memory": "16+"}
+
+
+def test_prepare_runs_in_the_image_the_trains_run_in(tmp_path):
+    """prepare borrows the hf-peft-sft image for its venv and counts tokens with
+    its transformers, to drop the rows train would truncate. A different image
+    could count differently, so PREP_IMAGE must follow the step's image."""
+    step = yaml.safe_load(_STEP.read_text())["config"]["hf_peft_sft_config"]
+    build = _build(tmp_path, "METHODS=alora,lora")
+    prepare = build["targets"]["prepare"]["steps"][0]["config"]
+    image = prepare["command_config"]["image"]
+    for target in _trains(build).values():
+        train_image = _hps(target).get("image_id", step["image_id"])
+        assert image == train_image.removeprefix("docker:")
+
+
+def test_instance_type_only_when_set(tmp_path):
+    def resources(*params):
+        (target,) = _trains(_build(tmp_path, *params)).values()
+        return target["steps"][0]["config"]["launcher_config"]["resources"]
+
+    assert resources() == {"accelerators": "H200:8"}
+    assert resources("ACCELERATORS=L40S:1", "INSTANCE_TYPE=g6e.4xlarge") == {
+        "accelerators": "L40S:1",
+        "instance_type": "g6e.4xlarge",
+    }
+
+
+def test_effective_batch_is_32_by_default(tmp_path):
+    (target,) = _trains(_build(tmp_path)).values()
+    gpus = int(
+        target["steps"][0]["config"]["launcher_config"]["resources"][
+            "accelerators"
+        ].split(":")[1]
+    )
+    args = _hps(target)["args"]
+    assert (
+        gpus * args["per_device_train_batch_size"] * args["gradient_accumulation_steps"]
+        == 32
+    )
+
+
+def test_environment_pins_every_step_type_to_the_efs_region():
+    env = yaml.safe_load(_ENV.read_text())
+    config = env["config"]
+    region = config["shared_filesystem"]["efs"]["region"]
+    assert config["shared_workdir"].startswith(
+        config["shared_filesystem"]["mount_point"]
+    )
+    for step in ("hfpull", "hfpush", "command", "hf-peft-sft"):
+        infra = config["steps"][step]["launcher_config"]["resources"]["infra"]
+        assert infra == f"aws/{region}"
+    # hf pulls are their own steps, cached on the EFS: no inline, no local cache.
+    (hf,) = [s for s in env["assetstores"] if s["store_uri"].endswith("/hf")]
+    assert hf["pull"][0]["config"] == {}
+
+
+# ── the README's example row ─────────────────────────────────────────────────
+
+# A stand-in for transformers' tokenizer, as in test_answerability_lora_recipe:
+# prepare only needs a token count per row.
+_FAKE_TRANSFORMERS = """
+class _Tok:
+    def apply_chat_template(self, messages, tokenize=True):
+        return [0] * sum(4 + len(m["content"].split()) for m in messages)
+
+
+class AutoTokenizer:
+    @staticmethod
+    def from_pretrained(path):
+        return _Tok()
+"""
+
+
+def _readme_example():
+    """The JSON row in README.md, "Your data"."""
+    text = (_RECIPE / "README.md").read_text()
+    section = text[text.index("## Your data") : text.index("### What `prepare` does")]
+    block = section.split("```json\n", 1)[1].split("```", 1)[0]
+    return json.loads(block)
+
+
+def test_the_readme_example_row_passes_prepare(tmp_path):
+    row = _readme_example()
+    src = tmp_path / "src"
+    src.mkdir()
+    for split in ("train", "test"):
+        pq.write_table(pa.Table.from_pylist([row]), src / f"{split}.parquet")
+    stub = tmp_path / "stub"
+    stub.mkdir()
+    (stub / "transformers.py").write_text(_FAKE_TRANSFORMERS)
+    step = _build(
+        tmp_path,
+        f"DATA_ROOT={tmp_path / 'data'}",
+        f"ADAPTER_ROOT={tmp_path / 'adapters'}",
+        "RUN_ID=r1",
+    )
+    command = fill_template(
+        step["targets"]["prepare"]["steps"][0]["config"]["command_config"]["command"],
+        {
+            "bindings": {
+                "source": {"binding": {"path": str(src)}},
+                "base_model": {"binding": {"path": str(tmp_path / "model")}},
+            }
+        },
+        strict=True,
+    )
+    launcher = (
+        "import sys; "
+        f"sys.path.insert(0, {str(stub)!r}); "
+        "sys.argv = sys.argv[1:]; "
+        "exec(compile(sys.stdin.read(), 'prepare', 'exec'), dict(__name__='__main__'))"
+    )
+    command = command.replace('"$PY" -I -', f'"{sys.executable}" -I -c "{launcher}" _')
+    proc = subprocess.run(
+        ["bash", "-c", command], capture_output=True, text=True, check=False
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = pq.read_table(tmp_path / "data" / "r1" / "data" / "train.parquet")
+    assert out.to_pylist() == [row]
+
+
+@pytest.mark.parametrize(
+    "run_id", ["", ".", "..", "../..", "x/../../../..", "a/b", "a b", "-rf", "r1;rm"]
+)
+def test_an_unsafe_run_id_fails_the_render(tmp_path, run_id):
+    """RUN_ID names the dataset and adapter dirs that are replaced in place."""
+    with pytest.raises(Exception, match="RUN_ID_must_be"):
+        _build(tmp_path, f"RUN_ID={run_id}")
+
+
+@pytest.mark.parametrize("run_id", ["r1", "aws-full-3", "smoke_1.b", "123"])
+def test_a_plain_run_id_renders(tmp_path, run_id):
+    build = _build(tmp_path, f"RUN_ID={run_id}")
+    assert build["targets"]["prepare"]["outputs"]["dataset"]["uri"].endswith(
+        f"/{run_id}"
+    )
+
+
+def test_prepare_creates_the_shared_dirs_world_writable(tmp_path):
+    """prepare runs as root in the hf-peft-sft container; the SR recipe runs
+    as a non-root user and writes beside it under the same root. So prepare
+    leaves every level it creates under the EFS mount 1777 (sticky), as
+    gbserver's per-run tree is, including the levels above ADAPTER_ROOT that
+    hf-peft-sft would otherwise create as root 0755."""
+    efs = tmp_path / "efs"
+    build = _build(tmp_path, "RUN_ID=r1")
+    cmd = build["targets"]["prepare"]["steps"][0]["config"]["command_config"]["command"]
+    walk = cmd[cmd.index("MNT=") : cmd.index('echo "prepare:')]
+    walk = walk.replace(_EFS_ROOT, f"{efs}/")
+    proc = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + walk],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    for rel in (
+        "granite-switch",
+        "granite-switch/answerability-lora",
+        "granite-switch/answerability-lora/data",
+        "granite-switch/answerability-lora/adapters",
+    ):
+        assert (efs / rel).stat().st_mode & 0o7777 == 0o1777, rel

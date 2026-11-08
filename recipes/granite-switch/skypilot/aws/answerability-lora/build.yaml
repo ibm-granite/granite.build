@@ -1,37 +1,54 @@
 #####
-# Answerability LoRA adapter on granite-4.2-8b, trained with the hf-peft-sft
-# step on IBM BlueVela over SLURM.
+# Answerability LoRA and/or aLoRA adapters on granite-4.2-8b, trained with the
+# hf-peft-sft step on AWS EC2 GPUs, with a shared EFS filesystem
+# (an environment written by ../setup-local-space.sh).
 #
-# Two targets, wired by one artifact:
+# One prepare target, and one train target per entry of METHODS
+# (comma-separated, in order):
 #
-#   prepare ──(dataset)──> train
+#   prepare ──(dataset)──> train-<m1> ──(order)──> train-<m2> ...
 #
-# `prepare` pulls the answerability parquet from the private HF dataset repo
-# ibm-research/touma (only that directory: the hf:// URI names a path in the
-# repo), keeps its prompt/completion columns, and writes them to shared /proj.
-# `train` stages the base model (hfpull), binds that dataset, trains a LoRA
-# adapter with TRL's SFTTrainer (loss on the completion only), and registers
-# the ADAPTER as the `adapter` artifact.
+# `prepare` pulls your parquet dir (SOURCE_DATA_URI, no default; for an hf://
+# URI only that directory of the repo), keeps its prompt/completion columns,
+# drops rows that cannot be trained on, and writes the result to the EFS.
+# Each `train-<method>` stages the base model (hfpull), binds that dataset,
+# trains a LoRA or aLoRA adapter with TRL's SFTTrainer (loss on the completion
+# only), and registers the ADAPTER as its `adapter` artifact. A later train
+# also binds the previous one's adapter, only so the trains run one after
+# another (one GPU instance at a time).
 #
-# See README.md for the HF_TOKEN secret this needs and why the conversion
-# exists.
+# Each target, and each hf:// pull, runs on its own EC2 instance; the EFS is
+# what they share. See README.md for the secrets this needs.
 #
-#   gb build start -f build.yaml --param-file parameters.yaml
-#   gb build start -f build.yaml --param-file parameters.yaml --param RUN_ID=r2
+#   gb build start -f build.yaml --param RUN_ID=r1 --param SOURCE_DATA_URI=<dir>
+#   gb build start -f build.yaml --param RUN_ID=r2 --param SOURCE_DATA_URI=<dir> \
+#     --param METHODS=alora,lora
 #####
+<% set methods = METHODS.split(",") | map("trim") | reject("equalto", "") | list %>
+<% if not methods or methods | reject("in", ["lora", "alora"]) | list or methods | unique | list | length != methods | length %>
+# An undefined name fails the render (StrictUndefined) and names the problem.
+$${ METHODS_must_be_distinct_entries_of_lora_or_alora }
+<% endif %>
+<% set _rid = RUN_ID | string %>
+<% if not _rid or _rid in [".", ".."] or _rid.startswith("-") or _rid | list | reject("in", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-") | list %>
+# RUN_ID names directories the targets clear and replace (`rm -rf`), so only a
+# plain name may pass: letters, digits, `.`, `_`, `-`; not `.`, `..` or a
+# leading `-`. An undefined name fails the render (StrictUndefined).
+$${ RUN_ID_must_be_letters_digits_dot_underscore_dash_and_not_dot_or_dotdot }
+<% endif %>
 granite.build:
-  name: answerability-$${METHOD}-$${RUN_ID}
+  name: answerability-$${methods | join("-")}-$${RUN_ID}
 
   targets:
 
     ##########################################################################
-    # prepare — HF parquet -> prompt/completion dataset on /proj (CPU only)
+    # prepare — HF parquet -> prompt/completion dataset on the EFS (CPU only)
     ##########################################################################
     prepare:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
-        # Only training_data/answerability/parquet_granite4.2_8b is downloaded,
-        # into the shared hf cache, and bound at that directory.
+        # For an hf:// URI, only the directory it names is downloaded, into
+        # the shared hf cache, and bound at that directory.
         source:
           uri: "$${SOURCE_DATA_URI}"
           type: dataset
@@ -42,7 +59,8 @@ granite.build:
           uri: "$${BASE_MODEL_URI}"
           type: model
       outputs:
-        # Shared /proj, so train (another SLURM job) can read it.
+        # On the EFS, outside the per-run workdir (removed at teardown), so
+        # train (another instance) can read it.
         dataset:
           uri: "env://$${DATA_ROOT}/$${RUN_ID}"
           type: dataset
@@ -50,21 +68,15 @@ granite.build:
         - step_uri: space://steps/command
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
-            # CPU-only: the cpu partition, without the environment-wide H200
-            # constraint (as the environment does for hfpull/hfpush).
-            zone: cpu
             launcher_config:
+              # The region comes from the environment (the EFS's region).
               resources:
-                # cpu caps memory at 8 GiB per CPU (MaxMemPerCPU=8192): memory
-                # over cpus x 8 makes SLURM raise cpus-per-task, which then
-                # disagrees with SkyPilot's srun --cpus and srun aborts.
-                cpus: $${PREP_CPUS}
-                memory: "$${PREP_MEMORY}"
-              sbatch_options:
-                constraint: null
+                # A CPU instance at least this size (SkyPilot's "N+" minimum).
+                cpus: "$${PREP_CPUS}+"
+                memory: "$${PREP_MEMORY}+"
             command_config:
-              # The hf-peft-sft image: its venv has the pinned pyarrow, and
-              # train pulls the same image, so the node cache serves both.
+              # The hf-peft-sft image: its venv has the pinned pyarrow and the
+              # transformers train uses.
               image: "$${PREP_IMAGE}"
               # TRL treats a dataset with `input_ids` as already tokenized and
               # skips its chat-template tokenization and completion-only
@@ -73,12 +85,31 @@ granite.build:
               # a row, so the label at the end would be cut off and TRL would
               # drop the row anyway, without saying which. The script must
               # contain no Jinja delimiters: the step renders it.
+              # The Python below is a copy of the one in ../../slurm-bluevela/answerability-lora/
+              # build.yaml: change both (test_granite_switch_recipe_copies.py checks
+              # they match; #650 is to keep one copy).
               command: |
                 set -euo pipefail
                 SRC="{{ bindings.source.binding.path }}"
                 MODEL="{{ bindings.base_model.binding.path }}"
                 OUT="$${DATA_ROOT}/$${RUN_ID}"
                 PY=/opt/hf-peft-sft/.venv/bin/python
+                # This step runs as root; the SR recipe runs as a non-root user
+                # and writes beside it under the same root, and the EFS does not
+                # remap root. So every level of both roots under the mount is
+                # 1777 (sticky), as gbserver's per-run tree is. That includes the
+                # levels above ADAPTER_ROOT, which hf-peft-sft would otherwise
+                # create as root 0755.
+                MNT="/mnt/gb-shared/"
+                for ROOT in "$${DATA_ROOT}" "$${ADAPTER_ROOT}"; do
+                  case "$ROOT" in "$MNT"?*) ;; *) continue ;; esac
+                  D="${MNT%/}"
+                  for P in $(echo "${ROOT#"$MNT"}" | tr "/" " "); do
+                    D="$D/$P"
+                    mkdir -p "$D"
+                    chmod 1777 "$D" 2>/dev/null || true
+                  done
+                done
                 echo "prepare: $SRC -> $OUT"
                 mkdir -p "$OUT"
                 "$PY" -I - "$SRC" "$OUT" "$${SOURCE_DATA_URI}" "$MODEL" "$${MAX_LENGTH}" <<'PY'
@@ -101,6 +132,7 @@ granite.build:
 
 
                 def sha256(path):
+                    """Hex SHA-256 of the file at path, read in 1 MiB chunks."""
                     h = hashlib.sha256()
                     with path.open("rb") as f:
                         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -152,6 +184,7 @@ granite.build:
 
 
                 def drop(table, rows):
+                    """table without the rows at the given positions, in order."""
                     gone = set(rows)
                     return table.take([i for i in range(table.num_rows) if i not in gone])
 
@@ -179,7 +212,8 @@ granite.build:
                                      f"have a prompt not ending in a user turn (over {MAX_DROPPED:.0%})")
                     # Source row numbers of the rows kept so far, so every drop is
                     # recorded by its row in the source parquet.
-                    index = [i for i in range(table.num_rows) if i not in set(r for r, _ in bad)]
+                    gone = set(r for r, _ in bad)
+                    index = [i for i in range(table.num_rows) if i not in gone]
                     if bad:
                         kept = drop(kept, [r for r, _ in bad])
                     long_rows = [(index[i], n) for i, n in too_long(kept, tok, max_length)]
@@ -219,10 +253,11 @@ granite.build:
                 PY
                 echo "GB_ARTIFACT_ID:dataset GB_ARTIFACT_PATH:$OUT"
 
+<% for METHOD in methods %>
     ##########################################################################
-    # train — LoRA adapter with hf-peft-sft (DDP on H200)
+    # train-$${METHOD} — $${METHOD} adapter with hf-peft-sft (DDP, 8x H200 by default)
     ##########################################################################
-    train:
+    train-$${METHOD}:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
         base_model:
@@ -233,8 +268,15 @@ granite.build:
         # lineage edge from the HF source to the adapter.
         dataset:
           binding: prepare.dataset
+<% if not loop.first %>
+        # Not read by the step: binding the previous method's adapter only makes
+        # this train wait for that one, so the trains share one GPU instance in
+        # turn instead of running at the same time.
+        after:
+          binding: train-$${loop.previtem}.adapter
+<% endif %>
       outputs:
-        # Written to shared /proj so it survives teardown; must match
+        # Written to the EFS so it survives teardown; must match
         # hf_peft_sft_config.output_path below.
         adapter:
           uri: "env://$${ADAPTER_ROOT}/answerability-$${METHOD}/$${RUN_ID}"
@@ -245,10 +287,15 @@ granite.build:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             launcher_config:
               resources:
-                # H200 is the only GPU bluevela schedules (its constraint).
+                # SkyPilot picks the cheapest instance with these GPUs (H200:8 is
+                # p5e/p5en.48xlarge, L40S:1 is g6e.xlarge) unless INSTANCE_TYPE
+                # names one. The region comes from the environment.
                 accelerators: "$${ACCELERATORS}"
-                # gbserver drops compute_config memory on slurm; bare GiB string.
-                memory: "$${MEMORY}"
+<% if INSTANCE_TYPE %>
+                # Another size with the same GPUs, when the cheapest one has no
+                # capacity: AWS stocks each instance type separately.
+                instance_type: "$${INSTANCE_TYPE}"
+<% endif %>
               envs:
                 PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
             compute_config:
@@ -293,7 +340,9 @@ granite.build:
                 # prepare already dropped longer rows, so nothing is truncated.
                 max_length: $${MAX_LENGTH}
                 per_device_train_batch_size: 1
-                gradient_accumulation_steps: 8
+                # Effective batch = GPUs x 1 x this: 8 x 1 x 4 = 32, the batch
+                # the other hyperparameters were set with.
+                gradient_accumulation_steps: $${GRAD_ACCUM}
                 learning_rate: $${LEARNING_RATE}
                 lr_scheduler_type: cosine
                 warmup_steps: 0.05
@@ -306,3 +355,4 @@ granite.build:
                 dataloader_num_workers: 4
                 logging_steps: 10
                 seed: 0
+<% endfor %>
