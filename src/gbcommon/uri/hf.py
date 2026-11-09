@@ -367,6 +367,20 @@ def _clear_hf_download_scratch(dest: Path) -> None:
     shutil.rmtree(scratch, ignore_errors=True)
 
 
+def hf_path_patterns(path_in_repo: str) -> Optional[List[str]]:
+    """The download filter that limits a repo pull to *path_in_repo*.
+
+    A path names a file or a directory, so it matches both: the path itself,
+    and everything under it (fnmatch's ``*`` crosses ``/``). The shell hfpull
+    steps pass the same two patterns as ``--include`` flags.
+
+    :param path_in_repo: The sub-path in the repo, or ``""`` for the whole repo.
+    :returns: The ``allow_patterns`` list, or ``None`` (no filter) for ``""``.
+    """
+    path = path_in_repo.strip("/")
+    return [path, f"{path}/*"] if path else None
+
+
 def _pull_hf_repo(
     *,
     repo_id: str,
@@ -377,6 +391,7 @@ def _pull_hf_repo(
     endpoint: Optional[str],
     force: bool,
     lock: Optional[SharedFileSystemLock] = None,
+    path_in_repo: str = "",
 ) -> None:
     """snapshot_download into *dest*, self-healing a corrupt HF cache.
 
@@ -400,8 +415,12 @@ def _pull_hf_repo(
     has no following step to re-fence, so a failure there also re-checks ownership
     and re-waits on eviction instead of surfacing as a build failure. An
     operator-requested ``force`` on the initial attempt is honored regardless.
+
+    A non-empty *path_in_repo* limits the download to that file or directory
+    (see :func:`hf_path_patterns`); it lands at ``dest/<path_in_repo>``.
     """
     lock_held = lock is not None
+    allow_patterns = hf_path_patterns(path_in_repo)
 
     def _download(force_download: bool) -> None:
         snapshot_download(
@@ -412,6 +431,7 @@ def _pull_hf_repo(
             token=token,
             force_download=force_download,
             endpoint=endpoint,
+            allow_patterns=allow_patterns,
         )
 
     def _fence_self_heal() -> None:
@@ -884,6 +904,22 @@ class HfURI(URI):
         """Return the sub-path within the repo encoded in the URI, or empty string."""
         return self._parts().path_in_repo
 
+    def local_path(self, dest: Path) -> Path:
+        """Where this URI's content is once :meth:`pull` has downloaded to *dest*.
+
+        A pull keeps the repo layout under *dest*, so a path in the repo is
+        bound at ``dest/<path_in_repo>``; without one it is *dest* itself.
+        Buckets sync the path's contents into *dest*, so for them it is always
+        *dest*.
+
+        :param dest: The pull destination (the hfpull ``--local-dir``).
+        :returns: The path to bind.
+        """
+        path = self.get_path_in_repo().strip("/")
+        if not path or self.get_hf_type() == HfType.BUCKET:
+            return Path(dest)
+        return Path(dest) / path
+
     def custom_str(self) -> str:
         """Return the canonical URI string, always including the type segment."""
         p = self._parts()
@@ -1047,6 +1083,11 @@ class HfURI(URI):
         with ``force_download`` and, if needed, clearing the scratch download
         dir.
 
+        A repo URI with a path in the repo (``.../<revision>/<path_in_repo>``)
+        downloads only that file or directory, to ``dest/<path_in_repo>`` (see
+        :meth:`local_path`); a path that matches nothing in the repo fails the
+        pull rather than binding an empty directory.
+
         Returns ``True`` immediately without network calls when HF mocking is
         enabled via ``GBTEST_MOCK_HF``.
 
@@ -1129,7 +1170,22 @@ class HfURI(URI):
                                 endpoint=endpoint,
                                 force=force,
                                 lock=lock,
+                                path_in_repo=p.path_in_repo,
                             )
+                            if (
+                                p.path_in_repo.strip("/")
+                                and not self.local_path(dest).exists()
+                            ):
+                                logger.error(
+                                    "HF pull of %s: %r matched nothing in %s "
+                                    "(type=%s, rev=%s)",
+                                    str(self),
+                                    p.path_in_repo,
+                                    repo_id,
+                                    repo_type,
+                                    p.revision,
+                                )
+                                return False
                             logger.debug(
                                 "Completed HF pull of %s (type=%s, rev=%s) to %s",
                                 repo_id,

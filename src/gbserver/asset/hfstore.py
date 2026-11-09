@@ -202,6 +202,10 @@ class Hfstore(Assetstore):
             hfuri: Parsed HuggingFace URI.
             binding_path: Local path where the asset will be cached.
 
+        The step downloads into *binding_path*. With a path in the repo, the
+        input is bound at ``HfURI.local_path(binding_path)``, not at
+        *binding_path* itself.
+
         Returns:
             Dict suitable for passing as config={"hfpull_config": ...} to
             BuildTargetStepConfig.
@@ -214,6 +218,10 @@ class Hfstore(Assetstore):
             "owner": hfuri.get_owner(),
             "repo": hfuri.get_repo(),
             "revision": hfuri.get_revision(),
+            # Sub-path within the repo ("" when none). The skypilot/LSF hfpull
+            # scripts download only it (``--include``), into ``path`` with the
+            # repo layout kept; the k8s template re-parses it from ``uri``.
+            "path_in_repo": hfuri.get_path_in_repo(),
             "hf": {
                 "type": hf_type,
             },

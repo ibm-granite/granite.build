@@ -1,0 +1,12 @@
+# Direct pins for the hf-peft-sft image (spec: latest stable as of 2026-10-30).
+# `make lock` compiles requirements.lock (full closure, hashed) from this file.
+# torch 2.15.0 from PyPI bundles the CUDA 13.2 runtime (matches the 13.2.1 base).
+torch==2.15.0
+peft==0.21.2
+trl==1.17.1
+transformers==5.22.1
+accelerate==1.15.0
+bitsandbytes==0.50.2
+deepspeed==0.19.9
+datasets==5.1.0
+clearml==2.1.12

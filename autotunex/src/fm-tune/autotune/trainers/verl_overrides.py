@@ -96,31 +96,16 @@ def build_verl_overrides(
     reward_function_path = training_rl_config.get("reward_function_path", None)
     reward_function_name = training_rl_config.get("reward_function_name", "compute_score")
 
-    # Detect hybrid (Mamba/SSM) architectures — these require enforce_eager
-    # because CUDA graph capture is incompatible with stateful Mamba layers.
-    is_hybrid_model = False
-    # try:
-    #     from transformers import AutoConfig
-    #     _hf_cfg = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True)
-    #     _arch = getattr(_hf_cfg, "architectures", []) or []
-    #     _model_type = getattr(_hf_cfg, "model_type", "")
-    #     is_hybrid_model = any(
-    #         kw in a.lower() for a in _arch for kw in ("hybrid", "mamba", "rwkv", "ssm")
-    #     ) or any(
-    #         kw in _model_type.lower() for kw in ("hybrid", "mamba", "rwkv", "ssm")
-    #     )
-    #     if is_hybrid_model:
-    #         print(f"[AutoTune] Detected hybrid/SSM architecture: {_arch} — forcing eager mode")
-    # except Exception:
-    #     pass
-
-    # Derive adaptive settings from TP and architecture
+    # Derive adaptive settings from TP. Hybrid Mamba/SSM bases need no special
+    # case: vLLM 0.24 captures full CUDA graphs for GraniteMoeHybrid (Granite
+    # 4.0-H micro/tiny GRPO ran with enforce_eager=False). Older vLLM could not,
+    # which is why a detection block used to live here (disabled, then removed).
     is_large_model = tensor_model_parallel_size > 1
     # Always enable gradient checkpointing — with colocated pools the actor,
     # critic, ref, and vLLM engine all share the same GPUs, so activation
     # memory savings matter even for small models.
     enable_gradient_checkpointing = True
-    enforce_eager = is_large_model or is_hybrid_model
+    enforce_eager = is_large_model
 
     # Set rollout n based on algorithm
     if rl_algorithm in ("grpo", "dapo"):
@@ -263,9 +248,11 @@ def build_verl_overrides(
                 "path": model_name_or_path,
                 "tokenizer_path": model_name_or_path,
                 "enable_gradient_checkpointing": enable_gradient_checkpointing,
-                "fsdp_config": {
-                    "dtype": dtype,
-                },
+            },
+            # verl 0.9 moved the critic's FSDP settings from critic.model.fsdp_config
+            # to critic.fsdp (the model-engine config); the old key is ignored.
+            "fsdp": {
+                "dtype": dtype,
             },
             "optim": {
                 "lr": lr,
@@ -315,7 +302,7 @@ def build_verl_overrides(
         },
     }
 
-    # DAPO-specific overlong buffer. verl 0.7.1's "dapo" reward manager
+    # DAPO-specific overlong buffer. verl's (0.7.1 and 0.9.1) "dapo" reward manager
     # (experimental/reward_loop/reward_manager/dapo.py) reads both keys from
     # reward.reward_kwargs and asserts max_resp_len >= overlong_buffer_cfg.len.
     if rl_algorithm == "dapo":
@@ -340,6 +327,31 @@ def build_verl_overrides(
             },
             "max_resp_len": max_response_length,
         }
+
+    # GRPO / DAPO: kl_coef is a KL *loss* against the reference policy. Without
+    # this, use_kl_loss stayed False (and use_kl_in_reward is False for every
+    # algorithm), so the kl_coef their search spaces sweep changed nothing and
+    # nothing held the policy near the reference. kl_coef == 0 (DAPO's default)
+    # keeps it off, so no reference model is loaded for a zero-weight term.
+    # PPO is unchanged: its KL is a reward penalty (algorithm.kl_ctrl), which
+    # the driver disables when a reward function is given.
+    if rl_algorithm in ("grpo", "dapo"):
+        overrides["actor_rollout_ref"]["actor"]["use_kl_loss"] = kl_coef > 0
+        overrides["actor_rollout_ref"]["actor"]["kl_loss_coef"] = kl_coef
+
+    # GRPO: do not divide group advantages by the group's reward std by default.
+    # When a group's rewards are nearly equal (all right or all wrong), the std
+    # is tiny and the division turns small shaping terms -- e.g. a length
+    # penalty of a few hundredths -- into +-1 advantages, so the policy learns
+    # mostly from them. With the shipped GSM8K reward that drove responses from
+    # ~150 tokens to 2 within 15 steps on verl 0.7.1 and 0.9.1 alike. Mean-only
+    # centering ("Dr. GRPO") keeps the reward's own scale; DAPO already runs
+    # without std normalization. Set norm_adv_by_std_in_grpo: true in
+    # training_rl_config for the original GRPO.
+    if rl_algorithm == "grpo":
+        overrides["algorithm"]["norm_adv_by_std_in_grpo"] = bool(
+            training_rl_config.get("norm_adv_by_std_in_grpo", False)
+        )
 
     logger.info(
         f"[AutoTune] VERL config: actor_gpus={actor_gpus}, "

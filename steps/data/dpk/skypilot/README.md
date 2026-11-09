@@ -306,7 +306,7 @@ on **different nodes**. What works depends on the endpoint:
 
 | Endpoint | Output URI | Why |
 |---|---|---|
-| `skypilot/slurm`, `skypilot/lsf` | `env:///shared/…` + an **explicit** matching `output_path` | `/shared` is the environment's `shared_workdir`, mounted on every node — cross-node safe. The `./output` default will not do here: it lives in the per-target workdir, which is deleted at target teardown. |
+| `skypilot/slurm/*`, `skypilot/lsf/*` | `env:///shared/…` + an **explicit** matching `output_path` | `/shared` is the environment's `shared_workdir`, mounted on every node — cross-node safe. The `./output` default will not do here: it lives in the per-target workdir, which is deleted at target teardown. |
 | `skypilot/aws` | `s3://bucket/…`, `output_path` may be **left default** | Each target gets its own instance with no shared filesystem. The S3 assetstore pushes the staged dir and the consumer pulls it, so a node-local `./output` is fine. |
 | `skypilot/kubernetes/local` | `env:///shared/…` + an **explicit** matching `output_path` | As on slurm: every pod mounts the env's ReadWriteMany volume at `/shared`, its `shared_workdir`. The `./output` default lives in the per-target workdir, deleted at target teardown. |
 | `skypilot/kubernetes` | **None until shared storage is enabled** — terminal outputs only | Each step is its own pod. The env ships its ReadWriteMany-PVC wiring commented out; once enabled (or with an `s3` assetstore added), hand off as on `skypilot/kubernetes/local` (or `skypilot/aws`). See `docs/environments/skypilot-kubernetes.md`. |

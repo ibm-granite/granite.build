@@ -54,7 +54,7 @@ granite.build:
   targets:
 
     tokenize:
-      environment_uri: space://environments/skypilot/slurm
+      environment_uri: space://environments/skypilot/slurm/local
       inputs:
         docs:
           # Public dataset: DPK's own tokenization test fixture (5 parquet, 2
