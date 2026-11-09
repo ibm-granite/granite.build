@@ -120,18 +120,37 @@ Run the setup script once per region, from your checkout:
 recipes/granite-switch/skypilot/aws/setup-local-space.sh <region>
 ```
 
-It reads `FS` from your `.ids` file (step 2) and writes, outside the repo and
-readable only by you:
+It reads `FS` from your `.ids` file (step 2), looks up the GPU host image (below),
+and writes, outside the repo and readable only by you:
 
 | File | What |
 |---|---|
-| `~/.granite.build/local-space/overlay/environments/skypilot-local/aws-gb-shared*/environment.yaml` | The template with your EFS id and region, named for the region as in step 1. Under `skypilot-local/`, so it never shadows a shipped environment. |
+| `~/.granite.build/local-space/overlay/environments/skypilot-local/aws-gb-shared*/environment.yaml` | The template with your EFS id, region and host AMI, named for the region as in step 1. Under `skypilot-local/`, so it never shadows a shipped environment. |
 | `~/.granite.build/local-space/space.yaml` | A standalone space named `public` (so it reads the `space_secrets/public/` secrets): the overlay first, then this checkout's `configurations/assets`. An existing one that already lists the overlay is kept. |
-| `~/.granite.build/local-env/granite-switch.params` | `ENVIRONMENT_URI=space://environments/skypilot-local/<name>`. Other lines in the file are kept. |
+| `~/.granite.build/local-env/granite-switch.params` | `ENVIRONMENT_URI=space://environments/skypilot-local/<name>` and `HOST_AMI=ami-...`. Other lines in the file are kept. |
 
-It reads no secret and calls no AWS API; it is safe to re-run, and
-`ENVIRONMENT_URI` points at the region set up last. It ends by printing what
-is left to do.
+It reads no secret; it is safe to re-run, and `ENVIRONMENT_URI` and `HOST_AMI`
+point at the region set up last. It ends by printing what is left to do.
+
+**The GPU host image.** The GPU steps run on the AWS
+[Deep Learning Base GPU AMI](https://aws.amazon.com/releasenotes/aws-deep-learning-base-gpu-ami-ubuntu-22-04/)
+("Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04)"). On SkyPilot's
+default AMI an 8-GPU H200 instance does not see its GPUs: the GPUs are joined
+through NVSwitch, which needs the DLAMI's NVIDIA Fabric Manager before CUDA can
+start. AMI ids differ by region and AWS publishes a new build every few weeks,
+so the script reads the current one for your region from AWS's public SSM
+parameter `/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id`.
+That is its one AWS call, made with your AWS CLI and profile from steps 1-2. To
+pin a build, or to run without that call, add `AMI=ami-...` to the region's
+`.ids` file. Re-run the script to pick up a newer build.
+
+The AMI is used in two places. The environment gives it to `hf-peft-sft` as
+`docker.host_image_id`, which sets the host and keeps the step's own image.
+answerability-sr takes it as the `HOST_AMI` parameter, from the params file. It
+runs the step on the AMI directly when `IMAGE` is empty, or as the host of
+`IMAGE`'s container when `IMAGE` is set. An environment-level image would
+replace that container. The CPU-only steps (`prepare`, the `hf://` pulls) keep
+SkyPilot's default AMI.
 
 ## 5. Add your data, start gbserver and run
 

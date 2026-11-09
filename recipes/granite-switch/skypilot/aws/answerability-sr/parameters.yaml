@@ -27,6 +27,15 @@ ENVIRONMENT_URI: "space://environments/skypilot-local/aws-gb-shared"
 #   IMAGE: "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime"
 IMAGE: ""
 
+# The GPU host image: the AWS Deep Learning Base GPU AMI for the environment's
+# region. ../setup-local-space.sh looks it up and records it in
+# ~/.granite.build/local-env/granite-switch.params next to ENVIRONMENT_URI, so pass
+# that file (../README.md, step 5). SkyPilot's default AMI leaves an 8-GPU H200
+# instance without its GPUs (NVSwitch needs the DLAMI's Fabric Manager). With
+# IMAGE empty the step runs on this AMI itself; with an IMAGE it is the host the
+# container runs on. Empty: SkyPilot's default AMI.
+HOST_AMI: ""
+
 # ── Code under test ──────────────────────────────────────────────────────────
 # The byoc step does an UNAUTHENTICATED `git clone`, so this must be a public
 # repo. Keep it pointed at the public github.com repo.

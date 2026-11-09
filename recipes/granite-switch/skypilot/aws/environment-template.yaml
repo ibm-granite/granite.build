@@ -65,6 +65,15 @@ config:
   # from build.yaml, so the pin has to live here. A build running another step
   # type here must pin it too (launcher_config.resources.infra:
   # aws/<region>), or add it to this list.
+  #
+  # hf-peft-sft's GPU host runs on the AWS Deep Learning Base GPU AMI
+  # (AMI-REPLACE-ME, which setup-local-space.sh fills in per region). SkyPilot's
+  # default AMI leaves an 8-GPU H200 instance without the GPUs: NVSwitch needs
+  # the DLAMI's NVIDIA Fabric Manager before CUDA initializes. docker.host_image_id
+  # sets only the host; the step keeps its own image. byoc gets no AMI here: an
+  # environment image_id would replace the docker:<IMAGE> byoc builds from
+  # byoc_config.image, so the answerability-sr recipe sets it (HOST_AMI). The
+  # CPU-only steps stay on SkyPilot's default AMI.
   steps:
     hfpull:
       launcher_config: { resources: { infra: aws/REGION-REPLACE-ME } }
@@ -73,7 +82,9 @@ config:
     command:
       launcher_config: { resources: { infra: aws/REGION-REPLACE-ME } }
     hf-peft-sft:
-      launcher_config: { resources: { infra: aws/REGION-REPLACE-ME } }
+      launcher_config:
+        resources: { infra: aws/REGION-REPLACE-ME }
+        docker: { host_image_id: AMI-REPLACE-ME }
     byoc:
       launcher_config: { resources: { infra: aws/REGION-REPLACE-ME } }
 assetstores:

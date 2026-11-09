@@ -321,6 +321,49 @@ def test_environment_pins_byoc_to_the_efs_region():
     assert infra == f"aws/{region}"
 
 
+def test_environment_sets_no_image_for_byoc():
+    # An environment image_id would replace the docker:<IMAGE> that byoc builds
+    # from byoc_config.image; the recipe sets the host AMI itself (HOST_AMI).
+    config = yaml.safe_load(_ENV.read_text())["config"]
+    assert config["steps"]["byoc"]["launcher_config"] == {
+        "resources": {"infra": "aws/REGION-REPLACE-ME"}
+    }
+
+
+_AMI = "ami-0123456789abcdef0"
+
+
+def test_without_host_ami_both_targets_use_skypilots_default_host(tmp_path):
+    build = _build(tmp_path)
+    for target in build["targets"].values():
+        launcher = _step(target)["launcher_config"]
+        assert "image_id" not in launcher
+        assert "docker" not in launcher
+
+
+def test_bare_host_targets_run_on_the_host_ami(tmp_path):
+    # IMAGE empty (the default, #529): byoc runs on the bare EC2 host, so the AMI
+    # is the image itself.
+    build = _build(tmp_path, f"HOST_AMI={_AMI}")
+    for target in build["targets"].values():
+        config = _step(target)
+        assert config["byoc_config"]["image"] == ""
+        assert config["launcher_config"]["image_id"] == _AMI
+        assert "docker" not in config["launcher_config"]
+
+
+def test_container_targets_keep_their_image_on_the_host_ami(tmp_path):
+    # With IMAGE set, an image_id here would replace byoc's docker:<IMAGE>; the
+    # AMI goes to docker.host_image_id instead, which sets only the host.
+    image = "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime"
+    build = _build(tmp_path, f"HOST_AMI={_AMI}", f"IMAGE={image}")
+    for target in build["targets"].values():
+        config = _step(target)
+        assert config["byoc_config"]["image"] == image
+        assert "image_id" not in config["launcher_config"]
+        assert config["launcher_config"]["docker"] == {"host_image_id": _AMI}
+
+
 def _readme_examples():
     """The two JSON rows in README.md, "Your data": train first, then eval."""
     text = (_RECIPE / "README.md").read_text()

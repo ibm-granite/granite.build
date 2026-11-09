@@ -38,22 +38,54 @@ _REPO = pathlib.Path(__file__).resolve().parents[3]
 _AWS = _REPO / "recipes" / "granite-switch" / "skypilot" / "aws"
 _SCRIPT = _AWS / "setup-local-space.sh"
 _FS = "fs-0123456789abcdef0"
+_AMI = "ami-0123456789abcdef0"
+_SSM = "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id"
 
 
-def _home(tmp_path, region, fs=_FS, name=None, quote=""):
+def _home(tmp_path, region, fs=_FS, name=None, quote="", ami=None):
     """A GB_HOME_DIR holding one ids file for region, as README.md step 2 writes."""
     env = tmp_path / "gbhome" / "local-env"
     env.mkdir(parents=True, exist_ok=True)
     ids = env / (name or f"gb-shared-{region}.ids")
-    ids.write_text(f"REGION={quote}{region}{quote}\nVPC=vpc-x\nSG=sg-x\nFS={fs}\n")
+    pin = f"AMI={ami}\n" if ami is not None else ""
+    ids.write_text(f"REGION={quote}{region}{quote}\nVPC=vpc-x\nSG=sg-x\nFS={fs}\n{pin}")
     return tmp_path / "gbhome"
 
 
-def _run(home, region):
-    """Run the script for region with only home as GB_HOME_DIR and HOME."""
+def _aws_stub(tmp_path, out=_AMI, rc=0):
+    """A fake `aws` on PATH: logs its argv, prints out for `ssm get-parameter`."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    stub = bin_dir / "aws"
+    stub.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> "{tmp_path}/aws.log"\n'
+        f'case "$1 $2" in "ssm get-parameter") printf "%s\\n" "{out}"; exit {rc} ;; esac\n'
+        "exit 9\n"
+    )
+    stub.chmod(0o755)
+    return bin_dir
+
+
+def _aws_calls(tmp_path):
+    """The aws invocations the stub saw, one per line."""
+    log = tmp_path / "aws.log"
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def _run(home, region, aws=None):
+    """Run the script for region with only home as GB_HOME_DIR and HOME.
+
+    aws: the stub's bin dir (default: a stub that returns _AMI next to home).
+    """
+    aws = aws or _aws_stub(home.parent)
     return subprocess.run(
         ["bash", str(_SCRIPT), region],
-        env={"GB_HOME_DIR": str(home), "PATH": "/usr/bin:/bin", "HOME": str(home)},
+        env={
+            "GB_HOME_DIR": str(home),
+            "PATH": f"{aws}:/usr/bin:/bin",
+            "HOME": str(home),
+        },
         capture_output=True,
         text=True,
         check=False,
@@ -101,9 +133,68 @@ def test_writes_the_environment_space_and_params(tmp_path, region, name):
     ]
 
     uri = f"space://environments/skypilot-local/{name}"
-    assert _params(home) == {"ENVIRONMENT_URI": uri}
+    assert _params(home) == {"ENVIRONMENT_URI": uri, "HOST_AMI": _AMI}
     assert f"ENVIRONMENT_URI={uri}" in proc.stdout
     assert "gbserver standalone --space-dir" in proc.stdout
+
+
+def test_only_hf_peft_sft_gets_the_dlami_as_its_host_image(tmp_path):
+    home = _home(tmp_path, "us-west-2")
+    proc = _run(home, "us-west-2")
+    assert proc.returncode == 0, proc.stderr
+    text = _env(home, "aws-gb-shared-usw2").read_text()
+    steps = yaml.safe_load(text)["config"]["steps"]
+    assert steps["hf-peft-sft"]["launcher_config"]["docker"] == {"host_image_id": _AMI}
+    # byoc's own image_id (docker:<IMAGE>) must not be overridden by the env, and
+    # the CPU-only steps keep SkyPilot's default AMI: none of them get one here.
+    for slug, step in steps.items():
+        if slug != "hf-peft-sft":
+            assert set(step["launcher_config"]) == {"resources"}, slug
+    assert f"# Host AMI: {_AMI}" in text
+
+
+def test_looks_the_ami_up_in_the_region_from_aws_ssm(tmp_path):
+    home = _home(tmp_path, "eu-west-1")
+    proc = _run(home, "eu-west-1")
+    assert proc.returncode == 0, proc.stderr
+    assert _aws_calls(tmp_path) == [
+        f"ssm get-parameter --region eu-west-1 --name {_SSM}"
+        " --query Parameter.Value --output text"
+    ]
+    assert _params(home)["HOST_AMI"] == _AMI
+
+
+def test_an_ami_in_the_ids_file_wins_and_skips_the_lookup(tmp_path):
+    pinned = "ami-0f9b1a75c4247001e"
+    home = _home(tmp_path, "us-west-2", ami=f'"{pinned}"')
+    proc = _run(home, "us-west-2")
+    assert proc.returncode == 0, proc.stderr
+    assert _aws_calls(tmp_path) == []
+    steps = yaml.safe_load(_env(home, "aws-gb-shared-usw2").read_text())["config"][
+        "steps"
+    ]
+    assert steps["hf-peft-sft"]["launcher_config"]["docker"]["host_image_id"] == pinned
+    assert _params(home)["HOST_AMI"] == pinned
+
+
+@pytest.mark.parametrize(
+    "out,rc", [(_AMI, 255), ("", 0), ("None", 0), ("ami-xyz", 0), ("sg-0123abcd", 0)]
+)
+def test_refuses_when_the_lookup_gives_no_ami(tmp_path, out, rc):
+    home = _home(tmp_path, "us-west-2")
+    proc = _run(home, "us-west-2", aws=_aws_stub(tmp_path, out=out, rc=rc))
+    assert proc.returncode != 0
+    assert "AMI=" in proc.stderr
+    assert not (home / "local-space").exists()
+    assert not (home / "local-env" / "granite-switch.params").exists()
+
+
+def test_refuses_a_pinned_ami_that_is_not_an_ami_id(tmp_path):
+    home = _home(tmp_path, "us-west-2", ami="ami-REPLACE-ME")
+    proc = _run(home, "us-west-2")
+    assert proc.returncode != 0
+    assert "is not an AMI id" in proc.stderr
+    assert not (home / "local-space").exists()
 
 
 def test_another_region_gets_its_own_name_from_the_same_template(tmp_path):
@@ -145,6 +236,9 @@ def test_the_template_has_only_placeholders_for_the_ids():
     assert {
         s["launcher_config"]["resources"]["infra"] for s in config["steps"].values()
     } == {"aws/REGION-REPLACE-ME"}
+    assert config["steps"]["hf-peft-sft"]["launcher_config"]["docker"] == {
+        "host_image_id": "AMI-REPLACE-ME"
+    }
 
 
 def test_a_rerun_keeps_other_params_and_moves_the_uri(tmp_path):
@@ -157,6 +251,7 @@ def test_a_rerun_keeps_other_params_and_moves_the_uri(tmp_path):
     assert _params(home) == {
         "DATA_URI": "hf:///datasets/o/r",
         "ENVIRONMENT_URI": "space://environments/skypilot-local/aws-gb-shared-usw2",
+        "HOST_AMI": _AMI,
     }
     assert _env(home, "aws-gb-shared").is_file()
 

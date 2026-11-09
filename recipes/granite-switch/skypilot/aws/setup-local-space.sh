@@ -4,21 +4,26 @@
 #   recipes/granite-switch/skypilot/aws/setup-local-space.sh <region>
 #
 # Reads FS, your EFS file system id, from $GB_HOME/local-env/gb-shared-<region>.ids
-# (README.md, step 2) and writes, all outside the repo:
+# (README.md, step 2), looks up the GPU host AMI, and writes, all outside the repo:
 #
 #   $GB_HOME/local-space/overlay/environments/skypilot-local/<name>/environment.yaml
-#       environment-template.yaml (next to this script) with your EFS id and
-#       region; <name> is aws-gb-shared for us-east-1, aws-gb-shared-usw2 for
-#       us-west-2, aws-gb-shared-<region> otherwise
+#       environment-template.yaml (next to this script) with your EFS id, region
+#       and host AMI; <name> is aws-gb-shared for us-east-1, aws-gb-shared-usw2
+#       for us-west-2, aws-gb-shared-<region> otherwise
 #   $GB_HOME/local-space/space.yaml
 #       a standalone space: that overlay first, then this checkout's
 #       configurations/assets (an existing one that lists the overlay is kept)
 #   $GB_HOME/local-env/granite-switch.params
-#       ENVIRONMENT_URI for `gb build start`; its other lines are kept
+#       ENVIRONMENT_URI and HOST_AMI for `gb build start`; its other lines are kept
 #
-# GB_HOME is $GB_HOME_DIR, or ~/.granite.build. The script reads no secret and
-# calls no AWS API. It is safe to re-run; ENVIRONMENT_URI points at the region
-# set up last.
+# The host AMI is the AWS Deep Learning Base GPU AMI for the region: without it an
+# 8-GPU H200 instance does not see its GPUs (NVSwitch needs the DLAMI's NVIDIA
+# Fabric Manager). An AMI=ami-... line in the ids file pins one; otherwise one AWS
+# call reads the latest from AWS's public SSM parameter, with the AWS CLI and
+# profile of README.md steps 1-2.
+#
+# GB_HOME is $GB_HOME_DIR, or ~/.granite.build. The script reads no secret. It is
+# safe to re-run; ENVIRONMENT_URI and HOST_AMI point at the region set up last.
 set -euo pipefail
 umask 077
 
@@ -51,6 +56,23 @@ FS="$(sed -n 's/^FS=//p' "$IDS" | tail -n 1 | tr -d "\"' ")"
 [[ "$FS" =~ ^fs-[0-9a-f]{8,17}$ ]] ||
   die "$IDS: FS=${FS:-<missing>} is not an EFS file system id (fs-<hex>)"
 
+# The GPU host image: the AWS Deep Learning Base GPU AMI for this region. An AMI=
+# line in the ids file pins one; otherwise AWS's public SSM parameter names the
+# latest build.
+SSM_AMI=/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id
+AMI="$(sed -n 's/^AMI=//p' "$IDS" | tail -n 1 | tr -d "\"' ")"
+if [ -n "$AMI" ]; then
+  [[ "$AMI" =~ ^ami-[0-9a-f]{8,17}$ ]] || die "$IDS: AMI=$AMI is not an AMI id (ami-<hex>)"
+  AMI_FROM="AMI= in $IDS"
+else
+  AMI="$(aws ssm get-parameter --region "$REGION" --name "$SSM_AMI" \
+    --query Parameter.Value --output text 2>/dev/null)" || AMI=""
+  [[ "$AMI" =~ ^ami-[0-9a-f]{8,17}$ ]] ||
+    die "could not look up the Deep Learning Base GPU AMI for $REGION (aws ssm get-parameter $SSM_AMI)." \
+      "Check the AWS CLI and its credentials, or pin one with an AMI=ami-... line in $IDS."
+  AMI_FROM="$SSM_AMI"
+fi
+
 # One template for every region; the environment's name says which region its
 # EFS is in (us-east-1 keeps the plain name the recipes default to).
 case "$REGION" in
@@ -61,6 +83,7 @@ esac
 SRC="$HERE/environment-template.yaml"
 [ -f "$SRC" ] || die "$SRC not found: run this script from a granite.build checkout"
 grep -q 'file_system_id: fs-REPLACE-ME$' "$SRC" || die "$SRC has no fs-REPLACE-ME placeholder"
+grep -q 'host_image_id: AMI-REPLACE-ME' "$SRC" || die "$SRC has no AMI-REPLACE-ME placeholder"
 
 # 1. The environment, with the EFS id, under a skypilot-local/ name so it never
 #    shadows a shipped environment.
@@ -73,13 +96,16 @@ TMP="$(mktemp "$DEST_DIR/.environment.yaml.XXXXXX")"
 {
   echo "# Written by recipes/granite-switch/skypilot/aws/setup-local-space.sh from"
   echo "# environment-template.yaml for $REGION. Holds your EFS id: keep it out of git."
+  echo "# Host AMI: $AMI (from $AMI_FROM)."
   sed -e "s/fs-REPLACE-ME/$FS/" \
     -e "s/^name: .*/name: skypilot-local-$NAME/" \
+    -e "s/AMI-REPLACE-ME/$AMI/g" \
     -e "s/REGION-REPLACE-ME/$REGION/g" "$SRC"
 } >"$TMP"
-grep -q "file_system_id: $FS\$" "$TMP" && ! grep -q "REPLACE-ME" "$TMP" || {
+grep -q "file_system_id: $FS\$" "$TMP" && grep -q "host_image_id: $AMI" "$TMP" &&
+  ! grep -q "REPLACE-ME" "$TMP" || {
   rm -f "$TMP"
-  die "could not fill in the EFS id and region in $DEST"
+  die "could not fill in the EFS id, region and AMI in $DEST"
 }
 chmod 600 "$TMP"
 mv "$TMP" "$DEST"
@@ -112,21 +138,24 @@ else
     "Add '- $OVERLAY' as the first entry of its base_uris."
 fi
 
-# 3. The parameters file: ENVIRONMENT_URI replaced, other lines kept.
+# 3. The parameters file: ENVIRONMENT_URI and HOST_AMI (the same region's, for the
+#    answerability-sr recipe) replaced, other lines kept.
 PARAMS="$GB_HOME/local-env/granite-switch.params"
 URI="space://environments/skypilot-local/$NAME"
 TMP="$(mktemp "$PARAMS.XXXXXX")"
 {
-  if [ -f "$PARAMS" ]; then grep -v '^ENVIRONMENT_URI=' "$PARAMS" || true; fi
+  if [ -f "$PARAMS" ]; then grep -vE '^(ENVIRONMENT_URI|HOST_AMI)=' "$PARAMS" || true; fi
   echo "ENVIRONMENT_URI=$URI"
+  echo "HOST_AMI=$AMI"
 } >"$TMP"
 mv "$TMP" "$PARAMS"
 
 cat <<EOF
 Set up $REGION, with the EFS id from $IDS:
   environment  $DEST
+  host AMI     $AMI (from $AMI_FROM)
   space        $S/space.yaml: $SPACE_NOTE
-  parameters   $PARAMS: ENVIRONMENT_URI=$URI
+  parameters   $PARAMS: ENVIRONMENT_URI=$URI, HOST_AMI=$AMI
 
 Still to do by hand (this script never handles secrets; README.md, step 3):
   - the AWS key, as the secrets GB_AWS_ACCESS_KEY_ID and GB_AWS_SECRET_ACCESS_KEY;

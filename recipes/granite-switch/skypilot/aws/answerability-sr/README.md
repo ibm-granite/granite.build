@@ -264,6 +264,12 @@ ones you are most likely to set:
   `IMAGE=pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime`. shadow-residual
   pins `transformers<5.10` and `peft==0.19.1`, so it cannot share the
   hf-peft-sft image either way.
+- **The host is the Deep Learning Base GPU AMI (`HOST_AMI`).** The params file
+  carries it from `../setup-local-space.sh`
+  ([../README.md, step 4](../README.md#4-make-a-private-copy-of-the-environment)). With an empty
+  `IMAGE` the step runs on that AMI; with an `IMAGE` it is the container's host
+  (`docker.host_image_id`). Without `HOST_AMI`, SkyPilot's default AMI is used,
+  and an 8-GPU H200 instance there does not see its GPUs.
 - **No baseline arm.** There is no `--mode base` target to compare the adapter
   against in the same build; add a third target running
   `answerability_eval --mode base` on the same `DATA_URI` / `EVAL_DATA_SUBDIR`.
