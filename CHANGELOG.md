@@ -254,16 +254,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **K8s steps no longer fail for email usernames (ibmid auth) (#630).** The gbstep chart rendered
   `run_metadata.username` verbatim as a label, so the API server rejected the AppWrapper.
   `launch_helm` now passes a sanitized username (`user@x.com` -> `user_x.com`) chart-wide.
-- **`openinstruct-sft` refuses multi-node builds set through `launcher_config.num_nodes`, and
-  abbreviated `args` keys (#609).** Before, `launcher_config.num_nodes: 2` passed the step's
-  single-node check, so SkyPilot ran two independent single-node trainings, and `1.0` was
-  refused. Now both `compute_config` and `launcher_config` must be 1 (`1.0` counts). An `args`
-  key that abbreviates a step-owned flag (`output_d`), names its `no_*` form, or is not a bare
-  name is refused at step creation, and the image (`oi-v0.3.0-8`) parses `finetune.py`'s flags
-  with prefix matching off, so `learning_rat` fails the run instead of setting
-  `learning_rate`. The `Step:` status message now carries the whole progress line (LR, loss,
-  throughput), not just `Step: <n>`. The image also moves `Authlib` from 1.9.0 to 1.9.3 for
-  GHSA-8m4g-j4wp-wgcg (JWS/JWT forgery with an empty HMAC key).
+- **`space://steps/train/openinstruct-sft` refuses multi-node builds set through
+  `launcher_config.num_nodes`, and abbreviated `args` keys (#609).** Before,
+  `launcher_config.num_nodes: 2` passed the step's single-node check, so SkyPilot ran two
+  independent single-node trainings, and `1.0` was refused. Now both `compute_config` and
+  `launcher_config` must be 1 (`1.0` and strings like `"01"` count, as gbserver reads them).
+  An `args` key that abbreviates a step-owned flag (`output_d`), is a `no_*` key (it takes no
+  value), or is not a bare name is refused at step creation, and the image (`oi-v0.3.0-9`)
+  parses `finetune.py`'s flags with prefix matching off, so `learning_rat` fails the run
+  instead of setting `learning_rate`. `dataset_cache_mode` is now step-owned and pinned to
+  `local`: `hf` pushed the tokenized dataset to the Hub whenever `HF_TOKEN` was set. The
+  `Step:` status message now carries the whole progress line (LR, loss, throughput), not just
+  `Step: <n>`. The image also moves `Authlib` from 1.9.0 to 1.9.5 for GHSA-8m4g-j4wp-wgcg
+  (JWS/JWT forgery with an empty HMAC key). The legacy hand-authored
+  `space://steps/openinstruct-sft` assets are unchanged; see #569.
 
 - **Workload-status events now carry the `message` field step monitor rules send (#598).**
   Before, the `Step:` progress events were dropped and gbserver logged a traceback for each

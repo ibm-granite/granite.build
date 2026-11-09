@@ -30,6 +30,7 @@ patches/                    build-time patches applied to upstream finetune.py
 test/                       unit tests at the root; one dir per cluster build test
   test_dockerfile.py
   test_exemplar_build.py
+  test_finetune_flags_in_image.py   run in the image; skips without its Open-Instruct source
   test_finetune_local_model_patch.py
   test_finetune_no_abbrev_patch.py
   test_openinstruct_sft_guard_sh.py
@@ -70,7 +71,7 @@ unrendered-binding detector). `**/*.md` is listed so the docs can show `{{ ... }
 
 ## Image
 
-`quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-8`. It holds:
+`quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-9`. It holds:
 
 | Part | Pin |
 |---|---|
@@ -79,7 +80,7 @@ unrendered-binding detector). `**/*.md` is listed so the docs can show `{{ ... }
 | Open-Instruct | allenai/open-instruct tag v0.3.0, commit `26de99604002d6a7b25a2c5f2ee880e388a21dca` (Apache-2.0), at `/opt/open-instruct`. The build fetches exactly that commit and fails if `HEAD` differs. |
 | Training stack | `uv sync --frozen` from Open-Instruct's own `uv.lock` into `/opt/open-instruct/.venv`. |
 | clearml | `clearml==2.1.12`, installed into the same venv. |
-| Security patches | On top of the frozen lock, in the same install RUN: `vllm` uninstalled (the fixed release needs torch 2.11; SFT does not use it); `pillow`, `nltk`, `litellm`, `PyJWT`, `Authlib`, `fastmcp`, `anyio`, `GitPython`, `certifi`, `cryptography`, `wandb` upgraded to their first fixed releases, except `Authlib`: 1.9.3, the latest, which has no advisories (the first fixed one is 1.9.1). Versions are pinned in the Dockerfile and `test/test_dockerfile.py`. `litellm` and `wandb` therefore leave upstream's pins. The NVIDIA Nsight Compute profiler is purged from the CUDA base. |
+| Security patches | On top of the frozen lock, in the same install RUN: `vllm` uninstalled (the fixed release needs torch 2.11; SFT does not use it); `pillow`, `nltk`, `litellm`, `PyJWT`, `Authlib`, `fastmcp`, `anyio`, `GitPython`, `certifi`, `cryptography`, `wandb` upgraded to their first fixed releases, except `Authlib`: 1.9.5, the newest when it was pinned (the first fixed one is 1.9.1). Versions are pinned in the Dockerfile and `test/test_dockerfile.py`. `litellm` and `wandb` therefore leave upstream's pins. The NVIDIA Nsight Compute profiler is purged from the CUDA base. |
 | Step scripts | `src/` at `/opt/openinstruct-sft/`. |
 
 Why `finetune.py`: it is deprecated upstream in favour of `olmo_core_finetune.py`,
@@ -111,7 +112,11 @@ Choices in the Dockerfile that look odd, and why:
     sets the full flag (`learning_rate`), and a prefix can change meaning when a
     later pin adds a flag. The parser is built with `allow_abbrev=False`, so a
     prefix fails the run as an unrecognized argument. Prefixes of the step-owned
-    flags are refused earlier, at render time (see Tests).
+    flags are also refused at render time: that also covers an older or custom
+    image set through `image_id`, and fails before provisioning. The render-time
+    rule relies on no other `finetune.py` flag being a prefix of a step-owned
+    one, which `test_finetune_flags_in_image.py` checks against the image's own
+    source. Run it after any Open-Instruct pin bump (see Tests).
 
 **Security trade-off.** The base is Ubuntu, not UBI or a minimal image. SkyPilot
 bootstraps itself by running `apt-get` inside the container, so a UBI/RPM base fails
@@ -146,16 +151,17 @@ it when SFT does not use it and the fix would move the training stack), then
 rebuilding and rescanning. Check quay's own scan of the pushed tag too: its
 database differs from trivy's (it flagged `Authlib`, `certifi` and `cryptography`
 CRITICALs that trivy did not, fixed in `oi-v0.3.0-5`; and an `Authlib` 1.9.0 one,
-GHSA-8m4g-j4wp-wgcg, that trivy rates HIGH, fixed in `oi-v0.3.0-8`).
+GHSA-8m4g-j4wp-wgcg, that trivy rates HIGH, fixed in `oi-v0.3.0-8`). When quay's
+scan of a tag fails on quay's side (status `failed`, no report), check the venv's
+Python packages against the OSV database, the source quay uses for Python.
 
-Result for `oi-v0.3.0-8`, the shipped image:
+Result for `oi-v0.3.0-9`, the shipped image:
 
 - trivy (CRITICAL+HIGH): 0 fixable CRITICAL. 18 CRITICAL have no fix, all in Ubuntu's
-  `linux-libc-dev` (kernel UAPI headers, needed by DeepSpeed's JIT build). 552 HIGH,
-  80 of them fixable (70 Python packages, 9 jar, 1 Go binary), tracked in #567.
-- quay's scan of the tag failed on quay's side (status `failed`, no report), so the
-  venv's 316 Python packages were checked against the OSV database instead, the
-  source quay uses for Python: none has a CRITICAL advisory.
+  `linux-libc-dev` (kernel UAPI headers, needed by DeepSpeed's JIT build). 562 HIGH,
+  81 of them fixable (70 Python packages, 9 jar, 2 Go binaries), tracked in #567.
+- OSV, for all 316 Python packages in the venv: none has a CRITICAL advisory.
+- quay's scan of the tag stayed `queued` (the `-8` scan ended `failed` on quay's side).
 
 Build a published image with `podman build --no-cache`. A cached build reuses an
 old `apt-get upgrade` layer: a cached `-7` build had a fixable `linux-libc-dev`
@@ -163,7 +169,7 @@ CRITICAL and 44 fixable Ubuntu HIGHs that the no-cache build does not.
 
 ### Bumping IMAGE_VERSION
 
-The Makefile's `IMAGE_VERSION` is a stable version (`oi-v0.3.0-8`), not the
+The Makefile's `IMAGE_VERSION` is a stable version (`oi-v0.3.0-9`), not the
 per-commit git SHA. The image is large, and BlueVela caches a `.sqsh` per tag
 (each new tag means a fresh cold import), so it must not churn on unrelated commits.
 
@@ -187,7 +193,7 @@ credentials"), then:
 
 ```bash
 make -C steps/train/openinstruct-sft/skypilot image publish-image
-sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-8
+sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/openinstruct-sft/skypilot:oi-v0.3.0-9
 ```
 
 `publish-image` refuses a tag that already exists, so bump `IMAGE_VERSION` (see
@@ -247,13 +253,14 @@ The unit tests at `test/`'s root need no cluster or image. They stub `accelerate
 | Test | Pins |
 |---|---|
 | `test_dockerfile.py` | every `FROM` digest-pinned; Open-Instruct pinned to a full commit and checked after fetch; `uv sync --frozen` and an exact `clearml==` pin; no `USER` and no `useradd` (runs as root); `OPEN_INSTRUCT_COMMIT` set and no `GIT_COMMIT`; every script the template calls exists in `src/`; every file under `patches/` runs, before `uv sync` |
+| `test_finetune_flags_in_image.py` | run in the image (it skips without `/opt/open-instruct`; see its docstring for the `podman run` line): no `finetune.py` flag is a prefix of a step-owned one, every step-owned flag still exists, and the real `HfArgumentParser` built with the patched arguments refuses `--learning_rat` and parses `--learning_rate`. Run it after building the image and after any Open-Instruct pin bump |
 | `test_finetune_local_model_patch.py` | the build-time pre-fetch patch applies once, refuses an upstream change, refuses a second apply |
 | `test_finetune_no_abbrev_patch.py` | the build-time `allow_abbrev` patch, run on a stand-in of upstream's `__main__`: an abbreviation is expanded before the patch and refused after it, full flags still parse; it refuses an upstream change and a second apply |
-| `test_skypilot_train_openinstruct_sft_render.py` | the template rendered with gbserver's strict renderer: identity and I/O schema, the shared monitor and its `Step:` rule (a real `finetune.py` progress line through gbserver's log parser gives the whole line as the message), no GPU request, identical macro copies, the `docker:` prefix (including `.sqsh`), valid bash, every `raise_error` (data source, mixer and splits shape, `output`, `num_nodes` on `compute_config` and `launcher_config` with `1.0` accepted, no GPU request, `deepspeed_config`, `clearml_enabled`, step-owned flags and their `no_*` forms, abbreviations of step-owned flags, non-bare keys, map and empty-list `args`), flags sharing a step-owned stem still pass, and the guard and run argv (defaults, bound dataset, splits, `args` rendering, ClearML mode, output path) |
+| `test_skypilot_train_openinstruct_sft_render.py` | the template rendered with gbserver's strict renderer: identity and I/O schema, the shared monitor and its `Step:` rule (a real `finetune.py` progress line through gbserver's log parser gives the whole line as the message), no GPU request, identical macro copies, the `docker:` prefix (including `.sqsh`), valid bash, every `raise_error` (data source, mixer and splits shape, `output`, `num_nodes` on `compute_config` and `launcher_config` with `1.0` and strings `int()` reads as 1 accepted, no GPU request, `deepspeed_config`, `clearml_enabled`, step-owned flags and their `no_*` forms, any other `no_*` key, abbreviations of step-owned flags, non-bare keys, map and empty-list `args`), flags sharing a step-owned stem still pass, and the guard and run argv (defaults, bound dataset, splits, `args` rendering, ClearML mode, output path) |
 | `test_openinstruct_sft_guard_sh.py` | staged-path checks: empty or unrendered `base_model`, missing dir, no `config.json`, missing dataset, unknown option; valid paths pass silently |
 | `test_openinstruct_sft_setup_sh.py` | the image check: passes on a good image, fails without `finetune.py` or when the training stack does not import |
 | `test_openinstruct_sft_run_sh.py` | the `accelerate launch` argv and cwd, step-owned flags before build args, no-DeepSpeed, GPU count (SkyPilot, `nvidia-smi` fallback, none), ClearML off/on/auto and default names with `WANDB_MODE=disabled`, the staging swap and re-run, refusing a non-model `output_path` or one overlapping `base_model` (same, inside, containing, via a symlink, or at the staging dir), no marker without a model, and the markers last and absolute |
-| `test_exemplar_build.py` | every shipped build.yaml (exemplar and both fixtures) against the contract: step URI, `output` names a model output, exactly one data source, `base_model` bound, GPUs requested, no step-owned `args` (parsed from the template's `owned` list, 18 names), single node, the BlueVela GPU matching the environment's constraint, every exemplar parameter defined |
+| `test_exemplar_build.py` | every shipped build.yaml (exemplar and both fixtures) against the contract: step URI, `output` names a model output, exactly one data source, `base_model` bound, GPUs requested, no step-owned `args` (parsed from the template's `owned` list, 19 names), single node, the BlueVela GPU matching the environment's constraint, every exemplar parameter defined |
 
 Run the unit tests only with `-m "not extended"`, and with AWS credentials unset.
 `make test` and a plain `pytest test` do not deselect `extended`, so with AWS

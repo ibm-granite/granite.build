@@ -73,9 +73,10 @@ Config errors fail the build at step creation, with a message that starts
 - an empty or multi-word `output`;
 - a bad `clearml_enabled`;
 - in `args`: a key that is not a bare flag name (it holds `=`, a leading `-` or
-  whitespace, or is empty), a step-owned flag, or an abbreviation of one;
-- `compute_config.num_nodes` or `launcher_config.num_nodes` other than 1 (`1.0`
-  counts as 1).
+  whitespace, or is empty), a step-owned flag, an abbreviation of one, or a `no_*`
+  key;
+- `compute_config.num_nodes` or `launcher_config.num_nodes` other than 1. `1.0`,
+  and a string such as `"01"` that reads as the integer 1, count as 1.
 
 ## Passing finetune.py flags (args)
 
@@ -95,6 +96,7 @@ than silently setting a flag. A `_` in a name may be written `-`.
 | scalar: `max_seq_length: 4096` | `--max_seq_length 4096` |
 | list: `dataset_transform_fn: [a, b]` | `--dataset_transform_fn a b` (repeated values) |
 | bool: `gradient_checkpointing: true` | `--gradient_checkpointing true` (`false` renders `false`) |
+| `no_*` key: `no_fused_optimizer: true` | refused at step creation (`--no_<flag>` takes no value); write `fused_optimizer: false` |
 | null: `seed: null` | omitted |
 | empty list: `foo: []` | refused at step creation (`--foo` alone would take the next flag as its value) |
 | map | refused at step creation |
@@ -109,14 +111,16 @@ values is tracked in #613.
 model_name_or_path, output_dir, dataset_name, dataset_mixer, dataset_mixer_list,
 dataset_mixer_list_splits, with_tracking, report_to, wandb_entity, push_to_hub,
 try_launch_beaker_eval_jobs, try_auto_save_to_beaker, do_not_randomize_output_dir,
-resume_from_checkpoint, dataset_local_cache_dir, no_push_to_hub,
-no_try_launch_beaker_eval_jobs, no_try_auto_save_to_beaker
+resume_from_checkpoint, dataset_local_cache_dir, dataset_cache_mode,
+no_push_to_hub, no_try_launch_beaker_eval_jobs, no_try_auto_save_to_beaker
 ```
 
 Use the `base_model`/`dataset` inputs, `output_path`, `dataset_mixer_list(_splits)`
 or `clearml_*` instead. The step always passes `--push_to_hub false`,
-`--try_launch_beaker_eval_jobs false`, `--try_auto_save_to_beaker false` and
-`--do_not_randomize_output_dir`.
+`--try_launch_beaker_eval_jobs false`, `--try_auto_save_to_beaker false`,
+`--do_not_randomize_output_dir` and `--dataset_cache_mode local`
+(`dataset_cache_mode: hf` would push the tokenized dataset to the Hub as
+`<hf_user>/dataset-mix-cached` whenever `HF_TOKEN` is set).
 
 Example:
 
@@ -320,7 +324,7 @@ To train on your own data, bind a `dataset` input and remove `dataset_mixer_list
 ## Notes and limitations
 
 - **Single node only.** `compute_config.num_nodes` must be `1`, and so must
-  `launcher_config.num_nodes` when set (`1.0` counts as 1). Any other value fails
+  `launcher_config.num_nodes` when set (`1.0` and `"01"` count as 1). Any other value fails
   the build at step creation. Without the second check, gbserver would provision
   the nodes `launcher_config.num_nodes` asks for, and each would run its own
   single-node training.
