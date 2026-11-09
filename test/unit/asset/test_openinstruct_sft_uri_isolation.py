@@ -116,8 +116,10 @@ def test_legacy_uri_keeps_its_env_colocated_asset(env):
 
 @pytest.mark.parametrize("env", ["lsf-bluevela", "aws"])
 def test_env_gets_its_own_copy_without_a_subtype(env):
-    """An env's own steps/ is scoped by location: its copies' ``subtypes`` don't
-    exclude the env even when it runs with no sub-type set."""
+    """An env's own steps/ is scoped by location (the ``environment.yaml``
+    beside it), so the env gets its own copy even when it runs with no sub-type
+    set.  The copies declare no ``subtypes``; one that did would still be
+    filtered by them, like any other step."""
     env_dir, _ = ENVS[env]
     with SpaceURI.with_current_env_class_name(
         "Skypilot", env_dir_uri=f"file://{env_dir}", env_subtype=None

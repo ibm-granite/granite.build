@@ -80,7 +80,7 @@ Each event is a JSON object published to the exchange:
   "event_type": "status_event",
   "timestamp": 1748857872,
   "target_name": "training",
-  "step_name": "space://steps/distill/sft",
+  "step_name": "space://steps/my-sft",
   "source": "build-framework",
   "status": "running",
   "message": "Step started"

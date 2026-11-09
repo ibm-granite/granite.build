@@ -89,7 +89,7 @@ async def test_publish_and_consume_via_nats(nats_server):
         "event_type": "status_event",
         "timestamp": int(time.time()),
         "target_name": "training",
-        "step_name": "space://steps/distill/sft",
+        "step_name": "space://steps/my-sft",
         "source": "test",
         "status": "running",
         "message": "Step started",

@@ -142,7 +142,7 @@ granite.build:
       outputs:
         checkpoint: { uri: file:workspace/checkpoint }
       steps:
-        - step_uri: space://steps/distill/sft
+        - step_uri: space://steps/my-sft
           config:
             compute_config: { num_gpus_per_node: 4 }
 

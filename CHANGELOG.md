@@ -64,6 +64,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Step resolution: `base_uris` order decides, and environments own steps by `environment.yaml`
+  (#558).** `space://steps/<name>` now resolves to the first base, in `base_uris` order, that
+  holds a copy serving the active environment, so an earlier base always outranks a later one.
+  The space's own root `steps/<name>` still wins outright. Within one base, the copy in the
+  active environment's own `steps/` comes first, then shared copies; among shared copies, the
+  one whose `environment_configs` list the fewest classes wins. See
+  [docs/environments/step-resolution.md](docs/environments/step-resolution.md).
+  **Breaking changes:**
+  - **A step's name is its full path below `steps/`.** Only an env-class folder directly under
+    `steps/` (`bash`, `docker`, `k8s`, `lsf`, `runpod`, `skypilot`, `skypilot_managed`) may be
+    left out, as with the builtins' `space://steps/command`. Any other folder is part of the
+    name, so `space://steps/<leaf>` no longer reaches `steps/<category>/<leaf>`: write
+    `space://steps/<category>/<leaf>`, e.g. `space://steps/distill/sft`, not
+    `space://steps/sft`.
+  - **A `steps/` folder next to an `environment.yaml` serves only that environment.** Steps
+    there are no longer shared with other environments, of the same class or otherwise, and
+    folder names (`environments/…`) no longer decide which environments a folder serves. Put a
+    step meant for several environments in a folder with no `environment.yaml`, and limit it
+    with `subtypes` if needed.
+  - **`subtypes` apply wherever a step lives,** including an environment's own `steps/`. The
+    env-owned steps under `skypilot/aws/steps/` and `skypilot/lsf/ibm-bluevela/steps/` no
+    longer declare `subtypes`; their folder scopes them.
+  - **New errors instead of a silent pick:** `Ambiguous space uri` when one base holds two
+    equally specific copies of a name for the environment, and `Invalid step for its
+    environment` when the copy that would be selected is in the environment's own `steps/` but
+    doesn't admit it.
 - **With podman, `make publish-image`'s `REGISTRY_USER`/`REGISTRY_PASSWORD` login is scoped to
   `$(REGISTRY)` instead of the whole registry host (#229),** so it no longer replaces your other
   logins on that host. docker still logs in per host.
