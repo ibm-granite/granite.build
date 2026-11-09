@@ -55,7 +55,7 @@ unexpected.
 Each `steps/eval/<family>/skypilot/` is one step: `step-template.yaml` (the source
 of truth), `README.md` / `USAGE.md`, and `test/test_step_template.py` (a shared
 contract test — every sibling has the identical copy, which is what lets one test
-file assert all ten steps follow the same shape). The rendered, committed form
+file assert all eleven steps follow the same shape). The rendered, committed form
 that `space://steps/eval/<family>` actually resolves to lives under
 `configurations/assets/environments/skypilot/steps/eval/<family>/`, produced by
 `make publish-step` from the source template — never hand-edited.
