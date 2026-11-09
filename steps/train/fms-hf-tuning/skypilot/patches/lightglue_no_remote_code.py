@@ -37,6 +37,8 @@ fails the image build instead of silently shipping unpatched code.
 import pathlib
 import sys
 
+# The targets are exact upstream source lines, so they keep upstream's line length.
+# pylint: disable=line-too-long
 EDITS = {
     "configuration_lightglue.py": (
         '            if keypoint_detector_config["model_type"] not in CONFIG_MAPPING:\n'
@@ -58,6 +60,7 @@ EDITS = {
         "        self.keypoint_detector = AutoModelForKeypointDetection.from_config(config.keypoint_detector_config)\n",
     ),
 }
+# pylint: enable=line-too-long
 
 
 def patch(lightglue_dir: pathlib.Path) -> None:
