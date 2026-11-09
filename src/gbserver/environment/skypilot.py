@@ -297,6 +297,44 @@ def _lsf_client(lsf_cluster: str):
     )
 
 
+def _slurm_tracks_memory(cluster: str) -> bool:
+    """Whether a SLURM cluster schedules memory as a consumable resource.
+
+    Asks SkyPilot's own probe (``scontrol show config`` over the cluster's
+    ``~/.slurm/config`` entry, cached for an hour in SkyPilot's kv cache) for
+    ``SelectTypeParameters``. Only a ``CR_*_Memory`` value counts as tracked:
+    on ``CR_CPU``/``CR_Core`` clusters a ``--mem`` request can fail scheduling,
+    so the step memory floor must stay off there. Blocking (SSH); call it via
+    ``asyncio.to_thread`` from async code. Issue #657.
+
+    :param cluster: the SLURM cluster alias (the ``slurm/<cluster>`` infra
+        segment, equal to the SSH ``Host`` alias).
+    :returns: ``True`` if memory is tracked; ``False`` if it is not, or if the
+        value cannot be determined (probe failure fails safe to the old
+        behavior of skipping memory).
+    """
+    try:
+        from sky.provision.slurm import utils as slurm_utils
+
+        value = slurm_utils.get_select_type_parameters(cluster)
+    except Exception as e:  # noqa: BLE001 - fail safe: skip the memory floor
+        logger.info(
+            "SLURM cluster %s: could not read SelectTypeParameters (%s); "
+            "not applying the step memory floor",
+            cluster,
+            e,
+        )
+        return False
+    tracked = value is not None and "MEMORY" in value.upper()
+    logger.debug(
+        "SLURM cluster %s SelectTypeParameters=%s (memory tracked: %s)",
+        cluster,
+        value,
+        tracked,
+    )
+    return tracked
+
+
 def _lsf_job_alive(lsf_cluster: str, job_name: str) -> Optional[bool]:
     """Ask LSF directly whether the job behind a SkyPilot cluster is alive.
 
@@ -829,8 +867,9 @@ RETRY_RELAUNCH_TIMEOUT_SECONDS = 1800
 # SSH-provisioned bare HPC schedulers. They don't support SkyPilot autostop, and
 # commonly don't track memory as a consumable resource (RealMemory unset in
 # slurm.conf), so a --memory request fails resource matching. Cloud-specific
-# handling groups them: skip the compute_config memory floor and force autostop
-# off. Compared against the normalized first infra segment (lowercased).
+# handling groups them: skip the compute_config memory floor (on slurm, only when
+# the cluster doesn't track memory -- see _slurm_tracks_memory) and force
+# autostop off. Compared against the normalized first infra segment (lowercased).
 _SSH_HPC_CLOUDS = ("slurm", "lsf")
 
 
@@ -3166,8 +3205,8 @@ class Skypilot(Environment):
         # a 2-CPU cleanup that cannot land just orphans the per-run tree. On cloud
         # catalogs 1 vCPU alone could match a sub-1-GiB t2.nano/micro too small
         # for SkyPilot's Ray runtime, so pair it with a 2-GiB memory floor there
-        # (slurm/lsf match CPUs directly and don't track memory, so it is skipped
-        # for them, mirroring _resources_from_compute_config). _cpus_floor gates
+        # (slurm/lsf match CPUs directly and may not track memory, so it is
+        # skipped for them; a 1-vCPU rm needs no memory floor). _cpus_floor gates
         # the "N+" minimum form (crashes LSF/SLURM). Issue #425.
         cloud = self._get_cloud()
         res_kwargs: Dict[str, Any] = {"infra": cloud}
@@ -3380,8 +3419,66 @@ class Skypilot(Environment):
         except ValueError:
             return None
 
+    @classmethod
+    def _memory_floor(cls, compute_config: Dict) -> Optional[str]:
+        """Format a step's ``total_memory_per_node`` as a SkyPilot memory minimum.
+
+        Emitted as a minimum (``"{n}+"``), not an exact float: an exact
+        ``memory=1.0`` matches no cloud instance type (SkyPilot dies with
+        "Catalog does not contain any instances satisfying ... AWS(mem=1.0)").
+        SkyPilot's SLURM catalog strips the ``+`` and requests ``--mem`` of that
+        size. Formatted without an exponent and with trailing zeros stripped
+        (1.0 -> ``"1+"``, 0.5 -> ``"0.5+"``); ``:g`` would switch large values to
+        scientific notation (``"1e+06+"``), which SkyPilot cannot parse. Not
+        valid for LSF, whose cloud calls ``float()`` on the value.
+
+        :param compute_config: the step's ``config.compute_config`` dict.
+        :returns: the ``"{n}+"`` GiB-minimum string, or ``None`` when
+            ``total_memory_per_node`` is unset or unparseable.
+        """
+        memory = cls._parse_memory_gib(compute_config.get("total_memory_per_node", ""))
+        if memory is None:
+            return None
+        mem_str = f"{memory:f}".rstrip("0").rstrip(".")
+        return f"{mem_str}+"
+
+    async def _slurm_memory_tracked_for_launch(
+        self: Self,
+        cloud_group: str,
+        target_alias: Optional[str],
+        compute_config: Dict,
+        override_res: Dict,
+    ) -> bool:
+        """Decide whether a launch's SLURM cluster should get the memory floor.
+
+        Probes the cluster (:func:`_slurm_tracks_memory`, offloaded to a thread
+        because it SSHes) only when the result matters: a slurm launch that
+        names a cluster, declares a parseable ``total_memory_per_node``, and
+        has no explicit ``resources.memory`` (which would override the floor
+        anyway). Every other launch skips the SSH round-trip. Must run after
+        the cluster's SSH config is materialized. Issue #657.
+
+        :param cloud_group: the normalized target cloud (first infra segment).
+        :param target_alias: the SLURM cluster alias (second infra segment),
+            or ``None`` when the infra names no cluster.
+        :param compute_config: the step's ``config.compute_config`` dict.
+        :param override_res: the merged higher-precedence resources.
+        :returns: ``True`` if the cluster tracks memory and the floor applies.
+        """
+        if (
+            cloud_group != "slurm"
+            or not target_alias
+            or "memory" in override_res
+            or self._memory_floor(compute_config) is None
+        ):
+            return False
+        return await asyncio.to_thread(_slurm_tracks_memory, target_alias)
+
     def _resources_from_compute_config(
-        self: Self, compute_config: Dict, cloud: str = ""
+        self: Self,
+        compute_config: Dict,
+        cloud: str = "",
+        memory_tracked: bool = False,
     ) -> Dict:
         """Derive a ``sky.Resources`` floor from a step's ``compute_config``.
 
@@ -3395,20 +3492,25 @@ class Skypilot(Environment):
         any instances satisfying the request: 1x AWS(mem=1.0)" / ``cpus=3``). The
         ``"+"`` form crashes SkyPilot's LSF cloud, so on slurm/lsf ``cpus`` stays
         a bare int (those schedulers match CPUs directly, not via a cloud
-        catalog) and ``memory`` is skipped entirely (below).
+        catalog). ``memory`` is skipped on LSF always, and on SLURM unless the
+        cluster tracks memory (``memory_tracked``, below).
 
         :param compute_config: the step's ``config.compute_config`` dict.
         :param cloud: the normalized target cloud (lowercased first infra
             segment, e.g. ``"slurm"``, ``"lsf"``, ``"k8s"``).
+        :param memory_tracked: for ``cloud == "slurm"``, whether the target
+            cluster schedules memory as a consumable resource (see
+            :func:`_slurm_tracks_memory`). Ignored on every other cloud.
         :returns: a dict optionally containing ``cpus`` (a ``"{n}+"`` minimum on
             cloud catalogs, or a bare int on slurm/lsf, when ``num_cpus_per_node``
             > 0) and ``memory`` (a ``"{n}+"`` GiB-minimum string, when
-            ``total_memory_per_node`` parses and the cloud is not slurm/lsf).
+            ``total_memory_per_node`` parses and the cloud is not lsf, nor a
+            slurm cluster that doesn't track memory).
         """
         resources: Dict = {}
         num_cpus = compute_config.get("num_cpus_per_node", 0)
         if isinstance(num_cpus, int) and num_cpus > 0:
-            # Same exact-match trap as memory (below): a bare number is an EXACT
+            # Same exact-match trap as memory: a bare number is an EXACT
             # request and no cloud catalog has an instance with, e.g., exactly 3
             # vCPUs, so SkyPilot dies with "Catalog does not contain any
             # instances satisfying the request". _cpus_floor emits a minimum
@@ -3416,26 +3518,18 @@ class Skypilot(Environment):
             # vCPUs; slurm/lsf keep the bare int (the "+" form crashes SkyPilot's
             # LSF cloud, and those schedulers match CPUs directly).
             resources["cpus"] = _cpus_floor(cloud, num_cpus)
-        # SLURM/LSF (bare HPC schedulers) commonly don't track memory as a
-        # consumable resource (RealMemory unset in slurm.conf), so a --memory
-        # request fails at resource matching ("Catalog does not contain any
-        # instances satisfying ..."). Skip the compute_config memory floor for
-        # them; an explicit launcher/build resources.memory still applies (and
-        # works on clusters that do configure memory).
-        if cloud not in _SSH_HPC_CLOUDS:
-            memory = self._parse_memory_gib(
-                compute_config.get("total_memory_per_node", "")
-            )
-            if memory is not None:
-                # Emit as a minimum ("{n}+"), not an exact float: an exact
-                # memory=1.0 matches no cloud instance type (SkyPilot dies with
-                # "Catalog does not contain any instances satisfying ...
-                # AWS(mem=1.0)"). Format without an exponent and strip the
-                # trailing ".0"/zeros (1.0 -> "1+", 0.5 -> "0.5+"); ":g" would
-                # switch large values to scientific notation (e.g. "1e+06+")
-                # which SkyPilot cannot parse. Safe here: slurm/lsf excluded.
-                mem_str = f"{memory:f}".rstrip("0").rstrip(".")
-                resources["memory"] = f"{mem_str}+"
+        # SLURM clusters on CR_CPU/CR_Core don't track memory as a consumable
+        # resource, so a --mem request can fail scheduling: apply the floor on
+        # slurm only when the cluster tracks memory (issue #657 — without it a
+        # step runs at the partition default, e.g. 1 GB on BlueVela). LSF never
+        # gets it (its cloud can't parse "N+", and an env-wide bsub M covers it).
+        # An explicit launcher/build resources.memory still applies everywhere.
+        apply_memory = cloud not in _SSH_HPC_CLOUDS or (
+            cloud == "slurm" and memory_tracked
+        )
+        memory = self._memory_floor(compute_config) if apply_memory else None
+        if memory is not None:
+            resources["memory"] = memory
         return resources
 
     @staticmethod
@@ -3790,9 +3884,12 @@ class Skypilot(Environment):
             # step's config.compute_config (num_cpus_per_node/total_memory_per_node)
             # is the lowest-precedence floor; override_res wins. GPUs/accelerators
             # are not sourced from compute_config — they flow via override_res.
+            memory_tracked = await self._slurm_memory_tracked_for_launch(
+                cloud_group, target_alias, compute_config, override_res
+            )
             res_config = {
                 **self._resources_from_compute_config(
-                    compute_config, cloud=cloud_group
+                    compute_config, cloud=cloud_group, memory_tracked=memory_tracked
                 ),
                 # override_res is passed VERBATIM to sky.Resources. On cloud
                 # catalogs (aws/gcp/azure/k8s) an explicit resources.cpus/memory

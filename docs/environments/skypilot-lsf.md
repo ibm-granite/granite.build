@@ -166,6 +166,13 @@ config:
 > `cloud_config.lsf...bsub_options.W` (minutes, `bsub -W`) as shown above, or
 > rely on the queue's own `RUNLIMIT`.
 
+> **Step memory on LSF.** A step's `compute_config.total_memory_per_node` is
+> **not** applied on LSF (unlike memory-tracking SLURM clusters, see
+> [skypilot-slurm.md](skypilot-slurm.md#step-memory-total_memory_per_node)).
+> Jobs get the environment-wide `bsub_options.M` shown above; set an explicit
+> `launcher_config.resources.memory` (a plain number of GB, not `"N+"`) to
+> override it for one step.
+
 ### `zone` → LSF queue
 
 SkyPilot's `zone` is overloaded per-cloud; for LSF it maps to the **queue** name (e.g. `normal`,

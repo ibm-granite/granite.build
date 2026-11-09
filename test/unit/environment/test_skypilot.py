@@ -810,21 +810,61 @@ class TestLaunchSkypilot:
         Reproduces the ResourcesUnavailableError case: SLURM often doesn't track
         memory as a consumable resource, so a --memory request fails matching.
         """
-        kwargs = await self._launch_and_capture_resources(
-            skypilot_env,  # fixture default_cloud is k8s
-            launcher_config={
-                "run": "echo hi",
-                "resources": {"infra": "slurm/mycluster"},
-            },
-            config={
-                "compute_config": {
-                    "num_cpus_per_node": 2,
-                    "total_memory_per_node": "10Gi",
-                }
-            },
-        )
+        with patch(
+            "gbserver.environment.skypilot._slurm_tracks_memory", return_value=False
+        ):
+            kwargs = await self._launch_and_capture_resources(
+                skypilot_env,  # fixture default_cloud is k8s
+                launcher_config={
+                    "run": "echo hi",
+                    "resources": {"infra": "slurm/mycluster"},
+                },
+                config={
+                    "compute_config": {
+                        "num_cpus_per_node": 2,
+                        "total_memory_per_node": "10Gi",
+                    }
+                },
+            )
         assert kwargs.get("memory") is None
         assert kwargs.get("cpus") == 2
+
+    @pytest.mark.asyncio
+    async def test_slurm_memory_tracking_cluster_applies_memory_floor(
+        self, skypilot_env
+    ):
+        """Issue #657: when the target SLURM cluster tracks memory, the step's
+        total_memory_per_node is applied (probed against the infra's cluster)."""
+        with patch(
+            "gbserver.environment.skypilot._slurm_tracks_memory", return_value=True
+        ) as probe:
+            kwargs = await self._launch_and_capture_resources(
+                skypilot_env,
+                launcher_config={
+                    "run": "echo hi",
+                    "resources": {"infra": "slurm/mycluster"},
+                },
+                config={"compute_config": {"total_memory_per_node": "10Gi"}},
+            )
+        probe.assert_called_once_with("mycluster")
+        assert kwargs.get("memory") == "10+"
+
+    @pytest.mark.asyncio
+    async def test_slurm_memory_probe_skipped_without_declared_memory(
+        self, skypilot_env
+    ):
+        """No total_memory_per_node => no cluster probe (no extra SSH call)."""
+        with patch("gbserver.environment.skypilot._slurm_tracks_memory") as probe:
+            kwargs = await self._launch_and_capture_resources(
+                skypilot_env,
+                launcher_config={
+                    "run": "echo hi",
+                    "resources": {"infra": "slurm/mycluster"},
+                },
+                config={"compute_config": {"num_cpus_per_node": 2}},
+            )
+        probe.assert_not_called()
+        assert kwargs.get("memory") is None
 
     @pytest.mark.asyncio
     async def test_slurm_cloud_casing_drops_memory_floor(self, skypilot_env):
@@ -990,6 +1030,57 @@ class TestSkypilotComputeConfigResources:
             {"num_cpus_per_node": 3, "total_memory_per_node": "2Gi"}, cloud="k8s"
         ) == {"cpus": "3+", "memory": "2+"}
 
+    def test_slurm_memory_floor_applied_when_cluster_tracks_memory(self):
+        """Issue #657: on a SLURM cluster that tracks memory (CR_*_Memory) the
+        memory floor is applied, so a step's total_memory_per_node becomes
+        #SBATCH --mem instead of the partition default. LSF ignores the flag."""
+        from gbserver.environment.skypilot import Skypilot
+
+        env = Skypilot(event_q=asyncio.Queue())
+        cc = {"num_cpus_per_node": 3, "total_memory_per_node": "2Gi"}
+        assert env._resources_from_compute_config(
+            cc, cloud="slurm", memory_tracked=True
+        ) == {"cpus": 3, "memory": "2+"}
+        assert env._resources_from_compute_config(
+            cc, cloud="slurm", memory_tracked=False
+        ) == {"cpus": 3}
+        assert env._resources_from_compute_config(
+            cc, cloud="lsf", memory_tracked=True
+        ) == {"cpus": 3}
+
+    @pytest.mark.parametrize(
+        "select_type, expected",
+        [
+            ("CR_Core_Memory", True),
+            ("CR_CPU_Memory", True),
+            ("cr_core_memory", True),
+            ("CR_Core", False),
+            ("CR_CPU", False),
+            (None, False),
+        ],
+    )
+    def test_slurm_tracks_memory(self, select_type, expected):
+        """Only an explicit CR_*_Memory SelectTypeParameters counts as tracked;
+        an undeterminable value (None) is treated as untracked (fail safe)."""
+        from gbserver.environment.skypilot import _slurm_tracks_memory
+
+        with patch(
+            "sky.provision.slurm.utils.get_select_type_parameters",
+            return_value=select_type,
+        ) as probe:
+            assert _slurm_tracks_memory("mycluster") is expected
+        probe.assert_called_once_with("mycluster")
+
+    def test_slurm_tracks_memory_probe_error_is_untracked(self):
+        """A failing probe (SSH error, etc.) falls back to skipping memory."""
+        from gbserver.environment.skypilot import _slurm_tracks_memory
+
+        with patch(
+            "sky.provision.slurm.utils.get_select_type_parameters",
+            side_effect=RuntimeError("ssh down"),
+        ):
+            assert _slurm_tracks_memory("mycluster") is False
+
     def test_cpus_floor_is_minimum_not_exact(self):
         """The cloud cpus floor must be a SkyPilot minimum ("{n}+"), not an
         exact number.
@@ -1051,6 +1142,11 @@ class TestSkypilotComputeConfigResources:
         assert env._resources_from_compute_config(compute_config, cloud="lsf") == {
             "cpus": cpus
         }
+        # Issue #657: on a memory-tracking SLURM cluster the declared memory
+        # reaches sbatch (hfpull/hfpush were OOM-killed at the 1 GB default).
+        assert env._resources_from_compute_config(
+            compute_config, cloud="slurm", memory_tracked=True
+        ) == {"cpus": cpus, "memory": memory}
 
     def test_memory_floor_is_minimum_not_exact(self):
         """The cloud memory floor must be a SkyPilot minimum ("{n}+"), not an
