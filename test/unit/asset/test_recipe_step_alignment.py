@@ -42,7 +42,6 @@ FAMILIES = (
     "lmeval",
     "mcpmark",
     "nemoskills",
-    "nl2repo",
     "officeqa",
     "swebench",
     "tau",
