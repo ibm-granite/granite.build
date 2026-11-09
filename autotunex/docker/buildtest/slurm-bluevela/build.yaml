@@ -5,10 +5,10 @@ granite.build:
   # the base image on one H200. SUCCESS proves the three kernels import and give
   # their reference results on a real GPU.
   #
-  # The image is a test build of the base in a PUBLIC repo, so Pyxis pulls it
+  # The image is the published base in a PUBLIC repo, so Pyxis pulls it
   # anonymously and no registry credential is needed. Buildtests take no
-  # parameters, so to test another build of the base (e.g. the published
-  # quay.io/granitebuild one), copy this file, change `image`, and run it with
+  # parameters, so to test another build of the base (e.g. a new release
+  # candidate), copy this file, change `image`, and run it with
   #   gbtest autotunex/docker/buildtest/slurm-bluevela/buildtest.yaml -f <copy>
   targets:
     smoke:
@@ -23,9 +23,10 @@ granite.build:
                 # constraint). Renders as --gres=gpu:h200:1.
                 accelerators: "H200:1"
             byoc_config:
-              # Built from docker/cuda-base/Dockerfile at 7a3d4101, pinned by
-              # digest so the tag cannot move under the test.
-              image: "quay.io/priyanshu891/autotunex-cuda-base:test-7a3d4101@sha256:e218d14a3aea482a7c56e3b9d628bd1e58b10e86e077a079f3560993638fc099"
+              # The published base, built from docker/cuda-base/Dockerfile at
+              # a25d9eb6. The same digest as CUDA_KERNEL_BASE in the
+              # Dockerfile, pinned so the tag cannot move under the test.
+              image: "quay.io/granitebuild/autotunex/cuda-base:cu130-torch2.11-1@sha256:fd916fffb24066b9003829d691b58c9a450e9098a158de285f848f8148089ff4"
               # The smoke test comes from the commit under review.
               repo: "https://github.com/priyanshu891/granite.build.git"
               ref: "a25d9eb654cad73a2aafb5cd8e17a4b1f9ad6fda"
