@@ -51,6 +51,7 @@ from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.space_storage import IStoredSpaceStorage
+from gbserver.storage.storage import Contains
 from gbserver.storage.stored_build import StoredBuild, reopen_finished_build
 from gbserver.storage.stored_event import StoredEvent
 from gbserver.storage.stored_step_run import StoredStepRun
@@ -204,11 +205,18 @@ class CancelBuildResponse(BaseModel):
     canceled: StoredBuild
 
 
+def _apply_name_contains(row_filter: dict, name_contains: str) -> None:
+    """Add a substring match on name. An exact ``name`` filter, if also given, wins."""
+    if name_contains and "name" not in row_filter:
+        row_filter["name"] = Contains(name_contains)
+
+
 # Needed to list all
 @builds_api.get("/")
 def list_builds(
     request: Request,
     name: str = "",
+    name_contains: str = "",  # case-insensitive substring match on name
     space_name: str = "",
     source_uri: str = "",
     username: str = "",  # needed
@@ -235,6 +243,7 @@ def list_builds(
         tags=tag,
         status=status,
     )
+    _apply_name_contains(row_filter, name_contains)
     query_control = get_query_control(sort, page_index, page_size)
 
     storage = get_admin_storage()
@@ -259,6 +268,7 @@ def list_builds(
 def count_builds(
     request: Request,
     name: str = "",
+    name_contains: str = "",  # case-insensitive substring match on name
     space_name: str = "",
     source_uri: str = "",
     username: str = "",
@@ -277,6 +287,7 @@ def count_builds(
         tags=tag,
         status=status,
     )
+    _apply_name_contains(row_filter, name_contains)
     storage = get_admin_storage()
     build_storage = storage.build_storage
     count = build_storage.count(where=row_filter)

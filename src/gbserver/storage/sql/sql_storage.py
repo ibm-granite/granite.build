@@ -50,6 +50,7 @@ from gbserver.storage.storage import (
     UPDATED_TIME_FIELD_NAME,
     UUID_COLUMN_NAME,
     BaseItemStorage,
+    Contains,
     QueryControl,
     SortOrder,
 )
@@ -914,8 +915,11 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
                     column.type, (String, Unicode, UnicodeText)
                 )
 
+                if isinstance(value, Contains):
+                    escaped = re.sub(r"([\\%_])", r"\\\1", value.value)
+                    filters.append(column.ilike(f"%{escaped}%", escape="\\"))
                 # If value is a list/tuple and column is string → use IN
-                if is_string_column and isinstance(value, (list, tuple, set)):
+                elif is_string_column and isinstance(value, (list, tuple, set)):
                     filters.append(column.in_(value))
                 else:
                     filters.append(column == value)

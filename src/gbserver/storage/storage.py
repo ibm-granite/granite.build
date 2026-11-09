@@ -3,6 +3,7 @@ import json
 import re
 import threading
 from abc import abstractmethod
+from dataclasses import dataclass
 from typing import (
     Annotated,
     Any,
@@ -82,6 +83,17 @@ class Pagination(BaseModel):
 
     index: Annotated[int, Field(ge=0)]
     size: Annotated[int, Field(gt=0)]
+
+
+@dataclass(frozen=True)
+class Contains:
+    """A ``get_by_where`` dict value requesting a case-insensitive substring match
+    on that column instead of the default equality, e.g. ``{"name": Contains("sft")}``.
+
+    ``%`` and ``_`` in ``value`` are matched literally, not as wildcards.
+    """
+
+    value: str
 
 
 class QueryControl(BaseModel):
