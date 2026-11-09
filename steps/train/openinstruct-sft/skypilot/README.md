@@ -292,7 +292,7 @@ reuses the published image.
 - **More environments.** Build tests for K8s, SkyPilot-K8s and LSF. Issue #229
   stays open for them.
 - **Multi-node.** The step is single-node only (`num_nodes` must be 1).
-- **Non-root image (#566).** Blocked on a SkyPilot fork fix; see Security trade-off.
+- **Non-root image (#566).** Blocked on a SkyPilot fix; see Security trade-off.
 - **Fixable HIGH and MEDIUM findings in the image (#567).** See Scanning.
 - **`publish-step`'s image check without skopeo (#568).** It reports a published
   single-platform image as missing, so this step was published with

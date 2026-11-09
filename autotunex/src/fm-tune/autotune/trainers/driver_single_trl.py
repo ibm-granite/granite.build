@@ -39,12 +39,16 @@ from trl import (
 )
 
 from autotune.callbacks.training_metrics import TrainingMetricsCallback
-
-# Local
+from autotune.device import disable_cudnn_sdpa
+from autotune.shadow_residual import reject_sr_for_trl_driver
 from autotune.trainers._alora_gc import (
     AloraGradCheckpointDrainCallback,
     install_alora_gc_safety_wrapper,
 )
+
+# Local
+from autotune.trainers._moe import router_aux_loss_coef as moe_router_aux_loss_coef
+from autotune.trainers._steps import resolve_epoch_steps
 from autotune.utils import (
     extract_tokenizer_kwargs,
     get_peft_config,
@@ -123,6 +127,7 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         A dict summarizing the progress of the training loop (per ray.tune).
     """
+    disable_cudnn_sdpa()  # per process: NaN grads on left-padded batches, see device.py
     from autotune.logging_setup import bind_trial_id, setup_logging
 
     setup_logging()
@@ -149,6 +154,8 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Get the training config (discard unused sections — pop for side effect)
     training_config = local_config.pop("training_config")
+
+    reject_sr_for_trl_driver(training_config)
     local_config.pop("training_rl_config")
     tuner_flags = local_config.pop("tuner_flags")
     local_config.pop("tune_config")
@@ -350,7 +357,16 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     effective_epochs = num_hpo_epochs if hpo_search else num_train_epochs
     batch_size = train_kwargs.get("per_device_train_batch_size", 1)
     train_ds_size = len(train_ds)
-    steps_per_epoch = max(1, train_ds_size // batch_size)
+    # Optimizer steps, not micro-batches: HF counts logging_steps and the
+    # single-epoch save/eval cadence below in optimizer steps, so a micro-batch
+    # count is grad_accum times too coarse and collapses the five best-model
+    # candidates of a 1-epoch run. Same derivation as driver_single.py.
+    epoch_steps = resolve_epoch_steps(
+        train_ds_size=train_ds_size,
+        per_device_batch_size=batch_size,
+        gradient_accumulation_steps=train_kwargs.get("gradient_accumulation_steps", 1),
+    )
+    steps_per_epoch = epoch_steps.optimizer_steps
     logging_steps = max(1, min(10, steps_per_epoch // 10))
 
     if hpo_search:
@@ -383,7 +399,6 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     common_kwargs = dict(
         output_dir=outputs_dir,
         logging_dir=logging_dir,
-        overwrite_output_dir=True,
         do_train=True,
         do_eval=True,
         logging_steps=logging_steps,
@@ -407,6 +422,12 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
         **train_kwargs,
     )
 
+    # Granite MoE / 4.0-H classes cannot emit router logits in transformers 5.9, so
+    # TRL's aux-loss term is an int 0 that crashes its metric gather; see _moe.py.
+    aux_coef = moe_router_aux_loss_coef(model)
+    if aux_coef is not None:
+        common_kwargs["router_aux_loss_coef"] = aux_coef
+
     if save_steps is not None:
         common_kwargs["save_steps"] = save_steps
     if eval_steps is not None:
@@ -419,7 +440,7 @@ def train_driver_single_gpu(config: Dict[str, Any]) -> Dict[str, Any]:
     logger.info(f"[AutoTune] Creating the TRL {rl_algorithm.upper()} Trainer...")
 
     if rl_algorithm == "dpo":
-        # trl 0.29: loss_type is list[str]
+        # trl >= 0.29: loss_type is list[str]
         lt = [loss_type] if isinstance(loss_type, str) else loss_type
         training_args = DPOConfig(
             **common_kwargs,

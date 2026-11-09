@@ -421,7 +421,7 @@ container specified in the step's `image_id`.
 
 ### How It Works
 
-The override flows through three layers:
+The override flows through two layers:
 
 1. **gbserver** (`src/gbserver/environment/skypilot.py`) merges docker config from the
    step's launcher_config and the build.yaml's config.launcher_config (build.yaml wins),
@@ -435,40 +435,11 @@ The override flows through three layers:
    resources = sky.Resources(..., _cluster_config_overrides=cluster_config_overrides)
    ```
 
-2. **SkyPilot constants** (`sky/skylet/constants.py`) — the key `('docker', 'host_image_id')`
-   must be in `OVERRIDEABLE_CONFIG_KEYS_IN_TASK` for the value to survive the
-   `Resources.copy()` filtering that occurs during task setup. (This is a local patch
-   to SkyPilot; without it the override is silently dropped.)
-
-3. **SkyPilot AWS backend** (`sky/clouds/aws.py`) — in Docker mode, when
-   `resources.extract_docker_image()` is not None, the code checks
-   `cluster_config_overrides` for `docker.host_image_id`. If present, it uses that AMI
-   as the host instance image instead of defaulting to None (SkyPilot's GPU catalog AMI):
-   ```python
-   if resources.extract_docker_image() is not None:
-       overrides = resources.cluster_config_overrides or {}
-       host_image_override = (overrides.get('host_image_id') or
-                              overrides.get('docker', {}).get('host_image_id'))
-       if host_image_override:
-           image_id_to_use = {None: host_image_override}
-       else:
-           image_id_to_use = None
-   ```
-
-### Required SkyPilot Patches
-
-Two local patches to the SkyPilot installation (`.venv/lib/python3.13/site-packages/sky/`)
-are required until upstream support is added:
-
-1. **`sky/skylet/constants.py`** — Add `('docker', 'host_image_id')` to
-   `OVERRIDEABLE_CONFIG_KEYS_IN_TASK`
-2. **`sky/clouds/aws.py`** — In `make_deploy_resources_variables()`, read
-   `host_image_id` from `cluster_config_overrides` when in Docker mode
-
-After patching, restart the SkyPilot API server:
-```bash
-sky api stop && sky api start
-```
+2. **SkyPilot** — `src/gbserver/utils/sky_patches.py` declares `docker.host_image_id` in
+   SkyPilot's config schema and registers it as task-overrideable, so the API server's
+   strict override validation accepts it. In Docker mode the AWS cloud then uses it as the
+   host AMI instead of SkyPilot's GPU catalog AMI. It can also be set globally under
+   `docker:` in `~/.sky/config.yaml`; the step value wins.
 
 ### Finding a Compatible AMI
 

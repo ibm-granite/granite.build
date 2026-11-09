@@ -1,0 +1,314 @@
+#####
+# Answerability LoRA adapter on granite-4.2-8b, trained with the hf-peft-sft
+# step on IBM BlueVela over SLURM.
+#
+# Two targets, wired by one artifact:
+#
+#   prepare ──(dataset)──> train
+#
+# `prepare` pulls the answerability parquet from the private HF dataset repo
+# ibm-research/touma (only that directory: the hf:// URI names a path in the
+# repo), keeps its prompt/completion columns, and writes them to shared /proj.
+# `train` stages the base model (hfpull), binds that dataset, trains a LoRA
+# adapter with TRL's SFTTrainer (loss on the completion only), and registers
+# the ADAPTER as the `adapter` artifact.
+#
+# See README.md for the HF_TOKEN secret this needs and why the conversion
+# exists.
+#
+#   gb build start -f build.yaml --param-file parameters.yaml
+#   gb build start -f build.yaml --param-file parameters.yaml --param RUN_ID=r2
+#####
+granite.build:
+  name: answerability-$${METHOD}-$${RUN_ID}
+
+  targets:
+
+    ##########################################################################
+    # prepare — HF parquet -> prompt/completion dataset on /proj (CPU only)
+    ##########################################################################
+    prepare:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # Only training_data/answerability/parquet_granite4.2_8b is downloaded,
+        # into the shared hf cache, and bound at that directory.
+        source:
+          uri: "$${SOURCE_DATA_URI}"
+          type: dataset
+        # The base model, for its tokenizer and chat template: prepare drops the
+        # rows TRL would truncate past their label. Same URI as train's, so the
+        # pull is shared (the cache is keyed by repo and revision).
+        base_model:
+          uri: "$${BASE_MODEL_URI}"
+          type: model
+      outputs:
+        # Shared /proj, so train (another SLURM job) can read it.
+        dataset:
+          uri: "env://$${DATA_ROOT}/$${RUN_ID}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            # CPU-only: the cpu partition, without the environment-wide H200
+            # constraint (as the environment does for hfpull/hfpush).
+            zone: cpu
+            launcher_config:
+              resources:
+                # cpu caps memory at 8 GiB per CPU (MaxMemPerCPU=8192): memory
+                # over cpus x 8 makes SLURM raise cpus-per-task, which then
+                # disagrees with SkyPilot's srun --cpus and srun aborts.
+                cpus: $${PREP_CPUS}
+                memory: "$${PREP_MEMORY}"
+              sbatch_options:
+                constraint: null
+            command_config:
+              # The hf-peft-sft image: its venv has the pinned pyarrow, and
+              # train pulls the same image, so the node cache serves both.
+              image: "$${PREP_IMAGE}"
+              # TRL treats a dataset with `input_ids` as already tokenized and
+              # skips its chat-template tokenization and completion-only
+              # masking, so keep exactly `prompt` and `completion`. Rows longer
+              # than MAX_LENGTH tokens are dropped here: TRL keeps the start of
+              # a row, so the label at the end would be cut off and TRL would
+              # drop the row anyway, without saying which. The script must
+              # contain no Jinja delimiters: the step renders it.
+              # The Python below is a copy of the one in ../../aws/answerability-lora/
+              # build.yaml: change both (test_granite_switch_recipe_copies.py checks
+              # they match; #650 is to keep one copy).
+              command: |
+                set -euo pipefail
+                SRC="{{ bindings.source.binding.path }}"
+                MODEL="{{ bindings.base_model.binding.path }}"
+                OUT="$${DATA_ROOT}/$${RUN_ID}"
+                PY=/opt/hf-peft-sft/.venv/bin/python
+                echo "prepare: $SRC -> $OUT"
+                mkdir -p "$OUT"
+                "$PY" -I - "$SRC" "$OUT" "$${SOURCE_DATA_URI}" "$MODEL" "$${MAX_LENGTH}" <<'PY'
+                import hashlib
+                import json
+                import sys
+                from pathlib import Path
+
+                import pyarrow.parquet as pq
+                from transformers import AutoTokenizer
+
+                KEEP = ["prompt", "completion"]
+                SPLITS = ["train", "test"]
+                # Above this share of rows dropped for their turns, the data is
+                # wrong, not noisy.
+                MAX_DROPPED = 0.01
+                # Above this share of rows dropped as too long, MAX_LENGTH is
+                # too short for this data.
+                MAX_TOO_LONG = 0.10
+
+
+                def sha256(path):
+                    """Hex SHA-256 of the file at path, read in 1 MiB chunks."""
+                    h = hashlib.sha256()
+                    with path.open("rb") as f:
+                        for chunk in iter(lambda: f.read(1 << 20), b""):
+                            h.update(chunk)
+                    return h.hexdigest()
+
+
+                def bad_rows(table, split):
+                    """Rows to drop: the completion must answer a user turn.
+
+                    A row whose prompt is not a message list, or whose
+                    completion is not one assistant message, fails the run:
+                    that is a schema problem, not a stray row.
+                    """
+                    prompts = table.column("prompt").to_pylist()
+                    completions = table.column("completion").to_pylist()
+                    bad = []
+                    for i, (p, c) in enumerate(zip(prompts, completions)):
+                        where = f"{split} row {i}"
+                        if not p or not all(isinstance(m, dict) and "role" in m for m in p):
+                            sys.exit(f"prepare: {where}: prompt is not a non-empty message list")
+                        if len(c) != 1 or c[0]["role"] != "assistant":
+                            sys.exit(f"prepare: {where}: completion is not one assistant message")
+                        if p[-1]["role"] != "user":
+                            bad.append((i, p[-1]["role"]))
+                    return bad
+
+
+                def too_long(table, tok, max_length):
+                    """(row, tokens) for rows longer than max_length, as TRL counts them.
+
+                    TRL tokenizes prompt + completion with the chat template; that
+                    length is what its max_length truncation and its drop of
+                    fully masked rows act on.
+                    """
+                    prompts = table.column("prompt").to_pylist()
+                    completions = table.column("completion").to_pylist()
+                    out = []
+                    for i, (p, c) in enumerate(zip(prompts, completions)):
+                        ids = tok.apply_chat_template(p + c, tokenize=True)
+                        # transformers 5 returns a BatchEncoding (whose len is
+                        # its number of keys), 4.x a plain list of ids.
+                        if hasattr(ids, "keys"):
+                            ids = ids["input_ids"]
+                        n = len(ids)
+                        if n > max_length:
+                            out.append((i, n))
+                    return out
+
+
+                def drop(table, rows):
+                    """table without the rows at the given positions, in order."""
+                    gone = set(rows)
+                    return table.take([i for i in range(table.num_rows) if i not in gone])
+
+
+                src, out, source_uri = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+                tok = AutoTokenizer.from_pretrained(sys.argv[4])
+                max_length = int(sys.argv[5])
+                (out / "data").mkdir(parents=True, exist_ok=True)
+                report = dict()
+                for split in SPLITS:
+                    f = src / f"{split}.parquet"
+                    if not f.is_file():
+                        sys.exit(f"prepare: {f} not found; SOURCE_DATA_URI must name the parquet dir")
+                    table = pq.read_table(f)
+                    missing = [c for c in KEEP if c not in table.column_names]
+                    if missing:
+                        sys.exit(f"prepare: {f}: missing columns {missing}; has {table.column_names}")
+                    kept = table.select(KEEP)
+                    bad = bad_rows(kept, split)
+                    if bad:
+                        print(f"prepare: {split}: dropping {len(bad)} row(s) whose prompt "
+                              f"does not end in a user turn: {bad[:20]}", flush=True)
+                        if len(bad) > MAX_DROPPED * kept.num_rows:
+                            sys.exit(f"prepare: {split}: {len(bad)} of {kept.num_rows} rows "
+                                     f"have a prompt not ending in a user turn (over {MAX_DROPPED:.0%})")
+                    # Source row numbers of the rows kept so far, so every drop is
+                    # recorded by its row in the source parquet.
+                    gone = set(r for r, _ in bad)
+                    index = [i for i in range(table.num_rows) if i not in gone]
+                    if bad:
+                        kept = drop(kept, [r for r, _ in bad])
+                    long_rows = [(index[i], n) for i, n in too_long(kept, tok, max_length)]
+                    if long_rows:
+                        print(f"prepare: {split}: dropping {len(long_rows)} row(s) longer than "
+                              f"{max_length} tokens (longest {max(n for _, n in long_rows)})", flush=True)
+                        if len(long_rows) > MAX_TOO_LONG * kept.num_rows:
+                            sys.exit(f"prepare: {split}: {len(long_rows)} of {kept.num_rows} rows are "
+                                     f"longer than MAX_LENGTH={max_length} (over {MAX_TOO_LONG:.0%})")
+                        pos = dict((r, j) for j, r in enumerate(index))
+                        kept = drop(kept, [pos[r] for r, _ in long_rows])
+                    pq.write_table(kept, out / "data" / f"{split}.parquet", compression="zstd")
+                    counts = dict()
+                    for c in kept.column("completion").to_pylist():
+                        counts[c[0]["content"]] = counts.get(c[0]["content"], 0) + 1
+                    report[split] = dict(
+                        source_sha256=sha256(f),
+                        source_columns=table.column_names,
+                        source_rows=table.num_rows,
+                        dropped_rows=[dict(row=i, last_prompt_role=r) for i, r in bad],
+                        max_length=max_length,
+                        too_long_rows=[dict(row=i, tokens=n) for i, n in long_rows],
+                        rows=kept.num_rows,
+                        completion_counts=counts,
+                    )
+                    print("prepare:", split, json.dumps(report[split]), flush=True)
+                (out / "README.md").write_text(
+                    "# answerability prompt/completion (granite-4.2-8b)\n\n"
+                    f"Converted from `{source_uri}` by keeping only the `prompt` and "
+                    "`completion` columns (dropping the pre-tokenized `input_ids` / "
+                    "`labels` / `attention_mask`), dropping rows whose prompt does "
+                    "not end in a user turn (`dropped_rows`), and dropping rows longer "
+                    "than `max_length` tokens with the base model's chat template "
+                    "(`too_long_rows`). Rows are numbered by source row.\n\n"
+                    "```json\n" + json.dumps(report, indent=2) + "\n```\n"
+                )
+                PY
+                echo "GB_ARTIFACT_ID:dataset GB_ARTIFACT_PATH:$OUT"
+
+    ##########################################################################
+    # train — LoRA adapter with hf-peft-sft (DDP on H200)
+    ##########################################################################
+    train:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        base_model:
+          uri: "$${BASE_MODEL_URI}"
+          type: model
+        # The prompt/completion dir prepare wrote (data/train.parquet +
+        # data/test.parquet). Binding it sequences the targets and records the
+        # lineage edge from the HF source to the adapter.
+        dataset:
+          binding: prepare.dataset
+      outputs:
+        # Written to shared /proj so it survives teardown; must match
+        # hf_peft_sft_config.output_path below.
+        adapter:
+          uri: "env://$${ADAPTER_ROOT}/answerability-$${METHOD}/$${RUN_ID}"
+          type: model
+      steps:
+        - step_uri: space://steps/train/hf-peft-sft
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            launcher_config:
+              resources:
+                # H200 is the only GPU bluevela schedules (its constraint).
+                accelerators: "$${ACCELERATORS}"
+                # gbserver drops compute_config memory on slurm; bare GiB string.
+                memory: "$${MEMORY}"
+              envs:
+                PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+            compute_config:
+              num_nodes: 1
+<% if CLEARML %>
+            # ClearML server credentials, from space secrets of the same names.
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+                  - { env_name: CLEARML_API_HOST,       secret_name: CLEARML_API_HOST }
+                  - { env_name: CLEARML_API_ACCESS_KEY, secret_name: CLEARML_API_ACCESS_KEY }
+                  - { env_name: CLEARML_API_SECRET_KEY, secret_name: CLEARML_API_SECRET_KEY }
+<% endif %>
+            hf_peft_sft_config:
+              # lora: a regular LoRA adapter. alora: an activated LoRA, which
+              # acts only from the invocation on, so serving can reuse the base
+              # model's cache for the prompt.
+              method: "$${METHOD}"
+<% if METHOD == "alora" %>
+              # The ChatML assistant marker Granite 4.2 emits before the answer
+              # turn; the last occurrence in each row opens the trained span.
+              # tojson: a JSON string is a valid YAML double-quoted scalar, so
+              # any special character in the value survives parameter rendering.
+              alora_invocation_string: $${ALORA_INVOCATION_STRING | tojson}
+<% endif %>
+              distributed: ddp
+              dataset_split: "$${DATASET_SPLIT}"
+              output: adapter
+              output_path: "$${ADAPTER_ROOT}/answerability-$${METHOD}/$${RUN_ID}"
+              base_model_id: "$${BASE_MODEL_ID}"
+              mixed_precision: bf16
+              clearml_enabled: "<% if CLEARML %>true<% else %>false<% endif %>"
+              clearml_project: "$${CLEARML_PROJECT}"
+              clearml_task_name: "answerability-$${METHOD}-$${RUN_ID}"
+              lora:
+                r: $${LORA_R}
+                alpha: $${LORA_ALPHA}
+                dropout: 0.05
+                target_modules: all-linear
+              # Any TRL SFTConfig field, as --<key> <value>.
+              args:
+                # prepare already dropped longer rows, so nothing is truncated.
+                max_length: $${MAX_LENGTH}
+                per_device_train_batch_size: 1
+                gradient_accumulation_steps: 8
+                learning_rate: $${LEARNING_RATE}
+                lr_scheduler_type: cosine
+                warmup_steps: 0.05
+                weight_decay: 0.01
+                num_train_epochs: $${NUM_TRAIN_EPOCHS}
+                max_steps: $${MAX_STEPS}
+                # Off for aLoRA: recomputing activations loses peft's aLoRA
+                # offsets and zeroes the gradients (peft issue #2826).
+                gradient_checkpointing: <% if METHOD == "alora" %>false<% else %>true<% endif %>
+                dataloader_num_workers: 4
+                logging_steps: 10
+                seed: 0

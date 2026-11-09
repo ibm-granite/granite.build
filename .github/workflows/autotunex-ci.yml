@@ -10,7 +10,7 @@
 # does not: the check job installs fm-tune torch-free, and most of its tests import
 # the training stack. It installs fm-tune[core] and runs `make test-fm-tune`, which
 # deselects the `slow` (HF weights), `gpu` (CUDA) and `full` (verl/hydra) markers.
-# torch is installed first from the CPU index so [core]'s torch==2.8.0 pin is
+# torch is installed first from the CPU index so [core]'s torch==2.11.0 pin is
 # already met and pip skips the multi-GB default CUDA wheel; keep the two pins in
 # step, or the [core] install swaps CPU torch for the CUDA wheel (slow, still green).
 #
@@ -94,7 +94,7 @@ jobs:
       - name: Install (fm-tune[core] on CPU torch)
         run: |
           python -m pip install --upgrade pip
-          pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
           pip install -e "./src/fm-tune[core]" pytest==9.1.1
 
       - name: make test-fm-tune

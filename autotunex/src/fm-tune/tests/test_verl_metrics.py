@@ -64,7 +64,7 @@ class TestInMemoryMetricsLogger:
             },
         ]
         out = _InMemoryMetricsLogger.collect("grpo")
-        # verl 0.7.1 emits no actor/ppo_loss: actor_loss is the mean policy-gradient loss.
+        # verl (0.7.1, 0.9.1) emits no actor/ppo_loss: actor_loss is the mean policy-gradient loss.
         assert out["actor_loss"] == pytest.approx(0.6)
         assert out["pg_loss"] == pytest.approx(0.6)
         assert out["actor_entropy"] == pytest.approx(0.45)
@@ -152,7 +152,7 @@ class TestLastHfModelDir:
         assert _last_hf_model_dir([self._make(tmp_path, 378, with_model=False)]) is None
 
 
-# One step as verl 0.7.1 reports it (after _InMemoryMetricsLogger.log added "_step").
+# One step as verl (0.7.1, 0.9.1) reports it (after _InMemoryMetricsLogger.log added "_step").
 _REAL_STEP = {
     "_step": 37,
     "training/global_step": 37,

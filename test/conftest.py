@@ -557,6 +557,12 @@ def pytest_configure(config):
     """
     _arm_stall_watchdog()
     _PREVIOUS_SIGNAL_HANDLERS.update(abort_cleanup.map_termination_signals_to_sigint())
+    # Run tests against the SkyPilot gbserver ships: patched, as in its API server.
+    # This also fails the run early if an edit no longer matches the pin.
+    if _can_import("sky"):
+        from gbserver.utils import sky_patches
+
+        sky_patches.apply()
 
 
 def pytest_unconfigure(config):
