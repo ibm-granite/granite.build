@@ -2,9 +2,9 @@
 #
 # Three cheap probes that gate the granite4-350m distillation family: does the student
 # load in this image, does the declared tokenizer_class change segmentation, and which
-# segmentation the weights prefer. Runs in the same prebuilt kd-sandbox image as the
-# distill steps (torch + transformers are already in its venv), so there is no
-# Dockerfile here: common.mk auto-detects a non-image step and the image /
+# segmentation the weights prefer. Runs in the shared distillation GPU image (built by
+# steps/train/distill/Makefile; torch + transformers are already in its venv). No
+# Dockerfile here, so common.mk treats it as a non-image step and the image /
 # publish-image targets are no-ops.
 #
 # Usage:

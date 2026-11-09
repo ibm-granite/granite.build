@@ -34,12 +34,12 @@ import stat
 import sys
 from typing import NoReturn
 
-PREFIX = "distill-gold: resume:"
+PREFIX = "logit-distill: resume:"
 
 
 def fatal(message: str) -> NoReturn:
     """Exit 1 with a FATAL line on stderr, the step's convention for a refusal."""
-    sys.exit(f"distill-gold: FATAL: {message}")
+    sys.exit(f"logit-distill: FATAL: {message}")
 
 
 def step_count(name: str, raw: str) -> int:

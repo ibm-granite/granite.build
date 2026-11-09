@@ -30,9 +30,9 @@ version: 1.0.0
 # package does the work (build_overlay, retag_student, align_state, masking). This
 # step delivers that package, resolves paths, and forwards eight flags.
 #
-# Deps come from the image; the CODE comes from a git clone at a pinned SHA (or a
-# filesystem checkout — see code_config), so an upstream fix lands without touching
-# granite.build. The resolved commit is recorded as step metadata either way.
+# Deps, the shared package and run-align.sh are all baked into the shared CPU image under
+# $DISTILL_HOME (/opt/distill); nothing is cloned or mounted at launch. The baked commit is
+# recorded as step metadata.
 type: data_processing
 config:
   # ─── Alignment ────────────────────────────────────────────────────────────────
@@ -161,12 +161,12 @@ environment_configs:
             # a missing local file fails here rather than silently fetching.
             HF_HUB_OFFLINE: "1"
           run: |
-            echo "=== distill-tokenizer-align on $(hostname) ==="
+            echo "=== tokenizer-align on $(hostname) ==="
 
             # The models used to be config keys. A recipe that still sets one would
             # otherwise be ignored silently, so refuse it.
             {% for key in ("teacher_model", "student_model") if config.align_config[key] is defined %}
-            echo "distill-tokenizer-align: FATAL: align_config.{{ key }} is no longer read; bind the target input instead (see this step's README)" >&2
+            echo "tokenizer-align: FATAL: align_config.{{ key }} is no longer read; bind the target input instead (see this step's README)" >&2
             exit 1
             {% endfor %}
 

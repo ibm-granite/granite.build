@@ -3,10 +3,9 @@
 # Turns a conversation dataset into the GOLD training corpus: filter by rendered
 # length, apply a think-tag policy, enforce the completion boundary, split
 # deterministically, and record what was done in a manifest the trainer checks.
-# Runs in a prebuilt public-registry image and takes the shared distillation
-# package from the /proj checkout at run time, so there is no Dockerfile here:
-# common.mk auto-detects a non-image step and the image / publish-image targets
-# are no-ops.
+# Runs in the shared distillation CPU image (built by steps/train/distill/Makefile).
+# No Dockerfile here, so common.mk treats it as a non-image step and the image /
+# publish-image targets are no-ops.
 #
 # Usage:
 #   make space    # render a Space (space.yaml + steps/<name>/step.yaml)

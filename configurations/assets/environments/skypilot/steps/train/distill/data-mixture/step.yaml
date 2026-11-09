@@ -5,8 +5,8 @@
 # logic, and the measurements behind it, live in src/build_sources.py; this file only
 # passes the configuration through.
 #
-# CPU-only and stdlib-only. It needs no trainer source, which is why it carries none of
-# the distill-* steps' code_config / source-delivery contract.
+# CPU-only and stdlib-only. It needs no trainer source; the script is baked into the
+# shared CPU image under $DISTILL_HOME (/opt/distill).
 ######
 name: data-mixture
 version: 1.0.0

@@ -7,24 +7,18 @@ released step as its `README.md`.
 
 | | Where | Change it where? |
 |---|---|---|
-| `step-template.yaml` | here | here — but see the source-delivery note below |
+| `step-template.yaml` | here | here |
 | `src/prep_corpus.py`, `src/merge_shards.py` | here, near-verbatim ports (they carry the 88 tests) | **upstream**, then re-sync |
 | `test/test_step_template.py` | here | here |
 | `test/test_prep_corpus.py` | here, near-verbatim port | **upstream**, then re-sync |
-| `gb_steps_post_training.distillation` | the delivered checkout | **upstream only** |
+| `gb_steps_post_training.distillation` | `steps/train/distill/src` (see `VENDORED.md`), baked into the image | there, then rebuild the image |
 
 `merge_shards.py` imports `prep_corpus` by flat name, so the two ship together; a test asserts it.
 
-## The source-delivery region is spliced, not written
+## Source delivery
 
-`code_config` and the delimited region at the top of `run:` are **byte-identical copies** from
-`steps/train/distill/tokenizer-align`, which is the reference step. Do not edit them here — change the
-reference and re-splice, or
-`steps/train/distill/tokenizer-align/skypilot/test/test_source_contract.py` fails and names this step.
-
-That is also why this step's `test_step_template.py` does not re-assert the twelve
-source-delivery properties: identical to a correct reference is correct, and two homes for one
-guarantee is how they drift.
+The package and this step's `src/` are baked into the shared CPU image under `$DISTILL_HOME`
+(`/opt/distill`); nothing is cloned or mounted at launch.
 
 ## The fixture is two targets, and that is forced
 
@@ -37,9 +31,11 @@ fixture proves the cross-target binding as a side effect.
 ## Tests
 
 ```bash
-make test                                                   # 24 contract tests, no checkout needed
-GB_DISTILL_CODE_DIR=/path/to/checkout make test              # + 88 ported upstream tests
+make test                                                   # contract tests + 88 ported upstream tests
 ```
+
+`test/conftest.py` puts the in-repo `steps/train/distill/src` on `sys.path`, so no external
+checkout is needed.
 
 ## Publishing
 

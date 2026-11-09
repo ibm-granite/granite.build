@@ -24,12 +24,13 @@ producing an error, and each is handled badly by a shell heredoc:
   phase will reopen.
 
 * The trainer's newer keys must be ABSENT, not false, when unused. ``ce_coef``,
-  ``log_student_entropy`` and the entropy-guard trio are NOT at the commit
-  ``code_config`` pins by default; they need a checkout carrying
-  ``patches/ce_anchor_and_entropy_guard.diff``. Emitting them unconditionally would make
-  every config here unreadable by any other checkout, and TRL rejects unknown top-level
-  keys outright -- which is what ``--verify-trainer-accepts-keys`` turns into a refusal
-  that names the patch instead of a failure on a held allocation. Emitting them only when they are non-default also keeps
+  ``log_student_entropy`` and the entropy-guard trio are not upstream TRL fields; they
+  exist only in the in-repo trainer copy at ``steps/train/distill/src`` (the CE-anchor/
+  entropy-guard fields folded into ``custom_gold_config.py``). Emitting them unconditionally
+  would make every config here unreadable by any other trainer, and TRL rejects unknown
+  top-level keys outright -- which is what ``--verify-trainer-accepts-keys`` turns into a
+  refusal that names the missing fields instead of a failure on a held allocation. Emitting
+  them only when they are non-default also keeps
   the rendered config of every existing recipe byte-identical, which is what
   ``test_off_policy_key_set_is_exact`` asserts.
 
@@ -523,8 +524,9 @@ def check_corpus_tokenizer(args: argparse.Namespace) -> None:
     loss. distill-pipeline-smoke chains corpus-prep straight into this step, which is exactly
     where a mismatch can be introduced by changing one parameter.
 
-    LAZY AND LOUD, never silent. The check lives in the shared package, which this step
-    delivers via code_config on every run; if PYTHONPATH was not set up to reach it (this
+    LAZY AND LOUD, never silent. The check lives in the shared package, which the step's
+    image bakes in at $DISTILL_HOME/src (PYTHONPATH=/opt/distill/src); if PYTHONPATH does not
+    reach it (this
     script invoked directly rather than through the step's run block, for instance), asking
     for the check anyway is an error naming why -- because a validator that quietly does not
     run is worse than one that is absent: the operator believes they checked.
@@ -536,8 +538,8 @@ def check_corpus_tokenizer(args: argparse.Namespace) -> None:
     except ImportError as exc:
         raise ValueError(
             "--check-corpus-tokenizer was requested but gb_steps_post_training is not "
-            f"importable ({exc}). That package reaches this container through code_config's "
-            "clone, normally exported onto PYTHONPATH by the step's run block -- either run "
+            f"importable ({exc}). That package is baked into the step's image at "
+            "$DISTILL_HOME/src (PYTHONPATH=/opt/distill/src) -- either run "
             "this through the step, or drop the check deliberately rather than leaving it "
             "to fail open"
         ) from exc
@@ -554,9 +556,9 @@ def check_corpus_tokenizer(args: argparse.Namespace) -> None:
 
 
 # Keys this renderer can emit that upstream trl's GOLDConfig does not define. Every one of
-# them needs the DELIVERED trainer to carry the field, and the delivered trainer is whatever
-# code_config's pin resolves to -- which is not guaranteed to be the tree these keys were
-# written against. See patches/ce_anchor_and_entropy_guard.diff.
+# them needs the BAKED trainer to carry the field. The in-repo copy at steps/train/distill/src
+# does (the CE-anchor/entropy-guard fields are folded into custom_gold_config.py; see
+# VENDORED.md there), but a future re-vendor could drop or rename them.
 _TRAINER_EXTENSION_KEYS = frozenset(
     {
         "ce_coef",
@@ -588,12 +590,12 @@ def check_trainer_accepts(config: Dict[str, Any]) -> None:
     completions the teacher scores as if they were rollouts, with nothing in any log saying
     the floor was dropped.
 
-    Checked against dataclasses.fields rather than a hardcoded list of "patched" commits, so
-    the check cannot drift from the trainer it is about: bump the pin to a tree that carries
-    the fields and this goes quiet on its own.
+    Checked against dataclasses.fields rather than a hardcoded list of trainer commits, so
+    the check cannot drift from the trainer it is about: a trainer that carries the fields
+    makes this go quiet on its own.
 
     Off in this script's own argparse and ON in the step's config, for the same reason
-    check_corpus_tokenizer is: the step delivers the package on every run, while a direct
+    check_corpus_tokenizer is: the step's image carries the package on every run, while a direct
     invocation (a unit test rendering a key in isolation) has no package to ask.
     """
     requested = sorted(_TRAINER_EXTENSION_KEYS & set(config))
@@ -608,8 +610,8 @@ def check_trainer_accepts(config: Dict[str, Any]) -> None:
         raise ValueError(
             f"this config emits {', '.join(requested)}, which only some trainers accept, but "
             f"gb_steps_post_training is not importable ({exc}) so that cannot be checked. "
-            "The package reaches this container through code_config's clone, normally exported "
-            "onto PYTHONPATH by the step's run block -- either run this through the step, or "
+            "The package is baked into the step's image at $DISTILL_HOME/src "
+            "(PYTHONPATH=/opt/distill/src) -- either run this through the step, or "
             "set gold_config.verify_trainer_accepts_keys false to skip the check deliberately"
         ) from exc
 
@@ -619,11 +621,11 @@ def check_trainer_accepts(config: Dict[str, Any]) -> None:
         raise ValueError(
             f"the delivered trainer's CustomGOLDConfig has no field(s) "
             f"{', '.join(missing)}, so emitting them would make TrlParser reject this config "
-            "on every node after the allocation is already held. The trainer comes from "
-            "code_config (see the step's step-template.yaml); to use these keys, point "
-            "code_config.code_dir at a checkout carrying "
-            "steps/train/distill/logit-distill/skypilot/patches/ce_anchor_and_entropy_guard.diff -- its "
-            "header has the exact patch invocation and the directory remap it needs. To run "
+            "on every node after the allocation is already held. The trainer is baked into "
+            "the step's image at $DISTILL_HOME/src from steps/train/distill/src, whose "
+            "CustomGOLDConfig defines the CE-anchor/entropy-guard fields; an image without "
+            "them is older or re-vendored -- rebuild it from this repo (make images in "
+            "steps/train/distill) and repin image_id. To run "
             "without them, leave the corresponding gold_config keys at their defaults"
         )
 
@@ -750,7 +752,8 @@ def _parse_args(argv=None) -> argparse.Namespace:
         default=False,
         help=(
             "verify the student's tokenizer matches the one the corpus was built with. "
-            "Requires gb_steps_post_training to be importable (delivered by code_config); "
+            "Requires gb_steps_post_training to be importable (baked into the image at "
+            "$DISTILL_HOME/src); "
             "errors rather than skipping if the package is absent."
         ),
     )

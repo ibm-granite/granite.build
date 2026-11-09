@@ -2,9 +2,9 @@
 #
 # Builds ONE prep-ready corpus file from several raw SFT splits: renames
 # `conversations` to `messages`, reservoir-samples each split in proportion to its
-# size, and shuffles the result. Runs in the same prebuilt kd-sandbox image as the
-# distill steps and needs only the standard library, so there is no Dockerfile here:
-# common.mk auto-detects a non-image step and the image / publish-image targets are
+# size, and shuffles the result. Runs in the shared distillation CPU image (built by
+# steps/train/distill/Makefile) and needs only the standard library. No Dockerfile here,
+# so common.mk treats it as a non-image step and the image / publish-image targets are
 # no-ops.
 #
 # Usage:

@@ -42,7 +42,7 @@ think-filtered** (`*_nothink.jsonl`): an assistant completion containing an inli
 
 | Field | Type | Purpose |
 |---|---|---|
-| `ds_config` | string | DeepSpeed ZeRO-3 `accelerate` config, relative to `$CODE_DIR` (the baked-in trainer source, `/opt/gb-steps-distillation`). Default: `configs/deepspeed/accelerate_deepspeed_zero3.yaml`. |
+| `ds_config` | string | DeepSpeed ZeRO-3 `accelerate` config, relative to `$DISTILL_HOME` (`/opt/distill`, where the image bakes the trainer and the shared configs). Default: `configs/deepspeed/accelerate_deepspeed_zero3.yaml`. |
 | `run_name` | string | Names the checkpoint directory and the rendered config. The node count is appended at run time, from the allocation (`<run_name>_node<N>`), so the two cannot disagree. Default: `gold`. |
 
 #### Weight residency
@@ -164,16 +164,14 @@ harmless where the gap doesn't exist — see `steps/train/distill/images/gpu/REA
 
 ### Source delivery
 
-Unlike every other ported distillation step, this step has no `code_config` and clones
-nothing at job-launch time. The trainer (`gold.py`, `custom_gold_trainer.py`,
-`run_vllm_serve.py` and their shared helpers) is baked directly into the shared GPU
-image (`steps/train/distill/images/gpu/Dockerfile` COPYs `steps/train/distill/src/`, pinned to
-`gb-steps-distillation` commit `a5d59bc45524a8d75706e20d44ae1a254f273f23`), including a
-locally-folded-in CE-anchor/entropy-guard patch — see
+Nothing is cloned or mounted at job-launch time. The trainer (`gold.py`,
+`custom_gold_trainer.py`, `run_vllm_serve.py` and their shared helpers) is baked into the
+shared GPU image (`steps/train/distill/images/gpu/Dockerfile` COPYs `steps/train/distill/src/`,
+copied from `gb-steps-distillation` commit `a5d59bc45524a8d75706e20d44ae1a254f273f23`), with
+the CE-anchor/entropy-guard fields folded into that copy — see
 [CE anchor and entropy guard](#ce-anchor-and-entropy-guard-1) and
-`steps/train/distill/src/VENDORED.md`. `$PYBIN` and `$CODE_DIR` are static paths baked into that
-image (`/stage/.venv/bin/python` and `/opt/gb-steps-distillation`), not resolved from a
-config field.
+`steps/train/distill/src/VENDORED.md`. `$PYBIN` and `$CODE_DIR` come from that image
+(the venv `python` and `$DISTILL_HOME`, i.e. `/opt/distill`), not from a config field.
 
 ### Image
 
@@ -246,10 +244,11 @@ provisioner-specific `RANK`/`TOTAL_NODES`/`MASTER_ADDR`/`MASTER_PORT`). All path
 `$GB_BUILD_WORKDIR` (the per-run workdir, on `/proj` on BlueVela and identity-mounted into
 the container), falling back to the current directory when unset:
 
-- `./src` — the step's `src/` (config renderer and residency check), file-mounted.
-- `/opt/gb-steps-distillation` (`$CODE_DIR`) — the trainer source, baked into the image.
-  No per-run clone, so no rank-0-clones/others-wait delay. `ds_config` resolves relative
-  to it.
+- `$DISTILL_HOME/steps/logit-distill` — the step's `src/` (config renderer and residency
+  check), baked into the image.
+- `/opt/distill` (`$DISTILL_HOME`, also `$CODE_DIR`) — the trainer package (`src/`) and the
+  shared `configs/`, baked into the image. No per-run clone, so no rank-0-clones/others-wait
+  delay. `ds_config` resolves relative to it.
 - `gold_config_<run_name>_node<N>.yaml` — the rendered trainer config, printed to the log by
   rank 0.
 - `checkpoints/<run_name>_node<N>/` — the trainer's `--output_dir`, and the `checkpoint`

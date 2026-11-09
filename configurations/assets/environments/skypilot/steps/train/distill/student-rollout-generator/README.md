@@ -104,8 +104,8 @@ value through filesystem-path normalisation and mangles `http://host:8001` into
 The run script starts in the step's per-run workdir (`GB_BUILD_WORKDIR`, or the current
 directory if that is unset). It:
 
-- uses the server code already baked into the image at `/opt/gb-steps-distillation`
-  (`PYTHONPATH` already set by the image itself) — no clone;
+- uses the server code already baked into the image at `/opt/distill` (`$DISTILL_HOME`;
+  `PYTHONPATH` already set by the image itself) — no clone;
 - runs the server with the image's interpreter, `/stage/.venv/bin/python`, with
   `/stage/.venv/bin` prepended to `PATH`;
 - sets `VLLM_RPC_BASE_PATH` and `TMPDIR` to `/tmp/vllm-<user>-<LSF job id>`, created on
@@ -211,7 +211,7 @@ both directions.
 
 | | |
 |---|---|
-| deps + server code | baked into the shared GPU image (`/stage/.venv` + `/opt/gb-steps-distillation`), the same image the `space://steps/train/distill/logit-distill` step uses |
+| deps + server code | baked into the shared GPU image (`/stage/.venv` + `/opt/distill`), the same image the `space://steps/train/distill/logit-distill` step uses |
 | bsub, enroot, node topology | SkyPilot's LSF provisioner |
 | readiness, address publication, teardown hook | this step |
 

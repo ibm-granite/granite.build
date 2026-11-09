@@ -24,6 +24,6 @@ one asks, and why, is in [`src/distill_probe.py`](src/distill_probe.py).
 | `python` | interpreter in the image (`/stage/.venv/bin/python`) |
 
 It sets no `HF_HUB_OFFLINE`: `load-student` asks whether transformers' lazy kernel
-fetch works in this image. No trainer source, so it does not carry the distill-* steps'
-`code_config` contract. The recipe is
+fetch works in this image. No trainer source; its script is baked into the shared GPU
+image. The recipe is
 [`recipes/granite4-350m/lsf/distill-probe`](../../../../recipes/granite4-350m/lsf/distill-probe/README.md).

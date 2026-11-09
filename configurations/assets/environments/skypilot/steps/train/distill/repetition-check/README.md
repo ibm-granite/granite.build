@@ -81,10 +81,10 @@ Declare `repetition_report` on the target (typically `uri: "env://{{ binding.pat
 - The run block sets `WORK="${GB_BUILD_WORKDIR:-$PWD}"`. A relative `output_dir` is
   absolutised to `$WORK/<output_dir>` and created before the script runs.
 - Rung paths are passed to the script unchanged. Use absolute paths.
-- The step's `src/` directory is mounted at `./src`; the workload is
-  `<python> ./src/gen_smoke.py <output_dir>/repetition.json <max_repetition> <new_tokens> <gate_final_rung> <rung>...`.
+- The step's `src/` is baked into the shared GPU image; the workload is
+  `python $DISTILL_HOME/steps/repetition-check/gen_smoke.py <output_dir>/repetition.json <max_repetition> <new_tokens> <gate_final_rung> <rung>...`.
 - `HF_HUB_OFFLINE=1` and `HF_HOME=/opt/hf-cache`. Nothing is fetched from the Hub.
-- No trainer source is cloned: the step carries no `code_config`.
+- No trainer source is used, and nothing is cloned or mounted.
 
 ## Example build.yaml
 

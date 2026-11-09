@@ -42,5 +42,4 @@ sources:
           output_dir: /proj/run/sources
 ```
 
-Stdlib-only, CPU-only, and no trainer source, so it does not carry the other distillation steps'
-`code_config` contract.
+Stdlib-only, CPU-only, and no trainer source; its script is baked into the shared CPU image.

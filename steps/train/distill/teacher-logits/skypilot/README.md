@@ -7,11 +7,11 @@ released step as its `README.md`.
 
 | | Where | Change it where? |
 |---|---|---|
-| `step-template.yaml` | here — but see the source-delivery note | here |
+| `step-template.yaml` | here | here |
 | `src/run-precompute.sh` | here, a near-verbatim port | **upstream**, then re-sync |
 | `test/test_step_template.py` | here | here |
 | `test/test_precompute_logits.py` | here, a near-verbatim port | **upstream**, then re-sync |
-| `precompute_logits`, `step_state` | the delivered checkout | **upstream only** |
+| `precompute_logits`, `step_state` | `steps/train/distill/src` (see `VENDORED.md`), baked into the image | there, then rebuild the image |
 
 ## Written from lessons, not from another six cluster runs
 
@@ -34,11 +34,10 @@ One more, from the `distill-eval` port: the artifact marker is printed by the **
 Upstream's template echoed it a second time, which would register two `NEWARTIFACT` events for one
 id.
 
-## The source-delivery region is spliced, not written
+## Source delivery
 
-`code_config` and the delimited region at the top of `run:` are **byte-identical copies** from
-`steps/train/distill/tokenizer-align`, the reference step. Change the reference and re-splice, or that
-step's `test_source_contract.py` fails and names this one.
+The package and this step's `src/` are baked into the shared GPU image under `$DISTILL_HOME`
+(`/opt/distill`); nothing is cloned or mounted at launch.
 
 ## Publishing
 
@@ -54,6 +53,8 @@ align and prep.
 ## Tests
 
 ```bash
-make test                                                   # 32 contract tests, no checkout needed
-GB_DISTILL_CODE_DIR=/path/to/checkout make test              # + 51 ported upstream tests
+make test                                                   # contract tests + 51 ported upstream tests
 ```
+
+`test/conftest.py` puts the in-repo `steps/train/distill/src` on `sys.path`, so no external
+checkout is needed.

@@ -135,12 +135,12 @@ environment_configs:
             VIRTUAL_ENV: /stage/.venv
             HF_HUB_OFFLINE: "1"
           run: |
-            echo "=== distill-corpus-prep on $(hostname) ==="
+            echo "=== data-prep on $(hostname) ==="
 
             # The inputs used to be config keys. A recipe that still sets one would
             # otherwise be ignored silently, so refuse it.
             {% for key in ("dataset", "tokenizer") if config.corpus_config[key] is defined %}
-            echo "distill-corpus-prep: FATAL: corpus_config.{{ key }} is no longer read; bind the target input instead (see this step's README)" >&2
+            echo "data-prep: FATAL: corpus_config.{{ key }} is no longer read; bind the target input instead (see this step's README)" >&2
             exit 1
             {% endfor %}
 

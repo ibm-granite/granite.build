@@ -11,20 +11,22 @@ released step as its `README.md`. This file is for people changing the step.
 | `src/run-align.sh` | here, a near-verbatim port | **upstream**, then re-sync |
 | `test/test_step_template.py` | here | here |
 | `test/test_build_overlay.py` | here, a near-verbatim port | **upstream**, then re-sync |
-| `gb_steps_post_training.distillation` (the actual work) | the delivered checkout — 15.6k lines, 33 modules | **upstream only** |
+| `gb_steps_post_training.distillation` (the actual work) | `steps/train/distill/src` (see `VENDORED.md`), baked into the image | there, then rebuild the image |
 
 Ported files carry a header naming their upstream path and commit, so a re-sync is a three-way
 merge rather than an eyeball diff. Keep them near-verbatim; behaviour changes belong upstream.
 
-The shared package is deliberately **not vendored**: its `tokenizer_identity` module writes a
-guard whose reader is the trainer in that same checkout, and a second copy is how the two halves
-drift apart.
+The shared package exists in this repo once, at `steps/train/distill/src`, and every distill
+step uses that one copy from the image (`$DISTILL_HOME/src`): its `tokenizer_identity` module
+writes a guard whose reader is the trainer in that same package, and a second copy is how the
+two halves drift apart.
 
 ## Non-image step
 
-There is no `Dockerfile`, so `steps/common.mk` auto-detects a non-image step
+There is no `Dockerfile` here, so `steps/common.mk` auto-detects a non-image step
 (`STEP_USES_IMAGE := $(if $(wildcard $(DOCKERFILE)),true,false)`), `IMAGE_REF` is empty, and
-`image` / `publish-image` become no-ops. `make all` reduces to `make space`.
+`image` / `publish-image` become no-ops. `make all` reduces to `make space`. The step runs in
+the shared distillation CPU image built by `steps/train/distill/Makefile`.
 
 The image is named literally in the template rather than as `${IMAGE_REF}`. Its contents were
 measured on BlueVela rather than assumed: python 3.12.14, torch 2.8.0+cu128, transformers 5.8.0,
@@ -59,21 +61,14 @@ itself to LSF with `environment_configs.Skypilot.subtypes: [lsf]`.
 ## Tests
 
 ```bash
-make test                                                   # hermetic contract tests, no checkout needed
-GB_DISTILL_CODE_DIR=/path/to/checkout make test              # + 39 ported upstream tests (test_build_overlay.py)
+make test                                                   # contract tests + 39 ported upstream tests (test_build_overlay.py)
 GB_STEP_BLUEVELA_BUILD=1 make test                           # + the end-to-end LSF run in test/lsf/
 ```
 
-Without a checkout, `make test` collects 100 tests (`test_step_template.py`,
-`test_source_contract.py`, `test_granite_role_template.py`, and two LSF tests that skip
-unless `GB_STEP_BLUEVELA_BUILD=1`). `conftest.py` falls back to
-`/proj/granite-build/g4os/gb-steps-collection-post-training` when `GB_DISTILL_CODE_DIR` is
-unset, so on a host with `/proj` mounted the ported suite runs without the variable.
+`conftest.py` puts the in-repo `steps/train/distill/src` on `sys.path`, so the ported suite
+runs with no external checkout. The two LSF tests skip unless `GB_STEP_BLUEVELA_BUILD=1`.
 
 The contract tests read the template and `src/run-align.sh` directly and assert, among other
 things, that every declared artifact id is actually printed (and vice versa), that booleans are
 rendered as `--flag`/`--no-flag` pairs rather than `--flag {{ value }}`, and that every flag the
-template passes is one the script parses. `test_source_contract.py` asserts the `code_config`
-block and the delimited source-delivery region of `run` are byte-identical across the ported
-steps. A green run with no checkout means the **step contract** holds — not that the upstream
-code does.
+template passes is one the script parses.

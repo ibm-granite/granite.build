@@ -121,7 +121,7 @@ RETAGGED="${OUT_DIR}/retagged_student"
 verify_flag() { [[ "$VERIFY" == "true" ]] && echo "--verify" || echo "--no-verify"; }
 chatml_flag() { [[ "$REQUIRE_CHATML" == "true" ]] && echo "--require-chatml" || echo "--no-require-chatml"; }
 
-echo "=== distill-tokenizer-align ==="
+echo "=== tokenizer-align ==="
 echo "  student : ${STUDENT_MODEL}"
 echo "  teacher : ${TEACHER_MODEL}"
 echo "  out     : ${OUT_DIR}"

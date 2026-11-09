@@ -70,8 +70,8 @@ a failure. It fails only on bad arguments, for example `tokenizer-fit` without a
 
 ## Working directory and paths
 
-`run` starts in the step's per-run working directory. The step's `src/` directory is
-mounted at `./src` there, and `run` invokes `<python> ./src/distill_probe.py <probe>
+`run` starts in the step's per-run working directory. The step's `src/` is baked into the
+shared GPU image, and `run` invokes `python $DISTILL_HOME/steps/preflight-check/distill_probe.py <probe>
 --checkpoint ... --corpus ... --rows ...`. `checkpoint` and `corpus` are passed through
 unchanged, so give absolute paths. The step writes nothing to the working directory;
 the tokenizer probes make their scratch copy of the checkpoint in a temporary
@@ -125,9 +125,8 @@ granite.build:
 ## Notes and limitations
 
 - **Needs** torch and transformers from the image, one GPU for `load-student` and
-  `tokenizer-fit`, and no trainer source. Because it uses no trainer source, the step
-  does not carry the `code_config` / source-delivery contract of the other distill
-  steps.
+  `tokenizer-fit`, and no trainer source; its script is baked into the shared GPU image
+  under `$DISTILL_HOME` (`/opt/distill`).
 - **No `HF_HUB_OFFLINE`.** The step deliberately does not set it. `load-student` asks
   whether transformers can fetch its kernels lazily in this image, and an offline hub
   would answer a different question.

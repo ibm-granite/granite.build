@@ -6,7 +6,7 @@ PORTED, not authored here. Upstream source of truth:
 
 Divergences, all about path resolution rather than behaviour:
   - upstream's sys.path inserts are removed. conftest.py resolves the step's own src/ and
-    the shared distillation package (from GB_DISTILL_CODE_DIR).
+    the shared distillation package (from the in-repo steps/train/distill/src).
   - the PARITY TESTS import distill-gold-train's renderer, which granite.build does not
     contain: this repo's steps/train/distill/logit-distill ships a DIFFERENT renderer (268 lines against
     upstream's 575), because it drives kd-sandbox's trainer rather than the vendored

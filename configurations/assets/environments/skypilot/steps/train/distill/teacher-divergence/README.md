@@ -54,24 +54,8 @@ only `entropy` is computable, and asking for `jsd` (or `kld`/`rkld`) without one
 > [The two keys that break a measurement quietly](#the-two-keys-that-break-a-measurement-quietly)
 > before changing either.
 
-### Source delivery (`code_config`)
-
-The step imports the shared distillation package from a source checkout resolved at run
-time. `code_config` is identical in every ported distillation step and is documented once —
-see "Source delivery" in the `space://steps/train/distill/tokenizer-align` step's README. The
-defaults clone a public repository at a pinned commit, so a recipe normally sets nothing
-here.
-
-| Field | Type | Purpose |
-|---|---|---|
-| `code_dir` | string | Existing checkout to use instead of cloning. Default: `""` (clone). |
-| `expect_ref` | string | Commit `code_dir` must be at; a mismatch fails the step. Default: `a5d59bc45524a8d75706e20d44ae1a254f273f23`. |
-| `repo` | string | Repository cloned when `code_dir` is empty. Default: `https://github.com/laminair/gb-steps-distillation.git`. |
-| `ref` | string | Branch, tag or commit checked out after the clone. Default: the same commit as `expect_ref`. |
-| `workdir` | string | Clone destination, relative to the working directory. Default: `distill-code`. |
-| `token_secret` | string | Name of a space secret holding a read credential for a private `repo`. Default: `""` (public clone). |
-| `python` | string | Interpreter that runs the workload. Default: `/stage/.venv/bin/python`. |
-| `setup_command` | string | Bash run after the source resolves and before the workload. Default: `""` (skipped). |
+The trainer package and this step's scripts are baked into the shared image under
+`$DISTILL_HOME` (`/opt/distill`); nothing is cloned or mounted.
 
 ### Top-level step config
 
@@ -130,10 +114,10 @@ Declare `eval_metrics` on the target (typically `uri: "env://{{ binding.path }}"
   handed to the `env://` store, possibly from another host.
 - The resolved `student` and `teacher` input paths, and `corpus`, are passed to the
   script unchanged. Use absolute paths; bindings already resolve to absolute paths.
-- The source is cloned into `$WORK/<code_config.workdir>` (default `distill-code/`), or
-  taken from `code_config.code_dir`, and `$CODE_DIR/src` is prepended to `PYTHONPATH`.
-- The step's `src/` directory is mounted at `./src`; the workload is
-  `bash ./src/run-eval.sh`, run with `PYBIN` set to `code_config.python`.
+- The shared package is baked into the image at `$DISTILL_HOME/src` (`/opt/distill/src`),
+  already on `PYTHONPATH`; nothing is cloned or mounted.
+- The workload is `bash $DISTILL_HOME/steps/teacher-divergence/run-eval.sh`, run with the
+  image's venv `python` as `PYBIN`.
 - `HF_HOME` is `/opt/hf-cache`, and the Hub stays reachable (see
   [Runtime](#runtime)).
 

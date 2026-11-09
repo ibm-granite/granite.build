@@ -6,7 +6,7 @@ PORTED, not authored here. Upstream source of truth:
 
 Divergence, about path resolution rather than behaviour: upstream's sys.path inserts are
 removed; conftest.py resolves the step's own src/ and the shared distillation package from
-GB_DISTILL_CODE_DIR.
+the in-repo steps/train/distill/src.
 
 Keep this a near-verbatim copy so re-syncing upstream stays a three-way merge.
 """

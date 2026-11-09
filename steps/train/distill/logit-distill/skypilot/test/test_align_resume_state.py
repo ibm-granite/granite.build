@@ -118,8 +118,9 @@ def test_a_bad_step_count_is_fatal_and_writes_nothing(tmp_path, flag, value):
     ckpt = _checkpoint(tmp_path)
     result = _run(ckpt, **{flag: value})
     assert result.returncode == 1
-    assert f"distill-gold: FATAL: {flag} must be a positive integer, got {value!r}" in (
-        result.stderr
+    assert (
+        f"logit-distill: FATAL: {flag} must be a positive integer, got {value!r}"
+        in (result.stderr)
     )
     assert "Traceback" not in result.stderr
     assert _state(ckpt)["save_steps"] == 1000
@@ -135,7 +136,7 @@ def test_an_unreadable_state_is_fatal(tmp_path, content):
         (ckpt / "trainer_state.json").write_text(content)
     result = _run(ckpt)
     assert result.returncode == 1
-    assert "distill-gold: FATAL:" in result.stderr
+    assert "logit-distill: FATAL:" in result.stderr
     assert "trainer_state.json" in result.stderr
     assert "Traceback" not in result.stderr
 

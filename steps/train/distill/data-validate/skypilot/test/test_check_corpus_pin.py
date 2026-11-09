@@ -151,7 +151,7 @@ def test_main_writes_the_report_and_registers_it(tmp_path, capsys):
 
 def test_main_refuses_with_the_whole_list(tmp_path, capsys):
     corpus = _corpus(tmp_path, _manifest(eval_fraction=0.5))
-    with pytest.raises(SystemExit, match=r"FATAL \[corpus-pin-check\]: 1 mismatch"):
+    with pytest.raises(SystemExit, match=r"FATAL \[data-validate\]: 1 mismatch"):
         main(_argv(corpus, tmp_path, tmp_path / "o.json"))
     assert "CORPUS-PIN REJECTED" in capsys.readouterr().out
 

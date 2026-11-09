@@ -25,5 +25,4 @@ output, which makes the check an ordering edge rather than a suggestion.
 `eval_fraction`, `tokenizer_dir`, `output_dir` (relative paths land under
 `GB_BUILD_WORKDIR`) and `python`.
 
-Stdlib-only, CPU-only, and no trainer source, so it does not carry the distill-* steps'
-`code_config` contract.
+Stdlib-only, CPU-only, and no trainer source; its script is baked into the shared CPU image.

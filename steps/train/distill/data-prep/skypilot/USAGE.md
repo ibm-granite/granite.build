@@ -7,8 +7,7 @@ SkyPilot environment only (`subtypes: [lsf]`), on CPU, in the prebuilt
 `docker:us.icr.io/cil15-shared-registry/gb-step-distillation-cpu:fd7abbfc` image; it builds no image.
 
 > **Developing or testing this step?** See `steps/train/distill/data-prep/skypilot/README.md` in the
-> granite.build repository for how the step is generated, tested, and published — including the
-> tests that need a distillation checkout (`GB_DISTILL_CODE_DIR`).
+> granite.build repository for how the step is generated, tested, and published.
 
 ## Referencing the step
 
@@ -52,23 +51,8 @@ The source dataset and the tokenizer are no longer config fields; they are targe
 > config keys: the sharded path is driven by `src/merge_shards.py`, and a recipe passing them
 > would be sharding by accident.
 
-### Source delivery (`code_config`)
-
-`code_config` is identical in every ported distillation step and is documented once — see
-"Source delivery" in the `space://steps/train/distill/tokenizer-align` step's README. No field is
-required; the defaults clone a public repository unauthenticated, so no credential reaches the
-container.
-
-| Field | Type | Purpose |
-|---|---|---|
-| `code_dir` | string | Filesystem checkout to use instead of cloning. Default: `""` (clone). |
-| `expect_ref` | string | Commit a `code_dir` checkout must be at. Default: `a5d59bc45524a8d75706e20d44ae1a254f273f23`. |
-| `repo` | string | Repository cloned when `code_dir` is empty. Default: `https://github.com/laminair/gb-steps-distillation.git`. |
-| `ref` | string | Ref checked out after the clone. Default: same commit as `expect_ref`. |
-| `workdir` | string | Clone destination, relative to the working directory. Default: `distill-code`. |
-| `token_secret` | string | Name of a space secret for a private clone. Default: `""`. |
-| `python` | string | Interpreter. Default: `/stage/.venv/bin/python`. |
-| `setup_command` | string | Bash run after the source resolves, before the workload. Default: `""` (skipped). |
+The trainer package and this step's scripts are baked into the shared image under
+`$DISTILL_HOME` (`/opt/distill`); nothing is cloned or mounted.
 
 ## Inputs and outputs
 
@@ -110,9 +94,9 @@ Declare it on the target as `uri: "env://{{ binding.path }}"`, `type: dataset`. 
 ## Working directory and paths
 
 The run starts in the step's working directory, `$GB_BUILD_WORKDIR` (falling back to `$PWD`).
-`src/` is mounted at `./src`, and `./src/prep_corpus.py` is what runs. The shared
-`gb_steps_post_training` package is cloned into `$GB_BUILD_WORKDIR/<code_config.workdir>`
-(default `distill-code`), or taken from `code_config.code_dir`, and put on `PYTHONPATH`. A relative `out_dir` is absolutised against
+The script runs from the image, as `$DISTILL_HOME/steps/data-prep/prep_corpus.py`
+(`/opt/distill`); the shared `gb_steps_post_training` package is at `$DISTILL_HOME/src`,
+already on `PYTHONPATH`. A relative `out_dir` is absolutised against
 `$GB_BUILD_WORKDIR` before the artifact marker is printed, because the monitor hands the path to
 the `env://` store, possibly from another host, and a relative `env:` URI is rejected at config
 load. The resolved `source_dataset` and `tokenizer` input paths are passed through unchanged, so

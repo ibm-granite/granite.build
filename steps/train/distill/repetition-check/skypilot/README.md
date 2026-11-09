@@ -28,5 +28,5 @@ Only the final rung ever gates: it is the one a downstream consumer would pick u
 earlier rung above threshold is a finding to read in the table, not a reason to fail a
 build whose later checkpoints may be fine.
 
-Needs one GPU, which the build supplies. No trainer source, so it does not carry the
-distill-* steps' `code_config` contract.
+Needs one GPU, which the build supplies. No trainer source; its script is baked into the
+shared GPU image.

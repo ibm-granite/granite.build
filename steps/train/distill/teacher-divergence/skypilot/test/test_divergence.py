@@ -5,8 +5,8 @@ PORTED, not authored here. Upstream source of truth:
   commit 70c1550a171aa8e09a9ad9047a5bf763c39e8579
 
 Divergence, about path resolution rather than behaviour: upstream's sys.path.insert is
-removed; conftest.py resolves both the step's own src/ and the upstream package from
-GB_DISTILL_CODE_DIR.
+removed; conftest.py resolves both the step's own src/ and the shared package from the
+in-repo steps/train/distill/src.
 
 Ten of these tests need torch and skip without it, which is upstream's design rather than
 an accident: the metric arithmetic is worth testing against real tensors, and the image

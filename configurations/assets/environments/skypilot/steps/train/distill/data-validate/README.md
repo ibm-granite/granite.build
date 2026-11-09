@@ -90,8 +90,8 @@ accepted.
 
 The run block sets `WORK` to `$GB_BUILD_WORKDIR` (falling back to the current directory).
 A relative `output_dir` becomes `$WORK/<output_dir>`; it is created before the check runs.
-`src/` is file-mounted beside the step and the workload runs
-`<python> ./src/check_corpus_pin.py` with the config values as positional arguments.
+`src/` is baked into the shared CPU image and the workload runs
+`python $DISTILL_HOME/steps/data-validate/check_corpus_pin.py` with the config values as positional arguments.
 `corpus_dir` and `teacher_model` are used as given, so pass absolute paths; the
 `tokenizer` input's resolved binding path is used the same way.
 
@@ -178,5 +178,5 @@ log shows `CORPUS-PIN ACCEPTED <corpus_dir> (<mode>)`.
 
 ### No source delivery
 
-The step is stdlib-only and CPU-only, and needs no trainer source, so it does not carry
-the `code_config` source-delivery contract the other ported distillation steps share.
+The step is stdlib-only and CPU-only, and needs no trainer source; its script is baked into
+the shared CPU image under `$DISTILL_HOME` (`/opt/distill`).

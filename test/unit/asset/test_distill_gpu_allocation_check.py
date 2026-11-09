@@ -18,12 +18,12 @@ _STEPS = Path(__file__).resolve().parents[3] / "steps" / "train" / "distill"
 
 # step -> (launcher key, echo prefix)
 _GPU_STEPS = {
-    "logit-distill": ("gold", "distill-gold"),
-    "teacher-divergence": ("eval", "distill-eval"),
-    "student-sft": ("train", "distill-sft"),
-    "teacher-logits": ("precompute", "distill-logit-precompute"),
-    "student-rollout-generator": ("vllm", "distill-vllm-server"),
-    "repetition-check": ("gen_smoke", "gen-smoke"),
+    "logit-distill": ("gold", "logit-distill"),
+    "teacher-divergence": ("eval", "teacher-divergence"),
+    "student-sft": ("train", "student-sft"),
+    "teacher-logits": ("precompute", "teacher-logits"),
+    "student-rollout-generator": ("vllm", "student-rollout-generator"),
+    "repetition-check": ("gen_smoke", "repetition-check"),
 }
 
 

@@ -8,7 +8,7 @@ frozen teacher — see [Two uses](#two-uses-and-the-second-one-is-not-a-control)
 
 > **Developing or testing this step?** See `steps/train/distill/student-sft/skypilot/README.md` in the
 > granite.build repository for how the step is generated, tested, and published — including the
-> ported upstream tests that need a distillation checkout (`GB_DISTILL_CODE_DIR`).
+> ported upstream tests that need a `gb-steps-distillation` checkout (`GB_DISTILL_CODE_DIR`).
 
 ## Referencing the step
 
@@ -47,7 +47,7 @@ was built for.
 | `save_steps` | integer | Must be >= 1: this step runs on preemptable capacity, so a run that never checkpoints loses everything on the first preemption. Default: `100`. |
 | `seed` | integer | Default: `42`. |
 | `resume` | string | `auto` \| `never` \| `require`. The trainer resumes on the mere **presence** of a checkpoint directory, so this is enforced as preflight validation rather than trusted. Default: `auto`. |
-| `deepspeed_config` | string | Accelerate DeepSpeed config. **Relative resolves against the delivered checkout**; a missing file fails the step before launch. Default: `configs/deepspeed/accelerate_deepspeed_zero3.yaml`. |
+| `deepspeed_config` | string | Accelerate DeepSpeed config. **Relative resolves against `$DISTILL_HOME` (`/opt/distill`)**; a missing file fails the step before launch. Default: `configs/deepspeed/accelerate_deepspeed_zero3.yaml`. |
 | `use_liger_memory_opt` | boolean | Fused linear+CE loss, no model-internal patching. Default: `false`. |
 | `use_liger_swiglu_mlp` | boolean | Liger tiled-MLP patch to `GraniteSWAMLP`. **`true` is refused**: the patch is not part of this collection. Default: `false`. |
 | `precomputed_logits_dir` | string | **Setting this stops the step being a control**: it becomes forward-KL distillation against the teacher logits in this directory (an output of the `space://steps/train/distill/teacher-logits` step). Must be a directory when set. Default: `""`. |
@@ -91,22 +91,8 @@ All five empty means tracking off; see [Tracking](#tracking) before setting any 
 | `log_retrieval_mode` | string | Log retrieval mode. Default: `periodic` — a training run lasts far longer than the library's default `on_completion` mode surfaces anything for, so a stalled run would look identical to a slow one. |
 | `log_retrieval_interval_seconds` | integer | Log retrieval interval. Default: `900`. |
 
-### Source delivery (`code_config`)
-
-`code_config` is identical in every ported distillation step and is documented once — see
-"Source delivery" in the `space://steps/train/distill/tokenizer-align` step's README. No field is
-required; the defaults clone a public repository unauthenticated.
-
-| Field | Type | Purpose |
-|---|---|---|
-| `code_dir` | string | Filesystem checkout to use instead of cloning. Default: `""` (clone). |
-| `expect_ref` | string | Commit a `code_dir` checkout must be at. Default: `a5d59bc45524a8d75706e20d44ae1a254f273f23`. |
-| `repo` | string | Repository cloned when `code_dir` is empty. Default: `https://github.com/laminair/gb-steps-distillation.git`. |
-| `ref` | string | Ref checked out after the clone. Default: same commit as `expect_ref`. |
-| `workdir` | string | Clone destination, relative to the working directory. Default: `distill-code`. |
-| `token_secret` | string | Name of a space secret for a private clone. Default: `""`. |
-| `python` | string | Interpreter. Default: `/stage/.venv/bin/python`. |
-| `setup_command` | string | Bash run after the source resolves, before the workload. Default: `""` (skipped). |
+The trainer package and this step's scripts are baked into the shared image under
+`$DISTILL_HOME` (`/opt/distill`); nothing is cloned or mounted.
 
 ## Inputs and outputs
 
@@ -138,18 +124,17 @@ step.
 ## Working directory and paths
 
 The run starts in the step's working directory, `$GB_BUILD_WORKDIR` (falling back to `$PWD`).
-`src/` is mounted at `./src`; `./src/run-sft.sh` renders the trainer config with
-`./src/render_sft_config.py` and launches upstream's `sft.py` through `accelerate`. The shared
-package and `sft.py` come from the delivered checkout, cloned into
-`$GB_BUILD_WORKDIR/<code_config.workdir>` (default `distill-code`) or taken from
-`code_config.code_dir`; the step points `run-sft.sh` at it with
-`SFT_SRC=$CODE_DIR/src/gb_steps_post_training/distillation` and
-`LIB_DIR=$CODE_DIR/steps/distill-sft/src/lib`.
+The scripts run from the image, under `$DISTILL_HOME/steps/student-sft` (`/opt/distill`):
+`run-sft.sh` renders the trainer config with `render_sft_config.py` and launches upstream's
+`sft.py` through `accelerate`. The shared package and `sft.py` are at `$DISTILL_HOME/src`; the
+step points `run-sft.sh` at them with
+`SFT_SRC=$DISTILL_HOME/src/gb_steps_post_training/distillation` and
+`LIB_DIR=$DISTILL_HOME/shell`.
 
 - A relative `output_dir` is absolutised against `$GB_BUILD_WORKDIR` before the artifact marker
   is printed, because the monitor hands the path to the `env://` store, possibly from another
   host, and a relative `env:` URI is rejected at config load.
-- A relative `deepspeed_config` resolves against the delivered checkout (`$CODE_DIR`).
+- A relative `deepspeed_config` resolves against `$DISTILL_HOME` (`/opt/distill`).
 - The resolved `student` and `corpus` input paths, and `precomputed_logits_dir`, are passed
   through unchanged, so bind/give them as absolute paths.
 - `run-sft.sh` puts its preprocessing cache in `sft-preprocess-cache/` beside `output_dir` (its
@@ -259,9 +244,10 @@ where the first read blocks on a recall with the GPUs already held. It reads met
 
 ### `deepspeed_config`
 
-gb-steps-distillation ships exactly one deepspeed config, under `distill-gold-train`'s own
-directory (`configs/deepspeed/`) — `distill-sft` there has none of its
-own and reuses that one. `configs/distillation/deepspeed/` was the pre-port path (an in-image
+The one deepspeed config the distill steps use is the shared
+`$DISTILL_HOME/configs/deepspeed/accelerate_deepspeed_zero3.yaml`, baked into the GPU image from
+`steps/train/distill/images/gpu/configs/` — `student-sft` has none of its own and reuses that
+one. `configs/distillation/deepspeed/` was the pre-port path (an in-image
 `/opt` copy that does not exist in this image) and stayed as a stale default through the port,
 until a real run confirmed it missing (build `30e46247`: "deepspeed config not found"). It is an
 **accelerate** config, not a bare DeepSpeed one, and it is load-bearing — its own header records a

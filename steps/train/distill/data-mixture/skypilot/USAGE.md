@@ -79,8 +79,8 @@ Declare it on the target as `env://{{ binding.path }}`. The
 ## Working directory and paths
 
 The run script starts in the step's per-run workdir (`GB_BUILD_WORKDIR`, or the current
-directory if that is unset). The step's `src/` is mounted at `./src` and run as
-`./src/build_sources.py`. A relative `output_dir` is resolved against the workdir; an
+directory if that is unset). The step's `src/` is baked into the shared CPU image and run as
+`$DISTILL_HOME/steps/data-mixture/build_sources.py` (`/opt/distill`). A relative `output_dir` is resolved against the workdir; an
 absolute one is used as is. The step writes only `<output_dir>/train.jsonl`.
 
 ## Example build.yaml
@@ -173,8 +173,8 @@ The step fails on:
 Unusable individual rows (invalid JSON, or neither key) are skipped and counted in a
 `SOURCES WARNING unusable rows skipped: N` line, not fatal.
 
-### No `code_config`
+### No trainer source
 
-The step needs no trainer source, so it carries none of the other distillation steps'
-`code_config` / source-delivery contract. The sampling method, and the measurements
+The step needs no trainer source; its one script is baked into the shared CPU image under
+`$DISTILL_HOME` (`/opt/distill`). The sampling method, and the measurements
 behind it, are documented in `src/build_sources.py`.

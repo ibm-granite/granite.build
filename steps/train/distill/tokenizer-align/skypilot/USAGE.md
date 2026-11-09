@@ -10,8 +10,7 @@ and one embedding matrix on CPU. It runs in the prebuilt image
 
 > **Developing or testing this step?** See `steps/train/distill/tokenizer-align/skypilot/README.md`
 > in the granite.build repository for how the step is generated, tested, and published —
-> including which tests need a trainer checkout (`GB_DISTILL_CODE_DIR`) and which need
-> BlueVela.
+> including which tests need BlueVela.
 
 ## Referencing the step
 
@@ -25,9 +24,7 @@ steps:
 
 ## Config contract (`align_config`)
 
-All fields in this section live under the step's `config.align_config`. The step also
-carries a `config.code_config` block, described in
-[`code_config`](#code_config) below.
+All fields in this section live under the step's `config.align_config`.
 
 The teacher and student models are no longer config fields; they are target inputs — see
 [Inputs](#inputs) below. `teacher` must be a **directory**, not an HF repo id (the
@@ -39,7 +36,7 @@ genuinely mis-segments.
 
 | Field | Type | Purpose |
 |---|---|---|
-| `chat_template` | string | The chat template installed on the retagged student, used when the target does not bind the optional `chat_template` input (a bound input wins). A relative path resolves against the delivered checkout; an absolute path is used as-is. **Set it explicitly:** the default, `templates/chatml_granite_42_generation.jinja`, does not exist in `gb-steps-distillation` at the pinned commit, so the default resolves to a missing file. See [Chat template](#chat-template). |
+| `chat_template` | string | The chat template installed on the retagged student, used when the target does not bind the optional `chat_template` input (a bound input wins). The path is passed to the script as-is, so give an absolute path. **Set it, or bind the input:** the default is empty, which installs no template. See [Chat template](#chat-template). |
 
 ### Optional
 
@@ -53,22 +50,6 @@ genuinely mis-segments.
 
 The booleans are rendered as `--flag` / `--no-flag` pairs, so `false` reaches the script
 as an explicit `--no-<flag>`.
-
-### `code_config`
-
-Where the shared distillation package comes from. The block is identical in every ported
-distillation step; see [Source delivery](#source-delivery) for how the fields interact.
-
-| Field | Type | Purpose |
-|---|---|---|
-| `code_dir` | string | An existing checkout to use instead of cloning. Used only when it contains `src/gb_steps_post_training`. Default: `""` (clone). |
-| `expect_ref` | string | The commit `code_dir` is expected to be at; checked only on the `code_dir` path, where a mismatch fails the step. Empty disables the check. Default: `a5d59bc45524a8d75706e20d44ae1a254f273f23`. |
-| `repo` | string | Git repository cloned when `code_dir` is not used. Default: `https://github.com/laminair/gb-steps-distillation.git`. |
-| `ref` | string | Branch, tag or commit checked out after the clone. Default: `a5d59bc45524a8d75706e20d44ae1a254f273f23`. |
-| `workdir` | string | Clone destination, relative to the step's working directory. Default: `distill-code`. |
-| `token_secret` | string | The **name** of a space secret holding a read-scoped credential, never a value. Consulted only on the clone path. Default: `""` (the repo is public). |
-| `python` | string | The interpreter. Not a bare `python`: the image's venv is not on `PATH`, and the system interpreter has no transformers. Default: `/stage/.venv/bin/python`. |
-| `setup_command` | string | Bash run after the source resolves and before the workload, from the step's working directory. Empty => skipped. Not needed on this image. Default: `""`. |
 
 ## Inputs and outputs
 
@@ -126,20 +107,17 @@ hands its consumers the paths. Under `dry_run: true` none are printed.
 
 - `$WORK` is `$GB_BUILD_WORKDIR` (falling back to the current directory). On BlueVela it is
   on `/proj`, identity-mounted into the container at the same path.
-- `src/` is file-mounted beside the step and the workload runs `./src/run-align.sh`.
-- On the clone path the source lands at `$WORK/<code_config.workdir>` (default
-  `distill-code/`), and is removed and re-cloned on every run. `$CODE_DIR/src` is prepended
-  to `PYTHONPATH` (the package root, because every module is imported by its full dotted
-  path).
+- `src/` is baked into the image at `$DISTILL_HOME/steps/tokenizer-align` (`/opt/distill`),
+  and the workload runs `run-align.sh` from there. The shared package is at
+  `$DISTILL_HOME/src`, already on `PYTHONPATH`. Nothing is cloned or mounted.
 - A relative `out_dir` becomes `$WORK/<out_dir>`, and is absolutised before any marker is
   printed: the monitor hands the paths to the `env://` store, possibly from another host.
-- A relative `chat_template` becomes `$CODE_DIR/<chat_template>`; an absolute one is used
-  as-is.
+- `chat_template` (or the bound input's path) is passed through unchanged; use an absolute
+  path.
 - The image runs with `HF_HUB_OFFLINE=1` and `HF_HOME=/opt/hf-cache`, so a missing local
   file fails here rather than silently fetching.
-- The resolved commit is recorded as step metadata `distill_code_commit`, the source kind
-  as `distill_code_source` (`git` or `filesystem`), and on the `code_dir` path the count of
-  uncommitted changes as `distill_code_dirty`.
+- The baked trainer commit is recorded as step metadata `distill_code_commit`, and the
+  source kind as `distill_code_source` (`baked-image`).
 
 ## Example build.yaml
 
@@ -252,11 +230,8 @@ retagged student (when `verify` is true and not a dry run), `[4/4]` masking cont
 
 ### Chat template
 
-- **Relative resolves against the checkout.** The default,
-  `templates/chatml_granite_42_generation.jinja`, was repointed from an upstream in-image
-  `/opt` path that does not exist in this image — but `gb-steps-distillation` does not ship
-  a `templates/` directory at the pinned commit either, so the default currently resolves to
-  a missing file. The shipped recipes override it with an absolute path, e.g.
+- **Use an absolute path.** The default is empty: the images carry no model-specific
+  template. The shipped recipes pass an absolute path, e.g.
   `/proj/granite-build/g4os/chat_templates/granite_4_role_generation.jinja` (granite-4.0's
   own template with `{% generation %}` markers added around the assistant span and nothing
   else changed).
@@ -339,47 +314,13 @@ is otherwise a no-op.
 
 ### Source delivery
 
-This step ships **no image and no Python of its own** beyond `src/run-align.sh`. The work is
-done by `gb_steps_post_training.distillation`, which is delivered at run time from the public
-repo `https://github.com/laminair/gb-steps-distillation`, pinned to one commit — the same
-arrangement every other ported distillation step uses.
-
-```yaml
-code_config:
-  code_dir: ""
-  expect_ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
-  repo: "https://github.com/laminair/gb-steps-distillation.git"
-  ref: "a5d59bc45524a8d75706e20d44ae1a254f273f23"
-```
-
-**The default is an unauthenticated HTTPS clone** of `repo` at `ref`, into `workdir` under
-the step's working directory. No `/proj` checkout and no BlueVela-specific path, so it
-resolves the same on any environment that can reach github.com. **No credential reaches the
-container:** `token_secret` is empty on purpose, because the repo is public. If
-`token_secret` is set, the clone authenticates through a short-lived `GIT_ASKPASS` helper
-(never a token in the URL), and a `token_secret` naming a secret the space does not have
-fails the step.
-
-On this path the clone is checked out at `ref`, and that is what pins the code: `ref` is a
-full commit rather than a branch, so two runs a week apart run the same code. `expect_ref`
-carries the same commit so the two cannot be read differently, but it is only *checked* on
-the pre-staged path below. A clone without `src/gb_steps_post_training` fails the step.
-
-#### Bumping the pin
-
-Set `ref` and `expect_ref` to the same new commit of `gb-steps-distillation` — in the recipe,
-or in the step default. The default is asserted byte-identical across the ported steps by
-the step's source-contract test, so a default bump has to land in all of them together.
-
-#### Using a pre-staged checkout instead
-
-Set `code_dir` to an existing checkout and the clone is skipped. There, `expect_ref` is
-checked against the checkout's actual `HEAD` and the step **fails loudly** on a mismatch,
-because a silently-moved shared checkout is how two runs that report the same pin end up on
-different code. Uncommitted changes are not fatal but are warned about and recorded as
-`distill_code_dirty` step metadata. A `code_dir` that does not contain
-`src/gb_steps_post_training` is ignored and the step falls back to cloning `repo`; if `repo`
-is empty too, the step fails.
+This step ships **no Python of its own** beyond `src/run-align.sh`. The work is done by
+`gb_steps_post_training.distillation`, kept in-repo at `steps/train/distill/src` (copied from
+`gb-steps-distillation` at commit `a5d59bc4`, see `VENDORED.md` there). Both the package and
+this step's scripts are baked into the shared CPU image under `$DISTILL_HOME`
+(`/opt/distill`); nothing is cloned or mounted at launch, and no credential reaches the
+container. Changing the trainer means rebuilding the image (`make images` in
+`steps/train/distill/`) and repinning `image_id`.
 
 ### Image
 

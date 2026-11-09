@@ -78,7 +78,7 @@ done
 PYBIN="${PYBIN:-python}"
 PKG="gb_steps_post_training.distillation"
 
-echo "=== distill-eval ==="
+echo "=== teacher-divergence ==="
 echo "  student : ${STUDENT_MODEL}"
 echo "  teacher : ${TEACHER_MODEL:-<none: single-model metrics only>}"
 echo "  corpus  : ${CORPUS}"

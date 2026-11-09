@@ -119,7 +119,7 @@ done
 
 [[ -z "$TEACHER_TOKENIZER" ]] && TEACHER_TOKENIZER="$TEACHER_MODEL"
 
-echo "=== distill-logit-precompute ==="
+echo "=== teacher-logits ==="
 date; hostname
 echo "step home : $STEP_HOME"
 echo "src       : $PRECOMPUTE_SRC"

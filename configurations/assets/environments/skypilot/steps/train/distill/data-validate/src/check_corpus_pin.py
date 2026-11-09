@@ -126,7 +126,7 @@ def main(argv: list[str]) -> int:
         for p in problems:
             print(f"  - {p}", flush=True)
         raise SystemExit(
-            f"FATAL [corpus-pin-check]: {len(problems)} mismatch(es) "
+            f"FATAL [data-validate]: {len(problems)} mismatch(es) "
             f"between this build and the pinned corpus manifest"
         )
 

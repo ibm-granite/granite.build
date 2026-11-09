@@ -135,7 +135,7 @@ while (( $# )); do
   esac
 done
 
-echo "=== distill-sft ==="
+echo "=== student-sft ==="
 date; hostname
 echo "step home : $STEP_HOME"
 echo "sft src   : $SFT_SRC"

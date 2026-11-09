@@ -5,8 +5,8 @@
 # logic, and the reasoning behind each comparison, live in src/check_corpus_pin.py;
 # this file only passes the configuration through.
 #
-# CPU-only and stdlib-only. It needs no trainer source, which is why it carries none of
-# the distill-* steps' code_config / source-delivery contract.
+# CPU-only and stdlib-only. It needs no trainer source; the script is baked into the
+# shared CPU image under $DISTILL_HOME (/opt/distill).
 ######
 name: data-validate
 version: 1.0.0
@@ -68,11 +68,11 @@ environment_configs:
             VIRTUAL_ENV: /stage/.venv
           run: |
             set -euo pipefail
-            echo "=== corpus-pin-check on $(hostname) ==="
+            echo "=== data-validate on $(hostname) ==="
             # The tokenizer used to be a config key. A recipe that still sets it would
             # otherwise be ignored silently, so refuse it.
             {% if config.pin_check_config.tokenizer_dir is defined %}
-            echo "corpus-pin-check: FATAL: pin_check_config.tokenizer_dir is no longer read; bind the target input 'tokenizer' instead (see this step's README)" >&2
+            echo "data-validate: FATAL: pin_check_config.tokenizer_dir is no longer read; bind the target input 'tokenizer' instead (see this step's README)" >&2
             exit 1
             {% endif %}
             WORK="${GB_BUILD_WORKDIR:-$PWD}"

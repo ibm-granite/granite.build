@@ -7,11 +7,11 @@ released step as its `README.md`.
 
 | | Where | Change it where? |
 |---|---|---|
-| `step-template.yaml` | here — but see the source-delivery note | here |
+| `step-template.yaml` | here | here |
 | `src/run-eval.sh` | here, a near-verbatim port | **upstream**, then re-sync |
 | `test/test_step_template.py` | here | here |
 | `test/test_divergence.py` | here, a near-verbatim port | **upstream**, then re-sync |
-| `gb_steps_post_training.distillation` (`run_divergence`, `eval_state`) | the delivered checkout | **upstream only** |
+| `gb_steps_post_training.distillation` (`run_divergence`, `eval_state`) | `steps/train/distill/src` (see `VENDORED.md`), baked into the image | there, then rebuild the image |
 
 ## One upstream bug the port fixed
 
@@ -28,19 +28,20 @@ drops the template's. Tests assert both halves: the script prints it, the templa
 and `on_completion` surfaces nothing until the end — so a stalled run looks identical to a slow
 one. Both intervals stay recipe-overridable.
 
-## The source-delivery region is spliced, not written
+## Source delivery
 
-`code_config` and the delimited region at the top of `run:` are **byte-identical copies** from
-`steps/train/distill/tokenizer-align`, the reference step. Do not edit them here — change the
-reference and re-splice, or that step's `test_source_contract.py` fails and names this one.
+The package and this step's `src/` are baked into the shared GPU image under `$DISTILL_HOME`
+(`/opt/distill`); nothing is cloned or mounted at launch.
 
 ## Tests
 
 ```bash
-make test                                                   # 31 contract tests, no checkout needed
-GB_DISTILL_CODE_DIR=/path/to/checkout make test              # + 21 ported (10 skip without torch)
+make test                                                   # contract + 21 ported tests (10 skip without torch)
 GB_STEP_BLUEVELA_BUILD=1 make test                           # + the end-to-end run on BlueVela
 ```
+
+`test/conftest.py` puts the in-repo `steps/train/distill/src` on `sys.path`, so no external
+checkout is needed.
 
 Ten of the ported tests need torch and skip without it. That is upstream's design, not an
 oversight: the metric arithmetic is worth testing against real tensors, and the image that has

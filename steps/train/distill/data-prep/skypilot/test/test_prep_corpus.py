@@ -6,8 +6,8 @@ PORTED, not authored here. Upstream source of truth:
 
 Divergences, both about path resolution rather than behaviour:
   - upstream's sys.path.insert for the shared package is removed; conftest.py resolves it
-    from GB_DISTILL_CODE_DIR, and upstream's relative parents[] do not point at a checkout
-    from inside granite.build.
+    from the in-repo steps/train/distill/src, and upstream's relative parents[] do not
+    point there from inside granite.build.
   - the step's own src/ is already on PYTHONPATH via `make test`, so prep_corpus imports
     directly.
 

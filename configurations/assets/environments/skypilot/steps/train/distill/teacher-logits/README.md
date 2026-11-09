@@ -22,7 +22,7 @@ steps:
 ## Config contract (`precompute_config`)
 
 The workload fields live under `config.precompute_config`; the allocation under
-`config.workload`; the trainer source under `config.code_config`.
+`config.workload`.
 
 The corpus, the teacher model and the teacher tokenizer are no longer config fields; they
 are the required `corpus`, `teacher` and `teacher_tokenizer` target inputs — see
@@ -59,12 +59,8 @@ directory — it must be bound explicitly.
 | `nodes` | integer | Must be `1`; `nodes > 1` is **refused** (see [Single node only](#single-node-only)). Default: `1`. |
 | `hf_home` | string | If set, exported as `HF_HOME` for the workload, overriding the launcher's `/opt/hf-cache`. Default: `""`. |
 
-### Source delivery (`code_config`)
-
-`code_config` (`code_dir`, `expect_ref`, `repo`, `ref`, `workdir`, `token_secret`, `python`,
-`setup_command`) is identical in every ported distillation step and documented once — see
-"Source delivery" in the `space://steps/train/distill/tokenizer-align` step's README. The defaults
-clone the public trainer source at a pinned commit, so nothing needs setting.
+The trainer package and this step's scripts are baked into the shared image under
+`$DISTILL_HOME` (`/opt/distill`); nothing is cloned or mounted.
 
 ### Monitor (top-level `config`)
 
@@ -111,9 +107,9 @@ and setting that key changes what that step is (see [Why no recipe wires it](#wh
 ## Working directory and paths
 
 `run` starts in the step's per-run working directory; `$GB_BUILD_WORKDIR` (or that directory
-when unset) is the base for relative paths. The step's `src/` is mounted at `./src`. The
-trainer source is cloned into `<workdir>/distill-code` (`code_config.workdir`) unless
-`code_config.code_dir` points at an existing checkout. A relative `output_dir` is
+when unset) is the base for relative paths. The step's scripts run from the image, under
+`$DISTILL_HOME/steps/teacher-logits` (`/opt/distill`), and the trainer package is at
+`$DISTILL_HOME/src`. A relative `output_dir` is
 absolutised against `$GB_BUILD_WORKDIR` before the script runs, so the marker always carries
 an absolute path. The resolved `corpus`, `teacher` and `teacher_tokenizer` input paths
 are passed through unchanged; bind inputs that resolve to absolute paths.

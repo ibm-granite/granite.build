@@ -1,20 +1,15 @@
-"""Resolve the upstream distillation package for the ported unit tests.
+"""Resolve the shared distillation package for the ported unit tests.
 
 IDENTICAL IN EVERY PORTED DISTILLATION STEP.
 
-These suites test code this repo does not own. ``gb_steps_post_training.distillation``
-is delivered to the step at RUN time from a checkout on the shared filesystem (see
-``code_config`` in step-template.yaml), so it is not importable from a bare
-granite.build checkout and must not be vendored: its ``tokenizer_identity`` module
-writes a guard whose reader is the trainer in that same checkout, and a second copy is
-how the two halves drift apart.
+These suites test ``gb_steps_post_training.distillation``, which lives in this repo at
+``steps/train/distill/src`` (see VENDORED.md there) and is baked into the shared images.
+This conftest puts that directory on ``sys.path``, so the ported suites run from a bare
+granite.build checkout with no external checkout. If the directory is missing or
+unreadable, the files in ``_NEEDS_UPSTREAM`` are not collected and only the hermetic
+template tests run.
 
-So the ported suites are GATED. Point ``GB_DISTILL_CODE_DIR`` at a checkout to run
-them; without one they are skipped and only the hermetic template tests run. Be
-honest about what that means: a green ``make test`` in CI proves the STEP CONTRACT
-holds, not that the upstream code does.
-
-    make test                                          # contract tests only
+    make test
 """
 
 import os

@@ -6,8 +6,8 @@ PORTED, not authored here. Upstream source of truth:
 
 Two intentional divergences, both about path resolution rather than behaviour:
   - upstream's ``sys.path.insert(0, parents[3] / "src")`` is removed; conftest.py
-    resolves the upstream package from GB_DISTILL_CODE_DIR, and parents[3] does not
-    point at a checkout from inside granite.build.
+    resolves the shared package from the in-repo steps/train/distill/src, and parents[3]
+    does not point there from inside granite.build.
   - the import of the package is therefore gated: see conftest.py.
 
 Keep this a near-verbatim copy so re-syncing upstream stays a three-way merge.
