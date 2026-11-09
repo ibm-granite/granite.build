@@ -80,15 +80,6 @@ granite.build:
 <% if INSTANCE_TYPE %>
                 instance_type: "$${INSTANCE_TYPE}"
 <% endif %>
-<% if HOST_AMI and IMAGE %>
-              # The container runs on the DLAMI host. Not image_id: that would
-              # replace the docker:<IMAGE> byoc builds from byoc_config.image.
-              docker:
-                host_image_id: "$${HOST_AMI}"
-<% elif HOST_AMI %>
-              # No container: the step runs on the DLAMI itself.
-              image_id: "$${HOST_AMI}"
-<% endif %>
             byoc_config:
               image: "$${IMAGE}"
               repo: "$${SR_REPO}"
@@ -251,12 +242,6 @@ granite.build:
                 accelerators: "$${EVAL_ACCELERATORS}"
 <% if EVAL_INSTANCE_TYPE %>
                 instance_type: "$${EVAL_INSTANCE_TYPE}"
-<% endif %>
-<% if HOST_AMI and IMAGE %>
-              docker:
-                host_image_id: "$${HOST_AMI}"
-<% elif HOST_AMI %>
-              image_id: "$${HOST_AMI}"
 <% endif %>
             byoc_config:
               image: "$${IMAGE}"

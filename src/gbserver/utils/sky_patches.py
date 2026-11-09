@@ -418,10 +418,14 @@ def _patch_backend() -> None:
 
 
 def _patch_aws_host_image() -> None:
-    # `docker.host_image_id` sets the host AMI of a docker-image AWS cluster
-    # (e.g. when the default GPU AMI ships a broken driver). Declared in the
-    # schema and registered through register_task_overrideable_config_key, so
-    # the server's strict override validation accepts it.
+    # `docker.host_image_id` sets the host AMI of an AWS cluster (e.g. when the
+    # default GPU AMI ships a broken driver, or lacks the Fabric Manager an
+    # 8-GPU NVSwitch instance needs). With a docker image it is the container's
+    # host; on a bare host it is the AMI itself, unless the task names its own
+    # image_id. An environment can then set it per step type whether or not
+    # the step runs a container. Declared in the schema and registered through
+    # register_task_overrideable_config_key, so the server's strict override
+    # validation accepts it.
     _rewrite(
         schemas,
         "get_config_schema",
@@ -437,12 +441,24 @@ def _patch_aws_host_image() -> None:
         aws.AWS,
         "make_deploy_resources_variables",
         (
+            "        docker_run_options = []\n"
+            "        if resources.extract_docker_image() is not None:\n",
+            "        docker_run_options = []\n"
+            "        host_image_id = skypilot_config.get_nested(\n"
+            "            ('docker', 'host_image_id'), None,\n"
+            "            override_configs=resources.cluster_config_overrides)\n"
+            "        if resources.extract_docker_image() is not None:\n",
+        ),
+        (
             "            image_id_to_use = resources.get_cloud_image_id()\n",
-            "            host_image_id = skypilot_config.get_nested(\n"
-            "                ('docker', 'host_image_id'), None,\n"
-            "                override_configs=resources.cluster_config_overrides)\n"
             "            image_id_to_use = ({None: host_image_id} if host_image_id\n"
             "                               else resources.get_cloud_image_id())\n",
+        ),
+        (
+            "            image_id_to_use = resources.image_id\n",
+            "            image_id_to_use = (resources.image_id\n"
+            "                               or ({None: host_image_id}\n"
+            "                                   if host_image_id else None))\n",
         ),
     )
 

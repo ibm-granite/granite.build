@@ -14,16 +14,17 @@
 #       a standalone space: that overlay first, then this checkout's
 #       configurations/assets (an existing one that lists the overlay is kept)
 #   $GB_HOME/local-env/granite-switch.params
-#       ENVIRONMENT_URI and HOST_AMI for `gb build start`; its other lines are kept
+#       ENVIRONMENT_URI for `gb build start`; its other lines are kept
 #
 # The host AMI is the AWS Deep Learning Base GPU AMI for the region: without it an
 # 8-GPU H200 instance does not see its GPUs (NVSwitch needs the DLAMI's NVIDIA
-# Fabric Manager). An AMI=ami-... line in the ids file pins one; otherwise one AWS
-# call reads the latest from AWS's public SSM parameter, with the AWS CLI and
-# profile of README.md steps 1-2.
+# Fabric Manager). The environment gives it to the GPU step types, so it always
+# matches the environment's region. An AMI=ami-... line in the ids file pins one;
+# otherwise one AWS call reads the latest from AWS's public SSM parameter, with
+# the AWS CLI and $AWS_PROFILE (README.md, steps 1-2).
 #
 # GB_HOME is $GB_HOME_DIR, or ~/.granite.build. The script reads no secret. It is
-# safe to re-run; ENVIRONMENT_URI and HOST_AMI point at the region set up last.
+# safe to re-run; ENVIRONMENT_URI points at the region set up last.
 set -euo pipefail
 umask 077
 
@@ -32,6 +33,21 @@ die() {
   exit 1
 }
 warn() { echo "setup-local-space: warning: $*" >&2; }
+
+# Temp files to remove on any exit, Ctrl-C included.
+CLEANUP=()
+cleanup() { [ ${#CLEANUP[@]} -eq 0 ] || rm -f "${CLEANUP[@]}"; }
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+# read_id KEY REGEX: the last KEY= value in $IDS, quotes stripped, or die if it is
+# set but does not match REGEX. Prints nothing when KEY is absent.
+read_id() {
+  local value
+  value="$(sed -n "s/^$1=//p" "$IDS" | tail -n 1 | tr -d "\"' \r")"
+  [ -z "$value" ] || [[ "$value" =~ $2 ]] || die "$IDS: $1=$value is not $3"
+  printf '%s' "$value"
+}
 
 [ $# -eq 1 ] || die "usage: $0 <region>   (for example us-east-1)"
 REGION="$1"
@@ -52,33 +68,37 @@ if [ ! -f "$IDS" ]; then
     *) die "several ids files for $REGION; keep one:"$'\n'"$MATCHES" ;;
   esac
 fi
-FS="$(sed -n 's/^FS=//p' "$IDS" | tail -n 1 | tr -d "\"' ")"
-[[ "$FS" =~ ^fs-[0-9a-f]{8,17}$ ]] ||
-  die "$IDS: FS=${FS:-<missing>} is not an EFS file system id (fs-<hex>)"
+FS="$(read_id FS '^fs-[0-9a-f]{8,17}$' "an EFS file system id (fs-<hex>)")"
+[ -n "$FS" ] || die "$IDS: FS=<missing> is not an EFS file system id (fs-<hex>)"
 
 # The GPU host image: the AWS Deep Learning Base GPU AMI for this region. An AMI=
 # line in the ids file pins one; otherwise AWS's public SSM parameter names the
 # latest build.
 SSM_AMI=/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id
-AMI="$(sed -n 's/^AMI=//p' "$IDS" | tail -n 1 | tr -d "\"' ")"
+AMI="$(read_id AMI '^ami-[0-9a-f]{8,17}$' "an AMI id (ami-<hex>)")"
 if [ -n "$AMI" ]; then
-  [[ "$AMI" =~ ^ami-[0-9a-f]{8,17}$ ]] || die "$IDS: AMI=$AMI is not an AMI id (ami-<hex>)"
   AMI_FROM="AMI= in $IDS"
 else
   command -v aws >/dev/null ||
     die "no aws CLI on PATH to look up the Deep Learning Base GPU AMI for $REGION." \
       "Install it (README.md, What you need), or pin one with an AMI=ami-... line in $IDS."
+  PROFILE_ARGS=()
+  [ -z "${AWS_PROFILE:-}" ] || PROFILE_ARGS=(--profile "$AWS_PROFILE")
+  PROFILE="profile ${AWS_PROFILE:-default}"
   # The CLI's stderr says why a lookup failed (expired login, wrong profile, no
   # ssm:GetParameter permission); keep it for the message rather than drop it.
-  AWS_ERR="$(mktemp)"
+  # The timeouts keep a network that drops AWS traffic from hanging the script.
+  AWS_ERR="$(mktemp "${TMPDIR:-/tmp}/setup-local-space.XXXXXX")"
+  CLEANUP+=("$AWS_ERR")
   AMI="$(aws ssm get-parameter --region "$REGION" --name "$SSM_AMI" \
-    --query Parameter.Value --output text 2>"$AWS_ERR")" || AMI=""
+    --query Parameter.Value --output text \
+    --cli-connect-timeout 10 --cli-read-timeout 20 \
+    ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} 2>"$AWS_ERR")" || AMI=""
   ERR_TEXT="$(head -c 600 "$AWS_ERR")"
-  rm -f "$AWS_ERR"
   [[ "$AMI" =~ ^ami-[0-9a-f]{8,17}$ ]] ||
-    die "could not look up the Deep Learning Base GPU AMI for $REGION (aws ssm get-parameter $SSM_AMI)${ERR_TEXT:+: $ERR_TEXT}." \
-      "Check the AWS CLI and its credentials, or pin one with an AMI=ami-... line in $IDS."
-  AMI_FROM="$SSM_AMI"
+    die "could not look up the Deep Learning Base GPU AMI for $REGION with AWS $PROFILE (aws ssm get-parameter $SSM_AMI)${ERR_TEXT:+: $ERR_TEXT}." \
+      "Check the AWS CLI and its credentials (set AWS_PROFILE to choose a profile), or pin one with an AMI=ami-... line in $IDS."
+  AMI_FROM="$SSM_AMI, AWS $PROFILE"
 fi
 
 # One template for every region; the environment's name says which region its
@@ -101,6 +121,7 @@ DEST="$DEST_DIR/environment.yaml"
 mkdir -p "$DEST_DIR"
 chmod 700 "$GB_HOME/local-env" "$S"
 TMP="$(mktemp "$DEST_DIR/.environment.yaml.XXXXXX")"
+CLEANUP+=("$TMP")
 {
   echo "# Written by recipes/granite-switch/skypilot/aws/setup-local-space.sh from"
   echo "# environment-template.yaml for $REGION. Holds your EFS id: keep it out of git."
@@ -111,10 +132,8 @@ TMP="$(mktemp "$DEST_DIR/.environment.yaml.XXXXXX")"
     -e "s/REGION-REPLACE-ME/$REGION/g" "$SRC"
 } >"$TMP"
 grep -q "file_system_id: $FS\$" "$TMP" && grep -q "host_image_id: $AMI" "$TMP" &&
-  ! grep -q "REPLACE-ME" "$TMP" || {
-  rm -f "$TMP"
+  ! grep -q "REPLACE-ME" "$TMP" ||
   die "could not fill in the EFS id, region and AMI in $DEST"
-}
 chmod 600 "$TMP"
 mv "$TMP" "$DEST"
 
@@ -146,24 +165,38 @@ else
     "Add '- $OVERLAY' as the first entry of its base_uris."
 fi
 
-# 3. The parameters file: ENVIRONMENT_URI and HOST_AMI (the same region's, for the
-#    answerability-sr recipe) replaced, other lines kept.
+# 3. The parameters file: ENVIRONMENT_URI replaced, other lines kept.
 PARAMS="$GB_HOME/local-env/granite-switch.params"
 URI="space://environments/skypilot-local/$NAME"
 TMP="$(mktemp "$PARAMS.XXXXXX")"
+CLEANUP+=("$TMP")
 {
-  if [ -f "$PARAMS" ]; then grep -vE '^(ENVIRONMENT_URI|HOST_AMI)=' "$PARAMS" || true; fi
+  if [ -f "$PARAMS" ]; then grep -v '^ENVIRONMENT_URI=' "$PARAMS" || true; fi
   echo "ENVIRONMENT_URI=$URI"
-  echo "HOST_AMI=$AMI"
 } >"$TMP"
 mv "$TMP" "$PARAMS"
+
+# 4. Environments written before the host AMI (no `host_image_id:`) still run the
+#    GPU steps on SkyPilot's default AMI, where an 8-GPU H200 sees no GPUs.
+for env_file in "$S"/overlay/environments/skypilot-local/aws-gb-shared*/environment.yaml; do
+  [ -f "$env_file" ] && ! grep -q 'host_image_id: ami-' "$env_file" || continue
+  env_name="$(basename "$(dirname "$env_file")")"
+  env_region="$(sed -n 's/^ *region: *\([a-z0-9-]*\) *$/\1/p' "$env_file" | head -n 1)"
+  case "$env_name" in
+    aws-gb-shared) env_region="${env_region:-us-east-1}" ;;
+    aws-gb-shared-usw2) env_region="${env_region:-us-west-2}" ;;
+    *) env_region="${env_region:-${env_name#aws-gb-shared-}}" ;;
+  esac
+  warn "$env_name has no GPU host AMI: its GPU steps run on SkyPilot's default AMI," \
+    "where an 8-GPU H200 sees no GPUs. Re-run: $0 $env_region"
+done
 
 cat <<EOF
 Set up $REGION, with the EFS id from $IDS:
   environment  $DEST
   host AMI     $AMI (from $AMI_FROM)
   space        $S/space.yaml: $SPACE_NOTE
-  parameters   $PARAMS: ENVIRONMENT_URI=$URI, HOST_AMI=$AMI
+  parameters   $PARAMS: ENVIRONMENT_URI=$URI
 
 Still to do by hand (this script never handles secrets; README.md, step 3):
   - the AWS key, as the secrets GB_AWS_ACCESS_KEY_ID and GB_AWS_SECRET_ACCESS_KEY;
@@ -183,16 +216,3 @@ Then start gbserver on the space and run a recipe:
   cd $HERE/answerability-lora
   gb build start -f build.yaml \$(sed 's/^/--param /' $PARAMS) --param RUN_ID=<unique>
 EOF
-
-# Every region set up so far, from each environment's "# Host AMI:" header. An AMI
-# id exists only in its own region, so a run in another region than the last one
-# set up overrides both parameters, as a pair.
-echo
-echo "To run in a region other than the last one set up, override both, as a pair:"
-for env_file in "$S"/overlay/environments/skypilot-local/aws-gb-shared*/environment.yaml; do
-  [ -f "$env_file" ] || continue
-  env_ami="$(sed -n 's/^# Host AMI: \(ami-[0-9a-f]*\) .*/\1/p' "$env_file" | head -n 1)"
-  [ -n "$env_ami" ] || continue
-  env_name="$(basename "$(dirname "$env_file")")"
-  echo "  --param ENVIRONMENT_URI=space://environments/skypilot-local/$env_name --param HOST_AMI=$env_ami"
-done
