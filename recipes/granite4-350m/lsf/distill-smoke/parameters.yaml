@@ -117,8 +117,8 @@ STUDENT_MODEL_URI: "env:///proj/granite-build/g4os/skypilot-test/sft/checkpoints
 # and its schema is known-good. Stage 1 trains on the raw ancestor of the SFT mixture,
 # which is a different parameter in a different recipe.
 DATASET_URI: "env:///proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_2000_nothink.jsonl"
-# ABSOLUTE, and granite-native. run-align.sh only prefixes the steps' code_dir when
-# the value is relative, so an absolute path needs no step change.
+# ABSOLUTE, and granite-native. The align step passes the path to run-align.sh
+# unchanged, so it has to be absolute.
 #
 # This is granite-4.0-350m's OWN chat template with {% generation %} markers added
 # around the assistant span and nothing else changed — derived from the student's

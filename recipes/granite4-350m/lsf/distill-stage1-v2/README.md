@@ -76,9 +76,8 @@ the trend predicts. **The anchor is dropped, not tuned.**
 | | stage1 | v2 as shipped now | why |
 |---|---|---|---|
 | `CE_COEF` | — | **0.0** | retired; the sweep above |
-| `LOG_STUDENT_ENTROPY` | — | **false** | patch-gated; the same quantity is read per rung by `distill-eval` |
+| `LOG_STUDENT_ENTROPY` | — | **false** | off; the same quantity is read per rung by `teacher-divergence` |
 | `ENTROPY_GUARD_DROP_FRAC` | — | **0.0** | retired; it only ever warned, and the collapse was harmless |
-| `CODE_DIR` | `""` (public clone) | **`""`** | nothing patch-gated renders, so no local checkout is needed |
 | `GOLD_MAX_STEPS` | 0 (epoch) | 300 | the unanchored entropy curve is 96% collapsed by step 250 |
 | `GOLD_SAVE_STEPS` / `_TOTAL_LIMIT` | 1000 / 3 | 25 / 16 | keep the whole curve, not its last 750 steps |
 | `CKPT_LADDER` | — | 25,50,75,100,150,200,300 | export + transfer-eval + BFCL + generation check per rung |
@@ -107,32 +106,26 @@ The sweep is complete and its zero arm is now the shipped default, so a plain la
 gb build start -f recipes/granite4-350m/lsf/distill-stage1-v2/build.yaml --space <space>
 ```
 
-`CE_COEF` and the guard are still wired, at zero. Re-arming them needs **a patched
-trainer**: none of the six fields exist in `CustomGOLDConfig` at the step's pin
-(`a5d59bc4`), and `render_gold_config.py` refuses to emit one that the delivered trainer
-does not define — which is the loud failure and the one to want, since `TrlParser` would
-otherwise reject the config on every node of an allocation already held.
+`CE_COEF` and the guard are still wired, at zero. The trainer carries both: the CE-anchor and
+entropy-guard patch is part of the trainer package baked into the image
+(`steps/train/distill/src`, see its `VENDORED.md`), switched off by default. Re-arming them is
+parameters only, with no checkout or patch:
 
 ```bash
-# Build the patched checkout once, on a node that can reach github.com.
-git clone https://github.com/laminair/gb-steps-distillation.git $CODE_DIR
-git -C $CODE_DIR checkout a5d59bc45524a8d75706e20d44ae1a254f273f23
-( cd $CODE_DIR/src/gb_steps_post_training/distillation &&
-  patch -p2 -F3 < <this repo>/steps/train/distill/logit-distill/skypilot/patches/ce_anchor_and_entropy_guard.diff )
-git -C $CODE_DIR commit -am "ce anchor and entropy guard"
-
-# Then one arm per coefficient. RUN_NAME MUST differ per arm, and CORPUS_DIR pins the
-# corpus so the sweep derives it once rather than once per arm.
+# One arm per coefficient. RUN_NAME MUST differ per arm, and CORPUS_DIR pins the corpus so
+# the sweep derives it once rather than once per arm.
 CORPUS=/proj/granite-build/g4os/distill/distill-350m-s1v2-ce040/c20ed3c0-.../corpus
 for C in 0 0.05 0.15 0.40; do
   gb build start -f recipes/granite4-350m/lsf/distill-stage1-v2/build.yaml --space <space> \
     --param CE_COEF=$C \
-    --param CODE_DIR=$CODE_DIR \
-    --param CODE_EXPECT_REF=$(git -C $CODE_DIR rev-parse HEAD) \
     --param CORPUS_DIR=$CORPUS \
     --param RUN_NAME=distill-350m-s1v2-ce$(echo $C | tr -d .)
 done
 ```
+
+The guard is the same: `--param ENTROPY_GUARD_DROP_FRAC=…` (with `ENTROPY_GUARD_BASELINE_STEPS`,
+`ENTROPY_GUARD_PATIENCE` and `ENTROPY_GUARD_ACTION`), and `--param LOG_STUDENT_ENTROPY=true`
+for the per-step entropy log.
 
 **The one experiment still worth that spend is safety retention.** No CE arm was ever
 measured for safety, and safety is the only axis where the unanchored epoch went backwards.
@@ -159,28 +152,19 @@ Details that remain load-bearing:
   epoch on ifeval (55.5–58.5 vs 60.39) and level with it on EvalPlus. 300 steps is 3.7% of
   an epoch; the sweep speaks to the coefficient and to nothing else.
 
-## The trainer, and why the pin moved back
+## The trainer
 
-`train-gold` runs trainer code that does not come from the pinned steps checkout. Until v2
-nothing pinned what it *did* read: `distill-stage1` pointed it at
+`train-gold` runs the trainer baked into the distillation GPU image: the trainer package under
+[`steps/train/distill/src`](../../../../steps/train/distill/src) (copied from
+`github.com/laminair/gb-steps-distillation` at `a5d59bc4`, plus the CE-anchor and entropy-guard
+patch; provenance in its `VENDORED.md`). Nothing is cloned or mounted at job launch, so the
+trainer a build ran is exactly the image tag the step pins.
+
+That is the end of a provenance problem with a history. `distill-stage1` pointed the trainer at
 `/proj/granite-build/g4os/kd-sandbox` — another project's working tree, carrying **159
-uncommitted files** including `gold/` — so `df8512e0` recorded a commit that does not
-describe the code that ran.
-
-v2 fixed that by pinning a local clone this project controls, and that clone had to be local
-because it carried the CE patch. With the anchor retired, the pin moves back to the step's
-own `code_config`: an unauthenticated clone of
-[`github.com/laminair/gb-steps-distillation`](https://github.com/laminair/gb-steps-distillation)
-at `a5d59bc4`. That is strictly better provenance than a `/proj` checkout — the clone path
-is at `code_config.ref` by construction and cannot drift — and it is what makes this recipe
-runnable anywhere that can reach github.com rather than on BlueVela alone.
-
-`CODE_EXPECT_REF` is empty because `expect_ref` is only consulted on the `CODE_DIR` path. It
-is the value to fill in the moment a `CODE_DIR` *is* set, because that is when a checkout
-becomes mutable state again — and it brings the dirty-tree check with it.
-
-The patch that builds a re-armed checkout still ships with the repo:
-[`steps/train/distill/logit-distill/skypilot/patches/ce_anchor_and_entropy_guard.diff`](../../../../steps/train/distill/logit-distill/skypilot/patches/ce_anchor_and_entropy_guard.diff).
+uncommitted files** including `gold/` — so `df8512e0` recorded a commit that does not describe
+the code that ran. v2 then pinned a local patched clone. Both are gone: there is no `CODE_DIR`
+and no patch to apply, because the code is in the image.
 
 ## What to read, in this order
 

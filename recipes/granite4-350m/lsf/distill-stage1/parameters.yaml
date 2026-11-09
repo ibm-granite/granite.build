@@ -66,9 +66,9 @@ INCLUDE_SFT: false
 # BFCL target is deliberately NOT given it — that step runs its own harness
 # image.
 # The GOLD trainer (gb_steps_post_training.distillation.gold and friends) is
-# delivered by distill-gold's own code_config, the same pinned public-repo
-# clone every ported step uses — so a source bump is one edit in the step,
-# not one per recipe.
+# baked into the shared GPU image from steps/train/distill/src, the same package
+# every distill step uses — so a source bump is an image rebuild, not one edit per
+# recipe. DS_CONFIG is relative to $DISTILL_HOME (/opt/distill) in that image.
 DS_CONFIG: "configs/deepspeed/accelerate_deepspeed_zero3.yaml"
 
 # ─── The pair, the data, and the chat template ────────────────────────
@@ -139,8 +139,8 @@ TARGET_ROWS: 800000
 # Seeds both the per-split reservoir sampling and the interleave, so the exact corpus
 # is reproducible from this number alone.
 SHUFFLE_SEED: 42
-# ABSOLUTE, and granite-native. run-align.sh only prefixes the steps' code_dir when
-# the value is relative, so an absolute path needs no step change.
+# ABSOLUTE, and granite-native. The align step passes the path to run-align.sh
+# unchanged, so it has to be absolute.
 #
 # This is granite-4.0-350m's OWN chat template with {% generation %} markers added
 # around the assistant span and nothing else changed — derived from the student's

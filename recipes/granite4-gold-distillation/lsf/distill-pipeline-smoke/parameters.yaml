@@ -58,9 +58,9 @@ INCLUDE_SFT: false
 # BFCL target is deliberately NOT given it — that step runs its own harness
 # image.
 # The GOLD trainer (gb_steps_post_training.distillation.gold and friends) is
-# delivered by distill-gold's own code_config, the same pinned public-repo
-# clone every ported step uses — so a source bump is one edit in the step,
-# not one per recipe.
+# baked into the shared GPU image from steps/train/distill/src, the same package
+# every distill step uses — so a source bump is an image rebuild, not one edit per
+# recipe. DS_CONFIG is relative to $DISTILL_HOME (/opt/distill) in that image.
 DS_CONFIG: "configs/deepspeed/accelerate_deepspeed_zero3.yaml"
 
 # ─── The pair, the data, and the chat template ────────────────────────
@@ -72,7 +72,7 @@ DS_CONFIG: "configs/deepspeed/accelerate_deepspeed_zero3.yaml"
 #   s3://<bucket>/<key>     pulled from S3-compatible object storage
 # The defaults below use env:// against /proj. Override with --param to
 # source any of them from the Hub or your own bucket instead. CHAT_TEMPLATE
-# below is NOT one of these — it stays a bare, code-relative path; see its
+# below is NOT one of these — it stays a bare path parameter; see its
 # own comment.
 #
 # A 3B teacher, not the 30B reference one. An overlay is tokenizer files only,
@@ -98,14 +98,15 @@ STUDENT_MODEL_URI: "env:///proj/granite-build/g4os/kd-sandbox/student_overlays/g
 # assistant turn breaks GOLD's completion extraction silently, which is what
 # makes the filtering a correctness property and not a preference.
 DATASET_URI: "env:///proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_2000_nothink.jsonl"
-# Relative to the ported steps' code_dir, and deliberately a bare parameter
-# rather than a *_URI input binding — nothing to pull, this ships with the
-# code checkout. The one template on this cluster known to carry a real
-# {% generation %} block tag, which is what lets prep measure the completion
-# boundary at all: MEASURED, none of the 13 hand-built /proj overlay
-# directories has one. Pass an absolute path via --param to use a custom
-# template instead.
-CHAT_TEMPLATE: "templates/chatml_granite_42_generation.jinja"
+# A bare parameter rather than a *_URI input binding, and ABSOLUTE: the align step
+# passes it through unchanged. It used to be the relative
+# templates/chatml_granite_42_generation.jinja, which resolved inside the
+# gb-steps-distillation clone; the baked images ship no such file, so it now names
+# the same /proj template every other distillation recipe uses. The template has to
+# carry a real {% generation %} block tag, which is what lets prep measure the
+# completion boundary at all: MEASURED, none of the 13 hand-built /proj overlay
+# directories has one.
+CHAT_TEMPLATE: "/proj/granite-build/g4os/chat_templates/granite_4_role_generation.jinja"
 # The dataset is already think-filtered, so there is nothing to strip and
 # stripping would change the labelled span. keep.
 THINK_POLICY: "keep"

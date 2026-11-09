@@ -75,11 +75,11 @@ granite.build:
         # in. Whichever scheme wins, the step reads the RESOLVED binding path
         # of its `teacher` / `student` inputs, never the URI itself.
         #
-        # CHAT_TEMPLATE is NOT one of these: its default is a path RELATIVE to
-        # the ported step's own code checkout (see align_config.chat_template
-        # below), not an external artifact to pull, so it stays a plain
+        # CHAT_TEMPLATE is NOT one of these: it is a plain path passed through
+        # to the align step unchanged (see align_config.chat_template below),
+        # not an external artifact to pull, so it stays a plain
         # parameter rather than an input binding. Pass an absolute path via
-        # --param CHAT_TEMPLATE=/your/template.jinja for a custom one.
+        # --param CHAT_TEMPLATE=/your/template.jinja.
         teacher:
           uri: "$${TEACHER_MODEL_URI}"
           type: model

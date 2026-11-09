@@ -115,14 +115,11 @@ INCLUDE_SFT: false
 # BFCL target is deliberately NOT given it — that step runs its own harness
 # image.
 # The GOLD trainer: no CODE_DIR/CODE_EXPECT_REF override here any more. This recipe
-# used to point gold's code_config at a local checkout at
-# /proj/granite-build/g4os/gb-steps-distillation-gb carrying
-# patches/ce_anchor_and_entropy_guard.diff, because CE_COEF and the entropy guard
-# needed trainer fields the step's default public pin did not define. That patch is
-# now folded in permanently (steps/train/distill/src/VENDORED.md), baked into the shared
-# GPU image every GOLD recipe already uses, and gold itself no longer has a
-# code_config field to override at all -- so CE_COEF and the entropy guard below work
-# out of the box, with nothing to point anywhere.
+# used to point gold at a patched local checkout, because CE_COEF and the entropy guard
+# needed trainer fields the upstream pin did not define. Those fields are now part of
+# the in-repo trainer copy (steps/train/distill/src, see VENDORED.md), baked into the
+# shared GPU image, and no step has a code_config any more -- so CE_COEF and the
+# entropy guard below are one --param away, with nothing to point anywhere.
 DS_CONFIG: "configs/deepspeed/accelerate_deepspeed_zero3.yaml"
 
 # ─── The pair, the data, and the chat template ────────────────────────
@@ -193,8 +190,8 @@ TARGET_ROWS: 800000
 # Seeds both the per-split reservoir sampling and the interleave, so the exact corpus
 # is reproducible from this number alone.
 SHUFFLE_SEED: 42
-# ABSOLUTE, and granite-native. run-align.sh only prefixes the steps' code_dir when
-# the value is relative, so an absolute path needs no step change.
+# ABSOLUTE, and granite-native. The align step passes the path to run-align.sh
+# unchanged, so it has to be absolute.
 #
 # This is granite-4.0-350m's OWN chat template with {% generation %} markers added
 # around the assistant span and nothing else changed — derived from the student's

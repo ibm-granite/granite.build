@@ -32,9 +32,9 @@ SEED: 42
 ON_POLICY: false
 
 # ─── Trainer code and image ────────────────────────────────────────────
-# The GOLD trainer comes from code_config's pinned public-repo clone — the
-# same mechanism every ported step uses — recorded automatically as
-# distill_code_commit.
+# The GOLD trainer is baked into the shared GPU image from steps/train/distill/src,
+# the same package every distill step uses, recorded automatically as
+# distill_code_commit. DS_CONFIG is relative to $DISTILL_HOME (/opt/distill).
 DS_CONFIG: "configs/deepspeed/accelerate_deepspeed_zero3.yaml"
 
 # ─── The pair and the data ──────────────────────────────────────────────
@@ -63,11 +63,9 @@ TEACHER_MODEL_URI: "env:///proj/data-eng/hew/.cache/hf/hub/models--ibm-granite--
 # costs the align step's runtime — see build.yaml's header if you want to
 # skip align once hfpull is fixed and a raw student can be pulled directly.
 STUDENT_MODEL_URI: "env:///proj/data-eng/hew/gb-steps-collection-post-training/data/distillation/work/model_copies/granite-4.1-3b-base_retagged_v2"
-# The chat template installed on the retagged student. align's own default
-# (a path relative to the ported step's code checkout) is currently BROKEN —
-# the public gb-steps-distillation repo this step now clones does not ship
-# any *.jinja template at all — so this is overridden with an absolute,
-# verified-on-BlueVela path instead of relying on that default.
+# The chat template installed on the retagged student. align's own default is
+# empty (the images carry no model-specific template, and an empty value
+# installs none), so this is set to an absolute, verified-on-BlueVela path.
 CHAT_TEMPLATE: "/proj/granite-build/g4os/chat_templates/granite_4_role_generation.jinja"
 # FALSE: no granite 4.x model carries <|im_start|> at all, and the template
 # above is granite-native, not ChatML. See distill-smoke's parameters.yaml

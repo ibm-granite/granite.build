@@ -1,7 +1,7 @@
 # gold-smoke — GOLD distillation smoke recipe for BlueVela (SkyPilot / LSF).
 #
 # Exercises the plumbing — 2-node allocation, per-node rank, config rendering inside
-# the container against the /proj checkout, checkpoint publication — not the science.
+# the container from the baked-in trainer, checkpoint publication — not the science.
 # Everything expensive is scaled down; the model pair is not.
 #
 # Override any value with: gb build start --param KEY=VALUE
@@ -10,10 +10,10 @@
 RUN_NAME: "gold-smoke"
 
 # ─── Trainer code and image ───────────────────────────────────────────
-# The GOLD trainer is baked into the shared GPU image (steps/train/distill/src/, pinned
-# a5d59bc4 -- see steps/train/distill/src/VENDORED.md) -- nothing to set here.
-# accelerate + DeepSpeed ZeRO-3 config, resolved relative to $CODE_DIR
-# (/opt/gb-steps-distillation, baked into the image).
+# The GOLD trainer is baked into the shared GPU image (steps/train/distill/src/, copied
+# from a5d59bc4 -- see steps/train/distill/src/VENDORED.md) -- nothing to set here.
+# accelerate + DeepSpeed ZeRO-3 config, resolved relative to $DISTILL_HOME
+# (/opt/distill, baked into the image).
 DS_CONFIG: "configs/deepspeed/accelerate_deepspeed_zero3.yaml"
 
 # ─── Model pair and data ──────────────────────────────────────────────

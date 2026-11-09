@@ -17,10 +17,10 @@
 RUN_NAME: "gold-onpolicy-full-smoke"
 
 # ─── Trainer code and image ───────────────────────────────────────────
-# gold.py is baked into the shared GPU image; run_vllm_serve.py (the vllm-server
-# step) still clones gb-steps-distillation at job-launch time -- but both pull the
-# SAME pinned commit (a5d59bc4), so a server built from different code than the
-# trainer expects is not a failure mode this recipe can produce.
+# gold.py and run_vllm_serve.py (the student-rollout-generator step) are both baked
+# into the same shared GPU image from the same in-repo package (a5d59bc4 plus local
+# changes, see steps/train/distill/src/VENDORED.md), so a server built from different
+# code than the trainer expects is not a failure mode this recipe can produce.
 DS_CONFIG: "configs/deepspeed/accelerate_deepspeed_zero3.yaml"
 
 # ─── Model pair and data ──────────────────────────────────────────────

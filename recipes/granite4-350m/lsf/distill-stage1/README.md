@@ -124,8 +124,12 @@ model split across 16 or 32 ranks each shard is ~11-22M parameters — small eno
 collectives are latency-bound rather than bandwidth-bound. That overhead is also exactly
 what limits multi-node scaling, so removing it helps more than adding nodes.
 
-    ls /proj/granite-build/g4os/kd-sandbox/configs/deepspeed/
+    ls steps/train/distill/images/gpu/configs/deepspeed/   # baked to $DISTILL_HOME/configs/deepspeed/
     --param DS_CONFIG=configs/deepspeed/<a zero2 or zero1 config>
+
+The image ships only the ZeRO-3 config today, and the GOLD step always prefixes
+`DS_CONFIG` with `$DISTILL_HOME`, so a ZeRO-2/1 config has to be added there and the image
+rebuilt.
 
 Unverified, and it needs the short run rather than a leap: the checkpoint layout changes
 (`zero3_save_16bit_model` is a ZeRO-3 setting) and `distill-hf-export` asserts what it

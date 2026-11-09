@@ -31,9 +31,10 @@ no chance of a stale duplicate.
 
 Two things differ, and neither is incidental:
 
-- **The trainer.** This recipe's GOLD trainer comes from `code_config`'s pinned public-repo
-  clone (`gb-steps-distillation`), not the checkout the published sweep ran under. The
-  clone's commit is recorded automatically as `distill_code_commit` step metadata, so the
+- **The trainer.** This recipe's GOLD trainer is the copy baked into the shared GPU image
+  from `steps/train/distill/src` (taken from `gb-steps-distillation` at `a5d59bc4`, plus
+  local changes — see `VENDORED.md` there), not the checkout the published sweep ran under.
+  The commit is recorded as `distill_code_commit` step metadata, so the
   run says which code produced it. A numeric mismatch against the published arm is
   therefore a **finding**, not a bug in this recipe.
 - **No experiment tracking.** The published arm logged to ClearML project

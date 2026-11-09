@@ -61,8 +61,8 @@
 # where a collapse could feed itself, and the sweep was run off-policy, so it says
 # nothing about that. What it does say is that non-zero CE costs capability in ordered
 # amounts and that the collapse it prevented damaged nothing off-policy. So this starts
-# where the evidence is — at zero — and CE_COEF is one --param plus a patched CODE_DIR
-# away if the on-policy entropy curve argues otherwise.
+# where the evidence is — at zero — and CE_COEF is one --param away if the on-policy
+# entropy curve argues otherwise.
 #
 # Run:
 #   gb build start -f recipes/granite4-350m/lsf/distill-onpolicy-v2/build.yaml \
@@ -202,7 +202,7 @@ granite.build:
               out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/align"
               # Not optional for this pipeline: without a chat template carrying
               # generation markers, prep cannot build assistant masks and the
-              # trainers fail deep inside sft.py. Relative to the step's code_dir.
+              # trainers fail deep inside sft.py. Passed through as-is: give an absolute path.
               chat_template: "$${CHAT_TEMPLATE}"
               # FALSE for this pair, and it is the difference between this recipe
               # running and aborting. The knob gates whether the TEACHER's tokenizer
@@ -579,14 +579,16 @@ granite.build:
               use_liger_fused_jsd: $${USE_LIGER_FUSED_JSD}
 
               # ── the anchor and the guard, both off ──────────────────────────
-              # All six are patch-gated: they need trainer fields the step's public pin
-              # does not define, and render_gold_config.py emits each one only when it is
+              # All six are trainer extensions, not upstream TRL fields; the baked
+              # trainer (steps/train/distill/src) defines them, off by default, and
+              # render_gold_config.py emits each one only when it is
               # non-default. At the zeroed defaults in parameters.yaml nothing here
-              # reaches the config, which is exactly what lets this recipe run on that
-              # public pin — and what makes its objective df8512e0's, unanchored.
+              # reaches the config — which is what makes this recipe's objective
+              # df8512e0's, unanchored.
               #
-              # Setting any of them non-zero requires CODE_DIR at a patched checkout. See
-              # CE_COEF in parameters.yaml for the sweep that retired them.
+              # Turning any of them on is one --param (CE_COEF, ENTROPY_GUARD_*,
+              # LOG_STUDENT_ENTROPY). See CE_COEF in parameters.yaml for the sweep that
+              # retired them.
               ce_coef: $${CE_COEF}
               log_student_entropy: $${LOG_STUDENT_ENTROPY}
               entropy_guard_drop_frac: $${ENTROPY_GUARD_DROP_FRAC}

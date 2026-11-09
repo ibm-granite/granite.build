@@ -212,7 +212,7 @@ granite.build:
               out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/align"
               # Not optional for this pipeline: without a chat template carrying
               # generation markers, prep cannot build assistant masks and the
-              # trainers fail deep inside sft.py. Relative to the step's code_dir.
+              # trainers fail deep inside sft.py. Passed through as-is: give an absolute path.
               chat_template: "$${CHAT_TEMPLATE}"
               # FALSE for this pair, and it is the difference between this recipe
               # running and aborting. The knob gates whether the TEACHER's tokenizer

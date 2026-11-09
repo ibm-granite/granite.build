@@ -16,11 +16,13 @@
 RUN_NAME: "gold-sweep-100"
 
 # ─── Trainer code and image ───────────────────────────────────────────
-# The GOLD trainer comes from code_config's pinned public-repo clone -- the same
-# mechanism every ported step uses -- recorded automatically as distill_code_commit.
+# The GOLD trainer is baked into the shared GPU image from steps/train/distill/src
+# (copied from gb-steps-distillation a5d59bc4 plus local changes, see VENDORED.md
+# there), recorded automatically as distill_code_commit.
 # This is NOT the same trainer the published sweep ran, which is why a numeric
 # mismatch against the published arm is a finding rather than a bug: see README,
-# "What this does and does not reproduce".
+# "What this does and does not reproduce". DS_CONFIG is relative to $DISTILL_HOME
+# (/opt/distill) in that image.
 DS_CONFIG: "configs/deepspeed/accelerate_deepspeed_zero3.yaml"
 
 # ─── Model pair and data ──────────────────────────────────────────────
