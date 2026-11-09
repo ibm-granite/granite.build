@@ -54,6 +54,8 @@ class AutotunePipeline:
                     - loha for PeftType.LOHA
                     - lokr for PeftType.LOKR
                     - vera for PeftType.VERA
+                    - qlora for PeftType.LORA on a 4-bit NF4 base
+                    - sr for Shadow Residual (dual-stream Granite + stock LoRA)
                     - sft
                     - none for online RL post-training
             rl_algo: str

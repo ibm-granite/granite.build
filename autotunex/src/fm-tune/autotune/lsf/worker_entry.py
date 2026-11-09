@@ -12,13 +12,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Ray worker entry point launched by each LSF worker job.
+"""Ray worker entry point launched on each worker host (LSF blaunch or Slurm srun).
 
 Run as: ``python -m autotune.lsf.worker_entry --head_address <ip:port> ...``
 
-The worker process must outlive ``ray start`` so the LSF job stays alive and
-Ray keeps the node attached.  We block on ``signal.pause()`` after starting
-Ray and shut it down cleanly on ``SIGTERM`` (which ``bkill`` sends).
+The worker process must outlive ``ray start`` so the LSF job / Slurm step stays
+alive and Ray keeps the node attached.  We block on ``signal.pause()`` after
+starting Ray and shut it down cleanly on ``SIGTERM`` (which ``bkill`` sends, and
+which ``srun`` forwards to its task when ``autotune.slurm.ray_down`` signals it).
 """
 
 import argparse
@@ -33,6 +34,7 @@ import time
 from autotune.cluster import release_sockets, reserve_ports
 from autotune.logging_setup import setup_logging
 from autotune.lsf.log_utils import banner, dump_env_fingerprint, log_argv
+from autotune.tmpdir import resolve_job_id, resolve_ray_temp_dir
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -204,10 +206,11 @@ def main() -> int:
     #     so we MUST add hostname+pid; otherwise the Ray head's worker on
     #     host[0] and any other worker that happens to share a tmpfs view
     #     would collide on the plasma-store Unix-socket path.
-    worker_lsb_jobid = os.environ.get("LSB_JOBID") or str(os.getpid())
-    host = socket.gethostname()
-    worker_temp_dir = f"/tmp/ray/job_{worker_lsb_jobid}_{host}_{os.getpid()}"
-    os.makedirs(worker_temp_dir, exist_ok=True)
+    worker_job_id = resolve_job_id()
+    host = socket.gethostname().split(".")[0]
+    # Short suffix on purpose: Ray puts the plasma AF_UNIX socket under this dir,
+    # and those paths cap near 108 bytes (see autotune.tmpdir.MAX_TEMP_DIR_LEN).
+    worker_temp_dir = resolve_ray_temp_dir(f"w_{worker_job_id}_{host}_{os.getpid()}")
     logger.info(f"[worker] temp_dir={worker_temp_dir}")
 
     # Reserve five ports: node-manager, object-manager, dashboard-agent grpc,

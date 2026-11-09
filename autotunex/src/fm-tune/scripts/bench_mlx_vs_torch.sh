@@ -11,19 +11,24 @@
 # Run from repo root:   bash scripts/bench_mlx_vs_torch.sh
 # Requires Apple Silicon + the [mlx] extra:   uv pip install -e ".[mlx]"
 #
+# You supply the data: TRAIN_FILE and VAL_FILE are required SFT jsonl files
+# (see docs/dataset-sft.md). autotune/tools/build_*_dataset.py or any HF dataset
+# exported to jsonl can produce them.
+#
 # Everything is tunable via environment variables (defaults in parens):
 #   MODEL      HF model id / path         (HuggingFaceTB/SmolLM2-135M-Instruct)
 #   ALGO       tuning algo: lora|sft      (lora)  -- must run on BOTH backends
 #   CONFIG     YAML config file           (autotune/configs/autotune_mlx.yaml)
-#   TRAIN_FILE training jsonl             (datasets/finance_train.jsonl)
-#   VAL_FILE   validation jsonl           (datasets/finance_validation.jsonl)
+#   TRAIN_FILE training jsonl             (required, no default)
+#   VAL_FILE   validation jsonl           (required, no default)
 #   TRAIN_N    subset: first N train rows (256; set 0 to use the whole file)
 #   VAL_N      subset: first N val rows   (32;  set 0 to use the whole file)
 #   AUTOTUNE   1 = full HPO sweep, 0 = single run (--no_autotune)  (0)
 #   OUT        base output dir            (/tmp/fmtune_bench)
 #
 # Example — compare a full HPO sweep on the whole dataset:
-#   AUTOTUNE=1 TRAIN_N=0 VAL_N=0 bash scripts/bench_mlx_vs_torch.sh
+#   TRAIN_FILE=train.jsonl VAL_FILE=val.jsonl AUTOTUNE=1 TRAIN_N=0 VAL_N=0 \
+#     bash scripts/bench_mlx_vs_torch.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -38,8 +43,11 @@ PY=.venv/bin/python
 MODEL="${MODEL:-HuggingFaceTB/SmolLM2-135M-Instruct}"
 ALGO="${ALGO:-lora}"
 CONFIG="${CONFIG:-autotune/configs/autotune_mlx.yaml}"
-TRAIN_FILE="${TRAIN_FILE:-datasets/finance_train.jsonl}"
-VAL_FILE="${VAL_FILE:-datasets/finance_validation.jsonl}"
+if [ -z "${TRAIN_FILE:-}" ] || [ -z "${VAL_FILE:-}" ]; then
+  echo "ERROR: TRAIN_FILE and VAL_FILE must be set." >&2
+  echo "usage: TRAIN_FILE=path/to/train.jsonl VAL_FILE=path/to/val.jsonl bash scripts/bench_mlx_vs_torch.sh" >&2
+  exit 1
+fi
 TRAIN_N="${TRAIN_N:-256}"
 VAL_N="${VAL_N:-32}"
 AUTOTUNE="${AUTOTUNE:-0}"
