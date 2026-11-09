@@ -123,12 +123,14 @@ class SpaceURI(URI):
         elif uristr.startswith(SPACE_SCHEME):
             uri_suffix = uristr.removeprefix(SPACE_SCHEME + "://")
         SpaceURI._reject_parent_segments(uri_suffix, uristr)
-        # Steps: only copies that serve the active env (class, ``subtypes``, and
-        # a ``steps/`` dir owned by the env or one of its ancestors, or a base's
-        # top-level ``steps/``) are candidates, and base_uris order decides
-        # between them. Within one base: the space's root ``steps/<name>``, then
-        # the deepest owning dir, fewest ``environment_configs`` keys, then path.
-        # See _resolve_step_by_base_order.
+        # Steps: only copies that serve the active env are candidates: their
+        # ``environment_configs`` admit its class and ``subtypes``, and their
+        # ``steps/`` dir is the env's own (next to its environment.yaml) or a
+        # shared one (no environment.yaml beside it).  The space's root
+        # ``steps/<name>`` wins outright; otherwise the first base in base_uris
+        # order holding a candidate wins.  Within that base, the env's own copy
+        # beats shared ones, and among shared ones the fewest classes wins; a tie
+        # raises ``Ambiguous space uri``.  See _resolve_step_by_base_order.
         pinned: Optional[str] = None
         if uri_suffix.startswith(STEPS_PREFIX):
             try:
@@ -688,11 +690,12 @@ class SpaceURI(URI):
         outranks a later one, whatever the later copy's placement or specificity.
 
         For the space's own dir (with an env dir active) its root
-        ``steps/<name>`` comes first (:meth:`_space_root_step`).  Otherwise the
-        env-class glob over a base (:meth:`_env_class_matches`) supplies the
-        copies that serve the env, ranked: the deepest owning dir first (an env's
-        own ``steps/`` over its family's, over the base's top-level ``steps/``),
-        then fewest ``environment_configs`` keys, then path.
+        ``steps/<name>`` comes first (:meth:`_space_root_step`).  Otherwise
+        :meth:`_choose` takes the first base holding a candidate
+        (:meth:`_candidates`), and within it ranks by :meth:`_rank`: the env's
+        own ``steps/`` first, then shared copies, the most specific (fewest
+        ``environment_configs`` classes) winning.  Two equally specific copies
+        raise ``Ambiguous space uri`` rather than falling back to path order.
 
         The glob's step name is pinned across all bases
         (:meth:`_longest_step_in_bases`) before the env gate, so an env-excluded
@@ -1274,9 +1277,10 @@ class SpaceURI(URI):
 
         Step lookups take, from the earliest base_uri holding one, a copy that
         serves this env: its ``environment_configs`` list the env's class (and
-        ``subtypes`` admit its sub-type), and its ``steps/`` dir is the base's
-        top-level one or is owned by ``<env-dir>`` or an ancestor of it, the
-        deepest owner first.  Failing that, ``<base>/steps/<name>/`` is the
+        ``subtypes`` admit its sub-type), and its ``steps/`` dir is either
+        ``<env-dir>/steps/`` (the env's own, which comes first) or a shared one,
+        a ``steps/`` with no ``environment.yaml`` beside it.  Another env's own
+        ``steps/`` never serves it.  Failing that, ``<base>/steps/<name>/`` is the
         env-agnostic fallback.
 
         Prior values are saved on enter and restored on exit so nested or

@@ -18,10 +18,12 @@
 
 These exercise the resolution *behavior* the build pipeline hinges on:
 
-* base_uris order between env-matching copies (``TestBaseOrder``); within one
-  base the space root, then the env-class match (deepest owning folder, then
-  specificity, then path); then the env-agnostic fallback → ValueError;
-* env-folder ownership: which ``environments/<...>/steps/`` folders serve an env;
+* base_uris order between env-matching copies (``TestBaseOrder``); the space
+  root first; within one base, the env's own ``steps/``, then shared copies by
+  specificity, with a tie raising ``Ambiguous space uri``; then the
+  env-agnostic fallback → ValueError;
+* env-folder ownership: a ``steps/`` next to an ``environment.yaml`` serves only
+  that env, and every other ``steps/`` is shared;
 * ``with_current_env`` / ``with_current_env_class_name`` thread-local
   save/restore semantics;
 * relative-base-uri resolution in ``gbserver.build.space._resolve_base_uris``
@@ -420,9 +422,10 @@ class TestBaseOrder:
                 _resolve("space://steps/old")
 
     def test_family_steps_match_across_repo_layouts(self, tmp_path):
-        """A family's steps under ``configurations/assets/environments/...`` in
-        one repo serve that family's env loaded from a repo laid out as
-        ``environments/...`` (compared from the ``environments`` segment)."""
+        """A family folder's steps under ``configurations/assets/environments/...``
+        in one repo serve an env of that family loaded from a repo laid out as
+        ``environments/...``: the family folder has no ``environment.yaml``, so
+        its steps are shared and match by class."""
         space_root = tmp_path / "space"
         space_root.mkdir()
         repo = tmp_path / "repo"
@@ -448,8 +451,8 @@ class TestBaseOrder:
 
     def test_family_steps_in_another_base_serve_the_env(self, tmp_path):
         """A family's shared ``environments/skypilot/steps/`` serves a skypilot
-        env loaded from a different base: ownership is compared by path inside
-        each base, so cross-repo family steps still resolve."""
+        env loaded from a different base: the family folder has no
+        ``environment.yaml``, so its steps are shared, whatever base the env is in."""
         space_root = tmp_path / "space"
         space_root.mkdir()
         shared = tmp_path / "assets"
@@ -523,7 +526,7 @@ class TestBaseOrder:
 class TestSpaceRootAndEnvFolder:
     def test_env_colocated_hit_wins_within_its_base(self, tmp_path):
         """In the base holding the env, the env's own copy wins over the base's
-        top-level catalog copy (deeper owning dir first)."""
+        top-level catalog copy (the env's own ``steps/`` before shared copies)."""
         space_root = tmp_path / "space"  # base_uris[0], ships no steps/hello
         space_root.mkdir()
         assets = tmp_path / "assets"
@@ -589,7 +592,7 @@ class TestSpaceRootAndEnvFolder:
 
 
 # --------------------------------------------------------------------------- #
-# Env-folder ownership — family steps folders and deepest-owner ranking
+# Env-folder ownership — env-owned vs shared steps folders
 # --------------------------------------------------------------------------- #
 
 
@@ -700,8 +703,8 @@ class TestEnvFolderOwnership:
             assert _resolved_dir(resolved).samefile(shared)
 
     def test_env_own_dir_overrides_parent(self, tmp_path):
-        """A step in the env's own dir wins over a same-named ancestor step: the
-        deeper owning dir ranks first within a base."""
+        """A step in the env's own dir wins over a same-named shared step in a
+        parent folder: the env's own ``steps/`` ranks before shared copies."""
         base = tmp_path / "assets"
         _write_step(base / "skypilot" / "steps" / "digit", env_classes=["Skypilot"])
         env_dir = base / "skypilot" / "kubernetes"
@@ -771,9 +774,8 @@ class TestEnvFolderOwnership:
                 _resolve("space://steps/hello")
 
     def test_family_dir_listed_as_base_keeps_the_family_match(self, tmp_path):
-        """A base at the family dir (``repoA/environments/skypilot``) doesn't
-        strip the env's ``environments/<family>`` prefix, so the family's steps
-        in another repo still serve it."""
+        """With the family dir (``repoA/environments/skypilot``) listed as a base,
+        a family's shared steps in another repo still serve the env."""
         space_root = tmp_path / "space"
         space_root.mkdir()
         family_dir = tmp_path / "repoA" / "environments" / "skypilot"
@@ -805,8 +807,9 @@ class TestEnvFolderOwnership:
             assert _resolved_dir(_resolve("space://steps/x")).samefile(family)
 
     def test_env_dir_listed_as_base_keeps_its_own_copy_first(self, tmp_path):
-        """An env dir listed as a base under an outer base isn't collapsed to a
-        top-level folder there, so its own copy still beats the family's."""
+        """An env dir listed as a base under an outer base keeps its own copy
+        first: its ``steps/`` is still the env's own when searched from the outer
+        base, so it beats the family's shared copy there."""
         space_root = tmp_path / "space"
         space_root.mkdir()
         repo = tmp_path / "repo"
@@ -854,8 +857,7 @@ class TestEnvFolderOwnership:
 
     def test_unlisted_repo_env_gets_its_family_step(self, tmp_path):
         """An env in a repo no base encloses (a ``#subdirectory=`` git env not in
-        base_uris) is matched from its ``environments`` segment, so its family's
-        ``steps/`` in a listed base still serves it."""
+        base_uris) still gets a family's shared ``steps/`` from a listed base."""
         assets = tmp_path / "assets"
         family = _write_step(
             assets / "environments" / "skypilot" / "steps" / "hello", ["Skypilot"]

@@ -330,14 +330,14 @@ class Environment(ABC):
         """URI of the directory that contains this env's environment.yaml.
 
         Used by the SpaceURI resolver, when this env is the active target's
-        env, to decide which ``environments/<...>/steps/`` folders serve it (its
-        own and its ancestors') and to enable the space-root lookup.  Returned
-        with no trailing slash.  Returns ``None`` when the env was constructed
-        without an asset (e.g. some unit tests).  The resolver then skips the
-        space-root lookup, and, since no folder can be shown to own the env,
-        accepts copies from every ``steps/`` folder whose ``environment_configs``
-        admit the env's class, ranked shallowest folder first (a base's
-        top-level ``steps/``, then shared family folders, then one env's own).
+        env, to find its own ``steps/`` (the one next to this
+        ``environment.yaml``, which serves only this env) and to enable the
+        space-root lookup.  Returned with no trailing slash.  Returns ``None``
+        when the env was constructed without an asset (e.g. some unit tests).
+        The resolver then skips the space-root lookup, and, since no folder is
+        this env's, excludes every env-owned ``steps/`` (one next to an
+        ``environment.yaml``): only shared copies and builtins whose
+        ``environment_configs`` admit the env's class can match.
         """
         if self.environment_asset is None:
             return None

@@ -22,19 +22,19 @@ configurations/
 │   │   ├── bash/environment.yaml
 │   │   ├── docker/environment.yaml
 │   │   ├── skypilot/
-│   │   │   ├── steps/                   # shared by ALL skypilot envs below
-│   │   │   │   └── <name>/step.yaml     # (deepest owning folder wins)
+│   │   │   ├── steps/                   # shared: skypilot/ has no environment.yaml
+│   │   │   │   └── <name>/step.yaml     # serves every env its environment_configs admit
 │   │   │   ├── kubernetes/
-│   │   │   │   ├── environment.yaml     # inherits ../steps; may add its own
-│   │   │   │   └── steps/               # optional: env's own override
-│   │   │   │       └── <name>/step.yaml # wins over the shared ../steps copy
+│   │   │   │   ├── environment.yaml     # gets the shared ../steps copies
+│   │   │   │   └── steps/               # optional: this env only
+│   │   │   │       └── <name>/step.yaml # wins over the shared ../steps copy for this env
 │   │   │   └── slurm/
-│   │   │       ├── local/environment.yaml         # inherits ../../steps
-│   │   │       └── bluevela/environment.yaml      # inherits ../../steps
+│   │   │       ├── local/environment.yaml         # gets the shared ../../steps copies
+│   │   │       └── bluevela/environment.yaml      # gets the shared ../../steps copies
 │   │   └── skypilot-managed/
 │   │       └── kubernetes/environment.yaml
 │   ├── steps/
-│   │   ├── <name>/step.yaml             # env-agnostic step (matches any env)
+│   │   ├── <name>/step.yaml             # shared step (matches any env it admits)
 │   │   └── <env-class>/<name>/step.yaml # env-class-keyed split (matches envs whose
 │   │                                    # class is `<env-class>`, e.g. `bash/`,
 │   │                                    # `docker/`, `skypilot/`, `k8s/`)
@@ -51,6 +51,7 @@ configurations/
 
 - **`assets/`** is the leaf primitives directory. It holds no `space.yaml`; it's a target for `base_uris`, not a space in its own right.
 - **`configurations/spaces/local/space.yaml`** is the canonical user-facing space. Its `base_uris` chains into `configurations/assets/` so `space://environments/...`, `space://assetstores/...`, and `space://steps/...` resolve through to the assets tree.
+- **Environment-owned `steps/` are not inherited.** A `steps/` next to an `environment.yaml` serves that environment only, not environments nested below it. For example, `kubernetes/local` (which sits under `kubernetes/`, itself an environment) gets nothing from a `kubernetes/steps/`. To share steps with nested environments, put them in a folder with no `environment.yaml`, such as `skypilot/steps/`.
 - **Step resolution**: when a target runs, `space://steps/<name>` resolves to one copy of the step:
   1. **Candidates.** A copy counts only if its `environment_configs` list the active environment's class (e.g. `Bash`, `Docker`, `K8s`, `Skypilot`), and its optional `subtypes` admit the environment. A `steps/` folder next to an `environment.yaml` holds that environment's own steps and serves only that environment, so `skypilot/aws/steps/<name>` serves only `skypilot/aws`. Every other `steps/` folder is shared, so `skypilot/steps/<name>` (in a folder with no `environment.yaml`) serves every environment it admits. A step with no `environment_configs` is never a candidate.
   2. **Base order.** The space's own root `steps/<name>` wins outright. Otherwise bases are searched in order: the space's own directory, the environment's own folder if no base contains it, the space's `base_uris` as listed, then the builtins. The first base holding a candidate wins.

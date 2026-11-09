@@ -605,7 +605,8 @@ class Build(BuildEntity):
         """Return a ``file://`` URI for the resolved env directory, or ``None``.
 
         Feeds ``SpaceURI``'s env-folder ownership check during validation, so
-        steps in the env's own or its ancestors' ``steps/`` folders resolve.
+        steps in the env's own ``steps/`` folder resolve, alongside shared ones
+        (any ``steps/`` with no ``environment.yaml`` beside it).
         Builds on
         :meth:`__env_dir_path`, so a git-backed env resolves to its reused local
         clone; returns ``None`` only when the env URI is unavailable or can't be

@@ -298,9 +298,9 @@ class TargetStep(BuildEntity):
         # Scope the active env's step-discovery context on SpaceURI so that
         # any `space://steps/...` URIs resolved during step assimilation pick
         # a copy that matches this env, from the earliest base_uri holding one
-        # (the space's own steps/<name> first; within a base, the deepest
-        # owning folder, i.e. the env's own over its family's), else the
-        # env-agnostic fallback location.
+        # (the space's own steps/<name> first; within a base, the env's own
+        # steps/ over shared copies, then the most specific shared copy), else
+        # the env-agnostic fallback location.
         with SpaceURI.with_current_env(environment):
             self.step = Step(
                 stepuri=targetstep.step_uri, context=context, force_fetch=force_fetch  # type: ignore[arg-type]
