@@ -44,6 +44,13 @@ function formatAge(iso: string): string {
 export function DatasetList({ datasets, search, isLoading }: Props) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
+  // Page state is local, so a new search term must reset it here — otherwise
+  // searching from page N leaves an empty page when fewer results match.
+  const [prevSearch, setPrevSearch] = useState(search);
+  if (search !== prevSearch) {
+    setPrevSearch(search);
+    setPage(1);
+  }
 
   if (isLoading)
     return (

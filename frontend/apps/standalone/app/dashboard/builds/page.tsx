@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import {
   Dropdown,
   MultiSelect,
@@ -30,6 +30,11 @@ function TagDropdownItem({ label }: { id: string; label: string }) {
 }
 
 // Mirrors gbserver's Status enum (src/gbserver/types/status.py).
+// gbserver's `name` filter is an exact match, so substring search has to run
+// client-side. While a search term is active we fetch this many of the most
+// recent builds matching the other filters, then filter and paginate locally.
+const SEARCH_WINDOW = 500;
+
 const STATUS_OPTIONS = [
   { id: "all", label: "All statuses" },
   { id: "running", label: "Running" },
@@ -64,15 +69,18 @@ export default function BuildsPage() {
     queryFn: () => getBuildTags(spaceName),
   });
 
-  // Builds
+  const term = search.trim().toLowerCase();
+  const searching = term.length > 0;
+
+  // Builds — server-paginated normally; a single bounded window while
+  // searching (the term itself is not in the key: filtering is local).
   const { data, isLoading, error } = useQuery({
     queryKey: [
       "builds",
       spaceName,
       selectedTags,
       status,
-      page,
-      pageSize,
+      ...(searching ? ["search-window"] : [page, pageSize]),
     ],
     queryFn: () =>
       listBuilds({
@@ -80,8 +88,8 @@ export default function BuildsPage() {
         tags: selectedTags.length ? selectedTags : undefined,
         status: status === "all" ? undefined : (status as BuildStatus),
         sort: "created_time:desc",
-        page_index: page - 1,
-        page_size: pageSize,
+        page_index: searching ? 0 : page - 1,
+        page_size: searching ? SEARCH_WINDOW : pageSize,
       }),
     placeholderData: (prev) => prev,
   });
@@ -96,15 +104,25 @@ export default function BuildsPage() {
     setPage(1);
   }, []);
 
-  // gbserver's list endpoint has no name/search param, so search filters the
-  // current page of already-fetched builds rather than querying the server.
-  const allItems = data?.items ?? [];
-  const visibleItems = search
-    ? allItems.filter((b) =>
-        b.name.toLowerCase().includes(search.toLowerCase()),
-      )
-    : allItems;
-  const visibleTotal = search ? visibleItems.length : data?.total ?? 0;
+  const matches = useMemo(() => {
+    const items = data?.items ?? [];
+    if (!searching) return items;
+    return items.filter((b) =>
+      [b.name, b.uuid, b.username, b.space_name].some((f) =>
+        (f ?? "").toLowerCase().includes(term),
+      ),
+    );
+  }, [data?.items, searching, term]);
+  const visibleItems = useMemo(
+    () =>
+      searching
+        ? matches.slice((page - 1) * pageSize, page * pageSize)
+        : matches,
+    [matches, searching, page, pageSize],
+  );
+  const visibleTotal = searching ? matches.length : (data?.total ?? 0);
+  const searchTruncated =
+    searching && (data?.total ?? 0) > (data?.items.length ?? 0);
 
   const spaceItems = [
     { id: "__all__", label: "All spaces" },
@@ -191,6 +209,17 @@ export default function BuildsPage() {
           kind="error"
           title="Failed to load builds"
           subtitle={String(error)}
+          style={{ marginBottom: "1rem" }}
+        />
+      )}
+
+      {searchTruncated && (
+        <InlineNotification
+          kind="info"
+          lowContrast
+          hideCloseButton
+          title="Search limited to recent builds"
+          subtitle={`Searching the ${SEARCH_WINDOW} most recent builds matching the current filters. Narrow the filters to search further back.`}
           style={{ marginBottom: "1rem" }}
         />
       )}
