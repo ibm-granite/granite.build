@@ -1,46 +1,48 @@
 # Vendored: gb_steps_post_training
 
-The `gb_steps_post_training/distillation/` package under this directory is
-vendored verbatim from
-[`github.com/laminair/gb-steps-distillation`](https://github.com/laminair/gb-steps-distillation),
-pinned at commit `a5d59bc45524a8d75706e20d44ae1a254f273f23`, vendored on
-2026-10-21.
+The `gb_steps_post_training/distillation/` package under this directory is copied from
+[`github.com/laminair/gb-steps-distillation`](https://github.com/laminair/gb-steps-distillation)
+at commit `a5d59bc45524a8d75706e20d44ae1a254f273f23`, imported on 2026-10-21. It differs
+from that commit in two ways, and in no other:
 
-This is a one-time import, not a git subtree or submodule, and there is no
-sync mechanism to this external repo. A trainer fix lands as a direct edit
-to the files here, the same as any other granite.build code — it does not
-get re-pulled from `gb-steps-distillation`. If that external repo advances
-independently, this directory simply does not track it; re-vendoring a
-later commit (if ever needed) is a deliberate, separate action, not
-something any build or CI step does automatically.
+- **Formatting.** Every file is reformatted with `black` and `isort`, which CI enforces
+  repo-wide. To compare against upstream, format both sides the same way first.
+- **A local patch** in two files, described below.
 
-This package is shared across both the GPU image
-(`steps/train/distill/images/gpu/Dockerfile`) and, for the step(s) whose trainer source
-is fully baked in rather than cloned at job-launch time, imported via
-`PYTHONPATH`. See `steps/train/distill/images/gpu/Dockerfile` for how it's consumed.
+This is a one-time import, not a git subtree or submodule, and there is no sync mechanism
+to the external repo. A trainer fix lands as a direct edit here, like any other
+granite.build code; it is not re-pulled from `gb-steps-distillation`. Re-importing a later
+upstream commit, if ever needed, is a deliberate, separate change.
 
-## Local patch folded in: CE anchor + entropy guard
+## How the steps get it
 
-`custom_gold_config.py` and `custom_gold_trainer.py` carry a local patch
-(formerly `steps/train/distill/logit-distill/skypilot/patches/ce_anchor_and_entropy_guard.diff`,
-applied here on 2026-10-21 and removed as a separate file) adding `ce_coef`,
-`log_student_entropy`, `entropy_guard_*` fields to `CustomGOLDConfig` and the
-matching CE-anchor/entropy-collapse-guard logic to `CustomGOLDTrainer`. All
-new fields default to off/0.0, so an unpatched config computes exactly the
-same loss as before.
+Both shared images (`steps/train/distill/images/{gpu,cpu}/Dockerfile`, built by
+`steps/train/distill/Makefile`) COPY this package to `$DISTILL_HOME/src`
+(`/opt/distill/src`) and put it on `PYTHONPATH`. Nothing is cloned or mounted at job
+launch: the trainer a build ran is exactly what the step's pinned image tag contains.
+Changing anything here therefore means rebuilding the images and repinning their tags in
+the step templates.
 
-This used to be a recipe-applied patch against a `code_config.code_dir`
-checkout (the LSF stage-1 recipe), which only
-worked for `gold` because `gold` was the one step still cloning source at
-job-launch time with a recipe-overridable checkout path. Since `gold` now
-uses this vendored copy baked into the image instead (no more
-`code_config`), folding the patch in here — rather than losing the
-capability — keeps it available to every recipe unconditionally, with no
-separate checkout to point at. The patch's own header already recommended
-this exact move ("offer this upstream to gb-steps-distillation... point the
-recipes' CODE_DIR back at \"\" and delete this file").
+## Local patch: CE anchor + entropy guard
 
-If `gb-steps-distillation` upstream ever lands an equivalent of this patch
-and this vendor pin is bumped past that commit, these two files' local
-patch becomes redundant — reconcile by hand against the new upstream
-content at that time, the same as any other vendored-file update.
+`custom_gold_config.py` and `custom_gold_trainer.py` carry a patch that adds the
+`ce_coef`, `log_student_entropy` and `entropy_guard_*` fields to `CustomGOLDConfig`, and the
+matching CE-anchor and entropy-collapse-guard logic to `CustomGOLDTrainer`. Every new field
+defaults to off (`0.0` / `false`), so a config that sets none of them computes exactly the
+upstream loss. A recipe turns them on with parameters alone (`CE_COEF`, `LOG_STUDENT_ENTROPY`,
+`ENTROPY_GUARD_*`).
+
+The patch used to ship as a separate `.diff` that a recipe applied to its own checkout of
+the trainer. It was folded in here on 2026-10-21 when the steps stopped cloning the trainer
+at launch, so the capability stays available without a checkout to point at. If upstream
+lands an equivalent and the import is bumped past that commit, reconcile these two files by
+hand at that time.
+
+## A second copy elsewhere
+
+`steps/misc/hf-export/skypilot/src/hf_export_state/` carries its own copies of
+`step_state.py`, `export_state.py` and `tokenizer_identity.py`, so that generic step depends
+on nothing in this collection. Both copies must keep writing and reading the same
+`.step-done.json` marker: change the marker format in both places, together.
+`steps/misc/hf-export/skypilot/test/test_step_template.py::TestResumeCompatibility` fails if
+the schema or marker name drift apart.

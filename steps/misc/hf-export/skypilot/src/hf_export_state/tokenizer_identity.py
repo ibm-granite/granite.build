@@ -1,6 +1,6 @@
-# Copied from the distillation collection's vendored package
+# Copied from the distillation collection's trainer package
 # (steps/train/distill/src/gb_steps_post_training/distillation/tokenizer_identity.py) so this generic step
-# owns its resume gate and imports nothing from steps/distill. Same marker format, so
+# owns its resume gate and imports nothing from steps/train/distill. Same marker format, so
 # markers written by either copy read the same.
 """One definition of "which tokenizer is this", shared by every step that has an opinion.
 

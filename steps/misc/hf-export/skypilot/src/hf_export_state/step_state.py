@@ -1,7 +1,8 @@
-# Copied from the distillation collection's vendored package
-# (steps/train/distill/src/gb_steps_post_training/distillation/step_state.py) so this generic step
-# owns its resume gate and imports nothing from steps/distill. Same marker format, so
-# markers written by either copy read the same.
+# Copied from the distillation collection's trainer package
+# (steps/train/distill/src/gb_steps_post_training/distillation/step_state.py) so this generic
+# step owns its resume gate and imports nothing from steps/train/distill. The two copies must
+# keep one marker format: change MARKER_NAME, SCHEMA or the record layout in both together
+# (TestResumeCompatibility in this step's tests fails if they drift).
 """One answer, for every step, to "has this already been done, and with what?"
 
 WHY THIS EXISTS.
