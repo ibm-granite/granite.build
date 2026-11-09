@@ -533,10 +533,11 @@ environment_configs:
                 [ -f "$1/$sentinel" ] || return 1
               done
             }
-            # ZeRO optimizer shards in a checkpoint: one per training rank.
+            # ZeRO optimizer shards in a checkpoint: one per training rank. The tr
+            # strips the padding BSD wc adds, so the count prints the same everywhere.
             resume_shards() {
               find "$1" -mindepth 2 -maxdepth 2 -path '*/global_step*/*' \
-                -name '*optim_states.pt' 2>/dev/null | wc -l
+                -name '*optim_states.pt' 2>/dev/null | wc -l | tr -d '[:space:]'
             }
             # get_last_checkpoint's name rule, ^checkpoint-[0-9]+$: HF never loads
             # anything else, so nothing else is seeded, checked or picked.
@@ -928,7 +929,7 @@ environment_configs:
               # export/eval target bound to them would stay unready, and the build
               # would hang with no error to read. Count the markers, not a shell
               # variable — see EMITTED_DIR above.
-              EMITTED_COUNT="$(find "$EMITTED_DIR" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l)"
+              EMITTED_COUNT="$(find "$EMITTED_DIR" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d '[:space:]')"
               if [ "$EMITTED_COUNT" -eq 0 ]; then
                 echo "logit-distill: FATAL: no checkpoint dirs matched '${CKPT_DIR}/${CKPT_GLOB}*'." >&2
                 echo "  emit_checkpoint_artifacts is on, so a recipe is bound to" >&2
