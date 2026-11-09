@@ -30,6 +30,10 @@ keypoint detector config is always built from ``CONFIG_MAPPING`` (an unknown
 type raises KeyError), and the detector model never gets ``trust_remote_code``.
 LightGlue is a keypoint matcher, so nothing the step trains uses it.
 
+Like upstream's fix, it also edits ``modular_lightglue.py``, the source the two
+runtime files are generated from. transformers never imports it, but it ships
+in the wheel with the same two pass-throughs.
+
 Exits non-zero if any target is not found exactly once, so a transformers bump
 fails the image build instead of silently shipping unpatched code.
 """
@@ -39,28 +43,33 @@ import sys
 
 # The targets are exact upstream source lines, so they keep upstream's line length.
 # pylint: disable=line-too-long
-EDITS = {
-    "configuration_lightglue.py": (
-        '            if keypoint_detector_config["model_type"] not in CONFIG_MAPPING:\n'
-        "                keypoint_detector_config = AutoConfig.from_pretrained(\n"
-        '                    keypoint_detector_config["_name_or_path"], trust_remote_code=self.trust_remote_code\n'
-        "                )\n"
-        "            else:\n"
-        '                keypoint_detector_config = CONFIG_MAPPING[keypoint_detector_config["model_type"]](\n'
-        '                    **keypoint_detector_config, attn_implementation="eager"\n'
-        "                )\n",
-        '            keypoint_detector_config = CONFIG_MAPPING[keypoint_detector_config["model_type"]](\n'
-        '                **keypoint_detector_config, attn_implementation="eager"\n'
-        "            )\n",
-    ),
-    "modeling_lightglue.py": (
-        "        self.keypoint_detector = AutoModelForKeypointDetection.from_config(\n"
-        "            config.keypoint_detector_config, trust_remote_code=config.trust_remote_code\n"
-        "        )\n",
-        "        self.keypoint_detector = AutoModelForKeypointDetection.from_config(config.keypoint_detector_config)\n",
-    ),
-}
+_CONFIG = (
+    '            if keypoint_detector_config["model_type"] not in CONFIG_MAPPING:\n'
+    "                keypoint_detector_config = AutoConfig.from_pretrained(\n"
+    '                    keypoint_detector_config["_name_or_path"], trust_remote_code=self.trust_remote_code\n'
+    "                )\n"
+    "            else:\n"
+    '                keypoint_detector_config = CONFIG_MAPPING[keypoint_detector_config["model_type"]](\n'
+    '                    **keypoint_detector_config, attn_implementation="eager"\n'
+    "                )\n",
+    '            keypoint_detector_config = CONFIG_MAPPING[keypoint_detector_config["model_type"]](\n'
+    '                **keypoint_detector_config, attn_implementation="eager"\n'
+    "            )\n",
+)
+_MODEL = (
+    "        self.keypoint_detector = AutoModelForKeypointDetection.from_config(\n"
+    "            config.keypoint_detector_config, trust_remote_code=config.trust_remote_code\n"
+    "        )\n",
+    "        self.keypoint_detector = AutoModelForKeypointDetection.from_config(config.keypoint_detector_config)\n",
+)
 # pylint: enable=line-too-long
+
+# file name -> [(old, new), ...]
+EDITS = {
+    "configuration_lightglue.py": [_CONFIG],
+    "modeling_lightglue.py": [_MODEL],
+    "modular_lightglue.py": [_CONFIG, _MODEL],
+}
 
 
 def patch(lightglue_dir: pathlib.Path) -> None:
@@ -70,14 +79,17 @@ def patch(lightglue_dir: pathlib.Path) -> None:
     :raises SystemExit: If a target is not found exactly once in its file.
     """
     texts = {}
-    for name, (old, new) in EDITS.items():
+    for name, edits in EDITS.items():
         path = lightglue_dir / name
         text = path.read_text()
-        if text.count(old) != 1:
-            sys.exit(
-                f"fms-hf-tuning: CVE-2026-5241 patch target not found exactly once in {path}"
-            )
-        texts[path] = text.replace(old, new)
+        for old, new in edits:
+            if text.count(old) != 1:
+                sys.exit(
+                    "fms-hf-tuning: CVE-2026-5241 patch target not found exactly"
+                    f" once in {path}"
+                )
+            text = text.replace(old, new)
+        texts[path] = text
     for path, text in texts.items():
         path.write_text(text)
 

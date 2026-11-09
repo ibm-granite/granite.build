@@ -24,6 +24,7 @@ patched, it does not.
 import importlib.util
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -41,30 +42,56 @@ def _load():
     return mod
 
 
+_PASS_THROUGH = re.compile(r"trust_remote_code=(self|config)\.trust_remote_code")
+
+
 def _fake_package(tmp_path, patch):
     """A lightglue dir holding exactly the patch's OLD text, for the string tests."""
     d = tmp_path / "lightglue"
     d.mkdir()
-    for name, (old, _new) in patch.EDITS.items():
-        (d / name).write_text("# header\n" + old + "# footer\n")
+    for name, edits in patch.EDITS.items():
+        olds = "# middle\n".join(old for old, _new in edits)
+        (d / name).write_text("# header\n" + olds + "# footer\n")
     return d
 
 
 class TestStrings:
+    def test_covers_the_files_upstream_fixed(self):
+        # huggingface/transformers 676559d5 edits all three; the modular file is
+        # never imported, but ships in the wheel with the same two pass-throughs.
+        patch = _load()
+        assert sorted(patch.EDITS) == [
+            "configuration_lightglue.py",
+            "modeling_lightglue.py",
+            "modular_lightglue.py",
+        ]
+        modular, config, modeling = (
+            patch.EDITS[name]
+            for name in (
+                "modular_lightglue.py",
+                "configuration_lightglue.py",
+                "modeling_lightglue.py",
+            )
+        )
+        assert modular == config + modeling
+
     def test_replaces_every_target(self, tmp_path):
         patch = _load()
         d = _fake_package(tmp_path, patch)
         patch.patch(d)
-        for name, (old, new) in patch.EDITS.items():
+        for name, edits in patch.EDITS.items():
             text = (d / name).read_text()
-            assert old not in text and new in text, name
-            assert "trust_remote_code=" not in new, name
+            for old, new in edits:
+                assert old not in text and new in text, name
+                assert "trust_remote_code=" not in new, name
+            assert not _PASS_THROUGH.search(text), name
 
     def test_refuses_a_missing_target(self, tmp_path):
         patch = _load()
         d = _fake_package(tmp_path, patch)
-        first = next(iter(patch.EDITS))
-        (d / first).write_text("# upstream changed\n")
+        (d / "modular_lightglue.py").write_text(
+            patch.EDITS["modular_lightglue.py"][0][0]
+        )
         with pytest.raises(SystemExit, match="not found exactly once"):
             patch.patch(d)
 
@@ -72,10 +99,20 @@ class TestStrings:
         patch = _load()
         d = _fake_package(tmp_path, patch)
         first = next(iter(patch.EDITS))
-        old = patch.EDITS[first][0]
+        old = patch.EDITS[first][0][0]
         (d / first).write_text(old + old)
         with pytest.raises(SystemExit, match="not found exactly once"):
             patch.patch(d)
+
+    def test_writes_nothing_when_any_target_is_missing(self, tmp_path):
+        patch = _load()
+        d = _fake_package(tmp_path, patch)
+        before = {p.name: p.read_text() for p in d.iterdir()}
+        (d / "modular_lightglue.py").write_text("# upstream changed\n")
+        before["modular_lightglue.py"] = "# upstream changed\n"
+        with pytest.raises(SystemExit):
+            patch.patch(d)
+        assert {p.name: p.read_text() for p in d.iterdir()} == before
 
     def test_dockerfile_applies_it_after_the_install(self):
         dockerfile = (_STEP / "Dockerfile").read_text()
@@ -148,8 +185,8 @@ def _exploit(site_packages: pathlib.Path, work: pathlib.Path) -> bool:
     return marker.exists()
 
 
-@pytest.fixture
-def transformers_copy(tmp_path):
+@pytest.fixture(name="transformers_copy")
+def _transformers_copy(tmp_path):
     """A private copy of the installed transformers package, safe to patch."""
     pytest.importorskip("transformers.models.lightglue")
     import transformers  # pylint: disable=import-outside-toplevel
@@ -170,3 +207,14 @@ class TestExploit:
         work = tmp_path / "w2"
         work.mkdir()
         assert not _exploit(transformers_copy, work)
+
+    def test_patched_copy_keeps_no_pass_through(self, transformers_copy):
+        # The image check: no lightglue source file passes trust_remote_code on.
+        lightglue = transformers_copy / "transformers" / "models" / "lightglue"
+        _load().patch(lightglue)
+        left = [
+            p.name
+            for p in lightglue.glob("*.py")
+            if _PASS_THROUGH.search(p.read_text())
+        ]
+        assert not left
