@@ -101,11 +101,12 @@ def test_gpus_requested_by_the_build(build):
 
 
 def test_step_owned_list_is_parsed():
-    assert len(_STEP_OWNED) == 18, sorted(_STEP_OWNED)
+    assert len(_STEP_OWNED) == 19, sorted(_STEP_OWNED)
     assert {
         "model_name_or_path",
         "resume_from_checkpoint",
         "no_push_to_hub",
+        "dataset_cache_mode",
     } <= _STEP_OWNED
 
 

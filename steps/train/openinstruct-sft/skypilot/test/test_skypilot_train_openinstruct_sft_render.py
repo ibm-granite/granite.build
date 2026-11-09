@@ -225,9 +225,10 @@ class TestValidation:
 
     @pytest.mark.parametrize("block", ["setup", "run"])
     @pytest.mark.parametrize("layer", ["compute", "launcher"])
-    @pytest.mark.parametrize("n", [1, 1.0, "1"])
+    @pytest.mark.parametrize("n", [1, 1.0, "1", "01", " 1", "+1", "1 "])
     def test_whole_one_num_nodes_is_fine(self, block, layer, n):
-        # gbserver's _num_nodes_from_configs accepts a whole float (YAML 1.0).
+        # gbserver's _num_nodes_from_configs takes int(value): a whole float
+        # (YAML 1.0) and any string int() reads as 1 (a substituted parameter).
         if layer == "compute":
             ctx = _ctx(compute={"num_nodes": n})
         else:
@@ -238,6 +239,17 @@ class TestValidation:
                 }
             )
         _render(block, ctx)
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize("n", ["2", "02", "1.0", "0x1", "", "${NODES}"])
+    def test_string_num_nodes_other_than_one_refused(self, block, n):
+        # "1.0" and "0x1" fail gbserver's int() too; "${NODES}" is an
+        # unsubstituted parameter.
+        lc = {"resources": {"accelerators": "A10G:1"}, "num_nodes": n}
+        assert _render_error(block, _ctx(launcher_config=lc)) == (
+            f"openinstruct-sft: launcher_config.num_nodes must be 1 (got '{n}'); "
+            "this step is single-node."
+        )
 
     @pytest.mark.parametrize("block", ["setup", "run"])
     def test_whole_float_two_num_nodes_refused(self, block):
@@ -290,6 +302,8 @@ class TestValidation:
             "report_to",
             "push_to_hub",
             "dataset_local_cache_dir",
+            # hf would push a dataset-mix-cached dataset to the Hub.
+            "dataset_cache_mode",
         ],
     )
     def test_step_owned_args_refused(self, key):
@@ -319,6 +333,24 @@ class TestValidation:
 
     @pytest.mark.parametrize("block", ["setup", "run"])
     @pytest.mark.parametrize(
+        "key,flag",
+        [
+            ("no_fused_optimizer", "fused_optimizer"),
+            ("no-fused-optimizer", "fused-optimizer"),
+            ("no_use_fast", "use_fast"),
+            ("no_clean_checkpoints_at_end", "clean_checkpoints_at_end"),
+        ],
+    )
+    def test_no_complement_keys_refused(self, block, key, flag):
+        # HfArgumentParser's --no_<f> is store_false and takes no value, but args
+        # always renders one: `--no_fused_optimizer true` fails the run on 'true'.
+        assert _render_error(block, _ctx(args={key: True})) == (
+            f"openinstruct-sft: openinstruct_sft_config.args.{key} is a no_* flag, "
+            f"which takes no value; write {flag}: false instead."
+        )
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
         "key,owned",
         [
             ("output_d", "output_dir"),
@@ -328,6 +360,7 @@ class TestValidation:
             ("resume", "resume_from_checkpoint"),
             ("output-d", "output_dir"),
             ("no_push", "no_push_to_hub"),
+            ("dataset_cache", "dataset_cache_mode"),
         ],
     )
     def test_abbreviated_owned_args_refused(self, block, key, owned):
@@ -339,20 +372,19 @@ class TestValidation:
         )
 
     @pytest.mark.parametrize(
-        "key",
+        "key,value,rendered",
         [
-            "dataset_transform_fn",
-            "dataset_target_columns",
-            "dataset_cache_mode",
-            "model_revision",
-            "no_fused_optimizer",
+            ("dataset_transform_fn", ["sft_tulu_filter_v1"], ["sft_tulu_filter_v1"]),
+            ("dataset_target_columns", ["input_ids"], ["input_ids"]),
+            ("model_revision", "main", ["main"]),
+            ("fused_optimizer", False, ["false"]),
         ],
     )
-    def test_flags_sharing_an_owned_stem_are_fine(self, key):
+    def test_flags_sharing_an_owned_stem_are_fine(self, key, value, rendered):
         # Real finetune.py flags (open-instruct 26de9960) that start like an owned
-        # flag but are not a prefix of one.
-        tail = _tail(_argv("run", _ctx(args={key: "x"}), "openinstruct_sft_run.sh"))
-        assert tail[-2:] == [f"--{key}", "x"]
+        # flag but are not a prefix of one, with values finetune.py would parse.
+        tail = _tail(_argv("run", _ctx(args={key: value}), "openinstruct_sft_run.sh"))
+        assert tail[-1 - len(rendered) :] == [f"--{key}", *rendered]
 
     @pytest.mark.parametrize("block", ["setup", "run"])
     @pytest.mark.parametrize(
