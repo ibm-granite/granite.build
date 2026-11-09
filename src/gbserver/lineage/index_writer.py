@@ -60,31 +60,31 @@ from gbserver.lineage.db_jobstats import (
 )
 from gbserver.lineage.decompose import LineageDecomposeError, to_lineage_rows
 from gbserver.lineage.merge import rows_to_add, upsert_row
-from gbserver.storage.lineage_row_storage import ILineageRowStorage, tags_to_map
+from gbserver.storage.lineage_index_storage import ILineageIndexStorage, tags_to_map
 from gbserver.storage.stored_lineage_job import StoredLineageJob
 from gbserver.storage.stored_lineage_row import TERMINAL, JobStore, StoredLineageRow
 
 logger = logging.getLogger(__name__)
 
 
-class LineageRowIndexer:
+class LineageIndexWriter:
     """Derives and writes ``gb_lineage_index`` rows.
 
-    Owns the :class:`ILineageRowStorage` so no lineage *store* has to. The row
+    Owns the :class:`ILineageIndexStorage` so no lineage *store* has to. The row
     storage is resolved lazily, so importing this module does not require a
     configured database.
     """
 
-    def __init__(self, storage: Optional[ILineageRowStorage] = None) -> None:
+    def __init__(self, storage: Optional[ILineageIndexStorage] = None) -> None:
         self._row_storage = storage
 
     @property
-    def row_storage(self) -> ILineageRowStorage:
+    def row_storage(self) -> ILineageIndexStorage:
         """The lineage row storage, resolved on first use."""
         if self._row_storage is None:
             from gbserver.storage.singleton_storage import get_admin_storage
 
-            self._row_storage = get_admin_storage().lineage_row_storage
+            self._row_storage = get_admin_storage().lineage_index_storage
         return self._row_storage
 
     def has_rows_for_job(self, job_id: str) -> bool:

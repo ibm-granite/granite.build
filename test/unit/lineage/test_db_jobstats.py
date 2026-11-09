@@ -39,8 +39,8 @@ from gbserver.lineage.attributes import (
 )
 from gbserver.lineage.db_jobstats import DBLineageStore
 from gbserver.lineage.decompose import LineageRowDraft
-from gbserver.lineage.row_indexing import LineageRowIndexer
-from gbserver.lineage.row_indexing import row_from_draft as _row_from_draft
+from gbserver.lineage.index_writer import LineageIndexWriter
+from gbserver.lineage.index_writer import row_from_draft as _row_from_draft
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 
 pytestmark = pytest.mark.skipif(
@@ -55,7 +55,7 @@ class _LineageTablesTest(AbstractLineageTablesTest):
     @pytest.fixture(name="rows")
     def rows_fixture(self):
         """The lineage index, ``gb_lineage_index``."""
-        return self.storage.lineage_row_storage
+        return self.storage.lineage_index_storage
 
     @pytest.fixture(name="jobs")
     def jobs_fixture(self):
@@ -71,8 +71,8 @@ def sink_fixture(jobs):
 
 @pytest.fixture(name="indexer")
 def indexer_fixture(rows):
-    """The index writer, which owns gb_lineage_index. See row_indexing."""
-    return LineageRowIndexer(storage=rows)
+    """The index writer, which owns gb_lineage_index. See index_writer."""
+    return LineageIndexWriter(storage=rows)
 
 
 @pytest.fixture(name="write_job")
@@ -668,7 +668,7 @@ class TestJobTags(_LineageTablesTest):
         # both halves are kept here and _write runs them in order.
         self.tags = rows
         self.jobs = jobs
-        self.indexer = LineageRowIndexer(storage=rows)
+        self.indexer = LineageIndexWriter(storage=rows)
         return DBLineageStore(job_storage=self.jobs)
 
     def _write(self, sink, job_id, target_run, extra_tags=None, facet_tags=None):

@@ -20,7 +20,7 @@ One source, this store's own table. That is the ``ILineageStore`` contract --
 each store consults exactly one source, this one its job table, the W&B store the
 W&B API, the no-op store nothing -- and it is why nothing here touches
 ``gb_lineage_index``. The index is a *derived* artifact keyed by URI, owned and
-written by the lineage indexer (:mod:`gbserver.lineage.row_indexing`), which
+written by the lineage indexer (:mod:`gbserver.lineage.index_writer`), which
 reads these records back and decomposes them into edges.
 
 Each recorded execution is one job record, with the emitted entry kept verbatim
@@ -125,7 +125,7 @@ class DBLineageStore(ILineageStore):
         from. It used to return ``None`` and log a warning, which was tenable
         only while the index rows were also written here -- lineage still landed,
         minus the record's status, owner and step params. With the rows now the
-        indexer's (:mod:`gbserver.lineage.row_indexing`), a silent ``None`` would
+        indexer's (:mod:`gbserver.lineage.index_writer`), a silent ``None`` would
         make every write a no-op and every count zero, which reads as "no lineage
         yet" rather than as a broken store.
         """

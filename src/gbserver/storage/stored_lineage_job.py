@@ -60,7 +60,7 @@ module touches ``gb_targets``.
 ``tags`` is a promoted column, stored as the comma-joined sorted set the
 ``gb_builds`` and ``gb_artifacts`` tables already use for theirs. The same tags
 also ride on each of the job's index rows under ``attributes.job.tags`` (see
-:mod:`gbserver.storage.lineage_row_storage`); they are duplicated on purpose,
+:mod:`gbserver.storage.lineage_index_storage`); they are duplicated on purpose,
 because the two tables answer different questions -- the rows' copy labels an
 edge, this one is what a tag *search* filters on, and ``POST /lineage/search``
 has no index row in hand when it runs. There is no authorization logic anywhere

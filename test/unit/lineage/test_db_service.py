@@ -32,7 +32,7 @@ from gbserver.lineage.openlineage_service import (
     LineageServiceFactory,
     NoopLineageService,
 )
-from gbserver.storage.lineage_row_storage import GroupedEdge, endpoint_pair
+from gbserver.storage.lineage_index_storage import GroupedEdge, endpoint_pair
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 
 # Endpoints are normalized URIs: the node's identity and what a request names are

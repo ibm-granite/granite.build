@@ -245,20 +245,20 @@ def test_lineage_job_indexer_reads_in_order_and_checkpoints():
 def test_db_sink_record_only_then_index_dedups():
     """The store records; only the indexer writes rows. Both halves, in order."""
     from gbserver.lineage.db_jobstats import DBLineageStore
-    from gbserver.lineage.row_indexing import LineageRowIndexer
+    from gbserver.lineage.index_writer import LineageIndexWriter
 
     rows, jobs = MagicMock(), MagicMock()
     jobs.get_job.return_value = None
     store = DBLineageStore(job_storage=jobs)
     event = _job_record("j1", "x").attributes["entry"]["event"]
-    with patch("gbserver.lineage.row_indexing.upsert_row") as upsert_row:
+    with patch("gbserver.lineage.index_writer.upsert_row") as upsert_row:
         store.write_job(event, build_id="b1", target_run_uuid="j1")
         # The store cannot write a row -- it has no row storage at all now.
         upsert_row.assert_not_called()
         record = jobs.add.call_args.args[0]
         assert record.attributes["entry"]["events"] == [event]
 
-        reader = LineageRowIndexer(storage=rows)
+        reader = LineageIndexWriter(storage=rows)
         assert reader.index_job_record(record) is True
         assert reader.index_job_record(record) is True
         # Every pass goes through upsert_row, which merges into an existing row.
@@ -267,7 +267,7 @@ def test_db_sink_record_only_then_index_dedups():
 
 
 def test_index_job_records_bulk_adds_new_and_merges_existing():
-    from gbserver.lineage.row_indexing import LineageRowIndexer
+    from gbserver.lineage.index_writer import LineageIndexWriter
     from gbserver.storage.stored_lineage_row import StoredLineageRow
 
     def row(job_id, inp, out):
@@ -284,8 +284,8 @@ def test_index_job_records_bulk_adds_new_and_merges_existing():
 
     rows = MagicMock()
     rows.get_rows_by_jobs.return_value = [MagicMock(job_id="old")]
-    store = LineageRowIndexer(storage=rows)
-    with patch("gbserver.lineage.row_indexing.upsert_row") as upsert_row:
+    store = LineageIndexWriter(storage=rows)
+    with patch("gbserver.lineage.index_writer.upsert_row") as upsert_row:
         assert store.index_job_records([new, old]) == 2
     # One bulk add: the duplicate collapsed, the superseded terminal dropped.
     (added,) = rows.add.call_args.args
@@ -295,9 +295,9 @@ def test_index_job_records_bulk_adds_new_and_merges_existing():
 
 
 def test_index_job_record_without_entry_is_skipped():
-    from gbserver.lineage.row_indexing import LineageRowIndexer
+    from gbserver.lineage.index_writer import LineageIndexWriter
 
-    store = LineageRowIndexer(storage=MagicMock())
+    store = LineageIndexWriter(storage=MagicMock())
     assert store.index_job_record(_job_record("j1", "x", entry=False)) is False
 
 
@@ -776,12 +776,12 @@ def test_each_source_stamps_its_job_store():
     Stamped by the indexer, which writes the rows -- WANDB when it read the run
     from W&B, LINEAGE_JOB when it derived the rows from a job record.
     """
-    from gbserver.lineage.row_indexing import LineageRowIndexer
+    from gbserver.lineage.index_writer import LineageIndexWriter
 
     rows = MagicMock()
     rows.get_rows_by_job.return_value = []
     rows.get_rows_by_jobs.return_value = []
-    indexer = LineageRowIndexer(storage=rows)
+    indexer = LineageIndexWriter(storage=rows)
 
     event = _job_record("j1", "x").attributes["entry"]["event"]
     indexer.index_job_entry(
@@ -994,12 +994,12 @@ def test_wandb_api_is_fresh_per_scan(monkeypatch):
 
 
 def test_row_storage_error_propagates_instead_of_advancing():
-    from gbserver.lineage.row_indexing import LineageRowIndexer
+    from gbserver.lineage.index_writer import LineageIndexWriter
 
     rows = MagicMock()
     rows.get_rows_by_job.return_value = []
     rows.add.side_effect = ConnectionError("db down")
-    indexer = LineageRowIndexer(storage=rows)
+    indexer = LineageIndexWriter(storage=rows)
     with pytest.raises(ConnectionError):
         indexer.index_job_record(_job_record("j1", "2026-01-01T00:00:00+00:00"))
 

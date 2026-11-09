@@ -34,7 +34,7 @@ from gbserver.lineage.walk import (
     LineageGraph,
     walk_lineage,
 )
-from gbserver.storage.lineage_row_storage import GroupedEdge
+from gbserver.storage.lineage_index_storage import GroupedEdge
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 
 from .reference_walk import reference_walk

@@ -4,8 +4,8 @@ from gbserver.storage.sql.artifact_registry import SQLArtifactRegistry
 from gbserver.storage.sql.build_storage import SQLBuildStorage
 from gbserver.storage.sql.event_storage import SQLEventStorage
 from gbserver.storage.sql.kv_pair_storage import SQLKeyValuePairStorage
+from gbserver.storage.sql.lineage_index_storage import SQLLineageIndexStorage
 from gbserver.storage.sql.lineage_job_storage import SQLLineageJobStorage
-from gbserver.storage.sql.lineage_row_storage import SQLLineageRowStorage
 from gbserver.storage.sql.node_failure_storage import SQLNodeFailureStorage
 from gbserver.storage.sql.space_storage import SQLSpaceStorage
 from gbserver.storage.sql.space_user_storage import SQLSpaceUserStorage
@@ -36,8 +36,8 @@ class SQLStorageFactory(StorageFactory):
     def create_node_failure_storage(self, table_name: Optional[str] = None):
         return SQLNodeFailureStorage(table_name=table_name)
 
-    def create_lineage_row_storage(self, table_name: Optional[str] = None):
-        return SQLLineageRowStorage(table_name=table_name)
+    def create_lineage_index_storage(self, table_name: Optional[str] = None):
+        return SQLLineageIndexStorage(table_name=table_name)
 
     def create_lineage_job_storage(self, table_name: Optional[str] = None):
         return SQLLineageJobStorage(table_name=table_name)

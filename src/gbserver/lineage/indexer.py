@@ -61,6 +61,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from gbcommon.types.gbenvconfig import is_standalone
 from gbserver.lineage.db_jobstats import DBLineageStore
+from gbserver.lineage.index_writer import LineageIndexWriter
 from gbserver.lineage.jobstats import (
     LINEAGE_PROVIDER_DB,
     LINEAGE_PROVIDER_NONE,
@@ -77,7 +78,6 @@ from gbserver.lineage.lineage_seeding import (
     SEED_FROM_LATEST,
     LineageSeedError,
 )
-from gbserver.lineage.row_indexing import LineageRowIndexer
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.storage import Pagination, QueryControl, SortOrder
 from gbserver.storage.stored_lineage_job import StoredLineageJob
@@ -208,7 +208,7 @@ def create_indexer(
     source: str,
     monitoring_interval: float = 30.0,
     sink: Optional[DBLineageStore] = None,
-    rows: Optional[LineageRowIndexer] = None,
+    rows: Optional[LineageIndexWriter] = None,
 ):
     """Build the indexer loop for ``source``, or ``None`` when it has nothing to do.
 
@@ -219,7 +219,7 @@ def create_indexer(
     writes the index the indexer owns. See :class:`JobLineageIndexer`.
     """
     sink = sink or DBLineageStore()
-    rows = rows or LineageRowIndexer()
+    rows = rows or LineageIndexWriter()
     if source == INDEXER_SOURCE_ADMIN_DB:
         return TargetLineageIndexer(
             monitoring_interval=monitoring_interval, sink=sink, rows=rows
@@ -372,13 +372,13 @@ class JobLineageIndexer:
         self,
         monitoring_interval: float = 30.0,
         sink: Optional[DBLineageStore] = None,
-        rows: Optional[LineageRowIndexer] = None,
+        rows: Optional[LineageIndexWriter] = None,
     ) -> None:
         self.monitoring_interval = monitoring_interval
         self.stop_event = threading.Event()
         self.worker_thread: Optional[threading.Thread] = None
         self._sink = sink or DBLineageStore()
-        self._rows = rows or LineageRowIndexer()
+        self._rows = rows or LineageIndexWriter()
         self._failed_attempts: Dict[str, int] = {}
         self._transient_streak: Dict[str, int] = {}
         # The checkpoint as this indexer last read or wrote it; a write first checks
@@ -1442,7 +1442,7 @@ class WandBLineageIndexer(JobLineageIndexer):
         self,
         monitoring_interval: float = 30.0,
         sink: Optional[DBLineageStore] = None,
-        rows: Optional[LineageRowIndexer] = None,
+        rows: Optional[LineageIndexWriter] = None,
         api: Any = None,
     ) -> None:
         super().__init__(monitoring_interval=monitoring_interval, sink=sink, rows=rows)

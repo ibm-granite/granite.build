@@ -16,7 +16,7 @@
 
 """Shared tests for the lineage index table, ``gb_lineage_index``.
 
-The storage class is ``*LineageRowStorage`` (each item is a ``StoredLineageRow``);
+The storage class is ``*LineageIndexStorage`` (each item is a ``StoredLineageRow``);
 the table it backs is ``gb_lineage_index``. The bodies here are backend-agnostic and
 run against a prefixed copy of the admin tables, so they never touch the real one:
 
@@ -32,10 +32,10 @@ from libgbtest.storage.storage import AbstractStorageTest, AbstractStorageTestSu
 from sqlalchemy.exc import IntegrityError
 
 from gbserver.lineage.attributes import build_attributes
-from gbserver.storage.lineage_row_storage import (
+from gbserver.storage.lineage_index_storage import (
     DOWNSTREAM,
     UPSTREAM,
-    BaseLineageRowStorage,
+    BaseLineageIndexStorage,
     GroupedEdge,
 )
 from gbserver.storage.storage import BaseItemStorage, BaseStoredItem
@@ -86,14 +86,14 @@ class LineageIndexStorageTestSupport(AbstractStorageTestSupport):
 
 
 class BaseLineageIndexStorageTest(AbstractStorageTest):
-    """``gb_lineage_index`` via ``*LineageRowStorage``."""
+    """``gb_lineage_index`` via ``*LineageIndexStorage``."""
 
     @classmethod
     def _get_test_config(cls) -> AbstractStorageTestSupport:
         return LineageIndexStorageTestSupport()
 
-    def _get_tested_storage(self) -> BaseLineageRowStorage:
-        return self.storage.lineage_row_storage
+    def _get_tested_storage(self) -> BaseLineageIndexStorage:
+        return self.storage.lineage_index_storage
 
     def _get_where_search_columns(
         self, storage: BaseItemStorage, item: BaseStoredItem
@@ -582,7 +582,7 @@ class BaseLineageIndexStorageTest(AbstractStorageTest):
         """--rebuild empties the index under a running process that already resolved
         the table: that process must still read and write it afterwards."""
         storage = self._get_tested_storage()
-        other = self._get_storage_factory().create_lineage_row_storage(
+        other = self._get_storage_factory().create_lineage_index_storage(
             table_name=storage.table_name
         )
         other.add(row(job_id="J1"))

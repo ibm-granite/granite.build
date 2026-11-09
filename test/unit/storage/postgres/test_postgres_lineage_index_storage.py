@@ -14,11 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""``gb_lineage_index`` (SQLLineageRowStorage) tests against PostgreSQL.
+"""``gb_lineage_index`` (SQLLineageIndexStorage) tests against PostgreSQL.
 
 The backend-agnostic bodies live in test/libgbtest/storage/lineage_index_storage.py;
 re-running them here is what proves the two backends agree.
-``SqliteLineageRowStorage`` is ``SqliteStorageOverrides + SQLLineageRowStorage``, so
+``SqliteLineageIndexStorage`` is ``SqliteStorageOverrides + SQLLineageIndexStorage``, so
 everything the overrides touch -- connection specs, DDL dialect, index
 introspection -- is untested on postgres until it runs here.
 
@@ -49,7 +49,7 @@ from libgbtest.storage.postgres_storage import PostgresStorageTestMixin
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from gbserver.storage.sql.lineage_row_storage import SQLLineageRowStorage
+from gbserver.storage.sql.lineage_index_storage import SQLLineageIndexStorage
 from gbserver.storage.stored_lineage_row import TERMINAL
 
 pytestmark = LOCAL_POSTGRES_TEST_MARKS
@@ -60,9 +60,9 @@ class SQLLineageIndexStorageTests(
 ):
     """``gb_lineage_index`` tests, shared with the IBM copy (see TestSQLLineageIndexStorage below)."""
 
-    def _get_tested_storage(self) -> SQLLineageRowStorage:
+    def _get_tested_storage(self) -> SQLLineageIndexStorage:
         storage = super()._get_tested_storage()
-        assert isinstance(storage, SQLLineageRowStorage)
+        assert isinstance(storage, SQLLineageIndexStorage)
         return storage
 
     def _schema(self) -> Optional[str]:
@@ -185,7 +185,7 @@ class SQLLineageIndexStorageTests(
         # base class's teardown never sees, and drop it here.
         table = self._get_tested_storage().table_name[:-2] + "_x"
         assert len(f"uq_{table}_job_id_input_output") > 63, table
-        storage = self._get_storage_factory().create_lineage_row_storage(
+        storage = self._get_storage_factory().create_lineage_index_storage(
             table_name=table
         )
         try:

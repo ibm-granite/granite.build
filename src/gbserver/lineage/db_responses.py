@@ -63,7 +63,7 @@ from gbserver.lineage.attributes import (
     origin_detail,
     origin_system,
 )
-from gbserver.storage.lineage_row_storage import tags_to_map
+from gbserver.storage.lineage_index_storage import tags_to_map
 from gbserver.storage.stored_lineage_job import StoredLineageJob
 from gbserver.storage.stored_lineage_row import TERMINAL
 

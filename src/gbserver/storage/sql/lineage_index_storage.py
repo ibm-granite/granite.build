@@ -21,12 +21,12 @@ from typing import List, Optional
 
 from sqlalchemy import and_, distinct, func, or_
 
-from gbserver.storage.lineage_row_storage import (
+from gbserver.storage.lineage_index_storage import (
     DOWNSTREAM,
     UPSTREAM,
-    BaseLineageRowStorage,
+    BaseLineageIndexStorage,
     GroupedEdge,
-    ILineageRowStorage,
+    ILineageIndexStorage,
     endpoint_pair,
 )
 from gbserver.storage.sql.sql_storage import BaseSQLItemStorage, retry_read
@@ -34,10 +34,10 @@ from gbserver.storage.storage import JSON_COLUMN_NAME, UUID_COLUMN_NAME
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 
 
-class SQLLineageRowStorage(
+class SQLLineageIndexStorage(
     BaseSQLItemStorage[StoredLineageRow],
-    BaseLineageRowStorage,
-    ILineageRowStorage,
+    BaseLineageIndexStorage,
+    ILineageIndexStorage,
 ):
     """SQL-based storage implementation for lineage rows.
 

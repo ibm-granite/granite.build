@@ -55,8 +55,8 @@ from gbserver.lineage.attributes import (
     ORIGIN,
     ORIGIN_SYSTEM,
 )
+from gbserver.storage.lineage_index_storage import ILineageIndexStorage
 from gbserver.storage.lineage_job_storage import ILineageJobStorage
-from gbserver.storage.lineage_row_storage import ILineageRowStorage
 from gbserver.storage.stored_lineage_job import StoredLineageJob
 from gbserver.storage.stored_lineage_row import (
     MAX_JOB_ID_LENGTH,
@@ -193,7 +193,7 @@ def upsert_job(storage: ILineageJobStorage, job: StoredLineageJob) -> str:
     return UPDATED
 
 
-def upsert_row(storage: ILineageRowStorage, row: StoredLineageRow) -> str:
+def upsert_row(storage: ILineageIndexStorage, row: StoredLineageRow) -> str:
     """Add ``row``, or merge it into the stored row with the same identity.
 
     Also applies the terminal rule from the module docstring, in both directions: a
@@ -259,7 +259,7 @@ def _same_identity(
     return None
 
 
-def _delete_stale(storage: ILineageRowStorage, stale: List[StoredLineageRow]) -> None:
+def _delete_stale(storage: ILineageIndexStorage, stale: List[StoredLineageRow]) -> None:
     if stale:
         storage.delete([stored.uuid for stored in stale])
 

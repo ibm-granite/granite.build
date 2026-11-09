@@ -60,7 +60,7 @@ class TestSqliteLineageLocking(AbstractLineageTablesTest):
 
     @pytest.fixture(name="rows")
     def rows_fixture(self):
-        storage = self.storage.lineage_row_storage
+        storage = self.storage.lineage_index_storage
         storage.add(StoredLineageRow(job_id="J1", input="a", output="b"))
         return storage
 
