@@ -49,14 +49,15 @@ provides everything. It is generated from the sources here by the shared Makefil
   where the nightly extended suite runs it against the published step.
 - `test/slurm-bluevela/` + `test-data/slurm-bluevela/`: the GPU build test, on an
   internal GPU SLURM cluster through the in-repo environment
-  `space://environments/skypilot/slurm/ibm-bluevela`. It evaluates
+  `space://environments/skypilot/slurm/bluevela`. It evaluates
   `ibm-granite/granite-4.2-3b` on one H200 (`device=cuda`, PyPI's default CUDA torch)
-  on 10 instances, and pushes `results` the same way as `slurm-cpu`. It is marked
-  `ibm` and skipped in SPS CI/CD: the environment logs in with a key file,
-  `~/.ssh/ibm-bluevela.key`, so it needs no secret manager, but CI has no key. Run it
-  by hand from the IBM venv (`make ibm-venv`), with an `HF_TOKEN` that can write to
-  `GBTEST_HF_PUSH_ORG` (a read-only token fails the push with `Could not resolve
-  resource group id`):
+  on 10 instances, and pushes `results` the same way as `slurm-cpu`. The environment
+  logs in with the key in the `BV_SSH_PRIVATE_KEY` space secret: create it once in the
+  local space with `gb secret create BV_SSH_PRIVATE_KEY --from-file
+  ~/.ssh/ibm-bluevela.key`. It is marked `ibm`, skips unless that key file exists, and
+  is skipped in SPS CI/CD. Run it by hand from the IBM venv (`make ibm-venv`), with an
+  `HF_TOKEN` that can write to `GBTEST_HF_PUSH_ORG` (a read-only token fails the push
+  with `Could not resolve resource group id`):
 
   ```sh
   make -C steps/eval/unitxt/skypilot space

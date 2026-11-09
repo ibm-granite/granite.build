@@ -30,20 +30,24 @@ of torch. Ten instances make the score noisy; reaching SUCCESS proves:
   it. :class:`libgbtest.hfpush.HfPushCleanupMixin` names that dataset per run,
   checks it landed on the Hub, and deletes it afterwards.
 
-It uses the local space and the in-repo environment
-``space://environments/skypilot/slurm/ibm-bluevela``, which logs in as the shared
-functional ID with the key file ``~/.ssh/ibm-bluevela.key`` (mode 600, no
-passphrase). So the step resolves from this source tree, and the test needs no
-secret manager. It needs an ``HF_TOKEN`` that can write ``GBTEST_HF_PUSH_ORG``
-(default ibm-research).
+It uses the step's local space and the in-repo environment
+``space://environments/skypilot/slurm/bluevela``, so the step resolves from this
+source tree. That environment logs in as the shared functional ID with the key in
+the ``BV_SSH_PRIVATE_KEY`` space secret, created once in the local space from
+``~/.ssh/ibm-bluevela.key``
+(``gb secret create BV_SSH_PRIVATE_KEY --from-file ~/.ssh/ibm-bluevela.key``). It
+also needs an ``HF_TOKEN`` that can write ``GBTEST_HF_PUSH_ORG`` (default
+ibm-research).
 
-Marked ``ibm`` (IBM-only cluster), extended suite only, and skipped in SPS CI/CD,
-which has no key file. Run it by hand from the repo's IBM venv (``make ibm-venv``)::
+IBM infrastructure through the local space, so marked ``ibm``; extended suite only.
+Skips unless ``~/.ssh/ibm-bluevela.key`` exists on the host, and in SPS CI/CD,
+which has no key on the host. Run it by hand from the repo's IBM venv
+(``make ibm-venv``)::
 
     make -C steps/eval/unitxt/skypilot space
     cd steps/eval/unitxt/skypilot
-    GB_ENVIRONMENT=STANDALONE GBTEST_MODE=live PYTHONPATH=src \\
-      ../../../../.venv/bin/python -m pytest -s -v test/slurm-bluevela
+    GB_ENVIRONMENT=STANDALONE GBTEST_MODE=live GBTEST_STANDALONE_ENVIRONMENT=STAGING \\
+      PYTHONPATH=src ../../../../.venv/bin/python -m pytest -s -v test/slurm-bluevela
 
 The fixture's build.yaml and buildtest.yaml live in the directory returned by
 ``_get_yaml_spec_dir`` below.
@@ -60,16 +64,23 @@ from libgbtest.buildrunner.buildtest import (
 from libgbtest.constants import extended_testing_only
 from libgbtest.hfpush import HfPushCleanupMixin
 
-pytestmark = pytest.mark.ibm
+pytestmark = [pytest.mark.skypilot_integration, pytest.mark.ibm]
+
+# The key the BV_SSH_PRIVATE_KEY space secret is created from; the environment reads
+# the secret (cluster_ssh_configs IdentityKey), not this path.
+_BLUEVELA_KEY = Path("~/.ssh/ibm-bluevela.key").expanduser()
 
 
 @extended_testing_only
-# Serialize with the other tests on this cluster (same login nodes, same SSH
-# ControlMaster socket).
-@pytest.mark.xdist_group(name="buildtest_bv")
+# No xdist_group: skypilot_integration already puts it in the serialized
+# "skypilot" group, and under --dist=loadgroup any other group is a UsageError.
+@pytest.mark.skipif(
+    not _BLUEVELA_KEY.is_file(),
+    reason=f"BlueVela granitebuild SSH key not found at {_BLUEVELA_KEY}",
+)
 @pytest.mark.skipif(
     os.environ.get("RUNNING_IN_CICD", "False").lower() == "true",
-    reason="Needs the cluster's SSH key file, which SPS CI/CD does not have",
+    reason="No BlueVela SSH key on SPS CI/CD hosts",
 )
 class TestSkypilotSlurmBlueVelaUnitxtGpu(
     HfPushCleanupMixin, AbstractYamlBuildRunnerTest

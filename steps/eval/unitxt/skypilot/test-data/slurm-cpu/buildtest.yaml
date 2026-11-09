@@ -8,7 +8,7 @@ targets:
 target_expectations:
   # step_count is 3: the queued hfpull for the hf:// model input, the eval/unitxt
   # step itself, and one hfpush for the one artifact the step registers. The
-  # skypilot/slurm environment does not set `inline: true` on its hf assetstore
+  # skypilot/slurm/local environment does not set `inline: true` on its hf assetstore
   # pull/push (unlike skypilot/aws), so both transfers are separate steps (the same
   # accounting as the standalone skypilot_slurm/1step fixture).
   #
