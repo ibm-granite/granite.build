@@ -1,9 +1,9 @@
 # Identity-RL full recipe — the complete Identity RL run.
-# Reproduces gbansible run_rl_bluevela_identity.sh: RM server (no code server),
+# Reproduces the original Ansible-driven identity-RL launch: RM server (no code server),
 # same GRPO config, full training length (no smoke overrides). Override any
 # value with: gb build start --param KEY=VALUE
-# Values mirror gbansible vars/rl/identityrl.yml plus the
-# run_rl_bluevela_identity.sh -e overrides (temperature=1.15, total_episodes=300000,
+# Values mirror the original Ansible identity-RL configuration plus the
+# launch script's -e overrides (temperature=1.15, total_episodes=300000,
 # *_freq=40, ref=8, add_general_reward=false).
 
 # ─── Run identification ───────────────────────────────────────────────
@@ -22,7 +22,7 @@ DATASET_EVAL_MIXER: '{"/proj/granite-build/g4os/RLHF/data/long_context/general_d
 OUTPUT_DIR: "/proj/granite-build/g4os/skypilot-test/RLHF/outputs/granite4-350m-openinstruct-epoch-hf-2-identityrl/"
 CHECKPOINT_STATE_DIR: "/proj/granite-build/g4os/skypilot-test/RLHF/outputs/granite4-350m-openinstruct-epoch-hf-2-identityrl/_state"
 
-# ─── Full-run training length (run_rl_bluevela_identity.sh -e overrides) ─
+# ─── Full-run training length (original launch script's -e overrides) ─
 TOTAL_EPISODES: "120000"
 SAVE_FREQ: "20"
 EVAL_FREQ: "20"

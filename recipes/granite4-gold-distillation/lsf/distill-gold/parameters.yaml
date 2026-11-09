@@ -1,5 +1,5 @@
 # distill-gold — real-scale GOLD distillation, granite-4.2-30b teacher /
-# granite-4.1-3b-base student, for BlueVela (SkyPilot / LSF).
+# granite-4.1-3b-base student, for SkyPilot/LSF.
 #
 # LMBDA is the tunable that selects the loss: 0.0 (default) is off-policy,
 # forward/reverse-KL-mixable via BETA; >0.0 is on-policy. Setting LMBDA>0
@@ -43,13 +43,12 @@ IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
 # TEACHER_MODEL_URI / STUDENT_MODEL_URI carry a FULL uri, not a bare path —
 # the scheme picks how granite.build fetches it (see ibm-bluevela's
 # environment.yaml assetstores block for what's wired in):
-#   env://<absolute path>   already on the shared filesystem (BlueVela's /proj)
+#   env://<absolute path>   already on the shared filesystem (the cluster's shared filesystem)
 #   hf:///<org>/<repo>      pulled fresh from the Hugging Face Hub
 #   s3://<bucket>/<key>     pulled from S3-compatible object storage
 #
 # The teacher is the real HF snapshot gold-sweep-100 verified readable from
-# the granitebuild account (/proj/data-eng is drwxrws--- root proj_data-eng
-# and we are in proj_data-eng; verified 2026-09-13) — reused as-is rather
+# the service account (readable via the project group) — reused as-is rather
 # than pulled fresh, since re-downloading a 30B model buys nothing a
 # known-good snapshot doesn't already have.
 TEACHER_MODEL_URI: "env:///proj/data-eng/hew/.cache/hf/hub/models--ibm-granite--granite-4.2-30b/snapshots/a0057a78b9d98a88aba90b6ef6e00d292440a222"
@@ -69,7 +68,7 @@ STUDENT_MODEL_URI: "env:///proj/data-eng/hew/gb-steps-collection-post-training/d
 # (a path relative to the ported step's code checkout) is currently BROKEN —
 # the public gb-steps-distillation repo this step now clones does not ship
 # any *.jinja template at all — so this is overridden with an absolute,
-# verified-on-BlueVela path instead of relying on that default.
+# verified-on-the-cluster path instead of relying on that default.
 CHAT_TEMPLATE: "/proj/granite-build/g4os/chat_templates/granite_4_role_generation.jinja"
 # FALSE: no granite 4.x model carries <|im_start|> at all, and the template
 # above is granite-native, not ChatML. See distill-smoke's parameters.yaml

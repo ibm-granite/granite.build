@@ -1,7 +1,7 @@
 # IFRL full recipe
 
-The complete ~1-day Instruction-Following RL run on BlueVela (LSF via SkyPilot).
-This is the gbserver reproduction of the gbansible `run_rl_bluevela_if.sh`
+The complete ~1-day Instruction-Following RL run on SkyPilot/LSF.
+This is the gbserver reproduction of the original Ansible-driven IFRL launch
 script — same servers, same GRPO configuration, full training length. The
 `ifrl-smoke` recipe is the minutes-long plumbing test for the same workflow;
 this recipe runs it to convergence.
@@ -24,7 +24,7 @@ Four targets on `space://environments/skypilot/lsf`:
 
 Structurally identical (same `build.yaml`, same targets, same `H100:8`
 topology). The only differences are the full-run training-length parameters,
-matching the `run_rl_bluevela_if.sh` `-e` overrides:
+matching the original launch script's `-e` overrides:
 
 | Parameter               | smoke | full   |
 |-------------------------|-------|--------|
@@ -46,6 +46,6 @@ matching the `run_rl_bluevela_if.sh` `-e` overrides:
       --space <your-space>
 
 Outputs are namespaced under `…/granite4-350m-14-7180-ifrl-gb/` (note the `-gb`
-suffix) so this gbserver run cannot clobber the gbansible run's output under
+suffix) so this gbserver run cannot clobber the Ansible-driven run's output under
 `…/granite4-350m-14-7180-ifrl/`. Override any value with `--param KEY=VALUE`
 (see `parameters.yaml`).

@@ -1,7 +1,7 @@
-# gold-smoke — GOLD distillation smoke recipe for BlueVela (SkyPilot / LSF).
+# gold-smoke — GOLD distillation smoke recipe for SkyPilot/LSF.
 #
 # Exercises the plumbing — 2-node allocation, per-node rank, config rendering inside
-# the container against the /proj checkout, checkpoint publication — not the science.
+# the container against the shared-filesystem checkout, checkpoint publication — not the science.
 # Everything expensive is scaled down; the model pair is not.
 #
 # Override any value with: gb build start --param KEY=VALUE
@@ -22,7 +22,7 @@ IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
 # ─── Model pair and data ──────────────────────────────────────────────
 # The REFERENCE pair, deliberately not something smaller. GOLD compares student and
 # teacher distributions position-by-position, so the two must share a tokenizer — same
-# vocabulary size is not sufficient, the token IDs must agree. Grouping the /proj
+# vocabulary size is not sufficient, the token IDs must agree. Grouping the shared-fs
 # overlays by the hash of tokenizer.json, this is the only pair in its family, and the
 # only family whose tokenizer carries <|im_start|> — the token RESPONSE_TEMPLATE needs
 # to locate the completion span for loss masking. A smaller pair (e.g.

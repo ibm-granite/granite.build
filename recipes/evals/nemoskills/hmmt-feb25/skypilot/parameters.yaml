@@ -1,4 +1,4 @@
-# hmmt-feb25 on BlueVela (SkyPilot / SLURM), nemoskills family image.
+# hmmt-feb25 on SkyPilot/SLURM, nemoskills family image.
 # Data: https://huggingface.co/datasets/MathArena/hmmt_feb_2025 @ 6fdc4277120810ff75aa22d2d5489b91f7a262a1
 # (pinned in the image's code; fetch it into the HF cache with `make -C steps/eval prefetch HF_HOME=<cache>`).
 #

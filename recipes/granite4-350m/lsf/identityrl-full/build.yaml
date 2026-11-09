@@ -1,6 +1,6 @@
 ######
 # Identity-RL full recipe — the complete Identity RL run.
-# Reproduces gbansible run_rl_bluevela_identity.sh end-to-end. Structurally
+# Reproduces the original Ansible-driven identity-RL launch end-to-end. Structurally
 # identical to identityrl-smoke (same three targets, same 8-GPU topology); the
 # only difference is full-run training-length parameters instead of the smoke
 # overrides.

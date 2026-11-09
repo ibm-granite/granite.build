@@ -1,6 +1,6 @@
 granite.build:
   name: eval-multi-challenge-score-local
-  # Re-scores existing multi-challenge outputs on the gbserver host: no GPU, no BlueVela. For
+  # Re-scores existing multi-challenge outputs on the gbserver host: no GPU, no SkyPilot/SLURM cluster. For
   # comparing judges or scoring settings on the same generations. GENERATION_PATH is the absolute
   # path of a generation.json whose directory also holds items/ (e.g. a build-local.yaml fetch
   # output). Each run scores a fresh copy, so the source is never changed. The model, limit and

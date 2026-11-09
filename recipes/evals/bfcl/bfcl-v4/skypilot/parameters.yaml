@@ -1,4 +1,4 @@
-# bfcl-v4 on BlueVela (SkyPilot / SLURM), bfcl family image.
+# bfcl-v4 on SkyPilot/SLURM, bfcl family image.
 # Data: pinned inside the image (GitHub/PyPI/task data baked by the family's extras.sh), nothing to fetch.
 #
 # LIMIT is empty: the full benchmark. For a quick functional check, score only the first N

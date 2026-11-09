@@ -1,13 +1,13 @@
 # IFRL full recipe — the complete ~1-day Instruction-Following RL run.
-# Reproduces gbansible run_rl_bluevela_if.sh: same servers, same GRPO config,
+# Reproduces the original Ansible-driven IFRL launch: same servers, same GRPO config,
 # full training length (no smoke overrides). Override any value with:
 #   gb build start --param KEY=VALUE
-# Values mirror gbansible vars/rl/granite4-350m-14-7180-ifrl.yml plus the
-# run_rl_bluevela_if.sh -e overrides (total_episodes=500000, *_freq=80, ref=32).
+# Values mirror the original Ansible IFRL configuration plus the
+# launch script's -e overrides (total_episodes=500000, *_freq=80, ref=32).
 
 # ─── Run identification ───────────────────────────────────────────────
-# -gb suffix keeps this gbserver-driven run distinct from the gbansible
-# run_rl_bluevela_if.sh run (which uses the bare granite4-350m-14-7180-ifrl name).
+# -gb suffix keeps this gbserver-driven run distinct from the original
+# Ansible-driven run (which uses the bare granite4-350m-14-7180-ifrl name).
 EXP_NAME: "granite4-350m-openinstruct-epoch-hf-2"
 RUN_NAME: "granite4-350m-openinstruct-epoch-hf-2"
 RL_NAME: "if"
@@ -17,11 +17,11 @@ MODEL_PATH: "/proj/granite-build/g4os/skypilot-test/sft/checkpoints/v0-20260529-
 DATASET_MIXER: '{"/proj/granite-build/g4os/RLHF/data/long_context/rlnothink_300m/mix16_if/train.jsonl":1.0}'
 DATASET_EVAL_MIXER: '{"/proj/granite-build/g4os/RLHF/data/long_context/rlnothink_300m/mix16_if/validation.jsonl":1.0}'
 
-# ─── Output (namespaced under -gb so it can't clobber the gbansible run) ─
+# ─── Output (namespaced under -gb so it can't clobber the Ansible-driven run) ─
 OUTPUT_DIR: "/proj/granite-build/g4os/skypilot-test/RLHF/outputs/granite4-350m-openinstruct-epoch-hf-2/"
 CHECKPOINT_STATE_DIR: "/proj/granite-build/g4os/skypilot-test/RLHF/outputs/granite4-350m-openinstruct-epoch-hf-2/_state"
 
-# ─── Full-run training length (run_rl_bluevela_if.sh -e overrides) ────
+# ─── Full-run training length (original launch script's -e overrides) ────
 TOTAL_EPISODES: "500000"
 SAVE_FREQ: "80"
 EVAL_FREQ: "80"

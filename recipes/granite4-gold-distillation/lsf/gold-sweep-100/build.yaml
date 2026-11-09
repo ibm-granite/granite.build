@@ -1,5 +1,5 @@
 ######
-# gold-sweep-100 — GOLD knowledge distillation for BlueVela (SkyPilot / LSF).
+# gold-sweep-100 — GOLD knowledge distillation for SkyPilot/LSF.
 #
 # The lambda=0.0 off-policy arm of the 100-step sweep: 100 optimizer steps over the
 # full 802,027-row corpus at effective batch 192. Roughly 1.9 h on one 8xH100 node.

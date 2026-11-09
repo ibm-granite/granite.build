@@ -1,7 +1,7 @@
 # Identity-RL full recipe
 
-The complete Identity RL run on BlueVela (LSF via SkyPilot). This is the
-gbserver reproduction of the gbansible `run_rl_bluevela_identity.sh` script —
+The complete Identity RL run on SkyPilot/LSF. This is the
+gbserver reproduction of the original Ansible-driven identity-RL launch script —
 RM server, same GRPO configuration, full training length. The
 `identityrl-smoke` recipe is the minutes-long plumbing test for the same
 workflow; this recipe runs it to convergence.
@@ -34,7 +34,7 @@ simply omits the `code-server` target: the trainer takes only the
 
 Structurally identical (same `build.yaml`, same targets, same `H100:8`
 topology). The only differences are the full-run training-length parameters,
-matching the `run_rl_bluevela_identity.sh` `-e` overrides:
+matching the original launch script's `-e` overrides:
 
 | Parameter               | smoke | full   |
 |-------------------------|-------|--------|

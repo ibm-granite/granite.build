@@ -1,6 +1,6 @@
 # IFRL smoke recipe — validates end-to-end plumbing in minutes, not the full run.
 # Override any value with: gb build start --param KEY=VALUE
-# Values mirror gbansible vars/rl/granite4-350m-14-7180-ifrl.yml with smoke overrides.
+# Values mirror the original Ansible IFRL configuration with smoke overrides.
 
 # ─── Run identification ───────────────────────────────────────────────
 EXP_NAME: "granite4-350m-14-7180-ifrl-smoke"

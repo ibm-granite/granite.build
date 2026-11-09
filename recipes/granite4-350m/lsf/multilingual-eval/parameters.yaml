@@ -1,4 +1,4 @@
-# Default parameters for sage multilingual evaluation on BlueVela
+# Default parameters for sage multilingual evaluation on SkyPilot/LSF
 # Override any of these with: gb build start --param KEY=VALUE
 
 # Model
@@ -13,7 +13,7 @@ NUM_GPUS: 1
 # Output
 OUTPUT_DIR: "/proj/granite-build/g4os/sage"
 
-# Infrastructure (matches gbansible JOB_MEM = ngpu * 256)
+# Infrastructure (matches the original Ansible JOB_MEM = ngpu * 256)
 ACCELERATORS: "H100:1"
 CLUSTER: "bluevela"
 QUEUE: "preemptable"
