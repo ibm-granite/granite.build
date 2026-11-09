@@ -30,9 +30,9 @@
 # The step images are referenced from each family's step-template.yaml as
 # ${REGISTRY}/gb-step-eval-<family>:${IMAGE_VERSION}.
 
-FAMILIES := bfcl bird ifbench judged lmeval mcpmark nl2repo nemoskills officeqa swebench tau tbench
+FAMILIES := bfcl bird ifbench judged lmeval mcpmark nemoskills officeqa swebench tau tbench
 # Families whose benchmarks split into GPU generate + CPU score (--phase); lmeval and tbench score inside generation.
-CPU_FAMILIES := bfcl bird ifbench judged nl2repo nemoskills officeqa swebench tau
+CPU_FAMILIES := bfcl bird ifbench judged nemoskills officeqa swebench tau
 
 REGISTRY  ?=
 PLATFORM  ?= linux/amd64

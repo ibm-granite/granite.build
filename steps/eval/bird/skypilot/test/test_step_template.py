@@ -26,7 +26,6 @@ _FAMILIES = (
     "judged",
     "lmeval",
     "mcpmark",
-    "nl2repo",
     "nemoskills",
     "officeqa",
     "swebench",
