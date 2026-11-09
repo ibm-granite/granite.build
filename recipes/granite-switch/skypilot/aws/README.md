@@ -130,7 +130,9 @@ and writes, outside the repo and readable only by you:
 | `~/.granite.build/local-env/granite-switch.params` | `ENVIRONMENT_URI=space://environments/skypilot-local/<name>` and `HOST_AMI=ami-...`. Other lines in the file are kept. |
 
 It reads no secret; it is safe to re-run, and `ENVIRONMENT_URI` and `HOST_AMI`
-point at the region set up last. It ends by printing what is left to do.
+point at the region set up last. It ends by printing what is left to do, and,
+for every region set up so far, the `ENVIRONMENT_URI` and `HOST_AMI` pair to
+pass to run there (step 5).
 
 **The GPU host image.** The GPU steps run on the AWS
 [Deep Learning Base GPU AMI](https://aws.amazon.com/releasenotes/aws-deep-learning-base-gpu-ami-ubuntu-22-04/)
@@ -186,6 +188,11 @@ A `--param` given later on the command line wins, so add any override after
 the file's. Don't use `--parameters-path` for the file: it replaces the
 recipe's `parameters.yaml` rather than adding to it. Each recipe's README has
 its own smoke run and full-run parameters.
+
+To run in a region other than the last one you set up, override
+`ENVIRONMENT_URI` and `HOST_AMI` together, with the pair the script printed for
+that region. An AMI id exists only in its own region, so the last region's
+`HOST_AMI` with another region's environment fails the launch.
 
 ## Costs and cleanup
 

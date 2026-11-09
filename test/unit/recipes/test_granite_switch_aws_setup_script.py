@@ -52,18 +52,29 @@ def _home(tmp_path, region, fs=_FS, name=None, quote="", ami=None):
     return tmp_path / "gbhome"
 
 
-def _aws_stub(tmp_path, out=_AMI, rc=0):
-    """A fake `aws` on PATH: logs its argv, prints out for `ssm get-parameter`."""
+def _aws_stub(tmp_path, out=_AMI, rc=0, err=""):
+    """A fake `aws` on PATH: logs its argv; for `ssm get-parameter` prints out
+    (and err on stderr) and exits rc."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     stub = bin_dir / "aws"
     stub.write_text(
         "#!/bin/sh\n"
         f'printf "%s\\n" "$*" >> "{tmp_path}/aws.log"\n'
-        f'case "$1 $2" in "ssm get-parameter") printf "%s\\n" "{out}"; exit {rc} ;; esac\n'
+        'case "$1 $2" in "ssm get-parameter")\n'
+        f'  printf "%s\\n" "{out}"; [ -n "{err}" ] && printf "%s\\n" "{err}" >&2\n'
+        f"  exit {rc} ;;\n"
+        "esac\n"
         "exit 9\n"
     )
     stub.chmod(0o755)
+    return bin_dir
+
+
+def _no_aws(tmp_path):
+    """A bin dir without `aws`, so PATH has none (/usr/bin and /bin carry none)."""
+    bin_dir = tmp_path / "noaws"
+    bin_dir.mkdir(exist_ok=True)
     return bin_dir
 
 
@@ -195,6 +206,57 @@ def test_refuses_a_pinned_ami_that_is_not_an_ami_id(tmp_path):
     assert proc.returncode != 0
     assert "is not an AMI id" in proc.stderr
     assert not (home / "local-space").exists()
+
+
+def test_a_failed_lookup_shows_the_aws_cli_error(tmp_path):
+    # An expired login, a wrong profile or a missing ssm:GetParameter permission
+    # all fail the lookup; the CLI's own message says which.
+    err = "An error occurred (ExpiredTokenException): The security token included in the request is expired"
+    home = _home(tmp_path, "us-west-2")
+    proc = _run(home, "us-west-2", aws=_aws_stub(tmp_path, out="", rc=254, err=err))
+    assert proc.returncode != 0
+    assert "ExpiredTokenException" in proc.stderr
+    assert not (home / "local-space").exists()
+
+
+def test_refuses_without_the_aws_cli_unless_an_ami_is_pinned(tmp_path):
+    home = _home(tmp_path, "us-west-2")
+    proc = _run(home, "us-west-2", aws=_no_aws(tmp_path))
+    assert proc.returncode != 0
+    assert "no aws CLI" in proc.stderr
+    assert "AMI=" in proc.stderr
+    assert not (home / "local-space").exists()
+
+    pinned = _home(tmp_path / "pinned", "us-west-2", ami="ami-0f9b1a75c4247001e")
+    proc = _run(pinned, "us-west-2", aws=_no_aws(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert _params(pinned)["HOST_AMI"] == "ami-0f9b1a75c4247001e"
+
+
+def test_prints_each_set_up_regions_environment_and_ami_together(tmp_path):
+    # HOST_AMI is per region, and the params file holds the region set up last;
+    # a user who overrides ENVIRONMENT_URI must override HOST_AMI with it.
+    east = "ami-0846639209ba40084"
+    home = _home(tmp_path, "us-east-1", ami=east)
+    _home(tmp_path, "us-west-2")
+    assert _run(home, "us-east-1").returncode == 0
+    proc = _run(home, "us-west-2")
+    assert proc.returncode == 0, proc.stderr
+    assert (
+        "--param ENVIRONMENT_URI=space://environments/skypilot-local/aws-gb-shared"
+        f" --param HOST_AMI={east}"
+    ) in proc.stdout
+    assert (
+        "--param ENVIRONMENT_URI=space://environments/skypilot-local/aws-gb-shared-usw2"
+        f" --param HOST_AMI={_AMI}"
+    ) in proc.stdout
+
+
+def test_the_template_names_the_ami_placeholder_only_where_it_is_filled():
+    # The template's comments must not carry the placeholder: sed fills every
+    # occurrence, so a comment would end up naming the AMI as a placeholder.
+    text = (_AWS / "environment-template.yaml").read_text()
+    assert text.count("AMI-REPLACE-ME") == 1
 
 
 def test_another_region_gets_its_own_name_from_the_same_template(tmp_path):

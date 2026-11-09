@@ -66,8 +66,8 @@ config:
   # type here must pin it too (launcher_config.resources.infra:
   # aws/<region>), or add it to this list.
   #
-  # hf-peft-sft's GPU host runs on the AWS Deep Learning Base GPU AMI
-  # (AMI-REPLACE-ME, which setup-local-space.sh fills in per region). SkyPilot's
+  # hf-peft-sft's GPU host runs on the AWS Deep Learning Base GPU AMI, whose
+  # per-region id setup-local-space.sh fills in below. SkyPilot's
   # default AMI leaves an 8-GPU H200 instance without the GPUs: NVSwitch needs
   # the DLAMI's NVIDIA Fabric Manager before CUDA initializes. docker.host_image_id
   # sets only the host; the step keeps its own image. byoc gets no AMI here: an

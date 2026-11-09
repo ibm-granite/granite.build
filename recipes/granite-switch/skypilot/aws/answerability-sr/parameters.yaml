@@ -33,7 +33,9 @@ IMAGE: ""
 # that file (../README.md, step 5). SkyPilot's default AMI leaves an 8-GPU H200
 # instance without its GPUs (NVSwitch needs the DLAMI's Fabric Manager). With
 # IMAGE empty the step runs on this AMI itself; with an IMAGE it is the host the
-# container runs on. Empty: SkyPilot's default AMI.
+# container runs on. Empty: SkyPilot's default AMI. An AMI id exists only in its
+# own region: when you override ENVIRONMENT_URI, override HOST_AMI with it (the
+# script prints the pair for each region it has set up).
 HOST_AMI: ""
 
 # ── Code under test ──────────────────────────────────────────────────────────

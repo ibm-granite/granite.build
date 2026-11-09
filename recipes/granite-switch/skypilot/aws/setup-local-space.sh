@@ -65,10 +65,18 @@ if [ -n "$AMI" ]; then
   [[ "$AMI" =~ ^ami-[0-9a-f]{8,17}$ ]] || die "$IDS: AMI=$AMI is not an AMI id (ami-<hex>)"
   AMI_FROM="AMI= in $IDS"
 else
+  command -v aws >/dev/null ||
+    die "no aws CLI on PATH to look up the Deep Learning Base GPU AMI for $REGION." \
+      "Install it (README.md, What you need), or pin one with an AMI=ami-... line in $IDS."
+  # The CLI's stderr says why a lookup failed (expired login, wrong profile, no
+  # ssm:GetParameter permission); keep it for the message rather than drop it.
+  AWS_ERR="$(mktemp)"
   AMI="$(aws ssm get-parameter --region "$REGION" --name "$SSM_AMI" \
-    --query Parameter.Value --output text 2>/dev/null)" || AMI=""
+    --query Parameter.Value --output text 2>"$AWS_ERR")" || AMI=""
+  ERR_TEXT="$(head -c 600 "$AWS_ERR")"
+  rm -f "$AWS_ERR"
   [[ "$AMI" =~ ^ami-[0-9a-f]{8,17}$ ]] ||
-    die "could not look up the Deep Learning Base GPU AMI for $REGION (aws ssm get-parameter $SSM_AMI)." \
+    die "could not look up the Deep Learning Base GPU AMI for $REGION (aws ssm get-parameter $SSM_AMI)${ERR_TEXT:+: $ERR_TEXT}." \
       "Check the AWS CLI and its credentials, or pin one with an AMI=ami-... line in $IDS."
   AMI_FROM="$SSM_AMI"
 fi
@@ -175,3 +183,16 @@ Then start gbserver on the space and run a recipe:
   cd $HERE/answerability-lora
   gb build start -f build.yaml \$(sed 's/^/--param /' $PARAMS) --param RUN_ID=<unique>
 EOF
+
+# Every region set up so far, from each environment's "# Host AMI:" header. An AMI
+# id exists only in its own region, so a run in another region than the last one
+# set up overrides both parameters, as a pair.
+echo
+echo "To run in a region other than the last one set up, override both, as a pair:"
+for env_file in "$S"/overlay/environments/skypilot-local/aws-gb-shared*/environment.yaml; do
+  [ -f "$env_file" ] || continue
+  env_ami="$(sed -n 's/^# Host AMI: \(ami-[0-9a-f]*\) .*/\1/p' "$env_file" | head -n 1)"
+  [ -n "$env_ami" ] || continue
+  env_name="$(basename "$(dirname "$env_file")")"
+  echo "  --param ENVIRONMENT_URI=space://environments/skypilot-local/$env_name --param HOST_AMI=$env_ami"
+done
