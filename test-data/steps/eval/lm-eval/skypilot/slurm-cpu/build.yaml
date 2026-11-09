@@ -7,7 +7,7 @@ granite.build:
   # locally at ~620 MB peak RSS, under the cluster's 1 GB nodes.
   targets:
     aime25:
-      environment_uri: space://environments/skypilot/slurm
+      environment_uri: space://environments/skypilot/slurm/local
       inputs:
         # The step's required input. Public, so the hfpull needs no token.
         model:

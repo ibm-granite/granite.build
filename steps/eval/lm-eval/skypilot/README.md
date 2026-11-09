@@ -80,14 +80,15 @@ the `lm_eval_version` metadata, and checks that the results dataset exists on th
 
 **GPU build test (`slurm-bluevela`).** The same benchmark on one H200 on an internal GPU
 SLURM cluster, through the in-repo environment
-`space://environments/skypilot/slurm/ibm-bluevela`: `ibm-granite/granite-4.2-3b`,
+`space://environments/skypilot/slurm/bluevela`: `ibm-granite/granite-4.2-3b`,
 PyPI's CUDA torch, `device: cuda`, batch 1, the chat template, 3 of aime25's 30
 problems at `max_gen_toks: 16384`. The host asks for `cpus: 16, memory: 128`: long
 generations were OOM-killed on the default 16 GB. The results go to an `hf://` dataset
-as above. The score isn't asserted (3 problems is noisy). It is marked `ibm` and
-skipped in SPS CI/CD: the environment logs in with a key file,
-`~/.ssh/ibm-bluevela.key`, so it needs no secret manager, but CI has no key. Run it
-by hand from the IBM venv (`make ibm-venv`):
+as above. The score isn't asserted (3 problems is noisy). The environment logs in
+with the key in the `BV_SSH_PRIVATE_KEY` space secret: create it once in the local
+space with `gb secret create BV_SSH_PRIVATE_KEY --from-file ~/.ssh/ibm-bluevela.key`.
+It is marked `ibm`, skips unless that key file exists, and is skipped in SPS CI/CD.
+Run it by hand from the IBM venv (`make ibm-venv`):
 
 ```sh
 make -C steps/eval/lm-eval/skypilot space

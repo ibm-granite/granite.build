@@ -8,7 +8,7 @@ targets:
   - aime25
 target_expectations:
   - target_name: aime25
-    # hfpull(model) + eval/lm-eval + hfpush(results). The skypilot/slurm environment
+    # hfpull(model) + eval/lm-eval + hfpush(results). The skypilot/slurm/local environment
     # doesn't pull or push inline, so each transfer is its own step.
     step_count: 3
     input_artifact_count: 1    # model
