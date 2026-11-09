@@ -103,9 +103,10 @@ config:
   base_url: ""
   # Seed for the benchmark's own sampling (shuffles, subsets).
   seed: "0"
-  # Where the OpenHands and per-task test images are imported to as squashfs. On a
-  # shared filesystem, every job after the first reuses them instead of pulling again.
-  sandbox_cache: "/proj/granite-build/g4os/granite/enroot-cache"
+  # Where the OpenHands and per-task test images are imported to as squashfs.
+  # Empty derives a per-run path (the recipes' form); a shared path lets every
+  # job after the first reuse imported images instead of pulling again.
+  sandbox_cache: ""
   # Empty leaves the image's HF cache default alone.
   hf_home: ""
 outputs:
