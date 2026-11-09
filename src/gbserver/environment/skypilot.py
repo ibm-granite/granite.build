@@ -297,6 +297,12 @@ def _lsf_client(lsf_cluster: str):
     )
 
 
+# Bound on the SelectTypeParameters probe (_slurm_tracks_memory). SkyPilot runs
+# the underlying `scontrol show config` over SSH with no timeout, so a wedged
+# login node would otherwise hang the launch before sky.launch. Issue #657.
+_SLURM_MEMORY_PROBE_TIMEOUT_SECONDS = 60
+
+
 def _slurm_tracks_memory(cluster: str) -> bool:
     """Whether a SLURM cluster schedules memory as a consumable resource.
 
@@ -318,14 +324,21 @@ def _slurm_tracks_memory(cluster: str) -> bool:
 
         value = slurm_utils.get_select_type_parameters(cluster)
     except Exception as e:  # noqa: BLE001 - fail safe: skip the memory floor
-        logger.info(
+        logger.warning(
             "SLURM cluster %s: could not read SelectTypeParameters (%s); "
-            "not applying the step memory floor",
+            "not applying the step memory floor (set resources.memory to force it)",
             cluster,
             e,
         )
         return False
-    tracked = value is not None and "MEMORY" in value.upper()
+    if value is None:
+        logger.warning(
+            "SLURM cluster %s: SelectTypeParameters undetermined; not applying "
+            "the step memory floor (set resources.memory to force it)",
+            cluster,
+        )
+        return False
+    tracked = "MEMORY" in value.upper()
     logger.debug(
         "SLURM cluster %s SelectTypeParameters=%s (memory tracked: %s)",
         cluster,
@@ -1399,6 +1412,7 @@ class _LoginNodeRotator:
         selected: Dict[str, Dict[str, Any]],
         target_candidates: List[Dict[str, Any]],
         candidate_hostnames: Optional[Dict[str, Set[str]]] = None,
+        target_alias: Optional[str] = None,
     ) -> None:
         """Initialize a rotator over pre-resolved per-alias selections.
 
@@ -1412,8 +1426,11 @@ class _LoginNodeRotator:
         :param candidate_hostnames: ``{alias: {candidate HostName, …}}`` for every alias,
             forwarded to the merge so an interchangeable-login-node overwrite of another
             environment's block is distinguished from a different-cluster alias reuse.
+        :param target_alias: The effective launch alias (after the single-host
+            fallback for a bare infra), or ``None`` when there is no unambiguous one.
         """
         self._cloud = cloud
+        self.target_alias = target_alias
         self._env_name = env_name
         self._secrets = secrets
         self._selected = selected
@@ -2646,7 +2663,13 @@ class Skypilot(Environment):
             hosts, target_alias, on_disk
         )
         rotator = _LoginNodeRotator(
-            cloud, name, secrets, selected, target_candidates, candidate_hostnames
+            cloud,
+            name,
+            secrets,
+            selected,
+            target_candidates,
+            candidate_hostnames,
+            target_alias=target_alias,
         )
         await rotator.materialize()
         return rotator
@@ -3454,9 +3477,11 @@ class Skypilot(Environment):
         Probes the cluster (:func:`_slurm_tracks_memory`, offloaded to a thread
         because it SSHes) only when the result matters: a slurm launch that
         names a cluster, declares a parseable ``total_memory_per_node``, and
-        has no explicit ``resources.memory`` (which would override the floor
-        anyway). Every other launch skips the SSH round-trip. Must run after
-        the cluster's SSH config is materialized. Issue #657.
+        has no explicit (non-empty) ``resources.memory``, which would override
+        the floor anyway. Every other launch skips the SSH round-trip. Must run
+        after the cluster's SSH config is materialized. The probe is bounded by
+        ``_SLURM_MEMORY_PROBE_TIMEOUT_SECONDS`` (SkyPilot runs it with no SSH
+        timeout); a timeout fails safe to ``False``. Issue #657.
 
         :param cloud_group: the normalized target cloud (first infra segment).
         :param target_alias: the SLURM cluster alias (second infra segment),
@@ -3468,11 +3493,23 @@ class Skypilot(Environment):
         if (
             cloud_group != "slurm"
             or not target_alias
-            or "memory" in override_res
+            or override_res.get("memory") not in (None, "")
             or self._memory_floor(compute_config) is None
         ):
             return False
-        return await asyncio.to_thread(_slurm_tracks_memory, target_alias)
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(_slurm_tracks_memory, target_alias),
+                timeout=_SLURM_MEMORY_PROBE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "SLURM cluster %s: SelectTypeParameters probe timed out after %ss; "
+                "not applying the step memory floor (set resources.memory to force it)",
+                target_alias,
+                _SLURM_MEMORY_PROBE_TIMEOUT_SECONDS,
+            )
+            return False
 
     def _resources_from_compute_config(
         self: Self,
@@ -3884,8 +3921,11 @@ class Skypilot(Environment):
             # step's config.compute_config (num_cpus_per_node/total_memory_per_node)
             # is the lowest-precedence floor; override_res wins. GPUs/accelerators
             # are not sourced from compute_config — they flow via override_res.
+            # A bare `slurm` infra names no cluster; the SSH step above resolves
+            # the env's single declared host as the target in that case.
+            probe_alias = target_alias or getattr(ssh_rotator, "target_alias", None)
             memory_tracked = await self._slurm_memory_tracked_for_launch(
-                cloud_group, target_alias, compute_config, override_res
+                cloud_group, probe_alias, compute_config, override_res
             )
             res_config = {
                 **self._resources_from_compute_config(

@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -850,6 +850,72 @@ class TestLaunchSkypilot:
         assert kwargs.get("memory") == "10+"
 
     @pytest.mark.asyncio
+    async def test_bare_slurm_infra_probes_single_host_alias(self, skypilot_env):
+        """A bare `cloud: slurm` (no cluster segment) probes the alias the SSH
+        step resolved from the env's single declared host (issue #439 fallback)."""
+        rotator = MagicMock(target_alias="onlyhost")
+        with (
+            patch.object(
+                skypilot_env, "_prepare_ssh_for_launch", AsyncMock(return_value=rotator)
+            ),
+            patch(
+                "gbserver.environment.skypilot._slurm_tracks_memory", return_value=True
+            ) as probe,
+        ):
+            kwargs = await self._launch_and_capture_resources(
+                skypilot_env,
+                launcher_config={"run": "echo hi", "resources": {"cloud": "slurm"}},
+                config={"compute_config": {"total_memory_per_node": "10Gi"}},
+            )
+        probe.assert_called_once_with("onlyhost")
+        assert kwargs.get("memory") == "10+"
+
+    @pytest.mark.asyncio
+    async def test_slurm_null_memory_override_still_probes(self, skypilot_env):
+        """An explicit `memory: null` override doesn't suppress the floor."""
+        with patch(
+            "gbserver.environment.skypilot._slurm_tracks_memory", return_value=True
+        ) as probe:
+            await self._launch_and_capture_resources(
+                skypilot_env,
+                launcher_config={
+                    "run": "echo hi",
+                    "resources": {"infra": "slurm/mycluster", "memory": None},
+                },
+                config={"compute_config": {"total_memory_per_node": "10Gi"}},
+            )
+        probe.assert_called_once_with("mycluster")
+
+    @pytest.mark.asyncio
+    async def test_slurm_memory_probe_timeout_skips_floor(self, skypilot_env):
+        """A hung probe is bounded and fails safe to no memory floor."""
+        import threading
+        import time
+
+        release = threading.Event()
+
+        def _hang(_cluster):
+            release.wait(5)
+            return True
+
+        try:
+            with (
+                patch(
+                    "gbserver.environment.skypilot._SLURM_MEMORY_PROBE_TIMEOUT_SECONDS",
+                    0.05,
+                ),
+                patch("gbserver.environment.skypilot._slurm_tracks_memory", _hang),
+            ):
+                start = time.monotonic()
+                tracked = await skypilot_env._slurm_memory_tracked_for_launch(
+                    "slurm", "mycluster", {"total_memory_per_node": "10Gi"}, {}
+                )
+            assert tracked is False
+            assert time.monotonic() - start < 2
+        finally:
+            release.set()
+
+    @pytest.mark.asyncio
     async def test_slurm_memory_probe_skipped_without_declared_memory(
         self, skypilot_env
     ):
@@ -869,12 +935,15 @@ class TestLaunchSkypilot:
     @pytest.mark.asyncio
     async def test_slurm_cloud_casing_drops_memory_floor(self, skypilot_env):
         """Non-canonical cloud casing ('Slurm') is normalized, so the memory
-        floor is still dropped."""
-        kwargs = await self._launch_and_capture_resources(
-            skypilot_env,
-            launcher_config={"run": "echo hi", "resources": {"cloud": "Slurm"}},
-            config={"compute_config": {"total_memory_per_node": "10Gi"}},
-        )
+        floor is still dropped on a cluster that doesn't track memory."""
+        with patch(
+            "gbserver.environment.skypilot._slurm_tracks_memory", return_value=False
+        ):
+            kwargs = await self._launch_and_capture_resources(
+                skypilot_env,
+                launcher_config={"run": "echo hi", "resources": {"cloud": "Slurm"}},
+                config={"compute_config": {"total_memory_per_node": "10Gi"}},
+            )
         assert kwargs.get("memory") is None
 
     @pytest.mark.asyncio

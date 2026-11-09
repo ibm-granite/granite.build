@@ -412,7 +412,7 @@ gbserver reads the cluster's `SelectTypeParameters` (`scontrol show config`, cac
 |---|---|
 | `CR_CPU_Memory`, `CR_Core_Memory` | Sent as `--mem` (e.g. the built-in `hfpull`/`hfpush` steps get their declared 10 GiB). |
 | `CR_CPU`, `CR_Core` | Not sent. The job gets the partition default, because a `--mem` request can fail to schedule there. |
-| Can't be read (SSH error) | Not sent. |
+| Can't be read (SSH error, or no answer within 60 s) | Not sent; gbserver logs a WARNING. |
 
 An explicit `launcher_config.resources.memory` (in the step, build, or the environment's
 `steps:` overrides) always wins and is sent either way; the cluster isn't probed then. Without
