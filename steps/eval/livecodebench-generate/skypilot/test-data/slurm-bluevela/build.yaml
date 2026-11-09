@@ -28,7 +28,7 @@ granite.build:
     generate:
       # The in-repo env: SSH as the shared functional ID with the key file at
       # ~/.ssh/ibm-bluevela.key, so the test needs no secret manager.
-      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
         model:
           # Public (Apache-2.0, not gated), ~7 GB of safetensors, no other formats.
@@ -73,7 +73,7 @@ granite.build:
               max_model_len: 16384
 
     score:
-      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
         completions:
           binding: generate.completions

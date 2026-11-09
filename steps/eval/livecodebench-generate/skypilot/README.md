@@ -43,15 +43,16 @@ sources here by the shared Makefile conventions; see
   execute the rendered `run` block with a stub `python` on `PATH`.
 - `test/slurm-bluevela/` + `test-data/slurm-bluevela/`: the GPU build test, for this
   step and the score step together, on an internal GPU SLURM cluster through the
-  in-repo environment `space://environments/skypilot/slurm/ibm-bluevela`. `generate`
+  in-repo environment `space://environments/skypilot/slurm/bluevela`. `generate`
   runs `ibm-granite/granite-4.2-3b` on one H200 on one contest day (6 problems);
   `score` scores the completions on a CPU partition. Both outputs go to `test_`
   Hugging Face datasets that `HfPushCleanupMixin` checks and deletes. The score isn't
   asserted, since sampling varies; the score step's `slurm-cpu` test checks an exact
-  one. It is marked `ibm` and skipped in SPS CI/CD: the environment logs in with a
-  key file, `~/.ssh/ibm-bluevela.key`, so it needs no secret manager, but CI has no
-  key. Run it by hand from the IBM venv (`make ibm-venv`), with an `HF_TOKEN` that can
-  write to `GBTEST_HF_PUSH_ORG`:
+  one. The environment logs in with the key in the `BV_SSH_PRIVATE_KEY` space secret:
+  create it once in the local space with `gb secret create BV_SSH_PRIVATE_KEY
+  --from-file ~/.ssh/ibm-bluevela.key`. It is marked `ibm`, skips unless that key file
+  exists, and is skipped in SPS CI/CD. Run it by hand from the IBM venv
+  (`make ibm-venv`), with an `HF_TOKEN` that can write to `GBTEST_HF_PUSH_ORG`:
 
   ```sh
   make -C steps/eval/livecodebench-generate/skypilot space

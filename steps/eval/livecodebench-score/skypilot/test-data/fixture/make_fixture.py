@@ -329,7 +329,7 @@ granite.build:
   targets:
 
     stage:
-      environment_uri: space://environments/skypilot/slurm
+      environment_uri: space://environments/skypilot/slurm/local
       outputs:
         dataset:
           uri: "env://{shared}/{{{{ run_metadata.targetrun_id }}}}/code_generation_lite"
@@ -356,7 +356,7 @@ granite.build:
               total_memory_per_node: 1Gi
 
     score:
-      environment_uri: space://environments/skypilot/slurm
+      environment_uri: space://environments/skypilot/slurm/local
       inputs:
         dataset:
           binding: stage.dataset
@@ -386,7 +386,7 @@ granite.build:
               num_gpus_per_node: 0
 
     check:
-      environment_uri: space://environments/skypilot/slurm
+      environment_uri: space://environments/skypilot/slurm/local
       inputs:
         results:
           binding: score.results
