@@ -23,6 +23,8 @@ paths step.yaml calls exist.
 import pathlib
 import re
 
+import pytest
+
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
 _DOCKERFILE = (_STEP_DIR / "Dockerfile").read_text()
 _TEMPLATE = (_STEP_DIR / "step-template.yaml").read_text()
@@ -72,7 +74,7 @@ _PATCHED = {
     "nltk": "3.10.3",
     "litellm": "1.84.0",
     "PyJWT": "2.14.0",
-    "Authlib": "1.9.0",
+    "Authlib": "1.9.5",
     "fastmcp": "3.2.0",
     "anyio": "4.14.2",
     "GitPython": "3.1.59",
@@ -105,14 +107,20 @@ def test_patches_run_after_the_frozen_sync():
     assert sync < _DOCKERFILE.index('"pillow==13.0.0"')
 
 
-def test_finetune_patch_applied_before_install():
-    assert (
-        "COPY patches/finetune_local_model.py /tmp/finetune_local_model.py"
-        in _DOCKERFILE
+@pytest.mark.parametrize("patch", ["finetune_local_model.py", "finetune_no_abbrev.py"])
+def test_finetune_patch_applied_before_install(patch):
+    assert f"COPY patches/{patch} /tmp/{patch}" in _DOCKERFILE
+    assert f"python /tmp/{patch} open_instruct/finetune.py" in _DOCKERFILE
+    assert _DOCKERFILE.index(f"{patch} open_instruct/finetune.py") < _DOCKERFILE.index(
+        "uv sync --frozen"
     )
-    assert (
-        "python /tmp/finetune_local_model.py open_instruct/finetune.py" in _DOCKERFILE
-    )
-    assert _DOCKERFILE.index(
-        "finetune_local_model.py open_instruct/finetune.py"
-    ) < _DOCKERFILE.index("uv sync --frozen")
+
+
+def test_every_patch_is_applied_before_install():
+    # A patch file left out of the Dockerfile would ship an unpatched finetune.py.
+    patches = sorted((_STEP_DIR / "patches").glob("*.py"))
+    assert patches
+    for patch in patches:
+        run = f"python /tmp/{patch.name} open_instruct/finetune.py"
+        assert run in _DOCKERFILE, patch.name
+        assert _DOCKERFILE.index(run) < _DOCKERFILE.index("uv sync --frozen")

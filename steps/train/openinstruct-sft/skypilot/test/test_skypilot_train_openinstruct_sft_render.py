@@ -26,6 +26,8 @@ import subprocess
 import pytest
 import yaml
 
+from gbserver.environment.environment import Environment, EventLogLineParserConfig
+from gbserver.types.buildevent import BuildEventType, EntityRunMetadata
 from gbserver.utils.template import fill_template
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -120,6 +122,29 @@ class TestContract:
         assert mon["ref"] == "space://monitors/skypilot"
         assert "event_configs" not in mon["config"]
 
+    @pytest.mark.asyncio
+    async def test_step_progress_message_carries_loss(self):
+        # gbserver narrows the log line to the line_regex match before the field
+        # regexes run, so a narrow line_regex leaves the message at "Step: 3".
+        # The line: SkyPilot's worker prefix + open-instruct's logger_utils format
+        # + finetune.py's progress f-string (open-instruct 26de9960).
+        progress = "Step: 3, LR: 1.9e-05, Loss: 0.7012, TPS: 1234.5"
+        line = (
+            "(head, rank=0, pid=4242) 2026-11-03 12:00:00 - INFO - "
+            f"finetune.py:949 -   {progress}"
+        )
+        rule = _TEMPLATE["environment_configs"]["Skypilot"]["monitors"][
+            "skypilot_monitor"
+        ]["config"]["extra_event_configs"][0]
+        events = await Environment.get_events_from_log_line(
+            line,
+            [EventLogLineParserConfig(**rule)],
+            entityrun_metadata=EntityRunMetadata(),
+        )
+        assert len(events) == 1
+        assert events[0].type is BuildEventType.WORKLOAD_STATUS_EVENT
+        assert events[0].payload.message == progress
+
     def test_requests_no_gpus_itself(self):
         assert _LAUNCHER["resources"] == {}
 
@@ -188,6 +213,55 @@ class TestValidation:
         )
 
     @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_multi_node_launcher_config_refused(self, block):
+        # gbserver's _num_nodes_from_configs lets the build's
+        # launcher_config.num_nodes win over compute_config: 2 nodes would each
+        # run a separate single-node training.
+        lc = {"resources": {"accelerators": "A10G:1"}, "num_nodes": 2}
+        assert _render_error(block, _ctx(launcher_config=lc)) == (
+            "openinstruct-sft: launcher_config.num_nodes must be 1 (got '2'); "
+            "this step is single-node."
+        )
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize("layer", ["compute", "launcher"])
+    @pytest.mark.parametrize("n", [1, 1.0, "1", "01", " 1", "+1", "1 "])
+    def test_whole_one_num_nodes_is_fine(self, block, layer, n):
+        # gbserver's _num_nodes_from_configs takes int(value): a whole float
+        # (YAML 1.0) and any string int() reads as 1 (a substituted parameter).
+        if layer == "compute":
+            ctx = _ctx(compute={"num_nodes": n})
+        else:
+            ctx = _ctx(
+                launcher_config={
+                    "resources": {"accelerators": "A10G:1"},
+                    "num_nodes": n,
+                }
+            )
+        _render(block, ctx)
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize("n", ["2", "02", "1.0", "0x1", "", "${NODES}"])
+    def test_string_num_nodes_other_than_one_refused(self, block, n):
+        # "1.0" and "0x1" fail gbserver's int() too; "${NODES}" is an
+        # unsubstituted parameter.
+        lc = {"resources": {"accelerators": "A10G:1"}, "num_nodes": n}
+        assert _render_error(block, _ctx(launcher_config=lc)) == (
+            f"openinstruct-sft: launcher_config.num_nodes must be 1 (got '{n}'); "
+            "this step is single-node."
+        )
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_whole_float_two_num_nodes_refused(self, block):
+        assert "compute_config.num_nodes must be 1 (got '2.0')" in _render_error(
+            block, _ctx(compute={"num_nodes": 2.0})
+        )
+        lc = {"resources": {"accelerators": "A10G:1"}, "num_nodes": 2.0}
+        assert "launcher_config.num_nodes must be 1 (got '2.0')" in _render_error(
+            block, _ctx(launcher_config=lc)
+        )
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
     @pytest.mark.parametrize(
         "launcher_config",
         [
@@ -228,6 +302,8 @@ class TestValidation:
             "report_to",
             "push_to_hub",
             "dataset_local_cache_dir",
+            # hf would push a dataset-mix-cached dataset to the Hub.
+            "dataset_cache_mode",
         ],
     )
     def test_step_owned_args_refused(self, key):
@@ -238,6 +314,88 @@ class TestValidation:
     @pytest.mark.parametrize("key", ["output-dir", "push-to-hub", "model-name-or-path"])
     def test_step_owned_dash_aliases_refused(self, key):
         assert "is set by the step" in _render_error("run", _ctx(args={key: "x"}))
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "no_push_to_hub",
+            "no-push-to-hub",
+            "no_try_launch_beaker_eval_jobs",
+            "no_try_auto_save_to_beaker",
+        ],
+    )
+    def test_no_complement_of_step_owned_refused(self, key):
+        # HfArgumentParser adds --no_<f> for a bool field defaulting to True; it
+        # writes the same field as --<f>.
+        assert f"args.{key} is set by the step" in _render_error(
+            "run", _ctx(args={key: True})
+        )
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
+        "key,flag",
+        [
+            ("no_fused_optimizer", "fused_optimizer"),
+            ("no-fused-optimizer", "fused-optimizer"),
+            ("no_use_fast", "use_fast"),
+            ("no_clean_checkpoints_at_end", "clean_checkpoints_at_end"),
+        ],
+    )
+    def test_no_complement_keys_refused(self, block, key, flag):
+        # HfArgumentParser's --no_<f> is store_false and takes no value, but args
+        # always renders one: `--no_fused_optimizer true` fails the run on 'true'.
+        assert _render_error(block, _ctx(args={key: True})) == (
+            f"openinstruct-sft: openinstruct_sft_config.args.{key} is a no_* flag, "
+            f"which takes no value; write {flag}: false instead."
+        )
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
+        "key,owned",
+        [
+            ("output_d", "output_dir"),
+            ("push_to", "push_to_hub"),
+            ("report_", "report_to"),
+            ("model_name", "model_name_or_path"),
+            ("resume", "resume_from_checkpoint"),
+            ("output-d", "output_dir"),
+            ("no_push", "no_push_to_hub"),
+            ("dataset_cache", "dataset_cache_mode"),
+        ],
+    )
+    def test_abbreviated_owned_args_refused(self, block, key, owned):
+        # argparse's allow_abbrev expands a unique prefix, so `--output_d` would
+        # override the step's --output_dir.
+        assert _render_error(block, _ctx(args={key: "x"})) == (
+            f"openinstruct-sft: openinstruct_sft_config.args.{key} abbreviates the "
+            f"step-owned flag {owned}; abbreviated flags are not accepted."
+        )
+
+    @pytest.mark.parametrize(
+        "key,value,rendered",
+        [
+            ("dataset_transform_fn", ["sft_tulu_filter_v1"], ["sft_tulu_filter_v1"]),
+            ("dataset_target_columns", ["input_ids"], ["input_ids"]),
+            ("model_revision", "main", ["main"]),
+            ("fused_optimizer", False, ["false"]),
+        ],
+    )
+    def test_flags_sharing_an_owned_stem_are_fine(self, key, value, rendered):
+        # Real finetune.py flags (open-instruct 26de9960) that start like an owned
+        # flag but are not a prefix of one, with values finetune.py would parse.
+        tail = _tail(_argv("run", _ctx(args={key: value}), "openinstruct_sft_run.sh"))
+        assert tail[-1 - len(rendered) :] == [f"--{key}", *rendered]
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
+        "key", ["report_to=wandb", "--report_to", "-x", "report to", "", "a\tb"]
+    )
+    def test_non_bare_args_key_refused(self, block, key):
+        # '--report_to=wandb' would set report_to even with allow_abbrev off.
+        assert _render_error(block, _ctx(args={key: "x"})) == (
+            f"openinstruct-sft: openinstruct_sft_config.args key '{key}' must be a "
+            "bare finetune.py flag name (no '=', '-' prefix or whitespace)."
+        )
 
     def test_mapping_arg_refused(self):
         assert "scalar or a list" in _render_error("run", _ctx(args={"x": {"a": 1}}))
