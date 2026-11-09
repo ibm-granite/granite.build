@@ -45,8 +45,8 @@ HF_HOME: ""
 # (the tag defaults to the building checkout's git short SHA). The family image adds
 # only pandas and lxml (both BSD-3) on top of granite-evals, so any officeqa image
 # tag is license-clean to redistribute; the gated dataset is never baked in.
-IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-officeqa:633d6e4a"
-IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-officeqa-cpu:633d6e4a"
+IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-officeqa:ce003c94"
+IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-officeqa-cpu:ce003c94"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""

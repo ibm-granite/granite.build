@@ -20,8 +20,8 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
-IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills:633d6e4a"
-IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills-cpu:633d6e4a"
+IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills:ce003c94"
+IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills-cpu:ce003c94"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""
