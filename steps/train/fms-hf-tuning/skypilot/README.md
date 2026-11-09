@@ -355,6 +355,15 @@ published, and need `PYTEST_ADDOPTS=-s` (two launches in one pytest process).
   `distributed=fsdp`, `fms_hf_tuning_version=3.2.2`, `transformers_version=4.55.4`.
 - flash-attn and pyarrow import on the GPU node; the Mac cannot check that under qemu.
 
+**aws result** (`fms-v3.2.2-3`, 2026-11-09): passed in 6m45s, with `full` (none / ddp)
+and `alora` (alora / ddp), each on one A10G (g5.xlarge).
+- Both trained 3 steps (loss to about 1.62) with flash-attn on Ampere and registered
+  `model`. Metadata: `distributed=ddp`, `fms_hf_tuning_version=3.2.2`,
+  `transformers_version=4.55.4`.
+- SkyPilot hit `InsufficientInstanceCapacity` for g5.xlarge in one zone and failed
+  over to another by itself.
+- No EC2 instances were left running.
+
 The first attempt (build `00e72069`) failed on a bad node: `srun ... Communication
 connection failure` on p1-r14-n3 while provisioning `lora-fsdp`. gbserver treats that
 as non-transient and does not retry, and it left the half-provisioned SkyPilot cluster

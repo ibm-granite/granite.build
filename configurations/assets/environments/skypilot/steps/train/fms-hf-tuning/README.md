@@ -220,13 +220,12 @@ Verified combinations (`peft_method` × `distributed`):
 
 | | ddp | fsdp |
 |---|---|---|
-| none (full fine-tune) | pending (aws) | e2e (BlueVela) |
+| none (full fine-tune) | e2e (aws) | e2e (BlueVela) |
 | lora | render-tested | e2e (BlueVela) |
-| alora | pending (aws) | render-tested |
+| alora | e2e (aws) | render-tested |
 
 `e2e` means a real build on that cluster trained and registered the model or an
 adapter with weights. `render-tested` means covered by render and unit tests only.
-`pending` cells are covered by a build test that has not run yet.
 
 The BlueVela `lora` + `fsdp` adapter also carries `lm_head.weight` and
 `embed_tokens.weight`. fms-hf-tuning saves the resized embeddings with the adapter when
