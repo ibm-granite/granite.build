@@ -208,12 +208,30 @@ The step always passes its own accelerate config, so a user's
 A multi-GPU launch picks a free rendezvous port.
 
 **FSDP and adapters.** peft 0.21 saves an empty LoRA adapter under FSDP1
-(huggingface/peft#3876). This image has peft 0.19.1. The step refuses to register
-an adapter with 0 tensors in either case, so the failure shows as a failed build,
-never as an empty artifact.
+(huggingface/peft#3876). This image has peft 0.19.1, which is not affected: a LoRA run
+under this step's FSDP1 config on BlueVela saved 420 LoRA tensors. The step refuses to
+register an adapter with 0 tensors anyway, so a regression would show as a failed
+build, never as an empty artifact.
 
 The step fails before training when the container can access fewer GPUs than were
 allocated (on BlueVela SLURM this is ibm-granite/granite.build#604; rerun).
+
+Verified combinations (`peft_method` × `distributed`):
+
+| | ddp | fsdp |
+|---|---|---|
+| none (full fine-tune) | pending (aws) | e2e (BlueVela) |
+| lora | render-tested | e2e (BlueVela) |
+| alora | pending (aws) | render-tested |
+
+`e2e` means a real build on that cluster trained and registered the model or an
+adapter with weights. `render-tested` means covered by render and unit tests only.
+`pending` cells are covered by a build test that has not run yet.
+
+The BlueVela `lora` + `fsdp` adapter also carries `lm_head.weight` and
+`embed_tokens.weight`. fms-hf-tuning saves the resized embeddings with the adapter when
+it adds special tokens (`added_tokens_info.json` in the output), so the file is larger
+than the LoRA weights alone.
 
 ## ClearML tracking
 

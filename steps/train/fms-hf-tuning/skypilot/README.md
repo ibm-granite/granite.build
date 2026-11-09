@@ -345,6 +345,22 @@ published, and need `PYTEST_ADDOPTS=-s` (two launches in one pytest process).
 | `test/aws` (A10G:1) | `full` (none / ddp), `alora` (alora / ddp) | image pull, inline `hf download`, full fine-tuning with flash-attn on Ampere, aLoRA, the chat handler on HF-id data |
 | `test/slurm-bluevela` (H200:2, `ibm`) | `lora-fsdp` (lora / fsdp, bound `dataset`), `full-fsdp` (none / fsdp, `data_config`) | Pyxis + `.sqsh`, FSDP1 saving a non-empty adapter, `data_config` reading a bound input, ClearML offline |
 
+**BlueVela result** (build `718527f5`, `fms-v3.2.2-3`, 2026-11-09): passed in 25m52s.
+- The image cache imported the image into a `.sqsh` in 450 s on the first run.
+- `lora-fsdp`: loss 3.30 → 1.65 over 3 steps. The adapter has 422 tensors (210 `lora_A`
+  + 210 `lora_B`, plus the resized `lm_head`/`embed_tokens`), with `r=8`, and the base
+  id is rewritten. So peft 0.19.1 is not affected by peft#3876 under FSDP1.
+- `full-fsdp` (from `data_config`): loss 3.29 → 1.65; model registered.
+- Both reported `Step:` progress as workload status. Metadata: `peft_method`,
+  `distributed=fsdp`, `fms_hf_tuning_version=3.2.2`, `transformers_version=4.55.4`.
+- flash-attn and pyarrow import on the GPU node; the Mac cannot check that under qemu.
+
+The first attempt (build `00e72069`) failed on a bad node: `srun ... Communication
+connection failure` on p1-r14-n3 while provisioning `lora-fsdp`. gbserver treats that
+as non-transient and does not retry, and it left the half-provisioned SkyPilot cluster
+UP (removed with `sky down`). If a BlueVela run fails that way, rerun it, and run
+`sky status` afterwards.
+
 ```bash
 # aws (costs money)
 AWS_PROFILE=gb-skypilot PYTEST_ADDOPTS=-s make -C steps/train/fms-hf-tuning/skypilot test TESTS=test/aws
