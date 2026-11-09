@@ -1,11 +1,11 @@
 /**
- * Tests for the Builds page's client-side search (packages/ui-core/lib/buildSearch.ts)
- * and the page clamp DatasetList uses.
+ * Tests for the Builds search fallback (packages/ui-core/lib/buildSearch.ts),
+ * used by searchBuilds against a gbserver that predates `name_contains`, and
+ * the page clamp DatasetList uses.
  *
- * gbserver's `name` filter is exact-match, so while a term is active the page
- * fetches one window of recent builds and matches/paginates it locally. The
- * mode-switch cases cover React Query placeholder data: while the next request
- * loads, the previous result (fetched in the other mode) is still on screen.
+ * The fallback fetches one window of recent builds and matches/paginates it
+ * locally. The mode-switch cases cover placeholder data shown while the next
+ * request loads, fetched in the other mode.
  *
  * Usage: node --test tests/build-search.test.js
  */
@@ -27,10 +27,11 @@ const names = (view) => view.items.map((b) => b.name)
 const WINDOW = Array.from({ length: 30 }, (_, i) => build(`b${29 - i}`))
 
 describe('matchesBuildSearch', () => {
-  it('matches name, id, owner and space, case-insensitively', () => {
+  it('matches name case-insensitively, as gbserver name_contains does', () => {
     const b = build('Granite-SFT', { uuid: 'abc-123', username: 'Bob', space_name: 'Research' })
-    for (const term of ['sft', 'SFT', 'abc-1', 'bob', 'research']) assert.ok(matchesBuildSearch(b, term), term)
-    assert.equal(matchesBuildSearch(b, 'lora'), false)
+    for (const term of ['sft', 'SFT', 'granite-s']) assert.ok(matchesBuildSearch(b, term), term)
+    // Name only, so the fallback agrees with the server on what matches.
+    for (const term of ['abc-1', 'bob', 'research', 'lora']) assert.equal(matchesBuildSearch(b, term), false, term)
   })
 
   it('treats a blank term as matching everything and ignores surrounding spaces', () => {
@@ -40,7 +41,6 @@ describe('matchesBuildSearch', () => {
 
   it('tolerates a build without owner or space', () => {
     assert.ok(matchesBuildSearch({ name: 'n', uuid: 'u' }, 'n'))
-    assert.equal(matchesBuildSearch({ name: 'n', uuid: 'u' }, 'alice'), false)
   })
 })
 

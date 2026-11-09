@@ -1,10 +1,10 @@
 /**
  * Client-side Builds search over a bounded window of recent builds.
  *
- * gbserver's `name` filter on `/builds/` is an exact match, so a substring
- * search can't be pushed to the server. While a term is active the Builds page
- * fetches the `SEARCH_WINDOW` most recent builds matching its other filters
- * once, then matches and paginates them here.
+ * Builds search normally runs on gbserver (`name_contains`, via searchBuilds in
+ * api/gbserver.ts). A gbserver that predates it ignores the param, so the
+ * client then fetches the `SEARCH_WINDOW` most recent builds matching the other
+ * filters and matches and paginates them here.
  */
 
 export const SEARCH_WINDOW = 500
@@ -31,12 +31,10 @@ export interface BuildsView<T> {
   truncated: boolean
 }
 
+/** Case-insensitive substring match on name, the same rule as gbserver's `name_contains`. */
 export function matchesBuildSearch(build: SearchableBuild, term: string): boolean {
   const needle = term.trim().toLowerCase()
-  if (!needle) return true
-  return [build.name, build.uuid, build.username, build.space_name].some((f) =>
-    (f ?? '').toLowerCase().includes(needle),
-  )
+  return !needle || build.name.toLowerCase().includes(needle)
 }
 
 export function pageSlice<T>(items: T[], page: number, pageSize: number): T[] {
