@@ -21,8 +21,10 @@ jinja2 = pytest.importorskip("jinja2", reason="jinja2 renders the step template"
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
 _TEMPLATE = _STEP_DIR / "step-template.yaml"
-_COMPLETIONS = "/workdir/inputs/completions"
-_DATASET = "/workdir/inputs/dataset"
+# Relative on purpose: run must make them absolute before it cd's into the checkout.
+# _run creates them under the test's working directory.
+_COMPLETIONS = "inputs/completions"
+_DATASET = "inputs/dataset"
 
 
 @pytest.fixture(scope="module")
@@ -90,11 +92,14 @@ def _run(
         'echo "ENV:HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-}"\n'
         'echo "ENV:HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-}"\n'
         'echo "ENV:PYTHONPATH=${PYTHONPATH:-}"\n'
+        'env | sed "s/^/FULLENV:/"\n'
     )
     stub.chmod(0o755)
     (cwd / "venv" / "bin").mkdir(parents=True)
     (cwd / "venv" / "bin" / "activate").write_text("")
     (cwd / "LiveCodeBench").mkdir()
+    for d in (_COMPLETIONS, _DATASET):
+        (cwd / d).mkdir(parents=True, exist_ok=True)
     env = {k: v for k, v in os.environ.items() if k != "HF_TOKEN"}
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env.update(env_over or {})
@@ -219,8 +224,8 @@ class TestRun:
         proc = _run(_render(launcher["run"], _cfg(defaults)), tmp_path)
         argv = _lines(proc, "ARG:")
         assert argv[0] == str(tmp_path / "src" / "lcb_score.py")
-        assert _opt(argv, "--completions-dir") == _COMPLETIONS
-        assert _opt(argv, "--dataset-dir") == _DATASET
+        assert _opt(argv, "--completions-dir") == str(tmp_path / _COMPLETIONS)
+        assert _opt(argv, "--dataset-dir") == str(tmp_path / _DATASET)
         assert _opt(argv, "--release-version") == "release_v6"
         assert (
             _opt(argv, "--start-date") == "2025-04-05"
@@ -257,18 +262,81 @@ class TestRun:
 
     @pytest.mark.parametrize("var", ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"])
     def test_drops_an_inherited_hf_token(self, defaults, launcher, tmp_path, var):
-        """A token from the job environment is unset, with a warning, before the scorer runs."""
-        rendered = _render(launcher["run"], _cfg(defaults))
-        # The stub scorer reports whether the variable reached it.
-        probe = f'echo "ENV:{var}=${{{var}:-}}"\n'
-        proc = _run(
-            rendered.replace("python ", probe + "python ", 1), tmp_path, {var: "hf_x"}
-        )
+        """A token from the job environment is dropped, with a warning, before the scorer runs."""
+        proc = _run(_render(launcher["run"], _cfg(defaults)), tmp_path, {var: "hf_x"})
         assert proc.returncode == 0, proc.stderr
         assert f"WARNING {var} was set" in proc.stderr
-        assert f"ENV:{var}=" in proc.stdout.splitlines()
         assert "hf_x" not in proc.stdout
         assert any(line.startswith("ARG:") for line in proc.stdout.splitlines())
+
+    def test_scorer_gets_only_the_allowlisted_environment(
+        self, defaults, launcher, tmp_path
+    ):
+        """Anything else the job environment carries (a login profile's exports, a
+        declared secret) must not reach the scorer, and HOME must be empty."""
+        planted = {
+            "BV_SSH_PRIVATE_KEY": "secret-key",
+            "AWS_SECRET_ACCESS_KEY": "secret-aws",
+            "SOME_TOKEN": "secret-other",
+            "OMP_NUM_THREADS": "4",
+        }
+        proc = _run(_render(launcher["run"], _cfg(defaults)), tmp_path, planted)
+        assert proc.returncode == 0, proc.stderr
+        env = dict(
+            line.split("=", 1) for line in _lines(proc, "FULLENV:") if "=" in line
+        )
+        assert not {"BV_SSH_PRIVATE_KEY", "AWS_SECRET_ACCESS_KEY", "SOME_TOKEN"} & set(
+            env
+        )
+        assert "secret-" not in proc.stdout
+        # The thread count is kept, so the scorer stays on the job's CPUs.
+        assert env["OMP_NUM_THREADS"] == "4"
+        allowed = {
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "LANG",
+            "LC_ALL",
+            "PYTHONPATH",
+            "HF_HOME",
+            "HF_HUB_OFFLINE",
+            "HF_DATASETS_OFFLINE",
+            "VIRTUAL_ENV",
+            "OMP_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "SLURM_CPUS_PER_TASK",
+            "SLURM_CPUS_ON_NODE",
+        }
+        # bash itself adds a few (PWD, SHLVL, _) when it runs the stub.
+        assert set(env) - allowed <= {"PWD", "OLDPWD", "SHLVL", "_"}
+        home = pathlib.Path(env["HOME"])
+        assert home == tmp_path / ".score-home" and home.is_dir()
+        assert not any(home.iterdir())
+
+    def test_relative_inputs_reach_the_scorer_absolute(
+        self, defaults, launcher, tmp_path
+    ):
+        """run cd's into the checkout, so relative bindings must be made absolute first."""
+        proc = _run(_render(launcher["run"], _cfg(defaults)), tmp_path)
+        argv = _lines(proc, "ARG:")
+        for flag, rel in (
+            ("--completions-dir", _COMPLETIONS),
+            ("--dataset-dir", _DATASET),
+        ):
+            assert _opt(argv, flag) == str(tmp_path / rel)
+            assert pathlib.Path(_opt(argv, flag)).is_absolute()
+
+    def test_refuses_a_missing_input_dir(self, defaults, launcher, tmp_path):
+        rendered = _render(launcher["run"], _cfg(defaults)).replace(
+            _COMPLETIONS, "inputs/nowhere", 1
+        )
+        proc = _run(rendered, tmp_path)
+        assert proc.returncode == 1
+        assert (
+            "input directory inputs/nowhere (COMPLETIONS_DIR) does not exist"
+            in proc.stderr
+        )
+        assert "ARG:" not in proc.stdout
 
     def test_refuses_an_empty_release(self, defaults, launcher, tmp_path):
         proc = _run(

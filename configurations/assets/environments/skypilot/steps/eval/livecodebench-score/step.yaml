@@ -12,8 +12,8 @@ version: 1.0.0
 # subprocess with time and memory limits and some os/shutil/subprocess functions
 # disabled, but its own documentation says that guard is not a security sandbox.
 # What this step adds: it runs on its own (no model, no GPU), with no credentials
-# (run removes HF_TOKEN from its environment, with a warning, before any
-# generated code runs), and offline (its inputs arrive
+# (run starts the scorer under `env -i` with an allowlist of variables and an empty
+# HOME, warning if the job environment carried an HF token), and offline (its inputs arrive
 # through separate hfpull steps). Generated code can still use the network and
 # whatever the job user can write. See USAGE.md before scoring untrusted models.
 #
@@ -157,10 +157,11 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            # Generated code runs here: never with a Hugging Face token in the
-            # environment (see the comment at the top of this file). The step
-            # declares none, but a cluster account's login profile can export one
-            # into every job, so drop it and say so rather than fail the build.
+            # Generated code runs here: never with a credential in its environment
+            # (see the comment at the top of this file). The scorer is started under
+            # `env -i` with an allowlist, below. These two are also named here, with
+            # a warning, because a cluster account's login profile can export them
+            # into every job and the job's owner should know.
             for v in HF_TOKEN HUGGING_FACE_HUB_TOKEN; do
               if [ -n "${!v:-}" ]; then
                 echo "eval/livecodebench-score: WARNING $v was set in the job environment (not by this step; check the cluster account's login profile); unsetting it before running model-generated code." >&2
@@ -182,12 +183,38 @@ environment_configs:
             OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
             COMPLETIONS_DIR='{{ q(bindings.completions.binding.path) }}'
             DATASET_DIR='{{ q(bindings.dataset.binding.path) }}'
-            export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1
-            export HF_HOME="$PWD/.hf-cache"
+            # Absolute too: run cd's into the checkout below, so a relative input
+            # path would otherwise resolve under it.
+            for v in COMPLETIONS_DIR DATASET_DIR; do
+              if ! abs="$(cd "${!v}" 2>/dev/null && pwd)"; then
+                echo "eval/livecodebench-score: ERROR input directory ${!v} ($v) does not exist." >&2; exit 1
+              fi
+              printf -v "$v" '%s' "$abs"
+            done
+            HF_HOME_DIR="$PWD/.hf-cache"
+            # An empty HOME for the scorer: generated code that reads ~/.ssh,
+            # ~/.cache/huggingface or a dotfile finds nothing. Not a sandbox: it can
+            # still open the job user's real home by absolute path (see USAGE.md).
+            SCORE_HOME="$PWD/.score-home"
+            rm -rf "$SCORE_HOME" && mkdir -p "$SCORE_HOME"
+            PYTHON_BIN="$(command -v python)"
+            # The scorer starts with an empty environment plus this allowlist, so no
+            # credential the job environment carries (a login profile's exports, a
+            # declared secret) reaches the generated code. The thread-count variables
+            # keep it on the CPUs the job was given.
+            SCORE_ENV=(
+              "PATH=$PATH" "HOME=$SCORE_HOME" "TMPDIR=${TMPDIR:-/tmp}"
+              "LANG=${LANG:-C.UTF-8}" "LC_ALL=${LC_ALL:-C.UTF-8}"
+              "PYTHONPATH=$SRC_DIR" "HF_HOME=$HF_HOME_DIR"
+              "HF_HUB_OFFLINE=1" "HF_DATASETS_OFFLINE=1"
+            )
+            for v in VIRTUAL_ENV OMP_NUM_THREADS MKL_NUM_THREADS SLURM_CPUS_PER_TASK SLURM_CPUS_ON_NODE; do
+              if [ -n "${!v:-}" ]; then SCORE_ENV+=("$v=${!v}"); fi
+            done
             # LiveCodeBench reads its prompt files by relative path, so it runs from
             # inside its checkout.
             cd '{{ q(config.lcb_score_config.lcb_checkout) }}'
-            PYTHONPATH="$SRC_DIR" python "$SRC_DIR/lcb_score.py" \
+            env -i "${SCORE_ENV[@]}" "$PYTHON_BIN" "$SRC_DIR/lcb_score.py" \
               --completions-dir "$COMPLETIONS_DIR" \
               --dataset-dir "$DATASET_DIR" \
               --output-dir "$OUTPUT_DIR" \

@@ -167,3 +167,63 @@ def test_shim_copies_are_identical():
         / "lcb_dataset.py"
     )
     assert (_SRC / "lcb_dataset.py").read_bytes() == other.read_bytes()
+
+
+# question_ids() must give the same ids, in the same order, as decoding the window,
+# without decoding it. Run against the committed fixture with the real `datasets`
+# library; only LiveCodeBench's module (which loads the dataset) is stubbed.
+_FIXTURE = Path(__file__).resolve().parent.parent / "test-data" / "fixture"
+
+
+@pytest.fixture
+def fixture_loader(monkeypatch, tmp_path):
+    datasets = pytest.importorskip("datasets")
+    # The step pins datasets==3.5.0; 4.x dropped loading scripts, which the
+    # LiveCodeBench dataset is. Under 4.x this check can't run, so skip it there.
+    if int(datasets.__version__.split(".")[0]) >= 4:
+        pytest.skip(
+            f"needs the step's datasets 3.x for loading scripts, not {datasets.__version__}"
+        )
+    import types
+
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    monkeypatch.setenv("HF_DATASETS_OFFLINE", "1")
+    script = str(_FIXTURE / "code_generation_lite" / "code_generation_lite.py")
+
+    def load_dataset(path, *args, **kwargs):
+        assert path == "livecodebench/code_generation_lite"
+        return datasets.load_dataset(script, *args, **kwargs)
+
+    class CodeGenerationProblem:
+        def __init__(self, **row):
+            self.question_id = row["question_id"]
+
+    module = types.ModuleType("lcb_runner.benchmarks.code_generation")
+    module.load_dataset = load_dataset
+    module.CodeGenerationProblem = CodeGenerationProblem
+    for name in ("lcb_runner", "lcb_runner.benchmarks"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "lcb_runner.benchmarks.code_generation", module)
+    return module
+
+
+@pytest.mark.parametrize(
+    "start, end, expected",
+    [
+        (None, None, ["fx_sum", "fx_max", "fx_rev", "fx_square"]),
+        ("2099-01-01", "2099-01-01", ["fx_sum", "fx_max", "fx_rev", "fx_square"]),
+        ("2025-04-05", "2025-04-05", []),
+    ],
+)
+def test_question_ids_match_a_full_decode(fixture_loader, start, end, expected):
+    dataset = _load("lcb_dataset")
+    ids = dataset.question_ids("release_v6", start_date=start, end_date=end)
+    decoded = dataset._windowed_loader(fixture_loader)("release_v6", start, end)
+    assert ids == [p.question_id for p in decoded] == expected
+
+
+def test_main_reads_ids_not_problems():
+    """main() must not decode the benchmark itself: the scorer does that once."""
+    src = (_SRC / "lcb_score.py").read_text()
+    assert "lcb_dataset.question_ids(" in src
+    assert "load_code_generation_dataset" not in src

@@ -20,8 +20,10 @@ jinja2 = pytest.importorskip("jinja2", reason="jinja2 renders the step template"
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
 _TEMPLATE = _STEP_DIR / "step-template.yaml"
-_MODEL = "/workdir/inputs/model"
-_DATASET = "/workdir/inputs/dataset"
+# Relative on purpose: run must make them absolute before it cd's into the checkout.
+# _run creates them under the test's working directory.
+_MODEL = "inputs/model"
+_DATASET = "inputs/dataset"
 
 
 @pytest.fixture(scope="module")
@@ -86,6 +88,8 @@ def _run(rendered: str, cwd: pathlib.Path) -> subprocess.CompletedProcess:
     (cwd / "venv" / "bin").mkdir(parents=True)
     (cwd / "venv" / "bin" / "activate").write_text("")
     (cwd / "LiveCodeBench").mkdir()
+    for d in (_MODEL, _DATASET):
+        (cwd / d).mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
     return subprocess.run(
         ["bash", "-c", rendered], capture_output=True, text=True, cwd=cwd, env=env
@@ -189,8 +193,8 @@ class TestRun:
         argv = _lines(_run(_render(launcher["run"], _cfg(defaults)), tmp_path), "ARG:")
         assert argv[0] == str(tmp_path / "src" / "lcb_generate.py")
         expected = {
-            "--model-dir": _MODEL,
-            "--dataset-dir": _DATASET,
+            "--model-dir": str(tmp_path / _MODEL),
+            "--dataset-dir": str(tmp_path / _DATASET),
             "--output-dir": str(tmp_path / "output"),
             "--release-version": "release_v6",
             "--start-date": "2025-04-05",
@@ -235,6 +239,17 @@ class TestRun:
             f"GB_ARTIFACT_ID:completions GB_ARTIFACT_PATH:{tmp_path / 'output'}"
             in proc.stdout.splitlines()
         )
+
+    def test_refuses_a_missing_input_dir(self, defaults, launcher, tmp_path):
+        rendered = _render(launcher["run"], _cfg(defaults)).replace(
+            _MODEL, "inputs/nowhere", 1
+        )
+        proc = _run(rendered, tmp_path)
+        assert proc.returncode == 1
+        assert (
+            "input directory inputs/nowhere (MODEL_DIR) does not exist" in proc.stderr
+        )
+        assert "ARG:" not in proc.stdout
 
     def test_refuses_an_empty_release(self, defaults, launcher, tmp_path):
         proc = _run(

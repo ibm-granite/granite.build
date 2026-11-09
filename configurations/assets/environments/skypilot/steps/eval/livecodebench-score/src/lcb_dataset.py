@@ -124,39 +124,78 @@ def install(dataset_dir: str) -> None:
                 )
 
 
+def _window(
+    load: Callable[..., Any], release_version: str, start_date: Any, end_date: Any
+) -> Any:
+    """Load the raw (undecoded) rows of ``release_version``, filtered to the window.
+
+    The filter reads only the ``contest_date`` column, so no row's test cases are
+    decoded here. ``None`` on either side means no bound on that side.
+
+    :param load: the ``load_dataset`` to call (LiveCodeBench's patched reference).
+    :param release_version: a LiveCodeBench release, e.g. ``release_v6``.
+    :param start_date: inclusive lower bound, ``YYYY-MM-DD``, or ``None``.
+    :param end_date: inclusive upper bound, ``YYYY-MM-DD``, or ``None``.
+    :returns: the filtered ``datasets.Dataset``, in the release's own order.
+    """
+    from datetime import datetime
+
+    ds = load(
+        HF_NAME, split="test", version_tag=release_version, trust_remote_code=True
+    )
+    lo = datetime.strptime(start_date, "%Y-%m-%d") if start_date is not None else None
+    hi = datetime.strptime(end_date, "%Y-%m-%d") if end_date is not None else None
+    if lo is not None or hi is not None:
+
+        def keep(contest_date: str) -> bool:
+            d = datetime.fromisoformat(contest_date)
+            return (lo is None or lo <= d) and (hi is None or d <= hi)
+
+        ds = ds.filter(keep, input_columns="contest_date")
+    return ds
+
+
 def _windowed_loader(code_generation: Any) -> Callable[..., Any]:
     """Return a ``load_code_generation_dataset`` that filters before it decodes.
 
     Same signature and same result as LiveCodeBench's own; see the module docstring.
     """
-    from datetime import datetime
 
     def load_code_generation_dataset(
         release_version: str = "release_v1",
         start_date: Any = None,
         end_date: Any = None,
     ) -> list:
-        ds = code_generation.load_dataset(
-            HF_NAME, split="test", version_tag=release_version, trust_remote_code=True
+        ds = _window(
+            code_generation.load_dataset, release_version, start_date, end_date
         )
-        lo = (
-            datetime.strptime(start_date, "%Y-%m-%d")
-            if start_date is not None
-            else None
-        )
-        hi = datetime.strptime(end_date, "%Y-%m-%d") if end_date is not None else None
-        if lo is not None or hi is not None:
-
-            def keep(contest_date: str) -> bool:
-                d = datetime.fromisoformat(contest_date)
-                return (lo is None or lo <= d) and (hi is None or d <= hi)
-
-            ds = ds.filter(keep, input_columns="contest_date")
         problems = [code_generation.CodeGenerationProblem(**p) for p in ds]
         print(f"Loaded {len(problems)} problems")
         return problems
 
     return load_code_generation_dataset
+
+
+def question_ids(
+    release_version: str, start_date: Any = None, end_date: Any = None
+) -> list:
+    """The ``question_id`` of every problem in the window, without decoding any.
+
+    Same ids, in the same order, as ``[p.question_id for p in
+    load_code_generation_dataset(...)]``, but reads only the ``contest_date`` and
+    ``question_id`` columns. Decoding the whole release to get its ids would hold
+    every problem's private test cases in memory (see the module docstring), and the
+    scorer decodes them again itself. Call :func:`install` first.
+
+    :param release_version: a LiveCodeBench release, e.g. ``release_v6``.
+    :param start_date: inclusive lower bound, ``YYYY-MM-DD``, or ``None``.
+    :param end_date: inclusive upper bound, ``YYYY-MM-DD``, or ``None``.
+    :returns: the question ids, in the release's own order.
+    """
+    import lcb_runner.benchmarks.code_generation as code_generation
+
+    ds = _window(code_generation.load_dataset, release_version, start_date, end_date)
+    return list(ds["question_id"])
 
 
 def install_from_env(var: str = "LCB_DATASET_DIR") -> None:

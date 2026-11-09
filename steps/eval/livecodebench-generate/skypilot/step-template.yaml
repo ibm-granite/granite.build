@@ -184,6 +184,14 @@ environment_configs:
             OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
             MODEL_DIR='{{ q(bindings.model.binding.path) }}'
             DATASET_DIR='{{ q(bindings.dataset.binding.path) }}'
+            # Absolute too: run cd's into the checkout below, so a relative input
+            # path would otherwise resolve under it.
+            for v in MODEL_DIR DATASET_DIR; do
+              if ! abs="$(cd "${!v}" 2>/dev/null && pwd)"; then
+                echo "eval/livecodebench-generate: ERROR input directory ${!v} ($v) does not exist." >&2; exit 1
+              fi
+              printf -v "$v" '%s' "$abs"
+            done
             # Inputs are already downloaded; nothing here needs the Hub.
             export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1
             export HF_HOME="$PWD/.hf-cache"

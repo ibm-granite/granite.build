@@ -20,16 +20,25 @@ says that guard is not a security sandbox.**
 This step adds three things:
 
 - **It runs separately** from the model, in its own job, with no GPU.
-- **It has no credentials.** It declares no secrets and sets no `envs`. If the job
-  environment still carries `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` (a cluster
-  account's login profile can export one into every job), `run` unsets it, with
-  a warning in the log, before any generated code runs. Its inputs arrive through
-  separate download steps (hfpull) before it starts.
+- **It has no credentials in its environment.** It declares no secrets and sets no
+  `envs`, and `run` starts the scorer under `env -i` with an allowlist: `PATH`, an
+  empty `HOME`, `TMPDIR`, the locale, `PYTHONPATH`, `HF_HOME`, the two offline
+  switches, the venv's `VIRTUAL_ENV`, and the thread-count variables
+  (`OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `SLURM_CPUS_PER_TASK`,
+  `SLURM_CPUS_ON_NODE`). Nothing else the job environment carries reaches the
+  generated code, including what a cluster account's login profile exports. If it
+  carried `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN`, the log says so. Its inputs arrive
+  through separate download steps (hfpull) before it starts.
+- **Its `HOME` is empty.** Generated code that reads `~/.ssh`,
+  `~/.cache/huggingface` or a dotfile finds nothing.
 - **It runs offline.** `HF_HUB_OFFLINE` and `HF_DATASETS_OFFLINE` are set.
 
-Generated code can still reach the network and write wherever the job's user can.
-Before scoring a model you don't trust, run this step where that is acceptable, for
-example on a node with no network access or credentials of its own.
+**This is not a sandbox.** The scorer still runs as the job's user, so generated code
+can open any file that user can read by its absolute path (including the user's real
+home directory and any keys in it), reach the network, and write wherever the user
+can. Before scoring a model you don't trust, run this step where that is acceptable,
+for example as a user with no credentials of its own, on a node without network
+access.
 
 ## Referencing the step
 

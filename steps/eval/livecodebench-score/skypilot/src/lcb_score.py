@@ -19,7 +19,11 @@ path). It:
 Generated code is executed by LiveCodeBench's checker in subprocesses with
 timeouts and resource limits. That guard is NOT a security sandbox; isolation
 comes from running this step on its own, with no credentials in its
-environment (the step refuses to start with ``HF_TOKEN`` set).
+environment: the step starts this script under ``env -i`` with an allowlist of
+variables, and an empty ``HOME``. That still isn't a sandbox; see USAGE.md.
+
+Memory: the benchmark's problems are decoded once, by LiveCodeBench's scorer. The
+match check reads only their ids (:func:`lcb_dataset.question_ids`).
 """
 
 from __future__ import annotations
@@ -190,24 +194,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     }
 
     lcb_dataset.install(args.dataset_dir)
-    from lcb_runner.benchmarks.code_generation import load_code_generation_dataset
 
     completions, meta = load_completions(Path(args.completions_dir))
-    benchmark = load_code_generation_dataset(
+    # Only the ids: the scorer decodes the problems itself, below, and holding a
+    # decoded copy here too would double the peak on a large window.
+    benchmark_ids = lcb_dataset.question_ids(
         args.release_version, start_date=start, end_date=end
     )
-    if not benchmark:
+    if not benchmark_ids:
         raise ValueError(
             f"no problems in {args.release_version} for window {start}..{end}"
         )
-    check_matches(
-        meta,
-        completions,
-        args.release_version,
-        start,
-        end,
-        [p.question_id for p in benchmark],
-    )
+    check_matches(meta, completions, args.release_version, start, end, benchmark_ids)
 
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
