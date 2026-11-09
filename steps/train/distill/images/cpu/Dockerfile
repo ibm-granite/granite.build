@@ -13,8 +13,8 @@
 # limitations under the License.
 #
 # Shared CPU image for the distillation steps that do text/data processing
-# only, no GPU (corpus-pin-check, corpus-prep, corpus-sources,
-# tokenizer-align). hf-export moved to steps/misc/ with its own image.
+# only, no GPU (data-validate, data-prep, data-mixture, tokenizer-align).
+# hf-export moved to steps/misc/ with its own image.
 # See steps/train/distill/images/gpu/Dockerfile for the GPU
 # sibling and the shared rationale (one image per resource class, not one
 # per step -- checked directly against each step's own pyproject.toml, not
@@ -23,14 +23,14 @@
 # No CUDA base: a plain Ubuntu base is enough, and pulling in
 # nvcr.io/nvidia/cuda for a CPU-only image would cost multiple GB for
 # nothing these steps use. Dependency manifest below (pyproject.toml +
-# uv.lock, next to this Dockerfile) is the UNION of corpus-prep's,
+# uv.lock, next to this Dockerfile) is the UNION of data-prep's,
 # tokenizer-align's, and (before it moved) hf-export's own declared ranges -- see
 # pyproject.toml's header for exactly which step contributes which
 # dependency. torch is pulled from PyPI's dedicated CPU-only wheel index
 # (see pyproject.toml's [tool.uv.sources]), not the default index's cu12x
 # wheels, since this image has no CUDA toolkit to match them against.
-ARG UBUNTU_TAG=22.04
-FROM ubuntu:${UBUNTU_TAG}
+FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
+FROM ubuntu:22.04@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11
 
 ARG DEBIAN_FRONTEND=noninteractive
 # 3.12, matching steps/train/distill/images/gpu/'s pin for consistency -- none of this
@@ -43,8 +43,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git curl wget ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
+    UV_NO_CACHE=1
+COPY --from=uv /uv /usr/local/bin/uv
 RUN uv python install ${UV_PYTHON} \
     && uv python pin ${UV_PYTHON} --no-workspace
 
@@ -56,10 +57,8 @@ COPY src/gb_steps_post_training ${DISTILL_HOME}/src/gb_steps_post_training
 ENV PYTHONPATH=${DISTILL_HOME}/src
 
 # Let uv own the venv's location/activation -- same convention as the GPU
-# image, /stage/.venv for compatibility with every CPU step's existing
-# code_config.python/PATH convention (confirmed across corpus-pin-check,
-# corpus-prep, corpus-sources, tokenizer-align, hf-export: all hardcode
-# /stage/.venv/bin/python today against the opaque kd-sandbox-distill image).
+# image: /stage/.venv, the path the CPU steps' templates set as VIRTUAL_ENV
+# (and that the opaque kd-sandbox-distill image these images replace used).
 COPY images/cpu/pyproject.toml images/cpu/uv.lock /opt/distill-cpu-src/
 WORKDIR /opt/distill-cpu-src
 ENV UV_PROJECT_ENVIRONMENT=/stage/.venv

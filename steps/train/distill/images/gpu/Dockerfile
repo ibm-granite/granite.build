@@ -13,7 +13,8 @@
 # limitations under the License.
 #
 # Shared GPU image for the distillation steps that load models and/or train
-# (gold, sft, logit-precompute, eval, vllm-server, gen-smoke, probe).
+# (logit-distill, student-sft, teacher-logits, teacher-divergence,
+# student-rollout-generator, repetition-check, preflight-check).
 #
 # ONE image, not one per step: checked directly against the real uv.lock
 # files in github.com/laminair/gb-steps-distillation at a5d59bc4 --
@@ -21,16 +22,16 @@
 # resolved locks) pin IDENTICAL torch 2.8.0 / transformers 5.8.0 /
 # accelerate 1.12.0 / tokenizers 0.22.2, and every other GPU step's declared
 # range (e.g. transformers>=5.8.0,<6) is satisfied by that same set. The 11
-# distillation steps already ran on one opaque shared image
-# (kd-sandbox-distill:0.1.0-uv) with no reported incompatibility; splitting
+# distillation steps (then named gold, sft, ...) already ran on one opaque
+# shared image (kd-sandbox-distill:0.1.0-uv) with no reported incompatibility; splitting
 # into one image per step (tried, then reverted) would only have turned
 # into a full-time job keeping N sets of pins mutually compatible for no
 # real isolation benefit. This image replaces that opaque one with a known,
 # source-controlled build -- same one-shared-image shape, not a new one.
 #
 # Dependency manifest below (pyproject.toml + uv.lock, next to this
-# Dockerfile) is distill-gold-train's own, vendored UNCHANGED from the
-# pinned commit: it's the fullest GPU dependency set (trl, vllm, deepspeed,
+# Dockerfile) started as upstream distill-gold-train's own at the pinned
+# commit (since extended: weave, tqdm -- see pyproject.toml): it's the fullest GPU dependency set (trl, vllm, deepspeed,
 # kernels) of any step, and every other GPU step's looser range already
 # resolves inside it.
 #
@@ -39,8 +40,10 @@
 # sdist-only and compiles native CUDA extensions against nvcc at install
 # time below, so the devel toolkit's major.minor has to match what torch's
 # own runtime libs expect.
-ARG CUDA_IMAGE_TAG=12.8.2-devel-ubuntu22.04
-FROM nvcr.io/nvidia/cuda:${CUDA_IMAGE_TAG}
+# Tag AND digest: the tag says which toolkit, the digest makes a rebuild
+# reproduce the published image instead of whatever the tag points at today.
+FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
+FROM nvcr.io/nvidia/cuda:12.8.2-devel-ubuntu22.04@sha256:4c3d61ac8217a4933cc3855ddd0a75e2a058b6757a170993040272f4310ef113
 
 ARG DEBIAN_FRONTEND=noninteractive
 # 3.12 EXACTLY, matching the vendored pyproject.toml's own
@@ -52,8 +55,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git curl wget ca-certificates build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# UV_NO_CACHE: keep uv's download cache out of the image layers.
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
+    UV_NO_CACHE=1
+COPY --from=uv /uv /usr/local/bin/uv
 RUN uv python install ${UV_PYTHON} \
     && uv python pin ${UV_PYTHON} --no-workspace
 
@@ -76,8 +81,7 @@ ENV PYTHONPATH=${DISTILL_HOME}/src
 
 # Let uv own the venv's location and activation -- UV_PROJECT_ENVIRONMENT is
 # uv's own supported mechanism for this, so `uv sync` itself places the venv
-# exactly where every GPU step's code_config.python/PATH convention already
-# expects it (/stage/.venv), with no separate manual PATH bookkeeping needed
+# exactly where the GPU steps' templates expect it (VIRTUAL_ENV=/stage/.venv), with no separate manual PATH bookkeeping needed
 # here beyond what `uv python install/pin` above already did.
 COPY images/gpu/pyproject.toml images/gpu/uv.lock /opt/gold-train-src/
 WORKDIR /opt/gold-train-src

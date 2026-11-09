@@ -1,8 +1,9 @@
-# distill/gpu — shared GPU image for the distillation steps
+# images/gpu — shared GPU image for the distillation steps
 
 Shared, source-controlled GPU image for the distillation steps that load
-models and/or train: `gold`, `sft`, `logit-precompute`, `eval`,
-`vllm-server`, `gen-smoke`, `probe`. Replaces the opaque
+models and/or train: `logit-distill`, `student-sft`, `teacher-logits`,
+`teacher-divergence`, `student-rollout-generator`, `repetition-check`,
+`preflight-check`. (The CPU steps' image is [`../cpu`](../cpu).) Replaces the opaque
 `kd-sandbox-distill:0.1.0-uv` image (no accessible Dockerfile/build source
 anywhere) with one built here, from a public base.
 
@@ -12,13 +13,20 @@ step — checked directly against the real `uv.lock` files in
 
 ## Building and publishing
 
+Both images build from [`steps/train/distill/Makefile`](../../Makefile). The build
+context is `steps/train/distill/` itself, not `images/gpu/`: the Dockerfiles COPY the
+shared `src/` package and each step's `skypilot/src/` from there.
+
 ```shell
-cd steps/distill   # build context is steps/distill/ itself, not images/gpu/: the
-                    # Dockerfile COPYs the shared src/gb_steps_post_training/
-                    # package and each step's src/ from there.
-podman build --platform linux/amd64 -f images/gpu/Dockerfile . -t <registry>/gb-step-distillation-gpu:<tag>
-podman push <registry>/gb-step-distillation-gpu:<tag>
+cd steps/train/distill
+make images REGISTRY=<registry>           # both; IMAGE_VERSION defaults to the git short SHA
+make publish-images REGISTRY=<registry>   # refuses to overwrite a published tag
 ```
+
+The bases and `uv` are pinned by digest, and the venv comes from the locked `uv.lock`
+(`uv sync --locked`), so a rebuild from the same commit reproduces the published image.
+After publishing, repin the tag in every `steps/train/distill/*/skypilot/step-template.yaml`
+and run `make publish-step` in each step directory.
 
 ## Two things this image does NOT solve by itself
 
@@ -55,14 +63,14 @@ This has two parts, split across two different places on purpose:
   handled centrally — not something each step repeats. gbserver generates
   the `sbatch_options.export` directive
   (`NVIDIA_VISIBLE_DEVICES=all,NVIDIA_DRIVER_CAPABILITIES=all,...`)
-  automatically for any SLURM step that requests both an accelerator and a
-  container image (`Skypilot._pyxis_gpu_sbatch_directives` in
+  for any SLURM step that requests both an accelerator and a container image,
+  when the environment opts in with `slurm_gpu_sbatch_directives: true`, as the
+  bluevela one does (`Skypilot._pyxis_gpu_sbatch_directives` in
   `src/gbserver/environment/skypilot.py`; see issue #510) — without this,
   pyxis's own NVIDIA hook sees it unset, defaults to `"void"`, and skips
   driver injection entirely (`libcuda.so.1` is then simply absent from the
-  container, no amount of `ldconfig` fixes that). A SLURM `environment.yaml`
-  can opt out via `slurm_gpu_sbatch_directives: false` if a cluster's own
-  Pyxis/driver setup ever needs something different from BlueVela's. Not
+  container, no amount of `ldconfig` fixes that). Generation is off by default,
+  so a cluster whose Pyxis/driver setup differs from BlueVela's leaves it off. Not
   confirmed whether LSF's enroot/pyxis setup needs the same fix at all (LSF
   has its own, separate container bootstrap).
 - **The `ldconfig` cache refresh**, once the driver *is* injected, stays a
@@ -79,7 +87,7 @@ This has two parts, split across two different places on purpose:
   ldconfig
   ```
 
-  (as root; see `gold`'s own `step-template.yaml` for the in-repo
+  (as root; see `logit-distill`'s own `step-template.yaml` for the in-repo
   convention of where this lives in the vLLM-serving branch specifically).
   Not confirmed whether LSF's enroot/pyxis setup has the same gap — treat
   as unverified, not assumed-same.
