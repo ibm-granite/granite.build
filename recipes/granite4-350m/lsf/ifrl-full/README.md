@@ -1,8 +1,7 @@
 # IFRL full recipe
 
-The complete ~1-day Instruction-Following RL run on SkyPilot/LSF.
-This is the gbserver reproduction of the original Ansible-driven IFRL launch
-script — same servers, same GRPO configuration, full training length. The
+The complete ~1-day Instruction-Following RL run on SkyPilot/LSF — the same
+servers and GRPO configuration as `ifrl-smoke`, full training length. The
 `ifrl-smoke` recipe is the minutes-long plumbing test for the same workflow;
 this recipe runs it to convergence.
 
@@ -37,7 +36,7 @@ matching the original launch script's `-e` overrides:
 ## What it does NOT include
 
 - Downstream evals (the 27-eval fan-out is the separate full eval recipe, #39).
-  Like the ansible script, this recipe stops after training.
+  This recipe stops after training.
 
 ## Run
 
@@ -46,6 +45,6 @@ matching the original launch script's `-e` overrides:
       --space <your-space>
 
 Outputs are namespaced under `…/granite4-350m-14-7180-ifrl-gb/` (note the `-gb`
-suffix) so this gbserver run cannot clobber the Ansible-driven run's output under
+suffix) so this run cannot clobber an earlier run's output under
 `…/granite4-350m-14-7180-ifrl/`. Override any value with `--param KEY=VALUE`
 (see `parameters.yaml`).

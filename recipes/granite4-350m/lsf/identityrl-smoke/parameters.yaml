@@ -1,6 +1,5 @@
 # Identity-RL smoke recipe — validates end-to-end plumbing in minutes, not the full run.
 # Override any value with: gb build start --param KEY=VALUE
-# Values mirror the original Ansible identity-RL configuration with smoke overrides.
 
 # ─── Run identification ───────────────────────────────────────────────
 EXP_NAME: "granite4-350m-14-7180-identityrl-smoke"

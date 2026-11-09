@@ -58,8 +58,8 @@ EVAL_QUEUE: "preemptable"
 # FSDP + --padfree on a single GPU, the tied embed_tokens/lm_head
 # flat-param triggers a "Cannot writeback when the parameter shape
 # changes" crash on the first forward pass. Two or more processes take
-# a different FSDP wrapping path and avoid the issue. Mirrors the original
-# Ansible multi-GPU setup. Evals stay on a single H100 — they don't hit this path.
+# a different FSDP wrapping path and avoid the issue.
+# Evals stay on a single H100 — they don't hit this path.
 SFT_ACCELERATORS: "H100:2"
 EVAL_ACCELERATORS: "H100:1"
 SFT_MEMORY: "1580"

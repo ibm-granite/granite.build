@@ -1,9 +1,7 @@
 # Identity-RL full recipe — the complete Identity RL run.
-# Reproduces the original Ansible-driven identity-RL launch: RM server (no code server),
-# same GRPO config, full training length (no smoke overrides). Override any
+# RM server (no code server), the GRPO config, full training length (no smoke overrides). Override any
 # value with: gb build start --param KEY=VALUE
-# Values mirror the original Ansible identity-RL configuration plus the
-# launch script's -e overrides (temperature=1.15, total_episodes=300000,
+# Full-run overrides relative to identityrl-smoke: (temperature=1.15, total_episodes=300000,
 # *_freq=40, ref=8, add_general_reward=false).
 
 # ─── Run identification ───────────────────────────────────────────────

@@ -1,8 +1,7 @@
 # Identity-RL full recipe
 
-The complete Identity RL run on SkyPilot/LSF. This is the
-gbserver reproduction of the original Ansible-driven identity-RL launch script —
-RM server, same GRPO configuration, full training length. The
+The complete Identity RL run on SkyPilot/LSF — RM server, the GRPO
+configuration, full training length. The
 `identityrl-smoke` recipe is the minutes-long plumbing test for the same
 workflow; this recipe runs it to convergence.
 
@@ -61,7 +60,7 @@ source scripts differ by:
 
 ## What it does NOT include
 
-- Downstream evals. Like the ansible script, this recipe stops after training.
+- Downstream evals. This recipe stops after training.
 
 ## Run
 

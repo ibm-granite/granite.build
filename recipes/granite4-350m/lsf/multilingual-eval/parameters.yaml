@@ -13,7 +13,7 @@ NUM_GPUS: 1
 # Output
 OUTPUT_DIR: "/proj/granite-build/g4os/sage"
 
-# Infrastructure (matches the original Ansible JOB_MEM = ngpu * 256)
+# Infrastructure (memory = ngpu * 256)
 ACCELERATORS: "H100:1"
 CLUSTER: "bluevela"
 QUEUE: "preemptable"

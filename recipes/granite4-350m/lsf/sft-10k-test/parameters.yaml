@@ -12,8 +12,7 @@ OUTPUT_DIR: "/proj/granite-build/g4os/sft/checkpoints-cma"
 # FSDP + --padfree on a single GPU, the tied embed_tokens/lm_head
 # flat-param triggers a "Cannot writeback when the parameter shape
 # changes" crash on the first forward pass. Two or more processes take
-# a different FSDP wrapping path and avoid the issue. Mirrors the original
-# Ansible multi-GPU setup.
+# a different FSDP wrapping path and avoid the issue.
 ACCELERATORS: "H100:2"
 CLUSTER: "bluevela"
 QUEUE: "normal"

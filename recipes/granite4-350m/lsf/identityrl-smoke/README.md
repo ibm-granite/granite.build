@@ -2,7 +2,7 @@
 
 A minutes-long smoke test of the end-to-end Identity RL plumbing on SkyPilot/LSF,
 before committing to the full run. Mirrors `ifrl-smoke`,
-but for the identity workflow (the original Ansible-driven identity-RL launch).
+but for the identity workflow.
 
 Identity RL trains the model's persona/identity responses ("Who are you?",
 "What's your name?") on the `general_identity` dataset, scored by the reward
