@@ -74,7 +74,7 @@ _PATCHED = {
     "nltk": "3.10.3",
     "litellm": "1.84.0",
     "PyJWT": "2.14.0",
-    "Authlib": "1.9.3",
+    "Authlib": "1.9.5",
     "fastmcp": "3.2.0",
     "anyio": "4.14.2",
     "GitPython": "3.1.59",

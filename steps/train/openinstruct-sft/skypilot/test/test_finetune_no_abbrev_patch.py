@@ -18,6 +18,7 @@ The upstream stand-in below keeps the pinned finetune.py's `__main__` lines
 (open-instruct 26de9960) and a minimal HfArgumentParser (transformers 5.4.0): it
 forwards keyword arguments to argparse.ArgumentParser unchanged, and
 parse_args_into_dataclasses() raises on any argument parse_known_args() left over.
+test_finetune_flags_in_image.py runs the real HfArgumentParser, in the image.
 """
 
 import importlib.util
@@ -58,6 +59,10 @@ if __name__ == "__main__":
 
 
 def _load():
+    """Import patches/finetune_no_abbrev.py by path (it is not a package module).
+
+    :returns: The loaded module; its ``patch(path)`` edits a file in place.
+    """
     spec = importlib.util.spec_from_file_location("finetune_no_abbrev", _PATCH)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -65,7 +70,17 @@ def _load():
 
 
 def _run(path, *argv):
-    # FlatArguments/TokenizerConfig are only names in the stand-in's call.
+    """Run the stand-in at ``path`` as a script, with ``argv`` as its arguments.
+
+    Writes ``run_<name>`` next to ``path`` (in the test's tmp_path): the stand-in
+    plus a prelude defining FlatArguments/TokenizerConfig, which are only names in
+    its parser call. ``path`` itself is left as patched.
+
+    :param path: The stand-in finetune.py, patched or not.
+    :param argv: Command-line arguments for it.
+    :returns: The CompletedProcess, with text stdout/stderr captured; a non-zero
+        exit is returned, not raised.
+    """
     prelude = "FlatArguments = TokenizerConfig = None\n"
     script = path.with_name("run_" + path.name)
     script.write_text(prelude + path.read_text())
