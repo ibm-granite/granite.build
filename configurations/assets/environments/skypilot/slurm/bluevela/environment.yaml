@@ -29,13 +29,23 @@ config:
   # (keyed by step-type slug; a build can still override). The cpu partition has
   # no H200 nodes, so they also drop the h200 constraint below: `null` removes the
   # directive, where "" would emit a bare `--constraint=`.
+  #
+  # They also get 8 GB: the steps' own total_memory_per_node (10Gi) is not applied
+  # on slurm, so without `resources.memory` their jobs requested 1 GB, and an
+  # `hf download` of a multi-GB repo was OOM-killed there. A build can't set this
+  # itself: gbserver generates these steps, not the build.yaml. Stopgap until
+  # #657 applies total_memory_per_node on slurm/lsf; then this can go.
   steps:
     hfpull:
       zone: cpu
-      launcher_config: { sbatch_options: { constraint: null } }
+      launcher_config:
+        resources: { memory: 8 }
+        sbatch_options: { constraint: null }
     hfpush:
       zone: cpu
-      launcher_config: { sbatch_options: { constraint: null } }
+      launcher_config:
+        resources: { memory: 8 }
+        sbatch_options: { constraint: null }
   # Pin every job to H200 nodes (#SBATCH --constraint=h200, billed at 1.4x H100).
   # gpu-mid's submit filter rejects ANY job -- even a CPU-only one with 0 GPUs --
   # when no H100 node is free. A step requesting GPUs must therefore ask for H200
