@@ -500,7 +500,8 @@ def init(
 @click.option(
     "--parameters-path",
     type=click.Path(exists=True, readable=True, dir_okay=False),
-    help="Path to parameters.yaml file.",
+    multiple=True,
+    help="Parameters file layered over the recipe's parameters.yaml; repeat to add layers, later ones win.",
 )
 @click.option(
     "--verbose-validation",
@@ -813,7 +814,8 @@ gb build log --all {show_build_id} --build-step-id <step id>
 @click.option(
     "--parameters-path",
     type=click.Path(exists=True, readable=True, dir_okay=False),
-    help="Path to parameters.yaml file.",
+    multiple=True,
+    help="Parameters file layered over the recipe's parameters.yaml; repeat to add layers, later ones win.",
 )
 @click.option(
     "--verbose-validation",
@@ -2302,7 +2304,8 @@ def log(
 @click.option(
     "--parameters-path",
     type=click.Path(exists=True, readable=True, dir_okay=False),
-    help="Path to parameters.yaml file.",
+    multiple=True,
+    help="Parameters file layered over the recipe's parameters.yaml; repeat to add layers, later ones win.",
 )
 @common_options
 def describe(

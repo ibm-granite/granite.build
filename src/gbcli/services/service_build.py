@@ -274,7 +274,7 @@ def build_start(
     space: Optional[str] = None,
     params: Optional[List[str]] = [],
     skip_validation=False,
-    parameters_path: Optional[str] = None,
+    parameters_path: Optional[Sequence[str]] = None,
     targets: Optional[tuple[str, ...]] = (),
     description: str = "",
     tags: list[str] = [],
@@ -567,7 +567,7 @@ def build_validate(
     filename: Optional[str] = "",
     space: Optional[str] = None,
     params: Optional[List[str]] = [],
-    parameters_path: Optional[str] = None,
+    parameters_path: Optional[Sequence[str]] = None,
     targets: Optional[tuple[str, ...]] = (),
     callback=None,
     validation_type: str = "static",
@@ -1466,7 +1466,7 @@ def build_describe(
     id_format: Optional[str] = None,
     space: Optional[str] = None,
     params: Optional[List[str]] = None,
-    parameters_path: Optional[str] = None,
+    parameters_path: Optional[Sequence[str]] = None,
     callback=None,
 ) -> str:
     downloaded_build_file_path = False
@@ -1552,15 +1552,8 @@ def build_describe(
             # so re-applying params there is meaningless and, under
             # StrictUndefined, could spuriously fail on `$${...}`-looking text.
             if (params or parameters_path) and not build_id:
-                params_file = (
-                    Path(parameters_path)
-                    if parameters_path
-                    else build_yaml_path.parent / BUILD_PARAMETERS_FILE
-                )
-                params_from_file = (
-                    get_params_from_file(str(params_file))
-                    if params_file.is_file()
-                    else {}
+                params_from_file = load_layered_params(
+                    str(build_yaml_path), parameters_path
                 )
                 params_dict = parse_params(list(params or []), params_from_file)
                 with tempfile.TemporaryDirectory() as scratch:
@@ -2708,19 +2701,16 @@ def prepare_build_local_contents(
 
 def parameters_helper(
     quiet: bool,
-    parameters_path: str,
+    parameters_path: Optional[Sequence[str]],
     build_file_path: str,
     experiment_folder: str,
     params: Optional[List[str]] = [],
     callback=None,
     callback_event=None,
 ) -> Tuple[str, str]:
-    if not parameters_path:
-        build_path = "/".join(build_file_path.split("/")[:-1])
-        parameters_path = os.path.join(build_path, BUILD_PARAMETERS_FILE)
-    logger.debug(f"Searching for parameters file {parameters_path}...")
     try:
-        params_from_file = get_params_from_file(parameters_path)
+        # Recipe parameters.yaml, then each --parameters-path in order (#663).
+        params_from_file = load_layered_params(build_file_path, parameters_path)
     except Exception as e:
         if callback is not None:
             callback(
@@ -2750,7 +2740,7 @@ def validate_helper(
     build_file_path: str,
     space: Optional[str] = None,
     params: Optional[List[str]] = [],
-    parameters_path: Optional[str] = None,
+    parameters_path: Optional[Sequence[str]] = None,
     targets: Optional[tuple[str, ...]] = (),
     callback=None,
     validation_type: str = "static",

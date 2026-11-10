@@ -178,3 +178,163 @@ def test_start_dry_run_writes_save_build_file(tmp_path, monkeypatch):
     assert dest.is_file()
     assert dest.read_text(encoding="utf-8") == out
     assert "space://environments/k8s" in out
+
+
+# --- layered --parameters-path (issue #663) ---
+
+
+def _layers(tmp_path: Path):
+    """Recipe parameters.yaml + two layers; each later file overrides a key."""
+    _write(tmp_path, "SUFFIX: base\nENVIRONMENT: base\n", name="parameters.yaml")
+    site = _write(tmp_path, "SUFFIX: site\nENVIRONMENT: site\n", name="site.yaml")
+    smoke = _write(tmp_path, "SUFFIX: smoke\n", name="smoke.yaml")
+    return str(site), str(smoke)
+
+
+def test_describe_raw_layered_files_last_wins(tmp_path):
+    bp = _write(tmp_path)
+    site, smoke = _layers(tmp_path)
+    out = build_describe(
+        github_token="",
+        filename=str(bp),
+        format="yaml",
+        raw=True,
+        parameters_path=(site, smoke),
+    )
+    doc = yaml.safe_load(out)
+    assert doc["granite.build"]["name"] == "demo-smoke"
+    assert doc["granite.build"]["targets"]["t1"]["environment_uri"].endswith("/site")
+
+
+def test_describe_raw_layer_falls_back_to_recipe_file(tmp_path):
+    bp = _write(tmp_path)
+    _write(tmp_path, "SUFFIX: base\nENVIRONMENT: base\n", name="parameters.yaml")
+    smoke = _write(tmp_path, "SUFFIX: smoke\n", name="smoke.yaml")
+    out = build_describe(
+        github_token="",
+        filename=str(bp),
+        format="yaml",
+        raw=True,
+        parameters_path=(str(smoke),),
+    )
+    doc = yaml.safe_load(out)
+    # A key the layer does not define falls back to the recipe's parameters.yaml.
+    assert doc["granite.build"]["name"] == "demo-smoke"
+    assert doc["granite.build"]["targets"]["t1"]["environment_uri"].endswith("/base")
+
+
+def test_describe_raw_param_beats_every_file(tmp_path):
+    bp = _write(tmp_path)
+    site, smoke = _layers(tmp_path)
+    out = build_describe(
+        github_token="",
+        filename=str(bp),
+        format="yaml",
+        raw=True,
+        params=["SUFFIX=cli", "ENVIRONMENT=cli"],
+        parameters_path=(site, smoke),
+    )
+    doc = yaml.safe_load(out)
+    assert doc["granite.build"]["name"] == "demo-cli"
+    assert doc["granite.build"]["targets"]["t1"]["environment_uri"].endswith("/cli")
+
+
+def test_describe_raw_missing_layer_reports_error(tmp_path):
+    bp = _write(tmp_path)
+    events = []
+
+    def cb(callback_event=None, callback_args=None):
+        events.append((callback_event, callback_args))
+
+    result = build_describe(
+        github_token="",
+        filename=str(bp),
+        format="yaml",
+        raw=True,
+        parameters_path=(str(tmp_path / "nope.yaml"),),
+        callback=cb,
+    )
+    assert result is None
+    reasons = [a["reason"] for e, a in events if e == "error"]
+    assert any("nope.yaml" in r for r in reasons)
+
+
+def test_cli_describe_accepts_repeated_parameters_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("GB_CONFIG", str(tmp_path / "gbcli"))
+    bp = _write(tmp_path)
+    site, smoke = _layers(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        build_cli,
+        [
+            "describe",
+            "-f",
+            str(bp),
+            "--raw",
+            "--parameters-path",
+            site,
+            "--parameters-path",
+            smoke,
+            "--skip-version-check",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "name: demo-smoke" in result.output
+    assert "space://environments/site" in result.output
+
+
+def test_start_dry_run_layered_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("GB_CACHE", str(tmp_path / "cache"))
+    bp = _write(tmp_path)
+    site, smoke = _layers(tmp_path)
+    out = build_start(
+        github_token="",
+        quiet=True,
+        filename=str(bp),
+        parameters_path=(site, smoke),
+        dry_run=True,
+    )
+    doc = yaml.safe_load(out)
+    assert doc["granite.build"]["name"] == "demo-smoke"
+    assert doc["granite.build"]["targets"]["t1"]["environment_uri"].endswith("/site")
+
+
+def test_start_dry_run_param_beats_every_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("GB_CACHE", str(tmp_path / "cache"))
+    bp = _write(tmp_path)
+    site, smoke = _layers(tmp_path)
+    out = build_start(
+        github_token="",
+        quiet=True,
+        filename=str(bp),
+        params=["SUFFIX=cli"],
+        parameters_path=(site, smoke),
+        dry_run=True,
+    )
+    doc = yaml.safe_load(out)
+    assert doc["granite.build"]["name"] == "demo-cli"
+    assert doc["granite.build"]["targets"]["t1"]["environment_uri"].endswith("/site")
+
+
+def test_cli_start_dry_run_accepts_repeated_parameters_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("GB_CONFIG", str(tmp_path / "gbcli"))
+    monkeypatch.setenv("GB_CACHE", str(tmp_path / "cache"))
+    bp = _write(tmp_path)
+    site, smoke = _layers(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        build_cli,
+        [
+            "start",
+            "-f",
+            str(bp),
+            "--dry-run",
+            "--parameters-path",
+            site,
+            "--parameters-path",
+            smoke,
+            "--skip-version-check",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "demo-smoke" in result.output
