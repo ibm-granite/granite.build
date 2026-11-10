@@ -184,7 +184,7 @@ python recipes/distill/distill-eval/rerun_command.py <build-uuid> --site "$SITE"
 | Argument | Meaning |
 |---|---|
 | `build_id` | the full UUID of the finished build |
-| `--site` | the site file the command layers; read for a render check, never printed. Default `~/.granite.build/local-env/distill-ibm-site.yaml` |
+| `--site` | the site file the command layers; read for a render check, never printed. Default `~/.granite.build/local-env/distill-site.yaml` |
 | `--rerun-tag` | the re-run's `RERUN_TAG`; default `rerun-<now>`; must differ from the build's own |
 | `--whole-rungs` | re-run every eval of a rung that had a failure, so its re-run column is complete |
 | `--space` | passed through to `gb build start` |

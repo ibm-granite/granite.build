@@ -74,7 +74,7 @@ _REPO = _HERE.parents[2]
 _RECIPE = _HERE / "build.yaml"
 _PARAMS = _HERE / "parameters.yaml"
 _SITE_EXAMPLE = _HERE.parent / "site.example.yaml"
-_DEFAULT_SITE = "~/.granite.build/local-env/distill-ibm-site.yaml"
+_DEFAULT_SITE = "~/.granite.build/local-env/distill-site.yaml"
 
 # Set by plan() from the build itself, never copied from parameters-applied.yaml.
 _COMPUTED = {

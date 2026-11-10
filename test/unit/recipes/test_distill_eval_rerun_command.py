@@ -334,14 +334,14 @@ def test_main_defaults_to_the_users_site_file(fake_gb, capsys, tmp_path, monkeyp
     monkeypatch.setenv("HOME", str(tmp_path))
     assert rc.main([_BUILD_ID]) == 1
     assert "pass --site" in capsys.readouterr().err
-    site = tmp_path / ".granite.build" / "local-env" / "distill-ibm-site.yaml"
+    site = tmp_path / ".granite.build" / "local-env" / "distill-site.yaml"
     site.parent.mkdir(parents=True)
     site.write_text(_SITE.read_text())
     assert rc.main([_BUILD_ID]) == 0
     argv = _command(capsys.readouterr().out)
     assert argv[5:7] == [
         "--parameters-path",
-        "~/.granite.build/local-env/distill-ibm-site.yaml",
+        "~/.granite.build/local-env/distill-site.yaml",
     ]
 
 
