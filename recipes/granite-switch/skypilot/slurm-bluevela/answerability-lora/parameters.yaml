@@ -9,21 +9,21 @@ ENVIRONMENT_URI: "space://environments/skypilot/slurm/bluevela"
 
 # ── Model ────────────────────────────────────────────────────────────────────
 # Public, ungated, ~17.6 GB of safetensors (no onnx). Staged by an hfpull job
-# on the cpu partition into /proj/data-eng/llmb-read-write/hfcache/. If that
+# on the cpu partition into <shared-fs>/hfcache/. If that
 # job fails, point this at an existing copy instead:
-#   BASE_MODEL_URI: "env:///proj/<...>/granite-4.2-8b"
+#   BASE_MODEL_URI: "env://<shared-fs>/<...>/granite-4.2-8b"
 BASE_MODEL_URI: "hf:///ibm-granite/granite-4.2-8b"
 # Written into adapter_config.json as base_model_name_or_path.
 BASE_MODEL_ID: "ibm-granite/granite-4.2-8b"
 
 # ── Data ─────────────────────────────────────────────────────────────────────
-# The answerability parquet in the private HF dataset repo ibm-research/touma.
+# The answerability parquet in a private HF dataset repo.
 # The path after the revision limits the pull to that directory; the prepare
 # target keeps its prompt/completion columns. Needs an HF_TOKEN secret with
-# read access to ibm-research (README.md). Replace `main` with a commit hash
+# read access to that repo (README.md). Replace `main` with a commit hash
 # to pin the data.
 SOURCE_DATA_URI: "hf:///datasets/ibm-research/touma/main/training_data/answerability/parquet_granite4.2_8b"
-# prepare writes the converted dataset to $DATA_ROOT/$RUN_ID on shared /proj
+# prepare writes the converted dataset to $DATA_ROOT/$RUN_ID on the shared filesystem
 # (container-visible), where train reads it.
 DATA_ROOT: "/proj/data-eng/llmb-read-write/touma/data/answerability-lora"
 # load_dataset split spec; slicing works ("train[:256]" for a smoke run).
@@ -47,7 +47,7 @@ LORA_ALPHA: 32
 LEARNING_RATE: 5.0e-05
 
 # ── Output ───────────────────────────────────────────────────────────────────
-# Adapters land in $ADAPTER_ROOT/answerability-$METHOD/$RUN_ID on shared /proj
+# Adapters land in $ADAPTER_ROOT/answerability-$METHOD/$RUN_ID on the shared filesystem
 # (container-visible), so LoRA and aLoRA runs never share a directory.
 ADAPTER_ROOT: "/proj/data-eng/llmb-read-write/touma/adapters"
 

@@ -1,6 +1,6 @@
 ######
 # distill-onpolicy-v2 — ON-POLICY GOLD for the granite4-350m pair, continuing from
-# distill-stage1-v2's chosen checkpoint. BlueVela (SkyPilot / LSF).
+# distill-stage1-v2's chosen checkpoint. SkyPilot/LSF.
 #
 # WRITTEN, NOT YET RUN. STUDENT_MODEL has no usable default: on-policy continues from a
 # good off-policy checkpoint, and which rung of stage 1 v2's ladder that is is decided
@@ -73,7 +73,7 @@ granite.build:
   # A retry is here because of a MEASURED cluster fault, not as general
   # insurance. Builds 7853d33b and b5f030cd lost three GPU targets to
   # `RuntimeError: CUDA unknown error` raised inside torch at cuda_init, every
-  # one of them on host p2-r03-n1 — 3 runs, 3 failures on that host, against 0
+  # one of them on one specific host — 3 runs, 3 failures on that host, against 0
   # failures across several hundred runs on every other host in the logs. The
   # node takes the allocation and cannot initialise CUDA.
   #

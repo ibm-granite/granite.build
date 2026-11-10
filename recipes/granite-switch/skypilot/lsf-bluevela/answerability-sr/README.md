@@ -22,13 +22,13 @@ the adapter stream reaches the LM head.
 ## Data
 
 Both datasets come from one Hugging Face dataset repo set up for testing the
-recipe, `ibm-research/touma`. Data, base model and code are all fetched by URI.
+recipe (the `DATA_URI` default in [`parameters.yaml`](parameters.yaml)). Data, base model and code are all fetched by URI.
 `DATA_URI` names the **repo**; the two subdirectory parameters name what to use
 inside it:
 
 | Parameter | Value | Holds |
 |---|---|---|
-| `DATA_URI` | `hf:///datasets/ibm-research/touma` | the repo |
+| `DATA_URI` | `hf:///datasets/<org>/<dataset>` (default in `parameters.yaml`) | the repo |
 | `TRAIN_DATA_SUBDIR` | `training_data/answerability/jsonl/granite-4.2-8b` | `train.jsonl`, `test.jsonl` |
 | `EVAL_DATA_SUBDIR` | `eval_data/answerability` | `gold.jsonl`, `rag.jsonl`, `unanswerable_v2.{a,b,c}.jsonl`, `collection.txt`, `setting.txt` |
 
@@ -97,7 +97,7 @@ so the pull runs under your Hub identity.
 
 `--value "$HF_TOKEN"` reads the token out of the environment rather than typing
 it, which keeps it out of your shell history and out of this file. The token has
-to belong to an account with access to the `ibm-research` org.
+to belong to an account with read access to the dataset repo.
 
 From there its whole path is server-side: granite.build resolves the secret,
 hands it to the download step as an environment variable, and `hf download`
@@ -107,7 +107,7 @@ for `ibm-granite/granite-4.2-8b` is public and needs no credential.
 
 ## Run
 
-For testing the recipe, we are using an IBM BlueVela environment; to run
+For testing the recipe, we are using a SkyPilot/LSF environment; to run
 elsewhere, see the comment on `ENVIRONMENT_URI` in
 [`parameters.yaml`](parameters.yaml).
 

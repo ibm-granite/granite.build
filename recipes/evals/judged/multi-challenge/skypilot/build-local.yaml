@@ -1,7 +1,7 @@
 granite.build:
   name: eval-multi-challenge-local
-  # multi-challenge, scored on the gbserver host instead of BlueVela: for a judge gateway that
-  # BlueVela cannot reach. `multi-challenge-generate` holds a BlueVela GPU while the model generates
+  # multi-challenge, scored on the gbserver host instead of the SkyPilot/SLURM cluster: for a judge gateway that
+  # the cluster cannot reach. `multi-challenge-generate` holds a SkyPilot/SLURM GPU while the model generates
   # (same as build.yaml); `multi-challenge-fetch` copies its output dir (generation.json and the
   # per-item responses under items/, which the score phase reads) back with scp on the local Bash
   # environment; `multi-challenge` scores it in the CPU image on the local Docker environment.

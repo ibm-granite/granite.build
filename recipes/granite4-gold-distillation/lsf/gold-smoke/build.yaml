@@ -1,5 +1,5 @@
 ######
-# gold-smoke — GOLD knowledge distillation smoke build for BlueVela (SkyPilot / LSF).
+# gold-smoke — GOLD knowledge distillation smoke build for SkyPilot/LSF.
 #
 # One target. Values come from parameters.yaml beside this file; the comments
 # explaining WHY each value is what it is live there.

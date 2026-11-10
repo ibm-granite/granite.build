@@ -1,6 +1,6 @@
 ######
 # distill-gold — real-scale GOLD distillation, granite-4.2-30b teacher /
-# granite-4.1-3b-base student, for BlueVela (SkyPilot / LSF).
+# granite-4.1-3b-base student, for SkyPilot/LSF.
 #
 # THREE OR FIVE TARGETS, depending on ON_POLICY:
 #
@@ -61,7 +61,7 @@ granite.build:
     # CHAT_TEMPLATE is NOT one of these: its default is a path RELATIVE to the
     # ported step's own code checkout, and that default is currently BROKEN
     # (the public gb-steps-distillation repo does not ship it) — so this
-    # recipe overrides it with an absolute, verified-on-BlueVela path instead
+    # recipe overrides it with an absolute, verified-on-the-cluster path instead
     # of relying on the step's default.
     align:
       environment_uri: "$${ENVIRONMENT_URI}"

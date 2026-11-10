@@ -1,5 +1,5 @@
 # gold-sweep-100 — the lambda=0.0 off-policy arm of the 100-step GOLD sweep, for
-# BlueVela (SkyPilot / LSF).
+# SkyPilot/LSF.
 #
 # This is the arm the published sweep found on the cost/quality frontier: it buys
 # mathematical reasoning (+0.073 gsm8k strict over a plain-SFT control, 2x the 2-sigma
@@ -27,10 +27,9 @@ IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
 
 # ─── Model pair and data ──────────────────────────────────────────────
 # The published sweep's own three artifacts, read directly rather than copied. All three
-# are readable from the granitebuild account (/proj/data-eng is drwxrws--- root
-# proj_data-eng and we are in proj_data-eng); verified 2026-09-13.
+# are readable by the service account via the project group.
 #
-# The teacher is a raw HF snapshot rather than a /proj overlay, and the student is
+# The teacher is a raw HF snapshot rather than a shared-fs overlay, and the student is
 # RETAGGED — re-embedded onto the teacher's tokenizer by the upstream
 # distill-tokenizer-align step, which does not exist in this repo. That is why these
 # paths are used as-is: substituting our own overlays would change the tokenizer
