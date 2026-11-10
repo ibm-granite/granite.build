@@ -34,7 +34,6 @@ object. (Patching ``tenacity.nap.sleep`` itself would not work: Retrying binds i
 as a default argument at import time.)
 """
 
-import logging
 from unittest.mock import patch
 
 import pytest
@@ -49,8 +48,6 @@ from gbserver.types.artifact import ArtifactType
 # Patch only tenacity's reference to the time module, so the global time.sleep
 # (and any other thread using it) is untouched.
 _TENACITY_TIME = "tenacity.nap.time"
-
-logger = logging.getLogger(__name__)
 
 
 @pytest.fixture

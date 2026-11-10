@@ -26,21 +26,17 @@ and must keep the storage factory they chose).
 from fastapi import FastAPI
 
 
-def init_server_process() -> None:
-    """Run the root-group init from cli.py, unless this process already ran it."""
+def create_app() -> FastAPI:
+    """uvicorn calls this once per worker process (``factory=True``).
+
+    This is the only supported way to serve the REST API: importing root_api on
+    its own does not initialize the process.
+    """
     from gbserver import cli
 
-    if cli.process_initialized:
-        # Same process as the CLI (standalone, single-worker rest-server): keep the
-        # user's --log-level/--log-file instead of resetting them to defaults.
-        return
-    # Spawned worker: an empty CLI call runs the same root-group init as the CLI.
-    cli.gbserver(["rest-server-worker"], standalone_mode=False)
-
-
-def create_app() -> FastAPI:
-    """uvicorn calls this once per worker process (``factory=True``)."""
-    init_server_process()
+    # Spawned workers run the init; a process that already ran the CLI keeps the
+    # user's --log-level/--log-file.
+    cli.ensure_process_initialized()
     from gbserver.api.root_api import root_api
 
     return root_api

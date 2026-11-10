@@ -92,6 +92,17 @@ def set_storage_factory(factory: StorageFactory):
         set_storage_prefix(__STORAGE.table_name_prefix)
 
 
+def _singleton_state() -> tuple:
+    """The cached (admin storage, factory) pair, unbuilt if unset. For tests only."""
+    return (__STORAGE, __STORAGE_FACTORY)
+
+
+def _restore_singleton_state(state: tuple) -> None:
+    """Put back a pair returned by _singleton_state(). For tests only."""
+    global __STORAGE, __STORAGE_FACTORY
+    __STORAGE, __STORAGE_FACTORY = state
+
+
 def get_storage_factory() -> StorageFactory:
     """Get the configured or set StorageFactory.
 

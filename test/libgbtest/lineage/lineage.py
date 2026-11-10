@@ -38,7 +38,7 @@ def get_test_support():
 
 
 class AbstractLineageTablesTest(AbstractSingletonStorageUsingTest):
-    """Prefixed ``gb_lineage_job`` and ``gb_lineage_index`` (plus the other admin tables) per test.
+    """Prefixed ``gb_lineage_job`` and ``gb_lineage_index`` per test (the other admin tables are prefixed too, but not cleared).
 
     For tests of the code that writes and reads the lineage tables (the ``db`` store,
     the indexer, the read service), as opposed to the storage classes themselves
@@ -51,7 +51,10 @@ class AbstractLineageTablesTest(AbstractSingletonStorageUsingTest):
         return SqliteStorageFactory()
 
     def _get_storage_to_clear(self) -> list[BaseItemStorage]:
-        return super()._get_storage_to_clear() + [
+        # Only the lineage tables: most of these tests touch nothing else, and each
+        # drop costs a lock round-trip in both setup and teardown. A sub-class that
+        # writes other admin tables adds them.
+        return [
             self.storage.lineage_row_storage,
             self.storage.lineage_job_storage,
         ]

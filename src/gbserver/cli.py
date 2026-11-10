@@ -76,10 +76,67 @@ class GraniteBuildServerCLI(click.Group):
         return mod.cli
 
 
-# Set once the root group below has run in this process. The uvicorn app factory
-# checks it so it doesn't re-run init (and reset --log-level/--log-file to defaults)
-# in a process that already ran the CLI, e.g. standalone or single-worker rest-server.
+# True once init_process() has completed in this process. Reset only by tests.
 process_initialized = False
+
+
+def init_process(
+    log_level: str = DEFAULT_LOG_LEVEL,
+    log_file: str = "",
+    gb_admin_table_prefix: Optional[str] = None,
+) -> Optional[Path]:
+    """Process-level init shared by the CLI root group and the uvicorn app factory.
+
+    Configures logging, installs transport retries, runs the standalone setup and
+    applies the admin table prefix. Returns the resolved log path, if any. The
+    flag is set only after every step succeeds, so a failed init is retried.
+    """
+    global process_initialized
+    log_path = None
+    if log_file != "":
+        log_path = Path(log_file).resolve()
+        log_path.parent.mkdir(mode=DEFAULT_DIR_PERMS, parents=True, exist_ok=True)
+    configure_logging(
+        level=log_level.lower(),
+        log_file=str(log_path) if log_path is not None else None,
+    )
+
+    # Install low-level transport retries (aiohttp DNS + kubernetes_asyncio
+    # requests) so build runs survive transient connection blips in our
+    # clusters without per-call-site retry logic. Idempotent; runs before any
+    # subcommand issues request traffic.
+    from gbserver.resilience.transport_retry import install_transport_retries
+
+    install_transport_retries()
+
+    # Process-level standalone setup (env defaults -> constants reload -> sqlite
+    # storage factory -> standalone space access manager). No-op outside
+    # STANDALONE; idempotent within it. command_standalone makes its own call
+    # with the space_dir it alone knows.
+    from gbserver.commands.utils import check_and_init_for_standalone
+
+    check_and_init_for_standalone()
+
+    if gb_admin_table_prefix is not None:
+        logger.warning(
+            "Global admin table name prefix set to '%s'!!!", gb_admin_table_prefix
+        )
+        # The environment variable is passed to a child process
+        os.environ[ENV_VAR_GBSERVER_ADMIN_TABLE_PREFIX] = gb_admin_table_prefix
+        singleton_storage.set_storage_prefix(gb_admin_table_prefix)
+
+    process_initialized = True
+    return log_path
+
+
+def ensure_process_initialized() -> None:
+    """Run init_process() with defaults unless this process already ran it.
+
+    Used by spawned server workers. A process that ran the CLI keeps the user's
+    --log-level/--log-file instead of having them reset to defaults.
+    """
+    if not process_initialized:
+        init_process()
 
 
 @click.command(cls=GraniteBuildServerCLI, context_settings=CONTEXT_SETTINGS)
@@ -117,38 +174,9 @@ def gbserver(
     """Granite.Build command line interface."""
     # NOTE: The server_runtime_config flag here is a placeholder to avoid click parsing errors.
     # We process server_runtime_config earlier in the gbserverenvconfig.py
-    global process_initialized
-    process_initialized = True
     ctx.log_level = log_level.lower()
-    if log_file != "":
-        ctx.log_path = Path(log_file).resolve()
-        ctx.log_path.parent.mkdir(mode=DEFAULT_DIR_PERMS, parents=True, exist_ok=True)
-    configure_logging(
-        level=ctx.log_level,
-        log_file=str(ctx.log_path) if ctx.log_path is not None else None,
-    )
-
-    # Install low-level transport retries (aiohttp DNS + kubernetes_asyncio
-    # requests) so build runs survive transient connection blips in our
-    # clusters without per-call-site retry logic. Idempotent; runs before any
-    # subcommand issues request traffic.
-    from gbserver.resilience.transport_retry import install_transport_retries
-
-    install_transport_retries()
-
-    # Process-level standalone setup (env defaults -> constants reload -> sqlite
-    # storage factory -> standalone space access manager). Click invokes this root
-    # group callback before any subcommand, so a single call here covers all
-    # current and future commands. No-op outside STANDALONE; idempotent within it.
-    # command_standalone makes its own call with the space_dir it alone knows.
-    from gbserver.commands.utils import check_and_init_for_standalone
-
-    check_and_init_for_standalone()
-
-    if gb_admin_table_prefix is not None:
-        logger.warning(
-            "Global admin table name prefix set to '%s'!!!", gb_admin_table_prefix
-        )
-        # The environment variable is passed to a child process
-        os.environ[ENV_VAR_GBSERVER_ADMIN_TABLE_PREFIX] = gb_admin_table_prefix
-        singleton_storage.set_storage_prefix(gb_admin_table_prefix)
+    # Click invokes this root group callback before any subcommand, so a single
+    # call here covers all current and future commands.
+    log_path = init_process(ctx.log_level, log_file, gb_admin_table_prefix)
+    if log_path is not None:
+        ctx.log_path = log_path

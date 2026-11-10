@@ -30,9 +30,11 @@ from gbserver.types.constants import (
     GB_BUILDS_TABLE_NAME,
     GB_ENVIRONMENT,
     GB_EVENTS_TABLE_NAME,
+    GB_KV_PAIRS_TABLE_NAME,
     GB_LINEAGE_JOB_TABLE_NAME,
     GB_LINEAGE_TABLE_NAME,
     GB_NODE_FAILURES_TABLE_NAME,
+    GB_SPACE_USERS_TABLE_NAME,
     GB_SPACES_TABLE_NAME,
     GB_STEP_RUNS_TABLE_NAME,
     GB_TARGET_RUNS_TABLE_NAME,
@@ -54,6 +56,8 @@ _SACRED_TABLE_NAMES = [
     GB_NODE_FAILURES_TABLE_NAME,
     GB_LINEAGE_TABLE_NAME,
     GB_LINEAGE_JOB_TABLE_NAME,
+    GB_SPACE_USERS_TABLE_NAME,
+    GB_KV_PAIRS_TABLE_NAME,
 ]
 
 
@@ -111,11 +115,21 @@ class AbstractReadonlySingletonStorageUsingTest:
         assert (
             GB_ENVIRONMENT != "PROD"
         ), "Refusing to run storage tests with GB_ENVIRONMENT=PROD."
+        # Save the module globals (not get_storage_factory(), which would build a
+        # default) so teardown_class can put back exactly what was there.
+        cls._saved_storage_singletons = singleton_storage._singleton_state()
         f = cls._get_storage_factory()
         assert isinstance(
             f, StorageFactory
         ), "A StorageFactory instance was not provided"
         singleton_storage.set_storage_factory(f)
+
+    @classmethod
+    def teardown_class(cls):
+        # Don't leak this class's factory (e.g. SQLite) into later tests on the worker.
+        saved = getattr(cls, "_saved_storage_singletons", None)
+        if saved is not None:
+            singleton_storage._restore_singleton_state(saved)
 
     @classmethod
     @abstractmethod

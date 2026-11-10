@@ -59,6 +59,13 @@ class _RoundtripTest(AbstractLineageTablesTest):
     def storage_fixture(self):
         return self.storage
 
+    def _get_storage_to_clear(self):
+        return super()._get_storage_to_clear() + [
+            self.storage.build_storage,
+            self.storage.target_storage,
+            self.storage.artifact_registry,
+        ]
+
 
 def add_build(storage) -> StoredBuild:
     build = StoredBuild(

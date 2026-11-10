@@ -74,6 +74,9 @@ def _restore_other_singletons(saved: list) -> None:
             setattr(module, name, value)
 
 
+_home_counter = 0
+
+
 def _real_db_tables(db_path: Path) -> set[str]:
     """Return the table names in the SQLite db at ``db_path``, or an empty set if it doesn't exist."""
     if not db_path.exists():
@@ -110,6 +113,21 @@ def _guard_real_gb_home_db(request):
         yield
         return
     yield
+    # Rows written into existing gb_* tables don't show up as new tables, so also
+    # fail if anything in this process opened an engine on the real db at all.
+    # Engines on temp homes are disposed per test; one left on the real db means
+    # some storage was built before the GB_HOME_DIR override (setup_class, module
+    # or session fixtures) and may have written to it.
+    opened = [
+        str(engine.url)
+        for engine in list(get_singleton_engine_cache().engines.values())
+        if engine.url.get_backend_name() == "sqlite"
+        and _is_same_file(engine.url.database, db_path)
+    ]
+    assert not opened, (
+        f"Unit tests opened the real SQLite db {db_path} via {opened}. "
+        "Some test bypasses the GB_HOME_DIR isolation in test/unit/conftest.py."
+    )
     try:
         after = _real_db_tables(db_path)
     except sqlite3.Error:
@@ -125,12 +143,21 @@ def _guard_real_gb_home_db(request):
     )
 
 
-@pytest.fixture(autouse=True)
-def _isolate_gb_home_dir(tmp_path_factory, monkeypatch):
-    """Point GB_HOME_DIR at a fresh temp dir for each test and restore the singletons after it."""
-    # Outside the test's own tmp_path: some tests assert exactly what is in it, and
+@pytest.fixture(scope="session")
+def _gb_home_base(tmp_path_factory) -> Path:
+    # Outside each test's own tmp_path: some tests assert exactly what is in it, and
     # some create a "gb_home" there themselves to check it gets created.
-    home = tmp_path_factory.mktemp("gb_home_sqlite")
+    return tmp_path_factory.mktemp("gb_home_sqlite")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_gb_home_dir(_gb_home_base, monkeypatch):
+    """Point GB_HOME_DIR at a fresh temp dir for each test and restore the singletons after it."""
+    # A unique path that is not created here: sqlite_storage creates it on first use,
+    # so the many tests that never touch storage cost no directory.
+    global _home_counter
+    _home_counter += 1
+    home = _gb_home_base / f"t{_home_counter}"
     # sqlite_storage resolves the home dir via get_gb_home_dir() when a storage is
     # constructed, so setting the env var is enough to redirect storage built during
     # the test. Storage built earlier (setup_class, module/session fixtures) still
@@ -148,9 +175,19 @@ def _isolate_gb_home_dir(tmp_path_factory, monkeypatch):
     # Each test gets its own db path and so its own cached engine; dispose those so
     # pooled connections don't accumulate until atexit. Other engines (e.g. Postgres
     # pools under live-storage tests) are kept, so they don't reconnect every test.
-    get_singleton_engine_cache().dispose_matching(
-        lambda engine: _is_under(engine.url.database, home)
-    )
+    if home.exists():
+        get_singleton_engine_cache().dispose_matching(
+            lambda engine: _is_under(engine.url.database, home)
+        )
+
+
+def _is_same_file(database: str | None, path: Path) -> bool:
+    if not database:
+        return False
+    try:
+        return Path(database).resolve() == path.resolve()
+    except (OSError, ValueError):
+        return False
 
 
 def _is_under(database: str | None, home: Path) -> bool:
