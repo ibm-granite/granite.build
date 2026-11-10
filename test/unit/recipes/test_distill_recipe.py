@@ -233,6 +233,55 @@ def test_bad_lambda_settings_fail_to_render(tmp_path, params, needle):
     assert needle in str(err.value)
 
 
+@pytest.mark.parametrize(
+    "params, needle",
+    [
+        ({"LMBDA_MODE": "off-policy", "MIN_COMPLETION_LENGTH": "16"}, "MIN_COMPLETION"),
+        ({"LMBDA_MODE": "off-policy", "LMBDA_RAMP_START_STEP": "100"}, "LMBDA_RAMP"),
+        ({"LMBDA_MODE": "off-policy", "LMBDA_RAMP_STEPS": "100"}, "LMBDA_RAMP"),
+        ({"LMBDA_MODE": "on-policy", "LMBDA_RAMP_START_STEP": "100"}, "LMBDA_RAMP"),
+        ({"LMBDA_MODE": "on-policy", "LMBDA_RAMP_STEPS": "100"}, "LMBDA_RAMP"),
+    ],
+)
+def test_settings_a_mode_would_drop_fail_to_render(tmp_path, params, needle):
+    """A key the mode does not render would otherwise be silently ignored."""
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params)
+    assert needle in str(err.value)
+
+
+@pytest.mark.parametrize("mode", _MODES)
+def test_zero_and_empty_drop_settings_render(tmp_path, mode):
+    """0 is never a setting the mode drops, and empty is the floor's default."""
+    _render(
+        tmp_path,
+        LMBDA_MODE=mode,
+        MIN_COMPLETION_LENGTH="0",
+        LMBDA_RAMP_START_STEP="0",
+        LMBDA_RAMP_STEPS="0",
+    )
+    _render(tmp_path, LMBDA_MODE=mode, MIN_COMPLETION_LENGTH="")
+
+
+@pytest.mark.parametrize("mode", ["ramp", "on-policy"])
+def test_generation_floor_defaults_to_16_online(tmp_path, mode):
+    assert _gold(_render(tmp_path, LMBDA_MODE=mode))["min_completion_length"] == 16
+    gold = _gold(_render(tmp_path, LMBDA_MODE=mode, MIN_COMPLETION_LENGTH="0"))
+    assert gold["min_completion_length"] == 0
+
+
+def test_ramp_window_reaches_the_trainer(tmp_path):
+    gold = _gold(
+        _render(
+            tmp_path,
+            LMBDA_MODE="ramp",
+            LMBDA_RAMP_START_STEP="2000",
+            LMBDA_RAMP_STEPS="2500",
+        )
+    )
+    assert (gold["lmbda_ramp_start_step"], gold["lmbda_ramp_steps"]) == (2000, 2500)
+
+
 @pytest.mark.parametrize("mode", _MODES)
 def test_the_server_is_never_carved_out_of_the_trainer(tmp_path, mode):
     """vllm_num_servers > 0 without the `vllm` input would split the trainer's own

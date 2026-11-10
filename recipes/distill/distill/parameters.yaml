@@ -29,13 +29,14 @@ LMBDA: ""
 # The ramp's window, ramp mode only: it starts at LMBDA_RAMP_START_STEP (lambda 0
 # before it) and reaches lambda after LMBDA_RAMP_STEPS steps; 0 / 0 ramps over the
 # whole run. A resumed run sets the start to its resume step so it ramps over its
-# own steps.
+# own steps. The render fails if either is non-zero in another mode.
 LMBDA_RAMP_START_STEP: 0
 LMBDA_RAMP_STEPS: 0
 # The generation floor in tokens for the student's rollouts, sent by the trainer
-# with every request. 16 is cheap insurance against the immediate-EOS collapse;
-# rendered only when a server runs (the renderer refuses it off-policy).
-MIN_COMPLETION_LENGTH: 16
+# with every request. Empty: 16 whenever a server runs, cheap insurance against the
+# immediate-EOS collapse; 0 turns it off. The render fails if it is set above 0
+# with off-policy, where nothing generates.
+MIN_COMPLETION_LENGTH: ""
 
 # ─── The SFT arm ──────────────────────────────────────────────────────
 # true: a plain-SFT pass between align and distillation, which then continues from

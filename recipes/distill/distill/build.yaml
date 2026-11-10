@@ -74,6 +74,18 @@ $${ LMBDA_must_be_above_0_and_at_most_1 }
 <%- endif %>
 <%- set L = LMBDA | float %>
 <%- endif %>
+# Settings a mode does not render are refused rather than silently dropped: the
+# ramp window outside ramp, and a generation floor off-policy, where nothing
+# generates. 0 is never refused. An empty floor is the default: 16 tokens
+# whenever a server runs.
+<%- if SCHEDULE != "linear" and ((LMBDA_RAMP_START_STEP | int) != 0 or (LMBDA_RAMP_STEPS | int) != 0) %>
+$${ LMBDA_RAMP_START_STEP_and_LMBDA_RAMP_STEPS_must_be_0_unless_LMBDA_MODE_is_ramp }
+<%- endif %>
+<%- set FLOOR = MIN_COMPLETION_LENGTH | string | trim %>
+<%- if not ONLINE and FLOOR and (FLOOR | int) > 0 %>
+$${ MIN_COMPLETION_LENGTH_must_be_empty_or_0_when_LMBDA_MODE_is_off_policy }
+<%- endif %>
+<%- set FLOOR = (FLOOR or "16") | int %>
 # ── CKPT_LADDER, checked once ──────────────────────────────────────────────
 # Every rung binds a checkpoint the trainer emits MID-RUN. A rung it never
 # writes is not a late error but a target that never dispatches, so the ladder
@@ -647,18 +659,19 @@ $${ corpus_inputs() }
               opd_importance_sampling: $${OPD_IMPORTANCE_SAMPLING}
               lmbda_schedule: "$${SCHEDULE}"
 <%- if SCHEDULE == "linear" %>
-              # From 0 (all corpus) at the window's start to lmbda at its end; the
-              # renderer refuses the window keys under a constant schedule.
+              # From 0 (all corpus) at the window's start to lmbda at its end. The
+              # window keys are refused above in any other mode, and the step's
+              # renderer refuses them under a constant schedule.
               lmbda_init: 0.0
               lmbda_ramp_start_step: $${LMBDA_RAMP_START_STEP}
               lmbda_ramp_steps: $${LMBDA_RAMP_STEPS}
 <%- endif %>
-              # The generation floor, sent by the trainer with every request; the
-              # renderer refuses it off-policy, where it would be inert.
-              min_completion_length: $${MIN_COMPLETION_LENGTH}
+              # The generation floor, sent by the trainer with every request.
+              min_completion_length: $${FLOOR}
 <%- else %>
-              # Off-policy: no server count, schedule or floor, because the renderer
-              # refuses each of them at lmbda 0 as silently inert.
+              # Off-policy: no server count, schedule or floor. The step's renderer
+              # refuses each of them at lmbda 0 as silently inert, and this file
+              # refuses a floor or ramp window set here (above).
               vllm_num_servers: 0
 <%- endif %>
 
