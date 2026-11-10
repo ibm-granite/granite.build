@@ -19,12 +19,12 @@ path). It:
    no shell is left after it to print the marker.
 
 Generated code is executed by LiveCodeBench's checker in subprocesses with
-timeouts and resource limits. That guard is NOT a security sandbox; isolation
-comes from running this step on its own, with no credentials in its
-environment: the step ``exec``s this script under ``env -i`` with an allowlist of
-variables and an empty ``HOME``. That isn't a sandbox: processes above the step, run as
-the same user, still hold the job's original environment in ``/proc/<pid>/environ``,
-and the user's files stay readable by absolute path. See USAGE.md.
+timeouts and resource limits. That guard is NOT a security sandbox. The step adds
+isolation around this script: it ``exec``s it under ``env -i`` with an allowlist of
+variables and an empty ``HOME``, and (with ``sandbox`` on, the default) under the
+Landlock sandbox in ``lcb_sandbox.py``, so no other process's ``/proc/<pid>/environ``
+is readable, only the step's own files can be opened, and TCP is denied. See
+USAGE.md.
 
 Memory: the benchmark's problems are decoded once, by LiveCodeBench's scorer. The
 match check reads only their ids (:func:`lcb_dataset.question_ids`).
@@ -249,7 +249,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("eval/livecodebench-score: " + json.dumps(summary))
     # Must start the line for skypilot_monitor's regex to capture it; absolute,
     # because the server reads it off-node.
-    print(f"GB_ARTIFACT_ID:{ARTIFACT_ID} GB_ARTIFACT_PATH:{out.resolve()}", flush=True)
+    print(f"GB_ARTIFACT_ID:{ARTIFACT_ID} GB_ARTIFACT_PATH:{out.absolute()}", flush=True)
     return 0
 
 

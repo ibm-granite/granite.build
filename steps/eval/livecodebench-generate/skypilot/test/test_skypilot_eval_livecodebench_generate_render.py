@@ -185,10 +185,29 @@ class TestSetup:
     def test_uv_is_pinned_and_comes_from_the_package_index(self, defaults, launcher):
         mirror = "https://mirror.example/simple"
         setup = _render(launcher["setup"], _cfg(defaults, pip_index_url=mirror))
-        assert f"--index-url '{mirror}' \\\n  'uv==0.13.6'" in setup
-        assert "'uv==0.13.7'" in _render(
+        assert f"--index-url '{mirror}' \\\n  \"uv==$UV_VERSION\"" in setup
+        assert "UV_VERSION='0.13.6'" in setup
+        assert "UV_VERSION='0.13.7'" in _render(
             launcher["setup"], _cfg(defaults, uv_version="0.13.7")
         )
+
+    def test_empty_uv_version_fails_with_a_message(self, defaults, launcher, tmp_path):
+        setup = _render(launcher["setup"], _cfg(defaults, uv_version=""))
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        for name, body in (("git", "exit 0"), ("pip", 'echo "PIP_RAN:$*"; exit 1')):
+            (bin_dir / name).write_text(f"#!/usr/bin/env bash\n{body}\n")
+            (bin_dir / name).chmod(0o755)
+        proc = subprocess.run(
+            ["bash", "-c", setup],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env=dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}"),
+        )
+        assert proc.returncode == 1
+        assert "uv_version is empty" in proc.stderr
+        assert "PIP_RAN" not in proc.stdout
 
     def test_uv_bootstrap_hides_no_errors(self, defaults, launcher):
         """Ask pip whether it knows --break-system-packages; don't try and fall back."""

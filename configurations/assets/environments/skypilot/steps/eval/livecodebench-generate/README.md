@@ -70,6 +70,7 @@ generated; the whole release is still downloaded.
 | `vllm_package` | string | optional (default `vllm==0.32.0`) | vLLM release; it brings torch and transformers. Pick one whose torch build matches your GPU driver. |
 | `lcb_commit`, `lcb_repo`, `lcb_checkout` | string | optional | LiveCodeBench commit, source and checkout directory. Keep `lcb_commit` equal to the score step's. |
 | `pip_index_url` | string | optional | Package index for the install. |
+| `uv_version` | string | optional (default `0.13.6`) | uv release setup installs from `pip_index_url` and builds the venv with. Must not be empty. |
 
 ## Choosing max_tokens
 

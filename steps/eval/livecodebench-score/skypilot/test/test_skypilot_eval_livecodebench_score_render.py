@@ -6,13 +6,17 @@ only) and is not copied by ``make publish-step``.
 
 The rendered ``run`` block is executed with a stub ``python`` on PATH that records
 its argv and environment, so the assertions are on what bash actually hands the
-bundled scorer, not on rendered text.
+bundled scorer, not on rendered text. The stub stands in for the sandbox wrapper too
+(``src/lcb_sandbox.py``): it records the wrapper's paths and runs the command after
+``--``, so the tests run on hosts without Landlock. ``TestSandboxForReal`` runs the
+real wrapper where the host has it.
 """
 
 import os
 import pathlib
 import shutil
 import subprocess
+import sys
 
 import pytest
 import yaml
@@ -72,13 +76,73 @@ def _bash_ok(script: str) -> bool:
     return subprocess.run(["bash", "-n"], input=script, text=True).returncode == 0
 
 
+# What the rendered blocks run besides the stubs, for a PATH with nothing else on it.
+_TOOLS = (
+    "bash",
+    "env",
+    "mkdir",
+    "rm",
+    "sed",
+    "true",
+    "ls",
+    "grep",
+    "cat",
+    "id",
+    "wc",
+)
+
+_SANDBOX_PY = str(_STEP_DIR / "src" / "lcb_sandbox.py")
+
+# The top of the stub python, when it's asked to run the sandbox wrapper: "ok"
+# records the wrapper's arguments and runs the command after --; "broken" fails the
+# way the wrapper does on a kernel without Landlock; "real" runs the real wrapper with
+# the host's python, which restricts itself and execs the command (the stub again).
+_SANDBOX_STUBS = {
+    "ok": (
+        'if [ "${1:-}" = "$SRC_DIR_EXPECTED/lcb_sandbox.py" ]; then shift\n'
+        '  w=(); while [ "$1" != -- ]; do w+=("$1"); shift; done; shift\n'
+        '  echo "SANDBOX:${w[*]}"; exec "$@"\n'
+        "fi\n"
+    ),
+    "broken": (
+        'if [ "${1:-}" = "$SRC_DIR_EXPECTED/lcb_sandbox.py" ]; then\n'
+        '  echo "eval/livecodebench-score: ERROR sandbox is on but this node can\'t apply it (this kernel has no Landlock); refusing" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+    ),
+    "real": (
+        'if [ "${1:-}" = "$SRC_DIR_EXPECTED/lcb_sandbox.py" ]; then\n'
+        '  exec "$REAL_PYTHON" "$@"\n'
+        "fi\n"
+    ),
+}
+
+
+def _tools_dir(cwd: pathlib.Path) -> pathlib.Path:
+    """A directory with only the basic tools, so PATH can leave out the host's own
+    ``python`` (Debian's python-is-python3, RHEL's /usr/bin/python)."""
+    tools = cwd / "tools"
+    tools.mkdir()
+    for name in _TOOLS:
+        found = shutil.which(name)
+        if found:
+            (tools / name).symlink_to(found)
+    return tools
+
+
 def _run(
-    rendered: str, cwd: pathlib.Path, env_over: dict | None = None
+    rendered: str,
+    cwd: pathlib.Path,
+    env_over: dict | None = None,
+    sandbox: str = "ok",
+    stub_body: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Execute a rendered `run` block with a stub `python` on PATH.
 
     The stub prints ``ARG:<word>`` per argument, plus the working directory and the
-    environment variables the step must set or clear.
+    environment variables the step must set or clear (or runs ``stub_body``).
+    ``sandbox`` picks what the stub does when the step runs the sandbox wrapper: a key
+    of ``_SANDBOX_STUBS``. Apart from the stub, PATH holds only ``_TOOLS``.
     """
     if shutil.which("bash") is None:  # pragma: no cover
         pytest.skip("bash not available")
@@ -87,21 +151,32 @@ def _run(
     stub = bin_dir / "python"
     stub.write_text(
         "#!/usr/bin/env bash\n"
-        'for a in "$@"; do echo "ARG:$a"; done\n'
-        'echo "CWD:$(pwd)"\n'
-        'echo "ENV:HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-}"\n'
-        'echo "ENV:HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-}"\n'
-        'echo "ENV:PYTHONPATH=${PYTHONPATH:-}"\n'
-        'env | sed "s/^/FULLENV:/"\n'
+        # Paths written in, not passed in the environment: env -i starts the wrapper.
+        + _SANDBOX_STUBS[sandbox]
+        .replace("$SRC_DIR_EXPECTED", str(cwd / "src"))
+        .replace("$REAL_PYTHON", sys.executable)
+        + (
+            stub_body
+            or 'for a in "$@"; do echo "ARG:$a"; done\n'
+            'echo "CWD:$(pwd)"\n'
+            'echo "ENV:HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-}"\n'
+            'echo "ENV:HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-}"\n'
+            'echo "ENV:PYTHONPATH=${PYTHONPATH:-}"\n'
+            'env | sed "s/^/FULLENV:/"\n'
+        )
     )
     stub.chmod(0o755)
+    tools = _tools_dir(cwd)
+    (cwd / "src").mkdir()
+    if sandbox == "real":
+        shutil.copy(_SANDBOX_PY, cwd / "src")
     (cwd / "venv" / "bin").mkdir(parents=True)
     (cwd / "venv" / "bin" / "activate").write_text("")
     (cwd / "LiveCodeBench").mkdir()
     for d in (_COMPLETIONS, _DATASET):
         (cwd / d).mkdir(parents=True, exist_ok=True)
     env = {k: v for k, v in os.environ.items() if k != "HF_TOKEN"}
-    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["PATH"] = f"{bin_dir}:{tools}"
     for k, v in (env_over or {}).items():
         if v is None:
             env.pop(k, None)
@@ -109,6 +184,19 @@ def _run(
             env[k] = v
     return subprocess.run(
         ["bash", "-c", rendered], capture_output=True, text=True, cwd=cwd, env=env
+    )
+
+
+def _run_setup_until_uv(setup: str, cwd: pathlib.Path) -> subprocess.CompletedProcess:
+    """Run a rendered `setup` with stub git and pip, so it stops at the uv bootstrap."""
+    bin_dir = cwd / "setup-bin"
+    bin_dir.mkdir()
+    for name, body in (("git", "exit 0"), ("pip", 'echo "PIP_RAN:$*"; exit 1')):
+        (bin_dir / name).write_text(f"#!/usr/bin/env bash\n{body}\n")
+        (bin_dir / name).chmod(0o755)
+    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
+    return subprocess.run(
+        ["bash", "-c", setup], capture_output=True, text=True, cwd=cwd, env=env
     )
 
 
@@ -204,14 +292,14 @@ class TestSetup:
         assert 'uv pip install --no-deps -e "$LCB_DIR"' in setup
         assert (
             "--index-url 'https://download.pytorch.org/whl/cpu'" in setup
-            and "'torch==2.6.0'" in setup
+            and "'torch==2.15.0'" in setup
         )
         assert 'UV_CACHE_DIR="$PWD/.uv-cache"' in setup
         assert "GB_SHARED_WORKDIR" not in setup
 
     def test_torch_comes_before_the_rest(self, defaults, launcher):
         setup = _render(launcher["setup"], _cfg(defaults))
-        assert setup.index("torch==2.6.0") < setup.index("requirements-score.txt")
+        assert setup.index("torch==2.15.0") < setup.index("requirements-score.txt")
 
     def test_install_false_installs_nothing(self, defaults, launcher):
         setup = _render(launcher["setup"], _cfg(defaults, install=False))
@@ -220,8 +308,9 @@ class TestSetup:
     def test_uv_is_pinned_and_comes_from_the_package_index(self, defaults, launcher):
         mirror = "https://mirror.example/simple"
         setup = _render(launcher["setup"], _cfg(defaults, pip_index_url=mirror))
-        assert f"--index-url '{mirror}' \\\n  'uv==0.13.6'" in setup
-        assert "'uv==0.13.7'" in _render(
+        assert f"--index-url '{mirror}' \\\n  \"uv==$UV_VERSION\"" in setup
+        assert "UV_VERSION='0.13.6'" in setup
+        assert "UV_VERSION='0.13.7'" in _render(
             launcher["setup"], _cfg(defaults, uv_version="0.13.7")
         )
 
@@ -233,6 +322,13 @@ class TestSetup:
             l for l in setup.splitlines() if "pip install" in l and "uv pip" not in l
         ]
         assert boot and not any("2>/dev/null" in l for l in boot if "--help" not in l)
+
+    def test_empty_uv_version_fails_with_a_message(self, defaults, launcher, tmp_path):
+        setup = _render(launcher["setup"], _cfg(defaults, uv_version=""))
+        proc = _run_setup_until_uv(setup, tmp_path)
+        assert proc.returncode == 1
+        assert "uv_version is empty" in proc.stderr
+        assert "PIP_RAN" not in proc.stdout
 
     def test_venv_is_recreated_on_a_retry(self, defaults, launcher):
         """A retried step reuses the workdir; uv refuses to create over an existing venv."""
@@ -279,14 +375,18 @@ class TestRun:
         argv = _lines(proc, "ARG:")
         assert _opt(argv, "--start-date") == "" and _opt(argv, "--end-date") == ""
 
-    def test_the_scorer_replaces_the_shell(self, defaults, launcher):
-        """exec, so the shell holding the job's environment isn't the scorer's parent;
-        the scorer prints the artifact marker itself, since nothing runs after it."""
+    def test_the_scorer_prints_the_marker_with_the_logical_path(
+        self, defaults, launcher
+    ):
+        """Nothing runs after the exec, so the scorer prints the artifact marker. It
+        keeps symlinks in the path (absolute(), not resolve()), as `pwd` and every
+        other step do, so a symlinked mount reports the same path."""
         run = _render(launcher["run"], _cfg(defaults))
         assert 'exec env -i "${SCORE_ENV[@]}"' in run
         assert "GB_ARTIFACT_ID" not in run
         src = (_STEP_DIR / "src" / "lcb_score.py").read_text()
-        assert "GB_ARTIFACT_ID:{ARTIFACT_ID} GB_ARTIFACT_PATH:{out.resolve()}" in src
+        assert "GB_ARTIFACT_ID:{ARTIFACT_ID} GB_ARTIFACT_PATH:{out.absolute()}" in src
+        assert ".resolve()}" not in src
 
     def test_cd_is_safe_with_cdpath(self, defaults, launcher, tmp_path):
         """With CDPATH set, cd prints the directory; the captured path must stay clean."""
@@ -298,10 +398,21 @@ class TestRun:
         assert _opt(argv, "--output-dir") == str(tmp_path / "output")
 
     def test_missing_python_fails_with_a_message(self, defaults, launcher, tmp_path):
+        """PATH holds only the basic tools, so this holds on a host with its own
+        /usr/bin/python too."""
         rendered = _render(launcher["run"], _cfg(defaults, install=False))
-        proc = _run(rendered, tmp_path, {"PATH": "/usr/bin:/bin"})
+        _run(rendered, tmp_path)  # sets up the inputs, stubs and tools directory
+        (tmp_path / "bin" / "python").unlink()
+        proc = subprocess.run(
+            ["bash", "-c", rendered],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env={"PATH": f"{tmp_path / 'bin'}:{tmp_path / 'tools'}"},
+        )
         assert proc.returncode == 1
         assert "no python on PATH" in proc.stderr
+        assert "ARG:" not in proc.stdout
 
     @pytest.mark.parametrize("var", ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"])
     def test_drops_an_inherited_hf_token(self, defaults, launcher, tmp_path, var):
@@ -309,6 +420,7 @@ class TestRun:
         proc = _run(_render(launcher["run"], _cfg(defaults)), tmp_path, {var: "hf_x"})
         assert proc.returncode == 0, proc.stderr
         assert f"WARNING {var} was set" in proc.stderr
+        assert "kept out of the scorer's environment" in proc.stderr
         assert "hf_x" not in proc.stdout
         assert any(line.startswith("ARG:") for line in proc.stdout.splitlines())
 
@@ -416,3 +528,123 @@ class TestRun:
             not (tmp_path / "PWNED").exists()
             and not (tmp_path / "LiveCodeBench" / "PWNED").exists()
         )
+
+
+class TestSandbox:
+    def test_is_on_by_default(self, defaults):
+        assert defaults["sandbox"] is True
+
+    def test_scorer_runs_under_the_wrapper_with_only_the_steps_paths(
+        self, defaults, launcher, tmp_path
+    ):
+        proc = _run(_render(launcher["run"], _cfg(defaults)), tmp_path)
+        (wrapper_args,) = _lines(proc, "SANDBOX:")
+        words = wrapper_args.split()
+        reads = {words[i + 1] for i, w in enumerate(words) if w == "--read"}
+        writes = {words[i + 1] for i, w in enumerate(words) if w == "--write"}
+        assert reads == {
+            str(tmp_path / "src"),
+            str(tmp_path / _COMPLETIONS),
+            str(tmp_path / _DATASET),
+            str(tmp_path / "LiveCodeBench"),
+        }
+        # Only the step's own scratch and output directories: not the workdir
+        # itself, HOME, or the shared /tmp.
+        assert writes == {
+            str(tmp_path / "output"),
+            str(tmp_path / ".hf-cache"),
+            str(tmp_path / ".score-home"),
+            str(tmp_path / ".score-tmp"),
+        }
+        # The wrapper starts the scorer itself, inside env -i's clean environment.
+        argv = _lines(proc, "ARG:")
+        assert argv[0] == str(tmp_path / "src" / "lcb_score.py")
+
+    def test_scorer_tmpdir_is_its_own(self, defaults, launcher, tmp_path):
+        proc = _run(_render(launcher["run"], _cfg(defaults)), tmp_path)
+        env = dict(l.split("=", 1) for l in _lines(proc, "FULLENV:") if "=" in l)
+        assert env["TMPDIR"] == str(tmp_path / ".score-tmp")
+        assert (tmp_path / ".score-tmp").is_dir()
+
+    def test_fails_where_the_kernel_cant_apply_it(self, defaults, launcher, tmp_path):
+        proc = _run(
+            _render(launcher["run"], _cfg(defaults)), tmp_path, sandbox="broken"
+        )
+        assert proc.returncode == 1
+        assert "this kernel has no Landlock" in proc.stderr
+        assert "ARG:" not in proc.stdout
+
+    def test_off_runs_without_the_wrapper_and_warns(self, defaults, launcher, tmp_path):
+        proc = _run(
+            _render(launcher["run"], _cfg(defaults, sandbox=False)),
+            tmp_path,
+            sandbox="broken",
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "WARNING sandbox is off" in proc.stderr
+        assert not _lines(proc, "SANDBOX:") and _lines(proc, "ARG:")
+
+
+def _landlock_works() -> bool:
+    if not sys.platform.startswith("linux"):
+        return False
+    probe = "import lcb_sandbox, sys; sys.exit(lcb_sandbox.abi_version() < lcb_sandbox.MIN_ABI)"
+    return (
+        subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            env=dict(os.environ, PYTHONPATH=str(_STEP_DIR / "src")),
+        ).returncode
+        == 0
+    )
+
+
+@pytest.mark.skipif(
+    not _landlock_works(), reason="this host has no Landlock, or an ABI before 4"
+)
+class TestSandboxForReal:
+    """The real wrapper: what generated code would see from inside the scorer."""
+
+    # Runs where the generated code would: reads every process's environment,
+    # checks for a planted secret, and tries files and the network outside the step.
+    _PROBE = (
+        "n=0; d=0; for p in /proc/[0-9]*; do\n"
+        '  if grep -q -a PLANTED_SECRET= "$p/environ" 2>/dev/null; then n=$((n+1))\n'
+        '  elif ! cat "$p/environ" >/dev/null 2>&1; then d=$((d+1)); fi\n'
+        "done\n"
+        'echo "LEAKS:$n"\n'
+        'echo "DENIED:$d"\n'
+        'if cat "$OUTSIDE/secret" >/dev/null 2>&1; then echo "READ:ok"; else echo "READ:refused"; fi\n'
+        'if (echo x > "$OUTSIDE/new") 2>/dev/null; then echo "WRITE:ok"; else echo "WRITE:refused"; fi\n'
+        'if (echo x > "$OUTPUT/ok") 2>/dev/null; then echo "OUT:ok"; else echo "OUT:refused"; fi\n'
+        # Nothing listens on port 1: "Connection refused" unsandboxed, "Permission
+        # denied" when Landlock blocks the connect.
+        'e="$( (exec 3<>/dev/tcp/127.0.0.1/1) 2>&1 )"\n'
+        'case "$e" in *"Permission denied"*) echo "NET:denied";; *) echo "NET:other";; esac\n'
+    )
+
+    def test_no_process_environment_no_outside_files_and_no_tcp(
+        self, defaults, launcher, tmp_path
+    ):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret").write_text("key")
+        probe = self._PROBE.replace("$OUTSIDE", str(outside)).replace(
+            "$OUTPUT", str(tmp_path / "output")
+        )
+        proc = _run(
+            _render(launcher["run"], _cfg(defaults)),
+            tmp_path,
+            {"PLANTED_SECRET": "s3cret", "HF_TOKEN": "hf_planted"},
+            sandbox="real",
+            stub_body=probe,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "sandbox on (Landlock ABI" in proc.stderr
+        assert _lines(proc, "LEAKS:") == ["0"]
+        # This shell and the test's own processes, at least, hold the secret.
+        assert int(_lines(proc, "DENIED:")[0]) >= 2
+        assert _lines(proc, "READ:") == ["refused"]
+        assert _lines(proc, "WRITE:") == ["refused"]
+        assert _lines(proc, "OUT:") == ["ok"]
+        assert _lines(proc, "NET:") == ["denied"]

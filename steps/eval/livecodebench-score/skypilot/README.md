@@ -16,9 +16,12 @@ shared Makefile conventions; see [steps/README.md](../../../README.md).
 ## Layout
 
 - `step-template.yaml`: the step. `run` `exec`s `src/lcb_score.py` under `env -i`
-  with an allowlist of variables and an empty `HOME`, from inside the LiveCodeBench
+  with an allowlist of variables and an empty `HOME`, through the Landlock sandbox
+  `src/lcb_sandbox.py` (unless `sandbox: false`), from inside the LiveCodeBench
   checkout, offline. The script registers `output_path` as the `results` artifact.
-  This narrows what the generated code inherits; it doesn't sandbox it (see USAGE).
+- `src/lcb_sandbox.py`: applies a Landlock ruleset to itself, then `exec`s the
+  scorer, which inherits it: no other process's environment, no files outside the
+  step's own, no TCP. Standard library only.
 - `src/lcb_score.py`: checks the completions against `generation_meta.json` and the
   dataset's window, runs LiveCodeBench's `custom_evaluator` unchanged (through
   `runpy`, under an `if __name__ == "__main__"` guard, because the scorer uses

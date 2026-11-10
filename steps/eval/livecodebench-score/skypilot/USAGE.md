@@ -17,39 +17,61 @@ runs each one in a subprocess with time and memory limits, and disables some
 `os`, `shutil` and `subprocess` functions first. **LiveCodeBench's own documentation
 says that guard is not a security sandbox.**
 
-This step adds three things:
+This step adds the following:
 
 - **It runs separately** from the model, in its own job, with no GPU.
-- **Its own environment is an allowlist.** It declares no secrets and sets no
-  `envs`, and `run` replaces itself (`exec`) with the scorer under `env -i` and an
-  allowlist: `PATH`, an empty `HOME`, `TMPDIR`, the locale if the job set one,
-  `PYTHONPATH`, `HF_HOME`, the two offline switches, the venv's `VIRTUAL_ENV`, the
-  dynamic loader's and module system's variables (`LD_LIBRARY_PATH` and similar),
-  and the thread-count variables (`OMP_NUM_THREADS`, `MKL_NUM_THREADS`,
-  `SLURM_CPUS_PER_TASK`, `SLURM_CPUS_ON_NODE`). So credentials the job environment
-  carries, including what a cluster account's login profile exports, aren't in the
-  scorer's own environment. If it carried `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN`, the
-  log says so. Its inputs arrive through separate download steps (hfpull) before it
-  starts.
+- **It runs in a sandbox.** With `sandbox: true` (the default) the scorer, and so
+  every completion, runs under a [Landlock](https://docs.kernel.org/userspace-api/landlock.html)
+  ruleset (`src/lcb_sandbox.py`). Landlock is Linux's unprivileged access control:
+  the scorer restricts itself before it starts, every process it starts inherits the
+  restrictions, and none can lift them. It needs no root and no user namespaces, so
+  it works in unprivileged containers too.
+  - **No other process's environment.** Every process that started the scorer (the
+    cluster's job launcher, the step's shell) runs as the job's user and still holds
+    the job's original environment, credentials included, in `/proc/<pid>/environ`.
+    A sandboxed process can't trace a process outside its sandbox, and reading that
+    file counts as tracing, so none of them can be read, whatever wraps the step.
+  - **Only the step's own files.** The scorer can read the system directories
+    (`/usr`, `/lib`, `/etc` and the like), its Python, the LiveCodeBench checkout,
+    `src/` and the two inputs, and write only the output directory and its own
+    `HOME`, `TMPDIR` and HF cache under the working directory. The job user's real
+    home (keys, `~/.netrc`, tokens), the shared `/tmp` and other builds' files can't
+    be opened.
+  - **No TCP.** Binding and connecting TCP sockets are denied.
+  - **No signals to, or abstract unix sockets of, processes outside the sandbox**
+    (Landlock ABI 6 or later).
+
+  It needs Linux with Landlock enabled (`landlock` in `/sys/kernel/security/lsm`),
+  ABI 4 or later: Linux 6.7, or a distribution kernel with it backported (RHEL 9.7's
+  5.14 kernels report ABI 6). Where the kernel can't apply it, the step **fails**
+  rather than run the code without it. `sandbox: false` runs without it, with a
+  warning in the log; use it only for completions you trust.
+- **Its environment is an allowlist.** It declares no secrets and sets no `envs`, and
+  `run` replaces itself (`exec`) with the scorer under `env -i` and an allowlist:
+  `PATH`, an empty `HOME`, `TMPDIR`, the locale if the job set one, `PYTHONPATH`,
+  `HF_HOME`, the two offline switches, the venv's `VIRTUAL_ENV`, the dynamic loader's
+  and module system's variables (`LD_LIBRARY_PATH` and similar), and the thread-count
+  variables (`OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `SLURM_CPUS_PER_TASK`,
+  `SLURM_CPUS_ON_NODE`). If the job environment carried `HF_TOKEN` or
+  `HUGGING_FACE_HUB_TOKEN`, the log says so. Its inputs arrive through separate
+  download steps (hfpull) before it starts.
 - **Its `HOME` is empty.** Generated code that reads `~/.ssh`,
   `~/.cache/huggingface` or a dotfile finds nothing.
 - **It runs offline.** `HF_HUB_OFFLINE` and `HF_DATASETS_OFFLINE` are set.
 
-**This is not a sandbox, and it doesn't keep credentials from generated code.** The
-scorer runs as the job's user, and so do the processes that started it (the cluster's
-job launcher). Generated code can read their original environment, credentials
-included, from `/proc/<pid>/environ`; `env -i` and `exec` only clean up the scorer's
-own. It can also open any file that user can read by its absolute path (including the
-user's real home directory and any keys in it), reach the network, and write wherever
-the user can. Keeping secrets away from generated code needs a separate user, or a job
-that is never given them. Before scoring a model you don't trust, run this step where
-that is acceptable, for example as a user with no credentials of its own, on a node
-without network access.
+**What the sandbox doesn't cover.** UDP and pathname unix sockets aren't restricted,
+so generated code could still send a DNS query or a UDP packet. It can read the
+system directories, which may hold site configuration, and other processes'
+`/proc/<pid>/cmdline` (not their environments). It runs as the job's user, so a
+kernel bug in Landlock itself would hand it that user's access. Before scoring a
+model you don't trust, also run this step as a user with no credentials of its own
+on disk.
 
 ### Known advisories in the scorer's packages
 
 The step pins its scorer's packages, and moves them past LiveCodeBench's own lock for
-security fixes (see the comment in `src/requirements-score.txt`). Two can't move:
+security fixes (see the comment in `src/requirements-score.txt`), and torch
+(`torch_package`) is pinned past its advisories. Two can't move:
 
 - **`datasets` 3.5.0** (CVE-2026-66007, fixed only in 5.0.1). LiveCodeBench ships its
   benchmark as a loading-script dataset, and `datasets` 4.0 removed support for loading
@@ -57,7 +79,10 @@ security fixes (see the comment in `src/requirements-score.txt`). Two can't move
   a path traversal through `file_name` metadata in folder-based builders. This step
   reads only the pinned LiveCodeBench dataset, offline, through its script, and never
   saves a dataset to disk or pushes one to the Hub.
-- **`fsspec` 2024.12.0**, capped at `<=2024.12.0` by that `datasets` release.
+- **`fsspec` 2024.12.0** (GHSA-27vj-qcqg-25rc, fixed in 2026.6.0), capped at
+  `<=2024.12.0` by that `datasets` release. The advisory is code execution through a
+  Jinja2 template in a `ReferenceFileSystem` (`reference://`) reference. This step
+  never opens a reference filesystem: the dataset is read from local files.
 
 Removing the scorer's use of `datasets`, by reading the dataset's JSONL directly, would
 clear both.
@@ -108,8 +133,10 @@ and the generation settings recorded by the generate step.
 | `lcb_commit` | string | optional | LiveCodeBench commit to install (it isn't on PyPI). Its packages are pinned in the step's bundled `src/requirements-score.txt` to that commit's lock; a different commit needs that file regenerated. |
 | `lcb_repo` | string | optional | Where to fetch LiveCodeBench from. |
 | `lcb_checkout` | string | optional (default `LiveCodeBench`) | Where the checkout goes. LiveCodeBench reads files by relative path, so the scorer runs from inside it. |
-| `torch_package`, `torch_index_url` | string | optional | LiveCodeBench imports torch even to score. Installed first, from the CPU index by default. |
+| `torch_package`, `torch_index_url` | string | optional (default `torch==2.15.0`, CPU index) | LiveCodeBench imports torch even to score. Installed first, from the CPU index by default. |
+| `sandbox` | bool | optional (default `true`) | Run the scorer under a Landlock sandbox (see above). The step fails if the kernel can't apply it. `false` runs without it, with a warning: only for completions you trust. |
 | `pip_index_url` | string | optional | Package index for everything else. |
+| `uv_version` | string | optional (default `0.13.6`) | uv release setup installs from `pip_index_url` and builds the venv with. Must not be empty. |
 
 ## Example build.yaml
 

@@ -149,9 +149,13 @@ environment_configs:
             if pip install --help 2>/dev/null | grep -q -- --break-system-packages; then
               PIP_SYS="--break-system-packages"
             fi
+            UV_VERSION='{{ q(config.lcb_generate_config.uv_version) }}'
+            if [ -z "$UV_VERSION" ]; then
+              echo "eval/livecodebench-generate: ERROR lcb_generate_config.uv_version is empty; set a uv release, e.g. 0.13.6." >&2; exit 1
+            fi
             pip install --quiet --no-cache-dir $PIP_SYS \
               --index-url '{{ q(config.lcb_generate_config.pip_index_url) }}' \
-              'uv=={{ q(config.lcb_generate_config.uv_version) }}'
+              "uv==$UV_VERSION"
             # Caches stay inside the build's own workdir (setup starts in it).
             export UV_CACHE_DIR="$PWD/.uv-cache"
             # A Python that uv downloads itself, into the workdir, rather than

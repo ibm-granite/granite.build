@@ -4,7 +4,8 @@
 #
 # This is the subset the scorer imports (measured by running it), not the whole
 # lock: the lock also carries vLLM and its CUDA stack, which a CPU scorer never
-# uses. torch is installed separately, before these, from torch_index_url.
+# uses. torch is installed separately, before these, from torch_index_url; its pin
+# (torch_package in step-template.yaml) is checked against OSV the same way.
 # LiveCodeBench itself is installed with --no-deps from its pinned checkout.
 #
 # Security overrides. These pins are newer than the lock, because this step installs
@@ -15,13 +16,14 @@
 # httpcore and yarl are the versions those need. Keep them when regenerating from a
 # newer lock, and re-check OSV (https://api.osv.dev/v1/querybatch).
 #
-# Known and NOT fixed: datasets 3.5.0 (CVE-2026-66007, fixed in 5.0.1) and fsspec
-# 2024.12.0 (capped at <=2024.12.0 by that datasets). LiveCodeBench ships its
-# benchmark as a loading-script dataset, and datasets 4.0 removed loading scripts, so
-# the scorer can't load it on any fixed release. The advisory is a path traversal in
-# folder-based builders' file_name metadata; this step reads only the pinned
-# LiveCodeBench dataset, offline, through its script, and never saves to disk or
-# pushes to the Hub. See USAGE.md.
+# Known and NOT fixed, so the pins above don't clear every advisory:
+# - datasets 3.5.0 (CVE-2026-66007, fixed in 5.0.1). LiveCodeBench ships its
+#   benchmark as a loading-script dataset, and datasets 4.0 removed loading scripts,
+#   so the scorer can't load it on any fixed release.
+# - fsspec 2024.12.0 (GHSA-27vj-qcqg-25rc, code execution through a template in a
+#   ReferenceFileSystem reference; fixed in 2026.6.0), capped at <=2024.12.0 by that
+#   datasets.
+# See USAGE.md for why neither path is reachable from this step.
 #
 # Regenerate when lcb_commit changes: see the step's README.md.
 aiohappyeyeballs==2.6.1

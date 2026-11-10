@@ -11,12 +11,12 @@ version: 1.0.0
 # SCORING EXECUTES MODEL-GENERATED CODE. LiveCodeBench runs each sample in a
 # subprocess with time and memory limits and some os/shutil/subprocess functions
 # disabled, but its own documentation says that guard is not a security sandbox.
-# What this step adds: it runs on its own (no model, no GPU), with no credentials
-# (run execs the scorer under `env -i` with an allowlist of variables and an empty
-# HOME, warning if the job environment carried an HF token; processes above the step
-# still hold the job's environment, see USAGE.md), and offline (its inputs arrive
-# through separate hfpull steps). Generated code can still use the network and
-# whatever the job user can write. See USAGE.md before scoring untrusted models.
+# What this step adds: it runs on its own (no model, no GPU), and the scorer runs
+# under a Landlock sandbox (`sandbox`, src/lcb_sandbox.py), under `env -i` with an
+# allowlist of variables and an empty HOME. So generated code can't read any other
+# process's environment (none of the job's credentials in /proc), can open only the
+# step's own inputs, outputs and the system's files, and can't use TCP. Its inputs
+# arrive through separate hfpull steps. See USAGE.md before scoring untrusted models.
 #
 # `custom` rather than EVAL: there is no EVAL member in StepType (see bfcl-eval's
 # step-template.yaml for the longer note).
@@ -45,7 +45,9 @@ config:
     lcb_repo: "https://github.com/LiveCodeBench/LiveCodeBench.git"
     # LiveCodeBench imports torch even to score, though it computes nothing with it.
     # torch is installed first, on its own, so it can come from a CPU-only index.
-    torch_package: "torch==2.6.0"
+    # 2.15.0: the first release with no OSV advisory (2.6.0 has several, including
+    # code execution from an untrusted checkpoint).
+    torch_package: "torch==2.15.0"
     torch_index_url: "https://download.pytorch.org/whl/cpu"
     pip_index_url: "https://pypi.org/simple"
     # uv release that setup installs with pip (from pip_index_url) and builds the
@@ -66,6 +68,14 @@ config:
     # Where the LiveCodeBench checkout is (cloned at setup when install is true).
     # Relative paths resolve in the step's working directory.
     lcb_checkout: "LiveCodeBench"
+    # Run the scorer, and so the generated code, under a Landlock sandbox
+    # (src/lcb_sandbox.py): no other process's environment, no files outside the
+    # step's own, no TCP. Needs no privileges or user namespaces, only Linux
+    # Landlock, ABI 4 or later. The step fails if the kernel can't apply it. false
+    # runs without it, with a warning: generated code can then read every credential
+    # in the job's processes and the job user's files, and reach the network. Only
+    # for completions you trust.
+    sandbox: true
   compute_config:
     num_gpus_per_node: 0
     total_memory_per_node: "4Gi"
@@ -141,9 +151,13 @@ environment_configs:
             if pip install --help 2>/dev/null | grep -q -- --break-system-packages; then
               PIP_SYS="--break-system-packages"
             fi
+            UV_VERSION='{{ q(config.lcb_score_config.uv_version) }}'
+            if [ -z "$UV_VERSION" ]; then
+              echo "eval/livecodebench-score: ERROR lcb_score_config.uv_version is empty; set a uv release, e.g. 0.13.6." >&2; exit 1
+            fi
             pip install --quiet --no-cache-dir $PIP_SYS \
               --index-url '{{ q(config.lcb_score_config.pip_index_url) }}' \
-              'uv=={{ q(config.lcb_score_config.uv_version) }}'
+              "uv==$UV_VERSION"
             # Caches stay inside the build's own workdir (setup starts in it).
             export UV_CACHE_DIR="$PWD/.uv-cache"
             # A Python that uv downloads itself, into the workdir, rather than
@@ -171,16 +185,14 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            # Generated code runs here: never with a credential in its environment
-            # (see the comment at the top of this file). The scorer is started under
-            # `env -i` with an allowlist, below. These two are also named here, with
-            # a warning, because a cluster account's login profile can export them
-            # into every job and the job's owner should know.
+            # Generated code runs here (see the comment at the top of this file). The
+            # scorer gets none of the job's environment (`env -i` and the sandbox,
+            # below), so this loop only warns: a cluster account's login profile can
+            # export these into every job, and the job's owner should know.
             for v in HF_TOKEN HUGGING_FACE_HUB_TOKEN; do
               if [ -n "${!v:-}" ]; then
-                echo "eval/livecodebench-score: WARNING $v was set in the job environment (not by this step; check the cluster account's login profile); unsetting it before running model-generated code." >&2
+                echo "eval/livecodebench-score: WARNING $v was set in the job environment (not by this step; check the cluster account's login profile). It is kept out of the scorer's environment." >&2
               fi
-              unset "$v"
             done
             RELEASE='{{ q(config.lcb_score_config.release_version) }}'
             if [ -z "$RELEASE" ]; then
@@ -209,10 +221,13 @@ environment_configs:
             done
             HF_HOME_DIR="$PWD/.hf-cache"
             # An empty HOME for the scorer: generated code that reads ~/.ssh,
-            # ~/.cache/huggingface or a dotfile finds nothing. Not a sandbox: it can
-            # still open the job user's real home by absolute path (see USAGE.md).
+            # ~/.cache/huggingface or a dotfile finds nothing. It can still open the
+            # job user's real home by absolute path (see USAGE.md).
             SCORE_HOME="$PWD/.score-home"
             rm -rf "$SCORE_HOME" && mkdir -p "$SCORE_HOME"
+            # Its own TMPDIR too, so the sandbox needn't allow writing the shared /tmp.
+            SCORE_TMP="$PWD/.score-tmp"
+            rm -rf "$SCORE_TMP" && mkdir -p "$SCORE_TMP" "$HF_HOME_DIR"
             if ! PYTHON_BIN="$(command -v python)"; then
               echo "eval/livecodebench-score: ERROR no python on PATH (with install: false, the image must provide one)." >&2; exit 1
             fi
@@ -221,7 +236,7 @@ environment_configs:
             # declared secret) reaches the generated code. The thread-count variables
             # keep it on the CPUs the job was given.
             SCORE_ENV=(
-              "PATH=$PATH" "HOME=$SCORE_HOME" "TMPDIR=${TMPDIR:-/tmp}"
+              "PATH=$PATH" "HOME=$SCORE_HOME" "TMPDIR=$SCORE_TMP"
               "PYTHONPATH=$SRC_DIR" "HF_HOME=$HF_HOME_DIR"
               "HF_HUB_OFFLINE=1" "HF_DATASETS_OFFLINE=1"
             )
@@ -237,12 +252,28 @@ environment_configs:
             # LiveCodeBench reads its prompt files by relative path, so it runs from
             # inside its checkout.
             cd '{{ q(config.lcb_score_config.lcb_checkout) }}'
-            # exec: replace this shell with the scorer, so the shell that still holds
-            # the job's original environment isn't the generated code's parent. (Its
-            # ancestors above, run as the same user, still hold it: see USAGE.md.)
+            # The sandbox. env -i alone isn't enough: every process above the scorer
+            # (this shell, the launcher's job-log wrapper, the cluster's job step) runs
+            # as the same user and still holds the job's environment, credentials
+            # included, in /proc/<pid>/environ. lcb_sandbox.py applies a Landlock
+            # ruleset, then execs the scorer, which can't lift it: no reading any
+            # process's environment outside the sandbox, no files outside the paths
+            # below ($PWD is the checkout), and no TCP. It fails if the kernel can't
+            # (src/lcb_sandbox.py).
+            SANDBOX=()
+            {%- if config.lcb_score_config.sandbox %}
+            SANDBOX=("$PYTHON_BIN" "$SRC_DIR/lcb_sandbox.py"
+                     --read "$SRC_DIR" --read "$COMPLETIONS_DIR" --read "$DATASET_DIR"
+                     --read "$PWD"
+                     --write "$OUTPUT_DIR" --write "$HF_HOME_DIR" --write "$SCORE_HOME"
+                     --write "$SCORE_TMP" --)
+            {%- else %}
+            echo "eval/livecodebench-score: WARNING sandbox is off: generated code can read the credentials of every process in this job, the job user's files, and reach the network." >&2
+            {%- endif %}
             # lcb_score.py prints the results artifact marker itself, since nothing
-            # here runs after the exec.
-            exec env -i "${SCORE_ENV[@]}" "$PYTHON_BIN" "$SRC_DIR/lcb_score.py" \
+            # here runs after the exec. (The `+` form: bash before 4.4 calls an empty
+            # array unbound under set -u.)
+            exec env -i "${SCORE_ENV[@]}" ${SANDBOX[@]+"${SANDBOX[@]}"} "$PYTHON_BIN" "$SRC_DIR/lcb_score.py" \
               --completions-dir "$COMPLETIONS_DIR" \
               --dataset-dir "$DATASET_DIR" \
               --output-dir "$OUTPUT_DIR" \
