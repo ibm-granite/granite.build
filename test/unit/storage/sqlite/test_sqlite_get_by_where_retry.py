@@ -34,6 +34,7 @@ object. (Patching ``tenacity.nap.sleep`` itself would not work: Retrying binds i
 as a default argument at import time.)
 """
 
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -48,6 +49,18 @@ from gbserver.types.artifact import ArtifactType
 # (and any other thread using it) is untouched.
 _TENACITY_TIME = "tenacity.nap.time"
 
+logger = logging.getLogger(__name__)
+
+
+def _drop(storage):
+    # Each test has its own temp db (see _isolate_gb_home_dir), so a failed drop is harmless.
+    try:
+        storage.delete_table()
+    except Exception as e:
+        logger.warning(
+            f"Ignoring failed table deletion on {storage.get_table_name()}: {e}"
+        )
+
 
 @pytest.fixture
 def space_storage():
@@ -55,7 +68,8 @@ def space_storage():
         table_name="test_get_by_where_retry"
     )
     storage.add(StoredSpace(name="s1", git_repo_uri="file:///s1"))
-    return storage
+    yield storage
+    _drop(storage)
 
 
 @pytest.fixture
@@ -74,7 +88,8 @@ def artifact_registry():
                 tags=tags,
             )
         )
-    return registry
+    yield registry
+    _drop(registry)
 
 
 def _fail_then_succeed(storage, failures):

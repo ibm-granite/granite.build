@@ -29,6 +29,7 @@ import uuid as uuid_module
 from datetime import datetime, timezone
 
 import pytest
+from libgbtest.lineage.lineage import AbstractLineageTablesTest
 
 from gbcommon.uri.lh import LhURI
 from gbserver.lineage.attributes import origin_id
@@ -37,7 +38,6 @@ from gbserver.lineage.db_service import DBLineageService
 from gbserver.lineage.row_indexing import LineageRowIndexer
 from gbserver.lineage.uri_normalize import normalize_uri
 from gbserver.storage.artifact_registration import ArtifactRegistration
-from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_target_run import StoredTargetRun
 from gbserver.types.artifact import ArtifactType
@@ -52,27 +52,12 @@ SPACE = "my-space"
 USER = "alice"
 
 
-class _AdminStorage:
-    """The subset of SingletonAdminStorage the builders and the sink read."""
+class _RoundtripTest(AbstractLineageTablesTest):
+    """``storage`` is this test's prefixed admin storage: the real ``gb_*`` set, lineage included."""
 
-    def __init__(self, factory: SqliteStorageFactory, suffix: str) -> None:
-        self.build_storage = factory.create_build_storage(table_name=f"rt_b_{suffix}")
-        self.target_storage = factory.create_target_storage(table_name=f"rt_t_{suffix}")
-        self.step_storage = factory.create_step_storage(table_name=f"rt_s_{suffix}")
-        self.artifact_registry = factory.create_artifact_registry(
-            table_name=f"rt_a_{suffix}"
-        )
-        self.lineage_row_storage = factory.create_lineage_row_storage(
-            table_name=f"rt_l_{suffix}"
-        )
-        self.lineage_job_storage = factory.create_lineage_job_storage(
-            table_name=f"rt_j_{suffix}"
-        )
-
-
-@pytest.fixture(name="storage")
-def storage_fixture():
-    return _AdminStorage(SqliteStorageFactory(), uuid_module.uuid4().hex[:8])
+    @pytest.fixture(name="storage")
+    def storage_fixture(self):
+        return self.storage
 
 
 def add_build(storage) -> StoredBuild:
@@ -172,7 +157,7 @@ def record_and_index(storage, *args, **kwargs):
     return sink
 
 
-class TestOneHop:
+class TestOneHop(_RoundtripTest):
     """raw table -> [target run] -> trained model."""
 
     @pytest.fixture(name="wired", autouse=True)
@@ -187,7 +172,6 @@ class TestOneHop:
             inputs={"raw": self.raw.uuid},
             outputs={"model": [self.model.uuid]},
         )
-        self.storage = storage
         self.sink = DBLineageStore(job_storage=storage.lineage_job_storage)
         self.service = DBLineageService(storage=storage.lineage_row_storage)
 
@@ -235,12 +219,6 @@ class TestOneHop:
         self.record(storage, self.build.uuid)
         self.record(storage, self.build.uuid)
         assert len(all_jobs(storage)) == 1
-
-    def test_the_row_connects_the_two_artifacts(self, storage):
-        self.record(storage, self.build.uuid)
-        row = all_rows(storage)[0]
-        assert row.input == normalize_uri(self.raw.uri)
-        assert row.output == normalize_uri(self.model.uri)
 
     def test_the_endpoints_are_the_registered_uris(self, storage):
         """No separate URI column: the endpoint IS the URI.
@@ -297,7 +275,7 @@ class TestOneHop:
         assert artifact_ids(graph) == {"lh://prod/ns/tables/absent"}
 
 
-class TestFanOutRows:
+class TestFanOutRows(_RoundtripTest):
     """Two inputs and two outputs, end to end.
 
     Proof that the decompose guard does not bite a real target run: the producer
@@ -357,7 +335,7 @@ class TestFanOutRows:
         }
 
 
-class TestChainAcrossBuilds:
+class TestChainAcrossBuilds(_RoundtripTest):
     """Lineage that crosses builds is one chain, which is the point of the index."""
 
     def test_a_two_build_chain_is_walkable(self, storage):
@@ -389,7 +367,7 @@ class TestChainAcrossBuilds:
         }
 
 
-class TestErrors:
+class TestErrors(_RoundtripTest):
     def test_an_unknown_build_raises(self, storage):
         sink = DBLineageStore(job_storage=storage.lineage_job_storage)
         with pytest.raises(ValueError):
