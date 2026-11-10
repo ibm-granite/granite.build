@@ -1,0 +1,69 @@
+name: Secret scan
+
+# Deliberately separate from ci.yml: that workflow skips docs/**, **/*.md and
+# samples/**, but those are exactly where example tokens and credentials get pasted.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Keep in sync with the gitleaks `rev` in .pre-commit-config.yaml (checked below).
+  # When bumping, update the checksum from gitleaks_<version>_checksums.txt on the release page.
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb" # gitleaks_8.30.1_linux_x64.tar.gz
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # Full history: the scan covers every commit, not just the PR's diff.
+          # This also fetches every branch and tag; the scan below limits itself to HEAD.
+          fetch-depth: 0
+          # The job only reads the repo; keep GITHUB_TOKEN out of .git/config while gitleaks runs.
+          persist-credentials: false
+
+      - name: Check version matches the pre-commit hook
+        run: |
+          hook=$(grep -A1 'github.com/gitleaks/gitleaks' .pre-commit-config.yaml | sed -n 's/.*rev: v\(.*\)/\1/p')
+          if [ "$hook" != "$GITLEAKS_VERSION" ]; then
+            echo "::error::gitleaks version in this workflow ($GITLEAKS_VERSION) differs from .pre-commit-config.yaml ($hook)"
+            exit 1
+          fi
+
+      # The CLI is used instead of gitleaks/gitleaks-action, which requires a paid
+      # license key for organization repositories.
+      - name: Install gitleaks
+        run: |
+          curl -sSfL --retry 3 --retry-all-errors -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum --check -
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo install gitleaks /usr/local/bin/gitleaks
+
+      - name: Scan git history
+        id: scan
+        # --redact keeps matched secrets out of the public CI log.
+        # --log-opts limits the scan to history reachable from HEAD (for a PR, the merge ref:
+        # the PR's commits plus main). Without it gitleaks runs `git log --all`, so a finding
+        # on an unrelated branch or tag would fail every run.
+        run: gitleaks git --redact --verbose --exit-code 1 --log-opts="--full-history HEAD" .
+
+      - name: How to resolve findings
+        if: failure() && steps.scan.outcome == 'failure'
+        run: |
+          echo "::error title=gitleaks found possible secrets::See the findings above. If one is a real secret, rotate or revoke it: deleting it from the PR does not undo the exposure."
+          echo "::error title=Placeholder or public value?::Add its Fingerprint to .gitleaksignore as <path>:<rule>:<line>, WITHOUT the leading commit hash (PRs are squash-merged, so the hash will not survive the merge). Add a comment explaining why it is safe."
