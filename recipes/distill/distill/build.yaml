@@ -98,10 +98,20 @@ $${ CKPT_LADDER_rungs_must_be_multiples_of_GOLD_SAVE_STEPS }
 <%- if (GOLD_SAVE_TOTAL_LIMIT | int) < LADDER | length %>
 $${ GOLD_SAVE_TOTAL_LIMIT_must_cover_every_CKPT_LADDER_rung }
 <%- endif %>
+# distill evaluates the rungs of its own ladder, each through the export it
+# binds; it has no per-rung eval list (distill-eval's EVALS).
+<%- set RUNG_PICK = {} %>
+<%- macro model_input(N) %>
+        model:
+          binding: export-$${N}.hf_model
+<%- endmacro %>
+# >>> shared eval protocol (keep identical to recipes/distill/distill-eval/build.yaml)
 # ── The benchmark protocol ─────────────────────────────────────────────────
 # Every rung runs the SCREEN_EVALS subset; a rung in FULL_EVAL_RUNGS runs the
-# whole battery. A name that is neither an EVAL_CATALOG entry nor bfcl, or a
-# full rung off the ladder, fails the render rather than silently not running.
+# whole battery. RUNG_PICK, when the recipe sets one (distill-eval's EVALS),
+# names each rung's evals instead. A name that is neither an EVAL_CATALOG entry
+# nor bfcl, or a rung off the ladder, fails the render rather than silently not
+# running. WANT maps each rung to its evals, so the targets below test one list.
 <%- set CATS = [] %>
 <%- for c in (EVAL_CATEGORIES | string | replace(" ", "") | lower).split(",") if c %>
 <%- set _ = CATS.append(c) %>
@@ -125,25 +135,37 @@ $${ SCREEN_EVALS_must_name_EVAL_CATALOG_entries_or_bfcl }
 <%- endfor %>
 <%- for n in FULL %>
 <%- if n not in LADDER %>
-$${ FULL_EVAL_RUNGS_must_be_CKPT_LADDER_rungs }
+$${ FULL_EVAL_RUNGS_must_be_rungs_on_the_ladder }
 <%- endif %>
 <%- endfor %>
+<%- for n, names in RUNG_PICK.items() %>
+<%- if n not in LADDER %>
+$${ EVALS_must_name_rungs_on_the_ladder }
+<%- endif %>
+<%- for s in names if s not in KNOWN %>
+$${ EVALS_must_name_EVAL_CATALOG_entries_or_bfcl }
+<%- endfor %>
+<%- endfor %>
+<%- set WANT = {} %>
 <%- set SAGE_RUNGS = [] %>
 <%- set BFCL_RUNGS = [] %>
 <%- for N in LADDER %>
-<%- set ns = namespace(any=false) %>
-<%- for e in EVAL_CATALOG %>
-<%- if e.category in CATS and (N in FULL or e.name in SCREEN) %>
-<%- set ns.any = true %>
+<%- set picked = [] %>
+<%- for e in EVAL_CATALOG + [{"name": "bfcl", "category": "bfcl"}] %>
+<%- set chosen = (e.name in RUNG_PICK[N]) if N in RUNG_PICK else (not RUNG_PICK and (N in FULL or e.name in SCREEN)) %>
+<%- if e.category in CATS and chosen %>
+<%- set _ = picked.append(e.name) %>
 <%- endif %>
 <%- endfor %>
-<%- if ns.any %>
+<%- set _ = WANT.update({N: picked}) %>
+<%- if picked | reject("equalto", "bfcl") | list %>
 <%- set _ = SAGE_RUNGS.append(N) %>
 <%- endif %>
-<%- if "bfcl" in CATS and (N in FULL or "bfcl" in SCREEN) %>
+<%- if "bfcl" in picked %>
 <%- set _ = BFCL_RUNGS.append(N) %>
 <%- endif %>
 <%- endfor %>
+# <<< shared eval protocol
 # The corpus every reader of it binds. A reused corpus (CORPUS_DIR) is read
 # DIRECTLY, as a uri: `corpus` does not render, so a binding to it would block
 # on a producer that does not exist. corpus_pin carries the ordering edge
@@ -796,24 +818,24 @@ $${ corpus_inputs() }
               gate_final_rung: false
               output_dir: "$${RUN_DIR}/repetition-check"
 
+    # >>> shared eval targets (keep identical to recipes/distill/distill-eval/build.yaml)
     # ═══ BENCHMARK EVALS, PER RUNG (off by default) ═════════════════════════
-    # The sage battery from EVAL_CATALOG plus BFCL. A rung in FULL_EVAL_RUNGS gets
-    # every eval in EVAL_CATEGORIES; every other rung only those in SCREEN_EVALS.
-    # Each binds its rung's EXPORT, never the raw checkpoint, which would measure a
-    # model nobody can download. Evals are short, idempotent and retryable, so they
-    # run on EVAL_PARTITION; the images come from EVAL_IMAGE_REGISTRY.
+    # The sage battery from EVAL_CATALOG plus BFCL, each rung's evals as WANT lists
+    # them. Each reads its rung's EXPORT through the recipe's model_input macro,
+    # never a raw checkpoint, which would measure a model nobody can download.
+    # Evals are short, idempotent and retryable, so they run on EVAL_PARTITION;
+    # the images come from EVAL_IMAGE_REGISTRY.
     #
     # The BigCodeBench URL cannot travel as catalog data -- a parameter marker
     # inside a parameter VALUE is emitted literally -- so the entry carries
     # needs_bcb_url and this template writes the value.
-<%- for N in LADDER %>
+<%- for N in SAGE_RUNGS %>
 <%- for e in EVAL_CATALOG %>
-<%- if e.category in CATS and (N in FULL or e.name in SCREEN) %>
+<%- if e.name in WANT[N] %>
     eval-$${e.name}-ck$${N}:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
-        model:
-          binding: export-$${N}.hf_model
+$${ model_input(N) }
       outputs:
         sage_eval_results:
           type: dataset
@@ -863,8 +885,7 @@ $${ corpus_inputs() }
     eval-bfcl-ck$${N}:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
-        model:
-          binding: export-$${N}.hf_model
+$${ model_input(N) }
       outputs:
         bfcl_results:
           type: dataset
@@ -903,7 +924,7 @@ $${ corpus_inputs() }
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
 <%- for e in EVAL_CATALOG %>
-<%- if e.category in CATS and (N in FULL or e.name in SCREEN) %>
+<%- if e.name in WANT[N] %>
         gate_$${e.name | replace("-", "_")}:
           binding: eval-$${e.name}-ck$${N}.sage_eval_results
 <%- endif %>
@@ -994,3 +1015,4 @@ $${ corpus_inputs() }
                 zone: "$${EXPORT_PARTITION}"
                 memory: $${EXPORT_MEMORY}
 <%- endif %>
+    # <<< shared eval targets
