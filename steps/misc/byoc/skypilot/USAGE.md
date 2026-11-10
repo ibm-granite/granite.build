@@ -44,6 +44,23 @@ All fields live under the step's `config.byoc_config`.
 > build a Dockerfile), `byoc` builds no image; `image` selects an existing public image
 > and the code arrives at run time via `git clone`.
 
+### Images without git
+
+`setup` clones the repo **before** `setup_command` runs, so `setup_command` cannot be
+used to install git. Instead, when the image has no `git` (the default
+`fedora-minimal`, the official `pytorch/pytorch` images, `python:*-slim`), `setup`
+installs it before the clone:
+
+1. With **conda** in the image, from conda-forge into `./.byoc-git` under the workdir.
+   This needs no root, so it works in containers that run as the submitting user (enroot
+   on LSF), and it leaves the image's Python environment alone. `run` puts
+   `./.byoc-git/bin` on `PATH` too, after the image's own tools.
+2. Otherwise, **as root**, with the image's `apt-get`, `dnf` or `microdnf`.
+
+If neither works (no conda and not root, or no package manager), `setup` fails before
+the clone with a `byoc:` message saying so. Use an image that has git or conda then. An
+image that has git skips all of this.
+
 ## Inputs and outputs
 
 `byoc` declares no named inputs — its step.yaml has only `inputs: {allow_unknown: true}`,
