@@ -1,0 +1,435 @@
+# distill -- the experiment's knobs, and nothing about the site.
+#
+# Every host, path, partition, accelerator model, model and dataset comes from the
+# site file (recipes/distill/site.example.yaml lists every key); a key here may not
+# also be defined there. smoke.yaml shrinks this to a plumbing run.
+#
+# THE DEFAULTS ARE A FULL OFF-POLICY RUN: 8,000 optimizer steps (about one epoch of
+# an 800k-row mixture at effective batch 96), a rung every 1,000, jsd at BETA 0.5,
+# no benchmark evals. The on-policy study's arms are --param overrides of this file.
+#
+# Values arrive from --param as STRINGS (the CLI does no YAML parsing of them), so
+# build.yaml tests booleans against their string forms, not by truthiness.
+
+# ─── Run identification ───────────────────────────────────────────────
+# Set per run, with a timestamp: every output path hangs off it, and the rollout
+# server's mem:// URIs are suffixed with it -- two builds may not register one URI.
+RUN_NAME: "distill"
+SEED: 42
+
+# ─── The lambda policy ────────────────────────────────────────────────
+# THE switch: off-policy (lambda 0, corpus text only, no rollout server), ramp
+# (lambda 0 -> 1 linearly over the ramp window, server on) or on-policy (lambda 1
+# constant, server on). Anything else fails the render.
+LMBDA_MODE: "off-policy"
+# Empty: the mode's own end value (1.0). Set it with ramp or on-policy for a value
+# in (0, 1]: on-policy then holds that fraction of student-generated sequences
+# constant, ramp stops short of 1. Refused with off-policy, which is lambda 0.
+LMBDA: ""
+# The ramp's window, ramp mode only: it starts at LMBDA_RAMP_START_STEP (lambda 0
+# before it) and reaches lambda after LMBDA_RAMP_STEPS steps; 0 / 0 ramps over the
+# whole run. A resumed run sets the start to its resume step so it ramps over its
+# own steps.
+LMBDA_RAMP_START_STEP: 0
+LMBDA_RAMP_STEPS: 0
+# The generation floor in tokens for the student's rollouts, sent by the trainer
+# with every request. 16 is cheap insurance against the immediate-EOS collapse;
+# rendered only when a server runs (the renderer refuses it off-policy).
+MIN_COMPLETION_LENGTH: 16
+
+# ─── The SFT arm ──────────────────────────────────────────────────────
+# true: a plain-SFT pass between align and distillation, which then continues from
+# the SFT checkpoint. Off by default: a student that is already an SFT checkpoint
+# needs none, and its own eval row is the baseline.
+INCLUDE_SFT: false
+# Smoke tier: the small single-file SMOKE_DATASET_URI replaces the site's dataset.
+SMOKE: false
+
+# ─── Reusing a corpus ─────────────────────────────────────────────────
+# Empty: build the corpus in this build (sources + corpus), ~50 minutes on the
+# critical path, and deterministic. Set to an earlier build's corpus directory
+# (train.jsonl, eval.jsonl, corpus_manifest.json) to skip both: the consumers read
+# it directly, and corpus-validate fails before any GPU is held if its manifest
+# disagrees with this build's tokenizer or prep policies. Direct is the only form
+# that works across builds: target reuse is scoped to one build id, and a binding
+# names an output of THIS build. Reuse is also what keeps the held-out split
+# identical across runs that are compared on it.
+CORPUS_DIR: ""
+
+# ─── The mixture ──────────────────────────────────────────────────────
+# Rows sampled across the dataset's splits, in proportion to their sizes; 0 keeps
+# every row. THE COST KNOB: a split-proportional sample is representative where a
+# prefix would not be (prep's row limit stops after N rows in file order), and the
+# student has usually seen this text already under hard labels -- what it learns
+# here is the teacher's distribution, which a sample carries.
+TARGET_ROWS: 800000
+# Seeds the per-split sampling and the shuffle: the corpus is reproducible from it.
+SHUFFLE_SEED: 42
+SOURCES_CPUS: 8
+# The sampled rows are held in memory while they are shuffled.
+SOURCES_MEMORY: 128
+
+# ─── Alignment and the corpus ─────────────────────────────────────────
+# Must agree with the site's chat template. true demands ChatML turn tokens of the
+# teacher; a granite 4.x pair has none, so it needs false AND a granite-native
+# template -- false with a ChatML template aligns cleanly and then has the teacher
+# score a format it has never seen. The turn boundary is still checked either way.
+REQUIRE_CHATML: false
+THINK_POLICY: "keep"
+# KEEP, against the step's default of drop: a template that renders documents (the
+# granite 4.x one does, into the system turn) would otherwise lose every grounded
+# row for a reason that is not true of it.
+DOCUMENTS_POLICY: "keep"
+# 0: no cap. The subset is chosen proportionally by TARGET_ROWS instead.
+MAX_EXAMPLES: 0
+# ~4,000 held-out rows of 800k: comfortably more than EVAL_MAX_SAMPLES, and every
+# one is a row the trainer never sees.
+EVAL_FRACTION: 0.005
+# ONE budget for prep, both trainers and the divergence reads, which must agree:
+# prep drops rows longer than it, and a smaller eval budget scores truncated
+# completions. Match what the student's SFT data was tokenized at.
+MAX_LENGTH: 8192
+DATASET_NUM_PROC: 32
+
+# ─── Distillation ─────────────────────────────────────────────────────
+# Required positive: it is the last rung, and the ramp's horizon (the trainer
+# interpolates on global_step / max_steps).
+GOLD_MAX_STEPS: 8000
+# The ladder IS the target graph: each rung is an export, a divergence read, a
+# repetition-check row and, optionally, benchmark evals. Evenly spaced, because the
+# question is where along the run the best model sits. Rungs must be multiples of
+# GOLD_SAVE_STEPS and the last must equal GOLD_MAX_STEPS (or STOP_AT_STEP); the
+# render refuses otherwise, because a rung the trainer never writes is not an
+# error but a target that never dispatches.
+CKPT_LADDER: "1000,2000,3000,4000,5000,6000,7000,8000"
+GOLD_SAVE_STEPS: 1000
+# Keep every rung: the bound exports read them mid-run, so an evicted rung is an
+# export that never runs. Above the rung count so a resume cannot start evicting.
+GOLD_SAVE_TOTAL_LIMIT: 12
+# Effective batch = per_device x grad_accum x nodes x gpus = 2 x 3 x 2 x 8 = 96.
+# HOLD THE PRODUCT when changing the node count: 1 node at grad_accum 6 is the same
+# optimization as 2 at 3; 2 at 6 is a different run.
+GOLD_NUM_NODES: 2
+GOLD_NUM_GPUS: 8
+GOLD_PER_DEVICE_TRAIN_BATCH_SIZE: 2
+GOLD_GRADIENT_ACCUMULATION_STEPS: 3
+# Quoted: unquoted, YAML reads 2.0e-06 as a float whose repr is re-read as a STRING.
+# A fifth of a base-student schedule's 1e-5, because the student is usually a
+# CONVERGED SFT checkpoint, which a full-height peak knocks off its optimum before
+# the teacher's soft labels help.
+GOLD_LEARNING_RATE: "2.0e-06"
+GOLD_MIN_LR: "2.0e-07"
+WARMUP_RATIO: 0.05
+LR_SCHEDULER_TYPE: "cosine_with_min_lr"
+# The data SAMPLER's seed only. -1 follows the trainer's seed. Set it when starting
+# from another run's checkpoint over the same corpus, or this run replays the very
+# batches that one trained on.
+GOLD_DATA_SEED: -1
+# Adam's beta2. -1 keeps 0.999, a ~1,000-step second-moment horizon; 0.95 (~20
+# steps) wants a short warm-up to match.
+ADAM_BETA2: -1.0
+# The sampler. Empty: shuffled. "sequential" keeps a corpus whose order is part of
+# its design (a front-loaded one) in file order.
+TRAIN_SAMPLING_STRATEGY: ""
+# Save and stop here without touching max_steps: a resume of a longer run ends on
+# its ORIGINAL LR schedule. 0 trains to GOLD_MAX_STEPS. With it set, the ladder must
+# end here instead.
+STOP_AT_STEP: 0
+# Sampling temperature of the rollouts, and the divergence's softmax temperature.
+TEMPERATURE: 1.0
+# 0.5: a genuine JSD mixture -- the trainer short-circuits 0 to forward and 1 to
+# reverse KL. A student much smaller than its teacher cannot cover the teacher's
+# distribution and has to choose; reverse KL's mode-seeking half is what lets it.
+BETA: 0.5
+# Leave false: granite's logits_scaling overflows the fused bf16 kernel (NaN loss).
+USE_LIGER_FUSED_JSD: false
+# The objective as a validated preset; empty keeps jsd at BETA. distillm2_like
+# needs 0 < lambda < 1 over the run, which a 0 -> 1 ramp satisfies.
+LOSS_ARM: ""
+# The assistant turn header of the pair's chat markup, which locates the completion
+# span. A marker that matches nothing trains on NOTHING while still logging a loss.
+# granite 4.x puts nothing after it; a ChatML pair needs '<|im_start|>assistant\n'
+# with the newline as the two-character escape.
+RESPONSE_TEMPLATE: '<|start_of_role|>assistant<|end_of_role|>'
+# The rollout budget per on-policy sequence.
+MAX_COMPLETION_LENGTH: 2048
+
+# ─── The rollout server (ramp and on-policy only) ─────────────────────
+# Weight sync every step: a stale server generates from a model that no longer
+# exists, which is off-policy training at on-policy's cost. ~1.5 s per sync.
+VLLM_SYNC_FREQUENCY: 1
+VLLM_PORT: 8001
+# Data-parallel across these; ample for a small student.
+VLLM_NUM_GPUS: 2
+VLLM_HEALTH_TIMEOUT_SECONDS: 1800
+# The server's ceiling on holding its allocation once healthy, the backstop for a
+# crashed trainer (teardown never fires then). It must cover the trainer's queue
+# wait as well as its run: the server comes up right after align.
+VLLM_MAX_LIFETIME_SECONDS: 129600
+TOP_P: 0.95
+# The sampled-OPD (REINFORCE-style) loss is a different objective; off.
+USE_SAMPLED_OPD_LOSS: false
+LAST_MESSAGE_ONLY: false
+CLIP_ALPHA: 0.1
+OPD_IMPORTANCE_SAMPLING: false
+
+# ─── The SFT stage (INCLUDE_SFT only) ─────────────────────────────────
+SFT_LEARNING_RATE: "1.0e-05"
+SFT_NUM_TRAIN_EPOCHS: 1
+SFT_PER_DEVICE_TRAIN_BATCH_SIZE: 1
+SFT_GRADIENT_ACCUMULATION_STEPS: 8
+SFT_NUM_GPUS: 1
+SFT_SAVE_STEPS: 500
+
+# ─── Export and measurement ───────────────────────────────────────────
+# The generation prompt the published model hands out when a caller says nothing
+# about thinking. keep: the corpus is think-filtered at the source.
+CHAT_TEMPLATE_THINKING: "keep"
+# All four in one forward pass; entropy is the one to read first.
+EVAL_METRICS: "jsd,kld,rkld,entropy"
+# A real read, drawn with the seed rather than taken as a prefix.
+EVAL_MAX_SAMPLES: 256
+EVAL_BATCH_SIZE: 4
+EVAL_DTYPE: "bfloat16"
+# Above this fraction of completions that do not fit, the read refuses rather than
+# reporting a divergence measured on prefixes.
+MAX_INCOMPLETE_FRACTION: 0.25
+EVAL_NUM_GPUS: 1
+# The fraction of generated lines inside a run of 3+ identical lines above which a
+# rung is flagged degenerate: far above a healthy model's ~0, far below a collapsed
+# one's ~1. Reported, never gating.
+REPETITION_MAX: 0.15
+# Long enough for a loop to establish itself and be counted.
+REPETITION_NEW_TOKENS: 256
+
+# ─── Resources ────────────────────────────────────────────────────────
+# HOST memory per node (GB), stated because the HPC provisioners skip the
+# compute_config floor and a host-memory kill presents as a cross-node NCCL hang.
+GPU_MEMORY: 256
+# A partition may force cpus-per-task up to fit the memory; size CPUs to memory/8.
+CPU_ONLY_CPUS: 4
+CPU_ONLY_MEMORY: 32
+EXPORT_CPUS: 8
+EXPORT_MEMORY: 64
+EVAL_MEMORY: 256
+
+# ─── NCCL diagnostics ─────────────────────────────────────────────────
+# INFO by default: a multi-node ZeRO-3 all-gather hang once left no trace to report
+# because this was empty, and the rerun repaid the whole front of the pipeline.
+# SUBSYS bounds the volume to ring setup and the network plane.
+NCCL_DEBUG: "INFO"
+NCCL_DEBUG_SUBSYS: "INIT,NET"
+# 10 minutes: a hang reports in minutes instead of the default hour.
+NCCL_TIMEOUT_MS: 600000
+
+# ─── Retries and resume ───────────────────────────────────────────────
+# A retry re-runs the failed targets only and train resumes from its own
+# train_dir; one that made no progress is refused. 0 makes a failure final, for
+# debugging a failure of your own rather than the cluster's.
+MAX_RETRIES: 3
+# Empty for a fresh run. To continue a stopped run in a NEW build, its checkpoint
+# directory (<train_dir>/checkpoints/<RUN_NAME>_node<N>): every complete checkpoint
+# is hardlinked in and the trainer resumes from the highest. Keep the node and GPU
+# counts, batch sizes and GOLD_MAX_STEPS: the step refuses a different world size,
+# and nothing checks the schedule.
+RESUME_FROM_CHECKPOINT_DIR: ""
+# true: seeded rungs are announced again and their exports re-run, which a ladder
+# still naming them needs. false: CKPT_LADDER must name only the rungs to come.
+RESUME_EMIT_SEEDED: true
+
+# ─── Monitoring ───────────────────────────────────────────────────────
+POLL_INTERVAL_SECONDS: 30
+# With the watch interval, a rung's detection latency; the steps' 900 s default
+# would leave a rung unnoticed for a quarter hour of a 16-GPU allocation.
+LOG_RETRIEVAL_INTERVAL_SECONDS: 120
+CKPT_WATCH_INTERVAL_SECONDS: 120
+# Bounds how soon each benchmark eval's completion, and so its rung's CSV, is seen.
+EVAL_STATUS_POLL_INTERVAL_SECONDS: 120
+
+# ══ BENCHMARK EVALS PER RUNG (off by default) ═════════════════════════
+# Every rung runs SCREEN_EVALS; a rung in FULL_EVAL_RUNGS runs every eval in
+# EVAL_CATEGORIES instead. Names are EVAL_CATALOG names plus "bfcl"; an unknown name
+# or an off-ladder rung fails the render. Both empty: no benchmark targets at all.
+# A full battery is ~27 one-GPU targets and ~4 GPU-h per rung; screening a handful
+# of axes on every rung and the full battery on the last is the usual protocol.
+SCREEN_EVALS: ""
+FULL_EVAL_RUNGS: ""
+EVAL_CATEGORIES: "code,general,math,safety,multilingual,bfcl"
+# The namespace eval results hang off. Empty uses RUN_NAME. Shared trees: two runs
+# with one EXPERIMENT write their CSVs on top of one another.
+EXPERIMENT: ""
+# The benchmark harness's own settings, NOT the training budget: they must match
+# what any baseline row was measured at, or the comparison is invalid.
+SAGE_BATCH_SIZE: 10
+SAGE_MAX_LENGTH: 4096
+SAGE_NUM_GPUS: 1
+# The sage exporter's row-assembly stack; it decides which metrics become rows.
+EXPORT_STACK: "granite4-instruct"
+# Image names (repository:tag) under the site's EVAL_IMAGE_REGISTRY.
+SAGE_EXPORT_IMAGE: "sage-py311:0.025"
+BFCL_IMAGE: "bfcl-py311:0.02"
+# all: the same breadth as a full battery, so a row means what the baseline's does.
+BFCL_TEST_CATEGORIES: "all"
+BFCL_EVAL_NAME: "bfclv3"
+# The harness's model HANDLER, which selects the prompt format -- not the run name.
+BFCL_MODEL_ID: "ibm-granite/granite-4"
+BFCL_NUM_GPUS: 1
+BFCL_GPU_MEMORY_UTILIZATION: "0.5"
+# Row filter for the BFCL CSV; empty keeps every row.
+BFCL_FILTER: ""
+
+# The sage evals, as data: build.yaml's loop emits rung x eval. Per entry: name
+# (target eval-<name>-ck<N>), category (EVAL_CATEGORIES), gb_script, image
+# (repository:tag under EVAL_IMAGE_REGISTRY), output_subpath (where the script
+# writes, under the experiment dir), optional batch_size / max_length / extra_env,
+# and needs_bcb_url, which adds the site's OE_EVAL_BCB_API_URL to extra_env (a
+# bcb-server must be up for olmes-bigcodebench).
+EVAL_CATALOG:
+  # ─── Code (9) ───
+  - name: olmes-cruxeval
+    category: code
+    gb_script: code_olmes_cruxeval_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "code/olmes-instruct/cruxeval_output"
+  - name: olmes-bigcodebench
+    category: code
+    gb_script: code_olmes_bigcodebench_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "code/olmes-instruct/bigcodebench::tulu"
+    needs_bcb_url: true
+  - name: evalplus-humaneval
+    category: code
+    gb_script: code_evalplus_humaneval_slim.sh
+    image: sage-py311-code:0.025
+    output_subpath: code/evalplus/humaneval
+  - name: evalplus-mbpp
+    category: code
+    gb_script: code_evalplus_mbpp_slim.sh
+    image: sage-py311-code:0.025
+    output_subpath: code/evalplus/mbpp
+  # MultiPL-E: one script, the language through the environment, at max_length 512.
+  - name: multiple-sh
+    category: code
+    gb_script: code_multiple_slim.sh
+    image: sage-py311-code:0.025
+    output_subpath: code/multiple/sh
+    max_length: 512
+    extra_env: {MULTIPLE_LANG: "sh", MAX_LENGTH: "512"}
+  - name: multiple-cpp
+    category: code
+    gb_script: code_multiple_slim.sh
+    image: sage-py311-code:0.025
+    output_subpath: code/multiple/cpp
+    max_length: 512
+    extra_env: {MULTIPLE_LANG: "cpp", MAX_LENGTH: "512"}
+  - name: multiple-java
+    category: code
+    gb_script: code_multiple_slim.sh
+    image: sage-py311-code:0.025
+    output_subpath: code/multiple/java
+    max_length: 512
+    extra_env: {MULTIPLE_LANG: "java", MAX_LENGTH: "512"}
+  - name: multiple-js
+    category: code
+    gb_script: code_multiple_slim.sh
+    image: sage-py311-code:0.025
+    output_subpath: code/multiple/js
+    max_length: 512
+    extra_env: {MULTIPLE_LANG: "js", MAX_LENGTH: "512"}
+  - name: multiple-rs
+    category: code
+    gb_script: code_multiple_slim.sh
+    image: sage-py311-code:0.025
+    output_subpath: code/multiple/rs
+    max_length: 512
+    extra_env: {MULTIPLE_LANG: "rs", MAX_LENGTH: "512"}
+  # ─── General (5) ───
+  - name: olmes-agi-eval
+    category: general
+    gb_script: general_olmes_agi_eval_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "general/olmes-instruct/agi_eval_english:0shot_cot::tulu3"
+  - name: olmes-bbh
+    category: general
+    gb_script: general_olmes_bbh_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "general/olmes-instruct/bbh:cot-v1::tulu"
+  - name: olmes-mmlu-pro
+    category: general
+    gb_script: general_olmes_mmlu_pro_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "general/olmes-instruct/mmlu_pro:cot::none"
+  - name: olmes-ifeval
+    category: general
+    gb_script: general_olmes_ifeval_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "general/olmes-instruct/ifeval::tulu"
+    batch_size: 30
+  - name: olmes-mmlu-mc
+    category: general
+    gb_script: general_olmes_mmlu_mc_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "general/olmes-instruct/mmlu:mc::tulu"
+  # ─── Math (5) ───
+  - name: olmes-deepmind-math
+    category: math
+    gb_script: math_olmes_deepmind_math_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "math/olmes-instruct/deepmind_math:0shot_cot::tulu3"
+  - name: olmes-gpqa
+    category: math
+    gb_script: math_olmes_gpqa_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "math/olmes-instruct/gpqa:0shot_cot::llama3.1"
+  - name: olmes-gsm8k
+    category: math
+    gb_script: math_olmes_gsm8k_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "math/olmes-instruct/gsm8k::tulu"
+  - name: olmes-gsm-symbolic
+    category: math
+    gb_script: math_olmes_gsm_symbolic_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "math/olmes-instruct/gsm_symbolic::tulu"
+  - name: olmes-minerva-math
+    category: math
+    gb_script: math_olmes_minerva_math_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "math/olmes-instruct/minerva_math::llama3.1"
+  # ─── Safety (2) ───
+  - name: attaq
+    category: safety
+    gb_script: safety_attaq_slim.sh
+    image: sage-py311-safety:0.025
+    output_subpath: safety/attaq
+  - name: salad-bench
+    category: safety
+    gb_script: safety_salad_bench_slim.sh
+    image: sage-py311-safety:0.025
+    output_subpath: safety/salad_bench
+  # ─── Multilingual (5) ───
+  - name: global-mmlu
+    category: multilingual
+    gb_script: multilingual_global_mmlu_slim.sh
+    image: sage-py311-multilingual:0.025
+    output_subpath: multilingual/global_mmlu
+  - name: mgsm
+    category: multilingual
+    gb_script: multilingual_mgsm_slim.sh
+    image: sage-py311-multilingual:0.025
+    output_subpath: multilingual/mgsm
+  - name: include-ar-de-es-fr
+    category: multilingual
+    gb_script: multilingual_include_arabic_german_spanish_french_slim.sh
+    image: sage-py311-multilingual:0.025
+    output_subpath: "multilingual/include-5shot/arabic_german_spanish_french"
+  - name: include-hi-bn-ta-te
+    category: multilingual
+    gb_script: multilingual_include_hindi_bengali_tamil_telugu_slim.sh
+    image: sage-py311-multilingual:0.025
+    output_subpath: "multilingual/include-5shot/hindi_bengali_tamil_telugu"
+  - name: include-it-ja-ko-nl-pt-zh
+    category: multilingual
+    gb_script: multilingual_include_italian_japanese_korean_dutch_portuguese_chinese_slim.sh
+    image: sage-py311-multilingual:0.025
+    output_subpath: "multilingual/include-5shot/italian_japanese_korean_dutch_portuguese_chinese"

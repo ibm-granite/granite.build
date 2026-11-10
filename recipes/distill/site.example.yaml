@@ -72,8 +72,16 @@ WORKDIR_ROOT: "/shared/distill"
 TEACHER_MODEL_URI: "env:///shared/models/teacher"
 # The student model training starts from.
 STUDENT_MODEL_URI: "env:///shared/models/student"
-# The training dataset.
-DATASET_URI: "env:///shared/datasets/train"
+# The training dataset: a directory of raw SFT splits (or, with DATASET_SPLITS
+# empty, one .jsonl file). Rows may be `messages` or `conversations`.
+DATASET_URI: "env:///shared/datasets/sft"
+# The split files under DATASET_URI, mixed in proportion to their sizes by the
+# recipes' `sources` target. The list order seeds the mixture, so keep it fixed.
+# [] uses DATASET_URI itself as the only source.
+DATASET_SPLITS:
+  - "general/general.jsonl"
+  - "tools/tools.jsonl"
+  - "rag/rag.jsonl"
 # A small dataset for the plumbing smoke runs.
 SMOKE_DATASET_URI: "env:///shared/datasets/smoke.jsonl"
 # The chat template applied to the training data.
