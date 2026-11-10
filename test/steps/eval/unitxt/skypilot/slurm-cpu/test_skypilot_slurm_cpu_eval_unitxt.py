@@ -29,8 +29,8 @@ on a real cluster:
   :class:`libgbtest.hfpush.HfPushCleanupMixin` names that dataset per run, checks
   it landed on the Hub, and deletes it afterwards.
 
-GPU evaluation is not covered here: the local cluster has no GPUs. A GPU test
-against an internal GPU SLURM cluster belongs under ``test/integration/ibm/``.
+GPU evaluation is not covered here: the local cluster has no GPUs. The GPU test
+is the step's own ``test/slurm-bluevela`` build test.
 
 The model and the dataset are public, so pulling them needs no token, but the
 results push needs an HF_TOKEN that can write ``GBTEST_HF_PUSH_ORG`` (default

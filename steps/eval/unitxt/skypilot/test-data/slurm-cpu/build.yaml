@@ -51,6 +51,9 @@ granite.build:
               # (byoc's slurm fixture does the same).
               image: ""
               tasks: "card=cards.mmlu_pro.engineering"
+              # mmlu_pro cards filter their HF dataset with a code expression and
+              # refuse to load without this; the step defaults it to false.
+              trust_remote_code: true
               model_args: "torch_dtype=bfloat16,device=cpu"
               limit: 2
               # The CPU wheel: PyPI's default Linux torch bundles several GB of

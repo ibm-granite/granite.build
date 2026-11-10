@@ -62,6 +62,7 @@ def _cfg(defaults: dict, **over) -> dict:
     base = dict(
         defaults,
         tasks="card=cards.mmlu_pro.engineering",
+        trust_remote_code=True,
         model_args="torch_dtype=bfloat16,device=cuda",
         limit=10,
     )
@@ -180,10 +181,17 @@ class TestCliInvocation:
         argv = _argv(_run(_render(launcher["run"], _cfg(defaults, limit=0)), tmp_path))
         assert "--limit" not in argv
 
-    def test_trust_remote_code_can_be_turned_off(self, launcher, defaults, tmp_path):
-        cfg = _cfg(defaults, trust_remote_code=False)
+    def test_trust_remote_code_is_off_by_default(self, launcher, defaults, tmp_path):
+        """Running a repo's code must be an explicit choice, not the default."""
+        assert defaults["trust_remote_code"] is False
+        cfg = dict(_cfg(defaults), trust_remote_code=defaults["trust_remote_code"])
         argv = _argv(_run(_render(launcher["run"], cfg), tmp_path))
         assert "--trust_remote_code" not in argv
+
+    def test_trust_remote_code_can_be_turned_on(self, launcher, defaults, tmp_path):
+        cfg = _cfg(defaults, trust_remote_code=True)
+        argv = _argv(_run(_render(launcher["run"], cfg), tmp_path))
+        assert "--trust_remote_code" in argv
 
     def test_batch_size_is_passed(self, launcher, defaults, tmp_path):
         cfg = _cfg(defaults, batch_size=8)
@@ -233,7 +241,11 @@ class TestRefusedConfig:
 
     @pytest.mark.parametrize(
         "model_args",
-        ["pretrained=ibm-granite/granite-4.2-3b", "device=cuda,pretrained=x"],
+        [
+            "pretrained=ibm-granite/granite-4.2-3b",
+            "device=cuda,pretrained=x",
+            "device=cuda, pretrained=x",
+        ],
     )
     def test_pretrained_in_model_args_is_refused(
         self, launcher, defaults, model_args, tmp_path
@@ -245,12 +257,22 @@ class TestRefusedConfig:
             "must not set pretrained",
         )
 
-    def test_json_model_args_is_refused(self, launcher, defaults, tmp_path):
+    @pytest.mark.parametrize(
+        "model_args", ['{"torch_dtype": "bfloat16"}', '  {"torch_dtype": "bfloat16"}']
+    )
+    def test_json_model_args_is_refused(self, launcher, defaults, model_args, tmp_path):
         self._refused(
-            launcher,
-            _cfg(defaults, model_args='{"torch_dtype": "bfloat16"}'),
-            tmp_path,
-            "not JSON",
+            launcher, _cfg(defaults, model_args=model_args), tmp_path, "not JSON"
+        )
+
+    def test_a_value_that_merely_contains_pretrained_is_allowed(
+        self, launcher, defaults, tmp_path
+    ):
+        """Only the pretrained key is the step's; a path containing the word is fine."""
+        cfg = _cfg(defaults, model_args="peft=/ckpt/pretrained_adapter")
+        argv = _argv(_run(_render(launcher["run"], cfg), tmp_path))
+        assert _opt(argv, "--model_args") == (
+            f"pretrained={_MODEL_PATH},peft=/ckpt/pretrained_adapter"
         )
 
 
@@ -320,14 +342,16 @@ class TestImageSelection:
     ):
         """The image only provides python: setup still installs, wherever it runs."""
         cfg = _cfg(defaults, image=image)
-        assert "uv venv ./venv" in _render(launcher["setup"], cfg)
+        assert "uv venv --clear --managed-python --python 3.12 ./venv" in _render(
+            launcher["setup"], cfg
+        )
         assert ". ./venv/bin/activate" in _render(launcher["run"], cfg)
 
     def test_bare_node_installs_torch_then_unitxt_and_the_hf_packages(
         self, launcher, defaults
     ):
         setup = _render(launcher["setup"], _cfg(defaults))
-        assert "uv venv ./venv" in setup
+        assert "uv venv --clear --managed-python --python 3.12 ./venv" in setup
         torch = "uv pip install --index-url 'https://pypi.org/simple' \\\n  'torch'"
         rest = (
             "uv pip install --index-url 'https://pypi.org/simple' \\\n"
@@ -361,6 +385,28 @@ class TestImageSelection:
         assert 'export UV_CACHE_DIR="$PWD/.uv-cache"' in setup
         code = [l for l in setup.splitlines() if not l.lstrip().startswith("#")]
         assert not any("GB_SHARED_WORKDIR" in l for l in code)
+
+    def test_uv_is_pinned_and_comes_from_the_package_index(self, launcher, defaults):
+        mirror = "https://mirror.example/simple"
+        setup = _render(launcher["setup"], _cfg(defaults, pip_index_url=mirror))
+        assert f"--index-url '{mirror}' \\\n  'uv==0.13.6'" in setup
+        cfg = _cfg(defaults, uv_version="0.13.7")
+        assert "'uv==0.13.7'" in _render(launcher["setup"], cfg)
+
+    def test_uv_bootstrap_hides_no_errors(self, launcher, defaults):
+        """Ask pip whether it knows --break-system-packages; don't try and fall back."""
+        setup = _render(launcher["setup"], _cfg(defaults))
+        boot = [
+            l for l in setup.splitlines() if "pip install" in l and "uv pip" not in l
+        ]
+        assert boot and not any("2>/dev/null" in l for l in boot if "--help" not in l)
+        assert "pip install --help" in setup
+
+    def test_venv_is_recreated_on_a_retry(self, launcher, defaults, tmp_path):
+        """A retried step reuses the workdir; uv refuses to create over an existing venv."""
+        setup = _render(launcher["setup"], _cfg(defaults))
+        assert "uv venv --clear " in setup
+        assert setup.count("uv venv") == 1
 
     def test_install_false_skips_venv_and_install(self, launcher, defaults):
         cfg = _cfg(defaults, image="quay.io/org/unitxt:1", install=False)

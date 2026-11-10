@@ -54,8 +54,8 @@ provides everything. It is generated from the sources here by the shared Makefil
   on 10 instances, and pushes `results` the same way as `slurm-cpu`. The environment
   logs in with the key in the `BV_SSH_PRIVATE_KEY` space secret: create it once in the
   local space with `gb secret create BV_SSH_PRIVATE_KEY --from-file
-  ~/.ssh/ibm-bluevela.key`. It is marked `ibm`, skips unless that key file exists, and
-  is skipped in SPS CI/CD. Run it by hand from the IBM venv (`make ibm-venv`), with an
+  ~/.ssh/ibm-bluevela.key`. It is marked `ibm`, skips unless the local space holds that
+  secret, and is skipped in SPS CI/CD. Run it by hand from the IBM venv (`make ibm-venv`), with an
   `HF_TOKEN` that can write to `GBTEST_HF_PUSH_ORG` (a read-only token fails the push
   with `Could not resolve resource group id`):
 

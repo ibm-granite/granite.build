@@ -25,6 +25,7 @@ target_expectations:
           unitxt_config:
             image: ""
             tasks: "card=cards.mmlu_pro.engineering"
+            trust_remote_code: true
             torch_index_url: "https://download.pytorch.org/whl/cpu"
 # The Space this test resolves space://steps/eval/unitxt (and the environment +
 # monitors) through. In the step dir (Mode 1) that is the local Space rendered by

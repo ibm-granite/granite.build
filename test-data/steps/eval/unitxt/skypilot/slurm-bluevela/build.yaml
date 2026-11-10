@@ -24,8 +24,8 @@ granite.build:
   targets:
 
     evaluate:
-      # The in-repo env: SSH as the shared functional ID with the key file at
-      # ~/.ssh/ibm-bluevela.key, so the test needs no secret manager.
+      # The in-repo env: SSH as the shared functional ID with the key in the
+      # BV_SSH_PRIVATE_KEY space secret (see the test's docstring for creating it).
       environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
         model:
@@ -58,6 +58,9 @@ granite.build:
               # Pyxis. A containerized variant can follow.
               image: ""
               tasks: "card=cards.mmlu_pro.engineering"
+              # mmlu_pro cards filter their HF dataset with a code expression and
+              # refuse to load without this; the step defaults it to false.
+              trust_remote_code: true
               model_args: "torch_dtype=bfloat16,device=cuda"
               limit: 10
               # torch_index_url left empty: PyPI's default Linux wheel bundles CUDA.

@@ -40,8 +40,8 @@ also needs an ``HF_TOKEN`` that can write ``GBTEST_HF_PUSH_ORG`` (default
 ibm-research).
 
 IBM infrastructure through the local space, so marked ``ibm``; extended suite only.
-Skips unless ``~/.ssh/ibm-bluevela.key`` exists on the host, and in SPS CI/CD,
-which has no key on the host. Run it by hand from the repo's IBM venv
+Skips unless the local space holds the ``BV_SSH_PRIVATE_KEY`` secret (the environment
+authenticates with it, not with the key file), and in SPS CI/CD. Run it by hand from the repo's IBM venv
 (``make ibm-venv``)::
 
     make -C steps/eval/unitxt/skypilot space
@@ -66,17 +66,36 @@ from libgbtest.hfpush import HfPushCleanupMixin
 
 pytestmark = [pytest.mark.skypilot_integration, pytest.mark.ibm]
 
-# The key the BV_SSH_PRIVATE_KEY space secret is created from; the environment reads
-# the secret (cluster_ssh_configs IdentityKey), not this path.
-_BLUEVELA_KEY = Path("~/.ssh/ibm-bluevela.key").expanduser()
+# The environment authenticates with this space secret (cluster_ssh_configs
+# IdentityKey), not with a key file, so the test skips when the secret is missing.
+_SECRET = "BV_SSH_PRIVATE_KEY"
+# The local space the test runs in: its space.yaml `name`, which picks the local
+# secrets directory (~/.granite.build/space_secrets/<name>/).
+_SPACE_NAME = "public"
+
+
+def _bluevela_secret_present() -> bool:
+    """Whether the local space can resolve the environment's SSH key secret."""
+    from gbserver.spacesecretmanager.localspacesecretmanager import (
+        LocalSpaceSecretManager,
+    )
+
+    try:
+        manager = LocalSpaceSecretManager(uri="local", space_name=_SPACE_NAME)
+        return bool(manager.get_secrets().get(_SECRET))
+    except Exception:  # pylint: disable=broad-except  # an unreadable store == absent
+        return False
 
 
 @extended_testing_only
 # No xdist_group: skypilot_integration already puts it in the serialized
 # "skypilot" group, and under --dist=loadgroup any other group is a UsageError.
 @pytest.mark.skipif(
-    not _BLUEVELA_KEY.is_file(),
-    reason=f"BlueVela granitebuild SSH key not found at {_BLUEVELA_KEY}",
+    not _bluevela_secret_present(),
+    reason=(
+        f"no {_SECRET} secret in the local '{_SPACE_NAME}' space "
+        f"(gb secret create {_SECRET} --from-file ~/.ssh/ibm-bluevela.key)"
+    ),
 )
 @pytest.mark.skipif(
     os.environ.get("RUNNING_IN_CICD", "False").lower() == "true",

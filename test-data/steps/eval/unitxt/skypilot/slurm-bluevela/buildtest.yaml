@@ -22,6 +22,7 @@ target_expectations:
           unitxt_config:
             image: ""
             tasks: "card=cards.mmlu_pro.engineering"
+            trust_remote_code: true
             model_args: "torch_dtype=bfloat16,device=cuda"
 # The local Space rendered by `make space`; `make publish-step` rewrites this line to
 # configurations/spaces/local in the published copy. The environment comes from
