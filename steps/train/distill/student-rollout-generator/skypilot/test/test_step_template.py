@@ -13,6 +13,7 @@ import os
 import re
 import signal
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -134,25 +135,20 @@ class TestReadinessGate:
         """A service that returns ends its own step, and the trainer would lose the
         server mid-run.
 
-        Asserted as a PROPERTY of every path rather than as the script's last token.
-        This test used to read `endswith('wait "$SERVER_PID"')`, which was true only
-        while the tail was a single unconditional wait; once max_lifetime_seconds
-        added a watchdog the script ends in `fi` and the waits moved inside two
-        branches. The literal form would have failed a correct step -- and it did,
-        the moment the authoring template caught up with the published asset.
+        Asserted as a PROPERTY of the hold section rather than as the script's last
+        token: the section waits on the server exactly once, whether or not the
+        lifetime cap is armed, and everything after that wait only runs once the
+        server is gone -- and fails the target.
         """
         # Scoped to the hold section: an earlier wait in the readiness gate reaps a
-        # server that died during startup, and it is not one of the two counted here.
+        # server that died during startup, and it is not the one counted here.
         tail = run_script[run_script.index("# Hold the allocation") :].rstrip()
-        # One wait per branch: with the cap armed, and without it.
-        assert tail.count('wait "$SERVER_PID"') == 2
-        # Nothing after the waits may run in the normal path except the watchdog
-        # cleanup, the reaped-flag check and the exit with the server's code, all of
-        # which only follow a returned server. In particular the step must not end by falling off the end of the
-        # script with the server still up.
-        assert tail.endswith("fi")
-        for branch in ("$MAX_LIFETIME", "else"):
-            assert branch in tail
+        assert tail.count('wait "$SERVER_PID"') == 1
+        after = tail[tail.index('wait "$SERVER_PID"') :]
+        # The step must not fall off the end of the script, and must not exit with
+        # a bare server code that could be 0.
+        assert after.rstrip().endswith('exit "$RC"')
+        assert '[ "$RC" -ne 0 ] || RC=1' in after
 
     def test_the_lifetime_cap_defaults_off(self, step):
         """Every recipe that does not set it runs for hours and is torn down by
@@ -247,9 +243,12 @@ def _section(run_script, begin, end=None):
     return run_script[start : run_script.index(end, start) if end else None]
 
 
-def _run_under_launcher(tmp_path, body, server, values):
+def _run_under_launcher(tmp_path, body, server, values, send=None):
     """Run `body` the way the launcher does -- with `set -eu` in front of it -- against a
     stand-in server process, and return (exit code, stderr).
+
+    `send`, if given, is a signal delivered to the script itself (not its process
+    group) once it logs that it is holding the allocation, i.e. once its trap is armed.
 
     The output goes to files, not pipes: the watchdog's `sleep` outlives its killed
     subshell and would hold a pipe open until it finished. The whole session is killed
@@ -266,6 +265,13 @@ def _run_under_launcher(tmp_path, body, server, values):
             ["bash", str(script)], stdout=o, stderr=e, start_new_session=True
         )
         try:
+            if send is not None:
+                deadline = time.monotonic() + 20
+                while "holding the allocation" not in out.read_text():
+                    assert proc.poll() is None, err.read_text()
+                    assert time.monotonic() < deadline, "the hold never started"
+                    time.sleep(0.05)
+                proc.send_signal(send)
             rc = proc.wait(timeout=30)
         finally:
             try:
@@ -310,6 +316,75 @@ class TestFailuresAreReportedUnderTheLauncherPrefix:
         )
         assert "lifetime cap" not in err.replace("lifetime cap 60s armed", "")
         assert rc == 3
+
+
+_EARLY_DEATH = "the vLLM server exited (rc={}) before the teardown target ended it"
+
+
+class TestADeadServerFailsItsTarget:
+    """A server that dies before the teardown target ends it must leave its target
+    FAILED, never SUCCESS. On a build retry with target reuse, gbserver reuses SUCCESS
+    targets of the same build, so a dead server recorded as SUCCESS would hand the
+    retried trainer a dead URL; a FAILED one is relaunched alongside it.
+
+    A normal teardown is not decided here: launch_skypilot_teardown records the
+    cluster as intentionally torn down before it downs it, and the server's monitor
+    then ends as SUCCESS whatever the job's exit status was."""
+
+    @pytest.mark.parametrize("code", [0, 3, 137])
+    def test_any_uncapped_server_exit_fails_the_step(self, run_script, tmp_path, code):
+        """0 included: vLLM exits cleanly on a SIGTERM aimed at it, e.g. an idle
+        kill, and a clean exit is what used to end the target SUCCESS."""
+        hold = _section(run_script, "MAX_LIFETIME=")
+        rc, err = _run_under_launcher(
+            tmp_path, hold, server=f"exit {code}", values={"max_lifetime_seconds": 0}
+        )
+        assert "FATAL: " + _EARLY_DEATH.format(code) in err
+        assert rc == (code or 1)
+
+    def test_a_clean_exit_under_the_cap_fails_the_step(self, run_script, tmp_path):
+        hold = _section(run_script, "MAX_LIFETIME=")
+        rc, err = _run_under_launcher(
+            tmp_path, hold, server="exit 0", values={"max_lifetime_seconds": 60}
+        )
+        assert "FATAL: " + _EARLY_DEATH.format(0) in err
+        assert rc == 1
+
+    def test_the_cap_still_reports_itself_and_exits_1(self, run_script, tmp_path):
+        hold = _section(run_script, "MAX_LIFETIME=")
+        rc, err = _run_under_launcher(
+            tmp_path, hold, server="sleep 20", values={"max_lifetime_seconds": 1}
+        )
+        assert "lifetime cap of 1s reached" in err
+        assert _EARLY_DEATH.format(143) not in err
+        assert rc == 1
+
+    @pytest.mark.parametrize(
+        "sig, name, code", [(signal.SIGTERM, "SIGTERM", 143), (signal.SIGINT, "SIGINT", 130)]
+    )
+    @pytest.mark.parametrize("cap", [0, 60])
+    def test_a_signal_while_serving_is_trapped(
+        self, run_script, tmp_path, sig, name, code, cap
+    ):
+        """The script cannot tell a teardown's signal from a scheduler's, so the trap
+        keeps the status a signal-killed shell reports today (128 + signo) and says
+        why; gbserver, not this code, is what turns a teardown into SUCCESS."""
+        hold = _section(run_script, "MAX_LIFETIME=")
+        rc, err = _run_under_launcher(
+            tmp_path,
+            hold,
+            server="sleep 20",
+            values={"max_lifetime_seconds": cap},
+            send=sig,
+        )
+        assert f"FATAL: received {name} while serving" in err
+        assert rc == code
+
+    def test_the_trap_is_armed_only_once_serving(self, run_script):
+        """Before the URL is published nothing depends on this target, and the
+        readiness gate's own failures already exit 1."""
+        trap = run_script.index("trap ")
+        assert trap > run_script.index("GB_ARTIFACT_ID:vllm_url")
 
 
 class TestSlurmExecutorEnv:

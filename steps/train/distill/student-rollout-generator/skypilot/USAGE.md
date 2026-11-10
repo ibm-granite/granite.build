@@ -249,11 +249,29 @@ server. All failures exit non-zero with a `vllm-server: FATAL:` line on stderr:
 - `lifetime cap of <N>s reached; releasing the allocation` — `max_lifetime_seconds` was
   set and nothing tore the server down in time; check whether the consumer target
   failed;
+- `the vLLM server exited (rc=<RC>) before the teardown target ended it` — the server
+  died while serving (idle kill, OOM, crash). Exits with `<RC>`, or 1 when `<RC>` is 0:
+  vLLM exits cleanly on a SIGTERM aimed at it, so a clean exit is a failure too;
+- `received SIGTERM|SIGINT while serving` — the script itself was signalled. It stops
+  the server and exits 143 or 130, the status a signal-killed shell reports;
 - `vllm_config.min_completion_length is no longer read` — the generation floor moved to
   the trainer; see [The generation floor](#the-generation-floor).
 
 The messages are reported even though the launcher runs the script under `set -eu`.
-Without a lifetime cap, the step exits with the server's own exit code.
+
+### When the target ends FAILED, and when SUCCESS
+
+Once the URL is published, every way out of the hold exits non-zero, so a server that
+dies before the teardown target ends it leaves its target **FAILED**. That matters on a
+build retry: gbserver reuses the SUCCESS targets of the same build
+(`target_reuse_enabled`), so a dead server recorded as SUCCESS would hand the retried
+trainer a dead URL. A FAILED server is relaunched along with the trainer.
+
+A normal teardown ends the target **SUCCESS**, and that is decided by gbserver, not by
+this script's exit code. The teardown target records the cluster as torn down on
+purpose before it downs it, and the server's monitor then ends as success whatever
+status the job ended with. The script cannot tell a teardown's signal from anyone
+else's, so it does not try.
 
 ### Serving the teacher instead of the student
 

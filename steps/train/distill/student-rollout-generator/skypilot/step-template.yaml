@@ -261,12 +261,34 @@ environment_configs:
             # Hold the allocation for the server's lifetime. It never returns on
             # its own; the teardown target is what normally ends it.
             #
+            # Every way out of this section exits non-zero, so a server that dies
+            # before the teardown target ends it -- idle kill, OOM, crash, the cap
+            # below -- leaves its target FAILED. That matters on a build retry:
+            # gbserver reuses SUCCESS targets of the same build, and a dead server
+            # recorded as SUCCESS would hand the retried trainer a dead URL. A
+            # normal teardown is NOT decided here: launch_skypilot_teardown records
+            # the cluster as intentionally torn down before downing it, and the
+            # monitor then ends this target SUCCESS whatever the job's status.
+            #
             # MAX_LIFETIME > 0 arms a watchdog so a stranded server (consumer
             # crashed => teardown never eligible) releases its node instead of
             # holding it indefinitely. The watchdog is killed on the normal path,
             # so it costs a sleeping subshell and nothing else.
             MAX_LIFETIME={{ config.vllm_config.max_lifetime_seconds }}
             REAPED_FLAG="$(mktemp -u)"
+            WATCHDOG_PID=""
+            # A signal to this script cannot be told apart from a teardown's, so the
+            # trap keeps the status a signal-killed shell reports (128 + signo), says
+            # why, and takes the server and watchdog down with it.
+            on_signal() {
+              echo "student-rollout-generator: FATAL: received $1 while serving; stopping the vLLM server. Unless the teardown target sent it, this target fails." >&2
+              [ -z "$WATCHDOG_PID" ] || kill "$WATCHDOG_PID" 2>/dev/null || true
+              kill "$SERVER_PID" 2>/dev/null || true
+              exit "$2"
+            }
+            trap 'on_signal SIGTERM 143' TERM
+            trap 'on_signal SIGINT 130' INT
+            echo "student-rollout-generator: holding the allocation until the teardown target ends it"
             if [ "$MAX_LIFETIME" -gt 0 ]; then
               echo "student-rollout-generator: lifetime cap ${MAX_LIFETIME}s armed"
               (
@@ -277,17 +299,19 @@ environment_configs:
                 fi
               ) &
               WATCHDOG_PID=$!
-              RC=0; wait "$SERVER_PID" || RC=$?
-              kill "$WATCHDOG_PID" 2>/dev/null || true
-              if [ -f "$REAPED_FLAG" ]; then
-                rm -f "$REAPED_FLAG"
-                echo "student-rollout-generator: FATAL: lifetime cap of ${MAX_LIFETIME}s reached; releasing the allocation. Nothing tore this server down in time — check whether the consumer target failed." >&2
-                exit 1
-              fi
-              exit "$RC"
-            else
-              wait "$SERVER_PID"
             fi
+            RC=0; wait "$SERVER_PID" || RC=$?
+            [ -z "$WATCHDOG_PID" ] || kill "$WATCHDOG_PID" 2>/dev/null || true
+            if [ -f "$REAPED_FLAG" ]; then
+              rm -f "$REAPED_FLAG"
+              echo "student-rollout-generator: FATAL: lifetime cap of ${MAX_LIFETIME}s reached; releasing the allocation. Nothing tore this server down in time — check whether the consumer target failed." >&2
+              exit 1
+            fi
+            # vLLM exits 0 on a SIGTERM aimed at it, so even a clean exit is a
+            # failure here: nothing but the teardown target should end this server.
+            echo "student-rollout-generator: FATAL: the vLLM server exited (rc=$RC) before the teardown target ended it" >&2
+            [ "$RC" -ne 0 ] || RC=1
+            exit "$RC"
     monitors:
       skypilot_monitor:
         ref: space://monitors/skypilot
