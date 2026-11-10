@@ -257,8 +257,7 @@ def test_root_without_any_package_manager_fails_before_cloning(tmp_path):
 
 
 def test_conda_retries_with_the_classic_solver(tmp_path):
-    """The pytorch/pytorch:2.6.0 image's conda 25.1.0 (libmamba 2.0.5) reports
-    every conda-forge package as not available; `--solver classic` installs git."""
+    """A failure with the default solver is retried once with `--solver classic`."""
     node = _Node(tmp_path, tools=("conda",), uid=1000)
     node.write(
         node.bin / "conda",

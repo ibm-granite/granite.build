@@ -83,9 +83,8 @@ environment_configs:
               if command -v conda >/dev/null 2>&1; then
                 # HOME may be / (enroot) and the image's package cache
                 # root-owned, so conda's cache goes to a scratch dir, removed
-                # once git is in. Some conda releases' default libmamba solver
-                # finds no conda-forge package at all (conda 25.1.0 in
-                # pytorch/pytorch:2.6.0); the classic solver then still works.
+                # once git is in. If the default solver fails, the install is
+                # tried once more with the classic solver before setup fails.
                 CONDA_SCRATCH="$(pwd)/.byoc-git-scratch"
                 byoc_conda_git() {
                   rm -rf "$GIT_PREFIX"
