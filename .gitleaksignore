@@ -1,30 +1,41 @@
-# Placeholder tokens in documentation (YOUR_GITHUB_TOKEN, YOUR_ADMIN_TOKEN)
-docs/node_health_monitoring.md:curl-auth-header:296
-docs/node_health_monitoring.md:curl-auth-header:310
-docs/node_health_monitoring.md:curl-auth-header:339
-docs/node_health_monitoring.md:curl-auth-header:355
-docs/node_health_monitoring.md:curl-auth-header:388
-b648a7083becd6d7b72b5647af74f16fe447d832:docs/node_health_monitoring.md:curl-auth-header:129
-b648a7083becd6d7b72b5647af74f16fe447d832:docs/node_health_monitoring.md:curl-auth-header:143
-b648a7083becd6d7b72b5647af74f16fe447d832:docs/node_health_monitoring.md:curl-auth-header:170
-b648a7083becd6d7b72b5647af74f16fe447d832:docs/node_health_monitoring.md:curl-auth-header:186
-b648a7083becd6d7b72b5647af74f16fe447d832:docs/node_health_monitoring.md:curl-auth-header:217
-b648a7083becd6d7b72b5647af74f16fe447d832:docs/node_health_monitoring.md:curl-auth-header:234
+# Reviewed gitleaks findings that are placeholders, fixtures or public values.
+# Format: [<commit>:]<path>:<rule>:<line>. Entries with a commit apply to that commit only.
+# Entries should match a real, reviewed finding; remove stale ones when you notice them.
+#
+# Adding an entry for a NEW finding: pull requests here are squash-merged (as of this writing;
+# every recent commit on main is a squash), so the hash of a commit in your PR does not survive
+# the merge and a pinned entry would fail again on main. For new findings, omit the commit and
+# use <path>:<rule>:<line>, which matches in any commit.
+# Trade-off: a hash-less entry also suppresses any LATER finding with the same path, rule and
+# line, including a real secret. Reviewers should check such entries closely, and remove them
+# once the line they cover changes.
+# Commit-pinned entries below are for history that is already on main.
+
 # Example API key in sample config documentation
 samples/spaces/hybrid-secrets-example/README.md:generic-api-key:92
-# Test fixture with base64-encoded dummy secret ("my-old-secret")
-test/gbserver_test/spacesecretmanager/test_localspacesecretmanager.py:generic-api-key:27
 # Test fixture: empty-string ClearML cred name in enablement unit test (not a secret)
 steps/train/nemo-rl/skypilot/test/test_clearml_launch.py:generic-api-key:45
-# GitHub CLI public OAuth client secret (same value as official gh CLI)
-d97c7bcb8a2b52c5be0b126bf17dd6f5a9509ae4:src/gbcli/utils/gh_auth.py:generic-api-key:14
-# Example API key placeholder in CLAUDE.md (sk-1234567890)
-af29bc4e459904350e9653c57026fa8fd6a108f2:CLAUDE.md:generic-api-key:257
-# Helm template public key reference (id_ed25519.pub)
-341dabefe0688a06c4a021a532e632d852a7801d:src/gbserver/builtins/steps/gbstep/helm-charts/{{ step.name | default(run_metadata.target_name) }}/charts/gbstepbase/templates/_helpers.tpl:generic-api-key:355
-# Historical findings in deleted files (SSH key and secrets-manager YAMLs removed from tree)
-341dabefe0688a06c4a021a532e632d852a7801d:src/gbserver/builtins/steps/gbstep/helm-charts/{{ step.name | default(run_metadata.target_name) }}/templates/ssh-keys-secret.yaml:kubernetes-secret-yaml:16
-341dabefe0688a06c4a021a532e632d852a7801d:src/gbserver/builtins/steps/gbstep/helm-charts/{{ step.name | default(run_metadata.target_name) }}/templates/ssh-keys-secret.yaml:private-key:23
-40bd0d7d43cd6156bc402294ce5d0280ee92d6a8:src/gbserver/secretsmanager/openshift/secrets-manager-secret.yaml:kubernetes-secret-yaml:2
-164de16f8dc823cdec09faacbd64dbab7bcc32fa:src/gbserver/secretsmanager/openshift/secrets-manager-pod.yaml:generic-api-key:9
-164de16f8dc823cdec09faacbd64dbab7bcc32fa:src/gbserver/secretsmanager/openshift/secrets-manager-pod.yaml:kubernetes-secret-yaml:3
+
+# Public SHA-256 task digests keyed by task name in the tbench step
+c80970c8890162a5b54ee361cd036dc0c990f7c3:steps/eval/tbench/src/tbench.py:generic-api-key:111
+c80970c8890162a5b54ee361cd036dc0c990f7c3:steps/eval/tbench/src/tbench.py:generic-api-key:141
+c80970c8890162a5b54ee361cd036dc0c990f7c3:steps/eval/tbench/src/tbench.py:generic-api-key:70
+# Fake tokens in the secret-redaction unit test (ghp_0123..., sk_live_...abcdefghij..., AWS docs example key)
+ad7dccd5663f7172c280ac2c8de1d5eb8ab442b5:test/unit/utils/test_redaction.py:generic-api-key:187
+ad7dccd5663f7172c280ac2c8de1d5eb8ab442b5:test/unit/utils/test_redaction.py:generic-api-key:190
+ad7dccd5663f7172c280ac2c8de1d5eb8ab442b5:test/unit/utils/test_redaction.py:generic-api-key:284
+ad7dccd5663f7172c280ac2c8de1d5eb8ab442b5:test/unit/utils/test_redaction.py:generic-api-key:288
+ad7dccd5663f7172c280ac2c8de1d5eb8ab442b5:test/unit/utils/test_redaction.py:generic-api-key:289
+ad7dccd5663f7172c280ac2c8de1d5eb8ab442b5:test/unit/utils/test_redaction.py:generic-api-key:290
+ad7dccd5663f7172c280ac2c8de1d5eb8ab442b5:test/unit/utils/test_redaction.py:stripe-access-token:215
+ad7dccd5663f7172c280ac2c8de1d5eb8ab442b5:test/unit/utils/test_redaction.py:stripe-access-token:216
+# Model-name strings ('tokenizer_identity') in distill step tests, not credentials
+1f6f3831a661e836d43b36af0bb074c0b388c751:steps/distill/corpus-pin-check/skypilot/test/test_check_corpus_pin.py:generic-api-key:19
+1f6f3831a661e836d43b36af0bb074c0b388c751:steps/distill/corpus-pin-check/skypilot/test/test_check_corpus_pin.py:generic-api-key:83
+1f6f3831a661e836d43b36af0bb074c0b388c751:steps/distill/sft/skypilot/test/test_render_sft_config.py:generic-api-key:517
+# Dummy PEM ('abc123' between BEGIN/END markers) in skypilot config unit test
+7f5f0a98418997e59a400e94cf8052492a21b584:test/unit/environment/test_skypilot_config.py:private-key:309
+# RabbitMQ default guest:guest login in docs example
+41c378c0d2a3b664b76b825d4ab024b08d66d72e:docs/rabbitmq-event-notifications.md:curl-auth-user:213
+# Test fixture with base64-encoded dummy secret ("my-old-secret")
+9dc564fc35774afc6b3d6a5d98a6e8a7f033abb6:test/integration/ibm/spacesecretmanager/test_localspacesecretmanager.py:generic-api-key:30
