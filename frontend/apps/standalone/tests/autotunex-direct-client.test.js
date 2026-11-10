@@ -128,6 +128,34 @@ describe('the AutoTuneX client', () => {
       )
     })
 
+    it('does not double /api/v1 when baseUrl already ends in it', async () => {
+      // An operator pasting the API URL instead of the origin is an easy mistake;
+      // it should still land on /api/v1, not /api/v1/api/v1.
+      for (const baseUrl of ['https://a.example.com/api/v1', 'https://a.example.com/api/v1/']) {
+        configureAutotunexClient({ baseUrl })
+        const { client, sent } = capturingClient()
+        await client.get('/auth/me')
+        assert.equal(sent[0].baseURL, 'https://a.example.com/api/v1')
+        assert.equal(autotunexResourceUrl('/jobs/j'), 'https://a.example.com/api/v1/jobs/j')
+      }
+    })
+
+    it('routes a 401 by the mode the request was sent in', async () => {
+      // Switch to the proxy while the direct request is in flight: the 401 still
+      // belongs to AutoTuneX's login, not the host's.
+      const client = createAutotunexClient()
+      client.defaults.adapter = async (config) => {
+        configureAutotunexClient(null)
+        const err = new Error('status 401')
+        err.config = config
+        err.response = { data: {}, status: 401, statusText: '401', headers: {}, config }
+        throw err
+      }
+      await assert.rejects(client.get('/auth/me'))
+      assert.equal(autotunexUnauthorized, 1)
+      assert.equal(hostUnauthorized, 0)
+    })
+
     it('applies a configuration made after the client was built', async () => {
       configureAutotunexClient(null)
       const { client, sent } = capturingClient()

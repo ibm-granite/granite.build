@@ -628,8 +628,11 @@ export async function getJobAssets(jobId: string, scope: Scope = 'own'): Promise
 // same approach as the AutoTuneX UI. A link carries no headers, so behind an
 // authenticating gbserver proxy it relies on gbserver admitting the request; a
 // direct host (configureAutotunexClient) gets AutoTuneX's own session cookie, since
-// the navigation is to AutoTuneX's host. `path` is the asset's relative `path` and
-// is URL-encoded so nested slashes survive as a single query value.
+// the navigation is to AutoTuneX's host. A link is not an axios request, so the
+// host's onUnauthorized never runs for it: clicked after the AutoTuneX session has
+// expired, it opens AutoTuneX's raw 401 instead of its login. `path` is the asset's
+// relative `path` and is URL-encoded so nested slashes survive as a single query
+// value.
 export function resultFileUrl(jobId: string, path: string, scope: Scope = 'own'): string {
   return autotunexResourceUrl(
     `/jobs/${jobId}/result-report/file?path=${encodeURIComponent(path)}&scope=${scope}`
