@@ -54,6 +54,7 @@ _GIT = (
     "#!/bin/bash\n"
     + _LOG
     + 'case "$1" in\n'
+    + "  --version) echo 'git version 2.56.0' ;;\n"
     + '  clone) mkdir -p "$3" ;;\n'
     + f'  -C) [ "$3" = rev-parse ] && echo {_SHA} ;;\n'
     + "esac\n"
@@ -197,6 +198,26 @@ def test_conda_scratch_does_not_stay_in_the_workdir(tmp_path):
     proc = node.run(_render("setup", **_SETUP))
     assert proc.returncode == 0, proc.stderr
     assert sorted(p.name for p in node.work.iterdir()) == [".byoc-git", "code"]
+
+
+def test_a_broken_git_left_by_an_earlier_attempt_is_reinstalled(tmp_path):
+    """A relaunch reuses the per-run workdir; an install cut off mid-way can
+    leave bin/git without the libraries it loads."""
+    node = _Node(tmp_path, tools=("conda",), uid=1000)
+    leftover = node.work / ".byoc-git" / "bin" / "git"
+    leftover.parent.mkdir(parents=True)
+    node.write(
+        leftover,
+        "#!/bin/bash\n"
+        + _LOG
+        + "echo 'git: error while loading shared libraries: libpcre2-8.so.0' >&2\n"
+        + "exit 127\n",
+    )
+    proc = node.run(_render("setup", **_SETUP))
+    assert proc.returncode == 0, proc.stderr
+    assert len(node.calls("conda")) == 1
+    assert node.clone_git() == str(leftover)
+    assert leftover.read_text() == node.git_stub.read_text()
 
 
 @pytest.mark.parametrize("manager", ["apt-get", "dnf", "microdnf"])

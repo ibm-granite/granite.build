@@ -73,11 +73,13 @@ environment_configs:
             # first: it needs no root (enroot containers on LSF run as the
             # submitting user) and installs into its own prefix, leaving the
             # image's Python env alone. The prefix is APPENDED to PATH, so it
-            # never shadows a tool the image has; run adds it again.
+            # never shadows a tool the image has; run adds it again. git is
+            # run, not just looked up: a relaunch reuses this workdir, and an
+            # install cut off mid-way can leave a git that cannot start.
             GIT_PREFIX="$(pwd)/.byoc-git"
             PATH="$PATH:$GIT_PREFIX/bin"
-            if ! command -v git >/dev/null 2>&1; then
-              echo "byoc: git is not in the image; installing it"
+            if ! git --version >/dev/null 2>&1; then
+              echo "byoc: no working git in the image; installing it"
               if command -v conda >/dev/null 2>&1; then
                 # HOME may be / (enroot) and the image's package cache
                 # root-owned, so conda's cache goes to a scratch dir, removed

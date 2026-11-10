@@ -61,6 +61,11 @@ If neither works (no conda and not root, or no package manager), `setup` fails b
 the clone with a `byoc:` message saying so. Use an image that has git or conda then. An
 image that has git skips all of this.
 
+The install downloads at run time, so `setup` needs outbound access to conda-forge
+(`conda.anaconda.org`) or to the image's distro package mirrors. On a cluster without
+that access (air-gapped, or an egress allowlist that leaves them out), use an image
+that already has git.
+
 ## Inputs and outputs
 
 `byoc` declares no named inputs — its step.yaml has only `inputs: {allow_unknown: true}`,
