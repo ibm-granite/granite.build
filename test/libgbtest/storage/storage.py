@@ -156,8 +156,12 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
         assert uuids == [item2.uuid, item3.uuid]
         items: list = storage.get_by_uuid(uuids)
         assert len(items) == 2
-        assert self._verify_equal_strict(items[0], item2), "Did not get back expected item 0"
-        assert self._verify_equal_strict(items[1], item3), "Did not get back expected item 1"
+        assert self._verify_equal_strict(
+            items[0], item2
+        ), "Did not get back expected item 0"
+        assert self._verify_equal_strict(
+            items[1], item3
+        ), "Did not get back expected item 1"
 
     def test_get_by_uuid(self):
 

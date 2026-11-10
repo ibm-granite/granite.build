@@ -38,13 +38,13 @@ import logging
 from unittest.mock import patch
 
 import pytest
+from libgbtest.utils import drop_test_table
 from sqlalchemy.exc import OperationalError
 
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.artifact import ArtifactType
-from libgbtest.utils import drop_test_table
 
 # Patch only tenacity's reference to the time module, so the global time.sleep
 # (and any other thread using it) is untouched.

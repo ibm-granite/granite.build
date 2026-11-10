@@ -60,9 +60,9 @@ def _save_other_singletons() -> list:
             saved.append((module_name, name, unset))
             continue
         # Fail loudly if a global was renamed: restoring it would silently do nothing.
-        assert hasattr(module, name), (
-            f"{module_name}.{name} no longer exists; update _OTHER_SINGLETONS in {__file__}"
-        )
+        assert hasattr(
+            module, name
+        ), f"{module_name}.{name} no longer exists; update _OTHER_SINGLETONS in {__file__}"
         saved.append((module_name, name, getattr(module, name)))
     return saved
 
