@@ -48,6 +48,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from gbcommon.types.constants import get_gb_home_dir
 from gbcommon.types.gbenvconfig import is_standalone
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
@@ -91,8 +92,11 @@ from gbserver.utils.optional_imports import HAS_SKYPILOT
 if HAS_SKYPILOT:
     import sky
     import sky.exceptions
+
+    from gbserver.utils import sky_patches
 else:
     sky = None  # type: ignore[assignment]
+    sky_patches = None  # type: ignore[assignment]
 
 
 def _reload_skypilot_client_config() -> None:
@@ -908,6 +912,10 @@ def _ensure_skypilot_api_running():
     etc.) propagate so they're not masked by an unconditional ``api_start``.
     """
     _require_skypilot()
+    # SkyPilot fixes load as a server plugin, and only at server startup. None
+    # only when tests stub out an uninstalled SkyPilot.
+    if sky_patches is not None:
+        sky_patches.ensure_plugin_config(get_gb_home_dir())
     try:
         info = sky.api_info()
     except (ConnectionError, OSError, RuntimeError) as e:
@@ -919,6 +927,12 @@ def _ensure_skypilot_api_running():
             "SkyPilot API server status=%s — starting it now", info.status.value
         )
         sky.api_start()
+    elif sky_patches is not None and not sky_patches.server_has_patches():
+        # Not restarted here: that would abort other builds' in-flight requests.
+        raise RuntimeError(
+            "The SkyPilot API server was started without gbserver's sky_patches "
+            "plugin. Restart it (`sky api stop`; gbserver starts it again)."
+        )
 
 
 @retry(
@@ -1772,8 +1786,8 @@ def _remap_relative_dest(dst: str, build_workdir: Optional[str]) -> str:
     On the LSF/enroot backend the shared ``/proj`` tree is bind-mounted identity
     into the step container, so a payload written to ``${build_workdir}`` on the
     (sudo-less) login node is visible to the job at the same path; the SkyPilot
-    backend's symlink-wrap is exempted for these shared roots (see the fork's
-    ``sky/provision/lsf`` runner hook), so no container staging or copy-back is
+    backend's symlink-wrap is exempted for these shared roots (the LSF
+    SkyPilot build's ``sky/provision/lsf`` runner hook), so no container staging or copy-back is
     needed.
 
     Absolute destinations pass through unchanged (the author's explicit fixed
@@ -2191,7 +2205,8 @@ def _inline_hf_download_cmd(pull_info: Dict[str, Any]) -> str:
     ``pullasset_hfstore`` refuses one containing ``$``.
 
     :param pull_info: A binding's ``_hfpull`` dict (``repo``, ``path``, and the
-        optional ``revision`` and ``type``).
+        optional ``revision``, ``type`` and ``path_in_repo``; with a path in the
+        repo only it is downloaded, as ``HfURI.pull`` does).
     :returns: The shell command line.
     """
     cmd = (
@@ -2202,6 +2217,10 @@ def _inline_hf_download_cmd(pull_info: Dict[str, Any]) -> str:
         cmd += f" --revision {shlex.quote(str(pull_info['revision']))}"
     if pull_info.get("type"):
         cmd += f" --repo-type {shlex.quote(str(pull_info['type']))}"
+    path_in_repo = str(pull_info.get("path_in_repo") or "").strip("/")
+    if path_in_repo:
+        for pattern in (path_in_repo, f"{path_in_repo}/*"):
+            cmd += f" --include {shlex.quote(pattern)}"
     return cmd
 
 
@@ -2431,8 +2450,8 @@ def _check_multinode_supported(cloud: str, num_nodes: int) -> None:
         f"num_nodes={num_nodes} requested on the lsf cloud, but the installed "
         "SkyPilot predates LSF multi-node support (sky.skylet.executor.lsf is "
         "missing). Such a run would allocate every node and then execute the "
-        "task once, on one node, reporting success. Pin a SkyPilot build with "
-        "LSF multi-node support (>= gb-sky-v2-multinode)."
+        "task once, on one node, reporting success. Install a SkyPilot build "
+        "with LSF multi-node support."
     )
 
 
@@ -3177,7 +3196,7 @@ class Skypilot(Environment):
         container image: a bare-node SLURM step needs neither, and a CPU-only
         container step has no driver to inject.
 
-        The typed-GPU directive is ``gpus-per-node``, not ``gpus``: the fork's
+        The typed-GPU directive is ``gpus-per-node``, not ``gpus``: SkyPilot's
         SLURM backend emits its own ``--gres=gpu:<type>:<count>`` per node from
         the same resource spec, while ``--gpus`` counts across the whole job —
         the two would contradict each other on any multi-node step
@@ -3878,7 +3897,7 @@ class Skypilot(Environment):
             # vCPUs, so SkyPilot dies with "Catalog does not contain any
             # instances satisfying the request". _cpus_floor emits a minimum
             # ("{n}+") so it picks the smallest instance with at least that many
-            # vCPUs; slurm/lsf keep the bare int (the "+" form crashes the fork's
+            # vCPUs; slurm/lsf keep the bare int (the "+" form crashes SkyPilot's
             # LSF cloud, and those schedulers match CPUs directly).
             resources["cpus"] = _cpus_floor(cloud, num_cpus)
         # SLURM/LSF (bare HPC schedulers) commonly don't track memory as a
@@ -4305,7 +4324,7 @@ class Skypilot(Environment):
             image_id = cached_image_id or self._step_image_id(launcher_config, config)
 
             # Per-step SLURM sbatch directives (--time, --gres, --qos, ...).
-            # SLURM is the only cloud whose SkyPilot fork exposes a per-task
+            # SLURM is the only cloud whose SkyPilot backend exposes a per-task
             # sbatch_options override; on any other cloud it is a documented
             # no-op (warn and drop). Deep-merge under `slurm` so a sibling
             # slurm.* override is never clobbered. The Pyxis GPU directives are
@@ -4483,7 +4502,7 @@ class Skypilot(Environment):
             # filesystem) before the task is built. On LSF/enroot that shared
             # tree is bind-mounted identity into the step container, so the
             # payload written on the login node is visible to the job at the same
-            # path; the fork's backend wrap-exemption keeps these shared-root
+            # path; sky_patches' backend wrap-exemption keeps these shared-root
             # destinations un-wrapped. Relative local sources resolve against
             # targetsteprun_asset_dir (the dir holding the rendered step.yaml +
             # siblings). See _build_skypilot_mounts / _resolve_local_mount_source.
@@ -6000,7 +6019,9 @@ class Skypilot(Environment):
         )
 
         hf_token = assetstore.resolve_token(hfuri) or ""
-        binding_config = {"binding": {"path": str(binding_path)}}
+        # The pull keeps the repo layout under binding_path; a path in the repo
+        # is bound where it lands, not at the download root.
+        binding_config = {"binding": {"path": str(hfuri.local_path(binding_path))}}
 
         # Inline mode: stash download metadata for injection into the main
         # step's setup script rather than launching a separate cluster.
@@ -6028,6 +6049,7 @@ class Skypilot(Environment):
                 "repo": f"{hfuri.get_owner()}/{hfuri.get_repo()}",
                 "revision": hfuri.get_revision(),
                 "type": hfuri.get_hf_type() or "model",
+                "path_in_repo": hfuri.get_path_in_repo(),
                 "uri": str(hfuri),
                 "hf_token": hf_token,
             }

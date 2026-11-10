@@ -186,8 +186,10 @@ alongside the API. With `AUTOTUNEX_JOB_BACKEND=local` baked in (see the table
 below), tuning runs in-container; only the GPU / online-RL extras (`[full]`:
 verl/vLLM, flash-attn, deepspeed) and the macOS-arm64-only `[mlx]` extra are left
 out. That describes the default `DEVICE=cpu` build: `docker build --build-arg
-DEVICE=cuda .` selects an `nvidia/cuda` base stage in the same `Dockerfile` and
-installs `[full]` instead, so the `local` backend can train on an NVIDIA GPU.
+DEVICE=cuda .` selects a CUDA stage in the same `Dockerfile` that starts from the
+published kernel base (`docker/cuda-base/Dockerfile`, overridable with
+`--build-arg CUDA_KERNEL_BASE=...`) and installs `[full]` instead, so the `local`
+backend can train on an NVIDIA GPU.
 `compose.yaml` carries the same build behind a `cuda` profile —
 `docker compose --profile cuda up --build` builds `autotunex:cuda` with its own
 `autotunex-cuda-data` volume and an NVIDIA device reservation. See

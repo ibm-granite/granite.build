@@ -199,7 +199,7 @@ class TestImageSelection:
         assert _render(launcher["image_id"], cfg) == f"docker:{sqsh}"
 
     def test_skypilot_extracts_a_docker_prefixed_sqsh_path(self):
-        # Pins the SkyPilot half of the contract above, against the installed fork.
+        # Pins the SkyPilot half of the contract above, against the installed SkyPilot.
         sky = pytest.importorskip("sky", reason="skypilot not installed")
         sqsh = "/proj/x/images/nemo-rl-v0.7.0.sqsh"
         assert sky.Resources(image_id=f"docker:{sqsh}").extract_docker_image() == sqsh

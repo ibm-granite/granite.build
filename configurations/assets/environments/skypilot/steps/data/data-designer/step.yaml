@@ -1,0 +1,291 @@
+name: data-designer
+version: 1.0.0
+type: data_generation
+config:
+  data_designer_config:
+    # ---- what to generate ----------------------------------------------------
+    # REQUIRED. A NeMo Data Designer config, inline: either the shorthand form
+    # (`columns`, `model_configs`, `seed_config`, ... at the top level) or the full
+    # BuilderConfig form (a top-level `data_designer:` key) — the same document
+    # `data-designer validate/create` reads from a .yaml file.
+    #
+    # JINJA: this value is part of the step config, which the build RENDERS before the
+    # step sees it. Data Designer prompts are Jinja too (`{{ topic }}`), so wrap them in
+    # {% raw %}...{% endraw %} in the build.yaml. A bare `{{ name }}` happens to survive
+    # (undefined names are preserved), but a filter or `{% if %}` would be evaluated by
+    # the build and silently corrupted. See USAGE.md, "Prompts and Jinja".
+    config: {}
+    # REQUIRED. Data Designer ModelProvider entries — name, endpoint, provider_type
+    # (openai | anthropic), extra_body, extra_headers — plus two step-only keys that
+    # read a credential from the environment at run time, so no secret is ever written
+    # into the build.yaml, the persisted step config or a file on the node:
+    #   api_key_env:            NAME             -> api_key   = $NAME
+    #   extra_headers_from_env: {Header: NAME}   -> Header: $NAME
+    # The variable itself is delivered by declaring the space secret under
+    # config.skypilot.secrets (see USAGE.md, "Credentials").
+    model_providers: []
+    # OPTIONAL. Serve a model on the node itself, so the build needs no API key and no
+    # model endpoint: the step installs Ollama during setup, pulls `model`, runs it on
+    # 127.0.0.1:<port> for the duration of the generation, and adds a provider named
+    # `name` (default "local") pointing at it. Reference it from model_configs as
+    # `provider: local` with `model:` the same Ollama model name.
+    #
+    #   local_model: {runtime: ollama, model: granite4:350m}
+    #
+    # CPU-only (the step requests no GPU), so meant for small models — tests, demos, a
+    # smoke run of a config before pointing it at a real endpoint. A 350M model writes
+    # plausible but often wrong text. Ollama and the model are cached under the
+    # environment's shared workdir when it has one, so they download once per cluster.
+    # `model_providers` may be empty when this is set; anything in it is kept.
+    local_model:
+      runtime: ""          # "" (off) | ollama
+      model: ""            # Ollama model name, e.g. granite4:350m
+      version: "0.40.7"    # Ollama release; its archive sha256 is pinned in src/dd_ollama.sh
+      port: 11434
+      name: "local"        # provider name to reference from model_configs
+    # Data Designer RunConfig fields, passed through verbatim, e.g. buffer_size (rows per
+    # row group = per checkpoint; default 1000), max_concurrent_row_groups (3),
+    # shutdown_error_rate (0.5), disable_early_shutdown. Resume continues from the last
+    # COMPLETED row group, so buffer_size is also the resume granularity: with the
+    # default, a run under 1000 rows checkpoints only once, at the end.
+    run_config: {}
+    num_records: 10
+    # Name of a declared target output, used as the GB_ARTIFACT_ID the step emits.
+    # REQUIRED.
+    output: ""
+    # Directory Data Designer writes the dataset into. OPTIONAL: empty means ./output in
+    # the step's working directory. The same rules as the dpk step apply: set it
+    # explicitly (on the shared filesystem) when the output's `uri` names a path or a
+    # downstream target reads it — the per-run workdir is removed at target teardown.
+    output_path: ""
+    # What to do with a previous run already in output_path:
+    #   if_possible (default) — continue it when it matches this config; otherwise refuse
+    #                           and remove nothing. Starts fresh when there is none.
+    #   always                — like if_possible, but needs a previous run to continue
+    #                           (starts fresh only when there is no checkpoint yet).
+    #   restart               — continue it when it matches; otherwise DELETE it (only
+    #                           Data Designer's own files) and start fresh in place. The
+    #                           only mode that removes anything.
+    #   never                 — refuse a non-empty output_path.
+    # Deleting a previous dataset is opt-in, so editing a config never costs data.
+    resume: "if_possible"
+    # Also write the whole dataset as one file, <output_path>/<name>.<format>:
+    # jsonl | csv | parquet. Empty (the default) keeps only Data Designer's parquet
+    # batches under parquet-files/.
+    export_format: ""
+    # Fail the target when fewer rows than this come back (Data Designer drops rows
+    # whose cells failed). null means "at least one".
+    min_records: null
+    # With the optional `seed` input bound, its staged path replaces
+    # config.seed_config.source.path. A glob appended to it, e.g. "*.parquet", for a
+    # `local` seed source pointed at a directory. Empty uses the path as staged.
+    seed_glob: ""
+
+    # ---- runtime -------------------------------------------------------------
+    # data-designer release installed into ./venv. Ignored when dd_image is set.
+    # Pinned: 1.0.0rc1 is on PyPI and an unpinned install would pick up an rc.
+    dd_version: "0.9.5"
+    pip_index_url: "https://pypi.org/simple"
+    # Container image to run in, from any registry; the step adds SkyPilot's
+    # `docker:` marker. The image must already provide data-designer (setting this
+    # skips the install). Empty (the default) runs on the bare launcher node, which is
+    # what clusters without the Pyxis SPANK plugin — the local Docker SLURM cluster
+    # among them — require. There is no published public image to point this at.
+    dd_image: ""
+  # Data Designer only makes HTTP calls to the model endpoint; it never loads a model,
+  # so the step needs no GPU.
+  compute_config:
+    num_gpus_per_node: 0
+    total_memory_per_node: "4Gi"
+  # Secrets the workload receives as environment variables. Empty by default: a build
+  # declares the ones its providers read, e.g.
+  #   skypilot:
+  #     secrets:
+  #       secret_names_to_use_as_env_variable:
+  #         - {env_name: GATEWAY_API_KEY, secret_name: GATEWAY_API_KEY}
+  skypilot:
+    secrets:
+      secret_names_to_use_as_env_variable: []
+
+# `seed` is optional: a sampler/LLM-only config needs no input. allow_unknown stays
+# true so a recipe can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  optional:
+    # A seed dataset (file or directory) whose staged path replaces
+    # config.seed_config.source.path.
+    seed:
+      type: dataset
+      accept: [uri, binding]
+
+environment_configs:
+  Skypilot:
+    # No `subtypes:` restriction: nothing here is endpoint-specific.
+    default_launcher: data_designer
+    launchers:
+      data_designer:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # Not shell-escaped: this never enters a shell (skypilot.py passes it to
+          # sky.Resources(image_id=...) as a python value). Same as the dpk step.
+          image_id: '{{ ("docker:" ~ config.data_designer_config.dd_image) if config.data_designer_config.dd_image else "" }}'
+          resources: {}
+          # Bundled scripts land at ./src, relative to the working directory setup
+          # and run start in.
+          file_mounts:
+            src: src
+          envs:
+            # Data Designer sends usage telemetry to NVIDIA unless this is false.
+            NEMO_TELEMETRY_ENABLED: "false"
+            # The generation config and the providers travel as base64 YAML: it reaches
+            # dd_run.py byte-for-byte, with no shell quoting in between, and the Data
+            # Designer prompts inside it are data here, never re-rendered. YAML, not
+            # json_dumps, because an unquoted date in the build.yaml (`start:
+            # 2024-01-01`) is a date object, which json_dumps can't encode: the target
+            # failed to render with a Jinja traceback (review of #543). dd_run.py turns
+            # dates back into ISO strings. Carries no secret — providers name
+            # environment variables, not values.
+            #
+            # gbserver's to_yaml RETURNS "Error: ..." instead of raising, and writes a
+            # value plain YAML can't hold with a !!python/ tag that yaml.safe_load on
+            # the node rejects. Either would only fail after cluster setup, with the
+            # cause lost (re-review of #543), so both fail the render here instead.
+            # The error names only the PATH of the bad value (key names and list
+            # indexes), never any value: the spec holds literal provider credentials
+            # (api_key, extra_headers), which an excerpt of the dump printed into the
+            # build's error (third review of #543). The path comes from walking the
+            # config itself, not from reading the dumped text, which a wrapped or
+            # multi-line string can make look like "key: !!python/..." (independent
+            # review of the #543 fixes). Only strings, numbers, booleans, nulls,
+            # dates, lists and string-keyed mappings pass; a prompt that merely
+            # mentions "!!python/tuple" renders fine.
+            GB_DD_SPEC_B64: >-
+              {%- macro dd_bad(v, path, depth) -%}
+              {%- if depth > 64 -%}{{ path ~ " (nested more than 64 levels deep)\x1e" }}
+              {%- elif v is mapping and ({"k": v} | to_yaml).startswith("k: !!") -%}{{ path ~ "\x1e" }}
+              {%- elif v is mapping -%}
+              {%- for k, x in v.items() -%}
+              {%- if k is not string -%}{{ path ~ " (a key that is not a string)\x1e" }}
+              {%- else -%}{{ dd_bad(x, path ~ "." ~ k, depth + 1) }}
+              {%- endif -%}
+              {%- endfor -%}
+              {%- elif v is none -%}
+              {%- elif v is string or v is boolean or v is number -%}
+              {%- if ({"k": v} | to_yaml).startswith("k: !!") or (v is number and not (v is integer or v is float or v is boolean)) -%}{{ path ~ "\x1e" }}{%- endif -%}
+              {%- elif v is sequence -%}
+              {%- if (v | string)[:1] != "[" or ({"k": v} | to_yaml).startswith("k: !!") -%}{{ path ~ "\x1e" }}
+              {%- else -%}{%- for x in v -%}{{ dd_bad(x, path ~ "[" ~ loop.index0 ~ "]", depth + 1) }}{%- endfor -%}
+              {%- endif -%}
+              {%- elif (v | to_yaml).startswith("!!") or (v | to_yaml).startswith("Error:") -%}{{ path ~ "\x1e" }}
+              {%- endif -%}
+              {%- endmacro -%}
+              {%- set dd = config.data_designer_config -%}
+              {%- set dd_found = dd_bad({"config": dd.config, "model_providers": dd.model_providers, "run_config": dd.run_config, "local_model": dd.local_model}, "data_designer_config", 0) | trim -%}
+              {%- if dd_found -%}
+              {{ raise_error("data-designer: " ~ (dd_found.split("\x1e") | first) ~ " can't be passed to the node; data_designer_config must hold only strings, numbers, booleans, dates, lists and mappings with string keys.") }}
+              {%- endif -%}
+              {%- set dd_spec = {"config": dd.config, "model_providers": dd.model_providers, "run_config": dd.run_config, "local_model": dd.local_model} | to_yaml -%}
+              {%- if dd_spec.startswith("Error:") or "\n!!" in "\n" ~ dd_spec -%}
+              {{ raise_error("data-designer: data_designer_config could not be encoded as YAML; it must hold only strings, numbers, booleans, dates, lists and mappings with string keys.") }}
+              {%- endif -%}
+              {{ dd_spec | b64encode }}
+          # setup runs ONCE at cluster bring-up. It guards first, so an invalid build is
+          # refused before the install.
+          setup: |
+            set -eu
+            {#- Shell-quote escaping. Jinja macros are block-scoped, so `run` carries
+                its own identical copy (as in the dpk step). #}
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            {%- set c = config.data_designer_config %}
+            {%- set seed_path = bindings.seed.binding.path if (bindings is defined and "seed" in bindings) else "" %}
+            {#- Required-config guards live in src/dd_guard.sh, called identically from
+                both blocks; a render test asserts the two calls stay the same. #}
+            bash ./src/dd_guard.sh \
+              --output '{{ q(c.output) }}' \
+              --num-records '{{ q(c.num_records) }}' \
+              --resume '{{ q(c.resume) }}' \
+              --export-format '{{ q(c.export_format) }}' \
+              --min-records '{{ q(c.min_records) if c.min_records is not none else "" }}' \
+              --seed-path '{{ q(seed_path) }}' \
+              --dd-version '{{ q(c.dd_version) }}' \
+              --dd-image '{{ q(c.dd_image) }}' \
+              --has-config '{{ "x" if c.config else "" }}' \
+              --has-providers '{{ "x" if c.model_providers else "" }}' \
+              --local-runtime '{{ q(c.local_model.runtime) }}' \
+              --local-model '{{ q(c.local_model.model) }}' \
+              --local-port '{{ q(c.local_model.port) }}'
+            {%- if not c.dd_image %}
+            bash ./src/dd_setup.sh \
+              --venv ./venv \
+              --index-url '{{ q(c.pip_index_url) }}' \
+              -- '{{ q("data-designer==" ~ c.dd_version) }}'{% if c.local_model.runtime %} 'zstandard==0.25.0'{% endif %}
+            {%- endif %}
+            {%- if c.local_model.runtime %}
+            {#- The model server: Ollama's CPU libraries plus the model, cached under the
+                environment's shared workdir so a second run on the cluster reuses them.
+                dd_ollama.sh decompresses with zstd when the node has it, else with the
+                venv's python (zstandard is added to the install above for that). #}
+            {#- Always the step's venv: dd_guard.sh refuses local_model with dd_image, so
+                this block only runs in bare-node mode, where ./venv exists. #}
+            PYTHON=./venv/bin/python bash ./src/dd_ollama.sh install \
+              --version '{{ q(c.local_model.version) }}' \
+              --model '{{ q(c.local_model.model) }}' \
+              --port '{{ q(c.local_model.port) }}' \
+              --cache-dir "${GB_SHARED_WORKDIR:-$PWD}/.data-designer-cache"
+            {%- endif %}
+          # run starts in the same working directory as setup, so ./venv and ./src
+          # are both relative.
+          run: |
+            set -euo pipefail
+            {%- macro q(v) -%}
+            {{ v | string | replace("'", "'\"'\"'") }}
+            {%- endmacro %}
+            {%- set c = config.data_designer_config %}
+            {%- set seed_path = bindings.seed.binding.path if (bindings is defined and "seed" in bindings) else "" %}
+            bash ./src/dd_guard.sh \
+              --output '{{ q(c.output) }}' \
+              --num-records '{{ q(c.num_records) }}' \
+              --resume '{{ q(c.resume) }}' \
+              --export-format '{{ q(c.export_format) }}' \
+              --min-records '{{ q(c.min_records) if c.min_records is not none else "" }}' \
+              --seed-path '{{ q(seed_path) }}' \
+              --dd-version '{{ q(c.dd_version) }}' \
+              --dd-image '{{ q(c.dd_image) }}' \
+              --has-config '{{ "x" if c.config else "" }}' \
+              --has-providers '{{ "x" if c.model_providers else "" }}' \
+              --local-runtime '{{ q(c.local_model.runtime) }}' \
+              --local-model '{{ q(c.local_model.model) }}' \
+              --local-port '{{ q(c.local_model.port) }}'
+            {%- if not c.dd_image %}
+            . ./venv/bin/activate
+            {%- endif %}
+            {#- dd_run.py validates the config, generates, checks the row count and only
+                then prints the artifact marker, so a failed or short run registers
+                nothing. An omitted output_path defaults to ./output; the runner
+                absolutizes it before the marker, since the server consumes it off-node. #}
+            {%- if c.local_model.runtime %}
+            {#- Serves the model on 127.0.0.1 for the duration of dd_run.py only, then
+                stops it; the exit status is dd_run.py's. #}
+            bash ./src/dd_ollama.sh run \
+              --version '{{ q(c.local_model.version) }}' \
+              --model '{{ q(c.local_model.model) }}' \
+              --port '{{ q(c.local_model.port) }}' \
+              --cache-dir "${GB_SHARED_WORKDIR:-$PWD}/.data-designer-cache" -- \
+            {%- endif %}
+            python ./src/dd_run.py \
+              --output-path '{{ q(c.output_path if c.output_path else "./output") }}' \
+              --artifact-id '{{ q(c.output) }}' \
+              --num-records '{{ q(c.num_records) }}' \
+              --resume '{{ q(c.resume) }}' \
+              --export-format '{{ q(c.export_format) }}' \
+              --min-records '{{ q(c.min_records) if c.min_records is not none else "" }}' \
+              --seed-path '{{ q(seed_path) }}' \
+              --seed-glob '{{ q(c.seed_glob) }}'
+    monitors:
+      # Standard artifact/status convention from the shipped monitor library.
+      skypilot_monitor:
+        ref: space://monitors/skypilot

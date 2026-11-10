@@ -783,11 +783,19 @@ class BuildRunner(AbstractBuildRunner):
         assert isinstance(
             payload, BuildEventWorkloadStatusPayload
         ), f"payload is invalid: {event}"
-        logger.info(
-            "Workload status is %s for build %s",
-            payload.status,
-            event.run_metadata,
-        )
+        if payload.message:
+            logger.info(
+                "Workload status is %s (%s) for build %s",
+                payload.status,
+                payload.message,
+                event.run_metadata,
+            )
+        else:
+            logger.info(
+                "Workload status is %s for build %s",
+                payload.status,
+                event.run_metadata,
+            )
 
     def __process_metrics_event(self: Self, event: BuildEvent) -> None:
         payload = event.payload

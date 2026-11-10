@@ -787,7 +787,7 @@ class TestLaunchSkypilot:
     async def test_compute_config_memory_only(self, skypilot_env):
         """num_gpus_per_node: 0 with only memory set => cpus unset, memory applied.
 
-        Mirrors the skypilot/slurm 1step-image test build.yaml.
+        Mirrors the skypilot/slurm/local 1step-image test build.yaml.
         """
         kwargs = await self._launch_and_capture_resources(
             skypilot_env,
@@ -979,7 +979,7 @@ class TestSkypilotComputeConfigResources:
         assert env._resources_from_compute_config({}) == {}
         # On slurm/lsf the memory floor is dropped (bare HPC schedulers often
         # don't track memory as a consumable resource), and cpus stays a bare
-        # int (the "+" form crashes the fork's LSF cloud).
+        # int (the "+" form crashes SkyPilot's LSF cloud).
         for hpc_cloud in ("slurm", "lsf"):
             assert env._resources_from_compute_config(
                 {"num_cpus_per_node": 3, "total_memory_per_node": "2Gi"},
@@ -999,7 +999,7 @@ class TestSkypilotComputeConfigResources:
         does not contain any instances satisfying the request" failure the
         memory floor hit. Emitting ``"3+"`` lets SkyPilot pick the smallest
         instance with at least that many vCPUs. slurm/lsf keep the bare int (the
-        ``"+"`` form crashes the fork's LSF cloud).
+        ``"+"`` form crashes SkyPilot's LSF cloud).
         """
         from gbserver.environment.skypilot import Skypilot
 
@@ -2981,7 +2981,7 @@ class TestMultinodeSupportPreflight:
             "gbserver.environment.skypilot.importlib.util.find_spec",
             return_value=None,
         ):
-            with pytest.raises(RuntimeError, match="gb-sky-v2-multinode"):
+            with pytest.raises(RuntimeError, match="LSF multi-node support"):
                 _check_multinode_supported("lsf", 2)
 
     def test_raises_when_the_executor_package_is_missing(self):
@@ -2993,7 +2993,7 @@ class TestMultinodeSupportPreflight:
             "gbserver.environment.skypilot.importlib.util.find_spec",
             side_effect=ModuleNotFoundError("No module named 'sky.skylet.executor'"),
         ):
-            with pytest.raises(RuntimeError, match="gb-sky-v2-multinode"):
+            with pytest.raises(RuntimeError, match="LSF multi-node support"):
                 _check_multinode_supported("lsf", 2)
 
     @pytest.mark.parametrize("cloud", ["k8s", "aws", "slurm", ""])

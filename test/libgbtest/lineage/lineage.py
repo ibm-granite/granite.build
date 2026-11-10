@@ -11,6 +11,8 @@ from libgbtest.utils import AbstractSingletonStorageUsingTest
 from gbcommon.uri.lh import LhURI
 from gbserver.lineage.lineage_reconciler import expected_run_count
 from gbserver.storage.singleton_storage import get_storage_factory
+from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
+from gbserver.storage.storage import BaseItemStorage
 
 
 class _LineageBuildStorageTestSupport(BuildStorageTestSupport):
@@ -33,6 +35,26 @@ def get_test_support():
     bsts = _LineageBuildStorageTestSupport()
     asts = ArtifactStorageTestSupport()
     return tsts, bsts, ssts, asts
+
+
+class AbstractLineageTablesTest(AbstractSingletonStorageUsingTest):
+    """Prefixed ``gb_lineage_job`` and ``gb_lineage_index`` (plus the other admin tables) per test.
+
+    For tests of the code that writes and reads the lineage tables (the ``db`` store,
+    the indexer, the read service), as opposed to the storage classes themselves
+    (libgbtest/storage/lineage_*_storage.py). SQLite by default; a sub-class can
+    override ``_get_storage_factory`` to run on PostgreSQL.
+    """
+
+    @classmethod
+    def _get_storage_factory(cls):
+        return SqliteStorageFactory()
+
+    def _get_storage_to_clear(self) -> list[BaseItemStorage]:
+        return super()._get_storage_to_clear() + [
+            self.storage.lineage_row_storage,
+            self.storage.lineage_job_storage,
+        ]
 
 
 class AbstractLineageTest(AbstractSingletonStorageUsingTest):

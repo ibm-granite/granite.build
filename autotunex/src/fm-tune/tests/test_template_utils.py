@@ -1,50 +1,40 @@
-"""Tests for autotune.template_utils.lakehouse_path_to_uri."""
+"""Tests for autotune.template_utils.hf_cache_path_to_uri."""
 
 import pytest
 
-from autotune.template_utils import lakehouse_path_to_uri
-
-
-def test_lakehouse_path_resolves_to_lh_uri():
-    path = (
-        "/gb-lakehouse-prod-read-only/filesets/granite_dot_build/public/shared/"
-        "climate/20250906T064534/climate_train.jsonl"
-    )
-    uri, name = lakehouse_path_to_uri(path)
-    assert uri == "lh://prod/granite_dot_build.public/filesets/fileset_shared/climate/20250906T064534"
-    assert name == "climate"
+from autotune.template_utils import hf_cache_path_to_uri
 
 
 def test_hf_cache_path_resolves_to_hf_uri():
     path = (
-        "/gb-read-write/hfcache/ibm-research/finance-test/"
-        "d4efcbfc84d255b5e9e36393461db93bb6b5894debd71868b807f1d21e10c987/finance_train.jsonl"
+        "/gb-read-write/hfcache/example-org/example-dataset/"
+        "d4efcbfc84d255b5e9e36393461db93bb6b5894debd71868b807f1d21e10c987/example_train.jsonl"
     )
-    uri, name = lakehouse_path_to_uri(path)
-    assert uri == "hf:///datasets/ibm-research/finance-test"
-    assert name == "finance-test"
+    uri, name = hf_cache_path_to_uri(path)
+    assert uri == "hf:///datasets/example-org/example-dataset"
+    assert name == "example-dataset"
 
 
 def test_unmatched_path_raises_value_error():
     with pytest.raises(ValueError, match="does not match expected"):
-        lakehouse_path_to_uri("/some/random/path/train.jsonl")
+        hf_cache_path_to_uri("/some/random/path/train.jsonl")
 
 
 def test_resolve_dataset_uri_local_path_falls_back():
     from autotune.template_utils import resolve_dataset_uri
 
-    uri, name = resolve_dataset_uri("datasets/finance_train.jsonl")
+    uri, name = resolve_dataset_uri("data/train.jsonl")
     assert uri is None
-    assert name == "finance_train"
+    assert name == "train"
 
 
 def test_resolve_dataset_uri_hf_cache_still_resolves():
     from autotune.template_utils import resolve_dataset_uri
 
-    path = "/gb-read-write/hfcache/ibm-research/finance-test/abc123/finance_train.jsonl"
+    path = "/gb-read-write/hfcache/example-org/example-dataset/abc123/example_train.jsonl"
     uri, name = resolve_dataset_uri(path)
-    assert uri == "hf:///datasets/ibm-research/finance-test"
-    assert name == "finance-test"
+    assert uri == "hf:///datasets/example-org/example-dataset"
+    assert name == "example-dataset"
 
 
 def _snapshot(root, rel):
@@ -91,12 +81,12 @@ def _snapshot(root, rel):
 )
 def test_gbserver_hf_cache_path_resolves_to_hf_uri(tmp_path, snapshot, file, uri, name):
     path = f"{_snapshot(tmp_path, snapshot)}/{file}"
-    assert lakehouse_path_to_uri(path) == (uri, name)
+    assert hf_cache_path_to_uri(path) == (uri, name)
 
 
 def test_cluster_hf_cache_path_in_a_subdir_resolves_to_hf_uri():
     path = "/gb-read-write/hfcache/org/ds/abc123/data/train.parquet"
-    assert lakehouse_path_to_uri(path) == ("hf:///datasets/org/ds", "ds")
+    assert hf_cache_path_to_uri(path) == ("hf:///datasets/org/ds", "ds")
 
 
 @pytest.mark.parametrize(
@@ -111,7 +101,7 @@ def test_cluster_hf_cache_path_in_a_subdir_resolves_to_hf_uri():
 def test_hf_cache_lookalike_without_a_download_does_not_resolve(tmp_path, rel):
     (tmp_path / rel).parent.mkdir(parents=True)
     with pytest.raises(ValueError, match="does not match expected"):
-        lakehouse_path_to_uri(str(tmp_path / rel))
+        hf_cache_path_to_uri(str(tmp_path / rel))
 
 
 @pytest.mark.parametrize(
@@ -124,7 +114,7 @@ def test_hf_cache_lookalike_without_a_download_does_not_resolve(tmp_path, rel):
 )
 def test_non_cache_paths_do_not_resolve(path):
     with pytest.raises(ValueError, match="does not match expected"):
-        lakehouse_path_to_uri(path)
+        hf_cache_path_to_uri(path)
 
 
 @pytest.mark.parametrize(

@@ -24,11 +24,11 @@ what differs is the environment and the image.
 cover the two SLURM execution paths, which fail differently:
 
 * ``test_dpk_pii.py`` — bare path. Its ``file_mounts`` run on the host as
-  ``granitebuild``, so it needs the SlurmCommandRunner wrap-exemption fix in the
-  SkyPilot fork. Do not "fix" a regression there by containerizing it.
+  ``granitebuild``, so it needs the file-mount wrap-exemption fix in
+  ``gbserver/utils/sky_patches.py``. Do not "fix" a regression there by containerizing it.
 * this test — containerized path. Its ``file_mounts`` run as root inside the enroot
   container, where SkyPilot aliases ``sudo`` away, so it passes with or without that
-  fix. Full analysis in ``docs/environments/skypilot-slurm-file-mounts-sudo.md``.
+  fix.
 
 **What image mode changes.** ``dpk_version`` is ignored and the venv + ``uv pip
 install`` are skipped entirely, so the image must already provide DPK; the build
@@ -53,11 +53,10 @@ not Debian/apt-based (SkyPilot bootstraps its in-container SSH shim with
 ``apt-get``); confirm with ``sacct -j <job_id> --format=JobID,State,ExitCode,Reason``.
 
 **Troubleshooting a ``Usage:: command not found`` / exit 127 before "Job started".**
-That is SkyPilot's own container command, not this step: a SkyPilot API server
-started from a venv with a pre-``5f18669`` fork generates ``$(which env ...)``, which an
-exported host ``which`` function poisons inside the container. Check
-``sky api info`` reports the fork commit this checkout pins; ``sky api stop`` and
-restart it from this checkout's venv if not.
+That is SkyPilot's own container command, not this step: an API server started from
+an older SkyPilot generates ``$(which env ...)``, which an exported host ``which``
+function poisons inside the container. Check ``sky api info`` reports the version this
+checkout pins; ``sky api stop`` and restart it from this checkout's venv if not.
 
 The input dataset is public, so unlike the sibling 1step/2target fixtures this needs
 no HF_TOKEN at all.

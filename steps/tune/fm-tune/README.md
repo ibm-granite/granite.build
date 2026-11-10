@@ -125,7 +125,7 @@ needs the local podman Slurm VM: stop the VM when you are not testing slurm.
 
 - `make test` with a local `.env` that sets SQL metadata storage without the psycopg driver
   fails at startup; set `GBSERVER_METADATA_STORAGE=sqlite`.
-- The slurm test needs a venv with the `thirdparty` extra (the SkyPilot fork); the repo's main
+- The slurm test needs a venv with the `thirdparty` extra (SkyPilot); the repo's main
   `.venv` may not have it.
 - The node venv needs python3.10 (fm-tune needs >= 3.10). On the local Slurm cluster the cache
   is `/shared/.fm-tune-cache-<uid>` and the model goes to `/shared/fm-tune-test/model`. The nodes are

@@ -15,4 +15,4 @@ base_uris:
   # Relative path resolves against this space.yaml's directory.
   - file://../../../../../../../configurations/assets
 variables:
-  DEFAULT_ENVIRONMENT: skypilot/slurm
+  DEFAULT_ENVIRONMENT: skypilot/slurm/local
