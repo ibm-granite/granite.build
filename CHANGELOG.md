@@ -64,6 +64,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`gb build --parameters-path` is repeatable and layers over the recipe's `parameters.yaml`
+  instead of replacing it (#663).** `start`, `validate` and `describe` take the recipe's
+  `parameters.yaml` (next to `build.yaml`) as the base, then each `--parameters-path` in the order
+  given, then `--param`. The last layer wins per top-level key, and a list or map value is
+  replaced whole. For example:
+  `gb build start -f build.yaml --parameters-path site.yaml --parameters-path smoke.yaml`.
+  Compatibility: a single `--parameters-path` used to replace `parameters.yaml` completely; now a
+  key the file does not define falls back to `parameters.yaml`.
 - **With podman, `make publish-image`'s `REGISTRY_USER`/`REGISTRY_PASSWORD` login is scoped to
   `$(REGISTRY)` instead of the whole registry host (#229),** so it no longer replaces your other
   logins on that host. docker still logs in per host.

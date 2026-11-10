@@ -295,6 +295,45 @@ are matched on retry, and the relationship to *step-level* retry — see:
 - [Target reuse](target-reuse.md)
 - [Step retry configuration](step-retry-configuration.md)
 
+## Build parameters
+
+A `build.yaml` can contain `$${NAME}` placeholders. The `gb` CLI fills them in
+before it submits the build (`gb build start`, `validate`, and
+`describe --raw`). It takes values from parameter files and `--param`
+options. The final set of values is saved as `parameters-applied.yaml` next
+to the submitted `build.yaml`.
+
+```yaml
+# parameters.yaml, next to build.yaml
+ENVIRONMENT: skypilot/aws
+NUM_GPUS: 1
+```
+
+### Layering parameter files
+
+Values come from these layers, in this order. Each layer overrides the ones
+before it:
+
+1. `parameters.yaml` in the same directory as `build.yaml`, if there is one.
+2. Each `--parameters-path <file>`, in the order you give them.
+3. Each `--param KEY=VALUE`.
+
+```shell
+gb build start -f build.yaml --parameters-path site.yaml --parameters-path smoke.yaml
+```
+
+Here `smoke.yaml` overrides `site.yaml`, which overrides `parameters.yaml`. A
+key a file does not set keeps its value from an earlier layer.
+
+Layers merge only top-level keys, and the last one wins. A later layer
+replaces a list or map value whole; it is never merged with the earlier
+value. If you pass the recipe's own `parameters.yaml` as a `--parameters-path`,
+it is applied at that position, not also as the base layer.
+
+Run with `--loglevel DEBUG` to see which file overrode each key. To check the
+result without submitting, run `gb build describe -f build.yaml --raw` with
+the same options.
+
 ## Jinja templating
 
 Template expressions are evaluated in:
