@@ -26,7 +26,6 @@ Output directory:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -38,11 +37,6 @@ COMPLETIONS = "completions.json"
 RAW = "raw_outputs.json"
 META = "generation_meta.json"
 THINK_END = "</think>"
-
-
-def question_ids_sha256(ids: Sequence[str]) -> str:
-    """Hash a problem set independently of order (the score step recomputes it)."""
-    return hashlib.sha256("\n".join(sorted(ids)).encode()).hexdigest()
 
 
 def prompt_opens_reasoning(prompt: str) -> bool:
@@ -248,7 +242,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         "lcb_commit": args.lcb_commit,
         "vllm_version": vllm.__version__,
         "prompt": "lcb generic chat prompt + model chat template",
-        "question_ids_sha256": question_ids_sha256([p.question_id for p in problems]),
+        "question_ids_sha256": lcb_dataset.question_ids_sha256(
+            [p.question_id for p in problems]
+        ),
         **stats,
     }
     out = Path(args.output_dir)

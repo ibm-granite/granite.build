@@ -20,25 +20,47 @@ says that guard is not a security sandbox.**
 This step adds three things:
 
 - **It runs separately** from the model, in its own job, with no GPU.
-- **It has no credentials in its environment.** It declares no secrets and sets no
-  `envs`, and `run` starts the scorer under `env -i` with an allowlist: `PATH`, an
-  empty `HOME`, `TMPDIR`, the locale, `PYTHONPATH`, `HF_HOME`, the two offline
-  switches, the venv's `VIRTUAL_ENV`, and the thread-count variables
-  (`OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `SLURM_CPUS_PER_TASK`,
-  `SLURM_CPUS_ON_NODE`). Nothing else the job environment carries reaches the
-  generated code, including what a cluster account's login profile exports. If it
-  carried `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN`, the log says so. Its inputs arrive
-  through separate download steps (hfpull) before it starts.
+- **Its own environment is an allowlist.** It declares no secrets and sets no
+  `envs`, and `run` replaces itself (`exec`) with the scorer under `env -i` and an
+  allowlist: `PATH`, an empty `HOME`, `TMPDIR`, the locale if the job set one,
+  `PYTHONPATH`, `HF_HOME`, the two offline switches, the venv's `VIRTUAL_ENV`, the
+  dynamic loader's and module system's variables (`LD_LIBRARY_PATH` and similar),
+  and the thread-count variables (`OMP_NUM_THREADS`, `MKL_NUM_THREADS`,
+  `SLURM_CPUS_PER_TASK`, `SLURM_CPUS_ON_NODE`). So credentials the job environment
+  carries, including what a cluster account's login profile exports, aren't in the
+  scorer's own environment. If it carried `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN`, the
+  log says so. Its inputs arrive through separate download steps (hfpull) before it
+  starts.
 - **Its `HOME` is empty.** Generated code that reads `~/.ssh`,
   `~/.cache/huggingface` or a dotfile finds nothing.
 - **It runs offline.** `HF_HUB_OFFLINE` and `HF_DATASETS_OFFLINE` are set.
 
-**This is not a sandbox.** The scorer still runs as the job's user, so generated code
-can open any file that user can read by its absolute path (including the user's real
-home directory and any keys in it), reach the network, and write wherever the user
-can. Before scoring a model you don't trust, run this step where that is acceptable,
-for example as a user with no credentials of its own, on a node without network
-access.
+**This is not a sandbox, and it doesn't keep credentials from generated code.** The
+scorer runs as the job's user, and so do the processes that started it (the cluster's
+job launcher). Generated code can read their original environment, credentials
+included, from `/proc/<pid>/environ`; `env -i` and `exec` only clean up the scorer's
+own. It can also open any file that user can read by its absolute path (including the
+user's real home directory and any keys in it), reach the network, and write wherever
+the user can. Keeping secrets away from generated code needs a separate user, or a job
+that is never given them. Before scoring a model you don't trust, run this step where
+that is acceptable, for example as a user with no credentials of its own, on a node
+without network access.
+
+### Known advisories in the scorer's packages
+
+The step pins its scorer's packages, and moves them past LiveCodeBench's own lock for
+security fixes (see the comment in `src/requirements-score.txt`). Two can't move:
+
+- **`datasets` 3.5.0** (CVE-2026-66007, fixed only in 5.0.1). LiveCodeBench ships its
+  benchmark as a loading-script dataset, and `datasets` 4.0 removed support for loading
+  scripts, so the scorer can't load the benchmark on any fixed release. The advisory is
+  a path traversal through `file_name` metadata in folder-based builders. This step
+  reads only the pinned LiveCodeBench dataset, offline, through its script, and never
+  saves a dataset to disk or pushes one to the Hub.
+- **`fsspec` 2024.12.0**, capped at `<=2024.12.0` by that `datasets` release.
+
+Removing the scorer's use of `datasets`, by reading the dataset's JSONL directly, would
+clear both.
 
 ## Referencing the step
 

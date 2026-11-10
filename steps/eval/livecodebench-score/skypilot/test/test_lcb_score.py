@@ -56,10 +56,22 @@ def _write(dirpath, completions, meta):
 
 
 def test_hash_ignores_order():
-    assert score.question_ids_sha256(["b", "a"]) == score.question_ids_sha256(
-        ["a", "b"]
-    )
-    assert score.question_ids_sha256(["a"]) != score.question_ids_sha256(["a", "b"])
+    ds = _load("lcb_dataset")
+    assert ds.question_ids_sha256(["b", "a"]) == ds.question_ids_sha256(["a", "b"])
+    assert ds.question_ids_sha256(["a"]) != ds.question_ids_sha256(["a", "b"])
+
+
+def test_scripts_use_the_one_shared_hash():
+    """generate and score must hash with lcb_dataset's function, not their own."""
+    for script in (
+        _SRC / "lcb_score.py",
+        _SRC.parents[2]
+        / "livecodebench-generate"
+        / "skypilot"
+        / "src"
+        / "lcb_generate.py",
+    ):
+        assert "def question_ids_sha256" not in script.read_text(), script
 
 
 def test_matching_run_passes():
@@ -222,8 +234,58 @@ def test_question_ids_match_a_full_decode(fixture_loader, start, end, expected):
     assert ids == [p.question_id for p in decoded] == expected
 
 
-def test_main_reads_ids_not_problems():
-    """main() must not decode the benchmark itself: the scorer does that once."""
-    src = (_SRC / "lcb_score.py").read_text()
-    assert "lcb_dataset.question_ids(" in src
-    assert "load_code_generation_dataset" not in src
+def test_main_reads_ids_not_problems(monkeypatch, tmp_path):
+    """main() reads only the window's ids; LiveCodeBench's scorer decodes the problems.
+
+    lcb_dataset is stubbed: its ids function is called, and any attempt to decode the
+    benchmark from main() (through LiveCodeBench's loader) fails the test.
+    """
+    import types
+
+    ids = ["abc400_a", "abc400_b"]
+    calls = []
+    stub = types.SimpleNamespace(
+        install=lambda d: calls.append(("install", d)),
+        question_ids=lambda *a, **k: calls.append(("question_ids", a, k)) or ids,
+        question_ids_sha256=_load("lcb_dataset").question_ids_sha256,
+    )
+    monkeypatch.setattr(score, "lcb_dataset", stub)
+    loader = types.ModuleType("lcb_runner.benchmarks.code_generation")
+
+    def must_not_decode(*a, **k):
+        raise AssertionError("main() decoded the benchmark itself")
+
+    loader.load_code_generation_dataset = must_not_decode
+    for name in ("lcb_runner", "lcb_runner.benchmarks"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "lcb_runner.benchmarks.code_generation", loader)
+
+    out = tmp_path / "out"
+
+    def fake_scorer(module, run_name):
+        assert module == "lcb_runner.runner.custom_evaluator"
+        rows = [{"question_id": i, "difficulty": "easy", "pass@1": 1.0} for i in ids]
+        (out / f"completions_{score.SCENARIO}_output_eval_all.json").write_text(
+            json.dumps(rows)
+        )
+
+    monkeypatch.setattr(score.runpy, "run_module", fake_scorer)
+    comp = _write(tmp_path / "comp", _completions(ids), _meta(ids))
+    rc = score.main(
+        [
+            "--completions-dir",
+            str(comp),
+            "--dataset-dir",
+            str(tmp_path),
+            "--output-dir",
+            str(out),
+            "--release-version",
+            "release_v6",
+            "--start-date",
+            "2025-04-05",
+            "--end-date",
+            "2025-04-05",
+        ]
+    )
+    assert rc == 0
+    assert [c[0] for c in calls] == ["install", "question_ids"]

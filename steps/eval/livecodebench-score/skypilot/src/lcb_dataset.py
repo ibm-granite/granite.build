@@ -46,9 +46,10 @@ it after: it patches the name the module bound at import time as well.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 #: The dataset name LiveCodeBench hard-codes for the code generation scenario.
 HF_NAME = "livecodebench/code_generation_lite"
@@ -59,6 +60,19 @@ LOADING_SCRIPT = "code_generation_lite.py"
 #: Rows per Arrow write while ``datasets`` builds its cache. Its default (1000)
 #: buffers whole JSONL files whose rows reach 93 MB each; see the module docstring.
 WRITER_BATCH_SIZE = 1
+
+
+def question_ids_sha256(ids: Sequence[str]) -> str:
+    """Hash a problem set independently of order.
+
+    The generate step records it in ``generation_meta.json``; the score step
+    recomputes it from the dataset and refuses completions whose hash differs. Both
+    steps call this one function, so the two can't drift apart.
+
+    :param ids: the problems' ``question_id`` values, in any order.
+    :returns: the hex SHA-256 of the sorted ids joined by newlines.
+    """
+    return hashlib.sha256("\n".join(sorted(ids)).encode()).hexdigest()
 
 
 def check_dataset_dir(path: str) -> Path:

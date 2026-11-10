@@ -102,7 +102,11 @@ def _run(
         (cwd / d).mkdir(parents=True, exist_ok=True)
     env = {k: v for k, v in os.environ.items() if k != "HF_TOKEN"}
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
-    env.update(env_over or {})
+    for k, v in (env_over or {}).items():
+        if v is None:
+            env.pop(k, None)
+        else:
+            env[k] = v
     return subprocess.run(
         ["bash", "-c", rendered], capture_output=True, text=True, cwd=cwd, env=env
     )
@@ -213,6 +217,29 @@ class TestSetup:
         setup = _render(launcher["setup"], _cfg(defaults, install=False))
         assert _bash_ok(setup) and "uv" not in setup and "git" not in setup
 
+    def test_uv_is_pinned_and_comes_from_the_package_index(self, defaults, launcher):
+        mirror = "https://mirror.example/simple"
+        setup = _render(launcher["setup"], _cfg(defaults, pip_index_url=mirror))
+        assert f"--index-url '{mirror}' \\\n  'uv==0.13.6'" in setup
+        assert "'uv==0.13.7'" in _render(
+            launcher["setup"], _cfg(defaults, uv_version="0.13.7")
+        )
+
+    def test_uv_bootstrap_hides_no_errors(self, defaults, launcher):
+        """Ask pip whether it knows --break-system-packages; don't try and fall back."""
+        setup = _render(launcher["setup"], _cfg(defaults))
+        assert "pip install --help" in setup
+        boot = [
+            l for l in setup.splitlines() if "pip install" in l and "uv pip" not in l
+        ]
+        assert boot and not any("2>/dev/null" in l for l in boot if "--help" not in l)
+
+    def test_venv_is_recreated_on_a_retry(self, defaults, launcher):
+        """A retried step reuses the workdir; uv refuses to create over an existing venv."""
+        setup = _render(launcher["setup"], _cfg(defaults))
+        assert "uv venv --clear --managed-python --python 3.12 ./venv" in setup
+        assert setup.count("uv venv") == 1
+
 
 class TestRun:
     def test_parses(self, defaults, launcher):
@@ -252,13 +279,29 @@ class TestRun:
         argv = _lines(proc, "ARG:")
         assert _opt(argv, "--start-date") == "" and _opt(argv, "--end-date") == ""
 
-    def test_marker_is_absolute_and_starts_the_line(self, defaults, launcher, tmp_path):
-        proc = _run(_render(launcher["run"], _cfg(defaults)), tmp_path)
+    def test_the_scorer_replaces_the_shell(self, defaults, launcher):
+        """exec, so the shell holding the job's environment isn't the scorer's parent;
+        the scorer prints the artifact marker itself, since nothing runs after it."""
+        run = _render(launcher["run"], _cfg(defaults))
+        assert 'exec env -i "${SCORE_ENV[@]}"' in run
+        assert "GB_ARTIFACT_ID" not in run
+        src = (_STEP_DIR / "src" / "lcb_score.py").read_text()
+        assert "GB_ARTIFACT_ID:{ARTIFACT_ID} GB_ARTIFACT_PATH:{out.resolve()}" in src
+
+    def test_cd_is_safe_with_cdpath(self, defaults, launcher, tmp_path):
+        """With CDPATH set, cd prints the directory; the captured path must stay clean."""
+        rendered = _render(launcher["run"], _cfg(defaults))
+        proc = _run(rendered, tmp_path, {"CDPATH": str(tmp_path)})
         assert proc.returncode == 0, proc.stderr
-        assert (
-            f"GB_ARTIFACT_ID:results GB_ARTIFACT_PATH:{tmp_path / 'output'}"
-            in proc.stdout.splitlines()
-        )
+        argv = _lines(proc, "ARG:")
+        assert _opt(argv, "--completions-dir") == str(tmp_path / _COMPLETIONS)
+        assert _opt(argv, "--output-dir") == str(tmp_path / "output")
+
+    def test_missing_python_fails_with_a_message(self, defaults, launcher, tmp_path):
+        rendered = _render(launcher["run"], _cfg(defaults, install=False))
+        proc = _run(rendered, tmp_path, {"PATH": "/usr/bin:/bin"})
+        assert proc.returncode == 1
+        assert "no python on PATH" in proc.stderr
 
     @pytest.mark.parametrize("var", ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"])
     def test_drops_an_inherited_hf_token(self, defaults, launcher, tmp_path, var):
@@ -279,6 +322,7 @@ class TestRun:
             "AWS_SECRET_ACCESS_KEY": "secret-aws",
             "SOME_TOKEN": "secret-other",
             "OMP_NUM_THREADS": "4",
+            "LD_LIBRARY_PATH": "/opt/py/lib",
         }
         proc = _run(_render(launcher["run"], _cfg(defaults)), tmp_path, planted)
         assert proc.returncode == 0, proc.stderr
@@ -291,12 +335,22 @@ class TestRun:
         assert "secret-" not in proc.stdout
         # The thread count is kept, so the scorer stays on the job's CPUs.
         assert env["OMP_NUM_THREADS"] == "4"
+        # The loader's path is kept too: a module-loaded or image Python can need it
+        # to start. The locale is passed only if the job set one, never forced.
+        assert env["LD_LIBRARY_PATH"] == "/opt/py/lib"
         allowed = {
             "PATH",
             "HOME",
             "TMPDIR",
             "LANG",
             "LC_ALL",
+            "LC_CTYPE",
+            "LD_LIBRARY_PATH",
+            "LIBRARY_PATH",
+            "MODULEPATH",
+            "LOADEDMODULES",
+            "_LMFILES_",
+            "CONDA_PREFIX",
             "PYTHONPATH",
             "HF_HOME",
             "HF_HUB_OFFLINE",
@@ -312,6 +366,14 @@ class TestRun:
         home = pathlib.Path(env["HOME"])
         assert home == tmp_path / ".score-home" and home.is_dir()
         assert not any(home.iterdir())
+
+    def test_locale_is_not_forced(self, defaults, launcher, tmp_path):
+        """A job with no locale gets none: forcing one the node lacks gives warnings."""
+        rendered = _render(launcher["run"], _cfg(defaults))
+        proc = _run(rendered, tmp_path, dict.fromkeys(("LANG", "LC_ALL", "LC_CTYPE")))
+        assert proc.returncode == 0, proc.stderr
+        got = dict(l.split("=", 1) for l in _lines(proc, "FULLENV:") if "=" in l)
+        assert not {"LANG", "LC_ALL", "LC_CTYPE"} & set(got)
 
     def test_relative_inputs_reach_the_scorer_absolute(
         self, defaults, launcher, tmp_path

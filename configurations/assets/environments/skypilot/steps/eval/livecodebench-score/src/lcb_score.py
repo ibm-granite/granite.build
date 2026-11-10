@@ -14,13 +14,17 @@ path). It:
    writes its result files next to its input;
 4. runs LiveCodeBench's own scorer, ``lcb_runner.runner.custom_evaluator``,
    unmodified, with the dataset read from the local copy (``lcb_dataset``);
-5. writes ``summary.json`` (pass@1 overall and by difficulty) and prints it.
+5. writes ``summary.json`` (pass@1 overall and by difficulty) and prints it;
+6. prints the step's ``results`` artifact marker. The step ``exec``s this script, so
+   no shell is left after it to print the marker.
 
 Generated code is executed by LiveCodeBench's checker in subprocesses with
 timeouts and resource limits. That guard is NOT a security sandbox; isolation
 comes from running this step on its own, with no credentials in its
-environment: the step starts this script under ``env -i`` with an allowlist of
-variables, and an empty ``HOME``. That still isn't a sandbox; see USAGE.md.
+environment: the step ``exec``s this script under ``env -i`` with an allowlist of
+variables and an empty ``HOME``. That isn't a sandbox: processes above the step, run as
+the same user, still hold the job's original environment in ``/proc/<pid>/environ``,
+and the user's files stay readable by absolute path. See USAGE.md.
 
 Memory: the benchmark's problems are decoded once, by LiveCodeBench's scorer. The
 match check reads only their ids (:func:`lcb_dataset.question_ids`).
@@ -29,7 +33,6 @@ match check reads only their ids (:func:`lcb_dataset.question_ids`).
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import runpy
 import shutil
@@ -43,13 +46,10 @@ import lcb_dataset
 COMPLETIONS = "completions.json"
 META = "generation_meta.json"
 SUMMARY = "summary.json"
+#: The step's output artifact, announced on stdout for skypilot_monitor.
+ARTIFACT_ID = "results"
 #: The scenario this step scores; the others need different inputs.
 SCENARIO = "codegeneration"
-
-
-def question_ids_sha256(ids: List[str]) -> str:
-    """Hash a problem set independently of order, the same way generate does."""
-    return hashlib.sha256("\n".join(sorted(ids)).encode()).hexdigest()
 
 
 def load_completions(
@@ -105,7 +105,9 @@ def check_matches(
     comp_ids = [c["question_id"] for c in completions]
     if len(set(comp_ids)) != len(comp_ids):
         problems.append("completions.json lists a question_id more than once")
-    if question_ids_sha256(comp_ids) != question_ids_sha256(benchmark_ids):
+    if lcb_dataset.question_ids_sha256(comp_ids) != lcb_dataset.question_ids_sha256(
+        benchmark_ids
+    ):
         missing = sorted(set(benchmark_ids) - set(comp_ids))
         extra = sorted(set(comp_ids) - set(benchmark_ids))
         problems.append(
@@ -245,6 +247,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     summary = summarize(json.loads(eval_all_path.read_text()), meta, window)
     (out / SUMMARY).write_text(json.dumps(summary, indent=2) + "\n")
     print("eval/livecodebench-score: " + json.dumps(summary))
+    # Must start the line for skypilot_monitor's regex to capture it; absolute,
+    # because the server reads it off-node.
+    print(f"GB_ARTIFACT_ID:{ARTIFACT_ID} GB_ARTIFACT_PATH:{out.resolve()}", flush=True)
     return 0
 
 

@@ -26,8 +26,8 @@ granite.build:
   targets:
 
     generate:
-      # The in-repo env: SSH as the shared functional ID with the key file at
-      # ~/.ssh/ibm-bluevela.key, so the test needs no secret manager.
+      # The in-repo env: SSH as the shared functional ID with the key in the
+      # BV_SSH_PRIVATE_KEY space secret (see the test's docstring for creating it).
       environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
         model:

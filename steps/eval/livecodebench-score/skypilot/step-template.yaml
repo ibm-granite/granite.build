@@ -12,8 +12,9 @@ version: 1.0.0
 # subprocess with time and memory limits and some os/shutil/subprocess functions
 # disabled, but its own documentation says that guard is not a security sandbox.
 # What this step adds: it runs on its own (no model, no GPU), with no credentials
-# (run starts the scorer under `env -i` with an allowlist of variables and an empty
-# HOME, warning if the job environment carried an HF token), and offline (its inputs arrive
+# (run execs the scorer under `env -i` with an allowlist of variables and an empty
+# HOME, warning if the job environment carried an HF token; processes above the step
+# still hold the job's environment, see USAGE.md), and offline (its inputs arrive
 # through separate hfpull steps). Generated code can still use the network and
 # whatever the job user can write. See USAGE.md before scoring untrusted models.
 #
@@ -47,6 +48,10 @@ config:
     torch_package: "torch==2.6.0"
     torch_index_url: "https://download.pytorch.org/whl/cpu"
     pip_index_url: "https://pypi.org/simple"
+    # uv release that setup installs with pip (from pip_index_url) and builds the
+    # venv with. Pinned, so a new uv release can't change setup without an edit
+    # here. Ignored when `install` is false.
+    uv_version: "0.13.6"
     # Public container image the step runs in, rendered as SkyPilot `docker:<image>`.
     # "" runs on the bare launcher node (a SLURM cluster without the Pyxis plugin,
     # such as the local Docker SLURM cluster). The image must be Debian/Ubuntu-based
@@ -128,11 +133,17 @@ environment_configs:
             git init -q "$LCB_DIR"
             git -C "$LCB_DIR" fetch -q --depth 1 '{{ q(config.lcb_score_config.lcb_repo) }}' '{{ q(config.lcb_score_config.lcb_commit) }}'
             git -C "$LCB_DIR" checkout -q FETCH_HEAD
-            # uv into a venv, as dpk does. --break-system-packages is needed on PEP
-            # 668 interpreters; older pip lacks it, so fall back.
-            if ! pip install --quiet --no-cache-dir --break-system-packages uv 2>/dev/null; then
-              pip install --quiet --no-cache-dir uv
+            # uv into a venv. uv itself comes from pip_index_url, at the pinned
+            # uv_version. --break-system-packages is needed on PEP 668 interpreters,
+            # and pip older than 23.0.1 doesn't know it, so ask pip first rather
+            # than try and fall back (which would hide the first error).
+            PIP_SYS=""
+            if pip install --help 2>/dev/null | grep -q -- --break-system-packages; then
+              PIP_SYS="--break-system-packages"
             fi
+            pip install --quiet --no-cache-dir $PIP_SYS \
+              --index-url '{{ q(config.lcb_score_config.pip_index_url) }}' \
+              'uv=={{ q(config.lcb_score_config.uv_version) }}'
             # Caches stay inside the build's own workdir (setup starts in it).
             export UV_CACHE_DIR="$PWD/.uv-cache"
             # A Python that uv downloads itself, into the workdir, rather than
@@ -141,7 +152,10 @@ environment_configs:
             # with the one torch loads first (vLLM's `import sqlite3` then
             # fails with `GLIBCXX_... not found`).
             export UV_PYTHON_INSTALL_DIR="$PWD/.uv-python"
-            uv venv --managed-python --python 3.12 ./venv
+            # --clear: a retried step (step retry, or a SLURM/LSF relaunch) reuses this
+            # workdir, and uv refuses to create a venv over an existing one. Recreating
+            # it also drops a half-installed venv from the failed attempt.
+            uv venv --clear --managed-python --python 3.12 ./venv
             . ./venv/bin/activate
             uv pip install --index-url '{{ q(config.lcb_score_config.torch_index_url or config.lcb_score_config.pip_index_url) }}' \
               '{{ q(config.lcb_score_config.torch_package) }}'
@@ -180,13 +194,15 @@ environment_configs:
             mkdir -p "$OUTPUT_DIR"
             # Absolute, because the server reads the artifact marker off-node, and
             # because the scorer runs from inside the LiveCodeBench checkout.
-            OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
+            OUTPUT_DIR="$(CDPATH= cd -- "$OUTPUT_DIR" >/dev/null && pwd)"
             COMPLETIONS_DIR='{{ q(bindings.completions.binding.path) }}'
             DATASET_DIR='{{ q(bindings.dataset.binding.path) }}'
             # Absolute too: run cd's into the checkout below, so a relative input
             # path would otherwise resolve under it.
             for v in COMPLETIONS_DIR DATASET_DIR; do
-              if ! abs="$(cd "${!v}" 2>/dev/null && pwd)"; then
+              # CDPATH= and >/dev/null: with CDPATH set, cd prints the directory and the
+              # capture would hold it twice.
+              if ! abs="$(CDPATH= cd -- "${!v}" 2>/dev/null >/dev/null && pwd)"; then
                 echo "eval/livecodebench-score: ERROR input directory ${!v} ($v) does not exist." >&2; exit 1
               fi
               printf -v "$v" '%s' "$abs"
@@ -197,24 +213,36 @@ environment_configs:
             # still open the job user's real home by absolute path (see USAGE.md).
             SCORE_HOME="$PWD/.score-home"
             rm -rf "$SCORE_HOME" && mkdir -p "$SCORE_HOME"
-            PYTHON_BIN="$(command -v python)"
+            if ! PYTHON_BIN="$(command -v python)"; then
+              echo "eval/livecodebench-score: ERROR no python on PATH (with install: false, the image must provide one)." >&2; exit 1
+            fi
             # The scorer starts with an empty environment plus this allowlist, so no
             # credential the job environment carries (a login profile's exports, a
             # declared secret) reaches the generated code. The thread-count variables
             # keep it on the CPUs the job was given.
             SCORE_ENV=(
               "PATH=$PATH" "HOME=$SCORE_HOME" "TMPDIR=${TMPDIR:-/tmp}"
-              "LANG=${LANG:-C.UTF-8}" "LC_ALL=${LC_ALL:-C.UTF-8}"
               "PYTHONPATH=$SRC_DIR" "HF_HOME=$HF_HOME_DIR"
               "HF_HUB_OFFLINE=1" "HF_DATASETS_OFFLINE=1"
             )
-            for v in VIRTUAL_ENV OMP_NUM_THREADS MKL_NUM_THREADS SLURM_CPUS_PER_TASK SLURM_CPUS_ON_NODE; do
+            # Passed through only when set: the locale (forcing one the node lacks
+            # gives warnings), the dynamic loader's and module system's variables (a
+            # module-loaded or image Python can need them to start, with install:
+            # false), the venv, and the CPU counts.
+            for v in LANG LC_ALL LC_CTYPE LD_LIBRARY_PATH LIBRARY_PATH \
+                     MODULEPATH LOADEDMODULES _LMFILES_ CONDA_PREFIX \
+                     VIRTUAL_ENV OMP_NUM_THREADS MKL_NUM_THREADS SLURM_CPUS_PER_TASK SLURM_CPUS_ON_NODE; do
               if [ -n "${!v:-}" ]; then SCORE_ENV+=("$v=${!v}"); fi
             done
             # LiveCodeBench reads its prompt files by relative path, so it runs from
             # inside its checkout.
             cd '{{ q(config.lcb_score_config.lcb_checkout) }}'
-            env -i "${SCORE_ENV[@]}" "$PYTHON_BIN" "$SRC_DIR/lcb_score.py" \
+            # exec: replace this shell with the scorer, so the shell that still holds
+            # the job's original environment isn't the generated code's parent. (Its
+            # ancestors above, run as the same user, still hold it: see USAGE.md.)
+            # lcb_score.py prints the results artifact marker itself, since nothing
+            # here runs after the exec.
+            exec env -i "${SCORE_ENV[@]}" "$PYTHON_BIN" "$SRC_DIR/lcb_score.py" \
               --completions-dir "$COMPLETIONS_DIR" \
               --dataset-dir "$DATASET_DIR" \
               --output-dir "$OUTPUT_DIR" \
@@ -223,8 +251,6 @@ environment_configs:
               --end-date '{{ q(config.lcb_score_config.end_date) }}' \
               --timeout '{{ q(config.lcb_score_config.timeout) }}' \
               --num-process-evaluate '{{ q(config.lcb_score_config.num_process_evaluate) }}'
-            # Must start the line for skypilot_monitor's regex to capture it.
-            echo "GB_ARTIFACT_ID:results GB_ARTIFACT_PATH:${OUTPUT_DIR}"
     monitors:
       # Standard artifact/status convention from the shipped monitor library.
       skypilot_monitor:

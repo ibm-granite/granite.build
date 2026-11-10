@@ -182,13 +182,9 @@ def test_parse_bool_rejects_other_values():
         gen.parse_bool("maybe")
 
 
-def test_hash_matches_the_score_step():
-    """The score step recomputes this hash; both copies must agree."""
-    spec = importlib.util.spec_from_file_location(
-        "lcb_score_for_hash",
-        _SRC.parents[2] / "livecodebench-score" / "skypilot" / "src" / "lcb_score.py",
+def test_hash_comes_from_the_shared_dataset_module():
+    """generate records the hash the score step recomputes: one function, in lcb_dataset."""
+    assert gen.lcb_dataset.question_ids_sha256(["b", "a"]) == (
+        gen.lcb_dataset.question_ids_sha256(["a", "b"])
     )
-    other = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(other)
-    ids = ["b", "a", "c"]
-    assert gen.question_ids_sha256(ids) == other.question_ids_sha256(ids)
+    assert not hasattr(gen, "question_ids_sha256")

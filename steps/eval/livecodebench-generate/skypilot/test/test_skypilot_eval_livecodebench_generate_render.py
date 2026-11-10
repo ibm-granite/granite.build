@@ -182,6 +182,29 @@ class TestSetup:
         setup = _render(launcher["setup"], _cfg(defaults, install=False))
         assert _bash_ok(setup) and "uv" not in setup and "git" not in setup
 
+    def test_uv_is_pinned_and_comes_from_the_package_index(self, defaults, launcher):
+        mirror = "https://mirror.example/simple"
+        setup = _render(launcher["setup"], _cfg(defaults, pip_index_url=mirror))
+        assert f"--index-url '{mirror}' \\\n  'uv==0.13.6'" in setup
+        assert "'uv==0.13.7'" in _render(
+            launcher["setup"], _cfg(defaults, uv_version="0.13.7")
+        )
+
+    def test_uv_bootstrap_hides_no_errors(self, defaults, launcher):
+        """Ask pip whether it knows --break-system-packages; don't try and fall back."""
+        setup = _render(launcher["setup"], _cfg(defaults))
+        assert "pip install --help" in setup
+        boot = [
+            l for l in setup.splitlines() if "pip install" in l and "uv pip" not in l
+        ]
+        assert boot and not any("2>/dev/null" in l for l in boot if "--help" not in l)
+
+    def test_venv_is_recreated_on_a_retry(self, defaults, launcher):
+        """A retried step reuses the workdir; uv refuses to create over an existing venv."""
+        setup = _render(launcher["setup"], _cfg(defaults))
+        assert "uv venv --clear --managed-python --python 3.12 ./venv" in setup
+        assert setup.count("uv venv") == 1
+
 
 class TestRun:
     def test_parses(self, defaults, launcher):
