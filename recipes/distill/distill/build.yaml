@@ -40,6 +40,11 @@
 <%- set PINNED = (CORPUS_DIR | string | trim).rstrip("/") %>
 <%- set RUN_DIR = (WORKDIR_ROOT | string).rstrip("/") ~ "/" ~ RUN_NAME ~ "/{{ run_metadata.build_id }}" %>
 <%- set EXP = EXPERIMENT | string | trim or RUN_NAME %>
+# The trainer's failure signal to the rollout server: rank 0 writes it when the
+# trainer exits non-zero, and the server, polling for it, stops and fails its own
+# target instead of holding its GPUs until VLLM_MAX_LIFETIME_SECONDS. Under the
+# build's directory, which both allocations share and no other build writes.
+<%- set STOP_FILE = RUN_DIR ~ "/rollout-stop" %>
 # ── LMBDA_MODE, mapped once ────────────────────────────────────────────────
 # Off-policy trains on corpus text only; on-policy has the student generate
 # every sequence on a separate rollout server; ramp moves linearly from the
@@ -502,9 +507,14 @@ $${ corpus_inputs() }
               max_model_len: $${MAX_LENGTH}
               health_timeout_seconds: $${VLLM_HEALTH_TIMEOUT_SECONDS}
               # The backstop for teardown's one hole: teardown is gated on the
-              # trainer's checkpoint, which a CRASHED trainer never emits, so without
-              # a ceiling a trainer failure strands these GPUs (d77546a9).
+              # trainer's checkpoint, which a FAILED trainer never emits. stop_file
+              # below covers a trainer that exits; this ceiling covers a rank 0
+              # killed outright, which writes nothing (d77546a9).
               max_lifetime_seconds: $${VLLM_MAX_LIFETIME_SECONDS}
+              # The trainer's rollout_stop_file, the same path: its appearance means
+              # the trainer failed, so the server stops instead of waiting for a
+              # teardown that will never run.
+              stop_file: "$${STOP_FILE}"
 <%- endif %>
 
     # ─── train ──────────────────────────────────────────────────────────────
@@ -568,6 +578,10 @@ $${ corpus_inputs() }
             # build; ignored once train_dir holds checkpoints. See parameters.yaml.
             resume_from_checkpoint_dir: "$${RESUME_FROM_CHECKPOINT_DIR}"
             resume_emit_seeded: $${RESUME_EMIT_SEEDED}
+<%- if ONLINE %>
+            # The rollout server's stop_file, the same path; see STOP_FILE above.
+            rollout_stop_file: "$${STOP_FILE}"
+<%- endif %>
             compute_config:
               num_nodes: $${GOLD_NUM_NODES}
               num_gpus_per_node: $${GOLD_NUM_GPUS}
@@ -652,8 +666,9 @@ $${ corpus_inputs() }
     # ─── teardown ───────────────────────────────────────────────────────────
     # Not optional: a SERVICE cluster on an HPC cloud never autostops, so without
     # this the server's GPUs stay held after training. Gated on the trainer's final
-    # checkpoint, so a CRASHED trainer never triggers it -- gbserver has no
-    # on-failure edges -- which VLLM_MAX_LIFETIME_SECONDS backstops.
+    # checkpoint, so a FAILED trainer never triggers it -- gbserver has no
+    # on-failure edges. The stop file covers a trainer that exits non-zero, and
+    # VLLM_MAX_LIFETIME_SECONDS one killed outright.
     teardown:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:

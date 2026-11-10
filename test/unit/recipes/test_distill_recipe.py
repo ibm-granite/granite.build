@@ -262,6 +262,27 @@ def test_rollout_server_serves_the_trained_student(tmp_path, mode):
         )
 
 
+@pytest.mark.parametrize("smoke", [False, True], ids=["full", "smoke"])
+@pytest.mark.parametrize("mode", ["ramp", "on-policy"])
+def test_trainer_and_server_share_one_stop_file(tmp_path, mode, smoke):
+    """The trainer's rank 0 writes the stop file when it fails; the server polls
+    the same path and stops. One path, under the build's shared directory, so
+    both allocations see it and no other build's file is ever read."""
+    layers = (_SMOKE,) if smoke else ()
+    rendered = _render(tmp_path, *layers, LMBDA_MODE=mode, RUN_NAME="arm-x")
+    trainer = _config(rendered, "train")["rollout_stop_file"]
+    server = _config(rendered, "rollout-server")["vllm_config"]["stop_file"]
+    assert trainer and trainer == server
+    assert "{{ run_metadata.build_id }}" in trainer
+    root = _layered(_SITE)["WORKDIR_ROOT"].rstrip("/")
+    assert trainer.startswith(f"{root}/arm-x/{{{{ run_metadata.build_id }}}}/")
+
+
+def test_off_policy_sets_no_stop_file(tmp_path):
+    cfg = _config(_render(tmp_path, LMBDA_MODE="off-policy"), "train")
+    assert not cfg.get("rollout_stop_file")
+
+
 def test_on_policy_mem_uris_carry_the_run_name(tmp_path):
     outputs = _targets(_render(tmp_path, LMBDA_MODE="ramp", RUN_NAME="arm-x"))[
         "rollout-server"
