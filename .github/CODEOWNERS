@@ -1,0 +1,55 @@
+# CODEOWNERS for ibm-granite/granite.build
+#
+# Each line is a file pattern followed by one or more GitHub owners. When a PR
+# touches matching files, the owners are requested as reviewers automatically.
+# The LAST matching pattern wins, so keep general patterns above specific ones.
+#
+# Owners were derived from the last 12 months of commit history per directory.
+# Every owner needs write access to this repository for review requests to work.
+# Docs: https://docs.github.com/en/repository-and-organization/about-code-owners
+
+# Default owners for anything not matched below.
+*                       @daw3rd @toraponibm @klwuibm
+
+# Core Python packages
+/src/gbserver/          @toraponibm @daw3rd @klwuibm
+/src/gbcli/             @toraponibm @valeriabecker
+/src/gbcommon/          @toraponibm @daw3rd
+/src/gbmcp/             @daw3rd
+/src/gb_ui_backend/     @ayjleex @toraponibm
+
+# Frontend (yarn workspace: ui-core + standalone Next.js app)
+/frontend/              @ayjleex @valeriabecker
+
+# Build steps. The general rule comes first, then per-category owners.
+/steps/                 @daw3rd @klwuibm
+/steps/train/           @klwuibm
+/steps/eval/            @daw3rd @klwuibm
+/steps/distill/         @cmadam @daw3rd
+/steps/data/            @daw3rd
+
+# Recipes, shared configurations and samples
+/recipes/               @cmadam
+/configurations/        @daw3rd @klwuibm @cmadam
+/samples/               @daw3rd @toraponibm
+
+# AutoTuneX has its own formatter and CI
+/autotunex/             @priyanshu891
+
+# Deployment and packaging
+/k8s/                   @valeriabecker @toraponibm
+/Dockerfile*            @toraponibm
+/Makefile               @daw3rd @toraponibm
+/pyproject.toml         @toraponibm @daw3rd
+/constraints.txt        @toraponibm @daw3rd
+/scripts/               @daw3rd @toraponibm
+
+# Tests follow the code they cover; the default owners review test infrastructure.
+/test/                  @toraponibm @daw3rd @klwuibm
+
+# Documentation, contribution rules and CI
+/docs/                  @daw3rd @toraponibm
+/README.md              @daw3rd @toraponibm
+/CONTRIBUTING.md        @daw3rd @toraponibm
+/AGENTS.md              @daw3rd @toraponibm
+/.github/               @daw3rd @toraponibm @cmadam
