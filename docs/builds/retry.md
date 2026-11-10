@@ -33,5 +33,5 @@ to avoid unnecessary recomputations.  Steps such as `tuning` or `digit` allow th
      records in the build metadata tables.
 1. Step retry configuration is set the step definition (step.yaml) or the step section of the build (build.yaml). For more detail on step-level retry
 configuration, see [step-retry-configuration](step-retry-configuration.md).
-1. Currently only K8s (helm) and Lsf (bsub) environments support step-level retries.
+1. Currently only the K8s (helm) and SkyPilot (`Skypilot`, not `Skypilot_managed`) environments support step-level retries.
 1. Currently only the built-in steps lhpull/push and s3pull/push steps are enabled for retry. NOTE: there is no way for the end user to disable retry for these steps.

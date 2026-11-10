@@ -135,7 +135,7 @@ granite.build's surface flag is `public` (default false); HuggingFace's API uses
 same setting inverted, and the inversion happens at exactly one place —
 [`_private_from_hf_cfg`](../../src/gbserver/spaces/hf_push_config.py), where the
 merged push config is resolved. Everything below that point (the resolver's
-return value, the emitted step config, the LSF/Helm/SkyPilot worker templates,
+return value, the emitted step config, the Helm/SkyPilot worker templates,
 and `gbcommon.uri.hf`) speaks `private`, matching the HF API; everything you
 write in `build.yaml`/`store.yaml` speaks `public`. You never write `private`.
 
@@ -322,7 +322,7 @@ The space-table lookup + HF fallback + write-back is implemented in
 [`resolve_space_resource_group_id`](../../src/gbserver/spaces/hf_push_config.py),
 which wraps the HF-only resolver
 [`HfURI.resolve_resource_group_id_for_org`](../../src/gbcommon/uri/hf.py). It is
-called from the K8s, LSF, and SkyPilot push paths (and the CLI-facing
+called from the K8s and SkyPilot push paths (and the CLI-facing
 `/hf/resource-group` endpoint) before the step is dispatched.
 
 ---
@@ -405,5 +405,4 @@ environment value.
 - `src/gbserver/asset/hfstore.py` — `Hfstore.build_hfpush_step_config` — builds the step config dict
 - `src/gbserver/types/buildconfig.py` — `BuildTargetOutputPushConfig`, `BuildTargetOutputConfig`
 - `src/gbserver/environment/k8s.py` — `K8s.pushasset_hfstore` — K8s push path
-- `src/gbserver/environment/lsf.py` — `Lsf.pushasset_hfstore` — LSF push path
 - `src/gbserver/builtins/steps/hfpush/` — the built-in step that performs the HF push

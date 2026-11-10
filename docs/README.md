@@ -19,7 +19,7 @@ You're authoring a `build.yaml`, picking environments, and submitting builds wit
 - [Monitoring and artifact events](steps/monitoring-and-artifact-events.md) — how a step captures its outputs by parsing workload logs
 - [HuggingFace push](builds/hf-push.md) — `hf://` URIs and `store_push`
 - [Bring your own step](steps/bring-your-own-step.md) — custom code from a Git repo
-- [Custom code steps](steps/custom-code-steps.md) — inline commands without step definitions
+- [Custom code steps (Kubernetes)](steps/custom-code-steps.md) — inline commands without step definitions on the `gbstep` step
 - [Bring your own image](steps/bring-your-own-image.md) — custom container images
 - [FAQ](help/faq.md) — common questions and troubleshooting
 - [Glossary](glossary.md) — key terms and abbreviations
@@ -42,7 +42,7 @@ You're deploying gbserver, configuring environments, and keeping it healthy in p
 - [`gbserver` CLI reference](cli/gbserver-cli-reference.md) — running the REST API, watchers, build runner, standalone, and admin
 - [Configuration](configuration/README.md) — runtime settings: env vars, config files, and `GB_ENVIRONMENT`
 - [Spaces](spaces/README.md) — what a space is and the full `space.yaml` schema (`secret_manager`, `base_uris`, `variables`)
-- [Environments](environments/README.md) — the compute-endpoint map, per-type `environment.yaml` reference (Bash, Docker, Kubernetes, LSF, RunPod, SkyPilot and its clouds), and the setup guides (SkyPilot Kubernetes/SLURM, RunPod)
+- [Environments](environments/README.md) — the compute-endpoint map, per-type `environment.yaml` reference (Bash, Docker, Kubernetes, RunPod, SkyPilot and its clouds), and the setup guides (SkyPilot Kubernetes/SLURM, RunPod)
 - [Step resolution](environments/step-resolution.md) — how `space://steps/<name>` URIs route to the right impl per env
 - [Asset stores](asset-stores/README.md) — how artifacts are located and reached by URI scheme (file, git, COS/S3, HF, Lakehouse, env-local)
 - [Secrets](secrets/README.md) — secret-manager backends (local, env, hybrid, IBM Cloud) and how secrets are resolved

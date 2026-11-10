@@ -35,16 +35,15 @@ granite.build:
           config:
             # Fast completion detection for the test (base skypilot default 300s).
             poll_interval_seconds: 5
-            # Single node/GPU; raise for multi-GPU workloads.
+            # num_cpus_per_node -> --cpus-per-task, even though the step's own
+            # resources is {}. num_gpus_per_node only reaches the workload's env
+            # (the step's envs), not SLURM.
             compute_config:
               num_nodes: 1
               num_gpus_per_node: 1
-            # The ACTUAL GPU request: compute_config.num_gpus_per_node is not
-            # turned into a SLURM GPU request (GPUs only flow via
-            # launcher_config.resources.accelerators), and BlueVela rejects a
-            # GPU-less job on gpu-mid ("This job requests no GPUs, so it cannot
-            # run in gpu-mid"). One H200 -> --gres=gpu:H200:1. Kept equal to
-            # num_gpus_per_node above.
+              num_cpus_per_node: 4
+            # GPUs come only from accelerators (-> --gres=gpu:H200:1). gpu-mid
+            # rejects a GPU-less job. Kept equal to num_gpus_per_node above.
             launcher_config:
               resources:
                 accelerators: "H200:1"

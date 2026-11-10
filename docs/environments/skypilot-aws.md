@@ -7,8 +7,8 @@
 ## Compute environment
 
 With `default_cloud: aws`, SkyPilot **provisions EC2 instances** in your AWS account for each step,
-runs the job, and tears them down on cleanup. Unlike the SSH-provisioned HPC backends
-([SLURM](skypilot-slurm.md), [LSF](skypilot-lsf.md)), there is no SSH reachability file — AWS is
+runs the job, and tears them down on cleanup. Unlike the SSH-provisioned HPC backend
+([SLURM](skypilot-slurm.md)), there is no SSH reachability file — AWS is
 API-provisioned and reached through AWS credentials.
 
 ## AWS-specific configuration
@@ -737,4 +737,4 @@ assetstores:
 ## See also
 
 - [SkyPilot overview](skypilot.md) — compute model, launcher fields, inline-config rules
-- [SkyPilot on Kubernetes](skypilot-kubernetes.md) · [SLURM](skypilot-slurm.md) · [LSF](skypilot-lsf.md)
+- [SkyPilot on Kubernetes](skypilot-kubernetes.md) · [SLURM](skypilot-slurm.md)
