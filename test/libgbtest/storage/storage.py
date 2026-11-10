@@ -81,8 +81,7 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
     """
 
     # Fields the database stamps on write, so a stored item never matches the one passed to add().
-    # Sub-classes list them to have test_update_fields ignore them; equality checks also need a
-    # _verify_equal override (see BaseLineageJobStorageTest).
+    # Sub-classes list them to have test_update_fields and _verify_equal ignore them.
     _db_stamped_fields: list[str] = []
 
     @classmethod
@@ -535,6 +534,16 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
 
     def _verify_equal(self, result, expected):
         """Enables refined object comparison, for example, to allow ignoring updated_time field, when it is present."""
+        stamped = [
+            f
+            for f in self._db_stamped_fields
+            if hasattr(result, f) and hasattr(expected, f)
+        ]
+        if stamped:
+            # The database stamps these on write, so blank them on copies of both sides.
+            unstamped = dict.fromkeys(stamped, "")
+            result = result.model_copy(update=unstamped)
+            expected = expected.model_copy(update=unstamped)
         if hasattr(result, UPDATED_TIME_FIELD_NAME):
             # set the updated_time fields to be the same, effectively ignoring them.
             result_updated_time = getattr(result, UPDATED_TIME_FIELD_NAME)

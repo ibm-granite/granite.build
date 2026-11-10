@@ -53,17 +53,29 @@ from gbserver.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def get_app() -> FastAPI:
-    app = FastAPI()
-    if True:
-        # perform an empty CLI call here just to let the work process go through the same init code in cli.py
-        from gbserver.cli import gbserver
+def init_server_process() -> None:
+    """Run the process-level init from cli.py (standalone setup, logging, retries).
 
-        gbserver(["rest-server-worker"], standalone_mode=False)
-    return app
+    Done explicitly at server startup, via create_app(), rather than at import, so
+    importing this module has no side effects (tests import it to build a
+    TestClient and must keep the storage factory they chose).
+    """
+    from gbserver.cli import gbserver
+
+    # An empty CLI call, so the worker goes through the same root-group init as the CLI.
+    gbserver(["rest-server-worker"], standalone_mode=False)
 
 
-root_api = get_app()
+def create_app() -> FastAPI:
+    """uvicorn app factory: initialize this server process, then return root_api.
+
+    uvicorn calls it once per worker process (``factory=True``).
+    """
+    init_server_process()
+    return root_api
+
+
+root_api = FastAPI()
 
 root_api.add_middleware(AuthMiddleware)  # type: ignore[arg-type]
 

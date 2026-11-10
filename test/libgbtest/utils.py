@@ -196,9 +196,6 @@ class AbstractSingletonStorageUsingTest(AbstractReadonlySingletonStorageUsingTes
         assert (
             storage is None
         ), "This is not thread-safe.  Tests within a class must be run serially."
-        # Re-apply the class's factory: the first import of gbserver.api.root_api (e.g. by a
-        # function-scoped fixture) runs the standalone init, which installs SQLite after setup_class.
-        singleton_storage.set_storage_factory(self._get_storage_factory())
         self.storage = singleton_storage.set_storage_prefix(table_prefix)
         self._clear_storage()
 

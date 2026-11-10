@@ -23,6 +23,7 @@ Point GB_HOME_DIR at a per-test temp dir instead.
 """
 
 import sqlite3
+import sys
 from contextlib import closing
 from pathlib import Path
 
@@ -35,6 +36,35 @@ from gbserver.storage.sqlite.sqlite_storage import SQLITE_DB_FILE_NAME
 
 # Cached module globals in singleton_storage that a test can populate lazily.
 _SINGLETON_GLOBALS = ("__STORAGE", "__STORAGE_FACTORY")
+
+# Other lazily built process-wide singletons that hold (or reach) storage, as
+# (module, global, unset value). A test that builds one binds it to its own temp
+# db for every later test. They are looked up in sys.modules rather than
+# imported, so this fixture never pulls a module (and its import-time work) in.
+_OTHER_SINGLETONS = (
+    ("gbserver.resilience.nht_singleton", "_node_health_tracker", None),
+    ("gbserver.resilience.nht_singleton", "_tracker_initialized", False),
+    ("gbserver.spaces.space_access_manager", "_storage_manager", None),
+    ("gbserver.api.lineage", "_openlineage_service", None),
+    ("gbserver.api.lineage", "_index_service", None),
+    ("gbserver.metrics.metrics_client", "_SINGLETON_METRICS_CLIENT", None),
+)
+
+
+def _save_other_singletons() -> list:
+    """Each singleton's current value, or its unset value if its module isn't loaded yet."""
+    saved = []
+    for module_name, name, unset in _OTHER_SINGLETONS:
+        module = sys.modules.get(module_name)
+        saved.append((module_name, name, getattr(module, name, unset)))
+    return saved
+
+
+def _restore_other_singletons(saved: list) -> None:
+    for module_name, name, value in saved:
+        module = sys.modules.get(module_name)
+        if module is not None:
+            setattr(module, name, value)
 
 
 def _real_db_tables(db_path: Path) -> set[str]:
@@ -88,7 +118,7 @@ def _guard_real_gb_home_db(request):
 
 @pytest.fixture(autouse=True)
 def _isolate_gb_home_dir(tmp_path_factory, monkeypatch):
-    """Point GB_HOME_DIR at a fresh temp dir for each test and restore the storage singletons after it."""
+    """Point GB_HOME_DIR at a fresh temp dir for each test and restore the singletons after it."""
     # Outside the test's own tmp_path: some tests assert exactly what is in it, and
     # some create a "gb_home" there themselves to check it gets created.
     home = tmp_path_factory.mktemp("gb_home_sqlite")
@@ -101,9 +131,11 @@ def _isolate_gb_home_dir(tmp_path_factory, monkeypatch):
     # temp db for every later test; restore whatever was there before (None, or a
     # value a module-scoped fixture set on purpose).
     saved = {name: getattr(singleton_storage, name) for name in _SINGLETON_GLOBALS}
+    saved_others = _save_other_singletons()
     yield
     for name, value in saved.items():
         setattr(singleton_storage, name, value)
+    _restore_other_singletons(saved_others)
     # Each test gets its own db path and so its own cached engine; dispose them so
     # pooled connections don't accumulate until atexit. This also disposes Postgres
     # engines under live-storage tests (and logs INFO lines per engine); that is

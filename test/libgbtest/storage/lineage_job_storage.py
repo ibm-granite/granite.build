@@ -123,18 +123,6 @@ class BaseLineageJobStorageTest(AbstractStorageTest):
         item.job_id = item.uuid
         return item
 
-    def _verify_equal(self, result, expected):
-        """recorded_at is the database's stamp, never the caller's, so ignore it."""
-        if isinstance(result, StoredLineageJob) and isinstance(
-            expected, StoredLineageJob
-        ):
-            unstamped = dict.fromkeys(self._db_stamped_fields, "")
-            return super()._verify_equal(
-                result.model_copy(update=unstamped),
-                expected.model_copy(update=unstamped),
-            )
-        return super()._verify_equal(result, expected)
-
     # get_job / get_jobs / get_jobs_by_id / has_job: every query is a single indexed
     # lookup keyed on job_id.
 
