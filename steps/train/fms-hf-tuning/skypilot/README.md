@@ -217,9 +217,15 @@ the payload runs.
   (an unknown type raises `KeyError`), and the detector model never gets
   `trust_remote_code`. LightGlue is a keypoint matcher, so nothing the step trains
   uses it.
+- Like upstream's fix, it edits three files: `configuration_lightglue.py` and
+  `modeling_lightglue.py` (the code transformers runs), and, from `-4`,
+  `modular_lightglue.py`. That is the source the other two are generated from;
+  transformers never imports it, but the wheel ships it with the same two
+  pass-throughs.
 - The patch fails the build if its target lines change.
 - `test/test_lightglue_patch.py` runs the exploit against a copy of the real 4.55.4:
-  the payload runs unpatched and not patched.
+  the payload runs unpatched and not patched. It also checks that no LightGlue
+  source file in the patched copy keeps a pass-through.
 - Scanners match on the package version, so trivy and quay still report
   CVE-2026-5241 against transformers 4.55.4. That finding is patched, not open.
 
@@ -234,29 +240,52 @@ the payload runs.
   `-1` and `-2`. The Critical is PYSEC-2026-2290: a version-matched false positive,
   recorded below.
 - `-1` and `-2` carried the unpatched code. Both tags were **deleted from quay** on
-  2026-11-06; `-3` is the only published tag.
+  2026-11-06.
+- `-3` left `modular_lightglue.py` unpatched. transformers never imports that file,
+  so `-3` is not exploitable through it, but `-4` patches it too.
 
-#### Reviewed false positive: PYSEC-2026-2290 / CVE-2026-5241 in `fms-v3.2.2-3`
+`fms-v3.2.2-4` (manifest
+`sha256:2d4e803ece50d4f6bb62570035eb7715857cbb66280e086af111e3b9e48165cd`, published
+2026-11-10) is on the same lock and base as `-3`. Two changes:
+- the backport also patches `modular_lightglue.py`, as upstream's fix does;
+- a lint-only change to `src/fms_hf_tuning_job.py` (a mypy `cast` and a wrapped
+  line), with the same behaviour.
 
-quay's Critical on `fms-v3.2.2-3` is a reviewed false positive. Keep this record
-until fms-hf-tuning allows transformers 5 (foundation-model-stack/fms-hf-tuning#687)
-and the image moves to a fixed release.
+It was checked inside the built image:
+- no LightGlue source file keeps a `trust_remote_code` pass-through;
+- there are no `.pyc` files under `/opt/fms-hf-tuning`;
+- it has fms-hf-tuning 3.2.2 and transformers 4.55.4;
+- every `src/` file is byte-identical to the source.
+
+Scan results:
+- trivy 0.76.2: 0 CRITICAL / 7 HIGH, the same packages and CVEs as `-3`.
+- quay: 1 Critical / 20 High (89 Medium, 29 Low, 2 Negligible). That is the same as
+  a rescan of `-3` on the same day; Clair's database has changed since
+  2026-11-06, which is why Medium is lower than the 114 above.
+
+The build tests ran on `-3` (results below); `-4` trains the same way.
+
+#### Reviewed false positive: PYSEC-2026-2290 / CVE-2026-5241 in `fms-v3.2.2-3` and `-4`
+
+quay's Critical on `fms-v3.2.2-3` and `fms-v3.2.2-4` is a reviewed false positive.
+Keep this record until fms-hf-tuning allows transformers 5
+(foundation-model-stack/fms-hf-tuning#687) and the image moves to a fixed release.
 
 | | |
 |---|---|
 | Finding | PYSEC-2026-2290, alias CVE-2026-5241 / GHSA-fgcw-684q-jj6r. Critical in quay (Clair), High in trivy |
 | Package | transformers 4.55.4 (installed from the hashed lock; fms-hf-tuning 3.2.2 caps `transformers<=4.55.4`) |
-| Why it is reported | Clair and trivy match on the installed package's name and version. The patch edits two source files in that package and leaves its version metadata at 4.55.4, so every advisory for 4.55.4 is still listed |
-| Vulnerable code | `models/lightglue/configuration_lightglue.py`: the nested `AutoConfig.from_pretrained(..., trust_remote_code=self.trust_remote_code)` for a keypoint detector type outside `CONFIG_MAPPING`; `models/lightglue/modeling_lightglue.py`: `from_config(..., trust_remote_code=config.trust_remote_code)` |
-| Remediation | `patches/lightglue_no_remote_code.py`, a backport of huggingface/transformers 676559d5 ("[LightGlue] Remove remote code execution", #45122), applied by the Dockerfile right after the hashed install. It fails the image build if either target is not found exactly once |
-| Evidence | (1) Inside the published `-3` image, neither `trust_remote_code` pass-through remains in the two files. (2) `test/test_lightglue_patch.py` loads a crafted LightGlue repo the way fms-hf-tuning loads `base_model` (`AutoModelForCausalLM.from_pretrained`, no `trust_remote_code`), against a copy of the real 4.55.4: the repo's Python runs unpatched, and does not run patched |
+| Why it is reported | Clair and trivy match on the installed package's name and version. The patch edits source files in that package and leaves its version metadata at 4.55.4, so every advisory for 4.55.4 is still listed |
+| Vulnerable code | `models/lightglue/configuration_lightglue.py`: the nested `AutoConfig.from_pretrained(..., trust_remote_code=self.trust_remote_code)` for a keypoint detector type outside `CONFIG_MAPPING`; `models/lightglue/modeling_lightglue.py`: `from_config(..., trust_remote_code=config.trust_remote_code)`. `models/lightglue/modular_lightglue.py` holds both lines too; it is never imported (transformers' lazy loader skips `modular_*` files) |
+| Remediation | `patches/lightglue_no_remote_code.py`, a backport of huggingface/transformers 676559d5 ("[LightGlue] Remove remote code execution", #45122), applied by the Dockerfile right after the hashed install. It patches the two runtime files and, from `-4`, `modular_lightglue.py`, as upstream does. It fails the image build if any target is not found exactly once |
+| Evidence | (1) Inside the published images, no `trust_remote_code` pass-through remains in the two runtime files (`-3`), or in any LightGlue source file (`-4`). (2) `test/test_lightglue_patch.py` loads a crafted LightGlue repo the way fms-hf-tuning loads `base_model` (`AutoModelForCausalLM.from_pretrained`, no `trust_remote_code`), against a copy of the real 4.55.4: the repo's Python runs unpatched, and does not run patched |
 | Scope | Only this advisory. The other transformers, torch and fsspec findings are real and unpatched, held back by fms-hf-tuning's caps (the tables above) |
 | Re-check on | any change to `requirements.lock`, the base image, or the patch. A transformers bump that moves the target lines fails the build. A move to transformers 5.x removes the patch and this record |
-| Reviewed | 2026-11-06, for `fms-v3.2.2-3` (`sha256:fc696a40d415559b3752981b169ac1dbf8f01fc192f2e8dd44f55f7e3e04d414`) |
+| Reviewed | 2026-11-06, for `fms-v3.2.2-3` (`sha256:fc696a40d415559b3752981b169ac1dbf8f01fc192f2e8dd44f55f7e3e04d414`); 2026-11-10, for `fms-v3.2.2-4` (`sha256:2d4e803ece50d4f6bb62570035eb7715857cbb66280e086af111e3b9e48165cd`) |
 
 ### Bumping IMAGE_VERSION
 
-`IMAGE_VERSION` is stable (`fms-v3.2.2-3`), not the git SHA: BlueVela caches a
+`IMAGE_VERSION` is stable (`fms-v3.2.2-4`), not the git SHA: BlueVela caches a
 `.sqsh` per tag. Bump the suffix when the Dockerfile, `requirements.lock` or `src/`
 changes; the prefix with the fms-hf-tuning pin (for example `fms-v3.3.0-1`). After
 editing `requirements.in`, run `make lock` and commit both files. On an fms-hf-tuning
@@ -271,7 +300,7 @@ public), then:
 
 ```bash
 make -C steps/train/fms-hf-tuning/skypilot image publish-image
-sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/fms-hf-tuning/skypilot:fms-v3.2.2-3
+sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/fms-hf-tuning/skypilot:fms-v3.2.2-4
 ```
 
 `present` means it pulls anonymously. `make publish-step` refuses until the image

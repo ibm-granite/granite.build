@@ -34,7 +34,7 @@ config:
     # The step's image, filled in by `make space` / `make publish-step`. Override
     # it with another image or, on SLURM, a .sqsh path; `docker:` is added when
     # missing.
-    image_id: "docker:quay.io/granitebuild/steps/train/fms-hf-tuning/skypilot:fms-v3.2.2-3"
+    image_id: "docker:quay.io/granitebuild/steps/train/fms-hf-tuning/skypilot:fms-v3.2.2-4"
     # ClearML tracking: auto (on iff CLEARML_API_HOST, CLEARML_API_ACCESS_KEY and
     # CLEARML_API_SECRET_KEY are all set in the step env), true, or false.
     clearml_enabled: "auto"

@@ -27,7 +27,7 @@ import os
 import struct
 import sys
 from importlib import metadata
-from typing import Any
+from typing import Any, Callable, cast
 
 # Keys the step sets itself. step-template.yaml's `owned` list is the same set
 # (test_fms_hf_tuning_job.py pins it).
@@ -99,8 +99,9 @@ def _convert(act: argparse.Action, key: str, value: Any) -> Any:
         text = "true" if value else "false"
     else:
         text = value if isinstance(value, str) else str(value)
+    convert = cast(Callable[[str], Any], act.type)  # coerce_args skips type=None
     try:
-        out = act.type(text)
+        out = convert(text)
     except (TypeError, ValueError, argparse.ArgumentTypeError) as e:
         raise StepError(f"args.{key}: {value!r} is not a valid value ({e}).") from e
     if act.choices and out not in act.choices:
@@ -237,7 +238,9 @@ def tensor_count(path: str) -> int:
     return sum(1 for k in header if k != "__metadata__")
 
 
-def check_output(out_dir: str, peft_method: str) -> int:
+def check_output(  # pylint: disable=too-many-branches
+    out_dir: str, peft_method: str
+) -> int:
     """Refuse a saved output that is not a model with weights.
 
     :param out_dir: The save_model_dir.
@@ -276,7 +279,8 @@ def check_output(out_dir: str, peft_method: str) -> int:
             )
             if not shards:
                 raise StepError(
-                    f"training finished but {out_dir} has no *.safetensors weights; nothing registered."
+                    f"training finished but {out_dir} has no *.safetensors weights; "
+                    "nothing registered."
                 )
             count = sum(tensor_count(os.path.join(out_dir, n)) for n in shards)
         what = "model"
