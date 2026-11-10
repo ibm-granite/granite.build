@@ -313,7 +313,7 @@ def _slurm_tracks_memory(cluster: str) -> bool:
     ``SelectTypeParameters``. Only a ``CR_*_Memory`` value counts as tracked:
     on ``CR_CPU``/``CR_Core`` clusters a ``--mem`` request can fail scheduling,
     so the step memory floor must stay off there. Blocking (SSH); call it via
-    ``asyncio.to_thread`` from async code. Issue #657.
+    ``_sky_submit_to_thread`` from async code. Issue #657.
 
     :param cluster: the SLURM cluster alias (the ``slurm/<cluster>`` infra
         segment, equal to the SSH ``Host`` alias).
@@ -3480,9 +3480,10 @@ class Skypilot(Environment):
         because it SSHes) only when the result matters: a slurm launch that
         names a cluster, declares a parseable ``total_memory_per_node``, and
         has no ``resources.memory`` key. Any such key overrides the floor in
-        the merge, including ``memory: null``, which means "no floor" (the same
-        way ``sbatch_options: { constraint: null }`` removes a directive), so
-        it skips the probe too. Every other launch skips the SSH round-trip.
+        the merge, so it skips the probe too: a size is sent as-is, ``0``
+        omits ``--mem`` (SkyPilot allows 0 on Slurm), and ``memory: null``
+        drops the step memory so SkyPilot applies its own default (1 GB per
+        CPU, or 4 GB per CPU with GPUs, on a memory-tracking cluster). Every other launch skips the SSH round-trip.
         Must run after the cluster's SSH config is materialized. The probe runs
         on the dedicated SkyPilot pool (``_sky_submit_to_thread``), so a stuck
         one can't hold a slot in the loop's shared pool, and is bounded by
@@ -3565,8 +3566,9 @@ class Skypilot(Environment):
             resources["cpus"] = _cpus_floor(cloud, num_cpus)
         # SLURM clusters on CR_CPU/CR_Core don't track memory as a consumable
         # resource, so a --mem request can fail scheduling: apply the floor on
-        # slurm only when the cluster tracks memory (issue #657 — without it a
-        # step runs at the partition default, e.g. 1 GB on BlueVela). LSF never
+        # slurm only when the cluster tracks memory (issue #657 — without it
+        # SkyPilot sends its own 1 GB per CPU, which OOM-killed hfpull on
+        # BlueVela). LSF never
         # gets it (its cloud can't parse "N+", and an env-wide bsub M covers it).
         # An explicit launcher/build resources.memory still applies everywhere.
         apply_memory = cloud not in _SSH_HPC_CLOUDS or (

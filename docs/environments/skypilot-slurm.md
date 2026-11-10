@@ -420,10 +420,16 @@ cluster. That is what starved `hfpull` (`num_cpus_per_node: 1`) on BlueVela befo
 applied: 1 GB is too little for an `hf download` of a multi-GB repo.
 
 Any `launcher_config.resources.memory` key (in the step, build, or the environment's `steps:`
-overrides) wins over the step memory, and the cluster isn't probed then. A size is sent as-is, and
-`memory: null` means "no step memory" (SkyPilot then decides as above). On a memory-tracking
-cluster that's the only way to turn the step memory off, for example for a partition whose own
-`SelectTypeParameters` override doesn't track memory: gbserver reads the cluster-wide value only.
+overrides) wins over the step memory, and the cluster isn't probed then:
+
+- A size (e.g. `memory: "16"`) is sent as-is.
+- `memory: 0` sends no `--mem` at all; SkyPilot allows 0 on SLURM and leaves the directive out.
+  On a memory-tracking cluster that's the only way to turn `--mem` off, for example for a
+  partition whose own `SelectTypeParameters` override doesn't track memory: gbserver reads the
+  cluster-wide value only.
+- `memory: null` drops the step memory, and SkyPilot applies its own default (see the table
+  above): on a memory-tracking cluster that's still `--mem` of 1 GB per CPU, or 4 GB per CPU with
+  GPUs.
 
 The probe needs to know the cluster. With a bare `slurm` infra (no `slurm/<cluster>`), gbserver
 probes the environment's one declared host. If it declares several, gbserver sends nothing and

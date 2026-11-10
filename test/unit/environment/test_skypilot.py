@@ -876,8 +876,10 @@ class TestLaunchSkypilot:
         [
             # An explicit size wins over the floor, so probing would be wasted.
             ("8", "8"),
-            # `memory: null` means "no floor", like `constraint: null` removes
-            # an sbatch directive.
+            # `memory: 0` omits --mem (SkyPilot allows 0 on Slurm).
+            ("0", "0"),
+            # `memory: null` drops the step memory; SkyPilot applies its own
+            # default.
             (None, None),
         ],
     )
@@ -1114,7 +1116,7 @@ class TestSkypilotComputeConfigResources:
     def test_slurm_memory_floor_applied_when_cluster_tracks_memory(self):
         """Issue #657: on a SLURM cluster that tracks memory (CR_*_Memory) the
         memory floor is applied, so a step's total_memory_per_node becomes
-        #SBATCH --mem instead of the partition default. LSF ignores the flag."""
+        #SBATCH --mem instead of SkyPilot's 1 GB per CPU. LSF ignores the flag."""
         from gbserver.environment.skypilot import Skypilot
 
         env = Skypilot(event_q=asyncio.Queue())
