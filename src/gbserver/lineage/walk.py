@@ -155,7 +155,7 @@ def walk_lineage(
     """Walk the lineage graph outward from ``seeds``.
 
     Args:
-        storage: the lineage row storage to query.
+        storage: the lineage index storage to query.
         seeds: canonical identifiers to start from. Terminal markers and empty
             strings are dropped -- they identify no artifact.
         direction: which way to walk. ``BOTH`` runs each direction and merges,

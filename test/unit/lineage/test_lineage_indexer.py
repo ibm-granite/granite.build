@@ -98,7 +98,7 @@ def _indexer(runs):
     api.runs.return_value = runs
     rows = _indexed_runs()
     sink = MagicMock()
-    ix = idx.WandBLineageIndexer(sink=sink, api=api, rows=rows)
+    ix = idx.WandBLineageIndexer(sink=sink, api=api, writer=rows)
     # These tests exercise the scan itself from an empty checkpoint; the
     # standalone seed-from-latest rule has its own test.
     ix._seeds_when_standalone = False
@@ -231,7 +231,7 @@ def test_lineage_job_indexer_reads_in_order_and_checkpoints():
     # The rows collaborator indexes, not the sink: the index is the indexer's.
     rows = MagicMock()
     rows.index_job_records.side_effect = len
-    ix = idx.LineageJobIndexer(sink=MagicMock(), rows=rows)
+    ix = idx.LineageJobIndexer(sink=MagicMock(), writer=rows)
     with patch.object(idx, "_resolve_lineage_provider", return_value="db"):
         assert ix.scan_once(storage) == 2
         (batch,) = [c.args[0] for c in rows.index_job_records.call_args_list]
@@ -633,7 +633,7 @@ def _target_indexer(targets, indexed=()):
     rows = MagicMock()
     rows.has_rows_for_job.side_effect = lambda job_id: job_id in indexed
     rows.index_job_entry.return_value = True
-    ix = idx.TargetLineageIndexer(sink=sink, rows=rows)
+    ix = idx.TargetLineageIndexer(sink=sink, writer=rows)
     ordered = sorted(targets, key=lambda t: t.finished_at, reverse=True)
     page = patch.object(
         idx,
@@ -825,7 +825,7 @@ def test_a_scan_with_a_checkpoint_reads_only_targets_since_it_in_utc():
     ]
     with patch.object(idx, "_successful_targets_page", side_effect=AssertionError):
         selected = idx.TargetLineageIndexer(
-            sink=MagicMock(), rows=MagicMock()
+            sink=MagicMock(), writer=MagicMock()
         )._keys_since(
             storage,
             (T0 + timedelta(minutes=60))
@@ -846,7 +846,7 @@ def test_a_first_scan_reads_every_successful_target():
     with patch.object(
         idx, "_successful_targets_page", side_effect=lambda storage, i: []
     ) as full:
-        idx.TargetLineageIndexer(sink=MagicMock(), rows=MagicMock())._keys_since(
+        idx.TargetLineageIndexer(sink=MagicMock(), writer=MagicMock())._keys_since(
             storage, None
         )
     full.assert_called_once()
@@ -860,7 +860,7 @@ def _job_indexer(jobs, keyset=True):
     storage, kv = _admin_with_jobs(jobs, keyset=keyset)
     rows = MagicMock()
     rows.index_job_records.side_effect = len
-    return idx.LineageJobIndexer(sink=MagicMock(), rows=rows), storage, kv, rows
+    return idx.LineageJobIndexer(sink=MagicMock(), writer=rows), storage, kv, rows
 
 
 def test_outside_standalone_no_checkpoint_indexes_nothing_until_seeded():
@@ -951,7 +951,7 @@ def test_unsettled_job_is_not_taken_so_checkpoint_stays_behind():
     storage, kv = _admin_with_jobs(jobs)
     rows = MagicMock()
     rows.index_job_records.side_effect = len
-    ix = idx.LineageJobIndexer(sink=MagicMock(), rows=rows)
+    ix = idx.LineageJobIndexer(sink=MagicMock(), writer=rows)
     with patch.object(idx, "_resolve_lineage_provider", return_value="db"):
         assert ix.scan_once(storage) == 1
     assert kv["lineage_index_checkpoint:gb_lineage_job"]["timestamp"] == old
@@ -1277,7 +1277,7 @@ def test_wandb_indexer_writes_only_the_index_never_gb_lineage_job():
     api = MagicMock()
     api.runs.return_value = [_run("r1", D1, job_id="j1")]
     sink, rows = MagicMock(), MagicMock()
-    ix = idx.WandBLineageIndexer(sink=sink, api=api, rows=rows)
+    ix = idx.WandBLineageIndexer(sink=sink, api=api, writer=rows)
     ix._seeds_when_standalone = False
     assert ix.scan_once(storage) == 1
     rows.index_job_entry.assert_called_once()

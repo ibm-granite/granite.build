@@ -92,7 +92,7 @@ class DBLineageService(LineageService):
     """Read artifact lineage from the local lineage index.
 
     Args:
-        storage: the lineage row storage to read. Defaults to the process-wide
+        storage: the lineage index storage to read. Defaults to the process-wide
             admin storage, resolved lazily so importing this module does not
             require a configured database.
     """
@@ -107,7 +107,7 @@ class DBLineageService(LineageService):
 
     @property
     def storage(self) -> ILineageIndexStorage:
-        """The lineage row storage, resolved on first use."""
+        """The lineage index storage, resolved on first use."""
         if self._storage is None:
             from gbserver.storage.singleton_storage import get_admin_storage
 

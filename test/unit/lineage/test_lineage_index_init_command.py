@@ -47,7 +47,7 @@ def env_fixture():
     storage = SimpleNamespace(kv_pair_storage=_KV(), lineage_index_storage=MagicMock())
     api = MagicMock()
     latest = SimpleNamespace(created_at="2026-03-01T00:00:00Z")
-    indexer = idx.WandBLineageIndexer(sink=MagicMock(), rows=MagicMock(), api=api)
+    indexer = idx.WandBLineageIndexer(sink=MagicMock(), writer=MagicMock(), api=api)
     with (
         patch(f"{MODULE}.get_admin_storage", return_value=storage),
         patch(f"{MODULE}.resolve_indexer_source", return_value="lineage_store"),

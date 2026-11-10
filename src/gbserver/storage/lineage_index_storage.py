@@ -84,7 +84,7 @@ def _keep_self_loops(
 
 
 class ILineageIndexStorage(IItemStorage[StoredLineageRow]):
-    """Interface for lineage row storage implementations."""
+    """Interface for lineage index storage implementations."""
 
     def get_rows_by_input(
         self, inputs: List[str], self_loops: bool = True, limit: Optional[int] = None
