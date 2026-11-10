@@ -30,7 +30,9 @@
 #       configurations/assets (an existing one that lists the overlay is kept)
 #
 # and in both cases sets KEY in S to space://environments/skypilot-local/NAME,
-# leaving every other line of S as it was.
+# leaving every other line of S as it was (scripts/set_site_key.py). A symlinked
+# S is followed, so the link survives; a KEY whose value spans several lines, or
+# that appears twice, is refused before anything is written.
 #
 # GB_HOME is $GB_HOME_DIR, or ~/.granite.build. The Python used for rendering is
 # $GB_PYTHON, else this checkout's .venv/bin/python, else python3; it must be
@@ -104,6 +106,15 @@ fi
   die "$PY cannot import gbcli; set GB_PYTHON to a Python with granite.build" \
     "installed, or run 'make venv' in $REPO"
 
+URI="space://environments/skypilot-local/$NAME"
+
+# 0. The site-file edit, checked before anything is written: a key line this
+#    script cannot safely replace (a multi-line value, a duplicate key) refuses
+#    the whole run, not just its last step.
+RC=0
+"$PY" "$HERE/set_site_key.py" check "$SITE" "$ENV_KEY" "$URI" || RC=$?
+[ "$RC" -eq 0 ] || die "cannot set $ENV_KEY in $SITE; nothing written"
+
 # 1. The environment: rendered into a scratch dir first, so a template that
 #    fails to render leaves nothing behind, not even an empty directory.
 SCRATCH="$(mktemp -d)"
@@ -168,46 +179,12 @@ EOF
   fi
 fi
 
-# 3. The site file: KEY set in place, or appended; every other byte kept.
-URI="space://environments/skypilot-local/$NAME"
-"$PY" - "$SITE" "$ENV_KEY" "$URI" <<'PYEOF'
-import os
-import re
-import sys
-import tempfile
-
-path, key, uri = sys.argv[1:]
-with open(path, "rb") as f:
-    data = f.read()
-# NAME is [a-z0-9-] only, so single quotes need no escaping.
-line = f"{key}: '{uri}'".encode()
-pattern = re.compile(rb"^" + re.escape(key.encode()) + rb"[ \t]*:")
-lines = data.splitlines(keepends=True)
-found = False
-for i, old in enumerate(lines):
-    if pattern.match(old):
-        body = old.rstrip(b"\r\n")
-        lines[i] = line + old[len(body):]
-        found = True
-if not found:
-    if lines and not lines[-1].endswith((b"\n", b"\r")):
-        lines[-1] += b"\n"
-    lines.append(line + b"\n")
-new = b"".join(lines)
-if new != data:
-    mode = os.stat(path).st_mode & 0o7777
-    directory = os.path.dirname(path)
-    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=directory)
-    try:
-        os.fchmod(fd, mode)
-        with os.fdopen(fd, "wb") as f:
-            f.write(new)
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
-PYEOF
+# 3. The site file: KEY set in place (a trailing comment kept), or appended;
+#    every other byte kept. A symlinked site file keeps its link: the real file
+#    is edited. The edit is re-parsed before the atomic replace.
+RC=0
+"$PY" "$HERE/set_site_key.py" apply "$SITE" "$ENV_KEY" "$URI" || RC=$?
+[ "$RC" -eq 0 ] || die "could not set $ENV_KEY in $SITE; the environment was written, the site file was not"
 
 echo "Set up environment $NAME from $TEMPLATE:"
 echo "  environment  $DEST"

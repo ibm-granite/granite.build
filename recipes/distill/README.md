@@ -104,9 +104,12 @@ gbserver, pass `--out DIR` instead: it writes only
 touches neither `GB_HOME` nor `space.yaml`.
 
 Either way it sets `ENVIRONMENT_URI` in the site file to
-`space://environments/skypilot-local/<env-name>` and leaves every other line as it was
-(`--env-key KEY` names a different key). It reads no secret and is safe to re-run. A
-template that fails to render writes nothing.
+`space://environments/skypilot-local/<env-name>` and leaves every other line as it was,
+including a trailing `# comment` on that line (`--env-key KEY` names a different key). A
+site file that is a symlink, say from a private repo into `~/.granite.build/local-env/`,
+stays one: the real file is edited. It reads no secret and is safe to re-run. A template
+that fails to render writes nothing, and nor does a site file whose key it cannot replace
+on one line: a value spanning several lines, or the key given twice.
 
 **3. gbserver.** For the standalone case:
 

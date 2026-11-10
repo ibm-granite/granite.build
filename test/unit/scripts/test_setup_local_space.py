@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 
+import pytest
 import yaml
 
 _REPO = pathlib.Path(__file__).resolve().parents[3]
@@ -292,3 +293,101 @@ def test_render_exit_codes(tmp_path):
         "environment-template.yaml",
         "site.yaml",
     ]
+
+
+# ─── The site-file edit ───────────────────────────────────────────────────────
+
+_URI = "space://environments/skypilot-local/demo"
+
+
+def test_site_symlink_is_kept_and_its_target_updated(tmp_path):
+    """A site file linked into GB_HOME/local-env from a private repo keeps its
+    link: the real file is edited in place, in its own directory."""
+    t, real = _files(tmp_path)
+    private = tmp_path / "private-repo"
+    private.mkdir()
+    real = real.rename(private / "site.yaml")
+    link = tmp_path / "local-env-site.yaml"
+    link.symlink_to(real)
+    proc = _setup(tmp_path, t, link)
+    assert proc.returncode == 0, proc.stderr
+    assert link.is_symlink() and link.resolve() == real.resolve()
+    assert yaml.safe_load(real.read_text())["ENVIRONMENT_URI"] == _URI
+    # The temporary file was made beside the real file, and is gone.
+    assert sorted(p.name for p in private.iterdir()) == ["site.yaml"]
+
+
+def test_trailing_comment_on_the_key_line_is_kept(tmp_path):
+    site = _SITE.replace(
+        "ENVIRONMENT_URI: space://environments/old\n",
+        "ENVIRONMENT_URI: 'space://environments/old'   # set by the script\n",
+    )
+    t, s = _files(tmp_path, site=site)
+    assert _setup(tmp_path, t, s).returncode == 0
+    (line,) = [l for l in s.read_text().splitlines() if l.startswith("ENVIRONMENT_URI")]
+    assert line == f"ENVIRONMENT_URI: '{_URI}'   # set by the script"
+    assert yaml.safe_load(s.read_text())["ENVIRONMENT_URI"] == _URI
+    # A '#' inside a quoted value is not a comment.
+    site = _SITE.replace(
+        "ENVIRONMENT_URI: space://environments/old\n",
+        "ENVIRONMENT_URI: 'a # b'\n",
+    )
+    t, s = _files(tmp_path, site=site)
+    assert _setup(tmp_path, t, s).returncode == 0
+    (line,) = [l for l in s.read_text().splitlines() if l.startswith("ENVIRONMENT_URI")]
+    assert line == f"ENVIRONMENT_URI: '{_URI}'"
+    # An indented comment line below a one-line value does not continue it.
+    site = _SITE.replace(
+        "ENVIRONMENT_URI: space://environments/old\n",
+        "ENVIRONMENT_URI: space://environments/old\n  # the old one\n",
+    )
+    t, s = _files(tmp_path, site=site)
+    assert _setup(tmp_path, t, s).returncode == 0
+    assert s.read_text() == site.replace("space://environments/old\n", f"'{_URI}'\n")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "|\n  space://environments/old\n",  # a literal block scalar
+        ">-\n  space://environments/old\n",  # a folded one
+        "space://environments/\n  old\n",  # a plain scalar continued
+        "\n  - a\n  - b\n",  # a block sequence
+        "  # a comment, then\n  nested: x\n",  # a block mapping
+    ],
+)
+def test_multiline_value_is_refused_and_nothing_written(tmp_path, value):
+    site = _SITE.replace(
+        "ENVIRONMENT_URI: space://environments/old\n", f"ENVIRONMENT_URI: {value}"
+    )
+    t, s = _files(tmp_path, site=site)
+    proc = _setup(tmp_path, t, s)
+    assert proc.returncode != 0
+    assert "ENVIRONMENT_URI" in proc.stderr and "multi-line" in proc.stderr
+    assert s.read_text() == site
+    assert not (tmp_path / "gbhome").exists()
+
+
+def test_duplicate_key_is_refused_and_nothing_written(tmp_path):
+    site = _SITE + "ENVIRONMENT_URI: space://environments/again\n"
+    t, s = _files(tmp_path, site=site)
+    proc = _setup(tmp_path, t, s)
+    assert proc.returncode != 0
+    assert "ENVIRONMENT_URI" in proc.stderr and "more than once" in proc.stderr
+    assert s.read_text() == site
+    assert not (tmp_path / "gbhome").exists()
+
+
+def test_an_edit_that_does_not_parse_back_is_refused(tmp_path):
+    """The re-parse catches what the line scan cannot: here a flow sequence that
+    opens on the key line and closes at top level."""
+    site = _SITE.replace(
+        "ENVIRONMENT_URI: space://environments/old\n",
+        "ENVIRONMENT_URI: [a,\nb]\n",
+    )
+    t, s = _files(tmp_path, site=site)
+    proc = _setup(tmp_path, t, s)
+    assert proc.returncode != 0
+    assert "ENVIRONMENT_URI" in proc.stderr
+    assert s.read_text() == site
+    assert not (tmp_path / "gbhome").exists()
