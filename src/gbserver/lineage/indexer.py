@@ -1445,7 +1445,9 @@ class WandBLineageIndexer(JobLineageIndexer):
         writer: Optional[LineageIndexWriter] = None,
         api: Any = None,
     ) -> None:
-        super().__init__(monitoring_interval=monitoring_interval, sink=sink, writer=writer)
+        super().__init__(
+            monitoring_interval=monitoring_interval, sink=sink, writer=writer
+        )
         self._api = api
         self._logged_in = False
         # Run ids already warned about as pinning the scan, so it is said once.
