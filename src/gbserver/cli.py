@@ -135,8 +135,20 @@ def ensure_process_initialized() -> None:
     Used by spawned server workers. A process that ran the CLI keeps the user's
     --log-level/--log-file instead of having them reset to defaults.
     """
-    if not process_initialized:
-        init_process()
+    if process_initialized:
+        return
+    # Spawned workers don't go through the click root group, so resolve the same
+    # env vars click's auto_envvar_prefix would (e.g. GBSERVER_LOG_FILE) here.
+    prefix = CONTEXT_SETTINGS["auto_envvar_prefix"]
+    admin_prefix = os.environ.get(
+        f"{prefix}_GB_ADMIN_TABLE_PREFIX",
+        os.environ.get(ENV_VAR_GBSERVER_ADMIN_TABLE_PREFIX),
+    )
+    init_process(
+        log_level=os.environ.get(f"{prefix}_LOG_LEVEL", DEFAULT_LOG_LEVEL),
+        log_file=os.environ.get(f"{prefix}_LOG_FILE", ""),
+        gb_admin_table_prefix=admin_prefix,
+    )
 
 
 @click.command(cls=GraniteBuildServerCLI, context_settings=CONTEXT_SETTINGS)

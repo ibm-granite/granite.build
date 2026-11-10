@@ -17,7 +17,6 @@
 
 import asyncio
 import os
-import sys
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -221,17 +220,15 @@ async def _spa_fallback(
 @root_api.on_event("startup")
 async def _start_background_tasks():
     """Launch background tasks that run for the lifetime of the server."""
-    if (
-        "gbserver.cli" not in sys.modules
-        or not sys.modules["gbserver.cli"].process_initialized
-    ):
-        # Served directly (e.g. `uvicorn gbserver.api.root_api:root_api`) instead of
-        # through gbserver.api.app_factory:create_app, so logging, transport retries
-        # and standalone storage/auth were never set up. Tests do this on purpose.
-        logger.warning(
-            "root_api started without process init; serve "
-            "gbserver.api.app_factory:create_app instead of root_api directly"
-        )
+    # Served directly (e.g. `uvicorn gbserver.api.root_api:root_api`) rather than
+    # through gbserver.api.app_factory:create_app or the CLI: run the process init
+    # here, before the first request, so standalone storage/auth, retries and
+    # logging are set up. A no-op when the process is already initialized (the
+    # usual paths, and unit tests, whose conftest marks the process initialized so
+    # their chosen storage factory is kept).
+    from gbserver.cli import ensure_process_initialized
+
+    ensure_process_initialized()
     if _ANALYTICS_ENABLED:
         from gb_ui_backend.main import init_analytics
 

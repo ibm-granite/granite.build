@@ -30,12 +30,10 @@ from pathlib import Path
 import pytest
 
 from gbcommon.types.constants import get_gb_home_dir
+from gbserver import cli
 from gbserver.storage import singleton_storage
 from gbserver.storage.sql.engine_cache import get_singleton_engine_cache
 from gbserver.storage.sqlite.sqlite_storage import SQLITE_DB_FILE_NAME
-
-# Cached module globals in singleton_storage that a test can populate lazily.
-_SINGLETON_GLOBALS = ("__STORAGE", "__STORAGE_FACTORY")
 
 # Other lazily built process-wide singletons that hold (or reach) storage, as
 # (module, global, unset value). A test that builds one binds it to its own temp
@@ -48,6 +46,10 @@ _OTHER_SINGLETONS = (
     ("gbserver.api.lineage", "_openlineage_service", None),
     ("gbserver.api.lineage", "_index_service", None),
     ("gbserver.metrics.metrics_client", "_SINGLETON_METRICS_CLIENT", None),
+    ("gbserver.api.secrets", "secret_manager", None),
+    ("gb_ui_backend.services.db_schema", "_engine", None),
+    ("gb_ui_backend.services.db_schema", "_session_factory", None),
+    ("gb_ui_backend.services.gbserver_source", "_source", None),
 )
 
 
@@ -72,9 +74,28 @@ def _restore_other_singletons(saved: list) -> None:
         module = sys.modules.get(module_name)
         if module is not None:
             setattr(module, name, value)
+    # gb_ui_backend's config is an lru_cache that bakes in GB_UI_DATABASE_URL (a
+    # path under this test's GB_HOME_DIR); clear it with the engines built from it.
+    ui_config = sys.modules.get("gb_ui_backend.config")
+    if ui_config is not None:
+        ui_config.get_config.cache_clear()
 
 
 _home_counter = 0
+
+# The real db, resolved at import (before any per-test override).
+_REAL_DB_PATH = Path(get_gb_home_dir()) / SQLITE_DB_FILE_NAME
+# Engines seen on the real db during the run, recorded before any disposal so a
+# later dispose_all() (or the per-test dispose) can't hide them from the guard.
+_real_db_engines_seen: set[str] = set()
+
+
+def _record_real_db_engines() -> None:
+    for engine in list(get_singleton_engine_cache().engines.values()):
+        if engine.url.get_backend_name() == "sqlite" and _is_same_file(
+            engine.url.database, _REAL_DB_PATH
+        ):
+            _real_db_engines_seen.add(str(engine.url))
 
 
 def _real_db_tables(db_path: Path) -> set[str]:
@@ -104,7 +125,7 @@ def _guard_real_gb_home_db(request):
     ):
         yield
         return
-    db_path = Path(get_gb_home_dir()) / SQLITE_DB_FILE_NAME
+    db_path = _REAL_DB_PATH
     existed = db_path.exists()
     try:
         before = _real_db_tables(db_path)
@@ -118,12 +139,8 @@ def _guard_real_gb_home_db(request):
     # Engines on temp homes are disposed per test; one left on the real db means
     # some storage was built before the GB_HOME_DIR override (setup_class, module
     # or session fixtures) and may have written to it.
-    opened = [
-        str(engine.url)
-        for engine in list(get_singleton_engine_cache().engines.values())
-        if engine.url.get_backend_name() == "sqlite"
-        and _is_same_file(engine.url.database, db_path)
-    ]
+    _record_real_db_engines()
+    opened = sorted(_real_db_engines_seen)
     assert not opened, (
         f"Unit tests opened the real SQLite db {db_path} via {opened}. "
         "Some test bypasses the GB_HOME_DIR isolation in test/unit/conftest.py."
@@ -132,9 +149,7 @@ def _guard_real_gb_home_db(request):
         after = _real_db_tables(db_path)
     except sqlite3.Error:
         return
-    # gb_* are the real admin tables; a standalone server sharing this db may
-    # create them lazily during the run, which is not a test leak.
-    leaked = sorted(t for t in after - before if not t.startswith("gb_"))
+    leaked = sorted(after - before)
     created = not existed and db_path.exists()
     assert not leaked and not created, (
         f"Unit tests wrote to the real SQLite db {db_path}: "
@@ -153,11 +168,12 @@ def _gb_home_base(tmp_path_factory) -> Path:
 @pytest.fixture(autouse=True)
 def _isolate_gb_home_dir(_gb_home_base, monkeypatch):
     """Point GB_HOME_DIR at a fresh temp dir for each test and restore the singletons after it."""
-    # A unique path that is not created here: sqlite_storage creates it on first use,
-    # so the many tests that never touch storage cost no directory.
+    # Created up front: code that writes under the home dir (e.g. the analytics db)
+    # may not create it itself.
     global _home_counter
     _home_counter += 1
     home = _gb_home_base / f"t{_home_counter}"
+    home.mkdir()
     # sqlite_storage resolves the home dir via get_gb_home_dir() when a storage is
     # constructed, so setting the env var is enough to redirect storage built during
     # the test. Storage built earlier (setup_class, module/session fixtures) still
@@ -166,19 +182,23 @@ def _isolate_gb_home_dir(_gb_home_base, monkeypatch):
     # A test that lazily builds the admin storage singleton would pin it to its own
     # temp db for every later test; restore whatever was there before (None, or a
     # value a module-scoped fixture set on purpose).
-    saved = {name: getattr(singleton_storage, name) for name in _SINGLETON_GLOBALS}
+    saved = singleton_storage._singleton_state()
     saved_others = _save_other_singletons()
+    # Mark the process initialized so starting root_api (TestClient lifespan) does
+    # not run the process init over the storage factory this test chose. Tests that
+    # exercise the init itself monkeypatch it back to False.
+    monkeypatch.setattr(cli, "process_initialized", True)
     yield
-    for name, value in saved.items():
-        setattr(singleton_storage, name, value)
+    singleton_storage._restore_singleton_state(saved)
     _restore_other_singletons(saved_others)
-    # Each test gets its own db path and so its own cached engine; dispose those so
-    # pooled connections don't accumulate until atexit. Other engines (e.g. Postgres
+    # Each test gets its own db path and so its own cached engine; dispose every
+    # SQLite engine (including ones under a test's own GB_HOME_DIR/tmp_path) so pooled
+    # connections don't accumulate until atexit. Non-SQLite engines (e.g. Postgres
     # pools under live-storage tests) are kept, so they don't reconnect every test.
-    if home.exists():
-        get_singleton_engine_cache().dispose_matching(
-            lambda engine: _is_under(engine.url.database, home)
-        )
+    _record_real_db_engines()
+    get_singleton_engine_cache().dispose_matching(
+        lambda engine: engine.url.get_backend_name() == "sqlite"
+    )
 
 
 def _is_same_file(database: str | None, path: Path) -> bool:
@@ -186,14 +206,5 @@ def _is_same_file(database: str | None, path: Path) -> bool:
         return False
     try:
         return Path(database).resolve() == path.resolve()
-    except (OSError, ValueError):
-        return False
-
-
-def _is_under(database: str | None, home: Path) -> bool:
-    if not database:
-        return False
-    try:
-        return Path(database).resolve().is_relative_to(home.resolve())
     except (OSError, ValueError):
         return False
