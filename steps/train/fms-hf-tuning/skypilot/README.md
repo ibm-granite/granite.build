@@ -267,7 +267,7 @@ Scan results:
   a rescan of `-3` on the same day; Clair's database has changed since
   2026-11-06, which is why Medium is lower than the 114 above.
 
-The build tests ran on `-3` (results below); `-4` trains the same way.
+Both build tests passed again on `-4` (results below).
 
 #### Reviewed false positive: PYSEC-2026-2290 / CVE-2026-5241 in `fms-v3.2.2-3` and `-4`
 
@@ -384,7 +384,12 @@ published, and need `PYTEST_ADDOPTS=-s` (two launches in one pytest process).
 | `test/aws` (A10G:1) | `full` (none / ddp), `alora` (alora / ddp) | image pull, inline `hf download`, full fine-tuning with flash-attn on Ampere, aLoRA, the chat handler on HF-id data |
 | `test/slurm-bluevela` (H200:2, `ibm`) | `lora-fsdp` (lora / fsdp, bound `dataset`), `full-fsdp` (none / fsdp, `data_config`) | Pyxis + `.sqsh`, FSDP1 saving a non-empty adapter, `data_config` reading a bound input, ClearML offline |
 
-**BlueVela result** (build `718527f5`, `fms-v3.2.2-3`, 2026-11-09): passed in 25m52s.
+**BlueVela result on `fms-v3.2.2-4`** (build `a4190905`, 2026-11-10): passed in 34m48s,
+about 11 minutes of it waiting in the SLURM queue. The `-4` `.sqsh` was already in
+the image cache. `lora-fsdp`: loss 3.30 → 1.65, adapter registered. `full-fsdp`
+(from `data_config`): loss 3.29 → 1.65, model registered. Metadata as below.
+
+**BlueVela result on `fms-v3.2.2-3`** (build `718527f5`, 2026-11-09): passed in 25m52s.
 - The image cache imported the image into a `.sqsh` in 450 s on the first run.
 - `lora-fsdp`: loss 3.30 → 1.65 over 3 steps. The adapter has 422 tensors (210 `lora_A`
   + 210 `lora_B`, plus the resized `lm_head`/`embed_tokens`), with `r=8`, and the base
@@ -394,7 +399,11 @@ published, and need `PYTEST_ADDOPTS=-s` (two launches in one pytest process).
   `distributed=fsdp`, `fms_hf_tuning_version=3.2.2`, `transformers_version=4.55.4`.
 - flash-attn and pyarrow import on the GPU node; the Mac cannot check that under qemu.
 
-**aws result** (`fms-v3.2.2-3`, 2026-11-09): passed in 6m45s, with `full` (none / ddp)
+**aws result on `fms-v3.2.2-4`** (build `844b03cd`, 2026-11-10): passed in 7m54s, both
+targets on g5.xlarge, loss to about 1.62 as on `-3`. SkyPilot again retried other
+zones on `InsufficientInstanceCapacity`. No clusters or EC2 instances were left.
+
+**aws result on `fms-v3.2.2-3`** (2026-11-09): passed in 6m45s, with `full` (none / ddp)
 and `alora` (alora / ddp), each on one A10G (g5.xlarge).
 - Both trained 3 steps (loss to about 1.62) with flash-attn on Ampere and registered
   `model`. Metadata: `distributed=ddp`, `fms_hf_tuning_version=3.2.2`,
