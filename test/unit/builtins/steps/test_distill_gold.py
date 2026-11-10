@@ -11,8 +11,8 @@ That is not hypothetical. Build d8470f14 (gold-sweep-smoke on BlueVela, 2026-09-
 rendered ``"<|im_start|>assistant\\n"`` correctly into build.yaml, dispatched
 ``--response-template '<|im_start|>assistant'``, trained two steps against the
 wrong span, and reported success — the exact silent failure the recipe exists to
-gate. test_gold_sweep_recipe.py passed throughout, because it asserts on the
-build.yaml render, one layer ABOVE where the newline dies.
+gate. That recipe's unit test (retired with the recipe) passed throughout, because it
+asserted on the build.yaml render, one layer ABOVE where the newline dies.
 
 The fix moves the newline out of the transport: recipes carry a literal backslash-n,
 which has no trailing whitespace for anything to strip, and the step's renderer

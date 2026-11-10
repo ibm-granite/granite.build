@@ -285,6 +285,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sft_config.model_path` is **not** deprecated: it is the Hugging Face id the trainer
   downloads when `model` is not bound, so it stays as a real default with no warning.
 
+### Removed
+
+- **The LSF and single-pair distillation recipes (#664).** Replaced by
+  [`recipes/distill/`](recipes/distill/README.md): one `distill` pipeline with off-policy,
+  ramp and on-policy λ modes (`LMBDA_MODE`) and a `smoke.yaml` layer, plus `distill-eval`
+  for benchmarking existing exports. LSF is being decommissioned, so the LSF recipes are
+  deleted rather than migrated. Removed, with their unit tests:
+  - `recipes/granite4-gold-distillation/` (all of it: `distill-gold`, `distill-pipeline-smoke`,
+    `distill-sft-gold`, `gold-blend-smoke`, `gold-onpolicy-smoke`, `gold-onpolicy-full-smoke`,
+    `gold-smoke`, `gold-sweep-100`, `gold-sweep-smoke`);
+  - `recipes/granite4-350m/lsf/distill-{probe,smoke,stage1,stage1-v2,onpolicy-v2,checkpoint-eval}`;
+  - `recipes/granite4-350m/slurm/distill`.
+
 ### Fixed
 
 - **Workload-status events now carry the `message` field step monitor rules send (#598).**

@@ -2,17 +2,16 @@
 # sft-smoke — smoke-test distill-sft IN ISOLATION, on BlueVela (SkyPilot / LSF).
 #
 # Three targets, not seven: align -> corpus -> train-sft, then stop. This is
-# NOT a trimmed distill-smoke — it deliberately does not continue into GOLD,
+# NOT a trimmed distill smoke — it deliberately does not continue into GOLD,
 # export or eval, because its only job is to prove distill-sft's own pin
 # resolves and the step runs, cheaply and in isolation, without paying for
 # the rest of the pipeline every time. For the integrated "SFT warm-up feeds
-# GOLD" shape, run distill-smoke (or distill-pipeline-smoke) with
+# GOLD" shape, run recipes/distill/distill with its smoke.yaml layer and
 # --param INCLUDE_SFT=true instead — that is a recipe-level switch on the
 # full pipeline, not a separate recipe, and this one does not duplicate it.
 #
-# Same pair as distill-smoke: granite-4.0-350m (SFT checkpoint) as student,
-# granite-4.1-3b as teacher. See that recipe's README for why this pair and
-# not the 3b/30b reference one.
+# granite-4.0-350m (SFT checkpoint) as student, granite-4.1-3b as teacher. See
+# recipes/distill/README.md for the distillation recipes this pair also runs in.
 #
 # Two edges, and neither is optional:
 #   align  -> corpus   the corpus must be measured with the tokenizer that
@@ -88,8 +87,8 @@ granite.build:
                 memory: $${CPU_ONLY_MEMORY}
             align_config:
               out_dir: "$${WORKDIR_ROOT}/$${RUN_NAME}/$${BUILD_SUBDIR}/align"
-              # FALSE for this pair — see distill-smoke's parameters.yaml for
-              # the full reasoning (no granite 4.x model has ChatML turn
+              # FALSE for this pair — see recipes/distill/distill/parameters.yaml
+              # for the full reasoning (no granite 4.x model has ChatML turn
               # tokens; the turn boundary is still checked separately).
               require_chatml: $${REQUIRE_CHATML}
               verify: true
