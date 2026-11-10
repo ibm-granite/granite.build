@@ -101,6 +101,10 @@ $${ MIN_COMPLETION_LENGTH_must_be_empty_or_0_when_LMBDA_MODE_is_off_policy }
 <%- if MAX_STEPS <= 0 %>
 $${ GOLD_MAX_STEPS_must_be_positive_so_the_last_rung_is_known }
 <%- endif %>
+<%- set SAVE_STEPS = GOLD_SAVE_STEPS | int %>
+<%- if SAVE_STEPS <= 0 %>
+$${ GOLD_SAVE_STEPS_must_be_positive }
+<%- endif %>
 <%- if not LADDER or LADDER[-1] != END %>
 $${ CKPT_LADDER_must_end_at_GOLD_MAX_STEPS_or_at_STOP_AT_STEP }
 <%- endif %>
@@ -108,12 +112,22 @@ $${ CKPT_LADDER_must_end_at_GOLD_MAX_STEPS_or_at_STOP_AT_STEP }
 $${ CKPT_LADDER_must_be_strictly_ascending }
 <%- endif %>
 <%- for n in LADDER %>
-<%- if n <= 0 or n % (GOLD_SAVE_STEPS | int) != 0 %>
+<%- if n <= 0 or n % SAVE_STEPS != 0 %>
 $${ CKPT_LADDER_rungs_must_be_multiples_of_GOLD_SAVE_STEPS }
 <%- endif %>
 <%- endfor %>
-<%- if (GOLD_SAVE_TOTAL_LIMIT | int) < LADDER | length %>
-$${ GOLD_SAVE_TOTAL_LIMIT_must_cover_every_CKPT_LADDER_rung }
+# The limit counts every SAVE, not only the rungs. HF Trainer saves every
+# GOLD_SAVE_STEPS (and at the end), and after each save deletes the oldest
+# checkpoint-* until save_total_limit remain, protecting only the newest (this
+# run has no best checkpoint). A save between rungs therefore pushes a rung out,
+# possibly before its export reads it, and a retry's re-emit cannot re-deliver a
+# deleted rung. So the limit must hold all ceil(END / GOLD_SAVE_STEPS) saves; with
+# RESUME_FROM_CHECKPOINT_DIR the start step is unknown here and the same bound is
+# kept, which is conservative. 0 or below turns rotation off and keeps everything.
+<%- set SAVE_LIMIT = GOLD_SAVE_TOTAL_LIMIT | int %>
+<%- set SAVES = (END + SAVE_STEPS - 1) // SAVE_STEPS %>
+<%- if 0 < SAVE_LIMIT < SAVES %>
+$${ GOLD_SAVE_TOTAL_LIMIT_must_cover_every_save_through_the_last_rung_not_only_the_rungs }
 <%- endif %>
 # distill evaluates the rungs of its own ladder, each through the export it
 # binds; it has no per-rung eval list (distill-eval's EVALS).

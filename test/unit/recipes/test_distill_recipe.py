@@ -391,7 +391,8 @@ def test_one_export_per_rung(tmp_path, smoke):
     assert exports == ladder
     assert ladder[-1] == int(params["GOLD_MAX_STEPS"])
     assert all(n % int(params["GOLD_SAVE_STEPS"]) == 0 for n in ladder)
-    assert int(params["GOLD_SAVE_TOTAL_LIMIT"]) >= len(ladder)
+    saves = -(-int(params["GOLD_MAX_STEPS"]) // int(params["GOLD_SAVE_STEPS"]))
+    assert int(params["GOLD_SAVE_TOTAL_LIMIT"]) >= saves >= len(ladder)
     for n in ladder:
         assert targets[f"export-{n}"]["inputs"]["train_output"] == {
             "binding": f"train.checkpoint_{n}"
@@ -418,6 +419,54 @@ def test_inconsistent_ladder_fails_to_render(tmp_path, params):
     with pytest.raises(jinja2.exceptions.UndefinedError) as err:
         _render_text(tmp_path, **params)
     assert "CKPT_LADDER" in str(err.value) or "GOLD_" in str(err.value)
+
+
+def test_rotation_counts_every_save_not_only_the_rungs(tmp_path):
+    """HF Trainer saves every GOLD_SAVE_STEPS and, after each save, deletes the
+    oldest checkpoint-* beyond save_total_limit (protecting only the newest; this
+    recipe has no best checkpoint). Saves between rungs count, so a limit that
+    covers the rungs alone can still delete one before its export reads it."""
+    # 4 rungs, 8 saves (every 1000 to 8000): a limit of 4 covers the rungs only.
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(
+            tmp_path, CKPT_LADDER="2000,4000,6000,8000", GOLD_SAVE_TOTAL_LIMIT="7"
+        )
+    assert "GOLD_SAVE_TOTAL_LIMIT" in str(err.value)
+    # The boundary: exactly one slot per save.
+    _render(tmp_path, CKPT_LADDER="2000,4000,6000,8000", GOLD_SAVE_TOTAL_LIMIT="8")
+    # 0 turns rotation off (HF deletes nothing at a limit <= 0).
+    _render(tmp_path, GOLD_SAVE_TOTAL_LIMIT="0")
+
+
+def test_rotation_bound_ends_at_stop_at_step(tmp_path):
+    # 4500 / 250 = 18 saves, whatever GOLD_MAX_STEPS is.
+    params = dict(
+        GOLD_MAX_STEPS="8150",
+        STOP_AT_STEP="4500",
+        GOLD_SAVE_STEPS="250",
+        CKPT_LADDER="2250,2500,3000,3500,4000,4500",
+    )
+    with pytest.raises(jinja2.exceptions.UndefinedError):
+        _render_text(tmp_path, GOLD_SAVE_TOTAL_LIMIT="17", **params)
+    _render(tmp_path, GOLD_SAVE_TOTAL_LIMIT="18", **params)
+    # A resume does not relax it: the start step is unknown at render time.
+    with pytest.raises(jinja2.exceptions.UndefinedError):
+        _render_text(
+            tmp_path,
+            GOLD_SAVE_TOTAL_LIMIT="17",
+            RESUME_FROM_CHECKPOINT_DIR="/x/run_node2",
+            RESUME_EMIT_SEEDED="false",
+            **params,
+        )
+
+
+@pytest.mark.parametrize("smoke", [False, True], ids=["full", "smoke"])
+def test_default_save_limit_covers_every_save(tmp_path, smoke):
+    layers = (_SMOKE,) if smoke else ()
+    params = _layered(_SITE, *layers)
+    saves = -(-int(params["GOLD_MAX_STEPS"]) // int(params["GOLD_SAVE_STEPS"]))
+    assert int(params["GOLD_SAVE_TOTAL_LIMIT"]) >= saves
+    _render(tmp_path, *layers)
 
 
 def test_stop_at_step_ends_the_ladder(tmp_path):

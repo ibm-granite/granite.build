@@ -104,8 +104,11 @@ GOLD_MAX_STEPS: 8000
 # error but a target that never dispatches.
 CKPT_LADDER: "1000,2000,3000,4000,5000,6000,7000,8000"
 GOLD_SAVE_STEPS: 1000
-# Keep every rung: the bound exports read them mid-run, so an evicted rung is an
-# export that never runs. Above the rung count so a resume cannot start evicting.
+# Keep every SAVE, not only every rung: the trainer saves every GOLD_SAVE_STEPS and
+# deletes its oldest checkpoints past this limit, counting the saves between rungs,
+# so a rung can be deleted before its export reads it, and a retry cannot re-emit
+# it. The render fails unless it is at least ceil(last rung / GOLD_SAVE_STEPS) (8
+# here), or 0 or below, which keeps everything. Raise it with a finer save grid.
 GOLD_SAVE_TOTAL_LIMIT: 12
 # Effective batch = per_device x grad_accum x nodes x gpus = 2 x 3 x 2 x 8 = 96.
 # HOLD THE PRODUCT when changing the node count: 1 node at grad_accum 6 is the same
