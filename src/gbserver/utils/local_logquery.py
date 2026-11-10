@@ -146,7 +146,9 @@ class LocalLogQueryAPI:
         if event.build_event.payload is not None:
             msg = getattr(event.build_event.payload, "msg", "") or ""
 
-        timestamp = event.build_event.timestamp.timestamp()
+        # IBM Cloud Logs reports timestamps in milliseconds, and gbcli converts them
+        # back to seconds (convert_milliseconds_to_seconds) when paging with --all/-f.
+        timestamp = event.build_event.timestamp.timestamp() * 1000
 
         return LogqueryResponseLogs(
             timestamp=timestamp,

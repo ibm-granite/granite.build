@@ -30,6 +30,8 @@ from gbserver.types.buildevent import (
 from gbserver.types.logs import Item, LogqueryResponse, QueryDef, QueryParams
 from gbserver.utils.local_logquery import LocalLogQueryAPI
 
+_DEFAULT_TS = datetime(2026, 3, 26, 12, 0, 0)
+
 
 def _make_stored_event(
     build_id: str = "build-1",
@@ -40,7 +42,7 @@ def _make_stored_event(
 ) -> StoredEvent:
     """Helper to create a StoredEvent with a MESSAGE_EVENT payload."""
     if timestamp is None:
-        timestamp = datetime(2026, 3, 26, 12, 0, 0)
+        timestamp = _DEFAULT_TS
     return StoredEvent(
         build_event=BuildEvent(
             run_metadata=EntityRunMetadata(
@@ -108,7 +110,8 @@ class TestLocalLogQueryAPI:
             parsed = json.loads(log_entry.text)
             assert parsed["log"] == f"line {i + 1}"
             assert log_entry.logId is not None
-            assert log_entry.timestamp is not None
+            # gbcli expects milliseconds since epoch (like IBM Cloud Logs)
+            assert log_entry.timestamp == _DEFAULT_TS.timestamp() * 1000
 
     @patch("gbserver.utils.local_logquery.get_admin_storage")
     def test_step_id_filter(self, mock_get_storage):
