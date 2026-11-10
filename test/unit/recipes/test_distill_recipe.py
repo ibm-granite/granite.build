@@ -278,6 +278,16 @@ def test_trainer_and_server_share_one_stop_file(tmp_path, mode, smoke):
     assert trainer.startswith(f"{root}/arm-x/{{{{ run_metadata.build_id }}}}/")
 
 
+def test_server_lifetime_cap_is_twelve_hours(tmp_path):
+    """The stop file handles a trainer that fails; the cap is only the backstop
+    for a rank 0 killed outright, so it need not cover a whole run. Smoke's own
+    cap stays the smaller."""
+    assert int(_layered()["VLLM_MAX_LIFETIME_SECONDS"]) == 43200
+    assert int(_yaml(_SMOKE)["VLLM_MAX_LIFETIME_SECONDS"]) < 43200
+    cfg = _config(_render(tmp_path, LMBDA_MODE="ramp"), "rollout-server")
+    assert cfg["vllm_config"]["max_lifetime_seconds"] == 43200
+
+
 def test_off_policy_sets_no_stop_file(tmp_path):
     cfg = _config(_render(tmp_path, LMBDA_MODE="off-policy"), "train")
     assert not cfg.get("rollout_stop_file")

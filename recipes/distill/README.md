@@ -258,9 +258,15 @@ therefore costs one extra attempt, not every retry. See
 **The rollout server fails visibly.** A server that dies before `teardown` ends it (idle
 kill, OOM, crash, or `VLLM_MAX_LIFETIME_SECONDS` reached) ends FAILED, never SUCCESS. A retry therefore relaunches it along with `train`, rather than
 handing the trainer a dead URL. `teardown` is gated on `train`'s final checkpoint, so a
-crashed trainer never triggers it; `VLLM_MAX_LIFETIME_SECONDS` (default 36 h) is the backstop
-that releases the server's GPUs. See
-[When the target ends FAILED](../../steps/train/distill/student-rollout-generator/skypilot/USAGE.md#when-the-target-ends-failed-and-when-success).
+failed trainer never triggers it. Instead, the trainer and the server share a stop file,
+`WORKDIR_ROOT/RUN_NAME/<build_id>/rollout-stop`: when `train` exits non-zero its rank 0
+writes it, and the server stops within 30 s and fails its target. A rank 0 killed outright
+writes nothing; for that, `VLLM_MAX_LIFETIME_SECONDS` (default 12 h, 1 h in `smoke.yaml`)
+is the backstop that releases the server's GPUs. The cap also bounds a healthy run: it
+counts from the server's health check, which comes right after `align`, so it must cover
+the trainer's queue wait plus its run. Raise it for an online run longer than that. See
+[When the target ends FAILED](../../steps/train/distill/student-rollout-generator/skypilot/USAGE.md#when-the-target-ends-failed-and-when-success)
+and [Stopping when the trainer fails](../../steps/train/distill/student-rollout-generator/skypilot/USAGE.md#stopping-when-the-trainer-fails).
 
 **`RESUME_FROM_CHECKPOINT_DIR`** starts a *new* build from another run's checkpoints. Name
 that run's `<train_dir>/checkpoints/<RUN_NAME>_node<N>` directory: every complete

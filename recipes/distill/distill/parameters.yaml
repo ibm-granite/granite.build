@@ -162,10 +162,13 @@ VLLM_PORT: 8001
 # Data-parallel across these; ample for a small student.
 VLLM_NUM_GPUS: 2
 VLLM_HEALTH_TIMEOUT_SECONDS: 1800
-# The server's ceiling on holding its allocation once healthy, the backstop for a
-# crashed trainer (teardown never fires then). It must cover the trainer's queue
-# wait as well as its run: the server comes up right after align.
-VLLM_MAX_LIFETIME_SECONDS: 129600
+# The server's ceiling on holding its allocation once healthy. A trainer that FAILS
+# no longer needs it: rank 0 writes the stop file and the server stops at once.
+# This is the backstop for a rank 0 killed outright (OOM kill, node loss), which
+# writes nothing, so teardown never fires and only the cap releases the GPUs. It
+# still bounds a healthy run: the server comes up right after align, so the cap
+# must cover the trainer's queue wait plus its run. Raise it for a longer one.
+VLLM_MAX_LIFETIME_SECONDS: 43200
 TOP_P: 0.95
 # The sampled-OPD (REINFORCE-style) loss is a different objective; off.
 USE_SAMPLED_OPD_LOSS: false
