@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from gbcli.services.service_build import load_layered_params
+from gbcli.services.service_build import get_params_from_file, load_layered_params
 
 
 def _write(path: Path, text: str) -> str:
@@ -89,8 +89,68 @@ def test_missing_layer_names_path(tmp_path, recipe):
 
 def test_non_mapping_layer_errors(tmp_path, recipe):
     bad = _write(tmp_path / "bad.yaml", "- a\n- b\n")
-    with pytest.raises(Exception, match="key-value pairs"):
+    with pytest.raises(Exception, match="key-value pairs") as exc:
         load_layered_params(recipe, [bad])
+    # The error names the offending file, not "parameters.yaml".
+    assert str(exc.value).startswith(f"{bad}: ")
+    assert "must be a mapping" in str(exc.value)
+
+
+def test_get_params_from_file_comments_only_is_empty(tmp_path):
+    f = _write(tmp_path / "c.yaml", "# nothing set here\n# FOO: 1\n")
+    assert get_params_from_file(f) == {}
+
+
+def test_get_params_from_file_empty_is_empty(tmp_path):
+    f = _write(tmp_path / "e.yaml", "")
+    assert get_params_from_file(f) == {}
+
+
+def test_get_params_from_file_non_mapping_names_path(tmp_path):
+    f = _write(tmp_path / "scalar.yaml", "just a string\n")
+    with pytest.raises(Exception, match="scalar.yaml: parameters must be a mapping"):
+        get_params_from_file(f)
+
+
+def test_comments_only_layer_keeps_earlier_values(tmp_path, recipe):
+    c = _write(tmp_path / "c.yaml", "# placeholder\n")
+    assert load_layered_params(recipe, [c])["A"] == "base"
+
+
+def test_relative_build_file_finds_recipe_file(tmp_path, recipe, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write(tmp_path / "over.yaml", "B: over\n")
+    # A bare relative build.yaml: the recipe file is looked up in the cwd.
+    assert load_layered_params("build.yaml", ["over.yaml"]) == {
+        "A": "base",
+        "B": "over",
+        "LIST": [1, 2, 3],
+    }
+
+
+def test_recipe_file_via_symlink_applies_once_at_its_position(
+    tmp_path, recipe, monkeypatch
+):
+    import gbcli.services.service_build as sb
+
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    link = other / "linked.yaml"
+    link.symlink_to(tmp_path / "parameters.yaml")
+    over = _write(tmp_path / "over.yaml", "B: over\n")
+
+    loaded = []
+    real = sb.get_params_from_file
+
+    def spy(path):
+        loaded.append(Path(path).resolve())
+        return real(path)
+
+    monkeypatch.setattr(sb, "get_params_from_file", spy)
+    merged = sb.load_layered_params(recipe, [over, str(link)])
+    # The symlink is the recipe file: applied after `over`, and only once.
+    assert merged["B"] == "base"
+    assert loaded.count((tmp_path / "parameters.yaml").resolve()) == 1
 
 
 def test_explicit_recipe_file_applies_at_its_position(tmp_path, recipe):

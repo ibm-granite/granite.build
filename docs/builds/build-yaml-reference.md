@@ -300,8 +300,9 @@ are matched on retry, and the relationship to *step-level* retry — see:
 A `build.yaml` can contain `$${NAME}` placeholders. The `gb` CLI fills them in
 before it submits the build (`gb build start`, `validate`, and
 `describe --raw`). It takes values from parameter files and `--param`
-options. The final set of values is saved as `parameters-applied.yaml` next
-to the submitted `build.yaml`.
+options. `gb build start` and `gb build validate` write the final set of
+values to `parameters-applied.yaml` next to the resolved `build.yaml`, and
+`start` submits it with the build. `gb build describe` does not write it.
 
 ```yaml
 # parameters.yaml, next to build.yaml
@@ -330,9 +331,24 @@ replaces a list or map value whole; it is never merged with the earlier
 value. If you pass the recipe's own `parameters.yaml` as a `--parameters-path`,
 it is applied at that position, not also as the base layer.
 
-Run with `--loglevel DEBUG` to see which file overrode each key. To check the
-result without submitting, run `gb build describe -f build.yaml --raw` with
-the same options.
+The whole-value rule applies to files. A dotted `--param` sets one nested key
+and leaves the rest of the map alone: with `M: {x: 1, y: 2}` from a file,
+`--param M.y=3` gives `M: {x: 1, y: 3}`.
+
+The recipe's `parameters.yaml` is always loaded when it exists, so a malformed
+one fails the build even when you pass other files with `--parameters-path`.
+
+Run with `--loglevel DEBUG` to see which file overrode each key. To see the
+resolved build without submitting it, run `gb build start --dry-run` with the
+same options:
+
+```shell
+gb build start -f build.yaml --parameters-path site.yaml --parameters-path smoke.yaml --dry-run
+```
+
+`gb build describe -f build.yaml --raw` also renders the build, but only when
+you pass `--param` or `--parameters-path`. Without them it prints the file
+as it is, placeholders included, even if a `parameters.yaml` is next to it.
 
 ## Jinja templating
 

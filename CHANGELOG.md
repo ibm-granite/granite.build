@@ -71,7 +71,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replaced whole. For example:
   `gb build start -f build.yaml --parameters-path site.yaml --parameters-path smoke.yaml`.
   Compatibility: a single `--parameters-path` used to replace `parameters.yaml` completely; now a
-  key the file does not define falls back to `parameters.yaml`.
+  key the file does not define falls back to `parameters.yaml`. The recipe's `parameters.yaml` is
+  now always loaded, so a malformed one fails the build even when another `--parameters-path` is
+  passed. A comments-only parameters file now counts as empty instead of failing, and the error
+  for a file that is not a mapping names that file.
 - **With podman, `make publish-image`'s `REGISTRY_USER`/`REGISTRY_PASSWORD` login is scoped to
   `$(REGISTRY)` instead of the whole registry host (#229),** so it no longer replaces your other
   logins on that host. docker still logs in per host.

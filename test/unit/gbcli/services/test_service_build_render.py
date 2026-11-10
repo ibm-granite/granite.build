@@ -338,3 +338,136 @@ def test_cli_start_dry_run_accepts_repeated_parameters_path(tmp_path, monkeypatc
     )
     assert result.exit_code == 0, result.output
     assert "demo-smoke" in result.output
+
+
+def _recorder():
+    events = []
+
+    def cb(callback_event=None, callback_args=None):
+        events.append((callback_event, callback_args))
+
+    return events, cb
+
+
+def _errors(events):
+    return [str(a.get("reason", "")) for e, a in events if e == "error"]
+
+
+def test_start_dry_run_bad_layer_reports_one_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("GB_CACHE", str(tmp_path / "cache"))
+    bp = _write(tmp_path)
+    bad = _write(tmp_path, "- not\n- a mapping\n", name="bad.yaml")
+    events, cb = _recorder()
+    out = build_start(
+        github_token="",
+        quiet=True,
+        filename=str(bp),
+        parameters_path=(str(bad),),
+        dry_run=True,
+        callback=cb,
+    )
+    assert out is None
+    errors = _errors(events)
+    assert len(errors) == 1, errors
+    assert "bad.yaml: parameters must be a mapping" in errors[0]
+    assert "unpack" not in errors[0]
+
+
+def test_start_dry_run_relative_build_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("GB_CACHE", str(tmp_path / "cache"))
+    monkeypatch.chdir(tmp_path)
+    _write(tmp_path)
+    _layers(tmp_path)
+    out = build_start(
+        github_token="",
+        quiet=True,
+        filename="build.yaml",
+        parameters_path=("smoke.yaml",),
+        dry_run=True,
+    )
+    doc = yaml.safe_load(out)
+    # smoke.yaml sets SUFFIX; ENVIRONMENT falls back to the cwd's parameters.yaml.
+    assert doc["granite.build"]["name"] == "demo-smoke"
+    assert doc["granite.build"]["targets"]["t1"]["environment_uri"].endswith("/base")
+
+
+@pytest.fixture
+def offline_validate(monkeypatch, tmp_path):
+    """Stub the server side of build_validate; capture the submitted build.yaml."""
+    import base64
+    import io
+    import types
+    import zipfile
+
+    import gbcli.services.service_build as sb
+
+    monkeypatch.setenv("GB_CACHE", str(tmp_path / "cache"))
+    submitted = {}
+
+    def fake_validate_build(token, api, archive, space_name, user, **kwargs):
+        with zipfile.ZipFile(io.BytesIO(base64.b64decode(archive))) as z:
+            submitted["build.yaml"] = z.read("build.yaml").decode("utf-8")
+        return {"errors": [], "warnings": []}
+
+    monkeypatch.setattr(sb, "get_user", lambda token: types.SimpleNamespace(login="u"))
+    monkeypatch.setattr(
+        sb,
+        "resolve_space",
+        lambda token, space, cb=None: {"git_repo_uri": "x", "name": "default"},
+    )
+    monkeypatch.setattr(sb, "validate_build", fake_validate_build)
+    return submitted
+
+
+def test_validate_layered_files(tmp_path, offline_validate):
+    from gbcli.services.service_build import build_validate
+
+    bp = _write(tmp_path)
+    site, smoke = _layers(tmp_path)
+    events, cb = _recorder()
+    result = build_validate(
+        github_token="",
+        quiet=True,
+        filename=str(bp),
+        params=["ENVIRONMENT=cli"],
+        parameters_path=(site, smoke),
+        callback=cb,
+    )
+    assert _errors(events) == []
+    assert result
+    doc = yaml.safe_load(offline_validate["build.yaml"])
+    assert doc["granite.build"]["name"] == "demo-smoke"
+    assert doc["granite.build"]["targets"]["t1"]["environment_uri"].endswith("/cli")
+
+
+def test_validate_bad_layer_reports_one_error(tmp_path, offline_validate):
+    from gbcli.services.service_build import build_validate
+
+    bp = _write(tmp_path)
+    bad = _write(tmp_path, "just a string\n", name="bad.yaml")
+    events, cb = _recorder()
+    build_validate(
+        github_token="",
+        quiet=True,
+        filename=str(bp),
+        parameters_path=(str(bad),),
+        callback=cb,
+    )
+    errors = _errors(events)
+    assert len(errors) == 1, errors
+    assert "bad.yaml: parameters must be a mapping" in errors[0]
+    assert "build.yaml" not in offline_validate
+
+
+def test_dotted_param_sets_one_nested_key_of_file_map(tmp_path):
+    # Files replace a map whole; a dotted --param sets just one nested key.
+    bp = _write(tmp_path, "granite.build:\n  name: demo-$${M.x}-$${M.y}\n")
+    _write(tmp_path, "M:\n  x: 1\n  y: 2\n", name="parameters.yaml")
+    out = build_describe(
+        github_token="",
+        filename=str(bp),
+        format="yaml",
+        raw=True,
+        params=["M.y=3"],
+    )
+    assert yaml.safe_load(out)["granite.build"]["name"] == "demo-1-3"

@@ -2218,9 +2218,12 @@ def get_params_from_file(file_path: str) -> dict:
     if os.path.exists(file_path) and os.stat(file_path).st_size > 0:
         with open(file_path, "r", encoding="utf-8") as f:
             params_from_file = yaml.safe_load(f)
+        if params_from_file is None:
+            # Comments only (or whitespace): no parameters, like an empty file.
+            return {}
         if not isinstance(params_from_file, dict):
             raise Exception(
-                "parameters defined in parameters.yaml must be written in key-value pairs."
+                f"{file_path}: parameters must be a mapping of key-value pairs"
             )
         return params_from_file
     else:
@@ -2708,16 +2711,11 @@ def parameters_helper(
     callback=None,
     callback_event=None,
 ) -> Tuple[str, str]:
-    try:
-        # Recipe parameters.yaml, then each --parameters-path in order (#663).
-        params_from_file = load_layered_params(build_file_path, parameters_path)
-    except Exception as e:
-        if callback is not None:
-            callback(
-                callback_event="error",
-                callback_args={"reason": f"Error parsing file contents: {e}"},
-            )
-        return
+    # Recipe parameters.yaml, then each --parameters-path in order (#663). A
+    # loader error propagates: every caller wraps this call and reports the
+    # exception through the error callback once. Reporting it here and then
+    # returning None made callers fail again on the tuple unpack.
+    params_from_file = load_layered_params(build_file_path, parameters_path)
 
     if callback and callback_event and not quiet:
         callback(callback_event=callback_event, callback_args={"steps": 20})
