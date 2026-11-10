@@ -130,8 +130,10 @@ config:
   # test_checkpoint_consumer_reuse_on_retry.py). resume_from_checkpoint_dir then only
   # seeds an EMPTY train_dir: once the directory holds checkpoints of its own, they win.
   train_dir: ""
-  # With train_dir set: refuse to train when the previous attempt in this train_dir did not
-  # raise the highest complete checkpoint (a deterministic failure would otherwise burn every retry).
+  # With train_dir set: refuse to train when the two previous attempts in this train_dir both
+  # failed to raise the highest complete checkpoint (a deterministic failure would otherwise burn
+  # every retry; one transient failure before the next save is let through). Once refused, every
+  # later attempt in the train_dir is refused at once. See src/progress_check.py.
   require_progress: true
   gold_config:
     # ── Code and image ──────────────────────────────────────────────────────

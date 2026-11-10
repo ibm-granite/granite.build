@@ -1560,17 +1560,20 @@ class TestTrainDir:
         ckpts = train / "checkpoints" / "gold_node2"
         self._checkpoint(ckpts, 5)
         assert self._exec(tmp_path, train, attempt="tr-1").returncode == 0
+        # One attempt without progress is let through: it may have been transient.
+        assert self._exec(tmp_path, train, attempt="tr-2").returncode == 0
 
-        result = self._exec(tmp_path, train, attempt="tr-2")
+        result = self._exec(tmp_path, train, attempt="tr-3")
 
         assert result.returncode == 3
-        assert "no progress since attempt tr-1 (still at checkpoint-5)" in (
-            result.stderr
+        assert (
+            "no progress over the last 2 attempts (tr-1, tr-2; still at checkpoint-5)"
+            in result.stderr
         )
         # Refused before anything is emitted.
         assert self._emitted(result.stdout) == []
         marker = (ckpts / ".resume-seeded").read_text().strip()
-        assert marker == "failed:launch-tr-2::"
+        assert marker == "failed:launch-tr-3::"
         worker = subprocess.run(
             [
                 "bash",
@@ -1584,7 +1587,7 @@ class TestTrainDir:
                 "NODE_RANK": "1",
                 "NODES": "2",
                 "CONFIG_NAME": "gold_node2",
-                "GB_SKYPILOT_LAUNCH_ID": "launch-tr-2",
+                "GB_SKYPILOT_LAUNCH_ID": "launch-tr-3",
             },
             capture_output=True,
             text=True,

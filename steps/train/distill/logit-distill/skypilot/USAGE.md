@@ -143,7 +143,7 @@ harmless where the gap doesn't exist — see `steps/train/distill/images/gpu/REA
 | `resume_from_checkpoint_dir` | string | The `<run_name>_node<N>` checkpoint directory of an earlier run of this step to resume from. See [Resume](#resume). Default: `""` (no resume). |
 | `resume_emit_seeded` | boolean | Whether seeded checkpoints are emitted as `checkpoint_<N>` again. Only has an effect with both `resume_from_checkpoint_dir` and `emit_checkpoint_artifacts` set. Default: `true`. |
 | `train_dir` | string | A training directory that is stable for the whole build: the checkpoint directory becomes `<train_dir>/checkpoints/<run_name>_node<N>` and the rendered config sits under `<train_dir>` too. Empty keeps both under `GB_BUILD_WORKDIR`. See [Stable train_dir](#stable-train_dir). Default: `""`. |
-| `require_progress` | boolean | With `train_dir` set: refuse to train when the previous attempt in this `train_dir` did not raise the highest complete checkpoint. See [No-progress refusal](#no-progress-refusal). Default: `true`. |
+| `require_progress` | boolean | With `train_dir` set: refuse to train when the two previous attempts in this `train_dir` both failed to raise the highest complete checkpoint, and refuse every attempt after a refusal. Build-level retries only: `retry_workload` relaunches are not checked. See [No-progress refusal](#no-progress-refusal). Default: `true`. |
 
 ### Monitor (top-level `config`)
 
@@ -520,23 +520,45 @@ fails. The final `checkpoint` artifact is unchanged.
 
 ### No-progress refusal
 
-With `train_dir` set and `require_progress: true`, rank 0 records each attempt in
-`<train_dir>/attempts.jsonl` (its id and the highest complete checkpoint it starts from),
-after the move-aside and the seed and before anything is emitted or `accelerate` launches.
-An attempt is a **target run** (`GB_TARGETRUN_ID`): a `retry_workload` relaunch inside one
-target run is the same attempt and is let through, a build-level retry is a new one. When
-the new attempt starts from no higher a checkpoint than the previous one did, it is refused
-with exit 3:
+With `train_dir` set and `require_progress: true`, rank 0 appends one record per attempt to
+`<train_dir>/attempts.jsonl` (its id, the highest complete checkpoint it starts from, and a
+`status` of `started` or `refused`), after the move-aside and the seed and before anything is
+emitted or `accelerate` launches. An attempt is a **target run** (`GB_TARGETRUN_ID`): a
+build-level retry is a new one. An attempt is refused with exit 3 when the **two** most
+recent `started` attempts both began at a step at or above the one it would start from,
+that is, when two consecutive attempts made no progress:
 
 ```
-logit-distill: FATAL: no progress since attempt <id> (still at checkpoint-<N>); not retrying
+logit-distill: FATAL: no progress over the last 2 attempts (<a>, <b>; still at checkpoint-<N>); not retrying
 ```
 
-It means the previous attempt failed before its next save, and this one would fail at the
-same point: a deterministic failure (a bad batch, an OOM at a fixed length, a key the
-trainer rejects after loading) would otherwise burn every retry the build has, each holding
-the allocation until it got there. Read that attempt's log, fix the cause, and start a new
-build — a new build has a new `train_dir`. `require_progress: false` turns the check off.
+It means both attempts failed before their next save, and this one would fail at the same
+point: a deterministic failure (a bad batch, an OOM at a fixed length, a key the trainer
+rejects after loading) would otherwise burn every retry the build has, each holding the
+allocation until it got there. A **single** attempt that dies before its next save is let
+through: on our clusters an NCCL/IB hang or a dead node does that often, and the next
+attempt usually gets past it. Progress by any attempt in between resets the count.
+
+The refusal is itself recorded (`status: refused`), and once one attempt has been refused
+every later attempt in that `train_dir` is refused at once, naming the refusal:
+
+```
+logit-distill: FATAL: attempt <id> was refused for no progress (at checkpoint-<N>); not retrying
+```
+
+Those later retries fail fast: they still pay the queue wait to reach rank 0, but train
+nothing. Read the failed attempts' logs, fix the cause, and start a new build: a new build
+has a new `train_dir`. `require_progress: false` turns the check off.
+
+The cost: after its first failure, a deterministic failure now costs **two** extra
+attempts, where it used to cost one: a retry that trains to the same point and fails again
+(let through as possibly transient), then one refused at rank 0 after its queue wait.
+
+**What it does not check.** Only build-level retries are judged. A `retry_workload` relaunch
+(the environment's `retry` block, which relaunches the workload inside one target run) keeps
+its `GB_TARGETRUN_ID`, is let through unrecorded, and is not counted, so it is bounded only
+by that block's own retry count. That step-level retry is off unless the environment enables
+it.
 
 ### On-policy
 

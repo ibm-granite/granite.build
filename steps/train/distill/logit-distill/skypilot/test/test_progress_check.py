@@ -4,7 +4,8 @@ Run from the step directory with `make test`.
 
 The template tests (test_step_template.py) run it inside the train_dir block, after
 the incomplete-checkpoint move-aside; these pin the script's own rules: what counts
-as the highest checkpoint, when an attempt is recorded, and when it refuses.
+as the highest checkpoint, when an attempt is recorded, and when it refuses: only
+after two consecutive attempts made no progress, and every attempt after a refusal.
 """
 
 import json
@@ -72,6 +73,7 @@ def test_first_attempt_is_recorded_at_step_zero(tmp_path):
     (record,) = _attempts(train)
     assert record["attempt"] == "a1"
     assert record["start_step"] == 0
+    assert record["status"] == "started"
     # ISO 8601, UTC.
     assert datetime.fromisoformat(record["time"]).utcoffset().total_seconds() == 0
 
@@ -96,41 +98,114 @@ def test_progress_records_the_new_attempt(tmp_path):
     ]
 
 
-def test_no_progress_is_refused(tmp_path):
+def test_a_single_no_progress_failure_is_allowed(tmp_path):
+    """One attempt that dies before its next save (an NCCL hang, a dead node) is
+    common and transient: the next attempt is let through and recorded."""
     train, ckpts = _dirs(tmp_path)
     _checkpoint(ckpts, 500)
     assert _run(train, ckpts, "a1").returncode == 0
 
     result = _run(train, ckpts, "a2")
 
+    assert result.returncode == 0, result.stderr
+    assert [(r["attempt"], r["start_step"], r["status"]) for r in _attempts(train)] == [
+        ("a1", 500, "started"),
+        ("a2", 500, "started"),
+    ]
+
+
+def test_two_consecutive_no_progress_attempts_are_refused(tmp_path):
+    train, ckpts = _dirs(tmp_path)
+    _checkpoint(ckpts, 500)
+    assert _run(train, ckpts, "a1").returncode == 0
+    assert _run(train, ckpts, "a2").returncode == 0
+
+    result = _run(train, ckpts, "a3")
+
     assert result.returncode == 3
     lines = result.stderr.splitlines()
     assert lines[0] == (
-        "logit-distill: FATAL: no progress since attempt a1 (still at "
-        "checkpoint-500); not retrying"
+        "logit-distill: FATAL: no progress over the last 2 attempts (a1, a2; still "
+        "at checkpoint-500); not retrying"
     )
     assert len(lines) == 2 and lines[1].strip(), "expected a one-line hint"
-    # Nothing appended: the refused attempt never started.
-    assert [r["attempt"] for r in _attempts(train)] == ["a1"]
+    # The refusal is recorded, so a later attempt is refused without measuring.
+    assert [(r["attempt"], r["status"]) for r in _attempts(train)] == [
+        ("a1", "started"),
+        ("a2", "started"),
+        ("a3", "refused"),
+    ]
+    assert _attempts(train)[-1]["start_step"] == 500
 
 
 def test_no_progress_from_scratch_is_refused(tmp_path):
-    """An attempt that died before its first save left nothing to resume from."""
+    """Two attempts that died before their first save left nothing to resume from."""
     train, ckpts = _dirs(tmp_path)
     assert _run(train, ckpts, "a1").returncode == 0
-    result = _run(train, ckpts, "a2")
+    assert _run(train, ckpts, "a2").returncode == 0
+    result = _run(train, ckpts, "a3")
     assert result.returncode == 3
     assert "still at checkpoint-0" in result.stderr
+
+
+def test_progress_in_between_resets_the_count(tmp_path):
+    """a1 fails without saving, a2 saves 500 and fails, a3 fails at 500: only one
+    attempt (a3) made no progress, so a4 is let through; a5 then is not."""
+    train, ckpts = _dirs(tmp_path)
+    assert _run(train, ckpts, "a1").returncode == 0
+    assert _run(train, ckpts, "a2").returncode == 0
+    _checkpoint(ckpts, 500)
+    assert _run(train, ckpts, "a3").returncode == 0
+    result = _run(train, ckpts, "a4")
+    assert result.returncode == 0, result.stderr
+    result = _run(train, ckpts, "a5")
+    assert result.returncode == 3
+    assert "(a3, a4; still at checkpoint-500)" in result.stderr
+
+
+def test_after_a_refusal_every_later_attempt_is_refused_at_once(tmp_path):
+    """Even one that would have made progress by the count: the refusal is the
+    verdict on this train_dir, and only a new build clears it."""
+    train, ckpts = _dirs(tmp_path)
+    assert _run(train, ckpts, "a1").returncode == 0
+    assert _run(train, ckpts, "a2").returncode == 0
+    assert _run(train, ckpts, "a3").returncode == 3
+    _checkpoint(ckpts, 500)
+
+    result = _run(train, ckpts, "a4")
+
+    assert result.returncode == 3
+    lines = result.stderr.splitlines()
+    assert lines[0].startswith("logit-distill: FATAL: attempt a3 was refused")
+    assert "not retrying" in lines[0]
+    assert [(r["attempt"], r["status"]) for r in _attempts(train)][-2:] == [
+        ("a3", "refused"),
+        ("a4", "refused"),
+    ]
 
 
 def test_a_half_written_checkpoint_does_not_count(tmp_path):
     train, ckpts = _dirs(tmp_path)
     _checkpoint(ckpts, 500)
     assert _run(train, ckpts, "a1").returncode == 0
+    assert _run(train, ckpts, "a2").returncode == 0
     _checkpoint(ckpts, 1000, complete=False)
-    result = _run(train, ckpts, "a2")
+    result = _run(train, ckpts, "a3")
     assert result.returncode == 3
     assert "still at checkpoint-500" in result.stderr
+
+
+def test_a_record_without_a_status_counts_as_started(tmp_path):
+    """attempts.jsonl written before refusals were recorded carries no status."""
+    train, ckpts = _dirs(tmp_path)
+    _checkpoint(ckpts, 500)
+    (train / "attempts.jsonl").write_text(
+        '{"attempt": "a1", "start_step": 500, "time": "t"}\n'
+        '{"attempt": "a2", "start_step": 500, "time": "t"}\n'
+    )
+    result = _run(train, ckpts, "a3")
+    assert result.returncode == 3
+    assert "(a1, a2;" in result.stderr
 
 
 def test_sharded_weights_count_as_complete(tmp_path):
@@ -146,9 +221,12 @@ def test_the_same_attempt_twice_is_a_relaunch_not_a_retry(tmp_path):
     let through, even without progress, and recorded once."""
     train, ckpts = _dirs(tmp_path)
     assert _run(train, ckpts, "a1").returncode == 0
-    result = _run(train, ckpts, "a1")
-    assert result.returncode == 0, result.stderr
-    assert len(_attempts(train)) == 1
+    assert _run(train, ckpts, "a2").returncode == 0
+    for _ in range(3):
+        result = _run(train, ckpts, "a2")
+        assert result.returncode == 0, result.stderr
+        assert "relaunched (retry_workload)" in result.stdout
+    assert [r["attempt"] for r in _attempts(train)] == ["a1", "a2"]
 
 
 def test_ordering_is_numeric_not_lexical(tmp_path):
@@ -166,6 +244,16 @@ def test_only_hf_checkpoint_names_count(tmp_path):
         _checkpoint(ckpts, 2000).rename(ckpts / name)
     assert _run(train, ckpts, "a1").returncode == 0
     assert _attempts(train)[0]["start_step"] == 0
+
+
+def test_an_unknown_status_fails_loudly(tmp_path):
+    train, ckpts = _dirs(tmp_path)
+    (train / "attempts.jsonl").write_text(
+        '{"attempt": "a1", "start_step": 0, "status": "odd"}\n'
+    )
+    result = _run(train, ckpts, "a2")
+    assert result.returncode == 1
+    assert "logit-distill: FATAL:" in result.stderr
 
 
 def test_an_unreadable_attempt_record_fails_loudly(tmp_path):
