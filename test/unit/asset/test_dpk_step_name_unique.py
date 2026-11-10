@@ -16,17 +16,17 @@
 
 """Exactly one step named ``dpk`` ships in this repo.
 
-The step's URI is ``space://steps/data/dpk``. A bare ``space://steps/dpk`` is still
-looked up by name: the resolver's env-class-match tier searches
-``steps/**/dpk/step.yaml`` under every base_uri and, when several match, silently
-picks one (fewest ``environment_configs`` keys first, then path order). The BlueVela
-fixtures rely on that lookup on purpose, because in the gb-test assets repo the step
-lives at ``steps/skypilot/dpk``, where ``skypilot`` is an env-partition dir.
+The step's URI is ``space://steps/data/dpk``. ``data`` is a category folder, so it is
+part of the name: a bare ``space://steps/dpk`` does not reach it. A bare name only
+matches a ``dpk`` directly under ``steps/`` or under an env-class folder there (e.g.
+``steps/skypilot/dpk``); see "Step names" in docs/environments/step-resolution.md.
 
-A second ``dpk`` anywhere the resolver looks would make that lookup ambiguous without
-any error. This includes a stale ``steps/dpk`` left behind by a move, or a ``dpk`` in
-another category. The old in-repo URI ``space://steps/dpk`` is no longer supported
-(see CHANGELOG.md), so nothing here pins its behaviour.
+A second ``dpk`` would make the name ambiguous. A stale ``steps/dpk`` left behind by
+a move, or one under an env-class folder, would be what a bare ``space://steps/dpk``
+resolves to; a ``dpk`` in another category would give two steps the same leaf name.
+So this test checks the broader ``steps/**/dpk/step.yaml`` pattern, not just the
+names the resolver matches. The old in-repo URI ``space://steps/dpk`` is no longer
+supported (see CHANGELOG.md).
 """
 
 from pathlib import Path
@@ -42,13 +42,12 @@ SEARCH_ROOTS = [
 
 
 def test_exactly_one_step_is_named_dpk():
-    """Glob the same ``steps/**/dpk/step.yaml`` pattern the resolver uses."""
+    """Glob ``steps/**/dpk/step.yaml``, which covers every place a ``dpk`` could sit."""
     found = sorted(
         p.parent.relative_to(REPO_ROOT).as_posix()
         for root in SEARCH_ROOTS
         for p in root.rglob("steps/**/dpk/step.yaml")
     )
     assert found == ["configurations/assets/environments/skypilot/steps/data/dpk"], (
-        "a bare space://steps/dpk lookup silently picks one of several steps named "
-        f"dpk; found {found}"
+        "more than one step is named dpk, so its name is ambiguous; " f"found {found}"
     )
