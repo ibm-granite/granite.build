@@ -321,6 +321,31 @@ def test_environment_pins_byoc_to_the_efs_region():
     assert infra == f"aws/{region}"
 
 
+def test_environment_gives_byoc_the_host_ami_not_an_image():
+    # docker.host_image_id is the host AMI with or without IMAGE: the bare EC2
+    # host when IMAGE is empty, the container's host when it is set. An
+    # environment image_id would instead replace the docker:<IMAGE> byoc builds.
+    config = yaml.safe_load(_ENV.read_text())["config"]
+    assert config["steps"]["byoc"]["launcher_config"] == {
+        "resources": {"infra": "aws/REGION-REPLACE-ME"},
+        "docker": {"host_image_id": "AMI-REPLACE-ME"},
+    }
+
+
+@pytest.mark.parametrize("image", ["", "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime"])
+def test_the_recipe_leaves_the_host_image_to_the_environment(tmp_path, image):
+    # Train and eval run on the host the environment names for byoc, so the
+    # host AMI always matches the environment's region.
+    build = _build(tmp_path, f"IMAGE={image}")
+    for target in build["targets"].values():
+        config = _step(target)
+        assert config["byoc_config"]["image"] == image
+        assert "image_id" not in config["launcher_config"]
+        assert "docker" not in config["launcher_config"]
+    assert "HOST_AMI" not in (_RECIPE / "parameters.yaml").read_text()
+    assert "HOST_AMI" not in (_RECIPE / "build.yaml").read_text()
+
+
 def _readme_examples():
     """The two JSON rows in README.md, "Your data": train first, then eval."""
     text = (_RECIPE / "README.md").read_text()
