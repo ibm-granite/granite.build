@@ -1,4 +1,4 @@
-# vllm-server (SkyPilot / LSF)
+# student-rollout-generator (SkyPilot: LSF, SLURM)
 
 Serves a model under vLLM as a long-lived **SERVICE** target and publishes its URL as a
 `mem://` binding, so a training target in a *separate* allocation can reach it. The URL
@@ -152,6 +152,7 @@ granite.build:
               max_model_len: 16384                    # >= the trainer's max_length
               health_timeout_seconds: 1800
               max_lifetime_seconds: 18000             # backstop; must outlast the run
+              stop_file: "/proj/.../<build>/rollout.stop"  # = the trainer's rollout_stop_file
     train:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
@@ -169,6 +170,7 @@ granite.build:
       steps:
         - step_uri: space://steps/train/distill/logit-distill
           config:
+            rollout_stop_file: "/proj/.../<build>/rollout.stop"
             gold_config:
               max_length: 16384
               # ... the rest of the trainer's config
@@ -186,16 +188,16 @@ granite.build:
                 - "{{ bindings.vllm_cluster.binding.state }}"
 ```
 
-`recipes/granite4-gold-distillation/lsf/gold-onpolicy-smoke/build.yaml` and
-`recipes/granite4-350m/lsf/distill-onpolicy-v2/build.yaml` in the granite.build
-repository are complete versions of this graph.
+`recipes/distill/distill/build.yaml` in the granite.build repository is a complete version
+of this graph (its `rollout-server`, `train` and `teardown` targets, in the `ramp` and
+`on-policy` λ modes); see `recipes/distill/README.md`.
 
 ## Notes and limitations
 
 ### Status
 
-The shape has run. In build `9973e766` (2026-09-15, the `gold-onpolicy-smoke` recipe)
-the trainer synced all 362 parameter tensors to this server over **NCCL** across two
+The shape has run on LSF; it has not yet run on SLURM. In LSF build `9973e766`
+(2026-09-15, the since-retired `gold-onpolicy-smoke` recipe) the trainer synced all 362 parameter tensors to this server over **NCCL** across two
 separate LSF allocations, on both of its steps, and the teardown target ended the
 server. That was the open question this step left: the trainer pushes updated student
 weights over NCCL, not HTTP — the reference launcher's `VLLM_NCCL_COORDINATOR_PORT` — so
@@ -216,8 +218,9 @@ both directions.
 | bsub, enroot, node topology | SkyPilot's LSF provisioner |
 | readiness, address publication, teardown hook | this step |
 
-The step is LSF-only (`subtypes: [lsf]`): the topology contract and the SM90 image are
-both LSF/BlueVela specific.
+The step declares `subtypes: [lsf, slurm]`: it reads only SkyPilot's generic topology
+variables, so one step serves both. The image is an SM90 (H100) build, which is why other
+subtypes are not listed. It has run on LSF, not yet on SLURM.
 
 ### Why it is a separate target
 
@@ -241,9 +244,9 @@ Splitting the server out dissolves all three:
 
 The server runs in the background. The step probes `http://127.0.0.1:<port>/health/`
 every `health_poll_seconds`, checking before each probe that the server process is
-still alive. Once healthy it logs `vllm-server: healthy after <N>s` — which the monitor
+still alive. Once healthy it logs `student-rollout-generator: healthy after <N>s` — which the monitor
 turns into a RUNNING workload status — then publishes `vllm_url` and waits on the
-server. All failures exit non-zero with a `vllm-server: FATAL:` line on stderr:
+server. All failures exit non-zero with a `student-rollout-generator: FATAL:` line on stderr:
 
 - `server exited with <RC> before becoming healthy` — the server process died during
   bring-up (e.g. an unloadable `model` input);
@@ -340,5 +343,5 @@ nothing underneath reclaims it. Build `d77546a9` held 8 H100s that way until the
 downed by hand. [`stop_file`](#stopping-when-the-trainer-fails) closes that hole for a
 trainer that exits non-zero; one killed outright (its rank 0 never runs its exit trap)
 still strands the server. `max_lifetime_seconds` is the backstop, not the normal path: the
-`gold-onpolicy-smoke` recipe sets 3600 and `distill-onpolicy-v2` 5 h.
+`recipes/distill/distill` sets it from `VLLM_MAX_LIFETIME_SECONDS`.
 

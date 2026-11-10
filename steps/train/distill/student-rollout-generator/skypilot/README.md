@@ -67,5 +67,5 @@ the markers' form and separation, the monitor overlay's shape, and the vLLM work
 carried from the reference launcher.
 
 What it cannot check is the one thing that matters: whether a NCCL weight-sync group
-spans two LSF allocations. That needs the cluster; build `9973e766` (the
-`gold-onpolicy-smoke` recipe) showed that it does.
+spans two LSF allocations. That needs the cluster; LSF build `9973e766` (the since-retired
+`gold-onpolicy-smoke` recipe) showed that it does. It has not yet run on SLURM.

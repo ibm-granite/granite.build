@@ -25,5 +25,6 @@ one asks, and why, is in [`src/distill_probe.py`](src/distill_probe.py).
 
 It sets no `HF_HUB_OFFLINE`: `load-student` asks whether transformers' lazy kernel
 fetch works in this image. No trainer source; its script is baked into the shared GPU
-image. The recipe is
-[`recipes/granite4-350m/lsf/distill-probe`](../../../../recipes/granite4-350m/lsf/distill-probe/README.md).
+image. No recipe runs it today: the `distill-probe` recipe that did was retired with the
+other granite4-350m LSF recipes, and [`recipes/distill/`](../../../../../recipes/distill/README.md)
+does not include a probe target. Run it from a build of your own.

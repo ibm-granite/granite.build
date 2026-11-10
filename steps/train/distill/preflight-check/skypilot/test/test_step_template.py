@@ -1,4 +1,4 @@
-"""Contract tests for the distill-probe step-template.yaml.
+"""Contract tests for the preflight-check step-template.yaml.
 
 The run script is rendered with gbserver's own template filler and executed against a
 stand-in interpreter that records its argv, so a setting that does not reach the

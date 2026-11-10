@@ -1,4 +1,4 @@
-# distill-probe step for the SkyPilot environment (LSF / BlueVela).
+# preflight-check step for the SkyPilot environment (LSF / BlueVela).
 #
 # Three cheap probes that gate the granite4-350m distillation family: does the student
 # load in this image, does the declared tokenizer_class change segmentation, and which

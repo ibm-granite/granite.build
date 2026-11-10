@@ -289,8 +289,7 @@ granite.build:
 
 `gradient_accumulation_steps: 12` holds the reference effective batch of 192 on two nodes
 instead of four. For a full chain (align, corpus-prep, optional SFT, gold, export), see
-`recipes/granite4-gold-distillation/lsf/distill-pipeline-smoke` in the granite.build
-repository.
+`recipes/distill/distill` in the granite.build repository, and its `README.md`.
 
 ## Notes and limitations
 
@@ -435,8 +434,8 @@ soon as it is completely written (`model.safetensors` or, for sharded weights,
 `model.safetensors.index.json`, plus `tokenizer.json` and `trainer_state.json`: the same
 rule the move-aside, the seed, the re-emit and the progress check use). A recipe that declares matching `checkpoint_<N>` outputs
 can then export and evaluate rung N while the run is still training — see
-`recipes/granite4-350m/lsf/distill-checkpoint-eval`, where that turns ~36 GPU-h of eval from
-a serial tail into work overlapped with a 13-hour epoch. After the trainer exits, the step
+`recipes/distill/distill`, whose `export-N` targets do exactly that (on an earlier 350m run
+it turned ~36 GPU-h of eval from a serial tail into work overlapped with a 13-hour epoch). After the trainer exits, the step
 sweeps once more, which catches the final checkpoint of an epoch-bounded run.
 
 The emitted ids are a **contract** with the recipe: a rung whose checkpoint directory the
@@ -612,9 +611,9 @@ on-policy run would allocate a vLLM node and then generate locally, leaving the 
 (build `d77546a9` did exactly that and died in the local path).
 
 With the optional `vllm` input bound, the server lives in another target's allocation and
-every node here trains. This path has **not yet run on a cluster**: the trainer pushes
-updated student weights to the server over NCCL, so an external server means a NCCL process
-group spanning two LSF allocations, and whether that works is the open question this path
-exists to answer. The renderer refuses the `vllm` input with `vllm_num_servers: 0` (the run
+every node here trains. The trainer pushes updated student weights to the server over NCCL,
+so an external server means a NCCL process group spanning two allocations. This path has
+**run on LSF** (build `9973e766`, against `student-rollout-generator`: all 362 parameter
+tensors synced across the two allocations) and has **not yet run on SLURM**. The renderer refuses the `vllm` input with `vllm_num_servers: 0` (the run
 would train off-policy while a server sat idle) or with `lmbda: 0` (the student would never
 generate).

@@ -18,9 +18,10 @@ version: 1.0.0
 #
 # The trainer pushes updated student weights to the server over NCCL, not HTTP
 # (the reference launcher's VLLM_NCCL_COORDINATOR_PORT), so a separate target means
-# a NCCL process group spanning two LSF allocations. Build 9973e766 (recipe
-# gold-onpolicy-smoke) showed that works: all 362 parameter tensors synced across
-# the two allocations, and the teardown target ended the server.
+# a NCCL process group spanning two allocations. LSF build 9973e766 (the since-retired
+# gold-onpolicy-smoke recipe) showed that works: all 362 parameter tensors synced
+# across the two allocations, and the teardown target ended the server. It has not
+# yet run on SLURM.
 #
 # Division of labour, as in distill-gold: SkyPilot's LSF provisioner owns bsub,
 # enroot and the node topology; deps AND the server code (now

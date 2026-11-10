@@ -602,8 +602,8 @@ class TestTrainerFlagsReachTheRenderer:
 class TestPerCheckpointArtifacts:
     """The opt-in mid-run checkpoint watcher.
 
-    Added for recipes/granite4-350m/lsf/distill-checkpoint-eval, which needs to export
-    and evaluate checkpoint N while the run is still training rather than after it, and
+    Added for a since-retired 350m checkpoint-eval recipe, and used by recipes/distill/
+    distill, which export and evaluate checkpoint N while the run is still training, and
     modelled on the watcher openinstruct-rl already carried.
 
     Two contracts, and both are the kind that fail silently:

@@ -60,8 +60,9 @@ config:
   # and emits `checkpoint_<N>` per HF checkpoint-<N> dir as soon as it is completely
   # written. A recipe that declares matching `checkpoint_<N>` outputs can then export
   # and evaluate rung N while the run is still training, instead of after it — see
-  # recipes/granite4-350m/lsf/distill-checkpoint-eval, where that turns ~36 GPU-h of
-  # eval from a serial tail into work overlapped with a 13-hour epoch.
+  # recipes/distill/distill, whose export-N targets do exactly that; for the earlier
+  # 350m checkpoint-eval run it turned ~36 GPU-h of eval from a serial tail into work
+  # overlapped with a 13-hour epoch.
   #
   # The emitted ids are a CONTRACT with the recipe: a rung whose checkpoint dir the
   # trainer never writes is an artifact never emitted, and a target bound to it waits
@@ -364,10 +365,10 @@ inputs:
     # trainer is given the address on gold.py's command line. Unbound keeps the
     # in-allocation split that gold_config.vllm_num_servers alone selects.
     #
-    # NOT YET RUN ON A CLUSTER. The trainer pushes updated student weights to the
-    # server over NCCL (the reference launcher's VLLM_NCCL_COORDINATOR_PORT), so
-    # an external server means a NCCL process group spanning two LSF allocations.
-    # Whether that works here is the open question this path exists to answer.
+    # RUN ON LSF, NOT YET ON SLURM. The trainer pushes updated student weights to the
+    # server over NCCL (the reference launcher's VLLM_NCCL_COORDINATOR_PORT), so an
+    # external server means a NCCL process group spanning two allocations. LSF build
+    # 9973e766 showed that works there; SLURM has not been tried.
     vllm:
       type: fileset
       accept: [binding]

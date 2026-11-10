@@ -105,7 +105,8 @@ def test_a_degenerate_final_rung_fails_when_gated(tmp_path, capsys):
 
 
 def test_a_degenerate_final_rung_only_reports_when_not_gated(tmp_path, capsys):
-    """distill-checkpoint-eval's mode: measure the whole ladder and act on none of it."""
+    """The ungated mode (recipes/distill/distill's): measure the whole ladder and act on
+    none of it."""
     out = tmp_path / "r.json"
     rc = run(_argv(out, "false", "500:/b"), _fake_generate({"/b"}))
     assert rc == 0

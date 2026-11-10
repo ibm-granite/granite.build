@@ -61,8 +61,8 @@ _ONLINE_ONLY = (
 # ─── Loss arms ────────────────────────────────────────────────────────────────────────
 #
 # CustomGOLDConfig exposes nine boolean loss switches. They are NOT orthogonal, and this
-# branch already knows it: gold-onpolicy-smoke/parameters.yaml notes that "CustomGOLDConfig
-# rejects liger with several on-policy options". This table is that knowledge made
+# branch already knows it: the retired gold-onpolicy-smoke recipe's parameters noted that
+# "CustomGOLDConfig rejects liger with several on-policy options". This table is that knowledge made
 # mechanical, for the two kinds of invalid combination an enum cannot express:
 #
 #   (a) COMBINATIONS THE DATACLASS REJECTS in __post_init__. Failing here only saves the
@@ -560,7 +560,7 @@ def check_corpus_tokenizer(args: argparse.Namespace) -> None:
     tokenizers' ids are interchangeable, but their pre_tokenizers still differ (a Split regex
     on 4.1 vs plain ByteLevel on 4.2), so the same text segments differently. A run on the
     wrong corpus does not error: it trains on mis-segmented text at full speed with a falling
-    loss. distill-pipeline-smoke chains corpus-prep straight into this step, which is exactly
+    loss. recipes/distill/distill chains corpus-prep straight into this step, which is exactly
     where a mismatch can be introduced by changing one parameter.
 
     LAZY AND LOUD, never silent. The check lives in the shared package, which the step's
