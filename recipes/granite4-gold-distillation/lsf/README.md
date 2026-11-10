@@ -19,14 +19,8 @@ before the first run.
 
 ## Placeholders
 
-`<shared-fs>` in these docs and in the `parameters.yaml` comments stands for a
-directory on the cluster's shared filesystem, one that every compute node and
-container sees at the same path. It is not the environment's `shared_workdir`:
-that holds gbserver's per-run directories
-(`${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/`), while the
-`<shared-fs>` paths hold models, overlays and datasets you manage yourself. See
-[`file_mounts` inside enroot containers](../../../docs/environments/skypilot-lsf.md#file_mounts-inside-enroot-containers)
-for which shared paths LSF containers can see.
+`<shared-fs>` in these docs and comments stands for a directory on the
+cluster's shared filesystem; see [Placeholders](../../README.md#placeholders).
 
 The `parameters.yaml` defaults (paths, queues, images) are specific to the
 cluster the recipes were developed on. To run elsewhere, override them with

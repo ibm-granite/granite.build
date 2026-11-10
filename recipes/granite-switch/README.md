@@ -31,15 +31,8 @@ Each recipe directory carries its own `README.md` and `parameters.yaml`; read
 the README first, since a recipe may have a prerequisite to satisfy before the
 first run — data to stage, or a credential to register.
 
-`<shared-fs>` in a recipe's README or `parameters.yaml` comments stands for a
-directory on the cluster's shared filesystem, one that every compute node and
-container sees at the same path. It is not the environment's `shared_workdir`:
-that holds gbserver's per-run directories
-(`${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/`), while the
-`<shared-fs>` paths hold data and adapters you manage yourself. On SLURM a
-container sees only the trees the backend mounts into it, so a `<shared-fs>`
-path must be under one of them: see
-[`workdir` (containerized steps)](../../docs/environments/skypilot-slurm.md#workdir-containerized-steps).
+`<shared-fs>` in a recipe's README or comments stands for a directory on the
+cluster's shared filesystem; see [Placeholders](../README.md#placeholders).
 
 Alternatively, access Granite.build through an agent session and simply ask
 it to start a new build using that recipe.

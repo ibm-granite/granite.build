@@ -172,7 +172,7 @@ the LoRA adapters in `answerability-lora/`.
 | `SOURCE_DATA_URI` | `hf:///datasets/<org>/<dataset>/main/training_data/answerability/parquet_granite4.2_8b` | The source parquet dir. The path after the revision limits the pull to it. |
 | `DATA_ROOT` | `<shared-fs>/data/answerability-lora` | Where `prepare` writes, on the shared filesystem. |
 | `PREP_IMAGE` / `PREP_CPUS` / `PREP_MEMORY` | the hf-peft-sft image / `2` / `16` | `prepare` runs in the step image (its venv has pyarrow), so the node's image cache serves both targets. The cpu partition allows at most 8 GiB per CPU: keep `PREP_MEMORY` ≤ 8 × `PREP_CPUS`, or SLURM raises the CPU count and SkyPilot's `srun` aborts. |
-| `BASE_MODEL_URI` | `hf:///ibm-granite/granite-4.2-8b` | Staged by an hfpull job on the cpu partition. If that job fails (it runs in a small cgroup), point this at an existing copy: `env:///proj/...`. |
+| `BASE_MODEL_URI` | `hf:///ibm-granite/granite-4.2-8b` | Staged by an hfpull job on the cpu partition. If that job fails (it runs in a small cgroup), point this at an existing copy: `env://<shared-fs>/...`. |
 | `DATASET_SPLIT` | `train` | `load_dataset` split; `train[:256]` for a smoke run. |
 | `MAX_LENGTH` | `8192` | Tokens per row: `prepare` drops longer rows, and `train` uses it as `max_length`. |
 | `METHOD` | `lora` | `lora` or `alora`. Also names the build, the ClearML task and the adapter subdirectory. |
@@ -240,7 +240,7 @@ What these runs found:
   build FAILED and dropped the cluster while training kept running. The SLURM
   job then held its 4 H200s, idle, until cancelled by hand, and the two
   post-build cleanup VMs failed, orphaning
-  `<shared-fs>/.../builds/builds/a255acdc-.../runs/*`. Not fixed here: run gbserver
+  `${shared_workdir}/builds/a255acdc-.../runs/*`. Not fixed here: run gbserver
   from a host with stable access to the login nodes, and check `squeue` after
   a FAILED build.
 - **gbserver drops a trailing newline from config strings** (see

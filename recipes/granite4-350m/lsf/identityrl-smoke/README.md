@@ -10,8 +10,8 @@ model.
 
 ## No code-server
 
-Unlike `ifrl-smoke`, identity RL has **no code-server** — the source script
-sets `start_code_server=false` / `code_server_url=""`. The recipe omits the
+Unlike `ifrl-smoke`, identity RL has **no code-server**
+(`start_code_server=false` / `code_server_url=""`). The recipe omits the
 `code-server` target: the trainer takes only the `rm_server_url` binding, and
 `teardown` downs only the rm-server cluster.
 

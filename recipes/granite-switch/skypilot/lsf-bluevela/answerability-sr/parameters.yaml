@@ -63,7 +63,7 @@ DATA_URI: "hf:///datasets/ibm-research/touma"
 
 # Subdirectory of DATA_URI holding train.jsonl + test.jsonl in
 # shadow-residual's {"messages": [...]} JSONL format — the export produced by
-# intrinsics_training's granite_4.2_8b_jsonl_export.yaml. Neither the raw
+# the reference training run's granite_4.2_8b_jsonl_export.yaml. Neither the raw
 # classification JSONL (../raw) nor the tokenized parquet
 # (../parquet_granite4.2_8b) beside it is readable by sr-train.
 TRAIN_DATA_SUBDIR: "training_data/answerability/jsonl/granite-4.2-8b"
@@ -76,8 +76,8 @@ TRAIN_DATA_SUBDIR: "training_data/answerability/jsonl/granite-4.2-8b"
 EVAL_DATA_SUBDIR: "eval_data/answerability"
 
 # ── Adapter geometry ─────────────────────────────────────────────────────────
-# rank 16 / alpha 32 / dropout 0.05, from intrinsics_training's
-# configs/answerability/shadow_residual/sr_sharedkv_4.2_8b.yaml.
+# rank 16 / alpha 32 / dropout 0.05, from the reference training config
+# for the shared-KV shadow residual on granite-4.2-8b.
 #
 # k_proj and v_proj are deliberately absent and must stay absent: SR computes
 # K/V once from the frozen base stream and shares it, so a K/V LoRA delta has
@@ -122,7 +122,7 @@ PER_DEVICE_TRAIN: 1
 GRADIENT_ACCUMULATION: 8
 PER_DEVICE_EVAL: 4
 MAX_LENGTH: 8192
-# true, where intrinsics_training ran false. Its config was forced off by the
+# true, where the reference training run used false. Its config was forced off by the
 # aLoRA gating that version used; the current stock-PEFT SR has no gating and
 # its dual-stream decoder forward is pure, so recompute is exact — checkpointing
 # costs time, not correctness. On by default because SR holds two hidden-state
@@ -151,7 +151,7 @@ EVAL_MAX_NEW_TOKENS: 30
 EVAL_DATASET_SIZE: 100000
 
 # ── Compute ──────────────────────────────────────────────────────────────────
-# 1 GPU is what intrinsics_training used for this exact config and model size.
+# 1 GPU is what the reference training run used for this exact config and model size.
 # accelerators is PER NODE; memory is host memory per node, in GB.
 NUM_NODES: 1
 NUM_GPUS_PER_NODE: 1

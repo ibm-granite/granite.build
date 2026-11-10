@@ -22,8 +22,7 @@ Four targets on `space://environments/skypilot/lsf`:
 ## Difference from `ifrl-smoke`
 
 Structurally identical (same `build.yaml`, same targets, same `H100:8`
-topology). The only differences are the full-run training-length parameters,
-matching the original launch script's `-e` overrides:
+topology). The only differences are the full-run training-length parameters:
 
 | Parameter               | smoke | full   |
 |-------------------------|-------|--------|
@@ -44,7 +43,4 @@ matching the original launch script's `-e` overrides:
       --parameters-path recipes/granite4-350m/lsf/ifrl-full/parameters.yaml \
       --space <your-space>
 
-Outputs are namespaced under `…/granite4-350m-14-7180-ifrl-gb/` (note the `-gb`
-suffix) so this run cannot clobber an earlier run's output under
-`…/granite4-350m-14-7180-ifrl/`. Override any value with `--param KEY=VALUE`
-(see `parameters.yaml`).
+Override any value with `--param KEY=VALUE` (see `parameters.yaml`).
