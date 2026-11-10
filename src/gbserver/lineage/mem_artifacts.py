@@ -21,7 +21,7 @@ in-memory Memstore, used to hand a value (e.g. a service URL) from one target to
 the next. It does not exist outside the build, so there is nothing to version,
 download or draw, and recording it as lineage is noise. That includes the edge it
 used to imply between the producing and consuming targets: it is dropped too, on
-purpose (#561).
+purpose.
 
 A ``mem://`` artifact counts as absent. Every gate that decides whether a target
 has lineage, and how many runs it should have, must read :func:`lineage_view`

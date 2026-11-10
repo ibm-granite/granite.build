@@ -186,7 +186,7 @@ class ILineageRowStorage(IItemStorage[StoredLineageRow]):
     def purge_scheme(self, scheme: str) -> Tuple[int, int]:
         """Remove every row with a ``scheme://`` endpoint; return ``(deleted, added)``.
 
-        For cleaning rows a since-changed rule no longer writes (``mem://``, #561).
+        For cleaning rows a since-changed rule no longer writes (``mem://``).
         Each affected job ends up as the indexer would write it today: a real
         endpoint whose only rows went is kept as a terminal row (``uri -> ""`` or
         ``"" -> uri``), so the job does not vanish from its real artifacts. Done

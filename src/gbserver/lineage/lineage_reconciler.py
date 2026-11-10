@@ -194,14 +194,9 @@ def record_target_lineage(
         view: The target's already-resolved lineage view, if the caller has one,
             so the store does not read the artifact registry again.
     """
-    if view is None:
-        store.add_jobstats_for_build_target(
-            storage, build_id=build_id, target_id=target_id
-        )
-    else:
-        store.add_jobstats_for_build_target(
-            storage, build_id=build_id, target_id=target_id, view=view
-        )
+    store.add_jobstats_for_build_target(
+        storage, build_id=build_id, target_id=target_id, view=view
+    )
 
 
 def _successful_targets_page(
@@ -705,8 +700,16 @@ def reconcile_build(
     """
     dropped = skip or set()
     view_failures: list[str] = []
+    view_dropped: set[str] = set()
 
     def _note_view_failure(target: StoredTargetRun, exc: Exception) -> None:
+        # A target the caller already dropped is skipped, not failed: the view is
+        # resolved before ``skip`` applies, so without this a persistently failing
+        # registry read would keep the build unconfirmed and pin the checkpoint
+        # behind a target the watcher has given up on.
+        if target.uuid in dropped:
+            view_dropped.add(target.uuid)
+            return
         # Same containment as a failed record below: report it, keep the build
         # unconfirmed so the checkpoint does not pass it, and move on.
         view_failures.append(target.uuid)
@@ -721,6 +724,10 @@ def reconcile_build(
     if not targets:
         if view_failures:
             return ReconcileResult(all_confirmed=False)
+        if view_dropped:
+            return ReconcileResult(
+                all_confirmed=True, dropped=view_dropped, sink_unqueried=True
+            )
         # No recordable target: nothing to write and nothing outstanding, so the
         # build is trivially confirmed and the checkpoint may pass it.
         #
@@ -732,7 +739,7 @@ def reconcile_build(
         # targets and the lineage is never recorded.
         return ReconcileResult(all_confirmed=True, sink_unqueried=True)
 
-    skipped = {t.uuid for t in targets if t.uuid in dropped}
+    skipped = {t.uuid for t in targets if t.uuid in dropped} | view_dropped
     candidates = {t.uuid for t in targets if t.uuid not in dropped}
     if not candidates:
         # Every target is permanently dropped. Confirmed *with a known gap*: the

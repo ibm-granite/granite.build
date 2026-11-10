@@ -829,7 +829,7 @@ class TestRecordTargetLineage:
         record_target_lineage(store, storage, build_id="b1", target_id="t1")
 
         store.add_jobstats_for_build_target.assert_called_once_with(
-            storage, build_id="b1", target_id="t1"
+            storage, build_id="b1", target_id="t1", view=None
         )
 
 
@@ -869,10 +869,10 @@ class TestRecordSelectedTargets:
 
         assert store.add_jobstats_for_build_target.call_count == 2
         store.add_jobstats_for_build_target.assert_any_call(
-            storage, build_id="b1", target_id="t1"
+            storage, build_id="b1", target_id="t1", view=None
         )
         store.add_jobstats_for_build_target.assert_any_call(
-            storage, build_id="b2", target_id="t2"
+            storage, build_id="b2", target_id="t2", view=None
         )
 
 

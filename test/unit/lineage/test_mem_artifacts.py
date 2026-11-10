@@ -297,6 +297,28 @@ class TestRegistryErrors:
         assert errors == [("b1", "t1")]
         store.add_jobstats_for_build_target.assert_not_called()
 
+    def test_a_dropped_target_with_a_failing_read_does_not_pin_the_build(self):
+        """The view is resolved before ``skip`` applies; a target the watcher has
+        already dropped must not keep the build unconfirmed on every later scan."""
+        target = _target(inputs={"data": "real-in"}, outputs={"out": ["real-out"]})
+        storage = _storage(target)
+        storage.artifact_registry.get_by_uuid.side_effect = RuntimeError("bad row")
+        store = MagicMock()
+        errors = []
+
+        result = reconcile_build(
+            store,
+            storage,
+            "b1",
+            on_error=lambda b, t, e: errors.append((b, t)),
+            skip={"t1"},
+        )
+
+        assert result.all_confirmed
+        assert result.dropped == {"t1"}
+        assert errors == []
+        store.add_jobstats_for_build_target.assert_not_called()
+
 
 class TestIndexer:
     def test_mem_only_target_is_not_built(self):

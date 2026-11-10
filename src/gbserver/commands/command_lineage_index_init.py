@@ -89,9 +89,10 @@ from gbserver.types.context import CliEnvironment, pass_environment
     is_flag=True,
     default=False,
     help=(
-        "Remove the mem:// endpoints rows indexed before #561 still carry, and "
-        "exit. Each affected job keeps its real artifacts (as a no-output or "
-        "no-input row when mem:// was its only other side). Does not touch the "
+        "Remove the mem:// endpoints that rows indexed before mem:// filtering "
+        "still carry, and exit. Each affected job keeps its real artifacts (as a "
+        "no-output or no-input row when mem:// was its only other side). Does not "
+        "touch the "
         "checkpoint. Must be passed alone."
     ),
 )
