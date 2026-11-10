@@ -64,6 +64,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The `misc` step category is now `aux` (#671).** The byoc step moves from
+  `space://steps/misc/byoc` to `space://steps/aux/byoc`; its source is now `steps/aux/byoc/` and
+  its published copy is `configurations/assets/environments/skypilot/steps/aux/byoc/`. The
+  in-repo recipes, build tests and docs are updated. **Breaking:** a build.yaml outside this repo
+  that uses `space://steps/misc/byoc` must switch to the new URI; the old one is not kept as an
+  alias. Environment overrides keyed `steps.byoc:` still apply, because they match only the last
+  part of the step URI.
 - **Step resolution: `base_uris` order decides, and environments own steps by `environment.yaml`
   (#558).** `space://steps/<name>` now resolves to the first base, in `base_uris` order, that
   holds a copy serving the active environment, so an earlier base always outranks a later one.
