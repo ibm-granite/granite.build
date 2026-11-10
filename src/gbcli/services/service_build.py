@@ -13,7 +13,7 @@ from base64 import b64decode, b64encode
 from datetime import datetime, timezone
 from glob import glob
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 from urllib.parse import urlsplit, urlunsplit
 
 import yaml
@@ -2232,6 +2232,43 @@ def get_params_from_file(file_path: str) -> dict:
         return params_from_file
     else:
         return {}
+
+
+def load_layered_params(
+    build_file_path: str, parameters_paths: Optional[Union[str, Sequence[str]]]
+) -> dict:
+    """Merge parameter files: the recipe's parameters.yaml, then each path in order.
+    Top-level keys only; a later layer replaces a key whole. The recipe file next to
+    build.yaml is the implicit base layer unless it is also passed explicitly, in which
+    case it applies at that position (never twice)."""
+    if not parameters_paths:
+        layers: List[str] = []
+    elif isinstance(parameters_paths, (str, os.PathLike)):
+        layers = [os.fspath(parameters_paths)]
+    else:
+        layers = [os.fspath(p) for p in parameters_paths]
+
+    for layer in layers:
+        if not os.path.isfile(layer):
+            raise FileNotFoundError(f"parameters file not found: {layer}")
+
+    recipe_file = os.path.join(
+        os.path.dirname(os.fspath(build_file_path or "")), BUILD_PARAMETERS_FILE
+    )
+    recipe_real = os.path.realpath(recipe_file)
+    if os.path.isfile(recipe_file) and not any(
+        os.path.realpath(layer) == recipe_real for layer in layers
+    ):
+        layers.insert(0, recipe_file)
+
+    merged: dict = {}
+    for layer in layers:
+        logger.debug(f"Loading parameters file {layer}...")
+        for key, value in get_params_from_file(layer).items():
+            if key in merged:
+                logger.debug(f"Parameter '{key}' overridden by {layer}")
+            merged[key] = value
+    return merged
 
 
 def apply_build_parameters(
