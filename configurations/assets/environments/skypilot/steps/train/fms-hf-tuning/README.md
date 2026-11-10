@@ -110,9 +110,9 @@ LoRA and aLoRA settings go in `args` under fms-hf-tuning's own names: `r` (defau
 **aLoRA invocation string.** `peft_method: alora` requires
 `args.alora_invocation_string`: the text after which the adapter activates, usually
 the `response_template` (for example `<|im_start|>assistant` for ChatML). Any other
-method refuses it. `args.packing` and `args.padding_free` are refused for `alora`:
-the adapter activates from the last invocation in each row, so packed rows would
-train the wrong spans.
+method refuses it. With `alora`, `args.packing` must be off and `args.padding_free`
+unset: the adapter activates from the last invocation in each row, so packed rows
+would train the wrong spans.
 
 ## Config contract (fms_hf_tuning_config)
 
@@ -140,10 +140,12 @@ a message that starts `fms-hf-tuning:`. They are:
 - `args` or `data_config` not a map; a data-source conflict (see
   [Inputs and output](#inputs-and-output));
 - `args.alora_invocation_string` missing with `peft_method: alora`, or set with
-  another method; `args.packing` or `args.padding_free` true with `alora`;
+  another method; with `alora`, `args.packing` true (any spelling fms-hf-tuning
+  reads as true: `true`, `yes`, `t`, `y`, `1`) or `args.padding_free` set;
 - `base_model_id` with `peft_method: none`;
 - an empty `output`, or one with whitespace or a double quote;
-- `compute_config.num_nodes` or `launcher_config.num_nodes` other than 1;
+- `compute_config.num_nodes` or `launcher_config.num_nodes` other than 1. `1.0`,
+  and a string such as `"01"` that reads as the integer 1, count as 1;
 - no GPU request (neither `launcher_config.resources.accelerators` nor an
   `instance_type`); `distributed: fsdp` with `accelerators` asking for one GPU;
 - an `args` key that is not a bare name (empty, or with `=`, a leading `-` or

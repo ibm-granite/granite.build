@@ -110,7 +110,7 @@ environment_configs:
             {%- if c.peft_method == "none" and c.base_model_id %}{{ raise_error("fms-hf-tuning: base_model_id rewrites an adapter's base_model_name_or_path; it does not apply to peft_method: none.") }}{% endif -%}
             {%- if not c.output %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.output is required; it names the target's model output.") }}{% endif -%}
             {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
-            {%- macro one(v) %}{{ "y" if (v == 1 if v is number else (v | string) == "1") else "" }}{% endmacro -%}
+            {%- macro one(v) %}{{ "y" if (v == 1 if v is number else ((v | string | trim).lstrip("+").isdigit() and (v | string | trim | int) == 1)) else "" }}{% endmacro -%}
             {%- if not one(cc.num_nodes) %}{{ raise_error("fms-hf-tuning: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
             {%- if lc.get("num_nodes") is not none and not one(lc.get("num_nodes")) %}{{ raise_error("fms-hf-tuning: launcher_config.num_nodes must be 1 (got '" ~ lc.get("num_nodes") ~ "'); this step is single-node.") }}{% endif -%}
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("fms-hf-tuning: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type).") }}{% endif -%}
@@ -123,7 +123,7 @@ environment_configs:
             {%- set ks = k | string %}
             {%- if not ks or "=" in ks or ks.startswith("-") or (ks.split() | join("")) != ks %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.args key '" ~ ks ~ "' must be a bare fms-hf-tuning argument name (no '=', '-' prefix or whitespace).") }}{% endif -%}
             {%- if (ks | replace("-", "_")) in owned %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.args." ~ ks ~ " is set by the step; use the base_model/dataset inputs, dataset_name, data_config, peft_method, distributed, output_path or clearml_* instead.") }}{% endif -%}
-            {%- if c.peft_method == "alora" and ks in ["packing", "padding_free"] and (v | string | lower) in ["true", "1", "yes"] %}{{ raise_error("fms-hf-tuning: peft_method: alora cannot train with packing or padding_free (args." ~ ks ~ "): the adapter activates from the last invocation in each row, so packed rows would train the wrong spans.") }}{% endif -%}
+            {%- if c.peft_method == "alora" and ((ks == "packing" and (v | string | lower) in ["true", "1", "yes", "t", "y"]) or (ks == "padding_free" and v is not none)) %}{{ raise_error("fms-hf-tuning: peft_method: alora cannot train with packing or padding_free (args." ~ ks ~ "): the adapter activates from the last invocation in each row, so packed rows would train the wrong spans.") }}{% endif -%}
             {%- endfor -%}
             {%- endmacro %}
             {%- set c = config.fms_hf_tuning_config %}
@@ -159,7 +159,7 @@ environment_configs:
             {%- if c.peft_method == "none" and c.base_model_id %}{{ raise_error("fms-hf-tuning: base_model_id rewrites an adapter's base_model_name_or_path; it does not apply to peft_method: none.") }}{% endif -%}
             {%- if not c.output %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.output is required; it names the target's model output.") }}{% endif -%}
             {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
-            {%- macro one(v) %}{{ "y" if (v == 1 if v is number else (v | string) == "1") else "" }}{% endmacro -%}
+            {%- macro one(v) %}{{ "y" if (v == 1 if v is number else ((v | string | trim).lstrip("+").isdigit() and (v | string | trim | int) == 1)) else "" }}{% endmacro -%}
             {%- if not one(cc.num_nodes) %}{{ raise_error("fms-hf-tuning: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
             {%- if lc.get("num_nodes") is not none and not one(lc.get("num_nodes")) %}{{ raise_error("fms-hf-tuning: launcher_config.num_nodes must be 1 (got '" ~ lc.get("num_nodes") ~ "'); this step is single-node.") }}{% endif -%}
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("fms-hf-tuning: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type).") }}{% endif -%}
@@ -172,7 +172,7 @@ environment_configs:
             {%- set ks = k | string %}
             {%- if not ks or "=" in ks or ks.startswith("-") or (ks.split() | join("")) != ks %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.args key '" ~ ks ~ "' must be a bare fms-hf-tuning argument name (no '=', '-' prefix or whitespace).") }}{% endif -%}
             {%- if (ks | replace("-", "_")) in owned %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.args." ~ ks ~ " is set by the step; use the base_model/dataset inputs, dataset_name, data_config, peft_method, distributed, output_path or clearml_* instead.") }}{% endif -%}
-            {%- if c.peft_method == "alora" and ks in ["packing", "padding_free"] and (v | string | lower) in ["true", "1", "yes"] %}{{ raise_error("fms-hf-tuning: peft_method: alora cannot train with packing or padding_free (args." ~ ks ~ "): the adapter activates from the last invocation in each row, so packed rows would train the wrong spans.") }}{% endif -%}
+            {%- if c.peft_method == "alora" and ((ks == "packing" and (v | string | lower) in ["true", "1", "yes", "t", "y"]) or (ks == "padding_free" and v is not none)) %}{{ raise_error("fms-hf-tuning: peft_method: alora cannot train with packing or padding_free (args." ~ ks ~ "): the adapter activates from the last invocation in each row, so packed rows would train the wrong spans.") }}{% endif -%}
             {%- endfor -%}
             {%- endmacro %}
             {%- set c = config.fms_hf_tuning_config %}

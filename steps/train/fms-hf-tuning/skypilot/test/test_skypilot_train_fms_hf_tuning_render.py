@@ -213,23 +213,80 @@ class TestValidation:
     def test_bound_dataset_with_data_config_is_fine(self):
         _render("setup", _ctx(bindings=_DS, dataset_name="", data_config=_DC))
 
-    @pytest.mark.parametrize("flag", ["packing", "padding_free"])
-    def test_alora_refuses_packing(self, flag):
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
+        "flag, value",
+        [
+            ("packing", True),
+            # Every spelling transformers' string_to_bool reads as true.
+            *[("packing", v) for v in ["true", "TRUE", "1", "yes", "Y", "t", "T"]],
+            ("packing", 1),
+            # padding_free takes a list of methods (nargs="+"), e.g. [huggingface].
+            ("padding_free", ["huggingface"]),
+            ("padding_free", "huggingface"),
+            ("padding_free", True),
+        ],
+    )
+    def test_alora_refuses_packing(self, block, flag, value):
         msg = _render_error(
-            "setup",
+            block,
             _ctx(
-                peft_method="alora", args={"alora_invocation_string": "x", flag: True}
+                peft_method="alora", args={"alora_invocation_string": "x", flag: value}
             ),
         )
         assert "cannot train with packing or padding_free" in msg
 
-    def test_alora_accepts_packing_false(self):
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
+        "flag, value",
+        [
+            ("packing", False),
+            *[("packing", v) for v in ["false", "0", "no", "n", "f", "F"]],
+            ("packing", 0),
+            ("packing", None),
+            ("padding_free", None),
+        ],
+    )
+    def test_alora_accepts_packing_off(self, block, flag, value):
         _render(
-            "setup",
+            block,
             _ctx(
                 peft_method="alora",
-                args={"alora_invocation_string": "x", "packing": False},
+                args={"alora_invocation_string": "x", flag: value},
             ),
+        )
+
+    @pytest.mark.parametrize("value", ["t", "y", ["huggingface"]])
+    def test_other_methods_may_pack(self, value):
+        key = "padding_free" if isinstance(value, list) else "packing"
+        _render("setup", _ctx(peft_method="lora", args={key: value}))
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize("layer", ["compute", "launcher"])
+    @pytest.mark.parametrize("n", [1, 1.0, "1", "01", " 1", "+1", "1 "])
+    def test_whole_one_num_nodes_is_fine(self, block, layer, n):
+        # gbserver's _num_nodes_from_configs takes int(value): a whole float
+        # (YAML 1.0) and any string int() reads as 1 (a substituted parameter).
+        if layer == "compute":
+            ctx = _ctx(compute={"num_nodes": n})
+        else:
+            ctx = _ctx(
+                launcher_config={
+                    "resources": {"accelerators": "A10G:1"},
+                    "num_nodes": n,
+                }
+            )
+        _render(block, ctx)
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize("n", ["2", "02", "1.0", "0x1", "", "${NODES}"])
+    def test_string_num_nodes_other_than_one_refused(self, block, n):
+        # "1.0" and "0x1" fail gbserver's int() too; "${NODES}" is an
+        # unsubstituted parameter.
+        lc = {"resources": {"accelerators": "A10G:1"}, "num_nodes": n}
+        assert _render_error(block, _ctx(launcher_config=lc)) == (
+            f"fms-hf-tuning: launcher_config.num_nodes must be 1 (got '{n}'); "
+            "this step is single-node."
         )
 
     def test_num_nodes(self):

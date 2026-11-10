@@ -26,8 +26,8 @@
 #   trl/peft 0.19.x and datasets 4.x; only upstream can lift that.
 # - Runs as root, like the other step images: SkyPilot's docker runtime saves
 #   root's environment (HOME=/root) to /etc/profile.d, so a non-root default USER
-#   fails provisioning (#566). Pyxis on SLURM still runs the container as the job
-#   user.
+#   fails provisioning (#566). Pyxis on SLURM remaps the job to root inside the
+#   container (--container-remap-root); on the host it is the submitting user.
 # Mitigations: digest pins, a hashed lock, apt-get upgrade, no pip in the image,
 # and a vulnerability scan before `make publish-image`.
 FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
@@ -45,9 +45,10 @@ RUN apt-get update \
 COPY --from=uv /uv /uvx /usr/local/bin/
 
 # Managed Python under /opt, not root's home: the venv's interpreter is a symlink
-# into it, and Pyxis on SLURM runs the job as the submitting user. No bytecode at
-# install time (quay's scan of hf-peft-sft's .pyc-laden image never left
-# "queued", #616); Python compiles in memory on import.
+# into it, and /opt (a+rX) works whatever user and $HOME the container runtime
+# gives the job. No bytecode at install time: quay's scanner stalls on it (see
+# README, Scanning). SkyPilot runs the job as root in a writable container (Pyxis:
+# --container-remap-root --container-writable), so Python writes it on first import.
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python \
     UV_NO_CACHE=1 \
     UV_LINK_MODE=copy \
@@ -70,8 +71,8 @@ RUN uv venv --python 3.12 /opt/fms-hf-tuning/.venv \
 # it Critical). The patch fails the build if its target lines ever change. See
 # README.md "Scanning".
 COPY patches/lightglue_no_remote_code.py /tmp/lightglue_no_remote_code.py
-# -B: no bytecode, even for setuptools' _distutils_hack, which a .pth imports at
-# startup (the image ships no .pyc, #616).
+# -B: this build-time run writes no bytecode into the venv, not even for
+# setuptools' _distutils_hack, which a .pth imports at startup.
 RUN /opt/fms-hf-tuning/.venv/bin/python -B /tmp/lightglue_no_remote_code.py \
       /opt/fms-hf-tuning/.venv/lib/python3.12/site-packages/transformers/models/lightglue \
  && rm /tmp/lightglue_no_remote_code.py

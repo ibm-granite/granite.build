@@ -6,7 +6,7 @@ target_expectations:
   - target_name: lora-fsdp
     # skypilot/slurm runs each hf:// pull as its own hfpull step:
     # hfpull(base_model) + hfpull(dataset) + step (as hf-peft-sft's lora-fsdp).
-    # Re-calibrate on the first BlueVela run if it differs.
+    # Calibrated on BlueVela, build 718527f5 (2026-11-09, fms-v3.2.2-3).
     step_count: 3
     input_artifact_count: 2
     output_artifact_count: 1

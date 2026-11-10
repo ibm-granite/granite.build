@@ -88,8 +88,8 @@ launch=(--config_file "${home}/accelerate/${cfg}" --num_machines 1 --num_process
 if [ "$num_gpus" -gt 1 ]; then launch+=(--main_process_port 0); fi
 
 # --- output locations ------------------------------------------------------------
-# Scratch, job files and caches in the (writable) step workdir: /opt is
-# read-only for Pyxis's job user.
+# Scratch, job files and caches go in the step workdir, which belongs to the run,
+# not in the image's /opt.
 work="$(pwd)"
 scratch="${work}/fms_hf_tuning_scratch"
 given_output_path="$output_path"

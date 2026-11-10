@@ -145,7 +145,8 @@ Three documented exceptions to the image rules:
    container, so a UBI/RPM base fails provisioning.
 2. **Root.** SkyPilot's docker runtime saves root's environment (`HOME=/root`) to
    `/etc/profile.d`, so a non-root default `USER` fails provisioning (#566). Pyxis
-   on SLURM still runs the container as the job user.
+   on SLURM remaps the job to root inside the container (`--container-remap-root`);
+   on the host it is still the submitting user, with that user's file access.
 3. **Below latest.** fms-hf-tuning 3.2.2 caps torch 2.8 (latest 2.15),
    transformers 4.55.4 (latest 5.22), trl 0.19.1, peft 0.19.1 and datasets 4.8.5. Only
    upstream can lift those caps; overriding them would run fms-hf-tuning on versions
@@ -256,7 +257,9 @@ It was checked inside the built image:
 - no LightGlue source file keeps a `trust_remote_code` pass-through;
 - there are no `.pyc` files under `/opt/fms-hf-tuning`;
 - it has fms-hf-tuning 3.2.2 and transformers 4.55.4;
-- every `src/` file is byte-identical to the source.
+- every `src/` file was byte-identical to the source at publish time (later
+  comment-only edits to `src/fms_hf_tuning_run.sh` are not in the image; see
+  [Bumping IMAGE_VERSION](#bumping-image_version)).
 
 Scan results:
 - trivy 0.76.2: 0 CRITICAL / 7 HIGH, the same packages and CVEs as `-3`.
@@ -288,7 +291,13 @@ Keep this record until fms-hf-tuning allows transformers 5
 
 `IMAGE_VERSION` is stable (`fms-v3.2.2-4`), not the git SHA: BlueVela caches a
 `.sqsh` per tag. Bump the suffix when the Dockerfile, `requirements.lock` or `src/`
-changes; the prefix with the fms-hf-tuning pin (for example `fms-v3.3.0-1`). After
+changes; the prefix with the fms-hf-tuning pin (for example `fms-v3.3.0-1`).
+A change to comments only needs no bump: the published image keeps the old comment
+text and the step runs the same (hf-peft-sft's rule, #626). The review fixes after
+`-4` changed only comments in `src/fms_hf_tuning_run.sh` and the Dockerfile, so the
+image stays `-4`. A local `make image` then no longer matches the published tag,
+and under podman `make test` warns until the next bump; `TEST_PUBLISHED=true` skips
+that comparison. After
 editing `requirements.in`, run `make lock` and commit both files. On an fms-hf-tuning
 bump, re-run the CPU venv tests first: they catch parser and `train()` drift.
 
