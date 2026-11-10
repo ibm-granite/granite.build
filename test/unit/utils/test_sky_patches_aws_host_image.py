@@ -17,8 +17,10 @@
 """sky_patches._patch_aws_host_image: `docker.host_image_id` picks the host AMI.
 
 The patched aws.AWS.make_deploy_resources_variables (applied by test/conftest.py)
-runs on real sky.Resources; only AWS._get_image_id, the call that turns the
-chosen image into an AMI, is replaced, to record what it was given.
+runs on real sky.Resources. Two calls are replaced: AWS._get_image_id, which turns
+the chosen image into an AMI, to record what it was given; and the instance
+type's accelerator lookup, which reads SkyPilot's AWS catalog (a download when it
+is not cached) and plays no part in choosing the image. So the tests run offline.
 """
 
 import pytest
@@ -47,6 +49,11 @@ def _chosen_image(monkeypatch, image_id=None, host_image_id=None):
         raise _Chosen
 
     monkeypatch.setattr(aws.AWS, "_get_image_id", classmethod(record))
+    monkeypatch.setattr(
+        aws.AWS,
+        "get_accelerators_from_instance_type",
+        classmethod(lambda _cls, _instance_type: {"L4": 4}),
+    )
     overrides = {"docker": {"host_image_id": host_image_id}} if host_image_id else None
     kwargs = {"image_id": image_id} if image_id else {}
     resources = sky.Resources(

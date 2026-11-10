@@ -71,8 +71,19 @@ def _bin(tmp_path, name):
     for tool in _TOOLS:
         link = bin_dir / tool
         if not link.exists():
-            link.symlink_to(shutil.which(tool, path="/usr/bin:/bin"))
+            found = shutil.which(tool, path="/usr/bin:/bin")
+            if found is None:
+                pytest.skip(f"setup-script tests need {tool} in /usr/bin or /bin")
+            link.symlink_to(found)
     return bin_dir
+
+
+def test_a_tool_missing_from_usr_bin_skips_and_names_it(tmp_path, monkeypatch):
+    # On a system without the tools in /usr/bin or /bin (NixOS), the script tests
+    # skip with the tool's name rather than fail on symlink_to(None).
+    monkeypatch.setattr(shutil, "which", lambda tool, path=None: None)
+    with pytest.raises(pytest.skip.Exception, match="basename"):
+        _bin(tmp_path, "bin")
 
 
 def _aws_stub(tmp_path, out=_AMI, rc=0, err=""):
