@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback } from "react";
 import {
   Dropdown,
   MultiSelect,
@@ -10,6 +10,11 @@ import { useQuery } from "@tanstack/react-query";
 import { listBuilds, getBuildTags, listSpaces } from "@granite-build/ui-core/api/gbserver";
 import { BuildsTable } from "@granite-build/ui-core/components/BuildsTable";
 import { PageHeader } from "@granite-build/ui-core/components/PageHeader";
+import {
+  SEARCH_WINDOW,
+  buildsView,
+  type BuildsFetchMode,
+} from "@granite-build/ui-core/lib/buildSearch";
 import type { BuildStatus } from "@granite-build/ui-core/types";
 import styles from "./page.module.scss";
 
@@ -30,11 +35,6 @@ function TagDropdownItem({ label }: { id: string; label: string }) {
 }
 
 // Mirrors gbserver's Status enum (src/gbserver/types/status.py).
-// gbserver's `name` filter is an exact match, so substring search has to run
-// client-side. While a search term is active we fetch this many of the most
-// recent builds matching the other filters, then filter and paginate locally.
-const SEARCH_WINDOW = 500;
-
 const STATUS_OPTIONS = [
   { id: "all", label: "All statuses" },
   { id: "running", label: "Running" },
@@ -69,11 +69,11 @@ export default function BuildsPage() {
     queryFn: () => getBuildTags(spaceName),
   });
 
-  const term = search.trim().toLowerCase();
-  const searching = term.length > 0;
+  const searching = search.trim().length > 0;
+  const mode: BuildsFetchMode = searching ? "window" : "page";
 
-  // Builds — server-paginated normally; a single bounded window while
-  // searching (the term itself is not in the key: filtering is local).
+  // Builds — server-paginated normally; one bounded window while searching
+  // (lib/buildSearch: the term is not in the key, as filtering is local).
   const { data, isLoading, error } = useQuery({
     queryKey: [
       "builds",
@@ -82,15 +82,20 @@ export default function BuildsPage() {
       status,
       ...(searching ? ["search-window"] : [page, pageSize]),
     ],
-    queryFn: () =>
-      listBuilds({
+    queryFn: async () => ({
+      mode,
+      ...(await listBuilds({
         space_name: spaceName,
         tags: selectedTags.length ? selectedTags : undefined,
         status: status === "all" ? undefined : (status as BuildStatus),
         sort: "created_time:desc",
         page_index: searching ? 0 : page - 1,
         page_size: searching ? SEARCH_WINDOW : pageSize,
-      }),
+      })),
+    }),
+    // Keep the previous result while the next loads: without it BuildsTable
+    // shows its skeleton, which unmounts the search box mid-typing. buildsView
+    // renders it per the mode it was fetched in, not the one now wanted.
     placeholderData: (prev) => prev,
   });
 
@@ -104,25 +109,7 @@ export default function BuildsPage() {
     setPage(1);
   }, []);
 
-  const matches = useMemo(() => {
-    const items = data?.items ?? [];
-    if (!searching) return items;
-    return items.filter((b) =>
-      [b.name, b.uuid, b.username, b.space_name].some((f) =>
-        (f ?? "").toLowerCase().includes(term),
-      ),
-    );
-  }, [data?.items, searching, term]);
-  const visibleItems = useMemo(
-    () =>
-      searching
-        ? matches.slice((page - 1) * pageSize, page * pageSize)
-        : matches,
-    [matches, searching, page, pageSize],
-  );
-  const visibleTotal = searching ? matches.length : (data?.total ?? 0);
-  const searchTruncated =
-    searching && (data?.total ?? 0) > (data?.items.length ?? 0);
+  const view = buildsView(data, data?.mode, { term: search, page, pageSize });
 
   const spaceItems = [
     { id: "__all__", label: "All spaces" },
@@ -213,7 +200,7 @@ export default function BuildsPage() {
         />
       )}
 
-      {searchTruncated && (
+      {view.truncated && (
         <InlineNotification
           kind="info"
           lowContrast
@@ -225,8 +212,8 @@ export default function BuildsPage() {
       )}
 
       <BuildsTable
-        builds={visibleItems}
-        total={visibleTotal}
+        builds={view.items}
+        total={view.total}
         page={page}
         pageSize={pageSize}
         isLoading={isLoading}

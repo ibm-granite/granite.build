@@ -16,6 +16,7 @@ import {
 import type { DPDataset } from "@granite-build/ui-core/api/dataProcessing";
 import { adaptStatus } from "@granite-build/ui-core/api/gbserver";
 import { BuildStatusBadge } from "@granite-build/ui-core/components/BuildStatusBadge";
+import { clampPage, pageSlice } from "@granite-build/ui-core/lib/buildSearch";
 
 interface Props {
   datasets: DPDataset[];
@@ -44,13 +45,6 @@ function formatAge(iso: string): string {
 export function DatasetList({ datasets, search, isLoading }: Props) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  // Page state is local, so a new search term must reset it here — otherwise
-  // searching from page N leaves an empty page when fewer results match.
-  const [prevSearch, setPrevSearch] = useState(search);
-  if (search !== prevSearch) {
-    setPrevSearch(search);
-    setPage(1);
-  }
 
   if (isLoading)
     return (
@@ -72,8 +66,10 @@ export function DatasetList({ datasets, search, isLoading }: Props) {
       )
     : datasets;
 
-  const start = (page - 1) * pageSize;
-  const paged = filtered.slice(start, start + pageSize);
+  // A search, a shorter `days` window or `completedOnly` can shrink the list
+  // under the current page; show its last page rather than an empty one.
+  const currentPage = clampPage(page, filtered.length, pageSize);
+  const paged = pageSlice(filtered, currentPage, pageSize);
 
   const rows = paged.map((ds) => ({
     id: ds.name,
@@ -147,7 +143,7 @@ export function DatasetList({ datasets, search, isLoading }: Props) {
           <Pagination
             totalItems={filtered.length}
             pageSize={pageSize}
-            page={page}
+            page={currentPage}
             pageSizes={[10, 20, 50]}
             onChange={({ page: p, pageSize: ps }) => {
               setPage(p);
