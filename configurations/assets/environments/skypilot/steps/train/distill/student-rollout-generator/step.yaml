@@ -68,6 +68,20 @@ config:
     # nothing underneath reclaims it. Build d77546a9 held 8 H100s that way until
     # they were downed by hand. This is the backstop, not the normal path.
     max_lifetime_seconds: 0
+    # A file on a filesystem the trainer's nodes share, whose appearance means the
+    # trainer failed. EMPTY (default) = off, and nothing below renders. Set it to the
+    # same path as logit-distill's rollout_stop_file: that step's rank 0 writes it,
+    # atomically, when the trainer exits non-zero, with the trainer's GB_TARGETRUN_ID
+    # and a reason line. While serving, this step checks for it every
+    # stop_poll_seconds; when it appears the server is stopped and the target FAILS
+    # with the file's contents, instead of holding the allocation until
+    # max_lifetime_seconds because the teardown target, gated on the trainer's
+    # checkpoint, will never run. A file left by an earlier attempt is removed before
+    # the URL is published, so it is never acted on. A successful run never writes it,
+    # so a normal teardown is unchanged.
+    stop_file: ""
+    # How often the hold loop checks for stop_file. Only consulted when it is set.
+    stop_poll_seconds: 30
 
 # I/O schema, validated against the build.yaml target at build time: a target that
 # does not bind a required input fails validation before anything is queued. The
@@ -255,6 +269,16 @@ environment_configs:
             # the health gate: the consumer target cannot dispatch until this
             # binding resolves. Matched by the shipped skypilot monitor's generic
             # ARTIFACT_STATE rule, so this step needs no scrape config of its own.
+            {%- if config.vllm_config.stop_file | default("") | string | trim %}
+            # A stop file already here was left by an earlier attempt's trainer; no
+            # trainer of this attempt can have started, since none can dispatch before
+            # the URL below is published.
+            STOP_FILE="{{ config.vllm_config.stop_file | string | trim }}"
+            if [ -e "$STOP_FILE" ]; then
+              echo "student-rollout-generator: removing the stale stop file $STOP_FILE: $(awk 'NF{printf "%s%s", s, $0; s="; "}' "$STOP_FILE" 2>/dev/null || true)"
+              rm -f "$STOP_FILE"
+            fi
+            {%- endif %}
             echo "student-rollout-generator: healthy after $(( $(date +%s) - (DEADLINE - {{ config.vllm_config.health_timeout_seconds }}) ))s"
             echo "GB_ARTIFACT_ID:vllm_url GB_ARTIFACT_STATE:http://${ADDR}:${PORT}"
 
@@ -277,12 +301,19 @@ environment_configs:
             MAX_LIFETIME={{ config.vllm_config.max_lifetime_seconds }}
             REAPED_FLAG="$(mktemp -u)"
             WATCHDOG_PID=""
+            {%- if config.vllm_config.stop_file | default("") | string | trim %}
+            STOPPED_FLAG="$(mktemp -u)"
+            STOP_WATCH_PID=""
+            {%- endif %}
             # A signal to this script cannot be told apart from a teardown's, so the
             # trap keeps the status a signal-killed shell reports (128 + signo), says
             # why, and takes the server and watchdog down with it.
             on_signal() {
               echo "student-rollout-generator: FATAL: received $1 while serving; stopping the vLLM server. Unless the teardown target sent it, this target fails." >&2
               [ -z "$WATCHDOG_PID" ] || kill "$WATCHDOG_PID" 2>/dev/null || true
+              {%- if config.vllm_config.stop_file | default("") | string | trim %}
+              [ -z "$STOP_WATCH_PID" ] || kill "$STOP_WATCH_PID" 2>/dev/null || true
+              {%- endif %}
               kill "$SERVER_PID" 2>/dev/null || true
               exit "$2"
             }
@@ -300,8 +331,34 @@ environment_configs:
               ) &
               WATCHDOG_PID=$!
             fi
+            {%- if config.vllm_config.stop_file | default("") | string | trim %}
+            # The trainer's failure signal. Like the watchdog, a background poller that
+            # only kills the server, so the wait below stays the one place this script
+            # waits; its flag tells the outcome apart afterwards.
+            echo "student-rollout-generator: stopping if the trainer writes $STOP_FILE (checked every {{ config.vllm_config.stop_poll_seconds }}s)"
+            (
+              while kill -0 "$SERVER_PID" 2>/dev/null; do
+                if [ -e "$STOP_FILE" ]; then
+                  awk 'NF{printf "%s%s", s, $0; s="; "}' "$STOP_FILE" > "$STOPPED_FLAG" 2>/dev/null || : > "$STOPPED_FLAG"
+                  kill "$SERVER_PID" 2>/dev/null || true
+                  break
+                fi
+                sleep {{ config.vllm_config.stop_poll_seconds }}
+              done
+            ) &
+            STOP_WATCH_PID=$!
+            {%- endif %}
             RC=0; wait "$SERVER_PID" || RC=$?
             [ -z "$WATCHDOG_PID" ] || kill "$WATCHDOG_PID" 2>/dev/null || true
+            {%- if config.vllm_config.stop_file | default("") | string | trim %}
+            kill "$STOP_WATCH_PID" 2>/dev/null || true
+            if [ -f "$STOPPED_FLAG" ]; then
+              STOP_REASON="$(cat "$STOPPED_FLAG")"
+              rm -f "$STOPPED_FLAG" "$REAPED_FLAG"
+              echo "student-rollout-generator: FATAL: the trainer failed (${STOP_REASON:-no reason given}); stopping the rollout server" >&2
+              exit 1
+            fi
+            {%- endif %}
             if [ -f "$REAPED_FLAG" ]; then
               rm -f "$REAPED_FLAG"
               echo "student-rollout-generator: FATAL: lifetime cap of ${MAX_LIFETIME}s reached; releasing the allocation. Nothing tore this server down in time — check whether the consumer target failed." >&2

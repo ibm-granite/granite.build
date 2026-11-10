@@ -40,6 +40,8 @@ see [Inputs](#inputs) below. For on-policy GOLD this is the **student**, not the
 | `health_timeout_seconds` | integer | How long to wait for `/health` before giving up. A cold multi-GB load plus CUDA graph capture takes minutes, and on a shared filesystem the first read is the slow one; the reference launcher allows 1800 s. Default: `1800`. |
 | `health_poll_seconds` | integer | Sleep between `/health` probes. Default: `10`. |
 | `max_lifetime_seconds` | integer | Ceiling on how long the server holds its allocation once healthy. `0` means no ceiling: hold until the teardown target downs the cluster, which multi-hour runs rely on. Counted from the moment the server is healthy. Set it as a backstop against a stranded server (see [Nothing reaps the cluster](#nothing-reaps-the-cluster-but-the-teardown-target)); it must outlast the consumer's run. Default: `0`. |
+| `stop_file` | string | A path on a filesystem the trainer's nodes share; when it appears, the trainer failed, and the server stops at once and fails its target. Set it to the same path as `logit-distill`'s `rollout_stop_file`. See [Stopping when the trainer fails](#stopping-when-the-trainer-fails). Empty turns it off and renders nothing. Default: `""`. |
+| `stop_poll_seconds` | integer | How often the hold loop checks for `stop_file`. Only consulted when `stop_file` is set. Default: `30`. |
 
 ### Code delivery
 
@@ -252,6 +254,9 @@ server. All failures exit non-zero with a `vllm-server: FATAL:` line on stderr:
 - `the vLLM server exited (rc=<RC>) before the teardown target ended it` — the server
   died while serving (idle kill, OOM, crash). Exits with `<RC>`, or 1 when `<RC>` is 0:
   vLLM exits cleanly on a SIGTERM aimed at it, so a clean exit is a failure too;
+- `the trainer failed (<contents>); stopping the rollout server` — `stop_file` appeared:
+  the trainer exited non-zero. `<contents>` is the file's lines joined with `; `, the
+  trainer's `GB_TARGETRUN_ID` and its exit status. Exits 1;
 - `received SIGTERM|SIGINT while serving` — the script itself was signalled. It stops
   the server and exits 143 or 130, the status a signal-killed shell reports;
 - `vllm_config.min_completion_length is no longer read` — the generation floor moved to
@@ -299,6 +304,30 @@ vLLM binds an AF_UNIX socket under `VLLM_RPC_BASE_PATH`, capped at 108 bytes wit
 ZeroMQ refusing over 107. A default `TMPDIR` measured 111 on this cluster and failed
 *after* the engine started loading, so the step sets a short per-job path.
 
+### Stopping when the trainer fails
+
+The teardown target is gated on the trainer's checkpoint, which a failed trainer never
+emits, and gbserver waits for every running target, so without help a failed trainer
+leaves the build RUNNING until `max_lifetime_seconds` (or forever, at `0`). With
+`vllm_config.stop_file` set, and `logit-distill`'s `rollout_stop_file` set to the same
+path:
+
+- before publishing `vllm_url`, this step removes any file already at that path (left by
+  an earlier attempt's trainer; no trainer of this attempt can have started yet) and logs
+  what it held;
+- while serving, a background poller checks for the file every `stop_poll_seconds`. When
+  the trainer's rank 0 exits non-zero it writes the file atomically, with its
+  `GB_TARGETRUN_ID` and a reason line; the poller then stops the server, and the step
+  exits 1 with `FATAL: the trainer failed (<contents>); stopping the rollout server`. It
+  never takes the teardown/SUCCESS path, so on a build retry the server is relaunched with
+  the trainer.
+
+The poller sits beside the lifetime-cap watchdog: both only kill the server, and the
+script still waits on it in one place, so the signal traps and the cap behave as before.
+A successful trainer never writes the file, so a normal teardown is unchanged. Empty
+(the default) renders none of this. The path must be on a filesystem both allocations
+see, e.g. under the build's directory.
+
 ### Nothing reaps the cluster but the teardown target
 
 Forget the teardown target and the allocation is held until someone runs `sky down` by
@@ -308,6 +337,8 @@ Teardown is gated on the consumer's output (`binding: <train>.checkpoint`), whic
 failed consumer never emits, and gbserver's schema has no on-failure semantics — so a
 crashed trainer strands this server. LSF SERVICE clusters never autostop either, so
 nothing underneath reclaims it. Build `d77546a9` held 8 H100s that way until they were
-downed by hand. `max_lifetime_seconds` is the backstop, not the normal path: the
+downed by hand. [`stop_file`](#stopping-when-the-trainer-fails) closes that hole for a
+trainer that exits non-zero; one killed outright (its rank 0 never runs its exit trap)
+still strands the server. `max_lifetime_seconds` is the backstop, not the normal path: the
 `gold-onpolicy-smoke` recipe sets 3600 and `distill-onpolicy-v2` 5 h.
 

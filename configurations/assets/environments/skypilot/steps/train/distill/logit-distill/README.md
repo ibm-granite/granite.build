@@ -143,6 +143,7 @@ harmless where the gap doesn't exist — see `steps/train/distill/images/gpu/REA
 | `resume_from_checkpoint_dir` | string | The `<run_name>_node<N>` checkpoint directory of an earlier run of this step to resume from. See [Resume](#resume). Default: `""` (no resume). |
 | `resume_emit_seeded` | boolean | Whether seeded checkpoints are emitted as `checkpoint_<N>` again. Only has an effect with both `resume_from_checkpoint_dir` and `emit_checkpoint_artifacts` set. Default: `true`. |
 | `train_dir` | string | A training directory that is stable for the whole build: the checkpoint directory becomes `<train_dir>/checkpoints/<run_name>_node<N>` and the rendered config sits under `<train_dir>` too. Empty keeps both under `GB_BUILD_WORKDIR`. See [Stable train_dir](#stable-train_dir). Default: `""`. |
+| `rollout_stop_file` | string | A path on a filesystem the rollout server shares. When this step exits non-zero, rank 0 writes it, so a separate rollout server (`student-rollout-generator`'s `vllm_config.stop_file`, set to the same path) stops at once. See [Stopping the rollout server](#stopping-the-rollout-server). Empty turns it off and renders nothing. Default: `""`. |
 | `require_progress` | boolean | With `train_dir` set: refuse to train when the two previous attempts in this `train_dir` both failed to raise the highest complete checkpoint, and refuse every attempt after a refusal. Build-level retries only: `retry_workload` relaunches are not checked. See [No-progress refusal](#no-progress-refusal). Default: `true`. |
 
 ### Monitor (top-level `config`)
@@ -559,6 +560,28 @@ attempts, where it used to cost one: a retry that trains to the same point and f
 its `GB_TARGETRUN_ID`, is let through unrecorded, and is not counted, so it is bounded only
 by that block's own retry count. That step-level retry is off unless the environment enables
 it.
+
+### Stopping the rollout server
+
+With an external rollout server (the `vllm` input bound to `student-rollout-generator`),
+the teardown target that ends the server waits on this target's checkpoint, which a
+failed run never emits; gbserver waits for every running target, so the build would sit
+RUNNING until the server's `max_lifetime_seconds`. Set `rollout_stop_file` here and the
+server's `vllm_config.stop_file` to the same path on a shared filesystem, e.g. under the
+build's directory. The step then arms an EXIT handler before anything else that, on
+**rank 0** and only on a **non-zero** exit, writes the file atomically (to a temporary
+name, then `mv`):
+
+```
+<GB_TARGETRUN_ID>
+logit-distill rank 0 exited with status <N>
+```
+
+The server sees it within its `stop_poll_seconds` and fails its own target. The handler
+survives the resume handshake's and the checkpoint watcher's own EXIT traps, and leaves
+the exit status unchanged. A successful run never writes it. A rank 0 killed outright
+(SIGKILL, a dead node) runs no handler, so the server's lifetime cap stays the backstop.
+Empty (the default) renders nothing.
 
 ### On-policy
 

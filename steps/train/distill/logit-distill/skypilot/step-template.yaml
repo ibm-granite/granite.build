@@ -135,6 +135,17 @@ config:
   # every retry; one transient failure before the next save is let through). Once refused, every
   # later attempt in the train_dir is refused at once. See src/progress_check.py.
   require_progress: true
+  # ── Rollout server stop file ──────────────────────────────────────────────
+  # EMPTY (default) = off, and nothing below renders. Set it to a path on a filesystem
+  # the rollout server's node shares, and to the same path as
+  # student-rollout-generator's vllm_config.stop_file. When this script exits non-zero,
+  # rank 0 writes the file atomically (tmp + mv): this target run's GB_TARGETRUN_ID,
+  # then a reason line. The server polls for it and stops at once, failing its own
+  # target. Without it, a failed trainer strands the server: the teardown target is
+  # gated on this target's checkpoint, which a failed run never emits, so the build
+  # stays RUNNING until the server's max_lifetime_seconds. A successful run never
+  # writes it, so a normal teardown is unchanged.
+  rollout_stop_file: ""
   gold_config:
     # ── Code and image ──────────────────────────────────────────────────────
     # DeepSpeed ZeRO-3 accelerate config, relative to $DISTILL_HOME (/opt/distill).
@@ -410,6 +421,7 @@ environment_configs:
           run: |
             {% set train_dir = config.train_dir | default("") | string | trim -%}
             {% set resume_src = config.resume_from_checkpoint_dir | default("") | string | trim -%}
+            {% set rollout_stop = config.rollout_stop_file | default("") | string | trim -%}
             {% set vllm_server_url = bindings.vllm.binding.state | string | trim if bindings.vllm is defined else "" %}
             # The inputs used to be config keys. A recipe that still sets one would
             # otherwise be ignored silently, so refuse it.
@@ -422,6 +434,30 @@ environment_configs:
             # confirmed present on both the lsf and slurm subtypes (see the header
             # comment) — unlike RANK, which only LSF's provisioner sets.
             NODE_RANK="${SKYPILOT_NODE_RANK:-0}"
+            {%- if rollout_stop %}
+
+            # ── Rollout server stop file ──
+            # Rendered only when rollout_stop_file is set. Armed first, so a failure
+            # anywhere below stops the rollout server, not only the trainer's own. A
+            # later EXIT trap on rank 0 (the resume handshake, the checkpoint watcher)
+            # calls this too, so it stays armed until the script ends; the script's
+            # exit status is unchanged by it.
+            ROLLOUT_STOP_FILE="{{ rollout_stop }}"
+            rollout_stop_on_exit() {
+              [ "$1" -ne 0 ] || return 0
+              [ "$NODE_RANK" = "0" ] || return 0
+              mkdir -p "$(dirname "$ROLLOUT_STOP_FILE")" 2>/dev/null || true
+              if printf '%s\nlogit-distill rank 0 exited with status %s\n' \
+                  "${GB_TARGETRUN_ID:-unknown}" "$1" > "$ROLLOUT_STOP_FILE.tmp.$$" 2>/dev/null \
+                && mv -f "$ROLLOUT_STOP_FILE.tmp.$$" "$ROLLOUT_STOP_FILE" 2>/dev/null; then
+                echo "logit-distill: exited with status $1; wrote $ROLLOUT_STOP_FILE to stop the rollout server" >&2
+              else
+                rm -f "$ROLLOUT_STOP_FILE.tmp.$$" 2>/dev/null || true
+                echo "logit-distill: exited with status $1; could not write $ROLLOUT_STOP_FILE, so the rollout server runs until its lifetime cap" >&2
+              fi
+            }
+            trap 'rollout_stop_on_exit $?' EXIT
+            {%- endif %}
 
             # --- distill source: baked into the shared GPU image, no clone ---
             # Like every other distillation step, this step's trainer source
@@ -580,9 +616,9 @@ environment_configs:
               mkdir -p "$CKPT_DIR"
               # Any exit before the seed is done tells the waiting ranks at once,
               # rather than after their 900s.
-              trap '[ "$(cat "$RESUME_SEEDED" 2>/dev/null || true)" = "$RESUME_TOKEN" ] \
+              trap '{% if rollout_stop %}_rc=$?; {% endif %}[ "$(cat "$RESUME_SEEDED" 2>/dev/null || true)" = "$RESUME_TOKEN" ] \
                 || { printf "failed:%s\n" "$RESUME_TOKEN" > "$RESUME_SEEDED.tmp.$$" \
-                && mv -f "$RESUME_SEEDED.tmp.$$" "$RESUME_SEEDED"; } 2>/dev/null || true' EXIT
+                && mv -f "$RESUME_SEEDED.tmp.$$" "$RESUME_SEEDED"; } 2>/dev/null || true{% if rollout_stop %}; rollout_stop_on_exit "$_rc"{% endif %}' EXIT
               {%- if not train_dir %}
               if [ ! -d "$RESUME_SRC" ]; then
                 echo "logit-distill: FATAL: resume_from_checkpoint_dir '$RESUME_SRC' is not a directory." >&2
@@ -752,7 +788,7 @@ environment_configs:
               {%- endif %}
               printf '%s\n' "$RESUME_TOKEN" > "$RESUME_SEEDED.tmp.$$"
               mv -f "$RESUME_SEEDED.tmp.$$" "$RESUME_SEEDED"
-              trap - EXIT
+              {% if rollout_stop %}trap 'rollout_stop_on_exit $?' EXIT{% else %}trap - EXIT{% endif %}
             else
               # The checkpoint dir is on the shared filesystem, so rank 0's marker is
               # visible here once it is written. Bounded, for a rank 0 that died
@@ -888,7 +924,7 @@ environment_configs:
             if [ "$NODE_RANK" = "0" ]; then
               # EXIT-time cleanup on every path — success, trainer failure, or
               # signal — so the loop cannot outlive the script and keep emitting.
-              trap 'cleanup_watcher; rm -rf "$EMITTED_DIR"' EXIT
+              trap '{% if rollout_stop %}_rc=$?; {% endif %}cleanup_watcher; rm -rf "$EMITTED_DIR"{% if rollout_stop %}; rollout_stop_on_exit "$_rc"{% endif %}' EXIT
               mkdir -p "$CKPT_DIR"
               watch_checkpoints &
               WATCH_PID=$!

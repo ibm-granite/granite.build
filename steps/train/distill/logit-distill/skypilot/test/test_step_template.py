@@ -708,7 +708,8 @@ class TestPerCheckpointArtifacts:
     def test_the_watcher_cannot_outlive_the_script(self, run_script):
         """An orphaned loop keeps emitting after the trainer has gone. The trap covers
         every exit path -- success, trainer failure, signal."""
-        assert "trap 'cleanup_watcher; rm -rf \"$EMITTED_DIR\"' EXIT" in run_script
+        rendered = TestTrainDir._render(emit_checkpoint_artifacts=True)
+        assert "trap 'cleanup_watcher; rm -rf \"$EMITTED_DIR\"' EXIT" in rendered
         assert 'kill "$WATCH_PID"' in run_script
         assert 'wait "$WATCH_PID"' in run_script
 
@@ -1379,6 +1380,7 @@ class TestTrainDir:
         expected = json.loads(_GOLDEN.read_text())[golden]
         assert self._render(vllm, **overrides) == expected
         assert self._render(vllm, train_dir="", **overrides) == expected
+        assert self._render(vllm, rollout_stop_file="", **overrides) == expected
 
     @pytest.mark.parametrize(
         "overrides",
@@ -1657,3 +1659,152 @@ class TestTrainDir:
         )
         assert result.returncode == 1
         assert "is not a directory" in result.stderr
+
+
+class TestRolloutStopFile:
+    """rollout_stop_file: rank 0 writes it when the script exits non-zero, so the
+    rollout server (student-rollout-generator's vllm_config.stop_file, the same path)
+    stops at once instead of holding its allocation until its lifetime cap: the
+    teardown target waits on this target's checkpoint, which a failed trainer never
+    emits."""
+
+    _STOP = "/w/run/b1/rollout.stop"
+
+    @staticmethod
+    def _render(**overrides):
+        return TestTrainDir._render(**overrides)
+
+    def test_off_by_default(self, step):
+        assert step["config"]["rollout_stop_file"] == ""
+        assert "rollout_stop_file" not in step["config"]["gold_config"]
+        assert "ROLLOUT_STOP" not in self._render()
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {},
+            {"emit_checkpoint_artifacts": True},
+            {"train_dir": "/w/t", "emit_checkpoint_artifacts": True},
+            {"resume_from_checkpoint_dir": "/src", "emit_checkpoint_artifacts": True},
+        ],
+    )
+    def test_the_rendered_script_is_valid_shell(self, overrides):
+        result = subprocess.run(
+            ["bash", "-n"],
+            input=self._render(rollout_stop_file=self._STOP, **overrides),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_armed_before_anything_can_fail(self):
+        rendered = self._render(rollout_stop_file=self._STOP)
+        arm = rendered.index("trap 'rollout_stop_on_exit $?' EXIT")
+        assert arm < rendered.index("nvidia-smi -L")
+        assert arm < rendered.index("accelerate launch")
+
+    def _run(self, tmp_path, tail, rank="0", **overrides):
+        """The script from the stop-file block through `tail`, as rank `rank`."""
+        stop = tmp_path / "shared" / "rollout.stop"
+        rendered = self._render(rollout_stop_file=str(stop), **overrides)
+        start = rendered.index('ROLLOUT_STOP_FILE="')
+        end = rendered.index("# --- distill source: baked into", start)
+        script = "set -eu\n" + rendered[start:end] + tail
+        result = subprocess.run(
+            ["bash", "-c", script],
+            env={
+                "PATH": "/usr/bin:/bin",
+                "NODE_RANK": rank,
+                "GB_TARGETRUN_ID": "tr-9",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        return result, stop
+
+    @pytest.mark.parametrize("tail,code", [("exit 3\n", 3), ("false\n", 1)])
+    def test_rank_zero_writes_it_on_a_non_zero_exit(self, tmp_path, tail, code):
+        result, stop = self._run(tmp_path, tail)
+        assert result.returncode == code
+        assert stop.read_text().splitlines() == [
+            "tr-9",
+            f"logit-distill rank 0 exited with status {code}",
+        ]
+        # Atomic: tmp + mv, nothing left beside it.
+        assert sorted(p.name for p in stop.parent.iterdir()) == ["rollout.stop"]
+
+    def test_not_on_success(self, tmp_path):
+        result, stop = self._run(tmp_path, "exit 0\n")
+        assert result.returncode == 0, result.stderr
+        assert not stop.exists()
+
+    def test_not_on_another_rank(self, tmp_path):
+        result, stop = self._run(tmp_path, "exit 1\n", rank="1")
+        assert result.returncode == 1
+        assert not stop.exists()
+
+    def test_the_later_exit_traps_keep_writing_it(self, tmp_path):
+        """The resume handshake and the checkpoint watcher each replace the EXIT
+        trap on rank 0; both must still write the file, and keep the status."""
+        stop = tmp_path / "shared" / "rollout.stop"
+        train = tmp_path / "train"
+        rendered = self._render(
+            rollout_stop_file=str(stop),
+            train_dir=str(train),
+            emit_checkpoint_artifacts=True,
+            require_progress=False,
+        )
+        head = rendered[
+            rendered.index('ROLLOUT_STOP_FILE="') : rendered.index(
+                "# --- distill source: baked into"
+            )
+        ]
+        start = rendered.index('TRAIN_DIR="')
+        watcher = rendered.index("WATCH_PID=$!", start)
+        end = rendered.index("\nfi\n", watcher) + len("\nfi\n")
+        body = rendered[start:end]
+        home = tmp_path / "distill-home"
+        (home / "steps").mkdir(parents=True)
+        (home / "steps" / "logit-distill").symlink_to(_STEP.parent / "src")
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "NODE_RANK": "0",
+            "NODES": "2",
+            "GPUS": "8",
+            "VLLM_SERVERS": "0",
+            "CONFIG_NAME": "gold_node2",
+            "PYBIN": sys.executable,
+            "DISTILL_HOME": str(home),
+            "GB_TARGETRUN_ID": "tr-9",
+        }
+
+        def run(script):
+            return subprocess.run(
+                ["bash", "-c", "set -eu\n" + head + script],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+
+        # Failing under the handshake's trap (mid-preparation), then under the
+        # watcher's (after it started).
+        seeding = body.replace('RESUME_HELD=""', 'exit 6\nRESUME_HELD=""', 1)
+        assert seeding != body
+        for label, script in (("seed", seeding), ("watch", body + "exit 6\n")):
+            if stop.exists():
+                stop.unlink()
+            result = run(script)
+            assert result.returncode == 6, (label, result.stderr)
+            assert stop.read_text().splitlines()[0] == "tr-9", label
+        if (train / "checkpoints" / "gold_node2" / ".resume-seeded").exists():
+            (train / "checkpoints" / "gold_node2" / ".resume-seeded").unlink()
+        # A clean pass through both leaves no file.
+        stop.unlink()
+        result = run(body + "exit 0\n")
+        assert result.returncode == 0, result.stderr
+        assert not stop.exists()

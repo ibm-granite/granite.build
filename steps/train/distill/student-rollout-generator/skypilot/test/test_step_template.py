@@ -9,6 +9,7 @@ diagnostic: a shell syntax error, a marker that never fires so the consumer targ
 never dispatches, or a monitor overlay that gbserver rejects at config time.
 """
 
+import json
 import os
 import re
 import signal
@@ -20,6 +21,10 @@ import pytest
 import yaml
 
 _STEP = Path(__file__).resolve().parent.parent / "step-template.yaml"
+# The run script as the template rendered it before the trainer stop file existed,
+# keyed by case. A flat file, not a directory: publish-step copies every directory
+# under test/ as a per-cluster build test.
+_GOLDEN = Path(__file__).resolve().parent / "golden_run_scripts.json"
 
 
 @pytest.fixture(scope="module")
@@ -237,25 +242,37 @@ class TestVllmWorkarounds:
         )
 
 
+def _jinja(text, values):
+    """Render text (the template's run block, or a section of it) with the step's
+    vllm_config defaults overridden by values."""
+    from jinja2 import StrictUndefined, Template
+
+    defaults = yaml.safe_load(_STEP.read_text())["config"]["vllm_config"]
+    config = {"vllm_config": dict(defaults, **values)}
+    return Template(text, undefined=StrictUndefined).render(
+        config=config, bindings={"model": {"binding": {"path": "/models/student"}}}
+    )
+
+
 def _section(run_script, begin, end=None):
     """One section of the run block, cut at its own comment headers."""
     start = run_script.index(begin)
     return run_script[start : run_script.index(end, start) if end else None]
 
 
-def _run_under_launcher(tmp_path, body, server, values, send=None):
+def _run_under_launcher(tmp_path, body, server, values, send=None, on_hold=None):
     """Run `body` the way the launcher does -- with `set -eu` in front of it -- against a
     stand-in server process, and return (exit code, stderr).
 
     `send`, if given, is a signal delivered to the script itself (not its process
     group) once it logs that it is holding the allocation, i.e. once its trap is armed.
+    `on_hold`, if given, is called at that same point, before any signal.
 
     The output goes to files, not pipes: the watchdog's `sleep` outlives its killed
     subshell and would hold a pipe open until it finished. The whole session is killed
     afterwards for the same reason.
     """
-    for key, value in values.items():
-        body = body.replace("{{ config.vllm_config.%s }}" % key, str(value))
+    body = _jinja(body, values)
     assert "{{" not in body, "a template value the test did not supply"
     script = tmp_path / "run.sh"
     script.write_text(f"set -eu\n({server}) &\nSERVER_PID=$!\n{body}\n")
@@ -265,13 +282,16 @@ def _run_under_launcher(tmp_path, body, server, values, send=None):
             ["bash", str(script)], stdout=o, stderr=e, start_new_session=True
         )
         try:
-            if send is not None:
+            if send is not None or on_hold is not None:
                 deadline = time.monotonic() + 20
                 while "holding the allocation" not in out.read_text():
                     assert proc.poll() is None, err.read_text()
                     assert time.monotonic() < deadline, "the hold never started"
                     time.sleep(0.05)
-                proc.send_signal(send)
+                if on_hold is not None:
+                    on_hold()
+                if send is not None:
+                    proc.send_signal(send)
             rc = proc.wait(timeout=30)
         finally:
             try:
@@ -391,3 +411,110 @@ class TestSlurmExecutorEnv:
     def test_the_stripped_env_is_restored(self, launcher):
         assert launcher["envs"]["PYTHONPATH"] == "/opt/distill/src"
         assert launcher["envs"]["VIRTUAL_ENV"] == "/stage/.venv"
+
+
+_STOP_FATAL = "FATAL: the trainer failed ({}); stopping the rollout server"
+
+
+class TestTrainerStopFile:
+    """vllm_config.stop_file: logit-distill's rank 0 writes it when the trainer exits
+    non-zero (its rollout_stop_file), and the server stops at once and fails its
+    target, instead of holding the allocation until max_lifetime_seconds because the
+    teardown target, gated on the trainer's checkpoint, can never run."""
+
+    @pytest.mark.parametrize(
+        "golden,values", [("defaults", {}), ("lifetime_cap", {"max_lifetime_seconds": 7200})]
+    )
+    def test_empty_renders_byte_identical(self, run_script, golden, values):
+        """The goldens were rendered from the template before stop_file existed, so a
+        recipe that does not set it runs exactly the script it ran before."""
+        expected = json.loads(_GOLDEN.read_text())[golden]
+        assert _jinja(run_script, values) == expected
+        assert _jinja(run_script, dict(values, stop_file="")) == expected
+
+    def test_the_keys_and_their_defaults(self, step):
+        assert step["config"]["vllm_config"]["stop_file"] == ""
+        assert step["config"]["vllm_config"]["stop_poll_seconds"] == 30
+
+    def test_the_rendered_script_is_valid_shell(self, run_script):
+        result = subprocess.run(
+            ["bash", "-n"],
+            input=_jinja(run_script, {"stop_file": "/w/run/b1/rollout.stop"}),
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_the_stale_file_is_removed_before_the_url_is_published(self, run_script):
+        rendered = _jinja(run_script, {"stop_file": "/w/run/b1/rollout.stop"})
+        assert rendered.index('rm -f "$STOP_FILE"') < rendered.index(
+            "GB_ARTIFACT_ID:vllm_url"
+        )
+
+    def test_one_wait_point(self, run_script):
+        rendered = _jinja(run_script, {"stop_file": "/w/s", "max_lifetime_seconds": 60})
+        tail = rendered[rendered.index("# Hold the allocation") :]
+        assert tail.count('wait "$SERVER_PID"') == 1
+
+    @staticmethod
+    def _hold(
+        tmp_path, run_script, server, stale=False, on_hold=None, send=None, **values
+    ):
+        """The script from the stale-file removal on, against a stand-in server."""
+        stop = tmp_path / "shared" / "rollout.stop"
+        if stale:
+            stop.parent.mkdir(parents=True)
+            stop.write_text("tr-old\nan earlier attempt's trainer failed\n")
+        values = dict(stop_file=str(stop), stop_poll_seconds=0.1, **values)
+        hold = _section(run_script, "# Healthy.")
+        body = "DEADLINE=0\nADDR=127.0.0.1\nPORT=9\n" + hold
+        rc, err = _run_under_launcher(
+            tmp_path, body, server=server, values=values, on_hold=on_hold, send=send
+        )
+        return rc, err, stop
+
+    @pytest.mark.parametrize("cap", [0, 60])
+    def test_the_marker_stops_the_server_and_fails_the_step(
+        self, run_script, tmp_path, cap
+    ):
+        stop = tmp_path / "shared" / "rollout.stop"
+
+        def trainer_fails():
+            stop.parent.mkdir(parents=True, exist_ok=True)
+            stop.write_text("tr-7\nlogit-distill rank 0 exited with status 1\n")
+
+        started = time.monotonic()
+        rc, err, _ = self._hold(
+            tmp_path,
+            run_script,
+            server="sleep 20",
+            on_hold=trainer_fails,
+            max_lifetime_seconds=cap,
+        )
+        assert rc == 1
+        assert (
+            _STOP_FATAL.format("tr-7; logit-distill rank 0 exited with status 1")
+            in err
+        )
+        # Not the cap's message, nor the early-death one: the server was stopped.
+        assert "lifetime cap of" not in err
+        assert "before the teardown target ended it" not in err
+        assert time.monotonic() - started < 15, "the server ran out its own sleep"
+
+    def test_a_stale_marker_is_removed_and_not_acted_on(self, run_script, tmp_path):
+        rc, err, stop = self._hold(
+            tmp_path, run_script, server="sleep 1; exit 0", stale=True
+        )
+        assert not stop.exists()
+        assert "the trainer failed" not in err
+        # The server ended on its own, which still fails the target.
+        assert "FATAL: " + _EARLY_DEATH.format(0) in err
+        assert rc == 1
+
+    def test_a_signal_while_polling_is_still_trapped(self, run_script, tmp_path):
+        rc, err, _ = self._hold(
+            tmp_path, run_script, server="sleep 20", send=signal.SIGTERM
+        )
+        assert "FATAL: received SIGTERM while serving" in err
+        assert "the trainer failed" not in err
+        assert rc == 143
