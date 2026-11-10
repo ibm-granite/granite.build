@@ -35,6 +35,9 @@ outputs:
 
 environment_configs:
   Skypilot:
+    # AWS only (infra: aws/us-east-2, S3 file_mounts). Without this, env-class-match
+    # could pick this variant for any other SkyPilot sub-type (#664).
+    subtypes: [aws]
     default_launcher: bfcl
     launchers:
       bfcl:

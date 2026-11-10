@@ -24,7 +24,7 @@ ENVS = REPO_ROOT / "configurations/assets/environments/skypilot"
 # The steps under test, and the variable each roots its search at. aws/sage-eval
 # carries the same search but is not changed until it can be tested on AWS.
 STEPS = {
-    "lsf/ibm-bluevela/steps/sage-eval": "OUTPUT_BASE_PATH",
+    "steps/sage-eval": "OUTPUT_BASE_PATH",
 }
 
 EXPERIMENT = "exp-ckpt_1000"

@@ -94,8 +94,8 @@ EXPECTED = {
     f"{_SKY}/eval/tbench": (set(), set()),
     # Shipped in v0.3.x: optional during the deprecation window, with the old config
     # key as a fallback.
-    f"{_LSF}/sage-eval": (set(), {"model"}),
-    f"{_LSF}/bfcl-eval": (set(), {"model"}),
+    f"{_SKY}/sage-eval": (set(), {"model"}),
+    f"{_SKY}/bfcl-eval": (set(), {"model"}),
     f"{_LSF}/openinstruct-sft": (set(), {"model"}),
     f"{_LSF}/openinstruct-rl": (set(), {"rm_url", "code_url"}),
     f"{_SKY}/data/dpk": (set(), {"docs"}),
@@ -112,13 +112,13 @@ EXPECTED = {
     f"{_SKY}/tune/fm-tune": ({"dataset"}, {"base_model"}),
     # Exceptions: no named inputs, by design.
     f"{_SKY}/misc/byoc": (set(), set()),  # free-form command, any number of inputs
-    f"{_LSF}/skypilot-teardown": (set(), set()),  # variable-length cluster list
+    f"{_SKY}/skypilot-teardown": (set(), set()),  # variable-length cluster list
     f"{_LSF}/rm-server": (set(), set()),
     f"{_LSF}/code-server": (set(), set()),
     f"{_LSF}/bcb-server": (set(), set()),
-    f"{_LSF}/bfcl-export": (set(), set()),  # ordering-only gate inputs
-    f"{_LSF}/sage-export": (set(), set()),
-    f"{_LSF}/combined-export": (set(), set()),
+    f"{_SKY}/bfcl-export": (set(), set()),  # ordering-only gate inputs
+    f"{_SKY}/sage-export": (set(), set()),
+    f"{_SKY}/combined-export": (set(), set()),
     f"{_SKY}/sage": (set(), set()),
     "environments/skypilot-managed/kubernetes/steps/sage": (set(), set()),
     # AWS evals take the model as an S3 URI mounted by file_mounts.

@@ -30,7 +30,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[4]
 ENVIRONMENTS = REPO_ROOT / "configurations/assets/environments"
 STEPS = [
-    ENVIRONMENTS / "skypilot/lsf/ibm-bluevela/steps/sage-eval/step.yaml",
+    ENVIRONMENTS / "skypilot/steps/sage-eval/step.yaml",
     ENVIRONMENTS / "skypilot/aws/steps/sage-eval/step.yaml",
     ENVIRONMENTS / "skypilot/aws/steps/sage-eval-code-grouped/step.yaml",
 ]

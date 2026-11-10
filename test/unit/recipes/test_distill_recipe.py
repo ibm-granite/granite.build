@@ -44,9 +44,7 @@ _PARAMS = _RECIPE / "parameters.yaml"
 _SMOKE = _RECIPE / "smoke.yaml"
 _SITE = _DISTILL / "site.example.yaml"
 _STEPS = _REPO / "steps"
-_BLUEVELA_STEPS = (
-    _REPO / "configurations" / "assets" / "environments" / "skypilot" / "lsf"
-)
+_SKYPILOT_STEPS = _REPO / "configurations" / "assets" / "environments" / "skypilot" / "steps"
 
 _MODES = ("off-policy", "ramp", "on-policy")
 
@@ -72,18 +70,12 @@ _STEP_SCHEMAS = {
     / "train/distill/repetition-check/skypilot/step-template.yaml",
     "space://steps/misc/hf-export": _STEPS
     / "misc/hf-export/skypilot/step-template.yaml",
-    "space://steps/skypilot-teardown": _BLUEVELA_STEPS
-    / "ibm-bluevela/steps/skypilot-teardown/step.yaml",
-    "space://steps/sage-eval": _BLUEVELA_STEPS
-    / "ibm-bluevela/steps/sage-eval/step.yaml",
-    "space://steps/bfcl-eval": _BLUEVELA_STEPS
-    / "ibm-bluevela/steps/bfcl-eval/step.yaml",
-    "space://steps/sage-export": _BLUEVELA_STEPS
-    / "ibm-bluevela/steps/sage-export/step.yaml",
-    "space://steps/bfcl-export": _BLUEVELA_STEPS
-    / "ibm-bluevela/steps/bfcl-export/step.yaml",
-    "space://steps/combined-export": _BLUEVELA_STEPS
-    / "ibm-bluevela/steps/combined-export/step.yaml",
+    "space://steps/skypilot-teardown": _SKYPILOT_STEPS / "skypilot-teardown/step.yaml",
+    "space://steps/sage-eval": _SKYPILOT_STEPS / "sage-eval/step.yaml",
+    "space://steps/bfcl-eval": _SKYPILOT_STEPS / "bfcl-eval/step.yaml",
+    "space://steps/sage-export": _SKYPILOT_STEPS / "sage-export/step.yaml",
+    "space://steps/bfcl-export": _SKYPILOT_STEPS / "bfcl-export/step.yaml",
+    "space://steps/combined-export": _SKYPILOT_STEPS / "combined-export/step.yaml",
 }
 
 # Top-level step config keys every SkyPilot step reads through the shared monitor or
