@@ -297,9 +297,11 @@ class TestDerivations:
         run_argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
         assert _opt(run_argv, "--module") == module
         setup_argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
-        assert _passthrough(setup_argv) == [
+        # The derived extra is always FIRST; a compatibility pin may follow it
+        # (see TestNumpy1ExtrasPinPyarrow).
+        assert _passthrough(setup_argv)[0] == (
             f"data-prep-toolkit-transforms[{extra}]==1.1.8"
-        ]
+        )
 
     def test_dpk_version_is_honored(self, launcher, defaults):
         cfg = _transform_cfg(defaults, dpk_version="1.1.7")
@@ -746,8 +748,55 @@ class TestEveryConfigValueIsEscaped:
         cfg = _transform_cfg(defaults, transform="pii_redactor")
         argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
         assert _passthrough(argv) == [
-            "data-prep-toolkit-transforms[pii-redactor]==1.1.8"
+            "data-prep-toolkit-transforms[pii-redactor]==1.1.8",
+            "pyarrow<26",
         ]
+
+
+class TestNumpy1ExtrasPinPyarrow:
+    """#653: pyarrow 26 needs NumPy 2 at import time but does not declare it.
+
+    The extras below cap numpy below 2 in DPK 1.1.8, so an unpinned resolve pairs
+    numpy 1.26.4 with pyarrow 26 and the transform dies on `import pyarrow`. The pin
+    is scoped to them: an extra that resolves numpy 2 gets no extra requirement.
+    """
+
+    @pytest.mark.parametrize(
+        "transform",
+        [
+            "pii_redactor",
+            "fdedup",
+            "docling2parquet",
+            "code_profiler",
+            "doc_chunk",
+            "faces",
+            "nsfw",
+            "people",
+        ],
+    )
+    def test_numpy1_extras_get_the_pin(self, launcher, defaults, transform):
+        cfg = _transform_cfg(defaults, transform=transform)
+        argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
+        assert _passthrough(argv) == [
+            f"data-prep-toolkit-transforms[{transform.replace('_', '-')}]==1.1.8",
+            "pyarrow<26",
+        ]
+
+    @pytest.mark.parametrize(
+        "transform",
+        ["tokenization2arrow", "doc_id", "ededup", "filter", "text_encoder"],
+    )
+    def test_numpy2_extras_are_left_alone(self, launcher, defaults, transform):
+        cfg = _transform_cfg(defaults, transform=transform)
+        argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
+        assert _passthrough(argv) == [
+            f"data-prep-toolkit-transforms[{transform.replace('_', '-')}]==1.1.8"
+        ]
+
+    def test_image_mode_installs_nothing(self, launcher, defaults):
+        """The pin lives inside the bare-node install, so an image skips it too."""
+        cfg = _transform_cfg(defaults, transform="pii_redactor", dpk_image="img:1")
+        assert "pyarrow" not in _render(launcher["setup"], cfg, _BINDINGS)
 
 
 class TestArgsKeysReachTheGuardAsData:
