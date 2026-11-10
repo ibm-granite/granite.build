@@ -43,14 +43,20 @@ _OTHER_SINGLETONS = (
     ("gbserver.resilience.nht_singleton", "_node_health_tracker", None),
     ("gbserver.resilience.nht_singleton", "_tracker_initialized", False),
     ("gbserver.spaces.space_access_manager", "_storage_manager", None),
+    ("gbserver.spaces.space_access_manager", "_override_manager", None),
+    ("gbserver.lineage.jobstats", "__JOBSTATS_STORAGE", None),
     ("gbserver.api.lineage", "_openlineage_service", None),
     ("gbserver.api.lineage", "_index_service", None),
     ("gbserver.metrics.metrics_client", "_SINGLETON_METRICS_CLIENT", None),
-    ("gbserver.api.secrets", "secret_manager", None),
     ("gb_ui_backend.services.db_schema", "_engine", None),
     ("gb_ui_backend.services.db_schema", "_session_factory", None),
     ("gb_ui_backend.services.gbserver_source", "_source", None),
 )
+
+
+# Module-level dict caches filled per request/test (e.g. keyed by space); each is
+# restored to a copy of what it held before the test.
+_DICT_CACHES = (("gbserver.api.secrets", "_space_secret_manager_cache"),)
 
 
 def _save_other_singletons() -> list:
@@ -66,13 +72,24 @@ def _save_other_singletons() -> list:
             module, name
         ), f"{module_name}.{name} no longer exists; update _OTHER_SINGLETONS in {__file__}"
         saved.append((module_name, name, getattr(module, name)))
+    for module_name, name in _DICT_CACHES:
+        module = sys.modules.get(module_name)
+        if module is not None:
+            saved.append((module_name, name, dict(getattr(module, name))))
     return saved
 
 
 def _restore_other_singletons(saved: list) -> None:
     for module_name, name, value in saved:
         module = sys.modules.get(module_name)
-        if module is not None:
+        if module is None:
+            continue
+        current = getattr(module, name, None)
+        if isinstance(current, dict) and isinstance(value, dict):
+            # Keep the same dict object: callers may hold a reference to it.
+            current.clear()
+            current.update(value)
+        else:
             setattr(module, name, value)
     # gb_ui_backend's config is an lru_cache that bakes in GB_UI_DATABASE_URL (a
     # path under this test's GB_HOME_DIR); clear it with the engines built from it.
