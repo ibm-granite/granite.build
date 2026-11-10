@@ -58,9 +58,12 @@ think-filtered** (`*_nothink.jsonl`): an assistant completion containing an inli
 |---|---|---|
 | `num_train_epochs` | number | Epochs over the `corpus` input. Default: `1.0`. |
 | `max_steps` | integer | Cap the run by optimizer steps rather than epochs. `0` leaves the key out of the rendered config, so an epoch-bounded run is unaffected; any positive value overrides `num_train_epochs` in the trainer. One epoch of the 802,027-row reference corpus is 4,177 steps at effective batch 192. Default: `0`. |
+| `data_seed` | integer | Seed for the training data sampler only. `-1` leaves the key out, so the sampler follows the trainer's `seed` (42). Set it when initialising from another run's checkpoint over the same corpus, or the new run draws the very batches the old one trained on. `0` is a valid seed. Default: `-1`. |
 | `learning_rate` | number | Peak learning rate. Rendered as a YAML float. Default: `1.0e-05`. |
 | `min_lr` | number | Floor of the `cosine_with_min_lr` schedule; rendered under `lr_scheduler_kwargs`, not at the top level. Default: `1.0e-06`. |
 | `warmup_ratio` | number | Warmup fraction of the schedule. Default: `0.05`. |
+| `adam_beta2` | number | Adam's `beta2`, in `(0, 1)`. `-1` leaves the key out and the trainer keeps `0.999` (a second-moment horizon of ~1,000 steps; `0.95` is ~20). Default: `-1.0`. |
+| `train_sampling_strategy` | string | The training sampler: `random`, `sequential` or `group_by_length`. Empty leaves the key out (the trainer's `random`). `sequential` feeds the corpus in file order, the only way a corpus whose row order is part of its design reaches the trainer in that order. Default: `""`. |
 | `lr_scheduler_type` | string | Scheduler. Default: `cosine_with_min_lr`. |
 | `per_device_train_batch_size` | integer | Per-GPU batch. Default: `1`. |
 | `gradient_accumulation_steps` | integer | Effective batch is `per_device x grad_accum x nodes x gpus_per_node`; see [Things that will bite](#things-that-will-bite). Default: `6`. |
@@ -143,7 +146,10 @@ harmless where the gap doesn't exist — see `steps/train/distill/images/gpu/REA
 | `opd_importance_sampling` | boolean | Truncated importance sampling for the sampled OPD loss; emitted only on-policy. Default: `false`. |
 | `lmbda_schedule` | string | `constant`, or `linear` to ramp `lmbda` from `lmbda_init` up to `lmbda` across training — off-policy early, on-policy later. `linear` needs `vllm_num_servers > 0`; the renderer refuses it otherwise. Default: `constant`. |
 | `lmbda_init` | number | Starting `lmbda` for the linear schedule, in `[0.0, 1.0]`. Default: `0.0`. |
-| `min_completion_length` | integer | vLLM `min_tokens` for the student's rollout; `> 0` blocks the immediate-EOS mode collapse. Needs `vllm_num_servers > 0`. With `vllm_mode: server` the server must agree, via `GOLD_MIN_TOKENS`. Default: `0`. |
+| `lmbda_ramp_start_step` | integer | Linear schedule only: the optimizer step the ramp starts at; `lmbda` is `lmbda_init` before it. Lets a resumed run ramp over its own steps. Refused with a constant schedule. Default: `0`. |
+| `lmbda_ramp_steps` | integer | Linear schedule only: the ramp's length in steps; `lmbda` holds after it. `0` ramps until `max_steps`. Refused with a constant schedule. Default: `0`. |
+| `stop_at_step` | integer | Save and end training at this step, leaving `max_steps` (and the LR schedule built from it) unchanged: what a resume of a longer run needs to train a fixed number of extra steps on its original schedule. Refused past a positive `max_steps`. `0` disables. Default: `0`. |
+| `min_completion_length` | integer | vLLM `min_tokens` for the student's rollout; `> 0` blocks the immediate-EOS mode collapse. Needs `vllm_num_servers > 0`. The trainer sends it as `min_tokens` in every vLLM request (and as `SamplingParams.min_tokens` in colocate mode); an image built before the trainer carried this field needs the server to agree, via `GOLD_MIN_TOKENS`. Default: `0`. |
 
 ### Checkpoint emission and resume (top-level `config`)
 
@@ -419,6 +425,10 @@ it silently becomes a different arm.
 | `sampled_opd` | REINFORCE-style policy gradient on sampled tokens; optional truncated IS | `lmbda == 1.0`, `last_message_only: true` |
 | `uld` | Universal Logit Distillation over sorted logits; the cross-tokenizer arm | — |
 | `ce` | cross entropy only — in-trainer SFT control; the teacher is still loaded | `lmbda == 0.0` |
+
+Under `lmbda_schedule: linear`, `0 < lmbda < 1` is judged over the whole ramp: a ramp from
+`lmbda_init` 0 to `lmbda` 1 has both policy classes at every step but its two ends, so it
+satisfies the requirement, while a ramp that never moves is judged by its one value.
 
 The renderer also refuses an arm that contradicts a standalone flag (`use_liger_fused_jsd`,
 `use_sampled_opd_loss`), and an arm whose flag is on-policy-only on an off-policy render.

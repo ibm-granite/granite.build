@@ -415,6 +415,35 @@ class TestSchemaMatchesTheValidatedConfigs:
         config = _render(tmp_path, extra=["--max-steps", "100"])
         assert config["num_train_epochs"] == pytest.approx(1.0)
 
+    def test_data_seed_is_absent_by_default(self, tmp_path):
+        """Every recipe that predates the key must render exactly what it rendered
+        before; the sampler then follows the trainer's `seed`, as it always has."""
+        assert "data_seed" not in _render(_dir(tmp_path, "a"))
+        assert "data_seed" not in _render(
+            _dir(tmp_path, "b"), extra=["--data-seed", "-1"]
+        )
+
+    def test_data_seed_is_emitted_as_an_int_when_set(self, tmp_path):
+        """The on-policy-from-a-checkpoint recipe sets it so the continuation does not
+        replay the batches its init already trained on. 0 is a valid seed, so the
+        sentinel for "unset" is -1, not 0."""
+        for value in (0, 43):
+            config = _render(
+                _dir(tmp_path, str(value)), extra=["--data-seed", str(value)]
+            )
+            assert config["data_seed"] == value
+            assert isinstance(config["data_seed"], int)
+
+    def test_data_seed_is_not_a_trainer_extension(self):
+        """It is a stock TrainingArguments field, so it must not trip the delivered-
+        trainer field check that guards the trainer-extension keys."""
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("_rgc", _RENDER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert "data_seed" not in module._TRAINER_EXTENSION_KEYS
+
     def test_save_strategy_is_settable(self, tmp_path):
         """A run that wants no checkpoints should not have to edit the step."""
         assert (
@@ -906,3 +935,206 @@ class TestOnPolicyShapingKeys:
 
     def test_an_unknown_schedule_is_refused(self, tmp_path):
         _render(tmp_path, extra=["--lmbda-schedule", "cosine"], expect_rc=2)
+
+
+class TestTrainerKeyCheck:
+    """--verify-trainer-accepts-keys imports the delivered CustomGOLDConfig, and through it
+    TRL. Faked here so the suite needs neither: the fake TRL keeps the (bool, version) tuple
+    TRL 0.26 stores for _vllm_ascend_available under transformers>=4.57, and the fake
+    trainer imports vllm_ascend behind that guard the way trl.extras.vllm_client does.
+    Without the unwrap, the import fails and the renderer misreports it as the package
+    being missing -- what killed the ck2500 lmbda-ramp arms (fe650626, ae922fd7)."""
+
+    _RAMP = [
+        "--vllm-num-servers",
+        "1",
+        "--lmbda",
+        "0.75",
+        "--lmbda-schedule",
+        "linear",
+        "--lmbda-init",
+        "0.25",
+        "--verify-trainer-accepts-keys",
+        "true",
+    ]
+
+    @staticmethod
+    def _fake_packages(root, ascend_flag='(False, "N/A")', fields=None):
+        fields = fields or {"lmbda_schedule": '"constant"', "lmbda_init": "0.0"}
+        (root / "trl").mkdir(parents=True)
+        (root / "trl" / "__init__.py").write_text("")
+        (root / "trl" / "import_utils.py").write_text(
+            f"_vllm_ascend_available = {ascend_flag}\n"
+            '_mergekit_available = (False, "N/A")\n'
+        )
+        dist = root / "gb_steps_post_training" / "distillation"
+        dist.mkdir(parents=True)
+        (root / "gb_steps_post_training" / "__init__.py").write_text("")
+        (dist / "__init__.py").write_text("")
+        body = "".join(
+            f"    {name}: object = {value}\n" for name, value in fields.items()
+        )
+        (dist / "custom_gold_config.py").write_text(
+            "from dataclasses import dataclass\n"
+            "from trl import import_utils\n"
+            "if import_utils._vllm_ascend_available:\n"
+            "    import vllm_ascend  # noqa: F401\n"
+            "@dataclass\n"
+            "class CustomGOLDConfig:\n" + body
+        )
+        return root
+
+    @staticmethod
+    def _render_with(tmp_path, pythonpath, extra):
+        out = tmp_path / "gold_config.yaml"
+        cmd = [sys.executable, str(_RENDER), "--output", str(out), "--total-nodes", "2"]
+        for flag, value in _REQUIRED.items():
+            cmd += [flag, value]
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        env["PYTHONPATH"] = str(pythonpath)
+        result = subprocess.run(
+            cmd + extra, capture_output=True, text=True, check=False, env=env
+        )
+        return result, out
+
+    def test_a_tuple_guard_does_not_masquerade_as_a_missing_package(self, tmp_path):
+        """The regression: the exact environment of the delivered image."""
+        pkgs = self._fake_packages(tmp_path / "pkgs")
+        result, out = self._render_with(tmp_path, pkgs, self._RAMP)
+        assert result.returncode == 0, result.stderr
+        config = yaml.safe_load(out.read_text())
+        assert config["lmbda_schedule"] == "linear"
+        assert config["lmbda_init"] == pytest.approx(0.25)
+
+    def test_a_plain_bool_guard_still_passes(self, tmp_path):
+        """TRL versions that store a bool must not be disturbed by the unwrap."""
+        pkgs = self._fake_packages(tmp_path / "pkgs", ascend_flag="False")
+        result, _ = self._render_with(tmp_path, pkgs, self._RAMP)
+        assert result.returncode == 0, result.stderr
+
+    def test_a_trainer_without_the_fields_is_still_refused(self, tmp_path):
+        """The unwrap must not turn the check into a pass: it exists to refuse this."""
+        pkgs = self._fake_packages(
+            tmp_path / "pkgs", fields={"lmbda_schedule": '"constant"'}
+        )
+        result, out = self._render_with(tmp_path, pkgs, self._RAMP)
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "has no field(s) lmbda_init" in result.stderr
+        assert not out.exists()
+
+    def test_no_trl_at_all_is_still_reported_as_not_importable(self, tmp_path):
+        result, out = self._render_with(tmp_path, tmp_path / "empty", self._RAMP)
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "gb_steps_post_training is not importable" in result.stderr
+        assert not out.exists()
+
+
+class TestOnPolicyStudyKeys:
+    """The keys the on-policy study adds: two stock TrainingArguments fields and three that
+    need the vendored trainer's on-policy study fields (see steps/train/distill/src/VENDORED.md). All five are absent unless asked for, so every existing
+    recipe renders the config it rendered before."""
+
+    _ONLINE = ["--vllm-num-servers", "1", "--lmbda", "1.0"]
+    _RAMP = _ONLINE + ["--lmbda-schedule", "linear", "--lmbda-init", "0.0"]
+    _NEW = (
+        "adam_beta2",
+        "train_sampling_strategy",
+        "lmbda_ramp_start_step",
+        "lmbda_ramp_steps",
+        "stop_at_step",
+    )
+
+    def test_none_of_them_are_emitted_by_default(self, tmp_path):
+        assert not [k for k in self._NEW if k in _render(_dir(tmp_path, "a"))]
+        on = _render(_dir(tmp_path, "b"), extra=self._RAMP)
+        assert not [k for k in self._NEW if k in on]
+
+    def test_adam_beta2_is_emitted_as_a_float(self, tmp_path):
+        config = _render(tmp_path, extra=["--adam-beta2", "0.95"])
+        assert config["adam_beta2"] == pytest.approx(0.95)
+        assert isinstance(config["adam_beta2"], float)
+
+    @pytest.mark.parametrize("value", ["0", "1", "1.5"])
+    def test_adam_beta2_outside_the_open_interval_is_refused(self, tmp_path, value):
+        result = _render(tmp_path, extra=["--adam-beta2", value], expect_rc=2)
+        assert "adam_beta2 must be in (0, 1)" in result.stderr
+
+    def test_sequential_sampling_is_emitted(self, tmp_path):
+        config = _render(tmp_path, extra=["--train-sampling-strategy", "sequential"])
+        assert config["train_sampling_strategy"] == "sequential"
+
+    def test_an_unknown_sampling_strategy_is_refused(self, tmp_path):
+        result = _render(
+            tmp_path, extra=["--train-sampling-strategy", "ordered"], expect_rc=2
+        )
+        assert "train_sampling_strategy must be" in result.stderr
+
+    def test_the_stock_fields_are_not_trainer_extensions(self):
+        sys.path.insert(0, str(_RENDER.parent))
+        try:
+            import render_gold_config as rgc  # noqa: PLC0415
+        finally:
+            sys.path.pop(0)
+        assert (
+            not {"adam_beta2", "train_sampling_strategy"} & rgc._TRAINER_EXTENSION_KEYS
+        )
+        assert {"lmbda_ramp_start_step", "lmbda_ramp_steps", "stop_at_step"} <= (
+            rgc._TRAINER_EXTENSION_KEYS
+        )
+
+    def test_the_ramp_window_travels_with_a_linear_schedule(self, tmp_path):
+        config = _render(
+            tmp_path,
+            extra=self._RAMP
+            + ["--lmbda-ramp-start-step", "2000", "--lmbda-ramp-steps", "2500"],
+        )
+        assert config["lmbda_ramp_start_step"] == 2000
+        assert config["lmbda_ramp_steps"] == 2500
+
+    def test_the_ramp_window_is_refused_on_a_constant_schedule(self, tmp_path):
+        result = _render(
+            tmp_path, extra=self._ONLINE + ["--lmbda-ramp-steps", "1250"], expect_rc=2
+        )
+        assert "silently inert" in result.stderr
+
+    def test_stop_at_step_is_emitted_and_leaves_the_horizon_alone(self, tmp_path):
+        config = _render(tmp_path, extra=["--stop-at-step", "4500"])
+        assert config["stop_at_step"] == 4500
+        assert "max_steps" not in config
+
+    def test_stop_at_step_past_max_steps_is_refused(self, tmp_path):
+        result = _render(
+            tmp_path,
+            extra=["--max-steps", "2500", "--stop-at-step", "3000"],
+            expect_rc=2,
+        )
+        assert "would never fire" in result.stderr
+
+
+class TestLossArmRequirementsUnderARamp:
+    """lmbda_strictly_between asks that both policy classes occur. A linear ramp from 0 to 1
+    has both for every step but its two ends, so it must render, while a constant lmbda at
+    an end, or a ramp that never leaves one, is still refused."""
+
+    _ONLINE = ["--vllm-num-servers", "1", "--loss-arm", "distillm2_like"]
+
+    def test_a_ramp_from_zero_to_one_renders(self, tmp_path):
+        config = _render(
+            tmp_path,
+            extra=self._ONLINE
+            + ["--lmbda", "1.0", "--lmbda-schedule", "linear", "--lmbda-init", "0.0"],
+        )
+        assert config["use_distillm2_like"] is True
+
+    def test_a_constant_lmbda_of_one_is_still_refused(self, tmp_path):
+        result = _render(tmp_path, extra=self._ONLINE + ["--lmbda", "1.0"], expect_rc=2)
+        assert "0.0 < lmbda < 1.0" in result.stderr
+
+    def test_a_ramp_that_never_moves_is_judged_by_its_one_value(self, tmp_path):
+        result = _render(
+            tmp_path,
+            extra=self._ONLINE
+            + ["--lmbda", "1.0", "--lmbda-schedule", "linear", "--lmbda-init", "1.0"],
+            expect_rc=2,
+        )
+        assert "linear from lmbda_init=1.0" in result.stderr

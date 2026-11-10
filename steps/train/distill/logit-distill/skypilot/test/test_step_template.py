@@ -563,6 +563,12 @@ class TestCeAnchorFlagsReachTheRenderer:
             ("--lmbda-schedule", "lmbda_schedule"),
             ("--lmbda-init", "lmbda_init"),
             ("--min-completion-length", "min_completion_length"),
+            ("--data-seed", "data_seed"),
+            ("--adam-beta2", "adam_beta2"),
+            ("--train-sampling-strategy", "train_sampling_strategy"),
+            ("--lmbda-ramp-start-step", "lmbda_ramp_start_step"),
+            ("--lmbda-ramp-steps", "lmbda_ramp_steps"),
+            ("--stop-at-step", "stop_at_step"),
         ],
     )
     def test_each_flag_reads_its_own_key(self, run_script, flag, key):
@@ -585,6 +591,12 @@ class TestCeAnchorFlagsReachTheRenderer:
             "lmbda_schedule",
             "lmbda_init",
             "min_completion_length",
+            "data_seed",
+            "adam_beta2",
+            "train_sampling_strategy",
+            "lmbda_ramp_start_step",
+            "lmbda_ramp_steps",
+            "stop_at_step",
         ],
     )
     def test_each_new_flag_carries_a_default(self, run_script, key):
