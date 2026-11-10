@@ -413,7 +413,7 @@ and `alora` (alora / ddp), each on one A10G (g5.xlarge).
 - No EC2 instances were left running.
 
 The first attempt (build `00e72069`) failed on a bad node: `srun ... Communication
-connection failure` on p1-r14-n3 while provisioning `lora-fsdp`. gbserver treats that
+connection failure` on one node while provisioning `lora-fsdp`. gbserver treats that
 as non-transient and does not retry, and it left the half-provisioned SkyPilot cluster
 UP (removed with `sky down`). If a BlueVela run fails that way, rerun it, and run
 `sky status` afterwards.
