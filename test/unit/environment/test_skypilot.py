@@ -871,20 +871,32 @@ class TestLaunchSkypilot:
         assert kwargs.get("memory") == "10+"
 
     @pytest.mark.asyncio
-    async def test_slurm_null_memory_override_still_probes(self, skypilot_env):
-        """An explicit `memory: null` override doesn't suppress the floor."""
-        with patch(
-            "gbserver.environment.skypilot._slurm_tracks_memory", return_value=True
-        ) as probe:
-            await self._launch_and_capture_resources(
+    @pytest.mark.parametrize(
+        "memory, expected",
+        [
+            # An explicit size wins over the floor, so probing would be wasted.
+            ("8", "8"),
+            # `memory: null` means "no floor", like `constraint: null` removes
+            # an sbatch directive.
+            (None, None),
+        ],
+    )
+    async def test_slurm_explicit_memory_override_skips_probe(
+        self, skypilot_env, memory, expected
+    ):
+        """Any `resources.memory` key (a size or null) overrides the floor, so
+        the cluster isn't probed and sky.Resources gets the override as-is."""
+        with patch("gbserver.environment.skypilot._slurm_tracks_memory") as probe:
+            kwargs = await self._launch_and_capture_resources(
                 skypilot_env,
                 launcher_config={
                     "run": "echo hi",
-                    "resources": {"infra": "slurm/mycluster", "memory": None},
+                    "resources": {"infra": "slurm/mycluster", "memory": memory},
                 },
                 config={"compute_config": {"total_memory_per_node": "10Gi"}},
             )
-        probe.assert_called_once_with("mycluster")
+        probe.assert_not_called()
+        assert kwargs.get("memory") == expected
 
     @pytest.mark.asyncio
     async def test_slurm_memory_probe_timeout_skips_floor(self, skypilot_env):
@@ -1121,6 +1133,7 @@ class TestSkypilotComputeConfigResources:
         "select_type, expected",
         [
             ("CR_Core_Memory", True),
+            ("CR_Core_Memory,CR_ONE_TASK_PER_CORE", True),
             ("CR_CPU_Memory", True),
             ("cr_core_memory", True),
             ("CR_Core", False),

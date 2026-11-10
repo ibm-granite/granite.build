@@ -297,9 +297,11 @@ def _lsf_client(lsf_cluster: str):
     )
 
 
-# Bound on the SelectTypeParameters probe (_slurm_tracks_memory). SkyPilot runs
-# the underlying `scontrol show config` over SSH with no timeout, so a wedged
-# login node would otherwise hang the launch before sky.launch. Issue #657.
+# Bound on gbserver's SelectTypeParameters probe (_slurm_tracks_memory). SkyPilot
+# runs the underlying `scontrol show config` over SSH with no timeout, so a wedged
+# login node would otherwise hang the launch at this probe, before sky.launch.
+# (When the floor is then skipped, SkyPilot's slurm catalog may repeat the same
+# check, uncapped, inside sky.launch; this bound does not cover that.) Issue #657.
 _SLURM_MEMORY_PROBE_TIMEOUT_SECONDS = 60
 
 
@@ -3477,11 +3479,17 @@ class Skypilot(Environment):
         Probes the cluster (:func:`_slurm_tracks_memory`, offloaded to a thread
         because it SSHes) only when the result matters: a slurm launch that
         names a cluster, declares a parseable ``total_memory_per_node``, and
-        has no explicit (non-empty) ``resources.memory``, which would override
-        the floor anyway. Every other launch skips the SSH round-trip. Must run
-        after the cluster's SSH config is materialized. The probe is bounded by
+        has no ``resources.memory`` key. Any such key overrides the floor in
+        the merge, including ``memory: null``, which means "no floor" (the same
+        way ``sbatch_options: { constraint: null }`` removes a directive), so
+        it skips the probe too. Every other launch skips the SSH round-trip.
+        Must run after the cluster's SSH config is materialized. The probe runs
+        on the dedicated SkyPilot pool (``_sky_submit_to_thread``), so a stuck
+        one can't hold a slot in the loop's shared pool, and is bounded by
         ``_SLURM_MEMORY_PROBE_TIMEOUT_SECONDS`` (SkyPilot runs it with no SSH
-        timeout); a timeout fails safe to ``False``. Issue #657.
+        timeout). A timeout fails safe to ``False``. SkyPilot's catalog may
+        then run the same ``scontrol`` check itself, uncapped, inside
+        ``sky.launch``. Issue #657.
 
         :param cloud_group: the normalized target cloud (first infra segment).
         :param target_alias: the SLURM cluster alias (second infra segment),
@@ -3493,13 +3501,13 @@ class Skypilot(Environment):
         if (
             cloud_group != "slurm"
             or not target_alias
-            or override_res.get("memory") not in (None, "")
+            or "memory" in override_res
             or self._memory_floor(compute_config) is None
         ):
             return False
         try:
             return await asyncio.wait_for(
-                asyncio.to_thread(_slurm_tracks_memory, target_alias),
+                _sky_submit_to_thread(_slurm_tracks_memory, target_alias),
                 timeout=_SLURM_MEMORY_PROBE_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:

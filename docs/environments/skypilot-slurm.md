@@ -406,18 +406,28 @@ Notes:
 
 gbserver applies a step's `compute_config.total_memory_per_node` as `#SBATCH --mem` only on a
 cluster that schedules memory as a consumable resource. Before the first launch that needs it,
-gbserver reads the cluster's `SelectTypeParameters` (`scontrol show config`, cached for an hour):
+gbserver reads the cluster's `SelectTypeParameters` (`scontrol show config`, cached for an hour).
+When gbserver sends no memory, SkyPilot's SLURM catalog decides `--mem` itself:
 
-| `SelectTypeParameters` | Step memory |
-|---|---|
-| `CR_CPU_Memory`, `CR_Core_Memory` | Sent as `--mem` (e.g. the built-in `hfpull`/`hfpush` steps get their declared 10 GiB). |
-| `CR_CPU`, `CR_Core` | Not sent. The job gets the partition default, because a `--mem` request can fail to schedule there. |
-| Can't be read (SSH error, or no answer within 60 s) | Not sent; gbserver logs a WARNING. |
+| `SelectTypeParameters` | gbserver sends | The job gets |
+|---|---|---|
+| `CR_CPU_Memory`, `CR_Core_Memory` (combined values like `CR_Core_Memory,CR_ONE_TASK_PER_CORE` too) | the step's memory | `--mem` of the declared size (e.g. 10 GiB for the built-in `hfpull`/`hfpush`). |
+| `CR_CPU`, `CR_Core` | nothing | no `--mem`, so the partition default. SkyPilot omits it because a `--mem` request can fail to schedule there. |
+| Can't be read (SSH error, or no answer within 60 s) | nothing (gbserver logs a WARNING) | usually `--mem` = 1 GB per requested CPU. SkyPilot runs its own check, with no time limit, and assumes memory is tracked unless it finds otherwise. |
 
-An explicit `launcher_config.resources.memory` (in the step, build, or the environment's
-`steps:` overrides) always wins and is sent either way; the cluster isn't probed then. Without
-either, a job on a memory-tracking cluster gets the partition default (1 GB on BlueVela), which is
-too little for an `hf download` of a multi-GB repo.
+A step without `total_memory_per_node` also gets SkyPilot's 1 GB per CPU on a memory-tracking
+cluster. That is what starved `hfpull` (`num_cpus_per_node: 1`) on BlueVela before this was
+applied: 1 GB is too little for an `hf download` of a multi-GB repo.
+
+Any `launcher_config.resources.memory` key (in the step, build, or the environment's `steps:`
+overrides) wins over the step memory, and the cluster isn't probed then. A size is sent as-is, and
+`memory: null` means "no step memory" (SkyPilot then decides as above). On a memory-tracking
+cluster that's the only way to turn the step memory off, for example for a partition whose own
+`SelectTypeParameters` override doesn't track memory: gbserver reads the cluster-wide value only.
+
+The probe needs to know the cluster. With a bare `slurm` infra (no `slurm/<cluster>`), gbserver
+probes the environment's one declared host. If it declares several, gbserver sends nothing and
+SkyPilot checks every cluster in `~/.slurm/config`.
 
 ### No `image_id` on bare-host clusters
 
