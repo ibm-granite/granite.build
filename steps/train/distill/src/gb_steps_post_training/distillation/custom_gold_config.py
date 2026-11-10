@@ -157,6 +157,30 @@ class CustomGOLDConfig(GOLDConfig):
             "help": "Fraction (0~1] of tokens to keep by student entropy (batch-global) after switching. E.g., 0.2 = top 20% highest-entropy tokens."
         },
     )
+    lmbda_ramp_start_step: int = field(
+        default=0,
+        metadata={
+            "help": "Linear lmbda schedule only: the optimizer step at which the ramp from lmbda_init starts. Before it lmbda is lmbda_init. Lets a run resumed at step N ramp over its own steps rather than over the whole schedule."
+        },
+    )
+    lmbda_ramp_steps: int = field(
+        default=0,
+        metadata={
+            "help": "Linear lmbda schedule only: the ramp's length in optimizer steps; lmbda holds at lmbda after it. 0 ramps until max_steps, the original behaviour."
+        },
+    )
+    min_completion_length: int = field(
+        default=0,
+        metadata={
+            "help": "vLLM server mode: minimum tokens the student must generate before EOS, sent as min_tokens in every request's generation_kwargs. 0 sends nothing."
+        },
+    )
+    stop_at_step: int = field(
+        default=0,
+        metadata={
+            "help": "Save a checkpoint and end training at this optimizer step, leaving max_steps -- and with it the LR schedule's shape -- unchanged. 0 trains to max_steps."
+        },
+    )
     opd_importance_sampling: bool = field(
         default=False,
         metadata={
@@ -500,10 +524,17 @@ class CustomGOLDConfig(GOLDConfig):
                 raise ValueError("lmbda_init must be in range [0, 1].")
             if not (0.0 <= self.lmbda <= 1.0):
                 raise ValueError("lmbda must be in range [0, 1].")
+            if self.lmbda_ramp_start_step < 0 or self.lmbda_ramp_steps < 0:
+                raise ValueError(
+                    "lmbda_ramp_start_step and lmbda_ramp_steps must be >= 0."
+                )
         elif self.lmbda_schedule != "constant":
             raise ValueError(
                 f"lmbda_schedule must be 'constant' or 'linear', got '{self.lmbda_schedule}'."
             )
+
+        if self.min_completion_length < 0 or self.stop_at_step < 0:
+            raise ValueError("min_completion_length and stop_at_step must be >= 0.")
 
         # Validate clip_alpha
         if not (0.0 <= self.clip_alpha < 1.0):

@@ -2513,6 +2513,24 @@ class CustomULDLoss(ULDLoss):
             return jsd_loss
 
 
+class _StopAtStepCallback(TrainerCallback):
+    """Save and stop at a fixed optimizer step without changing max_steps.
+
+    max_steps is what the LR scheduler is built from, so ending a run early by lowering it
+    reshapes the whole schedule -- and on a resume, the restored scheduler state is then read
+    against a different curve. This leaves the schedule alone and ends the loop instead.
+    """
+
+    def __init__(self, stop_at_step: int):
+        self.stop_at_step = stop_at_step
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if state.global_step >= self.stop_at_step:
+            control.should_save = True
+            control.should_training_stop = True
+        return control
+
+
 class CustomGOLDTrainer(GOLDTrainer):
     """Custom trainer extending GOLDTrainer"""
 
@@ -2609,6 +2627,8 @@ class CustomGOLDTrainer(GOLDTrainer):
         super().__init__(*args, **kwargs)
         self.model_accepts_loss_kwargs = False
         self._last_log_time = time.time()
+        if int(getattr(self.args, "stop_at_step", 0) or 0) > 0:
+            self.add_callback(_StopAtStepCallback(int(self.args.stop_at_step)))
 
         # GENERATION EFFICIENCY COUNTERS, reset at every log emit like the t_* timers beside them.
         #
@@ -2877,6 +2897,17 @@ class CustomGOLDTrainer(GOLDTrainer):
 
                 self._unicode_to_byte = {v: k for k, v in bytes_to_unicode().items()}
 
+    def _min_tokens_kwargs(self) -> dict:
+        """generation_kwargs carrying the floor, for VLLMClient.generate; empty at 0.
+
+        trl 0.26's vllm_serve applies a request's generation_kwargs to SamplingParams last
+        (GenerateRequest.generation_kwargs, merged with .update()), so min_tokens set here is
+        what the server samples with. Empty at 0 so a floor-less run sends the request it
+        always sent.
+        """
+        n = int(getattr(self.args, "min_completion_length", 0) or 0)
+        return {"generation_kwargs": {"min_tokens": n}} if n > 0 else {}
+
     def _get_current_lmbda(self) -> float:
         """
         Compute current lmbda value based on training progress.
@@ -2886,6 +2917,26 @@ class CustomGOLDTrainer(GOLDTrainer):
         """
         if self.args.lmbda_schedule == "constant":
             return self.lmbda
+
+        if self.args.lmbda_schedule == "linear":
+            # The ramp runs from lmbda_ramp_start_step for lmbda_ramp_steps steps (0 = until
+            # max_steps). At the defaults (0, 0) this is the original global_step / max_steps.
+            start = int(getattr(self.args, "lmbda_ramp_start_step", 0) or 0)
+            length = int(getattr(self.args, "lmbda_ramp_steps", 0) or 0)
+            if length <= 0:
+                length = self.state.max_steps - start
+            current_step = self.state.global_step
+
+            if length <= 0:
+                return self.args.lmbda_init
+
+            progress = min(1.0, max(0.0, (current_step - start) / length))
+            current_lmbda = self.args.lmbda_init + progress * (
+                self.args.lmbda - self.args.lmbda_init
+            )
+            return current_lmbda
+
+        return self.lmbda
 
     def _draw_on_policy(self, current_lmbda: float) -> bool:
         """Whether THIS step draws from the teacher, decided identically on every rank.
@@ -2902,21 +2953,6 @@ class CustomGOLDTrainer(GOLDTrainer):
             global_step=getattr(self.state, "global_step", 0),
             device=self.accelerator.device,
         )
-
-        if self.args.lmbda_schedule == "linear":
-            max_steps = self.state.max_steps
-            current_step = self.state.global_step
-
-            if max_steps <= 0:
-                return self.args.lmbda_init
-
-            progress = min(1.0, current_step / max_steps)
-            current_lmbda = self.args.lmbda_init + progress * (
-                self.args.lmbda - self.args.lmbda_init
-            )
-            return current_lmbda
-
-        return self.lmbda
 
     def _get_current_beta(self) -> float:
         """
@@ -3529,6 +3565,7 @@ class CustomGOLDTrainer(GOLDTrainer):
                         min_p=_min_p,
                         max_tokens=_max_tokens,
                         guided_decoding_regex=self.vllm_guided_decoding_regex,
+                        **self._min_tokens_kwargs(),
                     )
                     _overlap_future._submit_time = _t_submit
 
@@ -4024,6 +4061,7 @@ class CustomGOLDTrainer(GOLDTrainer):
                     min_p=min_p,
                     max_tokens=max_completion_length,
                     guided_decoding_regex=self.vllm_guided_decoding_regex,
+                    **self._min_tokens_kwargs(),
                 )
                 completion_ids = vllm_response["completion_ids"]
                 vllm_logprobs_raw = vllm_response["logprobs"]
@@ -4055,6 +4093,7 @@ class CustomGOLDTrainer(GOLDTrainer):
                 max_tokens=max_completion_length,
                 guided_decoding=guided_decoding,
                 logprobs=1 if self.args.opd_importance_sampling else None,
+                min_tokens=int(getattr(self.args, "min_completion_length", 0) or 0),
             )
 
             if hasattr(self, "vllm_tp_group") and self.vllm_tensor_parallel_size > 1:
