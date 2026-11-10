@@ -257,9 +257,22 @@ environment_configs:
                 the WHOLE dependency set: DPK declares one per transform precisely so
                 a build never lists dependencies itself. The pure-python runtime needs
                 nothing beyond it — no `ray` extra, because this step has no Ray mode. #}
-            {%- set dpk_req = ("data-prep-toolkit-transforms[" ~ (t | replace("_", "-")) ~ "]==" ~ config.dpk_config.dpk_version)
+            {%- set extra = t | replace("_", "-") %}
+            {%- set dpk_req = ("data-prep-toolkit-transforms[" ~ extra ~ "]==" ~ config.dpk_config.dpk_version)
                               if t
                               else "" %}
+            {#- pyarrow 26 (2026-10-09) refuses to import under NumPy 1.x, but declares
+                no numpy requirement, so nothing stops the resolver pairing it with one
+                (#653). These are the transform extras whose DPK 1.1.8 deps cap numpy
+                below 2 — found by resolving all 50 extras with
+                `uv pip compile --python-version 3.12 --python-platform x86_64-unknown-linux-gnu`;
+                the group extras all/code/language/images are capped too, but no transform
+                name maps to them. Every other extra resolves numpy 2 and is left alone.
+                Scoped rather than global by choice. Remove an entry once that extra
+                allows numpy 2 in the dpk_version this step defaults to. #}
+            {%- set numpy1_extras = ["code-profiler", "doc-chunk", "docling2parquet", "faces",
+                                     "fdedup", "nsfw", "people", "pii-redactor"] %}
+            {%- set pins = ["pyarrow<26"] if (t and extra in numpy1_extras) else [] %}
             # The dependency install is delegated to the bundled src/dpk_setup.sh
             # (file-mounted at ./src). Safe from `setup` because SkyPilot syncs
             # file mounts first: its stage order is PROVISION -> SYNC_WORKDIR ->
@@ -281,7 +294,7 @@ environment_configs:
             bash ./src/dpk_setup.sh \
               --venv ./venv \
               --index-url '{{ q(config.dpk_config.pip_index_url) }}' \
-              --{% if dpk_req %} '{{ q(dpk_req) }}'{% endif %}
+              --{% if dpk_req %} '{{ q(dpk_req) }}'{% endif %}{% for p in pins %} '{{ q(p) }}'{% endfor %}
             {%- endif %}
           # run starts in the same working directory as setup, so ./venv and
           # ./src are both relative.
