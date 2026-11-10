@@ -1,4 +1,4 @@
-# Default parameters for sft-10k-eval-test on BlueVela.
+# Default parameters for sft-10k-eval-test on SkyPilot/LSF.
 # Runs 2-epoch SFT on a 10k sample, then fans out to 27 eval targets.
 # Override any of these with: gb build start --param KEY=VALUE
 
@@ -58,8 +58,8 @@ EVAL_QUEUE: "preemptable"
 # FSDP + --padfree on a single GPU, the tied embed_tokens/lm_head
 # flat-param triggers a "Cannot writeback when the parameter shape
 # changes" crash on the first forward pass. Two or more processes take
-# a different FSDP wrapping path and avoid the issue. Mirrors gbansible's
-# multi-GPU setup. Evals stay on a single H100 — they don't hit this path.
+# a different FSDP wrapping path and avoid the issue.
+# Evals stay on a single H100 — they don't hit this path.
 SFT_ACCELERATORS: "H100:2"
 EVAL_ACCELERATORS: "H100:1"
 SFT_MEMORY: "1580"

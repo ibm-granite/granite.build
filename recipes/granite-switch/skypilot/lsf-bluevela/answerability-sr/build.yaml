@@ -1,6 +1,6 @@
 ######
 # answerability-sr — train and evaluate a Shadow Residual (SR) answerability
-# adapter on BlueVela (SkyPilot / LSF).
+# adapter on SkyPilot/LSF.
 #
 # Two targets, wired by one artifact:
 #

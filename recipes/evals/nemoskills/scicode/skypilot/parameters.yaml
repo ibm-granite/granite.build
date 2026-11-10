@@ -1,4 +1,4 @@
-# scicode on BlueVela (SkyPilot / SLURM), nemoskills family image.
+# scicode on SkyPilot/SLURM, nemoskills family image.
 # Data: https://huggingface.co/datasets/SciCode1/SciCode @ 4510f6a6aa27c43fad7b43da2c59602a86e88480
 # (pinned in the image's code; fetch it into the HF cache with `make -C steps/eval prefetch HF_HOME=<cache>`).
 #

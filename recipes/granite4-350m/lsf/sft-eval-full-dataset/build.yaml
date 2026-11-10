@@ -25,7 +25,7 @@ granite.build:
       outputs:
         # `uri` is filled at push-time with `binding=<NEWARTIFACT payload>`,
         # so `{{ binding.path }}` is the run-specific dir the SFT step wrote
-        # (e.g. /proj/.../sft/checkpoints/v0-<DATE>-<TIME>). The eval targets'
+        # (e.g. <shared-fs>/.../sft/checkpoints/v0-<DATE>-<TIME>). The eval targets'
         # `model_path` template appends `-hf/epoch_hf_<NUM_EPOCHS>` to that.
         # Hardcoding `env://$${OUTPUT_DIR}` would point evals at the parent
         # checkpoints dir instead of the run-specific subdir.

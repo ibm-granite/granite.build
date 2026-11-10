@@ -1,5 +1,5 @@
 ######
-# gold-sweep-smoke — GOLD knowledge distillation for BlueVela (SkyPilot / LSF).
+# gold-sweep-smoke — GOLD knowledge distillation for SkyPilot/LSF.
 #
 # The minutes-long gate for gold-sweep-100. Same SHAPE — step-bounded, one node, the
 # real prepped corpus and retagged student — with only the cost shrunk.

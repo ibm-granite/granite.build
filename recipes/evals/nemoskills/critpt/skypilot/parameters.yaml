@@ -1,4 +1,4 @@
-# critpt on BlueVela (SkyPilot / SLURM), nemoskills family image.
+# critpt on SkyPilot/SLURM, nemoskills family image.
 # Data: https://huggingface.co/datasets/CritPt-Benchmark/CritPt @ 9b9fc8498596ec08ab5437a72f4aa18beef2b876
 # (pinned in the image's code; fetch it into the HF cache with `make -C steps/eval prefetch HF_HOME=<cache>`).
 #

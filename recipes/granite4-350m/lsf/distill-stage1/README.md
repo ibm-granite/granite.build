@@ -124,7 +124,7 @@ model split across 16 or 32 ranks each shard is ~11-22M parameters — small eno
 collectives are latency-bound rather than bandwidth-bound. That overhead is also exactly
 what limits multi-node scaling, so removing it helps more than adding nodes.
 
-    ls /proj/granite-build/g4os/kd-sandbox/configs/deepspeed/
+    ls <shared-fs>/kd-sandbox/configs/deepspeed/
     --param DS_CONFIG=configs/deepspeed/<a zero2 or zero1 config>
 
 Unverified, and it needs the short run rather than a leap: the checkpoint layout changes
@@ -151,7 +151,7 @@ an H100 on a single sequence.
 
 Expect well under the ideal 2x from doubling: `per_device` is already small, the ZeRO-3
 collectives grow with rank count, queue wait for 4x8 H100 is longer than for 2x8, and more
-nodes means more exposure to the `p2-r03-n1` CUDA-init fault. **GPU-h goes up, not down** —
+nodes means more exposure to the single-host CUDA-init fault. **GPU-h goes up, not down** —
 you are buying wall clock, not capacity. Do levers 1 and 2 first; they are cheaper and
 likely larger.
 
@@ -200,7 +200,7 @@ Stage 2 (on-policy, on the IFRL and IdentityRL prompt sets) continues from this 
 `CHAT_TEMPLATE` is granite-4.0-350m's own template with `{% generation %}` markers added
 and nothing else changed, and both halves of that claim are now checked:
 
-* **It is the right base.** `sha256sum /proj/granite-build/g4os/chat_template.jinja` —
+* **It is the right base.** `sha256sum <shared-fs>/chat_template.jinja` —
   the template the SFT mixture was actually tokenized with — returned
   `9524df67b77a7b25...` on 2026-09-22, byte-identical to the vendored
   `granite_4_role_base.jinja`. The hash is pinned in

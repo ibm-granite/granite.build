@@ -85,9 +85,12 @@ granite.build:
               # with "No module named 'dpk_tokenization2arrow'" (build d8cd80c0,
               # 2026-09-28). An image for this step must provide PUBLIC DPK.
               dpk_image: us.icr.io/cil15-shared-registry/preprocessing-pipelines/tokenization-python:dpk-1.1.8
-              # The dpk step declares `docs` as a named input and reads this
-              # target's `docs` binding directly, so no input_path config line
-              # is set here (the byoc pattern).
+              # The directory the transform reads: this target's `docs` input. The
+              # assets repo's dpk step (steps/skypilot/dpk) requires input_path and
+              # has no `docs` input of its own, so it is set here from the binding
+              # (the byoc pattern). This repo's data/dpk would also accept it, with
+              # a DEPRECATED warning, since it reads a bound `docs` itself.
+              input_path: "{{ bindings.docs.binding.path }}"
               output: tokens
               # Set to the value the step's own rule already derives, so this asserts
               # the override path is READ, not that a different runtime works (weak on

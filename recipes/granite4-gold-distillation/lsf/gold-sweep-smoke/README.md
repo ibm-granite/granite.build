@@ -6,7 +6,7 @@ code, the same image, the same retagged student, the same teacher snapshot, the 
 802,027-row corpus, the same objective.
 
 It exists because `gold-sweep-100` costs two hours and ~15 GPU-h, and almost everything
-that can be wrong with it is wrong immediately: an unreadable `/proj/data-eng` path, a
+that can be wrong with it is wrong immediately: an unreadable shared-filesystem path, a
 response template that rendered as a trailing space, a `max_steps` that reached the
 trainer as a string, a NaN loss from the fused kernel. None of those need 100 steps to
 show up.
@@ -34,7 +34,7 @@ rather than trusting it, because a gate is only a gate for what it holds fixed. 
 run here clears:
 
 - the step's new `max_steps` and `save_strategy` keys, end to end into the rendered config;
-- all three `/proj/data-eng/hew/...` paths, including the retagged student's tokenizer
+- all three `<shared-fs>/...` paths, including the retagged student's tokenizer
   relationship with the teacher;
 - the `beta: 0.5` objective;
 - the trailing-newline `RESPONSE_TEMPLATE`;

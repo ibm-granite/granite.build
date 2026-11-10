@@ -198,7 +198,7 @@ environment dispatches.
 
 ```yaml
 steps:
-  - step_uri: space://steps/sft
+  - step_uri: space://steps/my-sft
     config:
       compute_config:
         num_nodes: 1

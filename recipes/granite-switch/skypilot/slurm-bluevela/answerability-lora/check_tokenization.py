@@ -1,7 +1,7 @@
 """Check that the prepared prompt/completion data tokenizes to what was trained.
 
 The source parquet (training_data/answerability/parquet_granite4.2_8b in the HF
-dataset repo ibm-research/touma) carries pre-tokenized `input_ids` / `labels`
+dataset repo named by SOURCE_DATA_URI) carries pre-tokenized `input_ids` / `labels`
 next to the `prompt` / `completion` they were tokenized from. The prepare
 target keeps only `prompt` / `completion`, and hf-peft-sft re-tokenizes them
 with TRL's prompt-completion path. This replays that path (the same steps as
@@ -15,7 +15,7 @@ columns.
 Needs transformers + jinja2 + pyarrow (CPU only; no model weights). Get the
 source parquet with:
 
-    hf download ibm-research/touma --repo-type dataset \
+    hf download <org>/<dataset> --repo-type dataset \
       --include 'training_data/answerability/parquet_granite4.2_8b/*' --local-dir .
 """
 

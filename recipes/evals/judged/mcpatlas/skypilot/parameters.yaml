@@ -1,4 +1,4 @@
-# mcpatlas on BlueVela (SkyPilot / SLURM), judged family image.
+# mcpatlas on SkyPilot/SLURM, judged family image.
 # Data: https://huggingface.co/datasets/ScaleAI/MCP-Atlas @ 8c563b55d7c967755f474299848049834d624617
 # (pinned in the image's code; fetch it into the HF cache with `make -C steps/eval prefetch HF_HOME=<cache>`).
 #

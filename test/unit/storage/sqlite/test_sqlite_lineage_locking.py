@@ -24,6 +24,7 @@ import os
 import uuid as uuid_module
 
 import pytest
+from libgbtest.lineage.lineage import AbstractLineageTablesTest
 from sqlalchemy.exc import OperationalError
 
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
@@ -33,15 +34,6 @@ pytestmark = pytest.mark.skipif(
     os.environ.get("SKIP_SQL_ADMIN_TESTS", "False").lower() == "true",
     reason="Don't want to run this in CICD.",
 )
-
-
-@pytest.fixture(name="rows")
-def rows_fixture():
-    table = f"t_lock_{uuid_module.uuid4().hex[:8]}"
-    storage = SqliteStorageFactory().create_lineage_row_storage(table_name=table)
-    storage.add(StoredLineageRow(job_id="J1", input="a", output="b"))
-    yield storage
-    storage.delete_table()
 
 
 @pytest.fixture(name="no_wait")
@@ -63,51 +55,57 @@ class _CountingLock:
         return self.lock.__exit__(*exc)
 
 
-@pytest.mark.parametrize(
-    "call",
-    [
-        lambda s: s.grouped_edges(["a"], "downstream"),
-        lambda s: s.grouped_self_loops(["a"]),
-        lambda s: s.count_jobs_touching("a"),
-        lambda s: s.get_job_ids_touching("a", 10, 0),
-        lambda s: s.get_rows_by_input(["a"], self_loops=False),
-    ],
-    ids=["edges", "self_loops", "count", "job_ids", "no_self_loops"],
-)
-def test_the_walk_sql_holds_the_file_lock(rows, call):
-    lock = _CountingLock(rows._db_file_lock)  # pylint: disable=protected-access
-    object.__setattr__(rows, "_db_file_lock", lock)
-    call(rows)
-    assert lock.entered >= 1
+class TestSqliteLineageLocking(AbstractLineageTablesTest):
+    """The lock and retry on ``gb_lineage_index`` and ``gb_lineage_job``, prefixed per test."""
 
+    @pytest.fixture(name="rows")
+    def rows_fixture(self):
+        storage = self.storage.lineage_row_storage
+        storage.add(StoredLineageRow(job_id="J1", input="a", output="b"))
+        return storage
 
-def test_a_locked_database_is_retried(rows, no_wait, monkeypatch):
-    real = type(rows)._get_session_without_retry
-    failures = iter([OperationalError("SELECT", {}, Exception("database is locked"))])
-
-    def flaky(self):
-        failure = next(failures, None)
-        if failure is not None:
-            raise failure
-        return real(self)
-
-    monkeypatch.setattr(type(rows), "_get_session_without_retry", flaky)
-    assert [e.output for e in rows.grouped_edges(["a"], "downstream")] == ["b"]
-
-
-def test_a_bad_argument_is_not_retried(rows, no_wait):
-    with pytest.raises(ValueError):
-        rows.grouped_edges(["a"], "sideways")
-
-
-def test_tag_search_holds_the_file_lock():
-    jobs = SqliteStorageFactory().create_lineage_job_storage(
-        table_name=f"t_lockjob_{uuid_module.uuid4().hex[:8]}"
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda s: s.grouped_edges(["a"], "downstream"),
+            lambda s: s.grouped_self_loops(["a"]),
+            lambda s: s.count_jobs_touching("a"),
+            lambda s: s.get_job_ids_touching("a", 10, 0),
+            lambda s: s.get_rows_by_input(["a"], self_loops=False),
+        ],
+        ids=["edges", "self_loops", "count", "job_ids", "no_self_loops"],
     )
-    lock = _CountingLock(jobs._db_file_lock)  # pylint: disable=protected-access
-    object.__setattr__(jobs, "_db_file_lock", lock)
-    jobs.search_by_tags(["x=1"])
-    assert lock.entered >= 1
+    def test_the_walk_sql_holds_the_file_lock(self, rows, call):
+        lock = _CountingLock(rows._db_file_lock)  # pylint: disable=protected-access
+        object.__setattr__(rows, "_db_file_lock", lock)
+        call(rows)
+        assert lock.entered >= 1
+
+    def test_a_locked_database_is_retried(self, rows, no_wait, monkeypatch):
+        real = type(rows)._get_session_without_retry
+        failures = iter(
+            [OperationalError("SELECT", {}, Exception("database is locked"))]
+        )
+
+        def flaky(self):
+            failure = next(failures, None)
+            if failure is not None:
+                raise failure
+            return real(self)
+
+        monkeypatch.setattr(type(rows), "_get_session_without_retry", flaky)
+        assert [e.output for e in rows.grouped_edges(["a"], "downstream")] == ["b"]
+
+    def test_a_bad_argument_is_not_retried(self, rows, no_wait):
+        with pytest.raises(ValueError):
+            rows.grouped_edges(["a"], "sideways")
+
+    def test_tag_search_holds_the_file_lock(self):
+        jobs = self.storage.lineage_job_storage
+        lock = _CountingLock(jobs._db_file_lock)  # pylint: disable=protected-access
+        object.__setattr__(jobs, "_db_file_lock", lock)
+        jobs.search_by_tags(["x=1"])
+        assert lock.entered >= 1
 
 
 def test_the_lock_is_released_between_retry_attempts(monkeypatch):

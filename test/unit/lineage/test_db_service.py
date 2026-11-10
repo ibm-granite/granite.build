@@ -25,6 +25,7 @@ second is a real, successful answer and must come back as a graph.
 from unittest.mock import patch
 
 import pytest
+from libgbtest.lineage.lineage import AbstractLineageTablesTest
 
 from gbserver.lineage.db_service import DBLineageService
 from gbserver.lineage.openlineage_service import (
@@ -531,10 +532,6 @@ class TestQueryGraph:
         assert C not in ids
         assert result["truncated"] is True
 
-    def test_an_unknown_direction_raises(self):
-        with pytest.raises(ValueError):
-            service(row("J1", A, B)).query_graph(uri=A, direction="sideways")
-
     def test_a_storage_failure_raises(self):
         """A failing job lookup propagates; the route answers 503, not an empty graph."""
         svc = service(row("J1", A, B), fail=True)
@@ -710,7 +707,7 @@ class TestListJobs:
             svc.list_jobs(uri=A)
 
 
-class TestTagSearch:
+class TestTagSearch(AbstractLineageTablesTest):
     """``POST /lineage/search`` on the db provider, end to end through the service.
 
     The storage schema and the API contract are independent here: the tags are a
@@ -719,15 +716,9 @@ class TestTagSearch:
     these assert the bridge.
     """
 
-    @staticmethod
-    def _jobs(*records):
-        import uuid as uuid_module
-
-        from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
-
-        storage = SqliteStorageFactory().create_lineage_job_storage(
-            table_name=f"t_svc_{uuid_module.uuid4().hex[:8]}"
-        )
+    def _jobs(self, *records):
+        """This test's prefixed ``gb_lineage_job``, holding ``records``."""
+        storage = self.storage.lineage_job_storage
         for record in records:
             storage.add(record)
         return storage

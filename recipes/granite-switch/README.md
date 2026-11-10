@@ -11,8 +11,8 @@ Recipes are grouped by the SkyPilot cluster they run on, as
 
 | Recipe | What it builds |
 |---|---|
-| [`skypilot/lsf-bluevela/answerability-sr`](skypilot/lsf-bluevela/answerability-sr/README.md) | A Shadow Residual answerability adapter on `granite-4.2-8b`, trained and then scored against the answerability eval set (IBM BlueVela, LSF). |
-| [`skypilot/slurm-bluevela/answerability-lora`](skypilot/slurm-bluevela/answerability-lora/README.md) | An answerability LoRA or aLoRA adapter on `granite-4.2-8b`, trained with the `hf-peft-sft` step (IBM BlueVela, SLURM). |
+| [`skypilot/lsf-bluevela/answerability-sr`](skypilot/lsf-bluevela/answerability-sr/README.md) | A Shadow Residual answerability adapter on `granite-4.2-8b`, trained and then scored against the answerability eval set (SkyPilot/LSF). |
+| [`skypilot/slurm-bluevela/answerability-lora`](skypilot/slurm-bluevela/answerability-lora/README.md) | An answerability LoRA or aLoRA adapter on `granite-4.2-8b`, trained with the `hf-peft-sft` step (SkyPilot/SLURM). |
 | [`skypilot/aws/answerability-lora`](skypilot/aws/answerability-lora/README.md) | A template for LoRA and/or aLoRA adapters on `granite-4.2-8b`, trained on AWS EC2 GPUs with a shared EFS filesystem. Bring your own data. |
 | [`skypilot/aws/answerability-sr`](skypilot/aws/answerability-sr/README.md) | A template for a Shadow Residual adapter on `granite-4.2-8b`, trained and scored on AWS EC2 GPUs with a shared EFS filesystem. Bring your own data. |
 
@@ -30,6 +30,9 @@ gb build start -f <path to the recipe>/build.yaml
 Each recipe directory carries its own `README.md` and `parameters.yaml`; read
 the README first, since a recipe may have a prerequisite to satisfy before the
 first run — data to stage, or a credential to register.
+
+`<shared-fs>` in a recipe's README or comments stands for a directory on the
+cluster's shared filesystem; see [Placeholders](../README.md#placeholders).
 
 Alternatively, access Granite.build through an agent session and simply ask
 it to start a new build using that recipe.

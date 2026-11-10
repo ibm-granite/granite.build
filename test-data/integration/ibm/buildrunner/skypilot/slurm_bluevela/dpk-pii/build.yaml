@@ -75,9 +75,12 @@ granite.build:
             dpk_config:
               transform: pii_redactor
               dpk_version: "1.1.8"
-              # The dpk step declares `docs` as a named input and reads this
-              # target's `docs` binding directly, so no input_path config line
-              # is set here (steps/aux/byoc/skypilot/USAGE.md).
+              # The directory the transform reads: this target's `docs` input. The
+              # assets repo's dpk step (steps/skypilot/dpk) requires input_path and
+              # has no `docs` input of its own, so it is set here from the binding
+              # (the byoc pattern, steps/aux/byoc/skypilot/USAGE.md). This repo's
+              # data/dpk would also accept it, with a DEPRECATED warning.
+              input_path: "{{ bindings.docs.binding.path }}"
               output: clean
               output_path: /tmp/dpk-pii-output    # matches the `clean` uri above
               args:

@@ -28,8 +28,8 @@ target-set per checkpoint.
 
    ```shell
    python generate_build.py --workflow ifrl \
-     --model-path /proj/.../sft/epoch_hf_2 \
-     --output-dir /proj/.../rl-out/ \
+     --model-path <shared-fs>/.../sft/epoch_hf_2 \
+     --output-dir <shared-fs>/.../rl-out/ \
      --total-episodes 20480 --save-freq 10 \
      --eval-sets 'bfcl,multilingual-eval' \
      --output build.yaml
@@ -136,7 +136,7 @@ per-step ids match the generated `checkpoint_<step>` training outputs.
 
 ## Verification status (issue #45)
 
-Confirmed against real BlueVela grpo_fast runs:
+Confirmed against real SkyPilot/LSF grpo_fast runs:
 
 - **Checkpoint dir naming.** grpo_fast writes HF checkpoints as `output_dir/step_<N>`
   (confirmed: `step_10`, `step_20`), which the watcher globs directly.

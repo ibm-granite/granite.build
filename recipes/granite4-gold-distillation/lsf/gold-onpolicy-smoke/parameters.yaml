@@ -1,5 +1,5 @@
-# gold-onpolicy-smoke — on-policy GOLD with vLLM as a separate target, on BlueVela
-# (SkyPilot / LSF).
+# gold-onpolicy-smoke — on-policy GOLD with vLLM as a separate target, on
+# SkyPilot/LSF.
 #
 # NOT YET RUN. Its purpose is to answer one question cheaply: can the trainer's NCCL
 # weight-sync group span two LSF allocations? Everything here is sized so that
@@ -23,8 +23,8 @@ DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero
 IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
 
 # ─── Model pair and data ──────────────────────────────────────────────
-# The same three artifacts as gold-sweep-*, all verified readable from the
-# granitebuild account (2026-09-13). STUDENT_MODEL is used TWICE — as the trainer's
+# The same three artifacts as gold-sweep-*, all readable by the
+# service account via the project group. STUDENT_MODEL is used TWICE — as the trainer's
 # init and as the model vLLM serves — which is the on-policy contract: the student
 # generates, the teacher scores those generations.
 #

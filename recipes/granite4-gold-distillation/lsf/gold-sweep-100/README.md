@@ -1,6 +1,6 @@
 # GOLD 100-step off-policy sweep arm
 
-The λ=0.0 arm of the published 100-step GOLD sweep, on BlueVela (LSF via SkyPilot):
+The λ=0.0 arm of the published 100-step GOLD sweep, on SkyPilot/LSF:
 100 optimizer steps over the full 802,027-row corpus at effective batch 192, on one
 8×H100 node. Roughly 1.9 h and ~15 GPU-h.
 
@@ -26,7 +26,7 @@ Override any value with `--param KEY=VALUE`.
 ## What this reproduces, and what it does not
 
 Same student, same teacher, same corpus, same geometry as the published arm — the three
-artifacts are read directly from `/proj/data-eng/hew/...` rather than copied, so there is
+artifacts are read directly from `<shared-fs>/...` rather than copied, so there is
 no chance of a stale duplicate.
 
 Two things differ, and neither is incidental:
@@ -91,7 +91,7 @@ silently.
 
 `STUDENT_MODEL` is the **retagged** student: re-embedded onto the teacher's tokenizer by
 the upstream `distill-tokenizer-align` step, which does not exist in this repo. Do not
-substitute one of the `/proj/granite-build/g4os/kd-sandbox` overlays — the corpus was
+substitute one of the `<shared-fs>/kd-sandbox` overlays — the corpus was
 prepared against this tokenizer relationship, and the step can only run the
 shared-vocabulary JSD path (it exposes none of the trainer's cross-tokenizer `uld_*`
 keys, so pre-alignment is the only route open to it). See

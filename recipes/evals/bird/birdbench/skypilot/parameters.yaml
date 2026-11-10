@@ -1,4 +1,4 @@
-# birdbench on BlueVela (SkyPilot / SLURM), bird family image.
+# birdbench on SkyPilot/SLURM, bird family image.
 # Data: pinned inside the image (GitHub/PyPI/task data baked by the family's extras.sh), nothing to fetch.
 #
 # LIMIT is empty: the full benchmark. For a quick functional check, score only the first N

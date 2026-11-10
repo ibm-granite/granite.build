@@ -1,5 +1,5 @@
 # distill-stage1 — off-policy GOLD distillation of the granite-4.0-350m SFT
-# checkpoint towards a granite-4.1-3b teacher, on BlueVela (SkyPilot / LSF).
+# checkpoint towards a granite-4.1-3b teacher, on SkyPilot/LSF.
 #
 # THE REAL RUN. distill-smoke is this recipe's shape at 64 rows and 2 steps; run it
 # first. The baseline this is measured against is the EXISTING after-SFT eval row,
@@ -157,7 +157,7 @@ SHUFFLE_SEED: 42
 # steps/distill/tokenizer-align/skypilot/test/test_granite_role_template.py renders
 # both over nine conversation shapes and diffs them.
 #
-# BEFORE THE FIRST RUN: diff this against /proj/granite-build/g4os/chat_template.jinja,
+# BEFORE THE FIRST RUN: diff this against <shared-fs>/chat_template.jinja,
 # the template the SFT mixture was actually tokenized with. The vendored base is the
 # Hub's copy of granite-4.0-350m's template, which SHOULD be the same file — but "should
 # be" is not "is", and a difference here moves every prompt. The README has the command.
@@ -344,7 +344,7 @@ BFCL_GPU_MEMORY_UTILIZATION: "0.5"
 # logits tensor of the non-fused JSD path.
 #
 # Raising this requires lowering GRADIENT_ACCUMULATION_STEPS to match. More nodes
-# also means more exposure to the p2-r03-n1 CUDA-init fault.
+# also means more exposure to the single-host CUDA-init fault.
 GOLD_NUM_NODES: 2
 GOLD_NUM_GPUS: 8
 # HOST memory per node for the GPU targets, and it has to be stated: the LSF
@@ -387,8 +387,8 @@ NCCL_DEBUG_SUBSYS: "INIT,NET"
 NCCL_TIMEOUT_MS: 600000
 
 # ─── Retries ──────────────────────────────────────────────────────────
-# One retry, for a measured cluster fault rather than as general insurance: host
-# p2-r03-n1 takes an allocation and then fails inside torch at cuda_init with
+# One retry, for a measured cluster fault rather than as general insurance: one
+# specific host takes an allocation and then fails inside torch at cuda_init with
 # "CUDA unknown error" (3 runs, 3 failures there; 0 failures on every other host
 # across several hundred runs in ~/sky_logs). A build.yaml cannot steer LSF away
 # from a host, so running the target again — most likely elsewhere — is the only
