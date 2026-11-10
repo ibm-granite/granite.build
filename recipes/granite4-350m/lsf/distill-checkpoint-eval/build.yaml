@@ -53,8 +53,8 @@
 # NOTHING HERE ACTS ON A READING
 #
 # eval-transfer-<N> reports divergence and entropy per rung, gen-smoke reports
-# repetition, and the entropy guard runs in `warn` mode. All three are instruments:
-# none of them stops the run, fails a target or skips a rung. The run is one epoch
+# repetition. Both are instruments:
+# neither of them stops the run, fails a target or skips a rung. The run is one epoch
 # and the whole epoch is what is being measured, so a reading that cut it short would
 # destroy the thing this recipe exists to produce. gen-smoke in particular carries
 # NO exit gate here, unlike distill-stage1-v2 where it fails on a degenerate final
@@ -586,24 +586,6 @@ granite.build:
               lmbda: $${LMBDA}
               beta: $${BETA}
               use_liger_fused_jsd: $${USE_LIGER_FUSED_JSD}
-
-              # ── the anchor and the guard, both off ──────────────────────────
-              # All six are trainer extensions, not upstream TRL fields; the baked
-              # trainer (steps/train/distill/src) defines them, off by default, and
-              # render_gold_config.py emits each one only when it is
-              # non-default. At the zeroed defaults in parameters.yaml nothing here
-              # reaches the config — which is what makes this recipe's objective
-              # df8512e0's, unanchored.
-              #
-              # Turning any of them on is one --param (CE_COEF, ENTROPY_GUARD_*,
-              # LOG_STUDENT_ENTROPY). See CE_COEF in parameters.yaml for the sweep that
-              # retired them.
-              ce_coef: $${CE_COEF}
-              log_student_entropy: $${LOG_STUDENT_ENTROPY}
-              entropy_guard_drop_frac: $${ENTROPY_GUARD_DROP_FRAC}
-              entropy_guard_baseline_steps: $${ENTROPY_GUARD_BASELINE_STEPS}
-              entropy_guard_patience: $${ENTROPY_GUARD_PATIENCE}
-              entropy_guard_action: "$${ENTROPY_GUARD_ACTION}"
 
               response_template: "$${RESPONSE_TEMPLATE}"
               nccl_debug: "$${NCCL_DEBUG}"

@@ -546,20 +546,15 @@ class TestDistillSourceDelivery:
         assert "KD_CODE_DIR" not in run_script
 
 
-class TestCeAnchorFlagsReachTheRenderer:
+class TestTrainerFlagsReachTheRenderer:
     """The keys are useless if the run block does not pass them, and
     test_all_renderer_flags_are_passed only checks the flag STRING exists. These
     check each one is wired to its own config key rather than to a neighbour's —
-    a copy-paste that sends --ce-coef the entropy threshold would pass that test."""
+    a copy-paste that sends --lmbda-init the ramp start step would pass that test."""
 
     @pytest.mark.parametrize(
         "flag,key",
         [
-            ("--ce-coef", "ce_coef"),
-            ("--log-student-entropy", "log_student_entropy"),
-            ("--entropy-guard-drop-frac", "entropy_guard_drop_frac"),
-            ("--entropy-guard-baseline-steps", "entropy_guard_baseline_steps"),
-            ("--entropy-guard-patience", "entropy_guard_patience"),
             ("--lmbda-schedule", "lmbda_schedule"),
             ("--lmbda-init", "lmbda_init"),
             ("--min-completion-length", "min_completion_length"),
@@ -583,11 +578,6 @@ class TestCeAnchorFlagsReachTheRenderer:
     @pytest.mark.parametrize(
         "key",
         [
-            "ce_coef",
-            "log_student_entropy",
-            "entropy_guard_drop_frac",
-            "entropy_guard_baseline_steps",
-            "entropy_guard_patience",
             "lmbda_schedule",
             "lmbda_init",
             "min_completion_length",

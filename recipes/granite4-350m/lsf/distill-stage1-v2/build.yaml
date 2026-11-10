@@ -22,9 +22,9 @@
 #
 #   * THE CE ANCHOR IS RETIRED. The sweep completed at four coefficients (2026-09-28)
 #     and the dose-response is monotone-bad on two independent suites. Dropped, not
-#     tuned, and CE_COEF is 0 here. See its comment in parameters.yaml.
-#   * THE ENTROPY GUARD IS RETIRED. It was never more than a warning here
-#     (ENTROPY_GUARD_ACTION "warn"), and the collapse it watched for damaged nothing.
+#     tuned, and removed from the step in #664.
+#   * THE ENTROPY GUARD IS RETIRED. It was never more than a warning here, and the
+#     collapse it watched for damaged nothing. Removed from the step in #664.
 #   * THE LADDER AND THE CHEAP READS SURVIVE, and are the only reason to run this file:
 #     GOLD_SAVE_STEPS 25 with GOLD_SAVE_TOTAL_LIMIT 16 keeps every checkpoint, and
 #     CKPT_LADDER measures the curve instead of its endpoint. df8512e0's
@@ -531,21 +531,6 @@ granite.build:
               lmbda: $${LMBDA}
               beta: $${BETA}
               use_liger_fused_jsd: $${USE_LIGER_FUSED_JSD}
-
-              # ── the anchor and the guard, both off ──────────────────────────
-              # All six fields are unconditionally available (the trainer carries them
-              # permanently now -- see parameters.yaml's GOLD trainer note), and
-              # render_gold_config.py emits each one only when it is non-default. At the
-              # zeroed defaults in parameters.yaml nothing here reaches the config, which
-              # is what makes this recipe's objective df8512e0's, unanchored.
-              #
-              # See CE_COEF in parameters.yaml for the sweep that retired these at zero.
-              ce_coef: $${CE_COEF}
-              log_student_entropy: $${LOG_STUDENT_ENTROPY}
-              entropy_guard_drop_frac: $${ENTROPY_GUARD_DROP_FRAC}
-              entropy_guard_baseline_steps: $${ENTROPY_GUARD_BASELINE_STEPS}
-              entropy_guard_patience: $${ENTROPY_GUARD_PATIENCE}
-              entropy_guard_action: "$${ENTROPY_GUARD_ACTION}"
 
               response_template: "$${RESPONSE_TEMPLATE}"
               nccl_debug: "$${NCCL_DEBUG}"

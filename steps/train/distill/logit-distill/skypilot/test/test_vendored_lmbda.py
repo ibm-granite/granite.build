@@ -238,7 +238,8 @@ class TestConfigFields:
         assert name in fields
         assert fields[name] == 0
 
-    def test_ce_anchor_and_entropy_guard_fields_survive(self):
+    def test_ce_anchor_and_entropy_guard_fields_are_gone(self):
+        """Removed in #664 (see VENDORED.md); a re-import must not bring them back."""
         fields = self._fields()
         for name in (
             "ce_coef",
@@ -248,7 +249,18 @@ class TestConfigFields:
             "entropy_guard_patience",
             "entropy_guard_action",
         ):
-            assert name in fields
+            assert name not in fields
+
+    def test_ce_anchor_and_entropy_guard_logic_is_gone(self):
+        trainer = _TRAINER.read_text()
+        for needle in (
+            "ce_coef",
+            "log_student_entropy",
+            "entropy_guard",
+            "_maybe_act_on_entropy_collapse",
+            "_accumulate_collapse_diagnostics",
+        ):
+            assert needle not in trainer
 
     def test_post_init_rejects_negative_values(self):
         cls = _class(_tree(_CONFIG), "CustomGOLDConfig")

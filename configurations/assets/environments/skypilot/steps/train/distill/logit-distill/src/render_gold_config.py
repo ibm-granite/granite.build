@@ -23,10 +23,10 @@ producing an error, and each is handled badly by a shell heredoc:
   heredoc inside a YAML literal block — and it is exactly the seam the on-policy
   phase will reopen.
 
-* The trainer's newer keys must be ABSENT, not false, when unused. ``ce_coef``,
-  ``log_student_entropy`` and the entropy-guard trio are not upstream TRL fields; they
-  exist only in the in-repo trainer copy at ``steps/train/distill/src`` (the CE-anchor/
-  entropy-guard fields folded into ``custom_gold_config.py``). Emitting them unconditionally
+* The trainer's newer keys must be ABSENT, not false, when unused. The lmbda ramp,
+  ``min_completion_length`` and ``stop_at_step`` are not upstream TRL fields; they
+  exist only in the in-repo trainer copy at ``steps/train/distill/src`` (the on-policy
+  study fields folded into ``custom_gold_config.py``). Emitting them unconditionally
   would make every config here unreadable by any other trainer, and TRL rejects unknown
   top-level keys outright -- which is what ``--verify-trainer-accepts-keys`` turns into a
   refusal that names the missing fields instead of a failure on a held allocation. Emitting
@@ -360,32 +360,6 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
             f"({args.total_nodes}); every node would serve and none would train"
         )
 
-    # The CE anchor and the collapse guard. Validated here rather than left to the
-    # trainer's __post_init__ because a bad value there surfaces after accelerate has
-    # launched, the teacher has loaded and a 2-node allocation is already held.
-    if args.ce_coef < 0:
-        raise ValueError(f"ce_coef must be >= 0; got {args.ce_coef}")
-    if not 0.0 <= args.entropy_guard_drop_frac < 1.0:
-        raise ValueError(
-            "entropy_guard_drop_frac must be in [0.0, 1.0); got "
-            f"{args.entropy_guard_drop_frac}"
-        )
-    if args.entropy_guard_drop_frac > 0 and not args.log_student_entropy:
-        raise ValueError(
-            "entropy_guard_drop_frac > 0 needs log_student_entropy true: the guard reads "
-            "the entropy that flag computes, and without it the guard never arms — which "
-            "looks exactly like a run that never collapsed"
-        )
-    if args.entropy_guard_baseline_steps < 1:
-        raise ValueError("entropy_guard_baseline_steps must be >= 1")
-    if args.entropy_guard_patience < 1:
-        raise ValueError("entropy_guard_patience must be >= 1")
-    if args.entropy_guard_action not in ("stop", "warn"):
-        raise ValueError(
-            "entropy_guard_action must be 'stop' or 'warn'; got "
-            f"{args.entropy_guard_action!r}"
-        )
-
     # The lmbda ramp and the generation floor are on-policy-only. At lmbda 0 the student
     # never generates, so both would be silently inert rather than wrong — which is the
     # class of mistake this renderer exists to turn into an error.
@@ -503,21 +477,6 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
         # trainer cannot tell prompt from completion.
         "response_template": _decode_escapes(args.response_template),
         # Emitted only when asked for — see the fourth bullet in the module docstring.
-        # ce_coef ADDS cross entropy to the divergence; it is not use_ce_loss, which
-        # replaces it. Build df8512e0 ran the unanchored objective for 8,150 steps and
-        # lost 42% of the student's entropy to it.
-        **({"ce_coef": float(args.ce_coef)} if args.ce_coef > 0 else {}),
-        **({"log_student_entropy": True} if args.log_student_entropy else {}),
-        **(
-            {
-                "entropy_guard_drop_frac": float(args.entropy_guard_drop_frac),
-                "entropy_guard_baseline_steps": args.entropy_guard_baseline_steps,
-                "entropy_guard_patience": args.entropy_guard_patience,
-                "entropy_guard_action": args.entropy_guard_action,
-            }
-            if args.entropy_guard_drop_frac > 0
-            else {}
-        ),
         # The two on-policy shaping keys, same rule. lmbda_init is meaningless unless the
         # schedule is linear, so the pair travels together.
         **(
@@ -637,16 +596,10 @@ def check_corpus_tokenizer(args: argparse.Namespace) -> None:
 
 # Keys this renderer can emit that upstream trl's GOLDConfig does not define. Every one of
 # them needs the BAKED trainer to carry the field. The in-repo copy at steps/train/distill/src
-# does (the CE-anchor/entropy-guard fields are folded into custom_gold_config.py; see
+# does (the on-policy study fields are folded into custom_gold_config.py; see
 # VENDORED.md there), but a future re-vendor could drop or rename them.
 _TRAINER_EXTENSION_KEYS = frozenset(
     {
-        "ce_coef",
-        "log_student_entropy",
-        "entropy_guard_drop_frac",
-        "entropy_guard_baseline_steps",
-        "entropy_guard_patience",
-        "entropy_guard_action",
         "lmbda_schedule",
         "lmbda_init",
         "min_completion_length",
@@ -688,14 +641,14 @@ def check_trainer_accepts(config: Dict[str, Any]) -> None:
     """Refuse to emit a key the delivered trainer's dataclass does not define.
 
     THE FAILURE THIS CATCHES COSTS AN ALLOCATION. TrlParser rejects unknown top-level keys
-    outright, so a config naming ce_coef against a trainer without the field dies after
+    outright, so a config naming stop_at_step against a trainer without the field dies after
     accelerate has launched and the teacher has loaded on every node -- and the message names
     a YAML key, not the reason, so it reads as a recipe typo rather than a trainer that
     predates the key.
 
     It is also the SILENT direction that matters: min_completion_length reaches the sampler
-    through run_vllm_serve's GOLD_MIN_TOKENS handling, and where the delivered code has
-    neither the field nor that handling, a floor the recipe asked for simply never applies.
+    only through the trainer's own field (sent as min_tokens with every vLLM request), and
+    where the delivered trainer lacks it, a floor the recipe asked for simply never applies.
     The student is then free to emit an immediate EOS and the run collapses into empty
     completions the teacher scores as if they were rollouts, with nothing in any log saying
     the floor was dropped.
@@ -734,7 +687,7 @@ def check_trainer_accepts(config: Dict[str, Any]) -> None:
             f"{', '.join(missing)}, so emitting them would make TrlParser reject this config "
             "on every node after the allocation is already held. The trainer is baked into "
             "the step's image at $DISTILL_HOME/src from steps/train/distill/src, whose "
-            "CustomGOLDConfig defines the CE-anchor/entropy-guard and on-policy study "
+            "CustomGOLDConfig defines the on-policy study "
             "fields (min_completion_length, the lmbda ramp window, stop_at_step; see "
             "VENDORED.md there); an image without "
             "them is older or re-vendored -- rebuild it from this repo (make images in "
@@ -804,33 +757,6 @@ def _parse_args(argv=None) -> argparse.Namespace:
     )
     p.add_argument("--beta", type=float, default=0.0)
     p.add_argument("--use-liger-fused-jsd", type=_bool, default=False)
-    p.add_argument(
-        "--ce-coef",
-        type=float,
-        default=0.0,
-        help="Additive CE anchor weight; 0 omits the key and leaves the objective pure.",
-    )
-    p.add_argument(
-        "--log-student-entropy",
-        type=_bool,
-        default=False,
-        help="Log mean student entropy and reverse KL every logging_steps.",
-    )
-    p.add_argument(
-        "--entropy-guard-drop-frac",
-        type=float,
-        default=0.0,
-        help="Stop when entropy falls this fraction below baseline; 0 disables the guard.",
-    )
-    p.add_argument("--entropy-guard-baseline-steps", type=int, default=20)
-    p.add_argument("--entropy-guard-patience", type=int, default=3)
-    p.add_argument(
-        "--entropy-guard-action",
-        default="stop",
-        help="What a tripped guard does: stop the run at that step, or warn and carry "
-        "on to max_steps. Use warn when the run's purpose is the collapse curve "
-        "itself and a fixed export ladder needs every rung to exist.",
-    )
     p.add_argument(
         "--lmbda-schedule",
         default="constant",

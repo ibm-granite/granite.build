@@ -37,7 +37,6 @@ see [Inputs](#inputs) below. For on-policy GOLD this is the **student**, not the
 | `gpu_memory_utilization` | number | vLLM's `--gpu-memory-utilization`. Default: `0.9`. |
 | `tensor_parallel_size` | integer | vLLM's `--tensor-parallel-size`. Default: `1`. |
 | `data_parallel_size` | integer | vLLM's `--data-parallel-size`. Empty means one rank per GPU on the node (`NUM_GPUS_PER_NODE`, 8 if unset), taken from the allocation rather than from a parameter so it always describes the node it got. Default: `""`. |
-| `min_completion_length` | integer | Minimum tokens the student must generate before EOS, enforced in the server process. Exported as `GOLD_MIN_TOKENS`. `0` turns it off. A non-zero value is refused unless the delivered `run_vllm_serve.py` reads `GOLD_MIN_TOKENS`; at the default pin it does not (see [The generation floor](#the-generation-floor)). Default: `0`. |
 | `health_timeout_seconds` | integer | How long to wait for `/health` before giving up. A cold multi-GB load plus CUDA graph capture takes minutes, and on a shared filesystem the first read is the slow one; the reference launcher allows 1800 s. Default: `1800`. |
 | `health_poll_seconds` | integer | Sleep between `/health` probes. Default: `10`. |
 | `max_lifetime_seconds` | integer | Ceiling on how long the server holds its allocation once healthy. `0` means no ceiling: hold until the teardown target downs the cluster, which multi-hour runs rely on. Counted from the moment the server is healthy. Set it as a backstop against a stranded server (see [Nothing reaps the cluster](#nothing-reaps-the-cluster-but-the-teardown-target)); it must outlast the consumer's run. Default: `0`. |
@@ -250,8 +249,8 @@ server. All failures exit non-zero with a `vllm-server: FATAL:` line on stderr:
 - `lifetime cap of <N>s reached; releasing the allocation` — `max_lifetime_seconds` was
   set and nothing tore the server down in time; check whether the consumer target
   failed;
-- `vllm_config.min_completion_length is <N>, but the delivered ... does not read
-  GOLD_MIN_TOKENS` — see [The generation floor](#the-generation-floor).
+- `vllm_config.min_completion_length is no longer read` — the generation floor moved to
+  the trainer; see [The generation floor](#the-generation-floor).
 
 The messages are reported even though the launcher runs the script under `set -eu`.
 Without a lifetime cap, the step exits with the server's own exit code.
@@ -264,20 +263,10 @@ and reports a loss.
 
 ### The generation floor
 
-The floor has to be set here as well as on the trainer, and that is not redundancy: the
-trainer's `min_completion_length` only bounds what the trainer asks for, while the
-sampling decision is taken in this process. trl's `vllm_serve` has no `min_tokens`
-field, so `run_vllm_serve.py` is meant to patch `SamplingParams.min_tokens` from
-`GOLD_MIN_TOKENS`, which this step exports from `min_completion_length`. Left at 0 while
-the trainer sets a floor, the student is free to emit an immediate EOS and the run
-collapses into empty completions the teacher then scores as if they were rollouts.
-
-At the pin this image bakes in (`a5d59bc4`) `run_vllm_serve.py` does not read
-`GOLD_MIN_TOKENS`, so the export alone would be a no-op that looks configured. The step
-therefore greps the baked-in `run_vllm_serve.py` for `GOLD_MIN_TOKENS` and refuses to
-start when `min_completion_length` is non-zero and the handling is absent. To have a
-floor, bump the vendor pin (`steps/train/distill/src/VENDORED.md`) to a commit whose
-`run_vllm_serve.py` honours it; otherwise keep `0`.
+This step has no floor setting. Set `gold_config.min_completion_length` on
+`logit-distill` instead: the trainer sends it as `min_tokens` in every vLLM request, so
+the server applies it without any server-side configuration. A recipe that still sets
+`vllm_config.min_completion_length` here is refused at start, not ignored.
 
 ### `log_retrieval.mode` is `periodic`, not `startup_window`
 

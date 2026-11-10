@@ -100,27 +100,25 @@ eight earlier rungs have already been exported and evaluated by the time it bite
 
 `eval-transfer-<N>` reports divergence and entropy per rung and `gen-smoke` reports
 repetition. Both are **instruments**: neither stops the run, fails a target, or skips a rung.
-The entropy guard is disarmed outright (the completed CE sweep retired it), so there is no
-longer even a warning path that could end the run early. The whole epoch is the measurement, so a
+The entropy guard was removed (the completed CE sweep retired it; #664 deleted it), so there is no
+warning path that could end the run early. The whole epoch is the measurement, so a
 reading that truncated it would destroy the thing being measured. `gen-smoke` in particular
 carries **no exit gate** here, unlike v2's copy which fails on a degenerate final rung —
 `test_gen_smoke_reports_without_gating` holds that line.
 
 Read them anyway, and in this order:
 
-1. **`student_entropy` per step**, in the workload stdout. Holding within ~15% of its step-0
-   value is the run behaving; the guard prints its trip step either way.
-2. **`gen-smoke`'s table** — one line per rung, the fraction of generated lines inside a run
+1. **`gen-smoke`'s table** — one line per rung, the fraction of generated lines inside a run
    of ≥3 identical lines. A collapsed model scores ~1.0, healthy code 0.0.
-3. **The nine `eval-transfer-<N>/metrics.json`.** `entropy` here is the same quantity the
-   trainer logs, on held-out data.
-4. **`combined.csv`** — the capability answer, and the deliverable.
+2. **The nine `eval-transfer-<N>/metrics.json`.** `entropy` here is the student entropy,
+   on held-out data.
+3. **`combined.csv`** — the capability answer, and the deliverable.
 
 Workload stdout is not in `gb build log` and not in `build_job_log`; SkyPilot syncs it back:
 
 ```bash
 gb build log <build-id> --runner --all | grep -i "SkyPilot job.*on gb-"
-grep -aE "student_entropy|rkld|ce_anchor_loss|entropy-guard" ~/sky_logs/<cluster>/1-<cluster>/run.log
+grep -aE "loss|jsd|learning_rate" ~/sky_logs/<cluster>/1-<cluster>/run.log
 ```
 
 ## Reading combined.csv

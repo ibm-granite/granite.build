@@ -8,7 +8,7 @@ from that commit in these ways, and in no other:
 - **Formatting.** Every file is reformatted with `black` and `isort`, which CI enforces
   repo-wide. To compare against upstream, format both sides the same way first.
 - **Local patches** in `custom_gold_config.py` and `custom_gold_trainer.py`, described
-  below: the CE anchor and entropy guard, and the two on-policy study patches.
+  below: the two on-policy study patches.
 
 This is a one-time import, not a git subtree or submodule, and there is no sync mechanism
 to the external repo. A trainer fix lands as a direct edit here, like any other
@@ -24,20 +24,15 @@ launch: the trainer a build ran is exactly what the step's pinned image tag cont
 Changing anything here therefore means rebuilding the images and repinning their tags in
 the step templates.
 
-## Local patch: CE anchor + entropy guard
+## History: CE anchor + entropy guard (folded in, then removed)
 
-`custom_gold_config.py` and `custom_gold_trainer.py` carry a patch that adds the
-`ce_coef`, `log_student_entropy` and `entropy_guard_*` fields to `CustomGOLDConfig`, and the
-matching CE-anchor and entropy-collapse-guard logic to `CustomGOLDTrainer`. Every new field
-defaults to off (`0.0` / `false`), so a config that sets none of them computes exactly the
-upstream loss. A recipe turns them on with parameters alone (`CE_COEF`, `LOG_STUDENT_ENTROPY`,
-`ENTROPY_GUARD_*`).
-
-The patch used to ship as a separate `.diff` that a recipe applied to its own checkout of
-the trainer. It was folded in here on 2026-10-21 when the steps stopped cloning the trainer
-at launch, so the capability stays available without a checkout to point at. If upstream
-lands an equivalent and the import is bumped past that commit, reconcile these two files by
-hand at that time.
+PR 540 folded a local patch into `custom_gold_config.py` and `custom_gold_trainer.py` that
+added `ce_coef` (an additive cross-entropy anchor), `log_student_entropy` and the
+`entropy_guard_*` fields (an entropy-collapse guard). #664 removed it again: a CE sweep at
+four coefficients was monotone-bad on capability, the entropy collapse the guard watched
+for turned out to be harmless (the real defect was the export dropping `rope_theta`), and
+every recipe already ran both at zero. With them gone the trainer computes the upstream
+loss, as it did with the fields at their defaults.
 
 ## Local patches folded in: linear lmbda schedule, on-policy study
 
@@ -45,7 +40,7 @@ Two more patches, folded in on 2026-11-09 from the on-policy study's branch
 (`epic-61-onpolicy-followup`, `steps/distill/gold/skypilot/patches/`), where a recipe
 applied them to its own checkout of the trainer. Applied in order on top of a5d59bc4 they
 produce commit `00edb0db1978c385e1469361f8bcb9293b396222` in that patched checkout; the
-files here match it apart from formatting and the CE-anchor patch above.
+files here match it apart from formatting.
 
 - **`lmbda_linear_schedule.diff`** (2026-10-05). At a5d59bc4 the `linear` branch of
   `_get_current_lmbda` sat after the `return` of `_draw_on_policy`, so it was unreachable:

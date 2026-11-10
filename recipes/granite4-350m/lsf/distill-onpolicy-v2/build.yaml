@@ -24,9 +24,8 @@
 #     plausible loss.
 #   * The student must not be allowed to emit an immediate EOS. An empty completion is
 #     a rollout the teacher then scores as if it were one, and the run collapses into
-#     scoring nothing. MIN_COMPLETION_LENGTH sets a floor, and it has to be set on BOTH
-#     sides — the trainer's copy bounds what it asks for, the server's copy is where
-#     the sampling decision is actually taken.
+#     scoring nothing. MIN_COMPLETION_LENGTH sets a floor; the trainer sends it
+#     as min_tokens with every vLLM request.
 #   * LSF SERVICE clusters never autostop, so teardown is a target, not a courtesy.
 #     It is gated on the trainer's checkpoint, which a crashed trainer never emits,
 #     which is why the server also carries its own lifetime ceiling.
@@ -53,16 +52,8 @@
 #
 # Everything else is distill-stage1-v2: the step-bounded horizon and the checkpoint
 # ladder with an export, a transfer eval and a generation check per rung. NOT its CE
-# anchor and NOT its entropy guard — the completed CE sweep retired both, and CE_COEF and
-# ENTROPY_GUARD_DROP_FRAC are 0 here as they are there.
-#
-# That is worth stating rather than inheriting quietly, because the anchor's rationale
-# was strongest in exactly this regime: on-policy training on a student's own output is
-# where a collapse could feed itself, and the sweep was run off-policy, so it says
-# nothing about that. What it does say is that non-zero CE costs capability in ordered
-# amounts and that the collapse it prevented damaged nothing off-policy. So this starts
-# where the evidence is — at zero — and CE_COEF is one --param away if the on-policy
-# entropy curve argues otherwise.
+# anchor and NOT its entropy guard — the completed CE sweep retired both, and #664
+# removed them from the step.
 #
 # Run:
 #   gb build start -f recipes/granite4-350m/lsf/distill-onpolicy-v2/build.yaml \
@@ -473,9 +464,6 @@ granite.build:
               # Must be >= the trainer's max_length, or a prompt the trainer accepts
               # is one the server refuses mid-run.
               max_model_len: $${MAX_LENGTH}
-              # The floor, on the side where sampling actually happens. The trainer's
-              # own min_completion_length does not travel with a served request.
-              min_completion_length: $${MIN_COMPLETION_LENGTH}
               health_timeout_seconds: $${VLLM_HEALTH_TIMEOUT_SECONDS}
               # The server's own ceiling. teardown is gated on train-gold.checkpoint,
               # which a crashed trainer never emits, so without this a trainer failure
@@ -578,24 +566,6 @@ granite.build:
               beta: $${BETA}
               use_liger_fused_jsd: $${USE_LIGER_FUSED_JSD}
 
-              # ── the anchor and the guard, both off ──────────────────────────
-              # All six are trainer extensions, not upstream TRL fields; the baked
-              # trainer (steps/train/distill/src) defines them, off by default, and
-              # render_gold_config.py emits each one only when it is
-              # non-default. At the zeroed defaults in parameters.yaml nothing here
-              # reaches the config — which is what makes this recipe's objective
-              # df8512e0's, unanchored.
-              #
-              # Turning any of them on is one --param (CE_COEF, ENTROPY_GUARD_*,
-              # LOG_STUDENT_ENTROPY). See CE_COEF in parameters.yaml for the sweep that
-              # retired them.
-              ce_coef: $${CE_COEF}
-              log_student_entropy: $${LOG_STUDENT_ENTROPY}
-              entropy_guard_drop_frac: $${ENTROPY_GUARD_DROP_FRAC}
-              entropy_guard_baseline_steps: $${ENTROPY_GUARD_BASELINE_STEPS}
-              entropy_guard_patience: $${ENTROPY_GUARD_PATIENCE}
-              entropy_guard_action: "$${ENTROPY_GUARD_ACTION}"
-
               response_template: "$${RESPONSE_TEMPLATE}"
               nccl_debug: "$${NCCL_DEBUG}"
               nccl_debug_subsys: "$${NCCL_DEBUG_SUBSYS}"
@@ -622,8 +592,8 @@ granite.build:
               # never run in this pipeline.
               lmbda_schedule: "$${LMBDA_SCHEDULE}"
               lmbda_init: $${LMBDA_INIT}
-              # The generation floor, trainer side. Also set on the server above;
-              # both are required and they are not the same setting.
+              # The generation floor. The trainer sends it as min_tokens with every
+              # vLLM request, so the server needs no setting of its own.
               min_completion_length: $${MIN_COMPLETION_LENGTH}
 
     # ─── export-<N>, one per checkpoint in CKPT_LADDER ──────────────────────

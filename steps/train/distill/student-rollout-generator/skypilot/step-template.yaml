@@ -54,18 +54,6 @@ config:
     # How long to wait for /health before giving up. The reference launcher allows
     # 1800s: a cold multi-GB load plus CUDA graph capture is minutes, and on a
     # shared filesystem the first read is the slow one.
-    # Minimum tokens the student must generate before EOS is allowed, enforced on
-    # THIS side of the on-policy loop. 0 = off.
-    #
-    # It has to be set here as well as on the trainer, and that is not redundancy:
-    # distill-gold's min_completion_length only bounds what the TRAINER asks for, while
-    # the sampling decision is taken in this process. trl's vllm_serve has no
-    # min_tokens field, so run_vllm_serve.py monkey-patches SamplingParams from
-    # GOLD_MIN_TOKENS, which this step exports from the value below. Left at 0 while
-    # the trainer sets a floor, the student is free to emit an immediate EOS and the
-    # run collapses into empty completions the teacher then scores as if they were
-    # rollouts.
-    min_completion_length: 0
     health_timeout_seconds: 1800
     health_poll_seconds: 10
     # Ceiling on how long this SERVICE will hold its allocation once healthy.
@@ -140,6 +128,15 @@ environment_configs:
             echo "student-rollout-generator: FATAL: vllm_config.model_path is no longer read; bind the target input 'model' instead (see this step's README)" >&2
             exit 1
             {% endif %}
+            # The generation floor used to be set here too, as a server-side env var that
+            # the baked run_vllm_serve.py never read. It now travels with every request:
+            # set logit-distill's gold_config.min_completion_length, which the trainer sends
+            # as min_tokens. Refused rather than ignored, so a recipe that still sets it
+            # does not believe it has a floor it may not have.
+            {% if config.vllm_config.min_completion_length is defined %}
+            echo "student-rollout-generator: FATAL: vllm_config.min_completion_length is no longer read; set logit-distill's gold_config.min_completion_length instead, which the trainer sends with every vLLM request (see this step's README)" >&2
+            exit 1
+            {% endif %}
 
             # The image's venv is not on PATH by default; the dispatcher runs this
             # with `bash <file>` (non-login), so this export sticks.
@@ -170,33 +167,6 @@ environment_configs:
             if [ "$GPU_SEEN" -ge 1 ] && [ "$GPU_SEEN" -lt "$GPU_WANT" ]; then
               echo "student-rollout-generator: FATAL: $GPU_WANT GPU(s) were allocated (SKYPILOT_NUM_GPUS_PER_NODE) but this container can access only $GPU_SEEN (nvidia-smi -L). On SLURM this is ibm-granite/granite.build#604; rerun, or report the node." >&2
               exit 1
-            fi
-
-            # run_vllm_serve.py reads this and raises SamplingParams.min_tokens to it
-            # for every request, which is the only place a floor can be applied: the
-            # trainer's own min_completion_length does not travel with a served
-            # request.
-            export GOLD_MIN_TOKENS="{{ config.vllm_config.min_completion_length | default(0) }}"
-            # And refuse if the baked-in server cannot act on it. This export is the whole
-            # mechanism -- there is no other place a floor can be applied -- so against a
-            # revision of run_vllm_serve that does not read the variable it is a no-op that
-            # LOOKS configured: the step logs the floor, the server ignores it, and the run
-            # collapses into immediate-EOS completions the teacher scores as rollouts. At the
-            # pin this image bakes in (a5d59bc4) the handling is absent, which is why this
-            # is a check and not a comment. Grepped rather than imported: run_vllm_serve
-            # execs a server at import time, so asking Python would start one.
-            if [ "$GOLD_MIN_TOKENS" != "0" ]; then
-              SERVE_SRC="$CODE_DIR/src/gb_steps_post_training/distillation/run_vllm_serve.py"
-              if ! grep -q "GOLD_MIN_TOKENS" "$SERVE_SRC" 2>/dev/null; then
-                echo "student-rollout-generator: FATAL: vllm_config.min_completion_length is $GOLD_MIN_TOKENS," >&2
-                echo "  but the baked-in $SERVE_SRC does not read GOLD_MIN_TOKENS, so the floor" >&2
-                echo "  would silently never reach SamplingParams.min_tokens and the student could" >&2
-                echo "  emit an immediate EOS on every rollout." >&2
-                echo "  Either bump the vendor pin (steps/train/distill/src/VENDORED.md) to a commit whose" >&2
-                echo "  run_vllm_serve honours it, or set min_completion_length 0 and accept that" >&2
-                echo "  there is no floor." >&2
-                exit 1
-              fi
             fi
 
             # SKYPILOT_NUM_GPUS_PER_NODE is what SkyPilot sets on every backend.

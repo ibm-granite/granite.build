@@ -4,13 +4,11 @@
 [Choosing the student](#choosing-the-student). Everything else now runs on the step's own
 public trainer pin.
 
-> **There is no generation floor.** `MIN_COMPLETION_LENGTH` is 0, because neither half of it
-> exists at the pin (`a5d59bc4`): `CustomGOLDConfig` has no `min_completion_length`, and
-> `run_vllm_serve.py` never reads `GOLD_MIN_TOKENS`. A non-zero value buys two pre-allocation
-> refusals rather than a floor. So the immediate-EOS failure it guarded against — an empty
-> completion the teacher scores as if it were a rollout — is unmitigated and has to be *read*
-> instead: check `gen-smoke` on the first rung before letting a long arm run. Restoring a
-> floor means landing both halves upstream and bumping the pin.
+> **There is no generation floor.** `MIN_COMPLETION_LENGTH` is 0. The vendored trainer now
+> sends a non-zero value as `min_tokens` with every vLLM request, but this recipe has never
+> run with one. So the immediate-EOS failure it guards against — an empty completion the
+> teacher scores as if it were a rollout — has to be *read* instead: check `gen-smoke` on
+> the first rung before letting a long arm run.
 
 On-policy GOLD distillation towards the same `granite-4.1-3b` teacher, continuing from
 a chosen off-policy checkpoint. `lmbda 0.25`, `beta 0.5`, the same **unanchored**
@@ -18,7 +16,7 @@ objective as [`distill-stage1`](../distill-stage1/README.md), the same step-boun
 and checkpoint ladder as [`distill-stage1-v2`](../distill-stage1-v2/README.md) — plus a vLLM
 server in its own allocation and a teardown target.
 
-> **The CE anchor and the entropy guard are off here too.** The completed CE sweep found the
+> **The CE anchor and the entropy guard are not used here (and were removed in #664).** The completed CE sweep found the
 > anchor monotone-bad on capability off-policy, and the collapse the guard watched for did
 > no damage. The anchor's rationale was *strongest* in this regime — a student training on
 > its own output has no corpus token pulling it back — so the removal is stated rather than
@@ -53,7 +51,7 @@ student would run, report a plausible loss, and answer a question nobody asked �
 default is an invalid path that fails at `align` in minutes rather than a plausible one
 that trains the wrong model for three hours.
 
-Pick the rung from stage 1 v2's readings, in this order: `student_entropy` still near its
+Pick the rung from stage 1 v2's readings, in this order: `entropy` (from `eval-transfer-<N>`) still near its
 step-0 value, `rkld` having actually moved, `gen-smoke` repetition near zero, then the
 transfer metrics. Then:
 
@@ -75,13 +73,7 @@ the trainer looks for a server running on a different node.
 | serving the **teacher** | a complete run, plausible loss, a different algorithm | the `model` input is bound to `align.retagged_student`, and a test asserts it is not the teacher |
 | server allocated, generation local | 8 idle H100s, zero requests, then a shape mismatch — build `d77546a9` | the step states `--use_vllm` positively in both directions, from the same key |
 | URL mangled in transit | `/http:/host:8001` | `mem://`, not `env://`; `env://` normalises it as a filesystem path |
-| immediate-EOS collapse | the teacher scoring empty completions as rollouts | `MIN_COMPLETION_LENGTH` on **both** sides |
-
-That last one is worth spelling out. `min_completion_length` on the trainer bounds what it
-*asks* for; the sampling decision is taken in the server process, and trl's `vllm_serve`
-has no `min_tokens` field, so `run_vllm_serve.py` patches `SamplingParams` from
-`GOLD_MIN_TOKENS` — which the `vllm-server` step exports from its own
-`min_completion_length`. Set one and not the other and the floor does not exist.
+| immediate-EOS collapse | the teacher scoring empty completions as rollouts | `MIN_COMPLETION_LENGTH`, which the trainer sends as `min_tokens` with every vLLM request |
 
 ## Teardown is a target, and it has one hole
 
@@ -107,8 +99,8 @@ Read the constant arm first regardless. A ramp confounds *on-policy helped* with
 
 ## What is held fixed
 
-Everything from [`distill-stage1-v2`](../distill-stage1-v2/README.md): `CE_COEF 0.0` and
-the entropy guard disarmed — matched to the off-policy arm so the two remain comparable, and
+Everything from [`distill-stage1-v2`](../distill-stage1-v2/README.md): no CE anchor and
+no entropy guard — matched to the off-policy arm so the two remain comparable, and
 enforced by `test_it_matches_the_off_policy_arm` — plus `beta 0.5`, 300 steps, the
 25/50/75/100/150/200/300 ladder, the corpus and its sampling and the `CORPUS_DIR` pin, the
 geometry (effective batch 96 — the server has its own

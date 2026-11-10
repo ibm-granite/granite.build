@@ -70,6 +70,27 @@ class TestShape:
         assert "model_path" not in step["config"]["vllm_config"]
 
 
+class TestGenerationFloorIsNotAServerSetting:
+    """The floor travels with every request from the trainer (logit-distill's
+    gold_config.min_completion_length). The server-side key and its env export were
+    removed in #664; a recipe that still sets the key is refused, not ignored."""
+
+    def test_the_key_is_gone_from_the_defaults(self, step):
+        assert "min_completion_length" not in step["config"]["vllm_config"]
+
+    def test_nothing_exports_a_server_side_floor(self, run_script):
+        assert "GOLD_MIN_TOKENS" not in run_script
+
+    def test_a_recipe_that_still_sets_it_is_refused(self, run_script):
+        guard = "{% if config.vllm_config.min_completion_length is defined %}"
+        assert guard in run_script
+        block = run_script[run_script.index(guard) :]
+        block = block[: block.index("{% endif %}")]
+        assert "FATAL: vllm_config.min_completion_length is no longer read" in block
+        assert "gold_config.min_completion_length" in block
+        assert "exit 1" in block
+
+
 class TestRunScriptIsValidShell:
     def test_it_parses(self, run_script):
         result = subprocess.run(

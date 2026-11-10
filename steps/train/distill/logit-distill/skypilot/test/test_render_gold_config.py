@@ -733,17 +733,13 @@ class TestCorpusTokenizerCheck:
         assert not out.exists(), "a refused render must not leave a config behind"
 
 
-class TestCeAnchorAndCollapseGuard:
-    """The keys added after build df8512e0 collapsed a student into repetition loops.
+class TestRetiredCeAnchorAndEntropyGuard:
+    """The CE anchor and the entropy-collapse guard were removed in #664: a CE sweep at
+    four coefficients was monotone-bad on capability, and the entropy drop the guard
+    watched for was harmless (the real defect was the rope_theta export bug). Their
+    flags are gone, so a stale caller fails at argparse instead of being ignored."""
 
-    Two properties matter and pull against each other. The keys have to REACH the
-    trainer when a recipe asks for them, and they have to be ABSENT when it does not
-    — they exist only in the clone this step pins, and TRL's parse_args_and_config
-    rejects unknown top-level keys outright, so an unconditional emit would make
-    every config here unreadable by any other kd-sandbox checkout.
-    """
-
-    ANCHOR_KEYS = {
+    RETIRED_KEYS = {
         "ce_coef",
         "log_student_entropy",
         "entropy_guard_drop_frac",
@@ -752,22 +748,30 @@ class TestCeAnchorAndCollapseGuard:
         "entropy_guard_action",
     }
 
-    def test_none_of_them_are_emitted_by_default(self, tmp_path):
-        assert self.ANCHOR_KEYS.isdisjoint(_render(tmp_path))
+    def test_none_of_them_are_emitted(self, tmp_path):
+        assert self.RETIRED_KEYS.isdisjoint(_render(tmp_path))
 
-    def test_a_default_render_is_unchanged_by_the_new_flags_existing(self, tmp_path):
-        """The regression that would break every existing recipe at once: passing the
-        flags at their defaults must produce the same config as not passing them."""
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            ["--ce-coef", "0.05"],
+            ["--log-student-entropy", "true"],
+            ["--entropy-guard-drop-frac", "0.15"],
+            ["--entropy-guard-baseline-steps", "20"],
+            ["--entropy-guard-patience", "3"],
+            ["--entropy-guard-action", "stop"],
+        ],
+    )
+    def test_their_flags_are_refused(self, tmp_path, extra):
+        _render(tmp_path, extra=extra, expect_rc=2)
+
+    def test_a_default_render_is_unchanged_by_the_remaining_flags(self, tmp_path):
+        """Passing the on-policy shaping flags at their defaults must produce the same
+        config as not passing them."""
         implicit = _render(tmp_path)
         explicit = _render(
             tmp_path,
             extra=[
-                "--ce-coef",
-                "0.0",
-                "--log-student-entropy",
-                "false",
-                "--entropy-guard-drop-frac",
-                "0.0",
                 "--lmbda-schedule",
                 "constant",
                 "--min-completion-length",
@@ -775,122 +779,6 @@ class TestCeAnchorAndCollapseGuard:
             ],
         )
         assert implicit == explicit
-
-    def test_the_anchor_is_emitted_as_a_float_when_asked_for(self, tmp_path):
-        config = _render(tmp_path, extra=["--ce-coef", "0.05"])
-        assert isinstance(config["ce_coef"], float)
-        assert config["ce_coef"] == pytest.approx(0.05)
-        # Requested alone, it must not drag the guard in with it.
-        assert "entropy_guard_drop_frac" not in config
-
-    def test_the_guard_travels_with_its_two_settings(self, tmp_path):
-        """Emitting the threshold without the baseline window and the patience would
-        leave the trainer applying defaults the recipe never stated."""
-        config = _render(
-            tmp_path,
-            extra=[
-                "--log-student-entropy",
-                "true",
-                "--entropy-guard-drop-frac",
-                "0.15",
-                "--entropy-guard-baseline-steps",
-                "30",
-                "--entropy-guard-patience",
-                "2",
-            ],
-        )
-        assert config["entropy_guard_drop_frac"] == pytest.approx(0.15)
-        assert config["entropy_guard_baseline_steps"] == 30
-        assert config["entropy_guard_patience"] == 2
-        # Defaulted, but still emitted: the trainer needs to be told, and "stop" is the
-        # behaviour every recipe pinned before the knob existed.
-        assert config["entropy_guard_action"] == "stop"
-        assert config["log_student_entropy"] is True
-
-    def test_warn_mode_reaches_the_trainer(self, tmp_path):
-        """Build d1acf1c0's failure in one key. The guard tripped at step 77 of 2,000
-        and stopped, which took every rung of a fixed 500/1000/1500/2000 export ladder
-        with it. warn keeps the run going so the rungs exist; the trip is still printed
-        and still checkpointed."""
-        config = _render(
-            tmp_path,
-            extra=[
-                "--log-student-entropy",
-                "true",
-                "--entropy-guard-drop-frac",
-                "0.15",
-                "--entropy-guard-action",
-                "warn",
-            ],
-        )
-        assert config["entropy_guard_action"] == "warn"
-
-    def test_an_unknown_action_is_refused_here(self, tmp_path):
-        """Not left to the trainer's __post_init__: a bad value there surfaces after
-        accelerate has launched, the teacher has loaded and the allocation is held."""
-        _render(
-            tmp_path,
-            extra=[
-                "--log-student-entropy",
-                "true",
-                "--entropy-guard-drop-frac",
-                "0.15",
-                "--entropy-guard-action",
-                "continue",
-            ],
-            expect_rc=2,
-        )
-
-    def test_a_guard_without_its_metric_is_refused(self, tmp_path):
-        """The silent failure this check exists for: the guard reads what
-        log_student_entropy computes, so without it the guard never arms — which is
-        indistinguishable from a run that never collapsed."""
-        result = _render(
-            tmp_path, extra=["--entropy-guard-drop-frac", "0.15"], expect_rc=2
-        )
-        assert "log_student_entropy" in result.stderr
-
-    @pytest.mark.parametrize(
-        "extra",
-        [
-            ["--ce-coef", "-0.1"],
-            ["--log-student-entropy", "true", "--entropy-guard-drop-frac", "1.0"],
-            [
-                "--log-student-entropy",
-                "true",
-                "--entropy-guard-drop-frac",
-                "0.1",
-                "--entropy-guard-patience",
-                "0",
-            ],
-            [
-                "--log-student-entropy",
-                "true",
-                "--entropy-guard-drop-frac",
-                "0.1",
-                "--entropy-guard-baseline-steps",
-                "0",
-            ],
-        ],
-        ids=["negative-ce", "drop-frac-1.0", "patience-0", "baseline-0"],
-    )
-    def test_out_of_range_values_fail_here_not_on_the_cluster(self, tmp_path, extra):
-        """Validated in the renderer rather than left to the trainer's __post_init__,
-        because a raise there surfaces after accelerate has launched and the teacher
-        has loaded on every node of a held allocation."""
-        _render(tmp_path, extra=extra, expect_rc=2)
-
-    def test_the_logged_entropy_is_the_signal_the_loss_was_blind_to(self, tmp_path):
-        """Documents why this exists, in the one place that cannot rot: df8512e0's
-        train loss moved 2.7% over the 7,640 steps in which the student lost 42% of
-        its entropy, so `loss` alone cannot gate a run of this shape."""
-        assert "student_entropy" not in _render(tmp_path)
-        assert (
-            _render(tmp_path, extra=["--log-student-entropy", "true"])[
-                "log_student_entropy"
-            ]
-            is True
-        )
 
 
 class TestOnPolicyShapingKeys:

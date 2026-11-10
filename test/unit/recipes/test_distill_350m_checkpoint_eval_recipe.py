@@ -567,37 +567,31 @@ def test_gen_smoke_hands_the_interpreter_every_rung(built, tmp_path):
 def test_nothing_can_stop_this_run_early():
     """A guard that may stop at an arbitrary step and a ladder that names fixed ones
     cannot both have their way. On build d1acf1c0 the guard stopped at step 77 of 2,000
-    and all four export targets failed with `requested checkpoint does not exist`. On a
-    run whose whole point is the epoch, that is the one outcome worth ruling out.
-
-    It is now ruled out twice over: the guard is disarmed (the completed CE sweep retired
-    it -- the 42% entropy collapse it watched for turned out not to damage the model), and
-    even re-armed it may only warn."""
+    and all four export targets failed with `requested checkpoint does not exist`. The
+    guard was removed in #664, so no parameter for it may remain."""
     params = _params()
-    assert float(params["ENTROPY_GUARD_DROP_FRAC"]) == 0
-    assert params["ENTROPY_GUARD_ACTION"] == "warn"
+    for key in (
+        "ENTROPY_GUARD_DROP_FRAC",
+        "ENTROPY_GUARD_BASELINE_STEPS",
+        "ENTROPY_GUARD_PATIENCE",
+        "ENTROPY_GUARD_ACTION",
+    ):
+        assert key not in params, key
 
 
 def test_the_objective_is_unanchored():
     """This recipe measures WHERE in an epoch the gains land, and the epoch it measures is
-    df8512e0's: pure divergence, lmbda 0, no CE anchor. Keeping it that way at zero is what
-    keeps this the SAME objective df8512e0 ran -- the CE-anchor/entropy-guard fields are
-    now unconditionally available on the trainer (folded into
-    steps/train/distill/src/gb_steps_post_training/distillation/, see VENDORED.md), so setting
-    any one of them is just a --param now, not a patched-checkout dependency -- but doing
-    so would change the objective under measurement, which is why this recipe leaves them
-    at zero.
+    df8512e0's: pure divergence, lmbda 0, no CE anchor (removed from the trainer in #664).
     """
     params = _params()
-    assert float(params["CE_COEF"]) == 0
-    assert params["LOG_STUDENT_ENTROPY"] is False
-    assert float(params["ENTROPY_GUARD_DROP_FRAC"]) == 0
+    assert "CE_COEF" not in params
+    assert "LOG_STUDENT_ENTROPY" not in params
     assert float(params["LMBDA"]) == 0
 
 
 def test_entropy_is_still_measured_without_the_trainers_help():
-    """This recipe leaves LOG_STUDENT_ENTROPY off (see test_the_objective_is_unanchored),
-    so the per-step trainer log carries no entropy reading. distill-eval computes entropy
+    """The per-step trainer entropy log was removed with the guard (#664), so the
+    trainer log carries no entropy reading. distill-eval computes entropy
     and reverse KL from a checkpoint with no trainer involvement instead, and this recipe
     evaluates every rung -- which is the resolution that actually matters for the question
     it asks."""

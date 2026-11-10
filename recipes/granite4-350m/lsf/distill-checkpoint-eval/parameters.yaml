@@ -120,10 +120,9 @@ INCLUDE_SFT: false
 # ─── Image and trainer code ───────────────────────────────────────────
 # The GOLD trainer: no CODE_DIR/CODE_EXPECT_REF override here any more. This recipe
 # used to point gold at a patched local checkout, because CE_COEF and the entropy guard
-# needed trainer fields the upstream pin did not define. Those fields are now part of
-# the in-repo trainer copy (steps/train/distill/src, see VENDORED.md), baked into the
-# shared GPU image, and no step has a code_config any more -- so CE_COEF and the
-# entropy guard below are one --param away, with nothing to point anywhere.
+# needed trainer fields the upstream pin did not define. The trainer is now the in-repo
+# copy (steps/train/distill/src, see VENDORED.md), baked into the shared GPU image, and
+# no step has a code_config any more. The CE anchor and the guard were removed in #664.
 # Relative to $DISTILL_HOME (/opt/distill) in the image.
 DS_CONFIG: "configs/deepspeed/accelerate_deepspeed_zero3.yaml"
 # Every distill step reads its code from the same shared images, so a source bump is
@@ -408,57 +407,10 @@ LMBDA: 0.0
 # reverse KL's mode-seeking half buys, and forward KL alone would spread a 350M
 # student thin across modes it cannot afford.
 BETA: 0.5
-# ─── The CE anchor and the entropy guard: both off ────────────────────
-# OFF, AND THAT IS A RESULT rather than a default awaiting a value.
-#
-# The CE sweep is complete at four coefficients (0 / 0.05 / 0.15 / 0.40, read at step
-# 25 and step 300, 2026-09-28) and the dose-response is monotone-bad on two suites that
-# share no items. At step 300, as the coefficient rises: ifeval gain
-# +5.57 -> +4.04 -> +2.71 -> +2.56, and HumanEval +1 -> 0 -> -3 -> -9 problems. No
-# pairwise gap in that grid clears its own noise band -- the ORDERING is the finding,
-# and it has no interior optimum. ce015 was the last candidate for a usable middle and
-# it sits exactly where the trend predicts, so further rungs on this axis are not worth
-# GPU-hours.
-#
-# And the collapse the anchor was written to prevent turned out to be harmless.
-# df8512e0 did lose 42% of its student entropy over one epoch; once its export was
-# repaired (the dropped top-level rope_theta, fixed 2026-09-27) that same checkpoint
-# beat its own SFT baseline -- GSM8K +10.7, ifeval +7.4, Minerva +4.0, MGSM +3.1, with
-# HumanEval and BFCL level. The premise these keys were added under, "the objective is
-# wrong", is withdrawn. Longer, unanchored, off-policy is the best recipe on record.
-#
-# THE KEYS STAY, AT ZERO, rather than being deleted: render_gold_config.py emits each
-# of them only when non-default, so zero reproduces exactly the unanchored objective
-# this recipe has always run. And the sweep left one question open -- no CE arm was
-# ever measured for safety, which is the only axis where the unanchored epoch went
-# backwards (SALAD 93.5 -> 90.7, AttaQ -1.2). If that experiment is run, it is just
-# --param CE_COEF=<x> -- the trainer carrying these fields is now unconditional (see
-# the GOLD trainer note above), no checkout to point at.
-#
-# loss = JSD(student || teacher) + CE_COEF * CE(student, corpus tokens)
-CE_COEF: 0.0
-# Mean student entropy and reverse KL in the trainer log, every logging_steps.
-#
-# FALSE because this recipe does not need the WITHIN-run resolution, not because
-# nothing can turn it on any more. The quantity survives without it: distill-eval
-# computes entropy and rkld from a checkpoint with no trainer involvement (see
-# EVAL_METRICS below), and the eval-transfer targets read every checkpoint this
-# recipe exports. Flipping this to true is now a bare --param, nothing else to wire up.
-LOG_STUDENT_ENTROPY: false
-# 0 disables the guard, and disabling it changes no behaviour: ENTROPY_GUARD_ACTION has
-# been "warn" for as long as there has been a ladder, so the guard has only ever printed
-# the trip step and never ended a run. With the collapse now known not to damage the
-# model there is nothing left for it to warn about.
-ENTROPY_GUARD_DROP_FRAC: 0.0
-# INERT while ENTROPY_GUARD_DROP_FRAC is 0 -- the renderer emits this trio only when the
-# fraction is positive. Left at the values every sweep arm ran with, so re-arming the
-# guard alongside a CE arm is one --param and not a reconstruction.
-ENTROPY_GUARD_BASELINE_STEPS: 20
-ENTROPY_GUARD_PATIENCE: 3
-# "warn" rather than "stop", still, and for the same reason as before: a laddered recipe
-# wants the whole curve, and the trip step is the least useful place to end a run. Inert
-# while the fraction above is 0.
-ENTROPY_GUARD_ACTION: "warn"
+# ─── The CE anchor and the entropy guard ──────────────────────────────
+# Retired: the CE sweep at four coefficients was monotone-bad on capability, and the
+# entropy drop the guard watched for was harmless (the real defect was the rope_theta
+# export bug). #664 removed both from the step, so there are no parameters for them.
 
 # granite's logits_scaling=10 overflows the fused bf16 JSD kernel and yields NaN
 # loss, so false is the setting known to produce a finite loss here. The cost is

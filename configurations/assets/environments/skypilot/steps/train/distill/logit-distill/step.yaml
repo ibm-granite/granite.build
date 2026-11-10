@@ -42,13 +42,13 @@ config:
   # ─── Source delivery ──────────────────────────────────────────────────────────
   # NO code_config HERE (no distill step has one): this step's
   # trainer source (gb_steps_post_training, including the locally-folded-in
-  # CE-anchor/entropy-guard fields -- see steps/train/distill/src/VENDORED.md) is baked
+  # on-policy study fields -- see steps/train/distill/src/VENDORED.md) is baked
   # directly into the shared GPU image (steps/train/distill/images/gpu/Dockerfile COPYs
   # steps/train/distill/src/) rather than cloned at job-launch time. gold is the one
   # ported step that runs multi-node, where a runtime clone needs its own
   # rank-0-clones/others-wait guard against a real race (measured on build
   # 7e9995b3) -- baking the source into the image sidesteps that race entirely
-  # instead of guarding it, and gives every recipe the CE-anchor/entropy-guard
+  # instead of guarding it, and gives every recipe the vendored trainer's
   # fields unconditionally with no checkout to point at. See the static
   # CODE_DIR/PYBIN at the top of `run` below instead of a clone.
   # ── Per-checkpoint artifact emission ──────────────────────────────────────
@@ -194,46 +194,6 @@ config:
     # granite's logits_scaling=10 overflows the fused bf16 JSD kernel -> NaN loss.
     use_liger_fused_jsd: false
 
-    # ── The CE anchor, and the instruments that watch for its absence ────────
-    # All five need the trainer to carry the CE-anchor/entropy-guard fields. That
-    # trainer is the shared GPU image's baked-in copy of
-    # gb_steps_post_training (steps/train/distill/src/), which carries those fields permanently
-    # (folded in directly -- see steps/train/distill/src/VENDORED.md) -- so every recipe gets
-    # these keys unconditionally, with no checkout to point at.
-    #
-    # They are rendered into the trainer's config ONLY when non-default, so a recipe that
-    # leaves them alone renders the same config it always has. If the vendor pin is ever
-    # bumped past an upstream commit that carries an equivalent change natively,
-    # verify_trainer_accepts_keys below still catches a mismatch rather than failing deep
-    # inside TrlParser after the allocation was held.
-    #
-    # ce_coef ADDS cross entropy on the corpus tokens to the divergence:
-    #   loss = divergence + ce_coef * CE(student, labels)
-    # It is not the trainer's use_ce_loss, which REPLACES the divergence. Without an
-    # anchor the objective has no opinion about real text, so an already-SFT'd
-    # student — one that already matches the teacher closely — can only improve by
-    # sharpening, and sharpening ends in repetition loops. Additive rather than a
-    # convex mix because JSD runs ~0.07 here against CE ~1, so a convex 50/50 is
-    # ~20x CE-dominated. Both terms are logged, so the ratio is a reading.
-    ce_coef: 0.0
-    # Logs mean student entropy and reverse KL (nats, supervised positions) every
-    # logging_steps. The train loss is blind to collapse — it moved 2.7% across the
-    # 7,640 steps in which df8512e0's student lost 42% of its entropy.
-    log_student_entropy: false
-    # Stop when entropy falls this fraction below a baseline measured over the first
-    # entropy_guard_baseline_steps. 0 disables. Stops gracefully: the checkpoint is
-    # saved, the process exits 0, and export/eval still run, so a tripped guard is a
-    # finding rather than a failed build. Requires log_student_entropy.
-    entropy_guard_drop_frac: 0.0
-    entropy_guard_baseline_steps: 20
-    entropy_guard_patience: 3
-    # What a trip DOES. "stop" ends the run there; "warn" reports it, checkpoints it
-    # and continues to max_steps. Build d1acf1c0 is the argument for having the choice:
-    # the guard stopped it at step 77 of 2000, correctly by its own rule, and in doing
-    # so destroyed the checkpoint curve the run existed to measure and left its four
-    # fixed export rungs naming steps that never happened. Where max_steps already
-    # bounds the waste, the trip is worth a reading rather than a stop.
-    entropy_guard_action: "stop"
     # The objective as a validated PRESET, instead of nine booleans a build may combine
     # freely. EMPTY BY DEFAULT and empty means unchanged: the flags above stay
     # authoritative, every existing recipe renders exactly the config it rendered before,
@@ -253,7 +213,8 @@ config:
     # falling loss.
     check_corpus_tokenizer: false
     # Check every key this step is about to emit that upstream trl's GOLDConfig does not
-    # define (the CE anchor, the collapse guard, the on-policy shaping pair) against the
+    # define (the on-policy shaping pair, min_completion_length, the lmbda ramp window,
+    # stop_at_step) against the
     # baked-in trainer's dataclass (steps/train/distill/src/), and refuse before accelerate
     # launches.
     #
@@ -831,12 +792,6 @@ environment_configs:
               --lmbda {{ config.gold_config.lmbda }} \
               --beta {{ config.gold_config.beta }} \
               --use-liger-fused-jsd {{ config.gold_config.use_liger_fused_jsd }} \
-              --ce-coef {{ config.gold_config.ce_coef | default(0.0) }} \
-              --log-student-entropy {{ config.gold_config.log_student_entropy | default(false) }} \
-              --entropy-guard-drop-frac {{ config.gold_config.entropy_guard_drop_frac | default(0.0) }} \
-              --entropy-guard-baseline-steps {{ config.gold_config.entropy_guard_baseline_steps | default(20) }} \
-              --entropy-guard-patience {{ config.gold_config.entropy_guard_patience | default(3) }} \
-              --entropy-guard-action "{{ config.gold_config.entropy_guard_action | default('stop') }}" \
               --lmbda-schedule "{{ config.gold_config.lmbda_schedule | default('constant') }}" \
               --lmbda-init {{ config.gold_config.lmbda_init | default(0.0) }} \
               --min-completion-length {{ config.gold_config.min_completion_length | default(0) }} \

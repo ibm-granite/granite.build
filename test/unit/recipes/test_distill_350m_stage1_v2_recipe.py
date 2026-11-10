@@ -153,159 +153,53 @@ def test_the_build_is_not_still_named_after_the_smoke_recipe(off):
 # ─── The objective ─────────────────────────────────────────────────────────────
 
 
+_RETIRED_GOLD_KEYS = (
+    "ce_coef",
+    "log_student_entropy",
+    "entropy_guard_drop_frac",
+    "entropy_guard_baseline_steps",
+    "entropy_guard_patience",
+    "entropy_guard_action",
+)
+
+
 class TestTheUnanchoredObjective:
-    """The CE anchor and the entropy guard are OFF, and that is the result of the sweep
-    rather than a default nobody got round to setting.
+    """The CE anchor and the entropy guard are GONE, and that is the result of the sweep.
 
     The four-coefficient grid completed on 2026-09-28 with a monotone-bad dose-response
     on two independent suites (ifeval gain +5.57 -> +4.04 -> +2.71 -> +2.56, HumanEval
     +1 -> 0 -> -3 -> -9 problems as ce goes 0 -> 0.05 -> 0.15 -> 0.40), and the collapse
     the guard watched for turned out to damage nothing: df8512e0's 42% entropy drop is
     real, but once its export was repaired that checkpoint beat its own SFT baseline.
-
-    These tests assert the objective AND the property that follows from it -- that
-    nothing patch-gated renders, which is what lets this recipe run on the step's own
-    public trainer pin.
+    #664 removed both from the trainer and from logit-distill.
     """
 
-    def test_the_ce_anchor_is_off(self, off):
+    def test_the_retired_keys_are_not_set(self, off):
         gold = _config(off, "train-gold")["gold_config"]
-        assert float(gold.get("ce_coef", 0.0)) == 0.0
+        for key in _RETIRED_GOLD_KEYS:
+            assert key not in gold, key
 
-    def test_the_anchor_stays_the_same_order_as_the_divergence_if_re_armed(self, off):
-        """Inert at the shipped default, and the reason it is kept is the one question
-        the sweep left open: no CE arm was ever measured for safety, and safety is the
-        only axis where the unanchored epoch went backwards. If that experiment re-arms
-        the anchor, the coefficient still has to be readable -- df8512e0's JSD ran 0.068
-        and CE on this student runs order 1, so below ~0.01 the anchor restrains nothing
-        and above ~0.5 it is SFT with a divergence garnish."""
-        ce = float(_config(off, "train-gold")["gold_config"].get("ce_coef", 0.0))
-        if ce > 0:
-            assert 0.01 <= ce <= 0.5
-
-    def test_the_per_step_entropy_log_is_off_and_the_metric_survives_elsewhere(
-        self, off
-    ):
-        """log_student_entropy is left off because this recipe does not need the
-        WITHIN-run resolution, not because the baked-in trainer can't provide it (it
-        can, unconditionally, now). The quantity is not lost: distill-eval computes
-        entropy and rkld from a checkpoint with no trainer involvement, and every rung
-        is transfer-evaluated."""
+    def test_entropy_is_still_measured_per_rung(self, off):
+        """The per-step trainer log of entropy went with the guard. The quantity is not
+        lost: distill-eval computes entropy and rkld from a checkpoint with no trainer
+        involvement, and every rung is transfer-evaluated."""
         gold = _config(off, "train-gold")["gold_config"]
-        assert gold.get("log_student_entropy", False) is False
         assert int(gold["logging_steps"]) == 1
         assert "entropy" in _params()["EVAL_METRICS"].split(",")
-
-    def test_the_collapse_guard_is_disarmed(self, off):
-        """It never stopped a run here in any case -- ENTROPY_GUARD_ACTION has been
-        "warn" for as long as there has been a ladder -- so disarming it changes no
-        behaviour and removes a patch dependency."""
-        gold = _config(off, "train-gold")["gold_config"]
-        assert float(gold.get("entropy_guard_drop_frac", 0.0)) == 0.0
-
-    def test_a_stopping_guard_and_a_fixed_ladder_cannot_both_be_asked_for(self, off):
-        """THE failure of build d1acf1c0, as an invariant.
-
-        The guard tripped at step 77 of 2,000 and stopped the run, exactly as armed. But
-        every rung of this recipe's ladder is a literal step number, and the trainer had
-        written none of them: all four export targets failed with `requested checkpoint
-        does not exist`, the build failed, and the run's question went unanswered after
-        the training was paid for. The two features are individually right and jointly
-        contradictory -- a guard that may stop at an arbitrary step, and consumers that
-        demand specific steps -- so one of them has to give, and for a run whose PURPOSE
-        is the collapse curve it is the stop.
-
-        Either the guard only warns, or no rung is allowed to outlive a possible stop.
-        This recipe takes the first branch; the assertion admits both so that a future
-        recipe choosing the second is not forced to lie."""
-        gold = _config(off, "train-gold")["gold_config"]
-        if float(gold["entropy_guard_drop_frac"]) <= 0:
-            return  # guard disarmed: the ladder is bounded by max_steps alone
-        rungs = [int(n) for n in _params()["CKPT_LADDER"].split(",")]
-        if gold["entropy_guard_action"] == "stop":
-            raise AssertionError(
-                "the guard may stop at any step past "
-                f"{gold['entropy_guard_baseline_steps']}, but the ladder demands "
-                f"checkpoints at {rungs}. Set ENTROPY_GUARD_ACTION=warn, or stop naming "
-                "fixed rungs."
-            )
-        assert gold["entropy_guard_action"] == "warn"
 
     def test_the_checkpoint_budget_covers_the_whole_run(self, off):
         """Unconditional, and the one line of df8512e0's configuration still worth not
         repeating: save_total_limit 3 deleted every checkpoint anyone later wanted to
-        look at. A guard trip, if the guard is ever re-armed, adds one checkpoint beyond
-        the scheduled grid, so the budget has to cover that too."""
+        look at."""
         gold = _config(off, "train-gold")["gold_config"]
         produced = int(gold["max_steps"]) // int(gold["save_steps"]) + 1
         assert int(gold["save_total_limit"]) >= produced
 
-    def test_a_re_armed_guard_still_gets_its_metric_and_only_warns(self, off):
-        """Inert at the shipped defaults. It exists so that re-arming the guard for the
-        safety experiment cannot quietly reintroduce either of the two combinations that
-        cost a build: a guard with no entropy to read, and a guard that may stop at an
-        arbitrary step while the ladder names fixed ones (build d1acf1c0)."""
-        gold = _config(off, "train-gold")["gold_config"]
-        if float(gold.get("entropy_guard_drop_frac", 0.0)) > 0:
-            assert gold["log_student_entropy"] is True
-            assert gold["entropy_guard_action"] == "warn"
-
-    def test_the_guard_cannot_be_armed_without_its_metric(self, off):
-        """Belt and braces: the renderer refuses this combination too, but a recipe
-        that sets it has already wasted a submission."""
-        gold = _config(off, "train-gold")["gold_config"]
-        if float(gold["entropy_guard_drop_frac"]) > 0:
-            assert gold["log_student_entropy"] is True
-
-    def test_no_patch_gated_key_renders_at_the_defaults(self, off):
-        """THE PROPERTY THIS RECIPE RELIES ON: these keys stay present and at their
-        off defaults, so this recipe's own objective is the unanchored one df8512e0
-        ran, not because the baked-in trainer would reject a non-default (it now
-        defines all six fields unconditionally -- see TestTheTrainerPin) but because a
-        non-default value would change the objective under measurement, which is a
-        deliberate --param away, not this recipe's default.
-
-        Read off the step's gold_config -- the INPUT render_gold_config.py decides from --
-        rather than off parameters.yaml, so a stray literal or a Jinja default in build.yaml
-        cannot slip a non-default value past this. The renderer's own omit-when-default
-        behaviour is tested in the step's suite, not here."""
-        gold = _config(off, "train-gold")["gold_config"]
-        for key in (
-            "ce_coef",
-            "log_student_entropy",
-            "entropy_guard_drop_frac",
-            "entropy_guard_baseline_steps",
-            "entropy_guard_patience",
-            "entropy_guard_action",
-        ):
-            assert key in gold, (
-                f"{key} disappeared from the recipe; it is meant to be present and "
-                "at its default, so the sweep arm is one --param away"
-            )
-        emitted = {
-            "ce_coef": float(gold["ce_coef"]) > 0,
-            "log_student_entropy": gold["log_student_entropy"] is True,
-            "entropy_guard_drop_frac": float(gold["entropy_guard_drop_frac"]) > 0,
-        }
-        assert not any(emitted.values()), (
-            "these reach the trainer's config and would change this recipe's objective "
-            f"away from the unanchored one it measures: {sorted(k for k, v in emitted.items() if v)}"
-        )
-
     def test_the_objective_is_df8512e0s(self, off):
-        """Unanchored, off-policy, pure divergence -- the best recipe on record, and now
-        the default here rather than a control arm reached with two --params."""
+        """Unanchored, off-policy, pure divergence -- the best recipe on record."""
         gold = _config(off, "train-gold")["gold_config"]
-        assert float(gold.get("ce_coef", 0.0)) == 0.0
+        assert "ce_coef" not in gold
         assert float(_params()["LMBDA"]) == 0.0
-
-    def test_the_sweep_arms_are_still_reachable(self, tmp_path):
-        """Retiring the anchor must not mean deleting the plumbing: the safety question
-        the sweep left open is run from here, and it is now a bare --param -- the
-        trainer carries the field unconditionally, no checkout to bring along."""
-        arm = _render(tmp_path, INCLUDE_SFT=False, CE_COEF=0.15)
-        gold = _config(arm, "train-gold")["gold_config"]
-        assert float(gold["ce_coef"]) == 0.15
 
     def test_beta_and_the_policy_are_unchanged_from_stage1(self, off):
         """One variable at a time. The anchor already changes the loss; moving beta or
@@ -355,9 +249,8 @@ class TestTheTrainerPin:
     This recipe used to override CODE_DIR with a local patched checkout under /proj,
     because CE_COEF and the guard needed fields the pinned trainer did not define. That
     override was also what made the recipe BlueVela-only: a /proj path resolves nowhere
-    else. The patch is now folded permanently into the vendored source every GPU step's
-    image bakes in, so re-arming any of those fields is a bare --param, with no checkout
-    to point at and no BlueVela dependency to reintroduce.
+    else. The patch was folded into the vendored source every GPU step's image bakes in,
+    and later removed with the features themselves (#664).
     """
 
     def test_no_trainer_checkout_parameters_remain(self):
@@ -367,15 +260,6 @@ class TestTheTrainerPin:
         assert "CODE_DIR" not in params
         assert "CODE_EXPECT_REF" not in params
 
-    def test_a_patch_gated_key_needs_nothing_extra(self, off, tmp_path):
-        """THE INVARIANT THAT REPLACED THE PIN: re-arming any of the CE-anchor/
-        entropy-guard fields no longer requires a checkout at all, because the baked-in
-        trainer defines them unconditionally now."""
-        armed = _render(tmp_path, INCLUDE_SFT=False, CE_COEF=0.15)
-        gold = _config(armed, "train-gold")["gold_config"]
-        assert float(gold["ce_coef"]) == 0.15
-        assert "code_config" not in _config(armed, "train-gold")
-
     def test_the_renderers_field_check_stays_on(self, off):
         """It is what stands between any future re-arm and a config TrlParser rejects on
         every node of an allocation that is already held. Unconditional: it costs one
@@ -384,8 +268,8 @@ class TestTheTrainerPin:
         assert gold.get("verify_trainer_accepts_keys", True) is not False
 
     def test_the_fold_in_is_recorded_in_the_vendor_docs(self):
-        """Otherwise the fold-in has no provenance trail at all: where the fields came
-        from, and why they are safe to rely on unconditionally now."""
+        """The fold-in and its later removal (#664) both need a provenance trail: where
+        the fields came from, and why they are gone."""
         vendored_md = (
             _RECIPE.parents[3] / "steps" / "train" / "distill" / "src" / "VENDORED.md"
         )

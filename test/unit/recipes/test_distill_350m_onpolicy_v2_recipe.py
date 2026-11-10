@@ -178,60 +178,25 @@ class TestTheTrainerActuallyUsesTheServer:
 
 
 class TestTheGenerationFloor:
-    """There is none, and 0 is the state of the PINNED CODE rather than a preference.
+    """There is none: MIN_COMPLETION_LENGTH is 0, as it has always been for this recipe.
 
-    The floor has two halves and the step's pin (a5d59bc4) carries neither, checked against
-    the public repo on 2026-09-28. The trainer half needs
-    CustomGOLDConfig.min_completion_length, which is absent -- and unlike the CE anchor keys,
-    ce_anchor_and_entropy_guard.diff does not add it, so no patched checkout carries it
-    either. The server half, which is where the sampling decision is actually taken, needs
-    run_vllm_serve.py to read GOLD_MIN_TOKENS and patch SamplingParams.min_tokens; that file
-    at the pin is 108 lines and mentions none of the three.
+    The floor is a trainer setting only. The vendored trainer sends
+    gold_config.min_completion_length as min_tokens with every vLLM request; the server-side
+    vllm_config.min_completion_length key and its GOLD_MIN_TOKENS export were removed in
+    #664, and student-rollout-generator now refuses the key.
 
-    So a non-zero value buys two pre-allocation refusals -- render_gold_config's field check
-    and vllm-server's own GOLD_MIN_TOKENS grep -- rather than a floor.
-
-    WHAT IS UNMITIGATED: an immediate EOS. An empty completion is a rollout the teacher scores
-    as if it were one, and the run becomes an expensive way to score nothing. Nothing in the
-    pinned code reports it, so gen-smoke on the first rung is the read that has to replace it.
+    WHAT IS UNMITIGATED at 0: an immediate EOS. An empty completion is a rollout the teacher
+    scores as if it were one, so gen-smoke on the first rung is the read that replaces it.
     """
 
-    def test_neither_side_asks_for_a_floor_the_pin_cannot_deliver(self, on):
-        """Asserted as a value rather than tolerated either way: raising it is only correct
-        once both halves land upstream and the pin is bumped, and the cost of getting that
-        wrong is an arm that trains on empty completions with nothing saying so."""
+    def test_the_trainer_asks_for_no_floor(self, on):
         assert int(_params()["MIN_COMPLETION_LENGTH"]) == 0
         assert (
             int(_config(on, "train-gold")["gold_config"]["min_completion_length"]) == 0
         )
-        assert (
-            int(_config(on, "vllm-server")["vllm_config"]["min_completion_length"]) == 0
-        )
 
-    def test_the_two_sides_agree(self, on):
-        assert int(
-            _config(on, "train-gold")["gold_config"]["min_completion_length"]
-        ) == (int(_config(on, "vllm-server")["vllm_config"]["min_completion_length"]))
-
-    def test_the_step_exports_it_to_the_server_process(self):
-        """The recipe key is inert unless the step turns it into GOLD_MIN_TOKENS. Kept while
-        the floor is 0 because this is the half that has to survive for a future pin bump to
-        be a one-line change -- and because it is what makes vllm-server's refusal loud
-        rather than silent if someone raises the floor too early."""
-        step = (
-            _RECIPE.parents[3]
-            / "configurations"
-            / "assets"
-            / "environments"
-            / "skypilot"
-            / "steps"
-            / "train"
-            / "distill"
-            / "student-rollout-generator"
-            / "step.yaml"
-        ).read_text(encoding="utf-8")
-        assert "GOLD_MIN_TOKENS" in step
-        assert "min_completion_length" in step
+    def test_the_server_is_not_given_a_floor_it_would_refuse(self, on):
+        assert "min_completion_length" not in _config(on, "vllm-server")["vllm_config"]
 
 
 class TestTheAllocationIsReleased:
@@ -267,12 +232,6 @@ class TestItIsStage1V2PlusOnPolicy:
     @pytest.mark.parametrize(
         "key",
         [
-            "CE_COEF",
-            "LOG_STUDENT_ENTROPY",
-            "ENTROPY_GUARD_DROP_FRAC",
-            "ENTROPY_GUARD_BASELINE_STEPS",
-            "ENTROPY_GUARD_PATIENCE",
-            "ENTROPY_GUARD_ACTION",
             "BETA",
             "TEMPERATURE",
             "GOLD_MAX_STEPS",
@@ -303,34 +262,19 @@ class TestItIsStage1V2PlusOnPolicy:
             config = _config(on, name)
             assert "code_config" not in config, (name, config)
 
-    def test_a_stopping_guard_and_a_fixed_ladder_cannot_both_be_asked_for(self, on):
-        """Build d1acf1c0 hit this in the off-policy arm -- guard tripped at step 77 of
-        2,000, and all four fixed export rungs named checkpoints the trainer never
-        wrote. This recipe carries the same ladder, so it carries the same invariant."""
+    def test_the_anchor_and_the_guard_are_not_set(self, on):
+        """Both were removed from logit-distill in #664; setting their keys now would be
+        a stale recipe, so none may reach the step's config."""
         gold = _config(on, "train-gold")["gold_config"]
-        if float(gold["entropy_guard_drop_frac"]) <= 0:
-            return
-        assert gold["entropy_guard_action"] == "warn", (
-            "the guard may stop at an arbitrary step while CKPT_LADDER "
-            f"({_params()['CKPT_LADDER']}) demands specific ones"
-        )
-
-    def test_the_anchor_is_off_here_too(self, on):
-        """The anchor's stated rationale was STRONGEST in this regime -- on-policy
-        training on a student's own output is where a collapse could feed itself -- and
-        it is still off, because the evidence that retired it is the only evidence there
-        is. The CE sweep ran off-policy, so it says nothing about on-policy directly;
-        what it says is that non-zero CE costs capability in ordered amounts and that the
-        collapse it prevented damaged nothing. This arm starts where the evidence is.
-
-        If the on-policy entropy curve argues otherwise, CE_COEF is now a bare --param
-        (the trainer carries the field unconditionally) -- and it must match the
-        off-policy arm it is compared against, which test_it_matches_the_off_policy_arm
-        already enforces."""
-        gold = _config(on, "train-gold")["gold_config"]
-        assert float(gold.get("ce_coef", 0.0)) == 0.0
-        assert gold.get("log_student_entropy", False) is False
-        assert float(gold.get("entropy_guard_drop_frac", 0.0)) == 0.0
+        for key in (
+            "ce_coef",
+            "log_student_entropy",
+            "entropy_guard_drop_frac",
+            "entropy_guard_baseline_steps",
+            "entropy_guard_patience",
+            "entropy_guard_action",
+        ):
+            assert key not in gold, key
 
     def test_neither_step_overrides_its_image(self, on):
         """train-gold and vllm-server both default to the shared GPU image now (no

@@ -87,29 +87,12 @@ think-filtered** (`*_nothink.jsonl`): an assistant completion containing an inli
 | `loss_arm` | string | The objective as a validated preset instead of free boolean combinations; see [Loss arms](#loss-arms). Empty means unchanged — the flags above stay authoritative. Default: `""`. |
 | `response_template` | string | Locates the completion span for loss masking (the nothink chat template has no `{% generation %}` tag). Must match the pair's chat markup; see [Choosing a student/teacher pair](#choosing-a-studentteacher-pair). A trailing line boundary must be written as the two-character escape `\n`; see [Response template escape](#response-template-escape). Default: `<|im_start|>assistant`. |
 
-#### CE anchor and entropy guard
-
-These keys are rendered into the trainer's config **only when non-default**. The baked-in
-trainer carries the CE-anchor/entropy-guard fields unconditionally (folded into
-`steps/train/distill/src/`'s vendored copy — see [Source delivery](#source-delivery)), so no
-separate checkout is needed to use them; see
-[CE anchor and entropy guard](#ce-anchor-and-entropy-guard-1).
-
-| Field | Type | Purpose |
-|---|---|---|
-| `ce_coef` | number | Adds cross entropy on the corpus tokens to the divergence: `loss = divergence + ce_coef * CE(student, labels)`. Must be `>= 0`. Default: `0.0`. |
-| `log_student_entropy` | boolean | Log mean student entropy and reverse KL (nats, supervised positions) every `logging_steps`. Default: `false`. |
-| `entropy_guard_drop_frac` | number | Trip when entropy falls this fraction below a baseline; `0` disables. Must be in `[0.0, 1.0)`; `> 0` requires `log_student_entropy: true`. Default: `0.0`. |
-| `entropy_guard_baseline_steps` | integer | Steps over which the baseline is measured; `>= 1`. Default: `20`. |
-| `entropy_guard_patience` | integer | Consecutive low readings before a trip; `>= 1`. Default: `3`. |
-| `entropy_guard_action` | string | `stop` ends the run at the trip; `warn` reports it, checkpoints it and continues to `max_steps`. Default: `stop`. |
-
 #### Pre-launch checks
 
 | Field | Type | Purpose |
 |---|---|---|
 | `check_corpus_tokenizer` | boolean | Verify the student's tokenizer is the one the corpus was built with, before the config is rendered. Worth turning on for any build that chains the `space://steps/train/distill/data-prep` step into this one, because a mismatch does not error — it trains on mis-segmented text at full speed with a falling loss. Default: `false`. |
-| `verify_trainer_accepts_keys` | boolean | Check every emitted key that upstream trl's `GOLDConfig` does not define (the CE anchor, the collapse guard, the on-policy shaping pair) against the delivered trainer's dataclass, and refuse before `accelerate` launches. Only emitted keys are checked, so a build leaving them at their defaults never triggers it. Set false only to render deliberately against a trainer you know differs. Default: `true`. |
+| `verify_trainer_accepts_keys` | boolean | Check every emitted key that upstream trl's `GOLDConfig` does not define (the on-policy shaping pair, `min_completion_length`, the lmbda ramp window, `stop_at_step`) against the delivered trainer's dataclass, and refuse before `accelerate` launches. Only emitted keys are checked, so a build leaving them at their defaults never triggers it. Set false only to render deliberately against a trainer you know differs. Default: `true`. |
 
 #### NCCL and distributed diagnostics
 
@@ -149,7 +132,7 @@ harmless where the gap doesn't exist — see `steps/train/distill/images/gpu/REA
 | `lmbda_ramp_start_step` | integer | Linear schedule only: the optimizer step the ramp starts at; `lmbda` is `lmbda_init` before it. Lets a resumed run ramp over its own steps. Refused with a constant schedule. Default: `0`. |
 | `lmbda_ramp_steps` | integer | Linear schedule only: the ramp's length in steps; `lmbda` holds after it. `0` ramps until `max_steps`. Refused with a constant schedule. Default: `0`. |
 | `stop_at_step` | integer | Save and end training at this step, leaving `max_steps` (and the LR schedule built from it) unchanged: what a resume of a longer run needs to train a fixed number of extra steps on its original schedule. Refused past a positive `max_steps`. `0` disables. Default: `0`. |
-| `min_completion_length` | integer | vLLM `min_tokens` for the student's rollout; `> 0` blocks the immediate-EOS mode collapse. Needs `vllm_num_servers > 0`. The trainer sends it as `min_tokens` in every vLLM request (and as `SamplingParams.min_tokens` in colocate mode); an image built before the trainer carried this field needs the server to agree, via `GOLD_MIN_TOKENS`. Default: `0`. |
+| `min_completion_length` | integer | vLLM `min_tokens` for the student's rollout; `> 0` blocks the immediate-EOS mode collapse. Needs `vllm_num_servers > 0`. The trainer sends it as `min_tokens` in every vLLM request (and as `SamplingParams.min_tokens` in colocate mode). Default: `0`. |
 
 ### Checkpoint emission and resume (top-level `config`)
 
@@ -174,9 +157,7 @@ Nothing is cloned or mounted at job-launch time. The trainer (`gold.py`,
 `custom_gold_trainer.py`, `run_vllm_serve.py` and their shared helpers) is baked into the
 shared GPU image (`steps/train/distill/images/gpu/Dockerfile` COPYs `steps/train/distill/src/`,
 copied from `gb-steps-distillation` commit `a5d59bc45524a8d75706e20d44ae1a254f273f23`), with
-the CE-anchor/entropy-guard fields folded into that copy — see
-[CE anchor and entropy guard](#ce-anchor-and-entropy-guard-1) and
-`steps/train/distill/src/VENDORED.md`. `$PYBIN` and `$CODE_DIR` come from that image
+the local patches listed in `steps/train/distill/src/VENDORED.md` folded into that copy. `$PYBIN` and `$CODE_DIR` come from that image
 (the venv `python` and `$DISTILL_HOME`, i.e. `/opt/distill`), not from a config field.
 
 ### Image
@@ -442,37 +423,6 @@ A trailing line boundary in `response_template` must be written as the two-chara
 exactly one trailing newline from each value, so a real one never reaches this step.
 `render_gold_config.py` decodes the escape once, in the container. The default wants no line
 boundary and so carries none.
-
-### CE anchor and entropy guard
-
-`ce_coef`, `log_student_entropy` and the four `entropy_guard_*` keys need the trainer to
-carry the `ce_anchor_and_entropy_guard` fields. Unlike before, this is not something a
-recipe has to arrange: the fields are folded permanently into
-`steps/train/distill/src/gb_steps_post_training/distillation/{custom_gold_config,custom_gold_trainer}.py`
-(see `steps/train/distill/src/VENDORED.md` for the fold-in's provenance and history), baked into
-the shared GPU image every recipe already uses. Because the keys are rendered only when
-non-default, a recipe that leaves them alone renders the same config it always has.
-`verify_trainer_accepts_keys` still guards against a future vendor-pin bump that drops or
-renames these fields, turning "TrlParser rejected your config after the allocation was
-held" into a refusal that names the mismatch rather than failing deep inside TrlParser.
-Without that check the two failures are both expensive: TrlParser rejects an unknown
-top-level key only after the teacher has loaded on every node, and
-`min_completion_length` fails the other way, silently, by never reaching the sampler.
-
-- **`ce_coef` is not the trainer's `use_ce_loss`**, which *replaces* the divergence. Without an
-  anchor the objective has no opinion about real text, so an already-SFT'd student — one that
-  already matches the teacher closely — can only improve by sharpening, and sharpening ends in
-  repetition loops. Additive rather than a convex mix because JSD runs ~0.07 here against
-  CE ~1, so a convex 50/50 is ~20x CE-dominated. Both terms are logged, so the ratio is a
-  reading. Build `df8512e0` ran the unanchored objective for 8,150 steps.
-- **The train loss is blind to collapse** — it moved 2.7% across the 7,640 steps in which
-  `df8512e0`'s student lost 42% of its entropy. `log_student_entropy` is the instrument.
-- **A tripped guard is a finding, not a failed build.** With `entropy_guard_action: stop` the
-  run stops gracefully: the checkpoint is saved, the process exits 0, and export/eval still
-  run. `warn` exists because of build `d1acf1c0`: the guard stopped it at step 77 of 2000,
-  correctly by its own rule, and in doing so destroyed the checkpoint curve the run existed
-  to measure and left its four fixed export rungs naming steps that never happened. Where
-  `max_steps` already bounds the waste, the trip is worth a reading rather than a stop.
 
 ### Per-checkpoint artifacts
 

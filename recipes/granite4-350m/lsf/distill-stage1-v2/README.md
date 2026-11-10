@@ -59,7 +59,7 @@ just does not cost capability.
 CE sweep completed at four coefficients on 2026-09-28. At step 300, as `CE_COEF` goes
 0 → 0.05 → 0.15 → 0.40:
 
-| `ce_coef` | Δ ifeval avg | Δ HumanEval /164 | Δ EvalPlus(2) |
+| CE coefficient | Δ ifeval avg | Δ HumanEval /164 | Δ EvalPlus(2) |
 |---|---|---|---|
 | 0.00 | **+5.57** | **+1** | 39.02 |
 | 0.05 | +4.04 | 0 | 38.72 |
@@ -75,9 +75,8 @@ the trend predicts. **The anchor is dropped, not tuned.**
 
 | | stage1 | v2 as shipped now | why |
 |---|---|---|---|
-| `CE_COEF` | — | **0.0** | retired; the sweep above |
-| `LOG_STUDENT_ENTROPY` | — | **false** | off; the same quantity is read per rung by `teacher-divergence` |
-| `ENTROPY_GUARD_DROP_FRAC` | — | **0.0** | retired; it only ever warned, and the collapse was harmless |
+| CE anchor | — | **removed (#664)** | retired; the sweep above |
+| entropy guard / per-step entropy log | — | **removed (#664)** | it only ever warned, the collapse was harmless, and `teacher-divergence` reads entropy per rung |
 | `GOLD_MAX_STEPS` | 0 (epoch) | 300 | the unanchored entropy curve is 96% collapsed by step 250 |
 | `GOLD_SAVE_STEPS` / `_TOTAL_LIMIT` | 1000 / 3 | 25 / 16 | keep the whole curve, not its last 750 steps |
 | `CKPT_LADDER` | — | 25,50,75,100,150,200,300 | export + transfer-eval + BFCL + generation check per rung |
@@ -97,52 +96,25 @@ unsupervised, because every earlier assistant turn in a multi-turn row is masked
 Changing it re-preps the corpus (~30–45 min) and changes what the loss averages over, so
 v2's loss would stop being comparable to `df8512e0`'s. Worth doing; worth doing separately.
 
-## Re-arming the anchor
+## The anchor and the guard are gone
 
-The sweep is complete and its zero arm is now the shipped default, so a plain launch is the
+The sweep is complete and its zero arm is the shipped default, so a plain launch is the
 `df8512e0` objective:
 
 ```bash
 gb build start -f recipes/granite4-350m/lsf/distill-stage1-v2/build.yaml --space <space>
 ```
 
-`CE_COEF` and the guard are still wired, at zero. The trainer carries both: the CE-anchor and
-entropy-guard patch is part of the trainer package baked into the image
-(`steps/train/distill/src`, see its `VENDORED.md`), switched off by default. Re-arming them is
-parameters only, with no checkout or patch:
-
-```bash
-# One arm per coefficient. RUN_NAME MUST differ per arm, and CORPUS_DIR pins the corpus so
-# the sweep derives it once rather than once per arm.
-CORPUS=/proj/granite-build/g4os/distill/distill-350m-s1v2-ce040/c20ed3c0-.../corpus
-for C in 0 0.05 0.15 0.40; do
-  gb build start -f recipes/granite4-350m/lsf/distill-stage1-v2/build.yaml --space <space> \
-    --param CE_COEF=$C \
-    --param CORPUS_DIR=$CORPUS \
-    --param RUN_NAME=distill-350m-s1v2-ce$(echo $C | tr -d .)
-done
-```
-
-The guard is the same: `--param ENTROPY_GUARD_DROP_FRAC=…` (with `ENTROPY_GUARD_BASELINE_STEPS`,
-`ENTROPY_GUARD_PATIENCE` and `ENTROPY_GUARD_ACTION`), and `--param LOG_STUDENT_ENTROPY=true`
-for the per-step entropy log.
-
-**The one experiment still worth that spend is safety retention.** No CE arm was ever
-measured for safety, and safety is the only axis where the unanchored epoch went backwards.
-Read such an arm for *retention* of 93.5 / 82.5 rather than for lift, and watch the math
-gains as the thing it might cost.
+The CE anchor and the entropy guard were removed from the trainer and the `logit-distill`
+step in #664, so they can no longer be re-armed by parameter. No CE arm was ever measured
+for safety retention, the one axis where the unanchored epoch went backwards; that
+experiment would now need the anchor re-added to the vendored trainer.
 
 Details that remain load-bearing:
 
 - **`RUN_NAME` must differ per arm.** gbserver refuses an artifact URI another build in the
   space has already registered; the target then reports SUCCESS with an empty output list
   and consumers wait forever — the `b5f030cd` failure mode.
-- **A re-armed guard must WARN, never stop** (`ENTROPY_GUARD_ACTION: warn`). Build
-  `d1acf1c0` is why: the guard tripped at step 77 of 2,000 and stopped, so `checkpoint-500`
-  through `checkpoint-2000` were never written and all four `export-<N>` targets failed with
-  `requested checkpoint does not exist`. A guard that may stop at an arbitrary step and a
-  ladder that names fixed ones cannot both have their way.
-  `test_a_stopping_guard_and_a_fixed_ladder_cannot_both_be_asked_for` holds that line.
 - **The horizon is 300 and the rungs are early.** `bb779f1f` measured the unanchored curve
   over 2,000 steps: entropy −19% by step 80, −29.7% by 120, −34.1% by 250, −35.5% at 2,000
   — the last 1,750 steps bought 1.4%. JSD and forward KL were flat after 500 and reverse KL
@@ -156,8 +128,8 @@ Details that remain load-bearing:
 
 `train-gold` runs the trainer baked into the distillation GPU image: the trainer package under
 [`steps/train/distill/src`](../../../../steps/train/distill/src) (copied from
-`github.com/laminair/gb-steps-distillation` at `a5d59bc4`, plus the CE-anchor and entropy-guard
-patch; provenance in its `VENDORED.md`). Nothing is cloned or mounted at job launch, so the
+`github.com/laminair/gb-steps-distillation` at `a5d59bc4`, plus the local patches listed in its
+`VENDORED.md`). Nothing is cloned or mounted at job launch, so the
 trainer a build ran is exactly the image tag the step pins.
 
 That is the end of a provenance problem with a history. `distill-stage1` pointed the trainer at
@@ -172,8 +144,8 @@ Not the train loss. It was flat for 94% of `df8512e0` while the entropy fell 42%
 tells you nothing about what the run is doing — but note that the drop it hid turned out not
 to matter. **Entropy is now a diagnostic, not a verdict.** The verdict is capability.
 
-**Per-step `student_entropy`, `rkld` and `ce_anchor_loss` are no longer logged**, because
-`LOG_STUDENT_ENTROPY` is patch-gated and off. The quantities are read per rung instead, from
+**Per-step `student_entropy`, `rkld` and `ce_anchor_loss` are no longer logged**: the
+trainer instruments that produced them were removed in #664. The quantities are read per rung instead, from
 `distill-eval`, which computes them from the checkpoint with no trainer involvement.
 
 1. **The `eval-transfer-<N>/metrics.json` ladder** against `eval-transfer-baseline`, the
@@ -195,8 +167,6 @@ gb build log <build-id> --runner --all | grep -i "SkyPilot job.*on gb-"
 grep -aE "loss|jsd|learning_rate" ~/sky_logs/<cluster>/1-<cluster>/run.log
 ```
 
-(`student_entropy`, `rkld` and `entropy-guard` appear there only on a run launched with a
-patched `CODE_DIR` and `LOG_STUDENT_ENTROPY=true`.)
 
 ## full-eval per surviving rung
 
