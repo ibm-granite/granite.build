@@ -1313,3 +1313,344 @@ class TestSlurmExecutorEnv:
     def test_the_stripped_env_is_restored(self, launcher):
         assert launcher["envs"]["PYTHONPATH"] == "/opt/distill/src"
         assert launcher["envs"]["VIRTUAL_ENV"] == "/stage/.venv"
+
+
+# The run script as the template rendered it before train_dir existed (f08603fb),
+# keyed by case. A flat file, not a directory: publish-step copies every directory
+# under test/ as a per-cluster build test.
+_GOLDEN = Path(__file__).resolve().parent / "golden_run_scripts.json"
+
+
+class TestTrainDir:
+    """A stable per-build train_dir: checkpoints that survive a build-level retry,
+    re-emitted on resume, behind a no-progress refusal.
+
+    Text tests pin where things sit; the fragment from TRAIN_DIR through the
+    re-emit is also EXECUTED against fake checkpoints."""
+
+    _TRAIN = "/w/run/b1/train"
+
+    @staticmethod
+    def _render(_vllm_url="", **overrides):
+        from jinja2 import Template
+
+        step = yaml.safe_load(_STEP.read_text())
+        script = step["environment_configs"]["Skypilot"]["launchers"]["gold"]["config"][
+            "run"
+        ]
+        config = dict(step["config"])
+        config.update(overrides)
+        return Template(script).render(config=config, bindings=_bindings(_vllm_url))
+
+    def test_defaults_preserve_todays_behaviour(self, step):
+        assert step["config"]["train_dir"] == ""
+        assert step["config"]["require_progress"] is True
+        assert "train_dir" not in step["config"]["gold_config"]
+
+    @pytest.mark.parametrize(
+        "golden,overrides,vllm",
+        [
+            ("defaults", {}, ""),
+            ("emit", {"emit_checkpoint_artifacts": True}, ""),
+            ("resume", {"resume_from_checkpoint_dir": "/src/gold_node2"}, ""),
+            (
+                "resume_emit_unseeded",
+                {
+                    "resume_from_checkpoint_dir": "/src/gold_node2",
+                    "emit_checkpoint_artifacts": True,
+                    "resume_emit_seeded": False,
+                },
+                "",
+            ),
+            (
+                "resume_emit_vllm",
+                {
+                    "resume_from_checkpoint_dir": "/src/gold_node2",
+                    "emit_checkpoint_artifacts": True,
+                },
+                "http://10.0.0.1:8001",
+            ),
+        ],
+    )
+    def test_empty_train_dir_renders_byte_identical(self, golden, overrides, vllm):
+        """The goldens were rendered from the template before train_dir existed
+        (git show f08603fb:step-template.yaml), so every recipe that does not set it
+        runs exactly the script it ran before."""
+        expected = json.loads(_GOLDEN.read_text())[golden]
+        assert self._render(vllm, **overrides) == expected
+        assert self._render(vllm, train_dir="", **overrides) == expected
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {},
+            {"emit_checkpoint_artifacts": True},
+            {"resume_from_checkpoint_dir": "/src"},
+            {
+                "resume_from_checkpoint_dir": "/src",
+                "emit_checkpoint_artifacts": True,
+                "resume_emit_seeded": False,
+            },
+            {"require_progress": False},
+        ],
+    )
+    def test_bash_accepts_the_rendered_script(self, overrides):
+        result = subprocess.run(
+            ["bash", "-n"],
+            input=self._render(train_dir=self._TRAIN, **overrides),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_ckpt_dir_and_cfg_live_under_train_dir(self):
+        rendered = self._render(train_dir=self._TRAIN + "/")
+        assert f'TRAIN_DIR="{self._TRAIN}/"\nTRAIN_DIR="${{TRAIN_DIR%/}}"' in rendered
+        assert 'CKPT_DIR="$TRAIN_DIR/checkpoints/${CONFIG_NAME}"' in rendered
+        assert 'CFG="$TRAIN_DIR/gold_config_${CONFIG_NAME}.yaml"' in rendered
+        assert "GB_BUILD_WORKDIR:-$PWD}/checkpoints" not in rendered
+
+    def test_the_progress_check_is_rank_zero_after_move_aside_before_accelerate(
+        self,
+    ):
+        rendered = self._render(train_dir=self._TRAIN, emit_checkpoint_artifacts=True)
+        call = rendered.index("steps/logit-distill/progress_check.py")
+        assert '--attempt-id "$ATTEMPT_ID"' in rendered
+        assert 'ATTEMPT_ID="${GB_TARGETRUN_ID:-}"' in rendered
+        rank0 = rendered.rindex('if [ "$NODE_RANK" = "0" ]; then', 0, call)
+        # Inside rank 0's branch: no `else` of that if between the guard and the call.
+        assert "\nelse\n" not in rendered[rank0:call]
+        assert rendered.index("moved incomplete") < call
+        assert call < rendered.index("GB_ARTIFACT_ID:checkpoint_${step}")
+        assert call < rendered.index("accelerate launch")
+
+    def test_require_progress_false_drops_the_check(self):
+        rendered = self._render(train_dir=self._TRAIN, require_progress=False)
+        assert "progress_check.py" not in rendered
+        # The move-aside and the handshake still render.
+        assert "moved incomplete" in rendered
+        assert "failed:$RESUME_TOKEN" in rendered
+
+    def test_the_handshake_renders_with_train_dir_alone(self):
+        rendered = self._render(train_dir=self._TRAIN)
+        assert "RESUME_SRC" not in rendered
+        assert "trap '[" in rendered and "failed:%s" in rendered
+        assert 'if [ "$seed" = "failed:$RESUME_TOKEN" ]; then' in rendered
+
+    def test_the_re_emit_is_rank_zero_ascending_and_before_accelerate(self):
+        rendered = self._render(train_dir=self._TRAIN, emit_checkpoint_artifacts=True)
+        reemit = rendered.index("# ── Re-emit on resume")
+        loop = rendered.index("done | sort -n); do", reemit)
+        guard = rendered.index('if [ "$NODE_RANK" = "0" ]; then', reemit)
+        assert guard < loop
+        assert loop < rendered.index("watch_checkpoints &")
+        assert loop < rendered.index("accelerate launch")
+        # Marked as emitted, so the watcher does not emit it again this attempt.
+        assert 'touch "$EMITTED_DIR/checkpoint-$step"' in rendered[reemit:]
+
+    def test_no_re_emit_without_per_checkpoint_artifacts(self):
+        """Without emit_checkpoint_artifacts no target declares checkpoint_<N>."""
+        rendered = self._render(train_dir=self._TRAIN)
+        assert "GB_ARTIFACT_ID:checkpoint_" not in rendered
+        assert "GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:${CKPT_DIR}" in rendered
+
+    # ── executed ────────────────────────────────────────────────────────────
+
+    def _fragment(self, train_dir, **overrides):
+        """The rendered script from TRAIN_DIR through the re-emit, then one watcher
+        sweep: what rank 0 does before the trainer starts."""
+        rendered = self._render(
+            train_dir=str(train_dir), emit_checkpoint_artifacts=True, **overrides
+        )
+        start = rendered.index('TRAIN_DIR="')
+        end = rendered.index("# RANK 0 ONLY, for the same reason")
+        return "set -eu\n" + rendered[start:end] + "emit_new_checkpoints\n"
+
+    @staticmethod
+    def _checkpoint(root, step, complete=True):
+        ckpt = root / f"checkpoint-{step}"
+        ckpt.mkdir(parents=True)
+        for name in ("model.safetensors", "tokenizer.json"):
+            (ckpt / name).write_text(name)
+        if complete:
+            write_trainer_state(ckpt, step, 5, 5)
+        return ckpt
+
+    def _exec(self, tmp_path, train_dir, attempt="tr-1", rank="0", **overrides):
+        home = tmp_path / "distill-home"
+        if not home.exists():
+            (home / "steps").mkdir(parents=True)
+            (home / "steps" / "logit-distill").symlink_to(_STEP.parent / "src")
+        return subprocess.run(
+            ["bash", "-c", self._fragment(train_dir, **overrides)],
+            env={
+                "PATH": "/usr/bin:/bin",
+                "NODE_RANK": rank,
+                "NODES": "2",
+                "GPUS": "8",
+                "VLLM_SERVERS": "0",
+                "CONFIG_NAME": "gold_node2",
+                "PYBIN": sys.executable,
+                "DISTILL_HOME": str(home),
+                "GB_SKYPILOT_LAUNCH_ID": f"launch-{attempt}",
+                "GB_TARGETRUN_ID": attempt,
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+            cwd=tmp_path,
+        )
+
+    @staticmethod
+    def _emitted(stdout):
+        return [l for l in stdout.splitlines() if l.startswith("GB_ARTIFACT_ID:")]
+
+    def test_a_retry_re_emits_complete_checkpoints_in_order(self, tmp_path):
+        """5 and 10 complete, 15 half-written: 15 is moved aside before anything is
+        emitted, 5 then 10 are emitted at their paths, and the watcher's sweep does
+        not emit them a second time."""
+        train = tmp_path / "train"
+        ckpts = train / "checkpoints" / "gold_node2"
+        for step in (10, 5):
+            self._checkpoint(ckpts, step)
+        self._checkpoint(ckpts, 15, complete=False)
+
+        result = self._exec(tmp_path, train, save_steps=5)
+
+        assert result.returncode == 0, result.stderr
+        assert self._emitted(result.stdout) == [
+            f"GB_ARTIFACT_ID:checkpoint_5 GB_ARTIFACT_PATH:{ckpts}/checkpoint-5",
+            f"GB_ARTIFACT_ID:checkpoint_10 GB_ARTIFACT_PATH:{ckpts}/checkpoint-10",
+        ]
+        assert not (ckpts / "checkpoint-15").exists()
+        (aside,) = ckpts.glob("incomplete-checkpoint-15.*")
+        out = result.stdout
+        assert out.index("moved incomplete checkpoint-15") < out.index(
+            "GB_ARTIFACT_ID:"
+        )
+        assert "resumes from checkpoint-10" in out
+        assert (ckpts / ".resume-seeded").read_text().strip().startswith("launch-tr-1")
+
+    def test_numeric_not_lexical_order(self, tmp_path):
+        train = tmp_path / "train"
+        ckpts = train / "checkpoints" / "gold_node2"
+        for step in (1500, 500):
+            self._checkpoint(ckpts, step)
+        result = self._exec(tmp_path, train)
+        assert result.returncode == 0, result.stderr
+        ids = [l.split()[0] for l in self._emitted(result.stdout)]
+        assert ids == [
+            "GB_ARTIFACT_ID:checkpoint_500",
+            "GB_ARTIFACT_ID:checkpoint_1500",
+        ]
+
+    def test_a_first_attempt_emits_nothing_and_records_itself(self, tmp_path):
+        train = tmp_path / "train"
+        result = self._exec(tmp_path, train)
+        assert result.returncode == 0, result.stderr
+        assert self._emitted(result.stdout) == []
+        assert "starts from step 0" in result.stdout
+        (record,) = (train / "attempts.jsonl").read_text().splitlines()
+        assert json.loads(record)["attempt"] == "tr-1"
+
+    def test_no_progress_refuses_and_releases_the_workers(self, tmp_path):
+        train = tmp_path / "train"
+        ckpts = train / "checkpoints" / "gold_node2"
+        self._checkpoint(ckpts, 5)
+        assert self._exec(tmp_path, train, attempt="tr-1").returncode == 0
+
+        result = self._exec(tmp_path, train, attempt="tr-2")
+
+        assert result.returncode == 3
+        assert "no progress since attempt tr-1 (still at checkpoint-5)" in (
+            result.stderr
+        )
+        # Refused before anything is emitted.
+        assert self._emitted(result.stdout) == []
+        marker = (ckpts / ".resume-seeded").read_text().strip()
+        assert marker == "failed:launch-tr-2::"
+        worker = subprocess.run(
+            [
+                "bash",
+                "-c",
+                self._fragment(train)
+                .replace("-ge 900 ]", "-ge 1 ]")
+                .replace("sleep 5", "sleep 1"),
+            ],
+            env={
+                "PATH": "/usr/bin:/bin",
+                "NODE_RANK": "1",
+                "NODES": "2",
+                "CONFIG_NAME": "gold_node2",
+                "GB_SKYPILOT_LAUNCH_ID": "launch-tr-2",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        assert worker.returncode == 1
+        assert "rank 0 failed to prepare" in worker.stderr
+
+    def test_a_relaunch_of_the_same_target_run_is_let_through(self, tmp_path):
+        train = tmp_path / "train"
+        ckpts = train / "checkpoints" / "gold_node2"
+        self._checkpoint(ckpts, 5)
+        assert self._exec(tmp_path, train, attempt="tr-1").returncode == 0
+        result = self._exec(tmp_path, train, attempt="tr-1")
+        assert result.returncode == 0, result.stderr
+
+    def test_require_progress_false_trains_anyway(self, tmp_path):
+        train = tmp_path / "train"
+        self._checkpoint(train / "checkpoints" / "gold_node2", 5)
+        for attempt in ("tr-1", "tr-2"):
+            result = self._exec(
+                tmp_path, train, attempt=attempt, require_progress=False
+            )
+            assert result.returncode == 0, result.stderr
+        assert not (train / "attempts.jsonl").exists()
+
+    def test_resume_source_is_ignored_once_train_dir_holds_checkpoints(self, tmp_path):
+        src = tmp_path / "src"
+        self._checkpoint(src, 20)
+        train = tmp_path / "train"
+        ckpts = train / "checkpoints" / "gold_node2"
+        self._checkpoint(ckpts, 5)
+
+        result = self._exec(tmp_path, train, resume_from_checkpoint_dir=str(src))
+
+        assert result.returncode == 0, result.stderr
+        assert (
+            "logit-distill: resume: train_dir already holds checkpoints; "
+            "ignoring resume_from_checkpoint_dir" in result.stdout
+        )
+        assert not (ckpts / "checkpoint-20").exists()
+        assert "GB_STEP_METADATA_KEY:resumed_from" not in result.stdout
+        assert "resumes from checkpoint-5" in result.stdout
+
+    def test_resume_source_seeds_an_empty_train_dir(self, tmp_path):
+        src = tmp_path / "src"
+        self._checkpoint(src, 20)
+        train = tmp_path / "train"
+
+        result = self._exec(tmp_path, train, resume_from_checkpoint_dir=str(src))
+
+        assert result.returncode == 0, result.stderr
+        ckpts = train / "checkpoints" / "gold_node2"
+        assert (ckpts / "checkpoint-20").is_dir()
+        assert f"GB_STEP_METADATA_VALUE:{src}/checkpoint-20" in result.stdout
+        # Measured from the seed: the next attempt must get past 20.
+        assert json.loads((train / "attempts.jsonl").read_text())["start_step"] == 20
+        # The seeded rung reaches its consumers once (resume_emit_seeded default).
+        assert self._emitted(result.stdout) == [
+            f"GB_ARTIFACT_ID:checkpoint_20 GB_ARTIFACT_PATH:{ckpts}/checkpoint-20"
+        ]
+
+    def test_a_missing_resume_source_still_fails_on_an_empty_train_dir(self, tmp_path):
+        result = self._exec(
+            tmp_path, tmp_path / "train", resume_from_checkpoint_dir="/nope"
+        )
+        assert result.returncode == 1
+        assert "is not a directory" in result.stderr

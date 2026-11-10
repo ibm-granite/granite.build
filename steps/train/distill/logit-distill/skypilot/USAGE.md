@@ -142,6 +142,8 @@ harmless where the gap doesn't exist — see `steps/train/distill/images/gpu/REA
 | `checkpoint_watch_interval_seconds` | integer | How often that watcher polls. The monitor's log-retrieval interval is the other half of the latency. Default: `60`. |
 | `resume_from_checkpoint_dir` | string | The `<run_name>_node<N>` checkpoint directory of an earlier run of this step to resume from. See [Resume](#resume). Default: `""` (no resume). |
 | `resume_emit_seeded` | boolean | Whether seeded checkpoints are emitted as `checkpoint_<N>` again. Only has an effect with both `resume_from_checkpoint_dir` and `emit_checkpoint_artifacts` set. Default: `true`. |
+| `train_dir` | string | A training directory that is stable for the whole build: the checkpoint directory becomes `<train_dir>/checkpoints/<run_name>_node<N>` and the rendered config sits under `<train_dir>` too. Empty keeps both under `GB_BUILD_WORKDIR`. See [Stable train_dir](#stable-train_dir). Default: `""`. |
+| `require_progress` | boolean | With `train_dir` set: refuse to train when the previous attempt in this `train_dir` did not raise the highest complete checkpoint. See [No-progress refusal](#no-progress-refusal). Default: `true`. |
 
 ### Monitor (top-level `config`)
 
@@ -206,7 +208,7 @@ message naming the input to bind instead.
 
 | Output | Type | What it is |
 |---|---|---|
-| `checkpoint` | `model` | `$GB_BUILD_WORKDIR/checkpoints/<run_name>_node<N>`, the trainer's output directory holding its `checkpoint-<N>` subdirectories. Declared optional in the step. |
+| `checkpoint` | `model` | `$GB_BUILD_WORKDIR/checkpoints/<run_name>_node<N>` (`<train_dir>/checkpoints/<run_name>_node<N>` with `train_dir` set), the trainer's output directory holding its `checkpoint-<N>` subdirectories. Declared optional in the step. |
 | `checkpoint_<N>` | — | Only with `emit_checkpoint_artifacts: true`: one per complete `checkpoint-<N>` directory. Not declared by the step; the target must declare a matching `checkpoint_<N>` output for every rung it binds. |
 
 Markers, printed on rank 0 only (the executor streams every node into one driver log, so an
@@ -473,8 +475,8 @@ checkpoint. Hardlinks, not copies: no data is duplicated and the source is never
   ranks) is moved aside to `incomplete-checkpoint-<N>.<timestamp>`, so the retry resumes
   from the highest complete one rather than failing on it; the per-run workdir, and these
   with it, is reaped when the target run tears down. This all happens only when
-  `resume_from_checkpoint_dir` is set: a retry of a run without it goes straight to
-  `gold.py`'s own resume.
+  `resume_from_checkpoint_dir` or `train_dir` is set: a retry of a run with neither goes
+  straight to `gold.py`'s own resume.
 - **No complete checkpoint is an error,** not a fresh start: starting from step 0 would
   silently spend the whole schedule again.
 - **With `emit_checkpoint_artifacts` on,** every seeded checkpoint is emitted as
@@ -482,6 +484,59 @@ checkpoint. Hardlinks, not copies: no data is duplicated and the source is never
   targets re-run — which is also what keeps them from waiting forever on a rung this run never
   writes. Set `resume_emit_seeded: false` when the stopped run already exported and evaluated
   the seeded rungs and the relaunch's ladder names only the rungs still to come.
+
+### Stable train_dir
+
+`GB_BUILD_WORKDIR` is per target run: a build-level retry (same build id) gets a new one,
+and the target run's teardown reaps it. With `train_dir` empty, a retried build therefore
+restarts training at step 0. A recipe sets `train_dir` to a directory that is stable for the
+build and outside the per-run tree, e.g. `<WORKDIR_ROOT>/<RUN_NAME>/<build_id>/train`: a
+build-level retry finds what the failed attempt wrote and `gold.py` resumes from its highest
+`checkpoint-<N>`, and post-build cleanup leaves it in place. A new build gets a new
+directory. With `train_dir` set, every attempt, before anything else:
+
+1. **moves a half-written checkpoint aside** (rank 0's files missing, or fewer ZeRO
+   shards than ranks) to `incomplete-checkpoint-<N>.<timestamp>`, as a resumed run always
+   has. Under `train_dir` these are kept: nothing reaps them.
+2. **seeds from `resume_from_checkpoint_dir` only when the directory holds no
+   `checkpoint-*` yet.** Otherwise the step logs
+   `logit-distill: resume: train_dir already holds checkpoints; ignoring resume_from_checkpoint_dir`
+   and skips seeding: what an earlier attempt of this build wrote is further along the
+   same lineage. The world-size check and the `trainer_state.json` rewrite described under
+   [Resume](#resume) apply to the checkpoint the trainer resumes from, either way.
+3. **checks progress** (`require_progress`; see below).
+4. **re-emits on resume.** With `emit_checkpoint_artifacts` on, rank 0 emits
+   `GB_ARTIFACT_ID:checkpoint_<N> GB_ARTIFACT_PATH:<path>` for every complete
+   checkpoint already in the directory, at the same paths, in ascending step order,
+   before the trainer starts; the watcher then announces only new ones. This is required,
+   not cosmetic: gbserver decides whether to reuse a downstream export only once its input
+   binding is delivered again on the retry, and a consumer whose binding is not re-delivered
+   is never dispatched, while the build still reports SUCCESS. A checkpoint moved aside in
+   step 1 is never emitted. Seeded rungs withheld by `resume_emit_seeded: false` stay
+   withheld.
+
+The other ranks wait for rank 0 on the same handshake as a resume and stop at once if it
+fails. The final `checkpoint` artifact is unchanged.
+
+### No-progress refusal
+
+With `train_dir` set and `require_progress: true`, rank 0 records each attempt in
+`<train_dir>/attempts.jsonl` (its id and the highest complete checkpoint it starts from),
+after the move-aside and the seed and before anything is emitted or `accelerate` launches.
+An attempt is a **target run** (`GB_TARGETRUN_ID`): a `retry_workload` relaunch inside one
+target run is the same attempt and is let through, a build-level retry is a new one. When
+the new attempt starts from no higher a checkpoint than the previous one did, it is refused
+with exit 3:
+
+```
+logit-distill: FATAL: no progress since attempt <id> (still at checkpoint-<N>); not retrying
+```
+
+It means the previous attempt failed before its next save, and this one would fail at the
+same point: a deterministic failure (a bad batch, an OOM at a fixed length, a key the
+trainer rejects after loading) would otherwise burn every retry the build has, each holding
+the allocation until it got there. Read that attempt's log, fix the cause, and start a new
+build — a new build has a new `train_dir`. `require_progress: false` turns the check off.
 
 ### On-policy
 

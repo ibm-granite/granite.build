@@ -114,6 +114,25 @@ config:
   # Has no effect unless both resume_from_checkpoint_dir and
   # emit_checkpoint_artifacts are set.
   resume_emit_seeded: true
+  # ── Stable training directory ─────────────────────────────────────────────
+  # Empty = today's behaviour (checkpoints under GB_BUILD_WORKDIR). The distill recipe sets
+  # <WORKDIR_ROOT>/<RUN_NAME>/<build_id>/train: it survives build-level retries (same build id,
+  # new per-run workdir) and post-build cleanup; a new build gets a new directory.
+  #
+  # Set, the checkpoint directory is <train_dir>/checkpoints/<run_name>_node<N> and the
+  # rendered config sits beside it, so a build-level retry resumes from what the failed
+  # attempt wrote rather than from step 0. Before the trainer starts, rank 0 moves a
+  # half-written checkpoint aside (as a retry_workload relaunch always has) and, with
+  # emit_checkpoint_artifacts on, re-emits checkpoint_<N> for every complete checkpoint
+  # already there: gbserver only re-checks a downstream export once its input binding is
+  # delivered again, and without it those targets are never dispatched on the retry while
+  # the build still reports SUCCESS (test/unit/buildrunner/
+  # test_checkpoint_consumer_reuse_on_retry.py). resume_from_checkpoint_dir then only
+  # seeds an EMPTY train_dir: once the directory holds checkpoints of its own, they win.
+  train_dir: ""
+  # With train_dir set: refuse to train when the previous attempt in this train_dir did not
+  # raise the highest complete checkpoint (a deterministic failure would otherwise burn every retry).
+  require_progress: true
   gold_config:
     # ── Code and image ──────────────────────────────────────────────────────
     # DeepSpeed ZeRO-3 accelerate config, relative to $DISTILL_HOME (/opt/distill).
@@ -387,6 +406,8 @@ environment_configs:
           # forwards the outer environment. Confirm on a real run with
           # `grep NCCL_ job.log`; if that file does not set them, add both here.
           run: |
+            {% set train_dir = config.train_dir | default("") | string | trim -%}
+            {% set resume_src = config.resume_from_checkpoint_dir | default("") | string | trim -%}
             {% set vllm_server_url = bindings.vllm.binding.state | string | trim if bindings.vllm is defined else "" %}
             # The inputs used to be config keys. A recipe that still sets one would
             # otherwise be ignored silently, so refuse it.
@@ -483,15 +504,34 @@ environment_configs:
             # Identity derives from the ALLOCATION, never from a build parameter,
             # so the checkpoint path cannot claim a node count the run did not have.
             CONFIG_NAME="{{ config.gold_config.run_name }}_node${NODES}"
+            {%- if train_dir %}
+            # train_dir is stable for the whole build (see config: above), unlike the
+            # per-run GB_BUILD_WORKDIR, so a build-level retry finds its checkpoints here.
+            TRAIN_DIR="{{ train_dir }}"
+            TRAIN_DIR="${TRAIN_DIR%/}"
+            CKPT_DIR="$TRAIN_DIR/checkpoints/${CONFIG_NAME}"
+            CFG="$TRAIN_DIR/gold_config_${CONFIG_NAME}.yaml"
+            {%- else %}
             CKPT_DIR="${GB_BUILD_WORKDIR:-$PWD}/checkpoints/${CONFIG_NAME}"
             CFG="${GB_BUILD_WORKDIR:-$PWD}/gold_config_${CONFIG_NAME}.yaml"
+            {%- endif %}
 
             # The trainer's commit is already recorded above as distill_code_commit,
             # by the (now unconditional) source-delivery block: the trainer and the
             # rest of this collection are the same baked package, so there is nothing
             # left to record separately here.
             {% set _true = [true, "true", "True", "1", 1] -%}
-            {% if config.resume_from_checkpoint_dir | default("") | string | trim %}
+            {% if resume_src or train_dir %}
+            {%- if train_dir %}
+            # ── train_dir: prepare the checkpoint dir an earlier attempt may have left ──
+            # Rendered whenever train_dir is set. Rank 0 moves a half-written checkpoint
+            # aside, seeds from resume_from_checkpoint_dir only if nothing is left, checks
+            # the attempt made progress (require_progress), and checks and rewrites the
+            # checkpoint the trainer will resume from, all while the other ranks wait on
+            # the handshake below. With resume_from_checkpoint_dir set, the seeding and
+            # its checks are the ones documented under "Resume" next.
+            {%- endif %}
+            {%- if resume_src %}
             # ── Resume: seed this run's checkpoint dir from an earlier run ──
             # Rendered only when resume_from_checkpoint_dir is set. Runs BEFORE the
             # checkpoint watcher starts, so the watcher never sees a half-linked
@@ -501,6 +541,7 @@ environment_configs:
             # collective rather than fail.
             RESUME_SRC="{{ config.resume_from_checkpoint_dir | string | trim }}"
             RESUME_SRC="${RESUME_SRC%/}"
+            {%- endif %}
             # rank 0 -> the other ranks: this attempt's token once the seed is done,
             # "failed:<token>" if rank 0 exits first. A retry_workload relaunch reuses
             # GB_BUILD_WORKDIR, so a marker already here is the previous attempt's and
@@ -540,10 +581,12 @@ environment_configs:
               trap '[ "$(cat "$RESUME_SEEDED" 2>/dev/null || true)" = "$RESUME_TOKEN" ] \
                 || { printf "failed:%s\n" "$RESUME_TOKEN" > "$RESUME_SEEDED.tmp.$$" \
                 && mv -f "$RESUME_SEEDED.tmp.$$" "$RESUME_SEEDED"; } 2>/dev/null || true' EXIT
+              {%- if not train_dir %}
               if [ ! -d "$RESUME_SRC" ]; then
                 echo "logit-distill: FATAL: resume_from_checkpoint_dir '$RESUME_SRC' is not a directory." >&2
                 exit 1
               fi
+              {%- endif %}
               # An EXTERNAL server (the `vllm` input bound) is another target's allocation:
               # every node here trains, whatever vllm_num_servers says. Only the
               # in-allocation split gives nodes to vLLM -- see "Node roles" below.
@@ -569,6 +612,32 @@ environment_configs:
                 mv "$ckpt" "$aside"
                 echo "logit-distill: resume: moved incomplete ${ckpt##*/} aside to ${aside##*/}"
               done
+              {%- if train_dir %}
+              # Under train_dir the moved-aside ones stay for diagnosis: it is not reaped
+              # with the target run. Every checkpoint-<N> left is complete, so any one of
+              # them means an earlier attempt of this build trained here.
+              RESUME_HELD=""
+              TRAIN_SEEDED=""
+              for ckpt in "$CKPT_DIR"/checkpoint-*; do
+                if resume_is_checkpoint "$ckpt"; then
+                  RESUME_HELD=1
+                  break
+                fi
+              done
+              {%- endif %}
+              {%- if resume_src %}
+              {%- if train_dir %}
+              # The source only ever seeds an empty train_dir: what an earlier attempt of
+              # this build wrote there is further along the same lineage.
+              if [ -n "$RESUME_HELD" ]; then
+                echo "logit-distill: resume: train_dir already holds checkpoints; ignoring resume_from_checkpoint_dir"
+              else
+              TRAIN_SEEDED=1
+              if [ ! -d "$RESUME_SRC" ]; then
+                echo "logit-distill: FATAL: resume_from_checkpoint_dir '$RESUME_SRC' is not a directory." >&2
+                exit 1
+              fi
+              {%- endif %}
               RESUME_COUNT=0
               SEED_TOP=""
               for ckpt in "$RESUME_SRC"/checkpoint-*; do
@@ -596,6 +665,28 @@ environment_configs:
                 echo "  silently spend the whole schedule again." >&2
                 exit 1
               fi
+              {%- if train_dir %}
+              fi
+              {%- endif %}
+              {%- endif %}
+              {%- if train_dir and config.require_progress | default(true) in _true %}
+              # After the move-aside and the seed, so a half-written checkpoint does not
+              # count and a first attempt is measured from what it was seeded with; before
+              # anything is emitted and before accelerate. Exit 3 is a refusal: the EXIT
+              # trap above releases the waiting ranks with "failed:<token>".
+              #
+              # The attempt is the TARGET RUN: gbserver exports GB_TARGETRUN_ID to every
+              # SkyPilot launch (skypilot.py _launch_env_layers). A retry_workload relaunch
+              # replays the same launch, and so the same id (and reuses GB_BUILD_WORKDIR,
+              # .../runs/<targetrun_id>); a build-level retry creates new target runs.
+              ATTEMPT_ID="${GB_TARGETRUN_ID:-}"
+              if [ -z "$ATTEMPT_ID" ]; then
+                echo "logit-distill: FATAL: GB_TARGETRUN_ID is not set, so require_progress cannot tell a relaunch from a retry; set require_progress: false to train without the check." >&2
+                exit 1
+              fi
+              "$PYBIN" "$DISTILL_HOME/steps/logit-distill/progress_check.py" \
+                --train-dir "$TRAIN_DIR" --ckpt-dir "$CKPT_DIR" --attempt-id "$ATTEMPT_ID"
+              {%- endif %}
               # Every check below is on the checkpoint the trainer resumes from:
               # gold.py calls train(resume_from_checkpoint=True), and HF's
               # get_last_checkpoint takes the highest checkpoint-<N> in CKPT_DIR. After a
@@ -609,6 +700,11 @@ environment_configs:
                   RESUME_CKPT="$ckpt"
                 fi
               done
+              {%- if train_dir %}
+              if [ -z "$RESUME_CKPT" ]; then
+                echo "logit-distill: train_dir: no checkpoint yet; the trainer starts from step 0"
+              else
+              {%- endif %}
               RESUME_NAME="${RESUME_CKPT##*/}"
               # A ZeRO-3 checkpoint holds one optimizer shard per rank and DeepSpeed
               # cannot load it at another world size. Checked here, on a CPU-cheap
@@ -629,6 +725,15 @@ environment_configs:
               "$PYBIN" "$DISTILL_HOME/steps/logit-distill/align_resume_state.py" --checkpoint "$RESUME_CKPT" \
                 --save-steps '{{ config.gold_config.save_steps }}' \
                 --logging-steps '{{ config.gold_config.logging_steps }}'
+              {%- if train_dir %}
+              if [ -z "$TRAIN_SEEDED" ]; then
+                echo "logit-distill: train_dir: the trainer resumes from $RESUME_NAME, written by an earlier attempt of this build"
+              fi
+              {%- endif %}
+              {%- if resume_src %}
+              {%- if train_dir %}
+              if [ -n "$TRAIN_SEEDED" ]; then
+              {%- endif %}
               echo "logit-distill: resume: $RESUME_COUNT checkpoint(s) seeded; the trainer resumes from $RESUME_NAME"
               # Lineage is the seed: the source's highest complete checkpoint. A higher
               # one here was written by an earlier attempt of this run, from that seed.
@@ -636,6 +741,13 @@ environment_configs:
                 echo "logit-distill: resume: $RESUME_NAME was written by an earlier attempt of this run, after the seed"
               fi
               echo "GB_STEP_METADATA_KEY:resumed_from GB_STEP_METADATA_VALUE:$RESUME_SRC/checkpoint-$SEED_TOP"
+              {%- if train_dir %}
+              fi
+              {%- endif %}
+              {%- endif %}
+              {%- if train_dir %}
+              fi
+              {%- endif %}
               printf '%s\n' "$RESUME_TOKEN" > "$RESUME_SEEDED.tmp.$$"
               mv -f "$RESUME_SEEDED.tmp.$$" "$RESUME_SEEDED"
               trap - EXIT
@@ -648,7 +760,7 @@ environment_configs:
                 seed="$(cat "$RESUME_SEEDED" 2>/dev/null || true)"
                 [ "$seed" = "$RESUME_TOKEN" ] && break
                 if [ "$seed" = "failed:$RESUME_TOKEN" ]; then
-                  echo "logit-distill: FATAL: rank 0 failed to seed $CKPT_DIR; its log says why." >&2
+                  echo "logit-distill: FATAL: rank 0 failed to {{ "prepare" if train_dir else "seed" }} $CKPT_DIR; its log says why." >&2
                   exit 1
                 fi
                 if [ "$waited" -ge 900 ]; then
@@ -741,6 +853,31 @@ environment_configs:
                 WATCH_PID=""
               fi
             }
+            {%- if train_dir %}
+
+            # ── Re-emit on resume ───────────────────────────────────────────
+            # train_dir outlives the attempt, so it can already hold checkpoints an
+            # earlier attempt emitted. gbserver re-checks a downstream export only once
+            # its input binding is delivered again on the retry; undelivered, those
+            # targets are never dispatched and the build still reports SUCCESS
+            # (test/unit/buildrunner/test_checkpoint_consumer_reuse_on_retry.py). So
+            # rank 0 emits every complete one again, at the same path, in step order,
+            # before the trainer starts, and marks it so the watcher does not emit it a
+            # second time. EMITTED_DIR is new per attempt; the only markers already in
+            # it are the seeded rungs resume_emit_seeded: false withholds on purpose.
+            # Runs after the move-aside above, so a half-written one is never emitted.
+            if [ "$NODE_RANK" = "0" ]; then
+              for step in $(for ckpt in "$CKPT_DIR"/checkpoint-*; do
+                if resume_is_checkpoint "$ckpt" && resume_complete "$ckpt"; then
+                  printf '%s\n' "${ckpt##*/checkpoint-}"
+                fi
+              done | sort -n); do
+                [ -e "$EMITTED_DIR/checkpoint-$step" ] && continue
+                touch "$EMITTED_DIR/checkpoint-$step"
+                echo "GB_ARTIFACT_ID:checkpoint_${step} GB_ARTIFACT_PATH:$CKPT_DIR/checkpoint-$step"
+              done
+            fi
+            {%- endif %}
 
             # RANK 0 ONLY, for the same reason the final artifact line below is
             # rank-guarded: the executor streams every node's stdout into one
