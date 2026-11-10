@@ -63,7 +63,7 @@ means the build's own directory, so it resolves in both test modes. Keep
 For BlueVela SLURM, copy
 `configurations/assets/environments/skypilot/slurm/bluevela/environment.yaml`, and
 replace its header comment with one saying it's a build-test copy and where it came
-from. `steps/misc/byoc/skypilot/test-data/slurm-bluevela/` ships such a copy as an
+from. `steps/aux/byoc/skypilot/test-data/slurm-bluevela/` ships such a copy as an
 example, though its own `build.yaml` uses the shared environment.
 
 ## Any other IBM space

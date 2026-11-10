@@ -93,7 +93,7 @@ def _build(tmp_path, *params):
 def _step(target):
     """A target's byoc step config; it must be its only step."""
     (step,) = target["steps"]
-    assert step["step_uri"] == "space://steps/misc/byoc"
+    assert step["step_uri"] == "space://steps/aux/byoc"
     return step["config"]
 
 
