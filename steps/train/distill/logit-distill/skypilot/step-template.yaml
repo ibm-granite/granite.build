@@ -422,6 +422,19 @@ environment_configs:
             {% set train_dir = config.train_dir | default("") | string | trim -%}
             {% set resume_src = config.resume_from_checkpoint_dir | default("") | string | trim -%}
             {% set rollout_stop = config.rollout_stop_file | default("") | string | trim -%}
+            {% set stop_at = config.gold_config.stop_at_step | default(0) | int -%}
+            {% set stop_limit = stop_at if stop_at > 0 else config.gold_config.max_steps | default(0) | int -%}
+            {% set done_check = stop_limit > 0 and (resume_src or train_dir) -%}
+            {% set complete_fn -%}
+            RESUME_SENTINELS="tokenizer.json trainer_state.json"
+            resume_complete() {
+              [ -f "$1/model.safetensors" ] || [ -f "$1/model.safetensors.index.json" ] \
+                || return 1
+              for sentinel in $RESUME_SENTINELS; do
+                [ -f "$1/$sentinel" ] || return 1
+              done
+            }
+            {%- endset -%}
             {% set vllm_server_url = bindings.vllm.binding.state | string | trim if bindings.vllm is defined else "" %}
             # The inputs used to be config keys. A recipe that still sets one would
             # otherwise be ignored silently, so refuse it.
@@ -586,18 +599,16 @@ environment_configs:
             # must not release anyone; the token is built as the clone handshake's is.
             RESUME_SEEDED="$CKPT_DIR/.resume-seeded"
             RESUME_TOKEN="${GB_SKYPILOT_LAUNCH_ID:-}:${SKYPILOT_INTERNAL_JOB_ID:-}:${LSB_JOBID:-${SLURM_JOB_ID:-}}"
+            {%- if done_check %}
+            # Set when the checkpoint the trainer would resume from is already at the
+            # end of training; rank 0 then hands the other ranks "done:<token>".
+            TRAINING_DONE=""
+            {%- endif %}
             # The watcher's completeness test: these bracket HF Trainer's whole save
             # sequence, so a checkpoint the source run was killed while writing is
             # skipped rather than resumed from. Weights are model.safetensors, or the
             # index save_pretrained writes after the last shard of sharded ones.
-            RESUME_SENTINELS="tokenizer.json trainer_state.json"
-            resume_complete() {
-              [ -f "$1/model.safetensors" ] || [ -f "$1/model.safetensors.index.json" ] \
-                || return 1
-              for sentinel in $RESUME_SENTINELS; do
-                [ -f "$1/$sentinel" ] || return 1
-              done
-            }
+            {{ complete_fn }}
             # ZeRO optimizer shards in a checkpoint: one per training rank. The tr
             # strips the padding BSD wc adds, so the count prints the same everywhere.
             resume_shards() {
@@ -641,6 +652,13 @@ environment_configs:
               # workdir, and these with it, is reaped when the target run tears down.
               for ckpt in "$CKPT_DIR"/checkpoint-*; do
                 resume_is_checkpoint "$ckpt" || continue
+                {%- if resume_src %}
+                # Seeded: the source holds a complete one of this name. Its shard count
+                # is the source's, not this run's, so the shard rule does not apply.
+                if resume_complete "$ckpt" && resume_complete "$RESUME_SRC/${ckpt##*/}"; then
+                  continue
+                fi
+                {%- endif %}
                 shards="$(resume_shards "$ckpt")"
                 if resume_complete "$ckpt" \
                   && { [ "$shards" -eq 0 ] || [ "$shards" -ge "$RESUME_WORLD" ]; }; then
@@ -768,6 +786,16 @@ environment_configs:
                 echo "logit-distill: train_dir: the trainer resumes from $RESUME_NAME, written by an earlier attempt of this build"
               fi
               {%- endif %}
+              {%- if done_check %}
+              # Nothing left to train. The trainer's stop_at_step check runs at the end
+              # of a step, and HF trains a step before it looks, so launching it here
+              # would train one step past the limit and save an off-ladder checkpoint
+              # (HF stops at max_steps only on an epoch boundary, for the same reason).
+              if [ "${RESUME_NAME#checkpoint-}" -ge {{ stop_limit }} ]; then
+                TRAINING_DONE=1
+                echo "logit-distill: $RESUME_NAME is at {{ "stop_at_step" if stop_at > 0 else "max_steps" }} {{ stop_limit }} or past it: training is already done; not launching the trainer"
+              fi
+              {%- endif %}
               {%- if resume_src %}
               {%- if train_dir %}
               if [ -n "$TRAIN_SEEDED" ]; then
@@ -786,7 +814,11 @@ environment_configs:
               {%- if train_dir %}
               fi
               {%- endif %}
+              {%- if done_check %}
+              printf '%s%s\n' "${TRAINING_DONE:+done:}" "$RESUME_TOKEN" > "$RESUME_SEEDED.tmp.$$"
+              {%- else %}
               printf '%s\n' "$RESUME_TOKEN" > "$RESUME_SEEDED.tmp.$$"
+              {%- endif %}
               mv -f "$RESUME_SEEDED.tmp.$$" "$RESUME_SEEDED"
               {% if rollout_stop %}trap 'rollout_stop_on_exit $?' EXIT{% else %}trap - EXIT{% endif %}
             else
@@ -797,6 +829,12 @@ environment_configs:
               while :; do
                 seed="$(cat "$RESUME_SEEDED" 2>/dev/null || true)"
                 [ "$seed" = "$RESUME_TOKEN" ] && break
+                {%- if done_check %}
+                if [ "$seed" = "done:$RESUME_TOKEN" ]; then
+                  TRAINING_DONE=1
+                  break
+                fi
+                {%- endif %}
                 if [ "$seed" = "failed:$RESUME_TOKEN" ]; then
                   echo "logit-distill: FATAL: rank 0 failed to {{ "prepare" if train_dir else "seed" }} $CKPT_DIR; its log says why." >&2
                   exit 1
@@ -829,16 +867,17 @@ environment_configs:
             # the recipe declares on this target.
             CKPT_GLOB="checkpoint-"
             CKPT_WATCH_INTERVAL="{{ config.checkpoint_watch_interval_seconds | default(60) }}"
-            # Completeness sentinels: a checkpoint is emitted only once ALL of
-            # these exist. Trainer._save_checkpoint writes in a fixed order —
-            # save_model (config, weights, tokenizer) -> optimizer/scheduler ->
-            # rng_state -> state.save_to_json(trainer_state.json) — so requiring
-            # the weights, the last tokenizer file AND trainer_state.json brackets
-            # the entire write sequence. A plain non-empty check would race it and
-            # hand a half-written model to an export that has already allocated.
-            # Sharded weights (not this 350m pair) would need
-            # model.safetensors.index.json here too.
-            CKPT_SENTINELS="model.safetensors tokenizer.json trainer_state.json"
+            # A checkpoint is emitted only once it is complete, by resume_complete:
+            # the rule the move-aside, the seed and the re-emit use too. Trainer.
+            # _save_checkpoint writes in a fixed order — save_model (config, weights,
+            # tokenizer) -> optimizer/scheduler -> rng_state -> trainer_state.json —
+            # so requiring the weights (or a sharded save's index), the last tokenizer
+            # file AND trainer_state.json brackets the entire write sequence. A plain
+            # non-empty check would race it and hand a half-written model to an
+            # export that has already allocated.
+            {%- if not (resume_src or train_dir) %}
+            {{ complete_fn }}
+            {%- endif %}
             # One marker file per emitted checkpoint. On disk rather than in a
             # shell variable because emit_new_checkpoints also runs inside the
             # backgrounded watcher subshell, whose variables never propagate back
@@ -866,11 +905,7 @@ environment_configs:
                 step="${base#${CKPT_GLOB}}"
                 marker="$EMITTED_DIR/$base"
                 [ -e "$marker" ] && continue
-                complete=1
-                for sentinel in $CKPT_SENTINELS; do
-                  [ -f "$ckpt/$sentinel" ] || { complete=0; break; }
-                done
-                [ "$complete" -eq 1 ] || continue
+                resume_complete "$ckpt" || continue
                 touch "$marker"
                 echo "GB_ARTIFACT_ID:checkpoint_${step} GB_ARTIFACT_PATH:${ckpt}"
               done
@@ -1031,7 +1066,8 @@ environment_configs:
               echo "logit-distill: external vLLM server at $VLLM_HOST:$VLLM_PORT; all $NODES node(s) train"
             else
               TRAINER_NODES=$(( NODES - VLLM_SERVERS ))
-              if [ "$VLLM_SERVERS" -gt 0 ] && [ "$NODE_RANK" -ge "$TRAINER_NODES" ]; then
+              if [ "$VLLM_SERVERS" -gt 0 ] && [ "$NODE_RANK" -ge "$TRAINER_NODES" ]{% if done_check %} \
+                && [ -z "$TRAINING_DONE" ]{% endif %}; then
                 echo "logit-distill: rank $NODE_RANK serving the student under vLLM"
                 # SLURM's pyxis/enroot builds this container in a separate srun
                 # from the one that injects the NVIDIA driver, so the image's
@@ -1062,6 +1098,13 @@ environment_configs:
             # node, health-checks it, plumbs its address in, then generates locally
             # and leaves the server idle. Build d77546a9 did exactly that, logged
             # not one request against the server, and died in the local path.
+            {%- if done_check %}
+            # Training already done: see the resume block. Every rank skips the
+            # trainer; rank 0 still sweeps and emits below.
+            if [ -n "$TRAINING_DONE" ]; then
+              echo "logit-distill: rank $NODE_RANK: training is already done; not launching the trainer"
+            else
+            {%- endif %}
             echo "logit-distill: rank $NODE_RANK/$NODES training ($TRAINER_NODES trainer node(s)), master $MADDR:$MPORT"
             accelerate launch \
               --num_processes $(( TRAINER_NODES * GPUS )) \
@@ -1075,6 +1118,9 @@ environment_configs:
               --output_dir "$CKPT_DIR" \
               --use_vllm={{ 'True' if config.gold_config.vllm_num_servers | int > 0 else 'False' }} \
               $VLLM_ARGS
+            {%- if done_check %}
+            fi
+            {%- endif %}
 
             {% if config.emit_checkpoint_artifacts in _true %}
             # The trainer has exited. Stop the watcher, then sweep once more for

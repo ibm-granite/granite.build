@@ -684,19 +684,19 @@ class TestPerCheckpointArtifacts:
             "GB_ARTIFACT_ID:checkpoint_${step} GB_ARTIFACT_PATH:${ckpt}" in run_script
         )
 
-    def test_a_checkpoint_is_only_emitted_once_it_is_complete(self, run_script):
+    def test_a_checkpoint_is_only_emitted_once_it_is_complete(self):
         """Trainer._save_checkpoint writes save_model -> optimizer/scheduler ->
         rng_state -> trainer_state.json, so requiring the weights, the last tokenizer
         file AND trainer_state.json brackets the whole write sequence. Without
         trainer_state.json the sentinels only bracket save_model, and an export that
         has already allocated a node can open a checkpoint still being written."""
-        sentinels = re.search(r'CKPT_SENTINELS="([^"]+)"', run_script)
+        rendered = TestTrainDir._render(emit_checkpoint_artifacts=True)
+        sentinels = re.search(r'RESUME_SENTINELS="([^"]+)"', rendered)
         assert sentinels
-        assert set(sentinels.group(1).split()) == {
-            "model.safetensors",
-            "tokenizer.json",
-            "trainer_state.json",
-        }
+        assert set(sentinels.group(1).split()) == {"tokenizer.json", "trainer_state.json"}
+        rule = rendered[rendered.index("resume_complete() {") :]
+        rule = rule[: rule.index("\n}\n")]
+        assert '[ -f "$1/model.safetensors" ] || [ -f "$1/model.safetensors.index.json" ]' in rule
 
     def test_each_checkpoint_is_emitted_exactly_once(self, run_script):
         """Markers on disk, not a shell counter: emit_new_checkpoints also runs inside
@@ -1025,6 +1025,28 @@ class TestResumeFromCheckpointDir:
         assert "moved incomplete checkpoint-2500 aside" in result.stdout
         assert "resumes from checkpoint-2250" in result.stdout
 
+    def test_a_seeded_checkpoint_is_not_moved_aside_for_its_shard_count(
+        self, tmp_path
+    ):
+        """On a later attempt the move-aside meets the seeded checkpoints again.
+        One whose name is complete in the source carries the source's shard count,
+        not this run's, and is kept rather than logged as incomplete."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 2000, shards=9)
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        self._checkpoint(dst, 2000, shards=9)
+        self._checkpoint(dst, 2250)
+        self._checkpoint(dst, 2500, shards=9)
+
+        result, _ = self._run(tmp_path, src)
+
+        assert result.returncode == 0, result.stderr
+        assert "moved incomplete checkpoint-2000" not in result.stdout
+        assert (dst / "checkpoint-2000").is_dir()
+        # Not seeded, so the shard rule still applies to this run's own.
+        assert "moved incomplete checkpoint-2500 aside" in result.stdout
+        assert "resumes from checkpoint-2250" in result.stdout
+
     def test_sharded_weights_are_complete(self, tmp_path):
         """save_pretrained's sharded layout has no model.safetensors, only shards
         and the index it writes after them; such a checkpoint is seeded and
@@ -1319,6 +1341,14 @@ class TestSlurmExecutorEnv:
 # The run script as the template rendered it before train_dir existed (f08603fb),
 # keyed by case. A flat file, not a directory: publish-step copies every directory
 # under test/ as a per-cluster build test.
+#
+# The baseline is f08603fb, a commit on this branch, and NOT PR 540's head, on purpose:
+# B2 and the cleanup deliberately changed the script before B4 added train_dir, so a
+# byte-for-byte match with PR 540 is impossible. The goldens are the script as it stood
+# just before the train_dir change, and pin that nothing train_dir (or rollout_stop_file)
+# adds leaks into a render that does not set it. Regenerated since only for changes that
+# legitimately alter the no-train_dir render, each named in its commit: the shared
+# completeness rule in the watcher, and the move-aside's skip for seeded checkpoints.
 _GOLDEN = Path(__file__).resolve().parent / "golden_run_scripts.json"
 
 
@@ -1332,7 +1362,7 @@ class TestTrainDir:
     _TRAIN = "/w/run/b1/train"
 
     @staticmethod
-    def _render(_vllm_url="", **overrides):
+    def _render(_vllm_url="", _gold=None, **overrides):
         from jinja2 import Template
 
         step = yaml.safe_load(_STEP.read_text())
@@ -1341,6 +1371,7 @@ class TestTrainDir:
         ]
         config = dict(step["config"])
         config.update(overrides)
+        config["gold_config"] = dict(config["gold_config"], **(_gold or {}))
         return Template(script).render(config=config, bindings=_bindings(_vllm_url))
 
     def test_defaults_preserve_todays_behaviour(self, step):
@@ -1375,8 +1406,9 @@ class TestTrainDir:
     )
     def test_empty_train_dir_renders_byte_identical(self, golden, overrides, vllm):
         """The goldens were rendered from the template before train_dir existed
-        (git show f08603fb:step-template.yaml), so every recipe that does not set it
-        runs exactly the script it ran before."""
+        (git show f08603fb:step-template.yaml; see _GOLDEN above for the two later,
+        deliberate changes), so a recipe that does not set it runs the script it ran
+        before."""
         expected = json.loads(_GOLDEN.read_text())[golden]
         assert self._render(vllm, **overrides) == expected
         assert self._render(vllm, train_dir="", **overrides) == expected
@@ -1808,3 +1840,200 @@ class TestRolloutStopFile:
         result = run(body + "exit 0\n")
         assert result.returncode == 0, result.stderr
         assert not stop.exists()
+
+
+class TestOneCompletenessRule:
+    """The watcher, the re-emit, the move-aside and the progress check all call a
+    checkpoint complete by one rule: weights (model.safetensors, or the index a
+    sharded save writes after its last shard), tokenizer.json, trainer_state.json."""
+
+    @staticmethod
+    def _sharded(root, step):
+        ckpt = root / f"checkpoint-{step}"
+        ckpt.mkdir(parents=True)
+        for name in (
+            "model-00001-of-00002.safetensors",
+            "model.safetensors.index.json",
+            "tokenizer.json",
+            "trainer_state.json",
+        ):
+            (ckpt / name).write_text("x")
+        return ckpt
+
+    def _sweep(self, tmp_path, **overrides):
+        rendered = TestTrainDir._render(emit_checkpoint_artifacts=True, **overrides)
+        start = rendered.index('CKPT_GLOB="checkpoint-"')
+        end = rendered.index("watch_checkpoints() {")
+        head = ""
+        if "RESUME_SRC=" in rendered:
+            head = rendered[
+                rendered.index('RESUME_SRC="') : rendered.index(
+                    'if [ "$NODE_RANK" = "0" ]; then', rendered.index('RESUME_SRC="')
+                )
+            ]
+        ckpts = tmp_path / "ckpts"
+        self._sharded(ckpts, 500)
+        half = ckpts / "checkpoint-1000"
+        half.mkdir()
+        (half / "model-00001-of-00002.safetensors").write_text("x")
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                "set -eu\n" + head + rendered[start:end] + "emit_new_checkpoints\n",
+            ],
+            env={"PATH": "/usr/bin:/bin", "CKPT_DIR": str(ckpts)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        return re.findall(r"GB_ARTIFACT_ID:(checkpoint_\d+)", result.stdout)
+
+    def test_the_watcher_emits_a_sharded_checkpoint(self, tmp_path):
+        assert self._sweep(tmp_path) == ["checkpoint_500"]
+
+    def test_the_watcher_emits_a_sharded_checkpoint_on_resume(self, tmp_path):
+        assert self._sweep(tmp_path, resume_from_checkpoint_dir="/src") == [
+            "checkpoint_500"
+        ]
+
+    def test_the_watcher_calls_the_shared_rule(self):
+        for overrides in ({}, {"resume_from_checkpoint_dir": "/src"}, {"train_dir": "/t"}):
+            rendered = TestTrainDir._render(emit_checkpoint_artifacts=True, **overrides)
+            assert rendered.count("resume_complete() {") == 1, overrides
+            body = rendered[rendered.index("emit_new_checkpoints() {") :]
+            body = body[: body.index("\n}\n")]
+            assert 'resume_complete "$ckpt" || continue' in body
+            assert "CKPT_SENTINELS" not in rendered
+
+
+class TestTrainingAlreadyDone:
+    """A retry that resumes from checkpoint-<stop_at_step> (or -<max_steps>) has
+    nothing left to train. _StopAtStepCallback checks in on_step_end, and HF runs a
+    step before it checks should_training_stop, so launching the trainer would
+    train one more step and save an off-ladder checkpoint. Rank 0 skips accelerate
+    instead, still re-emits and emits, and releases the other ranks."""
+
+    def _fragment(self, train_dir, **overrides):
+        """TRAIN_DIR through the re-emit, then the script from the trainer launch
+        guard to its end, with `accelerate` stubbed."""
+        rendered = TestTrainDir._render(
+            train_dir=str(train_dir), emit_checkpoint_artifacts=True, **overrides
+        )
+        start = rendered.index('TRAIN_DIR="')
+        end = rendered.index("# RANK 0 ONLY, for the same reason")
+        launch = rendered.index("# Training already done: see the resume block.")
+        return (
+            "set -eu\n"
+            # The stub trainer records that it ran and saves one more checkpoint.
+            + "accelerate() {\n  touch \"$LAUNCHED\"\n"
+            + '  c="$CKPT_DIR/checkpoint-99"; mkdir -p "$c"\n'
+            + '  for f in model.safetensors tokenizer.json trainer_state.json; do'
+            + ' touch "$c/$f"; done\n}\n'
+            + rendered[start:end]
+            + "WATCH_PID=''\n"
+            + rendered[launch:]
+        )
+
+    def _exec(self, tmp_path, train_dir, rank="0", **overrides):
+        home = tmp_path / "distill-home"
+        if not home.exists():
+            (home / "steps").mkdir(parents=True)
+            (home / "steps" / "logit-distill").symlink_to(_STEP.parent / "src")
+        script = self._fragment(train_dir, **overrides)
+        if rank != "0":
+            script = script.replace("-ge 900 ]", "-ge 1 ]").replace("sleep 5", "sleep 1")
+        return subprocess.run(
+            ["bash", "-c", script],
+            env={
+                "PATH": "/usr/bin:/bin",
+                "NODE_RANK": rank,
+                "NODES": "2",
+                "GPUS": "8",
+                "VLLM_SERVERS": "0",
+                "TRAINER_NODES": "2",
+                "MIP": "10.0.0.1",
+                "MPORT": "29500",
+                "MADDR": "10.0.0.1",
+                "CODE_DIR": "/opt/distill",
+                "CFG": str(tmp_path / "cfg.yaml"),
+                "VLLM_ARGS": "",
+                "CONFIG_NAME": "gold_node2",
+                "PYBIN": sys.executable,
+                "DISTILL_HOME": str(home),
+                "GB_SKYPILOT_LAUNCH_ID": "launch-tr-1",
+                "GB_TARGETRUN_ID": "tr-1",
+                "LAUNCHED": str(tmp_path / "launched"),
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+            cwd=tmp_path,
+        )
+
+    def _train(self, tmp_path, *steps):
+        train = tmp_path / "train"
+        for step in steps:
+            TestTrainDir._checkpoint(train / "checkpoints" / "gold_node2", step)
+        return train
+
+    @pytest.mark.parametrize(
+        "gold,top",
+        [({"stop_at_step": 10}, 10), ({"stop_at_step": 10}, 15), ({"max_steps": 15}, 15)],
+    )
+    def test_rank_zero_skips_the_trainer_and_still_emits(self, tmp_path, gold, top):
+        train = self._train(tmp_path, 5, top)
+        result = self._exec(tmp_path, train, _gold=dict(gold, save_steps=5))
+        assert result.returncode == 0, result.stderr
+        assert not (tmp_path / "launched").exists(), "the trainer was launched"
+        assert "training is already done; not launching the trainer" in result.stdout
+        ids = re.findall(r"GB_ARTIFACT_ID:(\S+)", result.stdout)
+        assert ids == ["checkpoint_5", f"checkpoint_{top}", "checkpoint"]
+        ckpts = train / "checkpoints" / "gold_node2"
+        assert (ckpts / ".resume-seeded").read_text().strip() == "done:launch-tr-1::"
+
+    def test_below_the_limit_the_trainer_runs(self, tmp_path):
+        train = self._train(tmp_path, 5)
+        result = self._exec(tmp_path, train, _gold={"stop_at_step": 10})
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / "launched").exists()
+        assert "already done" not in result.stdout
+        ckpts = train / "checkpoints" / "gold_node2"
+        assert (ckpts / ".resume-seeded").read_text().strip() == "launch-tr-1::"
+
+    def test_a_first_attempt_runs_the_trainer(self, tmp_path):
+        result = self._exec(tmp_path, tmp_path / "train", _gold={"stop_at_step": 10})
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / "launched").exists()
+
+    def test_a_worker_exits_cleanly_when_rank_zero_is_done(self, tmp_path):
+        train = self._train(tmp_path, 10)
+        assert self._exec(tmp_path, train, _gold={"stop_at_step": 10}).returncode == 0
+        (tmp_path / "launched").unlink(missing_ok=True)
+        result = self._exec(tmp_path, train, rank="1", _gold={"stop_at_step": 10})
+        assert result.returncode == 0, result.stderr
+        assert "training is already done" in result.stdout
+        assert not (tmp_path / "launched").exists()
+        assert "GB_ARTIFACT_ID:" not in result.stdout
+
+    def test_not_rendered_without_a_limit(self):
+        rendered = TestTrainDir._render(train_dir="/t", emit_checkpoint_artifacts=True)
+        assert "TRAINING_DONE" not in rendered
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"train_dir": "/t"},
+            {"resume_from_checkpoint_dir": "/src"},
+            {"train_dir": "/t", "rollout_stop_file": "/s", "emit_checkpoint_artifacts": True},
+        ],
+    )
+    def test_the_rendered_script_is_valid_shell(self, overrides):
+        rendered = TestTrainDir._render(_gold={"stop_at_step": 10}, **overrides)
+        assert "TRAINING_DONE" in rendered
+        result = subprocess.run(
+            ["bash", "-n"], input=rendered, capture_output=True, text=True, check=False
+        )
+        assert result.returncode == 0, result.stderr

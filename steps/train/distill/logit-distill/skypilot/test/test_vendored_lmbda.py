@@ -157,6 +157,17 @@ class TestStopAtStep:
         )
         assert not control.should_training_stop and not control.should_save
 
+    def test_it_has_no_on_train_begin_stop(self):
+        """Not a gap to close here. HF (transformers 5.8.0, Trainer._run_epoch) checks
+        should_training_stop only after a step has trained, so setting it in
+        on_train_begin would still train the first resumed step, and this callback's
+        on_step_end would then save it off the ladder. The logit-distill step instead
+        skips the trainer when it would resume at or past stop_at_step
+        (TestTrainingAlreadyDone in test_step_template.py)."""
+        cls = _class(_tree(_TRAINER), "_StopAtStepCallback")
+        names = {n.name for n in cls.body if isinstance(n, ast.FunctionDef)}
+        assert names == {"__init__", "on_step_end"}
+
     def test_the_trainer_registers_it_when_set(self):
         cls = _class(_tree(_TRAINER), "CustomGOLDTrainer")
         init = ast.unparse(_method_node(cls, "__init__"))

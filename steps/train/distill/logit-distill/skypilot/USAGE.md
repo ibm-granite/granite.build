@@ -131,7 +131,7 @@ harmless where the gap doesn't exist — see `steps/train/distill/images/gpu/REA
 | `lmbda_init` | number | Starting `lmbda` for the linear schedule, in `[0.0, 1.0]`. Default: `0.0`. |
 | `lmbda_ramp_start_step` | integer | Linear schedule only: the optimizer step the ramp starts at; `lmbda` is `lmbda_init` before it. Lets a resumed run ramp over its own steps. Refused with a constant schedule. Default: `0`. |
 | `lmbda_ramp_steps` | integer | Linear schedule only: the ramp's length in steps; `lmbda` holds after it. `0` ramps until `max_steps`. Refused with a constant schedule. Default: `0`. |
-| `stop_at_step` | integer | Save and end training at this step, leaving `max_steps` (and the LR schedule built from it) unchanged: what a resume of a longer run needs to train a fixed number of extra steps on its original schedule. Refused past a positive `max_steps`. `0` disables. Default: `0`. |
+| `stop_at_step` | integer | Save and end training at this step, leaving `max_steps` (and the LR schedule built from it) unchanged: what a resume of a longer run needs to train a fixed number of extra steps on its original schedule. Refused past a positive `max_steps`. `0` disables. A retry that resumes from a checkpoint at or past it does not launch the trainer; see [Already at the limit](#already-at-the-limit). Default: `0`. |
 | `min_completion_length` | integer | vLLM `min_tokens` for the student's rollout; `> 0` blocks the immediate-EOS mode collapse. Needs `vllm_num_servers > 0`. The trainer sends it as `min_tokens` in every vLLM request (and as `SamplingParams.min_tokens` in colocate mode). Default: `0`. |
 
 ### Checkpoint emission and resume (top-level `config`)
@@ -431,8 +431,9 @@ boundary and so carries none.
 
 With `emit_checkpoint_artifacts: true`, a background watcher on rank 0 polls the checkpoint
 directory during training and emits `checkpoint_<N>` per HF `checkpoint-<N>` directory as
-soon as it is completely written (`model.safetensors`, `tokenizer.json` and
-`trainer_state.json` all present). A recipe that declares matching `checkpoint_<N>` outputs
+soon as it is completely written (`model.safetensors` or, for sharded weights,
+`model.safetensors.index.json`, plus `tokenizer.json` and `trainer_state.json`: the same
+rule the move-aside, the seed, the re-emit and the progress check use). A recipe that declares matching `checkpoint_<N>` outputs
 can then export and evaluate rung N while the run is still training — see
 `recipes/granite4-350m/lsf/distill-checkpoint-eval`, where that turns ~36 GPU-h of eval from
 a serial tail into work overlapped with a 13-hour epoch. After the trainer exits, the step
@@ -478,6 +479,9 @@ checkpoint. Hardlinks, not copies: no data is duplicated and the source is never
   with it, is reaped when the target run tears down. This all happens only when
   `resume_from_checkpoint_dir` or `train_dir` is set: a retry of a run with neither goes
   straight to `gold.py`'s own resume.
+- **A seeded checkpoint is never moved aside for its shard count.** On a later attempt the
+  move-aside meets the seeded checkpoints again; one whose name is complete in the source
+  carries the source's ZeRO shards, so the shard rule is skipped for it.
 - **No complete checkpoint is an error,** not a fresh start: starting from step 0 would
   silently spend the whole schedule again.
 - **With `emit_checkpoint_artifacts` on,** every seeded checkpoint is emitted as
@@ -485,6 +489,20 @@ checkpoint. Hardlinks, not copies: no data is duplicated and the source is never
   targets re-run — which is also what keeps them from waiting forever on a rung this run never
   writes. Set `resume_emit_seeded: false` when the stopped run already exported and evaluated
   the seeded rungs and the relaunch's ladder names only the rungs still to come.
+
+### Already at the limit
+
+With `resume_from_checkpoint_dir` or `train_dir` set and a positive `stop_at_step` (or,
+when that is `0`, a positive `max_steps`), rank 0 compares the checkpoint the trainer
+would resume from against that limit. At or past it there is nothing left to train:
+the trainer's `stop_at_step` check runs at the end of a step and HF trains a step before
+looking (and stops at `max_steps` on resume only on an epoch boundary), so launching it
+would train one step past the limit and save an off-ladder checkpoint. Instead rank 0
+logs `logit-distill: checkpoint-<N> is at stop_at_step <S> or past it: training is
+already done; not launching the trainer`, still re-emits and emits as usual, and hands
+the other ranks `done:<token>`; every rank, the in-allocation vLLM nodes included, skips
+`accelerate launch` and exits 0. A retry after a run that saved its last checkpoint and
+then failed (in export, say, or in teardown) therefore finishes at once.
 
 ### Stable train_dir
 
