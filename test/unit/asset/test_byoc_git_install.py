@@ -40,9 +40,9 @@ from gbserver.utils.template import fill_template
 _REPO = pathlib.Path(__file__).resolve().parents[3]
 _TEMPLATE = _REPO / "steps" / "misc" / "byoc" / "skypilot" / "step-template.yaml"
 _SHA = "0123456789abcdef0123456789abcdef01234567"
-_BASH = shutil.which("bash")
+_BASH = shutil.which("bash") or ""
 
-pytestmark = pytest.mark.skipif(_BASH is None, reason="bash not available")
+pytestmark = pytest.mark.skipif(not _BASH, reason="bash not available")
 
 # Logs one line per call (tool path, then tab-separated args) and acts out just
 # enough of each tool for setup/run to continue.
@@ -113,7 +113,9 @@ class _Node:
         self.git_stub = tmp_path / "git-stub"
         self.write(self.git_stub, _GIT)
         for name in _REAL:
-            (self.bin / name).symlink_to(shutil.which(name))
+            real = shutil.which(name)
+            assert real, f"{name} not on PATH"
+            (self.bin / name).symlink_to(real)
         self.write(self.bin / "id", _ID)
         stubs = {"git": _GIT, "conda": _CONDA}
         for name in tools:
