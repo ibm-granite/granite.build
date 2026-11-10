@@ -21,7 +21,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
@@ -514,68 +514,9 @@ ENVIRONMENT_FILES_REGISTRY: Dict[str, EnvironmentFilesConfig] = {
 }
 
 
-# Process-level cache of the derived environment URI, keyed by public-space repo
-# URL. Only a *stable* derivation is cached (a git result with a config branch, or
-# a file:// path); a branchless git result / failures / empties are not, so a later
-# request retries once the gbspace-config branch / token is healthy. Lock-free
-# write is fine: dict assignment is atomic, worst case is a redundant re-probe.
-_DERIVED_ENV_FOR_FILES_URI_CACHE: Dict[str, str] = {}
-
-
 def get_supported_env_for_files_uri() -> str:
-    """Derive the supported environment's environment.yaml asset URI.
-
-    Converts ``PUBLIC_SPACE_GIT_URI`` (the public space config repo) into a
-    ``git+ssh://…[@<config-branch>]#subdirectory=environments/<env>`` asset URI
-    via ``GitURI.get_gb_space_config_uri`` (the same conversion the build path
-    uses) and appends the env subdirectory. There is no override; the URI is
-    always derived, so per-deployment differences come from the public space.
-
-    Returns ``""`` (→ 503 in the caller) whenever a URI can't be produced: no
-    ``PUBLIC_SPACE_GIT_URI`` (e.g. STANDALONE), or the GitHub config-branch probe
-    failing — the exception is caught so a transient GitHub problem reads as "not
-    configured", not a 500.
-
-    Lazy (not evaluated at import) to avoid a cycle: git.py imports
-    ``GBSERVER_GITHUB_TOKEN`` from this module. See the cache note above for what
-    is / isn't memoized.
-    """
-    if not PUBLIC_SPACE_GIT_URI:
-        return ""
-    cached = _DERIVED_ENV_FOR_FILES_URI_CACHE.get(PUBLIC_SPACE_GIT_URI)
-    if cached is not None:
-        return cached
-    # Function-local import: git.py imports from this module (cycle otherwise).
-    from requests import RequestException
-
-    from gbcommon.uri.git import GitURI
-    from gbcommon.uri.uri import URI
-    from gbserver.utils.logger import get_logger
-
-    try:
-        base = GitURI.get_gb_space_config_uri(PUBLIC_SPACE_GIT_URI)
-    except (ValueError, RuntimeError, RequestException) as e:
-        # is_branch_present raises ValueError (401) / RuntimeError (non-404) /
-        # requests error (network); degrade those to 503, not 500. Anything else
-        # is an unexpected bug and propagates. Not cached — retry on recovery.
-        get_logger(__name__).warning(
-            "failed to derive files-env URI from public space %r: %s",
-            PUBLIC_SPACE_GIT_URI,
-            e,
-        )
-        return ""
-    if not base:
-        return ""
-    # get_gb_space_config_uri never adds a fragment (only `@<branch>` on a match),
-    # so append_path always creates the `#subdirectory=` fragment here.
-    uri = URI.get_uri(base)
-    uri.append_path(f"environments/{SUPPORTED_ENV_FOR_FILES}")
-    resolved = str(uri)
-    # Cache only a stable result (file:// path, or git with a config branch); a
-    # branchless git URI points at the default branch and is left uncached.
-    if base.startswith("file://") or "@" in base.split("#", 1)[0]:
-        _DERIVED_ENV_FOR_FILES_URI_CACHE[PUBLIC_SPACE_GIT_URI] = resolved
-    return resolved
+    """The files API's environment.yaml asset URI, derived from the public space."""
+    return get_space_environment_uri(PUBLIC_SPACE_GIT_URI, SUPPORTED_ENV_FOR_FILES)
 
 
 ENV_VAR_GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT = (
@@ -1177,6 +1118,54 @@ PUBLIC_SPACE_NAME = "public"
 SPACE_REPO_CONFIG_BRANCH_NAME = GB_ENVIRONMENT_CONFIG.space_config_branch_name
 SPACE_REPO_BUILD_BRANCH_NAME = "main"  # tentative- may move to a different branch name
 PUBLIC_SPACE_GIT_URI = GB_ENVIRONMENT_CONFIG.public_space_git_uri
+
+
+# Derived space environment URIs, keyed by (space repo URL, env path). Only stable
+# results are cached (file://, or git with a config branch), so a branchless or
+# failed derivation is retried once the config branch or token is healthy.
+_SPACE_ENV_URI_CACHE: Dict[Tuple[str, str], str] = {}
+
+
+def get_space_environment_uri(space_git_uri: str, env_path: str) -> str:
+    """Asset URI of ``environments/<env_path>`` in a space's config repo.
+
+    Uses the same conversion as the build path (``GitURI.get_gb_space_config_uri``).
+    Returns ``""`` when no URI can be produced (no repo, or the GitHub branch probe
+    failed), so callers can answer 503 rather than 500. Imports are function-local
+    because git.py imports this module.
+    """
+    if not space_git_uri:
+        return ""
+    cache_key = (space_git_uri, env_path)
+    cached = _SPACE_ENV_URI_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    from requests import RequestException
+
+    from gbcommon.uri.git import GitURI
+    from gbcommon.uri.uri import URI
+    from gbserver.utils.logger import get_logger
+
+    try:
+        base = GitURI.get_gb_space_config_uri(space_git_uri)
+    except (ValueError, RuntimeError, RequestException) as e:
+        get_logger(__name__).warning(
+            "failed to derive environments/%s URI from %r: %s",
+            env_path,
+            space_git_uri,
+            e,
+        )
+        return ""
+    if not base:
+        return ""
+    uri = URI.get_uri(base)
+    uri.append_path(f"environments/{env_path}")
+    resolved = str(uri)
+    if base.startswith("file://") or "@" in base.split("#", 1)[0]:
+        _SPACE_ENV_URI_CACHE[cache_key] = resolved
+    return resolved
+
+
 PUBLIC_SPACE_LH_NAMESPACE = f"{GRANITE_DOT_BUILD_PARENT_NAMESPACE}.{GB_ENVIRONMENT_CONFIG.public_space_lh_subnamespace}"
 
 # Leaving the below contants for now as they seem to be used by tests

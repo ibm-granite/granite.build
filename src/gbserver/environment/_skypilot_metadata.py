@@ -91,6 +91,18 @@ _METADATA_FIELDS = (
 )
 
 
+# Public read side of the comment, for consumers that parse it back (the
+# environment queue API): the keys a tag can carry, the per-value cap, and the
+# sanitizer, so a reader compares in the writer's own spelling.
+COMMENT_KEYS = tuple(meta.comment_key for meta in _METADATA_FIELDS)
+MAX_COMMENT_VALUE_LEN = _MAX_COMMENT_VALUE_LEN
+
+
+def comment_value(value: str) -> str:
+    """Return ``value`` as it would appear in a comment tag (see ``_comment_value``)."""
+    return _comment_value(value)
+
+
 def tracking_metadata(run_metadata: Mapping, launch_kwargs: Mapping) -> Dict:
     """Return a copy of ``run_metadata`` with ``gb_env`` and ``space_name`` added.
 

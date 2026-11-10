@@ -33,6 +33,7 @@ from gbserver.api.autotunex_proxy import AUTOTUNEX_URL
 from gbserver.api.autotunex_proxy import router as autotunex_router
 from gbserver.api.builds import builds_api
 from gbserver.api.environment_files import files_api
+from gbserver.api.environment_queue import queue_api
 from gbserver.api.lineage import lineage_api
 from gbserver.api.logs import logs_api
 from gbserver.api.node_health import node_health_api
@@ -86,6 +87,7 @@ def read_root():
 enable_api(root_api, f"{API_BASE_PATH}/auth", auth_api, advertise_auth=False)
 enable_api(root_api, f"{API_BASE_PATH}/artifacts", artifacts_api)
 enable_api(root_api, f"{API_BASE_PATH}/builds", builds_api)
+enable_api(root_api, f"{API_BASE_PATH}/environments", queue_api)
 enable_api(root_api, f"{API_BASE_PATH}/files", files_api)
 enable_api(root_api, f"{API_BASE_PATH}/lineage", lineage_api)
 enable_api(root_api, f"{API_BASE_PATH}/logs", logs_api)
