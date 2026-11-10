@@ -56,7 +56,14 @@ def _save_other_singletons() -> list:
     saved = []
     for module_name, name, unset in _OTHER_SINGLETONS:
         module = sys.modules.get(module_name)
-        saved.append((module_name, name, getattr(module, name, unset)))
+        if module is None:
+            saved.append((module_name, name, unset))
+            continue
+        # Fail loudly if a global was renamed: restoring it would silently do nothing.
+        assert hasattr(module, name), (
+            f"{module_name}.{name} no longer exists; update _OTHER_SINGLETONS in {__file__}"
+        )
+        saved.append((module_name, name, getattr(module, name)))
     return saved
 
 
@@ -107,7 +114,9 @@ def _guard_real_gb_home_db(request):
         after = _real_db_tables(db_path)
     except sqlite3.Error:
         return
-    leaked = sorted(after - before)
+    # gb_* are the real admin tables; a standalone server sharing this db may
+    # create them lazily during the run, which is not a test leak.
+    leaked = sorted(t for t in after - before if not t.startswith("gb_"))
     created = not existed and db_path.exists()
     assert not leaked and not created, (
         f"Unit tests wrote to the real SQLite db {db_path}: "
@@ -136,8 +145,18 @@ def _isolate_gb_home_dir(tmp_path_factory, monkeypatch):
     for name, value in saved.items():
         setattr(singleton_storage, name, value)
     _restore_other_singletons(saved_others)
-    # Each test gets its own db path and so its own cached engine; dispose them so
-    # pooled connections don't accumulate until atexit. This also disposes Postgres
-    # engines under live-storage tests (and logs INFO lines per engine); that is
-    # expected and harmless, they are recreated on demand.
-    get_singleton_engine_cache().dispose_all()
+    # Each test gets its own db path and so its own cached engine; dispose those so
+    # pooled connections don't accumulate until atexit. Other engines (e.g. Postgres
+    # pools under live-storage tests) are kept, so they don't reconnect every test.
+    get_singleton_engine_cache().dispose_matching(
+        lambda engine: _is_under(engine.url.database, home)
+    )
+
+
+def _is_under(database: str | None, home: Path) -> bool:
+    if not database:
+        return False
+    try:
+        return Path(database).resolve().is_relative_to(home.resolve())
+    except (OSError, ValueError):
+        return False

@@ -92,7 +92,7 @@ class TestStandaloneCommand(AbstractSingletonStorageUsingTest):
     def test_standalone_starts_and_serves_api(self):
         """Start the standalone server in a background thread and verify the REST API responds."""
         # Environment vars MUST be set before importing _run_standalone
-        # because the standalone init (run by root_api.create_app) reads them.
+        # because the standalone init (run by app_factory.create_app) reads them.
         env = {
             "GBSERVER_METADATA_STORAGE": "sqlite",
             "GBSERVER_DEFAULT_BUILDRUNNER_TYPE": "thread",

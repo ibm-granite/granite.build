@@ -76,6 +76,12 @@ class GraniteBuildServerCLI(click.Group):
         return mod.cli
 
 
+# Set once the root group below has run in this process. The uvicorn app factory
+# checks it so it doesn't re-run init (and reset --log-level/--log-file to defaults)
+# in a process that already ran the CLI, e.g. standalone or single-worker rest-server.
+process_initialized = False
+
+
 @click.command(cls=GraniteBuildServerCLI, context_settings=CONTEXT_SETTINGS)
 @click.option(
     "--log-level",
@@ -111,6 +117,8 @@ def gbserver(
     """Granite.Build command line interface."""
     # NOTE: The server_runtime_config flag here is a placeholder to avoid click parsing errors.
     # We process server_runtime_config earlier in the gbserverenvconfig.py
+    global process_initialized
+    process_initialized = True
     ctx.log_level = log_level.lower()
     if log_file != "":
         ctx.log_path = Path(log_file).resolve()

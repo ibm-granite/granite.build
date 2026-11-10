@@ -44,22 +44,13 @@ from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.artifact import ArtifactType
+from libgbtest.utils import drop_test_table
 
 # Patch only tenacity's reference to the time module, so the global time.sleep
 # (and any other thread using it) is untouched.
 _TENACITY_TIME = "tenacity.nap.time"
 
 logger = logging.getLogger(__name__)
-
-
-def _drop(storage):
-    # Each test has its own temp db (see _isolate_gb_home_dir), so a failed drop is harmless.
-    try:
-        storage.delete_table()
-    except Exception as e:
-        logger.warning(
-            f"Ignoring failed table deletion on {storage.get_table_name()}: {e}"
-        )
 
 
 @pytest.fixture
@@ -69,7 +60,7 @@ def space_storage():
     )
     storage.add(StoredSpace(name="s1", git_repo_uri="file:///s1"))
     yield storage
-    _drop(storage)
+    drop_test_table(storage)
 
 
 @pytest.fixture
@@ -89,7 +80,7 @@ def artifact_registry():
             )
         )
     yield registry
-    _drop(registry)
+    drop_test_table(registry)
 
 
 def _fail_then_succeed(storage, failures):

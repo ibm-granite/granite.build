@@ -129,7 +129,7 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
         item = storage.get_by_uuid(item0.uuid)
         assert item is not None, "Stored item was not retrieved from storage"
         # print(f"diffs={get_differing_attributes(item0.build_event,item.build_event)}")
-        assert self._verify_equal(item, item0), "Stored item not equal"
+        assert self._verify_equal_strict(item, item0), "Stored item not equal"
 
         # add 2nd item.
         item1 = self._get_test_item(1)
@@ -156,8 +156,8 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
         assert uuids == [item2.uuid, item3.uuid]
         items: list = storage.get_by_uuid(uuids)
         assert len(items) == 2
-        assert self._verify_equal(items[0], item2), "Did not get back expected item 0"
-        assert self._verify_equal(items[1], item3), "Did not get back expected item 1"
+        assert self._verify_equal_strict(items[0], item2), "Did not get back expected item 0"
+        assert self._verify_equal_strict(items[1], item3), "Did not get back expected item 1"
 
     def test_get_by_uuid(self):
 
@@ -532,18 +532,32 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
             return None
         return columns
 
-    def _verify_equal(self, result, expected):
-        """Enables refined object comparison, for example, to allow ignoring updated_time field, when it is present."""
+    def _unstamp(self, result, expected):
+        """Blank the database-stamped fields on copies of both sides so they don't affect equality."""
         stamped = [
             f
             for f in self._db_stamped_fields
             if hasattr(result, f) and hasattr(expected, f)
         ]
         if stamped:
-            # The database stamps these on write, so blank them on copies of both sides.
             unstamped = dict.fromkeys(stamped, "")
             result = result.model_copy(update=unstamped)
             expected = expected.model_copy(update=unstamped)
+        return result, expected
+
+    def _verify_equal_strict(self, result, expected):
+        """Exact comparison (updated_time included), ignoring only the database-stamped fields."""
+        result, expected = self._unstamp(result, expected)
+        is_equal = result == expected
+        if not is_equal:
+            logger.error(
+                f"Differences found: {get_differing_attributes(result, expected)}"
+            )
+        return is_equal
+
+    def _verify_equal(self, result, expected):
+        """Enables refined object comparison, for example, to allow ignoring updated_time field, when it is present."""
+        result, expected = self._unstamp(result, expected)
         if hasattr(result, UPDATED_TIME_FIELD_NAME):
             # set the updated_time fields to be the same, effectively ignoring them.
             result_updated_time = getattr(result, UPDATED_TIME_FIELD_NAME)
@@ -774,6 +788,7 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
                 UPDATED_TIME_FIELD_NAME,
                 CREATED_TIME_FIELD_NAME,
                 UUID_COLUMN_NAME,
+                *self._db_stamped_fields,
             ] and not name.startswith("_"):
                 updates[name] = value
 
@@ -803,7 +818,7 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
             ), "Updated attribute {name} did not get assigned value {value}"
 
         item = storage.get_by_uuid(item0.uuid)
-        assert self._verify_equal(
+        assert self._verify_equal_strict(
             item, updated_item0
         ), "Reading item from db did not give the updated item"
 

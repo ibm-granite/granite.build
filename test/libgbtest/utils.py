@@ -248,13 +248,18 @@ class AbstractSingletonStorageUsingTest(AbstractReadonlySingletonStorageUsingTes
 
     def __clear_storage(self, storage: IItemStorage):
         assert isinstance(storage, IItemStorage)
-        assert not storage.get_table_name() in _SACRED_TABLE_NAMES
-        try:
-            storage.delete_table()
-        except Exception as e:
-            logger.warning(
-                f"Ignoring failed table deletion on table {storage.get_table_name()}: {e}"
-            )
+        drop_test_table(storage)
+
+
+def drop_test_table(storage: IItemStorage) -> None:
+    """Drop a test-only table, ignoring failures; refuses the real admin tables."""
+    assert not storage.get_table_name() in _SACRED_TABLE_NAMES
+    try:
+        storage.delete_table()
+    except Exception as e:
+        logger.warning(
+            f"Ignoring failed table deletion on table {storage.get_table_name()}: {e}"
+        )
 
 
 public_space = StoredSpace(
