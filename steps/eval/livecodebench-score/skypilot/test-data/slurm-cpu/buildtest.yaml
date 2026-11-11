@@ -3,7 +3,7 @@
 # steps/README.md).
 #
 # THREE targets on the local Docker SLURM cluster; see the sibling build.yaml (and
-# ../fixture/make_fixture.py, which generates it) for what SUCCESS proves. `check`
+# ../../test/make_fixture.py, which generates it) for what SUCCESS proves. `check`
 # fails the build unless the score is exactly the fixture's expected one.
 targets:
   - stage

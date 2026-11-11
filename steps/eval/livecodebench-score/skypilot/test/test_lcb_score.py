@@ -10,6 +10,7 @@ summary. LiveCodeBench's scorer itself is exercised by the build tests.
 import hashlib
 import importlib.util
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -183,8 +184,11 @@ def test_shim_copies_are_identical():
 
 # question_ids() must give the same ids, in the same order, as decoding the window,
 # without decoding it. Run against the committed fixture with the real `datasets`
-# library; only LiveCodeBench's module (which loads the dataset) is stubbed.
-_FIXTURE = Path(__file__).resolve().parent.parent / "test-data" / "fixture"
+# library; only LiveCodeBench's module (which loads the dataset) is stubbed. The
+# fixture's data is under test-data/, its loading script under test/: the test puts
+# them together in a temporary dataset directory, as the build test's tarball does.
+_HERE = Path(__file__).resolve().parent
+_FIXTURE = _HERE.parent / "test-data" / "fixture"
 
 
 @pytest.fixture
@@ -200,7 +204,10 @@ def fixture_loader(monkeypatch, tmp_path):
 
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
     monkeypatch.setenv("HF_DATASETS_OFFLINE", "1")
-    script = str(_FIXTURE / "code_generation_lite" / "code_generation_lite.py")
+    dataset_dir = tmp_path / "code_generation_lite"
+    shutil.copytree(_FIXTURE / "code_generation_lite", dataset_dir)
+    shutil.copy(_HERE / "code_generation_lite.py", dataset_dir)
+    script = str(dataset_dir / "code_generation_lite.py")
 
     def load_dataset(path, *args, **kwargs):
         assert path == "livecodebench/code_generation_lite"

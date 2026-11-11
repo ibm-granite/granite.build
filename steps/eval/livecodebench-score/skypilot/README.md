@@ -36,6 +36,14 @@ shared Makefile conventions; see [steps/README.md](../../../README.md).
   LiveCodeBench's `uv.lock` at `lcb_commit`.
 - `test/test_lcb_score.py`: unit tests for `lcb_score.py`'s own logic. They run
   under the repo venv, which has no LiveCodeBench.
+- `test/make_fixture.py` and `test/code_generation_lite.py`: the fixture's generator
+  and its dataset's loading script. Scripts stay under `test/`; `test-data/fixture/`
+  holds only the generated data (the dataset's `test.jsonl` and a completions
+  directory). The generator also writes `test-data/slurm-cpu/build.yaml`, which
+  embeds the data and the loading script as one tarball, and
+  `test/test_lcb_score_fixture.py` checks that both are current.
+- `test/slurm-cpu/` + `test-data/slurm-cpu/`: the build test on the local Docker
+  SLURM cluster. It scores the fixture and checks the exact pass@1 (0.5).
 - `test/test_skypilot_eval_livecodebench_score_render.py`: Mode-1 render tests. They execute
   the rendered `run` block with a stub `python` on `PATH`.
 
@@ -64,6 +72,7 @@ make -C steps/eval/livecodebench-score/skypilot check-published
 
 ## Status
 
-New. Not yet published. Planned: a build test on the local Docker SLURM cluster
-against a tiny fixture dataset, and a GPU-to-CPU end-to-end run with the generate
-step.
+Published to `configurations/assets/environments/skypilot/steps/eval/livecodebench-score/`.
+Two build tests: `slurm-cpu` here (the exact fixture score), and the GPU-to-CPU
+end-to-end run in `eval/livecodebench-generate`'s `slurm-bluevela` test, which scores
+the generate step's completions.

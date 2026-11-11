@@ -16,9 +16,10 @@ import tarfile
 import zlib
 from pathlib import Path
 
-_DATA = Path(__file__).resolve().parent.parent / "test-data"
+_HERE = Path(__file__).resolve().parent
+_DATA = _HERE.parent / "test-data"
 _spec = importlib.util.spec_from_file_location(
-    "make_fixture", _DATA / "fixture" / "make_fixture.py"
+    "make_fixture", _HERE / "make_fixture.py"
 )
 mf = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mf)
@@ -32,14 +33,30 @@ def test_committed_fixture_files_are_current():
 
 
 def test_build_yaml_is_current():
-    expected = mf.build_yaml(mf.fixture_tarball_b64(mf.fixture_files()))
+    expected = mf.build_yaml(mf.fixture_tarball_b64(mf.tarball_files()))
     assert (
         _DATA / "slurm-cpu" / "build.yaml"
     ).read_text() == expected, "re-run make_fixture.py"
 
 
+def test_test_data_holds_no_python():
+    """Scripts (the generator, the dataset's loading script) live under test/."""
+    assert not sorted(_DATA.rglob("*.py"))
+
+
+def test_tarball_carries_the_loading_script_from_test():
+    files = mf.tarball_files()
+    assert (
+        files["code_generation_lite/code_generation_lite.py"]
+        == (_HERE / "code_generation_lite.py").read_text()
+    )
+    assert set(files) - set(mf.fixture_files()) == {
+        "code_generation_lite/code_generation_lite.py"
+    }
+
+
 def test_tarball_round_trips():
-    files = mf.fixture_files()
+    files = mf.tarball_files()
     raw = gzip.decompress(base64.b64decode(mf.fixture_tarball_b64(files)))
     with tarfile.open(fileobj=io.BytesIO(raw)) as tar:
         got = {m.name: tar.extractfile(m).read().decode() for m in tar.getmembers()}
@@ -47,7 +64,7 @@ def test_tarball_round_trips():
 
 
 def test_tarball_is_reproducible():
-    files = mf.fixture_files()
+    files = mf.tarball_files()
     assert mf.fixture_tarball_b64(files) == mf.fixture_tarball_b64(files)
 
 
