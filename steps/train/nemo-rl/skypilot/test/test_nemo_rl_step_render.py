@@ -76,7 +76,7 @@ def _raise_error(msg):
     The launcher-config fill uses the strict Jinja env, which exposes
     `raise_error` so a template can fail the build at render time. The step's
     `validate` macro calls it for config-only errors (missing keys, bad
-    `output`, `num_nodes != 1`) and its overrides loop for non-scalar values.
+    `output`) and its overrides loop for non-scalar values.
     """
     raise ValueError(msg)
 
@@ -223,7 +223,6 @@ class TestRenderTimeValidation:
             ({"output": ""}, None, "output is required"),
             ({"output": "my model"}, None, "whitespace or a double quote"),
             ({"output": 'my"model'}, None, "whitespace or a double quote"),
-            ({}, {"num_nodes": 2}, "num_nodes must be 1"),
         ],
     )
     def test_bad_config_fails_the_render(
@@ -235,6 +234,44 @@ class TestRenderTimeValidation:
     @pytest.mark.parametrize("block", ["setup", "run"])
     def test_valid_config_renders(self, launcher, nrl_defaults, block):
         assert _bash_ok(_render(launcher[block], _cfg(nrl_defaults)))
+
+
+class TestSingleNode:
+    """gbserver, not the template, refuses multi-node: the step declares
+    single_node and the num_nodes resolver enforces it at step creation, on
+    every layer it reads (the old Jinja check missed launcher_config)."""
+
+    @pytest.fixture
+    def step_env(self, template):
+        stepconfig = pytest.importorskip("gbserver.types.stepconfig")
+        return stepconfig.StepEnvironmentTypeConfig.model_validate(
+            template["environment_configs"]["Skypilot"]
+        )
+
+    def test_declared(self, step_env):
+        assert step_env.single_node is True
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            {"compute_config": {"num_nodes": 2}},
+            {"compute_config": {"num_nodes": 1}, "launcher_config": {"num_nodes": 2}},
+        ],
+    )
+    def test_gbserver_refuses_more_than_one_node(self, step_env, launcher, config):
+        skypilot = pytest.importorskip("gbserver.environment.skypilot")
+        with pytest.raises(ValueError, match="this step is single-node"):
+            skypilot.validate_launch_num_nodes(step_env, launcher, config)
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_template_leaves_num_nodes_to_gbserver(self, launcher, nrl_defaults, block):
+        rendered = _render(
+            launcher[block],
+            _cfg(nrl_defaults),
+            compute={"num_nodes": 2},
+            launcher_config={"resources": {"accelerators": "A10G:1"}, "num_nodes": 2},
+        )
+        assert _bash_ok(rendered)
 
 
 class TestGuardArgv:
@@ -336,9 +373,9 @@ class TestAccelerators:
         :returns: The rendered output (empty when the config is valid).
         :raises ValueError: From the macro's `raise_error` on an invalid config.
         """
-        source = cls._validate_macro(block_source) + "{{ validate(nrl, cc, res_arg) }}"
+        source = cls._validate_macro(block_source) + "{{ validate(nrl, res_arg) }}"
         return jinja2.Template(source, undefined=jinja2.StrictUndefined).render(
-            nrl=nrl, cc=_DEFAULT_COMPUTE, res_arg=res, raise_error=_raise_error
+            nrl=nrl, res_arg=res, raise_error=_raise_error
         )
 
     def test_setup_and_run_validate_identically(self, launcher):
