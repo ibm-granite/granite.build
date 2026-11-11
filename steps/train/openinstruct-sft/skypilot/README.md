@@ -17,6 +17,7 @@ AWS and IBM BlueVela SLURM. The framework it follows is described in
 
 ```
 step-template.yaml          the step: config defaults, render-time validation, launcher blocks
+macros/validate.j2          the validate macro; setup: and run: both gb-include it
 Makefile                    STEP_NAME, REGISTRY, IMAGE_VERSION; includes steps/common.mk
 Dockerfile                  the image: CUDA base, pinned Open-Instruct, clearml, src/
 .gbignore                   files gbserver ships without Jinja-rendering (docs, src/)
@@ -61,9 +62,13 @@ script checks. The launcher prepends the inline `hf download` (aws) to `setup:`,
 a script there runs only after the node is up and the model is downloaded. A
 `raise_error` fails the strict launcher fill at step creation instead, before
 provisioning. The guard script keeps only what is knowable on the node: the staged
-paths. Both `setup:` and `run:` call the guard and repeat the `validate` macro,
-because a warm-cluster re-run renders `run:` without `setup:`. A render test pins
-the two macro copies identical.
+paths. Both `setup:` and `run:` call the guard and validate, because a warm-cluster
+re-run renders `run:` without `setup:`. The macros are written once and pulled into
+both blocks by `gb-include` lines, which `make space` and `make publish-step` expand
+(see [steps/README.md](../../../README.md#sharing-jinja-between-templates-gb-include)):
+`validate` is in `macros/validate.j2`; `q()`, the `args` checks (`validate_args`)
+and the `args` argv (`render_args`) are in `steps/train/shared/trainer_args.j2`,
+shared with hf-peft-sft.
 
 `.gbignore` lists `src/**` because gbserver runs a strict Jinja pass over the merged
 step directory, and `openinstruct_sft_guard.sh` contains literal `{{` and `{%` (its
@@ -256,7 +261,7 @@ The unit tests at `test/`'s root need no cluster or image. They stub `accelerate
 | `test_finetune_flags_in_image.py` | run in the image (it skips without `/opt/open-instruct`; see its docstring for the `podman run` line): no `finetune.py` flag is a prefix of a step-owned one, every step-owned flag still exists, and the real `HfArgumentParser` built with the patched arguments refuses `--learning_rat` and parses `--learning_rate`. Run it after building the image and after any Open-Instruct pin bump |
 | `test_finetune_local_model_patch.py` | the build-time pre-fetch patch applies once, refuses an upstream change, refuses a second apply |
 | `test_finetune_no_abbrev_patch.py` | the build-time `allow_abbrev` patch, run on a stand-in of upstream's `__main__`: an abbreviation is expanded before the patch and refused after it, full flags still parse; it refuses an upstream change and a second apply |
-| `test_skypilot_train_openinstruct_sft_render.py` | the template rendered with gbserver's strict renderer: identity and I/O schema, the shared monitor and its `Step:` rule (a real `finetune.py` progress line through gbserver's log parser gives the whole line as the message), no GPU request, identical macro copies, the `single_node` declaration (gbserver refuses 2 nodes; the template leaves `num_nodes` to it), the `docker:` prefix (including `.sqsh`), valid bash, every `raise_error` (data source, mixer and splits shape, `output`, no GPU request, `deepspeed_config`, `clearml_enabled`, step-owned flags and their `no_*` forms, any other `no_*` key, abbreviations of step-owned flags, non-bare keys, map and empty-list `args`), flags sharing a step-owned stem still pass, and the guard and run argv (defaults, bound dataset, splits, `args` rendering, ClearML mode, output path) |
+| `test_skypilot_train_openinstruct_sft_render.py` | the template rendered with gbserver's strict renderer: identity and I/O schema, the shared monitor and its `Step:` rule (a real `finetune.py` progress line through gbserver's log parser gives the whole line as the message), no GPU request, both blocks pull in the shared macros, the `single_node` declaration (gbserver refuses 2 nodes; the template leaves `num_nodes` to it), the `docker:` prefix (including `.sqsh`), valid bash, every `raise_error` (data source, mixer and splits shape, `output`, no GPU request, `deepspeed_config`, `clearml_enabled`, step-owned flags and their `no_*` forms, any other `no_*` key, abbreviations of step-owned flags, non-bare keys, map and empty-list `args`), flags sharing a step-owned stem still pass, and the guard and run argv (defaults, bound dataset, splits, `args` rendering, ClearML mode, output path) |
 | `test_openinstruct_sft_guard_sh.py` | staged-path checks: empty or unrendered `base_model`, missing dir, no `config.json`, missing dataset, unknown option; valid paths pass silently |
 | `test_openinstruct_sft_setup_sh.py` | the image check: passes on a good image, fails without `finetune.py` or when the training stack does not import |
 | `test_openinstruct_sft_run_sh.py` | the `accelerate launch` argv and cwd, step-owned flags before build args, no-DeepSpeed, GPU count (SkyPilot, `nvidia-smi` fallback, none), ClearML off/on/auto and default names with `WANDB_MODE=disabled`, the staging swap and re-run, refusing a non-model `output_path` or one overlapping `base_model` (same, inside, containing, via a symlink, or at the staging dir), no marker without a model, and the markers last and absolute |

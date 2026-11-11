@@ -85,9 +85,37 @@ environment_configs:
           # before provisioning. The guard script checks only the staged paths.
           setup: |
             set -euo pipefail
+            {#- Shared by the steps/train SkyPilot SFT templates (openinstruct-sft, hf-peft-sft); after an edit, re-run make publish-step in each. -#}
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
+            {#- validate_args: refuse args entries that would override a step-owned flag or
+                break the argv render_args builds. step: message prefix; field: the args
+                path; owned: step-owned flag names; noun: what a key names; hint: what to
+                set instead of an owned flag; consumer: what parses the argv; full_flags:
+                non-owned flags that are a proper prefix of an owned one (argparse takes an
+                exact match first); refuse_no: refuse no_* keys (store_false, no value).
+                A call block gets (k, v, nk) once per key, after these checks. -#}
+            {%- macro validate_args(step, field, args, owned, noun, hint, consumer, full_flags=[], refuse_no=false) -%}
+            {%- if args is not mapping %}{{ raise_error(step ~ ": " ~ field ~ " must be a mapping of " ~ noun ~ " to value.") }}{% endif -%}
+            {%- for k, v in args.items() %}
+            {%- set ks = k | string %}
+            {%- if not ks or "=" in ks or ks.startswith("-") or (ks.split() | join("")) != ks %}{{ raise_error(step ~ ": " ~ field ~ " key '" ~ ks ~ "' must be a bare " ~ noun ~ " name (no '=', '-' prefix or whitespace).") }}{% endif -%}
+            {%- set nk = ks | replace("-", "_") %}
+            {%- if nk in owned %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is set by the step; use " ~ hint ~ " instead.") }}{% endif -%}
+            {%- for o in owned %}{% if nk != o and nk not in full_flags and o.startswith(nk) %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " abbreviates the step-owned flag " ~ o ~ "; abbreviated flags are not accepted.") }}{% endif %}{% endfor -%}
+            {%- if refuse_no and nk.startswith("no_") %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is a no_* flag, which takes no value; write " ~ k[3:] ~ ": false instead.") }}{% endif -%}
+            {%- if v is mapping %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
+            {%- if v is iterable and v is not string and v is not mapping and not v %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is an empty list; " ~ consumer ~ " would read the next flag as its value. Remove it, or set it to null to omit it.") }}{% endif -%}
+            {%- if caller is defined %}{{ caller(k, v, nk) }}{% endif -%}
+            {%- endfor -%}
+            {%- endmacro %}
+            {#- render_args: args as argv words after the step's own flags: '--<key>', then
+                true/false for a bool, each item of a list, or the scalar; null is omitted. -#}
+            {%- macro render_args(args) -%}
+            {% for k, v in args.items() %}{% if v is not none %}'--{{ q(k) }}' {% if v is sameas true or v is sameas false %}'{{ v | lower }}' {% elif v is iterable and v is not string %}{% for x in v %}'{{ q(x) }}' {% endfor %}{% else %}'{{ q(v) }}' {% endif %}{% endif %}{% endfor %}
+            {%- endmacro %}
+            {#- openinstruct-sft's config checks; setup: and run: both include this file. -#}
             {%- macro validate(c, bound, lc) -%}
             {%- set owned = ["model_name_or_path", "output_dir", "dataset_name", "dataset_mixer", "dataset_mixer_list", "dataset_mixer_list_splits", "with_tracking", "report_to", "wandb_entity", "push_to_hub", "try_launch_beaker_eval_jobs", "try_auto_save_to_beaker", "do_not_randomize_output_dir", "resume_from_checkpoint", "dataset_local_cache_dir", "dataset_cache_mode", "no_push_to_hub", "no_try_launch_beaker_eval_jobs", "no_try_auto_save_to_beaker"] -%}
             {%- if c.dataset_mixer_list is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list must map an HF dataset id to a fraction or count, e.g. {allenai/tulu-3-sft-personas-algebra: 1.0}.") }}{% endif -%}
@@ -100,24 +128,14 @@ environment_configs:
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("openinstruct-sft: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type). compute_config.num_gpus_per_node is not a SkyPilot GPU request.") }}{% endif -%}
             {%- if "/" in (c.deepspeed_config | string) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.deepspeed_config must be a file name under the image's configs/ds_configs/, got '" ~ c.deepspeed_config ~ "'.") }}{% endif -%}
             {%- if (c.clearml_enabled | string | lower) not in ["auto", "true", "false", "on", "off", "1", "0"] %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.clearml_enabled must be auto, true or false, got '" ~ c.clearml_enabled ~ "'.") }}{% endif -%}
-            {%- if c.args is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args must be a mapping of finetune.py flag to value.") }}{% endif -%}
-            {%- for k, v in c.args.items() %}
-            {%- set ks = k | string %}
-            {%- if not ks or "=" in ks or ks.startswith("-") or (ks.split() | join("")) != ks %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args key '" ~ ks ~ "' must be a bare finetune.py flag name (no '=', '-' prefix or whitespace).") }}{% endif -%}
-            {%- set nk = ks | replace("-", "_") %}
-            {%- if nk in owned %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is set by the step; use the base_model/dataset inputs, output_path, dataset_mixer_list(_splits) or clearml_* instead.") }}{% endif -%}
             {#- argparse expands a unique prefix (allow_abbrev), so a prefix of an owned
                 flag would override it. The image turns allow_abbrev off, but image_id
                 can name an older or custom image, and this fails before provisioning.
                 No other finetune.py flag at the pin is such a prefix; the in-image
-                test test_finetune_flags_in_image.py re-checks that on a pin bump. -#}
-            {%- for o in owned %}{% if nk != o and o.startswith(nk) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " abbreviates the step-owned flag " ~ o ~ "; abbreviated flags are not accepted.") }}{% endif %}{% endfor -%}
-            {#- HfArgumentParser's --no_<f> is store_false and takes no value, but args
-                always renders one, so the run would fail on it. -#}
-            {%- if nk.startswith("no_") %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is a no_* flag, which takes no value; write " ~ k[3:] ~ ": false instead.") }}{% endif -%}
-            {%- if v is mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
-            {%- if v is iterable and v is not string and v is not mapping and not v %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is an empty list; finetune.py would read the next flag as its value. Remove it, or set it to null to omit it.") }}{% endif -%}
-            {%- endfor -%}
+                test test_finetune_flags_in_image.py re-checks that on a pin bump.
+                HfArgumentParser's --no_<f> is store_false and takes no value, but args
+                always renders one, so the run would fail on it: refuse_no. -#}
+            {{- validate_args("openinstruct-sft", "openinstruct_sft_config.args", c.args, owned, "finetune.py flag", "the base_model/dataset inputs, output_path, dataset_mixer_list(_splits) or clearml_*", "finetune.py", refuse_no=true) -}}
             {%- endmacro %}
             {%- set c = config.openinstruct_sft_config %}
             {%- set b = bindings if bindings is defined else {} %}
@@ -127,13 +145,42 @@ environment_configs:
               --dataset '{{ q(b.dataset.binding.path if "dataset" in b else "") }}'
             bash /opt/openinstruct-sft/openinstruct_sft_setup.sh
           # Each block is filled on its own (no shared Jinja scope across YAML
-          # keys), so the macros repeat; run validates too, since a warm-cluster
+          # keys), so both pull in the macros; make space / make publish-step
+          # expand the include lines. run validates too, since a warm-cluster
           # re-run renders it without setup.
           run: |
             set -euo pipefail
+            {#- Shared by the steps/train SkyPilot SFT templates (openinstruct-sft, hf-peft-sft); after an edit, re-run make publish-step in each. -#}
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
+            {#- validate_args: refuse args entries that would override a step-owned flag or
+                break the argv render_args builds. step: message prefix; field: the args
+                path; owned: step-owned flag names; noun: what a key names; hint: what to
+                set instead of an owned flag; consumer: what parses the argv; full_flags:
+                non-owned flags that are a proper prefix of an owned one (argparse takes an
+                exact match first); refuse_no: refuse no_* keys (store_false, no value).
+                A call block gets (k, v, nk) once per key, after these checks. -#}
+            {%- macro validate_args(step, field, args, owned, noun, hint, consumer, full_flags=[], refuse_no=false) -%}
+            {%- if args is not mapping %}{{ raise_error(step ~ ": " ~ field ~ " must be a mapping of " ~ noun ~ " to value.") }}{% endif -%}
+            {%- for k, v in args.items() %}
+            {%- set ks = k | string %}
+            {%- if not ks or "=" in ks or ks.startswith("-") or (ks.split() | join("")) != ks %}{{ raise_error(step ~ ": " ~ field ~ " key '" ~ ks ~ "' must be a bare " ~ noun ~ " name (no '=', '-' prefix or whitespace).") }}{% endif -%}
+            {%- set nk = ks | replace("-", "_") %}
+            {%- if nk in owned %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is set by the step; use " ~ hint ~ " instead.") }}{% endif -%}
+            {%- for o in owned %}{% if nk != o and nk not in full_flags and o.startswith(nk) %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " abbreviates the step-owned flag " ~ o ~ "; abbreviated flags are not accepted.") }}{% endif %}{% endfor -%}
+            {%- if refuse_no and nk.startswith("no_") %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is a no_* flag, which takes no value; write " ~ k[3:] ~ ": false instead.") }}{% endif -%}
+            {%- if v is mapping %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
+            {%- if v is iterable and v is not string and v is not mapping and not v %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is an empty list; " ~ consumer ~ " would read the next flag as its value. Remove it, or set it to null to omit it.") }}{% endif -%}
+            {%- if caller is defined %}{{ caller(k, v, nk) }}{% endif -%}
+            {%- endfor -%}
+            {%- endmacro %}
+            {#- render_args: args as argv words after the step's own flags: '--<key>', then
+                true/false for a bool, each item of a list, or the scalar; null is omitted. -#}
+            {%- macro render_args(args) -%}
+            {% for k, v in args.items() %}{% if v is not none %}'--{{ q(k) }}' {% if v is sameas true or v is sameas false %}'{{ v | lower }}' {% elif v is iterable and v is not string %}{% for x in v %}'{{ q(x) }}' {% endfor %}{% else %}'{{ q(v) }}' {% endif %}{% endif %}{% endfor %}
+            {%- endmacro %}
+            {#- openinstruct-sft's config checks; setup: and run: both include this file. -#}
             {%- macro validate(c, bound, lc) -%}
             {%- set owned = ["model_name_or_path", "output_dir", "dataset_name", "dataset_mixer", "dataset_mixer_list", "dataset_mixer_list_splits", "with_tracking", "report_to", "wandb_entity", "push_to_hub", "try_launch_beaker_eval_jobs", "try_auto_save_to_beaker", "do_not_randomize_output_dir", "resume_from_checkpoint", "dataset_local_cache_dir", "dataset_cache_mode", "no_push_to_hub", "no_try_launch_beaker_eval_jobs", "no_try_auto_save_to_beaker"] -%}
             {%- if c.dataset_mixer_list is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list must map an HF dataset id to a fraction or count, e.g. {allenai/tulu-3-sft-personas-algebra: 1.0}.") }}{% endif -%}
@@ -146,24 +193,14 @@ environment_configs:
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("openinstruct-sft: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type). compute_config.num_gpus_per_node is not a SkyPilot GPU request.") }}{% endif -%}
             {%- if "/" in (c.deepspeed_config | string) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.deepspeed_config must be a file name under the image's configs/ds_configs/, got '" ~ c.deepspeed_config ~ "'.") }}{% endif -%}
             {%- if (c.clearml_enabled | string | lower) not in ["auto", "true", "false", "on", "off", "1", "0"] %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.clearml_enabled must be auto, true or false, got '" ~ c.clearml_enabled ~ "'.") }}{% endif -%}
-            {%- if c.args is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args must be a mapping of finetune.py flag to value.") }}{% endif -%}
-            {%- for k, v in c.args.items() %}
-            {%- set ks = k | string %}
-            {%- if not ks or "=" in ks or ks.startswith("-") or (ks.split() | join("")) != ks %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args key '" ~ ks ~ "' must be a bare finetune.py flag name (no '=', '-' prefix or whitespace).") }}{% endif -%}
-            {%- set nk = ks | replace("-", "_") %}
-            {%- if nk in owned %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is set by the step; use the base_model/dataset inputs, output_path, dataset_mixer_list(_splits) or clearml_* instead.") }}{% endif -%}
             {#- argparse expands a unique prefix (allow_abbrev), so a prefix of an owned
                 flag would override it. The image turns allow_abbrev off, but image_id
                 can name an older or custom image, and this fails before provisioning.
                 No other finetune.py flag at the pin is such a prefix; the in-image
-                test test_finetune_flags_in_image.py re-checks that on a pin bump. -#}
-            {%- for o in owned %}{% if nk != o and o.startswith(nk) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " abbreviates the step-owned flag " ~ o ~ "; abbreviated flags are not accepted.") }}{% endif %}{% endfor -%}
-            {#- HfArgumentParser's --no_<f> is store_false and takes no value, but args
-                always renders one, so the run would fail on it. -#}
-            {%- if nk.startswith("no_") %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is a no_* flag, which takes no value; write " ~ k[3:] ~ ": false instead.") }}{% endif -%}
-            {%- if v is mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
-            {%- if v is iterable and v is not string and v is not mapping and not v %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.args." ~ k ~ " is an empty list; finetune.py would read the next flag as its value. Remove it, or set it to null to omit it.") }}{% endif -%}
-            {%- endfor -%}
+                test test_finetune_flags_in_image.py re-checks that on a pin bump.
+                HfArgumentParser's --no_<f> is store_false and takes no value, but args
+                always renders one, so the run would fail on it: refuse_no. -#}
+            {{- validate_args("openinstruct-sft", "openinstruct_sft_config.args", c.args, owned, "finetune.py flag", "the base_model/dataset inputs, output_path, dataset_mixer_list(_splits) or clearml_*", "finetune.py", refuse_no=true) -}}
             {%- endmacro %}
             {%- set c = config.openinstruct_sft_config %}
             {%- set b = bindings if bindings is defined else {} %}
@@ -189,7 +226,7 @@ environment_configs:
               '--dataset_mixer_list' {% for k, v in c.dataset_mixer_list.items() %}'{{ q(k) }}' '{{ q(v) }}' {% endfor %}\
               {%- endif %}
               '--dataset_mixer_list_splits' {% for s in c.dataset_mixer_list_splits %}'{{ q(s) }}' {% endfor %}\
-              {% for k, v in c.args.items() %}{% if v is not none %}'--{{ q(k) }}' {% if v is sameas true or v is sameas false %}'{{ v | lower }}' {% elif v is iterable and v is not string %}{% for x in v %}'{{ q(x) }}' {% endfor %}{% else %}'{{ q(v) }}' {% endif %}{% endif %}{% endfor %}
+              {{ render_args(c.args) }}
     monitors:
       skypilot_monitor:
         # Artifact + metadata markers come from the shared library. Training logs

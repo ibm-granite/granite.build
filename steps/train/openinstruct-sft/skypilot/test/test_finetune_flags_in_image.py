@@ -80,8 +80,8 @@ def _options() -> set[str]:
 
 
 def _owned() -> set[str]:
-    """Return the step-owned flags from step-template.yaml's ``owned`` list."""
-    text = (_STEP_DIR / "step-template.yaml").read_text()
+    """Return the step-owned flags from macros/validate.j2's ``owned`` list."""
+    text = (_STEP_DIR / "macros" / "validate.j2").read_text()
     return set(
         re.findall(r'"([a-z_0-9]+)"', re.findall(r"set owned = \[(.*?)\]", text)[0])
     )
