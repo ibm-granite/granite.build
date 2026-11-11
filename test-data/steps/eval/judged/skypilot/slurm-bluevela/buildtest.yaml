@@ -1,0 +1,27 @@
+# YAML-driven spec for test_skypilot_slurm_bluevela_eval_judged.py (located by
+# the test/ <-> test-data/ helper; see steps/README.md). gdpval runs end to
+# end with judge_model=self -- the key-less smoke path that grades with the
+# served model -- on the family's GPU image (phase all: scoring needs the
+# server when the judge is the served model).
+targets:
+  - judged-test
+target_expectations:
+  - target_name: judged-test
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 1
+    expected_steps:
+      - config:
+          benchmark: gdpval
+          phase: all
+          options: judge_model=self
+# The Space rendered by `make space` (the local judged step), as for the other
+# clusters; publish-step rewrites it to configurations/spaces/local. The
+# environment comes from the shared BlueVela SLURM space.
+space_uri: ../../../../../../configurations/spaces/local
+tests:
+  - runner
+simulate_step_failure: false
+# Shared-partition queueing on BlueVela can take a while, plus vLLM startup
+# and the self-judging pass.
+timeout_minutes: 60

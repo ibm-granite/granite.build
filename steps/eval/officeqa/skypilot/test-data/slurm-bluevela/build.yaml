@@ -1,0 +1,76 @@
+granite.build:
+  name: skypilot-slurm-bluevela-eval-officeqa-test
+  # The recipes' shape on a synthetic dataset: generate on the family's GPU
+  # image (the model answers from the synthetic gold-page contexts), score on
+  # its CPU image, bound by the granite_generation artifact -- one build test
+  # covers both images with no HF gate and no token.
+  targets:
+    officeqa-generate:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/officeqa
+          config:
+            poll_interval_seconds: 5
+            log_retrieval_interval_seconds: 30
+            benchmark: "officeqa-pro"
+            image: "us.icr.io/cil15-shared-registry/gb-step-eval-officeqa:ce003c94"
+            model_path: "ibm-granite/granite-4.2-3b"
+            options: ""
+            # The synthetic dataset (invented questions + parsed pages, shipped
+            # in test-data/ and staged to the shared FS): a trusted local
+            # root, so the pinned gated fetch and HF_TOKEN are bypassed while
+            # every other path runs for real.
+            dataset: "/proj/data-eng/llmb-read-write/eval-build-tests/officeqa-synthetic"
+            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/officeqa"
+            run_name: "buildtest"
+            limit: "2"
+            workers: "2"
+            phase: "generate"
+            hf_home: "/proj/data-eng/llmb-read-write/eval-build-tests/hf-home"
+            sandbox_cache: ""
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "gpu-mid"
+                accelerators: "H200:1"
+                memory: 256
+    officeqa-score:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      inputs:
+        generation:
+          binding: officeqa-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/officeqa
+          config:
+            poll_interval_seconds: 5
+            log_retrieval_interval_seconds: 30
+            benchmark: "officeqa-pro"
+            image: "us.icr.io/cil15-shared-registry/gb-step-eval-officeqa-cpu:ce003c94"
+            model_path: "ibm-granite/granite-4.2-3b"
+            options: ""
+            # Same synthetic dataset and output dir: the score phase reads
+            # the generation.json the generate phase wrote there, and the
+            # questions/gold answers from the CSVs.
+            dataset: "/proj/data-eng/llmb-read-write/eval-build-tests/officeqa-synthetic"
+            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/officeqa"
+            run_name: "buildtest"
+            limit: "2"
+            workers: "2"
+            phase: "score"
+            sandbox_cache: ""
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "cpu"
+                memory: 32
+                cpus: 8
+              sbatch_options:
+                constraint: null
