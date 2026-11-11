@@ -1,0 +1,26 @@
+targets: [merge]
+expected_status: success
+target_expectations:
+  - target_name: merge
+    # hfpull(model_1) + hfpull(base_model) + mergekit + byoc.
+    step_count: 4
+    input_artifact_count: 2    # model_1, base_model
+    output_artifact_count: 1   # model, registered by the merge on both attempts
+    target_failure_count: 1    # the first attempt, failed by the byoc step
+    # The SUCCESS run's merge reused the first attempt's output rather than merging
+    # again (an existing output would otherwise be refused), with the same markers.
+    expected_steps:
+      - step_uri: space://steps/merge/mergekit
+        metadata:
+          reused_earlier_attempt: "true"
+          merge_method: slerp
+          tensor_count: "272"
+        metadata_matches:
+          mergekit_version: '^\d+\.\d+\.\d+$'
+space_uri: ../../space
+# The byoc step fails itself on the first attempt; no framework failure simulation.
+# Driven by test_skypilot_slurm_merge_mergekit_retry.py (BuildRunner directly), not
+# the YAML runner: it waits through the first attempt's FAILED status.
+simulate_step_failure: false
+# Two attempts: both pulls and the uv install once, then the hfpulls again (cached).
+timeout_minutes: 30

@@ -1,0 +1,70 @@
+granite.build:
+  name: skypilot-slurm-mergekit-retry
+  # An in-place build retry (retries.max_retries) after the merge already finished.
+  # The pattern of test/integration/standalone/buildrunner/bash/test_buildrunner_retry.py,
+  # on the local Docker SLURM cluster:
+  #   attempt 1: hfpulls, the merge (moves the model into place and writes its retry
+  #              record), then the byoc step fails: the target fails.
+  #   attempt 2: the build retries in place, with the same build id but new target and
+  #              step runs. The merge finds its finished output and a record with the
+  #              same retry key (build id / target / step index) and input hash, and
+  #              registers it (metadata reused_earlier_attempt: true); the byoc step
+  #              then succeeds, and so does the build.
+  # Without the retry key the second merge would fail with "output path already exists".
+  #
+  # Same models and recipe as ../slurm (see there for sizes and the memory note), with
+  # its own output path. Re-running: clear /shared/mergekit-test/slurm-retry first.
+  retries:
+    max_retries: 1
+  targets:
+    merge:
+      environment_uri: space://environments/skypilot/slurm/local
+      inputs:
+        model_1:
+          uri: hf:///HuggingFaceTB/SmolLM2-135M-Instruct
+        base_model:
+          uri: hf:///HuggingFaceTB/SmolLM2-135M
+      outputs:
+        model:
+          uri: "env:///shared/mergekit-test/slurm-retry/model"
+          type: model
+      steps:
+        - step_uri: space://steps/merge/mergekit
+          config:
+            poll_interval_seconds: 5
+            mergekit_config:
+              output_path: /shared/mergekit-test/slurm-retry/model
+              merge_config:
+                slices:
+                  - sources:
+                      - model: base_model
+                        layer_range: [0, 30]
+                      - model: model_1
+                        layer_range: [0, 30]
+                merge_method: slerp
+                base_model: base_model
+                parameters:
+                  t:
+                    - filter: self_attn
+                      value: [0, 0.5, 0.3, 0.7, 1]
+                    - filter: mlp
+                      value: [1, 0.5, 0.7, 0.3, 0]
+                    - value: 0.5
+                dtype: bfloat16
+        # Fails once: the marker on the shared volume, named for this build's id (the
+        # same on both attempts, unique per build), is absent on the first attempt and
+        # present on the retry, which may run on another node.
+        - step_uri: space://steps/misc/byoc
+          config:
+            poll_interval_seconds: 5
+            byoc_config:
+              image: ""
+              # byoc needs a repo to clone; any tiny public one (as byoc's own fixture).
+              repo: "https://github.com/octocat/Hello-World.git"
+              workdir: "code"
+              command: >-
+                m=/shared/mergekit-test/slurm-retry/.attempted-{{ run_metadata.build_id }};
+                if [ -f "$m" ]; then rm -f "$m"; echo retry-attempt-succeeding; exit 0; fi;
+                touch "$m"; echo first-attempt-failing; exit 1
+            compute_config:
+              num_gpus_per_node: 0
