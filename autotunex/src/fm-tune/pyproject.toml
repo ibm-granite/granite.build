@@ -41,6 +41,17 @@ core = [
     # on fsspec with GHSA-27vj-qcqg-25rc (fixed in 2026.6.0). 5.0.0 still caps it
     # at <=2026.4.0.
     "datasets==5.0.1",
+    # Transitive, but listed directly so pip installs enforce the fixes too, not
+    # only uv.lock. That covers the app images: their pip step then upgrades the
+    # copies the CUDA kernel base preinstalls.
+    #   fsspec: GHSA-27vj-qcqg-25rc, fixed in 2026.6.0.
+    "fsspec>=2026.6.0",
+    #   filelock: GHSA-v4x8-3wr5-3wq8 (HIGH) affects 3.20.4 through 4.2.0, and
+    #   4.2.1 needs Python >= 3.11. So 3.10 gets 3.20.3, the last release before
+    #   that range (it also has the 3.20.1 and 3.20.3 TOCTOU fixes). Medium
+    #   advisories fixed only in 4.2.1 still apply on 3.10.
+    "filelock>=4.2.1; python_version >= '3.11'",
+    "filelock>=3.20.3,<3.20.4; python_version < '3.11'",
     "ray[tune,default]==2.59.0",
     "pyzmq==27.2.0",
     "accelerate>=1.15.0",
@@ -107,13 +118,6 @@ autotune = ["configs/*.yaml"]
 # --- uv configuration ---
 [tool.uv]
 prerelease = "if-necessary"
-# filelock GHSA-v4x8-3wr5-3wq8 affects 3.20.4 through 4.2.0, and 4.2.1 needs
-# Python >= 3.11. Splitting on the Python version keeps 3.10 supported while
-# every lock entry stays outside that range.
-constraint-dependencies = [
-    "filelock>=4.2.1; python_version >= '3.11'",
-    "filelock<3.20.4; python_version < '3.11'",
-]
 
 # flash-attn is compiled from source at install time: there is no official
 # prebuilt wheel for torch 2.11 + CUDA 13. Run `uv pip install -e ".[full]"` on
