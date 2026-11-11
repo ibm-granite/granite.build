@@ -21,7 +21,7 @@
 #   make image-gpu REGISTRY=...  /  make image-cpu ...    build one
 #   make fix-locks                                        raise vulnerable lock packages to their fix
 #   make scan-images REGISTRY=...                         scan both built images (run before publishing)
-#   make publish-images REGISTRY=...                      push both (needs a prior login)
+#   make publish-images REGISTRY=...                      scan, then push both (needs a prior login)
 #
 # scan-images catches before the push most of what quay.io's own scan reports, so an
 # image is not rejected at quay and then rebuilt. It runs, for each image:
@@ -30,7 +30,14 @@
 #   - trivy on the built image (OS packages from the base and apt, the Python venv,
 #     the uv binary), saved to a tar so no registry or daemon socket is needed.
 # Each FAILS on a fixable vulnerability at SCAN_SEVERITY (default CRITICAL; CVSS >= 9
-# for OSV) and prints the fixable HIGH and above findings as a report. Unfixable findings (e.g. linux-libc-dev in the CUDA devel base) never fail
+# for OSV) and prints the fixable HIGH and above findings as a report.
+#
+# publish-image-<x> runs scan-image-<x> first and pushes only if it passes, so an image
+# is never pushed unscanned. SKIP_SCAN=true (exactly `true`) skips it, e.g. to push an
+# image you scanned in this shell a minute ago. Accepted exceptions live in
+# images/<x>/scan-ignore, one advisory id per line with the reason and the issue that
+# removes it: both gates (and fix-locks) read it, a listed finding is printed as
+# IGNORED, and an entry that matches nothing is reported so it gets deleted. Unfixable findings (e.g. linux-libc-dev in the CUDA devel base) never fail
 # it. quay (Clair) can still flag a package neither tool does, so check quay's scan
 # of the pushed tag too. Both scanners run as pinned containers (no local install);
 # trivy's database is cached under SCAN_CACHE. scan-locks alone needs no build.
@@ -69,6 +76,7 @@ TAG_STATUS        := sh ../../scripts/registry-tag-status.sh
 SCAN_SEVERITY     ?= CRITICAL
 SCAN_CACHE        ?= $(HOME)/.cache/gb-image-scan
 TRIVY_IMAGE       ?= ghcr.io/aquasecurity/trivy:0.76.2
+SKIP_SCAN         ?= false
 OSV_IMAGE         ?= ghcr.io/google/osv-scanner:v2.7.1
 
 image_ref = $(REGISTRY)/$(IMAGE_PREFIX)/$(1):$(IMAGE_VERSION)
@@ -93,8 +101,9 @@ $(addprefix image-,$(IMAGES)): image-%:
 	$(require_registry)
 	$(DOCKER) build --platform $(PLATFORM) -f images/$*/Dockerfile . -t $(call image_ref,$*)
 
-$(addprefix publish-image-,$(IMAGES)): publish-image-%:
+$(addprefix publish-image-,$(IMAGES)): publish-image-%: $(if $(filter true,$(SKIP_SCAN)),,scan-image-%)
 	$(require_registry)
+	@$(if $(filter true,$(SKIP_SCAN)),echo "[publish] SKIP_SCAN=true: pushing $(call image_ref,$*) without scanning it",true)
 	@if [ "$(PUBLISH_OVERWRITE)" != "true" ]; then \
 		status=$$($(TAG_STATUS) "$(call image_ref,$*)"); \
 		case "$$status" in \
@@ -116,7 +125,7 @@ $(addprefix scan-lock-,$(IMAGES)): scan-lock-%:
 	$(DOCKER) run --rm -v "$(CURDIR)/images/$*:/src:ro,Z" $(OSV_IMAGE) \
 		scan source --lockfile /src/uv.lock --format json > "$$json"; rc=$$?; \
 	if [ $$rc -ne 0 ] && [ $$rc -ne 1 ]; then rm -f "$$json"; echo "[scan] osv-scanner failed (exit $$rc) on images/$*/uv.lock" >&2; exit $$rc; fi; \
-	python3 images/osv-gate.py $(SCAN_SEVERITY) < "$$json"; rc=$$?; rm -f "$$json"; \
+	python3 images/osv-gate.py $(SCAN_SEVERITY) --ignore images/$*/scan-ignore < "$$json"; rc=$$?; rm -f "$$json"; \
 	if [ $$rc -ne 0 ]; then echo "[scan] FAILED: images/$*/uv.lock has fixable $(SCAN_SEVERITY) vulnerabilities; raise those pins and run uv lock" >&2; exit $$rc; fi
 
 # scan-image-<x> also runs scan-lock-<x>. The image is saved to a tar under SCAN_CACHE,
@@ -132,8 +141,12 @@ $(addprefix scan-image-,$(IMAGES)): scan-image-%: scan-lock-%
 	@tar="$(SCAN_CACHE)/$*-$(IMAGE_VERSION).tar"; rm -f "$$tar"; \
 	echo "[scan] saving $(call image_ref,$*)"; \
 	$(DOCKER) save -o "$$tar" $(call image_ref,$*) || { rm -f "$$tar"; exit 1; }; \
-	trivy() { $(DOCKER) run --rm -v "$$tar:/scan/image.tar:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" \
-		$(TRIVY_IMAGE) image --input /scan/image.tar --scanners vuln --ignore-unfixed --quiet "$$@"; }; \
+	ign=""; if [ -f images/$*/scan-ignore ]; then \
+		ign="-v $(CURDIR)/images/$*/scan-ignore:/scan/ignore:ro,Z"; \
+		echo "[scan] accepting the advisories listed in images/$*/scan-ignore"; fi; \
+	trivy() { $(DOCKER) run --rm -v "$$tar:/scan/image.tar:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" $$ign \
+		$(TRIVY_IMAGE) image --input /scan/image.tar --scanners vuln --ignore-unfixed --quiet \
+		$${ign:+--ignorefile /scan/ignore} "$$@"; }; \
 	echo "[scan] trivy report (fixable HIGH,CRITICAL) for $(call image_ref,$*)"; \
 	trivy --severity HIGH,CRITICAL --format table; rc=$$?; \
 	if [ $$rc -ne 0 ]; then rm -f "$$tar"; echo "[scan] trivy did not run (exit $$rc); see the error above" >&2; exit $$rc; fi; \

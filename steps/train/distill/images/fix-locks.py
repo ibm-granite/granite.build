@@ -23,7 +23,8 @@ MAX_ROUNDS times. Never touches [project] dependencies: a package the project pi
 EXACTLY (`vllm==0.11.0`) below its fix is reported as BLOCKED, because that pin is a
 compatibility decision for a person to revisit. If the constraints together do not
 resolve, each is tried alone and the ones uv cannot satisfy (a fix that a transitive
-pin rules out) are reported as UNSATISFIABLE and left out.
+pin rules out) are reported as UNSATISFIABLE and left out. Advisories listed in
+<image dir>/scan-ignore (accepted, documented exceptions) are skipped.
 
 Exits 0 when nothing fixable at SEVERITY remains, 1 when something does (blocked,
 unsatisfiable or still present), 2 on a usage or tool error. Review `git diff` and
@@ -54,7 +55,7 @@ def say(msg):
     print(f"[fix-lock] {msg}", flush=True)
 
 
-def scan(cmd):
+def scan(cmd, ignores=frozenset()):
     """Run osv-scanner; return {package: (version, best fix, worst score, ids)} at any severity."""
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode not in (0, 1):
@@ -67,6 +68,8 @@ def scan(cmd):
             name, version = pkg["package"]["name"], pkg["package"]["version"]
             vulns = {v["id"]: v for v in pkg.get("vulnerabilities", [])}
             for group in pkg.get("groups", []):
+                if osv_gate.group_ids(group) & ignores:
+                    continue  # accepted in <image dir>/scan-ignore
                 sev = group.get("max_severity")
                 score = float(sev) if sev not in (None, "") else None
                 fixes = [
@@ -177,6 +180,11 @@ def main():
             "usage: fix-locks.py <image dir> <SEVERITY> -- <osv-scanner json command...>"
         )
     image_dir, gate, cmd = Path(sys.argv[1]), sys.argv[2].upper(), sys.argv[4:]
+    ignores = osv_gate.load_ignores(image_dir / "scan-ignore")
+    if ignores:
+        say(
+            f"skipping {len(ignores)} advisory ids accepted in {image_dir / 'scan-ignore'}"
+        )
     if gate not in osv_gate.THRESHOLDS:
         sys.exit(f"[fix-lock] unknown severity {gate!r}")
     floor = osv_gate.THRESHOLDS[gate]
@@ -186,7 +194,7 @@ def main():
     blocked, unsat, applied = {}, {}, {}
 
     for rnd in range(1, MAX_ROUNDS + 1):
-        want = needed(scan(cmd), floor)
+        want = needed(scan(cmd, ignores), floor)
         for k in list(want):
             if k in pins and osv_gate.version_key(pins[k]) < osv_gate.version_key(
                 want[k][2]
@@ -235,7 +243,7 @@ def main():
             pyproject.write_text(original[0])
             lock.write_text(original[1])
 
-    remaining = needed(scan(cmd), floor)
+    remaining = needed(scan(cmd, ignores), floor)
     for k, item in applied.items():
         say(
             f"FIXED         {item[0]} {item[1]} -> >={item[2]}"

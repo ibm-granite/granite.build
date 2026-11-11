@@ -6,7 +6,7 @@ onto the teacher's tokenizer with a chat template installed, and pinned tokenize
 overlays of the teacher and of the pre-retag student. It is a `data_processing` step,
 gated to SkyPilot on LSF (`subtypes: [lsf]`), and needs no GPU: it loads two tokenizers
 and one embedding matrix on CPU. It runs in the prebuilt image
-`docker:us.icr.io/cil15-shared-registry/gb-step-distillation-cpu:e2c0ab49` and builds none.
+`docker:quay.io/granitebuild/steps/train/distill/images/cpu:ec82c1d9` and builds none.
 
 > **Developing or testing this step?** See `steps/train/distill/tokenizer-align/skypilot/README.md`
 > in the granite.build repository for how the step is generated, tested, and published —

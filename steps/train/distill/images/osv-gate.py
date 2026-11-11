@@ -16,17 +16,24 @@
 osv-scanner itself exits 1 on ANY finding and has no severity filter, so `make
 scan-lock-<x>` pipes its JSON here. Usage:
 
-    osv-scanner scan source --lockfile uv.lock --format json | python3 osv-gate.py CRITICAL
+    osv-scanner scan source --lockfile uv.lock --format json \
+        | python3 osv-gate.py CRITICAL [--ignore images/<x>/scan-ignore]
 
 Prints one line per finding at HIGH or above (package, version, CVSS, the lowest
 version that fixes it, advisory ids), and exits 1 when a finding at the given
 severity or above has a fixed version. Severity is the group's max CVSS score:
 CRITICAL >= 9.0, HIGH >= 7.0, MEDIUM >= 4.0, LOW > 0. A finding with no CVSS score
 counts as unknown and never fails the gate (it is still printed).
+
+--ignore names a file of accepted advisory ids, one per line, `#` comments (the
+.trivyignore format, so trivy reads the same file). A finding is IGNORED when any of
+its ids or aliases is listed: it is still printed, marked, and never fails the gate.
+An entry that matches nothing is reported as stale, so a fixed exception is noticed.
 """
 
 import json
 import sys
+from pathlib import Path
 
 THRESHOLDS = {"CRITICAL": 9.0, "HIGH": 7.0, "MEDIUM": 4.0, "LOW": 0.1}
 
@@ -51,6 +58,22 @@ def fixed_versions(vuln, package):
     return out
 
 
+def load_ignores(path):
+    """The advisory ids in an ignore file; empty for None or a missing file."""
+    if not path or not Path(path).is_file():
+        return set()
+    ids = set()
+    for line in Path(path).read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            ids.add(line.split()[0])
+    return ids
+
+
+def group_ids(group):
+    return set(group.get("ids", [])) | set(group.get("aliases", []))
+
+
 def version_key(v):
     parts = []
     for p in v.replace("-", ".").split("."):
@@ -59,7 +82,14 @@ def version_key(v):
 
 
 def main():
-    gate = sys.argv[1].upper() if len(sys.argv) > 1 else "CRITICAL"
+    args = sys.argv[1:]
+    ignore_path = None
+    if "--ignore" in args:
+        i = args.index("--ignore")
+        ignore_path = args[i + 1] if i + 1 < len(args) else None
+        del args[i : i + 2]
+    ignores = load_ignores(ignore_path)
+    gate = args[0].upper() if args else "CRITICAL"
     if gate not in THRESHOLDS:
         sys.exit(
             f"osv-gate: unknown severity {gate!r}; use one of {', '.join(THRESHOLDS)}"
@@ -79,16 +109,28 @@ def main():
                     if vid in vulns:
                         fixes += fixed_versions(vulns[vid], name)
                 fix = max(fixes, key=version_key) if fixes else None
-                findings.append((score, name, version, fix, group.get("ids", [])))
+                ids = group_ids(group)
+                findings.append(
+                    (score, name, version, fix, group.get("ids", []), ids & ignores)
+                )
 
     findings.sort(key=lambda f: (-(f[0] or 0), f[1]))
     shown = [f for f in findings if f[0] is None or f[0] >= THRESHOLDS["HIGH"]]
-    for score, name, version, fix, ids in shown:
+    for score, name, version, fix, ids, hit in shown:
         tag = f"{label(score):8} {score if score is not None else '-':>4}"
-        print(f"  {tag}  {name} {version} -> {fix or 'no fix'}  {' '.join(ids)}")
+        note = "  IGNORED (" + ignore_path + ")" if hit else ""
+        print(f"  {tag}  {name} {version} -> {fix or 'no fix'}  {' '.join(ids)}{note}")
     failing = [
-        f for f in findings if f[0] is not None and f[0] >= THRESHOLDS[gate] and f[3]
+        f
+        for f in findings
+        if f[0] is not None and f[0] >= THRESHOLDS[gate] and f[3] and not f[5]
     ]
+    ignored = [f for f in findings if f[5]]
+    used = set().union(*(f[5] for f in findings)) if findings else set()
+    for stale in sorted(ignores - used):
+        print(
+            f"  note: {stale} in {ignore_path} matches no finding; remove it if fixed"
+        )
     counts = {}
     for f in findings:
         counts[label(f[0])] = counts.get(label(f[0]), 0) + 1
@@ -98,8 +140,15 @@ def main():
         if k in counts
     )
     print(
-        f"  {len(findings)} advisory groups ({summary or 'none'}); {len(failing)} fixable at {gate} or above"
+        f"  {len(findings)} advisory groups ({summary or 'none'}); "
+        f"{len(failing)} fixable at {gate} or above"
+        + (f", {len(ignored)} ignored" if ignored else "")
     )
+    if not failing:
+        print(
+            f"  PASS: no fixable {gate} vulnerabilities"
+            + (" outside the ignore list" if ignored else "")
+        )
     sys.exit(1 if failing else 0)
 
 
