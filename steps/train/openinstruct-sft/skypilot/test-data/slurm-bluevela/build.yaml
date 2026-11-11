@@ -30,8 +30,9 @@ granite.build:
                 # SLURM-SPECIFIC: H200, the only GPU bluevela schedules (its
                 # sbatch constraint). Renders as --gres=gpu:h200:1.
                 accelerators: "H200:1"
-                # gbserver drops compute_config memory on slurm and the partition
-                # default is 2G: bare GiB, as a string.
+                # Explicit memory wins over compute_config on every cluster (without
+                # one, SkyPilot defaults to 4 GB per CPU with GPUs): bare GiB, as a
+                # string.
                 memory: "64"
               envs:
                 # ClearML on without a server: the session is written locally.

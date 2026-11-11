@@ -80,6 +80,6 @@ granite.build:
                 pii_redactor_score_threshold: 0.6
             compute_config:
               num_gpus_per_node: 0
-              # Advisory on SLURM (the compute_config memory floor is skipped for
-              # the SLURM/LSF clouds), but torch + flair genuinely want headroom.
+              # torch + flair genuinely want headroom. Sent as --mem only on a SLURM
+              # cluster that tracks memory; the local CR_Core cluster skips it.
               total_memory_per_node: 8Gi

@@ -66,6 +66,71 @@ environment_configs:
               echo "byoc: config.byoc_config.repo is empty; nothing to clone" >&2
               exit 1
             fi
+            # The clone needs git, and setup_command only runs after it, so a
+            # build cannot install git itself. Slim images (the default
+            # fedora-minimal, the official pytorch/pytorch images) have none, so
+            # install it here; an image with a working git skips this. git is
+            # run, not just looked up: a relaunch reuses this workdir, and an
+            # install cut off mid-way can leave a git that cannot start.
+            #
+            # conda is tried first: it needs no root (enroot containers on LSF
+            # run as the submitting user) and installs into its own env,
+            # $GIT_PREFIX/env, leaving the image's Python env alone. Only a git
+            # symlink goes in $GIT_PREFIX/bin, which comes FIRST on PATH, so it
+            # replaces a broken image git and shadows nothing else (the env also
+            # holds perl, openssl...). Next, as root: apt-get, dnf or microdnf.
+            # run puts $GIT_PREFIX/bin on PATH again.
+            GIT_PREFIX="$(pwd)/.byoc-git"
+            PATH="$GIT_PREFIX/bin:$PATH"
+            # Called only as an `if` condition, where bash ignores set -e: every
+            # step in here must check its own result.
+            byoc_install_git() {
+              # A git left here by an earlier attempt comes first on PATH and
+              # would hide whatever this attempt installs.
+              rm -rf "$GIT_PREFIX"
+              if command -v conda >/dev/null 2>&1; then
+                # conda's package cache and cache dir go to a scratch dir (the
+                # image's may be root-owned, and HOME is / under enroot), which
+                # is removed whatever the result. HOME itself is kept, so
+                # ~/.condarc and ~/.netrc (proxies, mirrors) still apply.
+                CONDA_SCRATCH="$(pwd)/.byoc-git-scratch"
+                rm -rf "$CONDA_SCRATCH"
+                if CONDA_PKGS_DIRS="$CONDA_SCRATCH/pkgs" XDG_CACHE_HOME="$CONDA_SCRATCH/cache" \
+                    conda create -y -q -p "$GIT_PREFIX/env" -c conda-forge --override-channels git; then
+                  rm -rf "$CONDA_SCRATCH"
+                  mkdir -p "$GIT_PREFIX/bin" && ln -s ../env/bin/git "$GIT_PREFIX/bin/git"
+                  return
+                fi
+                rm -rf "$CONDA_SCRATCH" "$GIT_PREFIX"
+                echo "byoc: conda could not install git" >&2
+              fi
+              if [ "$(id -u)" != 0 ]; then
+                echo "byoc: the container is not root, so apt-get, dnf or microdnf cannot install git" >&2
+                return 1
+              fi
+              if command -v apt-get >/dev/null 2>&1; then
+                apt-get update -qq &&
+                  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git ca-certificates
+              elif command -v dnf >/dev/null 2>&1; then
+                dnf install -y -q git
+              elif command -v microdnf >/dev/null 2>&1; then
+                microdnf install -y git
+              else
+                echo "byoc: there is no apt-get, dnf or microdnf to install git with" >&2
+                return 1
+              fi || {
+                echo "byoc: the package manager could not install git (no access to the distro mirrors, or root in name only such as enroot --container-remap-root)" >&2
+                return 1
+              }
+            }
+            if ! git --version >/dev/null 2>&1; then
+              echo "byoc: no working git in the image; installing it"
+              # hash -r: bash may have cached the broken git it just ran.
+              if ! { byoc_install_git && hash -r && git --version >/dev/null 2>&1; }; then
+                echo "byoc: no working git, and none could be installed; use an image that has git or conda" >&2
+                exit 1
+              fi
+            fi
             echo "byoc: cloning $REPO -> $CODE_DIR"
             rm -rf "$CODE_DIR"
             git clone "$REPO" "$CODE_DIR"
@@ -92,6 +157,11 @@ environment_configs:
           run: |
             set -eu
             CODE_DIR="{{ config.byoc_config.workdir }}"
+            # The git setup installed when the image had no working one (see
+            # setup). Only git is in .byoc-git/bin, so it goes first. run is a
+            # new shell, so put it on PATH again, for the lineage below and for
+            # the command.
+            PATH="$(pwd)/.byoc-git/bin:$PATH"
             # Record the resolved commit as step metadata so build lineage captures
             # exactly which commit was built (build.yaml may pin only a branch/tag,
             # or nothing). Defensive: never fail the build for lineage metadata,

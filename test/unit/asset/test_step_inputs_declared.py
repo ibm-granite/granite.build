@@ -103,6 +103,12 @@ EXPECTED = {
     "environments/bash/steps/lora-finetune": ({"model"}, {"dataset"}),
     "environments/bash/steps/tune/fm-tune": ({"dataset"}, {"base_model"}),
     f"{_SKY}/tune/fm-tune": ({"dataset"}, {"base_model"}),
+    # MergeKit merge: new, so model_1 is required outright; the rest are optional (a recipe
+    # may also name Hugging Face models directly, which MergeKit fetches itself).
+    f"{_SKY}/merge/mergekit": (
+        {"model_1"},
+        {"model_2", "model_3", "model_4", "base_model"},
+    ),
     # Exceptions: no named inputs, by design.
     f"{_SKY}/aux/byoc": (set(), set()),  # free-form command, any number of inputs
     f"{_LSF}/skypilot-teardown": (set(), set()),  # variable-length cluster list
