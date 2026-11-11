@@ -128,7 +128,7 @@ granite.build:
               # keeps the pool from oversubscribing.
               num_cpus_per_node: 2
               num_gpus_per_node: 0
-              # Advisory on SLURM (the compute_config memory floor is skipped for the
-              # SLURM/LSF clouds), so this documents intent rather than selecting a
-              # node.
+              # Sent as --mem on BlueVela, which tracks memory (on a CR_Core/CR_CPU
+              # cluster it would be skipped). See
+              # docs/environments/skypilot-slurm.md#step-memory-total_memory_per_node.
               total_memory_per_node: 4Gi

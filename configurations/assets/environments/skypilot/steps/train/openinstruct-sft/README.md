@@ -235,9 +235,10 @@ endpoint:
   once the CPU job starts, plus queueing); later runs start the container in seconds. No manual `enroot` import and no `image_id`
   override are needed. To pin a `.sqsh` you built yourself, set `image_id` to its
   path; the step adds `docker:`, and Pyxis gets the path as is.
-- **Request memory.** gbserver drops `compute_config` memory on SLURM, and a
-  partition default can be as small as 2G. Request memory in
-  `launcher_config.resources` as bare GiB, as a string:
+- **Request memory.** On SLURM, gbserver sends `compute_config` memory only on
+  clusters that track memory, and SkyPilot's default without it is 1 GB per CPU
+  (4 GB per CPU with GPUs). Request memory in `launcher_config.resources`, which
+  wins on every cluster, as bare GiB, as a string:
 
   ```yaml
   launcher_config:
