@@ -4,32 +4,30 @@
 # bound by the granite_generation artifact, so one build test covers both
 # images.
 targets:
-  - bfcl-generate
-  - bfcl-score
+- bfcl-generate
+- bfcl-score
 target_expectations:
-  - target_name: bfcl-generate
-    step_count: 1
-    input_artifact_count: 0
-    output_artifact_count: 1
-    expected_steps:
-      - config:
-          benchmark: bfcl-v4
-          phase: generate
-  - target_name: bfcl-score
-    step_count: 1
-    input_artifact_count: 1
-    output_artifact_count: 1
-    expected_steps:
-      - config:
-          benchmark: bfcl-v4
-          phase: score
-          image: us.icr.io/cil15-shared-registry/gb-step-eval-bfcl-cpu:ce003c94
-# The Space rendered by `make space` (the local bfcl step), as for the other
-# clusters; publish-step rewrites it to configurations/spaces/local. The
-# environment comes from the shared BlueVela SLURM space.
+- target_name: bfcl-generate
+  step_count: 2
+  input_artifact_count: 1
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: bfcl-v4
+      phase: generate
+    step_uri: space://steps/eval/bfcl
+- target_name: bfcl-score
+  step_count: 2
+  input_artifact_count: 2
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: bfcl-v4
+      phase: score
+      image: us.icr.io/cil15-shared-registry/gb-step-eval-bfcl-cpu:ce003c94
+    step_uri: space://steps/eval/bfcl
 space_uri: ../../space
 tests:
-  - runner
+- runner
 simulate_step_failure: false
-# Two queued jobs (generate, then score), each with its own startup.
 timeout_minutes: 75

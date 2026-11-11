@@ -3,24 +3,20 @@
 # mcpmark-filesystem (granite-4.2-3b served by vLLM in the job, small LIMIT), proving
 # upstream's MCP harness, the filesystem MCP server in its enroot sandbox, agentic tool use against the served model, and the aggregated results.json.
 targets:
-  - mcpmark-test
+- mcpmark-test
 target_expectations:
-  - target_name: mcpmark-test
-    # One target, one step record (phase all: generate + score in one job).
-    step_count: 1
-    input_artifact_count: 0
-    output_artifact_count: 1
-    expected_steps:
-      - config:
-          benchmark: mcpmark-filesystem
-          phase: all
-          options: task_suite=easy
-# The Space rendered by `make space` (the local mcpmark step), as for the other
-# clusters; publish-step rewrites it to configurations/spaces/local. The
-# environment comes from the shared BlueVela SLURM space.
+- target_name: mcpmark-test
+  step_count: 2
+  input_artifact_count: 1
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: mcpmark-filesystem
+      phase: all
+      options: task_suite=easy
+    step_uri: space://steps/eval/mcpmark
 space_uri: ../../../../../../configurations/spaces/local
 tests:
-  - runner
+- runner
 simulate_step_failure: false
-# Shared-partition queueing on BlueVela can take a while, plus vLLM startup.
 timeout_minutes: 60

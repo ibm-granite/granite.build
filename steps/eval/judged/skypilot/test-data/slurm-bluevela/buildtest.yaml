@@ -4,24 +4,20 @@
 # served model -- on the family's GPU image (phase all: scoring needs the
 # server when the judge is the served model).
 targets:
-  - judged-test
+- judged-test
 target_expectations:
-  - target_name: judged-test
-    step_count: 1
-    input_artifact_count: 0
-    output_artifact_count: 1
-    expected_steps:
-      - config:
-          benchmark: gdpval
-          phase: all
-          options: judge_model=self
-# The Space rendered by `make space` (the local judged step), as for the other
-# clusters; publish-step rewrites it to configurations/spaces/local. The
-# environment comes from the shared BlueVela SLURM space.
+- target_name: judged-test
+  step_count: 2
+  input_artifact_count: 1
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: gdpval
+      phase: all
+      options: judge_model=self
+    step_uri: space://steps/eval/judged
 space_uri: ../../space
 tests:
-  - runner
+- runner
 simulate_step_failure: false
-# Shared-partition queueing on BlueVela can take a while, plus vLLM startup
-# and the self-judging pass.
 timeout_minutes: 60

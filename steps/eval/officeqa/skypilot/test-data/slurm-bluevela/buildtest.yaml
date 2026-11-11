@@ -5,32 +5,30 @@
 # its CPU image, bound by the granite_generation artifact, so one build test
 # covers both family images with no HF gate and no token.
 targets:
-  - officeqa-generate
-  - officeqa-score
+- officeqa-generate
+- officeqa-score
 target_expectations:
-  - target_name: officeqa-generate
-    step_count: 1
-    input_artifact_count: 0
-    output_artifact_count: 1
-    expected_steps:
-      - config:
-          benchmark: officeqa-pro
-          phase: generate
-  - target_name: officeqa-score
-    step_count: 1
-    input_artifact_count: 1
-    output_artifact_count: 1
-    expected_steps:
-      - config:
-          benchmark: officeqa-pro
-          phase: score
-          image: us.icr.io/cil15-shared-registry/gb-step-eval-officeqa-cpu:ce003c94
-# The Space rendered by `make space` (the local officeqa step), as for the
-# other clusters; publish-step rewrites it to configurations/spaces/local.
-# The environment comes from the shared BlueVela SLURM space.
+- target_name: officeqa-generate
+  step_count: 3
+  input_artifact_count: 2
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: officeqa-pro
+      phase: generate
+    step_uri: space://steps/eval/officeqa
+- target_name: officeqa-score
+  step_count: 3
+  input_artifact_count: 3
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: officeqa-pro
+      phase: score
+      image: us.icr.io/cil15-shared-registry/gb-step-eval-officeqa-cpu:ce003c94
+    step_uri: space://steps/eval/officeqa
 space_uri: ../../space
 tests:
-  - runner
+- runner
 simulate_step_failure: false
-# Two queued jobs (generate, then score), each with its own startup.
 timeout_minutes: 60

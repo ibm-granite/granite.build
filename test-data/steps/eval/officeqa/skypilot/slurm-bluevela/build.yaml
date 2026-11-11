@@ -7,6 +7,17 @@ granite.build:
   targets:
     officeqa-generate:
       environment_uri: space://environments/skypilot/slurm/bluevela
+      inputs:
+        # The model checkpoint as a real HF artifact: the launcher queues an
+        # hfpull step for it (public model, no token) and stages the download;
+        # the step then serves the binding path -- the artifact flow the
+        # env://-only fixtures never exercise.
+        model:
+          uri: "hf:///ibm-granite/granite-4.2-3b"
+          type: model
+        data:
+          uri: "hf:///datasets/ibm-granite/officeqa-buildtest-synthetic"
+          type: dataset
       outputs:
         granite_generation:
           uri: "env://{{ binding.path }}"
@@ -18,13 +29,19 @@ granite.build:
             log_retrieval_interval_seconds: 30
             benchmark: "officeqa-pro"
             image: "us.icr.io/cil15-shared-registry/gb-step-eval-officeqa:ce003c94"
-            model_path: "ibm-granite/granite-4.2-3b"
+            # The staged HF artifact path (its basename is not the
+            # model name, so pin the name vLLM advertises).
+            model_path: "{{ bindings.model.binding.path }}"
+            served_model_name: "granite-4.2-3b"
             options: ""
-            # The synthetic dataset (invented questions + parsed pages, shipped
-            # in test-data/ and staged to the shared FS): a trusted local
-            # root, so the pinned gated fetch and HF_TOKEN are bypassed while
-            # every other path runs for real.
-            dataset: "/proj/data-eng/llmb-read-write/eval-build-tests/officeqa-synthetic"
+            # The synthetic dataset (invented questions + parsed pages, hosted on
+            # the HF Hub; the repo copy in test-data/ is the source of truth):
+            # a trusted local root, so the pinned gated fetch and HF_TOKEN are
+            # bypassed while every other path runs for real.
+            # The synthetic dataset as a real HF artifact (same layout the
+            # trusted local root expects; hosted at
+            # ibm-granite/officeqa-buildtest-synthetic).
+            dataset: "{{ bindings.data.binding.path }}"
             output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/officeqa"
             run_name: "buildtest"
             limit: "2"
@@ -41,6 +58,17 @@ granite.build:
     officeqa-score:
       environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
+        # The same model artifact the generate target declares: a target only
+        # resolves bindings for inputs it declares itself (the granite4-350m
+        # recipes' per-target pattern), and the score phase's consistency
+        # check compares this run's model string against the generation
+        # record's. The second pull is a shared-cache hit.
+        model:
+          uri: "hf:///ibm-granite/granite-4.2-3b"
+          type: model
+        data:
+          uri: "hf:///datasets/ibm-granite/officeqa-buildtest-synthetic"
+          type: dataset
         generation:
           binding: officeqa-generate.granite_generation
       outputs:
@@ -54,12 +82,20 @@ granite.build:
             log_retrieval_interval_seconds: 30
             benchmark: "officeqa-pro"
             image: "us.icr.io/cil15-shared-registry/gb-step-eval-officeqa-cpu:ce003c94"
-            model_path: "ibm-granite/granite-4.2-3b"
+            # Must match the generate target's expression exactly: the score
+            # phase checks the generation record's model against this run's
+            # (results.py read_generation), and the binding path is what
+            # generate recorded. Bindings are build-scoped, so the score
+            # target resolves the same staged path without declaring the input.
+            model_path: "{{ bindings.model.binding.path }}"
             options: ""
             # Same synthetic dataset and output dir: the score phase reads
             # the generation.json the generate phase wrote there, and the
             # questions/gold answers from the CSVs.
-            dataset: "/proj/data-eng/llmb-read-write/eval-build-tests/officeqa-synthetic"
+            # The synthetic dataset as a real HF artifact (same layout the
+            # trusted local root expects; hosted at
+            # ibm-granite/officeqa-buildtest-synthetic).
+            dataset: "{{ bindings.data.binding.path }}"
             output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/officeqa"
             run_name: "buildtest"
             limit: "2"
