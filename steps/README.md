@@ -549,8 +549,8 @@ macros. The rules:
   `steps/<category>/shared/`.
 * Editing a shared file changes every step that includes it: re-run
   `make publish-step` in each and commit the regenerated `step.yaml`s.
-  `test/unit/asset/test_published_step_includes.py` (run in CI) fails while a
-  published `step.yaml` that uses `gb-include` is out of date. Example:
+  `test/unit/asset/test_published_steps_match_their_templates.py` (run in CI), which
+  checks every published step, include or not, fails while one is out of date. Example:
   `steps/train/shared/trainer_args.j2` holds the `args` checks and argv rendering of
   openinstruct-sft and hf-peft-sft.
 

@@ -95,8 +95,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `hf-peft-sft` steps now share their `args` checks, `q()` and `args` argv rendering
   (`steps/train/shared/trainer_args.j2`) and define their `validate` macro once
   (`macros/validate.j2`) instead of in both `setup:` and `run:`; their behaviour and
-  messages are unchanged. A CI test checks that a published `step.yaml` using
-  `gb-include` matches its source.
+  messages are unchanged. The CI test that checks every published `step.yaml` against
+  its source now renders the source as `make publish-step` does, so it also covers
+  `${IMAGE_REF}` and `gb-include` steps.
 
 - **Step resolution: `base_uris` order decides, and environments own steps by `environment.yaml`
   (#558).** `space://steps/<name>` now resolves to the first base, in `base_uris` order, that
