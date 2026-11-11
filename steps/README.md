@@ -420,7 +420,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `REGISTRY`        | *(required for image steps; set by the step's Makefile)* | image registry + namespace |
 | `IMAGE_NAME`      | `steps/<STEP_PATH>/<STEP_ENV>`            | image repository, one per step, mirroring the step's directory (e.g. `steps/train/openinstruct-sft/skypilot`) |
 | `IMAGE_VERSION`   | git short SHA, else `latest`              | version part of the tag; pin a release in the step's Makefile |
-| `IMAGE_TAG`       | `$(IMAGE_VERSION)`                        | image tag; the version of the step's image, e.g. `oi-v0.3.0-6` |
+| `IMAGE_TAG`       | `$(IMAGE_VERSION)`                        | image tag; the version of the step's image, e.g. `oi-v0.3.0-9` |
 | `IMAGE_REF`       | `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)`   | full image reference (derived)   |
 | `PUBLISH_OVERWRITE` | `false`                                 | set exactly `true` to let `publish-image` replace an existing tag (or push without checking) |
 | `TEST_PUBLISHED`  | `false`                                   | set exactly `true` to skip `make test`'s comparison of the local build with the published `IMAGE_REF`, and its registry query (see [Two test modes](#two-test-modes)) |

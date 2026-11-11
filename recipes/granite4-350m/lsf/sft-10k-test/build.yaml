@@ -16,7 +16,7 @@ granite.build:
         # `uri` is templated against the NEWARTIFACT event's binding payload
         # (filled by `pushasset` in environment.py with `binding=<payload>`),
         # so `{{ binding.path }}` resolves to the run-specific dir the SFT
-        # step actually wrote (e.g. /proj/.../sft/checkpoints/v0-<DATE>-<TIME>).
+        # step actually wrote (e.g. <shared-fs>/.../sft/checkpoints/v0-<DATE>-<TIME>).
         # Hardcoding `env://$${OUTPUT_DIR}` would force every downstream eval
         # to read the parent directory instead of the run-specific subdir,
         # because pullasset_envstore strips `env://` from this URI verbatim.

@@ -67,18 +67,24 @@ RUN git init -q . \
 # Upstream finetune.py calls snapshot_download(model_name_or_path) on rank 0 to
 # pre-fetch Hub files, and snapshot_download() rejects a local directory
 # (HFValidationError: "Repo id must be in the form ..."). The step always passes
-# the staged base_model directory, so skip the pre-fetch for a local path. The
-# patch fails the build if the upstream line ever changes.
+# the staged base_model directory, so skip the pre-fetch for a local path.
+# Upstream's parser also leaves argparse's allow_abbrev on, so a build's
+# `args: {learning_rat: ...}` would silently set learning_rate; the second patch
+# turns prefix matching off. Each patch fails the build if its upstream line ever
+# changes.
 COPY patches/finetune_local_model.py /tmp/finetune_local_model.py
+COPY patches/finetune_no_abbrev.py /tmp/finetune_no_abbrev.py
 RUN uv run --no-project --python 3.12 python /tmp/finetune_local_model.py open_instruct/finetune.py \
- && rm /tmp/finetune_local_model.py
+ && uv run --no-project --python 3.12 python /tmp/finetune_no_abbrev.py open_instruct/finetune.py \
+ && rm /tmp/finetune_local_model.py /tmp/finetune_no_abbrev.py
 
 # Security patches on top of the frozen lock (CRITICAL with a fix, from trivy or
 # quay's scanner; see README.md "Scanning"). vllm is REMOVED, not upgraded: the fixed vllm needs
 # torch 2.11, which would replace the locked torch 2.10 + flash-attn training
 # stack, and nothing finetune.py imports needs vllm (it serves RL/generation).
-# The rest are upgraded to the first fixed release. litellm leaves upstream's
-# <1.75.2 pin; finetune.py imports it only through optional helpers.
+# The rest are upgraded to the first fixed release, except Authlib: 1.9.5, the
+# newest when it was pinned (the first fixed one is 1.9.1). litellm leaves
+# upstream's <1.75.2 pin; finetune.py imports it only through optional helpers.
 # wandb is upgraded past upstream's ==0.23.1 pin for its bundled wandb-core Go
 # binary; the step runs it with WANDB_MODE=disabled (see README.md).
 RUN uv sync --frozen \
@@ -86,7 +92,7 @@ RUN uv sync --frozen \
  && uv pip uninstall --python .venv/bin/python vllm \
  && uv pip install --python .venv/bin/python \
       "pillow==13.0.0" "nltk==3.10.3" "litellm==1.84.0" "PyJWT==2.14.0" \
-      "Authlib==1.9.0" "fastmcp==3.2.0" "anyio==4.14.2" "GitPython==3.1.59" \
+      "Authlib==1.9.5" "fastmcp==3.2.0" "anyio==4.14.2" "GitPython==3.1.59" \
       "certifi==2026.10.19" "cryptography==46.0.7" "wandb==0.31.0" \
  && chmod -R a+rX /opt/open-instruct /opt/uv-python
 

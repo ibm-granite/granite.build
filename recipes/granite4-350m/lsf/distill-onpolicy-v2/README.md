@@ -59,7 +59,7 @@ transfer metrics. Then:
 
 ```bash
 gb build start -f recipes/granite4-350m/lsf/distill-onpolicy-v2/build.yaml --space <space> \
-  --param STUDENT_MODEL=/proj/granite-build/g4os/distill/distill-350m-stage1-v2/<build-id>/export-<N>
+  --param STUDENT_MODEL=<shared-fs>/distill/distill-350m-stage1-v2/<build-id>/export-<N>
 ```
 
 ## The topology, and the four ways it goes silently wrong

@@ -1,4 +1,4 @@
-# ruler-512k on BlueVela (SkyPilot / SLURM), nemoskills family image.
+# ruler-512k on SkyPilot/SLURM, nemoskills family image.
 # Data: pinned inside the image (GitHub/PyPI/task data baked by the family's extras.sh), nothing to fetch.
 #
 # LIMIT is empty: the full benchmark. For a quick functional check, score only the first N

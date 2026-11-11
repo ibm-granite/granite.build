@@ -1,6 +1,6 @@
 ######
 # distill-smoke — the granite4-350m distillation pipeline, end to end, at smoke
-# scale, on BlueVela (SkyPilot / LSF).
+# scale, on SkyPilot/LSF.
 #
 # This is recipes/granite4-gold-distillation/lsf/distill-pipeline-smoke retargeted from the
 # 4.1-3b/4.2-30b reference pair to OUR pair: the granite-4.0-350m SFT checkpoint as
@@ -66,7 +66,7 @@ granite.build:
   # A retry is here because of a MEASURED cluster fault, not as general
   # insurance. Builds 7853d33b and b5f030cd lost three GPU targets to
   # `RuntimeError: CUDA unknown error` raised inside torch at cuda_init, every
-  # one of them on host p2-r03-n1 — 3 runs, 3 failures on that host, against 0
+  # one of them on one specific host — 3 runs, 3 failures on that host, against 0
   # failures across several hundred runs on every other host in the logs. The
   # node takes the allocation and cannot initialise CUDA.
   #

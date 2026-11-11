@@ -1,8 +1,7 @@
 # Identity-RL full recipe
 
-The complete Identity RL run on BlueVela (LSF via SkyPilot). This is the
-gbserver reproduction of the gbansible `run_rl_bluevela_identity.sh` script —
-RM server, same GRPO configuration, full training length. The
+The complete Identity RL run on SkyPilot/LSF — RM server, the GRPO
+configuration, full training length. The
 `identityrl-smoke` recipe is the minutes-long plumbing test for the same
 workflow; this recipe runs it to convergence.
 
@@ -24,8 +23,8 @@ Three targets on `space://environments/skypilot/lsf`:
 
 ## No code-server
 
-Unlike `ifrl-*`, identity RL has **no code-server** — the source script sets
-`start_code_server=false` / `code_server_url=""`. The LSF `openinstruct-rl`
+Unlike `ifrl-*`, identity RL has **no code-server** (`start_code_server=false` /
+`code_server_url=""`). The LSF `openinstruct-rl`
 step gates the `CODE_SERVER_URL` export on a non-empty URL, so the recipe
 simply omits the `code-server` target: the trainer takes only the
 `rm_server_url` binding, and `teardown` downs only the rm-server cluster.
@@ -33,8 +32,7 @@ simply omits the `code-server` target: the trainer takes only the
 ## Difference from `identityrl-smoke`
 
 Structurally identical (same `build.yaml`, same targets, same `H100:8`
-topology). The only differences are the full-run training-length parameters,
-matching the `run_rl_bluevela_identity.sh` `-e` overrides:
+topology). The only differences are the full-run training-length parameters:
 
 | Parameter               | smoke | full   |
 |-------------------------|-------|--------|
@@ -46,8 +44,7 @@ matching the `run_rl_bluevela_identity.sh` `-e` overrides:
 
 ## Difference from `ifrl-full`
 
-Same servers minus the code-server, plus the identity-specific deltas the
-source scripts differ by:
+Same servers minus the code-server, plus the identity-specific deltas:
 
 | Parameter            | ifrl              | identityrl              |
 |----------------------|-------------------|-------------------------|
@@ -61,7 +58,7 @@ source scripts differ by:
 
 ## What it does NOT include
 
-- Downstream evals. Like the ansible script, this recipe stops after training.
+- Downstream evals. This recipe stops after training.
 
 ## Run
 

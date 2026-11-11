@@ -1,9 +1,9 @@
-# gold-sweep-smoke — the minutes-long gate for gold-sweep-100, on BlueVela
-# (SkyPilot / LSF).
+# gold-sweep-smoke — the minutes-long gate for gold-sweep-100, on
+# SkyPilot/LSF.
 #
 # Same SHAPE as gold-sweep-100, not the same scale. It keeps everything that can be
 # wrong in a way no unit test catches — the step's new max_steps / save_strategy keys,
-# the three /proj/data-eng paths, the retagged student, the trailing-newline response
+# the three shared-filesystem paths, the retagged student, the trailing-newline response
 # template, the beta 0.5 objective, the liger setting — and shrinks only what costs
 # time. Diff this file against gold-sweep-100/parameters.yaml: every difference should
 # be a cost, never a behaviour.

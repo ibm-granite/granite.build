@@ -1,5 +1,5 @@
 ######
-# Sage general evaluation suite on BlueVela (LSF).
+# Sage general evaluation suite on SkyPilot/LSF.
 # Runs 5 parallel eval targets: AGI Eval, BBH, MMLU Pro, IFEval, MMLU MC.
 ######
 granite.build:

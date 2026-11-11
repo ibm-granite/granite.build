@@ -60,16 +60,23 @@ All fields live under the step's `config.openinstruct_sft_config`.
 | `dataset_mixer_list_splits` | list | `["train"]` | Split names, rendered as `--dataset_mixer_list_splits <split> ...`. Must be a non-empty list. |
 | `deepspeed_config` | string | `stage3_no_offloading_accelerate.conf` | A file under the image's `/opt/open-instruct/configs/ds_configs/`. Empty means plain accelerate (no DeepSpeed). A value containing `/` is refused. |
 | `mixed_precision` | string | `bf16` | Passed to `accelerate launch --mixed_precision`. |
-| `args` | map | `{}` | Any other `finetune.py` flag, rendered as `--<key> <value>`. See [Passing finetune.py flags (args)](#passing-finetunepy-flags-args). |
+| `args` | map | `{}` | Any other `finetune.py` flag, rendered as `--<key> <value>`. Keys are full `finetune.py` flag names: an abbreviation of a step-owned flag is refused at step creation, any other fails the run. See [Passing finetune.py flags (args)](#passing-finetunepy-flags-args). |
 | `image_id` | string | the step's published image | The step's image, filled in when the step is generated. Override it with another image or, on SLURM, optionally a `.sqsh` path (SLURM environments with a `slurm_image_cache` cache the registry image themselves). `docker:` is added when missing. |
 | `clearml_enabled` | string | `auto` | `auto` (on iff `CLEARML_API_HOST`, `CLEARML_API_ACCESS_KEY` and `CLEARML_API_SECRET_KEY` are all set in the step env), `true`, or `false`. |
 | `clearml_project` | string | `""` | ClearML project. Empty means `openinstruct-sft`. Used only when ClearML is on. |
 | `clearml_task_name` | string | `""` | ClearML task name. Empty means `finetune`. Used only when ClearML is on. |
 
 Config errors fail the build at step creation, with a message that starts
-`openinstruct-sft:`. Examples: both or neither data source, an empty or multi-word
-`output`, a bad `clearml_enabled`, a step-owned flag in `args`, or `num_nodes` other
-than 1.
+`openinstruct-sft:`. Examples:
+
+- both or neither data source;
+- an empty or multi-word `output`;
+- a bad `clearml_enabled`;
+- in `args`: a key that is not a bare flag name (it holds `=`, a leading `-` or
+  whitespace, or is empty), a step-owned flag, an abbreviation of one, or a `no_*`
+  key;
+- `compute_config.num_nodes` or `launcher_config.num_nodes` other than 1. `1.0`,
+  and a string such as `"01"` that reads as the integer 1, count as 1.
 
 ## Passing finetune.py flags (args)
 
@@ -78,28 +85,42 @@ flags. Every value reaches `finetune.py` as its own argv word, byte for byte, so
 value with spaces or quotes is never word-split. `$MY_VAR` is therefore a literal,
 not an expansion. Parameterise the build with `$${PARAM}` instead.
 
+Keys must be full `finetune.py` flag names, never abbreviations: the step's
+`finetune.py` parses with prefix matching off. A key that is not a flag, or is a
+prefix of one, such as `learning_rat` or `max_seq_len`, fails the run with
+`ValueError: Some specified arguments are not used by the HfArgumentParser` rather
+than silently setting a flag. A `_` in a name may be written `-`.
+
 | YAML value | Renders as |
 |---|---|
 | scalar: `max_seq_length: 4096` | `--max_seq_length 4096` |
 | list: `dataset_transform_fn: [a, b]` | `--dataset_transform_fn a b` (repeated values) |
 | bool: `gradient_checkpointing: true` | `--gradient_checkpointing true` (`false` renders `false`) |
+| `no_*` key: `no_fused_optimizer: true` | refused at step creation (`--no_<flag>` takes no value); write `fused_optimizer: false` |
 | null: `seed: null` | omitted |
 | empty list: `foo: []` | refused at step creation (`--foo` alone would take the next flag as its value) |
 | map | refused at step creation |
 
-The step sets these flags itself, so they are refused in `args`:
+The step sets these flags itself, so they are refused as `args` keys at step
+creation. That covers their `-` spellings and abbreviations too: `output_d` or
+`push_to` is refused. Do not pass a flag inside a value either (for example
+`[a, --output_dir, /x]`): `finetune.py` would read it as a flag. Refusing such
+values is tracked in #613.
 
 ```
 model_name_or_path, output_dir, dataset_name, dataset_mixer, dataset_mixer_list,
 dataset_mixer_list_splits, with_tracking, report_to, wandb_entity, push_to_hub,
 try_launch_beaker_eval_jobs, try_auto_save_to_beaker, do_not_randomize_output_dir,
-resume_from_checkpoint, dataset_local_cache_dir
+resume_from_checkpoint, dataset_local_cache_dir, dataset_cache_mode,
+no_push_to_hub, no_try_launch_beaker_eval_jobs, no_try_auto_save_to_beaker
 ```
 
 Use the `base_model`/`dataset` inputs, `output_path`, `dataset_mixer_list(_splits)`
 or `clearml_*` instead. The step always passes `--push_to_hub false`,
-`--try_launch_beaker_eval_jobs false`, `--try_auto_save_to_beaker false` and
-`--do_not_randomize_output_dir`.
+`--try_launch_beaker_eval_jobs false`, `--try_auto_save_to_beaker false`,
+`--do_not_randomize_output_dir` and `--dataset_cache_mode local`
+(`dataset_cache_mode: hf` would push the tokenized dataset to the Hub as
+`<hf_user>/dataset-mix-cached` whenever `HF_TOKEN` is set).
 
 Example:
 
@@ -134,7 +155,8 @@ The step uses all of them. It launches one process per GPU, taking the count fro
 `$SKYPILOT_NUM_GPUS_PER_NODE` (falling back to `nvidia-smi -L`). A build with neither
 `accelerators` nor a GPU `instance_type` fails at step creation, before a node is
 provisioned; a node that still has no GPUs fails before training. There is no
-`gpu_model` or `num_gpus_per_node` key. `compute_config.num_nodes` must be `1`.
+`gpu_model` or `num_gpus_per_node` key. `compute_config.num_nodes` must be `1`, and so
+must `launcher_config.num_nodes` when set.
 
 ## ClearML tracking
 
@@ -301,8 +323,11 @@ To train on your own data, bind a `dataset` input and remove `dataset_mixer_list
 
 ## Notes and limitations
 
-- **Single node only.** `compute_config.num_nodes` must be `1`. Any other value
-  fails the build at step creation.
+- **Single node only.** `compute_config.num_nodes` must be `1`, and so must
+  `launcher_config.num_nodes` when set (`1.0` and `"01"` count as 1). Any other value fails
+  the build at step creation. Without the second check, gbserver would provision
+  the nodes `launcher_config.num_nodes` asks for, and each would run its own
+  single-node training.
 - **`finetune.py` is deprecated upstream, and pinned here.** Upstream favours
   `olmo_core_finetune.py`, which supports only OLMo and Qwen3 configs (no Granite).
   The step pins Open-Instruct v0.3.0 (commit
@@ -314,5 +339,7 @@ To train on your own data, bind a `dataset` input and remove `dataset_mixer_list
   step-owned, and each run trains into a fresh staging dir, so a warm-cluster re-run
   never resumes an earlier run.
 - **A gated model or dataset needs `HF_TOKEN`** in the step env (a space secret).
-- **Progress shows in the step status.** The step's monitor picks up `Step: ...`
-  lines from the training log and shows them as the step's status message.
+- **Progress shows in the step status.** `finetune.py` logs a progress line every
+  `args.logging_steps` steps. The step's monitor turns each one into a `RUNNING`
+  workload-status event whose `message` is the rest of the line from `Step:`, for
+  example `Step: 3, LR: 1.9e-05, Loss: 0.7012, TPS: 1234.5`.
