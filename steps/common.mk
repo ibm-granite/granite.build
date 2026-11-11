@@ -452,7 +452,7 @@ endif
 # the render succeeds.
 RENDER_STEP_TEMPLATE = $(PYTHON) $(COMMON_MK_DIR)scripts/render_step_template.py
 define render-step-template
-	@$(RENDER_STEP_TEMPLATE) "$(TEMPLATE)" "$(1)" --image-ref '$(IMAGE_REF)'
+	@$(RENDER_STEP_TEMPLATE) "$(TEMPLATE)" "$(1)" --image-ref='$(IMAGE_REF)'
 endef
 
 # copy-gbignore — copy the step's own .gbignore next to the rendered step.yaml, so

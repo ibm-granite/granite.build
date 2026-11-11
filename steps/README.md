@@ -497,12 +497,12 @@ acting as a user who may create repositories in the namespace. It is passed to
 
 `make space` (and `make publish-step`) render the template with
 [`scripts/render_step_template.py`](scripts/render_step_template.py) (standard-library
-Python, no install). It expands `gb-include` lines (next section), then substitutes
-**only** the literal `${IMAGE_REF}` token:
+Python 3.9+, no install). It expands `gb-include` lines (next section), then
+substitutes **only** the literal `${IMAGE_REF}` token:
 
 ```sh
 python3 steps/scripts/render_step_template.py step-template.yaml \
-  $(SPACE_DIR)/steps/<path>/step.yaml --image-ref '<full image ref>'
+  $(SPACE_DIR)/steps/<path>/step.yaml --image-ref='<full image ref>'
 ```
 
 Because only the literal `${IMAGE_REF}` is replaced, everything else passes through
@@ -537,10 +537,11 @@ The render replaces each marker line with the file's lines, indented like the ma
 so the published `step.yaml` is self-contained and gbserver sees ordinary inline
 macros. The rules:
 
-* The marker is a whole line, `{#- gb-include <path> -#}`, indented with spaces. A
-  line that starts with `{#` and `gb-include` in any other form fails the render, so a
-  typo can't pass as a plain Jinja comment. (An unexpanded marker is just a comment,
-  and the strict fill would then fail on the undefined macro.)
+* The marker is a whole line, `{#- gb-include <path> -#}`, indented with spaces. Any
+  other `{#` comment naming `gb-include` (a typo, tab indentation, or a marker after
+  other text on the line) fails the render, so a typo can't pass as a plain Jinja
+  comment. (An unexpanded marker is just a comment, and the strict fill would then
+  fail on the undefined macro.)
 * `<path>` is relative to the file holding the marker and must resolve, after
   symlinks, to a file under `steps/`.
 * Included files hold Jinja only (macros and comments) and can't include other files.

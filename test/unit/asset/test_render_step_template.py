@@ -127,6 +127,11 @@ class TestRefuse:
         msg = self._error(steps, "{#- gb-include ../../shared/outer.j2 -#}\n")
         assert "do not nest" in msg
 
+    def test_a_nested_malformed_include(self, steps):
+        _write(steps / "train" / "shared" / "outer.j2", "{#+ gb-include x -#}\n")
+        msg = self._error(steps, "{#- gb-include ../../shared/outer.j2 -#}\n")
+        assert "do not nest" in msg
+
     @pytest.mark.parametrize(
         "line",
         [
@@ -136,12 +141,19 @@ class TestRefuse:
             "{#-  gb-include ../../shared/m.j2 -#}",
             "{#- gb-include ../../shared/m.j2 -#} trailing",
             "{#- gb-include -#}",
+            "{#+ gb-include ../../shared/m.j2 -#}",
+            "echo hi {#- gb-include ../../shared/m.j2 -#}",
         ],
     )
     def test_a_malformed_marker(self, steps, line):
         _write(steps / "train" / "shared" / "m.j2", "x\n")
         msg = self._error(steps, f"a\n{line}\n")
         assert "malformed gb-include line" in msg and "step-template.yaml:2" in msg
+
+    def test_trailing_whitespace_is_shown(self, steps):
+        _write(steps / "train" / "shared" / "m.j2", "x\n")
+        msg = self._error(steps, "{#- gb-include ../../shared/m.j2 -#} \n")
+        assert "malformed gb-include line" in msg and "-#} '" in msg
 
 
 class TestRender:
@@ -183,6 +195,18 @@ class TestCli:
         )
         assert proc.returncode == 0, proc.stderr
         assert out.read_text() == "a: r\n"
+
+    def test_an_image_ref_starting_with_a_dash(self, steps, tmp_path):
+        t = _template(steps, "a: ${IMAGE_REF}\n")
+        out = tmp_path / "step.yaml"
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), str(t), str(out), "--image-ref=-x/y:z"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert out.read_text() == "a: -x/y:z\n"
 
     def test_an_error_writes_nothing_and_exits_1(self, steps, tmp_path):
         # The CLI resolves includes against the real steps/ tree, so this tmp
