@@ -60,6 +60,8 @@ EXPECTED = {
         set(),
     ),
     f"{_SKY}/distill/vllm-server": ({"model"}, set()),
+    f"{_SKY}/eval/livecodebench-generate": ({"model", "dataset"}, set()),
+    f"{_SKY}/eval/livecodebench-score": ({"completions", "dataset"}, set()),
     f"{_SKY}/distill/corpus-sources": (set(), set()),  # variable-length sources list
     f"{_SKY}/distill/gen-smoke": (set(), set()),  # variable-length rungs list
     f"{_SKY}/distill/probe": (set(), set()),  # diagnostic, literal paths

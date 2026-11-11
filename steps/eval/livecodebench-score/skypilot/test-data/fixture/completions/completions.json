@@ -1,0 +1,30 @@
+[
+ {
+  "question_id": "fx_sum",
+  "code_list": [
+   "a, b = map(int, input().split())\nprint(a + b)",
+   "print(sum(map(int, input().split())))"
+  ]
+ },
+ {
+  "question_id": "fx_max",
+  "code_list": [
+   "input()\nprint(max(map(int, input().split())))",
+   "input()\nprint(min(map(int, input().split())))"
+  ]
+ },
+ {
+  "question_id": "fx_rev",
+  "code_list": [
+   "print(input())",
+   ""
+  ]
+ },
+ {
+  "question_id": "fx_square",
+  "code_list": [
+   "class Solution:\n    def square(self, x: int) -> int:\n        return x * x\n",
+   "class Solution:\n    def square(self, x: int) -> int:\n        while True:\n            pass\n"
+  ]
+ }
+]
