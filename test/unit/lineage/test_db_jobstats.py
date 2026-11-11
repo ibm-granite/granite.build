@@ -1035,11 +1035,12 @@ class TestUpsertJobIsOneUpdate(_LineageTablesTest):
         # On the class: the storage is a pydantic model, so its instance is closed.
         monkeypatch.setattr(type(jobs), "update_fields", counting)
         second = job("t1", [artifact("a", LH_TABLE)], [artifact("c", LH_MODEL)])
-        sink._write_job(second, build_id="BLD", target_run_uuid="t1", extra_tags=["y=2"])
+        sink._write_job(
+            second, build_id="BLD", target_run_uuid="t1", extra_tags=["y=2"]
+        )
         assert len(calls) == 1
         stored = jobs.get_job("t1")
         assert {"x=1", "y=2"} <= set(stored.tags)
-
 
     def test_a_merge_error_reaches_the_caller_as_itself(self, sink, jobs):
         """update_fields wraps a callback's error in a generic ValueError; the merge's
@@ -1056,10 +1057,13 @@ class TestUpsertJobIsOneUpdate(_LineageTablesTest):
             raise KeyError("bad stored blob")
 
         with pytest.raises(KeyError, match="bad stored blob"):
-            upsert_job(jobs, stored.model_copy(update={"tags": ["z=1"]}), extra_fields=boom)
+            upsert_job(
+                jobs, stored.model_copy(update={"tags": ["z=1"]}), extra_fields=boom
+            )
 
-
-    def test_an_unchanged_re_record_takes_no_locked_write(self, sink, jobs, monkeypatch):
+    def test_an_unchanged_re_record_takes_no_locked_write(
+        self, sink, jobs, monkeypatch
+    ):
         """A re-record that adds nothing is one plain read, as before the merge moved
         into update_fields."""
         first = job("t3", [artifact("a", LH_TABLE)], [artifact("b", LH_MODEL)])
