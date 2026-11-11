@@ -642,3 +642,24 @@ class BaseLineageIndexStorageTest(AbstractStorageTest):
         storage.add(row(job_id="J3", input=wide, output=wide + "x"))
         again = row(job_id="J3", input=wide, output=wide + "x")
         assert upsert_row(storage, again) in (UNCHANGED, UPDATED)
+
+    def test_purge_scheme_drops_mem_endpoints_and_keeps_real_artifacts(self):
+        """#561: rows indexed before mem:// was excluded. A real side left with no row
+        becomes a terminal row; jobs without mem:// are untouched."""
+        storage = self._get_tested_storage()
+        storage.add(row(job_id="J1", input="s3://b/in", output="mem://svc"))
+        storage.add(row(job_id="J2", input="s3://b/in", output="mem://svc"))
+        storage.add(row(job_id="J2", input="s3://b/in", output="s3://b/out"))
+        storage.add(row(job_id="J3", input="MEM://k", output="s3://b/out2"))
+        storage.add(row(job_id="J4", input="s3://b/x", output="s3://b/y"))
+
+        assert storage.purge_scheme("mem") == (3, 2)
+
+        def pairs(job_id):
+            return sorted((r.input, r.output) for r in storage.get_rows_by_job(job_id))
+
+        assert pairs("J1") == [("s3://b/in", TERMINAL)]
+        assert pairs("J2") == [("s3://b/in", "s3://b/out")]
+        assert pairs("J3") == [(TERMINAL, "s3://b/out2")]
+        assert pairs("J4") == [("s3://b/x", "s3://b/y")]
+        assert storage.purge_scheme("mem") == (0, 0)

@@ -44,6 +44,32 @@ All fields live under the step's `config.byoc_config`.
 > build a Dockerfile), `byoc` builds no image; `image` selects an existing public image
 > and the code arrives at run time via `git clone`.
 
+### Images without git
+
+`setup` clones the repo **before** `setup_command` runs, so `setup_command` cannot be
+used to install git. Instead, when the image has no working `git` (the default
+`fedora-minimal`, the official `pytorch/pytorch` images, `python:*-slim`), `setup`
+installs it before the clone:
+
+1. With **conda** in the image, from conda-forge into its own environment under
+   `./.byoc-git` in the workdir. This needs no root, so it works in containers that run
+   as the submitting user (enroot on LSF), and it leaves the image's Python environment
+   alone. Your `~/.condarc` and `~/.netrc` still apply, so proxy and mirror settings
+   there are used. `./.byoc-git/bin` holds only `git` and goes first on `PATH`, in
+   `setup` and in `run`, so the image's other tools are unchanged.
+2. If there is no conda, or conda fails, **as root** with the image's `apt-get`, `dnf`
+   or `microdnf`.
+
+If none of these works (conda fails and the container is not root, no package manager,
+or a root that cannot run one, such as enroot `--container-remap-root`), `setup` fails
+before the clone with `byoc:` messages saying why. Use an image that has git or conda
+then. An image whose git works skips all of this.
+
+The install downloads at run time, so `setup` needs outbound access to conda-forge
+(`conda.anaconda.org`) or to the image's distro package mirrors. On a cluster without
+that access (air-gapped, or an egress allowlist that leaves them out), use an image
+that already has git.
+
 ## Inputs and outputs
 
 `byoc` declares no named inputs — its step.yaml has only `inputs: {allow_unknown: true}`,

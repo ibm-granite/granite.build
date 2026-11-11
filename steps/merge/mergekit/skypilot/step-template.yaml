@@ -1,0 +1,268 @@
+# mergekit: merge models with MergeKit (mergekit-yaml) on the SkyPilot env. Issue #238.
+# Source: steps/merge/mergekit/skypilot/ — published by `make publish-step`; do not edit
+# the copy under configurations/assets. See USAGE.md.
+name: mergekit
+version: 1.0.0
+type: exec
+config:
+  mergekit_config:
+    # The MergeKit merge recipe, exactly as mergekit-yaml reads it (merge_method,
+    # models / slices / modules, base_model, parameters, dtype, tokenizer, ...). See
+    # https://github.com/arcee-ai/mergekit/blob/v0.1.5/docs/merge_methods.md.
+    #
+    # Every model reference keeps MergeKit's own syntax: `<model>`, `<model>@<revision>`
+    # and `<model>+<lora>`. <model> (and <lora>) may be:
+    #   * the NAME of a bound input of this step (model_1, model_2, model_3, model_4,
+    #     base_model): replaced with the input's staged path before MergeKit runs, so
+    #     the model goes through granite.build's inputs and lineage;
+    #   * a Hugging Face repo id or a node path: passed through untouched, and MergeKit
+    #     downloads / reads it itself (gated repos need HF_TOKEN in the step env; see
+    #     config.skypilot.secrets below). These models are not build inputs, so they
+    #     are not in lineage.
+    # A bare name only counts as an input when it is one of the five names above AND
+    # that input is bound; anything else is left as MergeKit would read it. MergeKit's
+    # mapping form of a reference ({model: ..., lora: ..., override_architecture: ...})
+    # is substituted too; a {path, revision} ModelPath is literal, so only a path that is
+    # exactly an input name is replaced. A staged path containing '@' or '+' is refused.
+    #
+    # gbserver renders every config string as Jinja before the step sees it, which drops
+    # {% %} blocks and keeps stray {{ }} fragments, so an inline Jinja `chat_template`
+    # must be wrapped in {% raw %}...{% endraw %} in the build.yaml. The step accepts
+    # only null, a template name MergeKit ships (auto, chatml, llama3, ...) or a
+    # template with its {% %} blocks intact, and refuses anything else rather than ship
+    # a mangled template or a model with no tokenizer.
+    merge_config: {}
+    # Extra mergekit-yaml flags, keyed by the flag name without the dashes. Rendered
+    # in order: true -> --<key>, false -> --no-<key> (MergeKit's on/off flags),
+    # null -> omitted, any other value -> --<key> '<value>'; an empty value is refused.
+    # E.g.  args: {out-shard-size: 1B, random-seed: 42, write-model-card: false}
+    # Refused here, because the step owns them: transformers-cache (a Hub cache on the
+    # environment's shared root) and lora-merge-cache (under the run's workdir); cuda, device and gpu-rich (set
+    # from the GPUs allocated); allow-crimes, trust-remote-code, copy-tokenizer and
+    # lazy-unpickle (the named keys below); safe-serialization (the step checks the
+    # output's .safetensors files). `-v` (verbosity) has no long form, so it can't be
+    # set here.
+    # Precision is not a flag: set `dtype` (compute) and `out_dtype` (saved weights)
+    # in merge_config, as MergeKit documents.
+    args: {}
+    # Two MergeKit flags, as named keys (args can't set them):
+    # - copy_tokenizer: copy the base model's tokenizer into the output (MergeKit's
+    #   default). run.sh refuses a merged model that lacks a tokenizer it copied or
+    #   built, or a chat template it was asked for, since MergeKit swallows tokenizer
+    #   copy errors.
+    # - lazy_unpickle: load pickled .bin checkpoints lazily (MergeKit defaults this off;
+    #   .safetensors inputs are always memory-mapped, so it has no effect on them).
+    copy_tokenizer: true
+    lazy_unpickle: true
+    # Dangerous MergeKit options, named so a build opts in visibly: mixing model
+    # architectures (--allow-crimes) and running a model repo's own Python code
+    # (--trust-remote-code).
+    allow_crimes: false
+    trust_remote_code: false
+    # Where the merged model is written and registered from. Empty = ./model in the
+    # per-target workdir, which teardown removes: when a later target reads the model,
+    # set a path on the cluster's shared filesystem and use the same path in the
+    # output's env:/// uri.
+    output_path: ""
+    # MergeKit release installed into ./venv with uv. Ignored when mk_image is set.
+    mergekit_version: "0.1.5"
+    pip_index_url: "https://pypi.org/simple"
+    # Container image to run in, from any registry; the step adds SkyPilot's `docker:`
+    # marker. Setting this SKIPS the venv and install: the image must already provide
+    # mergekit-yaml on PATH, plus python3 with PyYAML. Not usable on the local Docker
+    # SLURM cluster, which has no Pyxis to run images.
+    mk_image: ""
+  # MergeKit merges on the CPU by default. Measured peak RAM with mergekit 0.1.5: 1.25 GB
+  # for two 135M models in bf16, and 6.4 GB for two 0.5B models in float32. Size the node
+  # with headroom over the combined size of the models (see USAGE.md, Memory).
+  compute_config:
+    num_gpus_per_node: 0
+    total_memory_per_node: "4Gi"
+  # Secrets the merge receives as environment variables, e.g. HF_TOKEN for a gated
+  # Hugging Face repo named directly in merge_config:
+  #   skypilot:
+  #     secrets:
+  #       secret_names_to_use_as_env_variable:
+  #         - {env_name: HF_TOKEN, secret_name: HF_TOKEN}
+  skypilot:
+    secrets:
+      secret_names_to_use_as_env_variable: []
+inputs:
+  allow_unknown: true            # lets recipes bind extra inputs to order targets
+  required:
+    # The first model to merge. Every merge reads at least one model; the rest may be
+    # inputs or Hugging Face ids named in merge_config.
+    model_1:
+      type: model
+      accept: [uri, binding]
+  optional:
+    model_2:
+      type: model
+      accept: [uri, binding]
+    model_3:
+      type: model
+      accept: [uri, binding]
+    model_4:
+      type: model
+      accept: [uri, binding]
+    # The base for base-relative methods (ties, dare_*, task_arithmetic, slerp, ...).
+    base_model:
+      type: model
+      accept: [uri, binding]
+outputs:
+  allow_unknown: true
+  required:
+    # The merged model: a standard Hugging Face model directory.
+    model:
+      type: model
+environment_configs:
+  Skypilot:
+    # No `subtypes:` restriction: nothing here is endpoint-specific.
+    default_launcher: mergekit
+    launchers:
+      mergekit:
+        type: skypilot
+        monitors: [skypilot_monitor]
+        config:
+          # Not shell-escaped: SkyPilot gets it as a python value. Same as dpk.
+          image_id: '{{ ("docker:" ~ config.mergekit_config.mk_image) if config.mergekit_config.mk_image else "" }}'
+          resources: {}
+          file_mounts:
+            src: src             # ships src/ to ./src before setup
+          setup: |
+            set -euo pipefail
+            {%- macro q(v) -%}{{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}{%- endmacro %}
+            {%- if not config.mergekit_config.mk_image %}
+            bash ./src/setup.sh \
+              --venv ./venv \
+              --index-url '{{ q(config.mergekit_config.pip_index_url) }}' \
+              -- 'mergekit=={{ q(config.mergekit_config.mergekit_version) }}'
+            {%- endif %}
+          run: |
+            set -euo pipefail
+            {%- macro q(v) -%}{{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}{%- endmacro %}
+            {%- set c = config.mergekit_config %}
+            {#- Config-only checks. gbserver fills this launcher config with the strict
+                renderer when it creates the step, so a raise_error here fails the step
+                before the merge node is provisioned (the fm-tune pattern; the target's
+                hfpull steps, which run first, still do their downloads). They live in run:
+                only, because each block is filled on its own. mergekit_prepare.py repeats
+                the recipe, args, chat_template and unbound-input checks on the node (for a
+                direct run, and for what only the node can see: the installed mergekit's
+                methods and template names, and mapping-form references);
+                test_render_and_prepare_agree keeps the two in step. The mergekit_version
+                and string-key checks, and the node and GPU checks, are render-only: they
+                concern the launch, not the recipe. #}
+            {%- macro validate(c) -%}
+            {#- MergeKit 0.1.5's registered methods (mergekit.merge_methods.registry);
+                test_merge_method_list_matches_mergekit_registry keeps this list in sync.
+                Like the template names below, it is checked only when the step installs
+                0.1.5 itself: another mergekit_version or an mk_image may have other
+                methods, and MergeKit then refuses an unknown one itself ("Unimplemented
+                merge method"). #}
+            {%- set pinned = not c.mk_image and (c.mergekit_version | string) == "0.1.5" -%}
+            {%- set methods = ["arcee_fusion", "breadcrumbs", "breadcrumbs_ties", "dare_linear", "dare_ties", "della", "della_linear", "karcher", "linear", "model_stock", "multislerp", "nearswap", "nuslerp", "passthrough", "ram", "ramplus_tl", "sce", "slerp", "task_arithmetic", "ties"] -%}
+            {%- set owned = ["transformers-cache", "lora-merge-cache", "cuda", "device", "gpu-rich", "allow-crimes", "trust-remote-code", "copy-tokenizer", "lazy-unpickle", "safe-serialization"] -%}
+            {%- set mc = c.merge_config -%}
+            {%- if mc is not mapping or not mc %}{{ raise_error("mergekit: mergekit_config.merge_config is required: the MergeKit recipe (merge_method, models or slices, ...).") }}{% endif -%}
+            {%- if mc.merge_method is not defined or mc.merge_method is not string or not mc.merge_method %}{{ raise_error("mergekit: merge_config.merge_method is required, as a non-empty string.") }}{% endif -%}
+            {%- if pinned and mc.merge_method not in methods %}{{ raise_error("mergekit: merge_config.merge_method must be one of " ~ (methods | join(", ")) ~ "; got '" ~ mc.merge_method ~ "'.") }}{% endif -%}
+            {%- for k in ["models", "slices"] if mc[k] is defined and mc[k] and (mc[k] is mapping or mc[k] is string or mc[k] is not iterable) %}{{ raise_error("mergekit: merge_config." ~ k ~ " must be a list.") }}{% endfor -%}
+            {%- if mc.modules is defined and mc.modules and mc.modules is not mapping %}{{ raise_error("mergekit: merge_config.modules must be a mapping of module name to module.") }}{% endif -%}
+            {%- if ([mc.models is defined and mc.models, mc.slices is defined and mc.slices, mc.modules is defined and mc.modules] | select | list | length) != 1 %}{{ raise_error("mergekit: merge_config must have exactly one of models, slices or modules (MergeKit's own rule).") }}{% endif -%}
+            {%- if c.args is not mapping %}{{ raise_error("mergekit: mergekit_config.args must be a mapping of mergekit-yaml flags, e.g. {out-shard-size: 1B}.") }}{% endif -%}
+            {%- for k in c.args if (k | string) in owned %}{{ raise_error("mergekit: mergekit_config.args." ~ k ~ " is set by the step; use the named mergekit_config key where there is one (allow_crimes, trust_remote_code, copy_tokenizer, lazy_unpickle).") }}{% endfor -%}
+            {%- for key in ["copy_tokenizer", "lazy_unpickle", "allow_crimes", "trust_remote_code"] if c[key] is not boolean %}{{ raise_error("mergekit: mergekit_config." ~ key ~ " must be true or false, got '" ~ c[key] ~ "'.") }}{% endfor -%}
+            {%- for key in ["output_path", "mergekit_version", "pip_index_url", "mk_image"] if c[key] is mapping or (c[key] is iterable and c[key] is not string) %}{{ raise_error("mergekit: mergekit_config." ~ key ~ " must be a string.") }}{% endfor -%}
+            {%- if not c.mk_image and not c.mergekit_version %}{{ raise_error("mergekit: set mergekit_config.mergekit_version, or mk_image to an image that has mergekit-yaml.") }}{% endif -%}
+            {#- args keys and values, as mergekit_prepare.py render_args checks them. #}
+            {%- set key_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-" -%}
+            {%- for k, v in (c.args.items() if c.args is mapping else []) -%}
+            {%- if not (k | string) or (k | string).startswith("-") or (k | string).startswith("no-") or ((k | string) | list | reject("in", key_chars) | list) %}{{ raise_error("mergekit: mergekit_config.args key '" ~ k ~ "' must be a mergekit-yaml flag name without dashes (e.g. out-shard-size); write false to turn a flag off, not no-<flag>.") }}{% endif -%}
+            {%- if v is string and not v.strip() %}{{ raise_error("mergekit: mergekit_config.args." ~ k ~ " is empty; give it a value, or null to leave the flag out.") }}{% endif -%}
+            {%- if v is mapping or (v is iterable and v is not string) %}{{ raise_error("mergekit: mergekit_config.args." ~ k ~ " must be a scalar, got a list or mapping.") }}{% endif -%}
+            {%- endfor -%}
+            {#- chat_template, as mergekit_prepare.py check_chat_template checks it: null, a
+                template name MergeKit 0.1.5 ships, or a template with its {% %} blocks
+                (which survive gbserver's config fill only inside {% raw %}). The node
+                re-checks names against the installed mergekit. #}
+            {%- set template_names = ["auto", "alpaca", "chatml", "exaone", "llama3", "mistral"] -%}
+            {%- set ct = mc.chat_template if mc is mapping and mc.chat_template is defined else none -%}
+            {%- if ct is not none -%}
+            {%- if ct is not string or not ct.strip() %}{{ raise_error("mergekit: merge_config.chat_template is empty or not a string. Use a template name (" ~ (template_names | join(", ")) ~ ") or an inline Jinja template with {% %} blocks, wrapped in {% raw %}...{% endraw %} in the build.yaml.") }}
+            {%- elif pinned and ct not in template_names and "{%" not in ct %}{{ raise_error("mergekit: merge_config.chat_template '" ~ (ct if ct | length <= 60 else ct[:57] ~ "...") ~ "' is not a template name MergeKit ships, and not a Jinja template with {% %} blocks. Use a template name (" ~ (template_names | join(", ")) ~ ") or wrap an inline template in {% raw %}...{% endraw %} in the build.yaml.") }}
+            {%- endif -%}
+            {%- set builds = mc.tokenizer is defined and mc.tokenizer is not none or mc.tokenizer_source is defined and mc.tokenizer_source is not none -%}
+            {%- if c.copy_tokenizer is sameas false and not builds %}{{ raise_error("mergekit: merge_config.chat_template needs copy_tokenizer: true (or a tokenizer_source / tokenizer block in merge_config); otherwise the merged model has no tokenizer, so MergeKit drops the template.") }}{% endif -%}
+            {%- endif -%}
+            {%- endmacro %}
+            {{- validate(c) }}
+            {#- An input name the recipe uses but the target doesn't bind would reach MergeKit
+                as a Hub repo id and fail only after provisioning. Checked here for the
+                string references in base_model, models[] and slices[].sources[] (the common
+                forms); mergekit_prepare.py walks every reference field, mapping forms
+                included, on the node. #}
+            {%- set input_names = ["model_1", "model_2", "model_3", "model_4", "base_model"] %}
+            {%- set mc = c.merge_config %}
+            {%- set refs = [mc.base_model if mc.base_model is defined and mc.base_model is string else ""] %}
+            {%- for m in (mc.models if mc.models is defined and mc.models is iterable and mc.models is not string else []) if m is mapping and m.model is defined and m.model is string %}{% set _ = refs.append(m.model) %}{% endfor %}
+            {%- for sl in (mc.slices if mc.slices is defined and mc.slices is iterable and mc.slices is not string else []) if sl is mapping %}
+            {%- for src in (sl.sources if sl.sources is defined and sl.sources is iterable and sl.sources is not string else []) if src is mapping and src.model is defined and src.model is string %}{% set _ = refs.append(src.model) %}{% endfor %}
+            {%- endfor %}
+            {%- for ref in refs if "{{" in ref %}{{ raise_error("mergekit: merge_config has a model reference gbserver could not fill: '" ~ ref ~ "'. A {{ bindings.<name>.binding.path }} reference arrives like this when that input is not bound. Bind the input, or name it by its input name (e.g. model: model_1), which the step checks.") }}{% endfor %}
+            {%- for ref in refs %}
+            {%- for part in ref.split("+") %}
+            {%- set name = part.split("@")[0] %}
+            {%- if name in input_names and bindings[name] is not defined %}{{ raise_error("mergekit: merge_config names input " ~ name ~ ", but it is not bound. Bind it under the target's inputs, or name the model by its Hugging Face id or path instead.") }}{% endif %}
+            {%- endfor %}
+            {%- endfor %}
+            {#- A bound input the recipe never names is most often a typo (model1 for
+                model_1), which MergeKit would fetch as a Hub id. Refused here only when no
+                string VALUE anywhere in the recipe names it (keys such as base_model: don't
+                count): as a reference's <model> or <lora> part, or as its staged path (what
+                the bindings form renders to). Every reference field is such a value, so this
+                never refuses what mergekit_prepare.py accepts; prepare checks the reference
+                fields themselves on the node. #}
+            {%- macro _values(v, out) -%}
+            {%- if v is string %}{% set _ = out.append(v) %}
+            {%- elif v is mapping %}{% for k in v %}{{ _values(v[k], out) }}{% endfor %}
+            {%- elif v is iterable %}{% for x in v %}{{ _values(x, out) }}{% endfor %}
+            {%- endif -%}
+            {%- endmacro %}
+            {%- set values = [] %}{{ _values(mc, values) }}
+            {%- set used = [] %}
+            {%- for v in values %}{% for part in v.split("+") %}{% set _ = used.append(part.split("@")[0]) %}{% endfor %}{% endfor %}
+            {%- for name in input_names if bindings[name] is defined and name not in used and bindings[name].binding.path not in used %}{{ raise_error("mergekit: input " ~ name ~ " is bound, but merge_config never names it. Name each bound input in the recipe (e.g. model: " ~ name ~ "), or remove it from the target's inputs.") }}{% endfor %}
+            {#- Single node: with more, SkyPilot runs run: on every node and the runs race
+                on the output. Both sources gbserver reads num_nodes from. #}
+            {%- set compute = config.compute_config if (config.compute_config is defined and config.compute_config is mapping) else {} %}
+            {%- set launcher = config.launcher_config if (config.launcher_config is defined and config.launcher_config is mapping) else {} %}
+            {%- for where, src in [("compute_config", compute), ("launcher_config", launcher)] if src.get("num_nodes") is not none and (src.get("num_nodes") | string) != "" and not ((src.get("num_nodes") is number and src.get("num_nodes") == 1) or (src.get("num_nodes") | string) == "1") %}{{ raise_error("mergekit: " ~ where ~ ".num_nodes must be 1 (got '" ~ src.get("num_nodes") ~ "'); this step is single-node.") }}{% endfor %}
+            {#- GPUs: gbserver requests them only from launcher_config.resources.accelerators
+                or an instance_type (issue #536), so a GPU count alone would silently get a
+                CPU-only node. "More than 0" follows gbserver's _warn_unrequested_gpus,
+                float(value) > 0: true counts as 1 GPU; false, 0, 0.0 and "0.0" are no GPU; and a
+                value that is not a number is not a GPU request. #}
+            {%- set gpus = compute.get("num_gpus_per_node") %}
+            {%- set gpus_n = 0 if gpus is none else (1 if gpus is sameas true else (0 if gpus is sameas false else (gpus | float(0)))) %}
+            {%- if gpus_n > 0 and not ((launcher.get("resources") or {}).get("accelerators") or (launcher.get("resources") or {}).get("instance_type")) %}{{ raise_error("mergekit: compute_config.num_gpus_per_node is " ~ gpus ~ ", but gbserver does not request GPUs from compute_config (issue #536). Also set config.launcher_config.resources.accelerators (or an instance_type with GPUs), or leave GPUs at 0 (MergeKit merges on the CPU).") }}{% endif %}
+            bash ./src/run.sh \
+              --venv '{{ "" if c.mk_image else "./venv" }}' \
+              --input-model_1 '{{ q(bindings.model_1.binding.path) }}' \
+              --input-model_2 '{{ q(bindings.model_2.binding.path if bindings.model_2 is defined else "") }}' \
+              --input-model_3 '{{ q(bindings.model_3.binding.path if bindings.model_3 is defined else "") }}' \
+              --input-model_4 '{{ q(bindings.model_4.binding.path if bindings.model_4 is defined else "") }}' \
+              --input-base_model '{{ q(bindings.base_model.binding.path if bindings.base_model is defined else "") }}' \
+              --merge-config-json '{{ q(c.merge_config | json_dumps) }}' \
+              --args-json '{{ q(c.args | json_dumps) }}' \
+              --copy-tokenizer '{{ q(c.copy_tokenizer | string | lower) }}' \
+              --lazy-unpickle '{{ q(c.lazy_unpickle | string | lower) }}' \
+              --allow-crimes '{{ q(c.allow_crimes | string | lower) }}' \
+              --trust-remote-code '{{ q(c.trust_remote_code | string | lower) }}' \
+              --output-model '{{ q(c.output_path or "./model") }}' \
+              --run-id '{{ q(run_metadata.targetsteprun_id if run_metadata is defined else "") }}'
+    monitors:
+      skypilot_monitor:
+        ref: space://monitors/skypilot
+        config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(300) }}"

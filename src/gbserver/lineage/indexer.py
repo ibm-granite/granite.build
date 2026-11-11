@@ -77,6 +77,7 @@ from gbserver.lineage.lineage_seeding import (
     SEED_FROM_LATEST,
     LineageSeedError,
 )
+from gbserver.lineage.mem_artifacts import lineage_view
 from gbserver.lineage.row_indexing import LineageRowIndexer
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.storage import Pagination, QueryControl, SortOrder
@@ -582,6 +583,7 @@ class JobLineageIndexer:
         Keyed off the class, not ``GBSERVER_LINEAGE_PROVIDER``: an indexer reads
         exactly one source, so its checkpoint cannot depend on the environment.
         """
+        assert self.PROVIDER is not None, "a concrete indexer sets PROVIDER"
         return _checkpoint_key_for_provider(self.PROVIDER)
 
     def read_checkpoint(self, storage: SingletonAdminStorage) -> Optional[dict]:
@@ -1021,6 +1023,8 @@ class TargetLineageIndexer(JobLineageIndexer):
     PROVIDER = LINEAGE_PROVIDER_NONE
 
     def _timestamp(self, job: StoredTargetRun) -> str:
+        # Only finished targets are listed (see _keys_since).
+        assert job.finished_at is not None
         return as_aware(job.finished_at).isoformat()
 
     def _item_id(self, job: StoredTargetRun) -> str:
@@ -1129,6 +1133,12 @@ class TargetLineageIndexer(JobLineageIndexer):
     def _index(self, storage: SingletonAdminStorage, job: StoredTargetRun) -> bool:
         if not job.input_artifacts and not any(job.output_artifacts.values()):
             return False
+        # mem:// artifacts are not lineage (see mem_artifacts): a target whose only
+        # artifacts are mem:// is artifact-less too. The view is handed to the
+        # builder, so the registry is read once.
+        view = lineage_view(storage, job)
+        if view.is_artifact_less:
+            return False
         # gb_targets IS the job store for this source, so nothing is copied into
         # gb_lineage_job: the rows are stamped TARGETS and their ``retrieve`` keys
         # (build_id, target_run_uuid) are what GET /lineage/jobs/{id} follows back
@@ -1140,7 +1150,7 @@ class TargetLineageIndexer(JobLineageIndexer):
             # raise when it is gone: a target whose build vanished has no
             # provenance to index, and the rows' retrieve keys would point at a
             # build the detail route cannot fetch.
-            events, _ = self._sink.create_jobstats_for_target(storage, job)
+            events, _ = self._sink.create_jobstats_for_target(storage, job, view=view)
         except ValueError as exc:
             logger.warning(
                 "Target run %s could not be built into lineage entries; "
@@ -1172,7 +1182,10 @@ class TargetLineageIndexer(JobLineageIndexer):
                 return None
             finished = [t for t in page if t.finished_at is not None]
             if finished:
-                return max(finished, key=lambda t: as_aware(t.finished_at))
+                return max(
+                    finished,
+                    key=lambda t: as_aware(t.finished_at),  # type: ignore[arg-type]
+                )
             page_index += 1
 
     def _format_timestamp(self, instant: datetime) -> str:
@@ -1348,8 +1361,8 @@ class LineageJobIndexer(JobLineageIndexer):
             return self._rows.index_job_records(batch), self._checkpoint_batch(
                 storage, batch_keys, mark
             )
-        except Exception:
-            if _is_transient_error(sys.exc_info()[1]):
+        except Exception as exc:  # noqa: BLE001
+            if _is_transient_error(exc):
                 logger.warning(
                     "Transient failure indexing lineage job records; retrying "
                     "next scan.",
