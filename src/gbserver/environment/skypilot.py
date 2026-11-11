@@ -3660,6 +3660,19 @@ class Skypilot(Environment):
             kwargs.get("config") or {}
         ).secrets.secret_names_to_use_as_env_variable
 
+    def validate_launch_config(
+        self: Self,
+        step_env_config: "StepEnvironmentTypeConfig",
+        launcher_config: Dict,
+        config: Dict,
+    ) -> None:
+        """Resolve ``num_nodes`` as the launch will and enforce ``single_node``.
+
+        See :meth:`Environment.validate_launch_config` and
+        :func:`validate_launch_num_nodes`.
+        """
+        validate_launch_num_nodes(step_env_config, launcher_config, config)
+
     def _launch_env_layers(self: Self, **kwargs: Any) -> List[Dict[str, str]]:
         """SkyPilot env layers for the shared launch-env composer.
 
