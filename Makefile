@@ -296,7 +296,7 @@ cicd-pr-test:
 quick-tests-setup:
 	$(MAKE) venv
 
-# Setup does not setup slurm, so the skypilot/slurm tests are skipped
+# Setup does not setup slurm, so the skypilot/slurm/local tests are skipped
 # GBTEST_MODE=mock defaults GBTEST_MOCK_HF=true (see test/libgbtest/mock_env.py), so
 # HF is never touched — the action has no HF_TOKEN secret on PRs and we don't want
 # CI flaking on HF rate limits. A test needing real HF opts in via @pytest.mark.live("hf").

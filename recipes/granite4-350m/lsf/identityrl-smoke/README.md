@@ -1,8 +1,8 @@
 # Identity-RL smoke recipe
 
-A minutes-long smoke test of the end-to-end Identity RL plumbing on BlueVela
-(LSF via SkyPilot), before committing to the full run. Mirrors `ifrl-smoke`,
-but for the identity workflow (gbansible `run_rl_bluevela_identity.sh`).
+A minutes-long smoke test of the end-to-end Identity RL plumbing on SkyPilot/LSF,
+before committing to the full run. Mirrors `ifrl-smoke`,
+but for the identity workflow.
 
 Identity RL trains the model's persona/identity responses ("Who are you?",
 "What's your name?") on the `general_identity` dataset, scored by the reward
@@ -10,8 +10,8 @@ model.
 
 ## No code-server
 
-Unlike `ifrl-smoke`, identity RL has **no code-server** — the source script
-sets `start_code_server=false` / `code_server_url=""`. The recipe omits the
+Unlike `ifrl-smoke`, identity RL has **no code-server**
+(`start_code_server=false` / `code_server_url=""`). The recipe omits the
 `code-server` target: the trainer takes only the `rm_server_url` binding, and
 `teardown` downs only the rm-server cluster.
 

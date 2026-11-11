@@ -69,7 +69,7 @@ not the `1.0` the config states.
 |---|---|
 | `PROBE LOAD_OK attn=flash_attention_2` | Clear. Both arms can run. |
 | `PROBE LOAD_OK attn=eager` only | The model loads, the FA2 kernel does not. GOLD is fine (it never sets `attn_implementation`); the SFT control arm is **not** — `sft.py`'s `verify_optimization_stack` aborts every rank on a mismatch. |
-| `PROBE LOAD_FAIL` both, with `GreedySearchDecoderOnlyOutput` | The measured failure. Fix by prefetching a newer kernel revision into a persistent `HF_HOME` (`workload.hf_home` exists on every step for this); upstream has `scripts/bluevela/prefetch-kernels.sh`. **Do not** switch to a dense student — that changes the experiment. |
+| `PROBE LOAD_FAIL` both, with `GreedySearchDecoderOnlyOutput` | The measured failure. Fix by prefetching a newer kernel revision into a persistent `HF_HOME` (`workload.hf_home` exists on every step for this); upstream has a kernel-prefetch script. **Do not** switch to a dense student — that changes the experiment. |
 | `PROBE LOAD_FAIL` with `OfflineModeIsEnabled` | The image is offline and the kernel is not cached. Same fix. |
 
 It also prints `logits_scaling` and `tie_word_embeddings`, both of which matter later:
@@ -201,8 +201,8 @@ pinned teacher in [`distill-smoke`](../distill-smoke/README.md#the-pinned-teache
 `SRC` and `DST` changed to:
 
 ```
-SRC=/proj/granite-build/g4os/skypilot-test/sft/checkpoints/v0-20260529-20260529_212150-hf/epoch_hf_2
-DST=/proj/granite-build/g4os/skypilot-test/sft/checkpoints/epoch_hf_2-tokpinned
+SRC=<shared-fs>/skypilot-test/sft/checkpoints/v0-20260529-20260529_212150-hf/epoch_hf_2
+DST=<shared-fs>/skypilot-test/sft/checkpoints/epoch_hf_2-tokpinned
 ```
 
 Nothing but `tokenizer_config.json` differs — the weights are the same inodes, so it is
@@ -210,7 +210,7 @@ the same model by construction.
 
 ```bash
 gb build start -f recipes/granite4-350m/lsf/full-eval/build.yaml --space <your-space> \
-  --param MODEL_PATH=/proj/granite-build/g4os/skypilot-test/sft/checkpoints/epoch_hf_2-tokpinned \
+  --param MODEL_PATH=<shared-fs>/skypilot-test/sft/checkpoints/epoch_hf_2-tokpinned \
   --param EXPERIMENT=sft-epoch2-tokpinned-r1 \
   --param OE_EVAL_BCB_API_URL=http://<fresh-bcb-host>:7860/evaluate/
 ```

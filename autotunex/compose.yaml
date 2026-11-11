@@ -52,20 +52,23 @@ services:
       # - ./mysql-ca.pem:/certs/mysql-ca.pem:ro
     restart: unless-stopped
 
-  # GPU build of the same image: an nvidia/cuda base plus the fm-tune [full]
-  # extras (verl/vLLM, flash-attn, deepspeed). Run with:
+  # GPU build of the same image: the CUDA kernel base (docker/cuda-base/Dockerfile)
+  # plus the fm-tune [full] extras (verl/vLLM, flash-attn, deepspeed). Run with:
   #   docker compose --profile cuda up --build
   cuda:
     # Behind a profile, like `aio`, so a bare `up` never pulls the multi-GB CUDA
     # base or tries to reserve a GPU on a machine that has none.
     profiles: ["cuda"]
+    # The CUDA wheels and kernels are amd64-only, so on Apple silicon (arm64) this
+    # build runs under emulation and is much slower.
+    platform: linux/amd64
     build:
       context: .
       args:
         DEVICE: cuda
-      # CUDA_BASE overrides the CUDA version; keep an Ubuntu whose system python
-      # is 3.12, because the pinned flash-attn wheel is cp312-only.
-      #   CUDA_BASE: nvidia/cuda:12.8.0-devel-ubuntu24.04
+      # CUDA_KERNEL_BASE overrides the kernel base (docker/cuda-base/Dockerfile),
+      # e.g. with one built locally:
+      #   CUDA_KERNEL_BASE: autotunex-cuda-base:local
     image: autotunex:cuda
     ports:
       - "8000:8000"

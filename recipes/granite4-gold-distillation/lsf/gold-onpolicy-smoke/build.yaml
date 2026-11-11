@@ -1,5 +1,5 @@
 ######
-# gold-onpolicy-smoke — on-policy GOLD distillation for BlueVela (SkyPilot / LSF),
+# gold-onpolicy-smoke — on-policy GOLD distillation for SkyPilot/LSF,
 # with vLLM as a SEPARATE target rather than nodes carved out of the trainer's
 # allocation.
 #

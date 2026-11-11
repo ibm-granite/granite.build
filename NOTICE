@@ -116,3 +116,11 @@ This product contains code adapted from HuggingFace PEFT (Apache 2.0):
       LoraModel._enable_peft_forward_hooks from peft.tuners.lora.model.
     - autotunex/src/fm-tune/autotune/trainers/_alora_gc.py adapts
       ALoraLinearVariant.forward from peft.tuners.lora.variants.
+
+========================================
+SkyPilot - Apache 2.0
+========================================
+This product contains code adapted from SkyPilot (Apache 2.0):
+* SkyPilot (https://github.com/skypilot-org/skypilot)
+  Copyright the SkyPilot authors. Licensed under the Apache License, Version 2.0.
+    - src/gbserver/utils/sky_patches.py modifies functions of SkyPilot 0.14.2 at runtime.

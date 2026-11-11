@@ -1,0 +1,558 @@
+# Copyright LLM.build Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Unit tests for the pure helpers in src/hf_peft_sft_train.py.
+
+The module imports with the standard library only (torch/peft/trl are imported
+inside the private helpers main() calls), so these run in the repo venv. PYTHONPATH=src (make test) puts
+it on the path.
+"""
+
+import dataclasses
+import re
+
+import hf_peft_sft_train as t
+import pytest
+
+
+class TestFormat:
+    @pytest.mark.parametrize(
+        "cols,fmt",
+        [
+            (["messages"], "messages"),
+            (["source", "messages", "num_turns"], "messages"),
+            (["prompt", "completion"], "prompt_completion"),
+            (["text"], "text"),
+            (["id", "prompt", "messages"], "messages"),
+        ],
+    )
+    def test_detects(self, cols, fmt):
+        assert t.detect_format(cols) == fmt
+
+    @pytest.mark.parametrize("cols", [["input", "output"], ["prompt"], []])
+    def test_unknown_refused(self, cols):
+        with pytest.raises(t.StepError, match="messages.*prompt.*completion.*text"):
+            t.detect_format(cols)
+
+
+class TestInvocation:
+    def test_subsequence(self):
+        assert t.contains_subsequence([5, 1, 2, 3, 9], [1, 2, 3])
+        assert t.contains_subsequence([1, 2], [1, 2])
+        assert not t.contains_subsequence([1, 2], [1, 2, 3])
+        assert not t.contains_subsequence([1, 3, 2], [1, 2])
+
+    def test_all_rows_hit(self):
+        assert t.check_invocation([[7, 1, 2], [1, 2, 0]], [1, 2]) == []
+
+    def test_some_rows_miss_returns_them(self):
+        assert t.check_invocation([[1, 2], [3, 4], [9, 1, 2]], [1, 2]) == [1]
+
+    def test_every_row_misses_is_an_error(self):
+        with pytest.raises(t.StepError, match="never appears"):
+            t.check_invocation([[3, 4], [5]], [1, 2])
+
+
+class _FakeTokenizer:
+    """Just enough tokenizer for _alora_tokens: encode() returns fixed ids."""
+
+    def __init__(self, ids):
+        self.ids = ids
+        self.calls = []
+
+    def encode(self, text, add_special_tokens=True):
+        self.calls.append((text, add_special_tokens))
+        return list(self.ids)
+
+
+def _step(**kw):
+    return t.StepArgs(model_name_or_path="/m", **kw)
+
+
+class TestAloraTokens:
+    def test_encodes_the_invocation_without_special_tokens(self):
+        tok = _FakeTokenizer([5, 6])
+        step = _step(method="alora", alora_invocation_string="<|a|>")
+        assert t._alora_tokens(step, tok) == [5, 6]
+        assert tok.calls == [("<|a|>", False)]
+
+    def test_empty_encoding_is_an_error(self):
+        step = _step(method="alora", alora_invocation_string="x")
+        with pytest.raises(
+            t.StepError,
+            match=r"^alora_invocation_string tokenizes to nothing with this "
+            r"tokenizer\.$",
+        ):
+            t._alora_tokens(step, _FakeTokenizer([]))
+
+    @pytest.mark.parametrize("method", ["lora", "qlora"])
+    def test_other_methods_do_not_encode(self, method):
+        tok = _FakeTokenizer([])
+        assert t._alora_tokens(_step(method=method), tok) is None
+        assert tok.calls == []
+
+
+class TestTargetModules:
+    def test_all_linear(self):
+        assert t.parse_target_modules(["all-linear"]) == "all-linear"
+
+    def test_list(self):
+        assert t.parse_target_modules(["q_proj", "v_proj"]) == ["q_proj", "v_proj"]
+
+    def test_empty_refused(self):
+        with pytest.raises(t.StepError):
+            t.parse_target_modules([])
+
+
+class TestReentrant:
+    @pytest.mark.parametrize(
+        "method,dist,ws,expected",
+        [
+            ("qlora", "ddp", 1, True),
+            ("qlora", "ddp", 2, False),
+            ("qlora", "fsdp", 2, True),
+            ("qlora", "deepspeed", 2, True),
+            ("lora", "ddp", 1, False),
+            ("lora", "fsdp", 4, False),
+            ("alora", "ddp", 2, False),
+            ("lora", "deepspeed", 2, True),
+            ("alora", "deepspeed", 4, True),
+        ],
+    )
+    def test_rule(self, method, dist, ws, expected):
+        assert t.use_reentrant(method, dist, ws) is expected
+
+
+class TestModelKwargs:
+    def test_lora_ddp(self):
+        assert t.model_kwargs("lora", "ddp", "bf16", 0) == {
+            "dtype": "bfloat16",
+            "attn_implementation": "sdpa",
+        }
+
+    def test_lora_no_precision_is_fp32(self):
+        assert t.model_kwargs("alora", "fsdp", "no", 0)["dtype"] == "float32"
+
+    def test_qlora_ddp_pins_the_device(self):
+        kw = t.model_kwargs("qlora", "ddp", "bf16", 3)
+        assert kw["device_map"] == {"": 3}
+        assert kw["quantization"] == t.bnb_kwargs("bf16", sharded=False)
+        assert kw["dtype"] == "bfloat16"
+
+    @pytest.mark.parametrize("dist", ["fsdp", "deepspeed"])
+    def test_qlora_sharded_stores_in_bf16_and_lets_the_launcher_place(self, dist):
+        kw = t.model_kwargs("qlora", dist, "bf16", 1)
+        assert "device_map" not in kw
+        assert kw["quantization"]["bnb_4bit_quant_storage"] == "bfloat16"
+        assert kw["dtype"] == "bfloat16"
+
+    def test_bnb_defaults(self):
+        assert t.bnb_kwargs("bf16", sharded=False) == {
+            "load_in_4bit": True,
+            "bnb_4bit_quant_type": "nf4",
+            "bnb_4bit_use_double_quant": True,
+            "bnb_4bit_compute_dtype": "bfloat16",
+            "bnb_4bit_quant_storage": "uint8",
+        }
+
+    def test_bnb_no_precision_computes_in_fp32(self):
+        assert t.bnb_kwargs("no", sharded=False)["bnb_4bit_compute_dtype"] == "float32"
+
+
+class TestLoraKwargs:
+    def test_plain(self):
+        assert t.lora_kwargs(16, 32, 0.05, "all-linear", None, None) == {
+            "task_type": "CAUSAL_LM",
+            "r": 16,
+            "lora_alpha": 32,
+            "lora_dropout": 0.05,
+            "bias": "none",
+            "target_modules": "all-linear",
+        }
+
+    def test_alora_and_modules_to_save(self):
+        kw = t.lora_kwargs(8, 16, 0.0, ["q_proj"], ["lm_head"], [1, 2])
+        assert kw["alora_invocation_tokens"] == [1, 2]
+        assert kw["modules_to_save"] == ["lm_head"]
+
+
+def test_step_line():
+    assert t.step_line(3, 10, {"loss": 0.70123, "lr": 1e-4}) == "Step: 3/10 loss=0.7012"
+    assert t.step_line(1, -1, {}) == "Step: 1"
+    assert re.match(r"Step:\s\d+", t.step_line(2, 5, {"loss": 1.0}))
+
+
+def test_rewrite_base_model():
+    cfg = {"base_model_name_or_path": "/proj/cache/x", "r": 16}
+    assert t.rewrite_base_model(cfg, "ibm-granite/g") == {
+        "base_model_name_or_path": "ibm-granite/g",
+        "r": 16,
+    }
+    assert t.rewrite_base_model(cfg, "") == cfg
+
+
+def _saved_dataset(d, files, write=None):
+    """A fake single-Dataset save_to_disk dir: state.json listing `files`."""
+    import json
+
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "state.json").write_text(
+        json.dumps({"_data_files": [{"filename": f} for f in files]})
+    )
+    for f in files if write is None else write:
+        (d / f).write_bytes(b"")
+    return d
+
+
+class TestDatasetLoadSpec:
+    def test_hf_id_without_config(self):
+        assert t.dataset_load_spec("trl-lib/Capybara", "train", "") == (
+            "trl-lib/Capybara",
+            {"split": "train"},
+        )
+
+    def test_hf_id_with_config_adds_name(self):
+        assert t.dataset_load_spec(
+            "HuggingFaceTB/smoltalk", "train[:100]", "everyday-conversations"
+        ) == (
+            "HuggingFaceTB/smoltalk",
+            {"split": "train[:100]", "name": "everyday-conversations"},
+        )
+
+    def test_dataset_dict_dir_is_loaded_by_path(self, tmp_path):
+        (tmp_path / "dataset_dict.json").write_text('{"splits": ["train"]}')
+        (tmp_path / "state.json").write_text("{}")
+        assert t.dataset_load_spec(str(tmp_path), "train", "c") == (
+            str(tmp_path),
+            {"split": "train", "name": "c"},
+        )
+
+    def test_single_dataset_dir_loads_as_arrow(self, tmp_path):
+        files = ["data-00000-of-00002.arrow", "data-00001-of-00002.arrow"]
+        d = _saved_dataset(tmp_path / "ds", files)
+        assert t.dataset_load_spec(str(d), "train[:10]", "ignored") == (
+            "arrow",
+            {
+                "data_files": {"train": [str(d / f) for f in files]},
+                "split": "train[:10]",
+            },
+        )
+
+    @pytest.mark.parametrize("state", ["{not json", "[]", "{}", '{"_data_files": []}'])
+    def test_bad_state_json_is_an_error(self, tmp_path, state):
+        (tmp_path / "state.json").write_text(state)
+        with pytest.raises(t.StepError, match="state.json"):
+            t.dataset_load_spec(str(tmp_path), "train", "")
+
+    def test_unreadable_state_json_is_an_error(self, tmp_path):
+        (tmp_path / "state.json").mkdir()
+        with pytest.raises(t.StepError, match="state.json"):
+            t.dataset_load_spec(str(tmp_path), "train", "")
+
+    def test_missing_listed_file_is_an_error(self, tmp_path):
+        files = ["data-00000-of-00002.arrow", "data-00001-of-00002.arrow"]
+        d = _saved_dataset(tmp_path / "ds", files, write=files[:1])
+        with pytest.raises(t.StepError, match="data-00001-of-00002.arrow"):
+            t.dataset_load_spec(str(d), "train", "")
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "data-00000-of-00001.arrow",
+            None,
+            ["data-00000-of-00001.arrow"],
+            {"filename": 3},
+            {"filename": None},
+            {"filename": ["data-00000-of-00001.arrow"]},
+            {"other": "data-00000-of-00001.arrow"},
+            {"filename": ""},
+        ],
+    )
+    def test_malformed_data_files_entry_is_an_error(self, tmp_path, entry):
+        import json
+
+        (tmp_path / "data-00000-of-00001.arrow").write_bytes(b"")
+        (tmp_path / "state.json").write_text(json.dumps({"_data_files": [entry]}))
+        with pytest.raises(t.StepError, match="malformed _data_files entry"):
+            t.dataset_load_spec(str(tmp_path), "train", "")
+
+    @pytest.mark.parametrize("split", ["[:2]", "[10%:]", ""])
+    def test_split_without_a_name_is_an_error(self, tmp_path, split):
+        d = _saved_dataset(tmp_path / "ds", ["data-00000-of-00001.arrow"])
+        with pytest.raises(t.StepError, match="no split name") as e:
+            t.dataset_load_spec(str(d), split, "")
+        assert repr(split) in str(e.value)
+
+    @pytest.mark.parametrize("split", ["train+test", "train+test[:5]"])
+    def test_combined_splits_are_an_error(self, tmp_path, split):
+        d = _saved_dataset(tmp_path / "ds", ["data-00000-of-00001.arrow"])
+        with pytest.raises(t.StepError, match="one split") as e:
+            t.dataset_load_spec(str(d), split, "")
+        assert repr(split) in str(e.value)
+
+    @pytest.mark.parametrize(
+        "split",
+        [
+            " train[:2]",
+            "train[:2] ",
+            "\ttrain",
+            "train\n",
+            "train [:2]",
+            "train[:2] + train[5:]",
+        ],
+    )
+    def test_split_with_whitespace_is_an_error(self, tmp_path, split):
+        # datasets' arrow builder refuses each with a raw ValueError.
+        d = _saved_dataset(tmp_path / "ds", ["data-00000-of-00001.arrow"])
+        with pytest.raises(t.StepError, match="whitespace") as e:
+            t.dataset_load_spec(str(d), split, "")
+        assert repr(split) in str(e.value)
+
+    def test_slices_of_the_one_split_can_be_combined(self, tmp_path):
+        d = _saved_dataset(tmp_path / "ds", ["data-00000-of-00001.arrow"])
+        split = "train[:2]+train[5:]"
+        assert t.dataset_load_spec(str(d), split, "")[1] == {
+            "data_files": {"train": [str(d / "data-00000-of-00001.arrow")]},
+            "split": split,
+        }
+
+    @pytest.mark.parametrize("split", ["[:2]", "train+test"])
+    def test_hf_ids_pass_the_split_through(self, split):
+        assert t.dataset_load_spec("trl-lib/Capybara", split, "") == (
+            "trl-lib/Capybara",
+            {"split": split},
+        )
+
+
+def test_step_arg_fields_match_the_dataclass():
+    assert tuple(f.name for f in dataclasses.fields(t.StepArgs)) == t.STEP_ARG_FIELDS
+    assert len(t.STEP_ARG_FIELDS) == 14
+    assert t.STEP_ARG_FIELDS.index("dataset_config") == (
+        t.STEP_ARG_FIELDS.index("dataset_split") + 1
+    )
+
+
+def test_step_arg_fields_do_not_collide_with_sftconfig():
+    """main() parses StepArgs and SFTConfig together; a shared name would clash."""
+    trl = pytest.importorskip("trl")
+    sft_fields = {f.name for f in dataclasses.fields(trl.SFTConfig)}
+    assert sft_fields & set(t.STEP_ARG_FIELDS) == set()
+
+
+class TestTrainingArgs:
+    """_training_args with the real HfArgumentParser: no argparse abbreviation."""
+
+    @pytest.mark.parametrize(
+        "flag,value",
+        [
+            ("--output_d", "/x"),
+            ("--meth", "qlora"),
+            ("--max_ste", "77"),
+            ("--seeed", "-1"),
+        ],
+    )
+    def test_abbreviated_flag_is_a_step_error(self, flag, value):
+        # Under argparse's default allow_abbrev=True, --output_d silently sets
+        # output_dir (and --max_ste, a non-owned abbreviation, sets max_steps);
+        # the trainer must refuse both and name the flag.
+        pytest.importorskip("trl")
+        argv = ["--model_name_or_path", "/m", "--output_dir", "/o", flag, value]
+        with pytest.raises(t.StepError) as e:
+            t._training_args(argv)
+        msg = str(e.value)
+        assert flag in msg
+        assert value not in msg  # flags only, not their values
+        assert msg.endswith(
+            "; every hf_peft_sft_config.args key must be an exact SFTConfig field "
+            "name (no abbreviations)."
+        )
+
+    def test_unknown_key_is_not_called_an_abbreviation(self):
+        # warmup_ratio is no prefix of anything: the message must fit it too.
+        pytest.importorskip("trl")
+        with pytest.raises(t.StepError) as e:
+            t._training_args(["--model_name_or_path", "/m", "--warmup_ratio", "0.1"])
+        assert str(e.value) == (
+            "unknown or abbreviated trainer flag(s) ['--warmup_ratio']; every "
+            "hf_peft_sft_config.args key must be an exact SFTConfig field name "
+            "(no abbreviations)."
+        )
+
+    def test_flag_with_equals_is_named_without_its_value(self):
+        pytest.importorskip("trl")
+        with pytest.raises(t.StepError) as e:
+            t._training_args(["--model_name_or_path", "/m", "--output_d=/secret"])
+        assert "'--output_d'" in str(e.value)
+        assert "/secret" not in str(e.value)
+
+    def test_bad_choice_is_argparses_own_exit(self):
+        # A bad value is argparse's own error (exit 2), not the unused-arguments case.
+        pytest.importorskip("trl")
+        with pytest.raises(SystemExit):
+            t._training_args(["--model_name_or_path", "/m", "--method", "dora"])
+
+    def test_sftconfig_post_init_value_error_propagates_unrewritten(self):
+        # Only unused argv words become a StepError; SFTConfig's own checks keep
+        # their ValueError and message.
+        pytest.importorskip("trl")
+        argv = ["--model_name_or_path", "/m", "--output_dir", "/o"]
+        with pytest.raises(ValueError, match="fp16 and bf16") as e:
+            t._training_args(argv + ["--bf16", "true", "--fp16", "true"])
+        assert not isinstance(e.value, t.StepError)
+        assert "hf_peft_sft_config.args" not in str(e.value)
+
+    def test_exact_flags_parse(self):
+        pytest.importorskip("trl")
+        step, cfg = t._training_args(
+            [
+                "--model_name_or_path",
+                "/m",
+                "--output_dir",
+                "/o",
+                "--method",
+                "qlora",
+                "--max_steps",
+                "3",
+                "--report_to=none",
+            ]
+        )
+        assert (step.method, cfg.output_dir, cfg.max_steps) == ("qlora", "/o", 3)
+        assert cfg.report_to == []  # transformers maps "none" to no integrations
+
+
+def _safetensors(path, tensors):
+    """Write a minimal safetensors file: 8-byte header length + JSON header."""
+    import json
+    import struct
+
+    header = {"__metadata__": {"format": "pt"}}
+    offset = 0
+    for name in tensors:
+        header[name] = {
+            "dtype": "F32",
+            "shape": [1],
+            "data_offsets": [offset, offset + 4],
+        }
+        offset += 4
+    raw = json.dumps(header).encode()
+    path.write_bytes(struct.pack("<Q", len(raw)) + raw + b"\0" * offset)
+
+
+class TestSavedAdapter:
+    def test_counts_tensors_from_the_header(self, tmp_path):
+        p = tmp_path / "adapter_model.safetensors"
+        _safetensors(
+            p,
+            [
+                "base_model.model.q_proj.lora_A.weight",
+                "base_model.model.q_proj.lora_B.weight",
+            ],
+        )
+        assert t.saved_tensor_count(str(p)) == 2
+
+    def test_empty_adapter_is_an_error(self, tmp_path):
+        # The 40-byte file FSDP produced: a header with only __metadata__.
+        p = tmp_path / "adapter_model.safetensors"
+        _safetensors(p, [])
+        with pytest.raises(t.StepError, match="no weights"):
+            t.check_saved_adapter(str(p))
+
+    def test_non_empty_adapter_passes(self, tmp_path):
+        p = tmp_path / "adapter_model.safetensors"
+        _safetensors(p, ["base_model.model.q_proj.lora_A.weight"])
+        t.check_saved_adapter(str(p))
+
+    @pytest.mark.parametrize("content", [b"", b"\x01\x00", b"\xff" * 8 + b"x"])
+    def test_unreadable_file_is_an_error(self, tmp_path, content):
+        p = tmp_path / "adapter_model.safetensors"
+        p.write_bytes(content)
+        with pytest.raises(t.StepError, match="not a readable safetensors"):
+            t.check_saved_adapter(str(p))
+
+
+_STEP_DIR = __import__("pathlib").Path(__file__).resolve().parents[1]
+_SHIPPED_BUILDS = ["build.yaml", "aws/build.yaml", "slurm-bluevela/build.yaml"]
+
+
+def _args_maps(node):
+    """Every hf_peft_sft_config.args map anywhere in a parsed YAML document."""
+    if isinstance(node, dict):
+        cfg = node.get("hf_peft_sft_config")
+        if isinstance(cfg, dict) and isinstance(cfg.get("args"), dict):
+            yield cfg["args"]
+        for v in node.values():
+            yield from _args_maps(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _args_maps(v)
+
+
+def _argv_like_the_template(args):
+    """args -> argv words as step-template.yaml renders them (null omitted,
+    bools lowercased, lists as repeated values)."""
+    out = []
+    for k, v in args.items():
+        if v is None:
+            continue
+        out.append(f"--{k}")
+        if isinstance(v, bool):
+            out.append(str(v).lower())
+        elif isinstance(v, list):
+            out += [str(x) for x in v]
+        else:
+            out.append(str(v))
+    return out
+
+
+def _shipped_args():
+    """(where, args) for each shipped build fixture and each USAGE.md yaml block."""
+    import textwrap
+
+    import yaml
+
+    params = yaml.safe_load((_STEP_DIR / "test-data" / "parameters.yaml").read_text())
+    found = []
+    for name in _SHIPPED_BUILDS:
+        text = (_STEP_DIR / "test-data" / name).read_text()
+        text = re.sub(r"\$\$\{([A-Z0-9_]+)\}", lambda m: str(params[m[1]]), text)
+        found += [(name, a) for a in _args_maps(yaml.safe_load(text))]
+    usage = (_STEP_DIR / "USAGE.md").read_text()
+    for i, block in enumerate(re.findall(r"```yaml\n(.*?)```", usage, re.S)):
+        try:
+            doc = yaml.safe_load(textwrap.dedent(block).replace("$${", "${"))
+        except yaml.YAMLError:
+            continue
+        found += [(f"USAGE.md yaml block {i}", a) for a in _args_maps(doc)]
+    return found
+
+
+def test_shipped_args_examples_are_found():
+    where = [w for w, _ in _shipped_args()]
+    assert sum(w.startswith("USAGE.md") for w in where) >= 2, where
+    assert "build.yaml" in where
+
+
+def test_shipped_args_parse_with_the_real_trainer_parser():
+    """Every args map a user may copy (exemplar, cluster fixtures, USAGE.md)
+    parses through _training_args: a key that is not an exact SFTConfig field
+    (e.g. warmup_ratio, gone in transformers 5) fails the run, and a dry run
+    never reaches the trainer to show it."""
+    pytest.importorskip("trl")
+    base = ["--model_name_or_path", "/m", "--output_dir", "/o", "--use_cpu", "true"]
+    for where, args in _shipped_args():
+        argv = base + _argv_like_the_template(args)
+        try:
+            t._training_args(argv)
+        except t.StepError as e:
+            pytest.fail(f"{where}: {e}")

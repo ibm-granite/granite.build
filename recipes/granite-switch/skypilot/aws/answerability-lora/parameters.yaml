@@ -1,0 +1,90 @@
+# Parameters for build.yaml. gb build start picks this file up from beside
+# build.yaml; override any value with --param KEY=VALUE.
+
+# Names the build, the dataset dir, the adapter dir and the ClearML task. Use a
+# new value per run: a re-run with the same RUN_ID replaces that run's outputs.
+RUN_ID: "it1-r1"
+
+# SkyPilot on AWS with a shared EFS: the environment ../setup-local-space.sh
+# writes into your own space under ~/.granite.build from
+# ../environment-template.yaml, with your EFS id. This default is the name it
+# uses for us-east-1; for us-west-2 it is .../aws-gb-shared-usw2, and the script
+# records the right one in ~/.granite.build/local-env/granite-switch.params
+# (../README.md, step 4). Without that setup the build fails before it is
+# submitted, as gbserver finds no environment by this name.
+ENVIRONMENT_URI: "space://environments/skypilot-local/aws-gb-shared"
+
+# ── Model ────────────────────────────────────────────────────────────────────
+# Public, ungated, ~17.6 GB of safetensors (no onnx). Staged by an hfpull step
+# into the EFS hf cache once; later pulls of the same revision reuse it.
+BASE_MODEL_URI: "hf:///ibm-granite/granite-4.2-8b"
+# Written into adapter_config.json as base_model_name_or_path.
+BASE_MODEL_ID: "ibm-granite/granite-4.2-8b"
+
+# ── Data ─────────────────────────────────────────────────────────────────────
+# SOURCE_DATA_URI has no default: bring your own data and pass it with
+# --param (README.md, "Your data"). It names a directory holding train.parquet
+# and test.parquet with `prompt` and `completion` message-list columns. For a
+# Hugging Face dataset repo, the path after the revision limits the pull to
+# that directory; use a commit hash as the revision to pin the data, and
+# register an HF_TOKEN secret if the repo is private:
+#   SOURCE_DATA_URI: "hf:///datasets/<org>/<repo>/<revision>/<dir>"
+# prepare writes the converted dataset to $DATA_ROOT/$RUN_ID on the EFS,
+# outside the per-run workdirs gbserver removes at teardown.
+DATA_ROOT: "/mnt/gb-shared/granite-switch/answerability-lora/data"
+# load_dataset split spec; slicing works ("train[:64]" for a smoke run).
+DATASET_SPLIT: "train"
+
+# Rows longer than this many tokens (prompt + completion, with the base
+# model's chat template) are dropped by prepare; train uses it as max_length.
+# prepare fails if more than 10% of a split is longer.
+MAX_LENGTH: 8192
+
+# ── Method ───────────────────────────────────────────────────────────────────
+# Comma-separated, in order: lora, alora, or both (e.g. "alora,lora"). One
+# train target per entry, run one after another; see README.md, "Methods".
+METHODS: "lora"
+# Only for an alora entry in METHODS. Granite 4.2's ChatML assistant marker, without a
+# trailing newline: gbserver's template fill drops one. Tokens [100256, 78191].
+ALORA_INVOCATION_STRING: "<|im_start|>assistant"
+LORA_R: 16
+LORA_ALPHA: 32
+LEARNING_RATE: 5.0e-05
+
+# ── Output ───────────────────────────────────────────────────────────────────
+# Adapters land in $ADAPTER_ROOT/answerability-<method>/$RUN_ID on the EFS, so
+# LoRA and aLoRA runs never share a directory.
+ADAPTER_ROOT: "/mnt/gb-shared/granite-switch/answerability-lora/adapters"
+
+# ── Compute ──────────────────────────────────────────────────────────────────
+# 8x H200 141 GB (p5e/p5en.48xlarge), DDP: one bf16 copy of the 8B base per
+# GPU. aLoRA runs without gradient checkpointing, and has fit on H200 at 8,192
+# tokens. AWS has no 4-GPU H100/H200 instance.
+ACCELERATORS: "H200:8"
+# Empty: SkyPilot picks the cheapest instance with ACCELERATORS. Set an EC2
+# instance type with those GPUs to try another size when that one has no
+# capacity (for L40S:1, g6e.2xlarge or g6e.4xlarge; for H200:8, p5e.48xlarge
+# or p5en.48xlarge).
+INSTANCE_TYPE: ""
+# Effective batch = GPUs x 1 x GRAD_ACCUM; keep it at 32 when changing GPUs
+# (H200:8 -> 4, H100:1 -> 32; a smoke run can leave it as is).
+GRAD_ACCUM: 4
+# prepare runs on a CPU instance in the hf-peft-sft image (its venv has
+# pyarrow and transformers): at least this many vCPUs and GB of memory.
+PREP_IMAGE: "quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-6"
+PREP_CPUS: 4
+PREP_MEMORY: 16
+
+# ── Schedule ─────────────────────────────────────────────────────────────────
+NUM_TRAIN_EPOCHS: 3
+# -1 = run all epochs; a positive value caps the run (smoke tests).
+MAX_STEPS: -1
+
+# ── Tracking ─────────────────────────────────────────────────────────────────
+# true: track in ClearML. Needs space secrets CLEARML_API_HOST,
+# CLEARML_API_ACCESS_KEY and CLEARML_API_SECRET_KEY; the build declares them
+# so they reach the step env. false: no tracking (loss is still in the step log).
+CLEARML: false
+CLEARML_PROJECT: "granite-switch/answerability"
+
+POLL_INTERVAL_SECONDS: 120

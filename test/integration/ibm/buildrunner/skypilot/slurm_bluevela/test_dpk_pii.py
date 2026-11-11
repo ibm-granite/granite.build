@@ -45,10 +45,9 @@ use; the fixture allows 60 minutes, where the sibling bluevela fixtures use 20-3
 The fixture's build.yaml and buildtest.yaml live in the directory returned by
 _get_yaml_spec_dir below.
 
-REQUIRES the SlurmCommandRunner wrap-exemption fix in the SkyPilot fork this repo
-pins (``git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable``). Green on
-BlueVela SLURM 2026-09-28 against the patched fork; without it the test fails in
-SkyPilot's file-mount stage, before the transform runs::
+REQUIRES the Slurm file-mount wrap-exemption fix in ``gbserver/utils/sky_patches.py``
+(green on BlueVela SLURM 2026-09-28). Without it the test fails in SkyPilot's
+file-mount stage, before the transform runs::
 
     sudo: a password is required
     srun: error: p1-r08-n1: task 0: Exited with exit code 1

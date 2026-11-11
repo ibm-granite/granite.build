@@ -101,8 +101,13 @@ def test_gpus_requested_by_the_build(build):
 
 
 def test_step_owned_list_is_parsed():
-    assert len(_STEP_OWNED) == 15, sorted(_STEP_OWNED)
-    assert {"model_name_or_path", "resume_from_checkpoint"} <= _STEP_OWNED
+    assert len(_STEP_OWNED) == 19, sorted(_STEP_OWNED)
+    assert {
+        "model_name_or_path",
+        "resume_from_checkpoint",
+        "no_push_to_hub",
+        "dataset_cache_mode",
+    } <= _STEP_OWNED
 
 
 @pytest.mark.parametrize("build", BUILDS)
@@ -115,8 +120,10 @@ def test_no_step_owned_args(build):
 
 @pytest.mark.parametrize("build", BUILDS)
 def test_single_node(build):
-    compute = _step(_target(_load(build)))["config"].get("compute_config", {})
-    assert compute.get("num_nodes", 1) == 1
+    config = _step(_target(_load(build)))["config"]
+    assert config.get("compute_config", {}).get("num_nodes", 1) == 1
+    # gbserver lets launcher_config.num_nodes win over compute_config.
+    assert config.get("launcher_config", {}).get("num_nodes", 1) == 1
 
 
 def test_bluevela_fixture_matches_the_environment():
@@ -124,13 +131,11 @@ def test_bluevela_fixture_matches_the_environment():
     env = yaml.safe_load(
         (
             repo
-            / "configurations/assets/environments/skypilot/slurm/ibm-bluevela/environment.yaml"
+            / "configurations/assets/environments/skypilot/slurm/bluevela/environment.yaml"
         ).read_text()
     )
     target = _target(_load("slurm-bluevela/build.yaml"))
-    assert (
-        target["environment_uri"] == "space://environments/skypilot/slurm/ibm-bluevela"
-    )
+    assert target["environment_uri"] == "space://environments/skypilot/slurm/bluevela"
     acc = _step(target)["config"]["launcher_config"]["resources"]["accelerators"]
     assert acc.split(":")[0].lower() == env["config"]["sbatch_options"]["constraint"]
 

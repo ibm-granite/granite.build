@@ -1,5 +1,5 @@
 ######
-# Full sage evaluation suite on BlueVela (LSF).
+# Full sage evaluation suite on SkyPilot/LSF.
 # Runs 28 parallel eval targets covering all categories:
 # code (11), general (5), math (5), safety (2), multilingual (5), bfcl (1).
 # Each target is an independent LSF job with one H100 GPU.

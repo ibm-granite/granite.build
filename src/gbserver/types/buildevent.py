@@ -332,6 +332,8 @@ class BuildEventWorkloadStatusPayload(EventPayload):
     """Payload for a workload status event."""
 
     status: Status = Status.PENDING
+    message: str = ""
+    """Free-text progress from the step's log, e.g. a monitor rule's ``Step:`` line."""
 
 
 @dataclass

@@ -20,8 +20,8 @@ ARG ARTIFACTORY_API_KEY
 USER root
 # Working directory
 WORKDIR /app
-# ubi10-minimal drops git and the C toolchain the full python image had. git installs
-# the git+https SkyPilot dep; gcc/make/python3.12-devel build any dep lacking a wheel.
+# ubi10-minimal drops git and the C toolchain the full python image had. git lets
+# setuptools_scm derive the version; gcc/make/python3.12-devel build any dep lacking a wheel.
 # Builder-only stage, so this adds no runner size.
 RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 \
         git gcc gcc-c++ make python3.12-devel && \

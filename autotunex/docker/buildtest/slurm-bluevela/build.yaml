@@ -1,0 +1,35 @@
+granite.build:
+  name: autotunex-cuda-base-smoke-bluevela
+  # GPU smoke test of the CUDA kernel base (docker/cuda-base/Dockerfile) on IBM
+  # BlueVela over SLURM: the byoc step runs autotunex/docker/smoke_test.py inside
+  # the base image on one H200. SUCCESS proves the three kernels import and give
+  # their reference results on a real GPU.
+  #
+  # The image is the published base in a PUBLIC repo, so Pyxis pulls it
+  # anonymously and no registry credential is needed. Buildtests take no
+  # parameters, so to test another build of the base (e.g. a new release
+  # candidate), copy this file, change `image`, and run it with
+  #   gbtest autotunex/docker/buildtest/slurm-bluevela/buildtest.yaml -f <copy>
+  targets:
+    smoke:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      steps:
+        - step_uri: space://steps/misc/byoc
+          config:
+            poll_interval_seconds: 30
+            launcher_config:
+              resources:
+                # H200, the only GPU ibm-bluevela schedules (its sbatch
+                # constraint). Renders as --gres=gpu:h200:1.
+                accelerators: "H200:1"
+            byoc_config:
+              # The published base, built from docker/cuda-base/Dockerfile at
+              # a25d9eb6. The same digest as CUDA_KERNEL_BASE in the
+              # Dockerfile, pinned so the tag cannot move under the test.
+              image: "quay.io/granitebuild/autotunex/cuda-base:cu130-torch2.11-1@sha256:fd916fffb24066b9003829d691b58c9a450e9098a158de285f848f8148089ff4"
+              # The smoke test comes from the commit under review.
+              repo: "https://github.com/priyanshu891/granite.build.git"
+              ref: "a25d9eb654cad73a2aafb5cd8e17a4b1f9ad6fda"
+              workdir: "code"
+              command: >-
+                python code/autotunex/docker/smoke_test.py
