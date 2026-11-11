@@ -37,7 +37,10 @@ dependencies = [
 ## it provided is needed independently — e.g. the AIO `local` backend.)
 [project.optional-dependencies]
 core = [
-    "datasets==4.8.5",
+    # 5.0.1, not 4.8.x: 4.8.x caps fsspec at <=2026.2.0, which leaves the image
+    # on fsspec with GHSA-27vj-qcqg-25rc (fixed in 2026.6.0). 5.0.0 still caps it
+    # at <=2026.4.0.
+    "datasets==5.0.1",
     "ray[tune,default]==2.59.0",
     "pyzmq==27.2.0",
     "accelerate>=1.15.0",
@@ -104,6 +107,13 @@ autotune = ["configs/*.yaml"]
 # --- uv configuration ---
 [tool.uv]
 prerelease = "if-necessary"
+# filelock GHSA-v4x8-3wr5-3wq8 affects 3.20.4 through 4.2.0, and 4.2.1 needs
+# Python >= 3.11. Splitting on the Python version keeps 3.10 supported while
+# every lock entry stays outside that range.
+constraint-dependencies = [
+    "filelock>=4.2.1; python_version >= '3.11'",
+    "filelock<3.20.4; python_version < '3.11'",
+]
 
 # flash-attn is compiled from source at install time: there is no official
 # prebuilt wheel for torch 2.11 + CUDA 13. Run `uv pip install -e ".[full]"` on
