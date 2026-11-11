@@ -167,10 +167,11 @@ def test_fixtures_cover_both_data_paths():
 
 
 def test_bluevela_fixture_stages_a_small_base_model():
-    # BlueVela's hfpull runs in the cpu partition's 1 GiB cgroup and pulls the
-    # whole repo; SmolLM2-135M-Instruct's 1.7 GB of onnx exports get it
-    # OOM-killed (#597). The base repo has no chat template, so the Instruct
-    # ChatML template is passed inline, inside {% raw %} so gbserver keeps it.
+    # hfpull pulls the whole repo; SmolLM2-135M-Instruct's 1.7 GB of onnx
+    # exports got it OOM-killed in BlueVela's 1 GiB cpu-partition default before
+    # #659 sent hfpull's 10Gi (#597). The base repo has no chat template, so the
+    # Instruct ChatML template is passed inline, inside {% raw %} so gbserver
+    # keeps it.
     for target in _targets("slurm-bluevela/build.yaml"):
         assert (
             target["inputs"]["base_model"]["uri"] == "hf:///HuggingFaceTB/SmolLM2-135M"

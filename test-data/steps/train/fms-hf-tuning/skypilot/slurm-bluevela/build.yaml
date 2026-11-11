@@ -8,11 +8,12 @@ granite.build:
   # under FSDP from a data_config whose data_paths read the bound input, ClearML
   # tracks in offline mode, and each `model` artifact is registered.
   #
-  # The base model is SmolLM2-135M, not -Instruct as on aws: BlueVela's hfpull
-  # runs in a 1 GiB cpu-partition cgroup and pulls the whole repo, and the
-  # Instruct repo's 1.7 GB of onnx exports get it OOM-killed (#597). The base
-  # repo has no chat template, so args.chat_template passes SmolLM2-Instruct's
-  # ChatML template inline ({% raw %} keeps gbserver from rendering it).
+  # The base model is SmolLM2-135M, not -Instruct as on aws: hfpull pulls the
+  # whole repo, and the Instruct repo's 1.7 GB of onnx exports got it OOM-killed
+  # in BlueVela's 1 GiB cpu-partition default before #659 sent hfpull's 10Gi
+  # (#597). The base repo has no chat template, so args.chat_template passes
+  # SmolLM2-Instruct's ChatML template inline ({% raw %} keeps gbserver from
+  # rendering it).
   targets:
     lora-fsdp:
       environment_uri: space://environments/skypilot/slurm/bluevela
@@ -34,7 +35,7 @@ granite.build:
               resources:
                 # H200 is the only GPU bluevela schedules (its constraint).
                 accelerators: "H200:2"
-                # gbserver drops compute_config memory on slurm; bare GiB string.
+                # Wins over compute_config memory on every cluster; bare GiB string.
                 memory: "128"
               envs:
                 CLEARML_OFFLINE_MODE: "1"

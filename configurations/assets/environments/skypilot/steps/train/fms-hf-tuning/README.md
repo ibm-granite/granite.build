@@ -322,8 +322,10 @@ The same step runs on a SkyPilot SLURM endpoint (for example
 - **The image is cached automatically.** Environments with a `slurm_image_cache`
   (`bluevela` has one) import the registry image once into a shared `.sqsh`; the
   first run on a cold cache imports it in a CPU job first.
-- **Request memory** in `launcher_config.resources` as bare GiB, as a string
-  (gbserver drops `compute_config` memory on SLURM):
+- **Request memory.** On SLURM, gbserver sends `compute_config` memory only on
+  clusters that track memory, and SkyPilot's default without it is 1 GB per CPU
+  (4 GB per CPU with GPUs). Request memory in `launcher_config.resources`, which
+  wins on every cluster, as bare GiB, as a string:
 
   ```yaml
   launcher_config:
@@ -334,9 +336,10 @@ The same step runs on a SkyPilot SLURM endpoint (for example
 
 - **Match the partition's GPU type** (`bluevela` pins `h200`).
 - **Inputs are staged by their own steps**: one hfpull job per `hf://` input.
-  BlueVela's hfpull runs in a 1 GiB cgroup and pulls the whole repo, so a repo with
-  large extra files (for example SmolLM2-135M-Instruct's onnx exports) can be
-  OOM-killed (ibm-granite/granite.build#597).
+  hfpull downloads the whole repo with parallel workers, large extra files (for
+  example SmolLM2-135M-Instruct's onnx exports) included
+  (ibm-granite/granite.build#597). On a cluster that tracks memory, such as
+  `bluevela`, it gets the 10 GiB its step declares.
 
 ## Example build.yaml
 
