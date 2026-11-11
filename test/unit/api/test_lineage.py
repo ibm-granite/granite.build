@@ -389,6 +389,11 @@ def test_query_graph_holds_a_non_admin_to_the_user_limits(kwargs):
                 LineageQueryRequest(uri="s3://b/x", **kwargs),
             )
     assert caught.value.status_code == 422
+    code = (caught.value.headers or {}).get(lineage_mod.LINEAGE_ERROR_CODE_HEADER)
+    if "max_depth" in kwargs:
+        assert code == lineage_mod.DEPTH_LIMIT_ERROR_CODE
+    else:
+        assert code is None
 
 
 def test_query_graph_accepts_job_ids_alone_as_a_seed():
