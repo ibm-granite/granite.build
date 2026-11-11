@@ -5,7 +5,7 @@
 # `setup:` and `run:` blocks and shipped to the node by `file_mounts: {src: src}`.
 #
 # WHAT IS CHECKED WHERE
-# Checks that depend only on config (algorithm, config_name, output, num_nodes)
+# Checks that depend only on config (algorithm, config_name, output)
 # are `raise_error`s in step-template.yaml: they fail the strict launcher-config
 # fill at step creation, before anything is provisioned. That matters because the
 # launcher PREPENDS the inline `hf download` to `setup:`, so this script runs only
