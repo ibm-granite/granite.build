@@ -44,10 +44,10 @@ class _KV:
 
 @pytest.fixture(name="env")
 def env_fixture():
-    storage = SimpleNamespace(kv_pair_storage=_KV(), lineage_row_storage=MagicMock())
+    storage = SimpleNamespace(kv_pair_storage=_KV(), lineage_index_storage=MagicMock())
     api = MagicMock()
     latest = SimpleNamespace(created_at="2026-03-01T00:00:00Z")
-    indexer = idx.WandBLineageIndexer(sink=MagicMock(), rows=MagicMock(), api=api)
+    indexer = idx.WandBLineageIndexer(sink=MagicMock(), writer=MagicMock(), api=api)
     with (
         patch(f"{MODULE}.get_admin_storage", return_value=storage),
         patch(f"{MODULE}.resolve_indexer_source", return_value="lineage_store"),
@@ -106,8 +106,8 @@ def test_rebuild_deletes_the_rows_and_reseeds_at_all(env):
     env.kv_pair_storage.set_value(KEY, {"timestamp": D1})
     result = _run("--rebuild")
     assert result.exit_code == 0, result.output
-    env.lineage_row_storage.delete_all_rows.assert_called_once()
-    env.lineage_row_storage.delete_table.assert_not_called()
+    env.lineage_index_storage.delete_all_rows.assert_called_once()
+    env.lineage_index_storage.delete_table.assert_not_called()
     assert env.kv_pair_storage.values[KEY]["timestamp"] == "1970-01-01T00:00:00Z"
 
 
@@ -117,7 +117,7 @@ def test_rebuild_deletes_the_rows_and_reseeds_at_all(env):
 def test_rebuild_rejects_a_conflicting_flag(env, args):
     result = _run(*args)
     assert result.exit_code != 0
-    env.lineage_row_storage.delete_all_rows.assert_not_called()
+    env.lineage_index_storage.delete_all_rows.assert_not_called()
     assert env.kv_pair_storage.values == {}
 
 
@@ -182,10 +182,10 @@ def test_empty_from_beginning_does_not_change_a_non_empty_source(env):
 
 def test_purge_mem_cleans_the_rows_and_leaves_the_checkpoint(env):
     env.kv_pair_storage.set_value(KEY, {"timestamp": D1})
-    env.lineage_row_storage.purge_scheme.return_value = (3, 1)
+    env.lineage_index_storage.purge_scheme.return_value = (3, 1)
     result = _run("--purge-mem")
     assert result.exit_code == 0, result.output
-    env.lineage_row_storage.purge_scheme.assert_called_once_with("mem")
+    env.lineage_index_storage.purge_scheme.assert_called_once_with("mem")
     assert "Deleted 3" in result.output and "added 1" in result.output
     assert env.kv_pair_storage.values[KEY]["timestamp"] == D1
 
@@ -196,4 +196,4 @@ def test_purge_mem_cleans_the_rows_and_leaves_the_checkpoint(env):
 def test_purge_mem_must_be_alone(env, args):
     result = _run("--purge-mem", *args)
     assert result.exit_code != 0
-    env.lineage_row_storage.purge_scheme.assert_not_called()
+    env.lineage_index_storage.purge_scheme.assert_not_called()

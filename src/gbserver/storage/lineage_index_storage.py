@@ -26,7 +26,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from gbserver.storage.storage import BaseItemStorage, IItemStorage
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
-from gbserver.types.constants import GB_LINEAGE_TABLE_NAME
+from gbserver.types.constants import GB_LINEAGE_INDEX_TABLE_NAME
 
 TERMINAL_INPUT = "input"
 TERMINAL_OUTPUT = "output"
@@ -83,8 +83,8 @@ def _keep_self_loops(
     return [row for row in rows if row.input != row.output]
 
 
-class ILineageRowStorage(IItemStorage[StoredLineageRow]):
-    """Interface for lineage row storage implementations."""
+class ILineageIndexStorage(IItemStorage[StoredLineageRow]):
+    """Interface for lineage index storage implementations."""
 
     def get_rows_by_input(
         self, inputs: List[str], self_loops: bool = True, limit: Optional[int] = None
@@ -210,7 +210,7 @@ class ILineageRowStorage(IItemStorage[StoredLineageRow]):
         raise NotImplementedError
 
 
-class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorage):
+class BaseLineageIndexStorage(BaseItemStorage[StoredLineageRow], ILineageIndexStorage):
     """Base storage implementation for lineage rows.
 
     Provides the shared query logic across backends (SQL, SQLite).
@@ -219,7 +219,7 @@ class BaseLineageRowStorage(BaseItemStorage[StoredLineageRow], ILineageRowStorag
     def __init__(self, **kwargs) -> None:
         kwargs["item_class"] = StoredLineageRow
         if kwargs.get("table_name") is None:
-            kwargs["table_name"] = GB_LINEAGE_TABLE_NAME
+            kwargs["table_name"] = GB_LINEAGE_INDEX_TABLE_NAME
         super().__init__(**kwargs)
 
     def _get_column_values(self, item: StoredLineageRow) -> dict:

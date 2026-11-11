@@ -60,36 +60,36 @@ from gbserver.lineage.db_jobstats import (
 )
 from gbserver.lineage.decompose import LineageDecomposeError, to_lineage_rows
 from gbserver.lineage.merge import rows_to_add, upsert_row
-from gbserver.storage.lineage_row_storage import ILineageRowStorage, tags_to_map
+from gbserver.storage.lineage_index_storage import ILineageIndexStorage, tags_to_map
 from gbserver.storage.stored_lineage_job import StoredLineageJob
 from gbserver.storage.stored_lineage_row import TERMINAL, JobStore, StoredLineageRow
 
 logger = logging.getLogger(__name__)
 
 
-class LineageRowIndexer:
+class LineageIndexWriter:
     """Derives and writes ``gb_lineage_index`` rows.
 
-    Owns the :class:`ILineageRowStorage` so no lineage *store* has to. The row
+    Owns the :class:`ILineageIndexStorage` so no lineage *store* has to. The index
     storage is resolved lazily, so importing this module does not require a
     configured database.
     """
 
-    def __init__(self, storage: Optional[ILineageRowStorage] = None) -> None:
-        self._row_storage = storage
+    def __init__(self, storage: Optional[ILineageIndexStorage] = None) -> None:
+        self._index_storage = storage
 
     @property
-    def row_storage(self) -> ILineageRowStorage:
-        """The lineage row storage, resolved on first use."""
-        if self._row_storage is None:
+    def index_storage(self) -> ILineageIndexStorage:
+        """The lineage index storage, resolved on first use."""
+        if self._index_storage is None:
             from gbserver.storage.singleton_storage import get_admin_storage
 
-            self._row_storage = get_admin_storage().lineage_row_storage
-        return self._row_storage
+            self._index_storage = get_admin_storage().lineage_index_storage
+        return self._index_storage
 
     def has_rows_for_job(self, job_id: str) -> bool:
         """Whether the index already holds rows for ``job_id``."""
-        return self.row_storage.has_rows_for_job(job_id)
+        return self.index_storage.has_rows_for_job(job_id)
 
     def index_job_record(self, record: StoredLineageJob) -> bool:
         """Write the index rows for a job record in ``gb_lineage_job``.
@@ -116,7 +116,7 @@ class LineageRowIndexer:
                 if row is not None:
                     # Storage errors propagate: the indexer must not move its
                     # checkpoint past a record whose rows were not written.
-                    upsert_row(self.row_storage, row)
+                    upsert_row(self.index_storage, row)
             return True
         events = _entry_events(entry)
         if not events:
@@ -197,7 +197,7 @@ class LineageRowIndexer:
 
         stored_jobs = {
             row.job_id
-            for row in self.row_storage.get_rows_by_jobs(
+            for row in self.index_storage.get_rows_by_jobs(
                 list({row.job_id for row in prebuilt})
             )
         }
@@ -205,7 +205,7 @@ class LineageRowIndexer:
         merging = [row for row in prebuilt if row.job_id in stored_jobs]
         if fresh:
             try:
-                self.row_storage.add(fresh)
+                self.index_storage.add(fresh)
             except Exception:
                 logger.debug(
                     "Bulk add of %d lineage rows failed; adding one by one",
@@ -214,7 +214,7 @@ class LineageRowIndexer:
                 )
                 merging.extend(fresh)
         for row in merging:
-            upsert_row(self.row_storage, row)
+            upsert_row(self.index_storage, row)
         return indexed
 
     def index_job_entry(
@@ -308,7 +308,7 @@ class LineageRowIndexer:
             row.attributes.setdefault("job", {})["tags"] = tags_to_map(tags)
         # Storage errors propagate: swallowing them let the indexer advance its
         # checkpoint past rows that were never written.
-        upsert_row(self.row_storage, row)
+        upsert_row(self.index_storage, row)
 
 
 def fill_job_from_record(row: StoredLineageRow, record: StoredLineageJob) -> None:

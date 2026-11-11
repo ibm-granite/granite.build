@@ -52,7 +52,7 @@ class AbstractLineageTablesTest(AbstractSingletonStorageUsingTest):
 
     def _get_storage_to_clear(self) -> list[BaseItemStorage]:
         return super()._get_storage_to_clear() + [
-            self.storage.lineage_row_storage,
+            self.storage.lineage_index_storage,
             self.storage.lineage_job_storage,
         ]
 

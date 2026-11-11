@@ -120,7 +120,7 @@ def cli(
             raise click.ClickException(
                 "--purge-mem is a one-off cleanup and must be passed alone."
             )
-        deleted, added = get_admin_storage().lineage_row_storage.purge_scheme(
+        deleted, added = get_admin_storage().lineage_index_storage.purge_scheme(
             MEM_URI_SCHEME
         )
         click.echo(
@@ -193,7 +193,7 @@ def cli(
         # Rows are deleted, not the table dropped: a running gbserver or indexer
         # keeps its cached table model and would not recreate a dropped one.
         # Deleted before seeding, since seeding 'all' cannot fail.
-        deleted = storage.lineage_row_storage.delete_all_rows()
+        deleted = storage.lineage_index_storage.delete_all_rows()
         click.echo(f"Deleted {deleted} gb_lineage_index row(s).")
     try:
         wrote = indexer.seed_if_absent(

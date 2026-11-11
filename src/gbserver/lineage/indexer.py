@@ -61,6 +61,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from gbcommon.types.gbenvconfig import is_standalone
 from gbserver.lineage.db_jobstats import DBLineageStore
+from gbserver.lineage.index_writer import LineageIndexWriter
 from gbserver.lineage.jobstats import (
     LINEAGE_PROVIDER_DB,
     LINEAGE_PROVIDER_NONE,
@@ -78,7 +79,6 @@ from gbserver.lineage.lineage_seeding import (
     LineageSeedError,
 )
 from gbserver.lineage.mem_artifacts import lineage_view
-from gbserver.lineage.row_indexing import LineageRowIndexer
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.storage import Pagination, QueryControl, SortOrder
 from gbserver.storage.stored_lineage_job import StoredLineageJob
@@ -209,29 +209,29 @@ def create_indexer(
     source: str,
     monitoring_interval: float = 30.0,
     sink: Optional[DBLineageStore] = None,
-    rows: Optional[LineageRowIndexer] = None,
+    writer: Optional[LineageIndexWriter] = None,
 ):
     """Build the indexer loop for ``source``, or ``None`` when it has nothing to do.
 
     The returned object has ``start()``, ``stop()``, a ``stop_event`` to block on,
     and ``seed_if_absent()``.
 
-    ``sink`` builds a target's job entries (the ``gb_targets`` source); ``rows``
+    ``sink`` builds a target's job entries (the ``gb_targets`` source); ``writer``
     writes the index the indexer owns. See :class:`JobLineageIndexer`.
     """
     sink = sink or DBLineageStore()
-    rows = rows or LineageRowIndexer()
+    writer = writer or LineageIndexWriter()
     if source == INDEXER_SOURCE_ADMIN_DB:
         return TargetLineageIndexer(
-            monitoring_interval=monitoring_interval, sink=sink, rows=rows
+            monitoring_interval=monitoring_interval, sink=sink, writer=writer
         )
     if source == INDEXER_SOURCE_LINEAGE_JOB:
         return LineageJobIndexer(
-            monitoring_interval=monitoring_interval, sink=sink, rows=rows
+            monitoring_interval=monitoring_interval, sink=sink, writer=writer
         )
     if source == INDEXER_SOURCE_LINEAGE_STORE:
         return WandBLineageIndexer(
-            monitoring_interval=monitoring_interval, sink=sink, rows=rows
+            monitoring_interval=monitoring_interval, sink=sink, writer=writer
         )
     logger.warning("Unknown lineage indexer source %r; not indexing.", source)
     return None
@@ -358,7 +358,7 @@ class JobLineageIndexer:
 
     **Two collaborators, two directions.** Jobs are *read* from whichever source
     this subclass is for -- ``gb_targets``, ``gb_lineage_job`` or the W&B API --
-    and index rows are *written* through ``self._rows``, which owns
+    and index rows are *written* through ``self._writer``, which owns
     ``gb_lineage_index``. The index belongs to the indexer, not to any lineage
     store: a store answers for its own source only. ``self._sink`` is the ``db``
     store, used only by the ``gb_targets`` source to build a target's job entries;
@@ -373,13 +373,13 @@ class JobLineageIndexer:
         self,
         monitoring_interval: float = 30.0,
         sink: Optional[DBLineageStore] = None,
-        rows: Optional[LineageRowIndexer] = None,
+        writer: Optional[LineageIndexWriter] = None,
     ) -> None:
         self.monitoring_interval = monitoring_interval
         self.stop_event = threading.Event()
         self.worker_thread: Optional[threading.Thread] = None
         self._sink = sink or DBLineageStore()
-        self._rows = rows or LineageRowIndexer()
+        self._writer = writer or LineageIndexWriter()
         self._failed_attempts: Dict[str, int] = {}
         self._transient_streak: Dict[str, int] = {}
         # The checkpoint as this indexer last read or wrote it; a write first checks
@@ -1065,7 +1065,7 @@ class TargetLineageIndexer(JobLineageIndexer):
             return False
         indexed = False
         for event in events:
-            indexed |= self._rows.index_job_entry(
+            indexed |= self._writer.index_job_entry(
                 event,
                 build_id=job.build_id,
                 target_run_uuid=job.uuid,
@@ -1203,7 +1203,7 @@ class LineageJobIndexer(JobLineageIndexer):
                     yield records[job_id]
 
     def _index(self, storage: SingletonAdminStorage, job: StoredLineageJob) -> bool:
-        return self._rows.index_job_record(job)
+        return self._writer.index_job_record(job)
 
     def _scan(
         self,
@@ -1262,7 +1262,7 @@ class LineageJobIndexer(JobLineageIndexer):
         batch_keys = [key for key, _ in pairs]
         batch = [record for _, record in pairs]
         try:
-            return self._rows.index_job_records(batch), self._checkpoint_batch(
+            return self._writer.index_job_records(batch), self._checkpoint_batch(
                 storage, batch_keys, mark
             )
         except Exception as exc:  # noqa: BLE001
@@ -1459,10 +1459,12 @@ class WandBLineageIndexer(JobLineageIndexer):
         self,
         monitoring_interval: float = 30.0,
         sink: Optional[DBLineageStore] = None,
-        rows: Optional[LineageRowIndexer] = None,
+        writer: Optional[LineageIndexWriter] = None,
         api: Any = None,
     ) -> None:
-        super().__init__(monitoring_interval=monitoring_interval, sink=sink, rows=rows)
+        super().__init__(
+            monitoring_interval=monitoring_interval, sink=sink, writer=writer
+        )
         self._api = api
         self._logged_in = False
         # Run ids already warned about as pinning the scan, so it is said once.
@@ -1564,7 +1566,7 @@ class WandBLineageIndexer(JobLineageIndexer):
         # run's build_id/target_run_uuid in ``retrieve``, which job_detail reads
         # back from this server's builds. Nothing is copied into gb_lineage_job,
         # which is the db provider's store alone.
-        self._rows.index_job_entry(
+        self._writer.index_job_entry(
             entry,
             build_id=build_id,
             target_run_uuid=target_run_uuid,

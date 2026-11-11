@@ -31,7 +31,7 @@ import logging
 from enum import Enum
 from typing import Iterable, Optional
 
-from gbserver.storage.lineage_row_storage import ILineageRowStorage
+from gbserver.storage.lineage_index_storage import ILineageIndexStorage
 from gbserver.storage.stored_lineage_row import TERMINAL, StoredLineageRow
 
 logger = logging.getLogger(__name__)
@@ -145,7 +145,7 @@ def _row_key(row: StoredLineageRow) -> tuple:
 
 
 def walk_lineage(
-    storage: ILineageRowStorage,
+    storage: ILineageIndexStorage,
     seeds: Iterable[str],
     direction: Direction = Direction.BOTH,
     max_depth: int = DEFAULT_MAX_DEPTH,
@@ -155,7 +155,7 @@ def walk_lineage(
     """Walk the lineage graph outward from ``seeds``.
 
     Args:
-        storage: the lineage row storage to query.
+        storage: the lineage index storage to query.
         seeds: canonical identifiers to start from. Terminal markers and empty
             strings are dropped -- they identify no artifact.
         direction: which way to walk. ``BOTH`` runs each direction and merges,
@@ -211,7 +211,7 @@ def walk_lineage(
 
 
 def _walk_one_direction(
-    storage: ILineageRowStorage,
+    storage: ILineageIndexStorage,
     seeds: list,
     direction: Direction,
     max_depth: int,
@@ -381,7 +381,7 @@ def _cut_off(rows: list, frontier: list, direction: Direction) -> set:
 
 
 def _hop(
-    storage: ILineageRowStorage,
+    storage: ILineageIndexStorage,
     frontier: list,
     direction: Direction,
     self_loops: bool = True,
@@ -398,7 +398,7 @@ def _hop(
 
 
 def _self_loop_samples(
-    storage: ILineageRowStorage,
+    storage: ILineageIndexStorage,
     frontier: list,
     graph: LineageGraph,
     checked: set,

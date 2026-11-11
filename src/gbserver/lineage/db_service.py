@@ -48,14 +48,14 @@ from gbserver.lineage.walk import (
     LineageGraph,
     walk_lineage,
 )
-from gbserver.storage.lineage_job_storage import ILineageJobStorage
-from gbserver.storage.lineage_row_storage import (
+from gbserver.storage.lineage_index_storage import (
     TERMINAL_INPUT,
     TERMINAL_OUTPUT,
-    ILineageRowStorage,
+    ILineageIndexStorage,
     row_tags,
     tag_strings,
 )
+from gbserver.storage.lineage_job_storage import ILineageJobStorage
 from gbserver.storage.stored_lineage_row import TERMINAL
 
 logger = logging.getLogger(__name__)
@@ -92,26 +92,26 @@ class DBLineageService(LineageService):
     """Read artifact lineage from the local lineage index.
 
     Args:
-        storage: the lineage row storage to read. Defaults to the process-wide
+        storage: the lineage index storage to read. Defaults to the process-wide
             admin storage, resolved lazily so importing this module does not
             require a configured database.
     """
 
     def __init__(
         self,
-        storage: Optional[ILineageRowStorage] = None,
+        storage: Optional[ILineageIndexStorage] = None,
         job_storage: Optional[ILineageJobStorage] = None,
     ) -> None:
         self._storage = storage
         self._job_storage = job_storage
 
     @property
-    def storage(self) -> ILineageRowStorage:
-        """The lineage row storage, resolved on first use."""
+    def storage(self) -> ILineageIndexStorage:
+        """The lineage index storage, resolved on first use."""
         if self._storage is None:
             from gbserver.storage.singleton_storage import get_admin_storage
 
-            self._storage = get_admin_storage().lineage_row_storage
+            self._storage = get_admin_storage().lineage_index_storage
         return self._storage
 
     @property
