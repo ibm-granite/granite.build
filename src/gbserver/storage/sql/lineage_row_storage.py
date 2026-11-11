@@ -17,7 +17,7 @@
 """SQL storage implementation for lineage rows."""
 
 from contextlib import contextmanager
-from typing import List, Optional
+from typing import Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import and_, distinct, func, or_
 
@@ -323,6 +323,58 @@ class SQLLineageRowStorage(
         finally:
             session.close()
 
+    def purge_scheme(self, scheme: str) -> Tuple[int, int]:
+        """Find the affected jobs by ``LIKE`` on the indexed URI columns, then
+        rewrite each job's rows in its own transaction."""
+        if not scheme or not self._ensure_table_without_retry():
+            return 0, 0
+        model = self._sql_alchemy_model
+        prefix = f"{scheme.lower()}://%"
+        session = self._get_session_without_retry()
+        try:
+            job_ids = sorted(
+                job_id
+                for (job_id,) in session.query(model.job_id)
+                .filter(
+                    or_(
+                        func.lower(model.input).like(prefix),
+                        func.lower(model.output).like(prefix),
+                    )
+                )
+                .distinct()
+                .all()
+            )
+        finally:
+            session.close()
+        deleted = added = 0
+        for job_id in job_ids:
+            stale, replacements = _scheme_purge_plan(
+                self.get_rows_by_job(job_id), scheme
+            )
+            self._replace_rows(stale, replacements)
+            deleted += len(stale)
+            added += len(replacements)
+        return deleted, added
+
+    def _replace_rows(
+        self, stale_uuids: List[str], rows: List[StoredLineageRow]
+    ) -> None:
+        """Delete ``stale_uuids`` and add ``rows`` in one transaction."""
+        model = self._sql_alchemy_model
+        session = self._get_session_without_retry()
+        try:
+            session.query(model).filter(
+                getattr(model, UUID_COLUMN_NAME).in_(stale_uuids)
+            ).delete(synchronize_session=False)
+            for row in rows:
+                session.add(model(**self._convert_item_to_row_dict(row)))
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
     @property
     def _job_id(self):
         return self._sql_alchemy_model.job_id
@@ -355,3 +407,47 @@ class SQLLineageRowStorage(
             yield session.query(model).filter(condition)
         finally:
             session.close()
+
+
+def _has_scheme(uri: str, scheme: str) -> bool:
+    return uri.lower().startswith(f"{scheme.lower()}://")
+
+
+def _scheme_purge_plan(
+    rows: List[StoredLineageRow], scheme: str
+) -> Tuple[List[str], List[StoredLineageRow]]:
+    """One job's rows to delete, and the terminal rows that replace them.
+
+    A real endpoint keeps a row when the purge would leave it with none: an input
+    whose only outputs were ``scheme://`` becomes ``input -> TERMINAL`` (a job that
+    read it and recorded no output), and likewise ``TERMINAL -> output``. Its blob
+    is the purged row's, minus the side that went.
+    """
+    stale = [
+        r for r in rows if _has_scheme(r.input, scheme) or _has_scheme(r.output, scheme)
+    ]
+    stale_uuids = {r.uuid for r in stale}
+    kept = [r for r in rows if r.uuid not in stale_uuids]
+    kept_inputs: Set[str] = {r.input for r in kept}
+    kept_outputs: Set[str] = {r.output for r in kept}
+    replacements: Dict[Tuple[str, str], StoredLineageRow] = {}
+    for row in stale:
+        for side, uri, kept_side in (
+            ("input", row.input, kept_inputs),
+            ("output", row.output, kept_outputs),
+        ):
+            if uri == TERMINAL or _has_scheme(uri, scheme) or uri in kept_side:
+                continue
+            other = "output" if side == "input" else "input"
+            pair = (uri, TERMINAL) if side == "input" else (TERMINAL, uri)
+            if pair in replacements:
+                continue
+            attributes = {k: v for k, v in row.attributes.items() if k != other}
+            replacements[pair] = StoredLineageRow(
+                job_id=row.job_id,
+                input=pair[0],
+                output=pair[1],
+                job_store=row.job_store,
+                attributes=attributes,
+            )
+    return [r.uuid for r in stale], list(replacements.values())
