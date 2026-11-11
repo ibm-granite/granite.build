@@ -3045,7 +3045,13 @@ class TestNumNodesResolution:
     """
 
     @staticmethod
-    def _resolve(compute_config=None, launcher_config=None, config=None, cloud=""):
+    def _resolve(
+        compute_config=None,
+        launcher_config=None,
+        config=None,
+        cloud="",
+        single_node=False,
+    ):
         from gbserver.environment.skypilot import _num_nodes_from_configs
 
         return _num_nodes_from_configs(
@@ -3053,6 +3059,7 @@ class TestNumNodesResolution:
             launcher_config or {},
             config or {},
             cloud=cloud,
+            single_node=single_node,
         )
 
     def test_defaults_to_one(self):
@@ -3133,6 +3140,52 @@ class TestNumNodesResolution:
             assert self._resolve(compute_config={"num_nodes": 2}) == 2
         assert "resources.num_nodes" not in caplog.text
 
+    @pytest.mark.parametrize("value", [None, 1, 1.0, "1", "01", " 1", "+1"])
+    def test_single_node_accepts_one(self, value):
+        """Exactly what int() reads as 1, as the launch parses it."""
+        assert self._resolve(compute_config={"num_nodes": value}, single_node=True) == 1
+
+    @pytest.mark.parametrize(
+        "layers,source",
+        [
+            ({"compute_config": {"num_nodes": 2}}, "compute_config.num_nodes"),
+            ({"compute_config": {"num_nodes": 2.0}}, "compute_config.num_nodes"),
+            ({"launcher_config": {"num_nodes": 2}}, "the step's launcher config"),
+            (
+                {"config": {"launcher_config": {"num_nodes": "2"}}},
+                "launcher_config.num_nodes",
+            ),
+        ],
+    )
+    def test_single_node_refuses_more_than_one_and_names_the_layer(
+        self, layers, source
+    ):
+        with pytest.raises(ValueError) as exc:
+            self._resolve(single_node=True, **layers)
+        assert str(exc.value) == (
+            f"num_nodes resolved to 2 (from {source}), but this step is single-node "
+            "(environment_configs.Skypilot.single_node); set num_nodes to 1 or "
+            "remove it."
+        )
+
+    def test_single_node_checks_the_resolved_count(self):
+        """Only the count the launch would use matters: the last layer wins."""
+        assert (
+            self._resolve(
+                compute_config={"num_nodes": 2},
+                config={"launcher_config": {"num_nodes": 1}},
+                single_node=True,
+            )
+            == 1
+        )
+
+    def test_single_node_keeps_the_parse_error(self):
+        with pytest.raises(ValueError, match="is not an integer"):
+            self._resolve(compute_config={"num_nodes": "many"}, single_node=True)
+
+    def test_multi_node_without_single_node_is_unchanged(self):
+        assert self._resolve(compute_config={"num_nodes": 2}) == 2
+
 
 class TestMultinodeSupportPreflight:
     """LSF multi-node requires the driver-side task executor.
@@ -3202,6 +3255,66 @@ class TestMultinodeSupportPreflight:
         ):
             with pytest.raises(RuntimeError, match="predates LSF multi-node"):
                 _num_nodes_from_configs({"num_nodes": 2}, {}, {}, cloud="lsf")
+
+    def test_single_node_is_refused_before_the_lsf_check(self):
+        """The step's own constraint is the clearer error, so it comes first."""
+        from gbserver.environment.skypilot import _num_nodes_from_configs
+
+        with patch(
+            "gbserver.environment.skypilot.importlib.util.find_spec",
+            return_value=None,
+        ):
+            with pytest.raises(ValueError, match="this step is single-node"):
+                _num_nodes_from_configs(
+                    {"num_nodes": 2}, {}, {}, cloud="lsf", single_node=True
+                )
+
+
+class TestValidateLaunchNumNodes:
+    """The step-creation entry point: a step's filled configs in, the count out."""
+
+    @staticmethod
+    def _env(single_node):
+        from gbserver.types.stepconfig import StepEnvironmentTypeConfig
+
+        return StepEnvironmentTypeConfig.model_validate(
+            {"launchers": {}, "single_node": single_node}
+        )
+
+    def test_reads_compute_config_from_the_step_config(self):
+        from gbserver.environment.skypilot import validate_launch_num_nodes
+
+        assert (
+            validate_launch_num_nodes(
+                self._env(False), {}, {"compute_config": {"num_nodes": 3}}
+            )
+            == 3
+        )
+
+    def test_enforces_the_step_flag(self):
+        from gbserver.environment.skypilot import validate_launch_num_nodes
+
+        with pytest.raises(ValueError, match="this step is single-node"):
+            validate_launch_num_nodes(
+                self._env(True), {}, {"compute_config": {"num_nodes": 3}}
+            )
+
+    @pytest.mark.parametrize(
+        "launcher_config,config",
+        [(None, None), ({}, {"compute_config": None}), ({}, {"launcher_config": None})],
+    )
+    def test_tolerates_missing_layers(self, launcher_config, config):
+        from gbserver.environment.skypilot import validate_launch_num_nodes
+
+        assert validate_launch_num_nodes(self._env(True), launcher_config, config) == 1
+
+    def test_no_step_env_config_means_no_flag(self):
+        from gbserver.environment.skypilot import validate_launch_num_nodes
+
+        assert (
+            validate_launch_num_nodes(None, {}, {"compute_config": {"num_nodes": 2}})
+            == 2
+        )
 
 
 class TestNumNodesReachesSkyTask:

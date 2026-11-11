@@ -81,6 +81,7 @@ from gbserver.utils.unwrap_errors import (
 if TYPE_CHECKING:
     from gbserver.monitoring.logfile_monitor import LogFileMonitor
     from gbserver.resilience.retry_handler import RetryStrategy
+    from gbserver.types.stepconfig import StepEnvironmentTypeConfig
 
 logger = get_logger(__name__)
 
@@ -2176,6 +2177,7 @@ def _num_nodes_from_configs(
     launcher_config: Dict,
     config: Dict,
     cloud: str = "",
+    single_node: bool = False,
 ) -> int:
     """Resolve the node count for a ``sky.Task``.
 
@@ -2197,16 +2199,20 @@ def _num_nodes_from_configs(
     :param launcher_config: The resolved launcher config.
     :param config: The step config (its ``launcher_config`` wins).
     :param cloud: Normalized target cloud, used only for the preflight check.
+    :param single_node: The step declares ``single_node`` in its environment
+        config: refuse any resolved count but 1.
     :returns: Node count, at least 1.
-    :raises ValueError: If a ``num_nodes`` is not an integer >= 1.
+    :raises ValueError: If a ``num_nodes`` is not an integer >= 1, or if
+        ``single_node`` is set and the count resolves to more than 1.
     """
     num_nodes = 1
-    for source in (
-        compute_config,
-        launcher_config,
-        config.get("launcher_config", {}) or {},
+    resolved_from = ""
+    for name, layer in (
+        ("compute_config.num_nodes", compute_config),
+        ("the step's launcher config", launcher_config),
+        ("launcher_config.num_nodes", config.get("launcher_config", {}) or {}),
     ):
-        value = (source or {}).get("num_nodes")
+        value = (layer or {}).get("num_nodes")
         if value is None:
             continue
         # Fail fast rather than fall back to one node: a bad value (an
@@ -2226,6 +2232,7 @@ def _num_nodes_from_configs(
         if parsed < 1:
             raise ValueError(f"num_nodes={parsed} is invalid; it must be >= 1.")
         num_nodes = parsed
+        resolved_from = name
 
     # `or {}` on every layer: a present-but-null `resources:` key returns None
     # from .get(), not the default.
@@ -2242,9 +2249,48 @@ def _num_nodes_from_configs(
             num_nodes,
         )
 
+    # On the resolved count, parsed as above, so the step's constraint can't
+    # drift from what the launch would do. Before the LSF preflight: the
+    # step's own limit is the clearer error.
+    if single_node and num_nodes != 1:
+        raise ValueError(
+            f"num_nodes resolved to {num_nodes} (from {resolved_from}), but this "
+            "step is single-node (environment_configs.Skypilot.single_node); set "
+            "num_nodes to 1 or remove it."
+        )
+
     if num_nodes > 1:
         _check_multinode_supported(cloud, num_nodes)
     return num_nodes
+
+
+def validate_launch_num_nodes(
+    step_env_config: Optional["StepEnvironmentTypeConfig"],
+    launcher_config: Optional[Dict],
+    config: Optional[Dict],
+) -> int:
+    """Resolve ``num_nodes`` from a step's filled configs, as its launch will.
+
+    The step-creation check behind ``Skypilot.validate_launch_config`` and
+    ``Skypilot_managed.validate_launch_config``: a malformed count, or more than
+    one node for a step that sets ``single_node``, fails the step before
+    anything is launched or provisioned. The LSF multi-node preflight is left
+    to the launch, which knows the target cloud.
+
+    :param step_env_config: The step's environment config (``None``: no flag).
+    :param launcher_config: The filled launcher block ``config``.
+    :param config: The filled step config; ``compute_config`` and the build's
+        ``launcher_config`` live here.
+    :returns: The resolved node count.
+    :raises ValueError: As :func:`_num_nodes_from_configs`.
+    """
+    config = config or {}
+    return _num_nodes_from_configs(
+        config.get("compute_config") or {},
+        launcher_config or {},
+        config,
+        single_node=bool(getattr(step_env_config, "single_node", False)),
+    )
 
 
 def _resolve_infra_and_zone(
