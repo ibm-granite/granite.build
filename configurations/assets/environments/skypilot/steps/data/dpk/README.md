@@ -44,6 +44,7 @@ you name it, and the step derives the python module and the pip dependencies.
 | `dpk_version` | string | no | DPK release to install. Default `1.1.8`. Ignored when `dpk_image` is set. |
 | `dpk_image` | string | no | Container image to run in. Default `""` = the bare launcher node. See [Running in a container image](#running-in-a-container-image). |
 | `pip_index_url` | string | no | Index for the pip install. Default `https://pypi.org/simple`. |
+| `pip_constraints` | list of strings | no | Version constraints for the bare-node install, passed to `uv pip install --constraint`. Default `["pyarrow<26"]`. Setting it **replaces** the default; `[]` or `null` means none. Ignored when `dpk_image` is set. See [Dependency constraints](#dependency-constraints). |
 | `module` | string | no | Override the derived python module. An escape hatch for a transform whose runtime is not `dpk_<name>.runtime`; the derivation holds for every transform in DPK 1.1.8. |
 
 ## Inputs
@@ -165,9 +166,40 @@ transform: pii_redactor
 
 Every DPK transform exposes `dpk_<name>.runtime` (a `PythonTransformLauncher` accepting
 `--data_local_config`), and `data-prep-toolkit-transforms` declares one pip extra per
-transform. Deriving the extra means the dependency set is always the one DPK itself
+transform. Deriving the extra means the step installs exactly the packages DPK itself
 declares for that transform — including awkward ones like `pii_redactor`'s pinned
-`numpy<1.29` and its presidio/flair versions.
+`numpy<1.29` and its presidio/flair versions. The only thing the step adds is
+`pip_constraints`, which can bound the versions of those packages but never adds one
+(see [Dependency constraints](#dependency-constraints)).
+
+### Dependency constraints
+
+DPK's extras do not pin every transitive dependency, so a new upstream release can break
+a bare-node install that used to work. `pip_constraints` bounds those versions without
+adding packages. Each entry is one requirement specifier, written to a constraints file
+and passed to `uv pip install --constraint`.
+
+The default is `["pyarrow<26"]` (#653). pyarrow 26 refuses to import under NumPy 1.x
+but does not declare that requirement, and several DPK extras pin `numpy<2`
+(`pii-redactor`, `fdedup`, `docling2parquet`, among others). Without the constraint the
+resolver pairs the two, and the transform fails with
+`ImportError: pyarrow requires NumPy 2.0 or newer`. The constraint applies to every
+transform: with it, every extra of DPK 1.1.7 and 1.1.8 still resolves, and pyarrow 25
+works under NumPy 1.26 and 2.x.
+
+A build's list **replaces** the default, so keep `pyarrow<26` if you add your own:
+
+```yaml
+dpk_config:
+  transform: pii_redactor
+  pip_constraints:
+    - "pyarrow<26"
+    - "pandas<3"
+```
+
+Set `pip_constraints: []` to install with no constraints, for example on a DPK release
+that needs pyarrow 26 or later. Constraints have no effect with `dpk_image`, because
+nothing is installed.
 
 The step also auto-injects the launcher's data config, so you never write it:
 

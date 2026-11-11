@@ -13,25 +13,48 @@
 # skips this entirely — the image is expected to already provide DPK.
 #
 # CONTRACT
-#   dpk_setup.sh --venv <dir> --index-url <url> [--] [pip requirements...]
+#   dpk_setup.sh --venv <dir> --index-url <url> [--constraint <spec>]...
+#                [--] [pip requirements...]
 #
 #   --venv        directory to create the virtualenv in (the step passes ./venv,
 #                 relative to the working directory `run` also starts in).
 #   --index-url   package index passed to `uv pip install`.
-#   --            everything after it is a pip requirement to install, already
-#                 resolved by the caller (the derived
-#                 data-prep-toolkit-transforms[extra]==version). Zero requirements
-#                 is valid — the caller may want a bare venv — so the install is
-#                 skipped rather than failing.
+#   --constraint  one version constraint (e.g. "pyarrow<26"); repeatable. They are
+#                 written one per line to <venv>/gb-constraints.txt and passed as
+#                 `uv pip install --constraint <file>`, which bounds packages the
+#                 requirements pull in without adding any. The file is left in the
+#                 venv so a failed install can be diagnosed on the node. The step
+#                 passes dpk_config.pip_constraints here (default "pyarrow<26",
+#                 #653). Zero constraints is valid and passes no --constraint.
+#   --            everything after it is a pip requirement to install. The step
+#                 passes exactly one, the derived
+#                 data-prep-toolkit-transforms[extra]==version; constraints never
+#                 travel here, they have their own flag. Zero requirements is valid
+#                 — the caller may want a bare venv — so the install is skipped
+#                 rather than failing.
 set -euo pipefail
 
 venv=""
 index_url=""
+# Kept as a newline-joined string rather than an array: "${arr[@]}" on an empty
+# array is an unbound-variable error under `set -u` in bash < 4.4 (macOS /bin/bash
+# is 3.2), and these are written to a file one per line anyway.
+constraints=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --venv)       venv="$2";       shift 2 ;;
     --index-url)  index_url="$2";  shift 2 ;;
+    --constraint)
+      # One entry must stay one line of the constraints file: an embedded newline
+      # would smuggle in a second line, which requirements-file syntax would read
+      # as another constraint or an option such as --index-url.
+      case "$2" in
+        "")      echo "dpk_setup.sh: --constraint needs a non-empty value" >&2; exit 2 ;;
+        *$'\n'*) echo "dpk_setup.sh: --constraint value must be a single line: $2" >&2; exit 2 ;;
+      esac
+      constraints="${constraints}${2}"$'\n'
+      shift 2 ;;
     --)           shift; break ;;
     *)            break ;;
   esac
@@ -96,5 +119,11 @@ uv venv "$venv"
 # Skip the install when there are none: `uv pip install` with no arguments is an
 # error, and a bare venv is a legitimate outcome.
 if [ "$#" -gt 0 ]; then
-  uv pip install --quiet --index-url "$index_url" "$@"
+  if [ -n "$constraints" ]; then
+    constraints_file="$venv/gb-constraints.txt"
+    printf '%s' "$constraints" > "$constraints_file"
+    uv pip install --quiet --index-url "$index_url" --constraint "$constraints_file" "$@"
+  else
+    uv pip install --quiet --index-url "$index_url" "$@"
+  fi
 fi

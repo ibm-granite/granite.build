@@ -297,11 +297,11 @@ class TestDerivations:
         run_argv = _script_argv(_render(launcher["run"], cfg, _BINDINGS), "run")
         assert _opt(run_argv, "--module") == module
         setup_argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
-        # The derived extra is always FIRST; a compatibility pin may follow it
-        # (see TestNumpy1ExtrasPinPyarrow).
-        assert _passthrough(setup_argv)[0] == (
+        # The derived extra is the ONLY requirement: version bounds such as the
+        # default pyarrow<26 travel as --constraint, never after `--`.
+        assert _passthrough(setup_argv) == [
             f"data-prep-toolkit-transforms[{extra}]==1.1.8"
-        )
+        ]
 
     def test_dpk_version_is_honored(self, launcher, defaults):
         cfg = _transform_cfg(defaults, dpk_version="1.1.7")
@@ -706,7 +706,9 @@ class TestEveryConfigValueIsEscaped:
         }
         assert _opt(argv, opt[field]) == "a'b"
 
-    @pytest.mark.parametrize("field", ["pip_index_url", "dpk_version"])
+    @pytest.mark.parametrize(
+        "field", ["pip_index_url", "dpk_version", "pip_constraints"]
+    )
     def test_the_setup_block_is_escaped_too(self, launcher, defaults, field, tmp_path):
         """`setup` had the same gap, in the phase that runs FIRST — before the venv.
 
@@ -748,55 +750,77 @@ class TestEveryConfigValueIsEscaped:
         cfg = _transform_cfg(defaults, transform="pii_redactor")
         argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
         assert _passthrough(argv) == [
-            "data-prep-toolkit-transforms[pii-redactor]==1.1.8",
-            "pyarrow<26",
+            "data-prep-toolkit-transforms[pii-redactor]==1.1.8"
         ]
 
 
-class TestNumpy1ExtrasPinPyarrow:
-    """#653: pyarrow 26 needs NumPy 2 at import time but does not declare it.
+class TestPipConstraints:
+    """`pip_constraints` reaches dpk_setup.sh as one --constraint per entry (#653).
 
-    The extras below cap numpy below 2 in DPK 1.1.8, so an unpinned resolve pairs
-    numpy 1.26.4 with pyarrow 26 and the transform dies on `import pyarrow`. The pin
-    is scoped to them: an extra that resolves numpy 2 gets no extra requirement.
+    The default "pyarrow<26" applies to EVERY transform: pyarrow 26 refuses to import
+    under NumPy 1.x without declaring it, and several DPK extras pin numpy<2. A
+    build's own list replaces the default (step config lists are replaced on merge,
+    not concatenated), and [] or null means none.
     """
 
     @pytest.mark.parametrize(
-        "transform",
-        [
-            "pii_redactor",
-            "fdedup",
-            "docling2parquet",
-            "code_profiler",
-            "doc_chunk",
-            "faces",
-            "nsfw",
-            "people",
-        ],
+        "transform", ["pii_redactor", "tokenization2arrow", "fdedup", "ededup"]
     )
-    def test_numpy1_extras_get_the_pin(self, launcher, defaults, transform):
+    def test_the_default_applies_to_every_transform(
+        self, launcher, defaults, transform
+    ):
         cfg = _transform_cfg(defaults, transform=transform)
         argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
+        assert _guard_opt(argv, "--constraint") == ["pyarrow<26"]
+
+    def test_the_default_is_pyarrow_below_26(self, defaults):
+        assert defaults["pip_constraints"] == ["pyarrow<26"]
+
+    def test_constraints_never_ride_in_the_requirements(self, launcher, defaults):
+        """They have their own flag, so `--` carries only the derived extra."""
+        cfg = _transform_cfg(defaults, transform="pii_redactor")
+        argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
+        assert argv.index("--constraint") < argv.index("--")
         assert _passthrough(argv) == [
-            f"data-prep-toolkit-transforms[{transform.replace('_', '-')}]==1.1.8",
-            "pyarrow<26",
+            "data-prep-toolkit-transforms[pii-redactor]==1.1.8"
         ]
 
-    @pytest.mark.parametrize(
-        "transform",
-        ["tokenization2arrow", "doc_id", "ededup", "filter", "text_encoder"],
-    )
-    def test_numpy2_extras_are_left_alone(self, launcher, defaults, transform):
-        cfg = _transform_cfg(defaults, transform=transform)
+    def test_a_build_list_replaces_the_default(self, launcher, defaults):
+        """Replace, not append — and order is kept."""
+        cfg = _transform_cfg(defaults, pip_constraints=["numpy<2", "pandas<3"])
         argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
-        assert _passthrough(argv) == [
-            f"data-prep-toolkit-transforms[{transform.replace('_', '-')}]==1.1.8"
-        ]
+        assert _guard_opt(argv, "--constraint") == ["numpy<2", "pandas<3"]
+
+    @pytest.mark.parametrize("value", [[], None])
+    def test_empty_or_null_means_no_constraints(self, launcher, defaults, value):
+        cfg = _transform_cfg(defaults, pip_constraints=value)
+        argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
+        assert "--constraint" not in argv
+
+    def test_a_bare_string_is_one_constraint(self, launcher, defaults):
+        """Not iterated character by character."""
+        cfg = _transform_cfg(defaults, pip_constraints="pyarrow<25")
+        argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
+        assert _guard_opt(argv, "--constraint") == ["pyarrow<25"]
+
+    def test_a_quoted_constraint_survives_as_data(self, launcher, defaults):
+        cfg = _transform_cfg(defaults, pip_constraints=["a'b", "c d"])
+        argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
+        assert _guard_opt(argv, "--constraint") == ["a'b", "c d"]
+
+    def test_a_non_default_dpk_version_keeps_the_default(self, launcher, defaults):
+        """The default is not tied to a DPK release: 1.1.7 needs it too."""
+        cfg = _transform_cfg(defaults, transform="lang_id", dpk_version="1.1.7")
+        argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
+        assert _guard_opt(argv, "--constraint") == ["pyarrow<26"]
+        assert _passthrough(argv) == ["data-prep-toolkit-transforms[lang-id]==1.1.7"]
 
     def test_image_mode_installs_nothing(self, launcher, defaults):
-        """The pin lives inside the bare-node install, so an image skips it too."""
+        """Constraints only bound the bare-node install, which an image skips."""
         cfg = _transform_cfg(defaults, transform="pii_redactor", dpk_image="img:1")
-        assert "pyarrow" not in _render(launcher["setup"], cfg, _BINDINGS)
+        rendered = _render(launcher["setup"], cfg, _BINDINGS)
+        assert "--constraint" not in rendered
+        assert "pyarrow" not in rendered
 
 
 class TestArgsKeysReachTheGuardAsData:

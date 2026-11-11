@@ -30,6 +30,8 @@ real, measured consequences:
 * the install does not pass ``--no-cache-dir``, which would defeat linking.
 * requirements arrive as argv, so a specifier containing ``[extra]`` needs no
   shell re-quoting.
+* ``--constraint`` entries go to uv as a constraints file in the venv, never as
+  extra requirements, and a multi-line entry is refused.
 
 Cluster-agnostic, so this sits at the root of the step's ``test/`` dir (Mode 1
 only) and is not copied by ``make publish-step``.
@@ -300,6 +302,63 @@ class TestRequirements:
     def test_requirement_with_spaces_stays_one_argument(self, run_setup):
         _, calls = run_setup(*_BASE, "--", "pkg @ file:///some path/x.whl")
         assert _call(calls, "uv", "pip")["args"][-1] == "pkg @ file:///some path/x.whl"
+
+
+class TestConstraints:
+    """--constraint entries reach uv as a constraints file (#653's pyarrow<26)."""
+
+    def test_constraints_are_written_and_passed(self, run_setup):
+        proc, calls = run_setup(
+            *_BASE, "--constraint", "pyarrow<26", "--", "somepkg==1.0"
+        )
+        assert proc.returncode == 0, proc.stderr
+        args = _call(calls, "uv", "pip")["args"]
+        cfile = args[args.index("--constraint") + 1]
+        assert cfile == "./venv/gb-constraints.txt"
+        # The file stays in the venv, so a failed install can be diagnosed.
+        written = (run_setup.tmp_path / cfile).read_text()
+        assert written.splitlines() == ["pyarrow<26"]
+        # A constraint bounds a package; it is not itself a requirement.
+        assert args[-1] == "somepkg==1.0"
+        assert "pyarrow<26" not in args
+
+    def test_several_constraints_keep_their_order(self, run_setup):
+        _, calls = run_setup(
+            *_BASE,
+            "--constraint", "pyarrow<26",
+            "--constraint", "numpy<2",
+            "--", "somepkg",
+        )  # fmt: skip
+        args = _call(calls, "uv", "pip")["args"]
+        assert args.count("--constraint") == 1, "one file, not one flag per entry"
+        written = (run_setup.tmp_path / "venv" / "gb-constraints.txt").read_text()
+        assert written.splitlines() == ["pyarrow<26", "numpy<2"]
+
+    def test_no_constraints_passes_no_flag(self, run_setup):
+        _, calls = run_setup(*_BASE, "--", "somepkg")
+        assert "--constraint" not in _call(calls, "uv", "pip")["args"]
+        assert not (run_setup.tmp_path / "venv" / "gb-constraints.txt").exists()
+
+    def test_constraints_without_requirements_still_skip_the_install(self, run_setup):
+        proc, calls = run_setup(*_BASE, "--constraint", "pyarrow<26", "--")
+        assert proc.returncode == 0, proc.stderr
+        assert _call(calls, "uv", "pip") is None
+
+    def test_a_constraint_with_spaces_stays_one_line(self, run_setup):
+        _, calls = run_setup(*_BASE, "--constraint", "pyarrow >= 20, < 26", "--", "x")
+        written = (run_setup.tmp_path / "venv" / "gb-constraints.txt").read_text()
+        assert written.splitlines() == ["pyarrow >= 20, < 26"]
+
+    @pytest.mark.parametrize(
+        "value", ["", "pyarrow<26\n--index-url https://evil.example/simple"]
+    )
+    def test_an_empty_or_multiline_constraint_is_refused(self, run_setup, value):
+        """A newline would add a second line to the file — another constraint, or
+        an option like --index-url. Refused before anything is installed."""
+        proc, calls = run_setup(*_BASE, "--constraint", value, "--", "somepkg")
+        assert proc.returncode == 2
+        assert "--constraint" in proc.stderr
+        assert calls == []
 
 
 class TestFailurePropagation:
