@@ -1,0 +1,74 @@
+granite.build:
+  name: skypilot-slurm-bluevela-eval-bfcl-test
+  # The recipes' shape: generate on the family's GPU image, score on its CPU
+  # image, bound by the granite_generation artifact -- one build test covers
+  # both images.
+  targets:
+    bfcl-generate:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/bfcl
+          config:
+            poll_interval_seconds: 5
+            log_retrieval_interval_seconds: 30
+            benchmark: "bfcl-v4"
+            image: "us.icr.io/cil15-shared-registry/gb-step-eval-bfcl:ce003c94"
+            model_path: "ibm-granite/granite-4.2-3b"
+            options: ""
+            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/bfcl"
+            run_name: "buildtest"
+            # Smoke knob: the first N scored entries of EVERY category (21), so even
+            # N=1 is ~25 cases with multi-turn prerequisites; N=5 is 125 and
+            # far over the test budget.
+            limit: "1"
+            workers: "8"
+            phase: "generate"
+            hf_home: "/proj/data-eng/llmb-read-write/eval-build-tests/hf-home"
+            sandbox_cache: ""
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "gpu-mid"
+                accelerators: "H200:1"
+                memory: 256
+    bfcl-score:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      inputs:
+        generation:
+          binding: bfcl-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/bfcl
+          config:
+            poll_interval_seconds: 5
+            log_retrieval_interval_seconds: 30
+            benchmark: "bfcl-v4"
+            image: "us.icr.io/cil15-shared-registry/gb-step-eval-bfcl-cpu:ce003c94"
+            model_path: "ibm-granite/granite-4.2-3b"
+            options: ""
+            # Same output dir as the generate target: the score phase reads
+            # the generation.json the generate phase wrote there.
+            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/bfcl"
+            run_name: "buildtest"
+            # Smoke knob: the first N scored entries of EVERY category (21), so even
+            # N=1 is ~25 cases with multi-turn prerequisites; N=5 is 125 and
+            # far over the test budget.
+            limit: "1"
+            workers: "4"
+            phase: "score"
+            sandbox_cache: ""
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "cpu"
+                memory: 32
+                cpus: 8
+              sbatch_options:
+                constraint: null

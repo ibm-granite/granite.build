@@ -1,0 +1,36 @@
+# YAML-driven spec for test_skypilot_slurm_bluevela_eval_nemoskills.py (located by
+# the test/ <-> test-data/ helper; see steps/README.md). The recipes' shape:
+# math-500 generates on the family's GPU image and scores on its CPU image,
+# bound by the granite_generation artifact, so one build test covers both
+# images model-free (gold mode).
+targets:
+  - nemoskills-generate
+  - nemoskills-score
+target_expectations:
+  - target_name: nemoskills-generate
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 1
+    expected_steps:
+      - config:
+          benchmark: math-500
+          phase: generate
+          options: answers=gold
+  - target_name: nemoskills-score
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    expected_steps:
+      - config:
+          benchmark: math-500
+          phase: score
+          image: us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills-cpu:ce003c94
+# The Space rendered by `make space` (the local nemoskills step), as for the other
+# clusters; publish-step rewrites it to configurations/spaces/local. The
+# environment comes from the shared BlueVela SLURM space.
+space_uri: ../../space
+tests:
+  - runner
+simulate_step_failure: false
+# Two queued jobs (generate, then score), each with its own startup.
+timeout_minutes: 60

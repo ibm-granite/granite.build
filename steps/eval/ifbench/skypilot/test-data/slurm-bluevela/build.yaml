@@ -1,0 +1,68 @@
+granite.build:
+  name: skypilot-slurm-bluevela-eval-ifbench-test
+  # The recipes' shape: generate on the family's GPU image, score on its CPU
+  # image, bound by the granite_generation artifact -- one build test covers
+  # both images.
+  targets:
+    ifbench-generate:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/ifbench
+          config:
+            poll_interval_seconds: 5
+            log_retrieval_interval_seconds: 30
+            benchmark: "ifbench"
+            image: "us.icr.io/cil15-shared-registry/gb-step-eval-ifbench:ce003c94"
+            model_path: "ibm-granite/granite-4.2-3b"
+            options: ""
+            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/ifbench"
+            run_name: "buildtest"
+            limit: "5"
+            workers: "8"
+            phase: "generate"
+            hf_home: "/proj/data-eng/llmb-read-write/eval-build-tests/hf-home"
+            sandbox_cache: ""
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "gpu-mid"
+                accelerators: "H200:1"
+                memory: 256
+    ifbench-score:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      inputs:
+        generation:
+          binding: ifbench-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/ifbench
+          config:
+            poll_interval_seconds: 5
+            log_retrieval_interval_seconds: 30
+            benchmark: "ifbench"
+            image: "us.icr.io/cil15-shared-registry/gb-step-eval-ifbench-cpu:ce003c94"
+            model_path: "ibm-granite/granite-4.2-3b"
+            options: ""
+            # Same output dir as the generate target: the score phase reads
+            # the generation.json the generate phase wrote there.
+            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/ifbench"
+            run_name: "buildtest"
+            limit: "5"
+            workers: "4"
+            phase: "score"
+            sandbox_cache: ""
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "cpu"
+                memory: 32
+                cpus: 8
+              sbatch_options:
+                constraint: null
