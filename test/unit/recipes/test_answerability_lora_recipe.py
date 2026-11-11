@@ -52,6 +52,7 @@ def _expanded_template() -> dict:
     """The template as `make space` renders it: gb-include lines expanded."""
     script = _REPO / "steps" / "scripts" / "render_step_template.py"
     spec = importlib.util.spec_from_file_location("render_step_template", script)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return yaml.safe_load(module.expand(_STEP / "step-template.yaml"))

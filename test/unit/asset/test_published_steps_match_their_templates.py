@@ -58,6 +58,7 @@ ASSETS_DIR = REPO_ROOT / "configurations" / "assets" / "environments"
 _spec = importlib.util.spec_from_file_location(
     "render_step_template", REPO_ROOT / "steps" / "scripts" / "render_step_template.py"
 )
+assert _spec is not None and _spec.loader is not None
 render_step_template = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(render_step_template)
 

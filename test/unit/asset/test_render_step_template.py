@@ -39,6 +39,7 @@ _OLD_SED = r"""ref=$(printf '%s' "$REF" | sed 's/[#&\\]/\\&/g'); sed "s#\${IMAGE
 
 def _load():
     spec = importlib.util.spec_from_file_location("render_step_template", SCRIPT)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
