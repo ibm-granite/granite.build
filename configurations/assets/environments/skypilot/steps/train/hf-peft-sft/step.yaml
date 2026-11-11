@@ -101,9 +101,37 @@ environment_configs:
           # before provisioning. The guard script checks only the staged paths.
           setup: |
             set -euo pipefail
+            {#- Shared by the steps/train SkyPilot SFT templates (openinstruct-sft, hf-peft-sft); after an edit, re-run make publish-step in each. -#}
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
+            {#- validate_args: refuse args entries that would override a step-owned flag or
+                break the argv render_args builds. step: message prefix; field: the args
+                path; owned: step-owned flag names; noun: what a key names; hint: what to
+                set instead of an owned flag; consumer: what parses the argv; full_flags:
+                non-owned flags that are a proper prefix of an owned one (argparse takes an
+                exact match first); refuse_no: refuse no_* keys (store_false, no value).
+                A call block gets (k, v, nk) once per key, after these checks. -#}
+            {%- macro validate_args(step, field, args, owned, noun, hint, consumer, full_flags=[], refuse_no=false) -%}
+            {%- if args is not mapping %}{{ raise_error(step ~ ": " ~ field ~ " must be a mapping of " ~ noun ~ " to value.") }}{% endif -%}
+            {%- for k, v in args.items() %}
+            {%- set ks = k | string %}
+            {%- if not ks or "=" in ks or ks.startswith("-") or (ks.split() | join("")) != ks %}{{ raise_error(step ~ ": " ~ field ~ " key '" ~ ks ~ "' must be a bare " ~ noun ~ " name (no '=', '-' prefix or whitespace).") }}{% endif -%}
+            {%- set nk = ks | replace("-", "_") %}
+            {%- if nk in owned %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is set by the step; use " ~ hint ~ " instead.") }}{% endif -%}
+            {%- for o in owned %}{% if nk != o and nk not in full_flags and o.startswith(nk) %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " abbreviates the step-owned flag " ~ o ~ "; abbreviated flags are not accepted.") }}{% endif %}{% endfor -%}
+            {%- if refuse_no and nk.startswith("no_") %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is a no_* flag, which takes no value; write " ~ k[3:] ~ ": false instead.") }}{% endif -%}
+            {%- if v is mapping %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
+            {%- if v is iterable and v is not string and v is not mapping and not v %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is an empty list; " ~ consumer ~ " would read the next flag as its value. Remove it, or set it to null to omit it.") }}{% endif -%}
+            {%- if caller is defined %}{{ caller(k, v, nk) }}{% endif -%}
+            {%- endfor -%}
+            {%- endmacro %}
+            {#- render_args: args as argv words after the step's own flags: '--<key>', then
+                true/false for a bool, each item of a list, or the scalar; null is omitted. -#}
+            {%- macro render_args(args) -%}
+            {% for k, v in args.items() %}{% if v is not none %}'--{{ q(k) }}' {% if v is sameas true or v is sameas false %}'{{ v | lower }}' {% elif v is iterable and v is not string %}{% for x in v %}'{{ q(x) }}' {% endfor %}{% else %}'{{ q(v) }}' {% endif %}{% endif %}{% endfor %}
+            {%- endmacro %}
+            {#- hf-peft-sft's config checks; setup: and run: both include this file. -#}
             {%- macro validate(c, bound, lc) -%}
             {%- set owned = ["output_dir", "report_to", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "resume_from_checkpoint", "save_strategy", "bf16", "fp16", "fsdp", "fsdp_config", "deepspeed", "gradient_checkpointing_kwargs", "model_name_or_path", "method", "distributed", "mixed_precision", "dataset_path", "dataset_split", "dataset_config", "lora_r", "lora_alpha", "lora_dropout", "lora_target_modules", "lora_modules_to_save", "alora_invocation_string", "base_model_id"] -%}
             {#- Non-owned trainer flags that are a proper prefix of an owned one: argparse
@@ -140,17 +168,9 @@ environment_configs:
             {%- if tm is not string and tm is iterable and tm is not mapping and "all-linear" in tm %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.lora.target_modules: all-linear is a peft keyword, not a module name; use target_modules: all-linear on its own, or list module names (with lora.modules_to_save for extra trainable modules like lm_head).") }}{% endif -%}
             {%- set mts = l.get("modules_to_save") -%}
             {%- if mts is not none and (mts is string or mts is not iterable or mts is mapping) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.lora.modules_to_save must be a list of module names, got '" ~ mts ~ "'.") }}{% endif -%}
-            {%- if c.args is not mapping %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args must be a mapping of SFTConfig field to value.") }}{% endif -%}
-            {%- for k, v in c.args.items() %}
-            {%- set ks = k | string %}
-            {%- if not ks or "=" in ks or ks.startswith("-") or (ks.split() | join("")) != ks %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args key '" ~ ks ~ "' must be a bare SFTConfig field name (no '=', '-' prefix or whitespace).") }}{% endif -%}
-            {%- set nk = ks | replace("-", "_") %}
-            {%- if nk in owned %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " is set by the step; use the base_model/dataset inputs, method, distributed, mixed_precision, lora, output_path, base_model_id or clearml_* instead.") }}{% endif -%}
-            {%- for o in owned %}{% if nk != o and nk not in full_flags and o.startswith(nk) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " abbreviates the step-owned flag " ~ o ~ "; abbreviated flags are not accepted.") }}{% endif %}{% endfor -%}
-            {%- if v is mapping %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
-            {%- if v is iterable and v is not string and v is not mapping and not v %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " is an empty list; the trainer would read the next flag as its value. Remove it, or set it to null to omit it.") }}{% endif -%}
+            {%- call(k, v, nk) validate_args("hf-peft-sft", "hf_peft_sft_config.args", c.args, owned, "SFTConfig field", "the base_model/dataset inputs, method, distributed, mixed_precision, lora, output_path, base_model_id or clearml_*", "the trainer", full_flags=full_flags) %}
             {%- if c.method == "alora" and nk in ["packing", "padding_free"] and (v | string | lower) in ["true", "1", "yes"] %}{{ raise_error("hf-peft-sft: method: alora cannot train with packing or padding_free (args." ~ k ~ "): peft activates the adapter from the last invocation in each row, so packed rows would train the wrong spans.") }}{% endif -%}
-            {%- endfor -%}
+            {%- endcall %}
             {%- endmacro %}
             {%- set c = config.hf_peft_sft_config %}
             {%- set b = bindings if bindings is defined else {} %}
@@ -160,13 +180,42 @@ environment_configs:
               --dataset '{{ q(b.dataset.binding.path if "dataset" in b else "") }}'
             bash /opt/hf-peft-sft/hf_peft_sft_setup.sh
           # Each block is filled on its own (no shared Jinja scope across YAML
-          # keys), so the macros repeat; run validates too, since a warm-cluster
+          # keys), so both pull in the macros; make space / make publish-step
+          # expand the include lines. run validates too, since a warm-cluster
           # re-run renders it without setup.
           run: |
             set -euo pipefail
+            {#- Shared by the steps/train SkyPilot SFT templates (openinstruct-sft, hf-peft-sft); after an edit, re-run make publish-step in each. -#}
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
+            {#- validate_args: refuse args entries that would override a step-owned flag or
+                break the argv render_args builds. step: message prefix; field: the args
+                path; owned: step-owned flag names; noun: what a key names; hint: what to
+                set instead of an owned flag; consumer: what parses the argv; full_flags:
+                non-owned flags that are a proper prefix of an owned one (argparse takes an
+                exact match first); refuse_no: refuse no_* keys (store_false, no value).
+                A call block gets (k, v, nk) once per key, after these checks. -#}
+            {%- macro validate_args(step, field, args, owned, noun, hint, consumer, full_flags=[], refuse_no=false) -%}
+            {%- if args is not mapping %}{{ raise_error(step ~ ": " ~ field ~ " must be a mapping of " ~ noun ~ " to value.") }}{% endif -%}
+            {%- for k, v in args.items() %}
+            {%- set ks = k | string %}
+            {%- if not ks or "=" in ks or ks.startswith("-") or (ks.split() | join("")) != ks %}{{ raise_error(step ~ ": " ~ field ~ " key '" ~ ks ~ "' must be a bare " ~ noun ~ " name (no '=', '-' prefix or whitespace).") }}{% endif -%}
+            {%- set nk = ks | replace("-", "_") %}
+            {%- if nk in owned %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is set by the step; use " ~ hint ~ " instead.") }}{% endif -%}
+            {%- for o in owned %}{% if nk != o and nk not in full_flags and o.startswith(nk) %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " abbreviates the step-owned flag " ~ o ~ "; abbreviated flags are not accepted.") }}{% endif %}{% endfor -%}
+            {%- if refuse_no and nk.startswith("no_") %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is a no_* flag, which takes no value; write " ~ k[3:] ~ ": false instead.") }}{% endif -%}
+            {%- if v is mapping %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
+            {%- if v is iterable and v is not string and v is not mapping and not v %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is an empty list; " ~ consumer ~ " would read the next flag as its value. Remove it, or set it to null to omit it.") }}{% endif -%}
+            {%- if caller is defined %}{{ caller(k, v, nk) }}{% endif -%}
+            {%- endfor -%}
+            {%- endmacro %}
+            {#- render_args: args as argv words after the step's own flags: '--<key>', then
+                true/false for a bool, each item of a list, or the scalar; null is omitted. -#}
+            {%- macro render_args(args) -%}
+            {% for k, v in args.items() %}{% if v is not none %}'--{{ q(k) }}' {% if v is sameas true or v is sameas false %}'{{ v | lower }}' {% elif v is iterable and v is not string %}{% for x in v %}'{{ q(x) }}' {% endfor %}{% else %}'{{ q(v) }}' {% endif %}{% endif %}{% endfor %}
+            {%- endmacro %}
+            {#- hf-peft-sft's config checks; setup: and run: both include this file. -#}
             {%- macro validate(c, bound, lc) -%}
             {%- set owned = ["output_dir", "report_to", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "resume_from_checkpoint", "save_strategy", "bf16", "fp16", "fsdp", "fsdp_config", "deepspeed", "gradient_checkpointing_kwargs", "model_name_or_path", "method", "distributed", "mixed_precision", "dataset_path", "dataset_split", "dataset_config", "lora_r", "lora_alpha", "lora_dropout", "lora_target_modules", "lora_modules_to_save", "alora_invocation_string", "base_model_id"] -%}
             {#- Non-owned trainer flags that are a proper prefix of an owned one: argparse
@@ -203,17 +252,9 @@ environment_configs:
             {%- if tm is not string and tm is iterable and tm is not mapping and "all-linear" in tm %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.lora.target_modules: all-linear is a peft keyword, not a module name; use target_modules: all-linear on its own, or list module names (with lora.modules_to_save for extra trainable modules like lm_head).") }}{% endif -%}
             {%- set mts = l.get("modules_to_save") -%}
             {%- if mts is not none and (mts is string or mts is not iterable or mts is mapping) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.lora.modules_to_save must be a list of module names, got '" ~ mts ~ "'.") }}{% endif -%}
-            {%- if c.args is not mapping %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args must be a mapping of SFTConfig field to value.") }}{% endif -%}
-            {%- for k, v in c.args.items() %}
-            {%- set ks = k | string %}
-            {%- if not ks or "=" in ks or ks.startswith("-") or (ks.split() | join("")) != ks %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args key '" ~ ks ~ "' must be a bare SFTConfig field name (no '=', '-' prefix or whitespace).") }}{% endif -%}
-            {%- set nk = ks | replace("-", "_") %}
-            {%- if nk in owned %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " is set by the step; use the base_model/dataset inputs, method, distributed, mixed_precision, lora, output_path, base_model_id or clearml_* instead.") }}{% endif -%}
-            {%- for o in owned %}{% if nk != o and nk not in full_flags and o.startswith(nk) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " abbreviates the step-owned flag " ~ o ~ "; abbreviated flags are not accepted.") }}{% endif %}{% endfor -%}
-            {%- if v is mapping %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
-            {%- if v is iterable and v is not string and v is not mapping and not v %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.args." ~ k ~ " is an empty list; the trainer would read the next flag as its value. Remove it, or set it to null to omit it.") }}{% endif -%}
+            {%- call(k, v, nk) validate_args("hf-peft-sft", "hf_peft_sft_config.args", c.args, owned, "SFTConfig field", "the base_model/dataset inputs, method, distributed, mixed_precision, lora, output_path, base_model_id or clearml_*", "the trainer", full_flags=full_flags) %}
             {%- if c.method == "alora" and nk in ["packing", "padding_free"] and (v | string | lower) in ["true", "1", "yes"] %}{{ raise_error("hf-peft-sft: method: alora cannot train with packing or padding_free (args." ~ k ~ "): peft activates the adapter from the last invocation in each row, so packed rows would train the wrong spans.") }}{% endif -%}
-            {%- endfor -%}
+            {%- endcall %}
             {%- endmacro %}
             {%- set c = config.hf_peft_sft_config %}
             {%- set b = bindings if bindings is defined else {} %}
@@ -253,7 +294,7 @@ environment_configs:
               {%- if c.base_model_id %}
               '--base_model_id' '{{ q(c.base_model_id) }}' \
               {%- endif %}
-              {% for k, v in c.args.items() %}{% if v is not none %}'--{{ q(k) }}' {% if v is sameas true or v is sameas false %}'{{ v | lower }}' {% elif v is iterable and v is not string %}{% for x in v %}'{{ q(x) }}' {% endfor %}{% else %}'{{ q(v) }}' {% endif %}{% endif %}{% endfor %}
+              {{ render_args(c.args) }}
     monitors:
       skypilot_monitor:
         # Artifact + metadata markers come from the shared library. Training logs

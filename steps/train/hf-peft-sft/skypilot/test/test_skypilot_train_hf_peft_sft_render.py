@@ -19,6 +19,7 @@ rendered blocks then run with the /opt/hf-peft-sft scripts swapped for argv
 printers. Mode 1 only.
 """
 
+import importlib.util
 import pathlib
 import re
 import subprocess
@@ -32,7 +33,20 @@ from gbserver.types.stepconfig import StepEnvironmentTypeConfig
 from gbserver.utils.template import fill_template
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
-_TEMPLATE = yaml.safe_load((_STEP_DIR / "step-template.yaml").read_text())
+_SOURCE = (_STEP_DIR / "step-template.yaml").read_text()
+_VALIDATE = (_STEP_DIR / "macros" / "validate.j2").read_text()
+
+
+def _expanded_template() -> dict:
+    """The template as `make space` renders it: gb-include lines expanded."""
+    script = _STEP_DIR.parents[2] / "scripts" / "render_step_template.py"
+    spec = importlib.util.spec_from_file_location("render_step_template", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return yaml.safe_load(module.expand(_STEP_DIR / "step-template.yaml"))
+
+
+_TEMPLATE = _expanded_template()
 _LAUNCHER = _TEMPLATE["environment_configs"]["Skypilot"]["launchers"]["hf_peft_sft"][
     "config"
 ]
@@ -94,14 +108,14 @@ def _tail(argv):
 
 
 def _owned():
-    text = (_STEP_DIR / "step-template.yaml").read_text()
+    text = _VALIDATE
     return set(
         re.findall(r'"([a-z_0-9]+)"', re.findall(r"set owned = \[(.*?)\]", text)[0])
     )
 
 
 def _exempt():
-    text = (_STEP_DIR / "step-template.yaml").read_text()
+    text = _VALIDATE
     found = re.findall(r"set full_flags = \[(.*?)\]", text)
     return set(re.findall(r'"([a-z_0-9]+)"', found[0])) if found else set()
 
@@ -149,12 +163,17 @@ class TestContract:
     def test_requests_no_gpus_itself(self):
         assert _LAUNCHER["resources"] == {}
 
-    @pytest.mark.parametrize("name", ["validate", "q"])
-    def test_macro_copies_are_identical(self, name):
-        macro = re.compile(r"\{%- macro " + name + r"\(.*?\{%- endmacro %\}", re.S)
-        setup = macro.findall(_LAUNCHER["setup"])
-        assert len(setup) == 1
-        assert setup == macro.findall(_LAUNCHER["run"])
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_blocks_include_the_shared_macros(self, block):
+        source = yaml.safe_load(_SOURCE)["environment_configs"]["Skypilot"][
+            "launchers"
+        ]["hf_peft_sft"]["config"][block]
+        for marker in (
+            "{#- gb-include ../../shared/trainer_args.j2 -#}",
+            "{#- gb-include macros/validate.j2 -#}",
+        ):
+            assert source.count(marker) == 1, marker
+        assert "{%- macro" not in _SOURCE
 
     def test_template_carries_the_image_ref_token(self):
         assert _DEFAULTS["image_id"] == "docker:${IMAGE_REF}"

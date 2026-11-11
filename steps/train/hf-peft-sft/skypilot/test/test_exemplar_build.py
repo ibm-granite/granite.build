@@ -28,12 +28,13 @@ import yaml
 _HERE = Path(__file__).resolve().parent
 _DATA = _HERE.parent / "test-data"
 _TEMPLATE_TEXT = (_HERE.parent / "step-template.yaml").read_text()
+_VALIDATE_TEXT = (_HERE.parent / "macros" / "validate.j2").read_text()
 _DEFAULTS = yaml.safe_load(_TEMPLATE_TEXT)["config"]["hf_peft_sft_config"]
 _PARAM_RE = re.compile(r"\$\$\{([A-Z0-9_]+)\}")
 BUILDS = ["build.yaml", "aws/build.yaml", "slurm-bluevela/build.yaml"]
 _OWNED = frozenset(
     re.findall(
-        r'"([a-z_0-9]+)"', re.findall(r"set owned = \[(.*?)\]", _TEMPLATE_TEXT)[0]
+        r'"([a-z_0-9]+)"', re.findall(r"set owned = \[(.*?)\]", _VALIDATE_TEXT)[0]
     )
 )
 
