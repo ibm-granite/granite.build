@@ -34,14 +34,10 @@ BUILDS = ["build.yaml", *_FIXTURES]
 
 
 def _parse_step_owned():
-    """Return the finetune.py flags the template owns, from its Jinja `owned` list.
-
-    The list appears twice (setup and run copies, pinned identical by another
-    test); the first match is used.
-    """
-    text = (_HERE.parent / "step-template.yaml").read_text()
+    """Return the finetune.py flags the step owns, from validate's `owned` list."""
+    text = (_HERE.parent / "macros" / "validate.j2").read_text()
     matches = re.findall(r"\{%-?\s*set owned = \[(.*?)\]\s*-?%\}", text)
-    assert matches, "no `{%- set owned = [...] -%}` line in step-template.yaml"
+    assert matches, "no `{%- set owned = [...] -%}` line in macros/validate.j2"
     return frozenset(re.findall(r'"([a-z_]+)"', matches[0]))
 
 

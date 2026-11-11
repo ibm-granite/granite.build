@@ -25,9 +25,8 @@ fails before it is launched or provisioned, though in a multi-target build only 
 upstream targets have run. On skypilot the macro is in `run:` (each launcher-config string
 is filled on its own, and `run:` is also what a warm re-run renders), followed by the
 skypilot-only checks: `config.compute_config` and `config.launcher_config` must be mappings
-(null or absent is unset); `num_nodes` must be 1 in both, the two sources gbserver's
-`_num_nodes_from_configs` reads from the build, and a whole number (`""` fails: gbserver's
-`int("")` would raise at launch); and the GPU check below. On
+(null or absent is unset), and the GPU check below; `num_nodes` is left to gbserver, which
+refuses any value but 1 at step creation because the step sets `single_node: true`. On
 bash the env values are separate strings, so the macro has a launcher-config key of its own,
 `validate:`, which renders to `""` and is read by nothing. The macro text is the same in both
 templates, and `skypilot/test/test_fm_tune_script_copies_match.py` checks that, and that one

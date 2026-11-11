@@ -27,9 +27,10 @@ USAGE.md             user docs; published as the released step's README.md
 
 - **Validation in `run:`.** Each launcher-config string is filled on its own, and `run:` is
   also what a warm re-run renders, so the `validate` macro sits in `run:`. After it come the
-  SkyPilot-only checks: `num_nodes` must be 1, and a GPU count needs
+  SkyPilot-only check: a GPU count needs
   `launcher_config.resources.accelerators`, since gbserver doesn't request GPUs from
-  `compute_config` (issue #536). See [Render-time checks](../README.md#render-time-checks).
+  `compute_config` (issue #536). gbserver checks `num_nodes` itself (`single_node: true`).
+  See [Render-time checks](../README.md#render-time-checks).
 - **Cache path.** The template sets
   `FMTUNE_CACHE_DIR="${GB_SHARED_WORKDIR:-$PWD}/.fm-tune-cache-$(id -u)"`: per user, with no
   shared parent directory, so a second user never hits the first user's permissions.

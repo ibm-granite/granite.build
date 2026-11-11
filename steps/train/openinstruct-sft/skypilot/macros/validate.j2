@@ -1,0 +1,22 @@
+{#- openinstruct-sft's config checks; setup: and run: both include this file. -#}
+{%- macro validate(c, bound, lc) -%}
+{%- set owned = ["model_name_or_path", "output_dir", "dataset_name", "dataset_mixer", "dataset_mixer_list", "dataset_mixer_list_splits", "with_tracking", "report_to", "wandb_entity", "push_to_hub", "try_launch_beaker_eval_jobs", "try_auto_save_to_beaker", "do_not_randomize_output_dir", "resume_from_checkpoint", "dataset_local_cache_dir", "dataset_cache_mode", "no_push_to_hub", "no_try_launch_beaker_eval_jobs", "no_try_auto_save_to_beaker"] -%}
+{%- if c.dataset_mixer_list is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list must map an HF dataset id to a fraction or count, e.g. {allenai/tulu-3-sft-personas-algebra: 1.0}.") }}{% endif -%}
+{%- if c.dataset_mixer_list_splits is string or c.dataset_mixer_list_splits is not iterable or not c.dataset_mixer_list_splits %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list_splits must be a non-empty list of split names, e.g. [train].") }}{% endif -%}
+{%- if bound and c.dataset_mixer_list %}{{ raise_error("openinstruct-sft: both the `dataset` input and openinstruct_sft_config.dataset_mixer_list are set; use one.") }}{% endif -%}
+{%- if not bound and not c.dataset_mixer_list %}{{ raise_error("openinstruct-sft: no training data: bind the `dataset` input or set openinstruct_sft_config.dataset_mixer_list.") }}{% endif -%}
+{%- if not c.output %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.output is required; it names the target's model output.") }}{% endif -%}
+{%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
+{%- set res = lc.get("resources") or {} -%}
+{%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("openinstruct-sft: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type). compute_config.num_gpus_per_node is not a SkyPilot GPU request.") }}{% endif -%}
+{%- if "/" in (c.deepspeed_config | string) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.deepspeed_config must be a file name under the image's configs/ds_configs/, got '" ~ c.deepspeed_config ~ "'.") }}{% endif -%}
+{%- if (c.clearml_enabled | string | lower) not in ["auto", "true", "false", "on", "off", "1", "0"] %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.clearml_enabled must be auto, true or false, got '" ~ c.clearml_enabled ~ "'.") }}{% endif -%}
+{#- argparse expands a unique prefix (allow_abbrev), so a prefix of an owned
+    flag would override it. The image turns allow_abbrev off, but image_id
+    can name an older or custom image, and this fails before provisioning.
+    No other finetune.py flag at the pin is such a prefix; the in-image
+    test test_finetune_flags_in_image.py re-checks that on a pin bump.
+    HfArgumentParser's --no_<f> is store_false and takes no value, but args
+    always renders one, so the run would fail on it: refuse_no. -#}
+{{- validate_args("openinstruct-sft", "openinstruct_sft_config.args", c.args, owned, "finetune.py flag", "the base_model/dataset inputs, output_path, dataset_mixer_list(_splits) or clearml_*", "finetune.py", refuse_no=true) -}}
+{%- endmacro %}

@@ -120,8 +120,6 @@ a message that starts `hf-peft-sft:`. They are:
 - `method: qlora` with `mixed_precision: fp16`; `method: qlora` with `distributed: fsdp`
   or `deepspeed` and `mixed_precision: no`;
 - an empty `output`, or one with whitespace or a double quote;
-- `compute_config.num_nodes` or `launcher_config.num_nodes` other than 1 (`1.0` counts
-  as 1);
 - no GPU request: neither `launcher_config.resources.accelerators` nor an
   `instance_type`;
 - `distributed: fsdp` or `deepspeed` with `accelerators` asking for one GPU (`"A10G"`
@@ -135,6 +133,11 @@ a message that starts `hf-peft-sft:`. They are:
   one (a key that is a proper prefix of it, such as `output_d`); a map or empty-list
   value in `args`;
 - `args.packing` or `args.padding_free` true with `method: alora`.
+
+The step also fails at step creation, with gbserver's own message, unless the `num_nodes`
+the launch would use is 1: the step sets `single_node: true`, and of `compute_config`, the
+step's launcher config and `launcher_config`, the last one set wins. `1.0`, and a string
+such as `"01"` that reads as the integer 1, count as 1.
 
 ## Passing SFTConfig flags (args)
 
@@ -483,9 +486,9 @@ string your model's chat template emits before the assistant turn.
 
 ## Notes and limitations
 
-- **Single node only.** `compute_config.num_nodes` must be `1`, and so must
-  `launcher_config.num_nodes` when set. Any other value fails the build at step
-  creation.
+- **Single node only.** The step sets `single_node: true`, so gbserver refuses, when it
+  creates the step, a resolved `num_nodes` other than 1: of `compute_config`, the step's
+  launcher config and `launcher_config`, the last one set wins.
 - **Adapter only.** The step never merges the adapter into the base model. aLoRA
   adapters cannot be merged, and merging into a 4-bit base is lossy. Merge in a
   downstream step if you need a merged LoRA model.

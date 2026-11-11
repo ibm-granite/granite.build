@@ -22,6 +22,7 @@ CLI (it has no aLoRA) and not peft's example scripts (not a stable API).
 
 ```
 step-template.yaml          the step: config defaults, render-time validation, launcher blocks
+macros/validate.j2          the validate macro; setup: and run: both gb-include it
 Makefile                    STEP_NAME, REGISTRY, IMAGE_VERSION, `make lock`; includes steps/common.mk
 Dockerfile                  the image: CUDA base, uv, the hashed lock, src/
 requirements.in             direct pins (torch, peft, trl, transformers, accelerate, ...)
@@ -73,9 +74,14 @@ script checks. The launcher prepends the inline `hf download` (aws) to `setup:`,
 a script there runs only after the node is up and the model is downloaded. A
 `raise_error` fails the strict launcher fill at step creation instead, before
 provisioning. The guard script keeps only what is knowable on the node: the staged
-paths. Both `setup:` and `run:` call the guard and repeat the `validate` macro,
-because a warm-cluster re-run renders `run:` without `setup:`. A render test pins
-the two macro copies identical.
+paths. Both `setup:` and `run:` call the guard and validate, because a warm-cluster
+re-run renders `run:` without `setup:`. The macros are written once and pulled into
+both blocks by `gb-include` lines, which `make space` and `make publish-step` expand
+(see [steps/README.md](../../../README.md#sharing-jinja-between-templates-gb-include)):
+`validate` is in `macros/validate.j2`; `q()`, the `args` checks (`validate_args`)
+and the `args` argv (`render_args`) are in `steps/train/shared/trainer_args.j2`,
+shared with openinstruct-sft. The aLoRA `packing` check runs per `args` key inside
+`validate_args` through a `{% call %}` block.
 
 The run script backstops two render-time checks it can only see on the node: no
 GPUs at all, and sharding on one GPU when the build asked for an `instance_type`
@@ -366,7 +372,7 @@ emits.
 |---|---|
 | `test_docs.py` | `USAGE.md` documents every config field and every step-owned flag, contains the exemplar build verbatim, and links only to anchors, `src/` or `https://`; this README links USAGE.md and records the torch/driver decision |
 | `test_dockerfile.py` | every `FROM` digest-pinned; the direct pins in `requirements.in` and the lock agree with the spec; every lock entry `==`-pinned with hashes, installed with `--require-hashes`; no flash-attn, vllm or unsloth; no `USER` and no `useradd` (runs as root); the `/opt/hf-peft-sft` layout and `PATH`; no recursive chmod of the venv after `COPY src/`; Makefile identity; every script and accelerate config the template and run script call exists in `src/` |
-| `test_skypilot_train_hf_peft_sft_render.py` | the template rendered with gbserver's strict renderer: identity and I/O schema, the shared monitor and `Step:` event, no GPU request, identical macro copies, the `owned` list covering every `StepArgs` field and the run script's flags, the `docker:` prefix (including `.sqsh`), valid bash, every `raise_error` (data source, split, enums, aLoRA invocation and packing, qlora + fp16, `output`, `num_nodes`, no GPU request, sharding on one GPU, `lora.*`, step-owned, map and empty-list `args`), and the guard and run argv (defaults, bound dataset, `lora` lists, aLoRA, `args` rendering, ClearML mode, output path and names) |
+| `test_skypilot_train_hf_peft_sft_render.py` | the template rendered with gbserver's strict renderer: identity and I/O schema, the shared monitor and `Step:` event, no GPU request, both blocks pull in the shared macros, the `single_node` declaration (gbserver refuses 2 nodes; the template leaves `num_nodes` to it), the `owned` list covering every `StepArgs` field and the run script's flags, the `docker:` prefix (including `.sqsh`), valid bash, every `raise_error` (data source, split, enums, aLoRA invocation and packing, qlora + fp16, `output`, no GPU request, sharding on one GPU, `lora.*`, step-owned, map and empty-list `args`), and the guard and run argv (defaults, bound dataset, `lora` lists, aLoRA, `args` rendering, ClearML mode, output path and names) |
 | `test_hf_peft_sft_guard_sh.py` | staged-path checks: empty or unrendered `base_model` or dataset, missing dir, no `config.json`, missing dataset, unknown option; valid paths (dataset dir or file) pass silently |
 | `test_hf_peft_sft_setup_sh.py` | the image check: passes on a good image and imports the whole stack, fails without the train script or when the stack does not import, only warns without `nvidia-smi` |
 | `test_hf_peft_sft_run_sh.py` | the `accelerate launch` argv: a step-owned config file for every launch (DDP `single_gpu.yaml` on 1 GPU, `ddp.yaml` on more, no `--multi_gpu`), `--main_process_port 0` only on multi-process launches, the config file per method × distributed, sharding on one GPU refused, step-owned flags before build args, `--bf16`/`--fp16`, GPU count (SkyPilot, `nvidia-smi` fallback run once, none), the dataset cache in the workdir, bad enums and missing values as prefixed errors; ClearML off/on/auto, default names and `CLEARML_LOG_MODEL` default and override; the staging swap and re-run, a stale `.partial`, refusing a non-adapter, degenerate (`/`, `.`, `..`) or `base_model`-overlapping `output_path` (same, inside, containing, via a symlink, or at the staging dir), no marker without both adapter files, a training failure propagating, and the markers last and absolute |

@@ -19,6 +19,7 @@ rendered blocks then run with the /opt/hf-peft-sft scripts swapped for argv
 printers. Mode 1 only.
 """
 
+import importlib.util
 import pathlib
 import re
 import subprocess
@@ -27,14 +28,33 @@ import hf_peft_sft_train as train
 import pytest
 import yaml
 
+from gbserver.environment.skypilot import validate_launch_num_nodes
+from gbserver.types.stepconfig import StepEnvironmentTypeConfig
 from gbserver.utils.template import fill_template
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
-_TEMPLATE = yaml.safe_load((_STEP_DIR / "step-template.yaml").read_text())
+_SOURCE = (_STEP_DIR / "step-template.yaml").read_text()
+_VALIDATE = (_STEP_DIR / "macros" / "validate.j2").read_text()
+
+
+def _expanded_template() -> dict:
+    """The template as `make space` renders it: gb-include lines expanded."""
+    script = _STEP_DIR.parents[2] / "scripts" / "render_step_template.py"
+    spec = importlib.util.spec_from_file_location("render_step_template", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return yaml.safe_load(module.expand(_STEP_DIR / "step-template.yaml"))
+
+
+_TEMPLATE = _expanded_template()
 _LAUNCHER = _TEMPLATE["environment_configs"]["Skypilot"]["launchers"]["hf_peft_sft"][
     "config"
 ]
 _DEFAULTS = _TEMPLATE["config"]["hf_peft_sft_config"]
+_ENV = StepEnvironmentTypeConfig.model_validate(
+    _TEMPLATE["environment_configs"]["Skypilot"]
+)
 _BASE = {"base_model": {"binding": {"path": "/staged/base it's"}}}
 _DS = dict(_BASE, dataset={"binding": {"path": "/staged/ds"}})
 _SCRIPTS = ("hf_peft_sft_guard.sh", "hf_peft_sft_setup.sh", "hf_peft_sft_run.sh")
@@ -89,14 +109,14 @@ def _tail(argv):
 
 
 def _owned():
-    text = (_STEP_DIR / "step-template.yaml").read_text()
+    text = _VALIDATE
     return set(
         re.findall(r'"([a-z_0-9]+)"', re.findall(r"set owned = \[(.*?)\]", text)[0])
     )
 
 
 def _exempt():
-    text = (_STEP_DIR / "step-template.yaml").read_text()
+    text = _VALIDATE
     found = re.findall(r"set full_flags = \[(.*?)\]", text)
     return set(re.findall(r'"([a-z_0-9]+)"', found[0])) if found else set()
 
@@ -144,12 +164,17 @@ class TestContract:
     def test_requests_no_gpus_itself(self):
         assert _LAUNCHER["resources"] == {}
 
-    @pytest.mark.parametrize("name", ["validate", "q"])
-    def test_macro_copies_are_identical(self, name):
-        macro = re.compile(r"\{%- macro " + name + r"\(.*?\{%- endmacro %\}", re.S)
-        setup = macro.findall(_LAUNCHER["setup"])
-        assert len(setup) == 1
-        assert setup == macro.findall(_LAUNCHER["run"])
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_blocks_include_the_shared_macros(self, block):
+        source = yaml.safe_load(_SOURCE)["environment_configs"]["Skypilot"][
+            "launchers"
+        ]["hf_peft_sft"]["config"][block]
+        for marker in (
+            "{#- gb-include ../../shared/trainer_args.j2 -#}",
+            "{#- gb-include macros/validate.j2 -#}",
+        ):
+            assert source.count(marker) == 1, marker
+        assert "{%- macro" not in _SOURCE
 
     def test_template_carries_the_image_ref_token(self):
         assert _DEFAULTS["image_id"] == "docker:${IMAGE_REF}"
@@ -234,6 +259,24 @@ class TestValidation:
         )
         assert "packing" in err
 
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
+        "args,expected",
+        [
+            # foo's shared checks run before packing's aLoRA check...
+            ({"foo": [], "packing": True}, "is an empty list"),
+            # ...and packing's aLoRA check before foo's shared checks.
+            ({"packing": True, "foo": []}, "cannot train with packing"),
+        ],
+    )
+    def test_alora_check_runs_per_key_with_the_shared_args_checks(
+        self, block, args, expected
+    ):
+        err = _render_error(
+            block, _ctx(method="alora", alora_invocation_string="x", args=args)
+        )
+        assert expected in err
+
     def test_alora_packing_false_is_fine(self):
         _render(
             "run",
@@ -267,56 +310,6 @@ class TestValidation:
     @pytest.mark.parametrize("dist", ["fsdp", "deepspeed"])
     def test_qlora_sharded_bf16_is_fine(self, dist):
         _render("run", _ctx(method="qlora", distributed=dist, mixed_precision="bf16"))
-
-    def test_multi_node_refused(self):
-        assert "num_nodes must be 1" in _render_error(
-            "run", _ctx(compute={"num_nodes": 2})
-        )
-
-    @pytest.mark.parametrize("block", ["setup", "run"])
-    def test_multi_node_launcher_config_refused(self, block):
-        lc = {"resources": {"accelerators": "A10G:2"}, "num_nodes": 2}
-        assert (
-            "hf-peft-sft: launcher_config.num_nodes must be 1 (got '2'); this step is single-node."
-            == _render_error(block, _ctx(launcher_config=lc))
-        )
-
-    @pytest.mark.parametrize("block", ["setup", "run"])
-    @pytest.mark.parametrize("layer", ["compute", "launcher"])
-    @pytest.mark.parametrize("n", [1, 1.0, "1"])
-    def test_whole_one_num_nodes_is_fine(self, block, layer, n):
-        # gbserver's _num_nodes_from_configs accepts a whole float (YAML 1.0).
-        if layer == "compute":
-            ctx = _ctx(compute={"num_nodes": n})
-        else:
-            ctx = _ctx(
-                launcher_config={
-                    "resources": {"accelerators": "A10G:2"},
-                    "num_nodes": n,
-                }
-            )
-        _render(block, ctx)
-
-    @pytest.mark.parametrize("block", ["setup", "run"])
-    def test_whole_float_two_num_nodes_refused(self, block):
-        assert "compute_config.num_nodes must be 1 (got '2.0')" in _render_error(
-            block, _ctx(compute={"num_nodes": 2.0})
-        )
-        lc = {"resources": {"accelerators": "A10G:2"}, "num_nodes": 2.0}
-        assert "launcher_config.num_nodes must be 1 (got '2.0')" in _render_error(
-            block, _ctx(launcher_config=lc)
-        )
-
-    def test_single_node_launcher_config_is_fine(self):
-        _render(
-            "run",
-            _ctx(
-                launcher_config={
-                    "resources": {"accelerators": "A10G:2"},
-                    "num_nodes": 1,
-                }
-            ),
-        )
 
     @pytest.mark.parametrize("block", ["setup", "run"])
     @pytest.mark.parametrize(
@@ -480,6 +473,42 @@ class TestValidation:
     def test_empty_list_arg_refused(self):
         assert "args.foo is an empty list" in _render_error(
             "run", _ctx(args={"foo": []})
+        )
+
+
+class TestSingleNode:
+    """gbserver, not the template, refuses multi-node: the step declares
+    single_node and the num_nodes resolver enforces it at step creation, on
+    every layer it reads."""
+
+    def test_declared(self):
+        assert _ENV.single_node is True
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            {"compute_config": {"num_nodes": 2}},
+            {"compute_config": {"num_nodes": 1}, "launcher_config": {"num_nodes": 2}},
+        ],
+    )
+    def test_gbserver_refuses_more_than_one_node(self, config):
+        with pytest.raises(ValueError, match="this step is single-node"):
+            validate_launch_num_nodes(_ENV, _LAUNCHER, config)
+
+    @pytest.mark.parametrize("n", [1, 1.0, "1", "01"])
+    def test_gbserver_accepts_one_node(self, n):
+        assert (
+            validate_launch_num_nodes(
+                _ENV, _LAUNCHER, {"compute_config": {"num_nodes": n}}
+            )
+            == 1
+        )
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_template_leaves_num_nodes_to_gbserver(self, block):
+        lc = {"resources": {"accelerators": "A10G:2"}, "num_nodes": 2}
+        assert "hf_peft_sft_guard.sh" in _render(
+            block, _ctx(compute={"num_nodes": 2}, launcher_config=lc)
         )
 
 

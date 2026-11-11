@@ -577,6 +577,23 @@ The K8s-only `gb.step_contents_in_env`, `k8s.*`, and `lsf.*` blocks are ignored 
 not copied into the pod; if the `run:` script needs files, use `file_mounts` or fetch them in
 `setup:` / `run:`.
 
+### Single-node steps
+
+A step that cannot run on more than one node sets `single_node: true` on its environment
+config:
+
+```yaml
+environment_configs:
+  Skypilot:
+    single_node: true
+```
+
+gbserver then resolves `num_nodes` as the launch does (`compute_config.num_nodes`, then the
+step's launcher config, then the build's `launcher_config.num_nodes`; the last one set wins)
+and fails the step at creation, before anything is provisioned, unless it is 1. The error names
+the layer that set the count. The step needs no Jinja check of its own. `Skypilot_managed`
+enforces it the same way.
+
 ## See also
 
 - Cloud pages: [SLURM](skypilot-slurm.md) · [LSF](skypilot-lsf.md) · [Kubernetes](skypilot-kubernetes.md) · [AWS](skypilot-aws.md)

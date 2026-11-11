@@ -25,8 +25,11 @@ _STEP = pathlib.Path(__file__).resolve().parents[1]
 _USAGE = (_STEP / "USAGE.md").read_text()
 _README = (_STEP / "README.md").read_text()
 _TEXT = (_STEP / "step-template.yaml").read_text()
+_VALIDATE = (_STEP / "macros" / "validate.j2").read_text()
 _DEFAULTS = yaml.safe_load(_TEXT)["config"]["hf_peft_sft_config"]
-_OWNED = re.findall(r'"([a-z_0-9]+)"', re.findall(r"set owned = \[(.*?)\]", _TEXT)[0])
+_OWNED = re.findall(
+    r'"([a-z_0-9]+)"', re.findall(r"set owned = \[(.*?)\]", _VALIDATE)[0]
+)
 
 
 def test_every_config_field_documented():

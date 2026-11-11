@@ -110,10 +110,11 @@ defaults an empty `run_name` to `fm-tune` instead of failing):
   that late too);
 - a list or mapping for any key except `hpo_config` (write it as a string);
 - `source` or `autotunex` not a mapping, or `hpo_config` not a mapping or null;
-- SkyPilot only: `compute_config` or `launcher_config` set but not a mapping; a `num_nodes`
-  other than 1 in either; a `num_nodes` that is not a whole number (`""` included: gbserver
-  cannot read it) or a `num_gpus_per_node` that is not a whole number >= 0 (`""` is unset);
-  and `num_gpus_per_node` > 0 without `launcher_config.resources.accelerators` (see "Compute").
+- SkyPilot only: `compute_config` or `launcher_config` set but not a mapping; a
+  `num_gpus_per_node` that is not a whole number >= 0 (`""` is unset); and
+  `num_gpus_per_node` > 0 without `launcher_config.resources.accelerators` (see "Compute").
+  gbserver itself refuses a resolved `num_nodes` other than 1, or one it cannot read: the
+  step sets `single_node: true`.
 
 A `null` value renders as empty, not as the string `None`. That is not the template
 default: `tuning_algo: null` passes no `--tuning_algo`, so fm-tune's own default, `none`,
@@ -246,8 +247,9 @@ or unset) it requests a CPU-only node, as the Slurm build test does. GPU runs ar
 verified (see "Known limits").
 
 `num_nodes` must be 1 (or unset) both in `compute_config` and in `launcher_config`, which
-gbserver reads too and which wins: with more nodes SkyPilot runs the job on every node and the
-runs race on the cache and the output directory.
+wins: the step sets `single_node: true`, so gbserver refuses any resolved count other than 1
+when it creates the step. With more nodes SkyPilot would run the job on every node and the runs would race on
+the cache and the output directory.
 
 ## Caches and cleanup
 

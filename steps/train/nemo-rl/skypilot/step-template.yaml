@@ -53,7 +53,8 @@ config:
     # wrong for the run, e.g. to train on fewer GPUs than the node has.
     gpus_per_node: ""
   compute_config:
-    # Iteration 1 is single-node, multi-GPU only; the guard rejects num_nodes != 1.
+    # Iteration 1 is single-node, multi-GPU only: environment_configs.Skypilot.single_node
+    # makes gbserver refuse any other num_nodes at step creation.
     # GPUs are not set here: the build requests them with
     # launcher_config.resources.accelerators.
     num_nodes: 1
@@ -79,6 +80,9 @@ environment_configs:
   Skypilot:
     # No `subtypes:` restriction, so this step resolves on every SkyPilot endpoint
     # that can provide the GPUs (aws first; slurm/kubernetes/lsf are additive).
+    # gbserver refuses, at step creation, a build whose resolved num_nodes is not 1
+    # (compute_config, this launcher's config, or the build's launcher_config).
+    single_node: true
     default_launcher: nemo_rl
     launchers:
       nemo_rl:
@@ -108,16 +112,15 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            {%- macro validate(nrl, cc, res) -%}
+            {%- macro validate(nrl, res) -%}
             {%- if not nrl.algorithm %}{{ raise_error("nemo-rl: nemo_rl_config.algorithm is required; it selects examples/run_<algorithm>.py in the image, e.g. sft.") }}{% endif -%}
             {%- if not nrl.config_name %}{{ raise_error("nemo-rl: nemo_rl_config.config_name is required; it names a YAML under examples/configs/, e.g. sft.yaml.") }}{% endif -%}
             {%- if not nrl.output %}{{ raise_error("nemo-rl: nemo_rl_config.output is required; it must name one of this target's declared model outputs.") }}{% endif -%}
             {%- if ((nrl.output | string).split() | join("")) != (nrl.output | string) or '"' in (nrl.output | string) %}{{ raise_error("nemo-rl: nemo_rl_config.output contains whitespace or a double quote: '" ~ nrl.output ~ "'. The artifact marker is space-delimited; rename the declared output.") }}{% endif -%}
-            {%- if (cc.num_nodes | string) != "1" %}{{ raise_error("nemo-rl: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node, multi-GPU only.") }}{% endif -%}
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("nemo-rl: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type). compute_config.num_gpus_per_node is not a SkyPilot GPU request.") }}{% endif -%}
             {%- endmacro %}
             {%- set nrl = config.nemo_rl_config %}
-            {{- validate(nrl, config.compute_config, (config.get("launcher_config") or {}).get("resources") or {}) }}
+            {{- validate(nrl, (config.get("launcher_config") or {}).get("resources") or {}) }}
             {%- set base_model = bindings.base_model.binding.path if (bindings is defined and "base_model" in bindings) else "" %}
             {%- set dataset_bound = bindings is defined and "dataset" in bindings %}
             {%- set dataset = bindings.dataset.binding.path if dataset_bound else "" %}
@@ -135,16 +138,15 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            {%- macro validate(nrl, cc, res) -%}
+            {%- macro validate(nrl, res) -%}
             {%- if not nrl.algorithm %}{{ raise_error("nemo-rl: nemo_rl_config.algorithm is required; it selects examples/run_<algorithm>.py in the image, e.g. sft.") }}{% endif -%}
             {%- if not nrl.config_name %}{{ raise_error("nemo-rl: nemo_rl_config.config_name is required; it names a YAML under examples/configs/, e.g. sft.yaml.") }}{% endif -%}
             {%- if not nrl.output %}{{ raise_error("nemo-rl: nemo_rl_config.output is required; it must name one of this target's declared model outputs.") }}{% endif -%}
             {%- if ((nrl.output | string).split() | join("")) != (nrl.output | string) or '"' in (nrl.output | string) %}{{ raise_error("nemo-rl: nemo_rl_config.output contains whitespace or a double quote: '" ~ nrl.output ~ "'. The artifact marker is space-delimited; rename the declared output.") }}{% endif -%}
-            {%- if (cc.num_nodes | string) != "1" %}{{ raise_error("nemo-rl: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node, multi-GPU only.") }}{% endif -%}
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("nemo-rl: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type). compute_config.num_gpus_per_node is not a SkyPilot GPU request.") }}{% endif -%}
             {%- endmacro %}
             {%- set nrl = config.nemo_rl_config %}
-            {{- validate(nrl, config.compute_config, (config.get("launcher_config") or {}).get("resources") or {}) }}
+            {{- validate(nrl, (config.get("launcher_config") or {}).get("resources") or {}) }}
             {%- set base_model = bindings.base_model.binding.path if (bindings is defined and "base_model" in bindings) else "" %}
             {%- set dataset_bound = bindings is defined and "dataset" in bindings %}
             {%- set dataset = bindings.dataset.binding.path if dataset_bound else "" %}

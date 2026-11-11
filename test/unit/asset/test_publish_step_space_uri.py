@@ -41,6 +41,7 @@ import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 COMMON_MK = REPO_ROOT / "steps" / "common.mk"
+RENDER_SCRIPT = REPO_ROOT / "steps" / "scripts" / "render_step_template.py"
 
 MODE2_URI = "../../../../../configurations/spaces/local"
 LOCAL_URIS = {
@@ -83,6 +84,8 @@ def _make_step(root: pathlib.Path) -> pathlib.Path:
     """
     (root / "steps").mkdir()
     shutil.copy(COMMON_MK, root / "steps" / "common.mk")
+    (root / "steps" / "scripts").mkdir()
+    shutil.copy(RENDER_SCRIPT, root / "steps" / "scripts" / RENDER_SCRIPT.name)
     step = root / "steps" / "fake" / "skypilot"
     step.mkdir(parents=True)
     (step / "Makefile").write_text("STEP_NAME := fake\ninclude ../../common.mk\n")

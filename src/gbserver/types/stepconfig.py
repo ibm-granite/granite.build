@@ -91,6 +91,10 @@ class StepEnvironmentTypeConfig(Config):
             a step will not resolve for an environment with no ``subtype``.
             Applied by the ``SpaceURI`` resolver wherever it finds a copy of the
             step.
+        single_node: The step runs on one node only. When true, gbserver
+            resolves ``num_nodes`` from every layer the launch reads and fails
+            the step at creation unless it is 1. Enforced by the SkyPilot
+            environments; any other environment refuses a step that sets it.
     """
 
     default_launcher: Optional[str] = None
@@ -101,6 +105,8 @@ class StepEnvironmentTypeConfig(Config):
     monitors: Dict[str, StepMonitorConfig] = Field(default_factory=dict)
     # env sub-types this step is restricted to (empty = universal)
     subtypes: List[str] = Field(default_factory=list)
+    # one node only, enforced at step creation (see the docstring)
+    single_node: bool = False
 
     def select_launcher_monitors(
         self, launcher: StepLauncherConfig
