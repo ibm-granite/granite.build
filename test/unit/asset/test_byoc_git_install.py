@@ -39,7 +39,7 @@ from gbserver.utils.template import fill_template
 
 _REPO = pathlib.Path(__file__).resolve().parents[3]
 _TEMPLATE = yaml.safe_load(
-    (_REPO / "steps" / "misc" / "byoc" / "skypilot" / "step-template.yaml").read_text()
+    (_REPO / "steps" / "aux" / "byoc" / "skypilot" / "step-template.yaml").read_text()
 )
 _LAUNCHER = _TEMPLATE["environment_configs"]["Skypilot"]["launchers"]["byoc"]["config"]
 _DEFAULTS = _TEMPLATE["config"]["byoc_config"]

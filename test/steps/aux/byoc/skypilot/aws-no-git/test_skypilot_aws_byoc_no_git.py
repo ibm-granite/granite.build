@@ -26,7 +26,7 @@ with ``git rev-parse``, proves both.
 
 Run it like the ``aws`` test, with AWS credentials exported::
 
-    make -C steps/misc/byoc/skypilot test TESTS=test/aws-no-git
+    make -C steps/aux/byoc/skypilot test TESTS=test/aws-no-git
 
 Real EC2, so it is in the extended suite only and skips unless AWS credentials
 are in the environment (:func:`gbserver.environment.skypilot.aws_credentials_present`).
@@ -58,6 +58,6 @@ class TestSkypilotAwsByocNoGit(AbstractYamlBuildRunnerTest):
     """byoc installs git, clones and runs in an image without git, on aws (EC2)."""
 
     def _get_yaml_spec_dir(self) -> Path:
-        # Mode 1: steps/misc/byoc/skypilot/test-data/aws-no-git/
-        # Mode 2: test-data/steps/misc/byoc/skypilot/aws-no-git/
+        # Mode 1: steps/aux/byoc/skypilot/test-data/aws-no-git/
+        # Mode 2: test-data/steps/aux/byoc/skypilot/aws-no-git/
         return get_test_data_dir_for(__file__)

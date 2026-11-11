@@ -17,7 +17,7 @@ granite.build:
         # `bash: git: command not found`, because byoc clones before
         # setup_command runs. The step now installs git first; this image has
         # conda, so git comes from conda-forge.
-        - step_uri: space://steps/misc/byoc
+        - step_uri: space://steps/aux/byoc
           config:
             poll_interval_seconds: 5
             byoc_config:
