@@ -1,0 +1,41 @@
+granite.build:
+  name: skypilot-slurm-bluevela-eval-judged-test
+  targets:
+    judged-test:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/judged
+          config:
+            poll_interval_seconds: 5
+            log_retrieval_interval_seconds: 30
+            benchmark: "gdpval"
+            image: "us.icr.io/cil15-shared-registry/gb-step-eval-judged:ce003c94"
+            model_path: "ibm-granite/granite-4.2-3b"
+            # judge_model=self grades with the served model -- the key-less
+            # smoke path -- so no judge endpoint and no EVAL_JUDGE_API_KEY;
+            # scoring then needs the server, so the run is phase all in one
+            # job (the split score phase is the site-specific external-judge
+            # shape a public fixture cannot name, which is also why this test
+            # covers only the GPU image).
+            options: "judge_model=self"
+            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/judged"
+            run_name: "buildtest"
+            # Smoke knob: first N tasks.
+            limit: "2"
+            workers: "4"
+            phase: "all"
+            hf_home: "/proj/data-eng/llmb-read-write/eval-build-tests/hf-home"
+            # gdpval runs its stirrup agents in enroot sandboxes: the shared
+            # cache (tau-proven) also gets ENROOT_TEMP_PATH mkdir'd by the
+            # step script, which the empty default skips entirely.
+            sandbox_cache: "/proj/data-eng/llmb-read-write/eval-build-tests/enroot-cache"
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "gpu-mid"
+                accelerators: "H200:1"
+                memory: 256
