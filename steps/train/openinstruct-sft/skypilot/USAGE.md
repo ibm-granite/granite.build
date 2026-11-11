@@ -74,9 +74,11 @@ Config errors fail the build at step creation, with a message that starts
 - a bad `clearml_enabled`;
 - in `args`: a key that is not a bare flag name (it holds `=`, a leading `-` or
   whitespace, or is empty), a step-owned flag, an abbreviation of one, or a `no_*`
-  key;
-- `compute_config.num_nodes` or `launcher_config.num_nodes` other than 1. `1.0`,
-  and a string such as `"01"` that reads as the integer 1, count as 1.
+  key.
+
+A `num_nodes` other than 1, in `compute_config` or `launcher_config`, also fails at step
+creation, with gbserver's own message: the step sets `single_node: true`. `1.0`, and a
+string such as `"01"` that reads as the integer 1, count as 1.
 
 ## Passing finetune.py flags (args)
 
@@ -324,11 +326,10 @@ To train on your own data, bind a `dataset` input and remove `dataset_mixer_list
 
 ## Notes and limitations
 
-- **Single node only.** `compute_config.num_nodes` must be `1`, and so must
-  `launcher_config.num_nodes` when set (`1.0` and `"01"` count as 1). Any other value fails
-  the build at step creation. Without the second check, gbserver would provision
-  the nodes `launcher_config.num_nodes` asks for, and each would run its own
-  single-node training.
+- **Single node only.** The step sets `single_node: true`, so gbserver refuses any
+  `num_nodes` other than 1 (`1.0` and `"01"` count as 1), from `compute_config`, the
+  step's launcher config or `launcher_config`, when it creates the step. With more
+  nodes, each would run its own single-node training.
 - **`finetune.py` is deprecated upstream, and pinned here.** Upstream favours
   `olmo_core_finetune.py`, which supports only OLMo and Qwen3 configs (no Granite).
   The step pins Open-Instruct v0.3.0 (commit
