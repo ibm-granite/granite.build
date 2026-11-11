@@ -17,7 +17,7 @@
 # these images by tag. The build context is this directory: both Dockerfiles COPY the
 # shared src/ package and each step's skypilot/src/ from here.
 #
-#   make images REGISTRY=us.icr.io/myorg                  build both
+#   make images REGISTRY=quay.io/granitebuild             build both
 #   make image-gpu REGISTRY=...  /  make image-cpu ...    build one
 #   make fix-locks                                        raise vulnerable lock packages to their fix
 #   make scan-images REGISTRY=...                         scan both built images (run before publishing)
@@ -43,6 +43,13 @@
 # a transitive pin rules out is reported UNSATISFIABLE and left out. It needs `uv` on
 # PATH. Review `git diff images/`, then rebuild and test: a fix can be a major version.
 #
+# The images are $(REGISTRY)/$(IMAGE_PREFIX)/<gpu|cpu>:$(IMAGE_VERSION). IMAGE_PREFIX
+# defaults to this directory's path from the repo root plus images/, matching the
+# Dockerfiles' location (steps/train/distill/images/<gpu|cpu>/), the way every other
+# quay.io/granitebuild repository is named after the folder it is built from. On
+# quay.io the repository must exist and be PUBLIC before the first push (a push
+# creates it private, and SkyPilot pulls anonymously).
+#
 # IMAGE_VERSION defaults to the git short SHA, so a tag names the commit it was built
 # from. publish-* refuses to overwrite a tag already on the registry: a published tag
 # must keep meaning one image. Pass PUBLISH_OVERWRITE=true to replace it on purpose.
@@ -55,6 +62,7 @@ REGISTRY          ?=
 PLATFORM          ?= linux/amd64
 DOCKER            ?= podman
 IMAGE_VERSION     ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
+IMAGE_PREFIX      ?= steps/train/distill/images
 PUBLISH_OVERWRITE ?= false
 TAG_STATUS        := sh ../../scripts/registry-tag-status.sh
 
@@ -63,16 +71,16 @@ SCAN_CACHE        ?= $(HOME)/.cache/gb-image-scan
 TRIVY_IMAGE       ?= ghcr.io/aquasecurity/trivy:0.76.2
 OSV_IMAGE         ?= ghcr.io/google/osv-scanner:v2.7.1
 
-image_ref = $(REGISTRY)/gb-step-distillation-$(1):$(IMAGE_VERSION)
+image_ref = $(REGISTRY)/$(IMAGE_PREFIX)/$(1):$(IMAGE_VERSION)
 
 .PHONY: help images publish-images scan-images scan-locks fix-locks $(addprefix fix-lock-,$(IMAGES)) $(addprefix image-,$(IMAGES)) $(addprefix publish-image-,$(IMAGES)) $(addprefix scan-image-,$(IMAGES)) $(addprefix scan-lock-,$(IMAGES))
 
 help:
 	@echo "Targets: images, scan-locks, fix-locks, scan-images, publish-images, image-<x>, scan-lock-<x>, fix-lock-<x>, scan-image-<x>, publish-image-<x> (x: $(IMAGES))"
-	@echo "Set REGISTRY (e.g. us.icr.io/myorg); IMAGE_VERSION defaults to the git short SHA ($(IMAGE_VERSION))."
+	@echo "Set REGISTRY (e.g. quay.io/granitebuild); IMAGE_VERSION defaults to the git short SHA ($(IMAGE_VERSION))."
 
 define require_registry
-	@test -n "$(REGISTRY)" || { echo "REGISTRY is not set: make $@ REGISTRY=us.icr.io/myorg" >&2; exit 1; }
+	@test -n "$(REGISTRY)" || { echo "REGISTRY is not set: make $@ REGISTRY=quay.io/granitebuild" >&2; exit 1; }
 endef
 
 images: $(addprefix image-,$(IMAGES))
