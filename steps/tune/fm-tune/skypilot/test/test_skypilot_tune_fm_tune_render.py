@@ -31,6 +31,8 @@ import subprocess
 import pytest
 import yaml
 
+from gbserver.environment.skypilot import validate_launch_num_nodes
+from gbserver.types.stepconfig import StepEnvironmentTypeConfig
 from gbserver.utils.template import fill_objtemplate, fill_template
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -169,12 +171,6 @@ def test_a_bound_base_model_satisfies_the_model_check(tmp_path):
     )
 
 
-@pytest.mark.parametrize("nodes", [2, "2", 0])
-def test_more_than_one_node_fails_the_fill(nodes):
-    msg = _render_error(compute={"num_nodes": nodes})
-    assert msg.startswith("fm-tune: compute_config.num_nodes must be 1"), msg
-
-
 @pytest.mark.parametrize(
     "compute",
     [
@@ -280,59 +276,12 @@ def test_cpu_only_renders_without_accelerators(compute):
     assert filled["resources"] == {}
 
 
-@pytest.mark.parametrize(
-    "compute, launcher",
-    [
-        (
-            {"num_nodes": 1},
-            {"num_nodes": 2},
-        ),  # launcher_config wins in _num_nodes_from_configs
-        (None, {"num_nodes": 2}),
-        ({}, {"num_nodes": "3"}),
-    ],
-)
-def test_a_launcher_config_num_nodes_other_than_1_fails_the_fill(compute, launcher):
-    """skypilot.py _num_nodes_from_configs reads compute_config, then the build's
-    config.launcher_config.num_nodes (last wins), so both are checked."""
-    msg = _render_error(compute=compute, launcher=launcher)
-    assert msg.startswith("fm-tune: launcher_config.num_nodes must be 1"), msg
-
-
-@pytest.mark.parametrize(
-    "compute, launcher",
-    [
-        ({"num_nodes": 1}, {"num_nodes": 1}),
-        ({"num_nodes": 1.0}, None),
-        ({}, {"num_nodes": "1"}),
-        ({"num_nodes": None}, {"num_nodes": None}),
-    ],
-)
-def test_one_node_from_every_source_renders(compute, launcher):
-    assert (
-        "bash ./src/fmtune_run.sh" in _fill(compute=compute, launcher=launcher)["run"]
-    )
-
-
 @pytest.mark.parametrize("bad", ["abc", "1.5", 1.5, -1, " ", True, [1]])
 def test_a_non_numeric_gpu_count_fails_the_fill(bad):
     msg = _render_error(compute={"num_gpus_per_node": bad})
     assert msg.startswith(
         "fm-tune: compute_config.num_gpus_per_node must be a whole number >= 0"
     ), msg
-
-
-@pytest.mark.parametrize(
-    "bad", ["abc", "1.5", 1.5, True, [1], ""]
-)  # "": gbserver int("") raises
-@pytest.mark.parametrize("where", ["compute_config", "launcher_config"])
-def test_a_non_numeric_node_count_fails_the_fill(bad, where):
-    kw = (
-        {"compute": {"num_nodes": bad}}
-        if where == "compute_config"
-        else {"launcher": {"num_nodes": bad}}
-    )
-    msg = _render_error(**kw)
-    assert msg.startswith(f"fm-tune: {where}.num_nodes must be a whole number"), msg
 
 
 @pytest.mark.parametrize("gpus", ["", None, 0, "0", 0.0])
@@ -383,3 +332,37 @@ def test_slurm_only_bare_node_and_ships_src():
     assert _SKY["subtypes"] == ["slurm"]
     assert _LAUNCHER["image_id"] == ""
     assert _LAUNCHER["file_mounts"] == {"src": "src"}
+
+
+_ENV = StepEnvironmentTypeConfig.model_validate(_SKY)
+
+
+def test_declares_single_node():
+    """gbserver, not the template, refuses multi-node (with more nodes SkyPilot
+    runs run: on every node and the runs race on the cache and the output)."""
+    assert _ENV.single_node is True
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"compute_config": {"num_nodes": 2}},
+        {"compute_config": {"num_nodes": 1}, "launcher_config": {"num_nodes": "3"}},
+    ],
+)
+def test_gbserver_refuses_more_than_one_node(config):
+    with pytest.raises(ValueError, match="this step is single-node"):
+        validate_launch_num_nodes(_ENV, _LAUNCHER, config)
+
+
+@pytest.mark.parametrize("bad", ["abc", "1.5", 1.5, ""])
+def test_gbserver_refuses_a_count_it_cannot_read(bad):
+    with pytest.raises(ValueError, match="is not an integer"):
+        validate_launch_num_nodes(
+            _ENV, _LAUNCHER, {"compute_config": {"num_nodes": bad}}
+        )
+
+
+def test_template_leaves_num_nodes_to_gbserver():
+    filled = _fill(compute={"num_nodes": 2}, launcher={"num_nodes": 2})
+    assert "bash ./src/fmtune_run.sh" in filled["run"]
