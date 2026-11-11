@@ -16,7 +16,7 @@
 
 """Tests for the sink that writes lineage into the local index.
 
-Run against a real SQLite row storage, not a fake: the properties worth pinning
+Run against a real SQLite index storage, not a fake: the properties worth pinning
 here -- that a re-ingest does not duplicate, that an already-recorded target is
 skipped -- are enforced by the composite unique index and by presence queries, and
 a fake would just re-implement (and possibly contradict) both.
@@ -663,7 +663,7 @@ class TestJobTags(_LineageTablesTest):
 
     @pytest.fixture(name="tagged_sink")
     def tagged_sink_fixture(self, rows, jobs):
-        # Tags live on the rows' ``attributes.job.tags``; the row storage answers
+        # Tags live on the rows' ``attributes.job.tags``; the index storage answers
         # them. The store records the job, the indexer derives the tagged rows, so
         # both halves are kept here and _write runs them in order.
         self.tags = rows

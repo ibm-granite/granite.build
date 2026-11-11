@@ -111,11 +111,11 @@ def _run_scan(targets, checkpoint=None, index_side_effect=None, every=3):
         [{"job_id": t.uuid}],
         {},
     )
-    rows = MagicMock()
-    rows.index_job_entry.return_value = True
+    writer = MagicMock()
+    writer.index_job_entry.return_value = True
     if index_side_effect:
-        rows.index_job_entry.side_effect = index_side_effect
-    ix = idx.TargetLineageIndexer(sink=sink, writer=rows)
+        writer.index_job_entry.side_effect = index_side_effect
+    ix = idx.TargetLineageIndexer(sink=sink, writer=writer)
     ix.settle_grace_s = 0
     with (
         patch.object(idx, "_targets_page", side_effect=store.page),
@@ -123,7 +123,7 @@ def _run_scan(targets, checkpoint=None, index_side_effect=None, every=3):
         patch.object(idx, "_CHECKPOINT_EVERY", every),
     ):
         count = ix.scan_once(storage)
-    ids = [c.kwargs["target_run_uuid"] for c in rows.index_job_entry.call_args_list]
+    ids = [c.kwargs["target_run_uuid"] for c in writer.index_job_entry.call_args_list]
     return count, ids, store, storage.kv_pair_storage, ix
 
 
@@ -161,9 +161,9 @@ def test_unsettled_target_stops_the_scan_and_later_batches_are_never_loaded():
         [{"job_id": t.uuid}],
         {},
     )
-    rows = MagicMock()
-    rows.index_job_entry.return_value = True
-    ix = idx.TargetLineageIndexer(sink=sink, writer=rows)
+    writer = MagicMock()
+    writer.index_job_entry.return_value = True
+    ix = idx.TargetLineageIndexer(sink=sink, writer=writer)
     ix.settle_grace_s = 3600
     with (
         patch.object(idx, "_targets_page", side_effect=store.page),
@@ -210,9 +210,9 @@ def test_a_transient_load_failure_keeps_the_checkpoint_where_indexing_reached():
         [{"job_id": t.uuid}],
         {},
     )
-    rows = MagicMock()
-    rows.index_job_entry.return_value = True
-    ix = idx.TargetLineageIndexer(sink=sink, writer=rows)
+    writer = MagicMock()
+    writer.index_job_entry.return_value = True
+    ix = idx.TargetLineageIndexer(sink=sink, writer=writer)
     ix.settle_grace_s = 0
     with (
         patch.object(idx, "_targets_page", side_effect=store.page),
@@ -232,14 +232,14 @@ def test_a_target_deleted_after_listing_is_passed_over():
     listed = store.page(None, 0, None)
     del store.targets["t1"]
     storage = SimpleNamespace(kv_pair_storage=_KV(), artifact_registry=_NO_ARTIFACTS)
-    rows = MagicMock()
-    rows.index_job_entry.return_value = True
+    writer = MagicMock()
+    writer.index_job_entry.return_value = True
     sink = MagicMock()
     sink.create_jobstats_for_target.side_effect = lambda s, t, build=None, view=None: (
         [{"job_id": t.uuid}],
         {},
     )
-    ix = idx.TargetLineageIndexer(sink=sink, writer=rows)
+    ix = idx.TargetLineageIndexer(sink=sink, writer=writer)
     ix.settle_grace_s = 0
     with (
         patch.object(

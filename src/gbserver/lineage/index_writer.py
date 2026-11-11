@@ -70,7 +70,7 @@ logger = logging.getLogger(__name__)
 class LineageIndexWriter:
     """Derives and writes ``gb_lineage_index`` rows.
 
-    Owns the :class:`ILineageIndexStorage` so no lineage *store* has to. The row
+    Owns the :class:`ILineageIndexStorage` so no lineage *store* has to. The index
     storage is resolved lazily, so importing this module does not require a
     configured database.
     """

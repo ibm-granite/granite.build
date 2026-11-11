@@ -84,31 +84,31 @@ def _run(run_id, created_at, state="finished", job_id="t1", outputs=("out",)):
 
 
 def _indexed_runs():
-    """The W&B indexer's ``rows`` collaborator, read like the old sink: one
+    """The W&B indexer's ``writer`` collaborator, read like the old sink: one
     ``write_job`` call per run indexed, so a side effect on it fails that run."""
-    rows = MagicMock()
+    writer = MagicMock()
 
     def index(job, **kwargs):
-        rows.write_job(job, **kwargs)
+        writer.write_job(job, **kwargs)
         return True
 
-    rows.index_job_entry.side_effect = index
-    return rows
+    writer.index_job_entry.side_effect = index
+    return writer
 
 
 def _indexer(runs):
-    """The W&B indexer, its API, and its ``rows`` (which is all it writes)."""
+    """The W&B indexer, its API, and its ``writer`` (which is all it writes)."""
     api = MagicMock()
     api.runs.return_value = runs
-    rows = _indexed_runs()
+    writer = _indexed_runs()
     sink = MagicMock()
-    ix = idx.WandBLineageIndexer(sink=sink, api=api, writer=rows)
+    ix = idx.WandBLineageIndexer(sink=sink, api=api, writer=writer)
     # These tests exercise the scan itself from an empty checkpoint; the
     # standalone seed-from-latest rule has its own test.
     ix._seeds_when_standalone = False
     # Nothing goes to gb_lineage_job from W&B.
     sink.write_job.side_effect = AssertionError("W&B runs are not copied")
-    return ix, api, rows
+    return ix, api, writer
 
 
 def _checkpoint(storage, provider="wandb"):
@@ -232,13 +232,13 @@ def test_lineage_job_indexer_reads_in_order_and_checkpoints():
         _job_record("j1", "2026-01-01T00:00:00.000000+00:00"),
     ]
     storage, kv = _admin_with_jobs(jobs)
-    # The rows collaborator indexes, not the sink: the index is the indexer's.
-    rows = MagicMock()
-    rows.index_job_records.side_effect = len
-    ix = idx.LineageJobIndexer(sink=MagicMock(), writer=rows)
+    # The writer collaborator indexes, not the sink: the index is the indexer's.
+    writer = MagicMock()
+    writer.index_job_records.side_effect = len
+    ix = idx.LineageJobIndexer(sink=MagicMock(), writer=writer)
     with patch.object(idx, "_resolve_lineage_provider", return_value="db"):
         assert ix.scan_once(storage) == 2
-        (batch,) = [c.args[0] for c in rows.index_job_records.call_args_list]
+        (batch,) = [c.args[0] for c in writer.index_job_records.call_args_list]
         assert [j.job_id for j in batch] == ["j1", "j2"]
         cp = kv["lineage_index_checkpoint:gb_lineage_job"]
         assert cp["timestamp"] == "2026-01-02T00:00:00.000000+00:00"
@@ -257,7 +257,7 @@ def test_db_sink_record_only_then_index_dedups():
     event = _job_record("j1", "x").attributes["entry"]["event"]
     with patch("gbserver.lineage.index_writer.upsert_row") as upsert_row:
         store.write_job(event, build_id="b1", target_run_uuid="j1")
-        # The store cannot write a row -- it has no row storage at all now.
+        # The store cannot write a row -- it has no index storage at all now.
         upsert_row.assert_not_called()
         record = jobs.add.call_args.args[0]
         assert record.attributes["entry"]["events"] == [event]
@@ -633,32 +633,32 @@ def _target_indexer(targets, indexed=()):
             {},
         )
     )
-    # "Already indexed" is a question about the index, which the rows collaborator
+    # "Already indexed" is a question about the index, which the writer collaborator
     # owns. Under this source gb_targets IS the job store, so there is no job
     # record to ask the sink about.
-    rows = MagicMock()
-    rows.has_rows_for_job.side_effect = lambda job_id: job_id in indexed
-    rows.index_job_entry.return_value = True
-    ix = idx.TargetLineageIndexer(sink=sink, writer=rows)
+    writer = MagicMock()
+    writer.has_rows_for_job.side_effect = lambda job_id: job_id in indexed
+    writer.index_job_entry.return_value = True
+    ix = idx.TargetLineageIndexer(sink=sink, writer=writer)
     ordered = sorted(targets, key=lambda t: t.finished_at, reverse=True)
     page = patch.object(
         idx,
         "_targets_page",
         side_effect=lambda storage, i, cutoff: ordered if i == 0 else [],
     )
-    return ix, rows, page
+    return ix, writer, page
 
 
 def test_targets_are_indexed_oldest_first_across_builds():
     storage = _storage()
-    ix, rows, page = _target_indexer(
+    ix, writer, page = _target_indexer(
         [_target("t2", 2, build_id="b2"), _target("t1", 1, build_id="b1")]
     )
     with page:
         with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
             assert ix.scan_once(storage) == 2
     assert [
-        c.kwargs["target_run_uuid"] for c in rows.index_job_entry.call_args_list
+        c.kwargs["target_run_uuid"] for c in writer.index_job_entry.call_args_list
     ] == ["t1", "t2"]
     assert _checkpoint(storage, provider="none")["timestamp"] == _ts(2)
 
@@ -668,13 +668,13 @@ def test_targets_behind_the_checkpoint_are_not_read():
     mark = {"timestamp": _ts(60), "item_ids": ["at"], "version": 1}
     key = idx._checkpoint_key_for_provider("none")
     storage.kv_pair_storage.set_value(key, dict(mark))
-    ix, rows, page = _target_indexer(
+    ix, writer, page = _target_indexer(
         [_target("old", 58), _target("at", 60), _target("tie", 60), _target("new", 61)]
     )
     with page:
         with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
             assert ix.scan_once(storage) == 2
-    ids = [c.kwargs["target_run_uuid"] for c in rows.index_job_entry.call_args_list]
+    ids = [c.kwargs["target_run_uuid"] for c in writer.index_job_entry.call_args_list]
     # "at" is listed as done on the mark; "tie" shares its instant and is not.
     assert ids == ["tie", "new"]
     assert _checkpoint(storage, provider="none")["timestamp"] == _ts(61)
@@ -702,13 +702,13 @@ def test_target_scan_reads_past_a_page_that_reaches_the_checkpoint():
 
 def test_artifactless_targets_are_not_indexed():
     storage = _storage()
-    ix, rows, page = _target_indexer(
+    ix, writer, page = _target_indexer(
         [_target("empty", 2, artifacts=False), _target("t3", 3)]
     )
     with page:
         with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
             assert ix.scan_once(storage) == 1
-    rows.index_job_entry.assert_called_once()
+    writer.index_job_entry.assert_called_once()
     assert _checkpoint(storage, provider="none")["timestamp"] == _ts(3)
 
 
@@ -729,13 +729,15 @@ def test_target_seed_by_timestamp_keeps_its_offset():
 
 def test_target_seed_indexes_from_that_instant_inclusive():
     storage = _storage()
-    ix, rows, page = _target_indexer([_target("t1", 1), _target("t2", 5)])
+    ix, writer, page = _target_indexer([_target("t1", 1), _target("t2", 5)])
     with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
         ix.seed_if_absent(storage, _ts(5))
     with page:
         with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
             ix.scan_once(storage)
-    indexed = [c.kwargs["target_run_uuid"] for c in rows.index_job_entry.call_args_list]
+    indexed = [
+        c.kwargs["target_run_uuid"] for c in writer.index_job_entry.call_args_list
+    ]
     assert "t2" in indexed
 
 
@@ -814,12 +816,12 @@ def test_each_source_stamps_its_job_store():
 def test_a_partly_indexed_target_is_completed_on_retry():
     """Rows already present must not short-circuit: the upsert is idempotent."""
     storage = _storage()
-    ix, rows, page = _target_indexer([_target("t1", 1)])
-    rows.has_rows_for_job.return_value = True
+    ix, writer, page = _target_indexer([_target("t1", 1)])
+    writer.has_rows_for_job.return_value = True
     with page:
         with patch.object(idx, "_resolve_lineage_provider", return_value="none"):
             assert ix.scan_once(storage) == 1
-    assert rows.index_job_entry.call_count == 1
+    assert writer.index_job_entry.call_count == 1
 
 
 def test_a_scan_with_a_checkpoint_reads_only_targets_since_it_in_utc():
@@ -864,14 +866,14 @@ def test_a_first_scan_reads_every_successful_target():
 
 def _job_indexer(jobs, keyset=True):
     storage, kv = _admin_with_jobs(jobs, keyset=keyset)
-    rows = MagicMock()
-    rows.index_job_records.side_effect = len
-    return idx.LineageJobIndexer(sink=MagicMock(), writer=rows), storage, kv, rows
+    writer = MagicMock()
+    writer.index_job_records.side_effect = len
+    return idx.LineageJobIndexer(sink=MagicMock(), writer=writer), storage, kv, writer
 
 
 def test_outside_standalone_no_checkpoint_indexes_nothing_until_seeded():
     jobs = [_job_record("j1", "2026-01-01T00:00:00.000000+00:00")]
-    ix, storage, kv, rows = _job_indexer(jobs)
+    ix, storage, kv, writer = _job_indexer(jobs)
     with (
         patch.object(idx, "is_standalone", return_value=False),
         patch.object(idx.logger, "info") as info,
@@ -880,7 +882,7 @@ def test_outside_standalone_no_checkpoint_indexes_nothing_until_seeded():
         assert ix.scan_once(storage) == 0
         notices = [c for c in info.call_args_list if "No lineage index" in c.args[0]]
         assert len(notices) == 1
-        rows.index_job_records.assert_not_called()
+        writer.index_job_records.assert_not_called()
         assert kv == {}
         # Seeded while running: the next scan picks it up, no restart.
         ix.seed_if_absent(storage, "all")
@@ -919,7 +921,7 @@ def test_the_from_beginning_mark_is_a_full_read_without_keyset():
 
 def test_standalone_indexer_honours_a_seeded_and_a_forced_checkpoint():
     storage = _storage()
-    ix, rows, page = _target_indexer(
+    ix, writer, page = _target_indexer(
         [_target("t1", 1), _target("t2", 2), _target("t3", 3)]
     )
     with (
@@ -931,7 +933,7 @@ def test_standalone_indexer_honours_a_seeded_and_a_forced_checkpoint():
         assert ix.scan_once(storage) == 2  # t2 (inclusive) and t3
         assert ix.seed_if_absent(storage, _ts(1)) is False
         assert ix.seed_if_absent(storage, _ts(1), force=True) is True
-        rows.index_job_entry.reset_mock()
+        writer.index_job_entry.reset_mock()
         assert ix.scan_once(storage) == 3
 
 
@@ -955,9 +957,9 @@ def test_unsettled_job_is_not_taken_so_checkpoint_stays_behind():
     fresh = now.isoformat()
     jobs = [_job_record("j1", old), _job_record("j2", fresh)]
     storage, kv = _admin_with_jobs(jobs)
-    rows = MagicMock()
-    rows.index_job_records.side_effect = len
-    ix = idx.LineageJobIndexer(sink=MagicMock(), writer=rows)
+    writer = MagicMock()
+    writer.index_job_records.side_effect = len
+    ix = idx.LineageJobIndexer(sink=MagicMock(), writer=writer)
     with patch.object(idx, "_resolve_lineage_provider", return_value="db"):
         assert ix.scan_once(storage) == 1
     assert kv["lineage_index_checkpoint:gb_lineage_job"]["timestamp"] == old
@@ -1113,9 +1115,9 @@ def test_db_source_gives_up_on_a_poison_record_alone():
     old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
     older = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
     jobs = [_job_record("bad", older), _job_record("good", old)]
-    ix, storage, kv, rows = _job_indexer(jobs)
-    rows.index_job_records.side_effect = ValueError("batch failed")
-    rows.index_job_record.side_effect = lambda job: (
+    ix, storage, kv, writer = _job_indexer(jobs)
+    writer.index_job_records.side_effect = ValueError("batch failed")
+    writer.index_job_record.side_effect = lambda job: (
         (_ for _ in ()).throw(ValueError("poison")) if job.job_id == "bad" else True
     )
     with patch.object(idx, "_resolve_lineage_provider", return_value="db"):
@@ -1128,14 +1130,14 @@ def test_db_source_gives_up_on_a_poison_record_alone():
 
 def test_db_source_outage_keeps_the_checkpoint_and_counts_nothing():
     old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
-    ix, storage, kv, rows = _job_indexer([_job_record("j1", old)])
-    rows.index_job_records.side_effect = OperationalError("could not connect")
+    ix, storage, kv, writer = _job_indexer([_job_record("j1", old)])
+    writer.index_job_records.side_effect = OperationalError("could not connect")
     with patch.object(idx, "_resolve_lineage_provider", return_value="db"):
         for _ in range(idx._MAX_JOB_ATTEMPTS * 2):
             assert ix.scan_once(storage) == 0
     assert "lineage_index_checkpoint:gb_lineage_job" not in kv
     assert ix._failed_attempts == {}
-    rows.index_job_record.assert_not_called()
+    writer.index_job_record.assert_not_called()
 
 
 def test_db_source_stops_at_an_unsettled_record_instead_of_stepping_past():
@@ -1178,7 +1180,7 @@ def test_db_source_reads_records_by_keyset_a_page_at_a_time(monkeypatch):
         _job_record(f"j{i}", (base + timedelta(minutes=i)).isoformat())
         for i in range(5)
     ]
-    ix, storage, kv, rows = _job_indexer(jobs)
+    ix, storage, kv, writer = _job_indexer(jobs)
     with patch.object(idx, "_resolve_lineage_provider", return_value="db"):
         assert ix.scan_once(storage) == 5
     reads = storage.lineage_job_storage.get_recorded_after.call_args_list
@@ -1189,7 +1191,11 @@ def test_db_source_reads_records_by_keyset_a_page_at_a_time(monkeypatch):
     ]
     storage.lineage_job_storage.get_jobs_by_id.assert_not_called()
     storage.lineage_job_storage.get_by_where.assert_not_called()
-    assert [len(c.args[0]) for c in rows.index_job_records.call_args_list] == [2, 2, 1]
+    assert [len(c.args[0]) for c in writer.index_job_records.call_args_list] == [
+        2,
+        2,
+        1,
+    ]
 
 
 def test_db_source_keyset_reads_a_record_moved_forward_by_a_merge(monkeypatch):
@@ -1202,7 +1208,7 @@ def test_db_source_keyset_reads_a_record_moved_forward_by_a_merge(monkeypatch):
         _job_record(f"j{i}", (base + timedelta(minutes=i)).isoformat())
         for i in range(4)
     ]
-    ix, storage, kv, rows = _job_indexer(jobs)
+    ix, storage, kv, writer = _job_indexer(jobs)
     real = storage.lineage_job_storage.get_recorded_after.side_effect
     moved = []
 
@@ -1218,7 +1224,7 @@ def test_db_source_keyset_reads_a_record_moved_forward_by_a_merge(monkeypatch):
     with patch.object(idx, "_resolve_lineage_provider", return_value="db"):
         ix.scan_once(storage)
     indexed = [
-        j.job_id for c in rows.index_job_records.call_args_list for j in c.args[0]
+        j.job_id for c in writer.index_job_records.call_args_list for j in c.args[0]
     ]
     assert set(indexed) >= {"j1", "j2", "j3"}
 
@@ -1282,12 +1288,12 @@ def test_wandb_indexer_writes_only_the_index_never_gb_lineage_job():
     storage = _storage()
     api = MagicMock()
     api.runs.return_value = [_run("r1", D1, job_id="j1")]
-    sink, rows = MagicMock(), MagicMock()
-    ix = idx.WandBLineageIndexer(sink=sink, api=api, writer=rows)
+    sink, writer = MagicMock(), MagicMock()
+    ix = idx.WandBLineageIndexer(sink=sink, api=api, writer=writer)
     ix._seeds_when_standalone = False
     assert ix.scan_once(storage) == 1
-    rows.index_job_entry.assert_called_once()
-    assert rows.index_job_entry.call_args.kwargs["job_store"] == idx.JobStore.WANDB
+    writer.index_job_entry.assert_called_once()
+    assert writer.index_job_entry.call_args.kwargs["job_store"] == idx.JobStore.WANDB
     assert not sink.method_calls
 
 
