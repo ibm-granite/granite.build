@@ -36,7 +36,7 @@ from fastapi.testclient import TestClient
 
 from gbserver.api import build_files as build_files_mod
 from gbserver.api.builds import builds_api
-from gbserver.api.lsf_tunnel import LsfTunnelConfig
+from gbserver.api.login_tunnel import LsfTunnelConfig
 from gbserver.storage.stored_build import StoredBuild
 
 # --------------------------------------------------------------------- fixtures
@@ -1378,23 +1378,23 @@ class TestResolveLsfConfig:
 
     @pytest.mark.asyncio
     async def test_non_lsf_environment_returns_400(self):
-        from gbserver.api import lsf_tunnel
+        from gbserver.api import login_tunnel
         from gbserver.types.environmentconfig import EnvironmentConfig
 
         env_config = EnvironmentConfig(name="kube-env", type="Kubernetes", config={})
         with patch.object(
-            lsf_tunnel.Environment,
+            login_tunnel.Environment,
             "load_environment_config",
             return_value=(env_config, MagicMock()),
         ):
             with pytest.raises(HTTPException) as ei:
-                await lsf_tunnel._resolve_lsf_config("space://environments/kube")
+                await login_tunnel._resolve_lsf_config("space://environments/kube")
         assert ei.value.status_code == 400
         assert "Lsf" in str(ei.value.detail)
 
     @pytest.mark.asyncio
     async def test_lsf_returns_fields(self):
-        from gbserver.api import lsf_tunnel
+        from gbserver.api import login_tunnel
         from gbserver.types.environmentconfig import EnvironmentConfig
 
         env_config = EnvironmentConfig(
@@ -1410,11 +1410,11 @@ class TestResolveLsfConfig:
             },
         )
         with patch.object(
-            lsf_tunnel.Environment,
+            login_tunnel.Environment,
             "load_environment_config",
             return_value=(env_config, MagicMock()),
         ):
-            login_nodes, username, key, ws = await lsf_tunnel._resolve_lsf_config(
+            login_nodes, username, key, ws = await login_tunnel._resolve_lsf_config(
                 "space://environments/test-cluster"
             )
         assert login_nodes == ["node-a", "node-b"]
@@ -1424,7 +1424,7 @@ class TestResolveLsfConfig:
 
     @pytest.mark.asyncio
     async def test_missing_field_returns_503(self):
-        from gbserver.api import lsf_tunnel
+        from gbserver.api import login_tunnel
         from gbserver.types.environmentconfig import EnvironmentConfig
 
         env_config = EnvironmentConfig(
@@ -1439,12 +1439,12 @@ class TestResolveLsfConfig:
             },
         )
         with patch.object(
-            lsf_tunnel.Environment,
+            login_tunnel.Environment,
             "load_environment_config",
             return_value=(env_config, MagicMock()),
         ):
             with pytest.raises(HTTPException) as ei:
-                await lsf_tunnel._resolve_lsf_config(
+                await login_tunnel._resolve_lsf_config(
                     "space://environments/test-cluster"
                 )
         assert ei.value.status_code == 503
@@ -1465,27 +1465,27 @@ class TestOpenLsfTunnelFailover:
     def _patch_resolvers(login_nodes):
         """Stub _resolve_lsf_config + _fetch_ssh_key_for_space + _write_key_file
         so the test focuses on the retry loop only."""
-        from gbserver.api import lsf_tunnel
+        from gbserver.api import login_tunnel
 
         resolve = patch.object(
-            lsf_tunnel,
+            login_tunnel,
             "_resolve_lsf_config",
             new=AsyncMock(return_value=(login_nodes, "u", "secret", "/ws")),
         )
         fetch = patch.object(
-            lsf_tunnel,
+            login_tunnel,
             "_fetch_ssh_key_for_space",
             new=AsyncMock(return_value="KEY"),
         )
         write = patch.object(
-            lsf_tunnel, "_write_key_file", return_value="/tmp/fake.key"
+            login_tunnel, "_write_key_file", return_value="/tmp/fake.key"
         )
         unlink = patch("os.unlink")
         return resolve, fetch, write, unlink
 
     @pytest.mark.asyncio
     async def test_single_node_open_failure_returns_503(self):
-        from gbserver.api import lsf_tunnel
+        from gbserver.api import login_tunnel
         from gbserver.utils.ssh_tunnel import SshTunnelError
 
         resolve, fetch, write, unlink = self._patch_resolvers(["node-a"])
@@ -1504,10 +1504,10 @@ class TestOpenLsfTunnelFailover:
             fetch,
             write,
             unlink,
-            patch.object(lsf_tunnel, "SshTunnel", side_effect=make_tunnel),
+            patch.object(login_tunnel, "SshTunnel", side_effect=make_tunnel),
         ):
             with pytest.raises(HTTPException) as ei:
-                async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x"):
+                async with login_tunnel.open_lsf_tunnel("space-a", "env://x"):
                     pass
 
         assert ei.value.status_code == 503
@@ -1516,7 +1516,7 @@ class TestOpenLsfTunnelFailover:
 
     @pytest.mark.asyncio
     async def test_first_fails_second_succeeds(self):
-        from gbserver.api import lsf_tunnel
+        from gbserver.api import login_tunnel
         from gbserver.utils.ssh_tunnel import SshTunnelError
 
         resolve, fetch, write, unlink = self._patch_resolvers(["node-a", "node-b"])
@@ -1549,9 +1549,9 @@ class TestOpenLsfTunnelFailover:
             write,
             unlink,
             shuffle_noop,
-            patch.object(lsf_tunnel, "SshTunnel", side_effect=make_tunnel),
+            patch.object(login_tunnel, "SshTunnel", side_effect=make_tunnel),
         ):
-            async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x") as (
+            async with login_tunnel.open_lsf_tunnel("space-a", "env://x") as (
                 tunnel,
                 cfg,
             ):
@@ -1567,7 +1567,7 @@ class TestOpenLsfTunnelFailover:
         command (readlink) is slow due to server-side session setup. As long as it
         finishes under command_timeout, the tunnel must open successfully — this is
         the case whose failure got a running build cancelled."""
-        from gbserver.api import lsf_tunnel
+        from gbserver.api import login_tunnel
 
         resolve, fetch, write, unlink = self._patch_resolvers(["node-a"])
 
@@ -1589,9 +1589,9 @@ class TestOpenLsfTunnelFailover:
             fetch,
             write,
             unlink,
-            patch.object(lsf_tunnel, "SshTunnel", side_effect=make_tunnel),
+            patch.object(login_tunnel, "SshTunnel", side_effect=make_tunnel),
         ):
-            async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x") as (
+            async with login_tunnel.open_lsf_tunnel("space-a", "env://x") as (
                 tunnel,
                 cfg,
             ):
@@ -1602,7 +1602,7 @@ class TestOpenLsfTunnelFailover:
     async def test_readlink_timeout_returns_503_not_500(self):
         """A command_timeout on the post-open readlink canonicalize (slow session
         setup) must surface as a clean 503, not an opaque 500."""
-        from gbserver.api import lsf_tunnel
+        from gbserver.api import login_tunnel
 
         resolve, fetch, write, unlink = self._patch_resolvers(["node-a"])
 
@@ -1620,17 +1620,17 @@ class TestOpenLsfTunnelFailover:
             fetch,
             write,
             unlink,
-            patch.object(lsf_tunnel, "SshTunnel", side_effect=make_tunnel),
+            patch.object(login_tunnel, "SshTunnel", side_effect=make_tunnel),
         ):
             with pytest.raises(HTTPException) as ei:
-                async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x"):
+                async with login_tunnel.open_lsf_tunnel("space-a", "env://x"):
                     pass
 
         assert ei.value.status_code == 503
 
     @pytest.mark.asyncio
     async def test_all_nodes_fail_returns_503_with_list(self):
-        from gbserver.api import lsf_tunnel
+        from gbserver.api import login_tunnel
         from gbserver.utils.ssh_tunnel import SshTunnelError
 
         resolve, fetch, write, unlink = self._patch_resolvers(
@@ -1648,10 +1648,10 @@ class TestOpenLsfTunnelFailover:
             fetch,
             write,
             unlink,
-            patch.object(lsf_tunnel, "SshTunnel", side_effect=make_tunnel),
+            patch.object(login_tunnel, "SshTunnel", side_effect=make_tunnel),
         ):
             with pytest.raises(HTTPException) as ei:
-                async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x"):
+                async with login_tunnel.open_lsf_tunnel("space-a", "env://x"):
                     pass
 
         assert ei.value.status_code == 503
@@ -1664,7 +1664,7 @@ class TestOpenLsfTunnelFailover:
     async def test_tunnel_constructed_with_banner_login_bounds(self):
         """The file-API tunnel carries the connect/login/keepalive bounds so a
         slow bluevela login node fails over instead of hanging open()."""
-        from gbserver.api import lsf_tunnel
+        from gbserver.api import login_tunnel
 
         resolve, fetch, write, unlink = self._patch_resolvers(["node-a"])
         seen: dict = {}
@@ -1686,34 +1686,36 @@ class TestOpenLsfTunnelFailover:
             fetch,
             write,
             unlink,
-            patch.object(lsf_tunnel, "SshTunnel", side_effect=make_tunnel),
+            patch.object(login_tunnel, "SshTunnel", side_effect=make_tunnel),
         ):
-            async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x"):
+            async with login_tunnel.open_lsf_tunnel("space-a", "env://x"):
                 pass
 
-        assert seen["connect_timeout"] == lsf_tunnel.GBSERVER_LSF_SSH_CONNECT_TIMEOUT_S
-        assert seen["login_timeout"] == lsf_tunnel.GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S
+        assert (
+            seen["connect_timeout"] == login_tunnel.GBSERVER_LSF_SSH_CONNECT_TIMEOUT_S
+        )
+        assert seen["login_timeout"] == login_tunnel.GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S
         assert (
             seen["keepalive_interval"]
-            == lsf_tunnel.GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S
+            == login_tunnel.GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S
         )
         assert (
             seen["keepalive_count_max"]
-            == lsf_tunnel.GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX
+            == login_tunnel.GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX
         )
         # File-API commands use the shorter file-API command timeout (tolerate the
         # same session-setup slowness, but with a shorter max than the runner's),
         # NOT the runner's GBSERVER_LSF_SSH_COMMAND_TIMEOUT_S.
         assert (
             seen["command_timeout"]
-            == lsf_tunnel.GBSERVER_LSF_FILE_API_COMMAND_TIMEOUT_S
+            == login_tunnel.GBSERVER_LSF_FILE_API_COMMAND_TIMEOUT_S
         )
 
     @pytest.mark.asyncio
     async def test_overall_budget_short_circuits_remaining_nodes(self):
         """A node that hangs open() past the total file-API budget must not let
         the loop grind through every remaining node — it returns 503 promptly."""
-        from gbserver.api import lsf_tunnel
+        from gbserver.api import login_tunnel
 
         resolve, fetch, write, unlink = self._patch_resolvers(
             ["node-a", "node-b", "node-c"]
@@ -1740,11 +1742,11 @@ class TestOpenLsfTunnelFailover:
             unlink,
             shuffle_noop,
             # Tiny budget so the first node's hang exhausts it immediately.
-            patch.object(lsf_tunnel, "GBSERVER_LSF_FILE_API_SSH_BUDGET_S", 0.05),
-            patch.object(lsf_tunnel, "SshTunnel", side_effect=make_tunnel),
+            patch.object(login_tunnel, "GBSERVER_LSF_FILE_API_SSH_BUDGET_S", 0.05),
+            patch.object(login_tunnel, "SshTunnel", side_effect=make_tunnel),
         ):
             with pytest.raises(HTTPException) as ei:
-                async with lsf_tunnel.open_lsf_tunnel("space-a", "env://x"):
+                async with login_tunnel.open_lsf_tunnel("space-a", "env://x"):
                     pass
 
         assert ei.value.status_code == 503

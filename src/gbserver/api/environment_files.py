@@ -70,7 +70,7 @@ from gbserver.api.environment_files_paths import (
     validate_folder_name,
     validate_subpath,
 )
-from gbserver.api.lsf_tunnel import open_lsf_tunnel
+from gbserver.api.login_tunnel import open_lsf_tunnel
 from gbserver.api.utils import translate_remote_file_errors
 from gbserver.types.constants import (
     ENV_FILES_DOWNLOAD_MAX_BYTES,

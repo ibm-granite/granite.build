@@ -51,7 +51,7 @@ from gbserver.api.environment_files_paths import (
     parse_gecos_email,
     parse_group_members,
 )
-from gbserver.api.lsf_tunnel import LsfTunnelConfig
+from gbserver.api.login_tunnel import LsfTunnelConfig
 from gbserver.types.constants import EnvironmentFilesConfig
 
 # The one supported environment (today) and a configured stand-in for it.
@@ -687,7 +687,7 @@ class TestNotConfigured:
         monkeypatch.setattr(
             c, "PUBLIC_SPACE_GIT_URI", "https://example.com/org/gbspace-public"
         )
-        c._DERIVED_ENV_FOR_FILES_URI_CACHE.clear()
+        c._SPACE_ENV_URI_CACHE.clear()
 
         def _raising(*_a, **_k):
             raise RuntimeError("github down")
@@ -700,7 +700,7 @@ class TestNotConfigured:
             r = _client().get(_url("demo"))
         assert r.status_code == 503
         assert tunnel.commands == []
-        c._DERIVED_ENV_FOR_FILES_URI_CACHE.clear()
+        c._SPACE_ENV_URI_CACHE.clear()
 
 
 class TestEnvironmentUriResolution:
@@ -713,9 +713,9 @@ class TestEnvironmentUriResolution:
         # or leaves a stale entry.
         from gbserver.types import constants as c
 
-        c._DERIVED_ENV_FOR_FILES_URI_CACHE.clear()
+        c._SPACE_ENV_URI_CACHE.clear()
         yield
-        c._DERIVED_ENV_FOR_FILES_URI_CACHE.clear()
+        c._SPACE_ENV_URI_CACHE.clear()
 
     def test_derived_from_public_space(self, monkeypatch):
         from gbcommon.uri.git import GitURI
@@ -825,7 +825,7 @@ class TestEnvironmentUriResolution:
         assert first == second
         assert "subdirectory=environments%2Fbluevela" in first
         assert calls["n"] == 2  # re-derived, not memoized
-        assert c.PUBLIC_SPACE_GIT_URI not in c._DERIVED_ENV_FOR_FILES_URI_CACHE
+        assert not c._SPACE_ENV_URI_CACHE
 
     def test_github_error_during_derivation_yields_empty_uncached(self, monkeypatch):
         from gbcommon.uri.git import GitURI

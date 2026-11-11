@@ -48,7 +48,7 @@ from gbserver.api.build_files_paths import (
     validate_subpath,
 )
 from gbserver.api.builds import builds_api
-from gbserver.api.lsf_tunnel import open_lsf_tunnel
+from gbserver.api.login_tunnel import open_lsf_tunnel
 from gbserver.api.utils import translate_remote_file_errors
 from gbserver.environment.lsf_paths import build_remote_root_dir
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage

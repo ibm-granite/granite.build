@@ -14,20 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Per-request SSH tunnel factory for the build-files REST API.
+"""Short-lived SSH login tunnels for REST requests.
 
-Opens a short-lived `SshTunnel` scoped to a single REST request, used to
-read a build's remote outputs from an LSF login node. The REST process
-does not share tunnels with the buildwatcher — each request pays a
-handshake cost (~1s typical, more under load). This is acceptable for
-interactive file inspection; if it becomes a bottleneck, a pooled tunnel
-with health checks can be introduced here without changing callers.
-
-Connection parameters are resolved from the target's `environment_uri` via
-the same loader the buildwatcher uses (`Environment.load_environment_config`),
-so the API always sees the same SSH config the build itself ran with. The
-SSH key is pulled from the space's IBM Cloud Secret Manager group at
-request time.
+``open_login_tunnel`` opens one tunnel to a cluster login node for a single
+request, failing over between candidate nodes under a caller-supplied time
+budget. Tunnels are not shared with the buildwatcher, so each request pays
+the handshake (~1s). ``open_lsf_tunnel`` wraps it for the build-files and
+environment-files APIs, resolving login details from an LSF environment.yaml.
 """
 
 import asyncio
@@ -74,16 +67,12 @@ class LsfTunnelConfig:
 def _clean_login_nodes(nodes: List[str]) -> List[str]:
     """Strip and drop empty entries from the configured login_nodes list.
 
-    Raises 503 if nothing usable remains. Reusing Lsf._get_reachable_ssh_node
-    would pull in the Lsf instance's mutable state (self.unreachable_ssh_nodes,
-    locks); the REST path keeps node selection per-request via the failover
-    loop in open_lsf_tunnel.
+    Raises 503 if nothing usable remains.
     """
     cleaned = [n.strip() for n in nodes if isinstance(n, str) and n.strip()]
     if not cleaned:
         raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "no login nodes configured in environment.yaml",
+            status.HTTP_503_SERVICE_UNAVAILABLE, "no login nodes configured"
         )
     return cleaned
 
@@ -197,6 +186,11 @@ async def _fetch_ssh_key_for_space(space_name: str, secret_name: str) -> str:
     return key_material
 
 
+async def fetch_space_ssh_key(space_name: str, secret_name: str) -> str:
+    """Public wrapper over the key fetch, for callers that cache the key."""
+    return await _fetch_ssh_key_for_space(space_name, secret_name)
+
+
 def _write_key_file(key_material: str) -> str:
     """Write an SSH private key to a 0600 tempfile. Caller must unlink."""
     fd, path = tempfile.mkstemp(prefix="gbserver_ssh_", suffix=".key")
@@ -211,47 +205,49 @@ def _write_key_file(key_material: str) -> str:
 
 
 @contextlib.asynccontextmanager
-async def open_lsf_tunnel(
+async def open_login_tunnel(
     space_name: str,
-    environment_uri: str,
-) -> AsyncIterator[tuple[SshTunnel, LsfTunnelConfig]]:
-    """Open a short-lived SSH tunnel to an LSF login node for one request.
+    login_nodes: List[str],
+    username: str,
+    key_secret_name: Optional[str] = None,
+    *,
+    key_material: Optional[str] = None,
+    budget_s: float,
+    command_timeout_s: float,
+    log_tag: str,
+) -> AsyncIterator[SshTunnel]:
+    """Open a short-lived SSH tunnel to one of ``login_nodes`` for one request.
 
-    Resolves SSH connection params from the target's environment.yaml (via
-    Environment.load_environment_config) so the API stays in sync with the
-    build's actual config. Yields (tunnel, config). On exit the tunnel is
-    closed and the private-key tempfile is unlinked, including cancellation
-    paths.
+    Pass either ``key_secret_name`` (fetched from the space's Secret Manager)
+    or ``key_material`` (a key the caller already holds). ``budget_s`` caps the
+    whole failover sweep, so an interactive caller gets a prompt 503 instead of
+    stacked per-node timeouts. The key tempfile is unlinked on every exit path.
     """
-    login_nodes, username, key_secret_name, workspace_remote_dir = (
-        await _resolve_lsf_config(environment_uri)
-    )
-
+    if (key_secret_name is None) == (key_material is None):
+        raise ValueError("pass exactly one of key_secret_name or key_material")
     candidates = _clean_login_nodes(login_nodes)
     # Shuffle so concurrent requests don't all probe the same node first.
     random.shuffle(candidates)
-    key_material = await _fetch_ssh_key_for_space(space_name, key_secret_name)
+    if key_material is None:
+        assert key_secret_name is not None  # checked above
+        key_material = await _fetch_ssh_key_for_space(space_name, key_secret_name)
     key_file_path: Optional[str] = None
     tunnel: Optional[SshTunnel] = None
     try:
         key_file_path = _write_key_file(key_material)
         last_err: Optional[Exception] = None
-        # Overall wall-time cap across all candidate nodes. This is a synchronous,
-        # interactively-called API (unlike the batch build runner), so we bound the
-        # whole sweep — not just each node — and return a fast, clean 503 rather
-        # than letting per-node login_timeouts stack up past the caller's timeout.
-        deadline = time.monotonic() + GBSERVER_LSF_FILE_API_SSH_BUDGET_S
+        deadline = time.monotonic() + budget_s
         for node in candidates:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 last_err = last_err or TimeoutError(
-                    f"file-API SSH budget of {GBSERVER_LSF_FILE_API_SSH_BUDGET_S}s "
-                    "exhausted before a reachable node was found"
+                    f"SSH budget of {budget_s}s exhausted before a reachable "
+                    "login node was found"
                 )
                 logger.warning(
-                    "[build-files] SSH budget exhausted after %ds; "
-                    "not trying remaining nodes",
-                    GBSERVER_LSF_FILE_API_SSH_BUDGET_S,
+                    "[%s] SSH budget exhausted after %ss; not trying remaining nodes",
+                    log_tag,
+                    budget_s,
                 )
                 break
             attempt = SshTunnel(
@@ -259,23 +255,17 @@ async def open_lsf_tunnel(
                 username=username,
                 key_file=key_file_path,
                 host_key_verification=ENABLE_SSH_HOST_KEY_VERIFICATION,
-                # Bound the banner/login phase and detect a wedged session so a
-                # slow bluevela login node fails over here instead of hanging
-                # open() unbounded (same symptom as the build runner's tunnel).
-                # login_timeout is the per-node bound; the deadline above caps the
-                # total across nodes, so a node is given at most whichever is less.
+                # Per-node bounds, so a slow login node fails over instead of
+                # hanging open(); the deadline above caps the total.
                 connect_timeout=GBSERVER_LSF_SSH_CONNECT_TIMEOUT_S,
                 login_timeout=GBSERVER_LSF_SSH_LOGIN_TIMEOUT_S,
                 keepalive_interval=GBSERVER_LSF_SSH_KEEPALIVE_INTERVAL_S,
                 keepalive_count_max=GBSERVER_LSF_SSH_KEEPALIVE_COUNT_MAX,
-                # File-API commands hit the SAME server-side session/exec setup
-                # slowness as the runner, so they need the same leniency — but a
-                # shorter max, since this runs synchronously for an interactive
-                # caller behind a route, not a patient batch runner.
-                command_timeout=GBSERVER_LSF_FILE_API_COMMAND_TIMEOUT_S,
+                command_timeout=command_timeout_s,
             )
             logger.info(
-                "[build-files] opening tunnel: space=%s node=%s key_file=%s",
+                "[%s] opening tunnel: space=%s node=%s key_file=%s",
+                log_tag,
                 space_name,
                 node,
                 key_file_path,
@@ -294,7 +284,7 @@ async def open_lsf_tunnel(
                     with contextlib.suppress(Exception):
                         await attempt.close()
                 logger.warning(
-                    "[build-files] tunnel open failed on node %s: %s", node, e
+                    "[%s] tunnel open failed on node %s: %s", log_tag, node, e
                 )
                 continue
             tunnel = attempt
@@ -305,6 +295,48 @@ async def open_lsf_tunnel(
                 f"no reachable login nodes among {candidates}: "
                 f"{last_err if last_err else 'unknown error'}",
             )
+        yield tunnel
+    finally:
+        if tunnel is not None:
+            try:
+                await tunnel.close()
+            except Exception as e:
+                logger.warning("[%s] tunnel close failed: %s", log_tag, e)
+        if key_file_path is not None:
+            try:
+                os.unlink(key_file_path)
+            except OSError as e:
+                logger.warning(
+                    "[%s] failed to remove key file %s: %s", log_tag, key_file_path, e
+                )
+
+
+@contextlib.asynccontextmanager
+async def open_lsf_tunnel(
+    space_name: str,
+    environment_uri: str,
+) -> AsyncIterator[tuple[SshTunnel, LsfTunnelConfig]]:
+    """Open a short-lived SSH tunnel to an LSF login node for one request.
+
+    Resolves SSH connection params from the target's environment.yaml (via
+    Environment.load_environment_config) so the API stays in sync with the
+    build's actual config. Yields (tunnel, config). On exit the tunnel is
+    closed and the private-key tempfile is unlinked, including cancellation
+    paths.
+    """
+    login_nodes, username, key_secret_name, workspace_remote_dir = (
+        await _resolve_lsf_config(environment_uri)
+    )
+    async with open_login_tunnel(
+        space_name,
+        login_nodes,
+        username,
+        key_secret_name,
+        # Read at call time so tests (and operators) can override the module value.
+        budget_s=GBSERVER_LSF_FILE_API_SSH_BUDGET_S,
+        command_timeout_s=GBSERVER_LSF_FILE_API_COMMAND_TIMEOUT_S,
+        log_tag="files-api",
+    ) as tunnel:
         # Canonicalize workspace_remote_dir once per request so every
         # downstream build_root is fully dereferenced. Without this, a
         # symlinked parent of the workspace could let validate_subpath's
@@ -329,19 +361,11 @@ async def open_lsf_tunnel(
                 f"{workspace_remote_dir!r}: {stderr.strip() or 'unknown error'}",
             )
         yield tunnel, LsfTunnelConfig(workspace_remote_dir=canonical_workspace)
-    finally:
-        if tunnel is not None:
-            try:
-                await tunnel.close()
-            except Exception as e:
-                logger.warning("[build-files] tunnel close failed: %s", e)
-        if key_file_path is not None:
-            try:
-                os.unlink(key_file_path)
-            except OSError as e:
-                logger.warning(
-                    "[build-files] failed to remove key file %s: %s", key_file_path, e
-                )
 
 
-__all__ = ["LsfTunnelConfig", "open_lsf_tunnel"]
+__all__ = [
+    "LsfTunnelConfig",
+    "fetch_space_ssh_key",
+    "open_login_tunnel",
+    "open_lsf_tunnel",
+]
