@@ -258,6 +258,15 @@ class TestValidation:
         )
         assert "packing" in err
 
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_alora_check_runs_after_the_shared_args_checks(self, block):
+        err = _render_error(
+            block,
+            _ctx(method="alora", alora_invocation_string="x", args={"packing": []}),
+        )
+        assert "is an empty list" in err
+        assert "cannot train with packing" not in err
+
     def test_alora_packing_false_is_fine(self):
         _render(
             "run",
