@@ -4,32 +4,30 @@
 # bound by the granite_generation artifact, so one build test covers both
 # images.
 targets:
-  - bird-generate
-  - bird-score
+- bird-generate
+- bird-score
 target_expectations:
-  - target_name: bird-generate
-    step_count: 1
-    input_artifact_count: 0
-    output_artifact_count: 1
-    expected_steps:
-      - config:
-          benchmark: birdbench
-          phase: generate
-  - target_name: bird-score
-    step_count: 1
-    input_artifact_count: 1
-    output_artifact_count: 1
-    expected_steps:
-      - config:
-          benchmark: birdbench
-          phase: score
-          image: us.icr.io/cil15-shared-registry/gb-step-eval-bird-cpu:ce003c94
-# The Space rendered by `make space` (the local bird step), as for the other
-# clusters; publish-step rewrites it to configurations/spaces/local. The
-# environment comes from the shared BlueVela SLURM space.
+- target_name: bird-generate
+  step_count: 2
+  input_artifact_count: 1
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: birdbench
+      phase: generate
+    step_uri: space://steps/eval/bird
+- target_name: bird-score
+  step_count: 2
+  input_artifact_count: 2
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: birdbench
+      phase: score
+      image: us.icr.io/cil15-shared-registry/gb-step-eval-bird-cpu:ce003c94
+    step_uri: space://steps/eval/bird
 space_uri: ../../../../../../configurations/spaces/local
 tests:
-  - runner
+- runner
 simulate_step_failure: false
-# Two queued jobs (generate, then score), each with its own startup.
 timeout_minutes: 105
