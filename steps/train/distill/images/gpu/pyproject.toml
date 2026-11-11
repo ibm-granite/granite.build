@@ -168,3 +168,8 @@ dev = ["pytest"]
 # other step in this repo.
 [tool.uv]
 package = false
+constraint-dependencies = [
+    "certifi>=2026.10.18",
+    "pillow>=13.0.0",
+    "pyjwt>=2.14.0",
+]
