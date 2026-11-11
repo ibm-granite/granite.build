@@ -1,0 +1,35 @@
+# YAML-driven spec for test_skypilot_slurm_bluevela_eval_bird.py (located by
+# the test/ <-> test-data/ helper; see steps/README.md). The recipes' shape:
+# birdbench generates on the family's GPU image and scores on its CPU image,
+# bound by the granite_generation artifact, so one build test covers both
+# images.
+targets:
+  - bird-generate
+  - bird-score
+target_expectations:
+  - target_name: bird-generate
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 1
+    expected_steps:
+      - config:
+          benchmark: birdbench
+          phase: generate
+  - target_name: bird-score
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    expected_steps:
+      - config:
+          benchmark: birdbench
+          phase: score
+          image: us.icr.io/cil15-shared-registry/gb-step-eval-bird-cpu:ce003c94
+# The Space rendered by `make space` (the local bird step), as for the other
+# clusters; publish-step rewrites it to configurations/spaces/local. The
+# environment comes from the shared BlueVela SLURM space.
+space_uri: ../../../../../../configurations/spaces/local
+tests:
+  - runner
+simulate_step_failure: false
+# Two queued jobs (generate, then score), each with its own startup.
+timeout_minutes: 105

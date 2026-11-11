@@ -1,0 +1,41 @@
+granite.build:
+  name: skypilot-slurm-bluevela-eval-lmeval-test
+  targets:
+    lmeval-test:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/lmeval
+          config:
+            poll_interval_seconds: 5
+            log_retrieval_interval_seconds: 30
+            benchmark: "mmlu-prox-lite"
+            image: "us.icr.io/cil15-shared-registry/gb-step-eval-lmeval:ce003c94"
+            # answers=gold: the GoldLM answers every question with its reference
+            # letter, so no model is served and nothing needs a GPU or a key.
+            model_path: "none"
+            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/lmeval"
+            run_name: "buildtest"
+            # Smoke knob: first N per (question_id, language), so a small N
+            # still covers every language.
+            limit: "5"
+            workers: "8"
+            options: "answers=gold"
+            phase: "all"
+            # lmeval runs no sandbox; the dataset (li-lab/MMLU-ProX-Lite, pinned)
+            # downloads into the image's own HF cache.
+            sandbox_cache: ""
+            hf_home: ""
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                # Gold mode is CPU-only: run on the cpu partition and drop the
+                # env-wide h200 constraint (as byoc's BlueVela test does).
+                zone: "cpu"
+                memory: 32
+                cpus: 8
+              sbatch_options:
+                constraint: null

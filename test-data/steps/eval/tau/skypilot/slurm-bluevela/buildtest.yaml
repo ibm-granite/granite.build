@@ -1,0 +1,36 @@
+# YAML-driven spec for test_skypilot_slurm_bluevela_eval_tau.py (located by
+# the test/ <-> test-data/ helper; see steps/README.md). The recipes' shape:
+# tau3-bench generates on the family's GPU image and scores on its CPU image,
+# bound by the granite_generation artifact, so one build test covers both
+# images model-free (gold mode).
+targets:
+  - tau-generate
+  - tau-score
+target_expectations:
+  - target_name: tau-generate
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 1
+    expected_steps:
+      - config:
+          benchmark: tau3-bench
+          phase: generate
+          options: agent=gold
+  - target_name: tau-score
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    expected_steps:
+      - config:
+          benchmark: tau3-bench
+          phase: score
+          image: us.icr.io/cil15-shared-registry/gb-step-eval-tau-cpu:ce003c94
+# The Space rendered by `make space` (the local tau step), as for the other
+# clusters; publish-step rewrites it to configurations/spaces/local. The
+# environment comes from the shared BlueVela SLURM space.
+space_uri: ../../../../../../configurations/spaces/local
+tests:
+  - runner
+simulate_step_failure: false
+# Two queued jobs (generate, then score), each with its own startup.
+timeout_minutes: 90

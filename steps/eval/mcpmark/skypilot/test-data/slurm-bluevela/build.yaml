@@ -1,0 +1,34 @@
+granite.build:
+  name: skypilot-slurm-bluevela-eval-mcpmark-test
+  targets:
+    mcpmark-test:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/mcpmark
+          config:
+            poll_interval_seconds: 5
+            log_retrieval_interval_seconds: 30
+            benchmark: "mcpmark-filesystem"
+            image: "us.icr.io/cil15-shared-registry/gb-step-eval-mcpmark:ce003c94"
+            model_path: "ibm-granite/granite-4.2-3b"
+            options: "task_suite=easy"
+            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/mcpmark"
+            run_name: "buildtest"
+            # Smoke knob: first N examples, so the run stays minutes-scale.
+            limit: "2"
+            workers: "1"
+            phase: "all"
+            # One shared HF cache across the eval build tests: the model is
+            # pulled once and reused by every family's run.
+            hf_home: "/proj/data-eng/llmb-read-write/eval-build-tests/hf-home"
+            sandbox_cache: "/proj/data-eng/llmb-read-write/eval-build-tests/enroot-cache"
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "gpu-mid"
+                accelerators: "H200:1"
+                memory: 256
