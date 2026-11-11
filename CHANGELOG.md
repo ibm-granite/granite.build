@@ -87,6 +87,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Framework steps: share Jinja between templates with `gb-include` (#651).** A
+  `{#- gb-include <path> -#}` line in a `step-template.yaml` is replaced by the file it
+  names when `make space` / `make publish-step` render the step
+  (`steps/scripts/render_step_template.py`, which replaces the `sed` render; steps
+  without such lines render byte-identically). The SkyPilot `openinstruct-sft` and
+  `hf-peft-sft` steps now share their `args` checks, `q()` and `args` argv rendering
+  (`steps/train/shared/trainer_args.j2`) and define their `validate` macro once
+  (`macros/validate.j2`) instead of in both `setup:` and `run:`; their behaviour and
+  messages are unchanged. A CI test checks that a published `step.yaml` using
+  `gb-include` matches its source.
+
 - **Step resolution: `base_uris` order decides, and environments own steps by `environment.yaml`
   (#558).** `space://steps/<name>` now resolves to the first base, in `base_uris` order, that
   holds a copy serving the active environment, so an earlier base always outranks a later one.
