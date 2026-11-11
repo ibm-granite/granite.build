@@ -573,6 +573,10 @@ GPUs in total. `Skypilot_managed` uses the same helpers: it layers `resources` (
 Do not put `num_nodes` under `resources`: it is a `sky.Task` field, not a `sky.Resources` one, so
 SkyPilot discards it silently. gbserver warns when it sees one, and the run proceeds single-node.
 
+The K8s-only `gb.step_contents_in_env`, `k8s.*`, and `lsf.*` blocks are ignored — step-asset code is
+not copied into the pod; if the `run:` script needs files, use `file_mounts` or fetch them in
+`setup:` / `run:`.
+
 ### Single-node steps
 
 A step that cannot run on more than one node sets `single_node: true` on its environment
@@ -589,10 +593,6 @@ step's launcher config, then the build's `launcher_config.num_nodes`; the last o
 and fails the step at creation, before anything is provisioned, unless it is 1. The error names
 the layer that set the count. The step needs no Jinja check of its own. `Skypilot_managed`
 enforces it the same way.
-
-The K8s-only `gb.step_contents_in_env`, `k8s.*`, and `lsf.*` blocks are ignored — step-asset code is
-not copied into the pod; if the `run:` script needs files, use `file_mounts` or fetch them in
-`setup:` / `run:`.
 
 ## See also
 
