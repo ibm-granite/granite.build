@@ -259,13 +259,22 @@ class TestValidation:
         assert "packing" in err
 
     @pytest.mark.parametrize("block", ["setup", "run"])
-    def test_alora_check_runs_after_the_shared_args_checks(self, block):
+    @pytest.mark.parametrize(
+        "args,expected",
+        [
+            # foo's shared checks run before packing's aLoRA check...
+            ({"foo": [], "packing": True}, "is an empty list"),
+            # ...and packing's aLoRA check before foo's shared checks.
+            ({"packing": True, "foo": []}, "cannot train with packing"),
+        ],
+    )
+    def test_alora_check_runs_per_key_with_the_shared_args_checks(
+        self, block, args, expected
+    ):
         err = _render_error(
-            block,
-            _ctx(method="alora", alora_invocation_string="x", args={"packing": []}),
+            block, _ctx(method="alora", alora_invocation_string="x", args=args)
         )
-        assert "is an empty list" in err
-        assert "cannot train with packing" not in err
+        assert expected in err
 
     def test_alora_packing_false_is_fine(self):
         _render(
