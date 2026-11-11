@@ -1,0 +1,30 @@
+{#- Shared by the steps/train SkyPilot SFT templates (openinstruct-sft, hf-peft-sft); after an edit, re-run make publish-step in each. -#}
+{%- macro q(v) -%}
+{{ v | string | replace("'", "'\"'\"'") }}
+{%- endmacro %}
+{#- validate_args: refuse args entries that would override a step-owned flag or
+    break the argv render_args builds. step: message prefix; field: the args
+    path; owned: step-owned flag names; noun: what a key names; hint: what to
+    set instead of an owned flag; consumer: what parses the argv; full_flags:
+    non-owned flags that are a proper prefix of an owned one (argparse takes an
+    exact match first); refuse_no: refuse no_* keys (store_false, no value).
+    A call block gets (k, v, nk) once per key, after these checks. -#}
+{%- macro validate_args(step, field, args, owned, noun, hint, consumer, full_flags=[], refuse_no=false) -%}
+{%- if args is not mapping %}{{ raise_error(step ~ ": " ~ field ~ " must be a mapping of " ~ noun ~ " to value.") }}{% endif -%}
+{%- for k, v in args.items() %}
+{%- set ks = k | string %}
+{%- if not ks or "=" in ks or ks.startswith("-") or (ks.split() | join("")) != ks %}{{ raise_error(step ~ ": " ~ field ~ " key '" ~ ks ~ "' must be a bare " ~ noun ~ " name (no '=', '-' prefix or whitespace).") }}{% endif -%}
+{%- set nk = ks | replace("-", "_") %}
+{%- if nk in owned %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is set by the step; use " ~ hint ~ " instead.") }}{% endif -%}
+{%- for o in owned %}{% if nk != o and nk not in full_flags and o.startswith(nk) %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " abbreviates the step-owned flag " ~ o ~ "; abbreviated flags are not accepted.") }}{% endif %}{% endfor -%}
+{%- if refuse_no and nk.startswith("no_") %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is a no_* flag, which takes no value; write " ~ k[3:] ~ ": false instead.") }}{% endif -%}
+{%- if v is mapping %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
+{%- if v is iterable and v is not string and v is not mapping and not v %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is an empty list; " ~ consumer ~ " would read the next flag as its value. Remove it, or set it to null to omit it.") }}{% endif -%}
+{%- if caller is defined %}{{ caller(k, v, nk) }}{% endif -%}
+{%- endfor -%}
+{%- endmacro %}
+{#- render_args: args as argv words after the step's own flags: '--<key>', then
+    true/false for a bool, each item of a list, or the scalar; null is omitted. -#}
+{%- macro render_args(args) -%}
+{% for k, v in args.items() %}{% if v is not none %}'--{{ q(k) }}' {% if v is sameas true or v is sameas false %}'{{ v | lower }}' {% elif v is iterable and v is not string %}{% for x in v %}'{{ q(x) }}' {% endfor %}{% else %}'{{ q(v) }}' {% endif %}{% endif %}{% endfor %}
+{%- endmacro %}
