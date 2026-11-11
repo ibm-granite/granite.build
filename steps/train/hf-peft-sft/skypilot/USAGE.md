@@ -134,9 +134,10 @@ a message that starts `hf-peft-sft:`. They are:
   value in `args`;
 - `args.packing` or `args.padding_free` true with `method: alora`.
 
-A `num_nodes` other than 1, in `compute_config` or `launcher_config`, also fails at step
-creation, with gbserver's own message: the step sets `single_node: true`. `1.0`, and a
-string such as `"01"` that reads as the integer 1, count as 1.
+The step also fails at step creation, with gbserver's own message, unless the `num_nodes`
+the launch would use is 1: the step sets `single_node: true`, and of `compute_config`, the
+step's launcher config and `launcher_config`, the last one set wins. `1.0`, and a string
+such as `"01"` that reads as the integer 1, count as 1.
 
 ## Passing SFTConfig flags (args)
 
@@ -485,9 +486,9 @@ string your model's chat template emits before the assistant turn.
 
 ## Notes and limitations
 
-- **Single node only.** The step sets `single_node: true`, so gbserver refuses any
-  `num_nodes` other than 1, from `compute_config`, the step's launcher config or
-  `launcher_config`, when it creates the step.
+- **Single node only.** The step sets `single_node: true`, so gbserver refuses, when it
+  creates the step, a resolved `num_nodes` other than 1: of `compute_config`, the step's
+  launcher config and `launcher_config`, the last one set wins.
 - **Adapter only.** The step never merges the adapter into the base model. aLoRA
   adapters cannot be merged, and merging into a 4-bit base is lossy. Merge in a
   downstream step if you need a merged LoRA model.

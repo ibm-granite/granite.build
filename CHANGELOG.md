@@ -80,8 +80,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   launcher config, the build's `launcher_config`) and fail the step at creation unless it is 1.
   Other environments refuse the flag. The SkyPilot `openinstruct-sft`, `hf-peft-sft`, `nemo-rl`
   and `fm-tune` steps use it instead of their own Jinja `num_nodes` checks: they now accept
-  exactly what gbserver parses as 1 (hf-peft-sft newly accepts `"01"`), and nemo-rl newly
-  checks the build's `launcher_config.num_nodes`.
+  exactly what gbserver parses as 1 (hf-peft-sft newly accepts `"01"`); only the count the
+  launch would use matters, so a `compute_config.num_nodes: 2` overridden by a build
+  `launcher_config.num_nodes: 1` now passes; and nemo-rl newly checks the build's
+  `launcher_config.num_nodes`.
 
 ### Changed
 
