@@ -51,7 +51,8 @@ config:
     clearml_project: ""
     clearml_task_name: ""
   compute_config:
-    # Single node only (validated). GPUs come from the build's
+    # Single node only: environment_configs.Skypilot.single_node makes gbserver
+    # refuse any other num_nodes at step creation. GPUs come from the build's
     # launcher_config.resources.accelerators; the step reads the count from
     # $SKYPILOT_NUM_GPUS_PER_NODE.
     num_nodes: 1
@@ -80,6 +81,9 @@ outputs:
 
 environment_configs:
   Skypilot:
+    # gbserver refuses, at step creation, a build whose resolved num_nodes is not 1
+    # (compute_config, this launcher's config, or the build's launcher_config).
+    single_node: true
     default_launcher: hf_peft_sft
     launchers:
       hf_peft_sft:
@@ -100,7 +104,7 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            {%- macro validate(c, cc, bound, lc) -%}
+            {%- macro validate(c, bound, lc) -%}
             {%- set owned = ["output_dir", "report_to", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "resume_from_checkpoint", "save_strategy", "bf16", "fp16", "fsdp", "fsdp_config", "deepspeed", "gradient_checkpointing_kwargs", "model_name_or_path", "method", "distributed", "mixed_precision", "dataset_path", "dataset_split", "dataset_config", "lora_r", "lora_alpha", "lora_dropout", "lora_target_modules", "lora_modules_to_save", "alora_invocation_string", "base_model_id"] -%}
             {#- Non-owned trainer flags that are a proper prefix of an owned one: argparse
                 takes an exact match first, so these are not abbreviations. -#}
@@ -119,12 +123,6 @@ environment_configs:
             {%- if c.method == "qlora" and c.distributed in ["fsdp", "deepspeed"] and c.mixed_precision == "no" %}{{ raise_error("hf-peft-sft: method: qlora with distributed: " ~ c.distributed ~ " stores the sharded 4-bit weights in bf16, so mixed_precision must be bf16 (got 'no'). Use mixed_precision: bf16, or distributed: ddp for fp32 compute.") }}{% endif -%}
             {%- if not c.output %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.output is required; it names the target's adapter output.") }}{% endif -%}
             {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
-            {#- A whole float (YAML 1.0) is one node, as gbserver reads it. -#}
-            {%- macro one(v) %}{{ "y" if (v == 1 if v is number else (v | string) == "1") else "" }}{% endmacro -%}
-            {%- if not one(cc.num_nodes) %}{{ raise_error("hf-peft-sft: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
-            {#- gbserver also reads num_nodes from the launcher block, which this step sets
-                none of and users cannot change, and from the build's launcher_config (lc). -#}
-            {%- if lc.get("num_nodes") is not none and not one(lc.get("num_nodes")) %}{{ raise_error("hf-peft-sft: launcher_config.num_nodes must be 1 (got '" ~ lc.get("num_nodes") ~ "'); this step is single-node.") }}{% endif -%}
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("hf-peft-sft: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type).") }}{% endif -%}
             {%- set acc = res.get("accelerators") -%}
             {%- if c.distributed != "ddp" and acc is string and acc -%}
@@ -156,7 +154,7 @@ environment_configs:
             {%- endmacro %}
             {%- set c = config.hf_peft_sft_config %}
             {%- set b = bindings if bindings is defined else {} %}
-            {{- validate(c, config.compute_config, "dataset" in b, config.get("launcher_config") or {}) }}
+            {{- validate(c, "dataset" in b, config.get("launcher_config") or {}) }}
             bash /opt/hf-peft-sft/hf_peft_sft_guard.sh \
               --base-model '{{ q(b.base_model.binding.path if "base_model" in b else "") }}' \
               --dataset '{{ q(b.dataset.binding.path if "dataset" in b else "") }}'
@@ -169,7 +167,7 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            {%- macro validate(c, cc, bound, lc) -%}
+            {%- macro validate(c, bound, lc) -%}
             {%- set owned = ["output_dir", "report_to", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "resume_from_checkpoint", "save_strategy", "bf16", "fp16", "fsdp", "fsdp_config", "deepspeed", "gradient_checkpointing_kwargs", "model_name_or_path", "method", "distributed", "mixed_precision", "dataset_path", "dataset_split", "dataset_config", "lora_r", "lora_alpha", "lora_dropout", "lora_target_modules", "lora_modules_to_save", "alora_invocation_string", "base_model_id"] -%}
             {#- Non-owned trainer flags that are a proper prefix of an owned one: argparse
                 takes an exact match first, so these are not abbreviations. -#}
@@ -188,12 +186,6 @@ environment_configs:
             {%- if c.method == "qlora" and c.distributed in ["fsdp", "deepspeed"] and c.mixed_precision == "no" %}{{ raise_error("hf-peft-sft: method: qlora with distributed: " ~ c.distributed ~ " stores the sharded 4-bit weights in bf16, so mixed_precision must be bf16 (got 'no'). Use mixed_precision: bf16, or distributed: ddp for fp32 compute.") }}{% endif -%}
             {%- if not c.output %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.output is required; it names the target's adapter output.") }}{% endif -%}
             {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("hf-peft-sft: hf_peft_sft_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
-            {#- A whole float (YAML 1.0) is one node, as gbserver reads it. -#}
-            {%- macro one(v) %}{{ "y" if (v == 1 if v is number else (v | string) == "1") else "" }}{% endmacro -%}
-            {%- if not one(cc.num_nodes) %}{{ raise_error("hf-peft-sft: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
-            {#- gbserver also reads num_nodes from the launcher block, which this step sets
-                none of and users cannot change, and from the build's launcher_config (lc). -#}
-            {%- if lc.get("num_nodes") is not none and not one(lc.get("num_nodes")) %}{{ raise_error("hf-peft-sft: launcher_config.num_nodes must be 1 (got '" ~ lc.get("num_nodes") ~ "'); this step is single-node.") }}{% endif -%}
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("hf-peft-sft: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type).") }}{% endif -%}
             {%- set acc = res.get("accelerators") -%}
             {%- if c.distributed != "ddp" and acc is string and acc -%}
@@ -225,7 +217,7 @@ environment_configs:
             {%- endmacro %}
             {%- set c = config.hf_peft_sft_config %}
             {%- set b = bindings if bindings is defined else {} %}
-            {{- validate(c, config.compute_config, "dataset" in b, config.get("launcher_config") or {}) }}
+            {{- validate(c, "dataset" in b, config.get("launcher_config") or {}) }}
             {%- set ce = c.clearml_enabled | string | lower %}
             {%- set clearml_mode = "on" if ce in ["true", "on", "1"] else ("off" if ce in ["false", "off", "0"] else "auto") %}
             {%- set l = c.lora %}
