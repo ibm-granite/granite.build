@@ -277,6 +277,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **SkyPilot SLURM: a step's `total_memory_per_node` is sent as `--mem` on clusters that track
+  memory (#657).** Before, it was always dropped on SLURM, so jobs got SkyPilot's 1 GB per CPU.
+  The built-in `hfpull`/`hfpush` (10Gi) were OOM-killed on BlueVela. gbserver now reads the
+  cluster's `SelectTypeParameters` and sends the step's memory only on `CR_*_Memory` clusters;
+  `CR_CPU`/`CR_Core` clusters and LSF are unchanged. **Behavior change:** on a memory-tracking
+  cluster a step now requests its declared memory, so one that declares more than the partition
+  allows sits PENDING instead of running. Set `resources.memory` to override it per step
+  (`memory: 0` omits `--mem`). The BlueVela environment's `resources: { memory: 8 }` stopgap
+  for hfpull/hfpush is removed. See
+  [skypilot-slurm.md](docs/environments/skypilot-slurm.md#step-memory-total_memory_per_node).
 - **K8s steps no longer fail for email usernames (ibmid auth) (#630).** The gbstep chart rendered
   `run_metadata.username` verbatim as a label, so the API server rejected the AppWrapper.
   `launch_helm` now passes a sanitized username (`user@x.com` -> `user_x.com`) chart-wide.

@@ -60,9 +60,9 @@ granite.build:
                 echo "env input path: {{ bindings.env_input.binding.path }}";
                 echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:/proj/data-eng/llmb-read-write/gbtest/filemount/out.txt"
             compute_config:
-              # CPU-only command. `total_memory_per_node` is intentionally omitted:
-              # the memory floor is silently skipped on SLURM (bare HPC schedulers
-              # don't track memory as consumable), so it would be a no-op here.
+              # CPU-only command. `total_memory_per_node` is omitted: an echo needs
+              # no more than SkyPilot's default (1 GB per CPU on a memory-tracking
+              # cluster like BlueVela).
               num_gpus_per_node: 0
             # The environment's cluster (bluevela) resolves the infra; the
             # `zone: cpu` above picks the partition.

@@ -105,18 +105,18 @@ granite.build:
               sbatch_options:
                 constraint: null
               resources:
-                # The ACTUAL memory request. BlueVela enforces memory per job
-                # (cgroups), but gbserver drops compute_config's memory floor on
-                # slurm/lsf, so without this the job got the partition default:
-                # sacct showed AllocCPUS=2 ReqMem=2G, and the transform step was
+                # The explicit memory request. BlueVela enforces memory per job
+                # (cgroups). Before #657, gbserver dropped compute_config's memory
+                # floor on slurm, so the job got SkyPilot's 1 GB per CPU: sacct
+                # showed AllocCPUS=2 ReqMem=2G, and the transform step was
                 # OOM-killed (OUT_OF_MEMORY 0:125, MaxRSS ~1.3G) while loading
-                # flair/ner-english-large — build c82e576e, 2026-09-28. An explicit
-                # launcher resources.memory is passed through on slurm; bare GiB,
-                # the same form the LSF ibm-bluevela steps use.
+                # flair/ner-english-large — build c82e576e, 2026-09-28. The floor
+                # is applied now (BlueVela tracks memory), but this explicit value
+                # wins either way; bare GiB, the same form the LSF ibm-bluevela
+                # steps use.
                 memory: "16"
             compute_config:
               num_gpus_per_node: 0
-              # Advisory only on SLURM (see launcher_config above for the real
-              # request); kept equal to it so the intent reads the same on
-              # endpoints that DO honor compute_config memory.
+              # Overridden by launcher_config.resources.memory above; kept equal
+              # to it so the intent reads the same on every endpoint.
               total_memory_per_node: 16Gi
