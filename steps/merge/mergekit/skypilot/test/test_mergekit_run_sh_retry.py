@@ -18,7 +18,9 @@ import shutil
 
 import pytest
 from mergekit_test_helpers import (  # pylint: disable=unused-import
+    _RECIPE,
     _markers,
+    _model,
     _refused,
     _run,
     _stub_argv,
@@ -65,14 +67,20 @@ def test_tokenizer_config_alone_is_not_a_tokenizer(env):
 
 def test_retry_of_the_same_run_registers_the_finished_output(env):
     """An attempt finished the merge and moved it into place, then the job was lost; the
-    retry (same run id, same output path) registers that output rather than fail."""
-    first = _run(env, **{"run-id": "tsr-1"})
+    retry (same retry key and inputs, same output path) registers that output rather
+    than fail."""
+    first = _run(env, **{"retry-key": "b-1/merge/0"})
     assert first.returncode == 0, first.stderr
     env["argv_file"].unlink()
-    retry = _run(env, **{"run-id": "tsr-1"})
+    retry = _run(env, **{"retry-key": "b-1/merge/0"})
     assert retry.returncode == 0, retry.stderr
-    assert _markers(retry) == _markers(first)
-    assert "earlier attempt of this run" in retry.stdout
+    # The same markers, plus one saying the output was reused (what the build test
+    # asserts, so it can tell a reuse from a second merge).
+    assert _markers(retry) == [
+        "GB_STEP_METADATA_KEY:reused_earlier_attempt GB_STEP_METADATA_VALUE:true",
+        *_markers(first),
+    ]
+    assert "earlier attempt of this step" in retry.stdout
     assert not env["argv_file"].exists()  # no second merge
     # The record lives beside the output, not in the model dir a push would upload.
     out = env["work"] / "out" / "model"
@@ -80,25 +88,25 @@ def test_retry_of_the_same_run_registers_the_finished_output(env):
     assert (out.parent / ".model.mergekit-done").is_file()
 
 
-@pytest.mark.parametrize("second", ["tsr-2", ""])
+@pytest.mark.parametrize("second", ["b-2/merge/0", ""])
 def test_another_run_still_refuses_an_existing_output(env, second):
-    """Only the run that wrote the output may re-register it."""
-    assert _run(env, **{"run-id": "tsr-1"}).returncode == 0
+    """Only a retry of the step that wrote the output may re-register it."""
+    assert _run(env, **{"retry-key": "b-1/merge/0"}).returncode == 0
     _refused(
-        _run(env, **{"run-id": second}),
+        _run(env, **{"retry-key": second}),
         "output path already exists and is not an empty directory",
     )
 
 
-def test_no_run_id_writes_no_record(env):
-    """A direct run (no --run-id) leaves nothing beside the output."""
+def test_no_retry_key_writes_no_record(env):
+    """A direct run (no --retry-key) leaves nothing beside the output."""
     assert _run(env).returncode == 0
     assert not list((env["work"] / "out").glob(".*mergekit-done"))
 
 
 def test_a_failed_merge_writes_no_record(env):
     _refused(
-        _run(env, extra_env={"STUB_FAIL": "1"}, **{"run-id": "tsr-1"}),
+        _run(env, extra_env={"STUB_FAIL": "1"}, **{"retry-key": "b-1/merge/0"}),
         "mergekit-yaml failed",
     )
     assert not list((env["work"] / "out").glob(".*mergekit-done"))
@@ -113,5 +121,46 @@ def test_a_failed_move_removes_the_record(env):
     # An rmdir that "succeeds" but leaves the dir (it reappeared after the rmdir).
     wrapper.write_text("#!/usr/bin/env bash\nexit 0\n")
     wrapper.chmod(0o755)
-    _refused(_run(env, **{"run-id": "tsr-1"}), "did not land")
+    _refused(_run(env, **{"retry-key": "b-1/merge/0"}), "did not land")
     assert not (out.parent / ".model.mergekit-done").exists()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"recipe": {**_RECIPE, "merge_method": "task_arithmetic"}},
+        {"args": {"out-shard-size": "1B"}},
+        {"copy-tokenizer": "false"},
+    ],
+    ids=["recipe", "args", "flag"],
+)
+def test_same_key_but_a_changed_merge_is_refused(env, change):
+    """The record matches only the merge it was written for: the same key with a changed
+    recipe, args or flag (a re-run, not a retry) is refused, not re-registered."""
+    assert _run(env, **{"retry-key": "b-1/merge/0"}).returncode == 0
+    env["argv_file"].unlink()
+    _refused(
+        _run(env, **{"retry-key": "b-1/merge/0", **change}),
+        "output path already exists and is not an empty directory",
+    )
+    assert not env["argv_file"].exists()
+
+
+def test_same_key_but_another_input_is_refused(env, tmp_path):
+    assert _run(env, **{"retry-key": "b-1/merge/0"}).returncode == 0
+    other = _model(tmp_path / "staged" / "other")
+    _refused(
+        _run(env, **{"retry-key": "b-1/merge/0", "input-model_1": other}),
+        "output path already exists",
+    )
+
+
+def test_a_record_from_the_previous_format_is_not_matched(env):
+    """A record written by #629's version (`run <step run id>`, no `config` line) never
+    matches, so the old refusal applies rather than a wrong re-registration."""
+    assert _run(env).returncode == 0  # an output, but no record (no key)
+    out = env["work"] / "out" / "model"
+    (out.parent / ".model.mergekit-done").write_text(
+        "run b-1/merge/0\nGB_ARTIFACT_ID:model GB_ARTIFACT_PATH:/elsewhere\n"
+    )
+    _refused(_run(env, **{"retry-key": "b-1/merge/0"}), "output path already exists")

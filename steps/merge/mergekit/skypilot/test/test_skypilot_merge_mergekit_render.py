@@ -186,11 +186,40 @@ def test_run_passes_config_as_json_and_flags(tmp_path):
     assert _value(argv, "--venv") == "./venv"
 
 
-def test_run_passes_the_target_step_run_id(tmp_path):
-    """run.sh gets the run id that stays the same across retries of one step run."""
-    argv = _argv("run", tmp_path, run_metadata={"targetsteprun_id": "tsr-abc"})
-    assert _value(argv, "--run-id") == "tsr-abc"
-    assert _value(_argv("run", tmp_path), "--run-id") == ""
+def _meta(**over):
+    """run_metadata as gbserver renders it (dataclasses.asdict(EntityRunMetadata))."""
+    return {
+        "build_id": "b-1",
+        "target_name": "merge",
+        "target_step_index": 0,
+        "targetsteprun_id": "tsr-a",
+        "targetrun_id": "tr-a",
+        **over,
+    }
+
+
+def test_run_passes_a_retry_key_that_survives_a_build_retry(tmp_path):
+    """The key is <build id>/<target>/<step index>. A build retry keeps the build id
+    but creates new target and step runs, so it must not depend on their ids."""
+    first = _value(_argv("run", tmp_path, run_metadata=_meta()), "--retry-key")
+    assert first == "b-1/merge/0"
+    retried = _meta(targetsteprun_id="tsr-b", targetrun_id="tr-b")
+    assert _value(_argv("run", tmp_path, run_metadata=retried), "--retry-key") == first
+
+
+@pytest.mark.parametrize(
+    "over", [{"build_id": "b-2"}, {"target_name": "other"}, {"target_step_index": 1}]
+)
+def test_the_retry_key_differs_for_another_build_target_or_step(tmp_path, over):
+    key = _value(_argv("run", tmp_path, run_metadata=_meta(**over)), "--retry-key")
+    assert key != "b-1/merge/0"
+
+
+@pytest.mark.parametrize("meta", [None, {"build_id": ""}])
+def test_no_retry_key_without_a_build_id(tmp_path, meta):
+    """A render without run metadata (or a direct run) gets no key: no record."""
+    argv = _argv("run", tmp_path, run_metadata=meta)
+    assert _value(argv, "--retry-key") == ""
 
 
 def test_run_output_path_defaults_to_model(tmp_path):

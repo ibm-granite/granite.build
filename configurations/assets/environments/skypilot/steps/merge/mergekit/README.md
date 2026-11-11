@@ -218,11 +218,15 @@ Two measurements with mergekit 0.1.5 on a CPU: a peak of 1.25 GB for the example
   path. The build's own lineage still records every input. If the merged model is pushed
   to the Hub, edit the card's `base_model:` first.
 - **A retry re-registers, not re-merges.** If an attempt finished the merge and moved it
-  into place but the job was then lost, gbserver's step retry (which relaunches the same
-  step run) registers that output: a `.<output name>.mergekit-done` record beside it names
-  the step run. Any other run still refuses an existing output, including a retry of the
-  whole build, which creates new step runs: give it a new `output_path`, or remove the
-  old output first.
+  into place but the target then failed (a later step failed, or the job was lost), a
+  retry of the build (`retries.max_retries`, or `gb build restart`) or of the step
+  registers that output instead of failing on it. A `.<output name>.mergekit-done` record
+  beside the output names the build, target and step, and a hash of the recipe, flags and
+  input paths. Any other build, or a changed recipe, still refuses an existing output:
+  give it a new `output_path`, or remove the old output first. The hash covers input
+  *paths*, not their contents: with `retries.target_reuse_enabled: false`, an upstream
+  target that re-runs and rewrites an input in place, or an `hf://` input at a moving
+  revision such as `main`, is not noticed, and the earlier merge is registered.
 - **A killed job leaves its staging dir.** The merge is written to a
   `.mergekit-stage.*` directory beside `output_path` and moved into place only on
   success. A normal failure removes it, but a job killed outright (SIGKILL, a preempted
