@@ -51,6 +51,7 @@ from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.space_storage import IStoredSpaceStorage
+from gbserver.storage.storage import Contains
 from gbserver.storage.stored_build import StoredBuild, reopen_finished_build
 from gbserver.storage.stored_event import StoredEvent
 from gbserver.storage.stored_step_run import StoredStepRun
@@ -169,10 +170,15 @@ class BuildValidateRequest(BaseModel):
 
 class ListBuildResponse(BaseModel):
     builds: list[StoredBuild]
+    # Echoes the substring filter actually applied. A server predating
+    # name_contains ignores the param and omits this, so clients can tell the
+    # builds are unfiltered and fall back.
+    name_contains: Optional[str] = None
 
 
 class CountBuildsResponse(BaseModel):
     count: int
+    name_contains: Optional[str] = None  # see ListBuildResponse.name_contains
 
 
 class BuildEventsResponse(BaseModel):
@@ -204,11 +210,24 @@ class CancelBuildResponse(BaseModel):
     canceled: StoredBuild
 
 
+def _apply_name_contains(row_filter: dict, name_contains: str) -> Optional[str]:
+    """Add a substring match on name. An exact ``name`` filter, if also given, wins.
+
+    Returns:
+        The substring applied, or None if none was.
+    """
+    if name_contains and "name" not in row_filter:
+        row_filter["name"] = Contains(name_contains)
+        return name_contains
+    return None
+
+
 # Needed to list all
 @builds_api.get("/")
 def list_builds(
     request: Request,
     name: str = "",
+    name_contains: str = "",  # case-insensitive substring match on name
     space_name: str = "",
     source_uri: str = "",
     username: str = "",  # needed
@@ -226,7 +245,7 @@ def list_builds(
 ) -> ListBuildResponse:
     scoped_space_name = scope_space_name_filter(request, space_name)
     if scoped_space_name is NO_ACCESSIBLE_SPACE:
-        return ListBuildResponse(builds=[])
+        return ListBuildResponse(builds=[], name_contains=name_contains or None)
     row_filter = get_row_filter(
         name=name,
         space_name=scoped_space_name,
@@ -235,6 +254,7 @@ def list_builds(
         tags=tag,
         status=status,
     )
+    applied_contains = _apply_name_contains(row_filter, name_contains)
     query_control = get_query_control(sort, page_index, page_size)
 
     storage = get_admin_storage()
@@ -251,7 +271,7 @@ def list_builds(
 
     item_list = [remove_build_archive(b) for b in item_list]
 
-    resp = ListBuildResponse(builds=item_list)
+    resp = ListBuildResponse(builds=item_list, name_contains=applied_contains)
     return resp
 
 
@@ -259,6 +279,7 @@ def list_builds(
 def count_builds(
     request: Request,
     name: str = "",
+    name_contains: str = "",  # case-insensitive substring match on name
     space_name: str = "",
     source_uri: str = "",
     username: str = "",
@@ -268,7 +289,7 @@ def count_builds(
     """Return the number of builds matching the filter criteria."""
     scoped_space_name = scope_space_name_filter(request, space_name)
     if scoped_space_name is NO_ACCESSIBLE_SPACE:
-        return CountBuildsResponse(count=0)
+        return CountBuildsResponse(count=0, name_contains=name_contains or None)
     row_filter = get_row_filter(
         name=name,
         space_name=scoped_space_name,
@@ -277,10 +298,11 @@ def count_builds(
         tags=tag,
         status=status,
     )
+    applied_contains = _apply_name_contains(row_filter, name_contains)
     storage = get_admin_storage()
     build_storage = storage.build_storage
     count = build_storage.count(where=row_filter)
-    return CountBuildsResponse(count=count)
+    return CountBuildsResponse(count=count, name_contains=applied_contains)
 
 
 @builds_api.post("/")

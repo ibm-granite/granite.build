@@ -1,15 +1,22 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
   Dropdown,
   MultiSelect,
   InlineNotification,
 } from "@carbon/react";
 import { useQuery } from "@tanstack/react-query";
-import { listBuilds, getBuildTags, listSpaces } from "@granite-build/ui-core/api/gbserver";
+import {
+  listBuilds,
+  searchBuilds,
+  getBuildTags,
+  listSpaces,
+  type BuildSearchResult,
+} from "@granite-build/ui-core/api/gbserver";
 import { BuildsTable } from "@granite-build/ui-core/components/BuildsTable";
 import { PageHeader } from "@granite-build/ui-core/components/PageHeader";
+import { SEARCH_WINDOW } from "@granite-build/ui-core/lib/buildSearch";
 import type { BuildStatus } from "@granite-build/ui-core/types";
 import styles from "./page.module.scss";
 
@@ -64,25 +71,29 @@ export default function BuildsPage() {
     queryFn: () => getBuildTags(spaceName),
   });
 
-  // Builds
-  const { data, isLoading, error } = useQuery({
-    queryKey: [
-      "builds",
-      spaceName,
-      selectedTags,
-      status,
-      page,
-      pageSize,
-    ],
-    queryFn: () =>
-      listBuilds({
+  const term = search.trim();
+
+  // Builds — server-side search and pagination (see searchBuilds for the
+  // older-gbserver fallback).
+  const { data, isLoading, error } = useQuery<BuildSearchResult & { term: string }>({
+    queryKey: ["builds", spaceName, selectedTags, status, term, page, pageSize],
+    queryFn: () => {
+      const params = {
         space_name: spaceName,
         tags: selectedTags.length ? selectedTags : undefined,
         status: status === "all" ? undefined : (status as BuildStatus),
         sort: "created_time:desc",
         page_index: page - 1,
         page_size: pageSize,
-      }),
+      };
+      // SEARCH_WINDOW only applies against a gbserver that predates name_contains.
+      const result = term
+        ? searchBuilds({ ...params, name_contains: term }, SEARCH_WINDOW)
+        : listBuilds(params).then((r) => ({ ...r, truncated: false }));
+      return result.then((r) => ({ ...r, term }));
+    },
+    // Keep the previous result while the next loads: without it BuildsTable
+    // shows its skeleton, which unmounts the search box mid-typing.
     placeholderData: (prev) => prev,
   });
 
@@ -91,20 +102,20 @@ export default function BuildsPage() {
     setPageSize(ps);
   }, []);
 
-  const handleSearch = useCallback((term: string) => {
-    setSearch(term);
-    setPage(1);
+  // Each keystroke would otherwise be a server round-trip.
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(searchDebounceRef.current), []);
+  const handleSearch = useCallback((value: string) => {
+    clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => {
+      setSearch(value);
+      setPage(1);
+    }, 300);
   }, []);
 
-  // gbserver's list endpoint has no name/search param, so search filters the
-  // current page of already-fetched builds rather than querying the server.
-  const allItems = data?.items ?? [];
-  const visibleItems = search
-    ? allItems.filter((b) =>
-        b.name.toLowerCase().includes(search.toLowerCase()),
-      )
-    : allItems;
-  const visibleTotal = search ? visibleItems.length : data?.total ?? 0;
+  // Only for the term on screen, so a placeholder from the previous search
+  // can't flash the notice while the next one loads.
+  const searchTruncated = (data?.term === term && data.truncated) || false;
 
   const spaceItems = [
     { id: "__all__", label: "All spaces" },
@@ -195,9 +206,20 @@ export default function BuildsPage() {
         />
       )}
 
+      {searchTruncated && (
+        <InlineNotification
+          kind="info"
+          lowContrast
+          hideCloseButton
+          title="Search limited to recent builds"
+          subtitle={`Searching the ${SEARCH_WINDOW} most recent builds matching the current filters. Narrow the filters to search further back.`}
+          style={{ marginBottom: "1rem" }}
+        />
+      )}
+
       <BuildsTable
-        builds={visibleItems}
-        total={visibleTotal}
+        builds={data?.items ?? []}
+        total={data?.total ?? 0}
         page={page}
         pageSize={pageSize}
         isLoading={isLoading}

@@ -13,6 +13,7 @@
  */
 import { apiBase, createApiClient } from './client'
 import { isLaterAttempt } from './targetAttempts'
+import { SEARCH_WINDOW, buildsView } from '../lib/buildSearch'
 import type {
   Build,
   BuildStatus,
@@ -303,6 +304,8 @@ export interface ListBuildsParams {
   sort?: string
   page_index?: number
   page_size?: number
+  /** Case-insensitive substring match on build name (gbserver `name_contains`). */
+  name_contains?: string
 }
 
 export interface BuildListResult {
@@ -310,6 +313,8 @@ export interface BuildListResult {
   total: number
   page: number
   page_size: number
+  /** False when name_contains was requested but the server predates it and ignored it. */
+  name_filtered?: boolean
 }
 
 export async function listBuilds(params: ListBuildsParams): Promise<BuildListResult> {
@@ -322,9 +327,10 @@ export async function listBuilds(params: ListBuildsParams): Promise<BuildListRes
   if (params.page_index != null) qp.set('page_index', String(params.page_index))
   if (params.page_size)   qp.set('page_size', String(params.page_size))
   for (const tag of params.tags ?? []) qp.append('tag', tag)
+  if (params.name_contains) qp.set('name_contains', params.name_contains)
 
   const [{ data }, total] = await Promise.all([
-    client.get<{ builds: Record<string, unknown>[]; total?: number; count?: number }>(
+    client.get<{ builds: Record<string, unknown>[]; total?: number; count?: number; name_contains?: string | null }>(
       `/builds/?${qp.toString()}`
     ),
     getBuildCount({
@@ -332,22 +338,49 @@ export async function listBuilds(params: ListBuildsParams): Promise<BuildListRes
       username: params.username,
       status: params.status,
       tags: params.tags,
+      name_contains: params.name_contains,
     }),
   ])
   const items = (data.builds ?? []).map(adaptBuild)
   const resolvedTotal = data.total ?? data.count ?? total
   const pageSize = params.page_size ?? items.length
-  return { items, total: resolvedTotal, page: (params.page_index ?? 0) + 1, page_size: pageSize }
+  // gbserver echoes name_contains when it applied it; an older one silently ignores it.
+  const name_filtered = !params.name_contains || data.name_contains === params.name_contains
+  return { items, total: resolvedTotal, page: (params.page_index ?? 0) + 1, page_size: pageSize, name_filtered }
 }
 
-export async function getBuildCount(params: Pick<ListBuildsParams, 'space_name' | 'username' | 'status' | 'tags'>): Promise<number> {
+export async function getBuildCount(params: Pick<ListBuildsParams, 'space_name' | 'username' | 'status' | 'tags' | 'name_contains'>): Promise<number> {
   const qp = new URLSearchParams()
   if (params.space_name) qp.set('space_name', params.space_name)
   if (params.username)   qp.set('username', params.username)
   for (const s of Array.isArray(params.status) ? params.status : params.status ? [params.status] : []) qp.append('status', s.toUpperCase())
   for (const tag of params.tags ?? []) qp.append('tag', tag)
+  if (params.name_contains) qp.set('name_contains', params.name_contains)
   const { data } = await client.get<{ count: number }>(`/builds/count?${qp.toString()}`)
   return data.count ?? 0
+}
+
+export interface BuildSearchResult extends BuildListResult {
+  /** Only the most recent `windowSize` builds were searched (older-server fallback). */
+  truncated: boolean
+}
+
+/**
+ * Search builds by name (case-insensitive substring), one page at a time. Uses
+ * gbserver's `name_contains`; against a server that predates it, matches the
+ * `windowSize` most recent builds that pass the other filters and paginates
+ * locally — `truncated` then says the window was smaller than the total.
+ */
+export async function searchBuilds(
+  params: ListBuildsParams & { name_contains: string },
+  windowSize = SEARCH_WINDOW,
+): Promise<BuildSearchResult> {
+  const result = await listBuilds(params)
+  if (result.name_filtered) return { ...result, truncated: false }
+  const { name_contains: term, page_index = 0, page_size = 20, ...filters } = params
+  const window = await listBuilds({ ...filters, page_index: 0, page_size: windowSize })
+  const view = buildsView(window, 'window', { term, page: page_index + 1, pageSize: page_size })
+  return { ...view, page: page_index + 1, page_size, name_filtered: true }
 }
 
 export async function getBuild(buildId: string): Promise<Build> {

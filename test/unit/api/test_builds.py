@@ -71,6 +71,7 @@ from gbserver.api.utils import (
 from gbserver.api.utils import (
     confirm_existing_item_write_access as _real_confirm_existing_item_write_access,
 )
+from gbserver.storage.storage import Contains
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.status import Status
@@ -821,3 +822,68 @@ def test_list_build_tags_excludes_other_spaces_for_non_admin():
         _set_alice_access(manager)
         tags = list_build_tags(_fake_request(ALICE, f"{ALICE}@example.com"))
     assert tags == ["alpha"]
+
+
+def test_list_and_count_builds_pass_name_contains_to_storage():
+    """name_contains becomes a Contains() filter on name for both endpoints, so
+    the paginated list and its total come from the same WHERE clause."""
+    seen = []
+    storage = SimpleNamespace(
+        get_by_where=lambda where=None, query_control=None: seen.append(where) or [],
+        count=lambda where=None: seen.append(where) or 0,
+    )
+    with (
+        patch.object(
+            builds_module,
+            "get_admin_storage",
+            return_value=SimpleNamespace(build_storage=storage),
+        ),
+        patch("gbserver.api.utils.is_super_admin", return_value=True),
+    ):
+        req = _fake_request("admin_x", "admin_x@example.com")
+        listed = list_builds(req, name_contains="sft")
+        counted = count_builds(req, name_contains="sft")
+    assert [w["name"] for w in seen] == [Contains("sft"), Contains("sft")]
+    # Echoed so a client can tell this server applied the filter.
+    assert listed.name_contains == counted.name_contains == "sft"
+
+
+def test_name_contains_not_echoed_when_absent_or_overridden():
+    storage = SimpleNamespace(
+        get_by_where=lambda where=None, query_control=None: [],
+        count=lambda where=None: 0,
+    )
+    with (
+        patch.object(
+            builds_module,
+            "get_admin_storage",
+            return_value=SimpleNamespace(build_storage=storage),
+        ),
+        patch("gbserver.api.utils.is_super_admin", return_value=True),
+    ):
+        req = _fake_request("admin_x", "admin_x@example.com")
+        assert list_builds(req).name_contains is None
+        assert (
+            count_builds(req, name="exact", name_contains="sft").name_contains is None
+        )
+
+
+def test_exact_name_takes_precedence_over_name_contains():
+    seen = []
+    storage = SimpleNamespace(
+        get_by_where=lambda where=None, query_control=None: seen.append(where) or [],
+    )
+    with (
+        patch.object(
+            builds_module,
+            "get_admin_storage",
+            return_value=SimpleNamespace(build_storage=storage),
+        ),
+        patch("gbserver.api.utils.is_super_admin", return_value=True),
+    ):
+        list_builds(
+            _fake_request("admin_x", "admin_x@example.com"),
+            name="exact",
+            name_contains="sft",
+        )
+    assert seen[0]["name"] == "exact"
