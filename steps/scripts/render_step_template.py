@@ -21,13 +21,13 @@ publish-step`. It makes two passes and nothing else:
 1. Each line ``{#- gb-include <path> -#}`` is replaced by the lines of the file
    it names, each indented like the marker. ``<path>`` is relative to the file
    holding the marker and must resolve, after symlinks, to a file under the
-   steps/ tree. Included files cannot include others. Any other line that
-   starts with ``{#`` and ``gb-include`` is refused, so a typo cannot pass as
+   steps/ tree. Included files cannot include others. Any other line with a
+   ``{#`` comment naming ``gb-include`` is refused, so a typo cannot pass as
    a plain Jinja comment.
 2. The literal ``${IMAGE_REF}`` is replaced by the image reference.
 
 Runtime Jinja (``{{ ... }}``) and shell expansions pass through untouched. Standard
-library only, so rendering needs no install.
+library only (Python 3.9+), so rendering needs no install.
 
 Usage: render_step_template.py TEMPLATE OUT [--image-ref REF]
 """
@@ -41,7 +41,7 @@ from typing import List, Optional
 STEPS_ROOT = Path(__file__).resolve().parent.parent
 IMAGE_REF_TOKEN = "${IMAGE_REF}"
 _MARKER = re.compile(r"^(?P<indent> *)\{#- gb-include (?P<path>\S+) -#\}$")
-_ATTEMPT = re.compile(r"^\s*\{#-?\s*gb-include\b")
+_ATTEMPT = re.compile(r"\{#[-+]*\s*gb-include\b")
 
 
 class IncludeError(Exception):
@@ -77,14 +77,15 @@ def expand(template: Path, root: Path = STEPS_ROOT) -> str:
     out: List[str] = []
     lines = template.read_text(encoding="utf-8").splitlines(keepends=True)
     for number, line in enumerate(lines, start=1):
-        if not _ATTEMPT.match(line):
+        if not _ATTEMPT.search(line):
             out.append(line)
             continue
         where = f"{template}:{number}"
         marker = _MARKER.match(line.rstrip("\n"))
         if marker is None:
+            written = line.rstrip("\n")
             raise IncludeError(
-                f"{where}: malformed gb-include line {line.strip()!r}; write it as "
+                f"{where}: malformed gb-include line {written!r}; write it as "
                 "`{#- gb-include <path> -#}` on a line of its own, indented with spaces"
             )
         try:
@@ -92,7 +93,7 @@ def expand(template: Path, root: Path = STEPS_ROOT) -> str:
         except IncludeError as exc:
             raise IncludeError(f"{where}: {exc}") from None
         body = target.read_text(encoding="utf-8").splitlines()
-        if any(_ATTEMPT.match(inner) for inner in body):
+        if any(_ATTEMPT.search(inner) for inner in body):
             raise IncludeError(
                 f"{where}: {marker['path']} has a gb-include line; includes do not nest"
             )
