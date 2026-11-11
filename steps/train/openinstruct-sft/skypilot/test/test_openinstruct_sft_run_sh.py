@@ -154,6 +154,8 @@ class TestLaunch:
             "false",
             "--try_auto_save_to_beaker",
             "false",
+            "--dataset_cache_mode",
+            "local",
             "--dataset_local_cache_dir",
             str(node[3] / "local_dataset_cache"),
             "--dataset_mixer_list",

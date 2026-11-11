@@ -27,9 +27,9 @@ With the SFT arm:
 
 Override any value with `--param KEY=VALUE`. The pair and the data:
 
-    --param TEACHER_MODEL=/proj/granite-build/g4os/kd-sandbox/teacher_overlays/<teacher> \
-    --param STUDENT_MODEL=/proj/granite-build/g4os/kd-sandbox/student_overlays/<student> \
-    --param DATASET=/proj/granite-build/g4os/gbtest/gold-distill-smoke/<data>_nothink.jsonl
+    --param TEACHER_MODEL=<shared-fs>/kd-sandbox/teacher_overlays/<teacher> \
+    --param STUDENT_MODEL=<shared-fs>/kd-sandbox/student_overlays/<student> \
+    --param DATASET=<shared-fs>/gbtest/gold-distill-smoke/<data>_nothink.jsonl
 
 ## Why the targets are in this order
 
@@ -39,7 +39,7 @@ file.
 
 | Edge | Why |
 |---|---|
-| `align → corpus` | Lengths and the assistant-mask check are counted in tokens, so a corpus measured with a different tokenizer is filtered against the wrong distribution. Prep also needs align's chat template to locate assistant spans at all: measured, none of the 13 hand-built `/proj` overlays carries a `{% generation %}` tag. |
+| `align → corpus` | Lengths and the assistant-mask check are counted in tokens, so a corpus measured with a different tokenizer is filtered against the wrong distribution. Prep also needs align's chat template to locate assistant spans at all: measured, none of the 13 hand-built shared-fs overlays carries a `{% generation %}` tag. |
 | `align → train-*` | The student is the **retagged** one. Its embedding rows for the control tokens differ from the base model's. |
 | `corpus → train-*` | Plus the manifest the trainers' row-count guard reads. |
 | `train-gold → export` | Selects a checkpoint, prunes it, and verifies it loads. |
@@ -51,20 +51,20 @@ The two evaluations answer different questions and neither substitutes for the
 other: a student can move toward the teacher's distribution while losing
 tool-calling accuracy, and the transfer metric cannot see that.
 
-## One bad host: p2-r03-n1
+## One bad host
 
 Three GPU targets across two builds died with `RuntimeError: CUDA unknown error`
 raised inside torch at `cuda_init`, after their own "1 GPU visible via
 CUDA_VISIBLE_DEVICES" gate had passed — so the allocation arrived and the
-initialisation is what failed. All three were on **p2-r03-n1**:
+initialisation is what failed. All three were on the same host, `<bad-host>`:
 
 | host | runs in `~/sky_logs` | cuda_init failures |
 |---|---|---|
-| `p2-r03-n1` | 3 | **3** |
+| `<bad-host>` | 3 | **3** |
 | every other host | several hundred | 0 |
 
-In build b5f030cd the same `distill-eval` step succeeded on `p3-r27-n2` and then
-failed on `p2-r03-n1` two minutes later, same config, same image. The node takes
+In build b5f030cd the same `distill-eval` step succeeded on another host and then
+failed on `<bad-host>` two minutes later, same config, same image. The node takes
 the allocation and cannot initialise CUDA. **Report it**; nothing in this
 repository fixes it.
 
@@ -79,7 +79,7 @@ Two mitigations, in order of usefulness:
      cluster_configs:
        bluevela:
          bsub_options:
-           R: "select[hname!='p2-r03-n1'&&hname!='p2-r03-n1.bluevela.rmf.ibm.com']"
+           R: "select[hname!='<bad-host>'&&hname!='<bad-host-fqdn>']"
    ```
 
    **No surrounding double quotes and no spaces**, both load-bearing and both
@@ -191,7 +191,7 @@ porting upstream's step.
 Everything composed hangs off `WORKDIR_ROOT/RUN_NAME/BUILD_SUBDIR`, one directory
 per build:
 
-    /proj/granite-build/g4os/gbtest/distill/distill-pipeline-smoke/<build-id>/
+    <shared-fs>/gbtest/distill/distill-pipeline-smoke/<build-id>/
       align/                     retagged student + the two tokenizer overlays
       corpus/train.jsonl         the declared corpus artifact (+ manifest sibling)
       corpus/eval.jsonl          the held-out split, composed rather than bound

@@ -1,5 +1,5 @@
 ######
-# Sage safety evaluation suite on BlueVela (LSF).
+# Sage safety evaluation suite on SkyPilot/LSF.
 # Runs 2 parallel eval targets: ATTAQ and Salad Bench.
 ######
 granite.build:

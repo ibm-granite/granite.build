@@ -1,5 +1,5 @@
 # gold-onpolicy-full-smoke — FULLY on-policy GOLD (lmbda 1.0) with vLLM as a
-# separate target, on BlueVela (SkyPilot / LSF).
+# separate target, on SkyPilot/LSF.
 #
 # Same shape as gold-onpolicy-smoke (proven: build 9973e766 synced all 362
 # parameter tensors over NCCL across two LSF allocations), same shared-path model

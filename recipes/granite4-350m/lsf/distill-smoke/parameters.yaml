@@ -1,5 +1,5 @@
 # distill-smoke — the granite4-350m distillation pipeline at smoke scale, for
-# BlueVela (SkyPilot / LSF).
+# SkyPilot/LSF.
 #
 # distill-pipeline-smoke's shape, retargeted to OUR pair: the granite-4.0-350m SFT
 # checkpoint as student, granite-4.1-3b as teacher. It is stage 1's graph at 64 rows
@@ -74,10 +74,10 @@ DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero
 # Each *_URI below carries a FULL uri, not a bare path — the scheme picks
 # how granite.build fetches it (see ibm-bluevela's environment.yaml
 # assetstores block for what's wired in):
-#   env://<absolute path>   already on the shared filesystem (BlueVela's /proj)
+#   env://<absolute path>   already on the cluster's shared filesystem
 #   hf:///<org>/<repo>      pulled fresh from the Hugging Face Hub
 #   s3://<bucket>/<key>     pulled from S3-compatible object storage
-# The defaults below use env:// against /proj, for the reasons documented
+# The defaults below use env:// against the shared filesystem, for the reasons documented
 # next to each one. Override with --param to source any of them from the
 # Hub or your own bucket instead, e.g.
 # --param DATASET_URI=s3://my-bucket/corpora/smoke.jsonl.
@@ -137,7 +137,7 @@ DATASET_URI: "env:///proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_200
 # steps/distill/tokenizer-align/skypilot/test/test_granite_role_template.py renders
 # both over nine conversation shapes and diffs them.
 #
-# BEFORE THE FIRST RUN: diff this against /proj/granite-build/g4os/chat_template.jinja,
+# BEFORE THE FIRST RUN: diff this against <shared-fs>/chat_template.jinja,
 # the template the SFT mixture was actually tokenized with. The vendored base is the
 # Hub's copy of granite-4.0-350m's template, which SHOULD be the same file — but "should
 # be" is not "is", and a difference here moves every prompt. The README has the command.
@@ -334,8 +334,8 @@ NCCL_DEBUG_SUBSYS: "INIT,NET"
 NCCL_TIMEOUT_MS: 600000
 
 # ─── Retries ──────────────────────────────────────────────────────────
-# One retry, for a measured cluster fault rather than as general insurance: host
-# p2-r03-n1 takes an allocation and then fails inside torch at cuda_init with
+# One retry, for a measured cluster fault rather than as general insurance: one
+# specific host takes an allocation and then fails inside torch at cuda_init with
 # "CUDA unknown error" (3 runs, 3 failures there; 0 failures on every other host
 # across several hundred runs in ~/sky_logs). A build.yaml cannot steer LSF away
 # from a host, so running the target again — most likely elsewhere — is the only

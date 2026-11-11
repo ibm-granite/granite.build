@@ -64,6 +64,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Step resolution: `base_uris` order decides, and environments own steps by `environment.yaml`
+  (#558).** `space://steps/<name>` now resolves to the first base, in `base_uris` order, that
+  holds a copy serving the active environment, so an earlier base always outranks a later one.
+  The space's own root `steps/<name>` still wins outright. Within one base, the copy in the
+  active environment's own `steps/` comes first, then shared copies; among shared copies, the
+  one whose `environment_configs` list the fewest classes wins. See
+  [docs/environments/step-resolution.md](docs/environments/step-resolution.md).
+  **Breaking changes:**
+  - **A step's name is its full path below `steps/`.** Only an env-class folder directly under
+    `steps/` (`bash`, `docker`, `k8s`, `lsf`, `runpod`, `skypilot`, `skypilot_managed`) may be
+    left out, as with the builtins' `space://steps/command`. Any other folder is part of the
+    name, so `space://steps/<leaf>` no longer reaches `steps/<category>/<leaf>`: write
+    `space://steps/<category>/<leaf>`, e.g. `space://steps/distill/sft`, not
+    `space://steps/sft`.
+  - **A `steps/` folder next to an `environment.yaml` serves only that environment.** Steps
+    there are no longer shared with other environments, of the same class or otherwise, and
+    folder names (`environments/…`) no longer decide which environments a folder serves. Put a
+    step meant for several environments in a folder with no `environment.yaml`, and limit it
+    with `subtypes` if needed.
+  - **`subtypes` apply wherever a step lives,** including an environment's own `steps/`. The
+    env-owned steps under `skypilot/aws/steps/` and `skypilot/lsf/ibm-bluevela/steps/` no
+    longer declare `subtypes`; their folder scopes them.
+  - **New errors instead of a silent pick:** `Ambiguous space uri` when one base holds two
+    equally specific copies of a name for the environment, and `Invalid step for its
+    environment` when the copy that would be selected is in the environment's own `steps/` but
+    doesn't admit it.
 - **With podman, `make publish-image`'s `REGISTRY_USER`/`REGISTRY_PASSWORD` login is scoped to
   `$(REGISTRY)` instead of the whole registry host (#229),** so it no longer replaces your other
   logins on that host. docker still logs in per host.
@@ -254,6 +280,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **K8s steps no longer fail for email usernames (ibmid auth) (#630).** The gbstep chart rendered
   `run_metadata.username` verbatim as a label, so the API server rejected the AppWrapper.
   `launch_helm` now passes a sanitized username (`user@x.com` -> `user_x.com`) chart-wide.
+- **`space://steps/train/openinstruct-sft` refuses multi-node builds set through
+  `launcher_config.num_nodes`, and abbreviated `args` keys (#609).** Before,
+  `launcher_config.num_nodes: 2` passed the step's single-node check, so SkyPilot ran two
+  independent single-node trainings, and `1.0` was refused. Now both `compute_config` and
+  `launcher_config` must be 1 (`1.0` and strings like `"01"` count, as gbserver reads them).
+  An `args` key that abbreviates a step-owned flag (`output_d`), is a `no_*` key (it takes no
+  value), or is not a bare name is refused at step creation, and the image (`oi-v0.3.0-9`)
+  parses `finetune.py`'s flags with prefix matching off, so `learning_rat` fails the run
+  instead of setting `learning_rate`. `dataset_cache_mode` is now step-owned and pinned to
+  `local`: `hf` pushed the tokenized dataset to the Hub whenever `HF_TOKEN` was set. The
+  `Step:` status message now carries the whole progress line (LR, loss, throughput), not just
+  `Step: <n>`. The image also moves `Authlib` from 1.9.0 to 1.9.5 for GHSA-8m4g-j4wp-wgcg
+  (JWS/JWT forgery with an empty HMAC key). The legacy hand-authored
+  `space://steps/openinstruct-sft` assets are unchanged; see #569.
+
 - **Workload-status events now carry the `message` field step monitor rules send (#598).**
   Before, the `Step:` progress events were dropped and gbserver logged a traceback for each
   matching line. These events are now stored and published once per matching log line, and the

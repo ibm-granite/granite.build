@@ -1,6 +1,6 @@
 ######
 # gold-onpolicy-full-smoke — FULLY on-policy GOLD distillation (lmbda 1.0) for
-# BlueVela (SkyPilot / LSF), with vLLM as a SEPARATE target rather than nodes
+# SkyPilot/LSF, with vLLM as a SEPARATE target rather than nodes
 # carved out of the trainer's allocation.
 #
 # Same three-target shape as gold-onpolicy-smoke (which proved this shape works:

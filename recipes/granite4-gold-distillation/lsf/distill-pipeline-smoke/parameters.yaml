@@ -1,5 +1,5 @@
 # distill-pipeline-smoke — the whole distillation pipeline at smoke scale, for
-# BlueVela (SkyPilot / LSF).
+# SkyPilot/LSF.
 #
 # This recipe's subject is the PLUMBING of the chain — align -> corpus ->
 # [train-sft] -> train-gold -> export -> eval-transfer x2 -> eval-bfcl — not the
@@ -69,10 +69,10 @@ DS_CONFIG: "steps/distill-gold-train/configs/deepspeed/accelerate_deepspeed_zero
 # TEACHER_MODEL_URI / STUDENT_MODEL_URI / DATASET_URI carry a FULL uri, not a
 # bare path — the scheme picks how granite.build fetches it (see
 # ibm-bluevela's environment.yaml assetstores block for what's wired in):
-#   env://<absolute path>   already on the shared filesystem (BlueVela's /proj)
+#   env://<absolute path>   already on the shared filesystem (the cluster's shared filesystem)
 #   hf:///<org>/<repo>      pulled fresh from the Hugging Face Hub
 #   s3://<bucket>/<key>     pulled from S3-compatible object storage
-# The defaults below use env:// against /proj. Override with --param to
+# The defaults below use env:// against the shared filesystem. Override with --param to
 # source any of them from the Hub or your own bucket instead. CHAT_TEMPLATE
 # below is NOT one of these — it stays a bare, code-relative path; see its
 # own comment.
@@ -104,7 +104,7 @@ DATASET_URI: "env:///proj/granite-build/g4os/gbtest/gold-distill-smoke/smoke_200
 # rather than a *_URI input binding — nothing to pull, this ships with the
 # code checkout. The one template on this cluster known to carry a real
 # {% generation %} block tag, which is what lets prep measure the completion
-# boundary at all: MEASURED, none of the 13 hand-built /proj overlay
+# boundary at all: MEASURED, none of the 13 hand-built shared-fs overlay
 # directories has one. Pass an absolute path via --param to use a custom
 # template instead.
 CHAT_TEMPLATE: "templates/chatml_granite_42_generation.jinja"
@@ -265,8 +265,8 @@ NCCL_DEBUG_SUBSYS: "INIT,NET"
 NCCL_TIMEOUT_MS: 600000
 
 # ─── Retries ──────────────────────────────────────────────────────────
-# One retry, for a measured cluster fault rather than as general insurance: host
-# p2-r03-n1 takes an allocation and then fails inside torch at cuda_init with
+# One retry, for a measured cluster fault rather than as general insurance: one
+# specific host takes an allocation and then fails inside torch at cuda_init with
 # "CUDA unknown error" (3 runs, 3 failures there; 0 failures on every other host
 # across several hundred runs in ~/sky_logs). A build.yaml cannot steer LSF away
 # from a host, so running the target again — most likely elsewhere — is the only

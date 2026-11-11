@@ -1,5 +1,5 @@
 # distill-onpolicy-v2 — ON-POLICY GOLD for the granite-4.0-350m pair, continuing from
-# distill-stage1-v2's chosen checkpoint. BlueVela (SkyPilot / LSF).
+# distill-stage1-v2's chosen checkpoint. SkyPilot/LSF.
 #
 # WRITTEN, NOT YET RUN. STUDENT_MODEL below is a placeholder that will not resolve:
 # on-policy continues from a good OFF-POLICY checkpoint, and which rung of stage 1 v2's
@@ -84,7 +84,7 @@ SEED: 42
 #   * a `binding` names another target's output IN THIS BUILD, so it cannot name a
 #     corpus that a different build produced.
 #
-#   --param CORPUS_DIR=/proj/granite-build/g4os/distill/<run>/<build-id>/corpus
+#   --param CORPUS_DIR=<shared-fs>/distill/<run>/<build-id>/corpus
 #
 # The directory must hold train.jsonl, eval.jsonl and corpus_manifest.json.
 #
@@ -120,12 +120,12 @@ IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
 # EMPTY means the step clones github.com/laminair/gb-steps-distillation at the commit
 # its own code_config pins, which resolves on any environment class that can reach
 # github.com. This recipe used to override it with a local checkout at
-# /proj/granite-build/g4os/gb-steps-distillation-gb carrying
+# <shared-fs>/gb-steps-distillation-gb carrying
 # patches/ce_anchor_and_entropy_guard.diff, because CE_COEF and the entropy guard need
 # trainer fields the public pin does not define. Both are off now -- see CE_COEF below
 # for the sweep that retired them -- so nothing patch-gated renders, the override has
 # no purpose left, and this recipe runs the same trainer as every other distillation
-# recipe here, on any cluster rather than only on BlueVela.
+# recipe here, on any cluster rather than only on this one.
 #
 # To re-arm either key, point this at a checkout carrying that patch and set
 # CODE_EXPECT_REF to its HEAD; the diff header states its base commit and the directory
@@ -172,7 +172,7 @@ TEACHER_MODEL: "/proj/granite-build/g4os/models/granite-4.1-3b-pinned"
 # would run, report a plausible loss, and answer a question nobody asked.
 #
 # Pass stage 1 v2's chosen rung:
-#   --param STUDENT_MODEL=/proj/granite-build/g4os/distill/distill-350m-stage1-v2/<build-id>/export-<N>
+#   --param STUDENT_MODEL=<shared-fs>/distill/distill-350m-stage1-v2/<build-id>/export-<N>
 #
 # Left as an obviously-invalid path rather than a plausible one, so a forgotten override
 # fails at align instead of training the wrong model for three hours.
@@ -226,7 +226,7 @@ SHUFFLE_SEED: 42
 # steps/distill/tokenizer-align/skypilot/test/test_granite_role_template.py renders
 # both over nine conversation shapes and diffs them.
 #
-# BEFORE THE FIRST RUN: diff this against /proj/granite-build/g4os/chat_template.jinja,
+# BEFORE THE FIRST RUN: diff this against <shared-fs>/chat_template.jinja,
 # the template the SFT mixture was actually tokenized with. The vendored base is the
 # Hub's copy of granite-4.0-350m's template, which SHOULD be the same file — but "should
 # be" is not "is", and a difference here moves every prompt. The README has the command.
@@ -340,7 +340,7 @@ CKPT_LADDER: "25,50,75,100,150,200,300"
 #
 # It is exactly backwards for an exploratory run: the checkpoints worth keeping are
 # the EARLY ones. 12 checkpoints at 4.7 G each is ~56 G against 21 T free on
-# /proj/data-eng — a rounding error next to a 16-GPU allocation. The limit is 16
+# the shared filesystem — a rounding error next to a 16-GPU allocation. The limit is 16
 # rather than 12 so a guard trip's extra save, or a resume, cannot start evicting.
 #
 # 25 rather than 250: at GOLD_MAX_STEPS 300 a 250-step grid would write exactly one
@@ -636,7 +636,7 @@ BFCL_GPU_MEMORY_UTILIZATION: "0.5"
 # logits tensor of the non-fused JSD path.
 #
 # Raising this requires lowering GRADIENT_ACCUMULATION_STEPS to match. More nodes
-# also means more exposure to the p2-r03-n1 CUDA-init fault.
+# also means more exposure to the single-host CUDA-init fault.
 GOLD_NUM_NODES: 2
 GOLD_NUM_GPUS: 8
 # HOST memory per node for the GPU targets, and it has to be stated: the LSF
@@ -679,8 +679,8 @@ NCCL_DEBUG_SUBSYS: "INIT,NET"
 NCCL_TIMEOUT_MS: 600000
 
 # ─── Retries ──────────────────────────────────────────────────────────
-# One retry, for a measured cluster fault rather than as general insurance: host
-# p2-r03-n1 takes an allocation and then fails inside torch at cuda_init with
+# One retry, for a measured cluster fault rather than as general insurance: one
+# specific host takes an allocation and then fails inside torch at cuda_init with
 # "CUDA unknown error" (3 runs, 3 failures there; 0 failures on every other host
 # across several hundred runs in ~/sky_logs). A build.yaml cannot steer LSF away
 # from a host, so running the target again — most likely elsewhere — is the only

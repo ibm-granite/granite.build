@@ -438,8 +438,10 @@ The override flows through two layers:
 2. **SkyPilot** — `src/gbserver/utils/sky_patches.py` declares `docker.host_image_id` in
    SkyPilot's config schema and registers it as task-overrideable, so the API server's
    strict override validation accepts it. In Docker mode the AWS cloud then uses it as the
-   host AMI instead of SkyPilot's GPU catalog AMI. It can also be set globally under
-   `docker:` in `~/.sky/config.yaml`; the step value wins.
+   host AMI instead of SkyPilot's GPU catalog AMI. A step without a container (no
+   `image_id`) runs on that AMI directly, and a step that names its own `image_id` keeps
+   it. It can also be set globally under `docker:` in `~/.sky/config.yaml`; the step
+   value wins.
 
 ### Finding a Compatible AMI
 
