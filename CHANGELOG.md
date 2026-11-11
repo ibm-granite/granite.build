@@ -75,6 +75,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dataset pins live in `steps/eval/VENDORED.md` and are fetched at run or image-build
   time (#460).
 
+- **`single_node` step flag (#651)** — `environment_configs.Skypilot.single_node: true` makes
+  gbserver resolve `num_nodes` from every layer the launch reads (`compute_config`, the step's
+  launcher config, the build's `launcher_config`) and fail the step at creation unless it is 1.
+  Other environments refuse the flag. The SkyPilot `openinstruct-sft`, `hf-peft-sft`, `nemo-rl`
+  and `fm-tune` steps use it instead of their own Jinja `num_nodes` checks: they now accept
+  exactly what gbserver parses as 1 (hf-peft-sft newly accepts `"01"`), and nemo-rl newly
+  checks the build's `launcher_config.num_nodes`.
+
 ### Changed
 
 - **Step resolution: `base_uris` order decides, and environments own steps by `environment.yaml`
