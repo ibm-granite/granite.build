@@ -147,14 +147,15 @@ class TestTargetStepRunValidatesLaunchConfig:
 
     def test_hook_gets_the_filled_launcher_config_and_config(self, tmp_path):
         targetstep = _make_targetstep_mock("trl-finetune-cpu", tmp_path)
-        self._create(targetstep)
+        run = self._create(targetstep)
 
         hook = targetstep.environment.validate_launch_config
         hook.assert_called_once()
         step_env_config, launcher_config, config = hook.call_args.args
         assert step_env_config is targetstep.step_environment_config
         assert launcher_config == {"image": _CPU_IMAGE, "command": "python3 run.py"}
-        assert isinstance(config, dict)
+        assert launcher_config is run.full_config["launcher_config"]
+        assert config is run.full_config["config"]
 
     def test_hook_error_fails_step_creation(self, tmp_path):
         targetstep = _make_targetstep_mock("trl-finetune-cpu", tmp_path)

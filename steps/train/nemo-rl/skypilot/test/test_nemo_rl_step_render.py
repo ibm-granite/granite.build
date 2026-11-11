@@ -263,6 +263,15 @@ class TestSingleNode:
         with pytest.raises(ValueError, match="this step is single-node"):
             skypilot.validate_launch_num_nodes(step_env, launcher, config)
 
+    def test_gbserver_accepts_one_node(self, step_env, launcher):
+        skypilot = pytest.importorskip("gbserver.environment.skypilot")
+        assert (
+            skypilot.validate_launch_num_nodes(
+                step_env, launcher, {"compute_config": {"num_nodes": 1}}
+            )
+            == 1
+        )
+
     @pytest.mark.parametrize("block", ["setup", "run"])
     def test_template_leaves_num_nodes_to_gbserver(self, launcher, nrl_defaults, block):
         rendered = _render(
